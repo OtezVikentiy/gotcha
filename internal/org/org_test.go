@@ -256,6 +256,100 @@ func TestOrgsOf(t *testing.T) {
 	}
 }
 
+func TestUsageAndQuota(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "usage-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "usage-org", "Usage Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	jan := time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
+	if n, err := svc.Usage(ctx, o.ID, jan); err != nil || n != 0 {
+		t.Fatalf("Usage (empty): n=%d err=%v, want 0", n, err)
+	}
+
+	if n, err := svc.IncUsage(ctx, o.ID, jan); err != nil || n != 1 {
+		t.Fatalf("IncUsage (1st): n=%d err=%v, want 1", n, err)
+	}
+	if n, err := svc.IncUsage(ctx, o.ID, jan); err != nil || n != 2 {
+		t.Fatalf("IncUsage (2nd): n=%d err=%v, want 2", n, err)
+	}
+	// Другой день того же месяца бьёт в тот же счётчик (period_month
+	// нормализуется к 1-му числу).
+	janLater := time.Date(2026, time.January, 28, 3, 0, 0, 0, time.UTC)
+	if n, err := svc.IncUsage(ctx, o.ID, janLater); err != nil || n != 3 {
+		t.Fatalf("IncUsage (same month, later day): n=%d err=%v, want 3", n, err)
+	}
+	if n, err := svc.Usage(ctx, o.ID, jan); err != nil || n != 3 {
+		t.Fatalf("Usage (january): n=%d err=%v, want 3", n, err)
+	}
+
+	// Другой месяц независим.
+	feb := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+	if n, err := svc.Usage(ctx, o.ID, feb); err != nil || n != 0 {
+		t.Fatalf("Usage (february, before inc): n=%d err=%v, want 0", n, err)
+	}
+	if n, err := svc.IncUsage(ctx, o.ID, feb); err != nil || n != 1 {
+		t.Fatalf("IncUsage (february): n=%d err=%v, want 1", n, err)
+	}
+	if n, err := svc.Usage(ctx, o.ID, jan); err != nil || n != 3 {
+		t.Fatalf("Usage (january, unaffected by february): n=%d err=%v, want 3", n, err)
+	}
+
+	if err := svc.SetQuota(ctx, o.ID, 42); err != nil {
+		t.Fatalf("SetQuota: %v", err)
+	}
+	got, err := svc.Get(ctx, o.ID)
+	if err != nil || got.EventQuota != 42 {
+		t.Fatalf("Get after SetQuota: %+v err=%v, want EventQuota=42", got, err)
+	}
+	if err := svc.SetQuota(ctx, 999999, 1); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("SetQuota (missing org): got %v, want ErrNotFound", err)
+	}
+}
+
+func TestSetQuotaNegative(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "quota-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "quota-org", "Quota Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// Initial quota is default (1_000_000).
+	initialOrg, err := svc.Get(ctx, o.ID)
+	if err != nil || initialOrg.EventQuota != 1_000_000 {
+		t.Fatalf("Get initial: %+v err=%v", initialOrg, err)
+	}
+
+	// SetQuota(-5) should reject and leave quota unchanged.
+	if err := svc.SetQuota(ctx, o.ID, -5); !errors.Is(err, org.ErrInvalidQuota) {
+		t.Fatalf("SetQuota(-5): got %v, want ErrInvalidQuota", err)
+	}
+	afterReject, err := svc.Get(ctx, o.ID)
+	if err != nil || afterReject.EventQuota != 1_000_000 {
+		t.Fatalf("Get after SetQuota(-5): %+v err=%v, want quota unchanged", afterReject, err)
+	}
+
+	// SetQuota(0) should succeed (0 = unlimited).
+	if err := svc.SetQuota(ctx, o.ID, 0); err != nil {
+		t.Fatalf("SetQuota(0): %v", err)
+	}
+	afterZero, err := svc.Get(ctx, o.ID)
+	if err != nil || afterZero.EventQuota != 0 {
+		t.Fatalf("Get after SetQuota(0): %+v err=%v, want quota=0", afterZero, err)
+	}
+}
+
 func TestLastOwnerRace(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)

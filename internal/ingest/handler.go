@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -16,12 +18,13 @@ import (
 // Handler — HTTP-слой Sentry-протокола.
 type Handler struct {
 	keys     *KeyCache
+	quota    QuotaChecker
 	pipeline *Pipeline
 	maxBytes int64
 }
 
-func NewHandler(keys *KeyCache, pipeline *Pipeline, maxEventBytes int64) *Handler {
-	return &Handler{keys: keys, pipeline: pipeline, maxBytes: maxEventBytes}
+func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEventBytes int64) *Handler {
+	return &Handler{keys: keys, quota: quota, pipeline: pipeline, maxBytes: maxEventBytes}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -29,31 +32,63 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/{project}/store/{$}", h.store)
 }
 
-// authenticate возвращает id проекта или пишет ошибку в w и возвращает -1.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) int64 {
+// authenticate проверяет ключ проекта и учитывает запрос в месячной квоте
+// организации; при успехе возвращает разрешённый ключ и true. При отказе
+// сама пишет ошибку в w и возвращает false.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key, bool) {
 	projectID, err := strconv.ParseInt(r.PathValue("project"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "unknown project")
-		return -1
+		return org.Key{}, false
 	}
 	pub := PublicKeyFromRequest(r)
 	if pub == "" {
 		writeJSONError(w, http.StatusUnauthorized, "missing sentry_key")
-		return -1
+		return org.Key{}, false
 	}
 	key, err := h.keys.Resolve(r.Context(), pub)
 	switch {
 	case errors.Is(err, org.ErrNotFound):
 		writeJSONError(w, http.StatusForbidden, "invalid sentry_key")
-		return -1
+		return org.Key{}, false
 	case err != nil:
 		writeJSONError(w, http.StatusServiceUnavailable, "key lookup failed")
-		return -1
+		return org.Key{}, false
 	case key.ProjectID != projectID:
 		writeJSONError(w, http.StatusForbidden, "sentry_key does not match project")
-		return -1
+		return org.Key{}, false
 	}
-	return projectID
+
+	if h.quota != nil {
+		allowed, err := h.quota.CheckAndCount(r.Context(), key.OrgID)
+		if err != nil {
+			// Fail-open: терять события из-за сбоя счётчика квот хуже, чем
+			// иногда пропустить организацию сверх квоты.
+			slog.Warn("ingest: quota check failed, allowing event", "org_id", key.OrgID, "error", err)
+		} else if !allowed {
+			writeQuotaExceeded(w)
+			return org.Key{}, false
+		}
+	}
+	return key, true
+}
+
+// writeQuotaExceeded пишет 429 с Retry-After — числом секунд до 1-го числа
+// следующего месяца UTC, когда счётчик организации обнулится.
+func writeQuotaExceeded(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.FormatInt(secondsUntilNextMonth(time.Now().UTC()), 10))
+	writeJSONError(w, http.StatusTooManyRequests, "event quota exceeded")
+}
+
+func secondsUntilNextMonth(now time.Time) int64 {
+	now = now.UTC()
+	y, m, _ := now.Date()
+	next := time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
+	secs := int64(next.Sub(now).Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
 }
 
 // noopClose — заглушка для тела без компрессии: закрывать нечего.
@@ -112,10 +147,11 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 }
 
 func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
-	projectID := h.authenticate(w, r)
-	if projectID < 0 {
+	key, ok := h.authenticate(w, r)
+	if !ok {
 		return
 	}
+	projectID := key.ProjectID
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
@@ -148,10 +184,11 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
-	projectID := h.authenticate(w, r)
-	if projectID < 0 {
+	key, ok := h.authenticate(w, r)
+	if !ok {
 		return
 	}
+	projectID := key.ProjectID
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")

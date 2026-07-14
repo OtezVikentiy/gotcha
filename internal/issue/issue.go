@@ -22,6 +22,9 @@ type Issue struct {
 	LastSeen    time.Time
 	TimesSeen   int64
 	AssigneeID  *int64
+	// AssigneeEmail — email назначенного пользователя (coalesce(u.email,'')),
+	// заполняется List/Get через LEFT JOIN users; пусто без назначения.
+	AssigneeEmail string
 }
 
 // UpsertResult — что произошло с группой при поступлении события.
@@ -43,16 +46,21 @@ func NewService(pool *pgxpool.Pool) *Service {
 // существующий обновляет last_seen/times_seen/title/level; resolved
 // переоткрывается (регрессия), ignored остаётся ignored.
 //
+// environment (если не пустой) денормализуется в issue_environments —
+// хранится в PG отдельно от событий (которые живут в CH), чтобы фильтр
+// списка issues по environment оставался обычным EXISTS без похода в CH.
+// Пустой environment не пишется.
+//
 // Гонка двух первых событий одного fingerprint: обе стороны могут получить
 // New=true (CTE old видит снимок до вставки). Редко и безвредно —
 // дедупликацию алертов делает троттлинг (план 6).
-func (s *Service) Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level string, seenAt time.Time) (UpsertResult, error) {
+func (s *Service) Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level, environment string, seenAt time.Time) (UpsertResult, error) {
 	const q = `
 WITH old AS (
     SELECT status FROM issues WHERE project_id = $1 AND fingerprint = $2
 ), up AS (
     INSERT INTO issues (project_id, fingerprint, title, culprit, level, first_seen, last_seen)
-    VALUES ($1, $2, $3, $4, $5, $6, $6)
+    VALUES ($1, $2, $3, $4, $5, $7, $7)
     ON CONFLICT (project_id, fingerprint) DO UPDATE SET
         title      = EXCLUDED.title,
         culprit    = EXCLUDED.culprit,
@@ -61,6 +69,10 @@ WITH old AS (
         times_seen = issues.times_seen + 1,
         status     = CASE WHEN issues.status = 'resolved' THEN 'unresolved' ELSE issues.status END
     RETURNING id
+), ins_env AS (
+    INSERT INTO issue_environments (issue_id, project_id, environment)
+    SELECT up.id, $1, $6 FROM up WHERE $6 <> ''
+    ON CONFLICT (issue_id, environment) DO NOTHING
 )
 SELECT up.id,
        old.status IS NULL                        AS is_new,
@@ -68,7 +80,7 @@ SELECT up.id,
 FROM up LEFT JOIN old ON true`
 
 	var r UpsertResult
-	err := s.pool.QueryRow(ctx, q, projectID, fingerprint, title, culprit, level, seenAt).
+	err := s.pool.QueryRow(ctx, q, projectID, fingerprint, title, culprit, level, environment, seenAt).
 		Scan(&r.IssueID, &r.New, &r.Regression)
 	if err != nil {
 		return UpsertResult{}, fmt.Errorf("issue: upsert: %w", err)

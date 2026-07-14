@@ -221,6 +221,44 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	})
 
+	t.Run("CountSince", func(t *testing.T) {
+		// issueA has 3 events at tsA1/tsA2/tsA3 (windowFrom+5m/+25m/+55m).
+		gotAll, err := q.CountSince(ctx, projectID, issueA, windowFrom)
+		if err != nil {
+			t.Fatalf("CountSince: %v", err)
+		}
+		if gotAll != 3 {
+			t.Fatalf("CountSince(from windowFrom) = %d, want 3", gotAll)
+		}
+
+		// since after tsA1 but before tsA2 -> only A2, A3 counted.
+		gotPartial, err := q.CountSince(ctx, projectID, issueA, tsA1.Add(time.Second))
+		if err != nil {
+			t.Fatalf("CountSince: %v", err)
+		}
+		if gotPartial != 2 {
+			t.Fatalf("CountSince(from after tsA1) = %d, want 2", gotPartial)
+		}
+
+		// far future -> 0.
+		gotNone, err := q.CountSince(ctx, projectID, issueA, now.Add(24*time.Hour))
+		if err != nil {
+			t.Fatalf("CountSince: %v", err)
+		}
+		if gotNone != 0 {
+			t.Fatalf("CountSince(from future) = %d, want 0", gotNone)
+		}
+
+		// other issue in same project unaffected.
+		gotB, err := q.CountSince(ctx, projectID, issueB, windowFrom)
+		if err != nil {
+			t.Fatalf("CountSince: %v", err)
+		}
+		if gotB != 2 {
+			t.Fatalf("CountSince(issueB) = %d, want 2", gotB)
+		}
+	})
+
 	t.Run("Sparklines", func(t *testing.T) {
 		since := now.Add(-24 * time.Hour)
 		out, err := q.Sparklines(ctx, projectID, []int64{issueA, issueB}, since, 24)

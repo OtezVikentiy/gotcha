@@ -1,0 +1,214 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+)
+
+func alertsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/alerts"
+}
+
+func alertsRulesPath(projectID int64) string {
+	return alertsPath(projectID) + "/rules"
+}
+
+func alertsChannelsPath(projectID int64) string {
+	return alertsPath(projectID) + "/channels"
+}
+
+func alertsChannelsDeletePath(projectID int64) string {
+	return alertsChannelsPath(projectID) + "/delete"
+}
+
+// ruleByKind ищет правило нужного kind среди уже сохранённых; для ещё не
+// заведённого правила возвращает дефолт для полей формы. spike — особый
+// случай: alert.Service.validateRule требует Threshold>0 и WindowMinutes>0
+// ВСЕГДА (даже когда правило выключено), поэтому ещё не сохранённому
+// spike-правилу подставляются ненулевые дефолты — иначе первое же
+// сохранение формы с нетронутыми (нулевыми) полями threshold/window
+// свалилось бы в ErrInvalidRule.
+func ruleByKind(rules []alert.Rule, kind string) alert.Rule {
+	for _, r := range rules {
+		if r.Kind == kind {
+			return r
+		}
+	}
+	if kind == alert.KindSpike {
+		return alert.Rule{Kind: kind, Threshold: 10, WindowMinutes: 5, ThrottleMinutes: 30}
+	}
+	return alert.Rule{Kind: kind, ThrottleMinutes: 30}
+}
+
+templ simpleRuleFields(r alert.Rule, prefix, label string) {
+	<fieldset class="alert-rule">
+		<legend>{ label }</legend>
+		<label>
+			<input type="checkbox" name={ prefix + "_enabled" } checked?={ r.Enabled }/>
+			Включено
+		</label>
+		<label>
+			Throttle (минут)
+			<input type="number" name={ prefix + "_throttle" } value={ strconv.Itoa(r.ThrottleMinutes) } min="0"/>
+		</label>
+	</fieldset>
+}
+
+templ spikeRuleFields(r alert.Rule) {
+	<fieldset class="alert-rule">
+		<legend>Всплеск (spike)</legend>
+		<label>
+			<input type="checkbox" name="spike_enabled" checked?={ r.Enabled }/>
+			Включено
+		</label>
+		<label>
+			Порог событий
+			<input type="number" name="spike_threshold" value={ strconv.Itoa(r.Threshold) } min="1"/>
+		</label>
+		<label>
+			Окно (минут)
+			<input type="number" name="spike_window" value={ strconv.Itoa(r.WindowMinutes) } min="1"/>
+		</label>
+		<label>
+			Throttle (минут)
+			<input type="number" name="spike_throttle" value={ strconv.Itoa(r.ThrottleMinutes) } min="0"/>
+		</label>
+	</fieldset>
+}
+
+func channelStatus(c alert.Channel) string {
+	if c.Enabled {
+		return "включён"
+	}
+	return "выключен"
+}
+
+// maxFailedErrorRunes caps the displayed last_error at 200 runes (not
+// bytes, to avoid splitting multi-byte UTF-8 sequences) — sender errors
+// (SMTP responses, HTTP bodies) are arbitrary free text and can be long;
+// this is an overview table, not a full log viewer.
+const maxFailedErrorRunes = 200
+
+func truncateFailedError(s string) string {
+	r := []rune(s)
+	if len(r) <= maxFailedErrorRunes {
+		return s
+	}
+	return string(r[:maxFailedErrorRunes]) + "…"
+}
+
+templ channelRow(projectID int64, c alert.Channel) {
+	<tr>
+		<td>{ c.Kind }</td>
+		<td>{ c.Target }</td>
+		<td>{ channelStatus(c) }</td>
+		<td>
+			<form method="post" action={ templ.URL(alertsChannelsDeletePath(projectID)) } class="channel-delete-form">
+				<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
+				<button type="submit">Удалить</button>
+			</form>
+		</td>
+	</tr>
+}
+
+templ failedRow(f notify.FailedJob) {
+	<tr>
+		<td>{ f.ChannelKind }</td>
+		<td>{ f.Target }</td>
+		<td>{ strconv.Itoa(f.Attempts) }</td>
+		<td>{ truncateFailedError(f.LastError) }</td>
+		<td>{ f.CreatedAt.Format(time.RFC3339) }</td>
+	</tr>
+}
+
+// Alerts — GET/POST /projects/{id}/alerts: правила алертинга (new_issue,
+// regression — enabled+throttle; spike — enabled+threshold+window+throttle)
+// одной формой сохранения, таблица каналов доставки, таблица
+// failed-доставок (spec §7 — не только правила/каналы, но и то, что реально
+// не долетело, должно быть видно в UI, не только в логах воркера; пусто —
+// секция не рендерится) и форма добавления канала. errMsg — сообщение об
+// ошибке последнего POST (ErrInvalidRule / ErrInvalidChannel), рендерится с
+// тем же статусом 422, что и ответ — тот же принцип, что и у
+// ProjectSettings/OrgSettings.
+templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, failed []notify.FailedJob, errMsg, userEmail string) {
+	@layout("Alerts", userEmail) {
+		<div class="alerts">
+			<h1>Алерты проекта</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<h2>Правила</h2>
+			<form method="post" action={ templ.URL(alertsRulesPath(projectID)) } class="alert-rules-form">
+				@simpleRuleFields(ruleByKind(rules, alert.KindNewIssue), "new_issue", "Новый issue")
+				@simpleRuleFields(ruleByKind(rules, alert.KindRegression), "regression", "Регрессия (issue снова открылся)")
+				@spikeRuleFields(ruleByKind(rules, alert.KindSpike))
+				<button type="submit">Сохранить правила</button>
+			</form>
+
+			<h2>Каналы доставки</h2>
+			<table>
+				<thead>
+					<tr>
+						<th>Тип</th>
+						<th>Получатель</th>
+						<th>Статус</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, c := range channels {
+						@channelRow(projectID, c)
+					}
+				</tbody>
+			</table>
+
+			if len(failed) > 0 {
+				<h2>Неудачные доставки</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>Тип</th>
+							<th>Получатель</th>
+							<th>Попыток</th>
+							<th>Ошибка</th>
+							<th>Когда</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, f := range failed {
+							@failedRow(f)
+						}
+					</tbody>
+				</table>
+			}
+
+			<h2>Добавить канал</h2>
+			<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
+				<label>
+					Тип
+					<select name="kind">
+						<option value={ alert.ChannelEmail }>Email</option>
+						<option value={ alert.ChannelWebhook }>Webhook</option>
+						<option value={ alert.ChannelTelegram }>Telegram</option>
+					</select>
+				</label>
+				<label>
+					Получатель (email — адрес; webhook — URL; telegram — chat_id)
+					<input type="text" name="target" required/>
+				</label>
+				<label>
+					Секрет (webhook — подпись запроса; telegram — bot token; не нужен для email)
+					<input type="text" name="secret"/>
+				</label>
+				<label>
+					<input type="checkbox" name="enabled" checked/>
+					Включён
+				</label>
+				<button type="submit">Добавить канал</button>
+			</form>
+		</div>
+	}
+}

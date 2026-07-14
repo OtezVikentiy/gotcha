@@ -1,0 +1,301 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
+
+// MonitorFormData — вью-модель формы создания/редактирования монитора
+// (GET/POST /projects/{id}/monitors/new и /monitors/{id}/edit). Все
+// типо-специфичные и общие числовые поля хранятся как строки — это ровно то,
+// что пришло из запроса (или было отформатировано из уже сохранённого
+// монитора web/monitorform.go): при 422 форма перерисовывается буквально с
+// тем, что ввёл пользователь, а не с округлённым/перепарсенным значением.
+type MonitorFormData struct {
+	ProjectID int64
+	MonitorID int64
+	IsEdit    bool
+	Kind      uptime.Kind
+	ErrMsg    string
+
+	Name                string
+	IntervalSeconds     string
+	TimeoutSeconds      string
+	FailThreshold       string
+	RecoveryThreshold   string
+	Consensus           string
+	RemindEveryMinutes  string
+	SSLAlertDays        string
+
+	AllRegions       []string
+	SelectedRegions  map[string]bool
+	AllChannels      []alert.Channel
+	SelectedChannels map[int64]bool
+
+	HTTPMethod          string
+	HTTPURL             string
+	HTTPHeaders         string
+	HTTPBody            string
+	HTTPExpectedStatus  string
+	HTTPBodyContains    string
+	HTTPBodyNotContains string
+	HTTPFollowRedirects bool
+
+	TCPHost string
+	TCPPort string
+
+	DNSHostname      string
+	DNSRecordType    string
+	DNSExpectedValue string
+
+	HeartbeatGraceSeconds string
+}
+
+func monitorFormTitle(d MonitorFormData) string {
+	if d.IsEdit {
+		return "Редактирование монитора"
+	}
+	return "Новый монитор"
+}
+
+func monitorFormAction(d MonitorFormData) string {
+	if d.IsEdit {
+		return monitorDetailPath(d.MonitorID)
+	}
+	return monitorsPath(d.ProjectID)
+}
+
+templ selectOption(value, label, selected string) {
+	if value == selected {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
+templ regionCheckbox(region string, selected map[string]bool) {
+	<label class="checkbox-inline">
+		<input type="checkbox" name="regions" value={ region } checked?={ selected[region] }/>
+		{ region }
+	</label>
+}
+
+templ channelCheckbox(c alert.Channel, selected map[int64]bool) {
+	<label class="checkbox-inline">
+		<input type="checkbox" name="channels" value={ strconv.FormatInt(c.ID, 10) } checked?={ selected[c.ID] }/>
+		{ c.Kind }: { c.Target }
+	</label>
+}
+
+templ httpFields(d MonitorFormData) {
+	<fieldset class="monitor-kind-fields">
+		<legend>HTTP</legend>
+		<label>
+			Метод
+			<select name="http_method">
+				@selectOption("GET", "GET", d.HTTPMethod)
+				@selectOption("POST", "POST", d.HTTPMethod)
+				@selectOption("HEAD", "HEAD", d.HTTPMethod)
+			</select>
+		</label>
+		<label>
+			URL
+			<input type="text" name="http_url" value={ d.HTTPURL } placeholder="https://example.com/health"/>
+		</label>
+		<label>
+			Заголовки (по одному "Key: Value" на строку)
+			<textarea name="http_headers" rows="4">{ d.HTTPHeaders }</textarea>
+		</label>
+		<label>
+			Тело запроса
+			<textarea name="http_body" rows="4">{ d.HTTPBody }</textarea>
+		</label>
+		<label>
+			Ожидаемые коды ответа (через запятую, пусто = 200-299)
+			<input type="text" name="http_expected_status" value={ d.HTTPExpectedStatus } placeholder="200,201,204"/>
+		</label>
+		<label>
+			Тело содержит
+			<input type="text" name="http_body_contains" value={ d.HTTPBodyContains }/>
+		</label>
+		<label>
+			Тело НЕ содержит
+			<input type="text" name="http_body_not_contains" value={ d.HTTPBodyNotContains }/>
+		</label>
+		<label>
+			<input type="checkbox" name="http_follow_redirects" checked?={ d.HTTPFollowRedirects }/>
+			Следовать редиректам
+		</label>
+		<label>
+			SSL alert (за сколько дней до истечения сертификата предупреждать)
+			<input type="number" name="ssl_alert_days" value={ d.SSLAlertDays } min="0"/>
+		</label>
+	</fieldset>
+}
+
+templ tcpFields(d MonitorFormData) {
+	<fieldset class="monitor-kind-fields">
+		<legend>TCP</legend>
+		<label>
+			Host
+			<input type="text" name="tcp_host" value={ d.TCPHost }/>
+		</label>
+		<label>
+			Port
+			<input type="number" name="tcp_port" value={ d.TCPPort } min="1" max="65535"/>
+		</label>
+	</fieldset>
+}
+
+templ dnsFields(d MonitorFormData) {
+	<fieldset class="monitor-kind-fields">
+		<legend>DNS</legend>
+		<label>
+			Hostname
+			<input type="text" name="dns_hostname" value={ d.DNSHostname }/>
+		</label>
+		<label>
+			Тип записи
+			<select name="dns_record_type">
+				@selectOption("A", "A", d.DNSRecordType)
+				@selectOption("AAAA", "AAAA", d.DNSRecordType)
+				@selectOption("CNAME", "CNAME", d.DNSRecordType)
+				@selectOption("MX", "MX", d.DNSRecordType)
+				@selectOption("TXT", "TXT", d.DNSRecordType)
+			</select>
+		</label>
+		<label>
+			Ожидаемое значение
+			<input type="text" name="dns_expected_value" value={ d.DNSExpectedValue }/>
+		</label>
+	</fieldset>
+}
+
+templ heartbeatFields(d MonitorFormData) {
+	<fieldset class="monitor-kind-fields">
+		<legend>Heartbeat</legend>
+		<label>
+			Grace period (секунд, минимум 60)
+			<input type="number" name="heartbeat_grace_seconds" value={ d.HeartbeatGraceSeconds } min="60"/>
+		</label>
+	</fieldset>
+}
+
+// kindFields — набор типо-специфичных полей. При редактировании тип
+// зафиксирован (d.Kind уже известен из сохранённого монитора) — показываем
+// только его fieldset. При создании тип ещё не подтверждён отправкой формы
+// (select можно переключить без перезагрузки страницы, а страница без JS не
+// умеет скрывать/показывать fieldset'ы по выбору), поэтому показываем все
+// четыре сразу — сервер использует поля только того kind, который реально
+// пришёл в поле "kind".
+templ kindFields(d MonitorFormData) {
+	if d.IsEdit {
+		switch d.Kind {
+			case uptime.KindHTTP:
+				@httpFields(d)
+			case uptime.KindTCP:
+				@tcpFields(d)
+			case uptime.KindDNS:
+				@dnsFields(d)
+			case uptime.KindHeartbeat:
+				@heartbeatFields(d)
+		}
+	} else {
+		@httpFields(d)
+		@tcpFields(d)
+		@dnsFields(d)
+		@heartbeatFields(d)
+	}
+}
+
+// MonitorForm — GET/POST /projects/{id}/monitors/new и GET/POST
+// /monitors/{id}/edit,/monitors/{id}: одна форма, переиспользуемая для
+// создания и редактирования. IsEdit решает: тип — select (создание) либо
+// readonly-поле (редактирование, кнопки Pause/Resume/Delete живут на
+// странице монитора, не здесь).
+templ MonitorForm(d MonitorFormData, userEmail string) {
+	@layout(monitorFormTitle(d), userEmail) {
+		<div class="monitor-form">
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(d.ProjectID)) }>← Monitors</a></p>
+			<h1>{ monitorFormTitle(d) }</h1>
+			if d.ErrMsg != "" {
+				<p class="error">{ d.ErrMsg }</p>
+			}
+			<form method="post" action={ templ.URL(monitorFormAction(d)) } class="monitor-form-form">
+				<label>
+					Имя
+					<input type="text" name="name" value={ d.Name } required/>
+				</label>
+				<label>
+					Тип
+					if d.IsEdit {
+						<input type="text" value={ string(d.Kind) } disabled/>
+					} else {
+						<select name="kind">
+							@selectOption(string(uptime.KindHTTP), "HTTP", string(d.Kind))
+							@selectOption(string(uptime.KindTCP), "TCP", string(d.Kind))
+							@selectOption(string(uptime.KindDNS), "DNS", string(d.Kind))
+							@selectOption(string(uptime.KindHeartbeat), "Heartbeat", string(d.Kind))
+						</select>
+					}
+				</label>
+
+				@kindFields(d)
+
+				<fieldset>
+					<legend>Общие настройки</legend>
+					<label>
+						Интервал проверки (секунд)
+						<input type="number" name="interval_seconds" value={ d.IntervalSeconds } min="30"/>
+					</label>
+					<label>
+						Таймаут (секунд)
+						<input type="number" name="timeout_seconds" value={ d.TimeoutSeconds } min="1" max="120"/>
+					</label>
+					<label>
+						Порог отказа (проверок подряд)
+						<input type="number" name="fail_threshold" value={ d.FailThreshold } min="1"/>
+					</label>
+					<label>
+						Порог восстановления (проверок подряд)
+						<input type="number" name="recovery_threshold" value={ d.RecoveryThreshold } min="1"/>
+					</label>
+					<label>
+						Консенсус по регионам
+						<select name="consensus">
+							@selectOption(string(uptime.ConsensusAny), "any", d.Consensus)
+							@selectOption(string(uptime.ConsensusMajority), "majority", d.Consensus)
+							@selectOption(string(uptime.ConsensusAll), "all", d.Consensus)
+						</select>
+					</label>
+					<label>
+						Повторное уведомление каждые (минут, 0 = выключено)
+						<input type="number" name="remind_every_minutes" value={ d.RemindEveryMinutes } min="0"/>
+					</label>
+				</fieldset>
+
+				<fieldset>
+					<legend>Регионы</legend>
+					for _, region := range d.AllRegions {
+						@regionCheckbox(region, d.SelectedRegions)
+					}
+				</fieldset>
+
+				<fieldset>
+					<legend>Каналы алертов</legend>
+					if len(d.AllChannels) == 0 {
+						<p>Нет доступных каналов — добавьте их на странице алертов проекта.</p>
+					} else {
+						for _, c := range d.AllChannels {
+							@channelCheckbox(c, d.SelectedChannels)
+						}
+					}
+				</fieldset>
+
+				<button type="submit">Сохранить</button>
+			</form>
+		</div>
+	}
+}

@@ -28,6 +28,8 @@ type stack struct {
 	srv      *httptest.Server
 	pipeline *ingest.Pipeline
 	batcher  *event.Batcher
+	orgSvc   *org.Service
+	org      org.Org
 	project  org.Project
 	key      org.Key
 }
@@ -61,7 +63,7 @@ func newStack(t *testing.T) *stack {
 	go batcher.Run()
 	pipeline := ingest.NewPipeline(issue.NewService(pool), batcher)
 	pipeline.Start()
-	h := ingest.NewHandler(ingest.NewKeyCache(orgSvc), pipeline, 1<<20)
+	h := ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, 1<<20)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -72,7 +74,7 @@ func newStack(t *testing.T) *stack {
 		defer cancel()
 		_ = batcher.Close(cctx)
 	})
-	return &stack{pool: pool, ch: ch, srv: srv, pipeline: pipeline, batcher: batcher, project: p, key: k}
+	return &stack{pool: pool, ch: ch, srv: srv, pipeline: pipeline, batcher: batcher, orgSvc: orgSvc, org: o, project: p, key: k}
 }
 
 const testEventJSON = `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error",

@@ -3,12 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"strconv"
 )
 
 // Config собирается из env (префикс GOTCHA_) и флагов командной строки.
 type Config struct {
-	Mode              string // ingest | web | all
+	Mode              string // ingest | web | uptime | probe | all
 	Addr              string
 	BaseURL           string
 	PostgresDSN       string
@@ -22,16 +23,32 @@ type Config struct {
 	DefaultEventQuota int64
 	MaxEventBytes     int64
 	SecretKey         string
+
+	// UptimeConcurrency — сколько проверок uptime.Runner выполняет
+	// одновременно (режимы uptime|all).
+	UptimeConcurrency int
+	// LocalRegion — имя встроенного региона локальной пробы (см.
+	// uptime.DefaultRegion), используется uptime.Runner.
+	LocalRegion string
+	// ProbeToken/ServerURL — учётные данные выносной пробы (--mode=probe):
+	// база центра и Bearer-токен пробы. В этом режиме обязательны — больше
+	// пробе знать нечего (ни PG, ни CH она не открывает).
+	ProbeToken string
+	ServerURL  string
+}
+
+var validModes = map[string]bool{
+	"ingest": true, "web": true, "uptime": true, "probe": true, "all": true,
 }
 
 func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	fs := flag.NewFlagSet("gotcha", flag.ContinueOnError)
-	mode := fs.String("mode", "all", "process role: ingest | web | all")
+	mode := fs.String("mode", "all", "process role: ingest | web | uptime | probe | all")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
-	if *mode != "ingest" && *mode != "web" && *mode != "all" {
-		return Config{}, fmt.Errorf("invalid --mode %q: want ingest, web or all", *mode)
+	if !validModes[*mode] {
+		return Config{}, fmt.Errorf("invalid --mode %q: want ingest, web, uptime, probe or all", *mode)
 	}
 
 	str := func(key, def string) string {
@@ -69,6 +86,10 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultEventQuota: num("GOTCHA_DEFAULT_EVENT_QUOTA", 1_000_000),
 		MaxEventBytes:     num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		SecretKey:         str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
+		UptimeConcurrency: int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
+		LocalRegion:       str("GOTCHA_LOCAL_REGION", "local"),
+		ProbeToken:        str("GOTCHA_PROBE_TOKEN", ""),
+		ServerURL:         str("GOTCHA_SERVER_URL", ""),
 	}
 	if len(errs) > 0 {
 		return Config{}, errs[0]
@@ -82,6 +103,27 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.MaxEventBytes < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_MAX_EVENT_BYTES must be >= 1, got %d", cfg.MaxEventBytes)
+	}
+	if cfg.UptimeConcurrency < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_UPTIME_CONCURRENCY must be >= 1, got %d", cfg.UptimeConcurrency)
+	}
+	if cfg.Mode == "probe" {
+		if cfg.ServerURL == "" {
+			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL is required with --mode=probe")
+		}
+		// Схему и хост проверяем на старте: без них каждый тик пробы (раз в
+		// секунду, вечно) падал бы с "unsupported protocol scheme" — тихий
+		// бесконечный цикл ошибок вместо внятного отказа при запуске.
+		u, err := url.Parse(cfg.ServerURL)
+		if err != nil {
+			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL: %w", err)
+		}
+		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL must be an absolute http(s) url, got %q", cfg.ServerURL)
+		}
+		if cfg.ProbeToken == "" {
+			return Config{}, fmt.Errorf("GOTCHA_PROBE_TOKEN is required with --mode=probe")
+		}
 	}
 
 	return cfg, nil

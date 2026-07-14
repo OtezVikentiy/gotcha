@@ -40,14 +40,14 @@ func TestUpsertLifecycle(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	// Новый issue.
-	r1, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", now)
+	r1, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", "", now)
 	if err != nil || !r1.New || r1.Regression || r1.IssueID == 0 {
 		t.Fatalf("first upsert: %+v err=%v", r1, err)
 	}
 
 	// Повтор: не новый, не регрессия, times_seen растёт, last_seen двигается.
 	later := now.Add(time.Minute)
-	r2, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", later)
+	r2, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", "", later)
 	if err != nil || r2.New || r2.Regression || r2.IssueID != r1.IssueID {
 		t.Fatalf("second upsert: %+v err=%v", r2, err)
 	}
@@ -67,7 +67,7 @@ func TestUpsertLifecycle(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE issues SET status='resolved' WHERE id=$1", r1.IssueID); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	r3, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", later.Add(time.Minute))
+	r3, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", "", later.Add(time.Minute))
 	if err != nil || r3.New || !r3.Regression {
 		t.Fatalf("regression upsert: %+v err=%v", r3, err)
 	}
@@ -79,7 +79,7 @@ func TestUpsertLifecycle(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE issues SET status='ignored' WHERE id=$1", r1.IssueID); err != nil {
 		t.Fatalf("ignore: %v", err)
 	}
-	r4, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", later.Add(2*time.Minute))
+	r4, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", "", later.Add(2*time.Minute))
 	if err != nil || r4.New || r4.Regression {
 		t.Fatalf("ignored upsert: %+v err=%v", r4, err)
 	}
@@ -88,7 +88,7 @@ func TestUpsertLifecycle(t *testing.T) {
 	}
 
 	// Другой fingerprint — другой issue.
-	r5, err := svc.Upsert(ctx, pid, "fp-2", "other", "", "warning", now)
+	r5, err := svc.Upsert(ctx, pid, "fp-2", "other", "", "warning", "", now)
 	if err != nil || !r5.New || r5.IssueID == r1.IssueID {
 		t.Fatalf("second fingerprint: %+v err=%v", r5, err)
 	}

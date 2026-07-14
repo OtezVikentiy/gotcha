@@ -10,9 +10,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
@@ -40,6 +42,16 @@ func newStack(t *testing.T) *stack {
 	t.Cleanup(srv.Close)
 
 	h = web.New(authSvc, orgSvc, issueSvc, events, srv.URL)
+	// Alerts (план 6, задача 5): онбординг вызывает EnsureDefaultRules при
+	// создании проекта, а /projects/{id}/alerts нужен во всех сценариях,
+	// использующих этот общий стенд (alerts_test.go, orgsettings_test.go,
+	// projsettings_test.go, onboarding_test.go) — заводим сервис здесь один
+	// раз, а не в каждом тесте отдельно.
+	h.Alerts = alert.NewService(pool)
+	// Outbox (план 6, задача 5, spec §7): страница /projects/{id}/alerts
+	// показывает failed-доставки — тот же принцип, что и Alerts выше, заводим
+	// один раз на весь стенд, а не в каждом тесте.
+	h.Outbox = notify.NewOutbox(pool)
 	h.Register(mux)
 
 	return &stack{pool: pool, srv: srv}

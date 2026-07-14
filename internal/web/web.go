@@ -14,10 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -33,7 +36,80 @@ type Handler struct {
 	BaseURL string
 	Secure  bool // Secure = strings.HasPrefix(BaseURL, "https://")
 
+	// Alerts — CRUD правил/каналов алертинга (план 6, задача 5):
+	// /projects/{id}/alerts и EnsureDefaultRules при создании проекта. Не
+	// принимается конструктором New (как Auth/Org/Issues/Events), а
+	// проставляется отдельным полем вызывающей стороной (cmd/gotcha/main.go,
+	// тестовые стенды) — оставляет сигнатуру New нетронутой для всего
+	// существующего кода, который его вызывает.
+	Alerts *alert.Service
+	// Email — синхронная отправка писем-приглашений (см. orgSettingsInvite).
+	// Может быть nil (SMTP не настроен) — тогда приглашение только
+	// показывается ссылкой в UI, письмо не шлётся.
+	Email *notify.EmailSender
+	// Outbox — очередь доставки алертов (план 6, задача 5, spec §7): страница
+	// /projects/{id}/alerts показывает таблицу failed-доставок
+	// (FailedForProject), чтобы отказы каналов были видны в UI, а не только в
+	// логах воркера. Как и Alerts, проставляется отдельным полем, а не
+	// принимается конструктором New.
+	Outbox *notify.Outbox
+
+	// Uptime — CRUD и состояние мониторов (этап 2, план 2, задача 3):
+	// heartbeat-эндпойнт (/uptime/hb/{token}) ищет монитор по токену и
+	// обновляет last_beat_at/monitor_state. Как и Alerts/Outbox,
+	// проставляется отдельным полем — nil (мод без "web") означает, что
+	// heartbeat-роут вовсе не регистрируется (см. Register).
+	Uptime *uptime.Service
+	// UptimeWriter — запись результата heartbeat-пинга в ClickHouse
+	// (check_results), тот же писатель, что использует uptime.Runner,
+	// когда режим включает и "uptime": один процесс = одна очередь
+	// вставок в CH. Может быть nil даже при непустом Uptime (в теории),
+	// тогда heartbeat пропускает запись в CH, но всё равно отвечает 200 —
+	// last_beat_at/monitor_state уже обновлены, это самое важное.
+	UptimeWriter *uptime.ResultWriter
+	// LocalRegion — регион, которым heartbeat помечает свои
+	// ApplyResult/Writer.Add вызовы (тот же регион, которым локальный
+	// uptime.Runner помечает свои проверки, cfg.LocalRegion в
+	// cmd/gotcha/main.go). Пусто (значение по умолчанию для стендов,
+	// которые не выставляют это поле явно) — используется
+	// uptime.DefaultRegion.
+	LocalRegion string
+
+	// UptimeQuery — чтение агрегатов check_results из ClickHouse (план 4,
+	// задача 2): список мониторов и страница монитора читают uptime%,
+	// среднюю задержку, полоску доступности, график задержек и ленту
+	// последних проверок отсюда, а не из Uptime (PG) — та часть состояния
+	// живёт только в PG (monitors/monitor_state/incidents). Как и
+	// Alerts/Outbox/Uptime, проставляется отдельным полем, а не
+	// принимается конструктором New; может быть nil (например, в стендах
+	// остальных web-тестов, которым мониторы не нужны) — тогда маршруты
+	// /projects/{id}/monitors и /monitors/{id} не должны вызываться
+	// (панику на nil-разыменование тестами эти стенды не бьют, так как они
+	// его и не запрашивают).
+	UptimeQuery *uptime.Query
+	// UptimeIngestor — общий с локальной пробой хвост обработки результата
+	// (claim → CH → ApplyResult → детекция): через него /probe/results
+	// проводит результаты выносных проб, чтобы детекция инцидентов и запись
+	// в ClickHouse были ровно в одном месте (см. uptime.Ingestor). Как и
+	// Uptime/UptimeWriter/UptimeQuery, собирается вызывающей стороной
+	// (cmd/gotcha/main.go, тестовые стенды); nil — приём результатов на этом
+	// узле недоступен (/probe/results отвечает 503, см. probeapi.go).
+	UptimeIngestor *uptime.Ingestor
+
 	loginLimiter *rateLimiter
+	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
+	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
+	// требует инициализации в New.
+	statusCache statusCache
+}
+
+// localRegion возвращает h.LocalRegion, а если оно не задано —
+// uptime.DefaultRegion (см. комментарий к полю).
+func (h *Handler) localRegion() string {
+	if h.LocalRegion == "" {
+		return uptime.DefaultRegion
+	}
+	return h.LocalRegion
 }
 
 // New собирает Handler. BaseURL используется для sameOrigin-проверки POST-ов
@@ -95,6 +171,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptPage)))
 	inner.Handle("POST /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptSubmit)))
 
+	// Выносные пробы организации (этап 2, план 5, задача 3): owner/admin
+	// организации (requireOrgRole, как остальные org-настройки). Роуты
+	// регистрируются безусловно — как и /projects/{id}/monitors выше: в режимах
+	// "web"/"all" h.Uptime всегда собран (см. cmd/gotcha/main.go), а стенды
+	// прочих web-тестов эти страницы не запрашивают.
+	inner.Handle("GET /orgs/{id}/probes", h.requireUser(http.HandlerFunc(h.orgProbesPage)))
+	inner.Handle("POST /orgs/{id}/probes", h.requireUser(http.HandlerFunc(h.orgProbesCreate)))
+	inner.Handle("POST /orgs/{id}/probes/revoke", h.requireUser(http.HandlerFunc(h.orgProbesRevoke)))
+
 	inner.Handle("GET /orgs/{id}/teams", h.requireUser(http.HandlerFunc(h.teamsPage)))
 	inner.Handle("POST /orgs/{id}/teams", h.requireUser(http.HandlerFunc(h.teamsCreate)))
 	inner.Handle("POST /teams/{id}/members", h.requireUser(http.HandlerFunc(h.teamMembersAdd)))
@@ -106,6 +191,72 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/settings/rename", h.requireUser(http.HandlerFunc(h.projectSettingsRename)))
 	inner.Handle("POST /projects/{id}/settings/keys", h.requireUser(http.HandlerFunc(h.projectSettingsKeyCreate)))
 	inner.Handle("POST /projects/{id}/settings/keys/revoke", h.requireUser(http.HandlerFunc(h.projectSettingsKeyRevoke)))
+
+	inner.Handle("GET /projects/{id}/alerts", h.requireUser(http.HandlerFunc(h.alertsPage)))
+	inner.Handle("POST /projects/{id}/alerts/rules", h.requireUser(http.HandlerFunc(h.alertsRulesSave)))
+	inner.Handle("POST /projects/{id}/alerts/channels", h.requireUser(http.HandlerFunc(h.alertsChannelCreate)))
+	inner.Handle("POST /projects/{id}/alerts/channels/delete", h.requireUser(http.HandlerFunc(h.alertsChannelDelete)))
+
+	inner.Handle("POST /orgs/{id}/settings/quota", h.requireUser(http.HandlerFunc(h.orgSettingsQuota)))
+
+	// Мониторы доступности (план 4, задача 2): список и страница монитора —
+	// просмотр открыт любому, у кого есть доступ к проекту
+	// (CanAccessProject), паузa/резюм/удаление — только owner/admin
+	// (requireProjectRole), тот же принцип, что и у issues/alerts выше.
+	inner.Handle("GET /projects/{id}/monitors", h.requireUser(http.HandlerFunc(h.monitorsList)))
+	inner.Handle("GET /monitors/{id}", h.requireUser(http.HandlerFunc(h.monitorDetail)))
+	inner.Handle("POST /monitors/{id}/pause", h.requireUser(http.HandlerFunc(h.monitorPause)))
+	inner.Handle("POST /monitors/{id}/resume", h.requireUser(http.HandlerFunc(h.monitorResume)))
+	inner.Handle("POST /monitors/{id}/delete", h.requireUser(http.HandlerFunc(h.monitorDelete)))
+
+	// Формы создания/редактирования монитора, инциденты и окна обслуживания
+	// (план 4, задача 3): создание/редактирование — только owner/admin
+	// (requireProjectRole), инциденты — любой участник проекта
+	// (CanAccessProject, тот же принцип, что и monitorsList/monitorDetail
+	// выше).
+	inner.Handle("GET /projects/{id}/monitors/new", h.requireUser(http.HandlerFunc(h.monitorNewPage)))
+	inner.Handle("POST /projects/{id}/monitors", h.requireUser(http.HandlerFunc(h.monitorCreate)))
+	inner.Handle("GET /monitors/{id}/edit", h.requireUser(http.HandlerFunc(h.monitorEditPage)))
+	inner.Handle("POST /monitors/{id}", h.requireUser(http.HandlerFunc(h.monitorUpdate)))
+
+	inner.Handle("GET /projects/{id}/incidents", h.requireUser(http.HandlerFunc(h.incidentsList)))
+
+	// Настройки статус-страниц проекта (план 5, задача 4): только owner/admin
+	// организации проекта (requireProjectRole), как окна обслуживания. У
+	// /statuspages/{id} проект берётся из самой страницы (loadManagedStatusPage),
+	// чужая страница по её id — 404.
+	inner.Handle("GET /projects/{id}/statuspages", h.requireUser(http.HandlerFunc(h.statusPagesPage)))
+	inner.Handle("POST /projects/{id}/statuspages", h.requireUser(http.HandlerFunc(h.statusPagesCreate)))
+	inner.Handle("POST /statuspages/{id}", h.requireUser(http.HandlerFunc(h.statusPagesUpdate)))
+	inner.Handle("POST /statuspages/{id}/delete", h.requireUser(http.HandlerFunc(h.statusPagesDelete)))
+
+	inner.Handle("GET /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenancePage)))
+	inner.Handle("POST /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenanceCreate)))
+	inner.Handle("POST /projects/{id}/maintenance/delete", h.requireUser(http.HandlerFunc(h.maintenanceDelete)))
+
+	// Публичный heartbeat-пинг (этап 2, план 2, задача 3): без requireUser
+	// (внешний вызов, не браузер) и без sameOrigin (см. heartbeat.go).
+	// Регистрируется только когда Uptime собран вызывающей стороной —
+	// стенды остальных web-тестов его не задают и не должны получать этот
+	// роут.
+	// Lease-протокол выносных проб (план 5, задача 1): как и heartbeat —
+	// машинный API без сессии и без sameOrigin, аутентификация
+	// Bearer-токеном пробы (см. probeapi.go). Регистрируется по тому же
+	// условию: только когда Uptime собран вызывающей стороной.
+	// Публичная статус-страница (план 5, задача 4): единственный браузерный
+	// роут без сессии — её и должен видеть аноним (см. statuspage.go). Как и
+	// heartbeat, регистрируется только когда Uptime собран вызывающей
+	// стороной; ей нужен ещё и UptimeQuery (uptime% и полоска за 90 дней из
+	// ClickHouse) — в режимах "web"/"all" оба поля выставляются вместе.
+	if h.Uptime != nil {
+		inner.HandleFunc("GET /uptime/hb/{token}", h.heartbeat)
+		inner.HandleFunc("POST /uptime/hb/{token}", h.heartbeat)
+
+		inner.HandleFunc("POST /probe/lease", h.probeLease)
+		inner.HandleFunc("POST /probe/results", h.probeResults)
+
+		inner.HandleFunc("GET /status/{slug}", h.statusPage)
+	}
 
 	// Fallback: любой путь, не покрытый паттернами выше, — стилизованная 404.
 	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

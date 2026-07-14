@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS status_page_monitors;
+DROP TABLE IF EXISTS status_pages;
+DROP TABLE IF EXISTS maintenance_windows;
+DROP TABLE IF EXISTS incidents;
+DROP TABLE IF EXISTS check_queue;
+DROP TABLE IF EXISTS probes;
+DROP TABLE IF EXISTS monitor_state;
+DROP TABLE IF EXISTS monitor_channels;
+DROP TABLE IF EXISTS monitor_regions;
+DROP TABLE IF EXISTS monitors;

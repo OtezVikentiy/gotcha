@@ -25,10 +25,12 @@ type IssueRow struct {
 // IssuesFilter — значения фильтров, которые нужно сохранить в форме и
 // пробросить в ссылки пагинации.
 type IssuesFilter struct {
-	Status string
-	Level  string
-	Query  string
-	Sort   string
+	Status      string
+	Level       string
+	Query       string
+	Sort        string
+	Environment string
+	Period      string
 }
 
 func issuesPath(projectID int64) string {
@@ -76,6 +78,15 @@ func ago(t time.Time) string {
 	}
 }
 
+// assigneeDisplay — email назначенного пользователя или «—», если issue
+// никому не назначен.
+func assigneeDisplay(email string) string {
+	if email == "" {
+		return "—"
+	}
+	return email
+}
+
 func totalPages(total int64) int64 {
 	if total <= 0 {
 		return 1
@@ -98,6 +109,12 @@ func issuesPageURL(projectID int64, f IssuesFilter, page int) string {
 	}
 	if f.Sort != "" {
 		q.Set("sort", f.Sort)
+	}
+	if f.Environment != "" {
+		q.Set("env", f.Environment)
+	}
+	if f.Period != "" {
+		q.Set("period", f.Period)
 	}
 	if page > 1 {
 		q.Set("page", strconv.Itoa(page))
@@ -133,16 +150,33 @@ templ sortOption(value, label string, selected string) {
 	}
 }
 
+templ environmentOption(value, label string, selected string) {
+	if value == selected {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
+templ periodOption(value, label string, selected string) {
+	if value == selected {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
 // IssuesList — GET /projects/{id}/issues: таблица issues проекта с панелью
 // фильтров (обычная GET-форма — работает без JS) и пагинацией по ссылкам.
 // htmx намеренно не подключён: hx-get на форме фильтров подменял бы только
 // #issues-table, но обработчик всегда рендерит целую страницу, а не
 // фрагмент, так что частичный своп дал бы вложенный документ внутри div.
 // Без htmx-атрибутов работает как обычный GET, что явно допускается спекой.
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, canManage bool, userEmail string) {
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, canManage bool, userEmail string, environments []string) {
 	@layout("Issues", userEmail) {
 		<div class="issues">
 			<h1>Issues</h1>
+			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a></p>
 			if canManage {
 				<p><a href={ templ.URL(projectSettingsPath(projectID)) }>Project settings</a></p>
 			}
@@ -167,6 +201,18 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@sortOption("first_seen", "First seen", filter.Sort)
 					@sortOption("times_seen", "Times seen", filter.Sort)
 				</select>
+				<select name="env">
+					@environmentOption("", "All environments", filter.Environment)
+					for _, env := range environments {
+						@environmentOption(env, env, filter.Environment)
+					}
+				</select>
+				<select name="period">
+					@periodOption("", "All time", filter.Period)
+					@periodOption("24h", "Last 24h", filter.Period)
+					@periodOption("7d", "Last 7 days", filter.Period)
+					@periodOption("30d", "Last 30 days", filter.Period)
+				</select>
 				<button type="submit">Применить</button>
 			</form>
 			<div id="issues-table">
@@ -184,6 +230,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 									<th>Events</th>
 									<th>Last seen</th>
 									<th>Status</th>
+									<th>Assignee</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -201,6 +248,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 										<td>{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
 										<td>{ ago(row.Issue.LastSeen) }</td>
 										<td>{ row.Issue.Status }</td>
+										<td>{ assigneeDisplay(row.Issue.AssigneeEmail) }</td>
 									</tr>
 								}
 							</tbody>

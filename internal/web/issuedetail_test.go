@@ -30,7 +30,7 @@ func TestWebIssueDetail(t *testing.T) {
 	project := createProject(t, s, ownerID, "issuedetail-org", "issuedetail-proj")
 
 	now := time.Now().UTC()
-	r1, err := s.issues.Upsert(context.Background(), project.ID, "fp-detail", "NullPointerException", "pkg/a.go:10", "error", now)
+	r1, err := s.issues.Upsert(context.Background(), project.ID, "fp-detail", "NullPointerException", "pkg/a.go:10", "error", "", now)
 	if err != nil {
 		t.Fatalf("upsert issue: %v", err)
 	}

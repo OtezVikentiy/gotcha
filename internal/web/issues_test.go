@@ -144,7 +144,7 @@ func TestWebIssuesList(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Issue 1: error, times_seen=1.
-	r1, err := s.issues.Upsert(context.Background(), project.ID, "fp-error", "NullPointerException", "pkg/a.go:10", "error", now)
+	r1, err := s.issues.Upsert(context.Background(), project.ID, "fp-error", "NullPointerException", "pkg/a.go:10", "error", "", now)
 	if err != nil {
 		t.Fatalf("upsert issue1: %v", err)
 	}
@@ -152,14 +152,14 @@ func TestWebIssuesList(t *testing.T) {
 	// Issue 2: warning, times_seen=3 (три Upsert увеличивают счётчик).
 	var r2 issue.UpsertResult
 	for i := 0; i < 3; i++ {
-		r2, err = s.issues.Upsert(context.Background(), project.ID, "fp-warning", "Slow query detected", "pkg/b.go:20", "warning", now)
+		r2, err = s.issues.Upsert(context.Background(), project.ID, "fp-warning", "Slow query detected", "pkg/b.go:20", "warning", "", now)
 		if err != nil {
 			t.Fatalf("upsert issue2: %v", err)
 		}
 	}
 
 	// Issue 3: info, times_seen=1.
-	r3, err := s.issues.Upsert(context.Background(), project.ID, "fp-info", "Deprecated API used", "pkg/c.go:30", "info", now)
+	r3, err := s.issues.Upsert(context.Background(), project.ID, "fp-info", "Deprecated API used", "pkg/c.go:30", "info", "", now)
 	if err != nil {
 		t.Fatalf("upsert issue3: %v", err)
 	}
@@ -283,6 +283,141 @@ func TestWebIssuesList(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("POST %s (outsider) status = %d, want 404", bulkPath, resp.StatusCode)
+	}
+}
+
+// TestWebIssuesEnvironmentAndPeriodFilter проверяет ?env и ?period в списке
+// issues: env сужает до issues с событиями в конкретном environment (по
+// issue_environments), period отсекает issues со старым last_seen.
+func TestWebIssuesEnvironmentAndPeriodFilter(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-envperiod-owner@example.com")
+	project := createProject(t, s, ownerID, "issues-envperiod-org", "issues-envperiod-proj")
+
+	now := time.Now().UTC()
+
+	rProd, err := s.issues.Upsert(context.Background(), project.ID, "fp-web-prod", "Prod NPE", "pkg/a.go:1", "error", "prod", now)
+	if err != nil {
+		t.Fatalf("upsert prod: %v", err)
+	}
+	_, err = s.issues.Upsert(context.Background(), project.ID, "fp-web-staging", "Staging timeout", "pkg/b.go:2", "error", "staging", now)
+	if err != nil {
+		t.Fatalf("upsert staging: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	// ?env=staging показывает только staging issue.
+	resp := getWithCookie(t, s.srv, issuesPath+"?env=staging", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?env=staging status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Staging timeout") {
+		t.Fatalf("GET %s?env=staging missing staging issue: %s", issuesPath, body)
+	}
+	if strings.Contains(string(body), "Prod NPE") {
+		t.Fatalf("GET %s?env=staging leaked prod issue: %s", issuesPath, body)
+	}
+
+	// Подкручиваем last_seen prod issue на 2 суток назад, ?period=24h должен его отсечь.
+	if _, err := s.pool.Exec(context.Background(), "UPDATE issues SET last_seen = $1 WHERE id = $2",
+		now.Add(-48*time.Hour), rProd.IssueID); err != nil {
+		t.Fatalf("backdate prod last_seen: %v", err)
+	}
+	resp = getWithCookie(t, s.srv, issuesPath+"?period=24h", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?period=24h status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Staging timeout") {
+		t.Fatalf("GET %s?period=24h missing recent staging issue: %s", issuesPath, body)
+	}
+	if strings.Contains(string(body), "Prod NPE") {
+		t.Fatalf("GET %s?period=24h leaked backdated prod issue: %s", issuesPath, body)
+	}
+}
+
+// TestWebIssuesAssigneeColumn проверяет колонку Assignee: "—" без назначения,
+// email назначенного юзера после Assign.
+func TestWebIssuesAssigneeColumn(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-assignee-owner@example.com")
+	project := createProject(t, s, ownerID, "issues-assignee-org", "issues-assignee-proj")
+
+	// Assignee отдельно от owner: owner's email всегда в шапке страницы
+	// (see the logout-form user-email span), так что проверка "email
+	// появился только после назначения" требует другого адреса.
+	assigneeID, _ := registerAndLogin(t, s, "issues-assignee-target@example.com")
+
+	now := time.Now().UTC()
+	r1, err := s.issues.Upsert(context.Background(), project.ID, "fp-web-assignee", "Needs owner", "pkg/a.go:1", "error", "", now)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "—") {
+		t.Fatalf("GET %s missing em-dash placeholder for unassigned issue: %s", issuesPath, body)
+	}
+	if strings.Contains(string(body), "issues-assignee-target@example.com") {
+		t.Fatalf("GET %s shows assignee email before assignment: %s", issuesPath, body)
+	}
+
+	if err := s.issues.Assign(context.Background(), r1.IssueID, &assigneeID); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	resp = getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (after assign) status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "issues-assignee-target@example.com") {
+		t.Fatalf("GET %s (after assign) missing assignee email: %s", issuesPath, body)
+	}
+}
+
+// TestWebIssuesPaginationPreservesFilters проверяет, что ссылки пагинации
+// (Next) сохраняют env и period наряду со status/level/q/sort.
+func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-pagefilter-owner@example.com")
+	project := createProject(t, s, ownerID, "issues-pagefilter-org", "issues-pagefilter-proj")
+
+	now := time.Now().UTC()
+	// 26 issues в prod, чтобы default PerPage=25 дал вторую страницу.
+	for i := 0; i < 26; i++ {
+		fp := "fp-page-" + strconv.Itoa(i)
+		if _, err := s.issues.Upsert(context.Background(), project.ID, fp, "Prod issue "+strconv.Itoa(i), "", "error", "prod", now); err != nil {
+			t.Fatalf("upsert %s: %v", fp, err)
+		}
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath+"?env=prod&period=24h", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?env=prod&period=24h status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "env=prod") || !strings.Contains(string(body), "period=24h") {
+		t.Fatalf("GET %s?env=prod&period=24h pagination link missing filters: %s", issuesPath, body)
+	}
+	if !strings.Contains(string(body), "page=2") {
+		t.Fatalf("GET %s?env=prod&period=24h missing next-page link: %s", issuesPath, body)
 	}
 }
 

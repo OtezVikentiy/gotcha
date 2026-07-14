@@ -36,7 +36,7 @@ func TestProjectKeys(t *testing.T) {
 	}
 
 	got, err := svc.KeyByPublic(ctx, k.PublicKey)
-	if err != nil || got.ProjectID != p.ID {
+	if err != nil || got.ProjectID != p.ID || got.OrgID != o.ID {
 		t.Fatalf("KeyByPublic: %+v err=%v", got, err)
 	}
 	if _, err := svc.KeyByPublic(ctx, "00000000000000000000000000000000"); !errors.Is(err, org.ErrNotFound) {

@@ -14,10 +14,11 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("org: not found")
-	ErrSlugTaken   = errors.New("org: slug already taken")
-	ErrInvalidSlug = errors.New("org: invalid slug")
-	ErrInvalidName = errors.New("org: name must not be empty")
+	ErrNotFound      = errors.New("org: not found")
+	ErrSlugTaken     = errors.New("org: slug already taken")
+	ErrInvalidSlug   = errors.New("org: invalid slug")
+	ErrInvalidName   = errors.New("org: name must not be empty")
+	ErrInvalidQuota  = errors.New("org: invalid quota")
 )
 
 // reSlug — lower-case буквенно-цифровой slug с дефисами, без дефисов по краям,

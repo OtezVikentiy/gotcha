@@ -38,6 +38,18 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.SecretKey != "insecure-dev-secret" {
 		t.Errorf("SecretKey = %q", cfg.SecretKey)
 	}
+	if cfg.UptimeConcurrency != 50 {
+		t.Errorf("UptimeConcurrency = %d, want 50", cfg.UptimeConcurrency)
+	}
+	if cfg.LocalRegion != "local" {
+		t.Errorf("LocalRegion = %q, want %q", cfg.LocalRegion, "local")
+	}
+	if cfg.ProbeToken != "" {
+		t.Errorf("ProbeToken = %q, want empty", cfg.ProbeToken)
+	}
+	if cfg.ServerURL != "" {
+		t.Errorf("ServerURL = %q, want empty", cfg.ServerURL)
+	}
 }
 
 func TestLoadConfigOverrides(t *testing.T) {
@@ -55,6 +67,10 @@ func TestLoadConfigOverrides(t *testing.T) {
 		"GOTCHA_DEFAULT_EVENT_QUOTA": "50000",
 		"GOTCHA_MAX_EVENT_BYTES":     "2097152",
 		"GOTCHA_SECRET_KEY":          "prod-secret",
+		"GOTCHA_UPTIME_CONCURRENCY":  "10",
+		"GOTCHA_LOCAL_REGION":        "eu-fra",
+		"GOTCHA_PROBE_TOKEN":         "ptok",
+		"GOTCHA_SERVER_URL":          "https://gotcha.example.com",
 	}
 	cfg, err := loadConfig(getenvFrom(env), []string{"--mode", "ingest"})
 	if err != nil {
@@ -77,11 +93,65 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.SecretKey != "prod-secret" {
 		t.Errorf("SecretKey = %q", cfg.SecretKey)
 	}
+	if cfg.UptimeConcurrency != 10 {
+		t.Errorf("UptimeConcurrency = %d, want 10", cfg.UptimeConcurrency)
+	}
+	if cfg.LocalRegion != "eu-fra" {
+		t.Errorf("LocalRegion = %q, want %q", cfg.LocalRegion, "eu-fra")
+	}
+	if cfg.ProbeToken != "ptok" {
+		t.Errorf("ProbeToken = %q, want %q", cfg.ProbeToken, "ptok")
+	}
+	if cfg.ServerURL != "https://gotcha.example.com" {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://gotcha.example.com")
+	}
 }
 
 func TestLoadConfigInvalidMode(t *testing.T) {
 	if _, err := loadConfig(getenvFrom(nil), []string{"--mode", "banana"}); err == nil {
 		t.Fatal("want error for invalid mode, got nil")
+	}
+}
+
+func TestLoadConfigAcceptsUptimeAndProbeModes(t *testing.T) {
+	// probe без GOTCHA_SERVER_URL/GOTCHA_PROBE_TOKEN не запускается (см.
+	// TestLoadConfigProbeModeRequiresServerURLAndToken), поэтому здесь они
+	// заданы для обоих режимов — проверяется только разбор --mode.
+	env := map[string]string{
+		"GOTCHA_SERVER_URL":  "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN": "probe-token",
+	}
+	for _, mode := range []string{"uptime", "probe"} {
+		cfg, err := loadConfig(getenvFrom(env), []string{"--mode", mode})
+		if err != nil {
+			t.Fatalf("mode %q: loadConfig: %v", mode, err)
+		}
+		if cfg.Mode != mode {
+			t.Errorf("mode %q: Mode = %q, want %q", mode, cfg.Mode, mode)
+		}
+	}
+}
+
+func TestLoadConfigProbeModeRejectsServerURLWithoutScheme(t *testing.T) {
+	// Без схемы/хоста каждый тик пробы падал бы с "unsupported protocol
+	// scheme" раз в секунду вечно — отказываем на старте.
+	for _, serverURL := range []string{"gotcha.example.com", "/probe", "ftp://gotcha.example.com"} {
+		env := map[string]string{
+			"GOTCHA_SERVER_URL":  serverURL,
+			"GOTCHA_PROBE_TOKEN": "probe-token",
+		}
+		if _, err := loadConfig(getenvFrom(env), []string{"--mode", "probe"}); err == nil {
+			t.Errorf("GOTCHA_SERVER_URL=%q: want error, got nil", serverURL)
+		}
+	}
+}
+
+func TestLoadConfigNonPositiveUptimeConcurrency(t *testing.T) {
+	for _, v := range []string{"0", "-1"} {
+		env := map[string]string{"GOTCHA_UPTIME_CONCURRENCY": v}
+		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
+			t.Fatalf("GOTCHA_UPTIME_CONCURRENCY=%q: want error, got nil", v)
+		}
 	}
 }
 
@@ -112,5 +182,49 @@ func TestLoadConfigNonPositiveMaxEventBytes(t *testing.T) {
 	env := map[string]string{"GOTCHA_MAX_EVENT_BYTES": "-1"}
 	if _, err := loadConfig(getenvFrom(env), nil); err == nil {
 		t.Fatal("GOTCHA_MAX_EVENT_BYTES=-1: want error, got nil")
+	}
+}
+
+func TestLoadConfigProbeModeRequiresServerURLAndToken(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"both missing", nil},
+		{"no token", map[string]string{"GOTCHA_SERVER_URL": "https://gotcha.example.com"}},
+		{"no server url", map[string]string{"GOTCHA_PROBE_TOKEN": "t"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := loadConfig(getenvFrom(tc.env), []string{"--mode=probe"}); err == nil {
+				t.Fatal("want error, got nil")
+			}
+		})
+	}
+}
+
+func TestLoadConfigProbeMode(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_SERVER_URL":  "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN": "probe-token",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=probe"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Mode != "probe" {
+		t.Errorf("Mode = %q, want probe", cfg.Mode)
+	}
+	if cfg.ServerURL != "https://gotcha.example.com" || cfg.ProbeToken != "probe-token" {
+		t.Errorf("ServerURL = %q, ProbeToken set = %v", cfg.ServerURL, cfg.ProbeToken != "")
+	}
+}
+
+// Остальные режимы GOTCHA_SERVER_URL/GOTCHA_PROBE_TOKEN не требуют.
+func TestLoadConfigNonProbeModeDoesNotRequireProbeCreds(t *testing.T) {
+	for _, mode := range []string{"ingest", "web", "uptime", "all"} {
+		if _, err := loadConfig(getenvFrom(nil), []string{"--mode=" + mode}); err != nil {
+			t.Errorf("--mode=%s: %v", mode, err)
+		}
 	}
 }

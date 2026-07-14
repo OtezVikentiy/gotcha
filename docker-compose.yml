@@ -3,10 +3,15 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # Внешний порт вынесен в 59xxx, чтобы не конфликтовать с другими
+      # локальными докер-проектами. Переопределяется: GOTCHA_PORT=... docker compose up
+      - "${GOTCHA_PORT:-59080}:8080"
     environment:
       GOTCHA_PG_DSN: postgres://gotcha:gotcha@postgres:5432/gotcha?sslmode=disable
       GOTCHA_CH_DSN: clickhouse://gotcha:gotcha@clickhouse:9000/gotcha
+      # BaseURL обязан совпадать с внешним портом: из него строятся DSN проекта,
+      # ссылки на issue в алертах и ссылки-приглашения.
+      GOTCHA_BASE_URL: ${GOTCHA_BASE_URL:-http://localhost:59080}
       GOTCHA_SECRET_KEY: ${GOTCHA_SECRET_KEY:-insecure-dev-secret}
     depends_on:
       postgres:

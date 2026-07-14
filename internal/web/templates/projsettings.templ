@@ -64,6 +64,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 				<button type="submit">Переименовать</button>
 			</form>
 			<p>Платформа: { project.Platform }</p>
+			<p><a href={ templ.URL(alertsPath(project.ID)) }>Alerts</a></p>
 			if dsn != "" {
 				<p>DSN текущего живого ключа:</p>
 				<pre>{ dsn }</pre>

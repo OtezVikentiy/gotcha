@@ -14,6 +14,7 @@ import (
 type Key struct {
 	ID        int64
 	ProjectID int64
+	OrgID     int64
 	PublicKey string
 	Revoked   bool
 }
@@ -48,13 +49,17 @@ func (s *Service) RevokeKey(ctx context.Context, keyID int64) error {
 	return nil
 }
 
-// KeyByPublic возвращает живой (неотозванный) ключ по public_key.
-// Горячий путь ingest — по нему аутентифицируется каждое событие.
+// KeyByPublic возвращает живой (неотозванный) ключ по public_key, включая
+// org_id проекта (JOIN projects) — ingest использует его для квот без
+// дополнительного похода в БД. Горячий путь ingest — по нему
+// аутентифицируется каждое событие.
 func (s *Service) KeyByPublic(ctx context.Context, publicKey string) (Key, error) {
 	k := Key{PublicKey: publicKey}
 	err := s.pool.QueryRow(ctx,
-		"SELECT id, project_id FROM project_keys WHERE public_key = $1 AND revoked_at IS NULL",
-		publicKey).Scan(&k.ID, &k.ProjectID)
+		"SELECT pk.id, pk.project_id, p.org_id FROM project_keys pk "+
+			"JOIN projects p ON p.id = pk.project_id "+
+			"WHERE pk.public_key = $1 AND pk.revoked_at IS NULL",
+		publicKey).Scan(&k.ID, &k.ProjectID, &k.OrgID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Key{}, ErrNotFound
 	}

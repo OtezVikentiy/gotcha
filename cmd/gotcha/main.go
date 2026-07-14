@@ -10,12 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -37,6 +40,21 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Выносная проба — отдельная ветка до всего остального: ей не нужны ни
+	// Postgres, ни ClickHouse, ни HTTP-сервер (и входящих портов у неё в
+	// чужом регионе может не быть вовсе). Только исходящие запросы к центру,
+	// пока не придёт сигнал.
+	if cfg.Mode == "probe" {
+		probe := &uptime.ProbeClient{
+			ServerURL:   cfg.ServerURL,
+			Token:       cfg.ProbeToken,
+			Concurrency: cfg.UptimeConcurrency,
+		}
+		probe.Run(ctx)
+		slog.Info("probe stopped")
+		return nil
+	}
 
 	pg, err := db.NewPostgres(ctx, cfg.PostgresDSN)
 	if err != nil {
@@ -70,12 +88,106 @@ func run() error {
 	mux.HandleFunc("GET /healthz", healthHandler(pg, ch))
 
 	// Общие сервисы нужны и ingest-у, и web-у — строим один раз на любой
-	// активный режим, а не дублируем на каждый.
+	// активный режим, а не дублируем на каждый. alertSvc/emailSender/outbox
+	// тоже общие: ingest использует их для срабатывания правил
+	// (Evaluator/Spike) и доставки, а web — для страницы
+	// /projects/{id}/alerts (правила/каналы/failed-доставки, см.
+	// web.Handler.Alerts/Outbox) и синхронной отправки писем-приглашений (см.
+	// web.Handler.Email в orgsettings.go).
 	var orgSvc *org.Service
 	var issueSvc *issue.Service
+	var alertSvc *alert.Service
+	var emailSender *notify.EmailSender
+	var outbox *notify.Outbox
 	if cfg.Mode == "ingest" || cfg.Mode == "web" || cfg.Mode == "all" {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
 		issueSvc = issue.NewService(pg)
+		alertSvc = alert.NewService(pg)
+		emailSender = notify.NewEmailSender(notify.EmailConfig{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+		})
+		outbox = notify.NewOutbox(pg)
+	}
+
+	// uptimeSvc/uptimeWriter — как и orgSvc/issueSvc выше, общие для любого
+	// активного режима, которому они нужны: web монтирует героя этой задачи,
+	// публичный heartbeat-роут (webHandler.Uptime/UptimeWriter), даже когда
+	// сам процесс не крутит Runner (--mode=web без --mode=uptime, например
+	// отдельная реплика для входящих HTTP-запросов); uptime собирает поверх
+	// них Runner. В --mode=all оба контура делят один ResultWriter — одна
+	// очередь вставок в ClickHouse на процесс, а не по одной на контур.
+	var uptimeSvc *uptime.Service
+	var uptimeWriter *uptime.ResultWriter
+	var uptimeDetector *uptime.Detector
+	var uptimeNotifier *uptime.OutboxNotifier
+	var uptimeIngestor *uptime.Ingestor
+	if cfg.Mode == "web" || cfg.Mode == "uptime" || cfg.Mode == "all" {
+		uptimeSvc = uptime.NewService(pg)
+		// Имя встроенного региона — конфигурируемое: Service.Regions предлагает
+		// его в форме монитора, и оно обязано совпадать с тем, которое лизит
+		// Runner ниже, иначе монитор попал бы в регион, который не проверяет
+		// никто.
+		uptimeSvc.LocalRegion = cfg.LocalRegion
+		uptimeWriter = uptime.NewResultWriter(ch)
+		go uptimeWriter.Run()
+
+		// alertSvc/outbox/emailSender are only built for ingest/web/all above —
+		// uptime alone doesn't need alerting/outbox for anything else, but the
+		// detector's notifier (down/up/ssl_expiring/reminder) is delivered
+		// through the very same Outbox, so build them here too when uptime
+		// runs on its own.
+		if alertSvc == nil {
+			alertSvc = alert.NewService(pg)
+		}
+		if outbox == nil {
+			outbox = notify.NewOutbox(pg)
+		}
+		if emailSender == nil {
+			emailSender = notify.NewEmailSender(notify.EmailConfig{
+				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+				User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+			})
+		}
+		uptimeNotifier = &uptime.OutboxNotifier{
+			Alerts:       alertSvc,
+			Uptime:       uptimeSvc,
+			Outbox:       outbox,
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+		}
+		uptimeDetector = &uptime.Detector{Svc: uptimeSvc, Notifier: uptimeNotifier}
+		// Ingestor нужен и режиму web (через него /probe/results проводит
+		// результаты выносных проб), и режиму uptime (тот же хвост у
+		// локальной пробы, Runner собирает его из своих полей) — детекция
+		// инцидентов и запись в CH одинаковы для обоих источников.
+		uptimeIngestor = &uptime.Ingestor{
+			Svc:      uptimeSvc,
+			Writer:   uptimeWriter,
+			OnResult: uptimeDetector.OnResult,
+		}
+	}
+
+	var runner *uptime.Runner
+	if cfg.Mode == "uptime" || cfg.Mode == "all" {
+		runner = &uptime.Runner{
+			Svc:         uptimeSvc,
+			Writer:      uptimeWriter,
+			Region:      cfg.LocalRegion,
+			Concurrency: cfg.UptimeConcurrency,
+			OnResult:    uptimeDetector.OnResult,
+		}
+		go runner.Run(ctx)
+
+		watchdog := &uptime.Watchdog{
+			Svc:      uptimeSvc,
+			Detector: uptimeDetector,
+			Notifier: uptimeNotifier,
+			Region:   cfg.LocalRegion,
+		}
+		go watchdog.Run(ctx)
+
+		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
 	}
 
 	var pipeline *ingest.Pipeline
@@ -83,15 +195,53 @@ func run() error {
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
 		go batcher.Run()
+
+		// Алертинг (план 6) — часть ingest-контура: правила/каналы срабатывают
+		// на события, которые проходят через этот же пайплайн.
+		senders := map[string]notify.Sender{
+			alert.ChannelWebhook:  &notify.WebhookSender{},
+			alert.ChannelTelegram: &notify.TelegramSender{},
+		}
+		if emailSender.Configured() {
+			senders[alert.ChannelEmail] = emailSender
+		} else {
+			slog.Warn("GOTCHA_SMTP_HOST is not set, email alert channels are disabled")
+		}
+		notifyWorker := &notify.Worker{Outbox: outbox, Senders: senders}
+		go notifyWorker.Run(ctx)
+
+		evaluator := &alert.Evaluator{
+			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
+		}
+		spikeWorker := &alert.Spike{
+			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
+		}
+		go spikeWorker.Run(ctx)
+
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
+		pipeline.Alerts = evaluator
 		pipeline.Start()
-		ingest.NewHandler(ingest.NewKeyCache(orgSvc), pipeline, cfg.MaxEventBytes).Register(mux)
+		ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes).Register(mux)
 		slog.Info("ingest enabled")
 	}
 	if cfg.Mode == "web" || cfg.Mode == "all" {
 		authSvc := auth.NewService(pg)
 		eventQuery := event.NewQuery(ch)
-		web.New(authSvc, orgSvc, issueSvc, eventQuery, cfg.BaseURL).Register(mux)
+		webHandler := web.New(authSvc, orgSvc, issueSvc, eventQuery, cfg.BaseURL)
+		webHandler.Alerts = alertSvc
+		webHandler.Email = emailSender
+		webHandler.Outbox = outbox
+		webHandler.Uptime = uptimeSvc
+		webHandler.UptimeWriter = uptimeWriter
+		// uptimeSvc is always built above whenever cfg.Mode is "web" or
+		// "all" (see the uptimeSvc/uptimeWriter block), so UptimeQuery is
+		// unconditional here too — same ClickHouse handle as uptimeWriter,
+		// just for reads instead of writes.
+		webHandler.UptimeQuery = uptime.NewQuery(ch)
+		webHandler.UptimeIngestor = uptimeIngestor
+		webHandler.LocalRegion = cfg.LocalRegion
+		webHandler.Register(mux)
+		go (&auth.Janitor{Svc: authSvc}).Run(ctx)
 		slog.Info("web enabled")
 	}
 
@@ -111,6 +261,16 @@ func run() error {
 			defer cancel()
 			if err := batcher.Close(cctx); err != nil {
 				slog.Error("event batcher drain failed", "error", err)
+			}
+		}
+		if runner != nil {
+			runner.Close()
+		}
+		if uptimeWriter != nil {
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := uptimeWriter.Close(cctx); err != nil {
+				slog.Error("uptime result writer drain failed", "error", err)
 			}
 		}
 	}

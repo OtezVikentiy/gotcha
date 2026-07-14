@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -396,5 +397,101 @@ func TestWebManageLinksVisibility(t *testing.T) {
 		if gotOrg != tc.wantLink {
 			t.Fatalf("GET /projects (%s): Org settings link present = %v, want %v: %s", tc.descriptor, gotOrg, tc.wantLink, projBody)
 		}
+	}
+}
+
+// TestWebOrgSettingsQuota — задача 5 (квота): блок «использование за месяц /
+// лимит» на странице настроек, форма смены лимита (owner|admin, тот же
+// requireOrgRole, что и остальные org-настройки), отрицательное значение →
+// 422 (ErrInvalidQuota), 0 = безлимит.
+func TestWebOrgSettingsQuota(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "quota-owner@example.com")
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "quota-member@example.com")
+
+	o, err := orgSvc.CreateOrg(context.Background(), "quota-co", "Quota Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if _, err := orgSvc.IncUsage(context.Background(), o.ID, time.Now()); err != nil {
+		t.Fatalf("inc usage: %v", err)
+	}
+
+	settingsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
+	quotaPath := settingsPath + "/quota"
+
+	// GET показывает текущее использование (1) и лимит по умолчанию (1000000).
+	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", settingsPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "1000000") {
+		t.Fatalf("GET %s missing default quota 1000000: %s", settingsPath, body)
+	}
+
+	// POST quota без Origin -> 403.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"500"}}, "", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (no origin) status = %d, want 403", quotaPath, resp.StatusCode)
+	}
+
+	// POST quota member -> 404.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"500"}}, s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (member) status = %d, want 404", quotaPath, resp.StatusCode)
+	}
+
+	// POST quota отрицательная -> 422, лимит не изменился.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"-1"}}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (negative) status = %d, want 422: %s", quotaPath, resp.StatusCode, body)
+	}
+	if got, err := orgSvc.Get(context.Background(), o.ID); err != nil || got.EventQuota != 1_000_000 {
+		t.Fatalf("quota after rejected negative POST = %+v, err=%v, want 1000000", got, err)
+	}
+
+	// POST quota валидная -> 303, лимит обновлён и виден на странице.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"500"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	if got, err := orgSvc.Get(context.Background(), o.ID); err != nil || got.EventQuota != 500 {
+		t.Fatalf("quota after valid POST = %+v, err=%v, want 500", got, err)
+	}
+	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "500") {
+		t.Fatalf("GET %s missing updated quota 500: %s", settingsPath, body)
+	}
+
+	// POST quota 0 -> безлимит, отображается отдельным текстом.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"0"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (zero) status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(strings.ToLower(string(body)), "безлимит") {
+		t.Fatalf("GET %s missing unlimited marker after quota=0: %s", settingsPath, body)
 	}
 }

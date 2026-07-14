@@ -1,0 +1,132 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
+
+func monitorsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/monitors"
+}
+
+func monitorNewPath(projectID int64) string {
+	return monitorsPath(projectID) + "/new"
+}
+
+func monitorDetailPath(monitorID int64) string {
+	return "/monitors/" + strconv.FormatInt(monitorID, 10)
+}
+
+// monitorStatusBadgeClass — цвет статуса монитора: up переиспользует
+// badge-info (тот же синий, что и "maintenance", up — это нормальное
+// рабочее состояние, не тревога), down/paused/unknown получают свои классы
+// ниже (app.css).
+func monitorStatusBadgeClass(status string) string {
+	switch status {
+	case "up":
+		return "badge badge-up"
+	case "down":
+		return "badge badge-error"
+	case "paused":
+		return "badge badge-paused"
+	case "maintenance":
+		return "badge badge-info"
+	default:
+		return "badge badge-warning"
+	}
+}
+
+// uptimeStatText — "no data", если за период не было ни одной проверки
+// (Total == 0, монитор только что создан или ClickHouse ещё не получил
+// строк), иначе процент с двумя знаками после запятой.
+func uptimeStatText(s uptime.UptimeStat) string {
+	if s.Total == 0 {
+		return "no data"
+	}
+	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
+}
+
+// avgLatencyText — тот же принцип "нет данных", что и uptimeStatText: без
+// проверок в периоде средняя задержка бессмысленна.
+func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
+	if s.Total == 0 {
+		return "-"
+	}
+	return strconv.Itoa(int(avgMs)) + "ms"
+}
+
+// lastCheckedText — "no data" для свежесозданного монитора, который ещё ни
+// разу не проверялся ни в одном регионе.
+func lastCheckedText(t *time.Time) string {
+	if t == nil {
+		return "no data"
+	}
+	return ago(*t)
+}
+
+// MonitorRow — монитор вместе с уже посчитанными для списка данными
+// (web/monitors.go: статус, uptime% за 24ч, средняя задержка, SVG-полоска
+// доступности, время последней проверки) — тот же приём, что и IssueRow в
+// issues.templ: числовая агрегация (PG/ClickHouse) остаётся в web-пакете,
+// этот пакет только форматирует готовые данные.
+type MonitorRow struct {
+	Monitor      uptime.Monitor
+	Status       string
+	Uptime24h    uptime.UptimeStat
+	AvgLatencyMs uint32
+	Bars         templ.Component
+	LastChecked  *time.Time
+}
+
+// MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
+// canManage управляет видимостью ссылки «New monitor» (owner/admin, тот же
+// принцип, что и «Project settings» на странице issues).
+templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail string) {
+	@layout("Monitors", userEmail) {
+		<div class="monitors">
+			<h1>Monitors</h1>
+			<p>
+				<a href={ templ.URL(incidentsPath(projectID)) }>Incidents</a>
+				if canManage {
+					· <a href={ templ.URL(maintenancePath(projectID)) }>Maintenance</a>
+					· <a href={ templ.URL(statusPagesPath(projectID)) }>Status pages</a>
+				}
+			</p>
+			if canManage {
+				<p><a href={ templ.URL(monitorNewPath(projectID)) }>New monitor</a></p>
+			}
+			if len(rows) == 0 {
+				<p>Мониторы не найдены.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Type</th>
+							<th>Status</th>
+							<th>Uptime (24h)</th>
+							<th>Avg latency (24h)</th>
+							<th>Availability (24h)</th>
+							<th>Last check</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range rows {
+							<tr>
+								<td><a href={ templ.URL(monitorDetailPath(row.Monitor.ID)) }>{ row.Monitor.Name }</a></td>
+								<td>{ string(row.Monitor.Kind) }</td>
+								<td><span class={ monitorStatusBadgeClass(row.Status) }>{ row.Status }</span></td>
+								<td>{ uptimeStatText(row.Uptime24h) }</td>
+								<td>{ avgLatencyText(row.Uptime24h, row.AvgLatencyMs) }</td>
+								<td>@row.Bars</td>
+								<td>{ lastCheckedText(row.LastChecked) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

@@ -1,0 +1,167 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
+
+func maintenancePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/maintenance"
+}
+
+func maintenanceDeletePath(projectID int64) string {
+	return maintenancePath(projectID) + "/delete"
+}
+
+// maintenanceTimezones — фиксированный список TZ из спеки задачи; "Другой"
+// (пустое значение select'а) переключает форму на соседнее свободное
+// IANA-поле, см. web/maintenance.go:maintenanceTimezone.
+var maintenanceTimezones = []string{"UTC", "Europe/Moscow", "Europe/Berlin", "Asia/Yekaterinburg"}
+
+var maintenanceWeekdayNames = [7]string{"Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"}
+
+func weekdayName(d int) string {
+	if d < 0 || d > 6 {
+		return "?"
+	}
+	return maintenanceWeekdayNames[d]
+}
+
+func windowKindText(w uptime.Window) string {
+	if w.Weekly {
+		return "еженедельно"
+	}
+	return "разовое"
+}
+
+func windowScheduleText(w uptime.Window) string {
+	if w.Weekly {
+		return weekdayName(w.Weekday) + " " + w.StartTime + "–" + w.EndTime + " (" + w.Timezone + ")"
+	}
+	starts, ends := "?", "?"
+	if w.StartsAt != nil {
+		starts = w.StartsAt.Format(time.RFC3339)
+	}
+	if w.EndsAt != nil {
+		ends = w.EndsAt.Format(time.RFC3339)
+	}
+	return starts + " → " + ends + " (" + w.Timezone + ")"
+}
+
+templ maintenanceTimezoneOption(tz string) {
+	<option value={ tz }>{ tz }</option>
+}
+
+templ maintenanceWeekdayOption(value int) {
+	<option value={ strconv.Itoa(value) }>{ weekdayName(value) }</option>
+}
+
+templ windowRow(projectID int64, w uptime.Window) {
+	<tr>
+		<td>{ w.Name }</td>
+		<td>{ windowKindText(w) }</td>
+		<td>{ windowScheduleText(w) }</td>
+		<td>
+			<form method="post" action={ templ.URL(maintenanceDeletePath(projectID)) } class="window-delete-form">
+				<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
+				<button type="submit">Удалить</button>
+			</form>
+		</td>
+	</tr>
+}
+
+// Maintenance — GET/POST /projects/{id}/maintenance: список окон
+// обслуживания проекта + форма создания (разового или еженедельного).
+// Доступ только owner/admin организации проекта (requireProjectRole).
+templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail string) {
+	@layout("Maintenance", userEmail) {
+		<div class="maintenance">
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← Monitors</a></p>
+			<h1>Окна обслуживания</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if len(windows) == 0 {
+				<p>Окон обслуживания нет.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Название</th>
+							<th>Тип</th>
+							<th>Расписание</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, w := range windows {
+							@windowRow(projectID, w)
+						}
+					</tbody>
+				</table>
+			}
+
+			<h2>Новое окно</h2>
+			<form method="post" action={ templ.URL(maintenancePath(projectID)) } class="maintenance-form">
+				<label>
+					Название
+					<input type="text" name="name" required/>
+				</label>
+				<label>
+					<input type="checkbox" name="weekly"/>
+					Еженедельное (иначе разовое)
+				</label>
+
+				<fieldset>
+					<legend>Разовое окно</legend>
+					<label>
+						Начало
+						<input type="datetime-local" name="starts_at"/>
+					</label>
+					<label>
+						Конец
+						<input type="datetime-local" name="ends_at"/>
+					</label>
+				</fieldset>
+
+				<fieldset>
+					<legend>Еженедельное окно</legend>
+					<label>
+						День недели
+						<select name="weekday">
+							for wd := 0; wd < 7; wd++ {
+								@maintenanceWeekdayOption(wd)
+							}
+						</select>
+					</label>
+					<label>
+						Начало (ЧЧ:ММ)
+						<input type="time" name="start_time"/>
+					</label>
+					<label>
+						Конец (ЧЧ:ММ)
+						<input type="time" name="end_time"/>
+					</label>
+				</fieldset>
+
+				<label>
+					Часовой пояс
+					<select name="timezone">
+						for _, tz := range maintenanceTimezones {
+							@maintenanceTimezoneOption(tz)
+						}
+						<option value="">Другой (указать вручную)</option>
+					</select>
+				</label>
+				<label>
+					Свой IANA часовой пояс (если выбрано "Другой")
+					<input type="text" name="timezone_custom" placeholder="например America/New_York"/>
+				</label>
+
+				<button type="submit">Создать окно</button>
+			</form>
+		</div>
+	}
+}

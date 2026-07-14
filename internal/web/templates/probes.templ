@@ -1,0 +1,127 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
+
+func orgProbesPath(orgID int64) string {
+	return "/orgs/" + strconv.FormatInt(orgID, 10) + "/probes"
+}
+
+func orgProbesRevokePath(orgID int64) string {
+	return orgProbesPath(orgID) + "/revoke"
+}
+
+// ProbeRow — проба вместе с уже посчитанным веб-слоем статусом (online, если
+// last_seen_at свежее probeOfflineAfter; иначе offline; отозванная — revoked;
+// см. web/probes.go) — тот же приём, что и MonitorRow: пороги и работа со
+// временем остаются в web, этот пакет только форматирует.
+type ProbeRow struct {
+	Probe  uptime.Probe
+	Status string
+}
+
+// probeStatusBadgeClass — цвета статусов проб: online — тот же зелёный, что и
+// у монитора в состоянии up, offline — красный (проба молчит, её регион не
+// проверяется), revoked — серый (отозванная проба не тревога, а осознанное
+// действие админа).
+func probeStatusBadgeClass(status string) string {
+	switch status {
+	case "online":
+		return "badge badge-up"
+	case "offline":
+		return "badge badge-error"
+	default:
+		return "badge badge-paused"
+	}
+}
+
+// probeLastSeenText — «никогда» для только что созданной пробы, которая ещё ни
+// разу не постучалась в центр (тот же принцип, что и lastCheckedText).
+func probeLastSeenText(row ProbeRow) string {
+	if row.Probe.LastSeenAt == nil {
+		return "никогда"
+	}
+	return ago(*row.Probe.LastSeenAt)
+}
+
+templ probeTableRow(orgID int64, row ProbeRow) {
+	<tr>
+		<td>{ row.Probe.Name }</td>
+		<td>{ row.Probe.Region }</td>
+		<td><span class={ probeStatusBadgeClass(row.Status) }>{ row.Status }</span></td>
+		<td>{ probeLastSeenText(row) }</td>
+		<td>{ ago(row.Probe.CreatedAt) }</td>
+		<td>
+			if !row.Probe.Revoked {
+				<form method="post" action={ templ.URL(orgProbesRevokePath(orgID)) } class="probe-revoke-form">
+					<input type="hidden" name="probe_id" value={ strconv.FormatInt(row.Probe.ID, 10) }/>
+					<button type="submit">Revoke</button>
+				</form>
+			}
+		</td>
+	</tr>
+}
+
+// Probes — GET/POST /orgs/{id}/probes: таблица проб организации и форма
+// создания новой. rawToken и runCmd заполняются ровно один раз — в теле ответа
+// POST, создавшего пробу: сырой токен хранится в БД только хешем и второй раз
+// его показать неоткуда (тот же приём, что и одноразовая ссылка-приглашение в
+// OrgSettings и DSN-ключи проекта). errMsg — сообщение 422 (пустое/слишком
+// длинное имя или регион), страница при этом перерисовывается на месте.
+templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail string) {
+	@layout("Пробы "+o.Name, userEmail) {
+		<div class="org-probes">
+			<h1>Пробы организации { o.Name }</h1>
+			<p><a href={ templ.URL(orgSettingsPath(o.ID)) }>Настройки организации</a></p>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if rawToken != "" {
+				<div class="probe-token-block">
+					<p>Токен пробы (скопируйте сейчас — второй раз не покажем):</p>
+					<p><code class="probe-token">{ rawToken }</code></p>
+					<p>Запуск пробы:</p>
+					<p><code class="probe-run">{ runCmd }</code></p>
+				</div>
+			}
+			<h2>Пробы</h2>
+			if len(rows) == 0 {
+				<p class="empty">Пока ни одной пробы: проверки выполняются только из региона local.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Имя</th>
+							<th>Регион</th>
+							<th>Статус</th>
+							<th>Last seen</th>
+							<th>Создана</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range rows {
+							@probeTableRow(o.ID, row)
+						}
+					</tbody>
+				</table>
+			}
+			<h2>Новая проба</h2>
+			<form method="post" action={ templ.URL(orgProbesPath(o.ID)) } class="probe-create-form">
+				<label>
+					Имя
+					<input type="text" name="name" required maxlength="40" placeholder="Moscow probe"/>
+				</label>
+				<label>
+					Регион
+					<input type="text" name="region" required maxlength="40" placeholder="ru-msk"/>
+				</label>
+				<button type="submit">Создать пробу</button>
+			</form>
+		</div>
+	}
+}

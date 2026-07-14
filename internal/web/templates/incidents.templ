@@ -1,0 +1,66 @@
+package templates
+
+import (
+	"strconv"
+	"strings"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
+
+func incidentsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incidents"
+}
+
+// IncidentRow — инцидент вместе с именем его монитора (Incident сам по себе
+// хранит только monitor_id, см. web/incidents.go) — тот же приём, что и
+// MonitorRow/IssueRow: числовая/справочная агрегация остаётся в web-пакете,
+// этот пакет только форматирует готовые данные.
+type IncidentRow struct {
+	Incident    uptime.Incident
+	MonitorName string
+}
+
+templ incidentListRow(row IncidentRow) {
+	<tr>
+		<td><a href={ templ.URL(monitorDetailPath(row.Incident.MonitorID)) }>{ row.MonitorName }</a></td>
+		<td>{ ago(row.Incident.StartedAt) }</td>
+		<td>{ incidentDurationText(row.Incident) }</td>
+		<td>{ row.Incident.Cause }</td>
+		<td>{ strings.Join(row.Incident.Regions, ", ") }</td>
+		<td>{ yesNo(row.Incident.InMaintenance) }</td>
+	</tr>
+}
+
+// IncidentsList — GET /projects/{id}/incidents: инциденты по всем мониторам
+// проекта, самые свежие первыми — доступна любому, у кого есть доступ к
+// проекту (CanAccessProject), не только owner/admin, тот же принцип, что и у
+// MonitorsList.
+templ IncidentsList(projectID int64, rows []IncidentRow, userEmail string) {
+	@layout("Incidents", userEmail) {
+		<div class="incidents">
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← Monitors</a></p>
+			<h1>Инциденты</h1>
+			if len(rows) == 0 {
+				<p>Инцидентов нет.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Монитор</th>
+							<th>Начало</th>
+							<th>Длительность</th>
+							<th>Причина</th>
+							<th>Регионы</th>
+							<th>Maintenance</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range rows {
+							@incidentListRow(row)
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

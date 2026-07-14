@@ -6,10 +6,20 @@ import (
 	"sync"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/fingerprint"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
+
+// AlertSink получает сигналы о смене состояния issue (новая группа,
+// регрессия), чтобы решить, нужно ли поставить уведомления в очередь.
+// Отдельный интерфейс (а не прямая зависимость от *alert.Evaluator) держит
+// Pipeline тестируемым без реальной БД под алертингом и делает поле
+// необязательным: nil (см. Pipeline.Alerts) значит "алертинг выключен".
+type AlertSink interface {
+	OnIssue(ctx context.Context, ev alert.Event)
+}
 
 // Pipeline — асинхронная обработка принятых событий:
 // fingerprint → upsert issue (PG) → буфер батчера (CH).
@@ -19,6 +29,11 @@ type Pipeline struct {
 	queue   chan task
 	workers int
 	wg      sync.WaitGroup
+
+	// Alerts — опциональный колбэк для new_issue/regression (план 6).
+	// nil (значение по умолчанию) означает, что алертинг выключен —
+	// process() просто пропускает вызов.
+	Alerts AlertSink
 
 	closeMu sync.RWMutex
 	closed  bool
@@ -94,16 +109,35 @@ func (p *Pipeline) process(t task) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res, err := p.issues.Upsert(ctx,
-		t.projectID, fp, ev.Title, ev.Culprit, ev.Level, ev.Timestamp)
+		t.projectID, fp, ev.Title, ev.Culprit, ev.Level, ev.Environment, ev.Timestamp)
 	if err != nil {
 		slog.Error("issue upsert failed, event dropped",
 			"project_id", t.projectID, "event_id", ev.EventID, "error", err)
 		return
 	}
-	// План 6: здесь сигналы new/regression уходят в alert.Evaluator.
-	if res.New || res.Regression {
-		slog.Debug("issue state change",
-			"issue_id", res.IssueID, "new", res.New, "regression", res.Regression)
+	if (res.New || res.Regression) && p.Alerts != nil {
+		kind := alert.KindNewIssue
+		if res.Regression {
+			kind = alert.KindRegression
+		}
+		// times_seen требует отдельного чтения: Upsert его не возвращает.
+		// New/Regression — редкие переходы состояния (не каждое событие),
+		// так что лишний round-trip к PG здесь не на горячем пути приёма.
+		timesSeen := int64(1)
+		if iss, err := p.issues.Get(ctx, res.IssueID); err != nil {
+			slog.Error("issue lookup for alert failed", "issue_id", res.IssueID, "error", err)
+		} else {
+			timesSeen = iss.TimesSeen
+		}
+		p.Alerts.OnIssue(ctx, alert.Event{
+			ProjectID: t.projectID,
+			IssueID:   res.IssueID,
+			Kind:      kind,
+			Title:     ev.Title,
+			Culprit:   ev.Culprit,
+			Level:     ev.Level,
+			TimesSeen: timesSeen,
+		})
 	}
 
 	var excType, excValue string

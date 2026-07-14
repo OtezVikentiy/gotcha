@@ -61,22 +61,25 @@ func up(dir string, fsys embed.FS, url string) error {
 	return nil
 }
 
-// ApplyRetention выставляет TTL таблицы events согласно конфигу инстанса.
-// Вызывается при каждом старте: ретеншн — свойство инсталляции, не миграции.
+// ApplyRetention выставляет TTL таблиц events и check_results согласно
+// конфигу инстанса. Вызывается при каждом старте: ретеншн — свойство
+// инсталляции, не миграции.
 func ApplyRetention(ctx context.Context, conn driver.Conn, days int) error {
-	var ddl string
-	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE events").Scan(&ddl); err != nil {
-		return fmt.Errorf("apply retention: read ddl: %w", err)
-	}
-	// ALTER ... MODIFY TTL запускает мутацию таблицы — не дёргаем её
-	// на каждом старте, если TTL уже совпадает.
-	if !needsRetention(ddl, days) {
-		return nil
-	}
-	q := fmt.Sprintf(
-		"ALTER TABLE events MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY", days)
-	if err := conn.Exec(ctx, q); err != nil {
-		return fmt.Errorf("apply retention: %w", err)
+	for _, table := range []string{"events", "check_results"} {
+		var ddl string
+		if err := conn.QueryRow(ctx, "SHOW CREATE TABLE "+table).Scan(&ddl); err != nil {
+			return fmt.Errorf("apply retention: read ddl %s: %w", table, err)
+		}
+		// ALTER ... MODIFY TTL запускает мутацию таблицы — не дёргаем её
+		// на каждом старте, если TTL уже совпадает.
+		if !needsRetention(ddl, days) {
+			continue
+		}
+		q := fmt.Sprintf(
+			"ALTER TABLE %s MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY", table, days)
+		if err := conn.Exec(ctx, q); err != nil {
+			return fmt.Errorf("apply retention %s: %w", table, err)
+		}
 	}
 	return nil
 }

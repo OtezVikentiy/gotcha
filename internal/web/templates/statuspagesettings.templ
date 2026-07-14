@@ -1,0 +1,148 @@
+package templates
+
+import "strconv"
+
+func statusPagesPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/statuspages"
+}
+
+func statusPageIDPath(statusPageID int64) string {
+	return "/statuspages/" + strconv.FormatInt(statusPageID, 10)
+}
+
+func statusPageDeletePath(statusPageID int64) string {
+	return statusPageIDPath(statusPageID) + "/delete"
+}
+
+// statusPagePublicURL — адрес публичной страницы для показа админу
+// (BaseURL + /status/{slug}).
+func statusPagePublicURL(baseURL, slug string) string {
+	return baseURL + "/status/" + slug
+}
+
+// StatusPageForm — значения одной формы статус-страницы: либо создания
+// (ID == 0), либо редактирования существующей. Заполняется из БД, а на 422 —
+// из тела запроса, чтобы введённое пользователем не пропадало
+// (web/statuspage.go: renderStatusPages + statusPageFormView).
+type StatusPageForm struct {
+	ID          int64
+	Slug        string
+	Title       string
+	Description string
+	Enabled     bool
+	Monitors    []StatusPageFormMonitor
+}
+
+// StatusPageFormMonitor — чекбокс монитора проекта в форме: Selected — стоит
+// ли он на странице, DisplayName — публичное имя (по умолчанию совпадает с
+// именем монитора), MonitorName — настоящее имя монитора (показывается только
+// админу, на публичную страницу не попадает).
+type StatusPageFormMonitor struct {
+	ID          int64
+	MonitorName string
+	Selected    bool
+	DisplayName string
+}
+
+func statusPageFormAction(projectID int64, f StatusPageForm) string {
+	if f.ID == 0 {
+		return statusPagesPath(projectID)
+	}
+	return statusPageIDPath(f.ID)
+}
+
+templ statusPageMonitorField(f StatusPageFormMonitor) {
+	<li class="status-page-monitor">
+		<label>
+			if f.Selected {
+				<input type="checkbox" name="monitors" value={ strconv.FormatInt(f.ID, 10) } checked/>
+			} else {
+				<input type="checkbox" name="monitors" value={ strconv.FormatInt(f.ID, 10) }/>
+			}
+			{ f.MonitorName }
+		</label>
+		<label>
+			Публичное имя
+			<input type="text" name={ "display_name_" + strconv.FormatInt(f.ID, 10) } value={ f.DisplayName }/>
+		</label>
+	</li>
+}
+
+// statusPageFormBlock — одна форма (создания или редактирования). Порядок
+// чекбоксов = порядок мониторов на странице (position 0,1,2…).
+templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
+	<form method="post" action={ templ.URL(statusPageFormAction(projectID, f)) } class="status-page-form">
+		<label>
+			Slug
+			<input type="text" name="slug" value={ f.Slug } required/>
+		</label>
+		<label>
+			Заголовок
+			<input type="text" name="title" value={ f.Title } required/>
+		</label>
+		<label>
+			Описание
+			<input type="text" name="description" value={ f.Description }/>
+		</label>
+		<label>
+			if f.Enabled {
+				<input type="checkbox" name="enabled" checked/>
+			} else {
+				<input type="checkbox" name="enabled"/>
+			}
+			Опубликована
+		</label>
+		if len(f.Monitors) == 0 {
+			<p>В проекте нет мониторов.</p>
+		} else {
+			<ul class="status-page-monitors">
+				for _, m := range f.Monitors {
+					@statusPageMonitorField(m)
+				}
+			</ul>
+		}
+		if f.ID == 0 {
+			<button type="submit">Создать страницу</button>
+		} else {
+			<button type="submit">Сохранить</button>
+		}
+	</form>
+	if f.ID != 0 {
+		<p class="status-page-public">
+			Публичный адрес:
+			<a href={ templ.URL(statusPagePublicURL(baseURL, f.Slug)) }>{ statusPagePublicURL(baseURL, f.Slug) }</a>
+		</p>
+		<form method="post" action={ templ.URL(statusPageDeletePath(f.ID)) } class="status-page-delete-form">
+			<button type="submit">Удалить</button>
+		</form>
+	}
+}
+
+// StatusPagesSettings — GET/POST /projects/{id}/statuspages: существующие
+// статус-страницы проекта (каждая — формой редактирования + публичной ссылкой
+// + кнопкой удаления) и форма создания новой. Только owner/admin организации
+// проекта (requireProjectRole).
+templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm, newForm StatusPageForm, errMsg, userEmail string) {
+	@layout("Status pages", userEmail) {
+		<div class="status-pages">
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← Monitors</a></p>
+			<h1>Статус-страницы</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if len(forms) == 0 {
+				<p>Статус-страниц нет.</p>
+			} else {
+				for _, f := range forms {
+					<section class="status-page-item">
+						<h2>{ f.Title }</h2>
+						@statusPageFormBlock(projectID, baseURL, f)
+					</section>
+				}
+			}
+
+			<h2>Новая статус-страница</h2>
+			@statusPageFormBlock(projectID, baseURL, newForm)
+		</div>
+	}
+}

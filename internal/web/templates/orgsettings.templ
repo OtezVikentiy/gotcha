@@ -22,6 +22,10 @@ func orgSettingsInvitePath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/invite"
 }
 
+func orgSettingsQuotaPath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/quota"
+}
+
 func inviteAcceptPath(token string) string {
 	return "/invite/" + token
 }
@@ -99,12 +103,17 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 // приглашения одноразовый и не должен уходить в query string или Location,
 // поэтому страница с готовой ссылкой рендерится прямо в теле POST-ответа.
 // uid используется и чтобы найти роль зрителя среди members (viewerIsOwner
-// для memberRow — см. её комментарий и security fix задачи 2).
-templ OrgSettings(o org.Org, members []org.Member, uid int64, errMsg, inviteLink, userEmail string) {
+// для memberRow — см. её комментарий и security fix задачи 2). usage —
+// счётчик событий организации за текущий месяц (org.Usage), o.EventQuota —
+// её месячный лимит (0 = безлимит).
+templ OrgSettings(o org.Org, members []org.Member, uid int64, usage int64, errMsg, inviteLink, userEmail string) {
 	@layout("Настройки "+o.Name, userEmail) {
 		<div class="org-settings">
 			<h1>Настройки организации { o.Name }</h1>
-			<p><a href={ templ.URL(orgTeamsPath(o.ID)) }>Teams</a></p>
+			<p>
+				<a href={ templ.URL(orgTeamsPath(o.ID)) }>Teams</a>
+				· <a href={ templ.URL(orgProbesPath(o.ID)) }>Probes</a>
+			</p>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
@@ -114,6 +123,22 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, errMsg, inviteLink
 					<code>{ inviteLink }</code>
 				</p>
 			}
+			<h2>Квота</h2>
+			<p class="org-quota-usage">
+				Использовано событий в этом месяце: { strconv.FormatInt(usage, 10) } /
+				if o.EventQuota == 0 {
+					безлимит
+				} else {
+					{ strconv.FormatInt(o.EventQuota, 10) }
+				}
+			</p>
+			<form method="post" action={ templ.URL(orgSettingsQuotaPath(o.ID)) } class="org-quota-form">
+				<label>
+					Лимит событий в месяц (0 = безлимит)
+					<input type="number" name="quota" value={ strconv.FormatInt(o.EventQuota, 10) } min="0"/>
+				</label>
+				<button type="submit">Изменить квоту</button>
+			</form>
 			<h2>Участники</h2>
 			<table>
 				<thead>

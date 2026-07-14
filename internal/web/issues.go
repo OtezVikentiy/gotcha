@@ -65,14 +65,22 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	filter := issue.Filter{
-		Status: q.Get("status"),
-		Level:  q.Get("level"),
-		Query:  q.Get("q"),
-		Sort:   q.Get("sort"),
-		Page:   parsePage(q.Get("page")),
+		Status:      q.Get("status"),
+		Level:       q.Get("level"),
+		Query:       q.Get("q"),
+		Sort:        q.Get("sort"),
+		Environment: q.Get("env"),
+		Period:      q.Get("period"),
+		Page:        parsePage(q.Get("page")),
 	}
 
 	items, total, err := h.Issues.List(r.Context(), projectID, filter)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	environments, err := h.Issues.Environments(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "internal error")
 		return
@@ -97,12 +105,14 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 	tplFilter := templates.IssuesFilter{
-		Status: filter.Status,
-		Level:  filter.Level,
-		Query:  filter.Query,
-		Sort:   filter.Sort,
+		Status:      filter.Status,
+		Level:       filter.Level,
+		Query:       filter.Query,
+		Sort:        filter.Sort,
+		Environment: filter.Environment,
+		Period:      filter.Period,
 	}
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, canManage, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, canManage, h.currentEmail(r), environments).Render(r.Context(), w)
 }
 
 // sparklinesFor — один запрос Events.Sparklines на все issues страницы

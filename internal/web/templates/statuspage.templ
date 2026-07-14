@@ -1,0 +1,165 @@
+package templates
+
+import "gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+
+// StatusPageView — модель публичной статус-страницы (собирается в
+// web/statuspage.go и кешируется там же на 30 секунд). Здесь только то, что
+// можно показать миру: заголовок/описание страницы, display_name мониторов,
+// их статус, uptime% и полоска за 90 дней, инциденты без причины и регионов,
+// ближайшие окна обслуживания. Ни URL/хоста/порта монитора, ни текста ошибки,
+// ни имён проекта и организации в модели нет — их неоткуда взять в шаблоне.
+type StatusPageView struct {
+	Title       string
+	Description string
+	Overall     string // operational | partial | major
+	Monitors    []StatusMonitorView
+	Incidents   []StatusIncidentView
+	Maintenance []StatusWindowView
+}
+
+// StatusMonitorView — плитка сервиса: публичное имя (display_name) и его
+// состояние.
+type StatusMonitorView struct {
+	Name      string
+	Status    string // up | down | unknown | paused | maintenance
+	Uptime90d uptime.UptimeStat
+	Bars      templ.Component
+}
+
+// StatusIncidentView — строка ленты инцидентов: сервис, начало (UTC) и
+// длительность либо "ongoing".
+type StatusIncidentView struct {
+	Name      string
+	StartedAt string
+	Duration  string
+}
+
+// StatusWindowView — ближайшее окно обслуживания (на 7 дней вперёд).
+type StatusWindowView struct {
+	Name string
+	From string
+	To   string
+}
+
+// overallStatusText/Class — человекочитаемый общий статус страницы.
+func overallStatusText(overall string) string {
+	switch overall {
+	case "major":
+		return "Major outage"
+	case "partial":
+		return "Partial outage"
+	default:
+		return "All systems operational"
+	}
+}
+
+func overallStatusClass(overall string) string {
+	switch overall {
+	case "major":
+		return "status-overall status-overall-major"
+	case "partial":
+		return "status-overall status-overall-partial"
+	default:
+		return "status-overall status-overall-ok"
+	}
+}
+
+// statusLayout — СВОЙ layout публичной страницы: ни навигации приложения, ни
+// ссылок в кабинет, ни формы logout, ни htmx (страница целиком статична).
+// Стили берутся из той же публичной статики /static/app.css.
+templ statusLayout(title string) {
+	<!DOCTYPE html>
+	<html lang="ru">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ title }</title>
+			<link rel="stylesheet" href="/static/app.css"/>
+		</head>
+		<body class="status-body">
+			<main class="status-page">
+				{ children... }
+			</main>
+		</body>
+	</html>
+}
+
+templ statusMonitorTile(m StatusMonitorView) {
+	<li class="status-tile">
+		<div class="status-tile-head">
+			<span class="status-tile-name">{ m.Name }</span>
+			<span class={ monitorStatusBadgeClass(m.Status) }>{ m.Status }</span>
+		</div>
+		<div class="status-tile-bars">@m.Bars</div>
+		<div class="status-tile-uptime">Uptime (90 дней): { uptimeStatText(m.Uptime90d) }</div>
+	</li>
+}
+
+// PublicStatusPage — GET /status/{slug}: страница для анонимного посетителя.
+templ PublicStatusPage(v StatusPageView) {
+	@statusLayout(v.Title) {
+		<h1>{ v.Title }</h1>
+		if v.Description != "" {
+			<p class="status-description">{ v.Description }</p>
+		}
+		<p class={ overallStatusClass(v.Overall) }>{ overallStatusText(v.Overall) }</p>
+
+		if len(v.Monitors) == 0 {
+			<p>Сервисы не настроены.</p>
+		} else {
+			<ul class="status-tiles">
+				for _, m := range v.Monitors {
+					@statusMonitorTile(m)
+				}
+			</ul>
+		}
+
+		<h2>Инциденты за 90 дней</h2>
+		if len(v.Incidents) == 0 {
+			<p>Инцидентов не было.</p>
+		} else {
+			<table class="status-incidents">
+				<thead>
+					<tr>
+						<th>Сервис</th>
+						<th>Начало (UTC)</th>
+						<th>Длительность</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, inc := range v.Incidents {
+						<tr>
+							<td>{ inc.Name }</td>
+							<td>{ inc.StartedAt }</td>
+							<td>{ inc.Duration }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+
+		<h2>Ближайшие работы</h2>
+		if len(v.Maintenance) == 0 {
+			<p>Работ не запланировано.</p>
+		} else {
+			<table class="status-maintenance">
+				<thead>
+					<tr>
+						<th>Работы</th>
+						<th>Начало (UTC)</th>
+						<th>Конец (UTC)</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, wnd := range v.Maintenance {
+						<tr>
+							<td>{ wnd.Name }</td>
+							<td>{ wnd.From }</td>
+							<td>{ wnd.To }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	}
+}

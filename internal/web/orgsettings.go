@@ -2,12 +2,15 @@ package web
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -26,6 +29,10 @@ func orgSettingsRemovePath(orgID int64) string {
 
 func orgSettingsInvitePath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/invite"
+}
+
+func orgSettingsQuotaPath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/quota"
 }
 
 func inviteAcceptPath(token string) string {
@@ -53,6 +60,8 @@ func orgSettingsErrorMessage(err error) string {
 		return "пользователь не является участником организации"
 	case errors.Is(err, org.ErrOwnerOnly):
 		return ownerLevelAccessMessage
+	case errors.Is(err, org.ErrInvalidQuota):
+		return "квота не может быть отрицательной"
 	default:
 		return "не удалось выполнить действие"
 	}
@@ -108,8 +117,16 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		h.renderError(w, r, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// usage — счётчик событий организации ЗА ТЕКУЩИЙ месяц (org_usage
+	// ключуется по (org_id, period_month)); блок «Квота» показывает его рядом
+	// с лимитом (o.EventQuota, уже загружен в Get выше).
+	usage, err := h.Org.Usage(r.Context(), orgID, time.Now())
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
 	w.WriteHeader(status)
-	_ = templates.OrgSettings(o, members, uid, errMsg, inviteLink, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.OrgSettings(o, members, uid, usage, errMsg, inviteLink, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // orgSettingsRole — POST /orgs/{id}/settings/role: user_id, role. Менять
@@ -235,7 +252,62 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(err), "")
 		return
 	}
-	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", h.BaseURL+inviteAcceptPath(token))
+	inviteLink := h.BaseURL + inviteAcceptPath(token)
+
+	// Упрощение (план 6, задача 5): полноценный outbox (internal/notify)
+	// привязан к channel_id NOT NULL — он существует для алертов конкретного
+	// проекта, а приглашение — организационное событие без проекта/канала.
+	// Поэтому письмо шлётся СИНХРОННО напрямую через notify.EmailSender,
+	// best-effort: ошибка SMTP не должна ронять сам POST — ссылка-приглашение
+	// всё равно показывается в UI ниже и её можно передать вручную.
+	if h.Email != nil && h.Email.Configured() {
+		payload := map[string]any{
+			"subject": "Приглашение в организацию Gotcha",
+			"body":    "Вас пригласили в организацию Gotcha. Ссылка для принятия приглашения: " + inviteLink,
+		}
+		if err := h.Email.Send(r.Context(), notify.Target{Kind: "email", Target: email}, payload); err != nil {
+			slog.Warn("orgSettingsInvite: failed to send invite email", "email", email, "org_id", orgID, "err", err)
+		}
+	}
+
+	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink)
+}
+
+// orgSettingsQuota — POST /orgs/{id}/settings/quota: quota (событий в
+// месяц). Доступ только owner/admin (requireOrgRole — та же граница, что и у
+// остальных настроек организации). Отрицательное значение (или нечисловое
+// поле) → 422 (ErrInvalidQuota); 0 = безлимит (org.SetQuota).
+func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	orgID, ok := parsePathOrgID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	quota, err := strconv.ParseInt(r.FormValue("quota"), 10, 64)
+	if err != nil {
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(org.ErrInvalidQuota), "")
+		return
+	}
+	if err := h.Org.SetQuota(r.Context(), orgID, quota); err != nil {
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(err), "")
+		return
+	}
+	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
 // inviteAcceptPage — GET /invite/{token}: страница «принять приглашение».

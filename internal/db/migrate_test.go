@@ -55,10 +55,10 @@ func TestMigrateCHAndRetention(t *testing.T) {
 	}
 	defer conn.Close()
 
-	showCreate := func() string {
+	showCreate := func(table string) string {
 		var ddl string
-		if err := conn.QueryRow(ctx, "SHOW CREATE TABLE events").Scan(&ddl); err != nil {
-			t.Fatalf("SHOW CREATE TABLE events: %v", err)
+		if err := conn.QueryRow(ctx, "SHOW CREATE TABLE "+table).Scan(&ddl); err != nil {
+			t.Fatalf("SHOW CREATE TABLE %s: %v", table, err)
 		}
 		return ddl
 	}
@@ -68,18 +68,35 @@ func TestMigrateCHAndRetention(t *testing.T) {
 	// migration source text. This is server-side normalization, not a
 	// property of the driver or of our SQL (which uses the INTERVAL syntax
 	// verbatim, per spec §5).
-	ddl := showCreate()
+	ddl := showCreate("events")
 	for _, want := range []string{"event_id", "project_id", "issue_id", "toYYYYMM(timestamp)", "toIntervalDay(90)"} {
 		if !strings.Contains(ddl, want) {
 			t.Errorf("events DDL missing %q:\n%s", want, ddl)
 		}
 	}
 
+	crDDL := showCreate("check_results")
+	for _, want := range []string{
+		"monitor_id", "project_id", "region", "status_code",
+		"toYYYYMM(timestamp)", "ORDER BY (monitor_id, region, timestamp)", "toIntervalDay(90)",
+	} {
+		if !strings.Contains(crDDL, want) {
+			t.Errorf("check_results DDL missing %q:\n%s", want, crDDL)
+		}
+	}
+
 	if err := db.ApplyRetention(ctx, conn, 180); err != nil {
 		t.Fatalf("ApplyRetention: %v", err)
 	}
-	if ddl := showCreate(); !strings.Contains(ddl, "toIntervalDay(180)") {
-		t.Errorf("TTL not updated to 180 days:\n%s", ddl)
+	if ddl := showCreate("events"); !strings.Contains(ddl, "toIntervalDay(180)") {
+		t.Errorf("events TTL not updated to 180 days:\n%s", ddl)
+	}
+	if ddl := showCreate("check_results"); !strings.Contains(ddl, "toIntervalDay(180)") {
+		t.Errorf("check_results TTL not updated to 180 days:\n%s", ddl)
+	}
+	// Идемпотентность: повторный вызов не должен падать, когда TTL уже совпадает.
+	if err := db.ApplyRetention(ctx, conn, 180); err != nil {
+		t.Fatalf("ApplyRetention (second run, same days): %v", err)
 	}
 }
 
@@ -159,5 +176,54 @@ func TestTenancySchema(t *testing.T) {
 		"INSERT INTO users (email, password_hash) VALUES ('A@b.c','x'), ('a@B.C','y')")
 	if err == nil {
 		t.Error("want unique violation for case-insensitive duplicate email")
+	}
+}
+
+func TestUptimeSchema(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, table := range []string{
+		"monitors", "monitor_regions", "monitor_channels", "monitor_state",
+		"probes", "check_queue", "incidents", "maintenance_windows",
+		"status_pages", "status_page_monitors",
+	} {
+		var n int
+		err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM information_schema.tables WHERE table_name = $1", table).Scan(&n)
+		if err != nil || n != 1 {
+			t.Errorf("table %s: n=%d err=%v", table, n, err)
+		}
+	}
+	// kind CHECK на monitors отвергает произвольные значения.
+	_, err := pool.Exec(ctx,
+		"INSERT INTO monitors (project_id, name, kind, interval_seconds) VALUES (1, 'x', 'bogus', 60)")
+	if err == nil {
+		t.Error("want CHECK violation for invalid monitors.kind")
+	}
+}
+
+func TestAlertsSchema(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, table := range []string{
+		"alert_rules", "alert_channels", "notification_outbox",
+		"alert_throttle", "org_usage",
+	} {
+		var n int
+		err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM information_schema.tables WHERE table_name = $1", table).Scan(&n)
+		if err != nil || n != 1 {
+			t.Errorf("table %s: n=%d err=%v", table, n, err)
+		}
+	}
+	// kind CHECK на alert_rules отвергает произвольные значения.
+	_, err := pool.Exec(ctx,
+		"INSERT INTO alert_rules (project_id, kind) VALUES (1, 'bogus')")
+	if err == nil {
+		t.Error("want CHECK violation for invalid alert_rules.kind")
 	}
 }

@@ -118,6 +118,19 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// EnsureDefaultRules (план 6) — заводит new_issue/regression правила
+	// алертинга сразу для нового проекта; идемпотентна и не требует org →
+	// alert зависимости (вызывается из web-слоя, а не из org.CreateProject).
+	// h.Alerts проставляется отдельным полем (см. Handler) — nil-guard на
+	// случай стендов, которые его не завели и не используют алерты.
+	if h.Alerts != nil {
+		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
+			h.compensateOrgCreate(r, o.ID)
+			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+
 	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
 		h.compensateOrgCreate(r, o.ID)
 		h.renderError(w, r, http.StatusInternalServerError, "internal error")

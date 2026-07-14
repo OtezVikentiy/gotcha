@@ -25,7 +25,7 @@ func (f *fakeResolver) KeyByPublic(_ context.Context, pub string) (org.Key, erro
 }
 
 func TestKeyCache(t *testing.T) {
-	fr := &fakeResolver{keys: map[string]org.Key{"abc": {ID: 1, ProjectID: 7, PublicKey: "abc"}}}
+	fr := &fakeResolver{keys: map[string]org.Key{"abc": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "abc"}}}
 	kc := NewKeyCache(fr)
 	now := time.Now()
 	kc.now = func() time.Time { return now }

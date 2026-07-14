@@ -1,0 +1,207 @@
+package templates
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
+
+func monitorPausePath(monitorID int64) string {
+	return monitorDetailPath(monitorID) + "/pause"
+}
+
+func monitorResumePath(monitorID int64) string {
+	return monitorDetailPath(monitorID) + "/resume"
+}
+
+func monitorDeletePath(monitorID int64) string {
+	return monitorDetailPath(monitorID) + "/delete"
+}
+
+func monitorEditPath(monitorID int64) string {
+	return monitorDetailPath(monitorID) + "/edit"
+}
+
+// monitorToggleAction — куда шлёт форма Pause/Resume: enabled монитор
+// паузится, paused — резюмируется. Один и тот же <button> текстом отражает
+// действие, которое произойдёт при нажатии, не текущее состояние.
+func monitorToggleAction(m uptime.Monitor) string {
+	if m.Enabled {
+		return monitorPausePath(m.ID)
+	}
+	return monitorResumePath(m.ID)
+}
+
+func checkStatusText(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "fail"
+}
+
+// sslExpiryText — "—" без сертификата (не https-монитор или ещё не было ни
+// одной успешной https-проверки), иначе дней до истечения + дата;
+// отрицательный остаток (сертификат уже просрочен) — отдельным словом, не
+// "-3d left".
+func sslExpiryText(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	days := int(time.Until(*t).Hours() / 24)
+	if days < 0 {
+		return "expired (" + t.Format("2006-01-02") + ")"
+	}
+	return strconv.Itoa(days) + "d left (" + t.Format("2006-01-02") + ")"
+}
+
+// incidentDurationText — "ongoing" для ещё не закрытого инцидента, иначе
+// длительность между started_at и resolved_at.
+func incidentDurationText(inc uptime.Incident) string {
+	if inc.ResolvedAt == nil {
+		return "ongoing"
+	}
+	return inc.ResolvedAt.Sub(inc.StartedAt).String()
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// heartbeatPingURL/heartbeatCronSnippet — те же вычисления, что и одноимённые
+// функции в web/monitorform.go; собственная копия здесь, а не импорт
+// web-пакета — templates не может импортировать web (иначе цикл: web ->
+// templates -> web).
+func heartbeatPingURL(baseURL, token string) string {
+	return baseURL + "/uptime/hb/" + token
+}
+
+func heartbeatCronSnippet(baseURL, token string, intervalSeconds int) string {
+	minutes := intervalSeconds / 60
+	if minutes < 1 {
+		minutes = 1
+	}
+	return "*/" + strconv.Itoa(minutes) + " * * * * curl -fsS " + heartbeatPingURL(baseURL, token) + " >/dev/null"
+}
+
+templ checkRow(c uptime.CheckRow) {
+	<tr>
+		<td>{ ago(c.Timestamp) }</td>
+		<td>{ c.Region }</td>
+		<td>{ checkStatusText(c.OK) }</td>
+		<td>{ strconv.Itoa(int(c.StatusCode)) }</td>
+		<td>{ c.Error }</td>
+		<td>{ strconv.Itoa(int(c.TotalMs)) }ms</td>
+	</tr>
+}
+
+templ incidentRow(inc uptime.Incident) {
+	<tr>
+		<td>{ ago(inc.StartedAt) }</td>
+		<td>{ incidentDurationText(inc) }</td>
+		<td>{ inc.Cause }</td>
+		<td>{ strings.Join(inc.Regions, ", ") }</td>
+		<td>{ yesNo(inc.InMaintenance) }</td>
+	</tr>
+}
+
+// MonitorDetail — GET /monitors/{id}: крупный статус, uptime% за
+// 24ч/7д/30д (уже посчитанные web/monitors.go — без окон обслуживания
+// проекта), stacked-график задержек за 24ч, последние проверки, таймлайн
+// инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при canManage
+// (owner/admin организации проекта).
+templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, checks []uptime.CheckRow, incidents []uptime.Incident, canManage bool, baseURL string, userEmail string) {
+	@layout(m.Name, userEmail) {
+		<div class="monitor-detail">
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(m.ProjectID)) }>← Monitors</a></p>
+			<h1>{ m.Name }</h1>
+			<span class={ monitorStatusBadgeClass(status) }>{ status }</span>
+
+			<div class="monitor-meta">
+				<span>Type: { string(m.Kind) }</span>
+				<span>Uptime 24h: { uptimeStatText(uptime24h) }</span>
+				<span>Uptime 7d: { uptimeStatText(uptime7d) }</span>
+				<span>Uptime 30d: { uptimeStatText(uptime30d) }</span>
+				<span>SSL: { sslExpiryText(m.SSLExpiresAt) }</span>
+			</div>
+
+			if canManage {
+				if m.Kind == uptime.KindHeartbeat && m.HeartbeatToken != "" {
+					<div class="monitor-heartbeat">
+						<h2>Heartbeat ping</h2>
+						<p>URL: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
+						<p>Cron: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
+					</div>
+				}
+
+				<div class="monitor-actions">
+					<form method="post" action={ templ.URL(monitorToggleAction(m)) }>
+						if m.Enabled {
+							<button type="submit">Pause</button>
+						} else {
+							<button type="submit">Resume</button>
+						}
+					</form>
+					<a href={ templ.URL(monitorEditPath(m.ID)) }>Edit</a>
+					<form method="post" action={ templ.URL(monitorDeletePath(m.ID)) }>
+						<button type="submit">Delete</button>
+					</form>
+				</div>
+			}
+
+			<h2>Latency (24h)</h2>
+			<div class="monitor-chart">
+				@latencyChart
+			</div>
+
+			<h2>Recent checks</h2>
+			if len(checks) == 0 {
+				<p>Нет проверок.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>When</th>
+							<th>Region</th>
+							<th>Status</th>
+							<th>Code</th>
+							<th>Error</th>
+							<th>Total</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, c := range checks {
+							@checkRow(c)
+						}
+					</tbody>
+				</table>
+			}
+
+			<h2>Incidents</h2>
+			if len(incidents) == 0 {
+				<p>Нет инцидентов.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Started</th>
+							<th>Duration</th>
+							<th>Cause</th>
+							<th>Regions</th>
+							<th>Maintenance</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, inc := range incidents {
+							@incidentRow(inc)
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

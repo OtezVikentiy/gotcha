@@ -106,6 +106,20 @@ func (q *Query) EventsForIssue(ctx context.Context, projectID, issueID int64, li
 	return out, nil
 }
 
+// CountSince возвращает число событий issue с timestamp >= since. Используется
+// spike-воркером алертинга для сравнения с порогом правила.
+func (q *Query) CountSince(ctx context.Context, projectID, issueID int64, since time.Time) (uint64, error) {
+	row := q.conn.QueryRow(ctx, `
+		SELECT count() FROM events
+		WHERE project_id = ? AND issue_id = ? AND timestamp >= ?`,
+		uint64(projectID), uint64(issueID), since)
+	var n uint64
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("count since: %w", err)
+	}
+	return n, nil
+}
+
 // EventByID ищет одно событие по project_id и event_id (UUID). Возвращает
 // found=false, если события с таким id нет в проекте (включая случай, когда
 // id существует, но принадлежит другому project_id).
@@ -194,11 +208,11 @@ func (q *Query) Series(ctx context.Context, projectID, issueID int64, from, to t
 // значения — нули.
 func (q *Query) Sparklines(ctx context.Context, projectID int64, issueIDs []int64, since time.Time, buckets int) (map[int64][]uint64, error) {
 	out := make(map[int64][]uint64, len(issueIDs))
-	for _, id := range issueIDs {
-		out[id] = make([]uint64, buckets)
-	}
 	if len(issueIDs) == 0 || buckets <= 0 {
 		return out, nil
+	}
+	for _, id := range issueIDs {
+		out[id] = make([]uint64, buckets)
 	}
 
 	sinceUnix := since.UTC().Unix()
