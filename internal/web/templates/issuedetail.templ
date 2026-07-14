@@ -1,0 +1,199 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+)
+
+// Frame — один фрейм стектрейса для отображения. Парсится из JSON исключения
+// (event.Stored.Stacktrace) в web/issuedetail.go локальным парсером (не тянет
+// internal/ingest — см. бриф задачи 7); сюда попадает уже в порядке "новые
+// сверху".
+type Frame struct {
+	Function string
+	Module   string
+	Filename string
+	Lineno   int
+	InApp    bool
+}
+
+func issueStatusPath(issueID int64) string {
+	return issueDetailPath(issueID) + "/status"
+}
+
+func issueAssignPath(issueID int64) string {
+	return issueDetailPath(issueID) + "/assign"
+}
+
+func issueEventPath(issueID int64, eventID string) string {
+	return issueDetailPath(issueID) + "?event=" + url.QueryEscape(eventID)
+}
+
+// frameLocation — "filename:lineno", пусто для фреймов без адреса.
+func frameLocation(f Frame) string {
+	if f.Filename == "" {
+		return ""
+	}
+	return f.Filename + ":" + strconv.Itoa(f.Lineno)
+}
+
+func eventSummary(ev event.Stored) string {
+	if ev.ExceptionType != "" {
+		return ev.ExceptionType + ": " + ev.ExceptionValue
+	}
+	return ev.Message
+}
+
+func eventRowClass(selected bool) string {
+	if selected {
+		return "event-row event-row-selected"
+	}
+	return "event-row"
+}
+
+templ assigneeOption(m org.Member, selected *int64) {
+	if selected != nil && *selected == m.UserID {
+		<option value={ strconv.FormatInt(m.UserID, 10) } selected>{ m.Email }</option>
+	} else {
+		<option value={ strconv.FormatInt(m.UserID, 10) }>{ m.Email }</option>
+	}
+}
+
+templ frameView(f Frame) {
+	if f.InApp {
+		<div class="frame in-app">
+			<div class="frame-location">{ frameLocation(f) }</div>
+			<div class="frame-function">{ f.Function }</div>
+			if f.Module != "" {
+				<div class="frame-module">{ f.Module }</div>
+			}
+		</div>
+	} else {
+		<details class="frame frame-system">
+			<summary>{ f.Function } ({ frameLocation(f) })</summary>
+			if f.Module != "" {
+				<div class="frame-module">{ f.Module }</div>
+			}
+		</details>
+	}
+}
+
+templ eventRow(issueID int64, ev event.Stored, selected bool) {
+	<tr class={ eventRowClass(selected) }>
+		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID)) }>{ ago(ev.Timestamp) }</a></td>
+		<td>{ eventSummary(ev) }</td>
+		<td>{ ev.Environment }</td>
+		<td>{ ev.Release }</td>
+	</tr>
+}
+
+// IssueDetail — GET /issues/{id}: шапка, статус/assign-формы, график частоты
+// за 7 дней, последние 20 событий, детали выбранного события (?event=).
+// selectedID — id события из query (для подсветки строки в таблице), может
+// не совпадать ни с одним из events, если событие устарело/удалено — тогда
+// selected/frames приходят пустыми и блок деталей просто не рендерится.
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string) {
+	@layout(it.Title, userEmail) {
+		<div class="issue-detail">
+			<p class="breadcrumb"><a href={ templ.URL(issuesPath(it.ProjectID)) }>← Issues</a></p>
+			<h1>{ it.Title }</h1>
+			if it.Culprit != "" {
+				<div class="culprit">{ it.Culprit }</div>
+			}
+			<span class={ levelBadgeClass(it.Level) }>{ it.Level }</span>
+			<div class="issue-meta">
+				<span>First seen: { ago(it.FirstSeen) }</span>
+				<span>Last seen: { ago(it.LastSeen) }</span>
+				<span>Times seen: { strconv.FormatInt(it.TimesSeen, 10) }</span>
+			</div>
+
+			<div class="issue-actions">
+				<form method="post" action={ templ.URL(issueStatusPath(it.ID)) }>
+					if it.Status == "unresolved" {
+						<button type="submit" name="status" value="resolved">Resolve</button>
+						<button type="submit" name="status" value="ignored">Ignore</button>
+					} else {
+						<button type="submit" name="status" value="unresolved">Unresolve</button>
+					}
+				</form>
+				<form method="post" action={ templ.URL(issueAssignPath(it.ID)) } class="assign-form">
+					<select name="assignee">
+						if it.AssigneeID == nil {
+							<option value="" selected>Unassigned</option>
+						} else {
+							<option value="">Unassigned</option>
+						}
+						for _, m := range members {
+							@assigneeOption(m, it.AssigneeID)
+						}
+					</select>
+					<button type="submit">Assign</button>
+				</form>
+			</div>
+
+			<div class="issue-chart">
+				@chart
+			</div>
+
+			<table class="issue-events">
+				<thead>
+					<tr>
+						<th>When</th>
+						<th>Message</th>
+						<th>Environment</th>
+						<th>Release</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, ev := range events {
+						@eventRow(it.ID, ev, ev.ID == selectedID)
+					}
+				</tbody>
+			</table>
+
+			if selected != nil {
+				<div class="event-detail">
+					<h2>Event { selected.ID }</h2>
+
+					if len(frames) > 0 {
+						<h3>Stacktrace</h3>
+						<div class="frames">
+							for _, f := range frames {
+								@frameView(f)
+							}
+						</div>
+					}
+
+					if len(selected.Tags) > 0 {
+						<h3>Tags</h3>
+						<table class="tags">
+							<tbody>
+								for k, v := range selected.Tags {
+									<tr>
+										<td>{ k }</td>
+										<td>{ v }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+
+					<h3>User</h3>
+					<pre>{ selected.UserID } { selected.UserEmail } { selected.UserIP }</pre>
+
+					<h3>SDK</h3>
+					<pre>{ selected.SDK }</pre>
+
+					if selected.Contexts != "" {
+						<h3>Contexts</h3>
+						<pre>{ selected.Contexts }</pre>
+					}
+				</div>
+			}
+		</div>
+	}
+}

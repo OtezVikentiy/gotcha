@@ -1,0 +1,47 @@
+package templates
+
+templ Login(errMsg string) {
+	@layout("Вход", "") {
+		<form method="post" action="/login" class="auth-form">
+			<h1>Вход</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<label>
+				Email
+				<input type="email" name="email" autocomplete="email" required autofocus/>
+			</label>
+			<label>
+				Пароль
+				<input type="password" name="password" autocomplete="current-password" required/>
+			</label>
+			<button type="submit">Войти</button>
+			<p class="auth-switch"><a href="/register">Создать аккаунт</a></p>
+		</form>
+	}
+}
+
+templ Register(errMsg string) {
+	@layout("Регистрация", "") {
+		<form method="post" action="/register" class="auth-form">
+			<h1>Регистрация</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<label>
+				Email
+				<input type="email" name="email" autocomplete="email" required autofocus/>
+			</label>
+			<label>
+				Пароль
+				<input type="password" name="password" autocomplete="new-password" required/>
+			</label>
+			<label>
+				Повторите пароль
+				<input type="password" name="password2" autocomplete="new-password" required/>
+			</label>
+			<button type="submit">Зарегистрироваться</button>
+			<p class="auth-switch"><a href="/login">Уже есть аккаунт?</a></p>
+		</form>
+	}
+}

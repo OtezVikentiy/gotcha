@@ -1,0 +1,53 @@
+services:
+  gotcha:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      GOTCHA_PG_DSN: postgres://gotcha:gotcha@postgres:5432/gotcha?sslmode=disable
+      GOTCHA_CH_DSN: clickhouse://gotcha:gotcha@clickhouse:9000/gotcha
+      GOTCHA_SECRET_KEY: ${GOTCHA_SECRET_KEY:-insecure-dev-secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: gotcha
+      POSTGRES_PASSWORD: gotcha
+      POSTGRES_DB: gotcha
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gotcha -d gotcha"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    environment:
+      CLICKHOUSE_DB: gotcha
+      CLICKHOUSE_USER: gotcha
+      CLICKHOUSE_PASSWORD: gotcha
+    healthcheck:
+      # 127.0.0.1, а не localhost: внутри контейнера localhost резолвится в ::1,
+      # а сервер ClickHouse слушает только IPv4 — healthcheck зависал бы навсегда.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    volumes:
+      - chdata:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+volumes:
+  pgdata:
+  chdata:

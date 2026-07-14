@@ -1,0 +1,93 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+)
+
+func projectSettingsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/settings"
+}
+
+func projectSettingsRenamePath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/rename"
+}
+
+func projectSettingsKeysPath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/keys"
+}
+
+func projectSettingsKeysRevokePath(projectID int64) string {
+	return projectSettingsKeysPath(projectID) + "/revoke"
+}
+
+func keyStatus(k org.Key) string {
+	if k.Revoked {
+		return "revoked"
+	}
+	return "active"
+}
+
+templ keyRow(projectID int64, k org.Key) {
+	<tr>
+		<td>{ k.PublicKey }</td>
+		<td>{ keyStatus(k) }</td>
+		<td>
+			if !k.Revoked {
+				<form method="post" action={ templ.URL(projectSettingsKeysRevokePath(projectID)) } class="key-revoke-form">
+					<input type="hidden" name="key_id" value={ strconv.FormatInt(k.ID, 10) }/>
+					<button type="submit">Revoke</button>
+				</form>
+			}
+		</td>
+	</tr>
+}
+
+// ProjectSettings — GET/POST /projects/{id}/settings: имя (форма rename),
+// платформа (readonly), таблица DSN-ключей (public_key, статус, revoke),
+// форма выпуска нового ключа, DSN текущего живого ключа. errMsg —
+// сообщение об ошибке последнего POST, рендерится с тем же статусом (422),
+// что и ответ — тот же принцип, что и у OrgSettings/Teams.
+templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string) {
+	@layout("Настройки "+project.Name, userEmail) {
+		<div class="project-settings">
+			<h1>Настройки проекта { project.Name }</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<form method="post" action={ templ.URL(projectSettingsRenamePath(project.ID)) } class="project-rename-form">
+				<label>
+					Название
+					<input type="text" name="name" value={ project.Name } required/>
+				</label>
+				<button type="submit">Переименовать</button>
+			</form>
+			<p>Платформа: { project.Platform }</p>
+			if dsn != "" {
+				<p>DSN текущего живого ключа:</p>
+				<pre>{ dsn }</pre>
+			} else {
+				<p class="error">Нет активного ключа — выпустите новый.</p>
+			}
+			<h2>Ключи</h2>
+			<table>
+				<thead>
+					<tr>
+						<th>Public key</th>
+						<th>Статус</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, k := range keys {
+						@keyRow(project.ID, k)
+					}
+				</tbody>
+			</table>
+			<form method="post" action={ templ.URL(projectSettingsKeysPath(project.ID)) } class="key-create-form">
+				<button type="submit">Новый ключ</button>
+			</form>
+		</div>
+	}
+}

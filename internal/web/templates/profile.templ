@@ -1,0 +1,42 @@
+package templates
+
+// Profile — GET/POST /profile: email юзера, форма смены пароля и кнопка
+// «выйти со всех других устройств». errMsg — ошибка последнего POST (неверный
+// старый пароль, несовпадение new/new2, слабый новый пароль), message —
+// подтверждение успеха (смена пароля или число завершённых сессий). Оба
+// рендерятся на этой же странице без редиректа — как и OrgSettings.
+templ Profile(email, errMsg, message, userEmail string) {
+	@layout("Профиль", userEmail) {
+		<div class="profile">
+			<h1>Профиль</h1>
+			<p>Email: { email }</p>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if message != "" {
+				<p class="notice">{ message }</p>
+			}
+			<h2>Смена пароля</h2>
+			<form method="post" action="/profile/password" class="auth-form">
+				<label>
+					Текущий пароль
+					<input type="password" name="old" required autocomplete="current-password"/>
+				</label>
+				<label>
+					Новый пароль
+					<input type="password" name="new" required autocomplete="new-password"/>
+				</label>
+				<label>
+					Повторите новый пароль
+					<input type="password" name="new2" required autocomplete="new-password"/>
+				</label>
+				<button type="submit">Изменить пароль</button>
+			</form>
+			<h2>Сессии</h2>
+			<p>Завершить все сессии на других устройствах, кроме текущей.</p>
+			<form method="post" action="/profile/sessions/revoke">
+				<button type="submit">Выйти со всех других устройств</button>
+			</form>
+		</div>
+	}
+}

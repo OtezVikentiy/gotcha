@@ -1,0 +1,37 @@
+// Package templates — SSR-шаблоны Gotcha (templ). Тёмная тема, минимум CSS,
+// без клиентского фреймворка: htmx — прогрессивное улучшение, все страницы
+// работают и с выключенным JS.
+package templates
+
+templ layout(title string, userEmail string) {
+	<!DOCTYPE html>
+	<html lang="ru">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ title } · Gotcha</title>
+			<link rel="stylesheet" href="/static/app.css"/>
+			<script src="/static/htmx.min.js"></script>
+		</head>
+		<body>
+			<header class="topbar">
+				<a class="logo" href="/">Gotcha</a>
+				<nav>
+					<a href="/projects">Projects</a>
+					if userEmail != "" {
+						<a href="/profile">Profile</a>
+					}
+				</nav>
+				if userEmail != "" {
+					<form method="post" action="/logout" class="logout-form">
+						<span class="user-email">{ userEmail }</span>
+						<button type="submit">Выйти</button>
+					</form>
+				}
+			</header>
+			<main>
+				{ children... }
+			</main>
+		</body>
+	</html>
+}

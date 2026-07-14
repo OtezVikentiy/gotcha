@@ -1,0 +1,170 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+)
+
+func orgSettingsPath(orgID int64) string {
+	return "/orgs/" + strconv.FormatInt(orgID, 10) + "/settings"
+}
+
+func orgSettingsRolePath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/role"
+}
+
+func orgSettingsRemovePath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/remove"
+}
+
+func orgSettingsInvitePath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/invite"
+}
+
+func inviteAcceptPath(token string) string {
+	return "/invite/" + token
+}
+
+// viewerIsOwner ищет uid среди members и сообщает, владелец ли зритель —
+// members уже содержит эту роль (её незачем запрашивать у Org отдельно),
+// нужно только найти строку зрителя.
+func viewerIsOwner(members []org.Member, uid int64) bool {
+	for _, m := range members {
+		if m.UserID == uid {
+			return m.Role == org.RoleOwner
+		}
+	}
+	return false
+}
+
+templ roleOption(value, label string, current org.Role) {
+	if string(current) == value {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
+// memberRow — строка таблицы участников: email, роль, форма смены роли,
+// форма удаления. Для собственной строки (self) обе формы скрыты — сервер
+// всё равно отклонит self-действия 422-ом (см. орг-бриф), но раз в UI это
+// никогда не легитимное действие, спрятать проще, чем показывать
+// заведомо проваливающиеся кнопки.
+//
+// viewerIsOwner — только owner может выдать роль owner, изменить роль
+// owner'а или удалить owner'а (security fix, задача 2): пункт "Owner" в
+// select виден только owner'у-зрителю, а для чужой строки с текущей ролью
+// owner non-owner-зритель вообще не получает ни select, ни кнопку удаления
+// (сервер всё равно отклонит такой POST 422-ом, но раз действие никогда не
+// легитимно — прятать элемент проще и честнее для UI, чем показывать
+// заведомо проваливающуюся форму).
+templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
+	<tr>
+		<td>{ m.Email }</td>
+		<td>{ string(m.Role) }</td>
+		<td>
+			if !self && (viewerIsOwner || m.Role != org.RoleOwner) {
+				<form method="post" action={ templ.URL(orgSettingsRolePath(orgID)) } class="member-role-form">
+					<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
+					<select name="role">
+						if viewerIsOwner {
+							@roleOption("owner", "Owner", m.Role)
+						}
+						@roleOption("admin", "Admin", m.Role)
+						@roleOption("member", "Member", m.Role)
+					</select>
+					<button type="submit">Изменить</button>
+				</form>
+			} else if !self {
+				Owner
+			}
+		</td>
+		<td>
+			if !self && (viewerIsOwner || m.Role != org.RoleOwner) {
+				<form method="post" action={ templ.URL(orgSettingsRemovePath(orgID)) } class="member-remove-form">
+					<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
+					<button type="submit">Удалить</button>
+				</form>
+			}
+		</td>
+	</tr>
+}
+
+// OrgSettings — GET/POST /orgs/{id}/settings: таблица участников (роль,
+// смена роли, удаление — не для себя) и форма приглашения нового участника.
+// errMsg — сообщение об ошибке последнего POST (self-действие, last-owner,
+// невалидный email и т.п.), рендерится с тем же статусом 422, что и ответ.
+// inviteLink заполняется один раз, сразу в ответе POST .../invite: токен
+// приглашения одноразовый и не должен уходить в query string или Location,
+// поэтому страница с готовой ссылкой рендерится прямо в теле POST-ответа.
+// uid используется и чтобы найти роль зрителя среди members (viewerIsOwner
+// для memberRow — см. её комментарий и security fix задачи 2).
+templ OrgSettings(o org.Org, members []org.Member, uid int64, errMsg, inviteLink, userEmail string) {
+	@layout("Настройки "+o.Name, userEmail) {
+		<div class="org-settings">
+			<h1>Настройки организации { o.Name }</h1>
+			<p><a href={ templ.URL(orgTeamsPath(o.ID)) }>Teams</a></p>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if inviteLink != "" {
+				<p class="invite-link">
+					Ссылка-приглашение (одноразовая, показывается только сейчас):
+					<code>{ inviteLink }</code>
+				</p>
+			}
+			<h2>Участники</h2>
+			<table>
+				<thead>
+					<tr>
+						<th>Email</th>
+						<th>Роль</th>
+						<th></th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, m := range members {
+						@memberRow(o.ID, m, m.UserID == uid, viewerIsOwner(members, uid))
+					}
+				</tbody>
+			</table>
+			<h2>Пригласить участника</h2>
+			<form method="post" action={ templ.URL(orgSettingsInvitePath(o.ID)) } class="invite-form">
+				<label>
+					Email
+					<input type="email" name="email" required placeholder="teammate@example.com"/>
+				</label>
+				<label>
+					Роль
+					<select name="role">
+						<option value="member">Member</option>
+						<option value="admin">Admin</option>
+					</select>
+				</label>
+				<button type="submit">Пригласить</button>
+			</form>
+		</div>
+	}
+}
+
+// InviteAccept — GET/POST /invite/{token}: страница «принять приглашение».
+// GET не проверяет токен (просмотр не должен тратить одноразовый токен) —
+// валидность проверяется только на POST; errMsg заполняется при
+// ErrInviteInvalid (недействительный/истёкший/уже использованный токен).
+templ InviteAccept(token, errMsg, userEmail string) {
+	@layout("Приглашение", userEmail) {
+		<div class="invite-accept">
+			<h1>Приглашение в организацию</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			} else {
+				<p>Нажмите кнопку, чтобы принять приглашение.</p>
+			}
+			<form method="post" action={ templ.URL(inviteAcceptPath(token)) }>
+				<button type="submit">Принять приглашение</button>
+			</form>
+		</div>
+	}
+}

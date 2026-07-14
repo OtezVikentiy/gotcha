@@ -1,0 +1,208 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+)
+
+func orgTeamsPath(orgID int64) string {
+	return "/orgs/" + strconv.FormatInt(orgID, 10) + "/teams"
+}
+
+func teamMembersPath(teamID int64) string {
+	return "/teams/" + strconv.FormatInt(teamID, 10) + "/members"
+}
+
+func teamMembersRemovePath(teamID int64) string {
+	return teamMembersPath(teamID) + "/remove"
+}
+
+func teamProjectsPath(teamID int64) string {
+	return "/teams/" + strconv.FormatInt(teamID, 10) + "/projects"
+}
+
+func teamProjectsDetachPath(teamID int64) string {
+	return teamProjectsPath(teamID) + "/detach"
+}
+
+// TeamView — команда вместе с уже загруженными участниками и привязанными
+// проектами: страница /orgs/{id}/teams рендерит сразу несколько команд,
+// поэтому обходы TeamMembers/TeamProjects по каждой команде web-хендлер
+// делает один раз при сборке страницы, а не в шаблоне.
+type TeamView struct {
+	Team     org.Team
+	Members  []org.Member
+	Projects []org.Project
+}
+
+// memberInTeam — участник организации уже состоит в команде? Нужно, чтобы не
+// предлагать в select тех, кто и так уже участник (AddTeamMember и так
+// идемпотентен, но лишний пункт в select только путает).
+func memberInTeam(members []org.Member, userID int64) bool {
+	for _, m := range members {
+		if m.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// projectAttached — тот же принцип для select привязки проекта.
+func projectAttached(projects []org.Project, projectID int64) bool {
+	for _, p := range projects {
+		if p.ID == projectID {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAvailableMembers — есть ли хоть один участник организации, ещё не
+// состоящий в команде (кандидат для select добавления участника).
+func hasAvailableMembers(members []org.Member, teamMembers []org.Member) bool {
+	for _, m := range members {
+		if !memberInTeam(teamMembers, m.UserID) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAvailableProjects — тот же принцип для select привязки проекта: есть ли
+// хоть один проект организации, ещё не привязанный к команде.
+func hasAvailableProjects(projects []org.Project, teamProjects []org.Project) bool {
+	for _, p := range projects {
+		if !projectAttached(teamProjects, p.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+templ teamMemberRow(teamID int64, m org.Member) {
+	<tr>
+		<td>{ m.Email }</td>
+		<td>
+			<form method="post" action={ templ.URL(teamMembersRemovePath(teamID)) } class="team-member-remove-form">
+				<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
+				<button type="submit">Убрать</button>
+			</form>
+		</td>
+	</tr>
+}
+
+templ teamProjectRow(teamID int64, p org.Project) {
+	<tr>
+		<td>{ p.Name }</td>
+		<td>
+			<form method="post" action={ templ.URL(teamProjectsDetachPath(teamID)) } class="team-project-detach-form">
+				<input type="hidden" name="project_id" value={ strconv.FormatInt(p.ID, 10) }/>
+				<button type="submit">Отвязать</button>
+			</form>
+		</td>
+	</tr>
+}
+
+// teamSection — карточка одной команды: участники (email + убрать), форма
+// добавления участника (select из участников организации, ещё не в команде),
+// привязанные проекты (+ отвязать), форма привязки проекта (select из всех
+// проектов организации, ещё не привязанных). Когда добавлять/привязывать
+// нечего (все участники/проекты организации уже в команде, либо их вовсе
+// нет), select не рендерится — вместо пустого <select></select> короткая
+// заметка (см. hasAvailableMembers/hasAvailableProjects).
+templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Project) {
+	<section class="team">
+		<h2>{ tm.Team.Name } <small>{ tm.Team.Slug }</small></h2>
+		<h3>Участники</h3>
+		<table>
+			<thead>
+				<tr>
+					<th>Email</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, m := range tm.Members {
+					@teamMemberRow(tm.Team.ID, m)
+				}
+			</tbody>
+		</table>
+		if hasAvailableMembers(orgMembers, tm.Members) {
+			<form method="post" action={ templ.URL(teamMembersPath(tm.Team.ID)) } class="team-member-add-form">
+				<select name="user_id">
+					for _, m := range orgMembers {
+						if !memberInTeam(tm.Members, m.UserID) {
+							<option value={ strconv.FormatInt(m.UserID, 10) }>{ m.Email }</option>
+						}
+					}
+				</select>
+				<button type="submit">Добавить участника</button>
+			</form>
+		} else {
+			<p class="team-empty-note">Нет доступных участников для добавления.</p>
+		}
+		<h3>Проекты</h3>
+		<table>
+			<thead>
+				<tr>
+					<th>Проект</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, p := range tm.Projects {
+					@teamProjectRow(tm.Team.ID, p)
+				}
+			</tbody>
+		</table>
+		if hasAvailableProjects(orgProjects, tm.Projects) {
+			<form method="post" action={ templ.URL(teamProjectsPath(tm.Team.ID)) } class="team-project-attach-form">
+				<select name="project_id">
+					for _, p := range orgProjects {
+						if !projectAttached(tm.Projects, p.ID) {
+							<option value={ strconv.FormatInt(p.ID, 10) }>{ p.Name }</option>
+						}
+					}
+				</select>
+				<button type="submit">Привязать проект</button>
+			</form>
+		} else {
+			<p class="team-empty-note">Нет доступных проектов для привязки.</p>
+		}
+	</section>
+}
+
+// Teams — GET/POST /orgs/{id}/teams: список команд организации (участники,
+// привязанные проекты, формы управления) и форма создания новой команды.
+// errMsg — сообщение об ошибке последнего POST, рендерится с тем же статусом
+// (422), что и ответ — тот же принцип, что и у OrgSettings.
+templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []org.Project, errMsg, userEmail string) {
+	@layout("Команды "+o.Name, userEmail) {
+		<div class="teams">
+			<h1>Команды { o.Name }</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if len(teams) == 0 {
+				<p>Команд пока нет.</p>
+			} else {
+				for _, tm := range teams {
+					@teamSection(tm, orgMembers, orgProjects)
+				}
+			}
+			<h2>Создать команду</h2>
+			<form method="post" action={ templ.URL(orgTeamsPath(o.ID)) } class="team-create-form">
+				<label>
+					Slug
+					<input type="text" name="slug" placeholder="backend" autocomplete="off" required/>
+				</label>
+				<label>
+					Название
+					<input type="text" name="name" placeholder="Backend" required/>
+				</label>
+				<button type="submit">Создать</button>
+			</form>
+		</div>
+	}
+}

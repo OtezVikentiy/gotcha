@@ -1,0 +1,7 @@
+.git
+cld
+.idea
+docker-compose.yml
+.env
+/gotcha
+*.test

@@ -1,0 +1,135 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+)
+
+// projectSetupPath — путь до страницы подключения SDK конкретного проекта.
+func projectSetupPath(id int64) string {
+	return "/projects/" + strconv.FormatInt(id, 10) + "/setup"
+}
+
+// platformOption — рендерит <option>, помечая его selected, если это
+// текущая выбранная платформа (сохранение значения формы после 422).
+templ platformOption(value, label, selected string) {
+	if value == selected {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
+// Onboarding — форма «создайте организацию и первый проект». Принимает уже
+// отправленные значения (orgSlug, orgName, projectSlug, projectName,
+// platform), чтобы при 422 (невалидный slug) не терять то, что юзер ввёл.
+templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, userEmail string) {
+	@layout("Онбординг", userEmail) {
+		<form method="post" action="/onboarding" class="auth-form">
+			<h1>Создайте организацию и первый проект</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<label>
+				Slug организации
+				<input type="text" name="org_slug" placeholder="my-team" autocomplete="off" required autofocus value={ orgSlug }/>
+			</label>
+			<label>
+				Название организации
+				<input type="text" name="org_name" placeholder="My Team" required value={ orgName }/>
+			</label>
+			<label>
+				Slug проекта
+				<input type="text" name="project_slug" placeholder="backend" autocomplete="off" required value={ projectSlug }/>
+			</label>
+			<label>
+				Название проекта
+				<input type="text" name="project_name" placeholder="Backend" required value={ projectName }/>
+			</label>
+			<label>
+				Платформа
+				<select name="platform" required>
+					@platformOption("go", "Go", platform)
+					@platformOption("php", "PHP", platform)
+					@platformOption("javascript", "JavaScript", platform)
+					@platformOption("python", "Python", platform)
+					@platformOption("other", "Other", platform)
+				</select>
+			</label>
+			<button type="submit">Создать</button>
+		</form>
+	}
+}
+
+// ProjectSetup — страница «подключи SDK»: DSN проекта и сниппеты
+// подключения для нескольких платформ.
+templ ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, userEmail string) {
+	@layout("Подключение "+project.Name, userEmail) {
+		<div class="setup">
+			<h1>{ project.Name }</h1>
+			if dsn == "" {
+				<p class="error">У проекта нет активного ключа — выпустите новый в настройках проекта.</p>
+			} else {
+				<p>DSN для отправки событий:</p>
+				<pre>{ dsn }</pre>
+				<h2>Go</h2>
+				<pre>{ goSnippet }</pre>
+				<h2>PHP</h2>
+				<pre>{ phpSnippet }</pre>
+				<h2>JavaScript</h2>
+				<pre>{ jsSnippet }</pre>
+			}
+			<p><a href="/projects">← Все проекты</a></p>
+		</div>
+	}
+}
+
+// NoProjects — GET "/" для юзера, который состоит хотя бы в одной
+// организации, но которому не назначен ни один проект (не привязан ни к
+// одной команде с доступом к проекту). В отличие от юзера вовсе без
+// организаций (тот уходит на /onboarding), таким юзерам организацию создавать
+// не нужно — им нужен админ, который добавит их в команду.
+templ NoProjects(userEmail string) {
+	@layout("Нет доступных проектов", userEmail) {
+		<div class="no-projects">
+			<h1>Нет доступных проектов</h1>
+			<p>Попросите администратора организации добавить вас в команду с доступом к проекту.</p>
+		</div>
+	}
+}
+
+// ProjectListItem — проект вместе с флагом, может ли текущий юзер управлять
+// его организацией (owner/admin) — только тогда рендерится ссылка «Org
+// settings» (иначе member получал бы ссылку на страницу, которая отвечает
+// ему 404 — dead link).
+type ProjectListItem struct {
+	Project   org.Project
+	CanManage bool
+}
+
+// ProjectsList — «Projects» в шапке: все проекты, доступные юзеру. Имя
+// проекта ведёт на список issues (основной сценарий), рядом — отдельная
+// ссылка на страницу подключения SDK.
+templ ProjectsList(items []ProjectListItem, userEmail string) {
+	@layout("Проекты", userEmail) {
+		<div class="projects-list">
+			<h1>Проекты</h1>
+			if len(items) == 0 {
+				<p>Нет доступных проектов. <a href="/onboarding">Создать первый проект</a></p>
+			} else {
+				<ul>
+					for _, it := range items {
+						<li>
+							<a href={ templ.URL(issuesPath(it.Project.ID)) }>{ it.Project.Name }</a>
+							· <a href={ templ.URL(projectSetupPath(it.Project.ID)) }>Setup</a>
+							if it.CanManage {
+								· <a href={ templ.URL(orgSettingsPath(it.Project.OrgID)) }>Org settings</a>
+							}
+						</li>
+					}
+				</ul>
+			}
+		</div>
+	}
+}
