@@ -18,6 +18,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
@@ -78,7 +79,10 @@ func run() error {
 		if err := db.MigrateCH(cfg.ClickHouseDSN); err != nil {
 			return err
 		}
-		return db.ApplyRetention(ctx, ch, cfg.RetentionDays)
+		if err := db.ApplyRetention(ctx, ch, cfg.RetentionDays); err != nil {
+			return err
+		}
+		return db.ApplySpanRetention(ctx, ch, cfg.SpanRetentionDays)
 	})
 	if err != nil {
 		return err
@@ -192,9 +196,16 @@ func run() error {
 
 	var pipeline *ingest.Pipeline
 	var batcher *event.Batcher
+	var spanWriter *trace.SpanWriter
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
 		go batcher.Run()
+
+		// Трейсинг — часть ingest-контура: транзакции приезжают тем же
+		// envelope-эндпойнтом, что и ошибки, и пишутся своим батчером
+		// (transactions + spans), независимым от батчера событий.
+		spanWriter = trace.NewSpanWriter(ch)
+		go spanWriter.Run()
 
 		// Алертинг (план 6) — часть ingest-контура: правила/каналы срабатывают
 		// на события, которые проходят через этот же пайплайн.
@@ -218,10 +229,35 @@ func run() error {
 		}
 		go spikeWorker.Run(ctx)
 
+		// Детекторы производительности (план 3): находки уезжают в perf_issues
+		// (PG) и алертят при первом обнаружении через тот же outbox, что и
+		// алерты об ошибках. Пороги берутся из projects.perf_detector_config
+		// через тот же кеш проектов, что читает transaction_sample_rate —
+		// один инстанс на процесс, чтобы не держать два кеша одного и того же.
+		projectCache := ingest.NewProjectCache(orgSvc)
+		perfNotifier := &trace.OutboxNotifier{
+			Alerts:       alertSvc,
+			Outbox:       outbox,
+			Pool:         pg, // perf_alert_throttle: рассылка ограничена по проекту
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+		}
+
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
 		pipeline.Alerts = evaluator
+		pipeline.Spans = spanWriter
+		pipeline.Perf = trace.NewIssueService(pg)
+		pipeline.PerfAlerts = perfNotifier
+		pipeline.Projects = projectCache
 		pipeline.Start()
-		ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes).Register(mux)
+		ingestHandler := ingest.NewHandler(
+			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)
+		// Квота транзакций — отдельный счётчик (organizations.transaction_quota
+		// против org_usage.transactions_count): исчерпанный бюджет транзакций
+		// не закрывает приём ошибок и наоборот.
+		ingestHandler.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)
+		ingestHandler.Projects = projectCache
+		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
 	if cfg.Mode == "web" || cfg.Mode == "all" {
@@ -239,6 +275,10 @@ func run() error {
 		// just for reads instead of writes.
 		webHandler.UptimeQuery = uptime.NewQuery(ch)
 		webHandler.UptimeIngestor = uptimeIngestor
+		// Perf-страницы (этап 3, план 4): агрегаты транзакций из того же CH
+		// (Trace) и связанные perf-проблемы из PG (PerfIssues).
+		webHandler.Trace = trace.NewQuery(ch)
+		webHandler.PerfIssues = trace.NewIssueService(pg)
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Register(mux)
 		go (&auth.Janitor{Svc: authSvc}).Run(ctx)
@@ -261,6 +301,13 @@ func run() error {
 			defer cancel()
 			if err := batcher.Close(cctx); err != nil {
 				slog.Error("event batcher drain failed", "error", err)
+			}
+		}
+		if spanWriter != nil {
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := spanWriter.Close(cctx); err != nil {
+				slog.Error("span writer drain failed", "error", err)
 			}
 		}
 		if runner != nil {

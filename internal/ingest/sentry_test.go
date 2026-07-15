@@ -9,10 +9,14 @@ import (
 	"time"
 )
 
-// Репрезентативный payload sentry-php.
-const phpEvent = `{
+// Репрезентативный payload sentry-php. timestamp относительный: абсолютную дату
+// в фикстуре держать нельзя — parseTimestamp подтягивает всё, что вне окна
+// хранения (см. timestamp.go), к его границе, и вшитая константа однажды сама по
+// себе вывалилась бы за окно.
+func phpEvent(ts time.Time) string {
+	return fmt.Sprintf(`{
   "event_id": "9ec79c33ec9942ab8353589fcb2e04dc",
-  "timestamp": 1752451200.123,
+  "timestamp": %.3f,
   "platform": "php",
   "level": "error",
   "environment": "production",
@@ -31,18 +35,19 @@ const phpEvent = `{
     ]}
   }]},
   "fingerprint": ["{{ default }}", "billing"]
-}`
+}`, float64(ts.UnixNano())/1e9)
+}
 
 func TestParseEventPHP(t *testing.T) {
-	pe, err := ParseEvent([]byte(phpEvent))
+	want := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	pe, err := ParseEvent([]byte(phpEvent(want)))
 	if err != nil {
 		t.Fatalf("ParseEvent: %v", err)
 	}
 	if pe.EventID != "9ec79c33-ec99-42ab-8353-589fcb2e04dc" {
 		t.Errorf("EventID = %q, want canonical uuid", pe.EventID)
 	}
-	// float64 не хранит .123 точно — сравниваем с допуском 1ms.
-	want := time.Unix(1752451200, 123_000_000).UTC()
+	// float64 не хранит доли секунды точно — сравниваем с допуском 1ms.
 	if d := pe.Timestamp.Sub(want); d < -time.Millisecond || d > time.Millisecond {
 		t.Errorf("Timestamp = %v, want %v ±1ms", pe.Timestamp, want)
 	}
@@ -81,12 +86,13 @@ func TestParseEventPHP(t *testing.T) {
 
 func TestParseEventMessageOnly(t *testing.T) {
 	// sentry-js captureMessage: message-объект, ISO-timestamp, тэги массивом.
-	raw := `{
+	want := time.Now().UTC().Add(-2 * time.Hour).Truncate(100 * time.Millisecond)
+	raw := fmt.Sprintf(`{
 	  "event_id": "abcdefabcdefabcdefabcdefabcdefab",
-	  "timestamp": "2026-07-14T10:00:00.5Z",
+	  "timestamp": %q,
 	  "message": {"formatted": "timeout for user 55"},
 	  "tags": [["browser", "firefox"], ["page", "/checkout"]]
-	}`
+	}`, want.Format(time.RFC3339Nano))
 	pe, err := ParseEvent([]byte(raw))
 	if err != nil {
 		t.Fatalf("ParseEvent: %v", err)
@@ -97,14 +103,69 @@ func TestParseEventMessageOnly(t *testing.T) {
 	if pe.Level != "error" {
 		t.Errorf("default level = %q", pe.Level)
 	}
-	if !pe.Timestamp.Equal(time.Date(2026, 7, 14, 10, 0, 0, 500_000_000, time.UTC)) {
-		t.Errorf("Timestamp = %v", pe.Timestamp)
+	if !pe.Timestamp.Equal(want) {
+		t.Errorf("Timestamp = %v, want %v", pe.Timestamp, want)
 	}
 	if pe.Tags["browser"] != "firefox" || pe.Tags["page"] != "/checkout" {
 		t.Errorf("tags: %v", pe.Tags)
 	}
 	if pe.Title != "timeout for user 55" || pe.Culprit != "" {
 		t.Errorf("title=%q culprit=%q", pe.Title, pe.Culprit)
+	}
+}
+
+// TestParseEventClampsTimestampToWindow: events партиционирована по
+// toYYYYMM(timestamp), и пачка событий с timestamp'ами из сотни разных месяцев
+// заклинила бы вставку целиком («Too many partitions for single INSERT block»),
+// поэтому timestamp вне окна [now-90d, now+1d] подтягивается к границе. Само
+// событие при этом НЕ теряется: ошибка со стектрейсом ценнее её timestamp'а.
+func TestParseEventClampsTimestampToWindow(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name string
+		raw  string
+		want time.Time
+	}{
+		{"prehistoric unix", `{"message":"x","timestamp":946684800}`, now.Add(-maxTimestampAge)},
+		{"older than TTL", fmt.Sprintf(`{"message":"x","timestamp":%q}`,
+			now.Add(-200*24*time.Hour).Format(time.RFC3339Nano)), now.Add(-maxTimestampAge)},
+		{"far future", fmt.Sprintf(`{"message":"x","timestamp":%d}`,
+			now.Add(365*24*time.Hour).Unix()), now.Add(maxTimestampFuture)},
+	}
+	for _, tc := range tests {
+		pe, err := ParseEvent([]byte(tc.raw))
+		if err != nil {
+			t.Fatalf("%s: ParseEvent: %v", tc.name, err)
+		}
+		if d := pe.Timestamp.Sub(tc.want); d < -time.Minute || d > time.Minute {
+			t.Errorf("%s: Timestamp = %v, want ~%v (clamped to the retention window)",
+				tc.name, pe.Timestamp, tc.want)
+		}
+	}
+
+	// Внутри окна timestamp остаётся нетронутым.
+	inWindow := now.Add(-24 * time.Hour).Truncate(time.Millisecond)
+	pe, err := ParseEvent([]byte(fmt.Sprintf(`{"message":"x","timestamp":%q}`,
+		inWindow.Format(time.RFC3339Nano))))
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	if !pe.Timestamp.Equal(inWindow) {
+		t.Errorf("in-window Timestamp = %v, want %v (untouched)", pe.Timestamp, inWindow)
+	}
+}
+
+// TestParseEventLowercasesTraceIDs: contexts.trace.trace_id/span_id хранятся
+// каноническим hex'ом в нижнем регистре — иначе events не сджойнятся с spans по
+// trace_id (регистр выбирает тот, кто кодирует id; в OTLP он едет сырыми байтами).
+func TestParseEventLowercasesTraceIDs(t *testing.T) {
+	pe, err := ParseEvent([]byte(`{"message":"x","contexts":{"trace":{
+		"trace_id":"4BF92F3577B34DA6A3CE929D0E0E4736","span_id":"00F067AA0BA902B7"}}}`))
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	if pe.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" || pe.SpanID != "00f067aa0ba902b7" {
+		t.Errorf("trace ids = %q/%q, want lowercase hex", pe.TraceID, pe.SpanID)
 	}
 }
 

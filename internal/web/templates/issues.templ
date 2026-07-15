@@ -176,7 +176,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 	@layout("Issues", userEmail) {
 		<div class="issues">
 			<h1>Issues</h1>
-			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a></p>
+			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(perfIssuesPath(projectID)) }>Performance Issues</a></p>
 			if canManage {
 				<p><a href={ templ.URL(projectSettingsPath(projectID)) }>Project settings</a></p>
 			}

@@ -1,0 +1,3 @@
+ALTER TABLE events
+    DROP COLUMN IF EXISTS span_id,
+    DROP COLUMN IF EXISTS trace_id;

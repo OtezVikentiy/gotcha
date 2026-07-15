@@ -159,6 +159,10 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 				<div class="event-detail">
 					<h2>Event { selected.ID }</h2>
 
+					if selected.TraceID != "" {
+						<p class="event-trace-link"><a href={ templ.URL(tracePath(selected.TraceID)) }>Смотреть трейс</a></p>
+					}
+
 					if len(frames) > 0 {
 						<h3>Stacktrace</h3>
 						<div class="frames">

@@ -14,11 +14,11 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("org: not found")
-	ErrSlugTaken     = errors.New("org: slug already taken")
-	ErrInvalidSlug   = errors.New("org: invalid slug")
-	ErrInvalidName   = errors.New("org: name must not be empty")
-	ErrInvalidQuota  = errors.New("org: invalid quota")
+	ErrNotFound     = errors.New("org: not found")
+	ErrSlugTaken    = errors.New("org: slug already taken")
+	ErrInvalidSlug  = errors.New("org: invalid slug")
+	ErrInvalidName  = errors.New("org: name must not be empty")
+	ErrInvalidQuota = errors.New("org: invalid quota")
 )
 
 // reSlug — lower-case буквенно-цифровой slug с дефисами, без дефисов по краям,
@@ -42,6 +42,9 @@ type Org struct {
 	Slug       string
 	Name       string
 	EventQuota int64
+	// TransactionQuota — месячная квота транзакций, счётчик у неё свой
+	// (org_usage.transactions_count): транзакции не тратят бюджет ошибок.
+	TransactionQuota int64
 }
 
 // Service — доменная логика тенантности поверх PostgreSQL.
@@ -109,7 +112,7 @@ func (s *Service) DeleteOrg(ctx context.Context, orgID int64) error {
 // (нужна страница «нет доступных проектов»).
 func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT o.id, o.slug, o.name, o.event_quota FROM organizations o "+
+		"SELECT o.id, o.slug, o.name, o.event_quota, o.transaction_quota FROM organizations o "+
 			"JOIN org_members m ON m.org_id = o.id WHERE m.user_id = $1 ORDER BY o.name",
 		userID)
 	if err != nil {
@@ -119,7 +122,7 @@ func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 	var out []Org
 	for rows.Next() {
 		var o Org
-		if err := rows.Scan(&o.ID, &o.Slug, &o.Name, &o.EventQuota); err != nil {
+		if err := rows.Scan(&o.ID, &o.Slug, &o.Name, &o.EventQuota, &o.TransactionQuota); err != nil {
 			return nil, fmt.Errorf("org: orgs of: %w", err)
 		}
 		out = append(out, o)
@@ -131,8 +134,8 @@ func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 func (s *Service) Get(ctx context.Context, orgID int64) (Org, error) {
 	o := Org{ID: orgID}
 	err := s.pool.QueryRow(ctx,
-		"SELECT slug, name, event_quota FROM organizations WHERE id = $1",
-		orgID).Scan(&o.Slug, &o.Name, &o.EventQuota)
+		"SELECT slug, name, event_quota, transaction_quota FROM organizations WHERE id = $1",
+		orgID).Scan(&o.Slug, &o.Name, &o.EventQuota, &o.TransactionQuota)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Org{}, ErrNotFound
 	}

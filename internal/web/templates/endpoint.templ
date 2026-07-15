@@ -1,0 +1,121 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+)
+
+func tracePath(traceID string) string {
+	return "/traces/" + traceID
+}
+
+// perfIssuePath — ссылка на страницу perf-проблемы (маршрут появится в
+// следующих задачах; ссылку кладём заранее, как это принято в проекте).
+func perfIssuePath(id int64) string {
+	return "/perf-issues/" + strconv.FormatInt(id, 10)
+}
+
+// EndpointDetailData — всё, что нужно странице эндпойнта: имя, фильтры,
+// уже собранные в web/performance.go SVG-графики и таблицы медленных трейсов и
+// связанных perf-проблем (тот же приём, что и MonitorRow/EndpointRow).
+type EndpointDetailData struct {
+	ProjectID   int64
+	Transaction string
+	Period      string
+	Environment string
+	ApdexT      int
+
+	LatencyChart templ.Component
+	Throughput   templ.Component
+	Histogram    templ.Component
+
+	Slowest    []trace.TraceRow
+	PerfIssues []trace.PerfIssue
+}
+
+// EndpointDetail — GET /projects/{id}/performance/{transaction}: перцентили и
+// throughput во времени, гистограмма длительностей, самые медленные трейсы и
+// связанные perf-проблемы. Все графики — server-side SVG.
+templ EndpointDetail(d EndpointDetailData, userEmail string) {
+	@layout(d.Transaction, userEmail) {
+		<div class="endpoint-detail">
+			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← Performance</a></p>
+			<h1>{ d.Transaction }</h1>
+			<div class="endpoint-meta">
+				<span>Период: { d.Period }</span>
+				if d.Environment != "" {
+					<span>Окружение: { d.Environment }</span>
+				}
+				<span>Apdex T: { strconv.Itoa(d.ApdexT) }ms</span>
+			</div>
+
+			<h2>Latency (p50 / p95)</h2>
+			<div class="endpoint-chart">
+				@d.LatencyChart
+			</div>
+
+			<h2>Throughput</h2>
+			<div class="endpoint-chart">
+				@d.Throughput
+			</div>
+
+			<h2>Duration histogram</h2>
+			<div class="endpoint-chart">
+				@d.Histogram
+			</div>
+
+			<h2>Slowest traces</h2>
+			if len(d.Slowest) == 0 {
+				<p class="empty">Нет трейсов за период.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>When</th>
+							<th>Duration</th>
+							<th>Status</th>
+							<th>Trace</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, tr := range d.Slowest {
+							<tr>
+								<td>{ ago(tr.Timestamp) }</td>
+								<td>{ formatDurationUS(tr.DurationUS) }</td>
+								<td>{ tr.Status }</td>
+								<td><a href={ templ.URL(tracePath(tr.TraceID)) }>{ tr.TraceID }</a></td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+
+			<h2>Related performance issues</h2>
+			if len(d.PerfIssues) == 0 {
+				<p class="empty">Нет связанных проблем.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Kind</th>
+							<th>Title</th>
+							<th>Status</th>
+							<th>Seen</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, iss := range d.PerfIssues {
+							<tr>
+								<td>{ iss.Kind }</td>
+								<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ iss.Title }</a></td>
+								<td>{ iss.Status }</td>
+								<td>{ strconv.FormatInt(iss.Count, 10) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

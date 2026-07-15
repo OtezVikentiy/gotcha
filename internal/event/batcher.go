@@ -181,7 +181,15 @@ func (b *Batcher) flush(ctx context.Context) {
 }
 
 func (b *Batcher) insert(ctx context.Context, events []Event) error {
-	batch, err := b.conn.PrepareBatch(ctx, "INSERT INTO events")
+	// Колонки перечислены явно (в порядке DDL, см. миграции 0001 и 0005):
+	// безымянный INSERT требует значение для каждой колонки таблицы и ломается
+	// при любом ALTER TABLE ADD COLUMN.
+	batch, err := b.conn.PrepareBatch(ctx, `INSERT INTO events (
+		event_id, project_id, issue_id, timestamp,
+		level, message, exception_type, exception_value, stacktrace,
+		environment, release, server_name, sdk,
+		user_id, user_ip, user_email, tags, contexts,
+		trace_id, span_id)`)
 	if err != nil {
 		return err
 	}
@@ -195,6 +203,7 @@ func (b *Batcher) insert(ctx context.Context, events []Event) error {
 			e.Level, e.Message, e.ExceptionType, e.ExceptionValue, e.Stacktrace,
 			e.Environment, e.Release, e.ServerName, e.SDK,
 			e.UserID, e.UserIP, e.UserEmail, e.Tags, e.Contexts,
+			e.TraceID, e.SpanID,
 		); err != nil {
 			return err
 		}

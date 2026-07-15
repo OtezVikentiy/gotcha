@@ -35,6 +35,11 @@ type Stored struct {
 
 	Tags     map[string]string
 	Contexts string
+
+	// TraceID — trace_id события (пустой, если SDK трейсинг не включил):
+	// страница issue показывает по нему ссылку «Смотреть трейс» на waterfall
+	// (этап 3, план 4, задача 3).
+	TraceID string
 }
 
 // Point — точка временного ряда: T — начало интервала (UTC), N — число
@@ -54,7 +59,7 @@ func NewQuery(conn driver.Conn) *Query {
 }
 
 const storedColumns = `event_id, timestamp, level, message, exception_type, exception_value, stacktrace,
-	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts`
+	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id`
 
 // scanner — общая часть driver.Row и driver.Rows, достаточная для Scan.
 type scanner interface {
@@ -69,7 +74,7 @@ func scanStored(s scanner) (Stored, error) {
 		&out.ExceptionType, &out.ExceptionValue, &out.Stacktrace,
 		&out.Environment, &out.Release, &out.ServerName, &out.SDK,
 		&out.UserID, &out.UserIP, &out.UserEmail,
-		&out.Tags, &out.Contexts,
+		&out.Tags, &out.Contexts, &out.TraceID,
 	); err != nil {
 		return Stored{}, err
 	}
@@ -144,6 +149,44 @@ func (q *Query) EventByID(ctx context.Context, projectID int64, eventID string) 
 		return Stored{}, false, fmt.Errorf("scan event: %w", err)
 	}
 	return s, true, nil
+}
+
+// TraceError — событие-ошибка, привязанное к трейсу: issue_id, в котором оно
+// сгруппировано, и span_id, на котором произошло (пустой — событие без привязки
+// к конкретному спану). Для красных маркеров ошибок на waterfall трейса.
+type TraceError struct {
+	IssueID int64
+	SpanID  string
+}
+
+// ByTraceID возвращает ошибки (события) проекта с данным trace_id — issue_id и
+// span_id каждой, чтобы waterfall трейса пометил соответствующие спаны красным
+// со ссылкой на issue. Параметризованный запрос: значения только через ?.
+// Дубли (несколько событий одного issue на одном спане) схлопываются DISTINCT.
+func (q *Query) ByTraceID(ctx context.Context, projectID int64, traceID string) ([]TraceError, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT DISTINCT issue_id, span_id
+		FROM events
+		WHERE project_id = ? AND trace_id = ?`,
+		uint64(projectID), traceID)
+	if err != nil {
+		return nil, fmt.Errorf("query events by trace: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TraceError
+	for rows.Next() {
+		var issueID uint64
+		var spanID string
+		if err := rows.Scan(&issueID, &spanID); err != nil {
+			return nil, fmt.Errorf("scan trace error: %w", err)
+		}
+		out = append(out, TraceError{IssueID: int64(issueID), SpanID: spanID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query events by trace: %w", err)
+	}
+	return out, nil
 }
 
 // Series строит временной ряд числа событий issue на окне [from, to) с шагом

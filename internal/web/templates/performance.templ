@@ -1,0 +1,167 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+)
+
+func performancePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/performance"
+}
+
+// endpointPath — ссылка на страницу эндпойнта. Имя транзакции недоверенное и
+// может содержать слэши, пробелы и произвольные символы, поэтому едет в пути
+// %-экранированным (PathEscape экранирует и «/» → «%2F», так что имя остаётся
+// одним сегментом пути); обработчик декодирует его обратно (url.PathUnescape).
+func endpointPath(projectID int64, transaction string) string {
+	return performancePath(projectID) + "/" + url.PathEscape(transaction)
+}
+
+// PerfFilter — состояние фильтров списка эндпойнтов (период, окружение,
+// сортировка), нужно и для GET-формы фильтров, и для ссылок сортировки колонок.
+type PerfFilter struct {
+	Period      string
+	Environment string
+	Sort        string
+}
+
+// perfListSortURL — ссылка на список с заданной сортировкой, сохраняя период и
+// окружение фильтра (клик по заголовку колонки).
+func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
+	q := url.Values{}
+	if f.Period != "" {
+		q.Set("period", f.Period)
+	}
+	if f.Environment != "" {
+		q.Set("environment", f.Environment)
+	}
+	q.Set("sort", sort)
+	return performancePath(projectID) + "?" + q.Encode()
+}
+
+// formatDurationUS форматирует длительность из микросекунд человекочитаемо:
+// µs → ms → s. Перцентили и Apdex — колонки таблицы.
+func formatDurationUS(us uint32) string {
+	switch {
+	case us == 0:
+		return "0"
+	case us < 1000:
+		return strconv.FormatUint(uint64(us), 10) + "µs"
+	case us < 1_000_000:
+		return strconv.FormatFloat(float64(us)/1000, 'f', 1, 64) + "ms"
+	default:
+		return strconv.FormatFloat(float64(us)/1_000_000, 'f', 2, 64) + "s"
+	}
+}
+
+// formatThroughput — транзакций в минуту с одним знаком после запятой.
+func formatThroughput(perMin float64) string {
+	return strconv.FormatFloat(perMin, 'f', 1, 64) + "/min"
+}
+
+// formatFailureRate — доля ошибок (0..1) в процентах с одним знаком.
+func formatFailureRate(rate float64) string {
+	return strconv.FormatFloat(rate*100, 'f', 1, 64) + "%"
+}
+
+// formatApdex — Apdex-балл (0..1) с двумя знаками.
+func formatApdex(score float64) string {
+	return strconv.FormatFloat(score, 'f', 2, 64)
+}
+
+// EndpointRow — строка списка эндпойнтов: агрегаты (trace.EndpointStat) плюс
+// уже собранный в web/performance.go SVG-спарклайн p95 (тот же приём, что и
+// MonitorRow: числовая агрегация в web-пакете, шаблон только форматирует).
+type EndpointRow struct {
+	Stat      trace.EndpointStat
+	Sparkline templ.Component
+}
+
+// perfPeriodOption — <option> периода с отметкой выбранного.
+templ perfPeriodOption(value, label, selected string) {
+	if value == selected {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
+// perfEnvOption — <option> окружения с отметкой выбранного.
+templ perfEnvOption(value, label, selected string) {
+	if value == selected {
+		<option value={ value } selected>{ label }</option>
+	} else {
+		<option value={ value }>{ label }</option>
+	}
+}
+
+// PerformanceList — GET /projects/{id}/performance: таблица эндпойнтов проекта с
+// перцентилями, failure rate, Apdex (порог T = apdexT мс) и спарклайном p95.
+// total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
+// если total больше, показывается пометка об усечении (как у waterfall).
+templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, userEmail string) {
+	@layout("Performance", userEmail) {
+		<div class="performance">
+			<h1>Performance</h1>
+			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a> · <a href={ templ.URL(perfIssuesPath(projectID)) }>Performance Issues</a></p>
+			<form method="get" action={ templ.URL(performancePath(projectID)) } class="performance-filters">
+				<select name="environment">
+					@perfEnvOption("", "Все окружения", filter.Environment)
+					for _, env := range environments {
+						@perfEnvOption(env, env, filter.Environment)
+					}
+				</select>
+				<select name="period">
+					@perfPeriodOption("1h", "1 час", filter.Period)
+					@perfPeriodOption("24h", "24 часа", filter.Period)
+					@perfPeriodOption("7d", "7 дней", filter.Period)
+					@perfPeriodOption("30d", "30 дней", filter.Period)
+				</select>
+				if filter.Sort != "" {
+					<input type="hidden" name="sort" value={ filter.Sort }/>
+				}
+				<button type="submit">Применить</button>
+			</form>
+			if len(rows) == 0 {
+				<p class="empty">no transaction data yet — включите трейсинг и поднимите traces_sample_rate в настройках проекта, чтобы здесь появились эндпойнты.</p>
+			} else {
+				<p class="apdex-note">Apdex T = { strconv.Itoa(apdexT) }ms</p>
+				if total > len(rows) {
+					<p class="perf-cap-note">Показаны первые { strconv.Itoa(len(rows)) } из { strconv.Itoa(total) } эндпойнтов (усечено).</p>
+				}
+				<table>
+					<thead>
+						<tr>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>Endpoint</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>Throughput</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>p50</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>p75</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>p95</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>p99</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>Failure</a></th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>Apdex</a></th>
+							<th>p95 (period)</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range rows {
+							<tr>
+								<td><a href={ templ.URL(endpointPath(projectID, row.Stat.Transaction)) }>{ row.Stat.Transaction }</a></td>
+								<td>{ formatThroughput(row.Stat.Throughput) }</td>
+								<td>{ formatDurationUS(row.Stat.P50) }</td>
+								<td>{ formatDurationUS(row.Stat.P75) }</td>
+								<td>{ formatDurationUS(row.Stat.P95) }</td>
+								<td>{ formatDurationUS(row.Stat.P99) }</td>
+								<td>{ formatFailureRate(row.Stat.FailureRate) }</td>
+								<td>{ formatApdex(row.Stat.ApdexScore) }</td>
+								<td>@row.Sparkline</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

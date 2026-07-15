@@ -15,6 +15,29 @@ type Project struct {
 	Slug     string
 	Name     string
 	Platform string
+
+	// Настройки производительности (этап 3): доля семплируемых транзакций
+	// (0 — не принимать ни одной, 1 — все), порог Apdex в миллисекундах и
+	// конфиг детекторов (JSON; читают детекторы, ingest его не трактует).
+	TransactionSampleRate float64
+	ApdexThresholdMS      int32
+	PerfDetectorConfig    string
+}
+
+// projectColumns — общий список колонок для всех SELECT'ов проекта: любой
+// прочитанный Project приезжает целиком, чтобы вызывающий не получил
+// TransactionSampleRate=0 (то есть «не семплировать вообще») из-за того, что
+// конкретный запрос забыл колонку.
+const projectColumns = "id, org_id, slug, name, platform, " +
+	"transaction_sample_rate, apdex_threshold_ms, perf_detector_config"
+
+// scanProject читает строку в порядке projectColumns (с префиксом таблицы или
+// без — порядок один и тот же).
+func scanProject(row pgx.Row) (Project, error) {
+	var p Project
+	err := row.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform,
+		&p.TransactionSampleRate, &p.ApdexThresholdMS, &p.PerfDetectorConfig)
+	return p, err
 }
 
 // CreateProject создаёт проект в организации.
@@ -22,10 +45,12 @@ func (s *Service) CreateProject(ctx context.Context, orgID int64, slug, name, pl
 	if !validSlug(slug) {
 		return Project{}, ErrInvalidSlug
 	}
-	p := Project{OrgID: orgID, Slug: slug, Name: name, Platform: platform}
-	err := s.pool.QueryRow(ctx,
-		"INSERT INTO projects (org_id, slug, name, platform) VALUES ($1, $2, $3, $4) RETURNING id",
-		orgID, slug, name, platform).Scan(&p.ID)
+	// RETURNING всех колонок: у проекта есть поля со значениями по умолчанию из
+	// БД (transaction_sample_rate и т.д.), и созданный Project обязан приехать
+	// с ними, а не с нулями.
+	p, err := scanProject(s.pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name, platform) VALUES ($1, $2, $3, $4) RETURNING "+projectColumns,
+		orgID, slug, name, platform))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Project{}, ErrSlugTaken
@@ -75,6 +100,23 @@ func (s *Service) RenameProject(ctx context.Context, projectID int64, name strin
 	return nil
 }
 
+// UpdatePerfSettings пишет настройки производительности проекта одним UPDATE:
+// долю семплируемых транзакций, порог Apdex (мс) и JSON конфига детекторов
+// (ровно те ключи, что читает trace.ConfigFromJSON). Значения уже провалидированы
+// вызывающим (форма настроек); несуществующий проект → ErrNotFound.
+func (s *Service) UpdatePerfSettings(ctx context.Context, projectID int64, sampleRate float64, apdexMS int32, detectorConfigJSON string) error {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE projects SET transaction_sample_rate = $1, apdex_threshold_ms = $2, perf_detector_config = $3 WHERE id = $4",
+		sampleRate, apdexMS, detectorConfigJSON, projectID)
+	if err != nil {
+		return fmt.Errorf("org: update perf settings: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // accessCondition: owner/admin видят все проекты организации,
 // member — проекты команд, в которых состоит.
 const accessCondition = `
@@ -90,7 +132,7 @@ const accessCondition = `
 // ProjectsForUser возвращает проекты, доступные пользователю.
 func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT p.id, p.org_id, p.slug, p.name, p.platform FROM projects p WHERE "+
+		"SELECT "+projectColumns+" FROM projects p WHERE "+
 			accessCondition+" ORDER BY p.id", userID)
 	if err != nil {
 		return nil, fmt.Errorf("org: projects for user: %w", err)
@@ -98,13 +140,28 @@ func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project,
 	defer rows.Close()
 	var out []Project
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform); err != nil {
+		p, err := scanProject(rows)
+		if err != nil {
 			return nil, fmt.Errorf("org: projects for user: %w", err)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// GetProject возвращает проект со всеми настройками; несуществующий id →
+// ErrNotFound. Ingest читает его на горячем пути (через кеш, см.
+// ingest.ProjectCache) ради transaction_sample_rate.
+func (s *Service) GetProject(ctx context.Context, projectID int64) (Project, error) {
+	p, err := scanProject(s.pool.QueryRow(ctx,
+		"SELECT "+projectColumns+" FROM projects WHERE id = $1", projectID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("org: get project: %w", err)
+	}
+	return p, nil
 }
 
 // ProjectsOf возвращает все проекты организации, отсортированные по name —
@@ -113,15 +170,15 @@ func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project,
 // конкретному пользователю (в отличие от ProjectsForUser).
 func (s *Service) ProjectsOf(ctx context.Context, orgID int64) ([]Project, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT id, org_id, slug, name, platform FROM projects WHERE org_id = $1 ORDER BY name", orgID)
+		"SELECT "+projectColumns+" FROM projects WHERE org_id = $1 ORDER BY name", orgID)
 	if err != nil {
 		return nil, fmt.Errorf("org: projects of: %w", err)
 	}
 	defer rows.Close()
 	var out []Project
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform); err != nil {
+		p, err := scanProject(rows)
+		if err != nil {
 			return nil, fmt.Errorf("org: projects of: %w", err)
 		}
 		out = append(out, p)

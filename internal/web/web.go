@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -95,6 +96,21 @@ type Handler struct {
 	// (cmd/gotcha/main.go, тестовые стенды); nil — приём результатов на этом
 	// узле недоступен (/probe/results отвечает 503, см. probeapi.go).
 	UptimeIngestor *uptime.Ingestor
+
+	// Trace — чтение агрегатов производительности из ClickHouse (этап 3, план 4,
+	// задача 2): список эндпойнтов и страница эндпойнта читают перцентили,
+	// throughput, гистограммы и примеры трейсов отсюда. Как и
+	// Alerts/Outbox/Uptime/UptimeQuery, проставляется отдельным полем, а не
+	// принимается конструктором New; может быть nil (в стендах прочих
+	// web-тестов, которым перформанс не нужен) — тогда маршруты
+	// /projects/{id}/performance* не должны вызываться (эти стенды их и не
+	// запрашивают).
+	Trace *trace.Query
+	// PerfIssues — perf_issues в PG (тот же trace.NewIssueService, что и в
+	// пайплайне детекции): страница эндпойнта показывает связанные с ним
+	// проблемы (фильтр по culprit). Как и Trace, отдельное необязательное поле;
+	// nil → секция связанных проблем на странице эндпойнта просто пустая.
+	PerfIssues *trace.IssueService
 
 	loginLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
@@ -191,6 +207,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/settings/rename", h.requireUser(http.HandlerFunc(h.projectSettingsRename)))
 	inner.Handle("POST /projects/{id}/settings/keys", h.requireUser(http.HandlerFunc(h.projectSettingsKeyCreate)))
 	inner.Handle("POST /projects/{id}/settings/keys/revoke", h.requireUser(http.HandlerFunc(h.projectSettingsKeyRevoke)))
+	inner.Handle("POST /projects/{id}/settings/performance", h.requireUser(http.HandlerFunc(h.projectSettingsPerformance)))
 
 	inner.Handle("GET /projects/{id}/alerts", h.requireUser(http.HandlerFunc(h.alertsPage)))
 	inner.Handle("POST /projects/{id}/alerts/rules", h.requireUser(http.HandlerFunc(h.alertsRulesSave)))
@@ -220,6 +237,35 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /monitors/{id}", h.requireUser(http.HandlerFunc(h.monitorUpdate)))
 
 	inner.Handle("GET /projects/{id}/incidents", h.requireUser(http.HandlerFunc(h.incidentsList)))
+
+	// Производительность (этап 3, план 4, задача 2): список эндпойнтов и
+	// страница эндпойнта — только чтение, доступ открыт любому участнику
+	// проекта (CanAccessProject → 404, как monitorsList/issuesList; POST'ов и
+	// sameOrigin здесь нет). Имя транзакции недоверенное и может содержать
+	// слэши — берём весь остаток пути ({transaction...}) и декодируем в
+	// обработчике. Роуты регистрируются безусловно, как /projects/{id}/monitors:
+	// в режимах "web"/"all" h.Trace всегда собран (см. cmd/gotcha/main.go), а
+	// стенды прочих web-тестов эти страницы не запрашивают.
+	inner.Handle("GET /projects/{id}/performance", h.requireUser(http.HandlerFunc(h.performanceList)))
+	inner.Handle("GET /projects/{id}/performance/{transaction...}", h.requireUser(http.HandlerFunc(h.endpointDetail)))
+
+	// Perf-проблемы (этап 3, план 5, задача 1): список проблем проекта и страница
+	// проблемы — просмотр открыт любому участнику проекта (CanAccessProject → 404,
+	// как performanceList), смена статуса — только owner/admin (requireProjectRole
+	// + sameOrigin, как issueSetStatus). Страница проблемы несёт в пути только
+	// {id}, проект резолвится из самой проблемы (PerfIssues.ProjectOf). Роуты
+	// регистрируются безусловно, как /projects/{id}/performance: в режимах
+	// "web"/"all" h.PerfIssues всегда собран, а стенды прочих web-тестов эти
+	// страницы не запрашивают.
+	inner.Handle("GET /projects/{id}/perf-issues", h.requireUser(http.HandlerFunc(h.perfIssuesList)))
+	inner.Handle("GET /perf-issues/{id}", h.requireUser(http.HandlerFunc(h.perfIssueDetail)))
+	inner.Handle("POST /perf-issues/{id}/status", h.requireUser(http.HandlerFunc(h.perfIssueSetStatus)))
+
+	// Waterfall трейса (этап 3, план 4, задача 3): доступ — по проекту трейса
+	// (ProjectForTrace → CanAccessProject → 404), не по {id} в пути. Только
+	// чтение, POST'ов и sameOrigin здесь нет. Как и /performance*,
+	// регистрируется безусловно — h.Trace собран в режимах "web"/"all".
+	inner.Handle("GET /traces/{trace_id}", h.requireUser(http.HandlerFunc(h.traceWaterfall)))
 
 	// Настройки статус-страниц проекта (план 5, задача 4): только owner/admin
 	// организации проекта (requireProjectRole), как окна обслуживания. У

@@ -5,9 +5,11 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
 type stack struct {
@@ -28,6 +31,7 @@ type stack struct {
 	srv      *httptest.Server
 	pipeline *ingest.Pipeline
 	batcher  *event.Batcher
+	spans    *trace.SpanWriter
 	orgSvc   *org.Service
 	org      org.Org
 	project  org.Project
@@ -61,9 +65,17 @@ func newStack(t *testing.T) *stack {
 
 	batcher := event.NewBatcher(ch)
 	go batcher.Run()
+	spans := trace.NewSpanWriter(ch)
+	go spans.Run()
+	projects := ingest.NewProjectCache(orgSvc)
 	pipeline := ingest.NewPipeline(issue.NewService(pool), batcher)
+	pipeline.Spans = spans
+	pipeline.Perf = trace.NewIssueService(pool)
+	pipeline.Projects = projects
 	pipeline.Start()
 	h := ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, 1<<20)
+	h.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)
+	h.Projects = projects
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -73,8 +85,13 @@ func newStack(t *testing.T) *stack {
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = batcher.Close(cctx)
+		_ = spans.Close(cctx)
 	})
-	return &stack{pool: pool, ch: ch, srv: srv, pipeline: pipeline, batcher: batcher, orgSvc: orgSvc, org: o, project: p, key: k}
+	return &stack{
+		pool: pool, ch: ch, srv: srv,
+		pipeline: pipeline, batcher: batcher, spans: spans,
+		orgSvc: orgSvc, org: o, project: p, key: k,
+	}
 }
 
 const testEventJSON = `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error",
@@ -232,6 +249,66 @@ func TestZstdEnvelope(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	waitIssue(t, s.pool, s.project.ID, 1)
+}
+
+// syncBuf — буфер логов, безопасный при параллельной записи: пока тест держит
+// его дефолтным slog-хендлером, в него пишут и фоновые горутины (батчер,
+// писатель спанов).
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestMixedEnvelopePartialQuotaDropIsLogged: в смешанном envelope'е квота
+// исчерпана по ОДНОМУ классу (ошибки), по второму (транзакции) — нет. Ответ 200
+// (транзакции приняты), но выброшенные ошибки обязаны быть видны в логе: иначе
+// оператор не отличит «ошибок не присылали» от «ошибки молча выброшены».
+func TestMixedEnvelopePartialQuotaDropIsLogged(t *testing.T) {
+	s := newStack(t)
+	ctx := context.Background()
+	if err := s.orgSvc.SetQuota(ctx, s.org.ID, 1); err != nil {
+		t.Fatalf("SetQuota: %v", err)
+	}
+	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
+
+	// Выбираем квоту ошибок целиком.
+	if resp := s.post(t, path, envelopeBody(testEventJSON), false, s.key.PublicKey); resp.StatusCode != 200 {
+		t.Fatalf("first event: status = %d, want 200", resp.StatusCode)
+	}
+
+	var logs syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	mixed := "{}\n" +
+		"{\"type\":\"event\"}\n" + strings.ReplaceAll(testEventJSON, "\n", "") + "\n" +
+		"{\"type\":\"transaction\"}\n" + strings.ReplaceAll(freshTransactionJSON(), "\n", "") + "\n"
+	resp := s.post(t, path, mixed, false, s.key.PublicKey)
+	if resp.StatusCode != 200 {
+		t.Fatalf("mixed envelope: status = %d, want 200 (transactions are within quota)", resp.StatusCode)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "class=event") {
+		t.Errorf("log does not name the dropped class:\n%s", out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("project_id=%d", s.project.ID)) ||
+		!strings.Contains(out, fmt.Sprintf("org_id=%d", s.org.ID)) {
+		t.Errorf("log does not name project/org:\n%s", out)
+	}
 }
 
 // TestDecompressedBombIs413: сырое тело маленькое (gzip), но распакованное

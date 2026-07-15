@@ -1,0 +1,45 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+)
+
+// TraceWaterfallData — всё, что нужно странице waterfall: имя транзакции,
+// trace_id, общая длительность и время трейса, уже собранный в web/trace.go
+// SVG-waterfall (тот же приём, что и MonitorRow/EndpointDetailData), а также
+// сколько спанов показано из общего числа (для пометки об усечении).
+type TraceWaterfallData struct {
+	ProjectID   int64
+	TraceID     string
+	Transaction string
+	TotalUS     uint32
+	Timestamp   time.Time
+
+	Waterfall templ.Component
+	ShownRows int
+	TotalRows int
+}
+
+// TraceWaterfall — GET /traces/{trace_id}: заголовок трейса (имя транзакции,
+// длительность, время) и server-side SVG-waterfall дерева спанов с красными
+// маркерами спанов, на которых были ошибки.
+templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
+	@layout(d.Transaction, userEmail) {
+		<div class="trace-detail">
+			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← Performance</a></p>
+			<h1>{ d.Transaction }</h1>
+			<div class="trace-meta">
+				<span>Trace: { d.TraceID }</span>
+				<span>Длительность: { formatDurationUS(d.TotalUS) }</span>
+				<span>{ ago(d.Timestamp) }</span>
+			</div>
+			if d.TotalRows > d.ShownRows {
+				<p class="trace-cap-note">Показаны первые { strconv.Itoa(d.ShownRows) } из { strconv.Itoa(d.TotalRows) } спанов (усечено для читаемости).</p>
+			}
+			<div class="trace-waterfall">
+				@d.Waterfall
+			</div>
+		</div>
+	}
+}

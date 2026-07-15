@@ -2,6 +2,7 @@ package org_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -259,6 +260,60 @@ func TestRenameProject(t *testing.T) {
 	}
 	if err := svc.RenameProject(ctx, proj.ID+1_000_000, "Whatever"); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("RenameProject missing project: got %v, want ErrNotFound", err)
+	}
+}
+
+// TestUpdatePerfSettings — новый метод настроек производительности (этап 3,
+// план 5): один UPDATE пишет sample_rate/apdex/detector_config, значения
+// приезжают обратно в Project, несуществующий проект → ErrNotFound.
+func TestUpdatePerfSettings(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "perfsettings@example.com")
+	o, err := svc.CreateOrg(ctx, "perfco", "Perf Co", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	proj, err := svc.CreateProject(ctx, o.ID, "perfproj", "Perf Proj", "go")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	const cfgJSON = `{"n_plus_one_min":7,"n_plus_one_min_total_ms":30,"slow_db_ms":250,"http_flood_min":15}`
+	if err := svc.UpdatePerfSettings(ctx, proj.ID, 0.25, 400, cfgJSON); err != nil {
+		t.Fatalf("UpdatePerfSettings: %v", err)
+	}
+
+	got, err := svc.GetProject(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.TransactionSampleRate != 0.25 {
+		t.Fatalf("TransactionSampleRate = %v, want 0.25", got.TransactionSampleRate)
+	}
+	if got.ApdexThresholdMS != 400 {
+		t.Fatalf("ApdexThresholdMS = %d, want 400", got.ApdexThresholdMS)
+	}
+	// Колонка perf_detector_config — JSONB, PG нормализует форматирование, поэтому
+	// сравниваем распарсенные пороги, а не строку байт в байт.
+	var cfg struct {
+		NPlusOneMin        int `json:"n_plus_one_min"`
+		NPlusOneMinTotalMs int `json:"n_plus_one_min_total_ms"`
+		SlowDBMs           int `json:"slow_db_ms"`
+		HTTPFloodMin       int `json:"http_flood_min"`
+	}
+	if err := json.Unmarshal([]byte(got.PerfDetectorConfig), &cfg); err != nil {
+		t.Fatalf("unmarshal PerfDetectorConfig %q: %v", got.PerfDetectorConfig, err)
+	}
+	if cfg.NPlusOneMin != 7 || cfg.NPlusOneMinTotalMs != 30 || cfg.SlowDBMs != 250 || cfg.HTTPFloodMin != 15 {
+		t.Fatalf("PerfDetectorConfig parsed = %+v, want {7 30 250 15}", cfg)
+	}
+
+	if err := svc.UpdatePerfSettings(ctx, proj.ID+1_000_000, 0.5, 300, "{}"); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("UpdatePerfSettings missing project: got %v, want ErrNotFound", err)
 	}
 }
 

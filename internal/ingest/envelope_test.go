@@ -31,6 +31,29 @@ hello
 	}
 }
 
+// TestParseEnvelopeMixedItems: event и transaction в одном envelope'е
+// раскладываются по разным спискам, прочие типы по-прежнему пропускаются.
+func TestParseEnvelopeMixedItems(t *testing.T) {
+	raw := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"boom"}
+{"type":"session"}
+{"sid":"x"}
+{"type":"transaction"}
+{"transaction":"GET /x"}
+`
+	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20)
+	if err != nil {
+		t.Fatalf("ParseEnvelope: %v", err)
+	}
+	if len(env.Events) != 1 || !strings.Contains(string(env.Events[0]), "boom") {
+		t.Errorf("events = %q", env.Events)
+	}
+	if len(env.Transactions) != 1 || !strings.Contains(string(env.Transactions[0]), "GET /x") {
+		t.Errorf("transactions = %q", env.Transactions)
+	}
+}
+
 func TestParseEnvelopeNoTrailingNewline(t *testing.T) {
 	raw := "{}\n{\"type\":\"event\"}\n{\"message\":\"x\"}"
 	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20)

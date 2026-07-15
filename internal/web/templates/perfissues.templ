@@ -1,0 +1,114 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+)
+
+func perfIssuesPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/perf-issues"
+}
+
+func perfIssueDetailPath(id int64) string {
+	return "/perf-issues/" + strconv.FormatInt(id, 10)
+}
+
+// perfKindLabel — человекочитаемое имя вида проблемы (в БД лежат коды
+// n_plus_one/slow_db_query/http_flood, см. trace.Kind*).
+func perfKindLabel(kind string) string {
+	switch kind {
+	case trace.KindNPlusOne:
+		return "N+1 queries"
+	case trace.KindSlowDBQuery:
+		return "Slow DB query"
+	case trace.KindHTTPFlood:
+		return "HTTP flood"
+	default:
+		return kind
+	}
+}
+
+// perfStatusFilterURL — ссылка на список с выбранным фильтром статуса.
+func perfStatusFilterURL(projectID int64, status string) string {
+	if status == "" {
+		return perfIssuesPath(projectID)
+	}
+	return perfIssuesPath(projectID) + "?status=" + status
+}
+
+func perfStatusFilterClass(active bool) string {
+	if active {
+		return "filter-tab filter-tab-active"
+	}
+	return "filter-tab"
+}
+
+templ perfStatusTab(projectID int64, value, label, active string) {
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(perfStatusFilterURL(projectID, tabQuery(value))) }>{ label }</a>
+}
+
+// tabQuery — значение query для вкладки: "all" убирает фильтр (пустой status).
+func tabQuery(value string) string {
+	if value == "all" {
+		return ""
+	}
+	return value
+}
+
+// PerfIssuesList — GET /projects/{id}/perf-issues: таблица perf-проблем проекта
+// с вкладками фильтра по статусу. Обычные ссылки/формы — работает без JS,
+// визуально повторяет список issues этапа 1.
+templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, userEmail string) {
+	@layout("Performance Issues", userEmail) {
+		<div class="perf-issues">
+			<h1>Performance Issues</h1>
+			<p><a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a></p>
+			<nav class="perf-issues-filters">
+				@perfStatusTab(projectID, "unresolved", "Unresolved", filter)
+				@perfStatusTab(projectID, "resolved", "Resolved", filter)
+				@perfStatusTab(projectID, "ignored", "Ignored", filter)
+				@perfStatusTab(projectID, "all", "All", filter)
+			</nav>
+			if len(issues) == 0 {
+				<p class="empty">no performance issues detected</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Kind</th>
+							<th>Issue</th>
+							<th>Culprit</th>
+							<th>Count</th>
+							<th>Last seen</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, iss := range issues {
+							<tr>
+								<td>{ perfKindLabel(iss.Kind) }</td>
+								<td><a href={ templ.URL(perfIssueDetailPath(iss.ID)) }>{ iss.Title }</a></td>
+								<td>{ iss.Culprit }</td>
+								<td>{ strconv.FormatInt(iss.Count, 10) }</td>
+								<td>{ ago(iss.LastSeen) }</td>
+								<td><span class={ perfStatusBadgeClass(iss.Status) }>{ iss.Status }</span></td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}
+
+func perfStatusBadgeClass(status string) string {
+	switch status {
+	case "resolved":
+		return "badge badge-info"
+	case "ignored":
+		return "badge badge-warning"
+	default:
+		return "badge badge-error"
+	}
+}

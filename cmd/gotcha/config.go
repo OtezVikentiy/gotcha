@@ -20,6 +20,7 @@ type Config struct {
 	SMTPPassword      string
 	SMTPFrom          string
 	RetentionDays     int
+	SpanRetentionDays int
 	DefaultEventQuota int64
 	MaxEventBytes     int64
 	SecretKey         string
@@ -83,6 +84,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SMTPPassword:      str("GOTCHA_SMTP_PASSWORD", ""),
 		SMTPFrom:          str("GOTCHA_SMTP_FROM", ""),
 		RetentionDays:     int(num("GOTCHA_RETENTION_DAYS", 90)),
+		SpanRetentionDays: int(num("GOTCHA_SPAN_RETENTION_DAYS", 30)),
 		DefaultEventQuota: num("GOTCHA_DEFAULT_EVENT_QUOTA", 1_000_000),
 		MaxEventBytes:     num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		SecretKey:         str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
@@ -97,6 +99,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	if cfg.RetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_RETENTION_DAYS must be >= 1, got %d", cfg.RetentionDays)
+	}
+	if cfg.SpanRetentionDays < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_SPAN_RETENTION_DAYS must be >= 1, got %d", cfg.SpanRetentionDays)
 	}
 	if cfg.DefaultEventQuota < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 1, got %d", cfg.DefaultEventQuota)

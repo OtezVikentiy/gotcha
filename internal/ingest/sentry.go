@@ -32,6 +32,16 @@ func capRunes(s string, n int) string {
 	return string(r[:n])
 }
 
+// normalizeID приводит trace_id/span_id/parent_span_id к каноническому виду:
+// обрезка пробелов, нижний регистр, кап длины. Регистр hex'а выбирает тот, кто
+// его кодирует (OTLP везёт trace id 16 сырыми байтами), поэтому один и тот же
+// трейс от разных источников должен храниться одинаково — иначе развалятся и
+// join spans↔transactions по trace_id, и детерминированное семплирование
+// (см. trace.Keep).
+func normalizeID(s string, n int) string {
+	return capRunes(strings.ToLower(strings.TrimSpace(s)), n)
+}
+
 // ParsedEvent — нормализованное Sentry-событие, готовое для пайплайна.
 type ParsedEvent struct {
 	EventID        string
@@ -52,6 +62,11 @@ type ParsedEvent struct {
 	Fingerprint    []string
 	Title          string
 	Culprit        string
+	// TraceID/SpanID — из contexts.trace: SDK кладут их в событие, когда
+	// включён трейсинг. Едут в одноимённые колонки events и связывают ошибку
+	// с транзакцией (пустые, если трейсинга нет).
+	TraceID string
+	SpanID  string
 }
 
 type sentryFrame struct {
@@ -138,6 +153,7 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 	pe.Tags = capTags(pe.Tags)
 	if len(se.Contexts) > 0 && string(se.Contexts) != "null" {
 		pe.ContextsJSON = string(se.Contexts)
+		pe.TraceID, pe.SpanID = parseTraceIDs(se.Contexts)
 	}
 
 	pe.Exceptions = parseExceptions(se.Exception)
@@ -179,19 +195,40 @@ func capTags(tags map[string]string) map[string]string {
 	return out
 }
 
+// parseTraceIDs достаёт contexts.trace.trace_id/span_id события. Битые или
+// отсутствующие contexts — не ошибка события: просто нет связи с трейсом.
+func parseTraceIDs(contexts json.RawMessage) (traceID, spanID string) {
+	var c struct {
+		Trace *struct {
+			TraceID string `json:"trace_id"`
+			SpanID  string `json:"span_id"`
+		} `json:"trace"`
+	}
+	if err := json.Unmarshal(contexts, &c); err != nil || c.Trace == nil {
+		return "", ""
+	}
+	return normalizeID(c.Trace.TraceID, maxTraceID), normalizeID(c.Trace.SpanID, maxSpanID)
+}
+
+// parseTimestamp разбирает timestamp события (unix-число или RFC3339-строка) и
+// ПОДТЯГИВАЕТ его к окну хранения [now-90d, now+1d] (см. timestamp.go): events
+// партиционируется по toYYYYMM(timestamp), и пачка событий с timestamp'ами из
+// сотни разных месяцев иначе заклинила бы вставку целиком. Отсутствующий или
+// нечитаемый timestamp — «сейчас», как и раньше.
 func parseTimestamp(raw json.RawMessage) time.Time {
+	now := time.Now().UTC()
 	var f float64
 	if err := json.Unmarshal(raw, &f); err == nil && f > 0 {
 		sec := int64(f)
-		return time.Unix(sec, int64((f-float64(sec))*1e9)).UTC()
+		return clampToRetentionWindow(time.Unix(sec, int64((f-float64(sec))*1e9)).UTC(), now)
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
-			return ts.UTC()
+			return clampToRetentionWindow(ts.UTC(), now)
 		}
 	}
-	return time.Now().UTC()
+	return now
 }
 
 func parseMessage(raw json.RawMessage) string {

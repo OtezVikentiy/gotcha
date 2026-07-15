@@ -22,6 +22,23 @@ func projectSettingsKeysRevokePath(projectID int64) string {
 	return projectSettingsKeysPath(projectID) + "/revoke"
 }
 
+func projectSettingsPerformancePath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/performance"
+}
+
+// PerfSettingsForm — значения формы «Performance» строками, чтобы при 422
+// перерисовке показать РОВНО то, что отправил пользователь (например «1.5»),
+// а не переигранное через float. На GET заполняется из org.Project и
+// распарсенного perf_detector_config (см. perfFormFromProject в projsettings.go).
+type PerfSettingsForm struct {
+	SampleRate         string
+	ApdexMS            string
+	NPlusOneMin        string
+	NPlusOneMinTotalMs string
+	SlowDBMs           string
+	HTTPFloodMin       string
+}
+
 func keyStatus(k org.Key) string {
 	if k.Revoked {
 		return "revoked"
@@ -49,7 +66,41 @@ templ keyRow(projectID int64, k org.Key) {
 // форма выпуска нового ключа, DSN текущего живого ключа. errMsg —
 // сообщение об ошибке последнего POST, рендерится с тем же статусом (422),
 // что и ответ — тот же принцип, что и у OrgSettings/Teams.
-templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string) {
+// perfSettingsForm — секция «Performance»: доля семплирования транзакций,
+// порог Apdex и пороги детекторов. Один POST на /settings/performance
+// (sameOrigin + owner|admin), при невалидном вводе — 422 с этой же формой.
+templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
+	<h2>Performance</h2>
+	<form method="post" action={ templ.URL(projectSettingsPerformancePath(projectID)) } class="project-perf-form">
+		<label>
+			Transaction sample rate (0..1)
+			<input type="number" name="sample_rate" value={ f.SampleRate } min="0" max="1" step="0.01" required/>
+		</label>
+		<label>
+			Apdex threshold (ms)
+			<input type="number" name="apdex_threshold_ms" value={ f.ApdexMS } min="1" required/>
+		</label>
+		<label>
+			N+1 min (n_plus_one_min)
+			<input type="number" name="n_plus_one_min" value={ f.NPlusOneMin } min="1" required/>
+		</label>
+		<label>
+			N+1 min total ms (n_plus_one_min_total_ms)
+			<input type="number" name="n_plus_one_min_total_ms" value={ f.NPlusOneMinTotalMs } min="1" required/>
+		</label>
+		<label>
+			Slow DB ms (slow_db_ms)
+			<input type="number" name="slow_db_ms" value={ f.SlowDBMs } min="1" required/>
+		</label>
+		<label>
+			HTTP flood min (http_flood_min)
+			<input type="number" name="http_flood_min" value={ f.HTTPFloodMin } min="1" required/>
+		</label>
+		<button type="submit">Сохранить</button>
+	</form>
+}
+
+templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string, perf PerfSettingsForm) {
 	@layout("Настройки "+project.Name, userEmail) {
 		<div class="project-settings">
 			<h1>Настройки проекта { project.Name }</h1>
@@ -89,6 +140,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 			<form method="post" action={ templ.URL(projectSettingsKeysPath(project.ID)) } class="key-create-form">
 				<button type="submit">Новый ключ</button>
 			</form>
+			@perfSettingsForm(project.ID, perf)
 		</div>
 	}
 }

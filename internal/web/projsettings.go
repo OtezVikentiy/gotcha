@@ -1,12 +1,15 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -24,6 +27,26 @@ func projectSettingsKeysPath(projectID int64) string {
 
 func projectSettingsKeysRevokePath(projectID int64) string {
 	return projectSettingsKeysPath(projectID) + "/revoke"
+}
+
+func projectSettingsPerformancePath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/performance"
+}
+
+// perfFormFromProject строит значения формы «Performance» из сохранённого
+// проекта: sample_rate/apdex — как есть, пороги детекторов — через
+// trace.ConfigFromJSON (та же функция, что читает детектор; пустой/битый JSON
+// даёт дефолты, а не нули). Значения строками — так же их ждёт перерисовка 422.
+func perfFormFromProject(p org.Project) templates.PerfSettingsForm {
+	cfg, _ := trace.ConfigFromJSON([]byte(p.PerfDetectorConfig))
+	return templates.PerfSettingsForm{
+		SampleRate:         strconv.FormatFloat(p.TransactionSampleRate, 'g', -1, 64),
+		ApdexMS:            strconv.FormatInt(int64(p.ApdexThresholdMS), 10),
+		NPlusOneMin:        strconv.Itoa(cfg.NPlusOneMin),
+		NPlusOneMinTotalMs: strconv.Itoa(cfg.NPlusOneMinTotalMs),
+		SlowDBMs:           strconv.Itoa(cfg.SlowDBMs),
+		HTTPFloodMin:       strconv.Itoa(cfg.HTTPFloodMin),
+	}
 }
 
 // parsePathProjectID достаёт projectID из {id} пути /projects/{id}/settings*;
@@ -94,14 +117,18 @@ func (h *Handler) projectSettingsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.renderProjectSettings(w, r, http.StatusOK, orgID, projectID, "")
+	h.renderProjectSettings(w, r, http.StatusOK, orgID, projectID, "", nil)
 }
 
 // renderProjectSettings — общий рендер: GET-обработчик и все POST в этом
 // файле на 422 (то же сообщение на месте, без редиректа — тот же принцип,
 // что и renderOrgSettings/renderTeamsPage). orgID уже известен вызывающему
 // (requireProjectRole его вернул) — не запрашиваем его заново.
-func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, status int, orgID, projectID int64, errMsg string) {
+// perfOverride != nil означает перерисовку формы «Performance» с уже
+// отправленными (невалидными) значениями, а не значениями из БД — так 422
+// сохраняет ввод пользователя. Остальные POST в файле передают nil: их формы
+// (rename/keys) перерисовки perf-значений не касаются, берём их из проекта.
+func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, status int, orgID, projectID int64, errMsg string, perfOverride *templates.PerfSettingsForm) {
 	// Отдельного Get-по-id для проекта в org.Service нет — как и в
 	// projectSetup, находим проект в списке всех проектов организации
 	// (findProject определён в onboarding.go, тот же пакет).
@@ -124,8 +151,12 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 	if publicKey := firstLiveKey(keys); publicKey != "" {
 		dsn = buildDSN(h.BaseURL, publicKey, projectID)
 	}
+	perf := perfFormFromProject(project)
+	if perfOverride != nil {
+		perf = *perfOverride
+	}
 	w.WriteHeader(status)
-	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r), perf).Render(r.Context(), w)
 }
 
 // projectSettingsRename — POST /projects/{id}/settings/rename: name.
@@ -154,7 +185,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 	}
 	name := r.FormValue("name")
 	if err := h.Org.RenameProject(r.Context(), projectID, name); err != nil {
-		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, projectSettingsErrorMessage(err))
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, projectSettingsErrorMessage(err), nil)
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -229,4 +260,97 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
+}
+
+// projectSettingsPerformance — POST /projects/{id}/settings/performance:
+// доля семплирования, порог Apdex и пороги детекторов. Валидация на стороне
+// сервера (sample_rate ∈ [0,1], apdex > 0, каждый порог ≥ 1); при ошибке —
+// 422 с перерисовкой формы и сохранением отправленных значений. JSON
+// детекторов собирается marshal'ом trace.DetectorConfig — его json-теги РОВНО
+// те ключи, что читает trace.ConfigFromJSON, поэтому опечатка в ключе
+// невозможна (иначе дефолт молча перекрыл бы ввод).
+func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+
+	// Сырые значения формы — их же возвращаем в форму при 422, чтобы не терять
+	// ввод пользователя (в т.ч. невалидный, например «1.5»).
+	submitted := templates.PerfSettingsForm{
+		SampleRate:         r.FormValue("sample_rate"),
+		ApdexMS:            r.FormValue("apdex_threshold_ms"),
+		NPlusOneMin:        r.FormValue("n_plus_one_min"),
+		NPlusOneMinTotalMs: r.FormValue("n_plus_one_min_total_ms"),
+		SlowDBMs:           r.FormValue("slow_db_ms"),
+		HTTPFloodMin:       r.FormValue("http_flood_min"),
+	}
+	reject := func(msg string) {
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, msg, &submitted)
+	}
+
+	sampleRate, err := strconv.ParseFloat(submitted.SampleRate, 64)
+	// math.IsNaN отдельно: NaN проходит любое сравнение <0/>1 (все сравнения с
+	// NaN ложны), так что без явной проверки «NaN» сохранился бы в колонку.
+	if err != nil || math.IsNaN(sampleRate) || sampleRate < 0 || sampleRate > 1 {
+		reject("sample rate должен быть числом в диапазоне [0, 1]")
+		return
+	}
+	apdexMS, err := strconv.ParseInt(submitted.ApdexMS, 10, 32)
+	if err != nil || apdexMS <= 0 {
+		reject("Apdex threshold должен быть положительным числом")
+		return
+	}
+	nPlusOneMin, ok1 := parsePerfThreshold(submitted.NPlusOneMin)
+	nPlusOneTotal, ok2 := parsePerfThreshold(submitted.NPlusOneMinTotalMs)
+	slowDBMs, ok3 := parsePerfThreshold(submitted.SlowDBMs)
+	httpFloodMin, ok4 := parsePerfThreshold(submitted.HTTPFloodMin)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		reject("пороги детекторов должны быть целыми числами ≥ 1")
+		return
+	}
+
+	cfgJSON, err := json.Marshal(trace.DetectorConfig{
+		NPlusOneMin:        nPlusOneMin,
+		NPlusOneMinTotalMs: nPlusOneTotal,
+		SlowDBMs:           slowDBMs,
+		HTTPFloodMin:       httpFloodMin,
+	})
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := h.Org.UpdatePerfSettings(r.Context(), projectID, sampleRate, int32(apdexMS), string(cfgJSON)); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
+}
+
+// parsePerfThreshold парсит порог детектора: целое ≥ 1. Ноль/отрицательное
+// отвергается на входе — иначе withDefaults молча заменил бы его дефолтом, и
+// «0» в форме превратился бы в 500 без объяснений.
+func parsePerfThreshold(raw string) (int, bool) {
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 1 {
+		return 0, false
+	}
+	return v, true
 }

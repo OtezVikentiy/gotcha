@@ -29,6 +29,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.RetentionDays != 90 {
 		t.Errorf("RetentionDays = %d, want 90", cfg.RetentionDays)
 	}
+	if cfg.SpanRetentionDays != 30 {
+		t.Errorf("SpanRetentionDays = %d, want 30", cfg.SpanRetentionDays)
+	}
 	if cfg.DefaultEventQuota != 1000000 {
 		t.Errorf("DefaultEventQuota = %d, want 1000000", cfg.DefaultEventQuota)
 	}
@@ -64,6 +67,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 		"GOTCHA_SMTP_PASSWORD":       "s3cret",
 		"GOTCHA_SMTP_FROM":           "gotcha@example.com",
 		"GOTCHA_RETENTION_DAYS":      "30",
+		"GOTCHA_SPAN_RETENTION_DAYS": "7",
 		"GOTCHA_DEFAULT_EVENT_QUOTA": "50000",
 		"GOTCHA_MAX_EVENT_BYTES":     "2097152",
 		"GOTCHA_SECRET_KEY":          "prod-secret",
@@ -89,6 +93,9 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 	if cfg.RetentionDays != 30 || cfg.DefaultEventQuota != 50000 || cfg.MaxEventBytes != 2097152 {
 		t.Errorf("numeric overrides failed: %+v", cfg)
+	}
+	if cfg.SpanRetentionDays != 7 {
+		t.Errorf("SpanRetentionDays = %d, want 7", cfg.SpanRetentionDays)
 	}
 	if cfg.SecretKey != "prod-secret" {
 		t.Errorf("SecretKey = %q", cfg.SecretKey)
@@ -167,6 +174,15 @@ func TestLoadConfigNonPositiveRetention(t *testing.T) {
 		env := map[string]string{"GOTCHA_RETENTION_DAYS": v}
 		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
 			t.Fatalf("GOTCHA_RETENTION_DAYS=%q: want error, got nil", v)
+		}
+	}
+}
+
+func TestLoadConfigNonPositiveSpanRetention(t *testing.T) {
+	for _, v := range []string{"0", "-5"} {
+		env := map[string]string{"GOTCHA_SPAN_RETENTION_DAYS": v}
+		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
+			t.Fatalf("GOTCHA_SPAN_RETENTION_DAYS=%q: want error, got nil", v)
 		}
 	}
 }

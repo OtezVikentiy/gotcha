@@ -199,6 +199,11 @@ func boolToUint8(b bool) uint8 {
 }
 
 func (w *ResultWriter) insert(ctx context.Context, rows []resultRow) error {
+	// ВНИМАНИЕ: INSERT без списка колонок требует значение для КАЖДОЙ колонки
+	// check_results в порядке объявления. Добавляете колонку в миграции —
+	// обязаны поправить и этот Append (или перейти на явный список колонок,
+	// как сделано в internal/event/batcher.go), иначе вставка результатов
+	// проверок сломается в рантайме.
 	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO check_results")
 	if err != nil {
 		return err

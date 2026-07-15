@@ -41,6 +41,12 @@ func pgx5URL(dsn string) string {
 }
 
 // MigrateCH применяет CH-миграции. Идемпотентна.
+//
+// Драйвер ClickHouse шлёт файл миграции одним Exec: в каждом файле
+// migrations/ch ровно один statement. Multi-statement (x-multi-statement)
+// намеренно не включаем — драйвер режет файл по любой ';', не разбирая
+// строковые литералы, и одна точка с запятой внутри кавычек молча испортила
+// бы миграцию. Нужен ещё один statement — заводите ещё один файл.
 func MigrateCH(dsn string) error {
 	return up("migrations/ch", chMigrations, dsn)
 }
@@ -64,14 +70,33 @@ func up(dir string, fsys embed.FS, url string) error {
 // ApplyRetention выставляет TTL таблиц events и check_results согласно
 // конфигу инстанса. Вызывается при каждом старте: ретеншн — свойство
 // инсталляции, не миграции.
+//
+// Таблица transactions намеренно НЕ управляется отсюда: её TTL зафиксирован
+// миграцией на 90 днях, отдельной ручки под неё в этом плане нет. MV
+// transactions_5m — без TTL by design (мелкие агрегаты, известный
+// компромисс). Спаны ретенируются отдельным числом дней — см.
+// ApplySpanRetention.
 func ApplyRetention(ctx context.Context, conn driver.Conn, days int) error {
-	for _, table := range []string{"events", "check_results"} {
+	return applyTableTTL(ctx, conn, []string{"events", "check_results"}, days)
+}
+
+// ApplySpanRetention выставляет TTL таблицы spans на отдельное число дней
+// (GOTCHA_SPAN_RETENTION_DAYS): спаны обычно живут короче событий. Тот же
+// механизм, что и ApplyRetention (SHOW CREATE TABLE → needsRetention →
+// ALTER MODIFY TTL), вынесен в общий applyTableTTL.
+func ApplySpanRetention(ctx context.Context, conn driver.Conn, days int) error {
+	return applyTableTTL(ctx, conn, []string{"spans"}, days)
+}
+
+// applyTableTTL приводит TTL перечисленных таблиц к days дням. Идемпотентна:
+// ALTER ... MODIFY TTL запускает мутацию таблицы — не дёргаем её на каждом
+// старте, если TTL уже совпадает.
+func applyTableTTL(ctx context.Context, conn driver.Conn, tables []string, days int) error {
+	for _, table := range tables {
 		var ddl string
 		if err := conn.QueryRow(ctx, "SHOW CREATE TABLE "+table).Scan(&ddl); err != nil {
 			return fmt.Errorf("apply retention: read ddl %s: %w", table, err)
 		}
-		// ALTER ... MODIFY TTL запускает мутацию таблицы — не дёргаем её
-		// на каждом старте, если TTL уже совпадает.
 		if !needsRetention(ddl, days) {
 			continue
 		}
@@ -120,6 +145,24 @@ func MigrateDownPG(dsn string) error {
 	defer m.Close()
 	if err := m.Down(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate down pg: %w", err)
+	}
+	return nil
+}
+
+// MigrateDownCH откатывает все CH-миграции. Используется тестами
+// up-down-up; в проде не вызывается.
+func MigrateDownCH(dsn string) error {
+	src, err := iofs.New(chMigrations, "migrations/ch")
+	if err != nil {
+		return fmt.Errorf("migrations source ch: %w", err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", src, dsn)
+	if err != nil {
+		return fmt.Errorf("migrate init ch: %w", err)
+	}
+	defer m.Close()
+	if err := m.Down(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrate down ch: %w", err)
 	}
 	return nil
 }

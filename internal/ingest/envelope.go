@@ -13,14 +13,19 @@ import (
 // ErrTooLarge — item в envelope превышает лимит размера.
 var ErrTooLarge = errors.New("ingest: envelope item too large")
 
-// Envelope — распакованный envelope: заголовок и payload'ы event-item'ов.
+// Envelope — распакованный envelope: заголовок и payload'ы item'ов, которые мы
+// умеем обрабатывать: события (type=event) и транзакции (type=transaction).
 type Envelope struct {
 	EventID string
 	Events  [][]byte
+	// Transactions — payload'ы item'ов type=transaction; идут отдельным путём
+	// (свой парсер, своя квота, своё семплирование), см. Handler.envelope.
+	Transactions [][]byte
 }
 
 // ParseEnvelope разбирает envelope-формат Sentry: JSON-заголовок, затем
-// пары (JSON-заголовок item'а, payload). Item'ы не-event типов пропускаются.
+// пары (JSON-заголовок item'а, payload). Item'ы прочих типов (session,
+// attachment, client_report...) пропускаются.
 func ParseEnvelope(r io.Reader, maxItem int64) (*Envelope, error) {
 	br := bufio.NewReader(r)
 
@@ -81,8 +86,11 @@ func ParseEnvelope(r io.Reader, maxItem int64) (*Envelope, error) {
 			}
 		}
 
-		if ih.Type == "event" {
+		switch ih.Type {
+		case "event":
 			env.Events = append(env.Events, payload)
+		case "transaction":
+			env.Transactions = append(env.Transactions, payload)
 		}
 	}
 }
