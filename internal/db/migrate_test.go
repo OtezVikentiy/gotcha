@@ -715,3 +715,51 @@ func TestMigrate0012OAuthIdentities(t *testing.T) {
 		t.Fatal("duplicate (provider,subject) must violate PK")
 	}
 }
+
+func TestMigrateMetricSchemaPG(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	var col string
+	if err := pool.QueryRow(ctx, `SELECT column_name FROM information_schema.columns
+		WHERE table_name='org_usage' AND column_name='metrics_count'`).Scan(&col); err != nil {
+		t.Fatalf("metrics_count column: %v", err)
+	}
+	for _, tbl := range []string{"metric_alert_rules", "metric_incidents"} {
+		var n int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM information_schema.tables WHERE table_name=$1", tbl).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("table %s: n=%d err=%v", tbl, n, err)
+		}
+	}
+	// CHECK на aggregation отвергает мусор.
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold) VALUES (1,'m','bogus','gt',1)"); err == nil {
+		t.Error("want CHECK violation for invalid aggregation")
+	}
+}
+
+func TestMigrateMetricPointsCH(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	ctx := context.Background()
+	if err := conn.Exec(ctx,
+		"INSERT INTO metric_points (project_id,name,type,ts,value) VALUES (1,'m','gauge',now64(3),1.5)"); err != nil {
+		t.Fatalf("insert metric_points: %v", err)
+	}
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM metric_points WHERE project_id=1").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("count = %d err=%v", n, err)
+	}
+	// Ретенция идемпотентна и переопределяет TTL.
+	if err := db.ApplyMetricRetention(ctx, conn, 7); err != nil {
+		t.Fatalf("ApplyMetricRetention: %v", err)
+	}
+	if err := db.ApplyMetricRetention(ctx, conn, 7); err != nil {
+		t.Fatalf("ApplyMetricRetention (idempotent): %v", err)
+	}
+}

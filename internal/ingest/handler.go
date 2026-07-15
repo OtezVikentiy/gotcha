@@ -13,6 +13,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
@@ -32,6 +33,19 @@ type Handler struct {
 	// Projects — настройки проекта (transaction_sample_rate). nil → семплируем
 	// все транзакции (rate = 1).
 	Projects ProjectSettings
+
+	// Metrics — приёмник OTLP-метрик (этап 6): /v1/metrics кладёт распарсенные
+	// точки сюда (metric.Writer ему удовлетворяет). nil → метрики выключены,
+	// эндпоинт отвечает успехом без записи (коллектор не ретраит вечно).
+	Metrics MetricSink
+	// MetricQuota — квота МЕТРИК (metric_quota против org_usage.metrics_count),
+	// отдельный счётчик. nil → метрики не квотируются.
+	MetricQuota QuotaChecker
+}
+
+// MetricSink принимает распарсенную metric-точку. Реализация — *metric.Writer.
+type MetricSink interface {
+	Add(projectID int64, p metric.MetricPoint)
 }
 
 func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEventBytes int64) *Handler {
@@ -44,6 +58,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// OTLP — ВТОРОЙ ВХОД в тот же пайплайн (см. otlp.go): своей квоты, своей
 	// модели и своих таблиц у него нет.
 	mux.HandleFunc("POST /v1/traces", h.otlpTraces)
+	// OTLP-метрики (этап 6) — третий вход в ingest: своя квота и своя таблица
+	// metric_points (см. otlp.go otlpMetrics).
+	mux.HandleFunc("POST /v1/metrics", h.otlpMetrics)
 }
 
 // authenticate проверяет ключ проекта; при успехе возвращает ключ и true. При

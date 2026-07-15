@@ -7,9 +7,63 @@ import (
 	"github.com/a-h/templ"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
+
+// metricSeriesSVG рисует одну полилинию по ряду metric.Point, нормированную по
+// min/max значения. Пустой ряд → плоская линия (flatlineSVG). points приходят
+// из metric.Query.Series (числа), поэтому текст SVG состоит только из чисел —
+// templ.Raw безопасен, как в latencyLinesSVG.
+func metricSeriesSVG(points []metric.Point, w, h int) templ.Component {
+	return templ.Raw(metricSeriesMarkup(points, w, h))
+}
+
+func metricSeriesMarkup(points []metric.Point, w, h int) string {
+	if len(points) == 0 {
+		return flatlineSVG(w, h)
+	}
+	min, max := points[0].V, points[0].V
+	for _, p := range points {
+		if p.V < min {
+			min = p.V
+		}
+		if p.V > max {
+			max = p.V
+		}
+	}
+	span := max - min
+	if span == 0 {
+		return flatlineSVG(w, h)
+	}
+	n := len(points)
+	var pts strings.Builder
+	for i, p := range points {
+		var x float64
+		if n > 1 {
+			x = float64(i) / float64(n-1) * float64(w)
+		}
+		y := float64(h) - (p.V-min)/span*float64(h)
+		if i > 0 {
+			pts.WriteByte(' ')
+		}
+		pts.WriteString(formatCoord(x))
+		pts.WriteByte(',')
+		pts.WriteString(formatCoord(y))
+	}
+	var sb strings.Builder
+	sb.WriteString(`<svg class="metric-chart" viewBox="0 0 `)
+	sb.WriteString(strconv.Itoa(w))
+	sb.WriteByte(' ')
+	sb.WriteString(strconv.Itoa(h))
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(`<polyline points="`)
+	sb.WriteString(pts.String())
+	sb.WriteString(`" fill="none" stroke="#5b8cff" stroke-width="1.5"/>`)
+	sb.WriteString(`</svg>`)
+	return sb.String()
+}
 
 // sparklineWidth/Height — размер инлайновых SVG-спарклайнов в списке issues.
 const (

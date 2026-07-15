@@ -15,11 +15,13 @@ import (
 	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
@@ -135,6 +137,65 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		h.enqueueSampled(projectID, rate, tx)
 	}
 	writeOTLPResponse(w, enc)
+}
+
+// otlpMetrics — приём OTLP-метрик (этап 6). Каркас копирует otlpTraces
+// (Bearer-DSN auth, квота, лимит тела, proto+JSON), но без sampling/TracingEnabled:
+// метрики не семплируются и не зависят от флага трейсинга. Метрики выключены
+// (h.Metrics == nil) → отвечаем успехом без записи (коллектор не ретраит вечно).
+func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
+	key, ok := h.otlpAuthenticate(w, r)
+	if !ok {
+		return
+	}
+	enc, ok := otlpEncodingOf(r.Header.Get("Content-Type"))
+	if !ok {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "unsupported content-type")
+		return
+	}
+	if h.Metrics == nil {
+		writeOTLPResponse(w, enc)
+		return
+	}
+	if !h.allow(r.Context(), h.MetricQuota, key.OrgID, "metric") {
+		writeQuotaExceeded(w, "metric quota exceeded")
+		return
+	}
+	body, closeBody, err := h.body(w, r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
+		return
+	}
+	defer closeBody()
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "export too large")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "bad body")
+		return
+	}
+	var req metricspb.MetricsData
+	if err := otlpUnmarshalMetrics(enc, raw, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "malformed otlp payload")
+		return
+	}
+	for _, p := range metric.MapOTLP(req.GetResourceMetrics(), time.Now().UTC()) {
+		h.Metrics.Add(key.ProjectID, p)
+	}
+	writeOTLPResponse(w, enc)
+}
+
+// otlpUnmarshalMetrics — разбор тела метрик. В отличие от otlpUnmarshal (трейсы),
+// hex-id переписывание не нужно: у метрик нет верхнеуровневых байтовых
+// идентификаторов, которые мы читаем (exemplars с trace/span id мы игнорируем).
+func otlpUnmarshalMetrics(enc otlpEncoding, raw []byte, req *metricspb.MetricsData) error {
+	if enc == otlpJSON {
+		return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(raw, req)
+	}
+	return proto.Unmarshal(raw, req)
 }
 
 // otlpAuthenticate резолвит публичный ключ DSN из `Authorization: Bearer <key>`

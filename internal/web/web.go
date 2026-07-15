@@ -18,6 +18,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -128,6 +129,16 @@ type Handler struct {
 	// трогаем.
 	OAuth *oauth.Registry
 
+	// Metrics — чтение агрегатов метрик из ClickHouse (этап 6): страницы
+	// /projects/{id}/metrics[/{name}]. Как Trace/Regressions — отдельное
+	// необязательное поле; nil → маршруты метрик отвечают 404 (nil-guard).
+	Metrics *metric.Query
+	// MetricRules/MetricIncidents — правила и инциденты пороговых алертов на
+	// метрики (этап 6, план 5): страница /projects/{id}/metrics/alerts. nil →
+	// маршруты алертов метрик отвечают 404.
+	MetricRules     *metric.RuleService
+	MetricIncidents *metric.IncidentService
+
 	loginLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
@@ -225,6 +236,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /teams/{id}/members/remove", h.requireUser(http.HandlerFunc(h.teamMembersRemove)))
 	inner.Handle("POST /teams/{id}/projects", h.requireUser(http.HandlerFunc(h.teamProjectsAttach)))
 	inner.Handle("POST /teams/{id}/projects/detach", h.requireUser(http.HandlerFunc(h.teamProjectsDetach)))
+
+	inner.Handle("GET /projects/{id}/metrics", h.requireUser(http.HandlerFunc(h.metricsList)))
+	inner.Handle("GET /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertsPage)))
+	inner.Handle("POST /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertCreate)))
+	inner.Handle("POST /projects/{id}/metrics/alerts/delete", h.requireUser(http.HandlerFunc(h.metricAlertDelete)))
+	inner.Handle("GET /projects/{id}/metrics/{name}", h.requireUser(http.HandlerFunc(h.metricDetail)))
 
 	inner.Handle("GET /projects/{id}/settings", h.requireUser(http.HandlerFunc(h.projectSettingsPage)))
 	inner.Handle("POST /projects/{id}/settings/rename", h.requireUser(http.HandlerFunc(h.projectSettingsRename)))

@@ -1,0 +1,166 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+)
+
+func metricsBasePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics"
+}
+
+func metricLink(projectID int64, name string) string {
+	return metricsBasePath(projectID) + "/" + url.PathEscape(name)
+}
+
+// metricsNav — общая шапка страниц метрик.
+templ metricsNav(projectID int64) {
+	<p>
+		<a href={ templ.URL(performancePath(projectID)) }>Performance</a> ·
+		<a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> ·
+		<a href={ templ.URL(metricsBasePath(projectID)) }>Metrics</a> ·
+		<a href={ templ.URL(metricsBasePath(projectID) + "/alerts") }>Metric Alerts</a> ·
+		<a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> ·
+		<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
+	</p>
+}
+
+// MetricsList — GET /projects/{id}/metrics: перечень метрик проекта.
+templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string) {
+	@layout("Metrics", userEmail) {
+		<div class="metrics">
+			<h1>Metrics</h1>
+			@metricsNav(projectID)
+			if len(metrics) == 0 {
+				<p class="empty">no metrics received yet</p>
+			} else {
+				<table>
+					<thead>
+						<tr><th>Metric</th><th>Type</th><th>Unit</th></tr>
+					</thead>
+					<tbody>
+						for _, m := range metrics {
+							<tr>
+								<td><a href={ templ.URL(metricLink(projectID, m.Name)) }>{ m.Name }</a></td>
+								<td>{ m.Type }</td>
+								<td>{ m.Unit }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}
+
+// MetricDetailVM — данные страницы метрики.
+type MetricDetailVM struct {
+	ProjectID    int64
+	Info         metric.MetricInfo
+	Period       string
+	Agg          string
+	Environment  string
+	Environments []string
+	Labels       map[string][]string
+	LabelKey     string
+	LabelValue   string
+	Chart        templ.Component
+	Percentiles  bool // histogram → доступны p50/p95/p99
+}
+
+func metricAggOptions(percentiles bool) []string {
+	if percentiles {
+		return []string{"p50", "p95", "p99", "avg"}
+	}
+	return []string{"avg", "max", "min", "sum"}
+}
+
+func metricPeriodOptions() []string {
+	return []string{"1h", "24h", "7d"}
+}
+
+// MetricDetail — GET /projects/{id}/metrics/{name}: график ряда с фильтрами.
+templ MetricDetail(vm MetricDetailVM, userEmail string) {
+	@layout("Metric: "+vm.Info.Name, userEmail) {
+		<div class="metric-detail">
+			<h1>{ vm.Info.Name }</h1>
+			<p class="metric-meta">{ vm.Info.Type } · { vm.Info.Unit }</p>
+			@metricsNav(vm.ProjectID)
+			<form method="get" class="metric-filters">
+				<label>
+					Period
+					<select name="period" onchange="this.form.submit()">
+						for _, p := range metricPeriodOptions() {
+							if p == vm.Period {
+								<option value={ p } selected>{ p }</option>
+							} else {
+								<option value={ p }>{ p }</option>
+							}
+						}
+					</select>
+				</label>
+				<label>
+					Aggregation
+					<select name="agg" onchange="this.form.submit()">
+						for _, a := range metricAggOptions(vm.Percentiles) {
+							if a == vm.Agg {
+								<option value={ a } selected>{ a }</option>
+							} else {
+								<option value={ a }>{ a }</option>
+							}
+						}
+					</select>
+				</label>
+				<label>
+					Environment
+					<select name="environment" onchange="this.form.submit()">
+						<option value="">all</option>
+						for _, e := range vm.Environments {
+							if e == vm.Environment {
+								<option value={ e } selected>{ e }</option>
+							} else {
+								<option value={ e }>{ e }</option>
+							}
+						}
+					</select>
+				</label>
+				if vm.LabelKey != "" {
+					<input type="hidden" name="label_key" value={ vm.LabelKey }/>
+					<input type="hidden" name="label_value" value={ vm.LabelValue }/>
+				}
+				<noscript><button type="submit">Apply</button></noscript>
+			</form>
+			<div class="metric-chart-wrap">
+				@vm.Chart
+			</div>
+			if len(vm.Labels) > 0 {
+				<h2>Labels</h2>
+				<ul class="metric-labels">
+					for key, vals := range vm.Labels {
+						<li>
+							<strong>{ key }</strong>:
+							for _, v := range vals {
+								<a href={ templ.URL(metricLabelFilterURL(vm, key, v)) }>{ v }</a>{ " " }
+							}
+						</li>
+					}
+				</ul>
+			}
+		</div>
+	}
+}
+
+// metricLabelFilterURL — ссылка на ту же метрику с фильтром по лейблу.
+func metricLabelFilterURL(vm MetricDetailVM, key, value string) string {
+	q := url.Values{}
+	q.Set("period", vm.Period)
+	q.Set("agg", vm.Agg)
+	if vm.Environment != "" {
+		q.Set("environment", vm.Environment)
+	}
+	q.Set("label_key", key)
+	q.Set("label_value", value)
+	return metricLink(vm.ProjectID, vm.Info.Name) + "?" + q.Encode()
+}

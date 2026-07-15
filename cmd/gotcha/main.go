@@ -16,6 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -82,7 +83,10 @@ func run() error {
 		if err := db.ApplyRetention(ctx, ch, cfg.RetentionDays); err != nil {
 			return err
 		}
-		return db.ApplySpanRetention(ctx, ch, cfg.SpanRetentionDays)
+		if err := db.ApplySpanRetention(ctx, ch, cfg.SpanRetentionDays); err != nil {
+			return err
+		}
+		return db.ApplyMetricRetention(ctx, ch, cfg.MetricRetentionDays)
 	})
 	if err != nil {
 		return err
@@ -210,12 +214,31 @@ func run() error {
 		}
 		go evaluator.Run(ctx)
 
+		// Оценщик пороговых алертов на метрики (этап 6, план 4) — та же ниша, что
+		// и regression-evaluator: периодическая джоба на PG (правила/инциденты) +
+		// CH (агрегаты метрик), алертит через общий outbox. alertSvc/outbox/
+		// emailSender построены выше в этом же блоке (uptime|all).
+		metricEval := &metric.Evaluator{
+			Rules:     metric.NewRuleService(pg),
+			Query:     metric.NewQuery(ch),
+			Incidents: metric.NewIncidentService(pg),
+			Notifier: &metric.MetricNotifier{
+				Alerts:       alertSvc,
+				Outbox:       outbox,
+				BaseURL:      cfg.BaseURL,
+				EmailEnabled: emailSender.Configured(),
+			},
+			Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
+		}
+		go metricEval.Run(ctx)
+
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
 	}
 
 	var pipeline *ingest.Pipeline
 	var batcher *event.Batcher
 	var spanWriter *trace.SpanWriter
+	var metricWriter *metric.Writer
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
 		go batcher.Run()
@@ -225,6 +248,11 @@ func run() error {
 		// (transactions + spans), независимым от батчера событий.
 		spanWriter = trace.NewSpanWriter(ch)
 		go spanWriter.Run()
+
+		// Метрики (этап 6) — третий приёмник ingest-контура: OTLP /v1/metrics
+		// пишет точки в metric_points своим батчером.
+		metricWriter = metric.NewWriter(ch)
+		go metricWriter.Run()
 
 		// Алертинг (план 6) — часть ingest-контура: правила/каналы срабатывают
 		// на события, которые проходят через этот же пайплайн.
@@ -276,6 +304,9 @@ func run() error {
 		// не закрывает приём ошибок и наоборот.
 		ingestHandler.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)
 		ingestHandler.Projects = projectCache
+		// Метрики (этап 6): приёмник + отдельная квота метрик.
+		ingestHandler.Metrics = metricWriter
+		ingestHandler.MetricQuota = ingest.NewOrgMetricQuota(orgSvc)
 		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
@@ -301,6 +332,9 @@ func run() error {
 		// Регрессии (этап 4, план 5): список /projects/{id}/regressions читает
 		// perf_regressions из PG (тот же сервис, что и оценщик выше).
 		webHandler.Regressions = trace.NewRegressionService(pg)
+		webHandler.Metrics = metric.NewQuery(ch)
+		webHandler.MetricRules = metric.NewRuleService(pg)
+		webHandler.MetricIncidents = metric.NewIncidentService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
 		webHandler.SecretKey = cfg.SecretKey
 		webHandler.LocalRegion = cfg.LocalRegion
@@ -332,6 +366,13 @@ func run() error {
 			defer cancel()
 			if err := spanWriter.Close(cctx); err != nil {
 				slog.Error("span writer drain failed", "error", err)
+			}
+		}
+		if metricWriter != nil {
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := metricWriter.Close(cctx); err != nil {
+				slog.Error("metric writer drain failed", "error", err)
 			}
 		}
 		if runner != nil {

@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -36,6 +37,25 @@ type stack struct {
 	org      org.Org
 	project  org.Project
 	key      org.Key
+	metrics  *fakeMetricSink
+}
+
+// fakeMetricSink копит принятые metric-точки для проверок эндпоинта /v1/metrics.
+type fakeMetricSink struct {
+	mu     sync.Mutex
+	points []metric.MetricPoint
+}
+
+func (f *fakeMetricSink) Add(_ int64, p metric.MetricPoint) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.points = append(f.points, p)
+}
+
+func (f *fakeMetricSink) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.points)
 }
 
 func newStack(t *testing.T) *stack {
@@ -76,6 +96,9 @@ func newStack(t *testing.T) *stack {
 	h := ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, 1<<20)
 	h.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)
 	h.Projects = projects
+	metrics := &fakeMetricSink{}
+	h.Metrics = metrics
+	h.MetricQuota = ingest.NewOrgMetricQuota(orgSvc)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -90,7 +113,7 @@ func newStack(t *testing.T) *stack {
 	return &stack{
 		pool: pool, ch: ch, srv: srv,
 		pipeline: pipeline, batcher: batcher, spans: spans,
-		orgSvc: orgSvc, org: o, project: p, key: k,
+		orgSvc: orgSvc, org: o, project: p, key: k, metrics: metrics,
 	}
 }
 

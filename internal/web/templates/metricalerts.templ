@@ -1,0 +1,124 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+)
+
+func metricAlertsBasePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics/alerts"
+}
+
+func fmtFloat(v float64) string {
+	return strconv.FormatFloat(v, 'g', 6, 64)
+}
+
+func comparatorSymbol(c string) string {
+	if c == "lt" {
+		return "<"
+	}
+	return ">"
+}
+
+func metricIncidentBadgeClass(status string) string {
+	if status == "open" {
+		return "badge badge-error"
+	}
+	return "badge badge-paused"
+}
+
+func ruleScope(r metric.Rule) string {
+	scope := r.Environment
+	if scope == "" {
+		scope = "all"
+	}
+	if r.LabelKey != "" {
+		scope += ", " + r.LabelKey + "=" + r.LabelValue
+	}
+	return scope
+}
+
+// MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
+templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, errMsg, userEmail string) {
+	@layout("Metric Alerts", userEmail) {
+		<div class="metric-alerts">
+			<h1>Metric Alerts</h1>
+			@metricsNav(projectID)
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<h2>New rule</h2>
+			<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
+				<label>Metric <input type="text" name="metric_name" required placeholder="http.server.duration"/></label>
+				<label>
+					Aggregation
+					<select name="aggregation">
+						for _, a := range []string{"avg", "max", "min", "sum", "p50", "p95", "p99"} {
+							<option value={ a }>{ a }</option>
+						}
+					</select>
+				</label>
+				<label>
+					Condition
+					<select name="comparator">
+						<option value="gt">&gt;</option>
+						<option value="lt">&lt;</option>
+					</select>
+				</label>
+				<label>Threshold <input type="text" name="threshold" required placeholder="100"/></label>
+				<label>Window (s) <input type="number" name="window_seconds" value="300" min="1" required/></label>
+				<label>Environment <input type="text" name="environment" placeholder="(any)"/></label>
+				<label>Label key <input type="text" name="label_key" placeholder="(none)"/></label>
+				<label>Label value <input type="text" name="label_value"/></label>
+				<button type="submit">Create rule</button>
+			</form>
+			<h2>Rules</h2>
+			if len(rules) == 0 {
+				<p class="empty">no rules yet</p>
+			} else {
+				<table>
+					<thead>
+						<tr><th>Metric</th><th>Condition</th><th>Window</th><th>Scope</th><th></th></tr>
+					</thead>
+					<tbody>
+						for _, rule := range rules {
+							<tr>
+								<td>{ rule.MetricName }</td>
+								<td>{ rule.Aggregation } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
+								<td>{ strconv.Itoa(rule.WindowSeconds) }s</td>
+								<td>{ ruleScope(rule) }</td>
+								<td>
+									<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
+										<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
+										<button type="submit">Delete</button>
+									</form>
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+			<h2>Incidents</h2>
+			if len(incidents) == 0 {
+				<p class="empty">no incidents</p>
+			} else {
+				<table>
+					<thead>
+						<tr><th>Status</th><th>Peak</th><th>Current</th><th>Started</th></tr>
+					</thead>
+					<tbody>
+						for _, in := range incidents {
+							<tr>
+								<td><span class={ metricIncidentBadgeClass(in.Status) }>{ in.Status }</span></td>
+								<td>{ fmtFloat(in.PeakValue) }</td>
+								<td>{ fmtFloat(in.CurrentValue) }</td>
+								<td>{ ago(in.StartedAt) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

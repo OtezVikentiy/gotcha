@@ -88,6 +88,29 @@ func ApplySpanRetention(ctx context.Context, conn driver.Conn, days int) error {
 	return applyTableTTL(ctx, conn, []string{"spans"}, days)
 }
 
+// ApplyMetricRetention выставляет TTL таблицы metric_points на days дней. Как
+// ApplySpanRetention, но по колонке ts (а не timestamp): metric_points своей
+// колонкой времени отличается от events/spans, поэтому применяем TTL напрямую,
+// а не через applyTableTTL (тот захардкожен на timestamp). Идемпотентна через
+// needsRetention.
+func ApplyMetricRetention(ctx context.Context, conn driver.Conn, days int) error {
+	if days < 1 {
+		return fmt.Errorf("apply metric retention: days must be >= 1, got %d", days)
+	}
+	var ddl string
+	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE metric_points").Scan(&ddl); err != nil {
+		return fmt.Errorf("apply metric retention: read ddl: %w", err)
+	}
+	if !needsRetention(ddl, days) {
+		return nil
+	}
+	q := fmt.Sprintf("ALTER TABLE metric_points MODIFY TTL toDateTime(ts) + INTERVAL %d DAY", days)
+	if err := conn.Exec(ctx, q); err != nil {
+		return fmt.Errorf("apply metric retention: %w", err)
+	}
+	return nil
+}
+
 // applyTableTTL приводит TTL перечисленных таблиц к days дням. Идемпотентна:
 // ALTER ... MODIFY TTL запускает мутацию таблицы — не дёргаем её на каждом
 // старте, если TTL уже совпадает.
