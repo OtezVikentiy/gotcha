@@ -193,6 +193,20 @@ func (o *Outbox) FailedForProject(ctx context.Context, projectID int64, limit in
 	return out, rows.Err()
 }
 
+// PurgeOld удаляет доставленные (sent) и окончательно проваленные (failed)
+// задачи старше olderThan. pending не трогает. Гигиена: строки outbox несут
+// секреты каналов в payload и без чистки копятся бесконечно. Возвращает число
+// удалённых.
+func (o *Outbox) PurgeOld(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	tag, err := o.pool.Exec(ctx,
+		"DELETE FROM notification_outbox WHERE status IN ('sent','failed') AND created_at < $1", cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("notify: purge outbox: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""

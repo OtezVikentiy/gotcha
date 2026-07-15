@@ -106,6 +106,16 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		shown = waterfallMaxRows
 	}
 
+	// Profiling-in-context (этап 8): показываем ссылку на flamegraph, если для
+	// этого трейса есть профиль. Best-effort — ошибка проверки не роняет
+	// waterfall, просто прячет ссылку.
+	hasProfile := false
+	if h.Profiles != nil {
+		if ok, err := h.Profiles.HasProfileForTrace(r.Context(), projectID, traceID); err == nil {
+			hasProfile = ok
+		}
+	}
+
 	data := templates.TraceWaterfallData{
 		ProjectID:   projectID,
 		TraceID:     traceID,
@@ -115,6 +125,56 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		Waterfall:   waterfallSVG(spans, errIssues, totalUS, waterfallWidth),
 		ShownRows:   shown,
 		TotalRows:   len(spans),
+		HasProfile:  hasProfile,
 	}
 	_ = templates.TraceWaterfall(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// traceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
+// время этого трейса (profiling-in-context, этап 8). Тот же контур доступа, что
+// waterfall (ProjectForTrace → 404 чужим/неизвестным). Нет профиля → flamegraph
+// с плейсхолдером «нет данных».
+func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if h.Trace == nil || h.Profiles == nil {
+		http.NotFound(w, r)
+		return
+	}
+	traceID := r.PathValue("trace_id")
+	if traceID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !canAccess {
+		http.NotFound(w, r)
+		return
+	}
+	root, err := h.Profiles.FlameForTrace(r.Context(), projectID, traceID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	data := templates.TraceFlameData{
+		TraceID: traceID,
+		Chart:   flamegraphSVG(root, 960),
+	}
+	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
 }

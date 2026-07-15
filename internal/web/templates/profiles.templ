@@ -1,0 +1,130 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+)
+
+func profilesBasePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/profiles"
+}
+
+// profileFlameLink — ссылка на flamegraph группы профилей.
+func profileFlameLink(projectID int64, s profile.ServiceInfo, period, environment string) string {
+	q := url.Values{}
+	q.Set("service", s.Service)
+	q.Set("type", s.Type)
+	if s.Transaction != "" {
+		q.Set("transaction", s.Transaction)
+	}
+	if period != "" {
+		q.Set("period", period)
+	}
+	if environment != "" {
+		q.Set("environment", environment)
+	}
+	return profilesBasePath(projectID) + "/flame?" + q.Encode()
+}
+
+// ProfilesList — GET /projects/{id}/profiles: группы профилей за период.
+templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, environment, userEmail string) {
+	@layout("Profiles", userEmail) {
+		<div class="profiles">
+			<h1>Profiles</h1>
+			<p>
+				<a href={ templ.URL(performancePath(projectID)) }>Performance</a> ·
+				<a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> ·
+				<a href={ templ.URL("/projects/" + strconv.FormatInt(projectID, 10) + "/metrics") }>Metrics</a> ·
+				<a href={ templ.URL(profilesBasePath(projectID)) }>Profiles</a> ·
+				<a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> ·
+				<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
+			</p>
+			<nav class="perf-issues-filters">
+				<a class={ perfStatusFilterClass(period == "1h") } href={ templ.URL(profilesBasePath(projectID) + "?period=1h") }>1h</a>
+				<a class={ perfStatusFilterClass(period == "24h") } href={ templ.URL(profilesBasePath(projectID) + "?period=24h") }>24h</a>
+				<a class={ perfStatusFilterClass(period == "7d") } href={ templ.URL(profilesBasePath(projectID) + "?period=7d") }>7d</a>
+			</nav>
+			if len(services) == 0 {
+				<p class="empty">no profiles received yet</p>
+			} else {
+				<table>
+					<thead>
+						<tr><th>Service</th><th>Type</th><th>Transaction</th><th>Samples</th></tr>
+					</thead>
+					<tbody>
+						for _, s := range services {
+							<tr>
+								<td><a href={ templ.URL(profileFlameLink(projectID, s, period, environment)) }>{ profileDisplayService(s.Service) }</a></td>
+								<td>{ s.Type }</td>
+								<td>{ s.Transaction }</td>
+								<td>{ strconv.FormatUint(s.Samples, 10) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}
+
+func profileDisplayService(service string) string {
+	if service == "" {
+		return "(unknown)"
+	}
+	return service
+}
+
+// ProfileFlameVM — данные страницы flamegraph.
+type ProfileFlameVM struct {
+	ProjectID   int64
+	Service     string
+	Type        string
+	Transaction string
+	Environment string
+	Period      string
+	Chart       templ.Component
+}
+
+// ProfileFlame — GET /projects/{id}/profiles/flame: flamegraph.
+templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
+	@layout("Flamegraph", userEmail) {
+		<div class="profile-flame">
+			<h1>Flamegraph</h1>
+			<p class="metric-meta">
+				{ profileDisplayService(vm.Service) } · { vm.Type }
+				if vm.Transaction != "" {
+					· { vm.Transaction }
+				}
+			</p>
+			<p><a href={ templ.URL(profilesBasePath(vm.ProjectID)) }>← all profiles</a></p>
+			<nav class="perf-issues-filters">
+				@profileFlamePeriodTab(vm, "1h")
+				@profileFlamePeriodTab(vm, "24h")
+				@profileFlamePeriodTab(vm, "7d")
+			</nav>
+			<div class="flamegraph-wrap">
+				@vm.Chart
+			</div>
+		</div>
+	}
+}
+
+templ profileFlamePeriodTab(vm ProfileFlameVM, period string) {
+	<a class={ perfStatusFilterClass(vm.Period == period) } href={ templ.URL(profileFlamePeriodURL(vm, period)) }>{ period }</a>
+}
+
+func profileFlamePeriodURL(vm ProfileFlameVM, period string) string {
+	q := url.Values{}
+	q.Set("service", vm.Service)
+	q.Set("type", vm.Type)
+	if vm.Transaction != "" {
+		q.Set("transaction", vm.Transaction)
+	}
+	if vm.Environment != "" {
+		q.Set("environment", vm.Environment)
+	}
+	q.Set("period", period)
+	return profilesBasePath(vm.ProjectID) + "/flame?" + q.Encode()
+}

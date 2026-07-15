@@ -111,6 +111,27 @@ func ApplyMetricRetention(ctx context.Context, conn driver.Conn, days int) error
 	return nil
 }
 
+// ApplyProfileRetention выставляет TTL таблицы profile_samples на days дней
+// (ALTER MODIFY TTL по колонке ts, как ApplyMetricRetention). Профили тяжёлые,
+// поэтому ретенция по умолчанию короче (7 дней). Идемпотентна через needsRetention.
+func ApplyProfileRetention(ctx context.Context, conn driver.Conn, days int) error {
+	if days < 1 {
+		return fmt.Errorf("apply profile retention: days must be >= 1, got %d", days)
+	}
+	var ddl string
+	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE profile_samples").Scan(&ddl); err != nil {
+		return fmt.Errorf("apply profile retention: read ddl: %w", err)
+	}
+	if !needsRetention(ddl, days) {
+		return nil
+	}
+	q := fmt.Sprintf("ALTER TABLE profile_samples MODIFY TTL toDateTime(ts) + INTERVAL %d DAY", days)
+	if err := conn.Exec(ctx, q); err != nil {
+		return fmt.Errorf("apply profile retention: %w", err)
+	}
+	return nil
+}
+
 // applyTableTTL приводит TTL перечисленных таблиц к days дням. Идемпотентна:
 // ALTER ... MODIFY TTL запускает мутацию таблицы — не дёргаем её на каждом
 // старте, если TTL уже совпадает.

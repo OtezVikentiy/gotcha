@@ -282,3 +282,32 @@ func TestLoadConfigOAuthMissingSecretFails(t *testing.T) {
 		t.Fatal("enabled OIDC without secret must fail at startup")
 	}
 }
+
+func TestLoadConfigProfileDefaults(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.ProfileRetentionDays != 7 {
+		t.Errorf("ProfileRetentionDays = %d, want 7", cfg.ProfileRetentionDays)
+	}
+	if cfg.ProfileQuota != 1_000_000 {
+		t.Errorf("ProfileQuota = %d, want 1000000", cfg.ProfileQuota)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_RETENTION_DAYS": "0"}), nil); err == nil {
+		t.Error("zero profile retention must fail")
+	}
+}
+
+func TestLoadConfigOutboxRetention(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.OutboxRetentionDays != 7 {
+		t.Errorf("OutboxRetentionDays = %d, want 7", cfg.OutboxRetentionDays)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_OUTBOX_RETENTION_DAYS": "0"}), nil); err == nil {
+		t.Error("zero outbox retention must fail")
+	}
+}

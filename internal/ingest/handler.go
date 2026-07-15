@@ -15,6 +15,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -41,11 +42,24 @@ type Handler struct {
 	// MetricQuota — квота МЕТРИК (metric_quota против org_usage.metrics_count),
 	// отдельный счётчик. nil → метрики не квотируются.
 	MetricQuota QuotaChecker
+
+	// Profiles — приёмник профилей (этап 7): Sentry-профили из envelope и
+	// pprof из /profiles/pprof кладут распарсенные Profile сюда (*profile.Writer).
+	// nil → профили выключены (не пишутся).
+	Profiles ProfileSink
+	// ProfileQuota — квота ПРОФИЛЕЙ (profile_quota против org_usage.profiles_count).
+	// nil → профили не квотируются.
+	ProfileQuota QuotaChecker
 }
 
 // MetricSink принимает распарсенную metric-точку. Реализация — *metric.Writer.
 type MetricSink interface {
 	Add(projectID int64, p metric.MetricPoint)
+}
+
+// ProfileSink принимает распарсенный профиль. Реализация — *profile.Writer.
+type ProfileSink interface {
+	Add(projectID int64, p profile.Profile)
 }
 
 func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEventBytes int64) *Handler {
@@ -61,6 +75,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// OTLP-метрики (этап 6) — третий вход в ingest: своя квота и своя таблица
 	// metric_points (см. otlp.go otlpMetrics).
 	mux.HandleFunc("POST /v1/metrics", h.otlpMetrics)
+	// Профили pprof (этап 7): свой минимальный эндпоинт (стандарта пуша pprof
+	// нет), Bearer-DSN auth + метаданные из query.
+	mux.HandleFunc("POST /profiles/pprof", h.pprofIngest)
 }
 
 // authenticate проверяет ключ проекта; при успехе возвращает ключ и true. При
@@ -251,6 +268,23 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	}
 	if txAllowed {
 		h.ingestTransactions(r.Context(), projectID, env.Transactions)
+	}
+	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
+	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
+	if len(env.Profiles) > 0 && h.Profiles != nil {
+		if h.allow(r.Context(), h.ProfileQuota, key.OrgID, "profile") {
+			for _, raw := range env.Profiles {
+				prof, err := profile.ParseSentry(raw, time.Now().UTC())
+				if err != nil {
+					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
+					continue
+				}
+				h.Profiles.Add(key.ProjectID, prof)
+			}
+		} else {
+			slog.Warn("ingest: profile quota exceeded, dropping profiles",
+				"items", len(env.Profiles), "project_id", projectID, "org_id", key.OrgID)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }

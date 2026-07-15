@@ -118,6 +118,55 @@ func (s *Service) IncMetricUsage(ctx context.Context, orgID int64, month time.Ti
 	return n, nil
 }
 
+// ProfileUsage возвращает счётчик профилей организации за месяц (0, если нет
+// записи). Отдельный счётчик (org_usage.profiles_count).
+func (s *Service) ProfileUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		"SELECT profiles_count FROM org_usage WHERE org_id = $1 AND period_month = $2",
+		orgID, monthStart(month)).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("org: profile usage: %w", err)
+	}
+	return n, nil
+}
+
+// IncProfileUsage увеличивает счётчик профилей организации за месяц на 1.
+func (s *Service) IncProfileUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO org_usage (org_id, period_month, profiles_count)
+		VALUES ($1, $2, 1)
+		ON CONFLICT (org_id, period_month) DO UPDATE SET
+			profiles_count = org_usage.profiles_count + 1
+		RETURNING profiles_count`,
+		orgID, monthStart(month)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("org: inc profile usage: %w", err)
+	}
+	return n, nil
+}
+
+// SetProfileQuota меняет месячную квоту профилей организации. Quota >= 0 required
+// (0 means unlimited).
+func (s *Service) SetProfileQuota(ctx context.Context, orgID, quota int64) error {
+	if quota < 0 {
+		return ErrInvalidQuota
+	}
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE organizations SET profile_quota = $2 WHERE id = $1", orgID, quota)
+	if err != nil {
+		return fmt.Errorf("org: set profile quota: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetMetricQuota меняет месячную квоту метрик организации. Quota >= 0 required
 // (0 means unlimited).
 func (s *Service) SetMetricQuota(ctx context.Context, orgID, quota int64) error {

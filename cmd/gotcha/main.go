@@ -19,6 +19,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
@@ -86,7 +87,10 @@ func run() error {
 		if err := db.ApplySpanRetention(ctx, ch, cfg.SpanRetentionDays); err != nil {
 			return err
 		}
-		return db.ApplyMetricRetention(ctx, ch, cfg.MetricRetentionDays)
+		if err := db.ApplyMetricRetention(ctx, ch, cfg.MetricRetentionDays); err != nil {
+			return err
+		}
+		return db.ApplyProfileRetention(ctx, ch, cfg.ProfileRetentionDays)
 	})
 	if err != nil {
 		return err
@@ -239,6 +243,7 @@ func run() error {
 	var batcher *event.Batcher
 	var spanWriter *trace.SpanWriter
 	var metricWriter *metric.Writer
+	var profileWriter *profile.Writer
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
 		go batcher.Run()
@@ -254,6 +259,11 @@ func run() error {
 		metricWriter = metric.NewWriter(ch)
 		go metricWriter.Run()
 
+		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и
+		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
+		profileWriter = profile.NewWriter(ch)
+		go profileWriter.Run()
+
 		// Алертинг (план 6) — часть ingest-контура: правила/каналы срабатывают
 		// на события, которые проходят через этот же пайплайн.
 		senders := map[string]notify.Sender{
@@ -267,6 +277,14 @@ func run() error {
 		}
 		notifyWorker := &notify.Worker{Outbox: outbox, Senders: senders}
 		go notifyWorker.Run(ctx)
+
+		// Чистка notification_outbox (техдолг): доставленные/проваленные строки
+		// несут секреты каналов в payload и без ретенции копятся бесконечно.
+		outboxJanitor := &notify.OutboxJanitor{
+			Outbox:    outbox,
+			Retention: time.Duration(cfg.OutboxRetentionDays) * 24 * time.Hour,
+		}
+		go outboxJanitor.Run(ctx)
 
 		evaluator := &alert.Evaluator{
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
@@ -307,6 +325,9 @@ func run() error {
 		// Метрики (этап 6): приёмник + отдельная квота метрик.
 		ingestHandler.Metrics = metricWriter
 		ingestHandler.MetricQuota = ingest.NewOrgMetricQuota(orgSvc)
+		// Профили (этап 7): приёмник + отдельная квота профилей.
+		ingestHandler.Profiles = profileWriter
+		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
 		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
@@ -335,6 +356,7 @@ func run() error {
 		webHandler.Metrics = metric.NewQuery(ch)
 		webHandler.MetricRules = metric.NewRuleService(pg)
 		webHandler.MetricIncidents = metric.NewIncidentService(pg)
+		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.OAuth = buildRegistry(cfg)
 		webHandler.SecretKey = cfg.SecretKey
 		webHandler.LocalRegion = cfg.LocalRegion
@@ -373,6 +395,13 @@ func run() error {
 			defer cancel()
 			if err := metricWriter.Close(cctx); err != nil {
 				slog.Error("metric writer drain failed", "error", err)
+			}
+		}
+		if profileWriter != nil {
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := profileWriter.Close(cctx); err != nil {
+				slog.Error("profile writer drain failed", "error", err)
 			}
 		}
 		if runner != nil {

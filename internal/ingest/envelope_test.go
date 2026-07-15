@@ -41,6 +41,8 @@ func TestParseEnvelopeMixedItems(t *testing.T) {
 {"sid":"x"}
 {"type":"transaction"}
 {"transaction":"GET /x"}
+{"type":"profile"}
+{"platform":"go"}
 `
 	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20)
 	if err != nil {
@@ -51,6 +53,9 @@ func TestParseEnvelopeMixedItems(t *testing.T) {
 	}
 	if len(env.Transactions) != 1 || !strings.Contains(string(env.Transactions[0]), "GET /x") {
 		t.Errorf("transactions = %q", env.Transactions)
+	}
+	if len(env.Profiles) != 1 || !strings.Contains(string(env.Profiles[0]), "\"platform\":\"go\"") {
+		t.Errorf("profiles = %q", env.Profiles)
 	}
 }
 

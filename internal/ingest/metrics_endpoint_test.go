@@ -3,6 +3,7 @@ package ingest_test
 import (
 	"bytes"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -71,5 +72,20 @@ func TestOTLPMetricsEndpoint(t *testing.T) {
 	resp = s.postMetrics(t, raw, "text/plain", s.key.PublicKey)
 	if resp.StatusCode != http.StatusUnsupportedMediaType {
 		t.Fatalf("bad content-type status = %d, want 415", resp.StatusCode)
+	}
+}
+
+func TestEnvelopeProfileIngest(t *testing.T) {
+	s := newStack(t)
+	profileItem := `{"platform":"python","transaction":{"name":"GET /x"},` +
+		`"profile":{"frames":[{"function":"main"},{"function":"slow"}],"stacks":[[1,0]],"samples":[{"stack_id":0},{"stack_id":0}]}}`
+	body := "{}\n{\"type\":\"profile\"}\n" + profileItem + "\n"
+	resp := s.post(t, "/api/"+strconv.FormatInt(s.project.ID, 10)+"/envelope/", body, false, s.key.PublicKey)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("envelope status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if s.profiles.count() != 1 {
+		t.Fatalf("profile sink got %d, want 1", s.profiles.count())
 	}
 }

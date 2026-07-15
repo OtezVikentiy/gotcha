@@ -22,6 +22,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -139,6 +140,10 @@ type Handler struct {
 	MetricRules     *metric.RuleService
 	MetricIncidents *metric.IncidentService
 
+	// Profiles — чтение профилей из ClickHouse (этап 7): страницы
+	// /projects/{id}/profiles[/flame]. Необязательное поле; nil → 404.
+	Profiles *profile.Query
+
 	loginLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
@@ -243,6 +248,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/metrics/alerts/delete", h.requireUser(http.HandlerFunc(h.metricAlertDelete)))
 	inner.Handle("GET /projects/{id}/metrics/{name}", h.requireUser(http.HandlerFunc(h.metricDetail)))
 
+	inner.Handle("GET /projects/{id}/profiles", h.requireUser(http.HandlerFunc(h.profilesList)))
+	inner.Handle("GET /projects/{id}/profiles/flame", h.requireUser(http.HandlerFunc(h.profileFlame)))
+
 	inner.Handle("GET /projects/{id}/settings", h.requireUser(http.HandlerFunc(h.projectSettingsPage)))
 	inner.Handle("POST /projects/{id}/settings/rename", h.requireUser(http.HandlerFunc(h.projectSettingsRename)))
 	inner.Handle("POST /projects/{id}/settings/keys", h.requireUser(http.HandlerFunc(h.projectSettingsKeyCreate)))
@@ -321,6 +329,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// чтение, POST'ов и sameOrigin здесь нет. Как и /performance*,
 	// регистрируется безусловно — h.Trace собран в режимах "web"/"all".
 	inner.Handle("GET /traces/{trace_id}", h.requireUser(http.HandlerFunc(h.traceWaterfall)))
+	inner.Handle("GET /traces/{trace_id}/flame", h.requireUser(http.HandlerFunc(h.traceFlame)))
 
 	// Настройки статус-страниц проекта (план 5, задача 4): только owner/admin
 	// организации проекта (requireProjectRole), как окна обслуживания. У

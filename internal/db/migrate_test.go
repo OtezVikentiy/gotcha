@@ -763,3 +763,47 @@ func TestMigrateMetricPointsCH(t *testing.T) {
 		t.Fatalf("ApplyMetricRetention (idempotent): %v", err)
 	}
 }
+
+func TestMigrateProfileSamples(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	var col string
+	if err := pool.QueryRow(ctx, `SELECT column_name FROM information_schema.columns
+		WHERE table_name='org_usage' AND column_name='profiles_count'`).Scan(&col); err != nil {
+		t.Fatalf("profiles_count column: %v", err)
+	}
+	conn := testenv.MigratedCH(t)
+	if err := conn.Exec(ctx,
+		"INSERT INTO profile_samples (project_id,profile_type,ts,stack,value) VALUES (1,'cpu',now64(3),['a','b'],5)"); err != nil {
+		t.Fatalf("insert profile_samples: %v", err)
+	}
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM profile_samples WHERE project_id=1").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("count = %d err=%v", n, err)
+	}
+	if err := db.ApplyProfileRetention(ctx, conn, 3); err != nil {
+		t.Fatalf("retention: %v", err)
+	}
+	if err := db.ApplyProfileRetention(ctx, conn, 3); err != nil {
+		t.Fatalf("retention idempotent: %v", err)
+	}
+}
+
+func TestMigrateProfileTraceID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	ctx := context.Background()
+	if err := conn.Exec(ctx,
+		"INSERT INTO profile_samples (project_id,profile_type,ts,stack,value,trace_id) VALUES (1,'cpu',now64(3),['a'],5,'tr-1')"); err != nil {
+		t.Fatalf("insert with trace_id: %v", err)
+	}
+	var tid string
+	if err := conn.QueryRow(ctx, "SELECT trace_id FROM profile_samples WHERE project_id=1 LIMIT 1").Scan(&tid); err != nil || tid != "tr-1" {
+		t.Fatalf("trace_id = %q err=%v", tid, err)
+	}
+}

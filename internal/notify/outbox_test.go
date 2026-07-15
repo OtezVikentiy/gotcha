@@ -307,3 +307,37 @@ func TestOutboxFailedForProject(t *testing.T) {
 		t.Errorf("ID = %d, want %d", f.ID, jobs[0].ID)
 	}
 }
+
+func TestOutboxPurgeOld(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ob := notify.NewOutbox(pool)
+	ctx := context.Background()
+	chID := newChannel(t, pool)
+
+	ins := func(status string, ageDays int) {
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO notification_outbox (channel_id, payload, status, created_at) VALUES ($1,'{}',$2, now() - make_interval(days => $3))",
+			chID, status, ageDays); err != nil {
+			t.Fatalf("insert %s: %v", status, err)
+		}
+	}
+	ins("sent", 10)    // старый доставленный → удалить
+	ins("failed", 10)  // старый проваленный → удалить
+	ins("pending", 10) // старый, но pending → щадим
+	ins("sent", 1)     // свежий доставленный → щадим
+
+	deleted, err := ob.PurgeOld(ctx, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeOld: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+	var remaining int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM notification_outbox WHERE channel_id = $1", chID).Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 2 {
+		t.Fatalf("remaining = %d, want 2 (pending + fresh sent)", remaining)
+	}
+}

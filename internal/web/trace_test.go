@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,6 +18,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
@@ -27,6 +29,7 @@ import (
 // issue). Wires h.Trace (waterfall/доступ) и h.Events (ByTraceID, EventByID).
 type traceStack struct {
 	pool    *pgxpool.Pool
+	ch      driver.Conn
 	srv     *httptest.Server
 	org     *org.Service
 	auth    *auth.Service
@@ -64,9 +67,10 @@ func newTraceStack(t *testing.T) *traceStack {
 
 	h := web.New(authSvc, orgSvc, issueSvc, eventsQuery, srv.URL)
 	h.Trace = trace.NewQuery(ch)
+	h.Profiles = profile.NewQuery(ch)
 	h.Register(mux)
 
-	return &traceStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, spans: spans, batcher: batcher}
+	return &traceStack{pool: pool, ch: ch, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, spans: spans, batcher: batcher}
 }
 
 // flush синхронно выгружает оба буфера (spans и events) в ClickHouse до
@@ -269,5 +273,65 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 	}
 	if strings.Contains(string(body), "Смотреть трейс") {
 		t.Fatalf("GET %s (event without trace) must not show 'Смотреть трейс': %s", issuePath, body)
+	}
+}
+
+// TestWebTraceProfilingInContext — этап 8: при наличии профиля для трейса
+// waterfall показывает ссылку «View flamegraph», а /traces/{id}/flame отдаёт
+// flamegraph. Без профиля ссылки нет.
+func TestWebTraceProfilingInContext(t *testing.T) {
+	s := newTraceStack(t)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "pic-owner@example.com")
+	_, outsiderCookie := orgSettingsRegister(t, s.auth, "pic-outsider@example.com")
+	ctx := context.Background()
+	o, _ := s.org.CreateOrg(ctx, "pic-co", "PIC Co", ownerID)
+	proj, _ := s.org.CreateProject(ctx, o.ID, "pic-proj", "PIC Proj", "go")
+
+	const traceID = "pic-trace-01"
+	start := time.Now().UTC().Add(-2 * time.Minute)
+	s.spans.Add(proj.ID, trace.Transaction{
+		TraceID: traceID, SpanID: "pic-root", Name: "GET /pic", Op: "http.server",
+		Status: "ok", Start: start, End: start.Add(100 * time.Millisecond), Environment: "prod",
+	})
+	s.flush(t)
+
+	// Без профиля — кнопки нет.
+	resp := getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), "View flamegraph") {
+		t.Fatalf("flamegraph link shown without a profile")
+	}
+
+	// Засеять профиль этого трейса.
+	if err := s.ch.Exec(ctx, `INSERT INTO profile_samples
+		(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+		VALUES (?,'cpu','api','prod','GET /pic','go',?,?,?,?)`,
+		proj.ID, start, []string{"root", "handler"}, uint64(10), traceID); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+
+	// Теперь кнопка есть.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "View flamegraph") {
+		t.Fatalf("flamegraph link missing with a profile: %s", body)
+	}
+
+	// /traces/{id}/flame отдаёт SVG.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<svg") {
+		t.Fatalf("flame page status=%d body=%s", resp.StatusCode, body)
+	}
+
+	// Чужой → 404.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider flame status = %d, want 404", resp.StatusCode)
 	}
 }

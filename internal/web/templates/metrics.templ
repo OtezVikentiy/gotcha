@@ -22,6 +22,7 @@ templ metricsNav(projectID int64) {
 		<a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> ·
 		<a href={ templ.URL(metricsBasePath(projectID)) }>Metrics</a> ·
 		<a href={ templ.URL(metricsBasePath(projectID) + "/alerts") }>Metric Alerts</a> ·
+		<a href={ templ.URL("/projects/" + strconv.FormatInt(projectID, 10) + "/profiles") }>Profiles</a> ·
 		<a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> ·
 		<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
 	</p>

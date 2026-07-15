@@ -21,6 +21,9 @@ type Envelope struct {
 	// Transactions — payload'ы item'ов type=transaction; идут отдельным путём
 	// (свой парсер, своя квота, своё семплирование), см. Handler.envelope.
 	Transactions [][]byte
+	// Profiles — payload'ы item'ов type=profile (этап 7); свой парсер
+	// (profile.ParseSentry) и своя квота, см. Handler.envelope.
+	Profiles [][]byte
 }
 
 // ParseEnvelope разбирает envelope-формат Sentry: JSON-заголовок, затем
@@ -91,6 +94,8 @@ func ParseEnvelope(r io.Reader, maxItem int64) (*Envelope, error) {
 			env.Events = append(env.Events, payload)
 		case "transaction":
 			env.Transactions = append(env.Transactions, payload)
+		case "profile":
+			env.Profiles = append(env.Profiles, payload)
 		}
 	}
 }

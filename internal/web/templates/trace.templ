@@ -19,6 +19,13 @@ type TraceWaterfallData struct {
 	Waterfall templ.Component
 	ShownRows int
 	TotalRows int
+	// HasProfile — есть ли профиль для этого трейса (этап 8): при true рисуем
+	// ссылку на flamegraph.
+	HasProfile bool
+}
+
+func traceFlamePath(traceID string) string {
+	return "/traces/" + traceID + "/flame"
 }
 
 // TraceWaterfall — GET /traces/{trace_id}: заголовок трейса (имя транзакции,
@@ -33,12 +40,36 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 				<span>Trace: { d.TraceID }</span>
 				<span>Длительность: { formatDurationUS(d.TotalUS) }</span>
 				<span>{ ago(d.Timestamp) }</span>
+				if d.HasProfile {
+					<span><a href={ templ.URL(traceFlamePath(d.TraceID)) }>View flamegraph →</a></span>
+				}
 			</div>
 			if d.TotalRows > d.ShownRows {
 				<p class="trace-cap-note">Показаны первые { strconv.Itoa(d.ShownRows) } из { strconv.Itoa(d.TotalRows) } спанов (усечено для читаемости).</p>
 			}
 			<div class="trace-waterfall">
 				@d.Waterfall
+			</div>
+		</div>
+	}
+}
+
+// TraceFlameData — страница flamegraph трейса (profiling-in-context, этап 8).
+type TraceFlameData struct {
+	TraceID string
+	Chart   templ.Component
+}
+
+// TraceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
+// время трейса, со ссылкой назад на waterfall.
+templ TraceFlame(d TraceFlameData, userEmail string) {
+	@layout("Flamegraph", userEmail) {
+		<div class="trace-flame">
+			<p class="breadcrumb"><a href={ templ.URL("/traces/" + d.TraceID) }>← Waterfall</a></p>
+			<h1>Flamegraph</h1>
+			<div class="trace-meta"><span>Trace: { d.TraceID }</span></div>
+			<div class="flamegraph-wrap">
+				@d.Chart
 			</div>
 		</div>
 	}

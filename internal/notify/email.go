@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"html"
 	"net"
 	"net/smtp"
 	"strings"
@@ -134,10 +135,43 @@ func BuildEmail(from, to, subject, body string) []byte {
 	to = sanitizeHeader(to)
 	subject = truncateRunes(sanitizeHeader(subject), maxSubjectRunes)
 
+	// multipart/alternative: текстовые клиенты видят text/plain, остальные —
+	// оформленный HTML. boundary фиксирован (не Math.random) — тело частей
+	// (plain body и html-экранированный html body) не может его содержать.
 	headers := fmt.Sprintf(
-		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n\r\n",
-		from, to, subject)
-	return []byte(headers + body)
+		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\n"+
+			"Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n",
+		from, to, subject, emailBoundary)
+
+	var b strings.Builder
+	b.WriteString(headers)
+	b.WriteString("--" + emailBoundary + "\r\n")
+	b.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
+	b.WriteString(body)
+	b.WriteString("\r\n--" + emailBoundary + "\r\n")
+	b.WriteString("Content-Type: text/html; charset=\"utf-8\"\r\n\r\n")
+	b.WriteString(buildHTMLBody(subject, body))
+	b.WriteString("\r\n--" + emailBoundary + "--\r\n")
+	return []byte(b.String())
+}
+
+// emailBoundary — MIME-разделитель частей. Содержит символы, которых нет в
+// html-экранированном/текстовом теле, поэтому коллизия с содержимым невозможна.
+const emailBoundary = "gotcha_boundary_9f3a2e17c4b8"
+
+// buildHTMLBody оборачивает текстовое тело в простой self-contained HTML
+// (inline-стили, без внешних ресурсов/картинок). Всё html-экранировано, переносы
+// строк сохраняются через <br>. subject уже sanitized/truncated вызывающим.
+func buildHTMLBody(subject, body string) string {
+	escBody := strings.ReplaceAll(html.EscapeString(body), "\n", "<br>")
+	escSubject := html.EscapeString(subject)
+	return `<!doctype html><html><body style="margin:0;padding:16px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a1a1a;background:#ffffff">` +
+		`<div style="max-width:560px;margin:0 auto">` +
+		`<h2 style="font-size:16px;margin:0 0 12px;color:#111">` + escSubject + `</h2>` +
+		`<div style="font-size:14px;line-height:1.5;color:#333">` + escBody + `</div>` +
+		`<hr style="border:none;border-top:1px solid #e5e5e5;margin:20px 0">` +
+		`<p style="font-size:12px;color:#999;margin:0">— Gotcha</p>` +
+		`</div></body></html>`
 }
 
 // maxSubjectRunes caps the Subject header so a pathologically long

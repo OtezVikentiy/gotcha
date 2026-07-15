@@ -10,24 +10,27 @@ import (
 
 // Config собирается из env (префикс GOTCHA_) и флагов командной строки.
 type Config struct {
-	Mode                string // ingest | web | uptime | probe | all
-	Addr                string
-	BaseURL             string
-	PostgresDSN         string
-	ClickHouseDSN       string
-	SMTPHost            string
-	SMTPPort            int
-	SMTPUser            string
-	SMTPPassword        string
-	SMTPFrom            string
-	RetentionDays       int
-	SpanRetentionDays   int
-	MetricRetentionDays int
-	DefaultEventQuota   int64
-	MaxEventBytes       int64
-	MetricQuota         int64
-	MetricEvalInterval  int
-	SecretKey           string
+	Mode                 string // ingest | web | uptime | probe | all
+	Addr                 string
+	BaseURL              string
+	PostgresDSN          string
+	ClickHouseDSN        string
+	SMTPHost             string
+	SMTPPort             int
+	SMTPUser             string
+	SMTPPassword         string
+	SMTPFrom             string
+	RetentionDays        int
+	SpanRetentionDays    int
+	MetricRetentionDays  int
+	ProfileRetentionDays int
+	DefaultEventQuota    int64
+	MaxEventBytes        int64
+	MetricQuota          int64
+	MetricEvalInterval   int
+	ProfileQuota         int64
+	OutboxRetentionDays  int
+	SecretKey            string
 
 	// UptimeConcurrency — сколько проверок uptime.Runner выполняет
 	// одновременно (режимы uptime|all).
@@ -98,28 +101,31 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 
 	cfg := Config{
-		Mode:                *mode,
-		Addr:                str("GOTCHA_ADDR", ":8080"),
-		BaseURL:             str("GOTCHA_BASE_URL", "http://localhost:8080"),
-		PostgresDSN:         str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
-		ClickHouseDSN:       str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
-		SMTPHost:            str("GOTCHA_SMTP_HOST", ""),
-		SMTPPort:            int(num("GOTCHA_SMTP_PORT", 587)),
-		SMTPUser:            str("GOTCHA_SMTP_USER", ""),
-		SMTPPassword:        str("GOTCHA_SMTP_PASSWORD", ""),
-		SMTPFrom:            str("GOTCHA_SMTP_FROM", ""),
-		RetentionDays:       int(num("GOTCHA_RETENTION_DAYS", 90)),
-		SpanRetentionDays:   int(num("GOTCHA_SPAN_RETENTION_DAYS", 30)),
-		MetricRetentionDays: int(num("GOTCHA_METRIC_RETENTION_DAYS", 30)),
-		DefaultEventQuota:   num("GOTCHA_DEFAULT_EVENT_QUOTA", 1_000_000),
-		MaxEventBytes:       num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
-		MetricQuota:         num("GOTCHA_METRIC_QUOTA", 1_000_000),
-		MetricEvalInterval:  int(num("GOTCHA_METRIC_EVAL_INTERVAL", 60)),
-		SecretKey:           str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
-		UptimeConcurrency:   int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
-		LocalRegion:         str("GOTCHA_LOCAL_REGION", "local"),
-		ProbeToken:          str("GOTCHA_PROBE_TOKEN", ""),
-		ServerURL:           str("GOTCHA_SERVER_URL", ""),
+		Mode:                 *mode,
+		Addr:                 str("GOTCHA_ADDR", ":8080"),
+		BaseURL:              str("GOTCHA_BASE_URL", "http://localhost:8080"),
+		PostgresDSN:          str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
+		ClickHouseDSN:        str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
+		SMTPHost:             str("GOTCHA_SMTP_HOST", ""),
+		SMTPPort:             int(num("GOTCHA_SMTP_PORT", 587)),
+		SMTPUser:             str("GOTCHA_SMTP_USER", ""),
+		SMTPPassword:         str("GOTCHA_SMTP_PASSWORD", ""),
+		SMTPFrom:             str("GOTCHA_SMTP_FROM", ""),
+		RetentionDays:        int(num("GOTCHA_RETENTION_DAYS", 90)),
+		SpanRetentionDays:    int(num("GOTCHA_SPAN_RETENTION_DAYS", 30)),
+		MetricRetentionDays:  int(num("GOTCHA_METRIC_RETENTION_DAYS", 30)),
+		ProfileRetentionDays: int(num("GOTCHA_PROFILE_RETENTION_DAYS", 7)),
+		DefaultEventQuota:    num("GOTCHA_DEFAULT_EVENT_QUOTA", 1_000_000),
+		MaxEventBytes:        num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
+		MetricQuota:          num("GOTCHA_METRIC_QUOTA", 1_000_000),
+		MetricEvalInterval:   int(num("GOTCHA_METRIC_EVAL_INTERVAL", 60)),
+		ProfileQuota:         num("GOTCHA_PROFILE_QUOTA", 1_000_000),
+		OutboxRetentionDays:  int(num("GOTCHA_OUTBOX_RETENTION_DAYS", 7)),
+		SecretKey:            str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
+		UptimeConcurrency:    int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
+		LocalRegion:          str("GOTCHA_LOCAL_REGION", "local"),
+		ProbeToken:           str("GOTCHA_PROBE_TOKEN", ""),
+		ServerURL:            str("GOTCHA_SERVER_URL", ""),
 	}
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
@@ -148,6 +154,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.MetricEvalInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL must be >= 1, got %d", cfg.MetricEvalInterval)
+	}
+	if cfg.ProfileRetentionDays < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 1, got %d", cfg.ProfileRetentionDays)
+	}
+	if cfg.OutboxRetentionDays < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
 	}
 	if cfg.DefaultEventQuota < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 1, got %d", cfg.DefaultEventQuota)

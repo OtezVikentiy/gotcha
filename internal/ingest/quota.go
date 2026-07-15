@@ -26,6 +26,7 @@ type quotaResolver interface {
 	IncUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
 	IncTransactionUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
 	IncMetricUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
+	IncProfileUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
 }
 
 // OrgQuota — QuotaChecker поверх org.Service. Квота организации кешируется на
@@ -80,6 +81,13 @@ func NewOrgMetricQuota(svc *org.Service) *OrgQuota {
 	return newOrgQuota(svc,
 		func(o org.Org) int64 { return o.MetricQuota },
 		svc.IncMetricUsage)
+}
+
+// NewOrgProfileQuota — квота ПРОФИЛЕЙ: profile_quota против org_usage.profiles_count.
+func NewOrgProfileQuota(svc *org.Service) *OrgQuota {
+	return newOrgQuota(svc,
+		func(o org.Org) int64 { return o.ProfileQuota },
+		svc.IncProfileUsage)
 }
 
 func newOrgQuota(

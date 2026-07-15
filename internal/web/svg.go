@@ -1,6 +1,9 @@
 package web
 
 import (
+	"fmt"
+	"hash/fnv"
+	"html"
 	"strconv"
 	"strings"
 
@@ -8,9 +11,107 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
+
+const flameRowHeight = 18
+
+// flamegraphSVG рисует icicle-диаграмму дерева профиля (сверху вниз). Ширина
+// фрейма ∝ его доле от корня; глубина = уровень стека. Текст SVG строится из
+// чисел и html-экранированных имён — templ.Raw безопасен. Пустое дерево
+// (Value==0) → плейсхолдер «нет данных».
+func flamegraphSVG(root *profile.FlameNode, width int) templ.Component {
+	if root == nil || root.Value == 0 {
+		return templ.Raw(`<p class="empty">нет данных профиля за период</p>`)
+	}
+	depth := flameDepth(root)
+	height := depth * flameRowHeight
+	var sb strings.Builder
+	sb.WriteString(`<svg class="flamegraph" viewBox="0 0 `)
+	sb.WriteString(strconv.Itoa(width))
+	sb.WriteByte(' ')
+	sb.WriteString(strconv.Itoa(height))
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="10">`)
+	flameRow(&sb, root, 0, float64(width), 0, root.Value)
+	sb.WriteString(`</svg>`)
+	return templ.Raw(sb.String())
+}
+
+func flameDepth(n *profile.FlameNode) int {
+	max := 0
+	for _, c := range n.Children {
+		if d := flameDepth(c); d > max {
+			max = d
+		}
+	}
+	return max + 1
+}
+
+// flameRow рисует прямоугольник узла и рекурсивно детей. x/w — позиция и ширина
+// в пикселях; total — Value корня (для доли в подписи).
+func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64) {
+	if w < 0.5 {
+		return
+	}
+	y := depth * flameRowHeight
+	pct := 0.0
+	if total > 0 {
+		pct = float64(n.Value) / float64(total) * 100
+	}
+	sb.WriteString(`<g><rect x="`)
+	sb.WriteString(formatCoord(x))
+	sb.WriteString(`" y="`)
+	sb.WriteString(strconv.Itoa(y))
+	sb.WriteString(`" width="`)
+	sb.WriteString(formatCoord(w))
+	sb.WriteString(`" height="`)
+	sb.WriteString(strconv.Itoa(flameRowHeight - 1))
+	sb.WriteString(`" fill="`)
+	sb.WriteString(flameColor(n.Name))
+	sb.WriteString(`"><title>`)
+	sb.WriteString(html.EscapeString(n.Name))
+	sb.WriteString(` — `)
+	sb.WriteString(strconv.FormatFloat(pct, 'f', 1, 64))
+	sb.WriteString(`%</title></rect>`)
+	if w > 30 {
+		sb.WriteString(`<text x="`)
+		sb.WriteString(formatCoord(x + 2))
+		sb.WriteString(`" y="`)
+		sb.WriteString(strconv.Itoa(y + flameRowHeight - 6))
+		sb.WriteString(`" fill="#111">`)
+		sb.WriteString(html.EscapeString(truncateRunes(n.Name, int(w/6))))
+		sb.WriteString(`</text>`)
+	}
+	sb.WriteString(`</g>`)
+	childX := x
+	for _, c := range n.Children {
+		cw := w * float64(c.Value) / float64(n.Value)
+		flameRow(sb, c, childX, cw, depth+1, total)
+		childX += cw
+	}
+}
+
+// flameColor — детерминированный тёплый цвет по имени функции.
+func flameColor(name string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	hue := int(h.Sum32() % 40) // 0..40 — красно-оранжевый диапазон
+	return fmt.Sprintf("hsl(%d,65%%,60%%)", hue+10)
+}
+
+// truncateRunes обрезает строку до n рун (без многоточия), n<=0 → пусто.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
 
 // metricSeriesSVG рисует одну полилинию по ряду metric.Point, нормированную по
 // min/max значения. Пустой ряд → плоская линия (flatlineSVG). points приходят
