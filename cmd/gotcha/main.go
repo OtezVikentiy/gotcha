@@ -191,6 +191,25 @@ func run() error {
 		}
 		go watchdog.Run(ctx)
 
+		// Оценщик регрессий производительности (этап 4, план 4) живёт в том же
+		// процессе, что и uptime-watchdog: оба — периодические джобы, которым
+		// нужны PG (инциденты/конфиг) и общий outbox/каналы. Он обходит топ-K
+		// целей каждого проекта и шлёт алерт об открытии/закрытии регрессии через
+		// тот же outbox. alertSvc/outbox/emailSender гарантированно построены
+		// выше в этом же блоке (uptime|all), даже если процесс не крутит web.
+		evaluator := &trace.Evaluator{
+			Pool:        pg,
+			Query:       trace.NewQuery(ch),
+			Regressions: trace.NewRegressionService(pg),
+			Notifier: &trace.RegressionNotifier{
+				Alerts:       alertSvc,
+				Outbox:       outbox,
+				BaseURL:      cfg.BaseURL,
+				EmailEnabled: emailSender.Configured(),
+			},
+		}
+		go evaluator.Run(ctx)
+
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
 	}
 
@@ -279,6 +298,9 @@ func run() error {
 		// (Trace) и связанные perf-проблемы из PG (PerfIssues).
 		webHandler.Trace = trace.NewQuery(ch)
 		webHandler.PerfIssues = trace.NewIssueService(pg)
+		// Регрессии (этап 4, план 5): список /projects/{id}/regressions читает
+		// perf_regressions из PG (тот же сервис, что и оценщик выше).
+		webHandler.Regressions = trace.NewRegressionService(pg)
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Register(mux)
 		go (&auth.Janitor{Svc: authSvc}).Run(ctx)

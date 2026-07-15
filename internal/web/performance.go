@@ -270,6 +270,15 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Панель Web Vitals (этап 4, план 2, задача 2): только если у транзакции
+	// есть хоть один web vital за период (иначе vitals == nil и панель не
+	// рендерится).
+	vitals, err := h.vitalsPanel(r, projectID, transaction, from, now, window, environment)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+
 	data := templates.EndpointDetailData{
 		ProjectID:    projectID,
 		Transaction:  transaction,
@@ -281,6 +290,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		Histogram:    durationHistogramSVG(histogram, perfLatencyChartWidth, perfLatencyChartHeight),
 		Slowest:      slowest,
 		PerfIssues:   perfIssues,
+		Vitals:       vitals,
 	}
 	_ = templates.EndpointDetail(data, h.currentEmail(r)).Render(r.Context(), w)
 }

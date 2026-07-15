@@ -111,6 +111,11 @@ type Handler struct {
 	// проблемы (фильтр по culprit). Как и Trace, отдельное необязательное поле;
 	// nil → секция связанных проблем на странице эндпойнта просто пустая.
 	PerfIssues *trace.IssueService
+	// Regressions — perf_regressions в PG (тот же trace.NewRegressionService, что
+	// и в оценщике этапа 4): страница /projects/{id}/regressions показывает
+	// открытые/закрытые регрессии производительности. Как и PerfIssues, отдельное
+	// необязательное поле; nil → маршрут регрессий отвечает 404 (nil-guard).
+	Regressions *trace.RegressionService
 
 	loginLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
@@ -208,6 +213,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/settings/keys", h.requireUser(http.HandlerFunc(h.projectSettingsKeyCreate)))
 	inner.Handle("POST /projects/{id}/settings/keys/revoke", h.requireUser(http.HandlerFunc(h.projectSettingsKeyRevoke)))
 	inner.Handle("POST /projects/{id}/settings/performance", h.requireUser(http.HandlerFunc(h.projectSettingsPerformance)))
+	inner.Handle("POST /projects/{id}/settings/regressions", h.requireUser(http.HandlerFunc(h.projectSettingsRegressions)))
 
 	inner.Handle("GET /projects/{id}/alerts", h.requireUser(http.HandlerFunc(h.alertsPage)))
 	inner.Handle("POST /projects/{id}/alerts/rules", h.requireUser(http.HandlerFunc(h.alertsRulesSave)))
@@ -249,6 +255,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/performance", h.requireUser(http.HandlerFunc(h.performanceList)))
 	inner.Handle("GET /projects/{id}/performance/{transaction...}", h.requireUser(http.HandlerFunc(h.endpointDetail)))
 
+	// Web Vitals (этап 4, план 2, задача 2): обзорная страница страниц проекта с
+	// p75 LCP/INP/CLS — только чтение, доступ по CanAccessProject → 404, как
+	// performanceList. Панель Web Vitals на странице эндпойнта отдельного роута
+	// не имеет (рендерится в endpointDetail).
+	inner.Handle("GET /projects/{id}/web-vitals", h.requireUser(http.HandlerFunc(h.webVitalsList)))
+
 	// Perf-проблемы (этап 3, план 5, задача 1): список проблем проекта и страница
 	// проблемы — просмотр открыт любому участнику проекта (CanAccessProject → 404,
 	// как performanceList), смена статуса — только owner/admin (requireProjectRole
@@ -260,6 +272,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/perf-issues", h.requireUser(http.HandlerFunc(h.perfIssuesList)))
 	inner.Handle("GET /perf-issues/{id}", h.requireUser(http.HandlerFunc(h.perfIssueDetail)))
 	inner.Handle("POST /perf-issues/{id}/status", h.requireUser(http.HandlerFunc(h.perfIssueSetStatus)))
+
+	// Регрессии производительности (этап 4, план 5, задача 1): список
+	// открытых/закрытых регрессий проекта — только чтение, доступ по
+	// CanAccessProject → 404, как perfIssuesList; POST'ов и sameOrigin нет
+	// (регрессии закрывает оценщик). Роут регистрируется безусловно, как
+	// /performance; nil-guard на h.Regressions отвечает 404 в стендах без
+	// детекции.
+	inner.Handle("GET /projects/{id}/regressions", h.requireUser(http.HandlerFunc(h.regressionsList)))
 
 	// Waterfall трейса (этап 3, план 4, задача 3): доступ — по проекту трейса
 	// (ProjectForTrace → CanAccessProject → 404), не по {id} в пути. Только

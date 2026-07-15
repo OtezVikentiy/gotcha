@@ -660,6 +660,63 @@ func waterfallMS(us uint32) string {
 	}
 }
 
+// perfVitalChartWidth/Height — размер мини-графика p75 web vital во времени на
+// панели Web Vitals страницы эндпойнта (этап 4, план 2, задача 2).
+const (
+	perfVitalChartWidth  = 240
+	perfVitalChartHeight = 48
+)
+
+// vitalSeriesSVG рисует полилинию p75 одного web vital по ряду
+// trace.VitalPoint, нормированную на максимум P75. Пустой ряд (или все нули) →
+// плоская линия посередине, тем же принципом «нет данных ≠ ошибка рендера»,
+// что и flatlineSVG.
+//
+// points приходят из trace.Query.VitalSeries (числа, посчитанные CH), поэтому
+// собранный SVG-текст состоит только из чисел — templ.Raw безопасен по тем же
+// причинам, что и в sparklineSVG.
+func vitalSeriesSVG(points []trace.VitalPoint, w, h int) templ.Component {
+	return templ.Raw(vitalSeriesMarkup(points, w, h))
+}
+
+func vitalSeriesMarkup(points []trace.VitalPoint, w, h int) string {
+	var max float64
+	for _, p := range points {
+		if p.P75 > max {
+			max = p.P75
+		}
+	}
+	if len(points) == 0 || max <= 0 {
+		return flatlineSVG(w, h)
+	}
+
+	n := len(points)
+	var pts strings.Builder
+	for i, p := range points {
+		var x float64
+		if n > 1 {
+			x = float64(i) / float64(n-1) * float64(w)
+		}
+		y := float64(h) - p.P75/max*float64(h)
+		if i > 0 {
+			pts.WriteByte(' ')
+		}
+		pts.WriteString(formatCoord(x))
+		pts.WriteByte(',')
+		pts.WriteString(formatCoord(y))
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<svg class="vital-chart" viewBox="0 0 `)
+	sb.WriteString(strconv.Itoa(w))
+	sb.WriteByte(' ')
+	sb.WriteString(strconv.Itoa(h))
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg"><polyline points="`)
+	sb.WriteString(pts.String())
+	sb.WriteString(`" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`)
+	return sb.String()
+}
+
 // latencyChartWidth/Height — размер stacked-bar-графика задержек на странице
 // монитора.
 const (

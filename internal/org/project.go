@@ -22,6 +22,11 @@ type Project struct {
 	TransactionSampleRate float64
 	ApdexThresholdMS      int32
 	PerfDetectorConfig    string
+
+	// Конфиг детектора регрессий (этап 4): JSON порогов роста p95/p75 над
+	// скользящей базой (ровно ключи trace.RegressionConfigFromJSON). Это
+	// ОТДЕЛЬНЫЙ механизм от PerfDetectorConfig (N+1/медленные запросы этапа 3).
+	PerfRegressionConfig string
 }
 
 // projectColumns — общий список колонок для всех SELECT'ов проекта: любой
@@ -29,14 +34,14 @@ type Project struct {
 // TransactionSampleRate=0 (то есть «не семплировать вообще») из-за того, что
 // конкретный запрос забыл колонку.
 const projectColumns = "id, org_id, slug, name, platform, " +
-	"transaction_sample_rate, apdex_threshold_ms, perf_detector_config"
+	"transaction_sample_rate, apdex_threshold_ms, perf_detector_config, perf_regression_config"
 
 // scanProject читает строку в порядке projectColumns (с префиксом таблицы или
 // без — порядок один и тот же).
 func scanProject(row pgx.Row) (Project, error) {
 	var p Project
 	err := row.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform,
-		&p.TransactionSampleRate, &p.ApdexThresholdMS, &p.PerfDetectorConfig)
+		&p.TransactionSampleRate, &p.ApdexThresholdMS, &p.PerfDetectorConfig, &p.PerfRegressionConfig)
 	return p, err
 }
 
@@ -110,6 +115,24 @@ func (s *Service) UpdatePerfSettings(ctx context.Context, projectID int64, sampl
 		sampleRate, apdexMS, detectorConfigJSON, projectID)
 	if err != nil {
 		return fmt.Errorf("org: update perf settings: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateRegressionConfig пишет JSON конфига детектора регрессий одним UPDATE
+// (ровно те ключи, что читает trace.RegressionConfigFromJSON). Значения уже
+// провалидированы вызывающим (форма настроек «Регрессии»); несуществующий
+// проект → ErrNotFound. Отдельный метод от UpdatePerfSettings: это другая
+// колонка и другой механизм (см. Project.PerfRegressionConfig).
+func (s *Service) UpdateRegressionConfig(ctx context.Context, projectID int64, configJSON string) error {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE projects SET perf_regression_config = $1 WHERE id = $2",
+		configJSON, projectID)
+	if err != nil {
+		return fmt.Errorf("org: update regression config: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

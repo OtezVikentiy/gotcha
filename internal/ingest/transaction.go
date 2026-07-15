@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -37,6 +39,14 @@ const (
 	// maxSpans — верхняя граница числа спанов в одной транзакции: защита от
 	// раздутого payload'а (лишние спаны отбрасываются, транзакция остаётся).
 	maxSpans = 1000
+	// maxMeasurements — сколько measurements кладём в CH-колонку measurements
+	// Map(String, Float64). Тот же кап, что у maxDataKeys/тегов: раздутый payload
+	// не должен утаскивать в колонку сотни ключей. Выбор при переполнении
+	// детерминирован — первые maxMeasurements в отсортированном порядке.
+	maxMeasurements = 40
+	// maxMeasurementKey — кап длины имени measurement'а (капается через capRunes,
+	// та же дисциплина, что у ключей тегов/data).
+	maxMeasurementKey = 100
 )
 
 // sentryTraceContext — contexts.trace транзакции: корневой спан трейса.
@@ -59,6 +69,14 @@ type sentrySpan struct {
 	Data         map[string]any  `json:"data"`
 }
 
+// sentryMeasurement — один measurement из блока measurements транзакции:
+// {"value": 2480.0, "unit": "millisecond"}. Unit нужен, чтобы привести секунды к
+// миллисекундам (см. parseMeasurements); у CLS unit пустой.
+type sentryMeasurement struct {
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
+}
+
 // sentryTransaction — transaction-item Sentry-envelope'а.
 type sentryTransaction struct {
 	Transaction string          `json:"transaction"`
@@ -74,7 +92,8 @@ type sentryTransaction struct {
 	User        *struct {
 		ID string `json:"id"`
 	} `json:"user"`
-	Tags json.RawMessage `json:"tags"`
+	Tags         json.RawMessage              `json:"tags"`
+	Measurements map[string]sentryMeasurement `json:"measurements"`
 }
 
 // ParseTransaction разбирает Sentry transaction-payload в trace.Transaction.
@@ -128,18 +147,19 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 	parseTags(st.Tags, tags)
 
 	tx := trace.Transaction{
-		TraceID:     traceID,
-		SpanID:      normalizeID(tc.SpanID, maxSpanID),
-		Name:        capRunes(st.Transaction, maxTransactionName),
-		Op:          capRunes(tc.Op, maxOp),
-		Status:      transactionStatus(tc.Status),
-		Start:       start,
-		End:         end,
-		Environment: capRunes(st.Environment, 200),
-		Release:     capRunes(st.Release, 200),
-		ServerName:  capRunes(st.ServerName, 200),
-		Tags:        capTags(tags),
-		Source:      "sentry",
+		TraceID:      traceID,
+		SpanID:       normalizeID(tc.SpanID, maxSpanID),
+		Name:         capRunes(st.Transaction, maxTransactionName),
+		Op:           capRunes(tc.Op, maxOp),
+		Status:       transactionStatus(tc.Status),
+		Start:        start,
+		End:          end,
+		Environment:  capRunes(st.Environment, 200),
+		Release:      capRunes(st.Release, 200),
+		ServerName:   capRunes(st.ServerName, 200),
+		Tags:         capTags(tags),
+		Source:       "sentry",
+		Measurements: parseMeasurements(st.Measurements),
 	}
 	if st.User != nil {
 		tx.UserID = capRunes(st.User.ID, 200)
@@ -174,6 +194,52 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 		})
 	}
 	return tx, nil
+}
+
+// parseMeasurements собирает measurements Sentry-транзакции в map[string]float64
+// с дисциплиной недоверенных данных: не-конечные (NaN/Inf) и отрицательные
+// значения отбрасываются (ключ не попадает в map), unit=="second" приводится к
+// миллисекундам (×1000), CLS (unit пустой) — как есть. Имена каппятся
+// (maxMeasurementKey), число ключей — maxMeasurements. Пустой/отсутствующий блок
+// → nil (в CH уедет пустой Map, см. SpanWriter.Add).
+func parseMeasurements(raw map[string]sentryMeasurement) map[string]float64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(raw))
+	for k, m := range raw {
+		v := m.Value
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			continue
+		}
+		if m.Unit == "second" {
+			v *= 1000 // ms-vitals хранятся в миллисекундах
+		}
+		out[capRunes(k, maxMeasurementKey)] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return capMeasurements(out)
+}
+
+// capMeasurements ограничивает число measurements до maxMeasurements. Выбор при
+// переполнении детерминирован — первые maxMeasurements ключей в отсортированном
+// порядке (как capTags/otlpAttrMap).
+func capMeasurements(m map[string]float64) map[string]float64 {
+	if len(m) <= maxMeasurements {
+		return m
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]float64, maxMeasurements)
+	for _, k := range keys[:maxMeasurements] {
+		out[k] = m[k]
+	}
+	return out
 }
 
 // transactionStatus нормализует статус: SDK его часто опускают у успешных

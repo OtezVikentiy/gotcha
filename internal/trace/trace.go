@@ -45,6 +45,11 @@ type Transaction struct {
 	Tags   map[string]string
 	Spans  []Span // дочерние спаны (без корневого)
 	Source string // "sentry" | "otlp"
+
+	// Measurements — web vitals (lcp/inp/cls/fcp/ttfb) и кастомные measurements
+	// транзакции; ms-vitals хранятся в миллисекундах. nil допустим — тогда в CH
+	// уезжает пустой Map (см. SpanWriter.Add).
+	Measurements map[string]float64
 }
 
 // DurationUS — длительность транзакции в микросекундах; 0, если End <= Start

@@ -105,7 +105,7 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 	@layout("Performance", userEmail) {
 		<div class="performance">
 			<h1>Performance</h1>
-			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a> · <a href={ templ.URL(perfIssuesPath(projectID)) }>Performance Issues</a></p>
+			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> · <a href={ templ.URL(regressionsPath(projectID)) }>Regressions</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a> · <a href={ templ.URL(perfIssuesPath(projectID)) }>Performance Issues</a></p>
 			<form method="get" action={ templ.URL(performancePath(projectID)) } class="performance-filters">
 				<select name="environment">
 					@perfEnvOption("", "Все окружения", filter.Environment)

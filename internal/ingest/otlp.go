@@ -31,10 +31,10 @@ const (
 	attrServiceVersion = "service.version"
 	attrDeployEnv      = "deployment.environment"      // старая семконвенция
 	attrDeployEnvName  = "deployment.environment.name" // текущая
-	attrDBSystem       = "db.system"      // старая семконвенция
-	attrDBSystemName   = "db.system.name" // текущая
-	attrDBStatement    = "db.statement"   // старая семконвенция
-	attrDBQueryText    = "db.query.text"  // текущая
+	attrDBSystem       = "db.system"                   // старая семконвенция
+	attrDBSystemName   = "db.system.name"              // текущая
+	attrDBStatement    = "db.statement"                // старая семконвенция
+	attrDBQueryText    = "db.query.text"               // текущая
 	attrHTTPMethod     = "http.request.method"
 	attrHTTPMethodOld  = "http.method"
 	attrURLFull        = "url.full"
@@ -42,6 +42,13 @@ const (
 	attrServerAddress  = "server.address"
 	attrURLPath        = "url.path"
 )
+
+// attrMeasurementPrefix — ЕДИНСТВЕННЫЙ известный носитель web vitals в OTLP.
+// Семантика measurements в OpenTelemetry не стандартизирована; Sentry-SDK кладёт
+// их в атрибуты корневого спана с этим префиксом (sentry.measurements.lcp =
+// 2480.0), имя vital'а — то, что после префикса. Других соглашений нет, поэтому и
+// читаем только этот префикс.
+const attrMeasurementPrefix = "sentry.measurements."
 
 // maxDataValue — кап значения атрибута в Span.Data: та же дисциплина, что у
 // description (см. capRunes), Data уезжает в JSON-колонку.
@@ -412,19 +419,20 @@ func MapOTLP(rs []*tracepb.ResourceSpans, now time.Time) []trace.Transaction {
 			continue // вне окна хранения → транзакции нет (см. ErrTimestampOutOfWindow)
 		}
 		tx := trace.Transaction{
-			TraceID:     e.traceID,
-			SpanID:      e.spanID,
-			Name:        capRunes(e.span.GetName(), maxTransactionName),
-			Op:          otlpOp(e.span),
-			Status:      otlpStatus(e.span.GetStatus()),
-			Start:       start,
-			End:         end,
-			Environment: capRunes(e.res.environment, 200),
-			Release:     capRunes(e.res.release, 200),
-			ServerName:  capRunes(e.res.service, 200),
-			Tags:        capTags(otlpTags(e.span.GetAttributes())),
-			Spans:       make([]trace.Span, 0, 4),
-			Source:      "otlp",
+			TraceID:      e.traceID,
+			SpanID:       e.spanID,
+			Name:         capRunes(e.span.GetName(), maxTransactionName),
+			Op:           otlpOp(e.span),
+			Status:       otlpStatus(e.span.GetStatus()),
+			Start:        start,
+			End:          end,
+			Environment:  capRunes(e.res.environment, 200),
+			Release:      capRunes(e.res.release, 200),
+			ServerName:   capRunes(e.res.service, 200),
+			Tags:         capTags(otlpTags(e.span.GetAttributes())),
+			Spans:        make([]trace.Span, 0, 4),
+			Source:       "otlp",
+			Measurements: otlpMeasurements(e.span.GetAttributes()),
 		}
 		rootOf[otlpSpanKey(e.traceID, e.spanID)] = len(txs)
 		if _, seen := firstRoot[e.traceID]; !seen {
@@ -706,6 +714,45 @@ func otlpAttr(attrs []*commonpb.KeyValue, key string) string {
 		}
 	}
 	return ""
+}
+
+// otlpMeasurements извлекает web vitals из атрибутов корневого спана с префиксом
+// attrMeasurementPrefix (единственный известный носитель measurements в OTLP).
+// Значение берётся из числового атрибута (double или int); строковые/булевы
+// игнорируются. Дисциплина недоверенных данных та же, что в Sentry-парсере (см.
+// parseMeasurements): не-конечные (NaN/Inf) и отрицательные — вон, имена каппятся
+// (maxMeasurementKey), число ключей — maxMeasurements. Единицы не конвертируем:
+// OTLP-значение уже числовое, соглашения об unit у этих атрибутов нет. Нет таких
+// атрибутов → nil (в CH уедет пустой Map).
+func otlpMeasurements(attrs []*commonpb.KeyValue) map[string]float64 {
+	out := make(map[string]float64, 4)
+	for _, kv := range attrs {
+		name, ok := strings.CutPrefix(kv.GetKey(), attrMeasurementPrefix)
+		if !ok || name == "" {
+			continue
+		}
+		v, ok := otlpNumber(kv.GetValue())
+		if !ok || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			continue
+		}
+		out[capRunes(name, maxMeasurementKey)] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return capMeasurements(out)
+}
+
+// otlpNumber возвращает числовое значение атрибута (double как есть, int — с
+// приведением к float64). ok=false — атрибут не числовой.
+func otlpNumber(v *commonpb.AnyValue) (float64, bool) {
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_DoubleValue:
+		return x.DoubleValue, true
+	case *commonpb.AnyValue_IntValue:
+		return float64(x.IntValue), true
+	}
+	return 0, false
 }
 
 // otlpTags — теги транзакции: атрибуты корневого спана. Числа/булевы приводим к

@@ -63,7 +63,7 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 	@layout("Performance Issues", userEmail) {
 		<div class="perf-issues">
 			<h1>Performance Issues</h1>
-			<p><a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a></p>
+			<p><a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> · <a href={ templ.URL(regressionsPath(projectID)) }>Regressions</a> · <a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a></p>
 			<nav class="perf-issues-filters">
 				@perfStatusTab(projectID, "unresolved", "Unresolved", filter)
 				@perfStatusTab(projectID, "resolved", "Resolved", filter)

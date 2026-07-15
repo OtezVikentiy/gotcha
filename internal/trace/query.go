@@ -501,6 +501,443 @@ func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID 
 	return int64(pid), true, nil
 }
 
+// Vital — один web vital с рейтингом: P75 — 75-й перцентиль (мс, кроме CLS),
+// Count — число замеров за период. Rating — оценка Google по P75
+// ("good"|"needs-improvement"|"poor"), либо "" если замеров нет (Count == 0).
+type Vital struct {
+	Name   string
+	P75    float64
+	Rating string
+	Count  uint64
+}
+
+// PageVitals — сводка Web Vitals по странице (transaction): три ключевых
+// показателя Core Web Vitals с рейтингом. Count — число замеров LCP (по нему
+// же идёт сортировка списка страниц).
+type PageVitals struct {
+	Transaction string
+	LCP         Vital
+	INP         Vital
+	CLS         Vital
+	Count       uint64
+}
+
+// VitalPoint — точка временного ряда p75 одного vital: T — начало корзины
+// (UTC), P75 — перцентиль в этой корзине. Пустые корзины (без замеров) в ряд
+// не попадают.
+type VitalPoint struct {
+	T   time.Time
+	P75 float64
+}
+
+// Пороги рейтинга Web Vitals (Google, по p75): значения в миллисекундах, кроме
+// CLS (безразмерный). Граница good включительна (p75 == good → "good"), выше
+// poor — "poor", между — "needs-improvement".
+const (
+	lcpGood, lcpPoor   = 2500.0, 4000.0
+	inpGood, inpPoor   = 200.0, 500.0
+	clsGood, clsPoor   = 0.1, 0.25
+	fcpGood, fcpPoor   = 1800.0, 3000.0
+	ttfbGood, ttfbPoor = 800.0, 1800.0
+)
+
+// webVitalsPageLimit — потолок числа страниц в списке WebVitalsPages.
+const webVitalsPageLimit = 200
+
+// Rating возвращает оценку Google для vital name по перцентилю p75
+// ("good"|"needs-improvement"|"poor"). Для неизвестного имени — "".
+// Отсутствие данных ("" при нуле замеров) обрабатывает вызывающий по Count, а
+// не эта функция: p75 == 0 для известного vital (например CLS) — валидный
+// "good".
+func Rating(name string, p75 float64) string {
+	var good, poor float64
+	switch name {
+	case "lcp":
+		good, poor = lcpGood, lcpPoor
+	case "inp":
+		good, poor = inpGood, inpPoor
+	case "cls":
+		good, poor = clsGood, clsPoor
+	case "fcp":
+		good, poor = fcpGood, fcpPoor
+	case "ttfb":
+		good, poor = ttfbGood, ttfbPoor
+	default:
+		return ""
+	}
+	switch {
+	case p75 <= good:
+		return "good"
+	case p75 > poor:
+		return "poor"
+	default:
+		return "needs-improvement"
+	}
+}
+
+// vitalKnown проверяет, что name — один из поддерживаемых web vitals. Нужен
+// для VitalSeries: имя vital подставляется в текст запроса как имя колонки MV
+// (не значение → не через ?), поэтому его допустимость проверяется белым
+// списком до конкатенации.
+func vitalKnown(name string) bool {
+	switch name {
+	case "lcp", "inp", "cls", "fcp", "ttfb":
+		return true
+	}
+	return false
+}
+
+// makeVital собирает Vital из результатов quantilesMerge (одноэлементный
+// массив p75) и countMerge (число замеров). При нуле замеров P75/Rating
+// остаются нулевыми: quantilesMerge пустого состояния возвращает NaN, читать
+// его нельзя, а рейтинг "" означает «нет данных».
+func makeVital(name string, p75 []float64, count uint64) Vital {
+	v := Vital{Name: name, Count: count}
+	if count > 0 && len(p75) > 0 {
+		v.P75 = p75[0]
+		v.Rating = Rating(name, v.P75)
+	}
+	return v
+}
+
+// WebVitalsPages возвращает сводку Web Vitals по страницам проекта за [from, to)
+// из MV web_vitals_5m: p75 LCP/INP/CLS (quantilesMerge(0.75)) с числом замеров
+// (countMerge) и рейтингом. Отсортировано по числу замеров LCP по убыванию,
+// не более webVitalsPageLimit страниц. environment пустой → без фильтра по
+// окружению.
+//
+// HAVING отсекает транзакции без единого замера LCP/INP/CLS: MV агрегирует ВСЕ
+// транзакции проекта (включая чистые API-эндпойнты без measurements), и без
+// фильтра такие строки (Count 0, Rating "") засоряли бы хвост списка.
+func (q *Query) WebVitalsPages(ctx context.Context, projectID int64, from, to time.Time, environment string) ([]PageVitals, error) {
+	where := "project_id = ? AND bucket >= ? AND bucket < ?"
+	args := []any{uint64(projectID), from, to}
+	if environment != "" {
+		where += " AND environment = ?"
+		args = append(args, environment)
+	}
+	args = append(args, webVitalsPageLimit)
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction,
+			quantilesMerge(0.75)(lcp) AS lcp_p,
+			quantilesMerge(0.75)(inp) AS inp_p,
+			quantilesMerge(0.75)(cls) AS cls_p,
+			countMerge(lcp_count) AS lcp_c,
+			countMerge(inp_count) AS inp_c,
+			countMerge(cls_count) AS cls_c
+		FROM web_vitals_5m
+		WHERE `+where+`
+		GROUP BY transaction
+		HAVING (lcp_c + inp_c + cls_c) > 0
+		ORDER BY lcp_c DESC, transaction
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("trace: web vitals pages: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PageVitals
+	for rows.Next() {
+		var transaction string
+		var lcpP, inpP, clsP []float64
+		var lcpC, inpC, clsC uint64
+		if err := rows.Scan(&transaction, &lcpP, &inpP, &clsP, &lcpC, &inpC, &clsC); err != nil {
+			return nil, fmt.Errorf("trace: web vitals pages: scan: %w", err)
+		}
+		out = append(out, PageVitals{
+			Transaction: transaction,
+			LCP:         makeVital("lcp", lcpP, lcpC),
+			INP:         makeVital("inp", inpP, inpC),
+			CLS:         makeVital("cls", clsP, clsC),
+			Count:       lcpC,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: web vitals pages: %w", err)
+	}
+	return out, nil
+}
+
+// VitalSeries строит временной ряд p75 одного vital (name: lcp|inp|cls|fcp|ttfb)
+// страницы transaction на окне [from, to) с шагом step из MV web_vitals_5m
+// (quantilesMerge(0.75)). В ряд попадают только корзины, где были замеры (пустые
+// пропускаются — у VitalPoint нет счётчика, поэтому каждый P75 должен быть
+// реальным). Сетка корзин выровнена по epoch средствами ClickHouse. environment
+// пустой → без фильтра по окружению.
+func (q *Query) VitalSeries(ctx context.Context, projectID int64, transaction, name string, from, to time.Time, step time.Duration, environment string) ([]VitalPoint, error) {
+	if !vitalKnown(name) {
+		return nil, fmt.Errorf("trace: vital series: unknown vital %q", name)
+	}
+	stepSec := int64(step / time.Second)
+	if stepSec <= 0 {
+		return nil, fmt.Errorf("trace: vital series: step must be at least one second, got %s", step)
+	}
+
+	where := "project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?"
+	args := []any{stepSec, uint64(projectID), transaction, from, to}
+	if environment != "" {
+		where += " AND environment = ?"
+		args = append(args, environment)
+	}
+
+	// name белым списком проверен vitalKnown → безопасно подставить как имя
+	// колонки (state — name, счётчик — name+"_count").
+	rows, err := q.conn.Query(ctx, `
+		SELECT toStartOfInterval(bucket, INTERVAL ? second) AS bucket_ts,
+			quantilesMerge(0.75)(`+name+`) AS q,
+			countMerge(`+name+`_count) AS c
+		FROM web_vitals_5m
+		WHERE `+where+`
+		GROUP BY bucket_ts
+		HAVING c > 0
+		ORDER BY bucket_ts`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("trace: vital series: %w", err)
+	}
+	defer rows.Close()
+
+	var out []VitalPoint
+	for rows.Next() {
+		var t time.Time
+		var qs []float64
+		var c uint64
+		if err := rows.Scan(&t, &qs, &c); err != nil {
+			return nil, fmt.Errorf("trace: vital series: scan: %w", err)
+		}
+		var p75 float64
+		if len(qs) > 0 {
+			p75 = qs[0]
+		}
+		out = append(out, VitalPoint{T: t.UTC(), P75: p75})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: vital series: %w", err)
+	}
+	return out, nil
+}
+
+// PageVitalsOne возвращает общий p75 всех пяти web vitals одной транзакции за
+// [from, to) ОДНИМ запросом к MV web_vitals_5m: quantilesMerge(0.75) по каждому
+// показателю и countMerge по числу замеров, агрегированные по всему окну без
+// разбивки по корзинам (нет GROUP BY по времени → одна строка-агрегат).
+// environment пустой → без фильтра по окружению. У vital без замеров Count == 0
+// и Rating "" (см. makeVital) — по этому и решается, показывать ли панель.
+func (q *Query) PageVitalsOne(ctx context.Context, projectID int64, transaction string, from, to time.Time, environment string) (lcp, inp, cls, fcp, ttfb Vital, err error) {
+	where := "project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?"
+	args := []any{uint64(projectID), transaction, from, to}
+	if environment != "" {
+		where += " AND environment = ?"
+		args = append(args, environment)
+	}
+
+	var lcpP, inpP, clsP, fcpP, ttfbP []float64
+	var lcpC, inpC, clsC, fcpC, ttfbC uint64
+	// Агрегат без GROUP BY всегда возвращает ровно одну строку (при отсутствии
+	// замеров — с нулевыми countMerge и пустыми quantilesMerge), поэтому
+	// ErrNoRows тут не бывает.
+	if err := q.conn.QueryRow(ctx, `
+		SELECT
+			quantilesMerge(0.75)(lcp)  AS lcp_p,
+			quantilesMerge(0.75)(inp)  AS inp_p,
+			quantilesMerge(0.75)(cls)  AS cls_p,
+			quantilesMerge(0.75)(fcp)  AS fcp_p,
+			quantilesMerge(0.75)(ttfb) AS ttfb_p,
+			countMerge(lcp_count)  AS lcp_c,
+			countMerge(inp_count)  AS inp_c,
+			countMerge(cls_count)  AS cls_c,
+			countMerge(fcp_count)  AS fcp_c,
+			countMerge(ttfb_count) AS ttfb_c
+		FROM web_vitals_5m
+		WHERE `+where, args...).
+		Scan(&lcpP, &inpP, &clsP, &fcpP, &ttfbP, &lcpC, &inpC, &clsC, &fcpC, &ttfbC); err != nil {
+		return Vital{}, Vital{}, Vital{}, Vital{}, Vital{}, fmt.Errorf("trace: page vitals one: %w", err)
+	}
+	return makeVital("lcp", lcpP, lcpC),
+		makeVital("inp", inpP, inpC),
+		makeVital("cls", clsP, clsC),
+		makeVital("fcp", fcpP, fcpC),
+		makeVital("ttfb", ttfbP, ttfbC), nil
+}
+
+// RecentEndpointP95 читает p95 длительности эндпойнта за окно [from, to) из MV
+// transactions_5m и число замеров. Value — в МИЛЛИСЕКУНДАХ (dur в MV хранится в
+// микросекундах, детектор регрессий и его полы работают в мс): us/1000. Пусто
+// (Samples 0) → Value 0, чтобы не подсунуть NaN пустого quantilesMerge в Decide.
+func (q *Query) RecentEndpointP95(ctx context.Context, projectID int64, transaction string, from, to time.Time) (RegressionSample, error) {
+	var p95us float64
+	var cnt uint64
+	// Агрегат без GROUP BY всегда возвращает ровно одну строку.
+	if err := q.conn.QueryRow(ctx, `
+		SELECT quantilesMerge(0.95)(dur)[1] AS p95, countMerge(cnt) AS c
+		FROM transactions_5m
+		WHERE project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?`,
+		uint64(projectID), transaction, from, to).Scan(&p95us, &cnt); err != nil {
+		return RegressionSample{}, fmt.Errorf("trace: recent endpoint p95: %w", err)
+	}
+	return msSample(p95us, cnt), nil
+}
+
+// BaselineEndpointP95 — скользящая база эндпойнта: МЕДИАНА дневных p95 за
+// последние days дней (окно [now-days, now)), из MV transactions_5m. Дневной
+// p95 считается quantilesMerge по 5м-корзинам одного дня, медиана — quantileExact
+// по дневным значениям. Samples — суммарное число замеров за всё окно (чтобы
+// min_samples был осмысленным). Value — в миллисекундах (us/1000).
+func (q *Query) BaselineEndpointP95(ctx context.Context, projectID int64, transaction string, days int, now time.Time) (RegressionSample, error) {
+	from := now.Add(-time.Duration(days) * 24 * time.Hour)
+	var medUs float64
+	var total uint64
+	// HAVING cnt > 0 не нужен для эндпойнтов (в transactions_5m у каждой корзины
+	// cnt > 0), но безвреден и симметричен вайтал-базе.
+	if err := q.conn.QueryRow(ctx, `
+		SELECT quantileExact(0.5)(daily) AS base, sum(cnt) AS total
+		FROM (
+			SELECT toStartOfDay(bucket) AS d,
+				quantilesMerge(0.95)(dur)[1] AS daily,
+				countMerge(cnt) AS cnt
+			FROM transactions_5m
+			WHERE project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?
+			GROUP BY d
+			HAVING cnt > 0
+		)`,
+		uint64(projectID), transaction, from, now).Scan(&medUs, &total); err != nil {
+		return RegressionSample{}, fmt.Errorf("trace: baseline endpoint p95: %w", err)
+	}
+	return msSample(medUs, total), nil
+}
+
+// RecentVitalP75 читает p75 web-vital'а name (lcp|inp|cls|fcp|ttfb) страницы за
+// окно [from, to) из MV web_vitals_5m и число замеров. Value уже в мс (для CLS —
+// безразмерный), конвертация не нужна. name проверяется белым списком vitalKnown
+// до подстановки как имя колонки (не bindable-параметр).
+func (q *Query) RecentVitalP75(ctx context.Context, projectID int64, transaction, name string, from, to time.Time) (RegressionSample, error) {
+	if !vitalKnown(name) {
+		return RegressionSample{}, fmt.Errorf("trace: recent vital p75: unknown vital %q", name)
+	}
+	var p75 float64
+	var cnt uint64
+	if err := q.conn.QueryRow(ctx, `
+		SELECT quantilesMerge(0.75)(`+name+`)[1] AS p75, countMerge(`+name+`_count) AS c
+		FROM web_vitals_5m
+		WHERE project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?`,
+		uint64(projectID), transaction, from, to).Scan(&p75, &cnt); err != nil {
+		return RegressionSample{}, fmt.Errorf("trace: recent vital p75: %w", err)
+	}
+	return valueSample(p75, cnt), nil
+}
+
+// BaselineVitalP75 — скользящая база web-vital'а name страницы: медиана дневных
+// p75 за days дней (окно [now-days, now)), из MV web_vitals_5m. HAVING cnt > 0
+// отбрасывает дни без замеров этого vital'а (иначе quantilesMerge пустого
+// состояния вернул бы NaN и испортил медиану). Samples — сумма замеров за окно.
+func (q *Query) BaselineVitalP75(ctx context.Context, projectID int64, transaction, name string, days int, now time.Time) (RegressionSample, error) {
+	if !vitalKnown(name) {
+		return RegressionSample{}, fmt.Errorf("trace: baseline vital p75: unknown vital %q", name)
+	}
+	from := now.Add(-time.Duration(days) * 24 * time.Hour)
+	var med float64
+	var total uint64
+	if err := q.conn.QueryRow(ctx, `
+		SELECT quantileExact(0.5)(daily) AS base, sum(cnt) AS total
+		FROM (
+			SELECT toStartOfDay(bucket) AS d,
+				quantilesMerge(0.75)(`+name+`)[1] AS daily,
+				countMerge(`+name+`_count) AS cnt
+			FROM web_vitals_5m
+			WHERE project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?
+			GROUP BY d
+			HAVING cnt > 0
+		)`,
+		uint64(projectID), transaction, from, now).Scan(&med, &total); err != nil {
+		return RegressionSample{}, fmt.Errorf("trace: baseline vital p75: %w", err)
+	}
+	return valueSample(med, total), nil
+}
+
+// TopEndpointsByTraffic — топ-K имён эндпойнтов проекта по трафику за [from, to)
+// (число транзакций, countMerge из transactions_5m), по убыванию. Для оценщика
+// (план 4): регрессия на цели без нагрузки — шум, оцениваем только верхушку.
+func (q *Query) TopEndpointsByTraffic(ctx context.Context, projectID int64, from, to time.Time, k int) ([]string, error) {
+	if k <= 0 {
+		return nil, nil
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction
+		FROM transactions_5m
+		WHERE project_id = ? AND bucket >= ? AND bucket < ?
+		GROUP BY transaction
+		ORDER BY countMerge(cnt) DESC, transaction
+		LIMIT ?`,
+		uint64(projectID), from, to, k)
+	if err != nil {
+		return nil, fmt.Errorf("trace: top endpoints by traffic: %w", err)
+	}
+	defer rows.Close()
+	return scanStrings(rows, "trace: top endpoints by traffic")
+}
+
+// TopVitalPages — топ-K страниц с web-vital'ами за [from, to] по числу замеров
+// (сумма countMerge по всем пяти vital'ам, из web_vitals_5m), по убыванию.
+// HAVING отсекает транзакции без единого замера vital'а (MV агрегирует и чистые
+// API-эндпойнты без measurements).
+func (q *Query) TopVitalPages(ctx context.Context, projectID int64, from, to time.Time, k int) ([]string, error) {
+	if k <= 0 {
+		return nil, nil
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction
+		FROM web_vitals_5m
+		WHERE project_id = ? AND bucket >= ? AND bucket < ?
+		GROUP BY transaction
+		HAVING (countMerge(lcp_count) + countMerge(inp_count) + countMerge(cls_count)
+			+ countMerge(fcp_count) + countMerge(ttfb_count)) > 0
+		ORDER BY (countMerge(lcp_count) + countMerge(inp_count) + countMerge(cls_count)
+			+ countMerge(fcp_count) + countMerge(ttfb_count)) DESC, transaction
+		LIMIT ?`,
+		uint64(projectID), from, to, k)
+	if err != nil {
+		return nil, fmt.Errorf("trace: top vital pages: %w", err)
+	}
+	defer rows.Close()
+	return scanStrings(rows, "trace: top vital pages")
+}
+
+// scanStrings собирает одноколоночный результат в срез строк (общий хвост
+// TopEndpointsByTraffic/TopVitalPages).
+func scanStrings(rows driver.Rows, where string) ([]string, error) {
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("%s: scan: %w", where, err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", where, err)
+	}
+	return out, nil
+}
+
+// msSample собирает RegressionSample из микросекундного значения (p95 dur) с
+// переводом в миллисекунды. При нуле замеров Value 0 (quantilesMerge пустого
+// состояния — NaN, его в Decide пускать нельзя).
+func msSample(us float64, cnt uint64) RegressionSample {
+	if cnt == 0 {
+		return RegressionSample{Value: 0, Samples: 0}
+	}
+	return RegressionSample{Value: us / 1000, Samples: int(cnt)}
+}
+
+// valueSample — как msSample, но без конвертации единиц (web-vital'ы уже в мс,
+// CLS безразмерный).
+func valueSample(v float64, cnt uint64) RegressionSample {
+	if cnt == 0 {
+		return RegressionSample{Value: 0, Samples: 0}
+	}
+	return RegressionSample{Value: v, Samples: int(cnt)}
+}
+
 // usFromFloat округляет квантиль (Float64 из quantiles/quantilesMerge) до
 // микросекунд с насыщением на границах UInt32.
 func usFromFloat(v float64) uint32 {

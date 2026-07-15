@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -154,6 +155,78 @@ func TestParseTransactionRFC3339Timestamps(t *testing.T) {
 	}
 	if got := tx.Spans[0].DurationUS(); got != 100_000 {
 		t.Errorf("span DurationUS = %d, want 100000", got)
+	}
+}
+
+// TestParseTransactionMeasurements — web vitals из блока measurements: value
+// берётся как есть, unit=="second" приводится к миллисекундам, CLS (unit пустой)
+// — как есть; отрицательные значения отбрасываются.
+func TestParseTransactionMeasurements(t *testing.T) {
+	base := txBase()
+	raw := fmt.Sprintf(`{"type":"transaction","transaction":"GET /x",
+		"start_timestamp":%s,"timestamp":%s,
+		"contexts":{"trace":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"span_id":"bbbbbbbbbbbbbbbb","op":"http.server","status":"ok"}},
+		"measurements":{
+			"lcp":{"value":2480.0,"unit":"millisecond"},
+			"cls":{"value":0.05,"unit":""},
+			"ttfb":{"value":0.64,"unit":"second"},
+			"bad":{"value":-1.0,"unit":"millisecond"}
+		}}`, unixFloat(base), unixFloat(base.Add(time.Second)))
+
+	tx, err := ingest.ParseTransaction([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseTransaction: %v", err)
+	}
+	if len(tx.Measurements) != 3 {
+		t.Fatalf("Measurements = %v, want 3 keys (negative dropped)", tx.Measurements)
+	}
+	if tx.Measurements["lcp"] != 2480 {
+		t.Errorf("lcp = %v, want 2480", tx.Measurements["lcp"])
+	}
+	if tx.Measurements["cls"] != 0.05 {
+		t.Errorf("cls = %v, want 0.05", tx.Measurements["cls"])
+	}
+	if math.Abs(tx.Measurements["ttfb"]-640) > 1e-9 {
+		t.Errorf("ttfb = %v, want 640 (seconds → ms)", tx.Measurements["ttfb"])
+	}
+	if _, ok := tx.Measurements["bad"]; ok {
+		t.Errorf("negative measurement not dropped: %v", tx.Measurements)
+	}
+}
+
+// TestParseTransactionMeasurementsCap — число measurements каппится (40).
+func TestParseTransactionMeasurementsCap(t *testing.T) {
+	base := txBase()
+	parts := make([]string, 0, 60)
+	for i := 0; i < 60; i++ {
+		parts = append(parts, fmt.Sprintf(`"m%02d":{"value":%d.0,"unit":"millisecond"}`, i, i))
+	}
+	raw := fmt.Sprintf(`{"type":"transaction","transaction":"GET /x",
+		"start_timestamp":%s,"timestamp":%s,
+		"contexts":{"trace":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"span_id":"bbbbbbbbbbbbbbbb","op":"http.server","status":"ok"}},
+		"measurements":{%s}}`,
+		unixFloat(base), unixFloat(base.Add(time.Second)), strings.Join(parts, ","))
+
+	tx, err := ingest.ParseTransaction([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseTransaction: %v", err)
+	}
+	if len(tx.Measurements) != 40 {
+		t.Fatalf("Measurements = %d, want 40 (cap)", len(tx.Measurements))
+	}
+}
+
+// TestParseTransactionNoMeasurements — транзакция без measurements → nil, не
+// паника (канонический payload их не несёт).
+func TestParseTransactionNoMeasurements(t *testing.T) {
+	tx, err := ingest.ParseTransaction([]byte(testTransactionJSON(txBase())))
+	if err != nil {
+		t.Fatalf("ParseTransaction: %v", err)
+	}
+	if tx.Measurements != nil {
+		t.Errorf("Measurements = %v, want nil", tx.Measurements)
 	}
 }
 

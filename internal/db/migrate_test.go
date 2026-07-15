@@ -88,14 +88,28 @@ func TestMigrateCHAndRetention(t *testing.T) {
 	}
 
 	// 0003: транзакции, спаны, агрегирующая MV и trace-колонки в events.
+	// 0007 добавляет колонку measurements.
 	txDDL := showCreate("transactions")
 	for _, want := range []string{
 		"trace_id", "span_id", "transaction", "duration_us", "tags", "source",
+		"measurements",
 		"toYYYYMM(timestamp)", "ORDER BY (project_id, transaction, timestamp)", "toIntervalDay(90)",
 	} {
 		if !strings.Contains(txDDL, want) {
 			t.Errorf("transactions DDL missing %q:\n%s", want, txDDL)
 		}
+	}
+
+	// 0008: MV web_vitals_5m существует после up. Содержимое проверяется
+	// поведением, см. TestWebVitals5mAggregates.
+	var wvExists uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = 'web_vitals_5m'").
+		Scan(&wvExists); err != nil {
+		t.Fatalf("system.tables web_vitals_5m: %v", err)
+	}
+	if wvExists != 1 {
+		t.Errorf("web_vitals_5m does not exist after up")
 	}
 
 	spansDDL := showCreate("spans")
@@ -222,7 +236,7 @@ func TestMigrateCHUpDownUp(t *testing.T) {
 	defer conn.Close()
 
 	// Down полностью зеркалит up: ни таблиц, ни MV не остаётся.
-	for _, table := range []string{"events", "check_results", "transactions", "spans", "transactions_5m"} {
+	for _, table := range []string{"events", "check_results", "transactions", "spans", "transactions_5m", "web_vitals_5m"} {
 		var n uint64
 		err := conn.QueryRow(ctx,
 			"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?",
@@ -309,6 +323,73 @@ func TestTransactions5mAggregates(t *testing.T) {
 	}
 	if quantiles[2] < 2899 || quantiles[2] > 2901 {
 		t.Errorf("p95 = %v, want ~2900 (levels: %v)", quantiles[2], quantiles)
+	}
+}
+
+// TestWebVitals5mAggregates закрепляет MV web_vitals_5m поведением: вставляем
+// транзакции с measurements['lcp'] и читаем p75 через quantilesMerge. Ключевое
+// свойство — mapContains-фильтр: транзакция без lcp не считается нулём и не
+// попадает в квантиль/счётчик.
+func TestWebVitals5mAggregates(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const projectID uint64 = 77
+	ts := time.Date(2026, 7, 15, 9, 2, 30, 0, time.UTC) // bucket 09:00
+	rows := []map[string]float64{
+		{"lcp": 2000, "inp": 150},
+		{"lcp": 2400},
+		{"lcp": 2600},
+		{}, // без lcp: не должен попасть ни в квантиль, ни в lcp_count
+	}
+
+	batch, err := conn.PrepareBatch(ctx,
+		"INSERT INTO transactions (project_id, trace_id, span_id, transaction, op, timestamp, duration_us, status, environment, measurements)")
+	if err != nil {
+		t.Fatalf("PrepareBatch transactions: %v", err)
+	}
+	for i, m := range rows {
+		err := batch.Append(projectID, "trace", "span", "GET /home", "pageload",
+			ts.Add(time.Duration(i)*time.Second), uint32(1000), "ok", "production", m)
+		if err != nil {
+			t.Fatalf("append row %d: %v", i, err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatalf("send transactions batch: %v", err)
+	}
+
+	var (
+		lcpCount  uint64
+		inpCount  uint64
+		quantiles []float64
+	)
+	err = conn.QueryRow(ctx, `
+		SELECT countMerge(lcp_count), countMerge(inp_count), quantilesMerge(0.75)(lcp)
+		  FROM web_vitals_5m
+		 WHERE project_id = ? AND transaction = 'GET /home' AND environment = 'production'`,
+		projectID).Scan(&lcpCount, &inpCount, &quantiles)
+	if err != nil {
+		t.Fatalf("read web_vitals_5m: %v", err)
+	}
+
+	// Отсутствующий lcp (mapContains guard) не считается — три присутствующих.
+	if lcpCount != 3 {
+		t.Errorf("countMerge(lcp_count) = %d, want 3 (mapContains не отсекает отсутствующий lcp?)", lcpCount)
+	}
+	// Пер-vital счётчики: inp есть только у одной строки (нужен плану 3 для min_samples).
+	if inpCount != 1 {
+		t.Errorf("countMerge(inp_count) = %d, want 1", inpCount)
+	}
+	// quantilesStateIf(0.75) — ровно один уровень.
+	if len(quantiles) != 1 {
+		t.Fatalf("quantilesMerge returned %d levels (%v), want 1", len(quantiles), quantiles)
+	}
+	// p75 из [2000, 2400, 2600] интерполируется в ~2500; если бы отсутствующий
+	// lcp считался нулём, p75 просел бы.
+	if quantiles[0] < 2499 || quantiles[0] > 2501 {
+		t.Errorf("p75(lcp) = %v, want ~2500 (levels: %v)", quantiles[0], quantiles)
 	}
 }
 
@@ -421,6 +502,110 @@ func seedProject(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (orgID, 
 		t.Fatalf("insert project: %v", err)
 	}
 	return orgID, projID
+}
+
+func TestRegressionSchema(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var n int
+	err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM information_schema.tables WHERE table_name = 'perf_regressions'").Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("table perf_regressions: n=%d err=%v", n, err)
+	}
+
+	cols := map[string][]string{
+		"perf_regressions": {
+			"id", "project_id", "target_kind", "target", "metric", "status",
+			"baseline_value", "peak_value", "current_value", "started_at",
+			"resolved_at", "notified_open", "notified_close",
+		},
+		"projects": {"perf_regression_config"},
+	}
+	for table, names := range cols {
+		for _, col := range names {
+			var c int
+			err := pool.QueryRow(ctx,
+				`SELECT count(*) FROM information_schema.columns
+				 WHERE table_name = $1 AND column_name = $2`, table, col).Scan(&c)
+			if err != nil || c != 1 {
+				t.Errorf("column %s.%s: n=%d err=%v", table, col, c, err)
+			}
+		}
+	}
+
+	// Оба индекса на месте: частичный уникальный на открытые инциденты и
+	// индекс списка регрессий проекта.
+	for _, idx := range []string{
+		"perf_regressions_one_open_idx", "perf_regressions_project_started_idx",
+	} {
+		var c int
+		err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_indexes
+			  WHERE tablename = 'perf_regressions' AND indexname = $1`, idx).Scan(&c)
+		if err != nil || c != 1 {
+			t.Errorf("index %s: n=%d err=%v", idx, c, err)
+		}
+	}
+
+	// Дефолт новой колонки проекта — '{}'.
+	_, projID := seedProject(t, ctx, pool)
+	var cfg string
+	if err := pool.QueryRow(ctx,
+		"SELECT perf_regression_config FROM projects WHERE id = $1", projID).Scan(&cfg); err != nil {
+		t.Fatalf("select perf_regression_config: %v", err)
+	}
+	if cfg != "{}" {
+		t.Errorf("perf_regression_config default = %q, want {}", cfg)
+	}
+
+	insertOpen := func() error {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO perf_regressions
+			   (project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
+			 VALUES ($1,'endpoint_p95','GET /checkout','duration',100,200,180)`, projID)
+		return err
+	}
+	// Частичный уникальный индекс: второй ОТКРЫТЫЙ инцидент по той же
+	// (project_id, target, metric) недопустим.
+	if err := insertOpen(); err != nil {
+		t.Fatalf("insert first open regression: %v", err)
+	}
+	if err := insertOpen(); err == nil {
+		t.Error("want unique violation for second open regression on same target")
+	}
+	// После закрытия первого можно открыть новый — индекс частичный (WHERE
+	// status='open').
+	if _, err := pool.Exec(ctx,
+		"UPDATE perf_regressions SET status='resolved', resolved_at=now() WHERE project_id=$1", projID); err != nil {
+		t.Fatalf("resolve regression: %v", err)
+	}
+	if err := insertOpen(); err != nil {
+		t.Errorf("insert open regression after resolving previous: %v", err)
+	}
+
+	// status CHECK отвергает произвольные значения.
+	_, err = pool.Exec(ctx,
+		`INSERT INTO perf_regressions
+		   (project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value)
+		 VALUES ($1,'endpoint_p95','GET /x','duration','bogus',1,1,1)`, projID)
+	if err == nil {
+		t.Error("want CHECK violation for invalid perf_regressions.status")
+	}
+
+	// Удаление проекта каскадно уносит его perf_regressions.
+	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projID); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM perf_regressions WHERE project_id = $1", projID).Scan(&n); err != nil {
+		t.Fatalf("count perf_regressions: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("perf_regressions not cascaded on project delete: n=%d", n)
+	}
 }
 
 func TestTenancySchema(t *testing.T) {

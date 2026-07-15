@@ -302,3 +302,164 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 		t.Fatalf("ApdexThresholdMS after 422s = %d, want unchanged 450", got.ApdexThresholdMS)
 	}
 }
+
+// TestWebProjectRegressionSettings — секция «Регрессии» (этап 4, план 5,
+// задача 2): форма показывает текущие значения (проценты); сохранение пишет
+// perf_regression_config, и trace.RegressionConfigFromJSON читает пороги
+// обратно (round-trip со значениями ВЫШЕ дефолтных, чтобы опечатка ключа
+// завалила тест); recovery ≥ threshold / threshold вне (0,1] / window=0 /
+// отрицательный пол / NaN → 422 с сохранением ввода; member → 404 на POST.
+func TestWebProjectRegressionSettings(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "regset-owner@example.com")
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "regset-member@example.com")
+
+	o, err := orgSvc.CreateOrg(context.Background(), "regset-co", "RegSet Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "regset-proj", "RegSet Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
+	regPath := settingsPath + "/regressions"
+
+	// GET owner: форма «Регрессии» с дефолтами (проценты: 25 = 0.25, 10 = 0.10).
+	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, want := range []string{
+		`name="threshold_pct"`, `name="recovery_pct"`, `name="window_minutes"`,
+		`name="min_samples"`, `name="duration_floor_ms"`, `name="floor_lcp"`,
+		`name="floor_inp"`, `name="floor_cls"`, `name="floor_fcp"`, `name="floor_ttfb"`,
+		`name="enabled"`, `value="25"`, `value="10"`, `value="60"`, `value="100"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("GET %s Регрессии form missing %q: %s", settingsPath, want, body)
+		}
+	}
+
+	// Базовая валидная форма (значения ВЫШЕ дефолтов).
+	valid := func() url.Values {
+		return url.Values{
+			"threshold_pct": {"40"}, "recovery_pct": {"20"},
+			"window_minutes": {"90"}, "min_samples": {"150"},
+			"duration_floor_ms": {"250"},
+			"floor_lcp":         {"300"}, "floor_inp": {"80"}, "floor_cls": {"0.1"},
+			"floor_fcp": {"300"}, "floor_ttfb": {"300"}, "enabled": {"1"},
+		}
+	}
+
+	// member (не owner/admin) → 404 на POST.
+	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (member) status = %d, want 404", regPath, resp.StatusCode)
+	}
+
+	// Валидное сохранение → 303, пороги читаются обратно через RegressionConfigFromJSON.
+	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (valid) status = %d, want 303", regPath, resp.StatusCode)
+	}
+	gotProj, err := orgSvc.GetProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	cfg, err := trace.RegressionConfigFromJSON([]byte(gotProj.PerfRegressionConfig))
+	if err != nil {
+		t.Fatalf("RegressionConfigFromJSON(%q): %v", gotProj.PerfRegressionConfig, err)
+	}
+	approx := func(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
+	if !approx(cfg.ThresholdPct, 0.40) || !approx(cfg.RecoveryPct, 0.20) {
+		t.Fatalf("round-trip threshold/recovery = %v/%v, want 0.40/0.20", cfg.ThresholdPct, cfg.RecoveryPct)
+	}
+	if cfg.WindowMinutes != 90 || cfg.MinSamples != 150 {
+		t.Fatalf("round-trip window/min_samples = %d/%d, want 90/150", cfg.WindowMinutes, cfg.MinSamples)
+	}
+	if !approx(cfg.DurationFloorMs, 250) || !approx(cfg.Floor("lcp"), 300) ||
+		!approx(cfg.Floor("inp"), 80) || !approx(cfg.Floor("cls"), 0.1) ||
+		!approx(cfg.Floor("fcp"), 300) || !approx(cfg.Floor("ttfb"), 300) {
+		t.Fatalf("round-trip floors = dur %v lcp %v inp %v cls %v fcp %v ttfb %v",
+			cfg.DurationFloorMs, cfg.Floor("lcp"), cfg.Floor("inp"), cfg.Floor("cls"), cfg.Floor("fcp"), cfg.Floor("ttfb"))
+	}
+	if !cfg.Enabled {
+		t.Fatalf("round-trip Enabled = false, want true")
+	}
+
+	// Снятый чекбокс enabled → сохраняется как false (присутствие поля = вкл).
+	noEnabled := valid()
+	noEnabled.Del("enabled")
+	resp = postForm(t, s.srv, regPath, noEnabled, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (no enabled) status = %d, want 303", regPath, resp.StatusCode)
+	}
+	gotProj, _ = orgSvc.GetProject(context.Background(), proj.ID)
+	cfg, _ = trace.RegressionConfigFromJSON([]byte(gotProj.PerfRegressionConfig))
+	if cfg.Enabled {
+		t.Fatalf("Enabled after unchecked = true, want false")
+	}
+	// Вернём валидную запись с enabled для дальнейшей проверки «не менялось».
+	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// Форма после сохранения показывает сохранённые значения (проценты 40/20).
+	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), `value="40"`) || !strings.Contains(string(body), `value="20"`) {
+		t.Fatalf("GET %s missing saved regression values: %s", settingsPath, body)
+	}
+
+	// Невалидные входы → 422 с сохранением отправленного значения offending-поля.
+	bad := []struct {
+		name  string
+		field string
+		val   string
+	}{
+		{"recovery>=threshold", "recovery_pct", "40"}, // threshold=40 → recovery не меньше
+		{"threshold=0", "threshold_pct", "0"},
+		{"threshold>100", "threshold_pct", "150"},
+		{"window=0", "window_minutes", "0"},
+		{"min_samples=0", "min_samples", "0"},
+		{"negative floor", "floor_lcp", "-5"},
+		{"NaN duration", "duration_floor_ms", "NaN"},
+	}
+	for _, tc := range bad {
+		form := valid()
+		form.Set(tc.field, tc.val)
+		resp = postForm(t, s.srv, regPath, form, s.srv.URL, ownerCookie)
+		body, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("POST %s (%s) status = %d, want 422: %s", regPath, tc.name, resp.StatusCode, body)
+		}
+		if want := `value="` + tc.val + `"`; !strings.Contains(string(body), want) {
+			t.Fatalf("POST %s (%s) 422 form did not preserve %q: %s", regPath, tc.name, want, body)
+		}
+	}
+
+	// БД по-прежнему держит последнюю валидную запись (threshold 0.40).
+	gotProj, err = orgSvc.GetProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("GetProject after bad posts: %v", err)
+	}
+	cfg, _ = trace.RegressionConfigFromJSON([]byte(gotProj.PerfRegressionConfig))
+	if !approx(cfg.ThresholdPct, 0.40) {
+		t.Fatalf("ThresholdPct after 422s = %v, want unchanged 0.40", cfg.ThresholdPct)
+	}
+}

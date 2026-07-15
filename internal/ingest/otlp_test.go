@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/hex"
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -571,6 +572,93 @@ func TestMapOTLP(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.check(t, MapOTLP(tt.rs, now))
 		})
+	}
+}
+
+// TestMapOTLPMeasurements — web vitals приезжают в OTLP атрибутами корневого
+// спана с префиксом sentry.measurements.<name> (double или int). Префикс
+// снимается, значение кладётся как есть; строковые атрибуты и атрибуты без
+// префикса measurements не дают, недоверенные значения (NaN/Inf/отрицательные)
+// отбрасываются.
+func TestMapOTLPMeasurements(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-time.Minute)
+	end := start.Add(500 * time.Millisecond)
+
+	txs := MapOTLP([]*tracepb.ResourceSpans{resSpans(nil, &tracepb.Span{
+		TraceId:           traceIDBytes,
+		SpanId:            rootIDBytes,
+		Name:              "GET /checkout",
+		Kind:              tracepb.Span_SPAN_KIND_SERVER,
+		StartTimeUnixNano: nanos(start),
+		EndTimeUnixNano:   nanos(end),
+		Attributes: []*commonpb.KeyValue{
+			dblAttr("sentry.measurements.lcp", 2480.0),
+			intAttr("sentry.measurements.ttfb", 640),
+			dblAttr("sentry.measurements.neg", -1.0),
+			dblAttr("sentry.measurements.nan", math.NaN()),
+			dblAttr("sentry.measurements.inf", math.Inf(1)),
+			strAttr("sentry.measurements.notnum", "x"), // не число — игнор
+			strAttr("http.request.method", "GET"),      // не measurement
+		},
+	})}, now)
+
+	if len(txs) != 1 {
+		t.Fatalf("транзакций: %d, ждали 1", len(txs))
+	}
+	m := txs[0].Measurements
+	if len(m) != 2 {
+		t.Fatalf("Measurements = %v, ждали 2 (lcp, ttfb)", m)
+	}
+	if m["lcp"] != 2480 {
+		t.Errorf("lcp = %v, ждали 2480", m["lcp"])
+	}
+	if m["ttfb"] != 640 {
+		t.Errorf("ttfb = %v, ждали 640 (int→float)", m["ttfb"])
+	}
+}
+
+// TestMapOTLPNoMeasurements — корень без sentry.measurements-атрибутов даёт nil.
+func TestMapOTLPNoMeasurements(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-time.Minute)
+
+	txs := MapOTLP([]*tracepb.ResourceSpans{resSpans(nil, &tracepb.Span{
+		TraceId:           traceIDBytes,
+		SpanId:            rootIDBytes,
+		Name:              "GET /x",
+		Kind:              tracepb.Span_SPAN_KIND_SERVER,
+		StartTimeUnixNano: nanos(start),
+		EndTimeUnixNano:   nanos(start.Add(time.Second)),
+		Attributes:        []*commonpb.KeyValue{strAttr("http.request.method", "GET")},
+	})}, now)
+
+	if len(txs) != 1 {
+		t.Fatalf("транзакций: %d, ждали 1", len(txs))
+	}
+	if txs[0].Measurements != nil {
+		t.Errorf("Measurements = %v, ждали nil", txs[0].Measurements)
+	}
+}
+
+// TestParseMeasurementsDropsNonFinite — прямой юнит на дисциплину
+// parseMeasurements: NaN/Inf/отрицательные отбрасываются, пустой/nil вход → nil.
+// NaN/Inf нельзя выразить в JSON, поэтому проверяем функцию напрямую.
+func TestParseMeasurementsDropsNonFinite(t *testing.T) {
+	got := parseMeasurements(map[string]sentryMeasurement{
+		"lcp": {Value: 2480, Unit: "millisecond"},
+		"nan": {Value: math.NaN()},
+		"inf": {Value: math.Inf(1)},
+		"neg": {Value: -5},
+	})
+	if len(got) != 1 || got["lcp"] != 2480 {
+		t.Fatalf("parseMeasurements = %v, ждали только lcp=2480", got)
+	}
+	if parseMeasurements(nil) != nil {
+		t.Errorf("parseMeasurements(nil) != nil")
+	}
+	if parseMeasurements(map[string]sentryMeasurement{}) != nil {
+		t.Errorf("parseMeasurements(пустой) != nil")
 	}
 }
 

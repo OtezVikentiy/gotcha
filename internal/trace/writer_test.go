@@ -149,3 +149,65 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 		t.Fatalf("transactions_5m count = %d, want 1", mvCnt)
 	}
 }
+
+// TestSpanWriterWritesMeasurements — measurements транзакции доезжают до
+// CH-колонки measurements Map(String, Float64) и читаются обратно; nil-map
+// пишется как ПУСТОЙ Map (CH не принимает nil на Append), без ошибки.
+func TestSpanWriterWritesMeasurements(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	w := trace.NewSpanWriter(conn)
+	go w.Run()
+
+	start := time.Now().UTC().Truncate(time.Millisecond)
+	withM := trace.Transaction{
+		TraceID:      "11111111111111111111111111111111",
+		SpanID:       "1111111111111111",
+		Name:         "GET /vitals",
+		Op:           "http.server",
+		Status:       "ok",
+		Start:        start,
+		End:          start.Add(100 * time.Millisecond),
+		Environment:  "production",
+		Source:       "sentry",
+		Measurements: map[string]float64{"lcp": 2500, "cls": 0.05},
+	}
+	noM := trace.Transaction{
+		TraceID:     "22222222222222222222222222222222",
+		SpanID:      "2222222222222222",
+		Name:        "GET /plain",
+		Op:          "http.server",
+		Status:      "ok",
+		Start:       start,
+		End:         start.Add(50 * time.Millisecond),
+		Environment: "production",
+		Source:      "sentry",
+		// Measurements: nil — должно уехать пустым Map.
+	}
+	w.Add(888, withM)
+	w.Add(888, noM)
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var m map[string]float64
+	if err := conn.QueryRow(ctx, `SELECT measurements FROM transactions
+		WHERE project_id = 888 AND transaction = 'GET /vitals'`).Scan(&m); err != nil {
+		t.Fatalf("select measurements: %v", err)
+	}
+	if m["lcp"] != 2500 || m["cls"] != 0.05 {
+		t.Fatalf("measurements = %v, want lcp=2500 cls=0.05", m)
+	}
+
+	var empty map[string]float64
+	if err := conn.QueryRow(ctx, `SELECT measurements FROM transactions
+		WHERE project_id = 888 AND transaction = 'GET /plain'`).Scan(&empty); err != nil {
+		t.Fatalf("select empty measurements: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("nil measurements stored as %v, want empty map", empty)
+	}
+}

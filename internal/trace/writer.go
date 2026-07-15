@@ -32,6 +32,9 @@ type txRow struct {
 	UserID      string
 	Tags        map[string]string
 	Source      string
+	// Measurements уезжает в CH-колонку measurements Map(String, Float64); nil
+	// приводится к пустому map при заполнении строки (CH Map не любит nil).
+	Measurements map[string]float64
 }
 
 // spanRow — одна строка CH-таблицы spans.
@@ -103,23 +106,28 @@ func NewSpanWriter(conn CHConn) *SpanWriter {
 // ClickHouse.
 func (w *SpanWriter) Add(projectID int64, t Transaction) {
 	tx := txRow{
-		ProjectID:   uint64(projectID),
-		TraceID:     t.TraceID,
-		SpanID:      t.SpanID,
-		Transaction: t.Name,
-		Op:          t.Op,
-		Timestamp:   t.Start,
-		DurationUS:  t.DurationUS(),
-		Status:      t.Status,
-		Environment: t.Environment,
-		Release:     t.Release,
-		ServerName:  t.ServerName,
-		UserID:      t.UserID,
-		Tags:        t.Tags,
-		Source:      t.Source,
+		ProjectID:    uint64(projectID),
+		TraceID:      t.TraceID,
+		SpanID:       t.SpanID,
+		Transaction:  t.Name,
+		Op:           t.Op,
+		Timestamp:    t.Start,
+		DurationUS:   t.DurationUS(),
+		Status:       t.Status,
+		Environment:  t.Environment,
+		Release:      t.Release,
+		ServerName:   t.ServerName,
+		UserID:       t.UserID,
+		Tags:         t.Tags,
+		Source:       t.Source,
+		Measurements: t.Measurements,
 	}
 	if tx.Tags == nil {
 		tx.Tags = map[string]string{}
+	}
+	// CH Map не принимает nil-карту на Append — как и tags, приводим к пустой.
+	if tx.Measurements == nil {
+		tx.Measurements = map[string]float64{}
 	}
 
 	spans := make([]spanRow, 0, len(t.Spans)+1)
@@ -352,7 +360,7 @@ func (w *SpanWriter) insertTx(ctx context.Context, rows []txRow) error {
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO transactions (
 		project_id, trace_id, span_id, transaction, op,
 		timestamp, duration_us, status, environment,
-		release, server_name, user_id, tags, source)`)
+		release, server_name, user_id, tags, source, measurements)`)
 	if err != nil {
 		return err
 	}
@@ -360,7 +368,7 @@ func (w *SpanWriter) insertTx(ctx context.Context, rows []txRow) error {
 		if err := batch.Append(
 			r.ProjectID, r.TraceID, r.SpanID, r.Transaction, r.Op,
 			r.Timestamp, r.DurationUS, r.Status, r.Environment,
-			r.Release, r.ServerName, r.UserID, r.Tags, r.Source,
+			r.Release, r.ServerName, r.UserID, r.Tags, r.Source, r.Measurements,
 		); err != nil {
 			return err
 		}

@@ -33,6 +33,10 @@ func projectSettingsPerformancePath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/performance"
 }
 
+func projectSettingsRegressionsPath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/regressions"
+}
+
 // perfFormFromProject строит значения формы «Performance» из сохранённого
 // проекта: sample_rate/apdex — как есть, пороги детекторов — через
 // trace.ConfigFromJSON (та же функция, что читает детектор; пустой/битый JSON
@@ -47,6 +51,42 @@ func perfFormFromProject(p org.Project) templates.PerfSettingsForm {
 		SlowDBMs:           strconv.Itoa(cfg.SlowDBMs),
 		HTTPFloodMin:       strconv.Itoa(cfg.HTTPFloodMin),
 	}
+}
+
+// regressionFormFromProject строит значения формы «Регрессии» из сохранённого
+// проекта через trace.RegressionConfigFromJSON (та же функция, что читает
+// детектор регрессий; пустой/битый JSON даёт дефолты, а не нули). ThresholdPct
+// и RecoveryPct хранятся долей (0.25), а в форме показываются процентами (25),
+// поэтому домножаем на 100. Полы — как есть. Значения строками — так же их ждёт
+// перерисовка 422.
+func regressionFormFromProject(p org.Project) templates.RegressionSettingsForm {
+	cfg, _ := trace.RegressionConfigFromJSON([]byte(p.PerfRegressionConfig))
+	return templates.RegressionSettingsForm{
+		ThresholdPct:    formatRegressionPercent(cfg.ThresholdPct),
+		RecoveryPct:     formatRegressionPercent(cfg.RecoveryPct),
+		WindowMinutes:   strconv.Itoa(cfg.WindowMinutes),
+		MinSamples:      strconv.Itoa(cfg.MinSamples),
+		DurationFloorMs: formatRegressionFloor(cfg.DurationFloorMs),
+		FloorLCP:        formatRegressionFloor(cfg.Floor("lcp")),
+		FloorINP:        formatRegressionFloor(cfg.Floor("inp")),
+		FloorCLS:        formatRegressionFloor(cfg.Floor("cls")),
+		FloorFCP:        formatRegressionFloor(cfg.Floor("fcp")),
+		FloorTTFB:       formatRegressionFloor(cfg.Floor("ttfb")),
+		Enabled:         cfg.Enabled,
+	}
+}
+
+// formatRegressionPercent показывает долю (0.25) процентом (25). Точность 'g'/6
+// значащих цифр гасит артефакты float (0.10×100 = 10.000000000000002 → «10»),
+// сохраняя дробные проценты (12.5) для тех, кто их задал напрямую.
+func formatRegressionPercent(ratio float64) string {
+	return strconv.FormatFloat(ratio*100, 'g', 6, 64)
+}
+
+// formatRegressionFloor показывает абсолютный пол метрики как есть (0.05 → «0.05»,
+// 200 → «200»).
+func formatRegressionFloor(v float64) string {
+	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
 // parsePathProjectID достаёт projectID из {id} пути /projects/{id}/settings*;
@@ -117,18 +157,19 @@ func (h *Handler) projectSettingsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.renderProjectSettings(w, r, http.StatusOK, orgID, projectID, "", nil)
+	h.renderProjectSettings(w, r, http.StatusOK, orgID, projectID, "", nil, nil)
 }
 
 // renderProjectSettings — общий рендер: GET-обработчик и все POST в этом
 // файле на 422 (то же сообщение на месте, без редиректа — тот же принцип,
 // что и renderOrgSettings/renderTeamsPage). orgID уже известен вызывающему
 // (requireProjectRole его вернул) — не запрашиваем его заново.
-// perfOverride != nil означает перерисовку формы «Performance» с уже
-// отправленными (невалидными) значениями, а не значениями из БД — так 422
-// сохраняет ввод пользователя. Остальные POST в файле передают nil: их формы
-// (rename/keys) перерисовки perf-значений не касаются, берём их из проекта.
-func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, status int, orgID, projectID int64, errMsg string, perfOverride *templates.PerfSettingsForm) {
+// perfOverride/regOverride != nil означают перерисовку соответствующей формы
+// («Performance»/«Регрессии») с уже отправленными (невалидными) значениями, а
+// не значениями из БД — так 422 сохраняет ввод пользователя. Остальные POST в
+// файле передают nil: их формы (rename/keys) перерисовки этих значений не
+// касаются, берём их из проекта.
+func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, status int, orgID, projectID int64, errMsg string, perfOverride *templates.PerfSettingsForm, regOverride *templates.RegressionSettingsForm) {
 	// Отдельного Get-по-id для проекта в org.Service нет — как и в
 	// projectSetup, находим проект в списке всех проектов организации
 	// (findProject определён в onboarding.go, тот же пакет).
@@ -155,8 +196,12 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 	if perfOverride != nil {
 		perf = *perfOverride
 	}
+	reg := regressionFormFromProject(project)
+	if regOverride != nil {
+		reg = *regOverride
+	}
 	w.WriteHeader(status)
-	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r), perf).Render(r.Context(), w)
+	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r), perf, reg).Render(r.Context(), w)
 }
 
 // projectSettingsRename — POST /projects/{id}/settings/rename: name.
@@ -185,7 +230,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 	}
 	name := r.FormValue("name")
 	if err := h.Org.RenameProject(r.Context(), projectID, name); err != nil {
-		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, projectSettingsErrorMessage(err), nil)
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, projectSettingsErrorMessage(err), nil, nil)
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -303,7 +348,7 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 		HTTPFloodMin:       r.FormValue("http_flood_min"),
 	}
 	reject := func(msg string) {
-		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, msg, &submitted)
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, msg, &submitted, nil)
 	}
 
 	sampleRate, err := strconv.ParseFloat(submitted.SampleRate, 64)
@@ -350,6 +395,133 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 func parsePerfThreshold(raw string) (int, bool) {
 	v, err := strconv.Atoi(raw)
 	if err != nil || v < 1 {
+		return 0, false
+	}
+	return v, true
+}
+
+// projectSettingsRegressions — POST /projects/{id}/settings/regressions:
+// пороги детектора регрессий. Валидация на стороне сервера: threshold_pct и
+// recovery_pct — проценты в (0,100], причём recovery < threshold (гистерезис);
+// window_minutes ≥ 1; min_samples ≥ 1; каждый пол ≥ 0. При ошибке — 422 с
+// перерисовкой формы и сохранением отправленных значений. JSON собирается
+// marshal'ом trace.RegressionConfig — его json-теги РОВНО те ключи, что читает
+// trace.RegressionConfigFromJSON, поэтому опечатка в ключе невозможна (иначе
+// дефолт молча перекрыл бы ввод). Проценты хранятся долей (25 → 0.25).
+func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+
+	// Сырые значения формы — их же возвращаем в форму при 422, чтобы не терять
+	// ввод пользователя (в т.ч. невалидный). enabled — чекбокс: присутствие
+	// поля = включено.
+	submitted := templates.RegressionSettingsForm{
+		ThresholdPct:    r.FormValue("threshold_pct"),
+		RecoveryPct:     r.FormValue("recovery_pct"),
+		WindowMinutes:   r.FormValue("window_minutes"),
+		MinSamples:      r.FormValue("min_samples"),
+		DurationFloorMs: r.FormValue("duration_floor_ms"),
+		FloorLCP:        r.FormValue("floor_lcp"),
+		FloorINP:        r.FormValue("floor_inp"),
+		FloorCLS:        r.FormValue("floor_cls"),
+		FloorFCP:        r.FormValue("floor_fcp"),
+		FloorTTFB:       r.FormValue("floor_ttfb"),
+		Enabled:         r.FormValue("enabled") != "",
+	}
+	reject := func(msg string) {
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, msg, nil, &submitted)
+	}
+
+	// Проценты: parseRegressionPercent даёт долю (25 → 0.25) и ловит NaN/диапазон.
+	thresholdRatio, ok1 := parseRegressionPercent(submitted.ThresholdPct)
+	recoveryRatio, ok2 := parseRegressionPercent(submitted.RecoveryPct)
+	if !ok1 || !ok2 {
+		reject("threshold_pct и recovery_pct должны быть процентами в диапазоне (0, 100]")
+		return
+	}
+	if recoveryRatio >= thresholdRatio {
+		reject("recovery_pct должен быть меньше threshold_pct (гистерезис)")
+		return
+	}
+	windowMinutes, ok3 := parsePerfThreshold(submitted.WindowMinutes)
+	minSamples, ok4 := parsePerfThreshold(submitted.MinSamples)
+	if !ok3 || !ok4 {
+		reject("window_minutes и min_samples должны быть целыми числами ≥ 1")
+		return
+	}
+	durationFloor, okd := parseRegressionFloor(submitted.DurationFloorMs)
+	floorLCP, okl := parseRegressionFloor(submitted.FloorLCP)
+	floorINP, oki := parseRegressionFloor(submitted.FloorINP)
+	floorCLS, okc := parseRegressionFloor(submitted.FloorCLS)
+	floorFCP, okf := parseRegressionFloor(submitted.FloorFCP)
+	floorTTFB, okt := parseRegressionFloor(submitted.FloorTTFB)
+	if !okd || !okl || !oki || !okc || !okf || !okt {
+		reject("полы метрик должны быть числами ≥ 0")
+		return
+	}
+
+	cfgJSON, err := json.Marshal(trace.RegressionConfig{
+		ThresholdPct:    thresholdRatio,
+		RecoveryPct:     recoveryRatio,
+		WindowMinutes:   windowMinutes,
+		MinSamples:      minSamples,
+		DurationFloorMs: durationFloor,
+		VitalFloor: map[string]float64{
+			"lcp":  floorLCP,
+			"inp":  floorINP,
+			"cls":  floorCLS,
+			"fcp":  floorFCP,
+			"ttfb": floorTTFB,
+		},
+		Enabled: submitted.Enabled,
+	})
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := h.Org.UpdateRegressionConfig(r.Context(), projectID, string(cfgJSON)); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
+}
+
+// parseRegressionPercent парсит процент (шаг 1) и возвращает долю: «25» → 0.25.
+// Диапазон (0,100] на входе (доля в (0,1]); math.IsNaN отдельно — NaN проходит
+// любое сравнение (все сравнения с NaN ложны), так что «NaN» иначе сохранился
+// бы в колонку.
+func parseRegressionPercent(raw string) (float64, bool) {
+	pct, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(pct) || pct <= 0 || pct > 100 {
+		return 0, false
+	}
+	return pct / 100, true
+}
+
+// parseRegressionFloor парсит абсолютный пол метрики: число ≥ 0. math.IsNaN
+// отдельно — по той же причине, что и в parseRegressionPercent.
+func parseRegressionFloor(raw string) (float64, bool) {
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(v) || v < 0 {
 		return 0, false
 	}
 	return v, true

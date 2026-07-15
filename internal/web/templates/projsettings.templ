@@ -26,6 +26,10 @@ func projectSettingsPerformancePath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/performance"
 }
 
+func projectSettingsRegressionsPath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/regressions"
+}
+
 // PerfSettingsForm — значения формы «Performance» строками, чтобы при 422
 // перерисовке показать РОВНО то, что отправил пользователь (например «1.5»),
 // а не переигранное через float. На GET заполняется из org.Project и
@@ -37,6 +41,26 @@ type PerfSettingsForm struct {
 	NPlusOneMinTotalMs string
 	SlowDBMs           string
 	HTTPFloodMin       string
+}
+
+// RegressionSettingsForm — значения формы «Регрессии» строками (тот же приём,
+// что и PerfSettingsForm: при 422 показать РОВНО отправленное). ThresholdPct и
+// RecoveryPct — В ПРОЦЕНТАХ (25 = ratio 0.25), конвертация в долю на стороне
+// обработчика. Полы — абсолютные значения метрик. Enabled — bool (чекбокс).
+// На GET заполняется из RegressionConfigFromJSON(project.PerfRegressionConfig)
+// (см. regressionFormFromProject в projsettings.go).
+type RegressionSettingsForm struct {
+	ThresholdPct    string
+	RecoveryPct     string
+	WindowMinutes   string
+	MinSamples      string
+	DurationFloorMs string
+	FloorLCP        string
+	FloorINP        string
+	FloorCLS        string
+	FloorFCP        string
+	FloorTTFB       string
+	Enabled         bool
 }
 
 func keyStatus(k org.Key) string {
@@ -100,7 +124,62 @@ templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
 	</form>
 }
 
-templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string, perf PerfSettingsForm) {
+// regressionSettingsForm — секция «Регрессии»: пороги детектора регрессий
+// (рост p95/p75 над скользящей базой). threshold_pct/recovery_pct В ПРОЦЕНТАХ
+// (шаг 1). Один POST на /settings/regressions (sameOrigin + owner|admin), при
+// невалидном вводе — 422 с этой же формой.
+templ regressionSettingsForm(projectID int64, f RegressionSettingsForm) {
+	<h2>Регрессии</h2>
+	<form method="post" action={ templ.URL(projectSettingsRegressionsPath(projectID)) } class="project-regression-form">
+		<label>
+			Порог открытия, % (threshold_pct)
+			<input type="number" name="threshold_pct" value={ f.ThresholdPct } min="1" max="100" step="1" required/>
+		</label>
+		<label>
+			Порог закрытия, % (recovery_pct)
+			<input type="number" name="recovery_pct" value={ f.RecoveryPct } min="1" max="100" step="1" required/>
+		</label>
+		<label>
+			Окно, минут (window_minutes)
+			<input type="number" name="window_minutes" value={ f.WindowMinutes } min="1" required/>
+		</label>
+		<label>
+			Минимум сэмплов (min_samples)
+			<input type="number" name="min_samples" value={ f.MinSamples } min="1" required/>
+		</label>
+		<label>
+			Пол duration, мс (duration_floor_ms)
+			<input type="number" name="duration_floor_ms" value={ f.DurationFloorMs } min="0" step="any" required/>
+		</label>
+		<label>
+			Пол LCP (lcp)
+			<input type="number" name="floor_lcp" value={ f.FloorLCP } min="0" step="any" required/>
+		</label>
+		<label>
+			Пол INP (inp)
+			<input type="number" name="floor_inp" value={ f.FloorINP } min="0" step="any" required/>
+		</label>
+		<label>
+			Пол CLS (cls)
+			<input type="number" name="floor_cls" value={ f.FloorCLS } min="0" step="any" required/>
+		</label>
+		<label>
+			Пол FCP (fcp)
+			<input type="number" name="floor_fcp" value={ f.FloorFCP } min="0" step="any" required/>
+		</label>
+		<label>
+			Пол TTFB (ttfb)
+			<input type="number" name="floor_ttfb" value={ f.FloorTTFB } min="0" step="any" required/>
+		</label>
+		<label>
+			<input type="checkbox" name="enabled" value="1" checked?={ f.Enabled }/>
+			Включено (enabled)
+		</label>
+		<button type="submit">Сохранить</button>
+	</form>
+}
+
+templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm) {
 	@layout("Настройки "+project.Name, userEmail) {
 		<div class="project-settings">
 			<h1>Настройки проекта { project.Name }</h1>
@@ -141,6 +220,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 				<button type="submit">Новый ключ</button>
 			</form>
 			@perfSettingsForm(project.ID, perf)
+			@regressionSettingsForm(project.ID, reg)
 		</div>
 	}
 }

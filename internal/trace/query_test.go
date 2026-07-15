@@ -20,6 +20,8 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 
 	const projectID = int64(55)
 	const projectID2 = int64(56) // отдельный проект для тестов LIMIT/индексов
+	const projectID3 = int64(57) // отдельный проект для Web Vitals
+	const projectID4 = int64(58) // отдельный проект для запросов регрессий (данные по дням)
 
 	w := trace.NewSpanWriter(conn)
 	go w.Run()
@@ -183,6 +185,153 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		Environment: "production",
 		Spans:       bigSpans,
 	})
+
+	// projectID3: Web Vitals. «GET /home» production — 3 pageload-транзакции с
+	// lcp 2000/2400/2600 (p75≈2500, граница good) и cls 0.05, без inp; все в
+	// первой 5м-корзине [base, base+5m).
+	for i, lcp := range []float64{2000, 2400, 2600} {
+		at := base.Add(time.Duration(i) * time.Second)
+		w.Add(projectID3, trace.Transaction{
+			TraceID:      fmt.Sprintf("home-%d", i),
+			SpanID:       fmt.Sprintf("homespan-%d", i),
+			Name:         "GET /home",
+			Op:           "pageload",
+			Status:       "ok",
+			Start:        at,
+			End:          at.Add(time.Second),
+			Environment:  "production",
+			Measurements: map[string]float64{"lcp": lcp, "cls": 0.05},
+		})
+	}
+	// «GET /slow» production — 5 транзакций lcp 5000 (p75=5000 → poor). Замеров
+	// больше, чем у /home, поэтому идёт первой при сортировке по lcp_count DESC.
+	for i := 0; i < 5; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		w.Add(projectID3, trace.Transaction{
+			TraceID:      fmt.Sprintf("slow-%d", i),
+			SpanID:       fmt.Sprintf("slowspan-%d", i),
+			Name:         "GET /slow",
+			Op:           "pageload",
+			Status:       "ok",
+			Start:        at,
+			End:          at.Add(time.Second),
+			Environment:  "production",
+			Measurements: map[string]float64{"lcp": 5000},
+		})
+	}
+	// «GET /home» staging — 2 транзакции lcp 9000, для проверки фильтра по
+	// окружению (production lcp_count=3, без фильтра — 5).
+	for i := 0; i < 2; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		w.Add(projectID3, trace.Transaction{
+			TraceID:      fmt.Sprintf("home-stg-%d", i),
+			SpanID:       fmt.Sprintf("homestgspan-%d", i),
+			Name:         "GET /home",
+			Op:           "pageload",
+			Status:       "ok",
+			Start:        at,
+			End:          at.Add(time.Second),
+			Environment:  "staging",
+			Measurements: map[string]float64{"lcp": 9000},
+		})
+	}
+
+	// «GET /api/noop» production — 4 http.server-транзакции БЕЗ measurements:
+	// MV web_vitals_5m их всё равно агрегирует (все *_count = 0), и без HAVING
+	// они бы засоряли список WebVitalsPages пустыми строками.
+	for i := 0; i < 4; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		w.Add(projectID3, trace.Transaction{
+			TraceID:     fmt.Sprintf("noop-%d", i),
+			SpanID:      fmt.Sprintf("noopspan-%d", i),
+			Name:        "GET /api/noop",
+			Op:          "http.server",
+			Status:      "ok",
+			Start:       at,
+			End:         at.Add(20 * time.Millisecond),
+			Environment: "production",
+		})
+	}
+
+	// projectID4: данные для запросов детектора регрессий, разнесённые по дням.
+	// Якорь regNow — полдень вчерашнего дня (UTC): заведомо в прошлом и вдали от
+	// полуночи, поэтому toStartOfDay кладёт свежее окно и прошлые дни в разные
+	// календарные сутки без риска пограничного дребезга.
+	regNow := time.Now().UTC().Truncate(24 * time.Hour).Add(-12 * time.Hour)
+	regRecentFrom := regNow.Add(-time.Hour)
+	regRecentTo := regNow
+	regRecentAt := regNow.Add(-30 * time.Minute) // внутри свежего окна [from,to)
+
+	// Эндпойнт «GET /reg»: сегодня (свежее окно) 50 транзакций по 1000 мс →
+	// recent p95 = 1000 мс; день-1 40 по 200 мс; день-2 40 по 300 мс. Дневные
+	// p95 = [1000, 200, 300], медиана = 300 мс; всего замеров 130.
+	regDays := []struct {
+		at    time.Time
+		durMs int
+		n     int
+	}{
+		{regRecentAt, 1000, 50},
+		{regNow.Add(-24 * time.Hour), 200, 40},
+		{regNow.Add(-48 * time.Hour), 300, 40},
+	}
+	for di, d := range regDays {
+		for i := 0; i < d.n; i++ {
+			w.Add(projectID4, trace.Transaction{
+				TraceID:     fmt.Sprintf("reg-%d-%03d", di, i),
+				SpanID:      fmt.Sprintf("regspan-%d-%03d", di, i),
+				Name:        "GET /reg",
+				Op:          "http.server",
+				Status:      "ok",
+				Start:       d.at,
+				End:         d.at.Add(time.Duration(d.durMs) * time.Millisecond),
+				Environment: "production",
+			})
+		}
+	}
+
+	// Страница «GET /vpage» с lcp: сегодня 30 замеров lcp 2000 → recent p75 =
+	// 2000; день-1 20 по 500; день-2 20 по 800. Дневные p75 = [2000, 500, 800],
+	// медиана = 800; всего замеров 70.
+	vDays := []struct {
+		at  time.Time
+		lcp float64
+		n   int
+	}{
+		{regRecentAt, 2000, 30},
+		{regNow.Add(-24 * time.Hour), 500, 20},
+		{regNow.Add(-48 * time.Hour), 800, 20},
+	}
+	for di, d := range vDays {
+		for i := 0; i < d.n; i++ {
+			w.Add(projectID4, trace.Transaction{
+				TraceID:      fmt.Sprintf("vp-%d-%03d", di, i),
+				SpanID:       fmt.Sprintf("vpspan-%d-%03d", di, i),
+				Name:         "GET /vpage",
+				Op:           "pageload",
+				Status:       "ok",
+				Start:        d.at,
+				End:          d.at.Add(time.Second),
+				Environment:  "production",
+				Measurements: map[string]float64{"lcp": d.lcp},
+			})
+		}
+	}
+
+	// Страница «GET /vpage2» с 5 замерами lcp сегодня — низкотрафичная, для
+	// проверки ранжирования TopVitalPages (её меньше, чем у /vpage).
+	for i := 0; i < 5; i++ {
+		w.Add(projectID4, trace.Transaction{
+			TraceID:      fmt.Sprintf("vp2-%03d", i),
+			SpanID:       fmt.Sprintf("vp2span-%03d", i),
+			Name:         "GET /vpage2",
+			Op:           "pageload",
+			Status:       "ok",
+			Start:        regRecentAt,
+			End:          regRecentAt.Add(time.Second),
+			Environment:  "production",
+			Measurements: map[string]float64{"lcp": 100},
+		})
+	}
 
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -487,6 +636,322 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("len(spans) = %d, want 5000 (LIMIT)", len(spans))
 		}
 	})
+
+	t.Run("WebVitalsPages", func(t *testing.T) {
+		pages, err := q.WebVitalsPages(ctx, projectID3, from, to, "production")
+		if err != nil {
+			t.Fatalf("WebVitalsPages: %v", err)
+		}
+		if len(pages) != 2 {
+			t.Fatalf("len(pages) = %d, want 2 (%+v)", len(pages), pages)
+		}
+		// HAVING (lcp+inp+cls > 0) отсекает «GET /api/noop» без замеров: в списке
+		// только страницы, у которых реально есть хоть один LCP/INP/CLS.
+		for _, p := range pages {
+			if p.Transaction == "GET /api/noop" {
+				t.Fatalf("WebVitalsPages returned empty page %q (want filtered out): %+v", p.Transaction, p)
+			}
+		}
+		// ORDER BY lcp_count DESC → /slow (5 замеров) перед /home (3).
+		if pages[0].Transaction != "GET /slow" || pages[1].Transaction != "GET /home" {
+			t.Fatalf("order: %q, %q", pages[0].Transaction, pages[1].Transaction)
+		}
+
+		slow := pages[0]
+		if slow.LCP.Count != 5 {
+			t.Fatalf("slow.LCP.Count = %d, want 5", slow.LCP.Count)
+		}
+		assertNearF(t, "slow lcp p75", slow.LCP.P75, 5000, 1)
+		if slow.LCP.Rating != "poor" {
+			t.Fatalf("slow.LCP.Rating = %q, want poor", slow.LCP.Rating)
+		}
+
+		home := pages[1]
+		if home.LCP.Count != 3 {
+			t.Fatalf("home.LCP.Count = %d, want 3", home.LCP.Count)
+		}
+		if home.Count != 3 {
+			t.Fatalf("home.Count = %d, want 3", home.Count)
+		}
+		// p75([2000,2400,2600]) = 2500 (линейная интерполяция).
+		assertNearF(t, "home lcp p75", home.LCP.P75, 2500, 60)
+		// Рейтинг должен быть согласован с чистой Rating() на фактическом p75.
+		if home.LCP.Rating != trace.Rating("lcp", home.LCP.P75) {
+			t.Fatalf("home.LCP.Rating = %q inconsistent with Rating(%v)", home.LCP.Rating, home.LCP.P75)
+		}
+		// cls 0.05 → good.
+		if home.CLS.Count != 3 || home.CLS.Rating != "good" {
+			t.Fatalf("home.CLS = %+v, want count 3 rating good", home.CLS)
+		}
+		assertNearF(t, "home cls p75", home.CLS.P75, 0.05, 0.001)
+		// Без inp → Count 0 и Rating "" (нет данных, не «good»).
+		if home.INP.Count != 0 || home.INP.Rating != "" {
+			t.Fatalf("home.INP = %+v, want count 0 rating \"\"", home.INP)
+		}
+	})
+
+	t.Run("WebVitalsPagesEnvironmentFilter", func(t *testing.T) {
+		all, err := q.WebVitalsPages(ctx, projectID3, from, to, "")
+		if err != nil {
+			t.Fatalf("WebVitalsPages all: %v", err)
+		}
+		var homeAll uint64
+		for _, p := range all {
+			if p.Transaction == "GET /home" {
+				homeAll = p.LCP.Count
+			}
+		}
+		if homeAll != 5 { // 3 production + 2 staging
+			t.Fatalf("home lcp count without env filter = %d, want 5", homeAll)
+		}
+	})
+
+	t.Run("WebVitalsPagesEmpty", func(t *testing.T) {
+		pages, err := q.WebVitalsPages(ctx, 999999, from, to, "")
+		if err != nil {
+			t.Fatalf("WebVitalsPages empty: %v", err)
+		}
+		if len(pages) != 0 {
+			t.Fatalf("len(pages) = %d, want 0 for unknown project", len(pages))
+		}
+	})
+
+	t.Run("VitalSeries", func(t *testing.T) {
+		pts, err := q.VitalSeries(ctx, projectID3, "GET /home", "lcp", from, to, 5*time.Minute, "production")
+		if err != nil {
+			t.Fatalf("VitalSeries: %v", err)
+		}
+		// Все три замера в одной 5м-корзине → одна точка ряда с p75≈2500.
+		if len(pts) != 1 {
+			t.Fatalf("len(pts) = %d, want 1 (%+v)", len(pts), pts)
+		}
+		if !pts[0].T.Equal(from) {
+			t.Fatalf("pts[0].T = %v, want %v", pts[0].T, from)
+		}
+		assertNearF(t, "series lcp p75", pts[0].P75, 2500, 60)
+	})
+
+	t.Run("VitalSeriesUnknownName", func(t *testing.T) {
+		if _, err := q.VitalSeries(ctx, projectID3, "GET /home", "bogus", from, to, 5*time.Minute, ""); err == nil {
+			t.Fatalf("VitalSeries with unknown vital name: want error, got nil")
+		}
+	})
+
+	t.Run("PageVitalsOne", func(t *testing.T) {
+		// GET /home production: lcp count 3 (p75≈2500), cls count 3 (good), без
+		// inp/fcp/ttfb → Count 0 и Rating "".
+		lcp, inp, cls, fcp, ttfb, err := q.PageVitalsOne(ctx, projectID3, "GET /home", from, to, "production")
+		if err != nil {
+			t.Fatalf("PageVitalsOne home: %v", err)
+		}
+		if lcp.Count != 3 {
+			t.Fatalf("home lcp count = %d, want 3", lcp.Count)
+		}
+		assertNearF(t, "home lcp p75", lcp.P75, 2500, 60)
+		if lcp.Rating != trace.Rating("lcp", lcp.P75) {
+			t.Fatalf("home lcp rating %q inconsistent with Rating(%v)", lcp.Rating, lcp.P75)
+		}
+		if cls.Count != 3 || cls.Rating != "good" {
+			t.Fatalf("home cls = %+v, want count 3 rating good", cls)
+		}
+		assertNearF(t, "home cls p75", cls.P75, 0.05, 0.001)
+		// Отсутствующие vitals — Count 0, Rating "" (нет данных, не «good»).
+		for _, v := range []trace.Vital{inp, fcp, ttfb} {
+			if v.Count != 0 || v.Rating != "" {
+				t.Fatalf("%s = %+v, want count 0 rating \"\"", v.Name, v)
+			}
+		}
+	})
+
+	t.Run("PageVitalsOneEnvironmentFilter", func(t *testing.T) {
+		// staging: только 2 транзакции lcp 9000 (poor). production сюда не входит.
+		lcp, _, _, _, _, err := q.PageVitalsOne(ctx, projectID3, "GET /home", from, to, "staging")
+		if err != nil {
+			t.Fatalf("PageVitalsOne staging: %v", err)
+		}
+		if lcp.Count != 2 {
+			t.Fatalf("home lcp count (staging) = %d, want 2", lcp.Count)
+		}
+		assertNearF(t, "home lcp p75 staging", lcp.P75, 9000, 1)
+		if lcp.Rating != "poor" {
+			t.Fatalf("home lcp rating (staging) = %q, want poor", lcp.Rating)
+		}
+		// Без фильтра окружения — 5 замеров (3 production + 2 staging).
+		lcpAll, _, _, _, _, err := q.PageVitalsOne(ctx, projectID3, "GET /home", from, to, "")
+		if err != nil {
+			t.Fatalf("PageVitalsOne all env: %v", err)
+		}
+		if lcpAll.Count != 5 {
+			t.Fatalf("home lcp count (all env) = %d, want 5", lcpAll.Count)
+		}
+	})
+
+	t.Run("PageVitalsOneNoVitals", func(t *testing.T) {
+		// Транзакция без measurements → все пять Count 0 и Rating "" (панель на
+		// вебе по этому и не рендерится).
+		vs, err := func() ([]trace.Vital, error) {
+			lcp, inp, cls, fcp, ttfb, err := q.PageVitalsOne(ctx, projectID, "GET /api/users", from, to, "production")
+			return []trace.Vital{lcp, inp, cls, fcp, ttfb}, err
+		}()
+		if err != nil {
+			t.Fatalf("PageVitalsOne users: %v", err)
+		}
+		for _, v := range vs {
+			if v.Count != 0 || v.Rating != "" {
+				t.Fatalf("users %s = %+v, want count 0 rating \"\" (no measurements)", v.Name, v)
+			}
+		}
+	})
+
+	t.Run("RecentEndpointP95", func(t *testing.T) {
+		// Свежее окно: 50 транзакций по 1000 мс → p95 = 1000 мс (в мс, не µs).
+		s, err := q.RecentEndpointP95(ctx, projectID4, "GET /reg", regRecentFrom, regRecentTo)
+		if err != nil {
+			t.Fatalf("RecentEndpointP95: %v", err)
+		}
+		if s.Samples != 50 {
+			t.Fatalf("recent samples = %d, want 50", s.Samples)
+		}
+		assertNearF(t, "recent p95 ms", s.Value, 1000, 1)
+	})
+
+	t.Run("BaselineEndpointP95", func(t *testing.T) {
+		// Дневные p95 = [1000, 200, 300] → медиана 300 мс; всего замеров 130.
+		s, err := q.BaselineEndpointP95(ctx, projectID4, "GET /reg", 7, regNow)
+		if err != nil {
+			t.Fatalf("BaselineEndpointP95: %v", err)
+		}
+		if s.Samples != 130 {
+			t.Fatalf("baseline samples = %d, want 130", s.Samples)
+		}
+		assertNearF(t, "baseline median p95 ms", s.Value, 300, 1)
+	})
+
+	t.Run("RecentEndpointP95Empty", func(t *testing.T) {
+		// Нет данных → Samples 0 и Value 0 (не NaN пустого quantilesMerge).
+		s, err := q.RecentEndpointP95(ctx, projectID4, "GET /nope", regRecentFrom, regRecentTo)
+		if err != nil {
+			t.Fatalf("RecentEndpointP95 empty: %v", err)
+		}
+		if s.Samples != 0 || s.Value != 0 {
+			t.Fatalf("empty recent = %+v, want {0 0}", s)
+		}
+	})
+
+	t.Run("RecentVitalP75", func(t *testing.T) {
+		// Свежее окно: 30 замеров lcp 2000 → p75 = 2000 (уже в мс).
+		s, err := q.RecentVitalP75(ctx, projectID4, "GET /vpage", "lcp", regRecentFrom, regRecentTo)
+		if err != nil {
+			t.Fatalf("RecentVitalP75: %v", err)
+		}
+		if s.Samples != 30 {
+			t.Fatalf("recent vital samples = %d, want 30", s.Samples)
+		}
+		assertNearF(t, "recent lcp p75", s.Value, 2000, 1)
+	})
+
+	t.Run("BaselineVitalP75", func(t *testing.T) {
+		// Дневные p75 = [2000, 500, 800] → медиана 800; всего замеров 70.
+		s, err := q.BaselineVitalP75(ctx, projectID4, "GET /vpage", "lcp", 7, regNow)
+		if err != nil {
+			t.Fatalf("BaselineVitalP75: %v", err)
+		}
+		if s.Samples != 70 {
+			t.Fatalf("baseline vital samples = %d, want 70", s.Samples)
+		}
+		assertNearF(t, "baseline median lcp p75", s.Value, 800, 1)
+	})
+
+	t.Run("VitalP75UnknownName", func(t *testing.T) {
+		if _, err := q.RecentVitalP75(ctx, projectID4, "GET /vpage", "bogus", regRecentFrom, regRecentTo); err == nil {
+			t.Fatalf("RecentVitalP75 unknown name: want error, got nil")
+		}
+		if _, err := q.BaselineVitalP75(ctx, projectID4, "GET /vpage", "bogus", 7, regNow); err == nil {
+			t.Fatalf("BaselineVitalP75 unknown name: want error, got nil")
+		}
+	})
+
+	t.Run("TopEndpointsByTraffic", func(t *testing.T) {
+		// За 7 дней «GET /reg» (130) — самый нагруженный эндпойнт проекта.
+		top, err := q.TopEndpointsByTraffic(ctx, projectID4, regNow.Add(-7*24*time.Hour), regNow, 2)
+		if err != nil {
+			t.Fatalf("TopEndpointsByTraffic: %v", err)
+		}
+		if len(top) != 2 {
+			t.Fatalf("len(top) = %d, want 2 (LIMIT)", len(top))
+		}
+		if top[0] != "GET /reg" {
+			t.Fatalf("top[0] = %q, want GET /reg (highest traffic)", top[0])
+		}
+		if k0, err := q.TopEndpointsByTraffic(ctx, projectID4, regRecentFrom, regRecentTo, 0); err != nil || k0 != nil {
+			t.Fatalf("TopEndpointsByTraffic k=0 = (%v, %v), want (nil, nil)", k0, err)
+		}
+	})
+
+	t.Run("TopVitalPages", func(t *testing.T) {
+		// Только страницы с замерами vital'ов: /vpage (70) перед /vpage2 (5);
+		// «GET /reg» без measurements отфильтрован HAVING.
+		top, err := q.TopVitalPages(ctx, projectID4, regNow.Add(-7*24*time.Hour), regNow, 10)
+		if err != nil {
+			t.Fatalf("TopVitalPages: %v", err)
+		}
+		if len(top) != 2 {
+			t.Fatalf("len(top) = %d, want 2 (%v)", len(top), top)
+		}
+		if top[0] != "GET /vpage" || top[1] != "GET /vpage2" {
+			t.Fatalf("top = %v, want [GET /vpage GET /vpage2]", top)
+		}
+	})
+}
+
+// TestRating проверяет пороги Google для рейтинга Web Vitals по p75, включая
+// границы (good включительна) и неизвестное имя (→ ""). Docker не нужен.
+func TestRating(t *testing.T) {
+	cases := []struct {
+		name string
+		p75  float64
+		want string
+	}{
+		{"lcp", 2500, "good"},
+		{"lcp", 2501, "needs-improvement"},
+		{"lcp", 4000, "needs-improvement"},
+		{"lcp", 4001, "poor"},
+		{"lcp", 0, "good"},
+		{"inp", 200, "good"},
+		{"inp", 201, "needs-improvement"},
+		{"inp", 500, "needs-improvement"},
+		{"inp", 501, "poor"},
+		{"cls", 0.1, "good"},
+		{"cls", 0.11, "needs-improvement"},
+		{"cls", 0.25, "needs-improvement"},
+		{"cls", 0.26, "poor"},
+		{"fcp", 1800, "good"},
+		{"fcp", 1801, "needs-improvement"},
+		{"fcp", 3000, "needs-improvement"},
+		{"fcp", 3001, "poor"},
+		{"ttfb", 800, "good"},
+		{"ttfb", 801, "needs-improvement"},
+		{"ttfb", 1800, "needs-improvement"},
+		{"ttfb", 1801, "poor"},
+		{"unknown", 1, ""},
+	}
+	for _, c := range cases {
+		if got := trace.Rating(c.name, c.p75); got != c.want {
+			t.Errorf("Rating(%q, %v) = %q, want %q", c.name, c.p75, got, c.want)
+		}
+	}
+}
+
+// assertNearF — как assertNear, но для float-величин (p75 web vitals).
+func assertNearF(t *testing.T, name string, got, want, tol float64) {
+	t.Helper()
+	d := got - want
+	if d < 0 {
+		d = -d
+	}
+	if d > tol {
+		t.Fatalf("%s = %v, want ~%v (±%v)", name, got, want, tol)
+	}
 }
 
 func assertNear(t *testing.T, name string, got, want, tol uint32) {

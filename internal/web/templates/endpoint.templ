@@ -32,6 +32,18 @@ type EndpointDetailData struct {
 
 	Slowest    []trace.TraceRow
 	PerfIssues []trace.PerfIssue
+
+	// Vitals — панель Web Vitals (этап 4, план 2, задача 2): непустой слайс →
+	// у транзакции есть web vitals и панель рендерится; nil → панели нет.
+	Vitals []VitalPanelRow
+}
+
+// VitalPanelRow — строка панели Web Vitals: один vital с p75/рейтингом
+// (trace.Vital) и уже собранный в web/webvitals.go SVG-мини-график p75 во
+// времени (тот же приём, что и EndpointRow.Sparkline).
+type VitalPanelRow struct {
+	Vital trace.Vital
+	Chart templ.Component
 }
 
 // EndpointDetail — GET /projects/{id}/performance/{transaction}: перцентили и
@@ -49,6 +61,34 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				}
 				<span>Apdex T: { strconv.Itoa(d.ApdexT) }ms</span>
 			</div>
+
+			if len(d.Vitals) > 0 {
+				<h2>Web Vitals</h2>
+				<table class="web-vitals-panel">
+					<thead>
+						<tr>
+							<th>Metric</th>
+							<th>p75</th>
+							<th>Rating</th>
+							<th>p75 over time</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range d.Vitals {
+							<tr>
+								<td>{ vitalLabel(row.Vital.Name) }</td>
+								<td>{ formatVitalValue(row.Vital) }</td>
+								<td>
+									if row.Vital.Rating != "" {
+										<span class={ vitalBadgeClass(row.Vital.Rating) }>{ row.Vital.Rating }</span>
+									}
+								</td>
+								<td class="vital-chart-cell">@row.Chart</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
 
 			<h2>Latency (p50 / p95)</h2>
 			<div class="endpoint-chart">
