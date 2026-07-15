@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -43,6 +44,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !h.loginLimiter.Allow(rateLimitKey(r, email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.Login("слишком много попыток входа, попробуйте через минуту", h.oauthButtons()).Render(r.Context(), w)
+		return
+	}
+
+	// Принуждение SSO (этап 10): если домен email принадлежит организации с
+	// enforced-SSO, пароль не принимаем — только вход через SSO.
+	if cfg, ok, err := h.Org.SSOByDomain(r.Context(), emailDomain(email)); err == nil && ok && cfg.Enforced {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = templates.Login("ваша организация требует вход через SSO — используйте «Вход через SSO»", h.oauthButtons()).Render(r.Context(), w)
 		return
 	}
 
@@ -126,4 +135,40 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	auth.ClearSessionCookie(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// ssoPage — GET /sso: identifier-first вход (этап 10). Поле email → по домену
+// резолвим SSO организации.
+func (h *Handler) ssoPage(w http.ResponseWriter, r *http.Request) {
+	_ = templates.SSOLogin("").Render(r.Context(), w)
+}
+
+// ssoSubmit — POST /sso: резолв org_sso по email-домену → редирект на SSO-start
+// организации. Неизвестный домен → нейтральное сообщение (не палим список доменов).
+func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	email := r.FormValue("email")
+	if !h.loginLimiter.Allow("sso|" + rateLimitKey(r, email)) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = templates.SSOLogin("слишком много попыток, попробуйте через минуту").Render(r.Context(), w)
+		return
+	}
+	cfg, ok, err := h.Org.SSOByDomain(r.Context(), emailDomain(email))
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = templates.SSOLogin("SSO для этого домена не настроен").Render(r.Context(), w)
+		return
+	}
+	http.Redirect(w, r, "/auth/oauth/"+ssoProviderPrefix+strconv.FormatInt(cfg.OrgID, 10)+"/start", http.StatusSeeOther)
 }

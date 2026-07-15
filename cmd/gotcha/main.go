@@ -236,6 +236,24 @@ func run() error {
 		}
 		go metricEval.Run(ctx)
 
+		// Оценщик регрессий профилей (этап 9): рост self-CPU доли функции над
+		// скользящей базой → инцидент + алерт через общий outbox. Та же ниша,
+		// что regression/metric-оценщики; alertSvc/outbox/emailSender/pg/ch в scope.
+		profileRegEval := &profile.RegressionEvaluator{
+			Pool:        pg,
+			Query:       profile.NewQuery(ch),
+			Regressions: profile.NewRegressionService(pg),
+			Notifier: &profile.RegressionNotifier{
+				Alerts:       alertSvc,
+				Outbox:       outbox,
+				BaseURL:      cfg.BaseURL,
+				EmailEnabled: emailSender.Configured(),
+			},
+			Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
+			Config:   profile.DefaultProfileRegressionConfig(),
+		}
+		go profileRegEval.Run(ctx)
+
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
 	}
 
@@ -357,6 +375,7 @@ func run() error {
 		webHandler.MetricRules = metric.NewRuleService(pg)
 		webHandler.MetricIncidents = metric.NewIncidentService(pg)
 		webHandler.Profiles = profile.NewQuery(ch)
+		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
 		webHandler.SecretKey = cfg.SecretKey
 		webHandler.LocalRegion = cfg.LocalRegion

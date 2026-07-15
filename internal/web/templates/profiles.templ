@@ -38,6 +38,7 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, envi
 				<a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> ·
 				<a href={ templ.URL("/projects/" + strconv.FormatInt(projectID, 10) + "/metrics") }>Metrics</a> ·
 				<a href={ templ.URL(profilesBasePath(projectID)) }>Profiles</a> ·
+				<a href={ templ.URL(profileRegressionsBasePath(projectID)) }>Profile regressions</a> ·
 				<a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> ·
 				<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
 			</p>

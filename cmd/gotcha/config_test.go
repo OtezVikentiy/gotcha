@@ -311,3 +311,16 @@ func TestLoadConfigOutboxRetention(t *testing.T) {
 		t.Error("zero outbox retention must fail")
 	}
 }
+
+func TestLoadConfigProfileEvalInterval(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.ProfileEvalInterval != 300 {
+		t.Errorf("ProfileEvalInterval = %d, want 300", cfg.ProfileEvalInterval)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_EVAL_INTERVAL": "0"}), nil); err == nil {
+		t.Error("zero profile eval interval must fail")
+	}
+}

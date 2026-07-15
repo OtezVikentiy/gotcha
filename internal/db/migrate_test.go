@@ -807,3 +807,68 @@ func TestMigrateProfileTraceID(t *testing.T) {
 		t.Fatalf("trace_id = %q err=%v", tid, err)
 	}
 }
+
+func TestMigrateProfileRegressions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	var n int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM information_schema.tables WHERE table_name='profile_regressions'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("table missing: n=%d err=%v", n, err)
+	}
+	// Нужен проект для FK.
+	var uid, orgID, projID int64
+	pool.QueryRow(ctx, "INSERT INTO users (email,password_hash) VALUES ('pr@e.com','x') RETURNING id").Scan(&uid)
+	pool.QueryRow(ctx, "INSERT INTO organizations (slug,name,event_quota) VALUES ('pr','pr',1000000) RETURNING id").Scan(&orgID)
+	pool.QueryRow(ctx, "INSERT INTO projects (org_id,slug,name,platform) VALUES ($1,'pr','pr','go') RETURNING id", orgID).Scan(&projID)
+
+	ins := "INSERT INTO profile_regressions (project_id,service,profile_type,function,baseline_share,peak_share,current_share) VALUES ($1,'api','cpu','slow',0.05,0.2,0.2)"
+	if _, err := pool.Exec(ctx, ins, projID); err != nil {
+		t.Fatalf("insert open: %v", err)
+	}
+	// Второй открытый на ту же функцию → нарушение partial-индекса.
+	if _, err := pool.Exec(ctx, ins, projID); err == nil {
+		t.Fatal("want one-open unique violation")
+	}
+	// CHECK status.
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO profile_regressions (project_id,service,profile_type,function,status,baseline_share,peak_share,current_share) VALUES ($1,'api','cpu','x','bogus',0,0,0)", projID); err == nil {
+		t.Fatal("want status CHECK violation")
+	}
+}
+
+func TestMigrateOrgSSO(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	var n int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM information_schema.tables WHERE table_name='org_sso'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("org_sso missing: n=%d err=%v", n, err)
+	}
+	mkOrg := func(slug string) int64 {
+		var uid, orgID int64
+		pool.QueryRow(ctx, "INSERT INTO users (email,password_hash) VALUES ($1,'x') RETURNING id", slug+"@e.com").Scan(&uid)
+		pool.QueryRow(ctx, "INSERT INTO organizations (slug,name,event_quota) VALUES ($1,$1,1000000) RETURNING id", slug).Scan(&orgID)
+		return orgID
+	}
+	o1, o2 := mkOrg("sso1"), mkOrg("sso2")
+	ins := "INSERT INTO org_sso (org_id,issuer,client_id,client_secret,domain) VALUES ($1,'https://i','c','s',$2)"
+	if _, err := pool.Exec(ctx, ins, o1, "corp.com"); err != nil {
+		t.Fatalf("insert o1: %v", err)
+	}
+	// Тот же домен у другого орга → нарушение UNIQUE.
+	if _, err := pool.Exec(ctx, ins, o2, "corp.com"); err == nil {
+		t.Fatal("want domain UNIQUE violation")
+	}
+	// CHECK default_role.
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO org_sso (org_id,issuer,client_id,client_secret,domain,default_role) VALUES ($1,'https://i','c','s','x.com','owner')", o2); err == nil {
+		t.Fatal("want default_role CHECK violation")
+	}
+}

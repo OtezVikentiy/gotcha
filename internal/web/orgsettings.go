@@ -100,6 +100,86 @@ func (h *Handler) orgSettingsPage(w http.ResponseWriter, r *http.Request) {
 	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", "")
 }
 
+// requireOrgOwner — SSO-настройки доступны только владельцу орга (более узкая
+// граница, чем requireOrgRole owner/admin): SSO — доверенная точка входа. Не
+// owner → 404 (как прочие owner-only действия). Возвращает ok.
+func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID, uid int64) bool {
+	role, err := h.Org.Role(r.Context(), orgID, uid)
+	if err != nil || role != org.RoleOwner {
+		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		return false
+	}
+	return true
+}
+
+// orgSettingsSSO — POST /orgs/{id}/settings/sso: owner настраивает per-org OIDC.
+func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	orgID, ok := parsePathOrgID(w, r)
+	if !ok {
+		return
+	}
+	if !h.requireOrgOwner(w, r, orgID, uid) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	cfg := org.SSOConfig{
+		OrgID:        orgID,
+		Issuer:       r.FormValue("issuer"),
+		ClientID:     r.FormValue("client_id"),
+		ClientSecret: r.FormValue("client_secret"),
+		Domain:       r.FormValue("domain"),
+		DefaultRole:  r.FormValue("default_role"),
+		Enforced:     r.FormValue("enforced") != "",
+	}
+	switch err := h.Org.UpsertSSO(r.Context(), cfg); {
+	case err == nil:
+		http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
+	case errors.Is(err, org.ErrDomainTaken):
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "домен уже используется другой организацией", "")
+	case errors.Is(err, org.ErrInvalidSSO) || errors.Is(err, org.ErrInvalidRole):
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "заполните issuer, client_id, client_secret и домен", "")
+	default:
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// orgSettingsSSODelete — POST /orgs/{id}/settings/sso/delete: owner убирает SSO.
+func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	orgID, ok := parsePathOrgID(w, r)
+	if !ok {
+		return
+	}
+	if !h.requireOrgOwner(w, r, orgID, uid) {
+		return
+	}
+	if err := h.Org.DeleteSSO(r.Context(), orgID); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
+}
+
 // renderOrgSettings — общий рендер страницы настроек: используется и
 // GET-обработчиком, и POST-обработчиками (422 с сообщением об ошибке на
 // месте, без редиректа — как логин/онбординг). POST .../invite при успехе
@@ -126,7 +206,27 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 	w.WriteHeader(status)
-	_ = templates.OrgSettings(o, members, uid, usage, errMsg, inviteLink, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.OrgSettings(o, members, uid, usage, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// ssoSettingsVM собирает данные секции SSO настроек орга (этап 10). Секция
+// видна только owner'у; client_secret обратно не отдаём (показываем «настроено»).
+func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSOSettings {
+	vm := templates.SSOSettings{
+		RedirectURI: h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",
+	}
+	if role, err := h.Org.Role(r.Context(), orgID, uid); err == nil && role == org.RoleOwner {
+		vm.IsOwner = true
+	}
+	if cfg, ok, err := h.Org.SSOByOrg(r.Context(), orgID); err == nil && ok {
+		vm.Configured = true
+		vm.Issuer = cfg.Issuer
+		vm.ClientID = cfg.ClientID
+		vm.Domain = cfg.Domain
+		vm.DefaultRole = cfg.DefaultRole
+		vm.Enforced = cfg.Enforced
+	}
+	return vm
 }
 
 // orgSettingsRole — POST /orgs/{id}/settings/role: user_id, role. Менять

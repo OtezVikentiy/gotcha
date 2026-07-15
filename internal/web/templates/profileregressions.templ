@@ -1,0 +1,109 @@
+package templates
+
+import (
+	"math"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+)
+
+func profileRegressionsBasePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/profile-regressions"
+}
+
+func profileRegStatusURL(projectID int64, status string) string {
+	if status == "" {
+		return profileRegressionsBasePath(projectID)
+	}
+	return profileRegressionsBasePath(projectID) + "?status=" + status
+}
+
+// profileRegShare — доля в процентах (0.2 → "20.0%").
+func profileRegShare(share float64) string {
+	return strconv.FormatFloat(share*100, 'f', 1, 64) + "%"
+}
+
+// profileRegRange — «база → пик» долей.
+func profileRegRange(r profile.Regression) string {
+	return profileRegShare(r.BaselineShare) + " → " + profileRegShare(r.PeakShare)
+}
+
+// profileRegIncreasePct — рост от ПИКА над базой в процентах (как этап 4). База
+// <= 0 → «—».
+func profileRegIncreasePct(r profile.Regression) string {
+	if r.BaselineShare <= 0 {
+		return "—"
+	}
+	pct := (r.PeakShare - r.BaselineShare) / r.BaselineShare * 100
+	rounded := int64(math.Round(pct))
+	sign := "+"
+	if rounded < 0 {
+		sign = ""
+	}
+	return sign + strconv.FormatInt(rounded, 10) + "%"
+}
+
+func profileRegDuration(r profile.Regression) string {
+	if r.ResolvedAt == nil {
+		return "ongoing"
+	}
+	return r.ResolvedAt.Sub(r.StartedAt).String()
+}
+
+func profileRegServiceType(r profile.Regression) string {
+	return r.Service + " · " + r.ProfileType
+}
+
+templ profileRegStatusTab(projectID int64, value, label, active string) {
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(profileRegStatusURL(projectID, tabQuery(value))) }>{ label }</a>
+}
+
+// ProfileRegressionsList — GET /projects/{id}/profile-regressions: таблица
+// регрессий self-CPU функций с фильтром по статусу. Только чтение, без JS.
+templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string) {
+	@layout("Profile regressions", userEmail) {
+		<div class="profile-regressions">
+			<h1>Profile regressions</h1>
+			<p>
+				<a href={ templ.URL(profilesBasePath(projectID)) }>Profiles</a> ·
+				<a href={ templ.URL(performancePath(projectID)) }>Performance</a> ·
+				<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
+			</p>
+			<nav class="perf-issues-filters">
+				@profileRegStatusTab(projectID, "open", "Open", filter)
+				@profileRegStatusTab(projectID, "resolved", "Resolved", filter)
+				@profileRegStatusTab(projectID, "all", "All", filter)
+			</nav>
+			if len(regressions) == 0 {
+				<p class="empty">no profile regressions detected</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Function</th>
+							<th>Service · Type</th>
+							<th>Increase</th>
+							<th>Baseline → Peak</th>
+							<th>Status</th>
+							<th>Started</th>
+							<th>Duration</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, reg := range regressions {
+							<tr>
+								<td>{ reg.Function }</td>
+								<td>{ profileRegServiceType(reg) }</td>
+								<td>{ profileRegIncreasePct(reg) }</td>
+								<td>{ profileRegRange(reg) }</td>
+								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ reg.Status }</span></td>
+								<td>{ ago(reg.StartedAt) }</td>
+								<td>{ profileRegDuration(reg) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}

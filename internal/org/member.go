@@ -66,6 +66,21 @@ func (s *Service) AddMember(ctx context.Context, orgID, userID int64, role Role)
 	return nil
 }
 
+// EnsureMember идемпотентно добавляет участника (для JIT-провижининга SSO,
+// этап 10): если участник уже есть — не ошибка и роль НЕ меняется (ON CONFLICT
+// DO NOTHING). Не понижаем/повышаем существующего.
+func (s *Service) EnsureMember(ctx context.Context, orgID, userID int64, role Role) error {
+	if !validRole(role) {
+		return ErrInvalidRole
+	}
+	if _, err := s.pool.Exec(ctx,
+		"INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT (org_id, user_id) DO NOTHING",
+		orgID, userID, role); err != nil {
+		return fmt.Errorf("org: ensure member: %w", err)
+	}
+	return nil
+}
+
 // SetRole меняет роль участника. Последнего owner понизить нельзя.
 func (s *Service) SetRole(ctx context.Context, orgID, userID int64, role Role) error {
 	if !validRole(role) {

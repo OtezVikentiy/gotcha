@@ -29,6 +29,7 @@ type Config struct {
 	MetricQuota          int64
 	MetricEvalInterval   int
 	ProfileQuota         int64
+	ProfileEvalInterval  int
 	OutboxRetentionDays  int
 	SecretKey            string
 
@@ -120,6 +121,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MetricQuota:          num("GOTCHA_METRIC_QUOTA", 1_000_000),
 		MetricEvalInterval:   int(num("GOTCHA_METRIC_EVAL_INTERVAL", 60)),
 		ProfileQuota:         num("GOTCHA_PROFILE_QUOTA", 1_000_000),
+		ProfileEvalInterval:  int(num("GOTCHA_PROFILE_EVAL_INTERVAL", 300)),
 		OutboxRetentionDays:  int(num("GOTCHA_OUTBOX_RETENTION_DAYS", 7)),
 		SecretKey:            str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		UptimeConcurrency:    int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
@@ -160,6 +162,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.OutboxRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
+	}
+	if cfg.ProfileEvalInterval < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL must be >= 1, got %d", cfg.ProfileEvalInterval)
 	}
 	if cfg.DefaultEventQuota < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 1, got %d", cfg.DefaultEventQuota)

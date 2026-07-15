@@ -126,6 +126,94 @@ func buildFlame(rows driver.Rows) (*FlameNode, error) {
 	return root, rows.Err()
 }
 
+// ServiceType — пара (сервис, тип профиля) с данными (для оценщика регрессий).
+type ServiceType struct {
+	Service string
+	Type    string
+}
+
+// ServicesWithProfiles — пары (service, profile_type) с профилями за окно.
+func (q *Query) ServicesWithProfiles(ctx context.Context, projectID int64, from, to time.Time) ([]ServiceType, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT DISTINCT service, profile_type FROM profile_samples
+		WHERE project_id = ? AND ts >= ? AND ts < ?`,
+		projectID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("profile: services with profiles: %w", err)
+	}
+	defer rows.Close()
+	var out []ServiceType
+	for rows.Next() {
+		var st ServiceType
+		if err := rows.Scan(&st.Service, &st.Type); err != nil {
+			return nil, fmt.Errorf("profile: services with profiles scan: %w", err)
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// TopFunctionsBySelfShare — топ-K функций по свежему self-CPU (лист стека) за
+// окно; кандидаты на проверку регрессии.
+func (q *Query) TopFunctionsBySelfShare(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]string, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT arrayElement(stack, -1) AS fn, sum(value) AS self
+		FROM profile_samples
+		WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ? AND length(stack) > 0
+		GROUP BY fn ORDER BY self DESC LIMIT ?`,
+		projectID, service, profileType, from, to, k)
+	if err != nil {
+		return nil, fmt.Errorf("profile: top functions: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var fn string
+		var self uint64
+		if err := rows.Scan(&fn, &self); err != nil {
+			return nil, fmt.Errorf("profile: top functions scan: %w", err)
+		}
+		out = append(out, fn)
+	}
+	return out, rows.Err()
+}
+
+// RecentFunctionShare — self-доля функции за окно (self-CPU / total) и число
+// сэмплов (total) окна для проверки MinSamples. total==0 → share 0.
+func (q *Query) RecentFunctionShare(ctx context.Context, projectID int64, service, profileType, function string, from, to time.Time) (float64, uint64, error) {
+	var self, total uint64
+	err := q.conn.QueryRow(ctx, `
+		SELECT sumIf(value, arrayElement(stack, -1) = ?), sum(value)
+		FROM profile_samples
+		WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?`,
+		function, projectID, service, profileType, from, to).Scan(&self, &total)
+	if err != nil {
+		return 0, 0, fmt.Errorf("profile: recent function share: %w", err)
+	}
+	if total == 0 {
+		return 0, 0, nil
+	}
+	return float64(self) / float64(total), total, nil
+}
+
+// BaselineFunctionShare — медиана дневной self-доли функции за baselineDays
+// дней (скользящая база). Нет строк → 0.
+func (q *Query) BaselineFunctionShare(ctx context.Context, projectID int64, service, profileType, function string, baselineDays int, now time.Time) (float64, error) {
+	from := now.AddDate(0, 0, -baselineDays)
+	var median float64
+	err := q.conn.QueryRow(ctx, `
+		SELECT quantileExact(0.5)(daily) FROM (
+			SELECT toDate(ts) d, sumIf(value, arrayElement(stack, -1) = ?) / sum(value) AS daily
+			FROM profile_samples
+			WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
+			GROUP BY d)`,
+		function, projectID, service, profileType, from, now).Scan(&median)
+	if err != nil {
+		return 0, fmt.Errorf("profile: baseline function share: %w", err)
+	}
+	return median, nil
+}
+
 // child находит/создаёт ребёнка по имени кадра.
 func (n *FlameNode) child(name string) *FlameNode {
 	for _, c := range n.Children {

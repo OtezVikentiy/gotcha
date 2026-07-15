@@ -32,9 +32,27 @@ templ Login(errMsg string, providers []OAuthButton) {
 				<input type="password" name="password" autocomplete="current-password" required/>
 			</label>
 			<button type="submit">Войти</button>
-			<p class="auth-switch"><a href="/register">Создать аккаунт</a></p>
+			<p class="auth-switch"><a href="/register">Создать аккаунт</a> · <a href="/sso">Вход через SSO</a></p>
 		</form>
 		@oauthButtons(providers)
+	}
+}
+
+// SSOLogin — GET/POST /sso: identifier-first вход по email-домену (этап 10).
+templ SSOLogin(errMsg string) {
+	@layout("Вход через SSO", "") {
+		<form method="post" action="/sso" class="auth-form">
+			<h1>Вход через SSO</h1>
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<label>
+				Рабочий email
+				<input type="email" name="email" autocomplete="email" required autofocus/>
+			</label>
+			<button type="submit">Продолжить</button>
+			<p class="auth-switch"><a href="/login">← Обычный вход</a></p>
+		</form>
 	}
 }
 

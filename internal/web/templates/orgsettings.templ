@@ -106,7 +106,20 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 // для memberRow — см. её комментарий и security fix задачи 2). usage —
 // счётчик событий организации за текущий месяц (org.Usage), o.EventQuota —
 // её месячный лимит (0 = безлимит).
-templ OrgSettings(o org.Org, members []org.Member, uid int64, usage int64, errMsg, inviteLink, userEmail string) {
+// SSOSettings — данные секции SSO (этап 10). Видна только owner'у; секрет не
+// пре-заполняется (Configured сигналит «настроено»).
+type SSOSettings struct {
+	IsOwner     bool
+	Configured  bool
+	Issuer      string
+	ClientID    string
+	Domain      string
+	DefaultRole string
+	Enforced    bool
+	RedirectURI string
+}
+
+templ OrgSettings(o org.Org, members []org.Member, uid int64, usage int64, errMsg, inviteLink string, sso SSOSettings, userEmail string) {
 	@layout("Настройки "+o.Name, userEmail) {
 		<div class="org-settings">
 			<h1>Настройки организации { o.Name }</h1>
@@ -170,7 +183,65 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, usage int64, errMs
 				</label>
 				<button type="submit">Пригласить</button>
 			</form>
+			if sso.IsOwner {
+				@ssoSection(o.ID, sso)
+			}
 		</div>
+	}
+}
+
+// ssoSection — секция настроек enterprise-SSO (этап 10, только owner).
+templ ssoSection(orgID int64, sso SSOSettings) {
+	<h2>SSO (OIDC)</h2>
+	if sso.Configured {
+		<p class="sso-status">
+			SSO настроен для домена <code>{ sso.Domain }</code>
+			if sso.Enforced {
+				(принудительно)
+			}
+		</p>
+	} else {
+		<p class="sso-status">SSO не настроен.</p>
+	}
+	<p class="sso-redirect">Redirect URI (укажите в своём IdP): <code>{ sso.RedirectURI }</code></p>
+	<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso") } class="sso-form">
+		<label>Issuer <input type="url" name="issuer" value={ sso.Issuer } required placeholder="https://idp.example/realms/x"/></label>
+		<label>Client ID <input type="text" name="client_id" value={ sso.ClientID } required/></label>
+		<label>
+			Client Secret
+			if sso.Configured {
+				<input type="password" name="client_secret" required placeholder="(настроено — введите заново для замены)"/>
+			} else {
+				<input type="password" name="client_secret" required/>
+			}
+		</label>
+		<label>Email-домен <input type="text" name="domain" value={ sso.Domain } required placeholder="corp.com"/></label>
+		<label>
+			Роль по умолчанию
+			<select name="default_role">
+				if sso.DefaultRole == "admin" {
+					<option value="member">Member</option>
+					<option value="admin" selected>Admin</option>
+				} else {
+					<option value="member" selected>Member</option>
+					<option value="admin">Admin</option>
+				}
+			</select>
+		</label>
+		<label class="sso-enforced">
+			if sso.Enforced {
+				<input type="checkbox" name="enforced" checked/>
+			} else {
+				<input type="checkbox" name="enforced"/>
+			}
+			Принудительно (юзеры этого домена входят только через SSO)
+		</label>
+		<button type="submit">Сохранить SSO</button>
+	</form>
+	if sso.Configured {
+		<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso/delete") } class="sso-delete-form">
+			<button type="submit">Удалить SSO</button>
+		</form>
 	}
 }
 

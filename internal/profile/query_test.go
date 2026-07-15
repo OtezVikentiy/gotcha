@@ -122,3 +122,52 @@ func TestFlameForTrace(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfShareQueries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ins := func(fnLeaf string, v uint64, ago time.Duration) {
+		if err := conn.Exec(ctx, `INSERT INTO profile_samples
+			(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+			VALUES (9,'cpu','api','','','go',?,?,?,'')`,
+			now.Add(-ago), []string{"root", fnLeaf}, v); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	// Свежее окно (последний час): slow — 60 из 100 (60%).
+	ins("slow", 60, 10*time.Minute)
+	ins("fast", 40, 10*time.Minute)
+	// Вчера: slow — 10 из 100 (10%) → база ~10%.
+	ins("slow", 10, 24*time.Hour)
+	ins("fast", 90, 24*time.Hour)
+
+	// ServicesWithProfiles.
+	sts, err := q.ServicesWithProfiles(ctx, 9, now.Add(-2*time.Hour), now.Add(time.Minute))
+	if err != nil || len(sts) != 1 || sts[0].Service != "api" || sts[0].Type != "cpu" {
+		t.Fatalf("services = %+v err=%v", sts, err)
+	}
+	// TopFunctionsBySelfShare (свежее окно) → slow первым.
+	top, err := q.TopFunctionsBySelfShare(ctx, 9, "api", "cpu", now.Add(-time.Hour), now.Add(time.Minute), 10)
+	if err != nil || len(top) == 0 || top[0] != "slow" {
+		t.Fatalf("top = %v err=%v", top, err)
+	}
+	// RecentFunctionShare slow ≈ 0.6, samples 100.
+	share, samples, err := q.RecentFunctionShare(ctx, 9, "api", "cpu", "slow", now.Add(-time.Hour), now.Add(time.Minute))
+	if err != nil || samples != 100 || share < 0.55 || share > 0.65 {
+		t.Fatalf("recent share=%v samples=%d err=%v", share, samples, err)
+	}
+	// Baseline slow за 7 дней — медиана дневных долей (60% сегодня, 10% вчера) → 0.1..0.6.
+	base, err := q.BaselineFunctionShare(ctx, 9, "api", "cpu", "slow", 7, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if base <= 0 || base > 0.65 {
+		t.Fatalf("baseline = %v, want within (0,0.65]", base)
+	}
+}

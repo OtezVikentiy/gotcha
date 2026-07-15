@@ -43,7 +43,7 @@ func (h *Handler) sessionUID(r *http.Request) (int64, bool) {
 // активной сессии; иначе поток обычного входа.
 func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
-	p, ok := h.OAuth.Get(name)
+	p, _, ok := h.resolveProvider(r.Context(), name)
 	if !ok {
 		h.renderError(w, r, http.StatusNotFound, "unknown provider")
 		return
@@ -104,7 +104,7 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 // меняет код на Identity и решает провижининг (link-only/invite-gated).
 func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
-	p, ok := h.OAuth.Get(name)
+	p, sso, ok := h.resolveProvider(r.Context(), name)
 	if !ok {
 		h.renderError(w, r, http.StatusNotFound, "unknown provider")
 		return
@@ -134,6 +134,12 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil || id.Subject == "" || id.Email == "" {
 		slog.Warn("oauth exchange failed", "provider", name, "err", err)
 		h.oauthFail(w, r, name)
+		return
+	}
+
+	// Per-org SSO (этап 10): своя ветка — domain guard + JIT-провижининг.
+	if sso != nil {
+		h.ssoCallback(w, r, name, id, sso)
 		return
 	}
 

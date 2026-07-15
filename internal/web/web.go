@@ -143,6 +143,13 @@ type Handler struct {
 	// Profiles — чтение профилей из ClickHouse (этап 7): страницы
 	// /projects/{id}/profiles[/flame]. Необязательное поле; nil → 404.
 	Profiles *profile.Query
+	// ProfileRegressions — регрессии self-CPU функций (этап 9): страница
+	// /projects/{id}/profile-regressions. Необязательное поле; nil → 404.
+	ProfileRegressions *profile.RegressionService
+
+	// ssoProviders — процесс-локальный кеш per-org OIDC-провайдеров (этап 10,
+	// см. sso.go). Нулевое значение готово к работе.
+	ssoProviders ssoCache
 
 	loginLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
@@ -188,6 +195,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("GET /register", h.registerPage)
 	inner.HandleFunc("POST /register", h.registerSubmit)
 	inner.HandleFunc("POST /logout", h.logout)
+	// Enterprise-SSO (этап 10): identifier-first вход по email-домену.
+	inner.HandleFunc("GET /sso", h.ssoPage)
+	inner.HandleFunc("POST /sso", h.ssoSubmit)
 
 	// OAuth/social login (этап 5): открыты для анонимов (вход), сессию для
 	// потока привязки проверяем внутри хендлера.
@@ -223,6 +233,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /orgs/{id}/settings/role", h.requireUser(http.HandlerFunc(h.orgSettingsRole)))
 	inner.Handle("POST /orgs/{id}/settings/remove", h.requireUser(http.HandlerFunc(h.orgSettingsRemove)))
 	inner.Handle("POST /orgs/{id}/settings/invite", h.requireUser(http.HandlerFunc(h.orgSettingsInvite)))
+	inner.Handle("POST /orgs/{id}/settings/sso", h.requireUser(http.HandlerFunc(h.orgSettingsSSO)))
+	inner.Handle("POST /orgs/{id}/settings/sso/delete", h.requireUser(http.HandlerFunc(h.orgSettingsSSODelete)))
 	inner.Handle("GET /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptPage)))
 	inner.Handle("POST /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptSubmit)))
 
@@ -250,6 +262,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	inner.Handle("GET /projects/{id}/profiles", h.requireUser(http.HandlerFunc(h.profilesList)))
 	inner.Handle("GET /projects/{id}/profiles/flame", h.requireUser(http.HandlerFunc(h.profileFlame)))
+	inner.Handle("GET /projects/{id}/profile-regressions", h.requireUser(http.HandlerFunc(h.profileRegressionsList)))
 
 	inner.Handle("GET /projects/{id}/settings", h.requireUser(http.HandlerFunc(h.projectSettingsPage)))
 	inner.Handle("POST /projects/{id}/settings/rename", h.requireUser(http.HandlerFunc(h.projectSettingsRename)))

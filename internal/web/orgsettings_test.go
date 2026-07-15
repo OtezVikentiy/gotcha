@@ -495,3 +495,76 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 		t.Fatalf("GET %s missing unlimited marker after quota=0: %s", settingsPath, body)
 	}
 }
+
+func TestWebOrgSettingsSSO(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	ctx := context.Background()
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "sso-set-owner@example.com")
+	adminID, adminCookie := orgSettingsRegister(t, authSvc, "sso-set-admin@example.com")
+	o, err := orgSvc.CreateOrg(ctx, "sso-set-co", "SSO Set Co", ownerID)
+	if err != nil {
+		t.Fatalf("org: %v", err)
+	}
+	if err := orgSvc.AddMember(ctx, o.ID, adminID, org.RoleAdmin); err != nil {
+		t.Fatalf("add admin: %v", err)
+	}
+	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/sso"
+	form := url.Values{
+		"issuer": {"https://idp.example/realms/x"}, "client_id": {"cid"}, "client_secret": {"sec"},
+		"domain": {"corp.com"}, "default_role": {"member"}, "enforced": {"on"},
+	}
+
+	// Owner сохраняет SSO → 303, конфиг в БД.
+	resp := postForm(t, s.srv, base, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("owner sso save status = %d, want 303", resp.StatusCode)
+	}
+	cfg, ok, _ := orgSvc.SSOByOrg(ctx, o.ID)
+	if !ok || cfg.Domain != "corp.com" || !cfg.Enforced {
+		t.Fatalf("sso not saved: %+v ok=%v", cfg, ok)
+	}
+
+	// Страница настроек (owner) показывает Redirect URI и домен.
+	resp = getWithCookie(t, s.srv, "/orgs/"+strconv.FormatInt(o.ID, 10)+"/settings", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "/auth/oauth/sso-"+strconv.FormatInt(o.ID, 10)+"/callback") ||
+		!strings.Contains(string(body), "corp.com") {
+		t.Fatalf("settings page missing SSO redirect/domain: %s", body)
+	}
+
+	// Admin (не owner) → 404.
+	resp = postForm(t, s.srv, base, form, s.srv.URL, adminCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("admin sso save status = %d, want 404", resp.StatusCode)
+	}
+
+	// Домен занят другой организацией → 422.
+	owner2, owner2Cookie := orgSettingsRegister(t, authSvc, "sso-set-owner2@example.com")
+	o2, _ := orgSvc.CreateOrg(ctx, "sso-set-co2", "SSO Set Co2", owner2)
+	base2 := "/orgs/" + strconv.FormatInt(o2.ID, 10) + "/settings/sso"
+	resp = postForm(t, s.srv, base2, form, s.srv.URL, owner2Cookie) // тот же domain corp.com
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("domain-taken status = %d, want 422", resp.StatusCode)
+	}
+
+	// Delete (owner) → конфиг убран.
+	resp = postForm(t, s.srv, base+"/delete", url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("sso delete status = %d, want 303", resp.StatusCode)
+	}
+	if _, ok, _ := orgSvc.SSOByOrg(ctx, o.ID); ok {
+		t.Fatal("sso should be gone after delete")
+	}
+}
