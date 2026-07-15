@@ -19,6 +19,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -36,6 +37,10 @@ type Handler struct {
 	Events  *event.Query
 	BaseURL string
 	Secure  bool // Secure = strings.HasPrefix(BaseURL, "https://")
+	// SecretKey — ключ HMAC-подписи короткоживущей oauth-cookie (этап 5,
+	// oauthstate.go). Проставляется из cfg.SecretKey в main.go; в стендах может
+	// быть пустым — тогда используется дефолт (см. secret()).
+	SecretKey string
 
 	// Alerts — CRUD правил/каналов алертинга (план 6, задача 5):
 	// /projects/{id}/alerts и EnsureDefaultRules при создании проекта. Не
@@ -117,6 +122,12 @@ type Handler struct {
 	// необязательное поле; nil → маршрут регрессий отвечает 404 (nil-guard).
 	Regressions *trace.RegressionService
 
+	// OAuth — включённые провайдеры social login (этап 5). nil/empty →
+	// кнопки входа скрыты, роуты /auth/oauth/* отвечают 404 на любой
+	// провайдер. Проставляется отдельным полем (как Alerts/Trace), New не
+	// трогаем.
+	OAuth *oauth.Registry
+
 	loginLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
@@ -162,6 +173,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("POST /register", h.registerSubmit)
 	inner.HandleFunc("POST /logout", h.logout)
 
+	// OAuth/social login (этап 5): открыты для анонимов (вход), сессию для
+	// потока привязки проверяем внутри хендлера.
+	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.oauthStart)
+	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.oauthCallback)
+
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic("web: embedded static assets missing: " + err.Error())
@@ -173,7 +189,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	inner.Handle("GET /profile", h.requireUser(http.HandlerFunc(h.profilePage)))
 	inner.Handle("POST /profile/password", h.requireUser(http.HandlerFunc(h.profilePasswordSubmit)))
+	inner.Handle("POST /profile/password/set", h.requireUser(http.HandlerFunc(h.profilePasswordSet)))
 	inner.Handle("POST /profile/sessions/revoke", h.requireUser(http.HandlerFunc(h.profileSessionsRevoke)))
+	inner.Handle("POST /profile/identities/unlink", h.requireUser(http.HandlerFunc(h.profileIdentityUnlink)))
 
 	inner.Handle("GET /onboarding", h.requireUser(http.HandlerFunc(h.onboardingPage)))
 	inner.Handle("POST /onboarding", h.requireUser(http.HandlerFunc(h.onboardingSubmit)))

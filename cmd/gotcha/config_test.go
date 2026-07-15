@@ -244,3 +244,41 @@ func TestLoadConfigNonProbeModeDoesNotRequireProbeCreds(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigOAuthProviders(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_OIDC_ENABLED":         "true",
+		"GOTCHA_OIDC_ISSUER":          "https://idp.example/realms/x",
+		"GOTCHA_OIDC_CLIENT_ID":       "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET":   "sec",
+		"GOTCHA_OIDC_NAME":            "Corp SSO",
+		"GOTCHA_YANDEX_ENABLED":       "true",
+		"GOTCHA_YANDEX_CLIENT_ID":     "ycid",
+		"GOTCHA_YANDEX_CLIENT_SECRET": "ysec",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.OIDCEnabled || cfg.OIDCIssuer != "https://idp.example/realms/x" || cfg.OIDCName != "Corp SSO" {
+		t.Fatalf("OIDC fields = %+v", cfg)
+	}
+	if !cfg.YandexEnabled || cfg.YandexClientID != "ycid" {
+		t.Fatalf("Yandex fields = %+v", cfg)
+	}
+	if cfg.VKEnabled {
+		t.Fatalf("VK must be disabled")
+	}
+}
+
+func TestLoadConfigOAuthMissingSecretFails(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_OIDC_ENABLED":   "true",
+		"GOTCHA_OIDC_ISSUER":    "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID": "cid",
+		// нет CLIENT_SECRET
+	}
+	if _, err := loadConfig(getenvFrom(env), []string{"--mode=all"}); err == nil {
+		t.Fatal("enabled OIDC without secret must fail at startup")
+	}
+}

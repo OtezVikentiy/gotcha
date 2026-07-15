@@ -680,3 +680,38 @@ func TestAlertsSchema(t *testing.T) {
 		t.Error("want CHECK violation for invalid alert_rules.kind")
 	}
 }
+
+func TestMigrate0012OAuthIdentities(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	// password_hash должен быть nullable.
+	var isNullable string
+	if err := pool.QueryRow(ctx, `
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_name = 'users' AND column_name = 'password_hash'`).Scan(&isNullable); err != nil {
+		t.Fatalf("query column: %v", err)
+	}
+	if isNullable != "YES" {
+		t.Fatalf("password_hash is_nullable = %q, want YES", isNullable)
+	}
+
+	// Вставка юзера без пароля и его личности проходит.
+	var uid int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email) VALUES ('oauth-only@example.com') RETURNING id").Scan(&uid); err != nil {
+		t.Fatalf("insert passwordless user: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO user_identities (user_id, provider, subject, email) VALUES ($1,'oidc','sub-1','oauth-only@example.com')", uid); err != nil {
+		t.Fatalf("insert identity: %v", err)
+	}
+	// Тот же (provider, subject) второй раз → нарушение PK.
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO user_identities (user_id, provider, subject) VALUES ($1,'oidc','sub-1')", uid); err == nil {
+		t.Fatal("duplicate (provider,subject) must violate PK")
+	}
+}

@@ -472,3 +472,52 @@ th {
 	color: var(--text-dim);
 	font-size: 13px;
 }
+
+/* OAuth / social login: кнопки на /login, /register и в профиле. */
+.oauth-buttons {
+	margin-top: 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.oauth-sep {
+	text-align: center;
+	color: var(--text-dim);
+	margin: 8px 0;
+}
+.oauth-btn {
+	display: block;
+	text-align: center;
+	padding: 8px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	text-decoration: none;
+	color: var(--text);
+}
+.oauth-btn:hover {
+	background: var(--surface);
+}
+/* Профиль: список связанных аккаунтов. */
+.linked-list {
+	list-style: none;
+	padding: 0;
+	margin: 8px 0;
+}
+.linked-list li {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 8px;
+}
+.linked-email {
+	color: var(--text-dim);
+	font-size: 13px;
+}
+.linked-note {
+	color: var(--text-dim);
+	font-size: 13px;
+}
+form.inline {
+	display: inline;
+}

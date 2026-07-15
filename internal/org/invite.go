@@ -78,3 +78,60 @@ func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64) 
 	}
 	return orgID, nil
 }
+
+// HasPendingInvite сообщает, есть ли действующий (не принятый, не протухший)
+// инвайт на email. Лёгкая предпроверка перед провижинингом OAuth-юзера, чтобы
+// не заводить аккаунт без приглашения.
+func (s *Service) HasPendingInvite(ctx context.Context, email string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM org_invites
+			WHERE email = $1 AND accepted_at IS NULL AND expires_at > now()
+		)`, email).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("org: has pending invite: %w", err)
+	}
+	return exists, nil
+}
+
+// AcceptPendingInviteByEmail гасит самый свежий действующий инвайт на email и
+// добавляет userID в организацию (роль из инвайта). ok=false без ошибки, если
+// pending-инвайта нет — вызывающий (OAuth-провижининг) трактует это как «нет
+// приглашения». Матч по email (провайдер вернул verified email); токен не
+// нужен — доступ уже подтверждён внешним провайдером.
+func (s *Service) AcceptPendingInviteByEmail(ctx context.Context, email string, userID int64) (int64, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("org: accept invite by email: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID int64
+	var role Role
+	err = tx.QueryRow(ctx, `
+		UPDATE org_invites SET accepted_at = now()
+		WHERE id = (
+			SELECT id FROM org_invites
+			WHERE email = $1 AND accepted_at IS NULL AND expires_at > now()
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+		RETURNING org_id, role`,
+		email).Scan(&orgID, &role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("org: accept invite by email: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		"INSERT INTO org_members (org_id, user_id, role) VALUES ($1,$2,$3) ON CONFLICT (org_id, user_id) DO NOTHING",
+		orgID, userID, role); err != nil {
+		return 0, false, fmt.Errorf("org: accept invite by email: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("org: accept invite by email: %w", err)
+	}
+	return orgID, true, nil
+}

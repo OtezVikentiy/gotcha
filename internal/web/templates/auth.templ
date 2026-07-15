@@ -1,6 +1,22 @@
 package templates
 
-templ Login(errMsg string) {
+type OAuthButton struct {
+	Name  string // ключ провайдера для URL (/auth/oauth/{name}/start)
+	Label string // подпись, напр. "Войти через Яндекс"
+}
+
+templ oauthButtons(providers []OAuthButton) {
+	if len(providers) > 0 {
+		<div class="oauth-buttons">
+			<p class="oauth-sep">или</p>
+			for _, p := range providers {
+				<a class="oauth-btn" href={ templ.URL("/auth/oauth/" + p.Name + "/start") }>{ p.Label }</a>
+			}
+		</div>
+	}
+}
+
+templ Login(errMsg string, providers []OAuthButton) {
 	@layout("Вход", "") {
 		<form method="post" action="/login" class="auth-form">
 			<h1>Вход</h1>
@@ -18,10 +34,11 @@ templ Login(errMsg string) {
 			<button type="submit">Войти</button>
 			<p class="auth-switch"><a href="/register">Создать аккаунт</a></p>
 		</form>
+		@oauthButtons(providers)
 	}
 }
 
-templ Register(errMsg string) {
+templ Register(errMsg string, providers []OAuthButton) {
 	@layout("Регистрация", "") {
 		<form method="post" action="/register" class="auth-form">
 			<h1>Регистрация</h1>
@@ -43,5 +60,6 @@ templ Register(errMsg string) {
 			<button type="submit">Зарегистрироваться</button>
 			<p class="auth-switch"><a href="/login">Уже есть аккаунт?</a></p>
 		</form>
+		@oauthButtons(providers)
 	}
 }

@@ -74,3 +74,53 @@ func TestInviteExpiry(t *testing.T) {
 		t.Fatalf("expired invite: got %v, want ErrInviteInvalid", err)
 	}
 }
+
+func TestAcceptPendingInviteByEmail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+
+	ownerID := newUser(t, pool, "owner-inv@example.com")
+	o, err := svc.CreateOrg(ctx, "inv-co", "Inv Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	inviteeID := newUser(t, pool, "invitee@example.com")
+	if orgID, ok, err := svc.AcceptPendingInviteByEmail(ctx, "invitee@example.com", inviteeID); err != nil || ok || orgID != 0 {
+		t.Fatalf("no invite = (%d,%v,%v), want (0,false,nil)", orgID, ok, err)
+	}
+	if _, err := svc.Invite(ctx, o.ID, "invitee@example.com", org.RoleMember); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	orgID, ok, err := svc.AcceptPendingInviteByEmail(ctx, "invitee@example.com", inviteeID)
+	if err != nil || !ok || orgID != o.ID {
+		t.Fatalf("accept = (%d,%v,%v), want (%d,true,nil)", orgID, ok, err, o.ID)
+	}
+	if _, ok, _ := svc.AcceptPendingInviteByEmail(ctx, "invitee@example.com", inviteeID); ok {
+		t.Fatal("second accept must be ok=false")
+	}
+}
+
+func TestHasPendingInvite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "hp-owner@example.com")
+	o, _ := svc.CreateOrg(ctx, "hp-co", "HP Co", ownerID)
+	if ok, _ := svc.HasPendingInvite(ctx, "nobody@example.com"); ok {
+		t.Fatal("no invite → false")
+	}
+	if _, err := svc.Invite(ctx, o.ID, "wanted@example.com", org.RoleMember); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	if ok, err := svc.HasPendingInvite(ctx, "wanted@example.com"); err != nil || !ok {
+		t.Fatalf("pending = (%v,%v), want (true,nil)", ok, err)
+	}
+}

@@ -8,12 +8,24 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
+// oauthButtons собирает кнопки включённых провайдеров для страниц входа.
+func (h *Handler) oauthButtons() []templates.OAuthButton {
+	if h.OAuth == nil {
+		return nil
+	}
+	var out []templates.OAuthButton
+	for _, p := range h.OAuth.List() {
+		out = append(out, templates.OAuthButton{Name: p.Name(), Label: "Войти через " + p.DisplayName()})
+	}
+	return out
+}
+
 func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
-	_ = templates.Login("").Render(r.Context(), w)
+	_ = templates.Login("", h.oauthButtons()).Render(r.Context(), w)
 }
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
-	_ = templates.Register("").Render(r.Context(), w)
+	_ = templates.Register("", h.oauthButtons()).Render(r.Context(), w)
 }
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -30,14 +42,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if !h.loginLimiter.Allow(rateLimitKey(r, email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Login("слишком много попыток входа, попробуйте через минуту").Render(r.Context(), w)
+		_ = templates.Login("слишком много попыток входа, попробуйте через минуту", h.oauthButtons()).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Authenticate(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login("неверный email или пароль").Render(r.Context(), w)
+		_ = templates.Login("неверный email или пароль", h.oauthButtons()).Render(r.Context(), w)
 		return
 	}
 
@@ -65,20 +77,20 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if !h.loginLimiter.Allow(rateLimitKey(r, email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Register("слишком много попыток регистрации, попробуйте через минуту").Render(r.Context(), w)
+		_ = templates.Register("слишком много попыток регистрации, попробуйте через минуту", h.oauthButtons()).Render(r.Context(), w)
 		return
 	}
 
 	if password != password2 {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register("пароли не совпадают").Render(r.Context(), w)
+		_ = templates.Register("пароли не совпадают", h.oauthButtons()).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Register(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(registerErrorMessage(err)).Render(r.Context(), w)
+		_ = templates.Register(registerErrorMessage(err), h.oauthButtons()).Render(r.Context(), w)
 		return
 	}
 

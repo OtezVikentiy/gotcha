@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // Config собирается из env (префикс GOTCHA_) и флагов командной строки.
@@ -36,6 +37,22 @@ type Config struct {
 	// пробе знать нечего (ни PG, ни CH она не открывает).
 	ProbeToken string
 	ServerURL  string
+
+	// OAuth/social login (этап 5). Каждый провайдер включается независимо;
+	// включённый без обязательных секретов → отказ на старте. Секреты живут
+	// только в памяти процесса.
+	OIDCEnabled      bool
+	OIDCIssuer       string
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCScopes       string
+	OIDCName         string
+	YandexEnabled      bool
+	YandexClientID     string
+	YandexClientSecret string
+	VKEnabled      bool
+	VKClientID     string
+	VKClientSecret string
 }
 
 var validModes = map[string]bool{
@@ -57,6 +74,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 			return v
 		}
 		return def
+	}
+
+	boolEnv := func(key string) bool {
+		v := strings.ToLower(strings.TrimSpace(getenv(key)))
+		return v == "1" || v == "true" || v == "yes" || v == "on"
 	}
 
 	var errs []error
@@ -93,6 +115,18 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ProbeToken:        str("GOTCHA_PROBE_TOKEN", ""),
 		ServerURL:         str("GOTCHA_SERVER_URL", ""),
 	}
+	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
+	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
+	cfg.OIDCClientID = str("GOTCHA_OIDC_CLIENT_ID", "")
+	cfg.OIDCClientSecret = str("GOTCHA_OIDC_CLIENT_SECRET", "")
+	cfg.OIDCScopes = str("GOTCHA_OIDC_SCOPES", "")
+	cfg.OIDCName = str("GOTCHA_OIDC_NAME", "")
+	cfg.YandexEnabled = boolEnv("GOTCHA_YANDEX_ENABLED")
+	cfg.YandexClientID = str("GOTCHA_YANDEX_CLIENT_ID", "")
+	cfg.YandexClientSecret = str("GOTCHA_YANDEX_CLIENT_SECRET", "")
+	cfg.VKEnabled = boolEnv("GOTCHA_VK_ENABLED")
+	cfg.VKClientID = str("GOTCHA_VK_CLIENT_ID", "")
+	cfg.VKClientSecret = str("GOTCHA_VK_CLIENT_SECRET", "")
 	if len(errs) > 0 {
 		return Config{}, errs[0]
 	}
@@ -129,6 +163,16 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		if cfg.ProbeToken == "" {
 			return Config{}, fmt.Errorf("GOTCHA_PROBE_TOKEN is required with --mode=probe")
 		}
+	}
+
+	if cfg.OIDCEnabled && (cfg.OIDCIssuer == "" || cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "") {
+		return Config{}, fmt.Errorf("GOTCHA_OIDC_ENABLED requires GOTCHA_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET")
+	}
+	if cfg.YandexEnabled && (cfg.YandexClientID == "" || cfg.YandexClientSecret == "") {
+		return Config{}, fmt.Errorf("GOTCHA_YANDEX_ENABLED requires GOTCHA_YANDEX_CLIENT_ID and _CLIENT_SECRET")
+	}
+	if cfg.VKEnabled && (cfg.VKClientID == "" || cfg.VKClientSecret == "") {
+		return Config{}, fmt.Errorf("GOTCHA_VK_ENABLED requires GOTCHA_VK_CLIENT_ID and _CLIENT_SECRET")
 	}
 
 	return cfg, nil

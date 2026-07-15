@@ -64,7 +64,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 func (s *Service) Authenticate(ctx context.Context, email, password string) (int64, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	var id int64
-	var hash string
+	var hash *string
 	err := s.pool.QueryRow(ctx,
 		"SELECT id, password_hash FROM users WHERE email = $1",
 		email).Scan(&id, &hash)
@@ -76,7 +76,12 @@ func (s *Service) Authenticate(ctx context.Context, email, password string) (int
 	if err != nil {
 		return 0, fmt.Errorf("auth: authenticate: %w", err)
 	}
-	ok, err := VerifyPassword(password, hash)
+	if hash == nil {
+		// OAuth-only аккаунт: паролем войти нельзя. Выравниваем тайминг.
+		_, _ = VerifyPassword(password, dummyHash)
+		return 0, ErrInvalidCredentials
+	}
+	ok, err := VerifyPassword(password, *hash)
 	if err != nil {
 		return 0, fmt.Errorf("auth: authenticate: %w", err)
 	}
@@ -103,7 +108,7 @@ func (s *Service) UserEmail(ctx context.Context, userID int64) (string, error) {
 // пользователя (включая ту, из которой пришёл запрос) — вызывающий хендлер
 // обязан выпустить новую сессию и переустановить cookie.
 func (s *Service) ChangePassword(ctx context.Context, userID int64, oldPassword, newPassword string) error {
-	var hash string
+	var hash *string
 	err := s.pool.QueryRow(ctx,
 		"SELECT password_hash FROM users WHERE id = $1", userID).Scan(&hash)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -112,7 +117,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, oldPassword,
 	if err != nil {
 		return fmt.Errorf("auth: change password: %w", err)
 	}
-	ok, err := VerifyPassword(oldPassword, hash)
+	if hash == nil {
+		// Нет старого пароля — ChangePassword неприменим (нужен SetPassword).
+		return ErrInvalidCredentials
+	}
+	ok, err := VerifyPassword(oldPassword, *hash)
 	if err != nil {
 		return fmt.Errorf("auth: change password: %w", err)
 	}

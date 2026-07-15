@@ -301,6 +301,8 @@ func run() error {
 		// Регрессии (этап 4, план 5): список /projects/{id}/regressions читает
 		// perf_regressions из PG (тот же сервис, что и оценщик выше).
 		webHandler.Regressions = trace.NewRegressionService(pg)
+		webHandler.OAuth = buildRegistry(cfg)
+		webHandler.SecretKey = cfg.SecretKey
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Register(mux)
 		go (&auth.Janitor{Svc: authSvc}).Run(ctx)

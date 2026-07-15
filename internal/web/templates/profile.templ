@@ -1,11 +1,23 @@
 package templates
 
-// Profile — GET/POST /profile: email юзера, форма смены пароля и кнопка
-// «выйти со всех других устройств». errMsg — ошибка последнего POST (неверный
-// старый пароль, несовпадение new/new2, слабый новый пароль), message —
-// подтверждение успеха (смена пароля или число завершённых сессий). Оба
-// рендерятся на этой же странице без редиректа — как и OrgSettings.
-templ Profile(email, errMsg, message, userEmail string) {
+type LinkedIdentity struct {
+	Provider    string
+	DisplayName string
+	Email       string
+	CanUnlink   bool
+}
+
+type LinkableProvider struct {
+	Name        string
+	DisplayName string
+}
+
+// Profile — GET/POST /profile: email юзера, форма пароля (смена, если пароль
+// есть; задание, если аккаунт OAuth-only), связанные аккаунты (привязка/отвязка)
+// и кнопка «выйти со всех других устройств». errMsg — ошибка последнего POST,
+// message — подтверждение успеха. Оба рендерятся на этой же странице без
+// редиректа — как и OrgSettings.
+templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedIdentity, linkable []LinkableProvider, userEmail string) {
 	@layout("Профиль", userEmail) {
 		<div class="profile">
 			<h1>Профиль</h1>
@@ -16,22 +28,68 @@ templ Profile(email, errMsg, message, userEmail string) {
 			if message != "" {
 				<p class="notice">{ message }</p>
 			}
-			<h2>Смена пароля</h2>
-			<form method="post" action="/profile/password" class="auth-form">
-				<label>
-					Текущий пароль
-					<input type="password" name="old" required autocomplete="current-password"/>
-				</label>
-				<label>
-					Новый пароль
-					<input type="password" name="new" required autocomplete="new-password"/>
-				</label>
-				<label>
-					Повторите новый пароль
-					<input type="password" name="new2" required autocomplete="new-password"/>
-				</label>
-				<button type="submit">Изменить пароль</button>
-			</form>
+			if hasPassword {
+				<h2>Смена пароля</h2>
+				<form method="post" action="/profile/password" class="auth-form">
+					<label>
+						Текущий пароль
+						<input type="password" name="old" required autocomplete="current-password"/>
+					</label>
+					<label>
+						Новый пароль
+						<input type="password" name="new" required autocomplete="new-password"/>
+					</label>
+					<label>
+						Повторите новый пароль
+						<input type="password" name="new2" required autocomplete="new-password"/>
+					</label>
+					<button type="submit">Изменить пароль</button>
+				</form>
+			} else {
+				<h2>Задать пароль</h2>
+				<p>У аккаунта нет пароля (вход только через внешний провайдер). Задайте пароль, чтобы входить и по email.</p>
+				<form method="post" action="/profile/password/set" class="auth-form">
+					<label>
+						Новый пароль
+						<input type="password" name="new" required autocomplete="new-password"/>
+					</label>
+					<label>
+						Повторите новый пароль
+						<input type="password" name="new2" required autocomplete="new-password"/>
+					</label>
+					<button type="submit">Задать пароль</button>
+				</form>
+			}
+			<h2>Связанные аккаунты</h2>
+			if len(linked) == 0 {
+				<p class="empty">нет привязанных провайдеров</p>
+			} else {
+				<ul class="linked-list">
+					for _, li := range linked {
+						<li>
+							<span>{ li.DisplayName }</span>
+							if li.Email != "" {
+								<span class="linked-email">{ li.Email }</span>
+							}
+							if li.CanUnlink {
+								<form method="post" action="/profile/identities/unlink" class="inline">
+									<input type="hidden" name="provider" value={ li.Provider }/>
+									<button type="submit">Отвязать</button>
+								</form>
+							} else {
+								<span class="linked-note">единственный способ входа</span>
+							}
+						</li>
+					}
+				</ul>
+			}
+			if len(linkable) > 0 {
+				<div class="oauth-buttons">
+					for _, lp := range linkable {
+						<a class="oauth-btn" href={ templ.URL("/auth/oauth/" + lp.Name + "/start?link=1") }>{ "Привязать " + lp.DisplayName }</a>
+					}
+				</div>
+			}
 			<h2>Сессии</h2>
 			<p>Завершить все сессии на других устройствах, кроме текущей.</p>
 			<form method="post" action="/profile/sessions/revoke">
