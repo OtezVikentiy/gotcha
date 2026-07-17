@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -79,7 +80,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -87,22 +88,22 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 	// отсутствии доступа (тот же приём, что и guard на h.PerfIssues ниже), а не
 	// паника при разыменовании.
 	if h.Trace == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	project, err := h.Org.GetProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -115,13 +116,13 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.Trace.Endpoints(r.Context(), projectID, from, now, environment, int(project.ApdexThresholdMS))
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	environments, err := h.Trace.Environments(r.Context(), projectID, from, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -140,7 +141,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 	for i, st := range stats {
 		points, err := h.Trace.EndpointLatency(r.Context(), projectID, st.Transaction, from, now, step, environment)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		rows[i] = templates.EndpointRow{
@@ -189,23 +190,23 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	// h.Trace может быть nil в стендах без трейсинга — тогда 404, а не паника
 	// при разыменовании (см. performanceList).
 	if h.Trace == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -217,13 +218,13 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	// корректно кругооборотят имя, включая литеральный «%».
 	transaction := r.PathValue("transaction")
 	if transaction == "" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	project, err := h.Org.GetProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -236,19 +237,19 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	step := perfBucketStep(window, perfLatencyBuckets)
 	points, err := h.Trace.EndpointLatency(r.Context(), projectID, transaction, from, now, step, environment)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	histogram, err := h.Trace.DurationHistogram(r.Context(), projectID, transaction, from, now, environment, perfHistogramBuckets)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	slowest, err := h.Trace.SlowestTraces(r.Context(), projectID, transaction, from, now, perfSlowestLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -260,7 +261,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	if h.PerfIssues != nil {
 		all, err := h.PerfIssues.List(r.Context(), projectID, "", perfIssuesLimit)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		for _, iss := range all {
@@ -275,7 +276,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	// рендерится).
 	vitals, err := h.vitalsPanel(r, projectID, transaction, from, now, window, environment)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 

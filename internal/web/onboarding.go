@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -40,7 +42,7 @@ func (h *Handler) onboardingPage(w http.ResponseWriter, r *http.Request) {
 	}
 	hasOrg, err := h.userHasProjects(r, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if hasOrg {
@@ -97,13 +99,13 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	// попытке), ни удалить её из UI. Проверяя оба slug'а заранее, мы не
 	// пишем в БД вообще ничего, если форма невалидна.
 	if !org.ValidSlug(orgSlug) || !org.ValidSlug(projectSlug) {
-		renderInvalid(onboardingErrorMessage(org.ErrInvalidSlug))
+		renderInvalid(onboardingErrorMessage(r.Context(), org.ErrInvalidSlug))
 		return
 	}
 
 	o, err := h.Org.CreateOrg(r.Context(), orgSlug, orgName, uid)
 	if err != nil {
-		renderInvalid(onboardingErrorMessage(err))
+		renderInvalid(onboardingErrorMessage(r.Context(), err))
 		return
 	}
 
@@ -114,7 +116,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	p, err := h.Org.CreateProject(r.Context(), o.ID, projectSlug, projectName, platform)
 	if err != nil {
 		h.compensateOrgCreate(r, o.ID)
-		renderInvalid(onboardingErrorMessage(err))
+		renderInvalid(onboardingErrorMessage(r.Context(), err))
 		return
 	}
 
@@ -126,14 +128,14 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	if h.Alerts != nil {
 		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
 			h.compensateOrgCreate(r, o.ID)
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 	}
 
 	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
 		h.compensateOrgCreate(r, o.ID)
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -152,14 +154,14 @@ func (h *Handler) compensateOrgCreate(r *http.Request, orgID int64) {
 	}
 }
 
-func onboardingErrorMessage(err error) string {
+func onboardingErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, org.ErrInvalidSlug):
-		return "slug должен состоять из строчных латинских букв, цифр и дефисов (1..64 символа)"
+		return i18n.T(ctx, "error.slug.invalid")
 	case errors.Is(err, org.ErrSlugTaken):
-		return "такой slug уже занят"
+		return i18n.T(ctx, "error.slug.taken")
 	default:
-		return "не удалось создать организацию или проект"
+		return i18n.T(ctx, "error.onboarding.failed")
 	}
 }
 
@@ -179,16 +181,16 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -197,18 +199,18 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 	// Get-по-id в org.Service пока нет.
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	project, ok := findProject(projects, projectID)
 	if !ok {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	publicKey := firstLiveKey(keys)
@@ -286,7 +288,7 @@ func (h *Handler) projectsList(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	rolesByOrg := make(map[int64]org.Role, len(projects))
@@ -296,7 +298,7 @@ func (h *Handler) projectsList(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			role, err = h.Org.Role(r.Context(), p.OrgID, uid)
 			if err != nil && !errors.Is(err, org.ErrNotMember) {
-				h.renderError(w, r, http.StatusInternalServerError, "internal error")
+				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 				return
 			}
 			rolesByOrg[p.OrgID] = role

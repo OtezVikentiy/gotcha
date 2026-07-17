@@ -103,6 +103,9 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allow(r.Context(), h.TxQuota, key.OrgID, "transaction") {
+		// Тело ещё не разобрано — точного числа транзакций в экспорте нет;
+		// считаем один отклонённый батч (best-effort сигнал о потерях).
+		h.countDrop(r.Context(), dropTransaction, key.OrgID, 1)
 		writeQuotaExceeded(w, "transaction quota exceeded")
 		return
 	}
@@ -158,6 +161,8 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allow(r.Context(), h.MetricQuota, key.OrgID, "metric") {
+		// Тело ещё не разобрано — считаем один отклонённый батч метрик.
+		h.countDrop(r.Context(), dropMetric, key.OrgID, 1)
 		writeQuotaExceeded(w, "metric quota exceeded")
 		return
 	}
@@ -183,6 +188,10 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range metric.MapOTLP(req.GetResourceMetrics(), time.Now().UTC()) {
+		// Зачистка ПДн: атрибуты датапойнта — единственный носитель denylist-
+		// значений на этом пути, и он идёт мимо Pipeline/Scrubber. h.Scrub == nil
+		// — no-op (ScrubTags nil-safe). p.Attributes — map[string]string.
+		h.Scrub.ScrubTags(p.Attributes)
 		h.Metrics.Add(key.ProjectID, p)
 	}
 	writeOTLPResponse(w, enc)

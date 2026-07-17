@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -48,7 +49,7 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -56,23 +57,23 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	// отсутствии доступа (тот же приём, что и nil-guard на h.PerfIssues), а не
 	// паника при разыменовании.
 	if h.Regressions == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	filterName, keep := regressionStatusFilter(r.URL.Query().Get("status"))
 	all, err := h.Regressions.List(r.Context(), projectID, regressionsPreFilterLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	// Фильтр по статусу — в Go: List статус не принимает (см. брифинг), поэтому

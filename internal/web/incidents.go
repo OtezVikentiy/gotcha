@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -26,23 +27,23 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	incidents, err := h.Uptime.Incidents(r.Context(), projectID, incidentsListLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -51,7 +52,7 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 	// инцидент.
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	names := make(map[int64]string, len(monitors))

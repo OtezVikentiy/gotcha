@@ -6,14 +6,22 @@ import (
 	"net"
 	"strconv"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
 // TCPChecker — TCP connect-чекер: успешен, если удаётся установить
 // соединение в пределах таймаута монитора.
-type TCPChecker struct{}
+//
+// SSRF: по умолчанию (AllowPrivate=false) коннекты к приватным/служебным
+// адресам режутся через netguard (по фактическому IP после резолва).
+type TCPChecker struct {
+	// AllowPrivate=true отключает SSRF-фильтр приватных целей.
+	AllowPrivate bool
+}
 
-func NewTCPChecker() *TCPChecker {
-	return &TCPChecker{}
+func NewTCPChecker(allowPrivate bool) *TCPChecker {
+	return &TCPChecker{AllowPrivate: allowPrivate}
 }
 
 func (c *TCPChecker) Check(ctx context.Context, m Monitor) Result {
@@ -26,7 +34,7 @@ func (c *TCPChecker) Check(ctx context.Context, m Monitor) Result {
 	defer cancel()
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	dialer := &net.Dialer{}
+	dialer := netguard.Dialer(c.AllowPrivate)
 
 	start := time.Now()
 	conn, err := dialer.DialContext(dialCtx, "tcp", addr)

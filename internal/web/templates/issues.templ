@@ -1,10 +1,12 @@
 package templates
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
@@ -49,32 +51,50 @@ func issueDetailPath(issueID int64) string {
 
 func levelBadgeClass(level string) string {
 	switch level {
-	case "warning":
-		return "badge badge-warning"
 	case "error", "fatal":
-		return "badge badge-error"
-	default:
+		return "badge badge-danger"
+	case "warning":
+		return "badge badge-warn"
+	case "info":
 		return "badge badge-info"
+	default:
+		return "badge badge-neutral"
 	}
 }
 
-// ago — относительное время вида "3s ago"/"5m ago"/"2h ago"/"4d ago".
-// Отрицательная разница (небольшой перекос часов между БД и веб-узлом)
-// приравнивается к нулю, а не показывается как "будущее" время.
-func ago(t time.Time) string {
+// statusBadgeClass — бейдж статуса issue: unresolved подсвечивается как
+// "требует внимания" (warn), resolved — good, ignored — нейтральный.
+func statusBadgeClass(status string) string {
+	switch status {
+	case "resolved":
+		return "badge badge-good"
+	case "ignored":
+		return "badge badge-neutral"
+	default:
+		return "badge badge-warn"
+	}
+}
+
+// ago — локализованное относительное время вида "3 секунды назад"/"5 минут
+// назад"/"2 часа назад"/"4 дня назад" (см. plurals time.ago.* в каталогах
+// i18n). Отрицательная разница (небольшой перекос часов между БД и
+// веб-узлом) приравнивается к нулю, а не показывается как "будущее" время.
+func ago(ctx context.Context, t time.Time) string {
 	d := time.Since(t)
 	if d < 0 {
 		d = 0
 	}
 	switch {
+	case d < time.Second:
+		return i18n.T(ctx, "time.just_now")
 	case d < time.Minute:
-		return strconv.FormatInt(int64(d/time.Second), 10) + "s ago"
+		return i18n.Tn(ctx, "time.ago.seconds", int(d/time.Second))
 	case d < time.Hour:
-		return strconv.FormatInt(int64(d/time.Minute), 10) + "m ago"
+		return i18n.Tn(ctx, "time.ago.minutes", int(d/time.Minute))
 	case d < 24*time.Hour:
-		return strconv.FormatInt(int64(d/time.Hour), 10) + "h ago"
+		return i18n.Tn(ctx, "time.ago.hours", int(d/time.Hour))
 	default:
-		return strconv.FormatInt(int64(d/(24*time.Hour)), 10) + "d ago"
+		return i18n.Tn(ctx, "time.ago.days", int(d/(24*time.Hour)))
 	}
 }
 
@@ -172,65 +192,64 @@ templ periodOption(value, label string, selected string) {
 // #issues-table, но обработчик всегда рендерит целую страницу, а не
 // фрагмент, так что частичный своп дал бы вложенный документ внутри div.
 // Без htmx-атрибутов работает как обычный GET, что явно допускается спекой.
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, canManage bool, userEmail string, environments []string) {
-	@layout("Issues", userEmail) {
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, canManage bool, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM) {
+	@layout(i18n.T(ctx, "issues.title"), userEmail) {
 		<div class="issues">
-			<h1>Issues</h1>
-			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> · <a href={ templ.URL(perfIssuesPath(projectID)) }>Performance Issues</a></p>
-			if canManage {
-				<p><a href={ templ.URL(projectSettingsPath(projectID)) }>Project settings</a></p>
-			}
+			@quotaBannerView(banner)
+			@gettingStartedChecklist(gs)
+			<h1>{ i18n.T(ctx, "issues.title") }</h1>
+			@helpPanel("issues", "issues")
 			<form method="get" action={ templ.URL(issuesPath(projectID)) } class="issues-filters">
-				<select name="status">
-					@statusOption("", "Все статусы", filter.Status)
-					@statusOption("unresolved", "Unresolved", filter.Status)
-					@statusOption("resolved", "Resolved", filter.Status)
-					@statusOption("ignored", "Ignored", filter.Status)
+				<select name="status" class="select" aria-label={ i18n.T(ctx, "filter.status") }>
+					@statusOption("", i18n.T(ctx, "issues.filter.status_all"), filter.Status)
+					@statusOption("unresolved", i18n.T(ctx, "issues.status.unresolved"), filter.Status)
+					@statusOption("resolved", i18n.T(ctx, "issues.status.resolved"), filter.Status)
+					@statusOption("ignored", i18n.T(ctx, "issues.status.ignored"), filter.Status)
 				</select>
-				<select name="level">
-					@levelOption("", "Все уровни", filter.Level)
-					@levelOption("debug", "Debug", filter.Level)
-					@levelOption("info", "Info", filter.Level)
-					@levelOption("warning", "Warning", filter.Level)
-					@levelOption("error", "Error", filter.Level)
-					@levelOption("fatal", "Fatal", filter.Level)
+				<select name="level" class="select" aria-label={ i18n.T(ctx, "filter.level") }>
+					@levelOption("", i18n.T(ctx, "issues.filter.level_all"), filter.Level)
+					@levelOption("debug", i18n.T(ctx, "issues.level.debug"), filter.Level)
+					@levelOption("info", i18n.T(ctx, "issues.level.info"), filter.Level)
+					@levelOption("warning", i18n.T(ctx, "issues.level.warning"), filter.Level)
+					@levelOption("error", i18n.T(ctx, "issues.level.error"), filter.Level)
+					@levelOption("fatal", i18n.T(ctx, "issues.level.fatal"), filter.Level)
 				</select>
-				<input type="text" name="q" placeholder="Поиск по title/culprit" value={ filter.Query }/>
-				<select name="sort">
-					@sortOption("last_seen", "Last seen", filter.Sort)
-					@sortOption("first_seen", "First seen", filter.Sort)
-					@sortOption("times_seen", "Times seen", filter.Sort)
+				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "issues.filter.query_placeholder") } value={ filter.Query } aria-label={ i18n.T(ctx, "filter.search") }/>
+				<select name="sort" class="select" aria-label={ i18n.T(ctx, "filter.sort") }>
+					@sortOption("last_seen", i18n.T(ctx, "issues.sort.last_seen"), filter.Sort)
+					@sortOption("first_seen", i18n.T(ctx, "issues.sort.first_seen"), filter.Sort)
+					@sortOption("times_seen", i18n.T(ctx, "issues.sort.times_seen"), filter.Sort)
 				</select>
-				<select name="env">
-					@environmentOption("", "All environments", filter.Environment)
+				<select name="env" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
+					@environmentOption("", i18n.T(ctx, "issues.filter.env_all"), filter.Environment)
 					for _, env := range environments {
 						@environmentOption(env, env, filter.Environment)
 					}
 				</select>
-				<select name="period">
-					@periodOption("", "All time", filter.Period)
-					@periodOption("24h", "Last 24h", filter.Period)
-					@periodOption("7d", "Last 7 days", filter.Period)
-					@periodOption("30d", "Last 30 days", filter.Period)
+				<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
+					@periodOption("", i18n.T(ctx, "issues.filter.period_all"), filter.Period)
+					@periodOption("24h", i18n.T(ctx, "issues.filter.period_24h"), filter.Period)
+					@periodOption("7d", i18n.T(ctx, "issues.filter.period_7d"), filter.Period)
+					@periodOption("30d", i18n.T(ctx, "issues.filter.period_30d"), filter.Period)
 				</select>
-				<button type="submit">Применить</button>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
 			<div id="issues-table">
 				if len(rows) == 0 {
-					<p>Issues не найдены.</p>
+					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID))
 				} else {
 					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
-						<table>
+						<table class="data-table">
 							<thead>
 								<tr>
 									<th></th>
-									<th>Level</th>
-									<th>Issue</th>
-									<th>Trend (24h)</th>
-									<th>Events</th>
-									<th>Last seen</th>
-									<th>Status</th>
-									<th>Assignee</th>
+									<th>{ i18n.T(ctx, "issues.table.level") }</th>
+									<th>{ i18n.T(ctx, "issues.table.issue") }</th>
+									<th>{ i18n.T(ctx, "issues.table.trend") }</th>
+									<th class="num">{ i18n.T(ctx, "issues.table.events") }</th>
+									<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
+									<th>{ i18n.T(ctx, "issues.table.status") }</th>
+									<th>{ i18n.T(ctx, "issues.table.assignee") }</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -245,28 +264,28 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 											}
 										</td>
 										<td>@row.Sparkline</td>
-										<td>{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
-										<td>{ ago(row.Issue.LastSeen) }</td>
-										<td>{ row.Issue.Status }</td>
+										<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
+										<td>{ ago(ctx, row.Issue.LastSeen) }</td>
+										<td><span class={ statusBadgeClass(row.Issue.Status) }>{ row.Issue.Status }</span></td>
 										<td>{ assigneeDisplay(row.Issue.AssigneeEmail) }</td>
 									</tr>
 								}
 							</tbody>
 						</table>
 						<div class="bulk-actions">
-							<button type="submit" name="action" value="resolve">Resolve</button>
-							<button type="submit" name="action" value="ignore">Ignore</button>
-							<button type="submit" name="action" value="unresolve">Unresolve</button>
+							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
+							<button type="submit" name="action" value="ignore" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
+							<button type="submit" name="action" value="unresolve" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
 						</div>
 					</form>
 				}
 				<nav class="pagination">
 					if page > 1 {
-						<a href={ templ.URL(issuesPageURL(projectID, filter, page-1)) }>« Prev</a>
+						<a href={ templ.URL(issuesPageURL(projectID, filter, page-1)) }>« { i18n.T(ctx, "issues.pagination.prev") }</a>
 					}
 					<span>{ strconv.Itoa(page) } / { strconv.FormatInt(totalPages(total), 10) }</span>
 					if int64(page) < totalPages(total) {
-						<a href={ templ.URL(issuesPageURL(projectID, filter, page+1)) }>Next »</a>
+						<a href={ templ.URL(issuesPageURL(projectID, filter, page+1)) }>{ i18n.T(ctx, "issues.pagination.next") } »</a>
 					}
 				</nav>
 			</div>

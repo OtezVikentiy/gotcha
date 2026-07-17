@@ -1,37 +1,272 @@
-// Package templates — SSR-шаблоны Gotcha (templ). Тёмная тема, минимум CSS,
-// без клиентского фреймворка: htmx — прогрессивное улучшение, все страницы
-// работают и с выключенным JS.
+// Package templates — SSR-шаблоны Gotcha (templ). Локализация — i18n.T(ctx,...),
+// локаль в контексте кладёт web-миддлвара withLocale.
 package templates
+
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
+	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
+)
 
 templ layout(title string, userEmail string) {
 	<!DOCTYPE html>
-	<html lang="ru">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<title>{ title } · Gotcha</title>
-			<link rel="stylesheet" href="/static/app.css"/>
-			<script src="/static/htmx.min.js"></script>
-		</head>
-		<body>
-			<header class="topbar">
-				<a class="logo" href="/">Gotcha</a>
-				<nav>
-					<a href="/projects">Projects</a>
-					if userEmail != "" {
-						<a href="/profile">Profile</a>
-					}
-				</nav>
-				if userEmail != "" {
-					<form method="post" action="/logout" class="logout-form">
-						<span class="user-email">{ userEmail }</span>
-						<button type="submit">Выйти</button>
-					</form>
-				}
-			</header>
-			<main>
+	if theme.FromContext(ctx).Code != "system" {
+		<html lang={ i18n.FromContext(ctx).Code } data-theme={ theme.FromContext(ctx).Code }>
+			@layoutBody(title, userEmail) {
 				{ children... }
-			</main>
-		</body>
-	</html>
+			}
+		</html>
+	} else {
+		<html lang={ i18n.FromContext(ctx).Code }>
+			@layoutBody(title, userEmail) {
+				{ children... }
+			}
+		</html>
+	}
+}
+
+// chromeless — минимальный layout для анонимных/setup-страниц (login,
+// register, invite-accept, error, onboarding): тот же <head>, что и у
+// authenticated layout (см. headTag), но без icon-рейла и контекстного
+// сайдбара — только тонкая верхняя полоса с логотипом и переключателями
+// языка/темы.
+templ chromeless(title string, userEmail string) {
+	<!DOCTYPE html>
+	if theme.FromContext(ctx).Code != "system" {
+		<html lang={ i18n.FromContext(ctx).Code } data-theme={ theme.FromContext(ctx).Code }>
+			@chromelessBody(title, userEmail) {
+				{ children... }
+			}
+		</html>
+	} else {
+		<html lang={ i18n.FromContext(ctx).Code }>
+			@chromelessBody(title, userEmail) {
+				{ children... }
+			}
+		</html>
+	}
+}
+
+// headTag — общий <head>, вынесен отдельно, чтобы не дублироваться между
+// layoutBody и chromelessBody.
+templ headTag(title string) {
+	<head>
+		<meta charset="utf-8"/>
+		<meta name="viewport" content="width=device-width, initial-scale=1"/>
+		// CSP default-src 'self' без unsafe-inline запрещает htmx вставлять свой
+		// inline-<style> индикатора (иначе — ошибка в консоли на каждой странице).
+		// Отключаем инъекцию декларативно; сами правила .htmx-indicator — в app.css.
+		<meta name="htmx-config" content='{"includeIndicatorStyles":false}'/>
+		<title>{ title } · Gotcha</title>
+		<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
+		<link rel="stylesheet" href="/static/app.css"/>
+		<script src="/static/htmx.min.js"></script>
+	</head>
+}
+
+// layoutBody — общее содержимое <head>/<body> для авторизованного app-shell,
+// вынесено отдельно, чтобы не дублировать всю разметку между двумя вариантами
+// открывающего тега <html> (с data-theme и без — см. layout). Тело — icon-
+// рейл (области нав-структуры) + контекстный сайдбар (подразделы текущей
+// области + переключатель проекта) + верхняя панель (breadcrumb + переключатели).
+templ layoutBody(title string, userEmail string) {
+	@headTag(title)
+	<body>
+		@iconSprite()
+		<div class="app-shell">
+			<aside class="rail">
+				<a class="rail-logo" href="/" title="Gotcha">@brandMark()</a>
+				if shell := nav.FromContext(ctx); len(shell.Projects) > 0 {
+					for _, a := range nav.Areas(shell) {
+						<a class={ railAreaClass(a.Active) } href={ templ.SafeURL(a.Href) } title={ i18n.T(ctx, a.LabelKey) } if a.Active { aria-current="page" }>
+							<span class="rail-ic">@icon(a.IconName)</span>
+							<span class="rail-label">{ i18n.T(ctx, a.LabelKey) }</span>
+						</a>
+					}
+				}
+				<div class="rail-spacer"></div>
+				<a class="avatar" href="/profile" title={ userEmail }>{ initials(userEmail) }</a>
+				<form method="post" action="/logout" class="rail-logout">
+					<button type="submit" class="rail-logout-btn" title={ i18n.T(ctx, "action.logout") } aria-label={ i18n.T(ctx, "action.logout") }>
+						@icon("log-out")
+					</button>
+				</form>
+			</aside>
+			<aside class="ctx-sidebar">
+				@ctxNav(nav.FromContext(ctx))
+			</aside>
+			<div class="app-main">
+				<header class="topbar">
+					<details class="mobile-nav">
+						<summary class="mobile-nav-summary" aria-label={ i18n.T(ctx, "nav.menu") }>@icon("menu")</summary>
+						<div class="mobile-nav-panel">
+							@ctxNav(nav.FromContext(ctx))
+						</div>
+					</details>
+					<div class="breadcrumb">{ title }</div>
+					<div class="topbar-spacer"></div>
+					@langSwitcher()
+					@themeToggle()
+				</header>
+				<main class="app-content">
+					{ children... }
+				</main>
+			</div>
+		</div>
+	</body>
+}
+
+// ctxNav — содержимое контекстного сайдбара: переключатель проекта,
+// подразделы текущей области и ссылка на настройки проекта (или кнопка
+// создания проекта, если проектов ещё нет). Вынесено отдельным компонентом,
+// чтобы переиспользовать разметку и в desktop .ctx-sidebar, и в мобильном
+// no-JS disclosure-меню топбара (см. layoutBody).
+templ ctxNav(shell nav.Shell) {
+	if len(shell.Projects) > 0 {
+		<details class="proj-switch">
+			<summary>{ currentProjectName(shell) }</summary>
+			<ul>
+				for _, p := range shell.Projects {
+					<li><a href={ templ.SafeURL("/projects/" + itoa(p.ID) + "/issues") }>{ p.Name }</a></li>
+				}
+			</ul>
+		</details>
+		for _, it := range nav.Subsections(shell) {
+			<a class={ ctxItemClass(it.Active) } href={ templ.SafeURL(it.Href) } if it.Active { aria-current="page" }>
+				if it.Label != "" {
+					{ it.Label }
+				} else {
+					{ i18n.T(ctx, it.LabelKey) }
+				}
+			</a>
+		}
+		if shell.CanManage {
+			<a class="ctx-settings" href={ templ.SafeURL("/projects/" + itoa(effectiveProjectID(shell)) + "/settings") }>
+				@icon("settings")
+				{ i18n.T(ctx, "nav.project_settings") }
+			</a>
+		}
+	} else {
+		<a class="btn btn-primary" href="/onboarding">{ i18n.T(ctx, "nav.create_project") }</a>
+	}
+}
+
+// chromelessBody — тело минимального layout для анонимных/setup-страниц: без
+// рейла и сайдбара, только тонкая верхняя полоса с логотипом и переключателями.
+templ chromelessBody(title string, userEmail string) {
+	@headTag(title)
+	<body class="chromeless">
+		@iconSprite()
+		<header class="chromeless-top">
+			<a class="brand-lockup" href="/">@brandMark()<span class="brand-word">Gotcha</span></a>
+			<div class="topbar-spacer"></div>
+			@langSwitcher()
+			@themeToggle()
+		</header>
+		<main class="chromeless-main">
+			{ children... }
+		</main>
+	</body>
+}
+
+// railAreaClass — класс рейл-пункта, is-active подсвечивает текущую область.
+func railAreaClass(active bool) string {
+	if active {
+		return "rail-area is-active"
+	}
+	return "rail-area"
+}
+
+// ctxItemClass — класс пункта контекстного сайдбара, is-active подсвечивает
+// текущий подраздел.
+func ctxItemClass(active bool) string {
+	if active {
+		return "ctx-item is-active"
+	}
+	return "ctx-item"
+}
+
+// initials — 1-2 заглавные буквы для аватара из email (до "@").
+func initials(email string) string {
+	local := email
+	if i := strings.IndexByte(email, '@'); i > 0 {
+		local = email[:i]
+	}
+	local = strings.TrimSpace(local)
+	if local == "" {
+		return ""
+	}
+	r := []rune(local)
+	if len(r) == 1 {
+		return strings.ToUpper(string(r[0:1]))
+	}
+	return strings.ToUpper(string(r[0:2]))
+}
+
+// itoa — форматирование int64 для построения href-ов в шаблонах.
+func itoa(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+// currentProjectName — имя проекта в переключателе: текущий проект по
+// ProjectID, иначе первый из списка, иначе пусто.
+func currentProjectName(s nav.Shell) string {
+	for _, p := range s.Projects {
+		if p.ID == s.ProjectID {
+			return p.Name
+		}
+	}
+	if len(s.Projects) > 0 {
+		return s.Projects[0].Name
+	}
+	return ""
+}
+
+// effectiveProjectID — ProjectID, если задан, иначе ID первого проекта,
+// иначе 0.
+func effectiveProjectID(s nav.Shell) int64 {
+	if s.ProjectID != 0 {
+		return s.ProjectID
+	}
+	if len(s.Projects) > 0 {
+		return s.Projects[0].ID
+	}
+	return 0
+}
+
+// langSwitcher — переключатель языка (форма POST, работает без JS). Активный
+// язык помечен классом is-active.
+templ langSwitcher() {
+	<form method="post" action="/settings/locale" class="lang-switcher">
+		<button type="submit" name="lang" value="ru" class={ langBtnClass(ctx, "ru") }>{ i18n.T(ctx, "lang.ru") }</button>
+		<button type="submit" name="lang" value="en" class={ langBtnClass(ctx, "en") }>{ i18n.T(ctx, "lang.en") }</button>
+	</form>
+}
+
+func langBtnClass(ctx context.Context, code string) string {
+	if i18n.FromContext(ctx).Code == code {
+		return "lang-btn is-active"
+	}
+	return "lang-btn"
+}
+
+// themeToggle — переключатель темы оформления (форма POST, работает без JS).
+// Активная тема помечена классом is-active.
+templ themeToggle() {
+	<form method="post" action="/settings/theme" class="theme-toggle">
+		<button type="submit" name="theme" value="dark" class={ themeBtnClass(ctx, "dark") }>{ i18n.T(ctx, "theme.dark") }</button>
+		<button type="submit" name="theme" value="light" class={ themeBtnClass(ctx, "light") }>{ i18n.T(ctx, "theme.light") }</button>
+		<button type="submit" name="theme" value="system" class={ themeBtnClass(ctx, "system") }>{ i18n.T(ctx, "theme.system") }</button>
+	</form>
+}
+
+func themeBtnClass(ctx context.Context, code string) string {
+	if theme.FromContext(ctx).Code == code {
+		return "theme-btn is-active"
+	}
+	return "theme-btn"
 }

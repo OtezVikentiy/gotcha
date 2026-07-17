@@ -140,6 +140,23 @@ func (s *Service) UpdateRegressionConfig(ctx context.Context, projectID int64, c
 	return nil
 }
 
+// DeleteProject удаляет проект. FK на projects (project_keys, monitors,
+// status_pages, maintenance_windows, issues, alert_rules и т.д.) объявлены
+// ON DELETE CASCADE в PG, поэтому зависимые записи снимаются автоматически и
+// осиротевших мониторов не остаётся. Телеметрию в ClickHouse каскад НЕ трогает —
+// её чистит вызывающий (см. telemetry.Purger в web-слое). Несуществующий
+// projectID → ErrNotFound.
+func (s *Service) DeleteProject(ctx context.Context, projectID int64) error {
+	tag, err := s.pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projectID)
+	if err != nil {
+		return fmt.Errorf("org: delete project: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // accessCondition: owner/admin видят все проекты организации,
 // member — проекты команд, в которых состоит.
 const accessCondition = `

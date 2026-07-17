@@ -177,6 +177,113 @@ func TestWorkerSendTimeoutDoesNotHang(t *testing.T) {
 	}
 }
 
+// flakyMarkSentOutbox — in-memory заглушка Outbox, отдающая ровно одну job
+// и умеющая уронить первый вызов MarkSent. Нужна, чтобы проверить сужение
+// окна at-least-once (ARCH-M2): после успешного Send воркер должен повторить
+// MarkSent при транзиентном сбое БД, а не оставлять job на повторную
+// доставку. Реальный notify.Outbox для этого не годится — его MarkSent
+// невозможно сделать флаки без модификации схемы.
+type flakyMarkSentOutbox struct {
+	mu            sync.Mutex
+	claimed       bool
+	markSentCalls int
+	sent          bool
+	retryCalls    int
+	failCalls     int
+}
+
+func (f *flakyMarkSentOutbox) Claim(ctx context.Context, limit int) ([]notify.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claimed {
+		return nil, nil
+	}
+	f.claimed = true
+	return []notify.Job{{
+		ID:        1,
+		ChannelID: 1,
+		Payload:   map[string]any{"channel_kind": "ok", "target": "dest"},
+		Attempts:  1,
+	}}, nil
+}
+
+func (f *flakyMarkSentOutbox) MarkSent(ctx context.Context, jobID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markSentCalls++
+	if f.markSentCalls == 1 {
+		return errors.New("transient mark sent failure")
+	}
+	f.sent = true
+	return nil
+}
+
+func (f *flakyMarkSentOutbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, next time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retryCalls++
+	return nil
+}
+
+func (f *flakyMarkSentOutbox) MarkFailed(ctx context.Context, jobID int64, sendErr error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failCalls++
+	return nil
+}
+
+func (f *flakyMarkSentOutbox) snapshot() (markSentCalls, retryCalls, failCalls int, sent bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.markSentCalls, f.retryCalls, f.failCalls, f.sent
+}
+
+// TestWorkerMarkSentRetriesTransientFailure: Send успешен, MarkSent падает
+// первый раз и проходит со второго. Воркер должен повторить MarkSent (>1
+// вызова) и в итоге пометить job отправленной, НЕ отправляя её на повторную
+// доставку (MarkRetry/MarkFailed не вызываются) — окно двойной доставки
+// сужено (ARCH-M2). Тест на заглушке, без testcontainers.
+func TestWorkerMarkSentRetriesTransientFailure(t *testing.T) {
+	ob := &flakyMarkSentOutbox{}
+	ok := &fakeSender{}
+	w := &notify.Worker{
+		Outbox:   ob,
+		Senders:  map[string]notify.Sender{"ok": ok},
+		Interval: 20 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runWorker(t, w, ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, _, _, sent := ob.snapshot()
+		if sent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for job to be marked sent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	markSentCalls, retryCalls, failCalls, sent := ob.snapshot()
+	if !sent {
+		t.Fatal("job not marked sent")
+	}
+	if markSentCalls < 2 {
+		t.Errorf("markSentCalls = %d, want >= 2 (retry after transient failure)", markSentCalls)
+	}
+	if retryCalls != 0 || failCalls != 0 {
+		t.Errorf("redelivery scheduled: retryCalls=%d failCalls=%d, want 0/0", retryCalls, failCalls)
+	}
+	if got := atomic.LoadInt32(&ok.calls); got != 1 {
+		t.Errorf("Send calls = %d, want 1 (no redelivery of a delivered message)", got)
+	}
+}
+
 func TestWorkerDeliversSuccessfulJob(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)

@@ -5,6 +5,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"io/fs"
@@ -14,15 +15,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -44,6 +49,18 @@ type Handler struct {
 	// быть пустым — тогда используется дефолт (см. secret()).
 	SecretKey string
 
+	// RegistrationMode — режим самостоятельной регистрации (PROD-B1):
+	// open|invite|closed. Проставляется из cfg.RegistrationMode в main.go.
+	// Пустая строка трактуется как «не open» (регистрация закрыта, кроме
+	// bootstrap первого пользователя). См. registerSubmit/registerPage.
+	RegistrationMode string
+
+	// RetentionDays — срок хранения телеметрии в днях (PROD-P6).
+	// Проставляется из cfg.RetentionDays в main.go. Показывается подписью
+	// «События хранятся N дней» на странице настроек проекта; 0 — срок не
+	// задан, подпись не рендерится.
+	RetentionDays int
+
 	// Alerts — CRUD правил/каналов алертинга (план 6, задача 5):
 	// /projects/{id}/alerts и EnsureDefaultRules при создании проекта. Не
 	// принимается конструктором New (как Auth/Org/Issues/Events), а
@@ -55,6 +72,14 @@ type Handler struct {
 	// Может быть nil (SMTP не настроен) — тогда приглашение только
 	// показывается ссылкой в UI, письмо не шлётся.
 	Email *notify.EmailSender
+	// EmailEnabled — настроен ли SMTP-транспорт (PROD-P2). Проставляется из
+	// main.go = emailSender.Configured(). Когда false, UI отражает
+	// недоступность почты: опция Email в форме канала алертов дизейблена с
+	// пояснением, а форма приглашений показывает предупреждение, что письмо не
+	// уйдёт и ссылку нужно скопировать вручную. Поле дублирует смысл
+	// h.Email!=nil && h.Email.Configured(), но вынесено отдельно, чтобы UI не
+	// зависел от того, проставлен ли Email в конкретном стенде.
+	EmailEnabled bool
 	// Outbox — очередь доставки алертов (план 6, задача 5, spec §7): страница
 	// /projects/{id}/alerts показывает таблицу failed-доставок
 	// (FailedForProject), чтобы отказы каналов были видны в UI, а не только в
@@ -147,11 +172,23 @@ type Handler struct {
 	// /projects/{id}/profile-regressions. Необязательное поле; nil → 404.
 	ProfileRegressions *profile.RegressionService
 
+	// Purger — best-effort очистка телеметрии проекта/субъекта из ClickHouse
+	// (PRIV-H2): PG-каскад не трогает CH, поэтому удаление проекта/данных
+	// субъекта в UI досылает удаление в CH через этот интерфейс.
+	// Проставляется отдельным полем (main.go: telemetry.NewPurger(ch)); nil —
+	// PG-удаление всё равно проходит, а CH-очистка пропускается с slog.Warn
+	// (стенды прочих web-тестов Purger не задают). См. ProjectPurger.
+	Purger ProjectPurger
+
 	// ssoProviders — процесс-локальный кеш per-org OIDC-провайдеров (этап 10,
 	// см. sso.go). Нулевое значение готово к работе.
 	ssoProviders ssoCache
 
 	loginLimiter *rateLimiter
+	// ipLimiter — глобальный per-IP лимитер входа/регистрации (SEC-L2): в
+	// дополнение к per-account (ip|email) ограничивает суммарный поток попыток с
+	// одного IP по РАЗНЫМ email, закрывая обход per-account лимита перебором.
+	ipLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
 	// требует инициализации в New.
@@ -169,15 +206,22 @@ func (h *Handler) localRegion() string {
 
 // New собирает Handler. BaseURL используется для sameOrigin-проверки POST-ов
 // и для выставления Secure-флага сессионной cookie.
+//
+// RegistrationMode по умолчанию "open" — это исторический контракт конструктора
+// (регистрация открыта). Продовая безопасность PROD-B1 живёт на уровне конфига:
+// main.go всегда проставляет webHandler.RegistrationMode = cfg.RegistrationMode
+// (GOTCHA_REGISTRATION, дефолт "invite"), переопределяя это значение.
 func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, events *event.Query, baseURL string) *Handler {
 	return &Handler{
-		Auth:         authSvc,
-		Org:          orgSvc,
-		Issues:       issueSvc,
-		Events:       events,
-		BaseURL:      baseURL,
-		Secure:       strings.HasPrefix(baseURL, "https://"),
-		loginLimiter: newRateLimiter(time.Now, 5, time.Minute),
+		Auth:             authSvc,
+		Org:              orgSvc,
+		Issues:           issueSvc,
+		Events:           events,
+		BaseURL:          baseURL,
+		Secure:           strings.HasPrefix(baseURL, "https://"),
+		RegistrationMode: "open",
+		loginLimiter:     newRateLimiter(time.Now, 5, time.Minute),
+		ipLimiter:        newRateLimiter(time.Now, 20, time.Minute),
 	}
 }
 
@@ -204,6 +248,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.oauthStart)
 	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.oauthCallback)
 
+	// Переключатель языка (задача 6): доступен и анониму — например, на
+	// странице логина, до создания сессии.
+	inner.HandleFunc("POST /settings/locale", h.localeSwitch)
+
+	// Переключатель темы оформления: доступен и анониму (см. локаль выше).
+	inner.HandleFunc("POST /settings/theme", h.themeSwitch)
+
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic("web: embedded static assets missing: " + err.Error())
@@ -221,6 +272,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	inner.Handle("GET /onboarding", h.requireUser(http.HandlerFunc(h.onboardingPage)))
 	inner.Handle("POST /onboarding", h.requireUser(http.HandlerFunc(h.onboardingSubmit)))
+	inner.Handle("GET /docs", h.requireUser(http.HandlerFunc(h.docsIndex)))
+	inner.Handle("GET /docs/{slug}", h.requireUser(http.HandlerFunc(h.docsPage)))
 	inner.Handle("GET /projects", h.requireUser(http.HandlerFunc(h.projectsList)))
 	inner.Handle("GET /projects/{id}/setup", h.requireUser(http.HandlerFunc(h.projectSetup)))
 	inner.Handle("GET /projects/{id}/issues", h.requireUser(http.HandlerFunc(h.issuesList)))
@@ -232,9 +285,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /orgs/{id}/settings", h.requireUser(http.HandlerFunc(h.orgSettingsPage)))
 	inner.Handle("POST /orgs/{id}/settings/role", h.requireUser(http.HandlerFunc(h.orgSettingsRole)))
 	inner.Handle("POST /orgs/{id}/settings/remove", h.requireUser(http.HandlerFunc(h.orgSettingsRemove)))
+	inner.Handle("POST /orgs/{id}/settings/leave", h.requireUser(http.HandlerFunc(h.orgSettingsLeave)))
 	inner.Handle("POST /orgs/{id}/settings/invite", h.requireUser(http.HandlerFunc(h.orgSettingsInvite)))
 	inner.Handle("POST /orgs/{id}/settings/sso", h.requireUser(http.HandlerFunc(h.orgSettingsSSO)))
 	inner.Handle("POST /orgs/{id}/settings/sso/delete", h.requireUser(http.HandlerFunc(h.orgSettingsSSODelete)))
+	// Удаление организации и удаление ПДн субъекта (PRIV-H2) — owner-only.
+	inner.Handle("POST /orgs/{id}/settings/delete", h.requireUser(http.HandlerFunc(h.orgSettingsDelete)))
+	inner.Handle("POST /orgs/{id}/settings/purge-subject", h.requireUser(http.HandlerFunc(h.orgSettingsPurgeSubject)))
+	// Выгрузка ПДн субъекта (право на доступ, 152-ФЗ ст. 14, RA-L11) — owner-only.
+	inner.Handle("POST /orgs/{id}/settings/export-subject", h.requireUser(http.HandlerFunc(h.orgSettingsExportSubject)))
 	inner.Handle("GET /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptPage)))
 	inner.Handle("POST /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptSubmit)))
 
@@ -270,8 +329,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/settings/keys/revoke", h.requireUser(http.HandlerFunc(h.projectSettingsKeyRevoke)))
 	inner.Handle("POST /projects/{id}/settings/performance", h.requireUser(http.HandlerFunc(h.projectSettingsPerformance)))
 	inner.Handle("POST /projects/{id}/settings/regressions", h.requireUser(http.HandlerFunc(h.projectSettingsRegressions)))
+	// Удаление проекта (PRIV-H2) — owner-only; после PG-удаления досылает
+	// CH-очистку через h.Purger (best-effort).
+	inner.Handle("POST /projects/{id}/settings/delete", h.requireUser(http.HandlerFunc(h.projectSettingsDelete)))
 
 	inner.Handle("GET /projects/{id}/alerts", h.requireUser(http.HandlerFunc(h.alertsPage)))
+	inner.Handle("GET /projects/{id}/alerts/deliveries", h.requireUser(http.HandlerFunc(h.alertDeliveriesPage)))
 	inner.Handle("POST /projects/{id}/alerts/rules", h.requireUser(http.HandlerFunc(h.alertsRulesSave)))
 	inner.Handle("POST /projects/{id}/alerts/channels", h.requireUser(http.HandlerFunc(h.alertsChannelCreate)))
 	inner.Handle("POST /projects/{id}/alerts/channels/delete", h.requireUser(http.HandlerFunc(h.alertsChannelDelete)))
@@ -383,10 +446,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Fallback: любой путь, не покрытый паттернами выше, — стилизованная 404.
 	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 	})
 
-	mux.Handle("/", h.securityHeaders(inner))
+	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withShell(inner)))))
 }
 
 // cacheControl проставляет Cache-Control на статику.
@@ -433,6 +496,32 @@ func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int
 	_ = templates.ErrorPage(status, msg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
+// notFound — стилизованная страница 404 вместо голого http.NotFound (которое
+// отдаёт неоформленный текст «404 page not found» на белом фоне). Используется
+// во всех обработчиках вместо http.NotFound и как catch-all для несуществующих
+// маршрутов (см. inner.Handle("/", …) в New).
+func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
+	h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+}
+
+// renderConfirm отдаёт общую страницу подтверждения деструктивного действия
+// (templates.ConfirmPage) вместо самого действия — двухшаговый POST с
+// confirmed=yes (см. её комментарий): под CSP default-src 'self' без
+// unsafe-inline инлайновые onsubmit/onclick с confirm() не исполняются,
+// поэтому подтверждение обязано быть server-side. titleKey/messageKey/
+// confirmLabelKey — i18n-ключи (переводятся здесь, а не в шаблоне, чтобы
+// вызывающий обработчик оставался единственным местом, знающим о действии);
+// action — URL того же обработчика (форма подтверждения шлёт POST туда же);
+// hidden — поля исходного POST, которые нужно сохранить до подтверждённого
+// повтора (например key_id).
+func (h *Handler) renderConfirm(w http.ResponseWriter, r *http.Request, titleKey, messageKey, confirmLabelKey, cancelHref, action string, hidden []templates.HiddenField) {
+	title := i18n.T(r.Context(), titleKey)
+	message := i18n.T(r.Context(), messageKey)
+	confirmLabel := i18n.T(r.Context(), confirmLabelKey)
+	w.WriteHeader(http.StatusOK)
+	_ = templates.ConfirmPage(title, message, confirmLabel, cancelHref, templ.SafeURL(action), hidden, h.currentEmail(r)).Render(r.Context(), w)
+}
+
 // index — GET /{$}: без доступных проектов ведёт себя по-разному в
 // зависимости от того, есть ли у юзера организация. Юзер вовсе без
 // организаций уводится на /onboarding — ему ещё только предстоит завести
@@ -450,13 +539,13 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if len(projects) == 0 {
 		orgs, err := h.Org.OrgsOf(r.Context(), uid)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		if len(orgs) > 0 {
@@ -505,6 +594,20 @@ func (h *Handler) requireUser(next http.Handler) http.Handler {
 	})
 }
 
+// ProjectPurger — узкий интерфейс CH-очистки, которым владеет web-слой
+// (telemetry.Purger ему удовлетворяет). Вынесен в web, чтобы тесты могли
+// подменять его фейком и считать вызовы, не поднимая ClickHouse. Оба метода
+// best-effort: PG-удаление первично, ошибка CH-очистки логируется, но
+// пользовательскую операцию не роняет.
+type ProjectPurger interface {
+	PurgeProject(ctx context.Context, projectID int64) error
+	PurgeSubject(ctx context.Context, projectID int64, sub telemetry.Subject) error
+	// ExportSubject — выгрузка всех ПДн субъекта в рамках проекта (право
+	// субъекта на доступ, 152-ФЗ ст. 14). В отличие от Purge*-методов не
+	// best-effort: результат отдаётся пользователю, ошибку нельзя проглотить.
+	ExportSubject(ctx context.Context, projectID int64, sub telemetry.Subject) (telemetry.SubjectExport, error)
+}
+
 // requireOrgRole проверяет роль userID в организации orgID: доступ к
 // настройкам организации (участники, роли, приглашения) есть только у
 // owner/admin. Любая другая роль или отсутствие членства (org.ErrNotMember) —
@@ -514,14 +617,14 @@ func (h *Handler) requireOrgRole(w http.ResponseWriter, r *http.Request, orgID, 
 	role, err := h.Org.Role(r.Context(), orgID, userID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotMember) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return "", false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return "", false
 	}
 	if role != org.RoleOwner && role != org.RoleAdmin {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return "", false
 	}
 	return role, true

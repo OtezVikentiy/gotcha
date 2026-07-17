@@ -33,6 +33,11 @@ type Runner struct {
 	Region      string
 	Concurrency int
 
+	// AllowPrivateTargets отключает SSRF-фильтр приватных целей в HTTP/TCP
+	// чекерах (прокидывается в CheckerFor). false (по умолчанию) — фильтр
+	// включён: чекеры режут loopback/приватные/link-local адреса.
+	AllowPrivateTargets bool
+
 	ScheduleEvery time.Duration
 	LeaseEvery    time.Duration
 
@@ -86,7 +91,7 @@ func (r *Runner) checkerFor(kind Kind) (Checker, error) {
 	if c, ok := r.Checkers[kind]; ok {
 		return c, nil
 	}
-	return CheckerFor(kind)
+	return CheckerFor(kind, r.AllowPrivateTargets)
 }
 
 // Run — цикл планировщика+исполнителя; запускать горутиной. Завершается,

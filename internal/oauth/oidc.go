@@ -133,8 +133,14 @@ func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, no
 	if !audMatches(claims["aud"], o.cfg.ClientID) {
 		return Identity{}, fmt.Errorf("%w: aud mismatch", ErrBadToken)
 	}
-	if exp, ok := claims["exp"].(float64); !ok || nowUnix() >= int64(exp) {
+	if exp, ok := claims["exp"].(float64); !ok || nowUnix() >= int64(exp)+clockSkewLeeway {
 		return Identity{}, fmt.Errorf("%w: expired", ErrBadToken)
+	}
+	// nbf (not before), если задан — с тем же допуском на дрейф часов.
+	if nbfRaw, ok := claims["nbf"]; ok {
+		if nbf, ok := nbfRaw.(float64); ok && nowUnix()+clockSkewLeeway < int64(nbf) {
+			return Identity{}, fmt.Errorf("%w: token not yet valid (nbf)", ErrBadToken)
+		}
 	}
 	if n, _ := claims["nonce"].(string); n != nonce {
 		return Identity{}, fmt.Errorf("%w: nonce mismatch", ErrBadToken)

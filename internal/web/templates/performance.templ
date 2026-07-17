@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -102,60 +103,60 @@ templ perfEnvOption(value, label, selected string) {
 // total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
 // если total больше, показывается пометка об усечении (как у waterfall).
 templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, userEmail string) {
-	@layout("Performance", userEmail) {
+	@layout(i18n.T(ctx, "perf.endpoints"), userEmail) {
 		<div class="performance">
-			<h1>Performance</h1>
-			<p><a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> · <a href={ templ.URL(regressionsPath(projectID)) }>Regressions</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a> · <a href={ templ.URL(perfIssuesPath(projectID)) }>Performance Issues</a></p>
+			<h1>{ i18n.T(ctx, "perf.endpoints") }</h1>
+			@helpPanel("performance", "performance")
 			<form method="get" action={ templ.URL(performancePath(projectID)) } class="performance-filters">
-				<select name="environment">
-					@perfEnvOption("", "Все окружения", filter.Environment)
+				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
+					@perfEnvOption("", i18n.T(ctx, "perf.filter.env_all"), filter.Environment)
 					for _, env := range environments {
 						@perfEnvOption(env, env, filter.Environment)
 					}
 				</select>
-				<select name="period">
-					@perfPeriodOption("1h", "1 час", filter.Period)
-					@perfPeriodOption("24h", "24 часа", filter.Period)
-					@perfPeriodOption("7d", "7 дней", filter.Period)
-					@perfPeriodOption("30d", "30 дней", filter.Period)
+				<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
+					@perfPeriodOption("1h", i18n.T(ctx, "perf.filter.period_1h"), filter.Period)
+					@perfPeriodOption("24h", i18n.T(ctx, "perf.filter.period_24h"), filter.Period)
+					@perfPeriodOption("7d", i18n.T(ctx, "perf.filter.period_7d"), filter.Period)
+					@perfPeriodOption("30d", i18n.T(ctx, "perf.filter.period_30d"), filter.Period)
 				</select>
 				if filter.Sort != "" {
 					<input type="hidden" name="sort" value={ filter.Sort }/>
 				}
-				<button type="submit">Применить</button>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
 			if len(rows) == 0 {
-				<p class="empty">no transaction data yet — включите трейсинг и поднимите traces_sample_rate в настройках проекта, чтобы здесь появились эндпойнты.</p>
+				@emptyState("zap", "perf.empty.title", "perf.empty.body", "perf.empty.cta", "/docs/performance")
 			} else {
-				<p class="apdex-note">Apdex T = { strconv.Itoa(apdexT) }ms</p>
+				<p class="apdex-note">{ i18n.Tf(ctx, "perf.apdex_note", "t", strconv.Itoa(apdexT)) }</p>
 				if total > len(rows) {
-					<p class="perf-cap-note">Показаны первые { strconv.Itoa(len(rows)) } из { strconv.Itoa(total) } эндпойнтов (усечено).</p>
+					<p class="perf-cap-note">{ i18n.Tf(ctx, "perf.truncated", "shown", strconv.Itoa(len(rows)), "total", strconv.Itoa(total)) }</p>
 				}
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>Endpoint</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>Throughput</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>p50</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>p75</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>p95</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>p99</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>Failure</a></th>
-							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>Apdex</a></th>
-							<th>p95 (period)</th>
+							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.endpoint") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>{ i18n.T(ctx, "perf.throughput") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>{ i18n.T(ctx, "perf.p50") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>{ i18n.T(ctx, "perf.p75") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>{ i18n.T(ctx, "perf.p95") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>{ i18n.T(ctx, "perf.p99") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>{ i18n.T(ctx, "perf.failure") }</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>{ i18n.T(ctx, "perf.apdex") }</a></th>
+							<th>{ i18n.T(ctx, "perf.p95_period") }</th>
 						</tr>
 					</thead>
 					<tbody>
 						for _, row := range rows {
 							<tr>
 								<td><a href={ templ.URL(endpointPath(projectID, row.Stat.Transaction)) }>{ row.Stat.Transaction }</a></td>
-								<td>{ formatThroughput(row.Stat.Throughput) }</td>
-								<td>{ formatDurationUS(row.Stat.P50) }</td>
-								<td>{ formatDurationUS(row.Stat.P75) }</td>
-								<td>{ formatDurationUS(row.Stat.P95) }</td>
-								<td>{ formatDurationUS(row.Stat.P99) }</td>
-								<td>{ formatFailureRate(row.Stat.FailureRate) }</td>
-								<td>{ formatApdex(row.Stat.ApdexScore) }</td>
+								<td class="num">{ formatThroughput(row.Stat.Throughput) }</td>
+								<td class="num">{ formatDurationUS(row.Stat.P50) }</td>
+								<td class="num">{ formatDurationUS(row.Stat.P75) }</td>
+								<td class="num">{ formatDurationUS(row.Stat.P95) }</td>
+								<td class="num">{ formatDurationUS(row.Stat.P99) }</td>
+								<td class="num">{ formatFailureRate(row.Stat.FailureRate) }</td>
+								<td class="num">{ formatApdex(row.Stat.ApdexScore) }</td>
 								<td>@row.Sparkline</td>
 							</tr>
 						}

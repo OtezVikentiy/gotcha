@@ -122,6 +122,7 @@ func newStack(t *testing.T) *stack {
 	profiles := &fakeProfileSink{}
 	h.Profiles = profiles
 	h.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
+	h.DropCounter = orgSvc
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)

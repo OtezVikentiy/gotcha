@@ -26,6 +26,12 @@ var reEmail = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 // Service — аутентификация: пользователи и сессии.
 type Service struct {
 	pool *pgxpool.Pool
+
+	// Secure — работает ли инстанс под HTTPS (BaseURL начинается с https://).
+	// RA-L1: на secure=true RequireUser читает сессию ТОЛЬКО из префиксной
+	// __Host--cookie. Проставляется из main.go после NewService; дефолт false
+	// (читать оба имени) сохраняет обратную совместимость.
+	Secure bool
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -45,18 +51,65 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 	if err != nil {
 		return 0, err
 	}
+	// PROD-B1: первый пользователь инстанса становится инстанс-админом.
+	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS; при
+	// гоночной первой регистрации вторую вставку с true отсечёт частичный
+	// уникальный индекс one_instance_admin.
 	var id int64
 	err = s.pool.QueryRow(ctx,
-		"INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
+		`INSERT INTO users (email, password_hash, is_instance_admin)
+		 VALUES ($1, $2, NOT EXISTS (SELECT 1 FROM users))
+		 RETURNING id`,
 		email, hash).Scan(&id)
+	// RA-L6: 23505 приходит от двух разных индексов. Различаем по имени
+	// констрейнта: unique(email) → email действительно занят; one_instance_admin
+	// → мы проиграли гонку за первого админа (NOT EXISTS увидел пустую таблицу,
+	// но другой запрос уже вставил админа). Во втором случае email свободен —
+	// повторяем вставку уже без претензии на админский флаг.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgErr.ConstraintName == "one_instance_admin" {
+			err = s.pool.QueryRow(ctx,
+				`INSERT INTO users (email, password_hash, is_instance_admin)
+				 VALUES ($1, $2, false)
+				 RETURNING id`,
+				email, hash).Scan(&id)
+			// После ретрая 23505 может быть уже только по email.
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return 0, ErrEmailTaken
+			}
+			if err != nil {
+				return 0, fmt.Errorf("auth: register: %w", err)
+			}
+			return id, nil
+		}
 		return 0, ErrEmailTaken
 	}
 	if err != nil {
 		return 0, fmt.Errorf("auth: register: %w", err)
 	}
 	return id, nil
+}
+
+// UserCount возвращает число пользователей инстанса. Используется гейтингом
+// регистрации (PROD-B1) для bootstrap первого админа.
+func (s *Service) UserCount(ctx context.Context) (int64, error) {
+	var n int64
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&n); err != nil {
+		return 0, fmt.Errorf("auth: user count: %w", err)
+	}
+	return n, nil
+}
+
+// UserIsInstanceAdmin сообщает, является ли пользователь админом инстанса.
+func (s *Service) UserIsInstanceAdmin(ctx context.Context, userID int64) (bool, error) {
+	var admin bool
+	err := s.pool.QueryRow(ctx,
+		"SELECT is_instance_admin FROM users WHERE id = $1", userID).Scan(&admin)
+	if err != nil {
+		return false, fmt.Errorf("auth: instance admin flag: %w", err)
+	}
+	return admin, nil
 }
 
 // Authenticate возвращает id пользователя по email+паролю.

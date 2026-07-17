@@ -8,7 +8,14 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
 )
+
+// poisonThreshold — сколько подряд-фейлов вставки одного и того же головного
+// батча терпим (транзиентные сбои CH), прежде чем перейти к изоляции ядовитых
+// рядов бинарным дроблением (chbatch.IsolatePoison).
+const poisonThreshold = 3
 
 // Conn — минимум ClickHouse-интерфейса, нужный батчеру.
 type Conn interface {
@@ -24,6 +31,7 @@ type Batcher struct {
 	mu          sync.Mutex
 	buf         []Event
 	dropped     int64
+	failStreak  int
 	lastDropLog time.Time
 
 	maxBuf    int
@@ -53,17 +61,21 @@ func NewBatcher(conn Conn) *Batcher {
 func (b *Batcher) Add(ev Event) {
 	b.mu.Lock()
 	logDrop := false
-	if len(b.buf) >= b.maxBuf {
-		b.buf = append(b.buf[:0], b.buf[1:]...)
-		b.dropped++
-		if time.Since(b.lastDropLog) > b.interval {
-			b.lastDropLog = time.Now()
-			logDrop = true
-		}
+	// Bulk-drop: считаем избыток над maxBuf с учётом добавляемого события и
+	// сдвигаем разом (O(1) сдвигов на Add вместо O(n) поштучных).
+	if drop := len(b.buf) + 1 - b.maxBuf; drop > 0 {
+		b.buf = append(b.buf[:0], b.buf[drop:]...)
+		b.dropped += int64(drop)
+		logDrop = true
 	}
-	dropped := b.dropped
 	b.buf = append(b.buf, ev)
+	dropped := b.dropped
 	full := len(b.buf) >= b.batchSize
+	if logDrop && time.Since(b.lastDropLog) > b.interval {
+		b.lastDropLog = time.Now()
+	} else {
+		logDrop = false
+	}
 	b.mu.Unlock()
 	if logDrop {
 		slog.Warn("event buffer full, dropping oldest", "dropped_total", dropped)
@@ -165,6 +177,41 @@ func (b *Batcher) flush(ctx context.Context) {
 	b.mu.Unlock()
 
 	if err := b.insert(ctx, batch); err != nil {
+		// Классифицируем ошибку: data-level «яд» изолируем сразу, транзиент
+		// (сеть/ctx) терпим до порога и лишь потом эскалируем в изоляцию, где
+		// транзиентные ряды вернутся в буфер без потерь.
+		poison := chbatch.IsServerDataError(err)
+		b.mu.Lock()
+		b.failStreak++
+		streak := b.failStreak
+		b.mu.Unlock()
+
+		if poison || streak >= poisonThreshold {
+			// Изолируем: ядовитые ряды дропнутся, хорошие вставятся, транзиентные
+			// вернутся в unresolved. Дополняет per-value UUID-фолбэк в insert (тот
+			// чинит только битый event_id), а не заменяет его.
+			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, b.insert, chbatch.IsServerDataError)
+			b.mu.Lock()
+			b.dropped += int64(dropped)
+			b.failStreak = 0
+			var over int
+			if len(unresolved) > 0 {
+				b.buf = append(unresolved, b.buf...)
+				if over = len(b.buf) - b.maxBuf; over > 0 {
+					b.buf = append(b.buf[:0], b.buf[over:]...)
+					b.dropped += int64(over)
+				} else {
+					over = 0
+				}
+			}
+			b.mu.Unlock()
+			if dropped > 0 || over > 0 {
+				slog.Warn("event batch: isolated poison rows",
+					"dropped", dropped, "unresolved", len(unresolved), "overflow", over, "batch", len(batch))
+			}
+			return
+		}
+
 		b.mu.Lock()
 		b.buf = append(batch, b.buf...)
 		var over int
@@ -177,7 +224,12 @@ func (b *Batcher) flush(ctx context.Context) {
 		b.mu.Unlock()
 		slog.Warn("event batch insert failed, will retry",
 			"events", len(batch), "error", err, "dropped", over)
+		return
 	}
+	// Успех — сбрасываем счётчик подряд-фейлов.
+	b.mu.Lock()
+	b.failStreak = 0
+	b.mu.Unlock()
 }
 
 func (b *Batcher) insert(ctx context.Context, events []Event) error {

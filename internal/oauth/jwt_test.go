@@ -60,6 +60,18 @@ func TestVerifyRS256WrongKeyFails(t *testing.T) {
 	}
 }
 
+func TestVerifyRS256RejectsWeakRSAKey(t *testing.T) {
+	// SEC-L3: ключ < 2048 бит отклоняется, даже если подпись математически верна.
+	weak, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("gen weak key: %v", err)
+	}
+	tok := signRS256(t, weak, "k1", map[string]any{"sub": "u1"})
+	if _, err := verifyRS256(tok, []jwk{jwkFromKey(weak, "k1")}); !errors.Is(err, ErrBadToken) {
+		t.Fatalf("verify weak key = %v, want ErrBadToken", err)
+	}
+}
+
 func TestVerifyRS256RejectsNoneAlg(t *testing.T) {
 	// alg=none → ErrUnsupportedAlg (защита от alg-downgrade).
 	enc := func(v any) string {

@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -34,14 +36,14 @@ func alertsChannelsDeletePath(projectID int64) string {
 
 // alertsErrorMessage переводит доменные ошибки alert.Service в
 // человекочитаемое сообщение для 422-страницы алертов.
-func alertsErrorMessage(err error) string {
+func alertsErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, alert.ErrInvalidRule):
-		return "недопустимое правило: у spike обязательны threshold и window (> 0), throttle не может быть отрицательным"
+		return i18n.T(ctx, "error.alerts.invalid_rule")
 	case errors.Is(err, alert.ErrInvalidChannel):
-		return "недопустимый канал: проверьте адрес/URL и обязательные поля выбранного типа"
+		return i18n.T(ctx, "error.alerts.invalid_channel")
 	default:
-		return "не удалось выполнить действие"
+		return i18n.T(ctx, "error.action_failed")
 	}
 }
 
@@ -74,7 +76,7 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -90,27 +92,48 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string) {
 	rules, err := h.Alerts.Rules(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	channels, err := h.Alerts.Channels(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	w.WriteHeader(status)
+	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// alertDeliveriesPage — GET /projects/{id}/alerts/deliveries: лог последних
+// неудачных доставок уведомлений (spec §7), вынесен из основной страницы
+// алертов на отдельную страницу (UI-фидбек: секция делала страницу алертов
+// слишком длинной). Доступ — тот же guard, что и у alertsPage.
+func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
 	// Outbox может быть не проставлен (например, в узких тестовых стендах,
-	// не относящихся к алертам) — тогда просто не показываем секцию
-	// failed-доставок, не роняя страницу.
+	// не относящихся к алертам) — тогда просто не показываем ни одной
+	// failed-записи, не роняя страницу.
 	var failed []notify.FailedJob
+	var err error
 	if h.Outbox != nil {
 		failed, err = h.Outbox.FailedForProject(r.Context(), projectID, maxFailedDeliveries)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 	}
-	w.WriteHeader(status)
-	_ = templates.Alerts(projectID, rules, channels, failed, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.AlertDeliveries(projectID, failed, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // alertsRulesSave — POST /projects/{id}/alerts/rules: одна форма сохраняет
@@ -133,7 +156,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -169,7 +192,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rule := range rules {
 		if _, err := h.Alerts.UpsertRule(r.Context(), rule); err != nil {
-			h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, alertsErrorMessage(err))
+			h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, alertsErrorMessage(r.Context(), err))
 			return
 		}
 	}
@@ -189,7 +212,7 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -208,7 +231,7 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 		Secret:    r.FormValue("secret"),
 	}
 	if _, err := h.Alerts.CreateChannel(r.Context(), c); err != nil {
-		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, alertsErrorMessage(err))
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, alertsErrorMessage(r.Context(), err))
 		return
 	}
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
@@ -238,7 +261,7 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -256,15 +279,15 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	channels, err := h.Alerts.Channels(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !channelBelongsToProject(channels, channelID) {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	if err := h.Alerts.DeleteChannel(r.Context(), channelID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)

@@ -1,13 +1,16 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -35,6 +38,10 @@ func projectSettingsPerformancePath(projectID int64) string {
 
 func projectSettingsRegressionsPath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/regressions"
+}
+
+func projectSettingsDeletePath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/delete"
 }
 
 // perfFormFromProject строит значения формы «Performance» из сохранённого
@@ -91,10 +98,10 @@ func formatRegressionFloor(v float64) string {
 
 // parsePathProjectID достаёт projectID из {id} пути /projects/{id}/settings*;
 // на невалидный id — 404 (тот же принцип, что и у parsePathOrgID).
-func parsePathProjectID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+func (h *Handler) parsePathProjectID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return 0, false
 	}
 	return projectID, true
@@ -107,10 +114,10 @@ func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, pro
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return 0, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return 0, false
 	}
 	if _, ok := h.requireOrgRole(w, r, orgID, userID); !ok {
@@ -119,12 +126,43 @@ func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, pro
 	return orgID, true
 }
 
-func projectSettingsErrorMessage(err error) string {
+// requireProjectOwner — как requireProjectRole, но owner-only (удаление
+// проекта — деструктивное действие, доступное только владельцу организации,
+// та же граница, что requireOrgOwner у SSO/удаления орга). Несуществующий
+// проект и недостаточная роль дают одну и ту же стилизованную 404.
+func (h *Handler) requireProjectOwner(w http.ResponseWriter, r *http.Request, projectID, userID int64) bool {
+	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
+	if err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return false
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return false
+	}
+	return h.requireOrgOwner(w, r, orgID, userID)
+}
+
+// purgeProject досылает удаление телеметрии проекта в ClickHouse после
+// PG-удаления. Best-effort: PG-каскад уже отработал, поэтому ошибка (или
+// незаданный Purger) не роняет операцию — только логируется, чтобы осиротевшую
+// телеметрию можно было добить повторно.
+func (h *Handler) purgeProject(ctx context.Context, projectID int64) {
+	if h.Purger == nil {
+		slog.Warn("purgeProject: Purger not configured, ClickHouse telemetry left in place", "project_id", projectID)
+		return
+	}
+	if err := h.Purger.PurgeProject(ctx, projectID); err != nil {
+		slog.Error("purgeProject: failed to purge ClickHouse telemetry", "project_id", projectID, "err", err)
+	}
+}
+
+func projectSettingsErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, org.ErrInvalidName):
-		return "имя проекта не должно быть пустым"
+		return i18n.T(ctx, "error.project.invalid_name")
 	default:
-		return "не удалось выполнить действие"
+		return i18n.T(ctx, "error.action_failed")
 	}
 }
 
@@ -149,7 +187,7 @@ func (h *Handler) projectSettingsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -175,17 +213,17 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 	// (findProject определён в onboarding.go, тот же пакет).
 	projects, err := h.Org.ProjectsOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	project, ok := findProject(projects, projectID)
 	if !ok {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	var dsn string
@@ -201,7 +239,7 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		reg = *regOverride
 	}
 	w.WriteHeader(status)
-	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r), perf, reg).Render(r.Context(), w)
+	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays).Render(r.Context(), w)
 }
 
 // projectSettingsRename — POST /projects/{id}/settings/rename: name.
@@ -216,7 +254,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -230,7 +268,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 	}
 	name := r.FormValue("name")
 	if err := h.Org.RenameProject(r.Context(), projectID, name); err != nil {
-		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, projectSettingsErrorMessage(err), nil, nil)
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, projectSettingsErrorMessage(r.Context(), err), nil, nil)
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -248,7 +286,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -256,7 +294,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if _, err := h.Org.CreateKey(r.Context(), projectID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -275,7 +313,7 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -293,15 +331,24 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !keyBelongsToProject(keys, keyID) {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		return
+	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline onclick="confirm()" — see renderConfirm): без
+	// confirmed=yes показываем страницу подтверждения вместо отзыва ключа.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.key_revoke.message", "project.settings.keys.revoke",
+			projectSettingsPath(projectID), projectSettingsKeysRevokePath(projectID),
+			[]templates.HiddenField{{Name: "key_id", Value: strconv.FormatInt(keyID, 10)}})
 		return
 	}
 	if err := h.Org.RevokeKey(r.Context(), keyID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -324,7 +371,7 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -379,11 +426,11 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 		HTTPFloodMin:       httpFloodMin,
 	})
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if err := h.Org.UpdatePerfSettings(r.Context(), projectID, sampleRate, int32(apdexMS), string(cfgJSON)); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -418,7 +465,7 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -495,14 +542,56 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		Enabled: submitted.Enabled,
 	})
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if err := h.Org.UpdateRegressionConfig(r.Context(), projectID, string(cfgJSON)); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
+}
+
+// projectSettingsDelete — POST /projects/{id}/settings/delete: owner-only
+// удаление проекта. Сначала PG-удаление (org.DeleteProject, FK ON DELETE
+// CASCADE снимает ключи/мониторы/issues и т.д.), затем best-effort очистка
+// телеметрии проекта из ClickHouse (h.purgeProject). Успех → 303 на /projects
+// (страница проекта больше не существует).
+func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if !h.requireProjectOwner(w, r, projectID, uid) {
+		return
+	}
+	// Двухшаговое подтверждение (см. projectSettingsKeyRevoke/renderConfirm):
+	// без confirmed=yes показываем страницу подтверждения вместо удаления
+	// проекта.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
+			projectSettingsPath(projectID), projectSettingsDeletePath(projectID), nil)
+		return
+	}
+	if err := h.Org.DeleteProject(r.Context(), projectID); err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	h.purgeProject(r.Context(), projectID)
+	http.Redirect(w, r, "/projects", http.StatusSeeOther)
 }
 
 // parseRegressionPercent парсит процент (шаг 1) и возвращает долю: «25» → 0.25.

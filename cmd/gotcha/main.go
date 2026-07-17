@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
@@ -38,7 +40,12 @@ func run() error {
 		return err
 	}
 	if cfg.SecretKey == "insecure-dev-secret" {
-		slog.Warn("GOTCHA_SECRET_KEY is not set, using insecure dev default")
+		slog.Warn("GOTCHA_SECRET_KEY is not set — using insecure dev default (fine for localhost only)")
+	}
+	// SEC-M3: сессионная cookie без Secure на не-loopback HTTP уходит открытым
+	// текстом (сниффинг/replay). Для продукта мониторинга дефолт должен толкать к TLS.
+	if !isLocalBaseURL(cfg.BaseURL) && !strings.HasPrefix(cfg.BaseURL, "https://") {
+		slog.Warn("GOTCHA_BASE_URL is non-local plain HTTP — session cookies ride unencrypted; enable TLS (https)")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -50,9 +57,10 @@ func run() error {
 	// пока не придёт сигнал.
 	if cfg.Mode == "probe" {
 		probe := &uptime.ProbeClient{
-			ServerURL:   cfg.ServerURL,
-			Token:       cfg.ProbeToken,
-			Concurrency: cfg.UptimeConcurrency,
+			ServerURL:           cfg.ServerURL,
+			Token:               cfg.ProbeToken,
+			Concurrency:         cfg.UptimeConcurrency,
+			AllowPrivateTargets: cfg.SSRFAllowPrivate,
 		}
 		probe.Run(ctx)
 		slog.Info("probe stopped")
@@ -75,11 +83,25 @@ func run() error {
 	// context) — процесс завершится после текущего шага.
 	slog.Info("applying migrations")
 	err = db.WithMigrationLock(ctx, pg, func() error {
-		if err := db.MigratePG(cfg.PostgresDSN); err != nil {
-			return err
-		}
-		if err := db.MigrateCH(cfg.ClickHouseDSN); err != nil {
-			return err
+		// ARCH-M3: авто-миграцию можно отключить (GOTCHA_AUTO_MIGRATE=false) и
+		// выносить в отдельный init-job, чтобы app-реплики не клинили все разом.
+		if cfg.AutoMigrate {
+			if err := db.MigratePG(cfg.PostgresDSN); err != nil {
+				return err
+			}
+			if err := db.MigrateCH(cfg.ClickHouseDSN); err != nil {
+				return err
+			}
+		} else {
+			// RA-8: без авто-миграции app не должен стартовать на отставшей схеме
+			// (иначе insert падает на каждой вставке → тихий дроп телеметрии).
+			// Проверяем и PG, и CH (audit-3: CH-схема тоже нуждается в гейте).
+			if err := db.CheckSchemaCurrent(cfg.PostgresDSN); err != nil {
+				return err
+			}
+			if err := db.CheckSchemaCurrentCH(cfg.ClickHouseDSN); err != nil {
+				return err
+			}
 		}
 		if err := db.ApplyRetention(ctx, ch, cfg.RetentionDays); err != nil {
 			return err
@@ -90,7 +112,15 @@ func run() error {
 		if err := db.ApplyMetricRetention(ctx, ch, cfg.MetricRetentionDays); err != nil {
 			return err
 		}
-		return db.ApplyProfileRetention(ctx, ch, cfg.ProfileRetentionDays)
+		if err := db.ApplyProfileRetention(ctx, ch, cfg.ProfileRetentionDays); err != nil {
+			return err
+		}
+		if err := db.ApplyTransactionRetention(ctx, ch, cfg.RetentionDays); err != nil {
+			return err
+		}
+		// RA-L3 (audit-3): web_vitals_5m тоже должен получать TTL, иначе inner-таблица
+		// MV растёт вечно (имя транзакции может нести URL — 152-ФЗ).
+		return db.ApplyWebVitalsRetention(ctx, ch, cfg.RetentionDays)
 	})
 	if err != nil {
 		return err
@@ -113,6 +143,8 @@ func run() error {
 	var outbox *notify.Outbox
 	if cfg.Mode == "ingest" || cfg.Mode == "web" || cfg.Mode == "all" {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
+		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+		orgSvc.SetSecretKey(cfg.SecretKey)
 		issueSvc = issue.NewService(pg)
 		alertSvc = alert.NewService(pg)
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
@@ -162,11 +194,12 @@ func run() error {
 			})
 		}
 		uptimeNotifier = &uptime.OutboxNotifier{
-			Alerts:       alertSvc,
-			Uptime:       uptimeSvc,
-			Outbox:       outbox,
-			BaseURL:      cfg.BaseURL,
-			EmailEnabled: emailSender.Configured(),
+			Alerts:          alertSvc,
+			Uptime:          uptimeSvc,
+			Outbox:          outbox,
+			BaseURL:         cfg.BaseURL,
+			EmailEnabled:    emailSender.Configured(),
+			ExternalDetails: cfg.ExternalChannelDetails,
 		}
 		uptimeDetector = &uptime.Detector{Svc: uptimeSvc, Notifier: uptimeNotifier}
 		// Ingestor нужен и режиму web (через него /probe/results проводит
@@ -183,11 +216,12 @@ func run() error {
 	var runner *uptime.Runner
 	if cfg.Mode == "uptime" || cfg.Mode == "all" {
 		runner = &uptime.Runner{
-			Svc:         uptimeSvc,
-			Writer:      uptimeWriter,
-			Region:      cfg.LocalRegion,
-			Concurrency: cfg.UptimeConcurrency,
-			OnResult:    uptimeDetector.OnResult,
+			Svc:                 uptimeSvc,
+			Writer:              uptimeWriter,
+			Region:              cfg.LocalRegion,
+			Concurrency:         cfg.UptimeConcurrency,
+			OnResult:            uptimeDetector.OnResult,
+			AllowPrivateTargets: cfg.SSRFAllowPrivate,
 		}
 		go runner.Run(ctx)
 
@@ -210,10 +244,11 @@ func run() error {
 			Query:       trace.NewQuery(ch),
 			Regressions: trace.NewRegressionService(pg),
 			Notifier: &trace.RegressionNotifier{
-				Alerts:       alertSvc,
-				Outbox:       outbox,
-				BaseURL:      cfg.BaseURL,
-				EmailEnabled: emailSender.Configured(),
+				Alerts:          alertSvc,
+				Outbox:          outbox,
+				BaseURL:         cfg.BaseURL,
+				EmailEnabled:    emailSender.Configured(),
+				ExternalDetails: cfg.ExternalChannelDetails,
 			},
 		}
 		go evaluator.Run(ctx)
@@ -227,10 +262,11 @@ func run() error {
 			Query:     metric.NewQuery(ch),
 			Incidents: metric.NewIncidentService(pg),
 			Notifier: &metric.MetricNotifier{
-				Alerts:       alertSvc,
-				Outbox:       outbox,
-				BaseURL:      cfg.BaseURL,
-				EmailEnabled: emailSender.Configured(),
+				Alerts:          alertSvc,
+				Outbox:          outbox,
+				BaseURL:         cfg.BaseURL,
+				EmailEnabled:    emailSender.Configured(),
+				ExternalDetails: cfg.ExternalChannelDetails,
 			},
 			Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
 		}
@@ -244,10 +280,11 @@ func run() error {
 			Query:       profile.NewQuery(ch),
 			Regressions: profile.NewRegressionService(pg),
 			Notifier: &profile.RegressionNotifier{
-				Alerts:       alertSvc,
-				Outbox:       outbox,
-				BaseURL:      cfg.BaseURL,
-				EmailEnabled: emailSender.Configured(),
+				Alerts:          alertSvc,
+				Outbox:          outbox,
+				BaseURL:         cfg.BaseURL,
+				EmailEnabled:    emailSender.Configured(),
+				ExternalDetails: cfg.ExternalChannelDetails,
 			},
 			Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
 			Config:   profile.DefaultProfileRegressionConfig(),
@@ -285,7 +322,7 @@ func run() error {
 		// Алертинг (план 6) — часть ingest-контура: правила/каналы срабатывают
 		// на события, которые проходят через этот же пайплайн.
 		senders := map[string]notify.Sender{
-			alert.ChannelWebhook:  &notify.WebhookSender{},
+			alert.ChannelWebhook:  &notify.WebhookSender{AllowPrivate: cfg.SSRFAllowPrivate},
 			alert.ChannelTelegram: &notify.TelegramSender{},
 		}
 		if emailSender.Configured() {
@@ -306,6 +343,7 @@ func run() error {
 
 		evaluator := &alert.Evaluator{
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
+			ExternalDetails: cfg.ExternalChannelDetails,
 		}
 		spikeWorker := &alert.Spike{
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
@@ -319,11 +357,12 @@ func run() error {
 		// один инстанс на процесс, чтобы не держать два кеша одного и того же.
 		projectCache := ingest.NewProjectCache(orgSvc)
 		perfNotifier := &trace.OutboxNotifier{
-			Alerts:       alertSvc,
-			Outbox:       outbox,
-			Pool:         pg, // perf_alert_throttle: рассылка ограничена по проекту
-			BaseURL:      cfg.BaseURL,
-			EmailEnabled: emailSender.Configured(),
+			Alerts:          alertSvc,
+			Outbox:          outbox,
+			Pool:            pg, // perf_alert_throttle: рассылка ограничена по проекту
+			BaseURL:         cfg.BaseURL,
+			EmailEnabled:    emailSender.Configured(),
+			ExternalDetails: cfg.ExternalChannelDetails,
 		}
 
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
@@ -332,6 +371,9 @@ func run() error {
 		pipeline.Perf = trace.NewIssueService(pg)
 		pipeline.PerfAlerts = perfNotifier
 		pipeline.Projects = projectCache
+		scrubber := ingest.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
+		scrubber.ScrubFreeText = cfg.ScrubFreeText // RA-L10: opt-in маскирование email в свободном тексте
+		pipeline.Scrub = scrubber
 		pipeline.Start()
 		ingestHandler := ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)
@@ -346,15 +388,19 @@ func run() error {
 		// Профили (этап 7): приёмник + отдельная квота профилей.
 		ingestHandler.Profiles = profileWriter
 		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
+		ingestHandler.DropCounter = orgSvc
+		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
 	if cfg.Mode == "web" || cfg.Mode == "all" {
 		authSvc := auth.NewService(pg)
+		authSvc.Secure = strings.HasPrefix(cfg.BaseURL, "https://") // RA-L1: на HTTPS читать только __Host- cookie
 		eventQuery := event.NewQuery(ch)
 		webHandler := web.New(authSvc, orgSvc, issueSvc, eventQuery, cfg.BaseURL)
 		webHandler.Alerts = alertSvc
 		webHandler.Email = emailSender
+		webHandler.EmailEnabled = emailSender.Configured()
 		webHandler.Outbox = outbox
 		webHandler.Uptime = uptimeSvc
 		webHandler.UptimeWriter = uptimeWriter
@@ -378,7 +424,10 @@ func run() error {
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
 		webHandler.SecretKey = cfg.SecretKey
+		webHandler.RegistrationMode = cfg.RegistrationMode
+		webHandler.RetentionDays = cfg.RetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
+		webHandler.Purger = telemetry.NewPurger(ch)
 		webHandler.Register(mux)
 		go (&auth.Janitor{Svc: authSvc}).Run(ctx)
 		slog.Info("web enabled")

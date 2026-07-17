@@ -7,7 +7,14 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
 )
+
+// poisonThreshold — сколько подряд-фейлов вставки одного и того же головного
+// батча терпим (транзиентные сбои CH), прежде чем перейти к изоляции ядовитых
+// рядов бинарным дроблением (chbatch.IsolatePoison).
+const poisonThreshold = 3
 
 // CHConn — минимум интерфейса ClickHouse, нужный ResultWriter.
 type CHConn interface {
@@ -34,6 +41,7 @@ type ResultWriter struct {
 	mu          sync.Mutex
 	buf         []resultRow
 	dropped     int64
+	failStreak  int
 	lastDropLog time.Time
 
 	maxBuf    int
@@ -64,17 +72,21 @@ func NewResultWriter(conn CHConn) *ResultWriter {
 func (w *ResultWriter) Add(projectID, monitorID int64, region string, at time.Time, r Result) {
 	w.mu.Lock()
 	logDrop := false
-	if len(w.buf) >= w.maxBuf {
-		w.buf = append(w.buf[:0], w.buf[1:]...)
-		w.dropped++
-		if time.Since(w.lastDropLog) > w.interval {
-			w.lastDropLog = time.Now()
-			logDrop = true
-		}
+	// Bulk-drop: считаем избыток над maxBuf с учётом добавляемого ряда и
+	// сдвигаем разом (O(1) сдвигов на Add вместо O(n) поштучных).
+	if drop := len(w.buf) + 1 - w.maxBuf; drop > 0 {
+		w.buf = append(w.buf[:0], w.buf[drop:]...)
+		w.dropped += int64(drop)
+		logDrop = true
 	}
-	dropped := w.dropped
 	w.buf = append(w.buf, resultRow{ProjectID: projectID, MonitorID: monitorID, Region: region, At: at, Result: r})
+	dropped := w.dropped
 	full := len(w.buf) >= w.batchSize
+	if logDrop && time.Since(w.lastDropLog) > w.interval {
+		w.lastDropLog = time.Now()
+	} else {
+		logDrop = false
+	}
 	w.mu.Unlock()
 	if logDrop {
 		slog.Warn("check result buffer full, dropping oldest", "dropped_total", dropped)
@@ -176,6 +188,38 @@ func (w *ResultWriter) flush(ctx context.Context) {
 	w.mu.Unlock()
 
 	if err := w.insert(ctx, batch); err != nil {
+		// Data-level «яд» изолируем сразу; транзиент (сеть/ctx) терпим до порога.
+		poison := chbatch.IsServerDataError(err)
+		w.mu.Lock()
+		w.failStreak++
+		streak := w.failStreak
+		w.mu.Unlock()
+
+		if poison || streak >= poisonThreshold {
+			// Изолируем: ядовитые ряды дропнутся, хорошие вставятся, транзиентные
+			// вернутся в unresolved (обратно в буфер) без потерь.
+			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insert, chbatch.IsServerDataError)
+			w.mu.Lock()
+			w.dropped += int64(dropped)
+			w.failStreak = 0
+			var over int
+			if len(unresolved) > 0 {
+				w.buf = append(unresolved, w.buf...)
+				if over = len(w.buf) - w.maxBuf; over > 0 {
+					w.buf = append(w.buf[:0], w.buf[over:]...)
+					w.dropped += int64(over)
+				} else {
+					over = 0
+				}
+			}
+			w.mu.Unlock()
+			if dropped > 0 || over > 0 {
+				slog.Warn("check result batch: isolated poison rows",
+					"dropped", dropped, "unresolved", len(unresolved), "overflow", over, "batch", len(batch))
+			}
+			return
+		}
+
 		w.mu.Lock()
 		w.buf = append(batch, w.buf...)
 		var over int
@@ -188,7 +232,12 @@ func (w *ResultWriter) flush(ctx context.Context) {
 		w.mu.Unlock()
 		slog.Warn("check result batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)
+		return
 	}
+	// Успех — сбрасываем счётчик подряд-фейлов.
+	w.mu.Lock()
+	w.failStreak = 0
+	w.mu.Unlock()
 }
 
 func boolToUint8(b bool) uint8 {

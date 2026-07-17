@@ -83,8 +83,8 @@ func TestWebVitalsOverview(t *testing.T) {
 		"2.50s",   // lcp home p75
 		"5.00s",   // lcp slow p75
 		"0.05",    // cls home p75 (безразмерный, 2 знака — не мс)
-		"vital-good",
-		"vital-poor",
+		"badge-good",
+		"badge-danger",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s (owner) missing %q: %s", path, want, body)
@@ -99,7 +99,7 @@ func TestWebVitalsOverview(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (empty) status = %d, want 200: %s", emptyPath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "no web vitals") {
+	if !strings.Contains(string(body), "Пока нет Web Vitals") {
 		t.Fatalf("GET %s (empty) missing 'no web vitals': %s", emptyPath, body)
 	}
 
@@ -173,14 +173,14 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 		t.Fatalf("GET %s status = %d, want 200: %s", homePath, resp.StatusCode, body)
 	}
 	for _, want := range []string{
-		"Web Vitals",
+		"<h2>Web Vitals</h2>",
 		"LCP", "INP", "CLS", "FCP", "TTFB",
 		"2.50s", // lcp
 		"150ms", // inp
 		"0.05",  // cls
 		"1.50s", // fcp
 		"700ms", // ttfb
-		"vital-good",
+		"badge-good",
 		"<svg",
 	} {
 		if !strings.Contains(string(body), want) {
@@ -196,7 +196,7 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", orderPath, resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), "Web Vitals") {
+	if strings.Contains(string(body), "<h2>Web Vitals</h2>") {
 		t.Fatalf("GET %s (no vitals) must not render Web Vitals panel: %s", orderPath, body)
 	}
 
@@ -210,7 +210,7 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", stagingPath, resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), "Web Vitals") {
+	if strings.Contains(string(body), "<h2>Web Vitals</h2>") {
 		t.Fatalf("GET %s (environment=staging) must not render Web Vitals panel: %s", stagingPath, body)
 	}
 
@@ -222,7 +222,7 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", prodPath, resp.StatusCode, body)
 	}
-	for _, want := range []string{"Web Vitals", "2.50s", "0.05"} {
+	for _, want := range []string{"<h2>Web Vitals</h2>", "2.50s", "0.05"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s (environment=production) missing %q: %s", prodPath, want, body)
 		}

@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
@@ -15,38 +16,29 @@ func metricLink(projectID int64, name string) string {
 	return metricsBasePath(projectID) + "/" + url.PathEscape(name)
 }
 
-// metricsNav — общая шапка страниц метрик.
-templ metricsNav(projectID int64) {
-	<p>
-		<a href={ templ.URL(performancePath(projectID)) }>Performance</a> ·
-		<a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> ·
-		<a href={ templ.URL(metricsBasePath(projectID)) }>Metrics</a> ·
-		<a href={ templ.URL(metricsBasePath(projectID) + "/alerts") }>Metric Alerts</a> ·
-		<a href={ templ.URL("/projects/" + strconv.FormatInt(projectID, 10) + "/profiles") }>Profiles</a> ·
-		<a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> ·
-		<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
-	</p>
-}
-
 // MetricsList — GET /projects/{id}/metrics: перечень метрик проекта.
 templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string) {
-	@layout("Metrics", userEmail) {
+	@layout(i18n.T(ctx, "metrics.title"), userEmail) {
 		<div class="metrics">
-			<h1>Metrics</h1>
-			@metricsNav(projectID)
+			<h1>{ i18n.T(ctx, "metrics.title") }</h1>
+			@helpPanel("metrics", "metrics")
 			if len(metrics) == 0 {
-				<p class="empty">no metrics received yet</p>
+				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
-						<tr><th>Metric</th><th>Type</th><th>Unit</th></tr>
+						<tr>
+							<th>{ i18n.T(ctx, "metrics.table.metric") }</th>
+							<th>{ i18n.T(ctx, "metrics.table.type") }</th>
+							<th class="num">{ i18n.T(ctx, "metrics.table.unit") }</th>
+						</tr>
 					</thead>
 					<tbody>
 						for _, m := range metrics {
 							<tr>
 								<td><a href={ templ.URL(metricLink(projectID, m.Name)) }>{ m.Name }</a></td>
 								<td>{ m.Type }</td>
-								<td>{ m.Unit }</td>
+								<td class="num">{ m.Unit }</td>
 							</tr>
 						}
 					</tbody>
@@ -84,15 +76,24 @@ func metricPeriodOptions() []string {
 
 // MetricDetail — GET /projects/{id}/metrics/{name}: график ряда с фильтрами.
 templ MetricDetail(vm MetricDetailVM, userEmail string) {
-	@layout("Metric: "+vm.Info.Name, userEmail) {
+	@layout(i18n.Tf(ctx, "metrics.detail.title", "name", vm.Info.Name), userEmail) {
 		<div class="metric-detail">
+			<p class="breadcrumb"><a href={ templ.URL(metricsBasePath(vm.ProjectID)) }>← { i18n.T(ctx, "metrics.title") }</a></p>
 			<h1>{ vm.Info.Name }</h1>
-			<p class="metric-meta">{ vm.Info.Type } · { vm.Info.Unit }</p>
-			@metricsNav(vm.ProjectID)
+			<div class="monitor-meta">
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "metrics.table.type") }</div>
+					<div class="stat-value">{ vm.Info.Type }</div>
+				</div>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "metrics.table.unit") }</div>
+					<div class="stat-value">{ vm.Info.Unit }</div>
+				</div>
+			</div>
 			<form method="get" class="metric-filters">
 				<label>
-					Period
-					<select name="period" onchange="this.form.submit()">
+					{ i18n.T(ctx, "metrics.filter.period") }
+					<select name="period" class="select">
 						for _, p := range metricPeriodOptions() {
 							if p == vm.Period {
 								<option value={ p } selected>{ p }</option>
@@ -103,8 +104,8 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 					</select>
 				</label>
 				<label>
-					Aggregation
-					<select name="agg" onchange="this.form.submit()">
+					{ i18n.T(ctx, "metrics.filter.aggregation") }
+					<select name="agg" class="select">
 						for _, a := range metricAggOptions(vm.Percentiles) {
 							if a == vm.Agg {
 								<option value={ a } selected>{ a }</option>
@@ -115,9 +116,9 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 					</select>
 				</label>
 				<label>
-					Environment
-					<select name="environment" onchange="this.form.submit()">
-						<option value="">all</option>
+					{ i18n.T(ctx, "metrics.filter.environment") }
+					<select name="environment" class="select">
+						<option value="">{ i18n.T(ctx, "metrics.filter.env_all") }</option>
 						for _, e := range vm.Environments {
 							if e == vm.Environment {
 								<option value={ e } selected>{ e }</option>
@@ -131,23 +132,23 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 					<input type="hidden" name="label_key" value={ vm.LabelKey }/>
 					<input type="hidden" name="label_value" value={ vm.LabelValue }/>
 				}
-				<noscript><button type="submit">Apply</button></noscript>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "metrics.filter.apply") }</button>
 			</form>
-			<div class="metric-chart-wrap">
+			<div class="metric-chart-wrap card">
 				@vm.Chart
 			</div>
 			if len(vm.Labels) > 0 {
-				<h2>Labels</h2>
-				<ul class="metric-labels">
+				<h2>{ i18n.T(ctx, "metrics.detail.labels") }</h2>
+				<div class="metric-labels">
 					for key, vals := range vm.Labels {
-						<li>
-							<strong>{ key }</strong>:
+						<div class="metric-label-row">
+							<span class="metric-label-key">{ key }</span>
 							for _, v := range vals {
-								<a href={ templ.URL(metricLabelFilterURL(vm, key, v)) }>{ v }</a>{ " " }
+								<a class="chip" href={ templ.URL(metricLabelFilterURL(vm, key, v)) }>{ v }</a>
 							}
-						</li>
+						</div>
 					}
-				</ul>
+				</div>
 			}
 		</div>
 	}

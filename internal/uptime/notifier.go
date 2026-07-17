@@ -29,6 +29,12 @@ type OutboxNotifier struct {
 	// email-каналы пропускаются (с warn-логом), чтобы не ставить в очередь
 	// задачи, которые notify.Worker всё равно не сможет доставить.
 	EmailEnabled bool
+
+	// ExternalDetails — см. alert.Evaluator.ExternalDetails: при false во
+	// внешние каналы (Telegram/webhook) уходит обезличенный payload без имени
+	// монитора и причины падения (потенциально чувствительны за пределами РФ,
+	// 152-ФЗ). true (дефолт из cfg) — поведение прежнее.
+	ExternalDetails bool
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал
@@ -78,6 +84,11 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 			"channel_kind":     ch.Kind,
 			"target":           ch.Target,
 			"secret":           ch.Secret,
+		}
+		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
+		// уходит обезличенный payload (см. notify.RedactExternalPayload).
+		if !n.ExternalDetails && (ch.Kind == alert.ChannelTelegram || ch.Kind == alert.ChannelWebhook) {
+			payload = notify.RedactExternalPayload(payload)
 		}
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("uptime: notify: enqueue failed", "channel_id", ch.ID, "error", err)

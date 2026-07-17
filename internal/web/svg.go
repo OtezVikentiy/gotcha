@@ -6,6 +6,7 @@ import (
 	"html"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 
@@ -113,57 +114,212 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-// metricSeriesSVG рисует одну полилинию по ряду metric.Point, нормированную по
-// min/max значения. Пустой ряд → плоская линия (flatlineSVG). points приходят
-// из metric.Query.Series (числа), поэтому текст SVG состоит только из чисел —
-// templ.Raw безопасен, как в latencyLinesSVG.
-func metricSeriesSVG(points []metric.Point, w, h int) templ.Component {
-	return templ.Raw(metricSeriesMarkup(points, w, h))
+// metricThreshold — порог алерта для горизонтальной линии на графике метрики
+// (значение + направление сравнения, чтобы подписать «> N» / «< N»).
+type metricThreshold struct {
+	Value      float64
+	Comparator string // "gt" | "lt"
 }
 
-func metricSeriesMarkup(points []metric.Point, w, h int) string {
-	if len(points) == 0 {
-		return flatlineSVG(w, h)
-	}
-	min, max := points[0].V, points[0].V
-	for _, p := range points {
-		if p.V < min {
-			min = p.V
-		}
-		if p.V > max {
-			max = p.V
-		}
-	}
-	span := max - min
-	if span == 0 {
-		return flatlineSVG(w, h)
-	}
-	n := len(points)
-	var pts strings.Builder
-	for i, p := range points {
-		var x float64
-		if n > 1 {
-			x = float64(i) / float64(n-1) * float64(w)
-		}
-		y := float64(h) - (p.V-min)/span*float64(h)
-		if i > 0 {
-			pts.WriteByte(' ')
-		}
-		pts.WriteString(formatCoord(x))
-		pts.WriteByte(',')
-		pts.WriteString(formatCoord(y))
-	}
+// metricSeriesSVG рисует график ряда metric.Point с осями: ось Y (значения +
+// юнит слева), ось X (время снизу) и пунктирные пороговые линии алертов
+// (Grafana-style). Текст SVG состоит из чисел и html-экранированных подписей —
+// templ.Raw безопасен, как в latencyLinesSVG.
+func metricSeriesSVG(points []metric.Point, unit string, thresholds []metricThreshold, w, h int) templ.Component {
+	return templ.Raw(metricSeriesMarkup(points, unit, thresholds, w, h))
+}
+
+func metricSeriesMarkup(points []metric.Point, unit string, thresholds []metricThreshold, w, h int) string {
+	const (
+		padL = 58 // место под подписи оси Y
+		padR = 16
+		padT = 12
+		padB = 26 // место под подписи оси X
+	)
+	x0, x1 := float64(padL), float64(w-padR)
+	y0, y1 := float64(padT), float64(h-padB)
+
 	var sb strings.Builder
 	sb.WriteString(`<svg class="metric-chart" viewBox="0 0 `)
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
 	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+
+	// Рамка осей (левая вертикаль + нижняя горизонталь).
+	sb.WriteString(`<g class="chart-axis">`)
+	axisLine(&sb, x0, y0, x0, y1)
+	axisLine(&sb, x0, y1, x1, y1)
+
+	if len(points) == 0 {
+		sb.WriteString(`<text x="`)
+		sb.WriteString(formatCoord((x0 + x1) / 2))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord((y0 + y1) / 2))
+		sb.WriteString(`" text-anchor="middle" dominant-baseline="middle" fill="currentColor">`)
+		sb.WriteString(html.EscapeString("нет данных за период"))
+		sb.WriteString(`</text></g></svg>`)
+		return sb.String()
+	}
+
+	// Домен значений: данные + пороги (чтобы пороговые линии попадали в область).
+	dataMin, dataMax := points[0].V, points[0].V
+	for _, p := range points {
+		if p.V < dataMin {
+			dataMin = p.V
+		}
+		if p.V > dataMax {
+			dataMax = p.V
+		}
+	}
+	domMin, domMax := dataMin, dataMax
+	for _, t := range thresholds {
+		if t.Value < domMin {
+			domMin = t.Value
+		}
+		if t.Value > domMax {
+			domMax = t.Value
+		}
+	}
+	if domMax == domMin {
+		domMin -= 1
+		domMax += 1
+	}
+	pad := (domMax - domMin) * 0.08
+	domMin -= pad
+	domMax += pad
+	yFor := func(v float64) float64 {
+		return y1 - (v-domMin)/(domMax-domMin)*(y1-y0)
+	}
+
+	// Подписи оси Y: max, середина, min значений данных + горизонтальные линии.
+	for _, v := range []float64{dataMax, (dataMin + dataMax) / 2, dataMin} {
+		yv := yFor(v)
+		axisLine(&sb, x0, yv, x1, yv)
+		sb.WriteString(`<text x="`)
+		sb.WriteString(formatCoord(x0 - 6))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(yv))
+		sb.WriteString(`" text-anchor="end" dominant-baseline="middle" fill="currentColor">`)
+		sb.WriteString(html.EscapeString(formatAxisValue(v, unit)))
+		sb.WriteString(`</text>`)
+	}
+
+	// Подписи оси X: время первой, средней и последней точки.
+	n := len(points)
+	spanH := points[n-1].T.Sub(points[0].T).Hours()
+	xLabel := func(t time.Time, xpos float64, anchor string) {
+		sb.WriteString(`<text x="`)
+		sb.WriteString(formatCoord(xpos))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(float64(h) - 8))
+		sb.WriteString(`" text-anchor="`)
+		sb.WriteString(anchor)
+		sb.WriteString(`" fill="currentColor">`)
+		sb.WriteString(html.EscapeString(metricTimeLabel(t, spanH)))
+		sb.WriteString(`</text>`)
+	}
+	xLabel(points[0].T, x0, "start")
+	if n > 2 {
+		xLabel(points[n/2].T, (x0+x1)/2, "middle")
+	}
+	xLabel(points[n-1].T, x1, "end")
+	sb.WriteString(`</g>`) // конец chart-axis
+
+	// Пороговые линии алертов (пунктир, поверх сетки, под линией данных).
+	for _, t := range thresholds {
+		yv := yFor(t.Value)
+		if yv < y0 || yv > y1 {
+			continue
+		}
+		sb.WriteString(`<g class="chart-threshold"><line x1="`)
+		sb.WriteString(formatCoord(x0))
+		sb.WriteString(`" y1="`)
+		sb.WriteString(formatCoord(yv))
+		sb.WriteString(`" x2="`)
+		sb.WriteString(formatCoord(x1))
+		sb.WriteString(`" y2="`)
+		sb.WriteString(formatCoord(yv))
+		sb.WriteString(`" stroke="currentColor" stroke-width="1" stroke-dasharray="4 3"/><text x="`)
+		sb.WriteString(formatCoord(x1 - 4))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(yv - 4))
+		sb.WriteString(`" text-anchor="end" fill="currentColor">`)
+		sb.WriteString(html.EscapeString(comparatorSymbol(t.Comparator) + " " + formatAxisValue(t.Value, unit)))
+		sb.WriteString(`</text></g>`)
+	}
+
+	// Линия данных.
+	var pts strings.Builder
+	for i, p := range points {
+		x := x0
+		if n > 1 {
+			x = x0 + float64(i)/float64(n-1)*(x1-x0)
+		}
+		if i > 0 {
+			pts.WriteByte(' ')
+		}
+		pts.WriteString(formatCoord(x))
+		pts.WriteByte(',')
+		pts.WriteString(formatCoord(yFor(p.V)))
+	}
 	sb.WriteString(`<polyline points="`)
 	sb.WriteString(pts.String())
-	sb.WriteString(`" fill="none" stroke="#5b8cff" stroke-width="1.5"/>`)
+	sb.WriteString(`" fill="none" stroke="#3d7bff" stroke-width="1.5"/>`)
 	sb.WriteString(`</svg>`)
 	return sb.String()
+}
+
+// axisLine — тонкая линия сетки/оси в текущем цвете (currentColor группы).
+func axisLine(sb *strings.Builder, x1, y1v, x2, y2 float64) {
+	sb.WriteString(`<line x1="`)
+	sb.WriteString(formatCoord(x1))
+	sb.WriteString(`" y1="`)
+	sb.WriteString(formatCoord(y1v))
+	sb.WriteString(`" x2="`)
+	sb.WriteString(formatCoord(x2))
+	sb.WriteString(`" y2="`)
+	sb.WriteString(formatCoord(y2))
+	sb.WriteString(`" stroke="currentColor" stroke-width="0.5" stroke-opacity="0.5"/>`)
+}
+
+// comparatorSymbol — знак сравнения для подписи пороговой линии.
+func comparatorSymbol(cmp string) string {
+	if cmp == "lt" {
+		return "<"
+	}
+	return ">"
+}
+
+// formatAxisValue форматирует значение для подписи оси: до 3 значащих цифр, с
+// суффиксом k/M для крупных чисел и опциональным юнитом.
+func formatAxisValue(v float64, unit string) string {
+	abs := v
+	if abs < 0 {
+		abs = -abs
+	}
+	var s string
+	switch {
+	case abs >= 1e6:
+		s = strconv.FormatFloat(v/1e6, 'g', 3, 64) + "M"
+	case abs >= 1e3:
+		s = strconv.FormatFloat(v/1e3, 'g', 3, 64) + "k"
+	default:
+		s = strconv.FormatFloat(v, 'g', 3, 64)
+	}
+	if unit != "" {
+		s += " " + unit
+	}
+	return s
+}
+
+// metricTimeLabel форматирует момент времени для оси X: на окне до двух суток —
+// часы:минуты, на более длинном — день.месяц.
+func metricTimeLabel(t time.Time, spanHours float64) string {
+	if spanHours >= 48 {
+		return t.Format("02.01")
+	}
+	return t.Format("15:04")
 }
 
 // sparklineWidth/Height — размер инлайновых SVG-спарклайнов в списке issues.
@@ -274,7 +430,7 @@ const (
 
 // perfLatencyLineColors — цвета линий p50 и p95 на графике перцентилей.
 // Захардкожены (не currentColor): нужны два разных цвета в одном SVG.
-var perfLatencyLineColors = [2]string{"#5b8cff", "#e0a52c"}
+var perfLatencyLineColors = [2]string{"#3d7bff", "#d9a521"}
 
 // latencyLinesSVG рисует две полилинии (p50 и p95) по ряду trace.LatencyPoint,
 // нормированные на максимум p95. Пустой ряд (или все нули) → плоская линия
@@ -333,7 +489,7 @@ func latencyLinesMarkup(points []trace.LatencyPoint, w, h int) string {
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">`)
 	sb.WriteString(lines.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()
@@ -383,7 +539,7 @@ func throughputBarsMarkup(points []trace.LatencyPoint, w, h int) string {
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">`)
 	sb.WriteString(bars.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()
@@ -435,17 +591,25 @@ func durationHistogramMarkup(buckets []trace.DurationBucket, w, h int) string {
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">`)
 	sb.WriteString(bars.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
 
-// chartWidth/Height — размер инлайнового bar-chart на странице issue
-// (частота событий за 7 дней).
+// chartWidth/Height — размер bar-chart частоты на странице issue (события за 7
+// дней). Высота с запасом под подписи оси X, ширина под подписи оси Y.
 const (
-	chartWidth  = 320
-	chartHeight = 96
+	chartWidth  = 360
+	chartHeight = 140
+)
+
+// chartPad* — поля графика частоты под оси.
+const (
+	chartPadL = 40
+	chartPadR = 10
+	chartPadT = 10
+	chartPadB = 22
 )
 
 // chartSVG строит инлайновый SVG bar-chart: один столбик на точку
@@ -463,6 +627,21 @@ func chartSVG(points []event.Point, w, h int) templ.Component {
 }
 
 func chartBars(points []event.Point, w, h int) string {
+	x0, x1 := float64(chartPadL), float64(w-chartPadR)
+	y0, y1 := float64(chartPadT), float64(h-chartPadB)
+
+	var sb strings.Builder
+	sb.WriteString(`<svg class="chart-freq" viewBox="0 0 `)
+	sb.WriteString(strconv.Itoa(w))
+	sb.WriteByte(' ')
+	sb.WriteString(strconv.Itoa(h))
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+
+	// Оси: левая вертикаль + базовая линия.
+	sb.WriteString(`<g class="chart-axis">`)
+	axisLine(&sb, x0, y0, x0, y1)
+	axisLine(&sb, x0, y1, x1, y1)
+
 	var max uint64
 	for _, p := range points {
 		if p.N > max {
@@ -470,42 +649,68 @@ func chartBars(points []event.Point, w, h int) string {
 		}
 	}
 	if len(points) == 0 || max == 0 {
-		return chartEmptyAxis(w, h)
+		sb.WriteString(`<text x="`)
+		sb.WriteString(formatCoord(x0 - 6))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(y1))
+		sb.WriteString(`" text-anchor="end" dominant-baseline="middle" fill="currentColor">0</text></g></svg>`)
+		return sb.String()
 	}
 
+	// Подписи оси Y: 0 (низ) и max (верх).
+	sb.WriteString(`<text x="`)
+	sb.WriteString(formatCoord(x0 - 6))
+	sb.WriteString(`" y="`)
+	sb.WriteString(formatCoord(y0))
+	sb.WriteString(`" text-anchor="end" dominant-baseline="middle" fill="currentColor">`)
+	sb.WriteString(strconv.FormatUint(max, 10))
+	sb.WriteString(`</text><text x="`)
+	sb.WriteString(formatCoord(x0 - 6))
+	sb.WriteString(`" y="`)
+	sb.WriteString(formatCoord(y1))
+	sb.WriteString(`" text-anchor="end" dominant-baseline="middle" fill="currentColor">0</text>`)
+
+	// Подписи оси X: время первой и последней точки.
 	n := len(points)
-	barW := float64(w) / float64(n)
+	spanH := points[n-1].T.Sub(points[0].T).Hours()
+	sb.WriteString(`<text x="`)
+	sb.WriteString(formatCoord(x0))
+	sb.WriteString(`" y="`)
+	sb.WriteString(formatCoord(float64(h) - 7))
+	sb.WriteString(`" text-anchor="start" fill="currentColor">`)
+	sb.WriteString(html.EscapeString(metricTimeLabel(points[0].T, spanH)))
+	sb.WriteString(`</text><text x="`)
+	sb.WriteString(formatCoord(x1))
+	sb.WriteString(`" y="`)
+	sb.WriteString(formatCoord(float64(h) - 7))
+	sb.WriteString(`" text-anchor="end" fill="currentColor">`)
+	sb.WriteString(html.EscapeString(metricTimeLabel(points[n-1].T, spanH)))
+	sb.WriteString(`</text></g>`)
+
+	// Столбики в области графика.
+	barW := (x1 - x0) / float64(n)
 	gap := barW * 0.15
-
-	var bars strings.Builder
 	for i, p := range points {
-		barH := float64(p.N) / float64(max) * float64(h)
-		x := float64(i)*barW + gap/2
-		y := float64(h) - barH
-		bars.WriteString(`<rect x="`)
-		bars.WriteString(formatCoord(x))
-		bars.WriteString(`" y="`)
-		bars.WriteString(formatCoord(y))
-		bars.WriteString(`" width="`)
-		bars.WriteString(formatCoord(barW - gap))
-		bars.WriteString(`" height="`)
-		bars.WriteString(formatCoord(barH))
-		bars.WriteString(`" fill="currentColor"/>`)
+		barH := float64(p.N) / float64(max) * (y1 - y0)
+		x := x0 + float64(i)*barW + gap/2
+		y := y1 - barH
+		sb.WriteString(`<rect x="`)
+		sb.WriteString(formatCoord(x))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(y))
+		sb.WriteString(`" width="`)
+		sb.WriteString(formatCoord(barW - gap))
+		sb.WriteString(`" height="`)
+		sb.WriteString(formatCoord(barH))
+		sb.WriteString(`" fill="currentColor"/>`)
 	}
-
-	var sb strings.Builder
-	sb.WriteString(`<svg class="chart" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
-	sb.WriteString(bars.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
 
-// chartEmptyAxis — горизонтальная линия у нижнего края: issue без событий в
-// окне графика (или без данных вовсе).
+// chartEmptyAxis — горизонтальная линия у нижнего края: пустой ряд (нет данных)
+// у bar-графиков с классом .chart (throughput, гистограмма длительностей) —
+// "нет данных" не должно выглядеть как ошибка рендера.
 func chartEmptyAxis(w, h int) string {
 	y := formatCoord(float64(h) - 0.5)
 	var sb strings.Builder
@@ -513,7 +718,7 @@ func chartEmptyAxis(w, h int) string {
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="`)
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"><line x1="0" y1="`)
 	sb.WriteString(y)
 	sb.WriteString(`" x2="`)
 	sb.WriteString(strconv.Itoa(w))
@@ -538,9 +743,9 @@ const (
 // одного currentColor тут недостаточно — нужны три разных цвета в одном
 // SVG, а не один цвет из контекста, как у sparklineSVG/chartSVG.
 const (
-	availabilityColorUp    = "#3ecf6e"
-	availabilityColorDown  = "#ff5f5f"
-	availabilityColorEmpty = "#3a3f4c"
+	availabilityColorUp    = "#2ea043"
+	availabilityColorDown  = "#f0574a"
+	availabilityColorEmpty = "#263041"
 )
 
 // availabilityBarsSVG строит полоску доступности: один прямоугольник на
@@ -575,7 +780,9 @@ func availabilityBarsMarkup(bars []uptime.UptimeStat, w, h int) string {
 		rects.WriteString(strconv.Itoa(h))
 		rects.WriteString(`" fill="`)
 		rects.WriteString(availabilityBarColor(b))
-		rects.WriteString(`"/>`)
+		rects.WriteString(`"><title>`)
+		rects.WriteString(availabilityBarLabel(b))
+		rects.WriteString(`</title></rect>`)
 	}
 
 	var sb strings.Builder
@@ -597,6 +804,22 @@ func availabilityBarColor(b uptime.UptimeStat) string {
 		return availabilityColorUp
 	default:
 		return availabilityColorDown
+	}
+}
+
+// availabilityBarLabel — текстовая альтернатива цвету корзины полоски
+// доступности (для <title> внутри <rect>): цвет — единственный сигнал
+// состояния в SVG, без title screen reader / hover ничего не получают.
+// uptime.UptimeStat не несёт даты/лейбла корзины, поэтому подпись — только
+// состояние; текст — фиксированные литералы, экранирование не требуется.
+func availabilityBarLabel(b uptime.UptimeStat) string {
+	switch {
+	case b.Total == 0:
+		return "нет данных"
+	case b.OK == b.Total:
+		return "работает"
+	default:
+		return "недоступен"
 	}
 }
 
@@ -636,8 +859,8 @@ const (
 // ошибка). Захардкожены, как availabilityColor* — нужны два разных цвета в
 // одном SVG, одного currentColor мало.
 const (
-	waterfallColorOK    = "#5b8cff"
-	waterfallColorError = "#ff5f5f"
+	waterfallColorOK    = "#3d7bff"
+	waterfallColorError = "#f0574a"
 )
 
 // waterfallSVG строит SVG-waterfall трейса: дерево спанов (по ParentSpanID)
@@ -677,7 +900,7 @@ func waterfallMarkup(spans []trace.SpanRow, errIssues map[string]int64, totalUS 
 	b.WriteString(strconv.Itoa(w))
 	b.WriteByte(' ')
 	b.WriteString(strconv.Itoa(h))
-	b.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	b.WriteString(`" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="10">`)
 
 	for i, os := range ordered {
 		s := os.span
@@ -883,7 +1106,7 @@ const (
 // порядку укладки снизу вверх: DNS, connect, TLS, TTFB. Захардкожены по той
 // же причине, что и availabilityColor* выше — четыре разных цвета в одном
 // SVG.
-var latencySegmentColors = [4]string{"#4fb0e8", "#5b8cff", "#e0a52c", "#3ecf6e"}
+var latencySegmentColors = [4]string{"#3d7bff", "#3d7bff", "#d9a521", "#2ea043"}
 
 // latencyStackedSVG строит один stacked-bar-график по сегментам таймингов
 // (DNS/connect/TLS/TTFB) на точку временного ряда uptime.Query.Latency.
@@ -942,7 +1165,7 @@ func latencyStackedMarkup(points []uptime.LatencyPoint, w, h int) string {
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">`)
 	sb.WriteString(bars.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()

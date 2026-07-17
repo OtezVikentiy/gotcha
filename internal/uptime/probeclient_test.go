@@ -167,6 +167,9 @@ func TestProbeClientRunsJobAndPostsResult(t *testing.T) {
 		ServerURL: srv.URL,
 		Token:     "secret-token",
 		PollEvery: 10 * time.Millisecond,
+		// Цель проверки — loopback-сервер httptest: отключаем SSRF-фильтр,
+		// иначе проверка резалась бы до соединения.
+		AllowPrivateTargets: true,
 	}
 	runClient(t, client)
 

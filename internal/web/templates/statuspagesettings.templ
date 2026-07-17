@@ -1,6 +1,10 @@
 package templates
 
-import "strconv"
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
 
 func statusPagesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/statuspages"
@@ -53,7 +57,7 @@ func statusPageFormAction(projectID int64, f StatusPageForm) string {
 
 templ statusPageMonitorField(f StatusPageFormMonitor) {
 	<li class="status-page-monitor">
-		<label>
+		<label class="checkbox-inline">
 			if f.Selected {
 				<input type="checkbox" name="monitors" value={ strconv.FormatInt(f.ID, 10) } checked/>
 			} else {
@@ -61,10 +65,12 @@ templ statusPageMonitorField(f StatusPageFormMonitor) {
 			}
 			{ f.MonitorName }
 		</label>
-		<label>
-			Публичное имя
-			<input type="text" name={ "display_name_" + strconv.FormatInt(f.ID, 10) } value={ f.DisplayName }/>
-		</label>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.statuspages.field.display_name") }
+				<input type="text" name={ "display_name_" + strconv.FormatInt(f.ID, 10) } value={ f.DisplayName } class="input"/>
+			</label>
+		</div>
 	</li>
 }
 
@@ -72,28 +78,36 @@ templ statusPageMonitorField(f StatusPageFormMonitor) {
 // чекбоксов = порядок мониторов на странице (position 0,1,2…).
 templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 	<form method="post" action={ templ.URL(statusPageFormAction(projectID, f)) } class="status-page-form">
-		<label>
-			Slug
-			<input type="text" name="slug" value={ f.Slug } required/>
-		</label>
-		<label>
-			Заголовок
-			<input type="text" name="title" value={ f.Title } required/>
-		</label>
-		<label>
-			Описание
-			<input type="text" name="description" value={ f.Description }/>
-		</label>
-		<label>
+		<div class="form-grid">
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.statuspages.field.slug") }
+				<input type="text" name="slug" value={ f.Slug } required class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.statuspages.field.title") }
+				<input type="text" name="title" value={ f.Title } required class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.statuspages.field.description") }
+				<input type="text" name="description" value={ f.Description } class="input"/>
+			</label>
+		</div>
+		</div>
+		<label class="checkbox-inline">
 			if f.Enabled {
 				<input type="checkbox" name="enabled" checked/>
 			} else {
 				<input type="checkbox" name="enabled"/>
 			}
-			Опубликована
+			{ i18n.T(ctx, "uptime.statuspages.field.enabled") }
 		</label>
 		if len(f.Monitors) == 0 {
-			<p>В проекте нет мониторов.</p>
+			<p>{ i18n.T(ctx, "uptime.statuspages.monitors_empty") }</p>
 		} else {
 			<ul class="status-page-monitors">
 				for _, m := range f.Monitors {
@@ -102,18 +116,18 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 			</ul>
 		}
 		if f.ID == 0 {
-			<button type="submit">Создать страницу</button>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "uptime.statuspages.submit_create") }</button>
 		} else {
-			<button type="submit">Сохранить</button>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "uptime.statuspages.submit_save") }</button>
 		}
 	</form>
 	if f.ID != 0 {
 		<p class="status-page-public">
-			Публичный адрес:
+			{ i18n.T(ctx, "uptime.statuspages.public_url") }
 			<a href={ templ.URL(statusPagePublicURL(baseURL, f.Slug)) }>{ statusPagePublicURL(baseURL, f.Slug) }</a>
 		</p>
 		<form method="post" action={ templ.URL(statusPageDeletePath(f.ID)) } class="status-page-delete-form">
-			<button type="submit">Удалить</button>
+			<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
 		</form>
 	}
 }
@@ -123,26 +137,31 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 // + кнопкой удаления) и форма создания новой. Только owner/admin организации
 // проекта (requireProjectRole).
 templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm, newForm StatusPageForm, errMsg, userEmail string) {
-	@layout("Status pages", userEmail) {
+	@layout(i18n.T(ctx, "nav.status_pages"), userEmail) {
 		<div class="status-pages">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← Monitors</a></p>
-			<h1>Статус-страницы</h1>
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			<h1>{ i18n.T(ctx, "nav.status_pages") }</h1>
+			@helpPanel("statuspages", "uptime")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
+			@createTrigger("new-statuspage", "uptime.statuspages.new_title")
 			if len(forms) == 0 {
-				<p>Статус-страниц нет.</p>
+				@emptyState("globe", "uptime.statuspages.empty.title", "uptime.statuspages.empty.body", "", "")
 			} else {
-				for _, f := range forms {
-					<section class="status-page-item">
-						<h2>{ f.Title }</h2>
-						@statusPageFormBlock(projectID, baseURL, f)
-					</section>
-				}
+				<div class="settings-grid">
+					for _, f := range forms {
+						<section class="status-page-item card card--wide">
+							<h2 class="card-header">{ f.Title }</h2>
+							@statusPageFormBlock(projectID, baseURL, f)
+						</section>
+					}
+				</div>
 			}
 
-			<h2>Новая статус-страница</h2>
-			@statusPageFormBlock(projectID, baseURL, newForm)
+			@createModal("new-statuspage", "uptime.statuspages.new_title") {
+				@statusPageFormBlock(projectID, baseURL, newForm)
+			}
 		</div>
 	}
 }

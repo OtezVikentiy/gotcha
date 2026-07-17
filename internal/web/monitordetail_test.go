@@ -133,12 +133,12 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 	if !strings.Contains(bodyStr, created.HeartbeatToken) {
 		t.Fatalf("GET %s (owner) missing heartbeat token %q in body: %s", path, created.HeartbeatToken, bodyStr)
 	}
-	if !strings.Contains(bodyStr, "Heartbeat ping") {
-		t.Fatalf("GET %s (owner) missing 'Heartbeat ping' section: %s", path, bodyStr)
+	if !strings.Contains(bodyStr, "Heartbeat-пинг") {
+		t.Fatalf("GET %s (owner) missing 'Heartbeat-пинг' section: %s", path, bodyStr)
 	}
 
 	// Member (view access, not owner/admin) GET -> 200, must NOT contain the
-	// heartbeat token or the Heartbeat ping section.
+	// heartbeat token or the Heartbeat-пинг section.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -149,8 +149,8 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 	if strings.Contains(bodyStr, created.HeartbeatToken) {
 		t.Fatalf("GET %s (member) must NOT show heartbeat token: %s", path, bodyStr)
 	}
-	if strings.Contains(bodyStr, "Heartbeat ping") {
-		t.Fatalf("GET %s (member) must NOT show Heartbeat ping section: %s", path, bodyStr)
+	if strings.Contains(bodyStr, "Heartbeat-пинг") {
+		t.Fatalf("GET %s (member) must NOT show Heartbeat-пинг section: %s", path, bodyStr)
 	}
 }
 

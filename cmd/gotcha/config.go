@@ -24,14 +24,50 @@ type Config struct {
 	SpanRetentionDays    int
 	MetricRetentionDays  int
 	ProfileRetentionDays int
-	DefaultEventQuota    int64
-	MaxEventBytes        int64
-	MetricQuota          int64
-	MetricEvalInterval   int
-	ProfileQuota         int64
-	ProfileEvalInterval  int
-	OutboxRetentionDays  int
-	SecretKey            string
+	// Edition — редакция сборки (oss | saas). Влияет на дефолты квот:
+	// в oss все дефолты = 0 (безлимит), в saas = 1_000_000. См. loadConfig.
+	Edition string
+	// Default*Quota — дефолтные месячные квоты приёма при создании
+	// организации (0 = безлимит). Читаются из GOTCHA_DEFAULT_*_QUOTA;
+	// дефолт зависит от Edition.
+	DefaultEventQuota       int64
+	DefaultTransactionQuota int64
+	DefaultMetricQuota      int64
+	DefaultProfileQuota     int64
+	MaxEventBytes           int64
+	MetricEvalInterval      int
+	ProfileEvalInterval     int
+	OutboxRetentionDays     int
+	SecretKey               string
+	// RegistrationMode — режим самостоятельной регистрации (PROD-B1):
+	// open (открыта всем), invite (по приглашению, кроме bootstrap первого
+	// админа), closed (только bootstrap первого админа). Дефолт — invite.
+	RegistrationMode string
+
+	// ScrubIP/ScrubEmail/ScrubKeys — серверный PII-scrubbing (PRIV-H1),
+	// включён по умолчанию. ScrubIP/ScrubEmail зануляют ip/email субъекта;
+	// ScrubKeys — denylist ключей, значения которых редактируются в
+	// tags/contexts/stacktrace/span.data.
+	ScrubIP    bool
+	ScrubEmail bool
+	ScrubKeys  []string
+	// ScrubFreeText (RA-L10) — опционально маскировать email-адреса в свободном
+	// тексте (message/exception_value/span.description). По умолчанию выключено
+	// (консервативно, чтобы не портить SQL/URL); только email, не номера.
+	ScrubFreeText bool
+
+	// SSRFAllowPrivate (SEC-M1) — разрешить uptime-чекерам и webhook'ам
+	// ходить на приватные/loopback/link-local адреса. По умолчанию false
+	// (мультитенантная защита от SSRF к метадате/внутренним сервисам).
+	SSRFAllowPrivate bool
+	// AutoMigrate (ARCH-M3) — применять миграции схемы на старте. По
+	// умолчанию true; false выносит миграции в отдельный init-job, чтобы
+	// app-реплики не клинили все разом на dirty-состоянии.
+	AutoMigrate bool
+	// ExternalChannelDetails — слать ли текст ошибки (title/culprit/body) во
+	// внешние каналы (Telegram/webhook). По умолчанию true; false шлёт только
+	// обезличенную ссылку (152-ФЗ: текст может нести ПДн, уезжающие за пределы РФ).
+	ExternalChannelDetails bool
 
 	// UptimeConcurrency — сколько проверок uptime.Runner выполняет
 	// одновременно (режимы uptime|all).
@@ -66,6 +102,26 @@ var validModes = map[string]bool{
 	"ingest": true, "web": true, "uptime": true, "probe": true, "all": true,
 }
 
+// defaultScrubKeys — denylist ключей для PII-scrubbing по умолчанию (PRIV-H1).
+func defaultScrubKeys() []string {
+	return []string{
+		"password", "passwd", "token", "secret", "authorization", "auth",
+		"cookie", "api_key", "apikey", "access_token", "refresh_token",
+		"session", "credit_card", "card_number", "cvv",
+	}
+}
+
+// isLocalBaseURL — BaseURL указывает на локальную разработку (localhost/loopback).
+// Для таких стендов дефолтный SecretKey допустим (см. валидацию ниже).
+func isLocalBaseURL(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	fs := flag.NewFlagSet("gotcha", flag.ContinueOnError)
 	mode := fs.String("mode", "all", "process role: ingest | web | uptime | probe | all")
@@ -83,12 +139,41 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return def
 	}
 
-	boolEnv := func(key string) bool {
+	var errs []error
+
+	// parseBool — распознаёт булево значение env; для непустого нераспознанного
+	// значения копит ошибку (RA-L4: `SCRUB_IP=ture` не должен молча выключать
+	// privacy-дефолт). Возвращает (значение, задано-ли-непустое).
+	parseBool := func(key string) (bool, bool) {
 		v := strings.ToLower(strings.TrimSpace(getenv(key)))
-		return v == "1" || v == "true" || v == "yes" || v == "on"
+		switch v {
+		case "":
+			return false, false
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		default:
+			errs = append(errs, fmt.Errorf("%s: invalid boolean %q (want 1/0/true/false/yes/no/on/off)", key, getenv(key)))
+			return false, true
+		}
 	}
 
-	var errs []error
+	boolEnv := func(key string) bool {
+		v, _ := parseBool(key)
+		return v
+	}
+
+	// boolEnvDef — как boolEnv, но unset → def (для флагов, включённых по
+	// умолчанию: явные 0/false/no/off → false).
+	boolEnvDef := func(key string, def bool) bool {
+		v, set := parseBool(key)
+		if !set {
+			return def
+		}
+		return v
+	}
+
 	num := func(key string, def int64) int64 {
 		v := getenv(key)
 		if v == "" {
@@ -101,33 +186,44 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return n
 	}
 
+	// PROD-B2: редакция определяет дефолт квот. В oss безлимит (0),
+	// в saas — прежний 1_000_000. Явный GOTCHA_DEFAULT_*_QUOTA перекрывает.
+	edition := str("GOTCHA_EDITION", "oss")
+	defQuota := int64(0)
+	if edition == "saas" {
+		defQuota = 1_000_000
+	}
+
 	cfg := Config{
-		Mode:                 *mode,
-		Addr:                 str("GOTCHA_ADDR", ":8080"),
-		BaseURL:              str("GOTCHA_BASE_URL", "http://localhost:8080"),
-		PostgresDSN:          str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
-		ClickHouseDSN:        str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
-		SMTPHost:             str("GOTCHA_SMTP_HOST", ""),
-		SMTPPort:             int(num("GOTCHA_SMTP_PORT", 587)),
-		SMTPUser:             str("GOTCHA_SMTP_USER", ""),
-		SMTPPassword:         str("GOTCHA_SMTP_PASSWORD", ""),
-		SMTPFrom:             str("GOTCHA_SMTP_FROM", ""),
-		RetentionDays:        int(num("GOTCHA_RETENTION_DAYS", 90)),
-		SpanRetentionDays:    int(num("GOTCHA_SPAN_RETENTION_DAYS", 30)),
-		MetricRetentionDays:  int(num("GOTCHA_METRIC_RETENTION_DAYS", 30)),
-		ProfileRetentionDays: int(num("GOTCHA_PROFILE_RETENTION_DAYS", 7)),
-		DefaultEventQuota:    num("GOTCHA_DEFAULT_EVENT_QUOTA", 1_000_000),
-		MaxEventBytes:        num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
-		MetricQuota:          num("GOTCHA_METRIC_QUOTA", 1_000_000),
-		MetricEvalInterval:   int(num("GOTCHA_METRIC_EVAL_INTERVAL", 60)),
-		ProfileQuota:         num("GOTCHA_PROFILE_QUOTA", 1_000_000),
-		ProfileEvalInterval:  int(num("GOTCHA_PROFILE_EVAL_INTERVAL", 300)),
-		OutboxRetentionDays:  int(num("GOTCHA_OUTBOX_RETENTION_DAYS", 7)),
-		SecretKey:            str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
-		UptimeConcurrency:    int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
-		LocalRegion:          str("GOTCHA_LOCAL_REGION", "local"),
-		ProbeToken:           str("GOTCHA_PROBE_TOKEN", ""),
-		ServerURL:            str("GOTCHA_SERVER_URL", ""),
+		Mode:                    *mode,
+		Addr:                    str("GOTCHA_ADDR", ":8080"),
+		BaseURL:                 str("GOTCHA_BASE_URL", "http://localhost:8080"),
+		PostgresDSN:             str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
+		ClickHouseDSN:           str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
+		SMTPHost:                str("GOTCHA_SMTP_HOST", ""),
+		SMTPPort:                int(num("GOTCHA_SMTP_PORT", 587)),
+		SMTPUser:                str("GOTCHA_SMTP_USER", ""),
+		SMTPPassword:            str("GOTCHA_SMTP_PASSWORD", ""),
+		SMTPFrom:                str("GOTCHA_SMTP_FROM", ""),
+		RetentionDays:           int(num("GOTCHA_RETENTION_DAYS", 90)),
+		SpanRetentionDays:       int(num("GOTCHA_SPAN_RETENTION_DAYS", 30)),
+		MetricRetentionDays:     int(num("GOTCHA_METRIC_RETENTION_DAYS", 30)),
+		ProfileRetentionDays:    int(num("GOTCHA_PROFILE_RETENTION_DAYS", 7)),
+		Edition:                 edition,
+		DefaultEventQuota:       num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
+		DefaultTransactionQuota: num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
+		DefaultMetricQuota:      num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
+		DefaultProfileQuota:     num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
+		MaxEventBytes:           num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
+		MetricEvalInterval:      int(num("GOTCHA_METRIC_EVAL_INTERVAL", 60)),
+		ProfileEvalInterval:     int(num("GOTCHA_PROFILE_EVAL_INTERVAL", 300)),
+		OutboxRetentionDays:     int(num("GOTCHA_OUTBOX_RETENTION_DAYS", 7)),
+		SecretKey:               str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
+		RegistrationMode:        str("GOTCHA_REGISTRATION", "invite"),
+		UptimeConcurrency:       int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
+		LocalRegion:             str("GOTCHA_LOCAL_REGION", "local"),
+		ProbeToken:              str("GOTCHA_PROBE_TOKEN", ""),
+		ServerURL:               str("GOTCHA_SERVER_URL", ""),
 	}
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
@@ -141,8 +237,37 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.VKEnabled = boolEnv("GOTCHA_VK_ENABLED")
 	cfg.VKClientID = str("GOTCHA_VK_CLIENT_ID", "")
 	cfg.VKClientSecret = str("GOTCHA_VK_CLIENT_SECRET", "")
+
+	// PRIV-H1: PII-scrubbing включён по умолчанию.
+	cfg.ScrubIP = boolEnvDef("GOTCHA_SCRUB_IP", true)
+	cfg.ScrubEmail = boolEnvDef("GOTCHA_SCRUB_EMAIL", true)
+	cfg.ScrubFreeText = boolEnv("GOTCHA_SCRUB_FREETEXT")
+	cfg.SSRFAllowPrivate = boolEnv("GOTCHA_SSRF_ALLOW_PRIVATE")
+	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE", true)
+	cfg.ExternalChannelDetails = boolEnvDef("GOTCHA_EXTERNAL_CHANNEL_DETAILS", true)
+	if keys := strings.TrimSpace(getenv("GOTCHA_SCRUB_KEYS")); keys != "" {
+		for _, k := range strings.Split(keys, ",") {
+			if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
+				cfg.ScrubKeys = append(cfg.ScrubKeys, k)
+			}
+		}
+	} else {
+		cfg.ScrubKeys = defaultScrubKeys()
+	}
 	if len(errs) > 0 {
 		return Config{}, errs[0]
+	}
+
+	switch cfg.RegistrationMode {
+	case "open", "invite", "closed":
+	default:
+		return Config{}, fmt.Errorf("GOTCHA_REGISTRATION must be open, invite or closed, got %q", cfg.RegistrationMode)
+	}
+
+	switch cfg.Edition {
+	case "oss", "saas":
+	default:
+		return Config{}, fmt.Errorf("GOTCHA_EDITION must be oss or saas, got %q", cfg.Edition)
 	}
 
 	if cfg.RetentionDays < 1 {
@@ -166,8 +291,18 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.ProfileEvalInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL must be >= 1, got %d", cfg.ProfileEvalInterval)
 	}
-	if cfg.DefaultEventQuota < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 1, got %d", cfg.DefaultEventQuota)
+	// Квоты: 0 = безлимит (легитимно в любой редакции), отрицательные — ошибка.
+	if cfg.DefaultEventQuota < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 0, got %d", cfg.DefaultEventQuota)
+	}
+	if cfg.DefaultTransactionQuota < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_TRANSACTION_QUOTA must be >= 0, got %d", cfg.DefaultTransactionQuota)
+	}
+	if cfg.DefaultMetricQuota < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_METRIC_QUOTA must be >= 0, got %d", cfg.DefaultMetricQuota)
+	}
+	if cfg.DefaultProfileQuota < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_PROFILE_QUOTA must be >= 0, got %d", cfg.DefaultProfileQuota)
 	}
 	if cfg.MaxEventBytes < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_MAX_EVENT_BYTES must be >= 1, got %d", cfg.MaxEventBytes)
@@ -202,6 +337,20 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.VKEnabled && (cfg.VKClientID == "" || cfg.VKClientSecret == "") {
 		return Config{}, fmt.Errorf("GOTCHA_VK_ENABLED requires GOTCHA_VK_CLIENT_ID and _CLIENT_SECRET")
+	}
+
+	// SEC-C1: дефолтный ключ подписи oauth-cookie публично известен из исходников.
+	// В серверных режимах (web/all) на не-localhost BaseURL это дыра (угон аккаунта
+	// через OAuth-link) — отказываемся стартовать. Escape-hatch для нестандартного
+	// dev-окружения — GOTCHA_ALLOW_INSECURE_SECRET=1.
+	if (cfg.Mode == "web" || cfg.Mode == "all") &&
+		cfg.SecretKey == "insecure-dev-secret" &&
+		!isLocalBaseURL(cfg.BaseURL) &&
+		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
+		return Config{}, fmt.Errorf(
+			"GOTCHA_SECRET_KEY must be set to a strong random value for a non-local %s instance "+
+				"(default key is public and enables OAuth account takeover); "+
+				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development", cfg.Mode)
 	}
 
 	return cfg, nil

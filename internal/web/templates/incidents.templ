@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
@@ -22,36 +23,40 @@ type IncidentRow struct {
 
 templ incidentListRow(row IncidentRow) {
 	<tr>
+		<td><span class={ incidentStatusBadgeClass(row.Incident) }>{ i18n.T(ctx, incidentStatusTextKey(row.Incident)) }</span></td>
 		<td><a href={ templ.URL(monitorDetailPath(row.Incident.MonitorID)) }>{ row.MonitorName }</a></td>
-		<td>{ ago(row.Incident.StartedAt) }</td>
-		<td>{ incidentDurationText(row.Incident) }</td>
+		<td>{ ago(ctx, row.Incident.StartedAt) }</td>
+		<td>{ incidentDurationText(ctx, row.Incident) }</td>
 		<td>{ row.Incident.Cause }</td>
 		<td>{ strings.Join(row.Incident.Regions, ", ") }</td>
-		<td>{ yesNo(row.Incident.InMaintenance) }</td>
+		<td>{ yesNo(ctx, row.Incident.InMaintenance) }</td>
 	</tr>
 }
 
 // IncidentsList — GET /projects/{id}/incidents: инциденты по всем мониторам
 // проекта, самые свежие первыми — доступна любому, у кого есть доступ к
 // проекту (CanAccessProject), не только owner/admin, тот же принцип, что и у
-// MonitorsList.
+// MonitorsList. Breadcrumb "← Monitors" ведёт к родительскому списку (тот же
+// паттерн, что у MonitorDetail), боковая панель app-shell уже даёт прямую
+// ссылку на "Incidents" из любого раздела uptime — здесь не дублируется.
 templ IncidentsList(projectID int64, rows []IncidentRow, userEmail string) {
-	@layout("Incidents", userEmail) {
+	@layout(i18n.T(ctx, "nav.incidents"), userEmail) {
 		<div class="incidents">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← Monitors</a></p>
-			<h1>Инциденты</h1>
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
 			if len(rows) == 0 {
-				<p>Инцидентов нет.</p>
+				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>Монитор</th>
-							<th>Начало</th>
-							<th>Длительность</th>
-							<th>Причина</th>
-							<th>Регионы</th>
-							<th>Maintenance</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.monitor") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
 						</tr>
 					</thead>
 					<tbody>

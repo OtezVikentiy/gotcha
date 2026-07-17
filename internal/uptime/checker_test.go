@@ -36,7 +36,7 @@ func TestHTTPCheckerOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method: "GET",
 		URL:    srv.URL,
@@ -60,7 +60,7 @@ func TestHTTPChecker500WithDefaultExpectedStatusFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method: "GET",
 		URL:    srv.URL,
@@ -84,7 +84,7 @@ func TestHTTPCheckerExpectedStatusMatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:         "GET",
 		URL:            srv.URL,
@@ -106,7 +106,7 @@ func TestHTTPCheckerBodyContainsFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:       "GET",
 		URL:          srv.URL,
@@ -125,7 +125,7 @@ func TestHTTPCheckerBodyContainsNotFoundFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:       "GET",
 		URL:          srv.URL,
@@ -147,7 +147,7 @@ func TestHTTPCheckerBodyNotContainsFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:          "GET",
 		URL:             srv.URL,
@@ -178,7 +178,7 @@ func redirectServer(t *testing.T) *httptest.Server {
 func TestHTTPCheckerRedirectNotFollowedExpected301(t *testing.T) {
 	srv := redirectServer(t)
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:          "GET",
 		URL:             srv.URL + "/redirect",
@@ -198,7 +198,7 @@ func TestHTTPCheckerRedirectNotFollowedExpected301(t *testing.T) {
 func TestHTTPCheckerRedirectNotFollowedUnexpectedFails(t *testing.T) {
 	srv := redirectServer(t)
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:          "GET",
 		URL:             srv.URL + "/redirect",
@@ -217,7 +217,7 @@ func TestHTTPCheckerRedirectNotFollowedUnexpectedFails(t *testing.T) {
 func TestHTTPCheckerRedirectFollowedReachesTarget(t *testing.T) {
 	srv := redirectServer(t)
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method:          "GET",
 		URL:             srv.URL + "/redirect",
@@ -240,7 +240,7 @@ func TestHTTPCheckerTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 1, httpConfig(t, uptime.HTTPConfig{
 		Method: "GET",
 		URL:    srv.URL,
@@ -262,7 +262,7 @@ func TestHTTPCheckerTimingsNonZero(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method: "GET",
 		URL:    srv.URL,
@@ -286,7 +286,7 @@ func TestHTTPCheckerTLSFillsSSLExpiresAt(t *testing.T) {
 	certPool := x509.NewCertPool()
 	certPool.AddCert(srv.Certificate())
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	c.TLSClientConfig = &tls.Config{RootCAs: certPool}
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method: "GET",
@@ -319,7 +319,7 @@ func TestHTTPCheckerBodyCappedAt1MB(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := uptime.NewHTTPChecker()
+	c := uptime.NewHTTPChecker(true)
 	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
 		Method: "GET",
 		URL:    srv.URL,
@@ -334,7 +334,87 @@ func TestHTTPCheckerBodyCappedAt1MB(t *testing.T) {
 	}
 }
 
+// TestHTTPCheckerBlocksLoopbackWhenPrivateDisallowed — при allowPrivate=false
+// чекер режет соединение к loopback (SSRF-фильтр по умолчанию): результат down
+// с ошибкой блокировки, до сервера запрос не доходит.
+func TestHTTPCheckerBlocksLoopbackWhenPrivateDisallowed(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := uptime.NewHTTPChecker(false)
+	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
+		Method: "GET",
+		URL:    srv.URL,
+	}))
+
+	got := c.Check(context.Background(), m)
+	if got.OK {
+		t.Fatalf("Check() = %+v, want down (loopback blocked)", got)
+	}
+	if !strings.Contains(got.Error, "blocked") {
+		t.Errorf("Error = %q, want it to mention blocked target", got.Error)
+	}
+	if hit {
+		t.Error("request reached the loopback server, want it blocked before dial")
+	}
+}
+
+// TestHTTPCheckerAllowsLoopbackWhenPrivateAllowed — при allowPrivate=true
+// фильтр отключён и запрос к loopback доходит.
+func TestHTTPCheckerAllowsLoopbackWhenPrivateAllowed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	c := uptime.NewHTTPChecker(true)
+	m := checkerMonitor(uptime.KindHTTP, 5, httpConfig(t, uptime.HTTPConfig{
+		Method: "GET",
+		URL:    srv.URL,
+	}))
+
+	got := c.Check(context.Background(), m)
+	if !got.OK || got.Error != "" {
+		t.Fatalf("Check() = %+v, want OK (allowPrivate=true)", got)
+	}
+}
+
 // --- TCP ---
+
+// TestTCPCheckerBlocksLoopbackWhenPrivateDisallowed — при allowPrivate=false
+// TCP-чекер режет коннект к loopback: результат down с ошибкой блокировки.
+func TestTCPCheckerBlocksLoopbackWhenPrivateDisallowed(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("atoi port: %v", err)
+	}
+
+	c := uptime.NewTCPChecker(false)
+	m := checkerMonitor(uptime.KindTCP, 5, tcpConfig(t, uptime.TCPConfig{Host: host, Port: port}))
+
+	got := c.Check(context.Background(), m)
+	if got.OK {
+		t.Fatalf("Check() = %+v, want down (loopback blocked)", got)
+	}
+	if !strings.Contains(got.Error, "blocked") {
+		t.Errorf("Error = %q, want it to mention blocked target", got.Error)
+	}
+}
 
 func TestTCPCheckerConnectsToLiveListener(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -352,7 +432,7 @@ func TestTCPCheckerConnectsToLiveListener(t *testing.T) {
 		t.Fatalf("atoi port: %v", err)
 	}
 
-	c := uptime.NewTCPChecker()
+	c := uptime.NewTCPChecker(true)
 	m := checkerMonitor(uptime.KindTCP, 5, tcpConfig(t, uptime.TCPConfig{Host: host, Port: port}))
 
 	got := c.Check(context.Background(), m)
@@ -376,7 +456,7 @@ func TestTCPCheckerFailsOnClosedPort(t *testing.T) {
 	}
 	ln.Close() // free the port so the connection is refused
 
-	c := uptime.NewTCPChecker()
+	c := uptime.NewTCPChecker(true)
 	m := checkerMonitor(uptime.KindTCP, 5, tcpConfig(t, uptime.TCPConfig{Host: host, Port: port}))
 
 	got := c.Check(context.Background(), m)
@@ -459,7 +539,7 @@ func TestCheckerForDispatchesByKind(t *testing.T) {
 		{uptime.KindDNS, "*uptime.DNSChecker"},
 	}
 	for _, tc := range cases {
-		got, err := uptime.CheckerFor(tc.kind)
+		got, err := uptime.CheckerFor(tc.kind, false)
 		if err != nil {
 			t.Fatalf("CheckerFor(%v): %v", tc.kind, err)
 		}
@@ -470,7 +550,7 @@ func TestCheckerForDispatchesByKind(t *testing.T) {
 }
 
 func TestCheckerForHeartbeatFails(t *testing.T) {
-	_, err := uptime.CheckerFor(uptime.KindHeartbeat)
+	_, err := uptime.CheckerFor(uptime.KindHeartbeat, false)
 	if err == nil {
 		t.Fatalf("CheckerFor(heartbeat) = nil error, want error")
 	}

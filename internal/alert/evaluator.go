@@ -42,6 +42,15 @@ type Evaluator struct {
 	// false, email-каналы пропускаются (с warn-логом), чтобы не ставить в
 	// очередь задачи, которые notify.Worker всё равно не сможет доставить.
 	EmailEnabled bool
+
+	// ExternalDetails управляет тем, раскрывать ли детали ошибки во внешние
+	// каналы (Telegram/webhook). true (дефолт логики, проставляется в main.go
+	// из cfg.ExternalChannelDetails) — слать полный payload с title/culprit/
+	// level/телом, как раньше. false — не раскрывать: текст ошибки может
+	// нести ПДн, а Telegram/webhook уводят их за пределы РФ (152-ФЗ), поэтому
+	// во внешние каналы уходит только ссылка на issue и вид алерта. Email —
+	// внутренний SMTP оператора — гейтом не затрагивается.
+	ExternalDetails bool
 }
 
 // OnIssue — точка входа для ingest.Pipeline (new_issue/regression) и
@@ -102,6 +111,13 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 			"channel_kind": ch.Kind,
 			"target":       ch.Target,
 			"secret":       ch.Secret,
+		}
+		if !e.ExternalDetails && (ch.Kind == ChannelTelegram || ch.Kind == ChannelWebhook) {
+			// Обезличиваем payload для внешних каналов: без title/culprit/
+			// level и без текста ошибки в теле/subject — только маршрутные
+			// поля, ссылка на issue и вид алерта (см. Evaluator.ExternalDetails
+			// и notify.RedactExternalPayload — тот же гейт во всех нотифаерах).
+			payload = notify.RedactExternalPayload(payload)
 		}
 		if err := e.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("alert: enqueue failed", "channel_id", ch.ID, "error", err)

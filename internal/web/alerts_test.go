@@ -262,13 +262,16 @@ func TestWebAlertsChannels(t *testing.T) {
 	}
 }
 
-// TestWebAlertsPageShowsFailedDeliveries — spec §7: failed-уведомления
-// должны быть видны на странице алертов, не только в логах воркера. Заводим
-// канал + одну failed-запись в notification_outbox напрямую (notify-пакет,
-// как и web-тесты, не создаёт для этого отдельного сервисного слоя — Outbox
-// это и есть публичный API) и проверяем, что GET показывает канал/адресат и
-// текст ошибки.
-func TestWebAlertsPageShowsFailedDeliveries(t *testing.T) {
+// TestWebAlertDeliveriesPageShowsFailedDeliveries — spec §7: failed-
+// уведомления должны быть видны в UI, не только в логах воркера. Живут на
+// отдельной странице /alerts/deliveries (вынесена из основной страницы
+// алертов — UI-фидбек: секция делала страницу алертов слишком длинной).
+// Заводим канал + одну failed-запись в notification_outbox напрямую
+// (notify-пакет, как и web-тесты, не создаёт для этого отдельного
+// сервисного слоя — Outbox это и есть публичный API) и проверяем, что GET
+// показывает канал/адресат и текст ошибки, а основная страница алертов эту
+// запись больше не показывает.
+func TestWebAlertDeliveriesPageShowsFailedDeliveries(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
 	orgSvc := org.NewService(s.pool, 1_000_000)
@@ -304,21 +307,100 @@ func TestWebAlertsPageShowsFailedDeliveries(t *testing.T) {
 	}
 
 	alertsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alerts"
+	deliveriesPath := alertsPath + "/deliveries"
+
+	// The main alerts page no longer shows the failed-deliveries table (the
+	// channel's target legitimately still appears there, in the channels
+	// table — so assert on the failed-delivery error text instead, which
+	// only ever appears in the failed-deliveries table).
 	resp := getWithCookie(t, s.srv, alertsPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", alertsPath, resp.StatusCode, body)
 	}
+	if strings.Contains(string(body), "connection refused by hooks.example.com") {
+		t.Fatalf("GET %s still shows failed delivery error (should have moved to %s): %s", alertsPath, deliveriesPath, body)
+	}
+
+	resp = getWithCookie(t, s.srv, deliveriesPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", deliveriesPath, resp.StatusCode, body)
+	}
 	if !strings.Contains(string(body), "https://hooks.example.com/failed-test") {
-		t.Fatalf("GET %s missing failed delivery target: %s", alertsPath, body)
+		t.Fatalf("GET %s missing failed delivery target: %s", deliveriesPath, body)
 	}
 	if !strings.Contains(string(body), "connection refused by hooks.example.com") {
-		t.Fatalf("GET %s missing failed delivery error: %s", alertsPath, body)
+		t.Fatalf("GET %s missing failed delivery error: %s", deliveriesPath, body)
 	}
 	// The signing secret must never reach the page.
 	if strings.Contains(string(body), "sig-secret") {
-		t.Fatalf("GET %s leaks channel secret: %s", alertsPath, body)
+		t.Fatalf("GET %s leaks channel secret: %s", deliveriesPath, body)
+	}
+
+	// Member (non-owner/admin) is denied, same guard as the main alerts page.
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "alertsfailed-member@example.com")
+	if err := orgSvc.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	resp = getWithCookie(t, s.srv, deliveriesPath, memberCookie)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (member) status = %d, want 404", deliveriesPath, resp.StatusCode)
+	}
+}
+
+// TestWebAlertsEmailEnabled — PROD-P2: форма канала алертов отражает
+// доступность SMTP. При EmailEnabled=false опция Email дизейблена с
+// пояснением «SMTP не настроен» (активной опции email в форме нет); при
+// EmailEnabled=true — обычная активная опция email.
+func TestWebAlertsEmailEnabled(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "alertsemail-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "alertsemail-co", "AlertsEmail Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "alertsemail-proj", "AlertsEmail Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	alertsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alerts"
+
+	// SMTP не настроен: опция Email дизейблена, есть пояснение, активной
+	// опции email нет.
+	s.h.EmailEnabled = false
+	resp := getWithCookie(t, s.srv, alertsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", alertsPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "SMTP не настроен") {
+		t.Fatalf("GET %s (email disabled) missing SMTP hint: %s", alertsPath, body)
+	}
+	if strings.Contains(string(body), `<option value="email">Email</option>`) {
+		t.Fatalf("GET %s (email disabled) still has active email option: %s", alertsPath, body)
+	}
+
+	// SMTP настроен: обычная активная опция email.
+	s.h.EmailEnabled = true
+	resp = getWithCookie(t, s.srv, alertsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", alertsPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `<option value="email">Email</option>`) {
+		t.Fatalf("GET %s (email enabled) missing active email option: %s", alertsPath, body)
+	}
+	if strings.Contains(string(body), "SMTP не настроен") {
+		t.Fatalf("GET %s (email enabled) unexpectedly shows SMTP hint: %s", alertsPath, body)
 	}
 }
 

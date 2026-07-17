@@ -95,11 +95,13 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("POST %s (empty name) status = %d, want 422: %s", renamePath, resp.StatusCode, body)
 	}
 
-	// Ключей пока нет -> DSN не показан.
+	// Ключей пока нет -> DSN не показан. DSN рендерится только внутри <pre>
+	// (см. templates.ProjectSettings), поэтому проверяем именно этот тег, а
+	// не "://" — тот встречается и в xmlns иконки-спрайта в <body>.
 	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if strings.Contains(string(body), "://") {
+	if strings.Contains(string(body), "<pre>") {
 		t.Fatalf("GET %s unexpectedly has a DSN before any key created: %s", settingsPath, body)
 	}
 
@@ -143,8 +145,10 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("other project's key revoked unexpectedly: %+v err=%v", k2, err)
 	}
 
-	// Отзыв своего ключа + выпуск нового -> DSN обновился.
-	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(firstKeyID, 10)}}, s.srv.URL, ownerCookie)
+	// Отзыв своего ключа (с confirmed=yes — без него revoke только показал бы
+	// страницу подтверждения, см. TestWebProjectSettingsRevokeConfirmGate) +
+	// выпуск нового -> DSN обновился.
+	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(firstKeyID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

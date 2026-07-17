@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -47,7 +48,7 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -55,23 +56,23 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	// отсутствии доступа (тот же приём, что и guard на h.Trace в performanceList),
 	// а не паника при разыменовании.
 	if h.PerfIssues == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	status, filterName := perfIssueStatusFilter(r.URL.Query().Get("status"))
 	items, err := h.PerfIssues.List(r.Context(), projectID, status, perfIssuesListLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -85,39 +86,39 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 // существование чужих числовых id (тот же принцип, что и loadAccessibleIssue).
 func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request, uid int64) (trace.PerfIssue, bool) {
 	if h.PerfIssues == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return trace.PerfIssue{}, false
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return trace.PerfIssue{}, false
 	}
 	projectID, found, err := h.PerfIssues.ProjectOf(r.Context(), id)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return trace.PerfIssue{}, false
 	}
 	if !found {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return trace.PerfIssue{}, false
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return trace.PerfIssue{}, false
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return trace.PerfIssue{}, false
 	}
 	iss, err := h.PerfIssues.Get(r.Context(), projectID, id)
 	if err != nil {
 		if errors.Is(err, trace.ErrNotFound) {
-			http.NotFound(w, r)
+			h.notFound(w, r)
 			return trace.PerfIssue{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return trace.PerfIssue{}, false
 	}
 	return iss, true
@@ -144,12 +145,12 @@ func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 	// команду (тот же приём, что и в issuesList).
 	orgID, err := h.Org.ProjectOrg(r.Context(), iss.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	canManage := role == org.RoleOwner || role == org.RoleAdmin
@@ -177,12 +178,12 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.PerfIssues == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		h.renderError(w, r, http.StatusNotFound, "not found")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	// Проект резолвим ДО проверки роли: requireProjectRole проверяет роль в
@@ -191,11 +192,11 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 	// — иначе разные тела ответа выдавали бы существование id (enumeration).
 	projectID, found, err := h.PerfIssues.ProjectOf(r.Context(), id)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !found {
-		h.renderError(w, r, http.StatusNotFound, "not found")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
@@ -212,10 +213,10 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, trace.ErrNotFound) {
-			http.NotFound(w, r)
+			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, perfIssueDetailPath(id), http.StatusSeeOther)

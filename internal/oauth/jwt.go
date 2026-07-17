@@ -15,6 +15,10 @@ import (
 // cryptoSHA256 — алиас для rsa.VerifyPKCS1v15 (и тестового rsa.SignPKCS1v15).
 const cryptoSHA256 = crypto.SHA256
 
+// minRSAModulusBits — минимальный размер RSA-модуля ключа JWKS (SEC-L3).
+// Ключи короче 2048 бит считаются слабыми и отклоняются.
+const minRSAModulusBits = 2048
+
 var (
 	ErrUnsupportedAlg = errors.New("oauth: unsupported id_token alg (want RS256)")
 	ErrBadToken       = errors.New("oauth: malformed or unverifiable id_token")
@@ -49,7 +53,14 @@ func parseJWK(k jwk) (*rsa.PublicKey, error) {
 	if !e.IsInt64() || e.Int64() > 1<<31 {
 		return nil, ErrBadToken
 	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(nb), E: int(e.Int64())}, nil
+	pub := &rsa.PublicKey{N: new(big.Int).SetBytes(nb), E: int(e.Int64())}
+	// SEC-L3: отклоняем слабые RSA-ключи из JWKS. Ключ короче 2048 бит
+	// (или пустой) не даёт нужной стойкости подписи id_token — не доверяем
+	// такому ключу, даже если провайдер его отдал.
+	if pub.N.BitLen() < minRSAModulusBits {
+		return nil, ErrBadToken
+	}
+	return pub, nil
 }
 
 // verifyRS256 проверяет подпись id_token по JWKS и возвращает claims.

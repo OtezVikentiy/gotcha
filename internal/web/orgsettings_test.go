@@ -216,6 +216,53 @@ func TestWebOrgSettings(t *testing.T) {
 	}
 }
 
+// TestWebInviteEmailMismatch — SEC-M2: POST /invite/{token} чужим (не тем, на
+// кого выписан инвайт) юзером → 422 с понятным сообщением, членство не
+// создаётся, инвайт остаётся действующим; правильный юзер принимает его.
+func TestWebInviteEmailMismatch(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, _ := orgSettingsRegister(t, authSvc, "mm-web-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "mm-web-co", "MM Web Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	token, err := orgSvc.Invite(context.Background(), o.ID, "mm-web-invited@example.com", org.RoleMember)
+	if err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	invitePath := "/invite/" + token
+
+	// Чужой юзер (другой email) → 422 с сообщением про другой email, членства нет.
+	strangerID, strangerCookie := orgSettingsRegister(t, authSvc, "mm-web-stranger@example.com")
+	resp := postForm(t, s.srv, invitePath, url.Values{}, s.srv.URL, strangerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (stranger) status = %d, want 422: %s", invitePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "другой email") {
+		t.Fatalf("POST %s (stranger) body missing mismatch message: %s", invitePath, body)
+	}
+	if _, err := orgSvc.Role(context.Background(), o.ID, strangerID); !errors.Is(err, org.ErrNotMember) {
+		t.Fatalf("stranger role: got %v, want ErrNotMember", err)
+	}
+
+	// Правильный юзер принимает тот же (не потраченный) инвайт → 303, member.
+	invitedID, invitedCookie := orgSettingsRegister(t, authSvc, "mm-web-invited@example.com")
+	resp = postForm(t, s.srv, invitePath, url.Values{}, s.srv.URL, invitedCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (invited) status = %d, want 303", invitePath, resp.StatusCode)
+	}
+	if role, err := orgSvc.Role(context.Background(), o.ID, invitedID); err != nil || role != org.RoleMember {
+		t.Fatalf("invited role = %v, %v, want member, nil", role, err)
+	}
+}
+
 // TestWebOrgSettingsOwnerOnlyManagesOwnerRole — привилегия owner-level
 // действий (задача 2, security fix): admin имеет доступ к настройкам
 // организации (requireOrgRole пускает owner/admin), но не может ни выдать
@@ -382,7 +429,8 @@ func TestWebManageLinksVisibility(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s (%s) status = %d, want 200: %s", issuesPath, tc.descriptor, resp.StatusCode, body)
 		}
-		got := strings.Contains(string(body), "Project settings")
+		settingsHref := "/projects/" + strconv.FormatInt(p.ID, 10) + "/settings"
+		got := strings.Contains(string(body), settingsHref)
 		if got != tc.wantLink {
 			t.Fatalf("GET %s (%s): Project settings link present = %v, want %v: %s", issuesPath, tc.descriptor, got, tc.wantLink, body)
 		}
@@ -393,7 +441,8 @@ func TestWebManageLinksVisibility(t *testing.T) {
 		if projResp.StatusCode != http.StatusOK {
 			t.Fatalf("GET /projects (%s) status = %d, want 200: %s", tc.descriptor, projResp.StatusCode, projBody)
 		}
-		gotOrg := strings.Contains(string(projBody), "Org settings")
+		orgSettingsHref := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
+		gotOrg := strings.Contains(string(projBody), orgSettingsHref)
 		if gotOrg != tc.wantLink {
 			t.Fatalf("GET /projects (%s): Org settings link present = %v, want %v: %s", tc.descriptor, gotOrg, tc.wantLink, projBody)
 		}
@@ -438,7 +487,7 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	}
 
 	// POST quota без Origin -> 403.
-	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"500"}}, "", ownerCookie)
+	resp = postForm(t, s.srv, quotaPath, url.Values{"event_quota": {"500"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -446,7 +495,7 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	}
 
 	// POST quota member -> 404.
-	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"500"}}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, quotaPath, url.Values{"event_quota": {"500"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -454,7 +503,7 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	}
 
 	// POST quota отрицательная -> 422, лимит не изменился.
-	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"-1"}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, quotaPath, url.Values{"event_quota": {"-1"}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -465,7 +514,7 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	}
 
 	// POST quota валидная -> 303, лимит обновлён и виден на странице.
-	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"500"}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, quotaPath, url.Values{"event_quota": {"500"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -482,7 +531,7 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	}
 
 	// POST quota 0 -> безлимит, отображается отдельным текстом.
-	resp = postForm(t, s.srv, quotaPath, url.Values{"quota": {"0"}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, quotaPath, url.Values{"event_quota": {"0"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -493,6 +542,89 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(strings.ToLower(string(body)), "безлимит") {
 		t.Fatalf("GET %s missing unlimited marker after quota=0: %s", settingsPath, body)
+	}
+}
+
+// TestWebOrgSettingsRateGuard — задача 3c (PROD-B3): все квоты (события,
+// транзакции, метрики, профили) видимы как единый защитный лимит приёма
+// (rate-guard). Один POST сохраняет все 4 через соответствующие Set*Quota;
+// 0 = безлимит. Проверяем, что значения долетели в БД (через Get), а страница
+// показывает заголовок rate-guard и usage-строки по каждому виду.
+func TestWebOrgSettingsRateGuard(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "rateguard-owner@example.com")
+
+	o, err := orgSvc.CreateOrg(context.Background(), "rateguard-co", "RateGuard Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	settingsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
+	quotaPath := settingsPath + "/quota"
+
+	// GET показывает заголовок rate-guard и usage-строки всех 4 видов приёма.
+	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", settingsPath, resp.StatusCode, body)
+	}
+	for _, marker := range []string{"rate-guard", "Транзакции", "Метрики", "Профили", "event_quota", "transaction_quota", "metric_quota", "profile_quota"} {
+		if !strings.Contains(string(body), marker) {
+			t.Fatalf("GET %s missing rate-guard marker %q: %s", settingsPath, marker, body)
+		}
+	}
+
+	// POST сохраняет все 4 квоты за один раз → 303.
+	form := url.Values{
+		"event_quota":       {"500"},
+		"transaction_quota": {"400"},
+		"metric_quota":      {"300"},
+		"profile_quota":     {"200"},
+	}
+	resp = postForm(t, s.srv, quotaPath, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (all quotas) status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	got, err := orgSvc.Get(context.Background(), o.ID)
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	if got.EventQuota != 500 || got.TransactionQuota != 400 || got.MetricQuota != 300 || got.ProfileQuota != 200 {
+		t.Fatalf("quotas after POST = %+v, want event=500 tx=400 metric=300 profile=200", got)
+	}
+
+	// 0 = безлимит для транзакций/метрик/профилей; отрицательное значение → 422.
+	resp = postForm(t, s.srv, quotaPath, url.Values{
+		"event_quota": {"0"}, "transaction_quota": {"0"}, "metric_quota": {"0"}, "profile_quota": {"0"},
+	}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (zeros) status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	got, err = orgSvc.Get(context.Background(), o.ID)
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	if got.EventQuota != 0 || got.TransactionQuota != 0 || got.MetricQuota != 0 || got.ProfileQuota != 0 {
+		t.Fatalf("quotas after zero POST = %+v, want all 0", got)
+	}
+
+	// Отрицательная транзакционная квота → 422, значения не изменились.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"transaction_quota": {"-5"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (negative tx) status = %d, want 422", quotaPath, resp.StatusCode)
+	}
+	if got, err := orgSvc.Get(context.Background(), o.ID); err != nil || got.TransactionQuota != 0 {
+		t.Fatalf("tx quota after rejected negative = %+v, err=%v, want 0", got, err)
 	}
 }
 

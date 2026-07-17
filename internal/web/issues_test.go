@@ -14,11 +14,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -31,6 +33,8 @@ type issuesStack struct {
 	org     *org.Service
 	auth    *auth.Service
 	issues  *issue.Service
+	alerts  *alert.Service
+	uptime  *uptime.Service
 	batcher *event.Batcher
 }
 
@@ -45,6 +49,8 @@ func newIssuesStack(t *testing.T) *issuesStack {
 	eventsQuery := event.NewQuery(ch)
 	batcher := event.NewBatcher(ch)
 	go batcher.Run()
+	alertSvc := alert.NewService(pool)
+	uptimeSvc := uptime.NewService(pool)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,9 +64,14 @@ func newIssuesStack(t *testing.T) *issuesStack {
 	})
 
 	h := web.New(authSvc, orgSvc, issueSvc, eventsQuery, srv.URL)
+	// Alerts/Uptime (задача 5, чек-лист «Первые шаги»): страница issues
+	// определяет закрытые шаги онбординга по этим сервисам, поэтому стенд
+	// заводит их так же, как newStack (auth_test.go) заводит h.Alerts.
+	h.Alerts = alertSvc
+	h.Uptime = uptimeSvc
 	h.Register(mux)
 
-	return &issuesStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, batcher: batcher}
+	return &issuesStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
 }
 
 // addEvent кладёт событие в батчер; для попадания в спарклайн теста нужен
@@ -283,6 +294,86 @@ func TestWebIssuesList(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("POST %s (outsider) status = %d, want 404", bulkPath, resp.StatusCode)
+	}
+}
+
+// TestWebIssuesGettingStartedChecklistFreshProject — задача 5 (docs-onboarding):
+// свежий проект (нет событий/каналов/мониторов, в орге один участник —
+// владелец) должен показывать карточку «Первые шаги» с прогрессом 1/4
+// (шаг 1 «создать проект» уже закрыт) и CTA-ссылками на оставшиеся шаги.
+func TestWebIssuesGettingStartedChecklistFreshProject(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "gs-fresh-owner@example.com")
+	project := createProject(t, s, ownerID, "gs-fresh-org", "gs-fresh-proj")
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `class="card getting-started"`) {
+		t.Fatalf("GET %s missing getting-started checklist: %s", issuesPath, body)
+	}
+	if !strings.Contains(string(body), "1/4") {
+		t.Fatalf("GET %s checklist missing 1/4 progress: %s", issuesPath, body)
+	}
+	// CTA-ссылки на оставшиеся шаги (SDK/alerts/org settings).
+	for _, href := range []string{
+		"/projects/" + strconv.FormatInt(project.ID, 10) + "/setup",
+		"/projects/" + strconv.FormatInt(project.ID, 10) + "/alerts",
+	} {
+		if !strings.Contains(string(body), href) {
+			t.Fatalf("GET %s checklist missing CTA link %q: %s", issuesPath, href, body)
+		}
+	}
+}
+
+// TestWebIssuesGettingStartedChecklistAllDone — когда все 4 шага онбординга
+// закрыты (есть issue, есть канал алертов, в орге больше одного участника),
+// карточка «Первые шаги» больше не рендерится.
+func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "gs-done-owner@example.com")
+	project := createProject(t, s, ownerID, "gs-done-org", "gs-done-proj")
+
+	// Шаг 2: есть хотя бы одна issue (total > 0).
+	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-done", "Boom", "pkg/a.go:1", "error", "", time.Now().UTC()); err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
+
+	// Шаг 3: есть канал доставки алертов.
+	if _, err := s.alerts.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: project.ID,
+		Kind:      alert.ChannelEmail,
+		Enabled:   true,
+		Target:    "ops@example.com",
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	// Шаг 4: в орге больше одного участника.
+	memberID, _ := registerAndLogin(t, s, "gs-done-member@example.com")
+	orgID, err := s.org.ProjectOrg(context.Background(), project.ID)
+	if err != nil {
+		t.Fatalf("project org: %v", err)
+	}
+	if err := s.org.AddMember(context.Background(), orgID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `class="card getting-started"`) {
+		t.Fatalf("GET %s should not show getting-started checklist when all steps are done: %s", issuesPath, body)
 	}
 }
 

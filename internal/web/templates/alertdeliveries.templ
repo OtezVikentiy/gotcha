@@ -1,0 +1,72 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+)
+
+// maxFailedErrorRunes caps the displayed last_error at 200 runes (not
+// bytes, to avoid splitting multi-byte UTF-8 sequences) — sender errors
+// (SMTP responses, HTTP bodies) are arbitrary free text and can be long;
+// this is an overview table, not a full log viewer.
+const maxFailedErrorRunes = 200
+
+func truncateFailedError(s string) string {
+	r := []rune(s)
+	if len(r) <= maxFailedErrorRunes {
+		return s
+	}
+	return string(r[:maxFailedErrorRunes]) + "…"
+}
+
+templ failedRow(f notify.FailedJob) {
+	<tr>
+		<td><span class="badge badge-neutral">{ channelKindLabel(ctx, f.ChannelKind) }</span></td>
+		<td>{ f.Target }</td>
+		<td><span class="badge badge-danger">{ i18n.T(ctx, "alerts.failed.status") }</span></td>
+		<td class="num">{ strconv.Itoa(f.Attempts) }</td>
+		<td>{ truncateFailedError(f.LastError) }</td>
+		<td>{ f.CreatedAt.Format(time.RFC3339) }</td>
+	</tr>
+}
+
+// AlertDeliveries — GET /projects/{id}/alerts/deliveries: лог последних
+// неудачных доставок уведомлений (spec §7 — не только правила/каналы, но и
+// то, что реально не долетело, должно быть видно в UI, не только в логах
+// воркера). Вынесена из основной страницы алертов (UI-фидбек: секция делала
+// страницу алертов слишком длинной/разрежённой).
+templ AlertDeliveries(projectID int64, failed []notify.FailedJob, userEmail string) {
+	@layout(i18n.T(ctx, "alerts.deliveries.title"), userEmail) {
+		<div class="alert-deliveries">
+			<p class="breadcrumb"><a href={ templ.URL(alertsPath(projectID)) }>← { i18n.T(ctx, "nav.alerts") }</a></p>
+			<h1>{ i18n.T(ctx, "alerts.deliveries.title") }</h1>
+			@helpPanel("alertdeliveries", "alerts")
+			if len(failed) == 0 {
+				@emptyState("bell", "alerts.deliveries.empty.title", "alerts.deliveries.empty.body", "", "")
+			} else {
+				<div class="card">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>{ i18n.T(ctx, "alerts.failed.table.kind") }</th>
+								<th>{ i18n.T(ctx, "alerts.failed.table.target") }</th>
+								<th>{ i18n.T(ctx, "alerts.failed.table.status") }</th>
+								<th class="num">{ i18n.T(ctx, "alerts.failed.table.attempts") }</th>
+								<th>{ i18n.T(ctx, "alerts.failed.table.error") }</th>
+								<th>{ i18n.T(ctx, "alerts.failed.table.when") }</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, f := range failed {
+								@failedRow(f)
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		</div>
+	}
+}

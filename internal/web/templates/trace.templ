@@ -3,6 +3,8 @@ package templates
 import (
 	"strconv"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
 // TraceWaterfallData — всё, что нужно странице waterfall: имя транзакции,
@@ -34,20 +36,29 @@ func traceFlamePath(traceID string) string {
 templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 	@layout(d.Transaction, userEmail) {
 		<div class="trace-detail">
-			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← Performance</a></p>
+			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← { i18n.T(ctx, "nav.performance") }</a></p>
 			<h1>{ d.Transaction }</h1>
-			<div class="trace-meta">
-				<span>Trace: { d.TraceID }</span>
-				<span>Длительность: { formatDurationUS(d.TotalUS) }</span>
-				<span>{ ago(d.Timestamp) }</span>
-				if d.HasProfile {
-					<span><a href={ templ.URL(traceFlamePath(d.TraceID)) }>View flamegraph →</a></span>
-				}
+			<div class="monitor-meta">
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "trace.field.trace_id") }</div>
+					<div class="stat-value">{ d.TraceID }</div>
+				</div>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "trace.field.duration") }</div>
+					<div class="stat-value">{ formatDurationUS(d.TotalUS) }</div>
+				</div>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "trace.field.when") }</div>
+					<div class="stat-value">{ ago(ctx, d.Timestamp) }</div>
+				</div>
 			</div>
-			if d.TotalRows > d.ShownRows {
-				<p class="trace-cap-note">Показаны первые { strconv.Itoa(d.ShownRows) } из { strconv.Itoa(d.TotalRows) } спанов (усечено для читаемости).</p>
+			if d.HasProfile {
+				<p class="trace-actions"><a class="btn btn-ghost" href={ templ.URL(traceFlamePath(d.TraceID)) }>{ i18n.T(ctx, "trace.view_flamegraph") }</a></p>
 			}
-			<div class="trace-waterfall">
+			if d.TotalRows > d.ShownRows {
+				<p class="trace-cap-note">{ i18n.Tf(ctx, "trace.truncated", "shown", strconv.Itoa(d.ShownRows), "total", strconv.Itoa(d.TotalRows)) }</p>
+			}
+			<div class="card trace-waterfall">
 				@d.Waterfall
 			</div>
 		</div>
@@ -63,12 +74,17 @@ type TraceFlameData struct {
 // TraceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
 // время трейса, со ссылкой назад на waterfall.
 templ TraceFlame(d TraceFlameData, userEmail string) {
-	@layout("Flamegraph", userEmail) {
+	@layout(i18n.T(ctx, "trace.flame.title"), userEmail) {
 		<div class="trace-flame">
-			<p class="breadcrumb"><a href={ templ.URL("/traces/" + d.TraceID) }>← Waterfall</a></p>
-			<h1>Flamegraph</h1>
-			<div class="trace-meta"><span>Trace: { d.TraceID }</span></div>
-			<div class="flamegraph-wrap">
+			<p class="breadcrumb"><a href={ templ.URL("/traces/" + d.TraceID) }>← { i18n.T(ctx, "trace.waterfall_link") }</a></p>
+			<h1>{ i18n.T(ctx, "trace.flame.title") }</h1>
+			<div class="monitor-meta">
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "trace.field.trace_id") }</div>
+					<div class="stat-value">{ d.TraceID }</div>
+				</div>
+			</div>
+			<div class="card flamegraph-wrap">
 				@d.Chart
 			</div>
 		</div>

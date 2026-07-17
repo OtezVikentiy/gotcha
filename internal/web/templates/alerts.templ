@@ -1,11 +1,11 @@
 package templates
 
 import (
+	"context"
 	"strconv"
-	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
-	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
 func alertsPath(projectID int64) string {
@@ -44,171 +44,181 @@ func ruleByKind(rules []alert.Rule, kind string) alert.Rule {
 }
 
 templ simpleRuleFields(r alert.Rule, prefix, label string) {
-	<fieldset class="alert-rule">
-		<legend>{ label }</legend>
-		<label>
+	<fieldset class="alert-rule card">
+		<legend class="card-header">{ label }</legend>
+		<label class="checkbox-inline">
 			<input type="checkbox" name={ prefix + "_enabled" } checked?={ r.Enabled }/>
-			Включено
+			{ i18n.T(ctx, "alerts.rules.field.enabled") }
 		</label>
-		<label>
-			Throttle (минут)
-			<input type="number" name={ prefix + "_throttle" } value={ strconv.Itoa(r.ThrottleMinutes) } min="0"/>
-		</label>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "alerts.rules.field.throttle") }
+				<input type="number" class="input" name={ prefix + "_throttle" } value={ strconv.Itoa(r.ThrottleMinutes) } min="0"/>
+			</label>
+		</div>
 	</fieldset>
 }
 
 templ spikeRuleFields(r alert.Rule) {
-	<fieldset class="alert-rule">
-		<legend>Всплеск (spike)</legend>
-		<label>
+	<fieldset class="alert-rule card">
+		<legend class="card-header">{ i18n.T(ctx, "alerts.rules.card.spike") }</legend>
+		<label class="checkbox-inline">
 			<input type="checkbox" name="spike_enabled" checked?={ r.Enabled }/>
-			Включено
+			{ i18n.T(ctx, "alerts.rules.field.enabled") }
 		</label>
-		<label>
-			Порог событий
-			<input type="number" name="spike_threshold" value={ strconv.Itoa(r.Threshold) } min="1"/>
-		</label>
-		<label>
-			Окно (минут)
-			<input type="number" name="spike_window" value={ strconv.Itoa(r.WindowMinutes) } min="1"/>
-		</label>
-		<label>
-			Throttle (минут)
-			<input type="number" name="spike_throttle" value={ strconv.Itoa(r.ThrottleMinutes) } min="0"/>
-		</label>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "alerts.rules.field.spike_threshold") }
+				<input type="number" class="input" name="spike_threshold" value={ strconv.Itoa(r.Threshold) } min="1"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "alerts.rules.field.spike_window") }
+				<input type="number" class="input" name="spike_window" value={ strconv.Itoa(r.WindowMinutes) } min="1"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "alerts.rules.field.throttle") }
+				<input type="number" class="input" name="spike_throttle" value={ strconv.Itoa(r.ThrottleMinutes) } min="0"/>
+			</label>
+		</div>
 	</fieldset>
 }
 
-func channelStatus(c alert.Channel) string {
-	if c.Enabled {
-		return "включён"
+// channelKindLabel — человекочитаемая подпись типа канала (email/webhook/
+// telegram); неизвестный (в норме невозможный — валидируется при создании)
+// kind возвращается как есть, чтобы не потерять данные из вида.
+func channelKindLabel(ctx context.Context, kind string) string {
+	switch kind {
+	case alert.ChannelEmail:
+		return i18n.T(ctx, "alerts.channels.kind.email")
+	case alert.ChannelWebhook:
+		return i18n.T(ctx, "alerts.channels.kind.webhook")
+	case alert.ChannelTelegram:
+		return i18n.T(ctx, "alerts.channels.kind.telegram")
+	default:
+		return kind
 	}
-	return "выключен"
 }
 
-// maxFailedErrorRunes caps the displayed last_error at 200 runes (not
-// bytes, to avoid splitting multi-byte UTF-8 sequences) — sender errors
-// (SMTP responses, HTTP bodies) are arbitrary free text and can be long;
-// this is an overview table, not a full log viewer.
-const maxFailedErrorRunes = 200
-
-func truncateFailedError(s string) string {
-	r := []rune(s)
-	if len(r) <= maxFailedErrorRunes {
-		return s
+// channelStatusBadge — бейдж состояния канала (включён/выключен), тот же
+// принцип, что и ruleEnabledBadge в metricalerts.templ.
+templ channelStatusBadge(c alert.Channel) {
+	if c.Enabled {
+		<span class="badge badge-good">{ i18n.T(ctx, "alerts.channels.status.enabled") }</span>
+	} else {
+		<span class="badge badge-neutral">{ i18n.T(ctx, "alerts.channels.status.disabled") }</span>
 	}
-	return string(r[:maxFailedErrorRunes]) + "…"
 }
 
 templ channelRow(projectID int64, c alert.Channel) {
 	<tr>
-		<td>{ c.Kind }</td>
+		<td><span class="badge badge-neutral">{ channelKindLabel(ctx, c.Kind) }</span></td>
 		<td>{ c.Target }</td>
-		<td>{ channelStatus(c) }</td>
+		<td>@channelStatusBadge(c)</td>
 		<td>
 			<form method="post" action={ templ.URL(alertsChannelsDeletePath(projectID)) } class="channel-delete-form">
 				<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
-				<button type="submit">Удалить</button>
+				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "alerts.channels.delete") }</button>
 			</form>
 		</td>
 	</tr>
 }
 
-templ failedRow(f notify.FailedJob) {
-	<tr>
-		<td>{ f.ChannelKind }</td>
-		<td>{ f.Target }</td>
-		<td>{ strconv.Itoa(f.Attempts) }</td>
-		<td>{ truncateFailedError(f.LastError) }</td>
-		<td>{ f.CreatedAt.Format(time.RFC3339) }</td>
-	</tr>
-}
-
 // Alerts — GET/POST /projects/{id}/alerts: правила алертинга (new_issue,
 // regression — enabled+throttle; spike — enabled+threshold+window+throttle)
-// одной формой сохранения, таблица каналов доставки, таблица
-// failed-доставок (spec §7 — не только правила/каналы, но и то, что реально
-// не долетело, должно быть видно в UI, не только в логах воркера; пусто —
-// секция не рендерится) и форма добавления канала. errMsg — сообщение об
-// ошибке последнего POST (ErrInvalidRule / ErrInvalidChannel), рендерится с
-// тем же статусом 422, что и ответ — тот же принцип, что и у
+// одной формой сохранения, таблица каналов доставки и форма добавления
+// канала. Лог неудачных доставок вынесен на отдельную страницу — см.
+// AlertDeliveries (alertdeliveries.templ). errMsg — сообщение об ошибке
+// последнего POST (ErrInvalidRule / ErrInvalidChannel), рендерится с тем же
+// статусом 422, что и ответ — тот же принцип, что и у
 // ProjectSettings/OrgSettings.
-templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, failed []notify.FailedJob, errMsg, userEmail string) {
-	@layout("Alerts", userEmail) {
+templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled bool, errMsg, userEmail string) {
+	@layout(i18n.T(ctx, "alerts.title"), userEmail) {
 		<div class="alerts">
-			<h1>Алерты проекта</h1>
+			<h1>{ i18n.T(ctx, "alerts.title") }</h1>
+			@helpPanel("alerts", "alerts")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			<h2>Правила</h2>
-			<form method="post" action={ templ.URL(alertsRulesPath(projectID)) } class="alert-rules-form">
-				@simpleRuleFields(ruleByKind(rules, alert.KindNewIssue), "new_issue", "Новый issue")
-				@simpleRuleFields(ruleByKind(rules, alert.KindRegression), "regression", "Регрессия (issue снова открылся)")
-				@spikeRuleFields(ruleByKind(rules, alert.KindSpike))
-				<button type="submit">Сохранить правила</button>
-			</form>
+			@createTrigger("new-channel", "alerts.channels.new.title")
 
-			<h2>Каналы доставки</h2>
-			<table>
-				<thead>
-					<tr>
-						<th>Тип</th>
-						<th>Получатель</th>
-						<th>Статус</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, c := range channels {
-						@channelRow(projectID, c)
-					}
-				</tbody>
-			</table>
+			<section class="alerts-section">
+				<h2>{ i18n.T(ctx, "alerts.rules.title") }</h2>
+				<form method="post" action={ templ.URL(alertsRulesPath(projectID)) } class="alert-rules-form">
+					<div class="rule-grid">
+						@simpleRuleFields(ruleByKind(rules, alert.KindNewIssue), "new_issue", i18n.T(ctx, "alerts.rules.card.new_issue"))
+						@simpleRuleFields(ruleByKind(rules, alert.KindRegression), "regression", i18n.T(ctx, "alerts.rules.card.regression"))
+						@spikeRuleFields(ruleByKind(rules, alert.KindSpike))
+					</div>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alerts.rules.submit") }</button>
+				</form>
+			</section>
 
-			if len(failed) > 0 {
-				<h2>Неудачные доставки</h2>
-				<table>
-					<thead>
-						<tr>
-							<th>Тип</th>
-							<th>Получатель</th>
-							<th>Попыток</th>
-							<th>Ошибка</th>
-							<th>Когда</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, f := range failed {
-							@failedRow(f)
-						}
-					</tbody>
-				</table>
+			<section class="alerts-section">
+				<h2>{ i18n.T(ctx, "alerts.channels.title") }</h2>
+				if len(channels) == 0 {
+					@emptyState("bell", "alerts.channels.empty.title", "alerts.channels.empty.body", "", "")
+				} else {
+					<div class="card">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>{ i18n.T(ctx, "alerts.channels.table.kind") }</th>
+									<th>{ i18n.T(ctx, "alerts.channels.table.target") }</th>
+									<th>{ i18n.T(ctx, "alerts.channels.table.status") }</th>
+									<th></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, c := range channels {
+									@channelRow(projectID, c)
+								}
+							</tbody>
+						</table>
+					</div>
+				}
+			</section>
+
+			@createModal("new-channel", "alerts.channels.new.title") {
+				<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
+					<div class="form-grid">
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "alerts.channels.new.kind") }
+							<select name="kind" class="select">
+								if emailEnabled {
+									<option value={ alert.ChannelEmail }>{ i18n.T(ctx, "alerts.channels.kind.email") }</option>
+								} else {
+									<option value={ alert.ChannelEmail } disabled>{ i18n.T(ctx, "alerts.channels.new.kind_email_disabled") }</option>
+								}
+								<option value={ alert.ChannelWebhook }>{ i18n.T(ctx, "alerts.channels.kind.webhook") }</option>
+								<option value={ alert.ChannelTelegram }>{ i18n.T(ctx, "alerts.channels.kind.telegram") }</option>
+							</select>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "alerts.channels.new.target") }
+							<input type="text" name="target" required class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "alerts.channels.new.secret") }
+							<input type="text" name="secret" class="input"/>
+						</label>
+					</div>
+					</div>
+					<label class="checkbox-inline">
+						<input type="checkbox" name="enabled" checked/>
+						{ i18n.T(ctx, "alerts.channels.new.enabled") }
+					</label>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alerts.channels.new.submit") }</button>
+				</form>
 			}
-
-			<h2>Добавить канал</h2>
-			<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
-				<label>
-					Тип
-					<select name="kind">
-						<option value={ alert.ChannelEmail }>Email</option>
-						<option value={ alert.ChannelWebhook }>Webhook</option>
-						<option value={ alert.ChannelTelegram }>Telegram</option>
-					</select>
-				</label>
-				<label>
-					Получатель (email — адрес; webhook — URL; telegram — chat_id)
-					<input type="text" name="target" required/>
-				</label>
-				<label>
-					Секрет (webhook — подпись запроса; telegram — bot token; не нужен для email)
-					<input type="text" name="secret"/>
-				</label>
-				<label>
-					<input type="checkbox" name="enabled" checked/>
-					Включён
-				</label>
-				<button type="submit">Добавить канал</button>
-			</form>
 		</div>
 	}
 }

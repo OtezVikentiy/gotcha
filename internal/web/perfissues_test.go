@@ -108,7 +108,7 @@ func TestWebPerfIssuesList(t *testing.T) {
 	if !strings.Contains(bs, "N+1 запросов: SELECT * FROM users") {
 		t.Fatalf("list missing N+1 title: %s", bs)
 	}
-	if !strings.Contains(bs, "N+1 queries") {
+	if !strings.Contains(bs, "N+1 запросы") {
 		t.Fatalf("list missing human-readable kind: %s", bs)
 	}
 	if !strings.Contains(bs, "GET /orders") {
@@ -171,7 +171,7 @@ func TestWebPerfIssuesListEmpty(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200", listPath, resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "no performance issues detected") {
+	if !strings.Contains(string(body), "Проблем производительности нет") {
 		t.Fatalf("empty list missing placeholder: %s", body)
 	}
 }
@@ -204,7 +204,7 @@ func TestWebPerfIssueDetailAndEvidence(t *testing.T) {
 	if !strings.Contains(bs, "N+1 запросов: SELECT * FROM users WHERE id = ?") {
 		t.Fatalf("detail missing title: %s", bs)
 	}
-	if !strings.Contains(bs, "N+1 queries") {
+	if !strings.Contains(bs, "N+1 запросы") {
 		t.Fatalf("detail missing human-readable kind: %s", bs)
 	}
 	// Evidence: repeat count 8 и total 24.0ms.

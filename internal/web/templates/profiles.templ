@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
@@ -30,29 +31,29 @@ func profileFlameLink(projectID int64, s profile.ServiceInfo, period, environmen
 
 // ProfilesList — GET /projects/{id}/profiles: группы профилей за период.
 templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, environment, userEmail string) {
-	@layout("Profiles", userEmail) {
+	@layout(i18n.T(ctx, "nav.profiles"), userEmail) {
 		<div class="profiles">
-			<h1>Profiles</h1>
-			<p>
-				<a href={ templ.URL(performancePath(projectID)) }>Performance</a> ·
-				<a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> ·
-				<a href={ templ.URL("/projects/" + strconv.FormatInt(projectID, 10) + "/metrics") }>Metrics</a> ·
-				<a href={ templ.URL(profilesBasePath(projectID)) }>Profiles</a> ·
-				<a href={ templ.URL(profileRegressionsBasePath(projectID)) }>Profile regressions</a> ·
-				<a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> ·
-				<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
+			<h1>{ i18n.T(ctx, "nav.profiles") }</h1>
+			@helpPanel("profiles", "profiling")
+			<p class="profiles-actions">
+				<a class="btn btn-ghost" href={ templ.URL(profileRegressionsBasePath(projectID)) }>{ i18n.T(ctx, "profiles.regressions.title") } →</a>
 			</p>
-			<nav class="perf-issues-filters">
-				<a class={ perfStatusFilterClass(period == "1h") } href={ templ.URL(profilesBasePath(projectID) + "?period=1h") }>1h</a>
-				<a class={ perfStatusFilterClass(period == "24h") } href={ templ.URL(profilesBasePath(projectID) + "?period=24h") }>24h</a>
-				<a class={ perfStatusFilterClass(period == "7d") } href={ templ.URL(profilesBasePath(projectID) + "?period=7d") }>7d</a>
+			<nav class="tabs">
+				<a class={ perfStatusFilterClass(period == "1h") } href={ templ.URL(profilesBasePath(projectID) + "?period=1h") } if period == "1h" { aria-current="page" }>1h</a>
+				<a class={ perfStatusFilterClass(period == "24h") } href={ templ.URL(profilesBasePath(projectID) + "?period=24h") } if period == "24h" { aria-current="page" }>24h</a>
+				<a class={ perfStatusFilterClass(period == "7d") } href={ templ.URL(profilesBasePath(projectID) + "?period=7d") } if period == "7d" { aria-current="page" }>7d</a>
 			</nav>
 			if len(services) == 0 {
-				<p class="empty">no profiles received yet</p>
+				@emptyState("activity", "profiles.empty.title", "profiles.empty.body", "profiles.empty.cta", "/docs/profiling")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
-						<tr><th>Service</th><th>Type</th><th>Transaction</th><th>Samples</th></tr>
+						<tr>
+							<th>{ i18n.T(ctx, "profiles.table.service") }</th>
+							<th>{ i18n.T(ctx, "profiles.table.type") }</th>
+							<th>{ i18n.T(ctx, "profiles.table.transaction") }</th>
+							<th class="num">{ i18n.T(ctx, "profiles.table.samples") }</th>
+						</tr>
 					</thead>
 					<tbody>
 						for _, s := range services {
@@ -60,7 +61,7 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, envi
 								<td><a href={ templ.URL(profileFlameLink(projectID, s, period, environment)) }>{ profileDisplayService(s.Service) }</a></td>
 								<td>{ s.Type }</td>
 								<td>{ s.Transaction }</td>
-								<td>{ strconv.FormatUint(s.Samples, 10) }</td>
+								<td class="num">{ strconv.FormatUint(s.Samples, 10) }</td>
 							</tr>
 						}
 					</tbody>
@@ -90,22 +91,22 @@ type ProfileFlameVM struct {
 
 // ProfileFlame — GET /projects/{id}/profiles/flame: flamegraph.
 templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
-	@layout("Flamegraph", userEmail) {
+	@layout(i18n.T(ctx, "profiles.flame.title"), userEmail) {
 		<div class="profile-flame">
-			<h1>Flamegraph</h1>
+			<p class="breadcrumb"><a href={ templ.URL(profilesBasePath(vm.ProjectID)) }>← { i18n.T(ctx, "nav.profiles") }</a></p>
+			<h1>{ i18n.T(ctx, "profiles.flame.title") }</h1>
 			<p class="metric-meta">
 				{ profileDisplayService(vm.Service) } · { vm.Type }
 				if vm.Transaction != "" {
 					· { vm.Transaction }
 				}
 			</p>
-			<p><a href={ templ.URL(profilesBasePath(vm.ProjectID)) }>← all profiles</a></p>
-			<nav class="perf-issues-filters">
+			<nav class="tabs">
 				@profileFlamePeriodTab(vm, "1h")
 				@profileFlamePeriodTab(vm, "24h")
 				@profileFlamePeriodTab(vm, "7d")
 			</nav>
-			<div class="flamegraph-wrap">
+			<div class="card flamegraph-wrap">
 				@vm.Chart
 			</div>
 		</div>
@@ -113,7 +114,7 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 }
 
 templ profileFlamePeriodTab(vm ProfileFlameVM, period string) {
-	<a class={ perfStatusFilterClass(vm.Period == period) } href={ templ.URL(profileFlamePeriodURL(vm, period)) }>{ period }</a>
+	<a class={ perfStatusFilterClass(vm.Period == period) } href={ templ.URL(profileFlamePeriodURL(vm, period)) } if vm.Period == period { aria-current="page" }>{ period }</a>
 }
 
 func profileFlamePeriodURL(vm ProfileFlameVM, period string) string {

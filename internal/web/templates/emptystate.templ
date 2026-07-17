@@ -1,0 +1,19 @@
+package templates
+
+import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+
+// emptyState — единый пустой экран: иконка, заголовок (что это/какое
+// состояние), тело (почему пусто и что делать) и опциональная кнопка-действие.
+// Пустой ctaKey → без кнопки (информационное пустое состояние — «пусто и это
+// норма»). ctaHref может быть внешним путём внутри приложения (напр. на
+// документацию или форму создания).
+templ emptyState(iconName, titleKey, bodyKey, ctaKey, ctaHref string) {
+	<div class="empty-state">
+		@icon(iconName)
+		<h3 class="empty-title">{ i18n.T(ctx, titleKey) }</h3>
+		<p>{ i18n.T(ctx, bodyKey) }</p>
+		if ctaKey != "" {
+			<a class="btn btn-primary empty-cta" href={ templ.SafeURL(ctaHref) }>{ i18n.T(ctx, ctaKey) }</a>
+		}
+	</div>
+}

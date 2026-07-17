@@ -24,10 +24,33 @@ const claimBatch = 5
 // доставку всем остальным.
 const defaultSendTimeout = 30 * time.Second
 
+// outboxStore — подмножество *Outbox, которым пользуется Worker. Вынесено в
+// интерфейс, чтобы в тестах подменять хранилище заглушкой (например с флаки
+// MarkSent для проверки сужения окна at-least-once, ARCH-M2). Боевой код
+// передаёт сюда *Outbox.
+type outboxStore interface {
+	Claim(ctx context.Context, limit int) ([]Job, error)
+	MarkSent(ctx context.Context, jobID int64) error
+	MarkRetry(ctx context.Context, jobID int64, sendErr error, next time.Time) error
+	MarkFailed(ctx context.Context, jobID int64, sendErr error) error
+}
+
+// markSentRetries — сколько раз воркер пытается подтвердить доставку
+// (MarkSent) после успешного Send, прежде чем сдаться и оставить job
+// pending. См. markSent — сужает окно повторной доставки при транзиентном
+// сбое БД.
+const markSentRetries = 3
+
+// markSentBackoff — короткая пауза между попытками MarkSent. Держим её
+// маленькой: это не сетевой ретрай доставки, а повтор локальной записи в БД,
+// и всё это время воркер держит claim-лизу (см. outbox.claimLease) и
+// блокирует последовательный tick для остальных задач.
+const markSentBackoff = 100 * time.Millisecond
+
 // Worker периодически забирает готовые к отправке задачи из Outbox и шлёт
 // их через Senders (ключ — Target.Kind / payload["channel_kind"]).
 type Worker struct {
-	Outbox   *Outbox
+	Outbox   outboxStore
 	Senders  map[string]Sender
 	Interval time.Duration
 
@@ -94,9 +117,43 @@ func (w *Worker) process(ctx context.Context, job Job) {
 		w.retryOrFail(ctx, job, err)
 		return
 	}
-	if err := w.Outbox.MarkSent(ctx, job.ID); err != nil {
-		slog.Error("notify worker: mark sent failed", "job_id", job.ID, "channel_id", job.ChannelID, "error", err)
+	w.markSent(ctx, job)
+}
+
+// markSent подтверждает доставку в outbox с коротким циклом ретраев.
+//
+// Доставка построена по модели at-least-once: между успешным Send и
+// MarkSent есть окно, в котором падение процесса или сбой записи в БД
+// оставит job в статусе pending — и она будет доставлена повторно по
+// истечении claim-лизы. Провайдерского idempotency-ключа у Telegram/webhook
+// нет, поэтому подавить такой редкий дубль на стороне канала нельзя — это
+// осознанный компромисс, задокументированный в аудите (ARCH-M2).
+//
+// Ретраи ниже сужают окно: транзиентный сбой БД (кратковременная потеря
+// соединения, дедлок) переживается на месте за миллисекунды, не дожидаясь
+// полного цикла повторной доставки уже отправленного сообщения. Backoff
+// прерывается по ctx, чтобы остановка воркера не подвисала. Если MarkSent не
+// удаётся и после всех попыток — оставляем job pending (дубль возможен) и
+// логируем Error.
+func (w *Worker) markSent(ctx context.Context, job Job) {
+	var err error
+	for attempt := 1; attempt <= markSentRetries; attempt++ {
+		if err = w.Outbox.MarkSent(ctx, job.ID); err == nil {
+			return
+		}
+		if attempt == markSentRetries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			slog.Error("notify worker: mark sent aborted",
+				"job_id", job.ID, "channel_id", job.ChannelID, "error", err)
+			return
+		case <-time.After(markSentBackoff):
+		}
 	}
+	slog.Error("notify worker: mark sent failed after retries",
+		"job_id", job.ID, "channel_id", job.ChannelID, "attempts", markSentRetries, "error", err)
 }
 
 // backoff — задержка перед следующей попыткой по номеру попытки (attempts,

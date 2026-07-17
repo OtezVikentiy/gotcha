@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 type stack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
+	h    *web.Handler
 }
 
 func newStack(t *testing.T) *stack {
@@ -54,7 +56,7 @@ func newStack(t *testing.T) *stack {
 	h.Outbox = notify.NewOutbox(pool)
 	h.Register(mux)
 
-	return &stack{pool: pool, srv: srv}
+	return &stack{pool: pool, srv: srv, h: h}
 }
 
 // noRedirectClient не следует за редиректами, чтобы можно было проверить
@@ -94,6 +96,59 @@ func sessionCookie(resp *http.Response) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+// TestRegisterExistingEmailNeutralMessage — SEC-L1: повторная регистрация уже
+// занятого email не должна раскрывать существование аккаунта (enumeration).
+// Ответ обязан быть нейтральным, без формулировки «уже зарегистрирован».
+func TestRegisterExistingEmailNeutralMessage(t *testing.T) {
+	s := newStack(t)
+
+	form := url.Values{
+		"email":     {"dup@example.com"},
+		"password":  {"correct-horse-battery"},
+		"password2": {"correct-horse-battery"},
+	}
+
+	// Первая регистрация — успех (303).
+	resp := postForm(t, s.srv, "/register", form, s.srv.URL, nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first register status = %d, want 303", resp.StatusCode)
+	}
+
+	// Повторная регистрация того же email — не должна палить существование аккаунта.
+	resp = postForm(t, s.srv, "/register", form, s.srv.URL, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("duplicate register status = %d, want 422", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "уже зарегистрирован") {
+		t.Fatalf("duplicate register body leaks account existence: %s", body)
+	}
+}
+
+// TestLoginPerIPRateLimit — SEC-L2: глобальный per-IP лимит. 21 попытка входа с
+// одного IP по РАЗНЫМ email: per-account лимит (по ip|email) не сработал бы, так
+// как каждый email уникален, а per-IP (20/мин) должен отдать 429 на 21-й.
+func TestLoginPerIPRateLimit(t *testing.T) {
+	s := newStack(t)
+
+	var last *http.Response
+	for i := 0; i < 21; i++ {
+		form := url.Values{
+			"email":    {fmt.Sprintf("user%d@example.com", i)},
+			"password": {"whatever-password"},
+		}
+		last = postForm(t, s.srv, "/login", form, s.srv.URL, nil)
+		io.Copy(io.Discard, last.Body)
+		last.Body.Close()
+	}
+	if last.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("21st login from same IP status = %d, want 429 (per-IP limit)", last.StatusCode)
+	}
 }
 
 func TestWebAuthFlow(t *testing.T) {

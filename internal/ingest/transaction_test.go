@@ -679,8 +679,8 @@ func TestTransactionQuotaExhaustedStillAcceptsErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionUsage: %v", err)
 	}
-	if txUsed != 3 { // третья посчитана, но отбита
-		t.Errorf("TransactionUsage = %d, want 3", txUsed)
+	if txUsed != 2 { // ARCH-L1: отбитая третья транзакция НЕ считается в usage
+		t.Errorf("TransactionUsage = %d, want 2", txUsed)
 	}
 	evUsed, err := s.orgSvc.Usage(ctx, s.org.ID, time.Now())
 	if err != nil {

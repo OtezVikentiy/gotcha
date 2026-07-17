@@ -100,7 +100,7 @@ func TestWebRegressionsList(t *testing.T) {
 	if !strings.Contains(bs, "+50%") {
 		t.Fatalf("list missing increase pct: %s", bs)
 	}
-	if !strings.Contains(bs, "ongoing") {
+	if !strings.Contains(bs, "идёт") {
 		t.Fatalf("open regression must show ongoing: %s", bs)
 	}
 	if strings.Contains(bs, "/checkout") {
@@ -128,7 +128,7 @@ func TestWebRegressionsList(t *testing.T) {
 	if strings.Contains(bs, "GET /orders") {
 		t.Fatalf("?status=resolved leaked open regression: %s", bs)
 	}
-	if strings.Contains(bs, "ongoing") {
+	if strings.Contains(bs, "идёт") {
 		t.Fatalf("resolved regression must show duration, not ongoing: %s", bs)
 	}
 
@@ -172,7 +172,7 @@ func TestWebRegressionsListEmpty(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200", listPath, resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "no regressions detected") {
+	if !strings.Contains(string(body), "Регрессий нет") {
 		t.Fatalf("empty list missing placeholder: %s", body)
 	}
 }

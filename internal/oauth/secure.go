@@ -83,3 +83,8 @@ func decodeJSON(r io.Reader, dst any) error {
 
 // nowUnix — текущее время в секундах (обёртка ради тестируемости exp).
 func nowUnix() int64 { return time.Now().Unix() }
+
+// clockSkewLeeway — допуск (сек) на рассинхрон часов при проверке exp/nbf
+// id_token (SEC-L3): токен, истёкший/ещё-не-действительный в пределах допуска,
+// принимается, чтобы небольшой дрейф часов IdP не ломал легитимный вход.
+const clockSkewLeeway int64 = 60

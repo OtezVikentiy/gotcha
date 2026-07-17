@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -22,12 +23,12 @@ func (h *Handler) metricAlertsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	if h.MetricRules == nil || h.MetricIncidents == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
@@ -39,12 +40,12 @@ func (h *Handler) metricAlertsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string) {
 	rules, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	incidents, err := h.MetricIncidents.List(r.Context(), projectID, 100)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	w.WriteHeader(status)
@@ -62,12 +63,12 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	if h.MetricRules == nil || h.MetricIncidents == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
@@ -104,7 +105,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, "неверные параметры правила")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)
@@ -121,12 +122,12 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	if h.MetricRules == nil || h.MetricIncidents == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
@@ -142,7 +143,7 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.MetricRules.Delete(r.Context(), ruleID, projectID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)

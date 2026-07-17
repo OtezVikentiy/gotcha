@@ -10,20 +10,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
 // WebhookSender шлёт уведомление как JSON POST на Target.Target, подписывая
 // тело HMAC-SHA256(Secret) в заголовке X-Gotcha-Signature, если Secret
 // задан.
+//
+// SSRF: получатель вебхука задаёт арендатор, поэтому по умолчанию
+// (AllowPrivate=false) отправитель, когда Client не задан явно, использует
+// SSRF-safe клиент из netguard — доставка на loopback/приватные/link-local
+// адреса режется по фактическому IP. Оператор может отключить фильтр
+// глобально (AllowPrivate=true) для single-tenant инсталляции. Если Client
+// задан явно (в тестах), фильтр не применяется.
 type WebhookSender struct {
-	Client *http.Client
+	Client       *http.Client
+	AllowPrivate bool
+
+	safeOnce   sync.Once
+	safeClient *http.Client
 }
 
 func (s *WebhookSender) client() *http.Client {
 	if s.Client != nil {
 		return s.Client
 	}
-	return defaultClient()
+	s.safeOnce.Do(func() {
+		s.safeClient = netguard.SafeHTTPClient(s.AllowPrivate, httpClientTimeout)
+	})
+	return s.safeClient
 }
 
 // transportFields — keys that alert.Evaluator stuffs into the outbox

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -90,11 +92,11 @@ func parseMaintenanceForm(r *http.Request, projectID int64) uptime.Window {
 	return w
 }
 
-func maintenanceErrorMessage(err error) string {
+func maintenanceErrorMessage(ctx context.Context, err error) string {
 	if errors.Is(err, uptime.ErrInvalidWindow) {
-		return "недопустимое окно обслуживания: " + err.Error()
+		return i18n.Tf(ctx, "error.maintenance.invalid_window", "detail", err.Error())
 	}
-	return "не удалось выполнить действие"
+	return i18n.T(ctx, "error.action_failed")
 }
 
 // windowBelongsToProject — тот же приём, что и keyBelongsToProject/
@@ -119,7 +121,7 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -135,7 +137,7 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string) {
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	w.WriteHeader(status)
@@ -157,7 +159,7 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -172,10 +174,10 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	win := parseMaintenanceForm(r, projectID)
 	if _, err := h.Uptime.CreateWindow(r.Context(), win); err != nil {
 		if errors.Is(err, uptime.ErrInvalidWindow) {
-			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID, maintenanceErrorMessage(err))
+			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID, maintenanceErrorMessage(r.Context(), err))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
@@ -194,7 +196,7 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -213,15 +215,15 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !windowBelongsToProject(windows, windowID) {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	if err := h.Uptime.DeleteWindow(r.Context(), windowID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)

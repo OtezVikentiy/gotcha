@@ -176,7 +176,7 @@ func TestWebPerformanceList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (empty) status = %d, want 200: %s", emptyPath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "no transaction data yet") {
+	if !strings.Contains(string(body), "Пока нет транзакций") {
 		t.Fatalf("GET %s (empty) missing 'no transaction data yet': %s", emptyPath, body)
 	}
 

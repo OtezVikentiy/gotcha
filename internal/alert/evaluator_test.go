@@ -3,6 +3,7 @@ package alert_test
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("CreateChannel telegram: %v", err)
 		}
 
-		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 		e.OnIssue(ctx, alert.Event{
 			ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue,
 			Title: "boom", Culprit: "app.x", Level: "error", TimesSeen: 3,
@@ -280,6 +281,116 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		jobs2, err := ob.Claim(ctx, 10)
 		if err != nil || len(jobs2) != 2 {
 			t.Fatalf("jobs2 = %+v err=%v, want 2 (email now enabled)", jobs2, err)
+		}
+	})
+
+	// ExternalDetails=false: во внешние каналы (Telegram/webhook) не должны
+	// уезжать текст ошибки/детали (title/culprit/level/тело) — только ссылка
+	// на issue и вид алерта. Защита от трансграничной передачи ПДн (152-ФЗ).
+	t.Run("external details withheld from telegram/webhook when ExternalDetails=false", func(t *testing.T) {
+		pid := newEvalProject(t, pool, "eval7")
+		issueID := newEvalIssue(t, pool, pid, "fp-1")
+		if _, err := svc.UpsertRule(ctx, alert.Rule{
+			ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+		}); err != nil {
+			t.Fatalf("UpsertRule: %v", err)
+		}
+		webhookCh, err := svc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel webhook: %v", err)
+		}
+		telegramCh, err := svc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "123", Secret: "tok",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel telegram: %v", err)
+		}
+
+		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		e.OnIssue(ctx, alert.Event{
+			ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue,
+			Title: "boom", Culprit: "app.x", Level: "error", TimesSeen: 3,
+		})
+
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		if len(jobs) != 2 {
+			t.Fatalf("len(jobs) = %d, want 2", len(jobs))
+		}
+
+		wantURL := "https://gotcha.example/issues/" + strconv.FormatInt(issueID, 10)
+		for _, j := range jobs {
+			// Детали ошибки не должны попадать во внешний payload.
+			if _, ok := j.Payload["title"]; ok {
+				t.Errorf("channel %d: payload leaks title: %+v", j.ChannelID, j.Payload)
+			}
+			if _, ok := j.Payload["culprit"]; ok {
+				t.Errorf("channel %d: payload leaks culprit: %+v", j.ChannelID, j.Payload)
+			}
+			if _, ok := j.Payload["level"]; ok {
+				t.Errorf("channel %d: payload leaks level: %+v", j.ChannelID, j.Payload)
+			}
+			// Тело/subject не должны содержать текст ошибки.
+			if body, _ := j.Payload["body"].(string); strings.Contains(body, "boom") || strings.Contains(body, "app.x") {
+				t.Errorf("channel %d: body leaks error text: %q", j.ChannelID, body)
+			}
+			if subj, _ := j.Payload["subject"].(string); strings.Contains(subj, "boom") || strings.Contains(subj, "app.x") {
+				t.Errorf("channel %d: subject leaks error text: %q", j.ChannelID, subj)
+			}
+			// Обезличенный минимум остаётся: ссылка и вид алерта.
+			if j.Payload["url"] != wantURL {
+				t.Errorf("channel %d: url = %v, want %s", j.ChannelID, j.Payload["url"], wantURL)
+			}
+			if j.Payload["kind"] != alert.KindNewIssue {
+				t.Errorf("channel %d: kind = %v, want %s", j.ChannelID, j.Payload["kind"], alert.KindNewIssue)
+			}
+		}
+
+		// Sanity: маршрутные поля на месте, чтобы worker собрал Target.
+		byChannel := map[int64]notify.Job{}
+		for _, j := range jobs {
+			byChannel[j.ChannelID] = j
+		}
+		if byChannel[webhookCh].Payload["target"] != "https://example.com/hook" {
+			t.Errorf("webhook target lost: %+v", byChannel[webhookCh].Payload)
+		}
+		if byChannel[telegramCh].Payload["secret"] != "tok" {
+			t.Errorf("telegram secret lost: %+v", byChannel[telegramCh].Payload)
+		}
+	})
+
+	// ExternalDetails=true: поведение прежнее — детали доставляются во внешние
+	// каналы без изменений (обратная совместимость).
+	t.Run("external details delivered to telegram/webhook when ExternalDetails=true", func(t *testing.T) {
+		pid := newEvalProject(t, pool, "eval8")
+		issueID := newEvalIssue(t, pool, pid, "fp-1")
+		if _, err := svc.UpsertRule(ctx, alert.Rule{
+			ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+		}); err != nil {
+			t.Fatalf("UpsertRule: %v", err)
+		}
+		if _, err := svc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		}); err != nil {
+			t.Fatalf("CreateChannel webhook: %v", err)
+		}
+
+		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		e.OnIssue(ctx, alert.Event{
+			ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue,
+			Title: "boom", Culprit: "app.x", Level: "error", TimesSeen: 3,
+		})
+
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("Claim: jobs=%d err=%v, want 1", len(jobs), err)
+		}
+		if jobs[0].Payload["title"] != "boom" || jobs[0].Payload["culprit"] != "app.x" {
+			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
 		}
 	})
 

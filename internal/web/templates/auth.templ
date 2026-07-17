@@ -1,5 +1,7 @@
 package templates
 
+import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+
 type OAuthButton struct {
 	Name  string // ключ провайдера для URL (/auth/oauth/{name}/start)
 	Label string // подпись, напр. "Войти через Яндекс"
@@ -8,31 +10,40 @@ type OAuthButton struct {
 templ oauthButtons(providers []OAuthButton) {
 	if len(providers) > 0 {
 		<div class="oauth-buttons">
-			<p class="oauth-sep">или</p>
+			<p class="oauth-sep">{ i18n.T(ctx, "auth.or") }</p>
 			for _, p := range providers {
-				<a class="oauth-btn" href={ templ.URL("/auth/oauth/" + p.Name + "/start") }>{ p.Label }</a>
+				<a class="btn btn-ghost" href={ templ.URL("/auth/oauth/" + p.Name + "/start") }>{ p.Label }</a>
 			}
 		</div>
 	}
 }
 
 templ Login(errMsg string, providers []OAuthButton) {
-	@layout("Вход", "") {
+	@chromeless(i18n.T(ctx, "auth.login.title"), "") {
+		<div class="auth-brand">
+			@brandMark()
+			<span class="auth-brand-word">Gotcha</span>
+			<p class="auth-tagline">{ i18n.T(ctx, "brand.tagline") }</p>
+		</div>
 		<form method="post" action="/login" class="auth-form">
-			<h1>Вход</h1>
+			<h1>{ i18n.T(ctx, "auth.login.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			<label>
-				Email
-				<input type="email" name="email" autocomplete="email" required autofocus/>
-			</label>
-			<label>
-				Пароль
-				<input type="password" name="password" autocomplete="current-password" required/>
-			</label>
-			<button type="submit">Войти</button>
-			<p class="auth-switch"><a href="/register">Создать аккаунт</a> · <a href="/sso">Вход через SSO</a></p>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "auth.email") }
+					<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "auth.password") }
+					<input type="password" name="password" autocomplete="current-password" required class="input"/>
+				</label>
+			</div>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.login.submit") }</button>
+			<p class="auth-switch"><a href="/register">{ i18n.T(ctx, "auth.login.register_link") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
 		</form>
 		@oauthButtons(providers)
 	}
@@ -40,44 +51,65 @@ templ Login(errMsg string, providers []OAuthButton) {
 
 // SSOLogin — GET/POST /sso: identifier-first вход по email-домену (этап 10).
 templ SSOLogin(errMsg string) {
-	@layout("Вход через SSO", "") {
+	@chromeless(i18n.T(ctx, "auth.sso.title"), "") {
 		<form method="post" action="/sso" class="auth-form">
-			<h1>Вход через SSO</h1>
+			<h1>{ i18n.T(ctx, "auth.sso.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			<label>
-				Рабочий email
-				<input type="email" name="email" autocomplete="email" required autofocus/>
-			</label>
-			<button type="submit">Продолжить</button>
-			<p class="auth-switch"><a href="/login">← Обычный вход</a></p>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "auth.sso.work_email") }
+					<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
+				</label>
+			</div>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.sso.submit") }</button>
+			<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.sso.back") }</a></p>
 		</form>
 	}
 }
 
-templ Register(errMsg string, providers []OAuthButton) {
-	@layout("Регистрация", "") {
-		<form method="post" action="/register" class="auth-form">
-			<h1>Регистрация</h1>
-			if errMsg != "" {
+// Register — экран регистрации. При closed=true (режим invite/closed и первый
+// пользователь уже есть, PROD-B1) парольная форма скрыта: показываем экран
+// «регистрация по приглашению» с OAuth-кнопками (инвайт-flow) и ссылками.
+templ Register(errMsg string, closed bool, providers []OAuthButton) {
+	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
+		if closed {
+			<div class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.register.invite_title") }</h1>
 				<p class="error">{ errMsg }</p>
-			}
-			<label>
-				Email
-				<input type="email" name="email" autocomplete="email" required autofocus/>
-			</label>
-			<label>
-				Пароль
-				<input type="password" name="password" autocomplete="new-password" required/>
-			</label>
-			<label>
-				Повторите пароль
-				<input type="password" name="password2" autocomplete="new-password" required/>
-			</label>
-			<button type="submit">Зарегистрироваться</button>
-			<p class="auth-switch"><a href="/login">Уже есть аккаунт?</a></p>
-		</form>
-		@oauthButtons(providers)
+				<p>{ i18n.T(ctx, "auth.register.closed_body") }</p>
+				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
+			</div>
+			@oauthButtons(providers)
+		} else {
+			<form method="post" action="/register" class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.register.title") }</h1>
+				if errMsg != "" {
+					<p class="error">{ errMsg }</p>
+				}
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "auth.email") }
+						<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
+					</label>
+				</div>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "auth.password") }
+						<input type="password" name="password" autocomplete="new-password" required class="input"/>
+					</label>
+				</div>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "auth.password2") }
+						<input type="password" name="password2" autocomplete="new-password" required class="input"/>
+					</label>
+				</div>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.register.submit") }</button>
+				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.register.have_account") }</a></p>
+			</form>
+			@oauthButtons(providers)
+		}
 	}
 }

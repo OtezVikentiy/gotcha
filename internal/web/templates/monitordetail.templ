@@ -1,10 +1,12 @@
 package templates
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
@@ -34,42 +36,75 @@ func monitorToggleAction(m uptime.Monitor) string {
 	return monitorResumePath(m.ID)
 }
 
-func checkStatusText(ok bool) string {
-	if ok {
-		return "ok"
+// monitorToggleLabelKey — i18n-ключ подписи той же кнопки Pause/Resume.
+func monitorToggleLabelKey(m uptime.Monitor) string {
+	if m.Enabled {
+		return "uptime.detail.action_pause"
 	}
-	return "fail"
+	return "uptime.detail.action_resume"
+}
+
+func checkStatusBadgeClass(ok bool) string {
+	if ok {
+		return "badge badge-good"
+	}
+	return "badge badge-danger"
+}
+
+func checkStatusText(ctx context.Context, ok bool) string {
+	if ok {
+		return i18n.T(ctx, "uptime.check.ok")
+	}
+	return i18n.T(ctx, "uptime.check.fail")
 }
 
 // sslExpiryText — "—" без сертификата (не https-монитор или ещё не было ни
 // одной успешной https-проверки), иначе дней до истечения + дата;
 // отрицательный остаток (сертификат уже просрочен) — отдельным словом, не
 // "-3d left".
-func sslExpiryText(t *time.Time) string {
+func sslExpiryText(ctx context.Context, t *time.Time) string {
 	if t == nil {
 		return "—"
 	}
+	date := t.Format("2006-01-02")
 	days := int(time.Until(*t).Hours() / 24)
 	if days < 0 {
-		return "expired (" + t.Format("2006-01-02") + ")"
+		return i18n.Tf(ctx, "uptime.ssl.expired", "date", date)
 	}
-	return strconv.Itoa(days) + "d left (" + t.Format("2006-01-02") + ")"
+	return i18n.Tf(ctx, "uptime.ssl.days_left", "days", strconv.Itoa(days), "date", date)
+}
+
+// incidentStatusBadgeClass/incidentStatusTextKey — открыт (ResolvedAt == nil)
+// подсвечивается как требующий внимания (danger), решён — good, тот же
+// приём, что и statusBadgeClass в issues.templ.
+func incidentStatusBadgeClass(inc uptime.Incident) string {
+	if inc.ResolvedAt == nil {
+		return "badge badge-danger"
+	}
+	return "badge badge-good"
+}
+
+func incidentStatusTextKey(inc uptime.Incident) string {
+	if inc.ResolvedAt == nil {
+		return "uptime.incident.status_open"
+	}
+	return "uptime.incident.status_resolved"
 }
 
 // incidentDurationText — "ongoing" для ещё не закрытого инцидента, иначе
 // длительность между started_at и resolved_at.
-func incidentDurationText(inc uptime.Incident) string {
+func incidentDurationText(ctx context.Context, inc uptime.Incident) string {
 	if inc.ResolvedAt == nil {
-		return "ongoing"
+		return i18n.T(ctx, "uptime.incident.ongoing")
 	}
 	return inc.ResolvedAt.Sub(inc.StartedAt).String()
 }
 
-func yesNo(b bool) string {
+func yesNo(ctx context.Context, b bool) string {
 	if b {
-		return "yes"
+		return i18n.T(ctx, "uptime.yes")
 	}
-	return "no"
+	return i18n.T(ctx, "uptime.no")
 }
 
 // heartbeatPingURL/heartbeatCronSnippet — те же вычисления, что и одноимённые
@@ -90,22 +125,23 @@ func heartbeatCronSnippet(baseURL, token string, intervalSeconds int) string {
 
 templ checkRow(c uptime.CheckRow) {
 	<tr>
-		<td>{ ago(c.Timestamp) }</td>
+		<td>{ ago(ctx, c.Timestamp) }</td>
 		<td>{ c.Region }</td>
-		<td>{ checkStatusText(c.OK) }</td>
-		<td>{ strconv.Itoa(int(c.StatusCode)) }</td>
+		<td><span class={ checkStatusBadgeClass(c.OK) }>{ checkStatusText(ctx, c.OK) }</span></td>
+		<td class="num">{ strconv.Itoa(int(c.StatusCode)) }</td>
 		<td>{ c.Error }</td>
-		<td>{ strconv.Itoa(int(c.TotalMs)) }ms</td>
+		<td class="num">{ strconv.Itoa(int(c.TotalMs)) }ms</td>
 	</tr>
 }
 
 templ incidentRow(inc uptime.Incident) {
 	<tr>
-		<td>{ ago(inc.StartedAt) }</td>
-		<td>{ incidentDurationText(inc) }</td>
+		<td><span class={ incidentStatusBadgeClass(inc) }>{ i18n.T(ctx, incidentStatusTextKey(inc)) }</span></td>
+		<td>{ ago(ctx, inc.StartedAt) }</td>
+		<td>{ incidentDurationText(ctx, inc) }</td>
 		<td>{ inc.Cause }</td>
 		<td>{ strings.Join(inc.Regions, ", ") }</td>
-		<td>{ yesNo(inc.InMaintenance) }</td>
+		<td>{ yesNo(ctx, inc.InMaintenance) }</td>
 	</tr>
 }
 
@@ -113,64 +149,74 @@ templ incidentRow(inc uptime.Incident) {
 // 24ч/7д/30д (уже посчитанные web/monitors.go — без окон обслуживания
 // проекта), stacked-график задержек за 24ч, последние проверки, таймлайн
 // инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при canManage
-// (owner/admin организации проекта).
+// (owner/admin организации проекта). Ссылка "← Monitors" в шапке — это
+// breadcrumb к родительскому списку (тот же паттерн, что у issuedetail.templ
+// и perfissuedetail.templ), не дублирование боковой панели app-shell.
 templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, checks []uptime.CheckRow, incidents []uptime.Incident, canManage bool, baseURL string, userEmail string) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(m.ProjectID)) }>← Monitors</a></p>
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(m.ProjectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
 			<h1>{ m.Name }</h1>
-			<span class={ monitorStatusBadgeClass(status) }>{ status }</span>
+			<span class={ monitorStatusBadgeClass(status) }>{ i18n.T(ctx, monitorStatusTextKey(status)) }</span>
+			<span class="chip">{ string(m.Kind) }</span>
 
 			<div class="monitor-meta">
-				<span>Type: { string(m.Kind) }</span>
-				<span>Uptime 24h: { uptimeStatText(uptime24h) }</span>
-				<span>Uptime 7d: { uptimeStatText(uptime7d) }</span>
-				<span>Uptime 30d: { uptimeStatText(uptime30d) }</span>
-				<span>SSL: { sslExpiryText(m.SSLExpiresAt) }</span>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_24h") }</div>
+					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime24h) }</div>
+				</div>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_7d") }</div>
+					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime7d) }</div>
+				</div>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_30d") }</div>
+					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime30d) }</div>
+				</div>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.ssl") }</div>
+					<div class="stat-value">{ sslExpiryText(ctx, m.SSLExpiresAt) }</div>
+				</div>
 			</div>
 
 			if canManage {
 				if m.Kind == uptime.KindHeartbeat && m.HeartbeatToken != "" {
-					<div class="monitor-heartbeat">
-						<h2>Heartbeat ping</h2>
-						<p>URL: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
-						<p>Cron: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
+					<div class="monitor-heartbeat card">
+						<h2>{ i18n.T(ctx, "uptime.detail.heartbeat_title") }</h2>
+						<p>{ i18n.T(ctx, "uptime.detail.heartbeat_url") }: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
+						<p>{ i18n.T(ctx, "uptime.detail.heartbeat_cron") }: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
 					</div>
 				}
 
 				<div class="monitor-actions">
 					<form method="post" action={ templ.URL(monitorToggleAction(m)) }>
-						if m.Enabled {
-							<button type="submit">Pause</button>
-						} else {
-							<button type="submit">Resume</button>
-						}
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, monitorToggleLabelKey(m)) }</button>
 					</form>
-					<a href={ templ.URL(monitorEditPath(m.ID)) }>Edit</a>
+					<a class="btn btn-ghost" href={ templ.URL(monitorEditPath(m.ID)) }>{ i18n.T(ctx, "uptime.detail.action_edit") }</a>
 					<form method="post" action={ templ.URL(monitorDeletePath(m.ID)) }>
-						<button type="submit">Delete</button>
+						<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
 					</form>
 				</div>
 			}
 
-			<h2>Latency (24h)</h2>
-			<div class="monitor-chart">
+			<h2>{ i18n.T(ctx, "uptime.detail.latency_title") }</h2>
+			<div class="card monitor-chart">
 				@latencyChart
 			</div>
 
-			<h2>Recent checks</h2>
+			<h2>{ i18n.T(ctx, "uptime.detail.checks_title") }</h2>
 			if len(checks) == 0 {
-				<p>Нет проверок.</p>
+				@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>When</th>
-							<th>Region</th>
-							<th>Status</th>
-							<th>Code</th>
-							<th>Error</th>
-							<th>Total</th>
+							<th>{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
+							<th>{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
+							<th>{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
+							<th class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
+							<th>{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
+							<th class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -181,18 +227,19 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				</table>
 			}
 
-			<h2>Incidents</h2>
+			<h2>{ i18n.T(ctx, "nav.incidents") }</h2>
 			if len(incidents) == 0 {
-				<p>Нет инцидентов.</p>
+				@emptyState("activity", "uptime.detail.incidents_empty.title", "uptime.detail.incidents_empty.body", "", "")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>Started</th>
-							<th>Duration</th>
-							<th>Cause</th>
-							<th>Regions</th>
-							<th>Maintenance</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
+							<th>{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
 						</tr>
 					</thead>
 					<tbody>

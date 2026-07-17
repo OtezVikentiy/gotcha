@@ -10,6 +10,8 @@ import (
 	"net/http/httptrace"
 	"strings"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
 const (
@@ -19,20 +21,26 @@ const (
 
 // HTTPChecker — HTTP(S)-чекер.
 //
-// Замечание про SSRF: это осознанное поведение, а не дыра. Пользователи
-// мониторят URL, которыми сами владеют/управляют (в т.ч. внутренние
-// сервисы, localhost, приватные диапазоны) — чекер намеренно не
-// блокирует приватные/внутренние адреса и не валидирует, что URL
-// "публичный".
+// SSRF: по умолчанию (AllowPrivate=false) чекер режет соединения к
+// приватным/служебным адресам (loopback, RFC1918, link-local/метадата
+// облака и т.п.) через netguard — фильтр работает по фактическому IP после
+// резолва и на каждом hop редиректа, устойчив к DNS-rebind. Это защита от
+// мультитенантного SSRF: один арендатор не должен мониторить внутренние
+// сервисы кластера. Оператор может отключить фильтр глобально флагом
+// (AllowPrivate=true), если инстанс single-tenant и мониторит свою же
+// приватную сеть.
 type HTTPChecker struct {
+	// AllowPrivate=true отключает SSRF-фильтр приватных целей.
+	AllowPrivate bool
+
 	// TLSClientConfig, если задан, используется вместо стандартного
 	// TLS-конфига транспорта — нужно тестам, чтобы доверять
 	// самоподписанному сертификату httptest.NewTLSServer.
 	TLSClientConfig *tls.Config
 }
 
-func NewHTTPChecker() *HTTPChecker {
-	return &HTTPChecker{}
+func NewHTTPChecker(allowPrivate bool) *HTTPChecker {
+	return &HTTPChecker{AllowPrivate: allowPrivate}
 }
 
 // httpTiming собирает моменты событий httptrace для расчёта тайминга по
@@ -93,6 +101,11 @@ func (c *HTTPChecker) Check(ctx context.Context, m Monitor) Result {
 	// goroutines. DisableKeepAlives ensures we get a fresh connect per check.
 	transport := &http.Transport{
 		DisableKeepAlives: true,
+		// SSRF-фильтр: DialContext режет приватные цели по фактическому IP.
+		// Для FollowRedirects фильтр срабатывает автоматически на каждом
+		// hop — каждый редирект открывает новое соединение через этот же
+		// DialContext.
+		DialContext: netguard.DialContext(c.AllowPrivate),
 	}
 	defer transport.CloseIdleConnections()
 	if c.TLSClientConfig != nil {

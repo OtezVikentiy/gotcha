@@ -43,11 +43,15 @@ func MapOTLP(resourceMetrics []*metricspb.ResourceMetrics, fallbackTS time.Time)
 
 func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment string, fallbackTS time.Time) []MetricPoint {
 	name, unit := m.GetName(), m.GetUnit()
-	base := func(ts uint64, attrs []*commonpb.KeyValue, typ string) MetricPoint {
+	base := func(ts uint64, attrs []*commonpb.KeyValue, typ string) (MetricPoint, bool) {
+		t, ok := pointTime(ts, fallbackTS)
+		if !ok {
+			return MetricPoint{}, false
+		}
 		return MetricPoint{
 			Name: name, Type: typ, Unit: unit, Service: service, Environment: environment,
-			Attributes: attrsToMap(attrs), TS: pointTime(ts, fallbackTS),
-		}
+			Attributes: attrsToMap(attrs), TS: t,
+		}, true
 	}
 	switch data := m.GetData().(type) {
 	case *metricspb.Metric_Gauge:
@@ -56,7 +60,10 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			if !ok {
 				continue
 			}
-			p := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "gauge")
+			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "gauge")
+			if !ok {
+				continue
+			}
 			p.Value = v
 			out = append(out, p)
 		}
@@ -68,7 +75,10 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			if !ok {
 				continue
 			}
-			p := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "sum")
+			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "sum")
+			if !ok {
+				continue
+			}
 			p.Value = v
 			p.Monotonic = mono
 			p.Temporality = temp
@@ -81,7 +91,10 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			if math.IsNaN(sum) || math.IsInf(sum, 0) {
 				continue
 			}
-			p := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "histogram")
+			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "histogram")
+			if !ok {
+				continue
+			}
 			p.Value = sum
 			p.Count = dp.GetCount()
 			p.BucketCounts = dp.GetBucketCounts()
@@ -186,9 +199,27 @@ func attrString(v *commonpb.AnyValue) string {
 	return ""
 }
 
-func pointTime(ns uint64, fallback time.Time) time.Time {
+// Окно допустимых таймстемпов метрик: [now-90d, now+1d]. Как у событий/трасс
+// (см. ingest/timestamp.go), защищает партиции metric_points (PARTITION BY
+// toYYYYMM(ts)) от флуда точками, разнесёнными по десяткам месяцев в одном батче.
+const (
+	maxPointAge    = 90 * 24 * time.Hour
+	maxPointFuture = 24 * time.Hour
+)
+
+// pointTime переводит наносекунды OTLP в момент времени. Возвращает ok=false для
+// мусора: ns > MaxInt64 (не влезает в int64) и времени вне окна ретенции — такие
+// точки писатель пропускает. ns == 0 (поле не заполнено) → fallback, ok=true.
+func pointTime(ns uint64, fallback time.Time) (time.Time, bool) {
 	if ns == 0 {
-		return fallback
+		return fallback, true
 	}
-	return time.Unix(0, int64(ns)).UTC()
+	if ns > math.MaxInt64 {
+		return time.Time{}, false
+	}
+	ts := time.Unix(0, int64(ns)).UTC()
+	if ts.Before(fallback.Add(-maxPointAge)) || ts.After(fallback.Add(maxPointFuture)) {
+		return time.Time{}, false
+	}
+	return ts, true
 }

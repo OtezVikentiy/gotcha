@@ -457,8 +457,9 @@ func TestPerformanceSchema(t *testing.T) {
 		"SELECT transaction_quota FROM organizations WHERE id = $1", orgID).Scan(&quota); err != nil {
 		t.Fatalf("select org quota: %v", err)
 	}
-	if quota != 100000 {
-		t.Errorf("organizations.transaction_quota default = %d, want 100000", quota)
+	// Миграция 0018 (PROD-B2) сменила дефолт на 0 (безлимит) для OSS-позиционирования.
+	if quota != 0 {
+		t.Errorf("organizations.transaction_quota default = %d, want 0", quota)
 	}
 
 	// (project_id, fingerprint) уникален.
@@ -840,6 +841,30 @@ func TestMigrateProfileRegressions(t *testing.T) {
 	}
 }
 
+// TestMigrateEventQuotaDefault — RA-6: после 0020 дефолт колонки event_quota — 0
+// (OSS-безлимит), как у tx/metric/profile-квот в 0018. Орг, вставленный без явного
+// event_quota, получает 0, а не legacy-хардкод 1000000.
+func TestMigrateEventQuotaDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	var orgID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO organizations (slug, name) VALUES ('eq', 'eq') RETURNING id").Scan(&orgID); err != nil {
+		t.Fatalf("insert org without event_quota: %v", err)
+	}
+	var quota int64
+	if err := pool.QueryRow(ctx,
+		"SELECT event_quota FROM organizations WHERE id = $1", orgID).Scan(&quota); err != nil {
+		t.Fatalf("select event_quota: %v", err)
+	}
+	if quota != 0 {
+		t.Errorf("organizations.event_quota default = %d, want 0", quota)
+	}
+}
+
 func TestMigrateOrgSSO(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -870,5 +895,142 @@ func TestMigrateOrgSSO(t *testing.T) {
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO org_sso (org_id,issuer,client_id,client_secret,domain,default_role) VALUES ($1,'https://i','c','s','x.com','owner')", o2); err == nil {
 		t.Fatal("want default_role CHECK violation")
+	}
+}
+
+// TestTransactionRetention: ApplyTransactionRetention выставляет настраиваемый
+// TTL на transactions (по колонке timestamp) и на MV transactions_5m (по
+// колонке bucket). Идемпотентна: повторный прогон не ошибка.
+func TestTransactionRetention(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
+		t.Fatalf("ApplyTransactionRetention: %v", err)
+	}
+	// Повторный прогон идемпотентен (needsRetention видит уже выставленный TTL).
+	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
+		t.Fatalf("ApplyTransactionRetention (idempotent): %v", err)
+	}
+
+	var txDDL string
+	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE transactions").Scan(&txDDL); err != nil {
+		t.Fatalf("SHOW CREATE TABLE transactions: %v", err)
+	}
+	if !strings.Contains(txDDL, "toIntervalDay(30)") {
+		t.Errorf("transactions DDL без toIntervalDay(30):\n%s", txDDL)
+	}
+
+	// transactions_5m — MATERIALIZED VIEW без TO-таблицы: TTL живёт на скрытой
+	// storage-таблице .inner_id.<uuid>, а SHOW CREATE TABLE самой вьюхи его не
+	// показывает. Поэтому проверяем TTL по внутренней таблице.
+	var inner string
+	if err := conn.QueryRow(ctx,
+		"SELECT concat('.inner_id.', toString(uuid)) FROM system.tables "+
+			"WHERE database = currentDatabase() AND name = 'transactions_5m'").Scan(&inner); err != nil {
+		t.Fatalf("resolve transactions_5m inner table: %v", err)
+	}
+	var mvDDL string
+	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE `"+inner+"`").Scan(&mvDDL); err != nil {
+		t.Fatalf("SHOW CREATE TABLE %s: %v", inner, err)
+	}
+	if !strings.Contains(mvDDL, "toIntervalDay(30)") {
+		t.Errorf("transactions_5m inner DDL без toIntervalDay(30):\n%s", mvDDL)
+	}
+	// TTL у 5m должен считаться от bucket, а не от timestamp.
+	if !strings.Contains(mvDDL, "TTL bucket") {
+		t.Errorf("transactions_5m TTL не по колонке bucket:\n%s", mvDDL)
+	}
+}
+
+// TestWebVitalsRetention: ApplyWebVitalsRetention выставляет настраиваемый TTL на
+// MV web_vitals_5m (по колонке bucket её скрытой storage-таблицы). Идемпотентна.
+func TestWebVitalsRetention(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := db.ApplyWebVitalsRetention(ctx, conn, 45); err != nil {
+		t.Fatalf("ApplyWebVitalsRetention: %v", err)
+	}
+	// Повторный прогон идемпотентен (needsRetention видит уже выставленный TTL).
+	if err := db.ApplyWebVitalsRetention(ctx, conn, 45); err != nil {
+		t.Fatalf("ApplyWebVitalsRetention (idempotent): %v", err)
+	}
+
+	// web_vitals_5m — MATERIALIZED VIEW без TO-таблицы: TTL живёт на скрытой
+	// storage-таблице .inner_id.<uuid>. Проверяем TTL по внутренней таблице.
+	var inner string
+	if err := conn.QueryRow(ctx,
+		"SELECT concat('.inner_id.', toString(uuid)) FROM system.tables "+
+			"WHERE database = currentDatabase() AND name = 'web_vitals_5m'").Scan(&inner); err != nil {
+		t.Fatalf("resolve web_vitals_5m inner table: %v", err)
+	}
+	var mvDDL string
+	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE `"+inner+"`").Scan(&mvDDL); err != nil {
+		t.Fatalf("SHOW CREATE TABLE %s: %v", inner, err)
+	}
+	if !strings.Contains(mvDDL, "toIntervalDay(45)") {
+		t.Errorf("web_vitals_5m inner DDL без toIntervalDay(45):\n%s", mvDDL)
+	}
+	// TTL у 5m должен считаться от bucket, а не от timestamp.
+	if !strings.Contains(mvDDL, "TTL bucket") {
+		t.Errorf("web_vitals_5m TTL не по колонке bucket:\n%s", mvDDL)
+	}
+}
+
+// TestSchemaVersionAndCheck: после полной миграции SchemaVersion возвращает
+// встроенный максимум и dirty=false, а CheckSchemaCurrent проходит без ошибки
+// (RA-8: гейт для AUTO_MIGRATE=false).
+func TestSchemaVersionAndCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	dsn := testenv.PostgresDSN(t)
+
+	if err := db.MigratePG(dsn); err != nil {
+		t.Fatalf("MigratePG: %v", err)
+	}
+
+	ver, dirty, err := db.SchemaVersion(dsn)
+	if err != nil {
+		t.Fatalf("SchemaVersion: %v", err)
+	}
+	if dirty {
+		t.Errorf("SchemaVersion dirty = true после успешной миграции")
+	}
+	if ver == 0 {
+		t.Errorf("SchemaVersion = 0 после применения всех миграций")
+	}
+
+	// После полной миграции схема не отстаёт — гейт пропускает старт.
+	if err := db.CheckSchemaCurrent(dsn); err != nil {
+		t.Errorf("CheckSchemaCurrent после полной миграции: %v", err)
+	}
+}
+
+// TestSchemaVersionAndCheckCH: CH-аналог TestSchemaVersionAndCheck (audit3).
+// После полной CH-миграции CheckSchemaCurrentCH проходит без ошибки — гейт для
+// AUTO_MIGRATE=false и на ClickHouse (RA-8 закрыл только PG).
+func TestSchemaVersionAndCheckCH(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	dsn := testenv.ClickHouseDSN(t)
+
+	if err := db.MigrateCH(dsn); err != nil {
+		t.Fatalf("MigrateCH: %v", err)
+	}
+
+	// После полной миграции CH-схема не отстаёт и не впереди — гейт пропускает старт.
+	if err := db.CheckSchemaCurrentCH(dsn); err != nil {
+		t.Errorf("CheckSchemaCurrentCH после полной миграции: %v", err)
 	}
 }

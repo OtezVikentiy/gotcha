@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -28,17 +30,17 @@ func (h *Handler) profilePage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status int, uid int64, errMsg, message string) {
 	email, err := h.Auth.UserEmail(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	hasPassword, err := h.Auth.HasPassword(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	ids, err := h.Auth.ListIdentities(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	linked := make([]templates.LinkedIdentity, 0, len(ids))
@@ -98,12 +100,12 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 
 	hasPassword, err := h.Auth.HasPassword(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	ids, err := h.Auth.ListIdentities(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !hasPassword && len(ids) <= 1 {
@@ -117,7 +119,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 	case errors.Is(err, auth.ErrNoIdentity):
 		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "этот провайдер не привязан", "")
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
 }
 
@@ -157,7 +159,7 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, auth.ErrPasswordAlreadySet):
 		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "пароль уже задан — используйте смену пароля", "")
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
 }
 
@@ -199,13 +201,13 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := h.Auth.ChangePassword(r.Context(), uid, oldPassword, newPassword); err != nil {
-		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, profilePasswordErrorMessage(err), "")
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, profilePasswordErrorMessage(r.Context(), err), "")
 		return
 	}
 
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
@@ -214,14 +216,14 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 
 // profilePasswordErrorMessage переводит ошибки auth.ChangePassword в
 // человекочитаемое сообщение для 422-страницы профиля.
-func profilePasswordErrorMessage(err error) string {
+func profilePasswordErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
-		return "неверный текущий пароль"
+		return i18n.T(ctx, "error.profile_password.invalid_current")
 	case errors.Is(err, auth.ErrWeakPassword):
-		return "новый пароль должен быть от 8 до 512 символов"
+		return i18n.T(ctx, "error.profile_password.weak")
 	default:
-		return "не удалось изменить пароль"
+		return i18n.T(ctx, "error.profile_password.failed")
 	}
 }
 
@@ -239,14 +241,14 @@ func (h *Handler) profileSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	c, err := r.Cookie(auth.CookieName)
-	if err != nil {
+	token, ok := auth.ReadSessionToken(r, h.Secure)
+	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	count, err := h.Auth.DestroyOtherSessions(r.Context(), uid, c.Value)
+	count, err := h.Auth.DestroyOtherSessions(r.Context(), uid, token)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.renderProfile(w, r, http.StatusOK, uid, "", revokedSessionsMessage(count))

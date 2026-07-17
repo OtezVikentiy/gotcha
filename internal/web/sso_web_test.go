@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -99,5 +100,41 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("non-enforced password login status = %d, want 303", resp.StatusCode)
+	}
+}
+
+// TestRegisterEnforcedSSOBlocked — SEC-H2: домен с enforced-SSO не может
+// регистрироваться паролем (обход централизованного provisioning). Register не
+// вызывается, форма возвращает 422 с сообщением про SSO.
+func TestRegisterEnforcedSSOBlocked(t *testing.T) {
+	s := newSSOWebStack(t)
+	ctx := context.Background()
+
+	ownerID, _ := orgSettingsRegister(t, s.auth, "reg-owner@corp.com")
+	o, err := s.org.CreateOrg(ctx, "reg-co", "Reg Co", ownerID)
+	if err != nil {
+		t.Fatalf("org: %v", err)
+	}
+	if err := s.org.UpsertSSO(ctx, org.SSOConfig{
+		OrgID: o.ID, Issuer: "https://idp", ClientID: "c", ClientSecret: "s",
+		Domain: "corp.com", DefaultRole: "member", Enforced: true,
+	}); err != nil {
+		t.Fatalf("upsert sso: %v", err)
+	}
+
+	form := url.Values{
+		"email":     {"newbie@corp.com"},
+		"password":  {"correct-horse-battery"},
+		"password2": {"correct-horse-battery"},
+	}
+	resp := postForm(t, s.srv, "/register", form, s.srv.URL, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "требует вход через SSO") {
+		t.Fatalf("enforced register status=%d body=%s", resp.StatusCode, body)
+	}
+	// Юзер не должен быть создан.
+	if _, err := s.auth.UserByEmail(ctx, "newbie@corp.com"); !errors.Is(err, auth.ErrUserNotFound) {
+		t.Fatalf("user must not be created for enforced-sso domain, got err=%v", err)
 	}
 }

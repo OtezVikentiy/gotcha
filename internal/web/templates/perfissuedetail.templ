@@ -3,6 +3,7 @@ package templates
 import (
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -46,39 +47,41 @@ func perfMS(us int64) string {
 templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 	@layout(d.Issue.Title, userEmail) {
 		<div class="perf-issue-detail issue-detail">
-			<p class="breadcrumb"><a href={ templ.URL(perfIssuesPath(d.Issue.ProjectID)) }>← Performance Issues</a></p>
+			<p class="breadcrumb"><a href={ templ.URL(perfIssuesPath(d.Issue.ProjectID)) }>← { i18n.T(ctx, "nav.perf_issues") }</a></p>
 			<h1>{ d.Issue.Title }</h1>
 			if d.Issue.Culprit != "" {
 				<div class="culprit">{ d.Issue.Culprit }</div>
 			}
+			<span class={ perfKindBadgeClass(d.Issue.Kind) }>{ perfKindLabel(ctx, d.Issue.Kind) }</span>
+			<span class={ perfStatusBadgeClass(d.Issue.Status) }>{ d.Issue.Status }</span>
 			<div class="issue-meta">
-				<span>Kind: { perfKindLabel(d.Issue.Kind) }</span>
-				<span>Status: <span class={ perfStatusBadgeClass(d.Issue.Status) }>{ d.Issue.Status }</span></span>
-				<span>Count: { strconv.FormatInt(d.Issue.Count, 10) }</span>
-				<span>First seen: { ago(d.Issue.FirstSeen) }</span>
-				<span>Last seen: { ago(d.Issue.LastSeen) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.times_seen") }: { strconv.FormatInt(d.Issue.Count, 10) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: { ago(ctx, d.Issue.FirstSeen) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: { ago(ctx, d.Issue.LastSeen) }</span>
 			</div>
 
 			if d.CanManage {
 				<div class="issue-actions">
 					<form method="post" action={ templ.URL(perfIssueStatusPath(d.Issue.ID)) }>
 						if d.Issue.Status == "unresolved" {
-							<button type="submit" name="status" value="resolved">Resolve</button>
-							<button type="submit" name="status" value="ignored">Ignore</button>
+							<button type="submit" name="status" value="resolved" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
+							<button type="submit" name="status" value="ignored" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
 						} else {
-							<button type="submit" name="status" value="unresolved">Unresolve</button>
+							<button type="submit" name="status" value="unresolved" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
 						}
 					</form>
 				</div>
 			}
 
 			<section class="perf-evidence">
-				<h2>Evidence</h2>
-				@perfEvidenceView(d.Issue.Kind, d.Evidence)
+				<h2>{ i18n.T(ctx, "perf.issues.detail.evidence") }</h2>
+				<div class="card">
+					@perfEvidenceView(d.Issue.Kind, d.Evidence)
+				</div>
 			</section>
 
 			if d.Issue.SampleTraceID != "" {
-				<p class="perf-sample-trace"><a href={ templ.URL(tracePath(d.Issue.SampleTraceID)) }>Открыть пример трейса →</a></p>
+				<p class="perf-sample-trace"><a class="btn btn-ghost" href={ templ.URL(tracePath(d.Issue.SampleTraceID)) }>{ i18n.T(ctx, "perf.issues.detail.sample_trace") }</a></p>
 			}
 		</div>
 	}
@@ -90,36 +93,36 @@ templ perfEvidenceView(kind string, ev PerfEvidence) {
 	<dl class="perf-evidence-list">
 		switch kind {
 			case trace.KindNPlusOne:
-				<dt>Repeat count</dt>
+				<dt>{ i18n.T(ctx, "perf.issues.evidence.repeat_count") }</dt>
 				<dd>{ strconv.FormatInt(ev.Count, 10) }</dd>
 				if ev.HasTotal {
-					<dt>Total time</dt>
+					<dt>{ i18n.T(ctx, "perf.issues.evidence.total_time") }</dt>
 					<dd>{ perfMS(ev.TotalUS) }</dd>
 				}
 				if ev.ParentOp != "" {
-					<dt>Parent op</dt>
+					<dt>{ i18n.T(ctx, "perf.issues.evidence.parent_op") }</dt>
 					<dd>{ ev.ParentOp }</dd>
 				}
 			case trace.KindSlowDBQuery:
-				<dt>Count</dt>
+				<dt>{ i18n.T(ctx, "perf.issues.evidence.count") }</dt>
 				<dd>{ strconv.FormatInt(ev.Count, 10) }</dd>
 				if ev.HasMax {
-					<dt>Max time</dt>
+					<dt>{ i18n.T(ctx, "perf.issues.evidence.max_time") }</dt>
 					<dd>{ perfMS(ev.MaxUS) }</dd>
 				}
 			case trace.KindHTTPFlood:
-				<dt>Count</dt>
+				<dt>{ i18n.T(ctx, "perf.issues.evidence.count") }</dt>
 				<dd>{ strconv.FormatInt(ev.Count, 10) }</dd>
 				if ev.HasSequential {
-					<dt>Sequential</dt>
+					<dt>{ i18n.T(ctx, "perf.issues.evidence.sequential") }</dt>
 					<dd>{ strconv.Itoa(ev.SequentialPct) }%</dd>
 				}
 				if ev.MaxConcurrency > 0 {
-					<dt>Max concurrency</dt>
+					<dt>{ i18n.T(ctx, "perf.issues.evidence.max_concurrency") }</dt>
 					<dd>{ strconv.Itoa(ev.MaxConcurrency) }</dd>
 				}
 				if len(ev.URLs) > 0 {
-					<dt>Sample URLs</dt>
+					<dt>{ i18n.T(ctx, "perf.issues.evidence.sample_urls") }</dt>
 					<dd>
 						<ul class="perf-urls">
 							for _, u := range ev.URLs {
@@ -129,7 +132,7 @@ templ perfEvidenceView(kind string, ev PerfEvidence) {
 					</dd>
 				}
 			default:
-				<dt>Count</dt>
+				<dt>{ i18n.T(ctx, "perf.issues.evidence.count") }</dt>
 				<dd>{ strconv.FormatInt(ev.Count, 10) }</dd>
 		}
 	</dl>

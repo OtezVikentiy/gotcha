@@ -3,6 +3,7 @@ package uptime_test
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestOutboxNotifierOwnChannelsWebhookAndTelegram(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{webhookCh, telegramCh})
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	err = n.Notify(ctx, uptime.Event{
 		Kind:    "down",
 		Monitor: m,
@@ -129,7 +130,7 @@ func TestOutboxNotifierFallsBackToProjectChannels(t *testing.T) {
 	// Монитор без своих каналов.
 	m := newNotifierMonitor(t, usvc, pid, nil)
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m, Cause: "timeout"}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestOutboxNotifierSkipsEmailWhenDisabled(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{emailCh, webhookCh})
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestOutboxNotifierSkipsDisabledChannel(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{disabledCh, enabledCh})
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestOutboxNotifierSubjectsPerKind(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{ch})
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 
 	cases := []struct {
 		ev      uptime.Event
@@ -291,4 +292,94 @@ func TestServiceMonitorChannelsOnlyEnabled(t *testing.T) {
 	if len(channels) != 1 || channels[0].ID != enabledCh {
 		t.Fatalf("MonitorChannels = %+v, want exactly [%d]", channels, enabledCh)
 	}
+}
+
+// Трансграничный гейт: при ExternalDetails=false во внешние каналы не должно
+// уезжать имя монитора/причина падения (тело/subject/monitor_name/cause);
+// при true — уезжает, как раньше.
+func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	usvc := uptime.NewService(pool)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	t.Run("withheld when false", func(t *testing.T) {
+		pid := newProject(t, pool)
+		webhookCh, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel webhook: %v", err)
+		}
+		telegramCh, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "123", Secret: "tok",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel telegram: %v", err)
+		}
+		m := newNotifierMonitor(t, usvc, pid, []int64{webhookCh, telegramCh})
+
+		n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		if err := n.Notify(ctx, uptime.Event{
+			Kind: "down", Monitor: m, Regions: []string{"eu"}, Cause: "connection refused",
+		}); err != nil {
+			t.Fatalf("Notify: %v", err)
+		}
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 2 {
+			t.Fatalf("jobs = %+v err=%v, want 2", jobs, err)
+		}
+		byChannel := map[int64]notify.Job{}
+		for _, j := range jobs {
+			byChannel[j.ChannelID] = j
+		}
+		for _, id := range []int64{webhookCh, telegramCh} {
+			p := byChannel[id].Payload
+			if _, ok := p["monitor_name"]; ok {
+				t.Errorf("channel %d leaks monitor_name: %+v", id, p)
+			}
+			if _, ok := p["cause"]; ok {
+				t.Errorf("channel %d leaks cause: %+v", id, p)
+			}
+			if body, _ := p["body"].(string); strings.Contains(body, "API health") || strings.Contains(body, "connection refused") {
+				t.Errorf("channel %d body leaks details: %q", id, body)
+			}
+			if subj, _ := p["subject"].(string); strings.Contains(subj, "API health") {
+				t.Errorf("channel %d subject leaks name: %q", id, subj)
+			}
+			if p["url"] == nil {
+				t.Errorf("channel %d lost url: %+v", id, p)
+			}
+		}
+		if byChannel[telegramCh].Payload["secret"] != "tok" {
+			t.Errorf("telegram secret lost: %+v", byChannel[telegramCh].Payload)
+		}
+	})
+
+	t.Run("delivered when true", func(t *testing.T) {
+		pid := newProject(t, pool)
+		webhookCh, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel webhook: %v", err)
+		}
+		m := newNotifierMonitor(t, usvc, pid, []int64{webhookCh})
+
+		n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		if err := n.Notify(ctx, uptime.Event{
+			Kind: "down", Monitor: m, Regions: []string{"eu"}, Cause: "connection refused",
+		}); err != nil {
+			t.Fatalf("Notify: %v", err)
+		}
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
+		}
+		if jobs[0].Payload["monitor_name"] != "API health" || jobs[0].Payload["cause"] != "connection refused" {
+			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
+		}
+	})
 }

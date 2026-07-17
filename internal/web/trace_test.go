@@ -277,7 +277,7 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 }
 
 // TestWebTraceProfilingInContext — этап 8: при наличии профиля для трейса
-// waterfall показывает ссылку «View flamegraph», а /traces/{id}/flame отдаёт
+// waterfall показывает ссылку «Смотреть flamegraph», а /traces/{id}/flame отдаёт
 // flamegraph. Без профиля ссылки нет.
 func TestWebTraceProfilingInContext(t *testing.T) {
 	s := newTraceStack(t)
@@ -299,7 +299,7 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 	resp := getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if strings.Contains(string(body), "View flamegraph") {
+	if strings.Contains(string(body), "Смотреть flamegraph") {
 		t.Fatalf("flamegraph link shown without a profile")
 	}
 
@@ -315,7 +315,7 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(body), "View flamegraph") {
+	if !strings.Contains(string(body), "Смотреть flamegraph") {
 		t.Fatalf("flamegraph link missing with a profile: %s", body)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -33,23 +34,23 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	// h.Trace может быть nil в стендах без трейсинга — тогда 404, как и при
 	// отсутствии доступа (тот же приём, что в performanceList), а не паника.
 	if h.Trace == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -62,13 +63,13 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 
 	pages, err := h.Trace.WebVitalsPages(r.Context(), projectID, from, now, environment)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	environments, err := h.Trace.Environments(r.Context(), projectID, from, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 

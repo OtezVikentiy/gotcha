@@ -1,0 +1,38 @@
+package templates
+
+import (
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// HiddenField — одно преserved-поле формы подтверждения: переносится из
+// исходного (неподтверждённого) POST в форму confirm-страницы, чтобы после
+// подтверждения обработчик получил те же данные (например key_id).
+type HiddenField struct {
+	Name  string
+	Value string
+}
+
+// ConfirmPage — общая страница подтверждения деструктивного действия.
+// Рендерится ВМЕСТО самого действия, когда POST не несёт confirmed=yes:
+// под CSP default-src 'self' без unsafe-inline инлайновые onsubmit/onclick
+// с confirm() не исполняются, поэтому единственный источник правды —
+// сервер (двухшаговый POST). Форма ведёт на тот же action с добавленным
+// confirmed=yes и всеми preserved-полями; Cancel — обычная ссылка, без JS.
+templ ConfirmPage(title, message, confirmLabel, cancelHref string, action templ.SafeURL, hidden []HiddenField, userEmail string) {
+	@layout(title, userEmail) {
+		<div class="confirm-page">
+			<section class="card">
+				<h1 class="card-header">{ title }</h1>
+				<p class="warning">{ message }</p>
+				<form method="post" action={ action } class="confirm-form">
+					<input type="hidden" name="confirmed" value="yes"/>
+					for _, f := range hidden {
+						<input type="hidden" name={ f.Name } value={ f.Value }/>
+					}
+					<button type="submit" class="btn btn-danger">{ confirmLabel }</button>
+					<a class="btn" href={ templ.SafeURL(cancelHref) }>{ i18n.T(ctx, "confirm.cancel") }</a>
+				</form>
+			</section>
+		</div>
+	}
+}

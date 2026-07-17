@@ -317,6 +317,67 @@ func TestUpdatePerfSettings(t *testing.T) {
 	}
 }
 
+// TestDeleteProject — удаление проекта (PRIV-H2): проект и зависимые записи
+// (DSN-ключ, монитор — FK ON DELETE CASCADE) исчезают из PG; повторное
+// удаление → ErrNotFound.
+func TestDeleteProject(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "deleteproject-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "deleteproject-org", "Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	proj, err := svc.CreateProject(ctx, o.ID, "api", "API", "go")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	key, err := svc.CreateKey(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("CreateKey: %v", err)
+	}
+	// Монитор — прямой FK на projects с ON DELETE CASCADE: проверяем, что после
+	// удаления проекта не остаётся осиротевших мониторов (иначе uptime-раннер
+	// продолжил бы их дёргать).
+	var monID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO monitors (project_id, name, kind, interval_seconds) VALUES ($1, 'm', 'http', 60) RETURNING id",
+		proj.ID).Scan(&monID); err != nil {
+		t.Fatalf("insert monitor: %v", err)
+	}
+
+	if err := svc.DeleteProject(ctx, proj.ID); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	// Проект исчез.
+	if _, err := svc.GetProject(ctx, proj.ID); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("GetProject after delete: got %v, want ErrNotFound", err)
+	}
+	// Каскад: ключ и монитор исчезли.
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM project_keys WHERE id = $1", key.ID).Scan(&n); err != nil {
+		t.Fatalf("count keys: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("project_keys after delete = %d, want 0 (cascade)", n)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM monitors WHERE id = $1", monID).Scan(&n); err != nil {
+		t.Fatalf("count monitors: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("monitors after delete = %d, want 0 (cascade)", n)
+	}
+
+	// Повторное удаление → ErrNotFound.
+	if err := svc.DeleteProject(ctx, proj.ID); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("DeleteProject (repeat): got %v, want ErrNotFound", err)
+	}
+}
+
 func TestAddTeamMemberIdempotent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)

@@ -1,8 +1,10 @@
 package templates
 
 import (
+	"context"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
@@ -24,28 +26,28 @@ type ProbeRow struct {
 	Status string
 }
 
-// probeStatusBadgeClass — цвета статусов проб: online — тот же зелёный, что и
-// у монитора в состоянии up, offline — красный (проба молчит, её регион не
-// проверяется), revoked — серый (отозванная проба не тревога, а осознанное
-// действие админа).
+// probeStatusBadgeClass — цвета статусов проб через дизайн-систему: online —
+// тот же зелёный, что и у монитора в состоянии up, offline — красный (проба
+// молчит, её регион не проверяется), revoked — нейтральный (отозванная проба
+// не тревога, а осознанное действие админа).
 func probeStatusBadgeClass(status string) string {
 	switch status {
 	case "online":
-		return "badge badge-up"
+		return "badge badge-good"
 	case "offline":
-		return "badge badge-error"
+		return "badge badge-danger"
 	default:
-		return "badge badge-paused"
+		return "badge badge-neutral"
 	}
 }
 
 // probeLastSeenText — «никогда» для только что созданной пробы, которая ещё ни
 // разу не постучалась в центр (тот же принцип, что и lastCheckedText).
-func probeLastSeenText(row ProbeRow) string {
+func probeLastSeenText(ctx context.Context, row ProbeRow) string {
 	if row.Probe.LastSeenAt == nil {
-		return "никогда"
+		return i18n.T(ctx, "uptime.probes.never")
 	}
-	return ago(*row.Probe.LastSeenAt)
+	return ago(ctx, *row.Probe.LastSeenAt)
 }
 
 templ probeTableRow(orgID int64, row ProbeRow) {
@@ -53,13 +55,13 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 		<td>{ row.Probe.Name }</td>
 		<td>{ row.Probe.Region }</td>
 		<td><span class={ probeStatusBadgeClass(row.Status) }>{ row.Status }</span></td>
-		<td>{ probeLastSeenText(row) }</td>
-		<td>{ ago(row.Probe.CreatedAt) }</td>
+		<td>{ probeLastSeenText(ctx, row) }</td>
+		<td>{ ago(ctx, row.Probe.CreatedAt) }</td>
 		<td>
 			if !row.Probe.Revoked {
 				<form method="post" action={ templ.URL(orgProbesRevokePath(orgID)) } class="probe-revoke-form">
 					<input type="hidden" name="probe_id" value={ strconv.FormatInt(row.Probe.ID, 10) }/>
-					<button type="submit">Revoke</button>
+					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "uptime.probes.action_revoke") }</button>
 				</form>
 			}
 		</td>
@@ -73,54 +75,61 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 // OrgSettings и DSN-ключи проекта). errMsg — сообщение 422 (пустое/слишком
 // длинное имя или регион), страница при этом перерисовывается на месте.
 templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail string) {
-	@layout("Пробы "+o.Name, userEmail) {
+	@layout(i18n.T(ctx, "uptime.probes.title")+" "+o.Name, userEmail) {
 		<div class="org-probes">
-			<h1>Пробы организации { o.Name }</h1>
-			<p><a href={ templ.URL(orgSettingsPath(o.ID)) }>Настройки организации</a></p>
+			<p class="breadcrumb"><a href={ templ.URL(orgSettingsPath(o.ID)) }>← { i18n.T(ctx, "nav.members") }</a></p>
+			<h1>{ i18n.T(ctx, "uptime.probes.title") } { o.Name }</h1>
+			@helpPanel("probes", "uptime")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
 			if rawToken != "" {
-				<div class="probe-token-block">
-					<p>Токен пробы (скопируйте сейчас — второй раз не покажем):</p>
+				<div class="probe-token-block card">
+					<p>{ i18n.T(ctx, "uptime.probes.token_hint") }</p>
 					<p><code class="probe-token">{ rawToken }</code></p>
-					<p>Запуск пробы:</p>
+					<p>{ i18n.T(ctx, "uptime.probes.run_hint") }</p>
 					<p><code class="probe-run">{ runCmd }</code></p>
 				</div>
 			}
-			<h2>Пробы</h2>
-			if len(rows) == 0 {
-				<p class="empty">Пока ни одной пробы: проверки выполняются только из региона local.</p>
-			} else {
-				<table>
-					<thead>
-						<tr>
-							<th>Имя</th>
-							<th>Регион</th>
-							<th>Статус</th>
-							<th>Last seen</th>
-							<th>Создана</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, row := range rows {
-							@probeTableRow(o.ID, row)
-						}
-					</tbody>
-				</table>
-			}
-			<h2>Новая проба</h2>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "uptime.probes.list_title") }</h2>
+				if len(rows) == 0 {
+					@emptyState("globe", "uptime.probes.empty.title", "uptime.probes.empty.body", "", "")
+				} else {
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>{ i18n.T(ctx, "uptime.probes.table.name") }</th>
+								<th>{ i18n.T(ctx, "uptime.probes.table.region") }</th>
+								<th>{ i18n.T(ctx, "uptime.probes.table.status") }</th>
+								<th>{ i18n.T(ctx, "uptime.probes.table.last_seen") }</th>
+								<th>{ i18n.T(ctx, "uptime.probes.table.created") }</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, row := range rows {
+								@probeTableRow(o.ID, row)
+							}
+						</tbody>
+					</table>
+				}
+			</section>
+			<h2>{ i18n.T(ctx, "uptime.probes.new_title") }</h2>
 			<form method="post" action={ templ.URL(orgProbesPath(o.ID)) } class="probe-create-form">
-				<label>
-					Имя
-					<input type="text" name="name" required maxlength="40" placeholder="Moscow probe"/>
-				</label>
-				<label>
-					Регион
-					<input type="text" name="region" required maxlength="40" placeholder="ru-msk"/>
-				</label>
-				<button type="submit">Создать пробу</button>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "uptime.probes.field.name") }
+						<input type="text" name="name" required maxlength="40" placeholder="Moscow probe" class="input"/>
+					</label>
+				</div>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "uptime.probes.field.region") }
+						<input type="text" name="region" required maxlength="40" placeholder="ru-msk" class="input"/>
+					</label>
+				</div>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "uptime.probes.submit") }</button>
 			</form>
 		</div>
 	}

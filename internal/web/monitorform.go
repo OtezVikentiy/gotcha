@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -318,11 +320,11 @@ func parseMonitorForm(r *http.Request, projectID int64, kind uptime.Kind, enable
 	return m, regions, channelIDs
 }
 
-func monitorFormErrorMessage(err error) string {
+func monitorFormErrorMessage(ctx context.Context, err error) string {
 	if errors.Is(err, uptime.ErrInvalidMonitor) {
-		return "монитор: " + err.Error()
+		return i18n.Tf(ctx, "error.monitor.invalid", "detail", err.Error())
 	}
-	return "не удалось сохранить монитор"
+	return i18n.T(ctx, "error.monitor.save_failed")
 }
 
 // renderMonitorForm — общий рендер формы создания/редактирования: тянет
@@ -332,12 +334,12 @@ func monitorFormErrorMessage(err error) string {
 func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, status int, orgID int64, data templates.MonitorFormData, userEmail string) {
 	regions, err := h.Uptime.Regions(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	channels, err := h.Alerts.Channels(r.Context(), data.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	data.AllRegions = regions
@@ -354,7 +356,7 @@ func (h *Handler) monitorNewPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -401,7 +403,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -421,11 +423,11 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, uptime.ErrInvalidMonitor) {
 			data := monitorFormFromRequest(r, projectID, 0, false, kind)
-			data.ErrMsg = monitorFormErrorMessage(err)
+			data.ErrMsg = monitorFormErrorMessage(r.Context(), err)
 			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, orgID, data, h.currentEmail(r))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(created.ID), http.StatusSeeOther)
@@ -462,16 +464,16 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.Uptime.Update(r.Context(), upd, regions, channelIDs); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
 		if errors.Is(err, uptime.ErrInvalidMonitor) {
 			data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
-			data.ErrMsg = monitorFormErrorMessage(err)
+			data.ErrMsg = monitorFormErrorMessage(r.Context(), err)
 			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, orgID, data, h.currentEmail(r))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(m.ID), http.StatusSeeOther)

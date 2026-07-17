@@ -30,6 +30,12 @@ type RegressionNotifier struct {
 	Outbox       *notify.Outbox
 	BaseURL      string
 	EmailEnabled bool
+
+	// ExternalDetails — см. alert.Evaluator.ExternalDetails: при false во
+	// внешние каналы (Telegram/webhook) уходит обезличенный payload без имени
+	// функции/сервиса (потенциально чувствительны за пределами РФ, 152-ФЗ).
+	// true (дефолт из cfg) — поведение прежнее.
+	ExternalDetails bool
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -68,6 +74,11 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev ProfileRegressionEve
 			"channel_kind":   ch.Kind,
 			"target":         ch.Target,
 			"secret":         ch.Secret,
+		}
+		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
+		// уходит обезличенный payload (см. notify.RedactExternalPayload).
+		if !n.ExternalDetails && (ch.Kind == alert.ChannelTelegram || ch.Kind == alert.ChannelWebhook) {
+			payload = notify.RedactExternalPayload(payload)
 		}
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("profile: regression notify: enqueue failed", "channel_id", ch.ID, "error", err)

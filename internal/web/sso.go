@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
@@ -89,13 +90,29 @@ func (h *Handler) resolveProvider(ctx context.Context, name string) (oauth.Provi
 }
 
 // emailDomain — часть email после '@', в нижнем регистре. Нет '@' → "".
+// RA-L2: обрезаем ВСЕ конечные точки FQDN ("user@enforced.com.." → "enforced.com"),
+// иначе trailing-dot обходил бы enforced-SSO гейт и domain guard (домен с точкой
+// не совпал бы ни с конфигом org_sso, ни в enforcedSSO-поиске). TrimRight снимает
+// любое число точек, тогда как TrimSuffix снял бы лишь одну.
 func emailDomain(email string) string {
 	email = strings.ToLower(strings.TrimSpace(email))
 	at := strings.LastIndexByte(email, '@')
 	if at < 0 || at == len(email)-1 {
 		return ""
 	}
-	return email[at+1:]
+	domain := strings.TrimRight(email[at+1:], ".")
+	return domain
+}
+
+// enforcedSSO — принадлежит ли домен организации с обязательным (enforced) SSO.
+// Централизует SEC-H2-проверку для password-логина, env-OAuth и регистрации.
+// Безопасно при h.Org == nil и пустом домене.
+func (h *Handler) enforcedSSO(ctx context.Context, domain string) bool {
+	if h.Org == nil || domain == "" {
+		return false
+	}
+	cfg, ok, err := h.Org.SSOByDomain(ctx, domain)
+	return err == nil && ok && cfg.Enforced
 }
 
 // ssoCallback — SSO-ветка callback (этап 10, JIT-провижининг вместо invite-gated).
@@ -104,11 +121,11 @@ func emailDomain(email string) string {
 // DefaultRole; существующий — линкуется и гарантированно становится участником.
 func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name string, id oauth.Identity, sso *ssoMeta) {
 	if !id.EmailVerified {
-		h.renderError(w, r, http.StatusForbidden, "провайдер не подтвердил email")
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
 		return
 	}
 	if emailDomain(id.Email) != sso.Domain {
-		h.renderError(w, r, http.StatusForbidden, "email не из домена организации")
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.email_not_in_domain"))
 		return
 	}
 	role := org.Role(sso.DefaultRole)
@@ -117,13 +134,13 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 	if uid, err := h.Auth.IdentityUser(r.Context(), name, id.Subject); err == nil {
 		_ = h.Auth.UpdateIdentityEmail(r.Context(), name, id.Subject, id.Email)
 		if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		h.oauthLogin(w, r, uid, "/")
 		return
 	} else if !errors.Is(err, auth.ErrNoIdentity) {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -135,20 +152,20 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 	case errors.Is(err, auth.ErrUserNotFound):
 		uid, err = h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if err := h.Auth.LinkIdentity(r.Context(), uid, name, id.Subject, id.Email); err != nil &&
 		!errors.Is(err, auth.ErrAlreadyLinked) {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.oauthLogin(w, r, uid, "/")

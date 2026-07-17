@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -76,7 +77,7 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	orgID, ok := parsePathOrgID(w, r)
+	orgID, ok := h.parsePathOrgID(w, r)
 	if !ok {
 		return
 	}
@@ -94,12 +95,12 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderProbes(w http.ResponseWriter, r *http.Request, status int, orgID int64, errMsg, rawToken string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	now := time.Now()
@@ -128,7 +129,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	orgID, ok := parsePathOrgID(w, r)
+	orgID, ok := h.parsePathOrgID(w, r)
 	if !ok {
 		return
 	}
@@ -160,7 +161,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, token, err := h.Uptime.CreateProbe(r.Context(), orgID, region, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.renderProbes(w, r, http.StatusOK, orgID, "", token)
@@ -180,7 +181,7 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	orgID, ok := parsePathOrgID(w, r)
+	orgID, ok := h.parsePathOrgID(w, r)
 	if !ok {
 		return
 	}
@@ -198,11 +199,11 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !probeBelongsToOrg(probes, probeID) {
-		h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	if err := h.Uptime.RevokeProbe(r.Context(), probeID); err != nil {
@@ -210,7 +211,7 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 			h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID, "проба уже отозвана", "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, orgProbesPath(orgID), http.StatusSeeOther)

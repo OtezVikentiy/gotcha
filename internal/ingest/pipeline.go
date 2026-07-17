@@ -60,13 +60,29 @@ type PerfNotifier interface {
 	NotifyRegression(ctx context.Context, projectID int64, iss trace.PerfIssue) error
 }
 
+// issueUpserter — то, что нужно пайплайну от issue.Service: апсерт группы и
+// чтение (для times_seen в алерте). *issue.Service ему удовлетворяет.
+// Отдельный интерфейс (а не прямая зависимость от *issue.Service) держит
+// событийный путь Pipeline тестируемым без PG.
+type issueUpserter interface {
+	Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level, environment string, seenAt time.Time) (issue.UpsertResult, error)
+	Get(ctx context.Context, issueID int64) (issue.Issue, error)
+}
+
+// eventSink — приёмник событий для записи в CH; *event.Batcher ему
+// удовлетворяет. Отдельный интерфейс (а не прямая зависимость от
+// *event.Batcher) держит событийный путь Pipeline тестируемым без ClickHouse.
+type eventSink interface {
+	Add(event.Event)
+}
+
 // Pipeline — асинхронная обработка принятых событий:
 // fingerprint → upsert issue (PG) → буфер батчера (CH). Транзакции идут через
 // ту же очередь вторым типом задачи: у них нет ни fingerprint'а, ни issue —
 // запись в SpanSink (CH) и детекция проблем производительности (PG + outbox).
 type Pipeline struct {
-	issues  *issue.Service
-	batcher *event.Batcher
+	issues  issueUpserter
+	batcher eventSink
 	queue   chan task
 	workers int
 	wg      sync.WaitGroup
@@ -90,6 +106,11 @@ type Pipeline struct {
 	// Projects — источник настроек проекта, из которого детекция берёт пороги
 	// (projects.perf_detector_config); nil означает «на дефолтах».
 	Projects ProjectSettings
+
+	// Scrub — зачистка ПДн перед записью событий и транзакций (152-ФЗ). nil
+	// означает «scrubbing выключен» — все методы Scrubber nil-safe, поэтому
+	// вызовы на p.Scrub делаются напрямую без проверки на nil.
+	Scrub *Scrubber
 
 	// testPerfBudget подменяет perfDetectBudget в тестах; 0 — обычный бюджет.
 	testPerfBudget time.Duration
@@ -196,6 +217,14 @@ func (p *Pipeline) process(t task) {
 		Message:    ev.Message,
 	})
 
+	// RA-L10 (проход 4): маскируем email в свободном тексте title ДО первого его
+	// использования — Upsert (issues.title в PG) и OnIssue (payload алерта).
+	// Раньше скраб title/message ехал только перед записью в CH, и email утекал в
+	// PG и в алерт открытым. fingerprint уже посчитан выше на ИСХОДНОМ тексте
+	// (Message/Exceptions, не Title), поэтому scrubbing здесь не трогает
+	// группировку. No-op при ScrubFreeText=false.
+	ev.Title = p.Scrub.ScrubText(ev.Title)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res, err := p.issues.Upsert(ctx,
@@ -234,6 +263,19 @@ func (p *Pipeline) process(t task) {
 	if n := len(ev.Exceptions); n > 0 {
 		excType, excValue = ev.Exceptions[n-1].Type, ev.Exceptions[n-1].Value
 	}
+
+	// Зачистка ПДн перед записью: обнуляем ip/email по флагам и редактим
+	// denylist-поля в tags/contexts/stacktrace. p.Scrub == nil — no-op
+	// (методы Scrubber nil-safe).
+	p.Scrub.ScrubUser(&ev.UserIP, &ev.UserEmail)
+	p.Scrub.ScrubTags(ev.Tags)
+	ev.ContextsJSON = p.Scrub.ScrubJSON(ev.ContextsJSON)
+	ev.StacktraceJSON = p.Scrub.ScrubJSON(ev.StacktraceJSON)
+	// RA-L10: опционально маскируем email в свободном тексте (message/exception
+	// value). No-op при ScrubFreeText=false — текущее поведение не меняется.
+	ev.Message = p.Scrub.ScrubText(ev.Message)
+	excValue = p.Scrub.ScrubText(excValue)
+
 	p.batcher.Add(event.Event{
 		ID:             ev.EventID,
 		ProjectID:      t.projectID,
@@ -268,6 +310,19 @@ func (p *Pipeline) processTransaction(projectID int64, tx trace.Transaction) {
 			"project_id", projectID, "trace_id", tx.TraceID)
 		return
 	}
+	// Зачистка ПДн перед записью. Теги транзакции чистятся так же, как у
+	// событий (см. process): denylist-тег на транзакции/OTLP-атрибуте иначе
+	// уехал бы в CH сырым. Данные спанов — отдельно: заголовки/куки/токены
+	// часто оседают в span.Data (напр. http.*). p.Scrub == nil — no-op
+	// (методы Scrubber nil-safe). Детекция работает поверх уже зачищенных спанов.
+	p.Scrub.ScrubTags(tx.Tags)
+	for i := range tx.Spans {
+		p.Scrub.ScrubData(tx.Spans[i].Data)
+		// RA-L10: опционально маскируем email в описании спана. No-op при
+		// ScrubFreeText=false.
+		tx.Spans[i].Description = p.Scrub.ScrubText(tx.Spans[i].Description)
+	}
+
 	p.Spans.Add(projectID, tx)
 	p.detectPerfIssues(projectID, tx)
 }

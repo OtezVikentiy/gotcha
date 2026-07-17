@@ -36,6 +36,9 @@ func newFastRunner(svc *uptime.Service, writer *uptime.ResultWriter) *uptime.Run
 		Concurrency:   5,
 		ScheduleEvery: 20 * time.Millisecond,
 		LeaseEvery:    20 * time.Millisecond,
+		// Тесты мониторят loopback-серверы httptest — отключаем SSRF-фильтр
+		// приватных целей, иначе проверки резались бы до соединения.
+		AllowPrivateTargets: true,
 	}
 }
 

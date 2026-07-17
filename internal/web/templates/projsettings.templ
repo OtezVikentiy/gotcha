@@ -3,6 +3,7 @@ package templates
 import (
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
@@ -28,6 +29,10 @@ func projectSettingsPerformancePath(projectID int64) string {
 
 func projectSettingsRegressionsPath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/regressions"
+}
+
+func projectSettingsDeletePath(projectID int64) string {
+	return projectSettingsPath(projectID) + "/delete"
 }
 
 // PerfSettingsForm — значения формы «Performance» строками, чтобы при 422
@@ -63,22 +68,34 @@ type RegressionSettingsForm struct {
 	Enabled         bool
 }
 
-func keyStatus(k org.Key) string {
+// keyStatusBadgeClass — цвет статуса DSN-ключа через дизайн-систему: живой
+// ключ — .badge-good (используется прямо сейчас), отозванный — .badge-danger
+// (клиенты с ним сразу получают 403 — это заметное, «опасное» состояние,
+// не просто нейтральный факт).
+func keyStatusBadgeClass(k org.Key) string {
 	if k.Revoked {
-		return "revoked"
+		return "badge badge-danger"
 	}
-	return "active"
+	return "badge badge-good"
+}
+
+// keyStatusLabelKey — i18n-ключ подписи статуса ключа.
+func keyStatusLabelKey(k org.Key) string {
+	if k.Revoked {
+		return "project.settings.keys.status.revoked"
+	}
+	return "project.settings.keys.status.active"
 }
 
 templ keyRow(projectID int64, k org.Key) {
 	<tr>
 		<td>{ k.PublicKey }</td>
-		<td>{ keyStatus(k) }</td>
+		<td><span class={ keyStatusBadgeClass(k) }>{ i18n.T(ctx, keyStatusLabelKey(k)) }</span></td>
 		<td>
 			if !k.Revoked {
 				<form method="post" action={ templ.URL(projectSettingsKeysRevokePath(projectID)) } class="key-revoke-form">
 					<input type="hidden" name="key_id" value={ strconv.FormatInt(k.ID, 10) }/>
-					<button type="submit">Revoke</button>
+					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "project.settings.keys.revoke") }</button>
 				</form>
 			}
 		</td>
@@ -94,34 +111,48 @@ templ keyRow(projectID int64, k org.Key) {
 // порог Apdex и пороги детекторов. Один POST на /settings/performance
 // (sameOrigin + owner|admin), при невалидном вводе — 422 с этой же формой.
 templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
-	<h2>Performance</h2>
-	<form method="post" action={ templ.URL(projectSettingsPerformancePath(projectID)) } class="project-perf-form">
-		<label>
-			Transaction sample rate (0..1)
-			<input type="number" name="sample_rate" value={ f.SampleRate } min="0" max="1" step="0.01" required/>
-		</label>
-		<label>
-			Apdex threshold (ms)
-			<input type="number" name="apdex_threshold_ms" value={ f.ApdexMS } min="1" required/>
-		</label>
-		<label>
-			N+1 min (n_plus_one_min)
-			<input type="number" name="n_plus_one_min" value={ f.NPlusOneMin } min="1" required/>
-		</label>
-		<label>
-			N+1 min total ms (n_plus_one_min_total_ms)
-			<input type="number" name="n_plus_one_min_total_ms" value={ f.NPlusOneMinTotalMs } min="1" required/>
-		</label>
-		<label>
-			Slow DB ms (slow_db_ms)
-			<input type="number" name="slow_db_ms" value={ f.SlowDBMs } min="1" required/>
-		</label>
-		<label>
-			HTTP flood min (http_flood_min)
-			<input type="number" name="http_flood_min" value={ f.HTTPFloodMin } min="1" required/>
-		</label>
-		<button type="submit">Сохранить</button>
-	</form>
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "nav.performance") }</h2>
+		<form method="post" action={ templ.URL(projectSettingsPerformancePath(projectID)) } class="project-perf-form">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.perf.sample_rate") }
+					<input type="number" name="sample_rate" value={ f.SampleRate } min="0" max="1" step="0.01" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.perf.apdex_ms") }
+					<input type="number" name="apdex_threshold_ms" value={ f.ApdexMS } min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.perf.n_plus_one_min") }
+					<input type="number" name="n_plus_one_min" value={ f.NPlusOneMin } min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.perf.n_plus_one_total_ms") }
+					<input type="number" name="n_plus_one_min_total_ms" value={ f.NPlusOneMinTotalMs } min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.perf.slow_db_ms") }
+					<input type="number" name="slow_db_ms" value={ f.SlowDBMs } min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.perf.http_flood_min") }
+					<input type="number" name="http_flood_min" value={ f.HTTPFloodMin } min="1" required class="input"/>
+				</label>
+			</div>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.perf.submit") }</button>
+		</form>
+	</section>
 }
 
 // regressionSettingsForm — секция «Регрессии»: пороги детектора регрессий
@@ -129,98 +160,157 @@ templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
 // (шаг 1). Один POST на /settings/regressions (sameOrigin + owner|admin), при
 // невалидном вводе — 422 с этой же формой.
 templ regressionSettingsForm(projectID int64, f RegressionSettingsForm) {
-	<h2>Регрессии</h2>
-	<form method="post" action={ templ.URL(projectSettingsRegressionsPath(projectID)) } class="project-regression-form">
-		<label>
-			Порог открытия, % (threshold_pct)
-			<input type="number" name="threshold_pct" value={ f.ThresholdPct } min="1" max="100" step="1" required/>
-		</label>
-		<label>
-			Порог закрытия, % (recovery_pct)
-			<input type="number" name="recovery_pct" value={ f.RecoveryPct } min="1" max="100" step="1" required/>
-		</label>
-		<label>
-			Окно, минут (window_minutes)
-			<input type="number" name="window_minutes" value={ f.WindowMinutes } min="1" required/>
-		</label>
-		<label>
-			Минимум сэмплов (min_samples)
-			<input type="number" name="min_samples" value={ f.MinSamples } min="1" required/>
-		</label>
-		<label>
-			Пол duration, мс (duration_floor_ms)
-			<input type="number" name="duration_floor_ms" value={ f.DurationFloorMs } min="0" step="any" required/>
-		</label>
-		<label>
-			Пол LCP (lcp)
-			<input type="number" name="floor_lcp" value={ f.FloorLCP } min="0" step="any" required/>
-		</label>
-		<label>
-			Пол INP (inp)
-			<input type="number" name="floor_inp" value={ f.FloorINP } min="0" step="any" required/>
-		</label>
-		<label>
-			Пол CLS (cls)
-			<input type="number" name="floor_cls" value={ f.FloorCLS } min="0" step="any" required/>
-		</label>
-		<label>
-			Пол FCP (fcp)
-			<input type="number" name="floor_fcp" value={ f.FloorFCP } min="0" step="any" required/>
-		</label>
-		<label>
-			Пол TTFB (ttfb)
-			<input type="number" name="floor_ttfb" value={ f.FloorTTFB } min="0" step="any" required/>
-		</label>
-		<label>
-			<input type="checkbox" name="enabled" value="1" checked?={ f.Enabled }/>
-			Включено (enabled)
-		</label>
-		<button type="submit">Сохранить</button>
-	</form>
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "nav.regressions") }</h2>
+		<form method="post" action={ templ.URL(projectSettingsRegressionsPath(projectID)) } class="project-regression-form">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.threshold_pct") }
+					<input type="number" name="threshold_pct" value={ f.ThresholdPct } min="1" max="100" step="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.recovery_pct") }
+					<input type="number" name="recovery_pct" value={ f.RecoveryPct } min="1" max="100" step="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.window_minutes") }
+					<input type="number" name="window_minutes" value={ f.WindowMinutes } min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.min_samples") }
+					<input type="number" name="min_samples" value={ f.MinSamples } min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.duration_floor_ms") }
+					<input type="number" name="duration_floor_ms" value={ f.DurationFloorMs } min="0" step="any" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.floor_lcp") }
+					<input type="number" name="floor_lcp" value={ f.FloorLCP } min="0" step="any" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.floor_inp") }
+					<input type="number" name="floor_inp" value={ f.FloorINP } min="0" step="any" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.floor_cls") }
+					<input type="number" name="floor_cls" value={ f.FloorCLS } min="0" step="any" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.floor_fcp") }
+					<input type="number" name="floor_fcp" value={ f.FloorFCP } min="0" step="any" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "project.settings.regressions.floor_ttfb") }
+					<input type="number" name="floor_ttfb" value={ f.FloorTTFB } min="0" step="any" required class="input"/>
+				</label>
+			</div>
+			<label class="checkbox-inline">
+				<input type="checkbox" name="enabled" value="1" checked?={ f.Enabled }/>
+				{ i18n.T(ctx, "project.settings.regressions.enabled") }
+			</label>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.regressions.submit") }</button>
+		</form>
+	</section>
 }
 
-templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm) {
-	@layout("Настройки "+project.Name, userEmail) {
+// retentionNotice — «События хранятся N дней» при заданном RetentionDays,
+// иначе «срок хранения не ограничен» — PROD-P6. Число подставляется через
+// i18n.Tf, а не отдельным узлом рядом с переводом: иначе порядок слов
+// «N дней» / «N days» не переживает разные языки.
+templ retentionNotice(retentionDays int) {
+	if retentionDays > 0 {
+		<p class="retention-notice">{ i18n.Tf(ctx, "project.settings.retention.notice", "days", strconv.Itoa(retentionDays)) }</p>
+	} else {
+		<p class="retention-notice">{ i18n.T(ctx, "project.settings.retention.unset") }</p>
+	}
+}
+
+templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm, retentionDays int) {
+	@layout(i18n.T(ctx, "project.settings.title")+" "+project.Name, userEmail) {
 		<div class="project-settings">
-			<h1>Настройки проекта { project.Name }</h1>
+			<h1>{ i18n.T(ctx, "project.settings.title") } { project.Name }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			<form method="post" action={ templ.URL(projectSettingsRenamePath(project.ID)) } class="project-rename-form">
-				<label>
-					Название
-					<input type="text" name="name" value={ project.Name } required/>
-				</label>
-				<button type="submit">Переименовать</button>
-			</form>
-			<p>Платформа: { project.Platform }</p>
-			<p><a href={ templ.URL(alertsPath(project.ID)) }>Alerts</a></p>
-			if dsn != "" {
-				<p>DSN текущего живого ключа:</p>
-				<pre>{ dsn }</pre>
-			} else {
-				<p class="error">Нет активного ключа — выпустите новый.</p>
-			}
-			<h2>Ключи</h2>
-			<table>
-				<thead>
-					<tr>
-						<th>Public key</th>
-						<th>Статус</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, k := range keys {
-						@keyRow(project.ID, k)
-					}
-				</tbody>
-			</table>
-			<form method="post" action={ templ.URL(projectSettingsKeysPath(project.ID)) } class="key-create-form">
-				<button type="submit">Новый ключ</button>
-			</form>
+			<div class="settings-grid">
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "project.settings.general.title") }</h2>
+				<form method="post" action={ templ.URL(projectSettingsRenamePath(project.ID)) } class="project-rename-form">
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "project.settings.field.name") }
+							<input type="text" name="name" value={ project.Name } required class="input"/>
+						</label>
+					</div>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.rename.submit") }</button>
+				</form>
+				<p><strong>{ i18n.T(ctx, "project.settings.field.platform") }:</strong> { project.Platform }</p>
+				<p><a class="btn btn-ghost" href={ templ.URL(alertsPath(project.ID)) }>{ i18n.T(ctx, "nav.alerts") }</a></p>
+			</section>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "project.settings.keys.title") }</h2>
+				if dsn != "" {
+					<p>{ i18n.T(ctx, "project.settings.dsn.label") }</p>
+					<pre>{ dsn }</pre>
+				} else {
+					<p class="error">{ i18n.T(ctx, "project.settings.keys.no_dsn") }</p>
+				}
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th>{ i18n.T(ctx, "project.settings.keys.table.key") }</th>
+							<th>{ i18n.T(ctx, "project.settings.keys.table.status") }</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, k := range keys {
+							@keyRow(project.ID, k)
+						}
+					</tbody>
+				</table>
+				<form method="post" action={ templ.URL(projectSettingsKeysPath(project.ID)) } class="key-create-form">
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.keys.create") }</button>
+				</form>
+			</section>
 			@perfSettingsForm(project.ID, perf)
 			@regressionSettingsForm(project.ID, reg)
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "project.settings.retention.title") }</h2>
+				@retentionNotice(retentionDays)
+			</section>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "project.settings.danger.title") }</h2>
+				<div class="card-actions">
+					<form
+						method="post"
+						action={ templ.URL(projectSettingsDeletePath(project.ID)) }
+						class="project-delete-form"
+					>
+						<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "project.settings.danger.delete_submit") }</button>
+					</form>
+				</div>
+			</section>
+			</div>
 		</div>
 	}
 }

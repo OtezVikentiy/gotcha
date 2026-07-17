@@ -3,6 +3,7 @@ package org_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -57,6 +58,51 @@ func TestSSOConfigCRUD(t *testing.T) {
 	}
 	if _, ok, _ := svc.SSOByOrg(ctx, oa.ID); ok {
 		t.Fatalf("sso should be gone after delete")
+	}
+}
+
+// TestSSOSecretEncryptedAtRest — при заданном мастер-ключе client_secret
+// возвращается чтением в исходном виде, но в БД лежит зашифрованным ("enc:").
+func TestSSOSecretEncryptedAtRest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	svc.SetSecretKey("master-key-for-sso")
+	ctx := context.Background()
+
+	owner := newUser(t, pool, "sso-enc@example.com")
+	o, _ := svc.CreateOrg(ctx, "sso-enc", "SSO Enc", owner)
+
+	const plaintext = "super-secret-value"
+	cfg := org.SSOConfig{OrgID: o.ID, Issuer: "https://idp", ClientID: "c", ClientSecret: plaintext, Domain: "enc.com"}
+	if err := svc.UpsertSSO(ctx, cfg); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Чтение через сервис возвращает расшифрованный секрет.
+	got, ok, err := svc.SSOByOrg(ctx, o.ID)
+	if err != nil || !ok {
+		t.Fatalf("by org = (%v,%v)", ok, err)
+	}
+	if got.ClientSecret != plaintext {
+		t.Fatalf("client_secret = %q, want %q", got.ClientSecret, plaintext)
+	}
+	if d, ok, _ := svc.SSOByDomain(ctx, "enc.com"); !ok || d.ClientSecret != plaintext {
+		t.Fatalf("by domain client_secret = %q ok=%v", d.ClientSecret, ok)
+	}
+
+	// В БД client_secret хранится зашифрованным и не содержит plaintext.
+	var stored string
+	if err := pool.QueryRow(ctx, "SELECT client_secret FROM org_sso WHERE org_id = $1", o.ID).Scan(&stored); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if !strings.HasPrefix(stored, "enc:") {
+		t.Fatalf("stored secret %q has no enc: prefix", stored)
+	}
+	if strings.Contains(stored, plaintext) {
+		t.Fatalf("stored secret %q leaks plaintext", stored)
 	}
 }
 

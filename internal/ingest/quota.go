@@ -23,10 +23,10 @@ type QuotaChecker interface {
 // удовлетворяет.
 type quotaResolver interface {
 	Get(ctx context.Context, orgID int64) (org.Org, error)
-	IncUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
-	IncTransactionUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
-	IncMetricUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
-	IncProfileUsage(ctx context.Context, orgID int64, month time.Time) (int64, error)
+	CheckAndCountEvents(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
+	CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
+	CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
+	CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
 }
 
 // OrgQuota — QuotaChecker поверх org.Service. Квота организации кешируется на
@@ -47,8 +47,10 @@ type OrgQuota struct {
 
 	// quotaOf — какую из квот организации проверяет этот экземпляр.
 	quotaOf func(org.Org) int64
-	// inc — какой счётчик потребления он увеличивает.
-	inc func(ctx context.Context, orgID int64, month time.Time) (int64, error)
+	// checkCount — условный атомарный инкремент соответствующего счётчика:
+	// растит его лишь если приём укладывается в quota, иначе отклоняет БЕЗ
+	// инкремента (ARCH-L1: отвергнутое не считается в usage).
+	checkCount func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
 
 	mu      sync.Mutex
 	entries map[int64]quotaEntry
@@ -63,7 +65,7 @@ type quotaEntry struct {
 func NewOrgQuota(svc *org.Service) *OrgQuota {
 	return newOrgQuota(svc,
 		func(o org.Org) int64 { return o.EventQuota },
-		svc.IncUsage)
+		svc.CheckAndCountEvents)
 }
 
 // NewOrgTransactionQuota — квота ТРАНЗАКЦИЙ: transaction_quota против
@@ -72,7 +74,7 @@ func NewOrgQuota(svc *org.Service) *OrgQuota {
 func NewOrgTransactionQuota(svc *org.Service) *OrgQuota {
 	return newOrgQuota(svc,
 		func(o org.Org) int64 { return o.TransactionQuota },
-		svc.IncTransactionUsage)
+		svc.CheckAndCountTransactions)
 }
 
 // NewOrgMetricQuota — квота МЕТРИК: metric_quota против org_usage.metrics_count.
@@ -80,28 +82,28 @@ func NewOrgTransactionQuota(svc *org.Service) *OrgQuota {
 func NewOrgMetricQuota(svc *org.Service) *OrgQuota {
 	return newOrgQuota(svc,
 		func(o org.Org) int64 { return o.MetricQuota },
-		svc.IncMetricUsage)
+		svc.CheckAndCountMetrics)
 }
 
 // NewOrgProfileQuota — квота ПРОФИЛЕЙ: profile_quota против org_usage.profiles_count.
 func NewOrgProfileQuota(svc *org.Service) *OrgQuota {
 	return newOrgQuota(svc,
 		func(o org.Org) int64 { return o.ProfileQuota },
-		svc.IncProfileUsage)
+		svc.CheckAndCountProfiles)
 }
 
 func newOrgQuota(
 	svc quotaResolver,
 	quotaOf func(org.Org) int64,
-	inc func(ctx context.Context, orgID int64, month time.Time) (int64, error),
+	checkCount func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error),
 ) *OrgQuota {
 	return &OrgQuota{
-		svc:     svc,
-		ttl:     30 * time.Second,
-		now:     time.Now,
-		quotaOf: quotaOf,
-		inc:     inc,
-		entries: map[int64]quotaEntry{},
+		svc:        svc,
+		ttl:        30 * time.Second,
+		now:        time.Now,
+		quotaOf:    quotaOf,
+		checkCount: checkCount,
+		entries:    map[int64]quotaEntry{},
 	}
 }
 
@@ -127,18 +129,13 @@ func (q *OrgQuota) quota(ctx context.Context, orgID int64) (int64, error) {
 }
 
 // CheckAndCount — см. QuotaChecker. Квота 0 означает безлимит: счётчик всё
-// равно растёт (для usage-репортинга), но приём никогда не блокируется.
+// равно растёт (для usage-репортинга), но приём никогда не блокируется. При
+// исчерпанной квоте счётчик НЕ инкрементится (ARCH-L1: отвергнутое не считается
+// в usage) — условный инкремент атомарен в БД, без гонки read-then-write.
 func (q *OrgQuota) CheckAndCount(ctx context.Context, orgID int64) (bool, error) {
 	quota, err := q.quota(ctx, orgID)
 	if err != nil {
 		return false, err
 	}
-	n, err := q.inc(ctx, orgID, time.Now())
-	if err != nil {
-		return false, err
-	}
-	if quota == 0 {
-		return true, nil
-	}
-	return n <= quota, nil
+	return q.checkCount(ctx, orgID, time.Now(), quota)
 }

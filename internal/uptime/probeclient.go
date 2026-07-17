@@ -39,6 +39,11 @@ type ProbeClient struct {
 	Concurrency int           // одновременных проверок; 0 = defaultConcurrency
 	PollEvery   time.Duration // период опроса центра; 0 = defaultPollEvery
 
+	// AllowPrivateTargets отключает SSRF-фильтр приватных целей в HTTP/TCP
+	// чекерах (прокидывается в CheckerFor). false (по умолчанию) — фильтр
+	// включён.
+	AllowPrivateTargets bool
+
 	// HTTPClient — клиент для походов В ЦЕНТР (не для самих проверок, у
 	// чекеров свои). nil — клиент с таймаутом 30s.
 	HTTPClient *http.Client
@@ -86,7 +91,7 @@ func (c *ProbeClient) checkerFor(kind Kind) (Checker, error) {
 	if ch, ok := c.Checkers[kind]; ok {
 		return ch, nil
 	}
-	return CheckerFor(kind)
+	return CheckerFor(kind, c.AllowPrivateTargets)
 }
 
 // Run — цикл пробы до отмены ctx: каждые PollEvery один тик (lease → проверки

@@ -69,6 +69,27 @@ func TestResolveProvider(t *testing.T) {
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 
+// TestEmailDomain — emailDomain нормализует регистр/пробелы И обрезает конечную
+// точку FQDN (RA-L2): "user@enforced.com." эквивалентен "enforced.com", иначе
+// trailing-dot обходил бы enforced-SSO гейт/domain guard.
+func TestEmailDomain(t *testing.T) {
+	cases := map[string]string{
+		"user@x.com":      "x.com",
+		"user@x.com.":     "x.com",
+		"USER@X.COM.":     "x.com",
+		"  user@x.com.  ": "x.com",
+		"user@sub.x.com.": "sub.x.com",
+		"nodomain":        "",
+		"trailing@":       "",
+		"user@x.com..":    "x.com",
+	}
+	for in, want := range cases {
+		if got := emailDomain(in); got != want {
+			t.Errorf("emailDomain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestSSOCallbackJIT(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

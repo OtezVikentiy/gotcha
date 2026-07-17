@@ -1,9 +1,11 @@
 package templates
 
 import (
+	"context"
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
@@ -19,31 +21,62 @@ func monitorDetailPath(monitorID int64) string {
 	return "/monitors/" + strconv.FormatInt(monitorID, 10)
 }
 
-// monitorStatusBadgeClass — цвет статуса монитора: up переиспользует
-// badge-info (тот же синий, что и "maintenance", up — это нормальное
-// рабочее состояние, не тревога), down/paused/unknown получают свои классы
-// ниже (app.css).
+// monitorStatusBadgeClass — цвет статуса монитора через дизайн-систему:
+// up/down/paused переиспользуют общие .badge-good/-danger/-neutral (тот же
+// набор, что и статусы issues/perf-issues), maintenance — .badge-info,
+// неизвестный статус — .badge-warn. Используется и статус-страницей
+// (statuspage.templ), не только этим пакетом.
 func monitorStatusBadgeClass(status string) string {
 	switch status {
 	case "up":
-		return "badge badge-up"
+		return "badge badge-good"
 	case "down":
-		return "badge badge-error"
+		return "badge badge-danger"
 	case "paused":
-		return "badge badge-paused"
+		return "badge badge-neutral"
 	case "maintenance":
 		return "badge badge-info"
 	default:
-		return "badge badge-warning"
+		return "badge badge-warn"
+	}
+}
+
+// monitorStatusTextKey — i18n-ключ человекочитаемого статуса монитора.
+func monitorStatusTextKey(status string) string {
+	switch status {
+	case "up":
+		return "uptime.status.up"
+	case "down":
+		return "uptime.status.down"
+	case "paused":
+		return "uptime.status.paused"
+	case "maintenance":
+		return "uptime.status.maintenance"
+	default:
+		return "uptime.status.unknown"
 	}
 }
 
 // uptimeStatText — "no data", если за период не было ни одной проверки
 // (Total == 0, монитор только что создан или ClickHouse ещё не получил
-// строк), иначе процент с двумя знаками после запятой.
+// строк), иначе процент с двумя знаками после запятой. Не локализуется:
+// используется статус-страницей (statuspage.templ), у которой принципиально
+// нет i18n (публичная страница, всегда на русском через statusLayout) — своей
+// копии этой функции у неё нет. Авторизованные страницы (MonitorsList,
+// MonitorDetail) используют uptimeStatTextCtx ниже, а не эту функцию.
 func uptimeStatText(s uptime.UptimeStat) string {
 	if s.Total == 0 {
 		return "no data"
+	}
+	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
+}
+
+// uptimeStatTextCtx — то же самое, но для авторизованных страниц: пустое
+// состояние локализуется через uptime.no_data вместо хардкода "no data" из
+// uptimeStatText (см. её комментарий про статус-страницу).
+func uptimeStatTextCtx(ctx context.Context, s uptime.UptimeStat) string {
+	if s.Total == 0 {
+		return i18n.T(ctx, "uptime.no_data")
 	}
 	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
 }
@@ -57,13 +90,15 @@ func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
 	return strconv.Itoa(int(avgMs)) + "ms"
 }
 
-// lastCheckedText — "no data" для свежесозданного монитора, который ещё ни
-// разу не проверялся ни в одном регионе.
-func lastCheckedText(t *time.Time) string {
+// lastCheckedText — "нет данных" для свежесозданного монитора, который ещё
+// ни разу не проверялся ни в одном регионе. Используется только
+// авторизованными страницами (MonitorsList) — своей копии для
+// статус-страницы нет, у неё нет колонки "последняя проверка".
+func lastCheckedText(ctx context.Context, t *time.Time) string {
 	if t == nil {
-		return "no data"
+		return i18n.T(ctx, "uptime.no_data")
 	}
-	return ago(*t)
+	return ago(ctx, *t)
 }
 
 // MonitorRow — монитор вместе с уже посчитанными для списка данными
@@ -82,46 +117,47 @@ type MonitorRow struct {
 
 // MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
 // canManage управляет видимостью ссылки «New monitor» (owner/admin, тот же
-// принцип, что и «Project settings» на странице issues).
+// принцип, что и «Project settings» на странице issues). Ссылки на
+// Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
+// боковой панели app-shell (nav.Subsections для area "uptime").
 templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail string) {
-	@layout("Monitors", userEmail) {
+	@layout(i18n.T(ctx, "nav.monitors"), userEmail) {
 		<div class="monitors">
-			<h1>Monitors</h1>
-			<p>
-				<a href={ templ.URL(incidentsPath(projectID)) }>Incidents</a>
-				if canManage {
-					· <a href={ templ.URL(maintenancePath(projectID)) }>Maintenance</a>
-					· <a href={ templ.URL(statusPagesPath(projectID)) }>Status pages</a>
-				}
-			</p>
+			<h1>{ i18n.T(ctx, "nav.monitors") }</h1>
+			@helpPanel("uptime", "uptime")
 			if canManage {
-				<p><a href={ templ.URL(monitorNewPath(projectID)) }>New monitor</a></p>
+				<p><a class="btn btn-primary" href={ templ.URL(monitorNewPath(projectID)) }>{ i18n.T(ctx, "uptime.monitors.new") }</a></p>
 			}
 			if len(rows) == 0 {
-				<p>Мониторы не найдены.</p>
+				if canManage {
+					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "uptime.monitors.empty.cta", monitorNewPath(projectID))
+				} else {
+					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "", "")
+				}
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>Name</th>
-							<th>Type</th>
-							<th>Status</th>
-							<th>Uptime (24h)</th>
-							<th>Avg latency (24h)</th>
-							<th>Availability (24h)</th>
-							<th>Last check</th>
+							<th>{ i18n.T(ctx, "uptime.monitors.table.name") }</th>
+							<th>{ i18n.T(ctx, "uptime.monitors.table.type") }</th>
+							<th>{ i18n.T(ctx, "uptime.monitors.table.status") }</th>
+							<th class="num">{ i18n.T(ctx, "uptime.monitors.table.uptime_24h") }</th>
+							<th class="num">{ i18n.T(ctx, "uptime.monitors.table.avg_latency_24h") }</th>
+							<th>{ i18n.T(ctx, "uptime.monitors.table.availability_24h") }</th>
+							<th>{ i18n.T(ctx, "uptime.monitors.table.last_check") }</th>
 						</tr>
 					</thead>
 					<tbody>
 						for _, row := range rows {
 							<tr>
 								<td><a href={ templ.URL(monitorDetailPath(row.Monitor.ID)) }>{ row.Monitor.Name }</a></td>
-								<td>{ string(row.Monitor.Kind) }</td>
-								<td><span class={ monitorStatusBadgeClass(row.Status) }>{ row.Status }</span></td>
-								<td>{ uptimeStatText(row.Uptime24h) }</td>
-								<td>{ avgLatencyText(row.Uptime24h, row.AvgLatencyMs) }</td>
-								<td>@row.Bars</td>
-								<td>{ lastCheckedText(row.LastChecked) }</td>
+								<td><span class="chip">{ string(row.Monitor.Kind) }</span></td>
+								<td><span class={ monitorStatusBadgeClass(row.Status) }>{ i18n.T(ctx, monitorStatusTextKey(row.Status)) }</span></td>
+								<td class="num">{ uptimeStatTextCtx(ctx, row.Uptime24h) }</td>
+								<td class="num">{ avgLatencyText(row.Uptime24h, row.AvgLatencyMs) }</td>
+								<td>@row.Bars
+</td>
+								<td>{ lastCheckedText(ctx, row.LastChecked) }</td>
 							</tr>
 						}
 					</tbody>

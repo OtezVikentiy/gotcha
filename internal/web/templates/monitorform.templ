@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
@@ -53,11 +54,11 @@ type MonitorFormData struct {
 	HeartbeatGraceSeconds string
 }
 
-func monitorFormTitle(d MonitorFormData) string {
+func monitorFormTitleKey(d MonitorFormData) string {
 	if d.IsEdit {
-		return "Редактирование монитора"
+		return "uptime.form.title_edit"
 	}
-	return "Новый монитор"
+	return "uptime.form.title_new"
 }
 
 func monitorFormAction(d MonitorFormData) string {
@@ -92,122 +93,176 @@ templ channelCheckbox(c alert.Channel, selected map[int64]bool) {
 templ httpFields(d MonitorFormData) {
 	<fieldset class="monitor-kind-fields">
 		<legend>HTTP</legend>
-		<label>
-			Метод
-			<select name="http_method">
-				@selectOption("GET", "GET", d.HTTPMethod)
-				@selectOption("POST", "POST", d.HTTPMethod)
-				@selectOption("HEAD", "HEAD", d.HTTPMethod)
-			</select>
-		</label>
-		<label>
-			URL
-			<input type="text" name="http_url" value={ d.HTTPURL } placeholder="https://example.com/health"/>
-		</label>
-		<label>
-			Заголовки (по одному "Key: Value" на строку)
-			<textarea name="http_headers" rows="4">{ d.HTTPHeaders }</textarea>
-		</label>
-		<label>
-			Тело запроса
-			<textarea name="http_body" rows="4">{ d.HTTPBody }</textarea>
-		</label>
-		<label>
-			Ожидаемые коды ответа (через запятую, пусто = 200-299)
-			<input type="text" name="http_expected_status" value={ d.HTTPExpectedStatus } placeholder="200,201,204"/>
-		</label>
-		<label>
-			Тело содержит
-			<input type="text" name="http_body_contains" value={ d.HTTPBodyContains }/>
-		</label>
-		<label>
-			Тело НЕ содержит
-			<input type="text" name="http_body_not_contains" value={ d.HTTPBodyNotContains }/>
-		</label>
-		<label>
+		<div class="form-grid">
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.method") }
+				<select name="http_method" class="select">
+					@selectOption("GET", "GET", d.HTTPMethod)
+					@selectOption("POST", "POST", d.HTTPMethod)
+					@selectOption("HEAD", "HEAD", d.HTTPMethod)
+				</select>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.url") }
+				<input type="text" name="http_url" value={ d.HTTPURL } placeholder="https://example.com/health" class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.headers") }
+				<textarea name="http_headers" rows="4" class="input">{ d.HTTPHeaders }</textarea>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.body") }
+				<textarea name="http_body" rows="4" class="input">{ d.HTTPBody }</textarea>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.expected_status") }
+				<input type="text" name="http_expected_status" value={ d.HTTPExpectedStatus } placeholder="200,201,204" class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.body_contains") }
+				<input type="text" name="http_body_contains" value={ d.HTTPBodyContains } class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.body_not_contains") }
+				<input type="text" name="http_body_not_contains" value={ d.HTTPBodyNotContains } class="input"/>
+			</label>
+		</div>
+		<label class="checkbox-inline">
 			<input type="checkbox" name="http_follow_redirects" checked?={ d.HTTPFollowRedirects }/>
-			Следовать редиректам
+			{ i18n.T(ctx, "uptime.form.http.follow_redirects") }
 		</label>
-		<label>
-			SSL alert (за сколько дней до истечения сертификата предупреждать)
-			<input type="number" name="ssl_alert_days" value={ d.SSLAlertDays } min="0"/>
-		</label>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.http.ssl_alert_days") }
+				<input type="number" name="ssl_alert_days" value={ d.SSLAlertDays } min="0" class="input"/>
+			</label>
+		</div>
+		</div>
 	</fieldset>
 }
 
 templ tcpFields(d MonitorFormData) {
 	<fieldset class="monitor-kind-fields">
 		<legend>TCP</legend>
-		<label>
-			Host
-			<input type="text" name="tcp_host" value={ d.TCPHost }/>
-		</label>
-		<label>
-			Port
-			<input type="number" name="tcp_port" value={ d.TCPPort } min="1" max="65535"/>
-		</label>
+		<div class="form-grid">
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.tcp.host") }
+				<input type="text" name="tcp_host" value={ d.TCPHost } class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.tcp.port") }
+				<input type="number" name="tcp_port" value={ d.TCPPort } min="1" max="65535" class="input"/>
+			</label>
+		</div>
+		</div>
 	</fieldset>
 }
 
 templ dnsFields(d MonitorFormData) {
 	<fieldset class="monitor-kind-fields">
 		<legend>DNS</legend>
-		<label>
-			Hostname
-			<input type="text" name="dns_hostname" value={ d.DNSHostname }/>
-		</label>
-		<label>
-			Тип записи
-			<select name="dns_record_type">
-				@selectOption("A", "A", d.DNSRecordType)
-				@selectOption("AAAA", "AAAA", d.DNSRecordType)
-				@selectOption("CNAME", "CNAME", d.DNSRecordType)
-				@selectOption("MX", "MX", d.DNSRecordType)
-				@selectOption("TXT", "TXT", d.DNSRecordType)
-			</select>
-		</label>
-		<label>
-			Ожидаемое значение
-			<input type="text" name="dns_expected_value" value={ d.DNSExpectedValue }/>
-		</label>
+		<div class="form-grid">
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.dns.hostname") }
+				<input type="text" name="dns_hostname" value={ d.DNSHostname } class="input"/>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.dns.record_type") }
+				<select name="dns_record_type" class="select">
+					@selectOption("A", "A", d.DNSRecordType)
+					@selectOption("AAAA", "AAAA", d.DNSRecordType)
+					@selectOption("CNAME", "CNAME", d.DNSRecordType)
+					@selectOption("MX", "MX", d.DNSRecordType)
+					@selectOption("TXT", "TXT", d.DNSRecordType)
+				</select>
+			</label>
+		</div>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.dns.expected_value") }
+				<input type="text" name="dns_expected_value" value={ d.DNSExpectedValue } class="input"/>
+			</label>
+		</div>
+		</div>
 	</fieldset>
 }
 
 templ heartbeatFields(d MonitorFormData) {
 	<fieldset class="monitor-kind-fields">
 		<legend>Heartbeat</legend>
-		<label>
-			Grace period (секунд, минимум 60)
-			<input type="number" name="heartbeat_grace_seconds" value={ d.HeartbeatGraceSeconds } min="60"/>
-		</label>
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.form.heartbeat.grace") }
+				<input type="number" name="heartbeat_grace_seconds" value={ d.HeartbeatGraceSeconds } min="60" class="input"/>
+			</label>
+		</div>
 	</fieldset>
 }
 
-// kindFields — набор типо-специфичных полей. При редактировании тип
-// зафиксирован (d.Kind уже известен из сохранённого монитора) — показываем
-// только его fieldset. При создании тип ещё не подтверждён отправкой формы
-// (select можно переключить без перезагрузки страницы, а страница без JS не
-// умеет скрывать/показывать fieldset'ы по выбору), поэтому показываем все
-// четыре сразу — сервер использует поля только того kind, который реально
-// пришёл в поле "kind".
+// kindFields — типо-специфичный fieldset при редактировании: тип зафиксирован
+// (d.Kind известен из сохранённого монитора), показываем только его.
 templ kindFields(d MonitorFormData) {
-	if d.IsEdit {
-		switch d.Kind {
-			case uptime.KindHTTP:
-				@httpFields(d)
-			case uptime.KindTCP:
-				@tcpFields(d)
-			case uptime.KindDNS:
-				@dnsFields(d)
-			case uptime.KindHeartbeat:
-				@heartbeatFields(d)
-		}
-	} else {
-		@httpFields(d)
-		@tcpFields(d)
-		@dnsFields(d)
-		@heartbeatFields(d)
+	switch d.Kind {
+		case uptime.KindHTTP:
+			@httpFields(d)
+		case uptime.KindTCP:
+			@tcpFields(d)
+		case uptime.KindDNS:
+			@dnsFields(d)
+		case uptime.KindHeartbeat:
+			@heartbeatFields(d)
 	}
+}
+
+// kindPicker — выбор типа проверки при создании монитора. Радиокнопки-вкладки
+// (name="kind") и четыре fieldset'а лежат прямыми детьми .kind-picker, поэтому
+// CSS-правило `#kf-…:checked ~ .kind-fields--…` показывает поля только
+// выбранного типа — прогрессивное раскрытие без JS (см. .kind-picker в app.css).
+// Радио идут перед fieldset'ами, иначе комбинатор `~` не сработает. Пустой
+// d.Kind (новая форма) → по умолчанию выбран HTTP.
+templ kindPicker(d MonitorFormData) {
+	<div class="kind-picker">
+		<span class="kind-picker-label">{ i18n.T(ctx, "uptime.form.field.type") }</span>
+		<input type="radio" name="kind" value={ string(uptime.KindHTTP) } id="kf-http" class="kind-radio" checked?={ d.Kind == uptime.KindHTTP || d.Kind == "" }/>
+		<label for="kf-http" class="kind-tab">HTTP</label>
+		<input type="radio" name="kind" value={ string(uptime.KindTCP) } id="kf-tcp" class="kind-radio" checked?={ d.Kind == uptime.KindTCP }/>
+		<label for="kf-tcp" class="kind-tab">TCP</label>
+		<input type="radio" name="kind" value={ string(uptime.KindDNS) } id="kf-dns" class="kind-radio" checked?={ d.Kind == uptime.KindDNS }/>
+		<label for="kf-dns" class="kind-tab">DNS</label>
+		<input type="radio" name="kind" value={ string(uptime.KindHeartbeat) } id="kf-heartbeat" class="kind-radio" checked?={ d.Kind == uptime.KindHeartbeat }/>
+		<label for="kf-heartbeat" class="kind-tab">Heartbeat</label>
+		<div class="kind-fields kind-fields--http">
+			@httpFields(d)
+		</div>
+		<div class="kind-fields kind-fields--tcp">
+			@tcpFields(d)
+		</div>
+		<div class="kind-fields kind-fields--dns">
+			@dnsFields(d)
+		</div>
+		<div class="kind-fields kind-fields--heartbeat">
+			@heartbeatFields(d)
+		</div>
+	</div>
 }
 
 // MonitorForm — GET/POST /projects/{id}/monitors/new и GET/POST
@@ -216,77 +271,94 @@ templ kindFields(d MonitorFormData) {
 // readonly-поле (редактирование, кнопки Pause/Resume/Delete живут на
 // странице монитора, не здесь).
 templ MonitorForm(d MonitorFormData, userEmail string) {
-	@layout(monitorFormTitle(d), userEmail) {
+	@layout(i18n.T(ctx, monitorFormTitleKey(d)), userEmail) {
 		<div class="monitor-form">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(d.ProjectID)) }>← Monitors</a></p>
-			<h1>{ monitorFormTitle(d) }</h1>
+			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(d.ProjectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			<h1>{ i18n.T(ctx, monitorFormTitleKey(d)) }</h1>
 			if d.ErrMsg != "" {
 				<p class="error">{ d.ErrMsg }</p>
 			}
 			<form method="post" action={ templ.URL(monitorFormAction(d)) } class="monitor-form-form">
-				<label>
-					Имя
-					<input type="text" name="name" value={ d.Name } required/>
-				</label>
-				<label>
-					Тип
-					if d.IsEdit {
-						<input type="text" value={ string(d.Kind) } disabled/>
-					} else {
-						<select name="kind">
-							@selectOption(string(uptime.KindHTTP), "HTTP", string(d.Kind))
-							@selectOption(string(uptime.KindTCP), "TCP", string(d.Kind))
-							@selectOption(string(uptime.KindDNS), "DNS", string(d.Kind))
-							@selectOption(string(uptime.KindHeartbeat), "Heartbeat", string(d.Kind))
-						</select>
-					}
-				</label>
+				<div class="form-grid">
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "uptime.form.field.name") }
+						<input type="text" name="name" value={ d.Name } required class="input"/>
+					</label>
+				</div>
+				if d.IsEdit {
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.field.type") }
+							<input type="text" value={ string(d.Kind) } disabled class="input"/>
+						</label>
+					</div>
+				}
 
-				@kindFields(d)
+				</div>
+				if d.IsEdit {
+					@kindFields(d)
+				} else {
+					@kindPicker(d)
+				}
 
 				<fieldset>
-					<legend>Общие настройки</legend>
-					<label>
-						Интервал проверки (секунд)
-						<input type="number" name="interval_seconds" value={ d.IntervalSeconds } min="30"/>
-					</label>
-					<label>
-						Таймаут (секунд)
-						<input type="number" name="timeout_seconds" value={ d.TimeoutSeconds } min="1" max="120"/>
-					</label>
-					<label>
-						Порог отказа (проверок подряд)
-						<input type="number" name="fail_threshold" value={ d.FailThreshold } min="1"/>
-					</label>
-					<label>
-						Порог восстановления (проверок подряд)
-						<input type="number" name="recovery_threshold" value={ d.RecoveryThreshold } min="1"/>
-					</label>
-					<label>
-						Консенсус по регионам
-						<select name="consensus">
-							@selectOption(string(uptime.ConsensusAny), "any", d.Consensus)
-							@selectOption(string(uptime.ConsensusMajority), "majority", d.Consensus)
-							@selectOption(string(uptime.ConsensusAll), "all", d.Consensus)
-						</select>
-					</label>
-					<label>
-						Повторное уведомление каждые (минут, 0 = выключено)
-						<input type="number" name="remind_every_minutes" value={ d.RemindEveryMinutes } min="0"/>
-					</label>
+					<legend>{ i18n.T(ctx, "uptime.form.common.legend") }</legend>
+					<div class="form-grid">
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.interval") }
+							<input type="number" name="interval_seconds" value={ d.IntervalSeconds } min="30" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.timeout") }
+							<input type="number" name="timeout_seconds" value={ d.TimeoutSeconds } min="1" max="120" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.fail_threshold") }
+							<input type="number" name="fail_threshold" value={ d.FailThreshold } min="1" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.recovery_threshold") }
+							<input type="number" name="recovery_threshold" value={ d.RecoveryThreshold } min="1" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.consensus") }
+							<select name="consensus" class="select">
+								@selectOption(string(uptime.ConsensusAny), "any", d.Consensus)
+								@selectOption(string(uptime.ConsensusMajority), "majority", d.Consensus)
+								@selectOption(string(uptime.ConsensusAll), "all", d.Consensus)
+							</select>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.remind") }
+							<input type="number" name="remind_every_minutes" value={ d.RemindEveryMinutes } min="0" class="input"/>
+						</label>
+					</div>
+					</div>
 				</fieldset>
 
 				<fieldset>
-					<legend>Регионы</legend>
+					<legend>{ i18n.T(ctx, "uptime.form.regions.legend") }</legend>
 					for _, region := range d.AllRegions {
 						@regionCheckbox(region, d.SelectedRegions)
 					}
 				</fieldset>
 
 				<fieldset>
-					<legend>Каналы алертов</legend>
+					<legend>{ i18n.T(ctx, "uptime.form.channels.legend") }</legend>
 					if len(d.AllChannels) == 0 {
-						<p>Нет доступных каналов — добавьте их на странице алертов проекта.</p>
+						<p>{ i18n.T(ctx, "uptime.form.channels.empty") }</p>
 					} else {
 						for _, c := range d.AllChannels {
 							@channelCheckbox(c, d.SelectedChannels)
@@ -294,7 +366,7 @@ templ MonitorForm(d MonitorFormData, userEmail string) {
 					}
 				</fieldset>
 
-				<button type="submit">Сохранить</button>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "uptime.form.submit") }</button>
 			</form>
 		</div>
 	}

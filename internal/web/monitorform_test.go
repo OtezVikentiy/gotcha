@@ -467,7 +467,7 @@ func TestWebIncidentsList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	for _, want := range []string{"Flaky API", "connection refused", "local", "ongoing"} {
+	for _, want := range []string{"Flaky API", "connection refused", "local", "продолжается"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s missing %q: %s", path, want, body)
 		}

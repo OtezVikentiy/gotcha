@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -23,39 +24,39 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 
 	traceID := r.PathValue("trace_id")
 	if traceID == "" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !found {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	root, spans, err := h.Trace.Trace(r.Context(), projectID, traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if len(spans) == 0 {
 		// ProjectForTrace нашёл трейс в transactions, но спанов нет — трейс
 		// без спанов рисовать нечем, 404 (тот же смысл «нет такой страницы»).
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -65,7 +66,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 	if h.Events != nil {
 		errs, err := h.Events.ByTraceID(r.Context(), projectID, traceID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		for _, e := range errs {
@@ -141,35 +142,35 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Trace == nil || h.Profiles == nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	traceID := r.PathValue("trace_id")
 	if traceID == "" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !found {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	root, err := h.Profiles.FlameForTrace(r.Context(), projectID, traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	data := templates.TraceFlameData{

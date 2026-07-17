@@ -50,6 +50,28 @@ type Handler struct {
 	// ProfileQuota — квота ПРОФИЛЕЙ (profile_quota против org_usage.profiles_count).
 	// nil → профили не квотируются.
 	ProfileQuota QuotaChecker
+
+	// DropCounter — учёт ОТКЛОНЁННЫХ (drop) единиц по орге/месяцу (PROD-P1: конец
+	// молчаливых потерь). Инкрементируется в каждой ветке дропа best-effort:
+	// ошибка логируется, но не меняет статус ответа. nil → не считаем.
+	// Присваивается опционально (как Metrics/TxQuota); *org.Service ему удовлетворяет.
+	DropCounter DropCounter
+
+	// Scrub — зачистка ПДн атрибутов OTLP-метрик перед записью (152-ФЗ). Путь
+	// метрик идёт МИМО ingest.Pipeline (и его Scrubber'а), поэтому scrubber
+	// нужен и здесь. Присваивается опционально (как Metrics/DropCounter); nil →
+	// scrubbing выключен (методы Scrubber nil-safe, вызов делается без проверки).
+	Scrub *Scrubber
+}
+
+// DropCounter учитывает отклонённые единицы приёма по орге за текущий месяц.
+// Реализация — *org.Service (методы IncDropped*). Сигнатуры совпадают с ним, так
+// что сервис подставляется в поле напрямую.
+type DropCounter interface {
+	IncDroppedEvents(ctx context.Context, orgID int64, month time.Time, n int64) error
+	IncDroppedTransactions(ctx context.Context, orgID int64, month time.Time, n int64) error
+	IncDroppedMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error
+	IncDroppedProfiles(ctx context.Context, orgID int64, month time.Time, n int64) error
 }
 
 // MetricSink принимает распарсенную metric-точку. Реализация — *metric.Writer.
@@ -125,6 +147,41 @@ func (h *Handler) allow(ctx context.Context, q QuotaChecker, orgID int64, kind s
 		return true
 	}
 	return allowed
+}
+
+// dropKind — класс отклонённой единицы для countDrop.
+type dropKind int
+
+const (
+	dropEvent dropKind = iota
+	dropTransaction
+	dropMetric
+	dropProfile
+)
+
+// countDrop списывает n отклонённых единиц класса kind на текущий месяц орги.
+// Best-effort: nil-счётчик или n<=0 — no-op, ошибка счётчика логируется, но не
+// влияет на ответ (терять статус ответа из-за учёта потерь бессмысленно).
+func (h *Handler) countDrop(ctx context.Context, kind dropKind, orgID int64, n int) {
+	if h.DropCounter == nil || n <= 0 {
+		return
+	}
+	month := time.Now().UTC()
+	var err error
+	switch kind {
+	case dropEvent:
+		err = h.DropCounter.IncDroppedEvents(ctx, orgID, month, int64(n))
+	case dropTransaction:
+		err = h.DropCounter.IncDroppedTransactions(ctx, orgID, month, int64(n))
+	case dropMetric:
+		err = h.DropCounter.IncDroppedMetrics(ctx, orgID, month, int64(n))
+	case dropProfile:
+		err = h.DropCounter.IncDroppedProfiles(ctx, orgID, month, int64(n))
+	}
+	if err != nil {
+		slog.Warn("ingest: drop counter update failed",
+			"org_id", orgID, "kind", kind, "n", n, "error", err)
+	}
 }
 
 // writeQuotaExceeded пишет 429 с Retry-After — числом секунд до 1-го числа
@@ -231,6 +288,14 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	hasTx := len(env.Transactions) > 0 && h.pipeline.TracingEnabled()
 	eventsAllowed := hasEvents && h.allow(r.Context(), h.quota, key.OrgID, "event")
 	txAllowed := hasTx && h.allow(r.Context(), h.TxQuota, key.OrgID, "transaction")
+	// Учёт дропов до развилки ответа: отклонённый класс считаем и когда 429 по
+	// ВСЕМ типам (ранний return ниже), и когда 200 по смешанному envelope'у.
+	if hasEvents && !eventsAllowed {
+		h.countDrop(r.Context(), dropEvent, key.OrgID, len(env.Events))
+	}
+	if hasTx && !txAllowed {
+		h.countDrop(r.Context(), dropTransaction, key.OrgID, len(env.Transactions))
+	}
 	if (hasEvents || hasTx) && !eventsAllowed && !txAllowed {
 		detail := "event quota exceeded"
 		if !hasEvents {
@@ -284,6 +349,7 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		} else {
 			slog.Warn("ingest: profile quota exceeded, dropping profiles",
 				"items", len(env.Profiles), "project_id", projectID, "org_id", key.OrgID)
+			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
@@ -339,6 +405,7 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allow(r.Context(), h.quota, key.OrgID, "event") {
+		h.countDrop(r.Context(), dropEvent, key.OrgID, 1)
 		writeQuotaExceeded(w, "event quota exceeded")
 		return
 	}

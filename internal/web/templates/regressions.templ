@@ -1,9 +1,11 @@
 package templates
 
 import (
+	"context"
 	"math"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -23,9 +25,9 @@ func regressionTargetURL(projectID int64, r trace.Regression) string {
 
 // regressionMetricLabel — человекочитаемое имя метрики: duration → «p95
 // длительности», web-vital → «LCP p75» и т.п. (vitalLabel уже даёт «LCP»/«INP»/…).
-func regressionMetricLabel(metric string) string {
+func regressionMetricLabel(ctx context.Context, metric string) string {
 	if metric == "duration" {
-		return "p95 длительности"
+		return i18n.T(ctx, "perf.regressions.metric.duration_p95")
 	}
 	return vitalLabel(metric) + " p75"
 }
@@ -63,19 +65,20 @@ func regressionIncreasePct(r trace.Regression) string {
 	return sign + strconv.FormatInt(rounded, 10) + "%"
 }
 
-// regressionStatusBadgeClass — открытая красным, закрытая серым.
+// regressionStatusBadgeClass — открытая (danger, требует внимания), закрытая
+// (good, восстановилась) — та же семантика, что и perfStatusBadgeClass.
 func regressionStatusBadgeClass(status string) string {
 	if status == "open" {
-		return "badge badge-error"
+		return "badge badge-danger"
 	}
-	return "badge badge-paused"
+	return "badge badge-good"
 }
 
 // regressionDurationText — «ongoing» для открытой регрессии, иначе длительность
 // между started_at и resolved_at (тот же приём, что incidentDurationText).
-func regressionDurationText(r trace.Regression) string {
+func regressionDurationText(ctx context.Context, r trace.Regression) string {
 	if r.ResolvedAt == nil {
-		return "ongoing"
+		return i18n.T(ctx, "perf.regressions.ongoing")
 	}
 	return r.ResolvedAt.Sub(r.StartedAt).String()
 }
@@ -89,47 +92,47 @@ func regressionStatusFilterURL(projectID int64, status string) string {
 }
 
 templ regressionStatusTab(projectID int64, value, label, active string) {
-	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(regressionStatusFilterURL(projectID, tabQuery(value))) }>{ label }</a>
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(regressionStatusFilterURL(projectID, tabQuery(value))) } if value == active { aria-current="page" }>{ label }</a>
 }
 
 // RegressionsList — GET /projects/{id}/regressions: таблица регрессий
 // производительности с вкладками фильтра по статусу. Только чтение, без JS
 // (обычные ссылки), визуально повторяет список инцидентов uptime.
 templ RegressionsList(projectID int64, regressions []trace.Regression, filter string, userEmail string) {
-	@layout("Regressions", userEmail) {
+	@layout(i18n.T(ctx, "nav.regressions"), userEmail) {
 		<div class="regressions">
-			<h1>Regressions</h1>
-			<p><a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> · <a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a></p>
-			<nav class="perf-issues-filters">
-				@regressionStatusTab(projectID, "open", "Open", filter)
-				@regressionStatusTab(projectID, "resolved", "Resolved", filter)
-				@regressionStatusTab(projectID, "all", "All", filter)
+			<h1>{ i18n.T(ctx, "nav.regressions") }</h1>
+			@helpPanel("regressions", "performance")
+			<nav class="tabs">
+				@regressionStatusTab(projectID, "open", i18n.T(ctx, "perf.tab.open"), filter)
+				@regressionStatusTab(projectID, "resolved", i18n.T(ctx, "issues.status.resolved"), filter)
+				@regressionStatusTab(projectID, "all", i18n.T(ctx, "perf.tab.all"), filter)
 			</nav>
 			if len(regressions) == 0 {
-				<p class="empty">no regressions detected</p>
+				@emptyState("zap", "perf.regressions.empty.title", "perf.regressions.empty.body", "", "")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>Target</th>
-							<th>Metric</th>
-							<th>Increase</th>
-							<th>Baseline → Peak</th>
-							<th>Status</th>
-							<th>Started</th>
-							<th>Duration</th>
+							<th>{ i18n.T(ctx, "perf.regressions.table.target") }</th>
+							<th>{ i18n.T(ctx, "perf.regressions.table.metric") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
+							<th>{ i18n.T(ctx, "issues.table.status") }</th>
+							<th>{ i18n.T(ctx, "perf.regressions.table.started") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
 						</tr>
 					</thead>
 					<tbody>
 						for _, reg := range regressions {
 							<tr>
 								<td><a href={ templ.URL(regressionTargetURL(projectID, reg)) }>{ reg.Target }</a></td>
-								<td>{ regressionMetricLabel(reg.Metric) }</td>
-								<td>{ regressionIncreasePct(reg) }</td>
-								<td>{ regressionValueRange(reg) }</td>
+								<td>{ regressionMetricLabel(ctx, reg.Metric) }</td>
+								<td class="num">{ regressionIncreasePct(reg) }</td>
+								<td class="num">{ regressionValueRange(reg) }</td>
 								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ reg.Status }</span></td>
-								<td>{ ago(reg.StartedAt) }</td>
-								<td>{ regressionDurationText(reg) }</td>
+								<td>{ ago(ctx, reg.StartedAt) }</td>
+								<td class="num">{ regressionDurationText(ctx, reg) }</td>
 							</tr>
 						}
 					</tbody>

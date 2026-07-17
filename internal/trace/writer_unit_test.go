@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
@@ -23,15 +24,25 @@ type fakeCHConn struct {
 	spanSends int
 	failTx    bool
 	failSpans bool
+	// poisonTx/poisonSpans — предикаты «ядовитого» ряда по аргументам Append.
+	// Если заданы, Send падает, когда в батче есть хотя бы один такой ряд (для
+	// тестов изоляции poison-row); одиночная вставка ядовитого ряда всегда падает.
+	poisonTx    func(args []any) bool
+	poisonSpans func(args []any) bool
 }
 
 type fakeCHBatch struct {
 	conn    *fakeCHConn
 	spans   bool
 	pending int
+	rows    [][]any
 }
 
-func (b *fakeCHBatch) Append(_ ...any) error         { b.pending++; return nil }
+func (b *fakeCHBatch) Append(args ...any) error {
+	b.pending++
+	b.rows = append(b.rows, args)
+	return nil
+}
 func (b *fakeCHBatch) AppendStruct(any) error        { return nil }
 func (b *fakeCHBatch) Abort() error                  { return nil }
 func (b *fakeCHBatch) Flush() error                  { return nil }
@@ -40,18 +51,39 @@ func (b *fakeCHBatch) Rows() int                     { return b.pending }
 func (b *fakeCHBatch) Close() error                  { return nil }
 func (b *fakeCHBatch) Column(int) driver.BatchColumn { return nil }
 func (b *fakeCHBatch) Columns() []column.Interface   { return nil }
+
+// hasPoison — есть ли в накопленном батче ряд, забракованный предикатом.
+func (b *fakeCHBatch) hasPoison(pred func([]any) bool) bool {
+	if pred == nil {
+		return false
+	}
+	for _, r := range b.rows {
+		if pred(r) {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *fakeCHBatch) Send() error {
 	b.conn.mu.Lock()
 	defer b.conn.mu.Unlock()
 	if b.spans {
 		if b.conn.failSpans {
-			return errors.New("ch down")
+			return errors.New("ch down") // транзиент: не *clickhouse.Exception
+		}
+		if b.hasPoison(b.conn.poisonSpans) {
+			// Серверная ошибка CH (data-level) — распознаётся как «яд».
+			return &clickhouse.Exception{Code: 53, Message: "type mismatch"}
 		}
 		b.conn.spanRows += b.pending
 		return nil
 	}
 	if b.conn.failTx {
-		return errors.New("ch down")
+		return errors.New("ch down") // транзиент: не *clickhouse.Exception
+	}
+	if b.hasPoison(b.conn.poisonTx) {
+		return &clickhouse.Exception{Code: 53, Message: "type mismatch"}
 	}
 	b.conn.txRows += b.pending
 	return nil
@@ -200,6 +232,128 @@ func TestSpanWriterCloseFlushesAndIsIdempotent(t *testing.T) {
 	defer c.mu.Unlock()
 	if c.txRows != 1 || c.spanRows != 3 {
 		t.Fatalf("after Close: txRows=%d spanRows=%d, want 1/3", c.txRows, c.spanRows)
+	}
+}
+
+// txNamed — транзакция без дочерних спанов с заданным именем (колонка
+// transaction). Даёт ровно 1 строку в txBuf и 1 корневой спан в spanBuf.
+func txNamed(name string) Transaction {
+	start := time.Now().UTC()
+	return Transaction{
+		TraceID: "t", SpanID: "root", Name: name, Op: "http.server", Status: "ok",
+		Start: start, End: start.Add(time.Millisecond), Source: "sentry",
+	}
+}
+
+// txWithChildDescs — транзакция (root Description = "ok") с дочерними спанами
+// заданных описаний. Позволяет подложить «ядовитый» спан в spanBuf.
+func txWithChildDescs(descs ...string) Transaction {
+	tr := txNamed("ok")
+	for _, d := range descs {
+		tr.Spans = append(tr.Spans, Span{
+			SpanID: "c", ParentSpanID: "root", Op: "db.query", Description: d,
+			Start: tr.Start, End: tr.End, Status: "ok",
+		})
+	}
+	return tr
+}
+
+// После poisonThreshold подряд-фейлов flushTx обязан изолировать ядовитый tx-ряд
+// (бинарное дробление): хорошие транзакции вставляются, ядовитая дропается,
+// txBuf разблокируется — head-of-line blocking снят.
+func TestSpanWriterIsolatesPoisonTxRowAfterThreshold(t *testing.T) {
+	// insertTx падает, если в батче есть транзакция с именем "poison"
+	// (args[3] — колонка transaction, см. порядок Append в insertTx).
+	c := &fakeCHConn{poisonTx: func(args []any) bool {
+		return len(args) > 3 && args[3] == "poison"
+	}}
+	w := NewSpanWriter(c)
+	w.interval = time.Hour // без авто-флаша: гоняем flushTx вручную
+
+	w.Add(1, txNamed("poison"))
+	for i := 0; i < 5; i++ {
+		w.Add(1, txNamed("ok"))
+	}
+	// txBuf: 1 ядовитый + 5 хороших (всё в одном батче, batchSize=1000).
+
+	for i := 0; i < poisonThreshold+1; i++ {
+		w.flushTx(context.Background())
+	}
+
+	w.mu.Lock()
+	txLeft := len(w.txBuf)
+	w.mu.Unlock()
+	if txLeft != 0 {
+		t.Fatalf("txBuf should drain after poison isolation, still %d buffered", txLeft)
+	}
+	if got := w.Dropped(); got != 1 {
+		t.Fatalf("Dropped() = %d, want 1 (ядовитая транзакция)", got)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.txRows != 5 {
+		t.Fatalf("inserted tx rows = %d, want 5 (хорошие)", c.txRows)
+	}
+}
+
+// То же для батча спанов: раздельный счётчик spanFailStreak и изоляция в
+// flushSpans, независимо от tx.
+func TestSpanWriterIsolatesPoisonSpanRowAfterThreshold(t *testing.T) {
+	// insertSpans падает, если в батче есть спан с описанием "poison"
+	// (args[6] — колонка description, см. порядок Append в insertSpans).
+	c := &fakeCHConn{poisonSpans: func(args []any) bool {
+		return len(args) > 6 && args[6] == "poison"
+	}}
+	w := NewSpanWriter(c)
+	w.interval = time.Hour
+
+	w.Add(1, txWithChildDescs("poison")) // root(ok) + child(poison)
+	for i := 0; i < 5; i++ {
+		w.Add(1, txNamed("ok")) // root(ok)
+	}
+	// spanBuf: 1 ядовитый + 6 хороших (root'ы).
+
+	for i := 0; i < poisonThreshold+1; i++ {
+		w.flushSpans(context.Background())
+	}
+
+	w.mu.Lock()
+	spanLeft := len(w.spanBuf)
+	w.mu.Unlock()
+	if spanLeft != 0 {
+		t.Fatalf("spanBuf should drain after poison isolation, still %d buffered", spanLeft)
+	}
+	if got := w.Dropped(); got != 1 {
+		t.Fatalf("Dropped() = %d, want 1 (ядовитый спан)", got)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.spanRows != 6 {
+		t.Fatalf("inserted span rows = %d, want 6 (хорошие)", c.spanRows)
+	}
+}
+
+// Транзиентный отказ обеих таблиц (сеть/ctx): даже после порога подряд-фейлов
+// изоляция не должна дропать валидные tx/span-ряды — они остаются в буфере.
+func TestSpanWriterTransientFailureDropsNothing(t *testing.T) {
+	c := &fakeCHConn{failTx: true, failSpans: true}
+	w := NewSpanWriter(c)
+	w.interval = time.Hour
+	for i := 0; i < 4; i++ {
+		w.Add(1, txNamed("ok")) // 1 tx + 1 root-span на каждый Add
+	}
+	for i := 0; i < poisonThreshold+3; i++ {
+		w.flushTx(context.Background())
+		w.flushSpans(context.Background())
+	}
+	w.mu.Lock()
+	txLeft, spanLeft := len(w.txBuf), len(w.spanBuf)
+	w.mu.Unlock()
+	if txLeft != 4 || spanLeft != 4 {
+		t.Fatalf("buffers: tx=%d spans=%d, want 4/4 (ряды остаются на ретрай)", txLeft, spanLeft)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0 (транзиент не должен ничего терять)", got)
 	}
 }
 

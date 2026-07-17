@@ -1,0 +1,22 @@
+package templates
+
+import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+
+// createModal — no-JS модальное окно через CSS :target (см. .modal в app.css).
+// id — якорь модалки (триггер ведёт на #id, крестик/фон — на "#" для закрытия).
+// titleKey — i18n-ключ заголовка. Содержимое (форма) передаётся children.
+templ createModal(id, titleKey string) {
+	<div id={ id } class="modal">
+		<a class="modal-backdrop" href="#" aria-label={ i18n.T(ctx, "modal.close") } tabindex="-1"></a>
+		<div class="modal-card">
+			<a class="modal-close" href="#" aria-label={ i18n.T(ctx, "modal.close") }>&times;</a>
+			<h2 class="card-header">{ i18n.T(ctx, titleKey) }</h2>
+			{ children... }
+		</div>
+	</div>
+}
+
+// createTrigger — кнопка «+ …» в шапке раздела, открывающая модалку #id.
+templ createTrigger(id, labelKey string) {
+	<a class="btn btn-primary create-trigger" href={ templ.SafeURL("#" + id) }>+ { i18n.T(ctx, labelKey) }</a>
+}

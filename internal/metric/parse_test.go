@@ -16,10 +16,14 @@ func kv(k, v string) *commonpb.KeyValue {
 	}}
 }
 
+// recentTS — таймстемп внутри окна ретенции метрик (см. pointTime); фиксированные
+// значения из прошлого дропались бы клампом окна.
+func recentTS() uint64 { return uint64(time.Now().Add(-time.Hour).UnixNano()) }
+
 func numDP(val float64, attrs ...*commonpb.KeyValue) *metricspb.NumberDataPoint {
 	return &metricspb.NumberDataPoint{
 		Attributes:   attrs,
-		TimeUnixNano: uint64(time.Unix(1600000000, 0).UnixNano()),
+		TimeUnixNano: recentTS(),
 		Value:        &metricspb.NumberDataPoint_AsDouble{AsDouble: val},
 	}
 }
@@ -45,7 +49,7 @@ func histMetric(name, unit string, count uint64, sum float64, buckets []uint64, 
 		Histogram: &metricspb.Histogram{
 			AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
 			DataPoints: []*metricspb.HistogramDataPoint{{
-				TimeUnixNano:   uint64(time.Unix(1600000000, 0).UnixNano()),
+				TimeUnixNano:   recentTS(),
 				Count:          count,
 				Sum:            &sum,
 				BucketCounts:   buckets,
@@ -113,6 +117,53 @@ func TestMapOTLPSkipsUnsupported(t *testing.T) {
 	}}
 	if points := MapOTLP(rm, time.Now()); len(points) != 0 {
 		t.Fatalf("summary must be skipped, got %+v", points)
+	}
+}
+
+// gaugeResourceMetrics строит минимальные ResourceMetrics с одним Gauge-метриком,
+// где на каждую пару ts→value приходится отдельная точка (TimeUnixNano=ts).
+func gaugeResourceMetrics(t *testing.T, points map[uint64]float64) []*metricspb.ResourceMetrics {
+	t.Helper()
+	dps := make([]*metricspb.NumberDataPoint, 0, len(points))
+	for ts, val := range points {
+		dps = append(dps, &metricspb.NumberDataPoint{
+			TimeUnixNano: ts,
+			Value:        &metricspb.NumberDataPoint_AsDouble{AsDouble: val},
+		})
+	}
+	return []*metricspb.ResourceMetrics{{
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{{
+			Name: "g", Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{DataPoints: dps}},
+		}}}},
+	}}
+}
+
+func TestMapOTLP_DropsOutOfWindowAndOverflowTimestamps(t *testing.T) {
+	now := time.Now().UTC()
+	old := uint64(now.Add(-200 * 24 * time.Hour).UnixNano()) // старше 90д
+	future := uint64(now.Add(48 * time.Hour).UnixNano())     // дальше +1д
+	overflow := uint64(math.MaxInt64) + 1                    // не влезает в int64
+	good := uint64(now.Add(-time.Hour).UnixNano())
+
+	rm := gaugeResourceMetrics(t, map[uint64]float64{
+		old: 1, future: 2, overflow: 3, good: 4,
+	})
+	pts := MapOTLP(rm, now)
+
+	if len(pts) != 1 {
+		t.Fatalf("want 1 in-window point, got %d", len(pts))
+	}
+	if pts[0].Value != 4 {
+		t.Fatalf("want the in-window point (value 4), got %v", pts[0].Value)
+	}
+}
+
+func TestMapOTLP_ZeroTimestampUsesFallback(t *testing.T) {
+	now := time.Now().UTC()
+	rm := gaugeResourceMetrics(t, map[uint64]float64{0: 7})
+	pts := MapOTLP(rm, now)
+	if len(pts) != 1 || !pts[0].TS.Equal(now) {
+		t.Fatalf("zero ts must fall back to now; got %+v", pts)
 	}
 }
 

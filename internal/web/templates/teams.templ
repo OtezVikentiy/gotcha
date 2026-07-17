@@ -3,6 +3,7 @@ package templates
 import (
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
@@ -86,7 +87,7 @@ templ teamMemberRow(teamID int64, m org.Member) {
 		<td>
 			<form method="post" action={ templ.URL(teamMembersRemovePath(teamID)) } class="team-member-remove-form">
 				<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
-				<button type="submit">Убрать</button>
+				<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "teams.members.remove") }</button>
 			</form>
 		</td>
 	</tr>
@@ -98,7 +99,7 @@ templ teamProjectRow(teamID int64, p org.Project) {
 		<td>
 			<form method="post" action={ templ.URL(teamProjectsDetachPath(teamID)) } class="team-project-detach-form">
 				<input type="hidden" name="project_id" value={ strconv.FormatInt(p.ID, 10) }/>
-				<button type="submit">Отвязать</button>
+				<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "teams.projects.detach") }</button>
 			</form>
 		</td>
 	</tr>
@@ -112,63 +113,81 @@ templ teamProjectRow(teamID int64, p org.Project) {
 // нет), select не рендерится — вместо пустого <select></select> короткая
 // заметка (см. hasAvailableMembers/hasAvailableProjects).
 templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Project) {
-	<section class="team">
-		<h2>{ tm.Team.Name } <small>{ tm.Team.Slug }</small></h2>
-		<h3>Участники</h3>
-		<table>
-			<thead>
-				<tr>
-					<th>Email</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody>
-				for _, m := range tm.Members {
-					@teamMemberRow(tm.Team.ID, m)
-				}
-			</tbody>
-		</table>
+	<section class="team card">
+		<h2 class="card-header">{ tm.Team.Name } <span class="chip">{ tm.Team.Slug }</span></h2>
+		<h3>{ i18n.T(ctx, "teams.members.title") }</h3>
+		if len(tm.Members) == 0 {
+			@emptyState("user", "teams.members.empty.title", "teams.members.empty.body", "", "")
+		} else {
+			<table class="data-table">
+				<thead>
+					<tr>
+						<th>{ i18n.T(ctx, "teams.members.table.email") }</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, m := range tm.Members {
+						@teamMemberRow(tm.Team.ID, m)
+					}
+				</tbody>
+			</table>
+		}
 		if hasAvailableMembers(orgMembers, tm.Members) {
 			<form method="post" action={ templ.URL(teamMembersPath(tm.Team.ID)) } class="team-member-add-form">
-				<select name="user_id">
-					for _, m := range orgMembers {
-						if !memberInTeam(tm.Members, m.UserID) {
-							<option value={ strconv.FormatInt(m.UserID, 10) }>{ m.Email }</option>
-						}
-					}
-				</select>
-				<button type="submit">Добавить участника</button>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "teams.members.add.select_label") }
+						<select name="user_id" class="select">
+							for _, m := range orgMembers {
+								if !memberInTeam(tm.Members, m.UserID) {
+									<option value={ strconv.FormatInt(m.UserID, 10) }>{ m.Email }</option>
+								}
+							}
+						</select>
+					</label>
+				</div>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "teams.members.add.submit") }</button>
 			</form>
 		} else {
-			<p class="team-empty-note">Нет доступных участников для добавления.</p>
+			<p class="hint">{ i18n.T(ctx, "teams.members.add.empty") }</p>
 		}
-		<h3>Проекты</h3>
-		<table>
-			<thead>
-				<tr>
-					<th>Проект</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody>
-				for _, p := range tm.Projects {
-					@teamProjectRow(tm.Team.ID, p)
-				}
-			</tbody>
-		</table>
+		<h3>{ i18n.T(ctx, "teams.projects.title") }</h3>
+		if len(tm.Projects) == 0 {
+			@emptyState("building", "teams.projects.empty.title", "teams.projects.empty.body", "", "")
+		} else {
+			<table class="data-table">
+				<thead>
+					<tr>
+						<th>{ i18n.T(ctx, "teams.projects.table.name") }</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, p := range tm.Projects {
+						@teamProjectRow(tm.Team.ID, p)
+					}
+				</tbody>
+			</table>
+		}
 		if hasAvailableProjects(orgProjects, tm.Projects) {
 			<form method="post" action={ templ.URL(teamProjectsPath(tm.Team.ID)) } class="team-project-attach-form">
-				<select name="project_id">
-					for _, p := range orgProjects {
-						if !projectAttached(tm.Projects, p.ID) {
-							<option value={ strconv.FormatInt(p.ID, 10) }>{ p.Name }</option>
-						}
-					}
-				</select>
-				<button type="submit">Привязать проект</button>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "teams.projects.attach.select_label") }
+						<select name="project_id" class="select">
+							for _, p := range orgProjects {
+								if !projectAttached(tm.Projects, p.ID) {
+									<option value={ strconv.FormatInt(p.ID, 10) }>{ p.Name }</option>
+								}
+							}
+						</select>
+					</label>
+				</div>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "teams.projects.attach.submit") }</button>
 			</form>
 		} else {
-			<p class="team-empty-note">Нет доступных проектов для привязки.</p>
+			<p class="hint">{ i18n.T(ctx, "teams.projects.attach.empty") }</p>
 		}
 	</section>
 }
@@ -176,33 +195,43 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 // Teams — GET/POST /orgs/{id}/teams: список команд организации (участники,
 // привязанные проекты, формы управления) и форма создания новой команды.
 // errMsg — сообщение об ошибке последнего POST, рендерится с тем же статусом
-// (422), что и ответ — тот же принцип, что и у OrgSettings.
+// (422), что и ответ — тот же принцип, что и у OrgSettings. Ссылка «назад» на
+// Members (breadcrumb) — тот же принцип, что и у Probes.
 templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []org.Project, errMsg, userEmail string) {
-	@layout("Команды "+o.Name, userEmail) {
+	@layout(i18n.T(ctx, "teams.title")+" "+o.Name, userEmail) {
 		<div class="teams">
-			<h1>Команды { o.Name }</h1>
+			<p class="breadcrumb"><a href={ templ.URL(orgSettingsPath(o.ID)) }>← { i18n.T(ctx, "nav.members") }</a></p>
+			<h1>{ i18n.T(ctx, "teams.title") } { o.Name }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
+			@createTrigger("new-team", "teams.create.title")
+			<div class="settings-grid">
 			if len(teams) == 0 {
-				<p>Команд пока нет.</p>
+				@emptyState("building", "teams.empty.title", "teams.empty.body", "", "")
 			} else {
 				for _, tm := range teams {
 					@teamSection(tm, orgMembers, orgProjects)
 				}
 			}
-			<h2>Создать команду</h2>
-			<form method="post" action={ templ.URL(orgTeamsPath(o.ID)) } class="team-create-form">
-				<label>
-					Slug
-					<input type="text" name="slug" placeholder="backend" autocomplete="off" required/>
-				</label>
-				<label>
-					Название
-					<input type="text" name="name" placeholder="Backend" required/>
-				</label>
-				<button type="submit">Создать</button>
-			</form>
+			</div>
+			@createModal("new-team", "teams.create.title") {
+				<form method="post" action={ templ.URL(orgTeamsPath(o.ID)) } class="team-create-form">
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "teams.create.slug_label") }
+							<input type="text" name="slug" placeholder="backend" autocomplete="off" required class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "teams.create.name_label") }
+							<input type="text" name="name" placeholder="Backend" required class="input"/>
+						</label>
+					</div>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "teams.create.submit") }</button>
+				</form>
+			}
 		</div>
 	}
 }

@@ -1,8 +1,10 @@
 package templates
 
 import (
+	"context"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
@@ -21,17 +23,40 @@ func comparatorSymbol(c string) string {
 	return ">"
 }
 
-func metricIncidentBadgeClass(status string) string {
+// incidentBadgeClass — CSS-класс бейджа статуса инцидента через дизайн-систему
+// (.badge-danger — открыт, .badge-good — решён), как vitalBadgeClass.
+func incidentBadgeClass(status string) string {
 	if status == "open" {
-		return "badge badge-error"
+		return "badge badge-danger"
 	}
-	return "badge badge-paused"
+	return "badge badge-good"
 }
 
-func ruleScope(r metric.Rule) string {
+func incidentStatusKey(status string) string {
+	if status == "open" {
+		return "metrics.alerts.status.open"
+	}
+	return "metrics.alerts.status.resolved"
+}
+
+// incidentStatusBadge — бейдж статуса инцидента (открыт/решён).
+templ incidentStatusBadge(status string) {
+	<span class={ incidentBadgeClass(status) }>{ i18n.T(ctx, incidentStatusKey(status)) }</span>
+}
+
+// ruleEnabledBadge — бейдж состояния правила (включено/выключено).
+templ ruleEnabledBadge(enabled bool) {
+	if enabled {
+		<span class="badge badge-good">{ i18n.T(ctx, "metrics.alerts.status.enabled") }</span>
+	} else {
+		<span class="badge badge-neutral">{ i18n.T(ctx, "metrics.alerts.status.disabled") }</span>
+	}
+}
+
+func ruleScope(ctx context.Context, r metric.Rule) string {
 	scope := r.Environment
 	if scope == "" {
-		scope = "all"
+		scope = i18n.T(ctx, "metrics.alerts.scope_all")
 	}
 	if r.LabelKey != "" {
 		scope += ", " + r.LabelKey + "=" + r.LabelValue
@@ -41,83 +66,138 @@ func ruleScope(r metric.Rule) string {
 
 // MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
 templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, errMsg, userEmail string) {
-	@layout("Metric Alerts", userEmail) {
+	@layout(i18n.T(ctx, "metrics.alerts.title"), userEmail) {
 		<div class="metric-alerts">
-			<h1>Metric Alerts</h1>
-			@metricsNav(projectID)
+			<h1>{ i18n.T(ctx, "metrics.alerts.title") }</h1>
+			@helpPanel("metricalerts", "metrics")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			<h2>New rule</h2>
-			<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
-				<label>Metric <input type="text" name="metric_name" required placeholder="http.server.duration"/></label>
-				<label>
-					Aggregation
-					<select name="aggregation">
-						for _, a := range []string{"avg", "max", "min", "sum", "p50", "p95", "p99"} {
-							<option value={ a }>{ a }</option>
-						}
-					</select>
-				</label>
-				<label>
-					Condition
-					<select name="comparator">
-						<option value="gt">&gt;</option>
-						<option value="lt">&lt;</option>
-					</select>
-				</label>
-				<label>Threshold <input type="text" name="threshold" required placeholder="100"/></label>
-				<label>Window (s) <input type="number" name="window_seconds" value="300" min="1" required/></label>
-				<label>Environment <input type="text" name="environment" placeholder="(any)"/></label>
-				<label>Label key <input type="text" name="label_key" placeholder="(none)"/></label>
-				<label>Label value <input type="text" name="label_value"/></label>
-				<button type="submit">Create rule</button>
-			</form>
-			<h2>Rules</h2>
+			@createTrigger("new-metric-rule", "metrics.alerts.new_rule")
+			<h2>{ i18n.T(ctx, "metrics.alerts.rules") }</h2>
 			if len(rules) == 0 {
-				<p class="empty">no rules yet</p>
+				@emptyState("bell", "metrics.alerts.rules.empty.title", "metrics.alerts.rules.empty.body", "", "")
 			} else {
-				<table>
-					<thead>
-						<tr><th>Metric</th><th>Condition</th><th>Window</th><th>Scope</th><th></th></tr>
-					</thead>
-					<tbody>
-						for _, rule := range rules {
+				<div class="card">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td>{ rule.MetricName }</td>
-								<td>{ rule.Aggregation } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
-								<td>{ strconv.Itoa(rule.WindowSeconds) }s</td>
-								<td>{ ruleScope(rule) }</td>
-								<td>
-									<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
-										<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
-										<button type="submit">Delete</button>
-									</form>
-								</td>
+								<th>{ i18n.T(ctx, "metrics.alerts.table.metric") }</th>
+								<th>{ i18n.T(ctx, "metrics.alerts.table.condition") }</th>
+								<th class="num">{ i18n.T(ctx, "metrics.alerts.table.window") }</th>
+								<th>{ i18n.T(ctx, "metrics.alerts.table.scope") }</th>
+								<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+								<th></th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, rule := range rules {
+								<tr>
+									<td>{ rule.MetricName }</td>
+									<td>{ rule.Aggregation } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
+									<td class="num">{ strconv.Itoa(rule.WindowSeconds) }s</td>
+									<td>{ ruleScope(ctx, rule) }</td>
+									<td>@ruleEnabledBadge(rule.Enabled)</td>
+									<td>
+										<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
+											<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
+											<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "metrics.alerts.delete") }</button>
+										</form>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 			}
-			<h2>Incidents</h2>
+			<h2>{ i18n.T(ctx, "metrics.alerts.incidents") }</h2>
 			if len(incidents) == 0 {
-				<p class="empty">no incidents</p>
+				@emptyState("activity", "metrics.alerts.incidents.empty.title", "metrics.alerts.incidents.empty.body", "", "")
 			} else {
-				<table>
-					<thead>
-						<tr><th>Status</th><th>Peak</th><th>Current</th><th>Started</th></tr>
-					</thead>
-					<tbody>
-						for _, in := range incidents {
+				<div class="card">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td><span class={ metricIncidentBadgeClass(in.Status) }>{ in.Status }</span></td>
-								<td>{ fmtFloat(in.PeakValue) }</td>
-								<td>{ fmtFloat(in.CurrentValue) }</td>
-								<td>{ ago(in.StartedAt) }</td>
+								<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+								<th class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
+								<th class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
+								<th>{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, in := range incidents {
+								<tr>
+									<td>@incidentStatusBadge(in.Status)</td>
+									<td class="num">{ fmtFloat(in.PeakValue) }</td>
+									<td class="num">{ fmtFloat(in.CurrentValue) }</td>
+									<td>{ ago(ctx, in.StartedAt) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+			@createModal("new-metric-rule", "metrics.alerts.new_rule") {
+				<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
+					<div class="form-grid">
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.metric") }
+							<input type="text" name="metric_name" required placeholder="http.server.duration" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.aggregation") }
+							<select name="aggregation" class="select">
+								for _, a := range []string{"avg", "max", "min", "sum", "p50", "p95", "p99"} {
+									<option value={ a }>{ a }</option>
+								}
+							</select>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.condition") }
+							<select name="comparator" class="select">
+								<option value="gt">&gt;</option>
+								<option value="lt">&lt;</option>
+							</select>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.threshold") }
+							<input type="text" name="threshold" required placeholder="100" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.window") }
+							<input type="number" name="window_seconds" value="300" min="1" required class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.environment") }
+							<input type="text" name="environment" placeholder={ i18n.T(ctx, "metrics.alerts.form.environment_any") } class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.label_key") }
+							<input type="text" name="label_key" placeholder={ i18n.T(ctx, "metrics.alerts.form.label_key_none") } class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.label_value") }
+							<input type="text" name="label_value" class="input"/>
+						</label>
+					</div>
+					</div>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "metrics.alerts.form.submit") }</button>
+				</form>
 			}
 		</div>
 	}

@@ -1,5 +1,7 @@
 package templates
 
+import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+
 type LinkedIdentity struct {
 	Provider    string
 	DisplayName string
@@ -18,83 +20,114 @@ type LinkableProvider struct {
 // message — подтверждение успеха. Оба рендерятся на этой же странице без
 // редиректа — как и OrgSettings.
 templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedIdentity, linkable []LinkableProvider, userEmail string) {
-	@layout("Профиль", userEmail) {
+	@layout(i18n.T(ctx, "profile.title"), userEmail) {
 		<div class="profile">
-			<h1>Профиль</h1>
-			<p>Email: { email }</p>
+			<h1>{ i18n.T(ctx, "profile.title") }</h1>
+			<p>{ i18n.T(ctx, "profile.email_label") } { email }</p>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
 			if message != "" {
 				<p class="notice">{ message }</p>
 			}
-			if hasPassword {
-				<h2>Смена пароля</h2>
-				<form method="post" action="/profile/password" class="auth-form">
-					<label>
-						Текущий пароль
-						<input type="password" name="old" required autocomplete="current-password"/>
-					</label>
-					<label>
-						Новый пароль
-						<input type="password" name="new" required autocomplete="new-password"/>
-					</label>
-					<label>
-						Повторите новый пароль
-						<input type="password" name="new2" required autocomplete="new-password"/>
-					</label>
-					<button type="submit">Изменить пароль</button>
-				</form>
-			} else {
-				<h2>Задать пароль</h2>
-				<p>У аккаунта нет пароля (вход только через внешний провайдер). Задайте пароль, чтобы входить и по email.</p>
-				<form method="post" action="/profile/password/set" class="auth-form">
-					<label>
-						Новый пароль
-						<input type="password" name="new" required autocomplete="new-password"/>
-					</label>
-					<label>
-						Повторите новый пароль
-						<input type="password" name="new2" required autocomplete="new-password"/>
-					</label>
-					<button type="submit">Задать пароль</button>
-				</form>
-			}
-			<h2>Связанные аккаунты</h2>
-			if len(linked) == 0 {
-				<p class="empty">нет привязанных провайдеров</p>
-			} else {
-				<ul class="linked-list">
-					for _, li := range linked {
-						<li>
-							<span>{ li.DisplayName }</span>
-							if li.Email != "" {
-								<span class="linked-email">{ li.Email }</span>
+			<div class="settings-grid">
+			<section class="card">
+				if hasPassword {
+					<h2 class="card-header">{ i18n.T(ctx, "profile.password.change_title") }</h2>
+					<form method="post" action="/profile/password">
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "profile.password.current") }
+								<input type="password" name="old" required autocomplete="current-password" class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "profile.password.new") }
+								<input type="password" name="new" required autocomplete="new-password" class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "profile.password.new2") }
+								<input type="password" name="new2" required autocomplete="new-password" class="input"/>
+							</label>
+						</div>
+						<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "profile.password.change_submit") }</button>
+					</form>
+				} else {
+					<h2 class="card-header">{ i18n.T(ctx, "profile.password.set_title") }</h2>
+					<p class="hint">{ i18n.T(ctx, "profile.password.set_hint") }</p>
+					<form method="post" action="/profile/password/set">
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "profile.password.new") }
+								<input type="password" name="new" required autocomplete="new-password" class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "profile.password.new2") }
+								<input type="password" name="new2" required autocomplete="new-password" class="input"/>
+							</label>
+						</div>
+						<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "profile.password.set_submit") }</button>
+					</form>
+				}
+			</section>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "profile.linked.title") }</h2>
+				if len(linked) == 0 {
+					@emptyState("user", "profile.linked.empty.title", "profile.linked.empty.body", "", "")
+				} else {
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>{ i18n.T(ctx, "profile.linked.table.provider") }</th>
+								<th>{ i18n.T(ctx, "profile.linked.table.email") }</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, li := range linked {
+								<tr>
+									<td><span class="badge badge-neutral">{ li.DisplayName }</span></td>
+									<td>
+										if li.Email != "" {
+											<span class="linked-email">{ li.Email }</span>
+										}
+									</td>
+									<td>
+										if li.CanUnlink {
+											<form method="post" action="/profile/identities/unlink" class="inline">
+												<input type="hidden" name="provider" value={ li.Provider }/>
+												<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "profile.linked.unlink") }</button>
+											</form>
+										} else {
+											<span class="linked-note">{ i18n.T(ctx, "profile.linked.sole_login") }</span>
+										}
+									</td>
+								</tr>
 							}
-							if li.CanUnlink {
-								<form method="post" action="/profile/identities/unlink" class="inline">
-									<input type="hidden" name="provider" value={ li.Provider }/>
-									<button type="submit">Отвязать</button>
-								</form>
-							} else {
-								<span class="linked-note">единственный способ входа</span>
-							}
-						</li>
-					}
-				</ul>
-			}
-			if len(linkable) > 0 {
-				<div class="oauth-buttons">
-					for _, lp := range linkable {
-						<a class="oauth-btn" href={ templ.URL("/auth/oauth/" + lp.Name + "/start?link=1") }>{ "Привязать " + lp.DisplayName }</a>
-					}
-				</div>
-			}
-			<h2>Сессии</h2>
-			<p>Завершить все сессии на других устройствах, кроме текущей.</p>
-			<form method="post" action="/profile/sessions/revoke">
-				<button type="submit">Выйти со всех других устройств</button>
-			</form>
+						</tbody>
+					</table>
+				}
+				if len(linkable) > 0 {
+					<div class="oauth-buttons">
+						for _, lp := range linkable {
+							<a class="btn btn-ghost" href={ templ.URL("/auth/oauth/" + lp.Name + "/start?link=1") }>{ i18n.T(ctx, "profile.linked.link_prefix") + " " + lp.DisplayName }</a>
+						}
+					</div>
+				}
+			</section>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "profile.sessions.title") }</h2>
+				<p class="hint">{ i18n.T(ctx, "profile.sessions.hint") }</p>
+				<form method="post" action="/profile/sessions/revoke">
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "profile.sessions.revoke_submit") }</button>
+				</form>
+			</section>
+			</div>
 		</div>
 	}
 }

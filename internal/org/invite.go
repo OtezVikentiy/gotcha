@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,9 @@ const InviteTTL = 7 * 24 * time.Hour
 var (
 	ErrInvalidRole   = errors.New("org: invite role must be admin or member")
 	ErrInviteInvalid = errors.New("org: invite is invalid, expired or already used")
+	// ErrInviteEmailMismatch — принимающий вошёл под email'ом, отличным от
+	// того, на который выписан инвайт (SEC-M2). Инвайт при этом не гасится.
+	ErrInviteEmailMismatch = errors.New("org: invite was issued for a different email")
 )
 
 func inviteTokenHash(token string) []byte {
@@ -48,7 +52,11 @@ func (s *Service) Invite(ctx context.Context, orgID int64, email string, role Ro
 // AcceptInvite принимает приглашение токен-носителем: приглашение
 // одноразовое, вход по токену (email — адрес доставки письма).
 // Уже участнику роль не меняем — только гасим приглашение.
-func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64) (int64, error) {
+//
+// acceptingEmail — email вошедшего юзера; он обязан совпадать (без учёта
+// регистра) с адресом, на который выписан инвайт (SEC-M2). Иначе транзакция
+// откатывается (инвайт не гасится) и возвращается ErrInviteEmailMismatch.
+func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64, acceptingEmail string) (int64, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("org: accept invite: %w", err)
@@ -57,16 +65,22 @@ func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64) 
 
 	var orgID int64
 	var role Role
+	var inviteEmail string
 	err = tx.QueryRow(ctx, `
 		UPDATE org_invites SET accepted_at = now()
 		WHERE token_hash = $1 AND accepted_at IS NULL AND expires_at > now()
-		RETURNING org_id, role`,
-		inviteTokenHash(token)).Scan(&orgID, &role)
+		RETURNING org_id, role, email`,
+		inviteTokenHash(token)).Scan(&orgID, &role, &inviteEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrInviteInvalid
 	}
 	if err != nil {
 		return 0, fmt.Errorf("org: accept invite: %w", err)
+	}
+	// Инвайт привязан к email: принять его может только владелец адреса.
+	// Откат (через defer) оставляет инвайт непотраченным.
+	if !strings.EqualFold(inviteEmail, acceptingEmail) {
+		return 0, ErrInviteEmailMismatch
 	}
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT (org_id, user_id) DO NOTHING",
@@ -117,6 +131,7 @@ func (s *Service) AcceptPendingInviteByEmail(ctx context.Context, email string, 
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
+		AND accepted_at IS NULL
 		RETURNING org_id, role`,
 		email).Scan(&orgID, &role)
 	if errors.Is(err, pgx.ErrNoRows) {

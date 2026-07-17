@@ -87,11 +87,18 @@ func (rl *rateLimiter) size() int {
 	return len(rl.hits)
 }
 
-// rateLimitKey строит ключ ip|email для лимитера логина/регистрации.
-func rateLimitKey(r *http.Request, email string) string {
+// extractIP извлекает host из RemoteAddr — ключ для глобального per-IP лимита
+// (SEC-L2). Порт отбрасываем, чтобы разные исходящие порты одного клиента
+// считались как один IP.
+func extractIP(r *http.Request) string {
 	host := r.RemoteAddr
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		host = h
 	}
-	return host + "|" + strings.ToLower(strings.TrimSpace(email))
+	return host
+}
+
+// rateLimitKey строит ключ ip|email для per-account лимитера логина/регистрации.
+func rateLimitKey(r *http.Request, email string) string {
+	return extractIP(r) + "|" + strings.ToLower(strings.TrimSpace(email))
 }

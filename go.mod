@@ -14,8 +14,10 @@ require (
 	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.43.0
+	github.com/yuin/goldmark v1.8.4
 	go.opentelemetry.io/proto/otlp v1.10.0
 	golang.org/x/crypto v0.54.0
+	golang.org/x/text v0.40.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -80,6 +82,5 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

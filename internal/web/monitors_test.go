@@ -178,28 +178,28 @@ func TestWebMonitorsList(t *testing.T) {
 
 	// Owner GET -> 200: both monitor names, an <svg availability bar, the
 	// "no data" monitor, a computed uptime % for the one with data, and the
-	// "New monitor" link (owner/admin only).
+	// "Новый монитор" (New monitor, ru i18n) link (owner/admin only).
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	for _, want := range []string{"With data", "No data", "<svg", "no data", "New monitor", "100.00%"} {
+	for _, want := range []string{"With data", "No data", "<svg", "нет данных", "Новый монитор", "100.00%"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s (owner) missing %q: %s", path, want, body)
 		}
 	}
 
-	// Member (view access, not owner/admin) GET -> 200, but no "New monitor"
-	// link.
+	// Member (view access, not owner/admin) GET -> 200, but no "Новый
+	// монитор" (New monitor) link.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (member) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), "New monitor") {
+	if strings.Contains(string(body), "Новый монитор") {
 		t.Fatalf("GET %s (member) must not show New monitor link: %s", path, body)
 	}
 
@@ -280,7 +280,10 @@ func TestWebMonitorDetail(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	for _, want := range []string{"API health", "boom", "500", "<svg", "Pause", "Delete", "Edit", "d left"} {
+	// "Приостановить"/"Удалить"/"Редактировать" — ru i18n for
+	// Pause/Delete/Edit; "дн. до истечения" is the ru SSL-expiry format
+	// (uptime.ssl.days_left).
+	for _, want := range []string{"API health", "boom", "500", "<svg", "Приостановить", "Удалить", "Редактировать", "дн. до истечения"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s (owner) missing %q: %s", path, want, body)
 		}
@@ -293,7 +296,7 @@ func TestWebMonitorDetail(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (member) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	for _, unwanted := range []string{"Pause", "Delete", "Edit"} {
+	for _, unwanted := range []string{"Приостановить", "Удалить", "Редактировать"} {
 		if strings.Contains(string(body), unwanted) {
 			t.Fatalf("GET %s (member) must not show %q: %s", path, unwanted, body)
 		}
@@ -338,13 +341,13 @@ func TestWebMonitorDetailNoChecksShowsNoDataAndDoesNotCrash(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "no data") {
-		t.Fatalf("GET %s missing 'no data': %s", path, body)
+	if !strings.Contains(string(body), "нет данных") {
+		t.Fatalf("GET %s missing 'нет данных': %s", path, body)
 	}
-	if !strings.Contains(string(body), "Нет проверок") {
+	if !strings.Contains(string(body), "Проверок ещё не было") {
 		t.Fatalf("GET %s missing empty-checks message: %s", path, body)
 	}
-	if !strings.Contains(string(body), "Нет инцидентов") {
+	if !strings.Contains(string(body), "Инцидентов не было") {
 		t.Fatalf("GET %s missing empty-incidents message: %s", path, body)
 	}
 }

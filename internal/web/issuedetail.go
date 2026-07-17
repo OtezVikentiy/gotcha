@@ -11,6 +11,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -39,25 +40,25 @@ func issueDetailPath(issueID int64) string {
 func (h *Handler) loadAccessibleIssue(w http.ResponseWriter, r *http.Request, uid int64) (issue.Issue, bool) {
 	issueID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return issue.Issue{}, false
 	}
 	it, err := h.Issues.Get(r.Context(), issueID)
 	if err != nil {
 		if errors.Is(err, issue.ErrNotFound) {
-			http.NotFound(w, r)
+			h.notFound(w, r)
 			return issue.Issue{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return issue.Issue{}, false
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, it.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return issue.Issue{}, false
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return issue.Issue{}, false
 	}
 	return it, true
@@ -79,25 +80,25 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 
 	orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	members, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	events, err := h.Events.EventsForIssue(r.Context(), it.ProjectID, it.ID, issueEventsLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	now := time.Now().UTC()
 	points, err := h.Events.Series(r.Context(), it.ProjectID, it.ID, now.Add(-issueChartWindow), now, issueChartStep)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	chart := chartSVG(points, chartWidth, chartHeight)
@@ -111,7 +112,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		if _, err := uuid.Parse(selectedID); err == nil {
 			ev, found, err := h.Events.EventByID(r.Context(), it.ProjectID, selectedID)
 			if err != nil {
-				h.renderError(w, r, http.StatusInternalServerError, "internal error")
+				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 				return
 			}
 			if found {
@@ -119,6 +120,15 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 				frames = parseStacktraceFrames(ev.Stacktrace)
 			}
 		}
+	}
+	// По умолчанию (нет ?event= или выбранное событие устарело/удалено)
+	// показываем последнее событие: стектрейс и структурированные данные
+	// видны сразу при открытии issue, без явного клика — как в Sentry/
+	// GlitchTip. events отсортированы timestamp DESC, значит [0] — свежайшее.
+	if selected == nil && len(events) > 0 {
+		selected = &events[0]
+		selectedID = events[0].ID
+		frames = parseStacktraceFrames(events[0].Stacktrace)
 	}
 
 	_ = templates.IssueDetail(it, members, chart, events, selectedID, selected, frames, h.currentEmail(r)).Render(r.Context(), w)
@@ -151,10 +161,10 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, issue.ErrNotFound) {
-			http.NotFound(w, r)
+			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, issueDetailPath(it.ID), http.StatusSeeOther)
@@ -192,12 +202,12 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 		}
 		orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		members, err := h.Org.MembersOf(r.Context(), orgID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		if !isOrgMember(members, id) {
@@ -209,10 +219,10 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.Issues.Assign(r.Context(), it.ID, assigneeID); err != nil {
 		if errors.Is(err, issue.ErrNotFound) {
-			http.NotFound(w, r)
+			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, issueDetailPath(it.ID), http.StatusSeeOther)

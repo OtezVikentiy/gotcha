@@ -38,7 +38,7 @@ func TestRegressionNotifierEnqueuesPerChannel(t *testing.T) {
 		t.Fatalf("CreateChannel telegram: %v", err)
 	}
 
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	ev := trace.RegressionEvent{
 		Kind: "regression_open", ProjectID: pid, Target: "GET /api/users", Metric: "duration",
 		BaselineValue: 800, CurrentValue: 1200, PctIncrease: 0.5,
@@ -114,7 +114,7 @@ func TestRegressionNotifierCloseSubject(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	ev := trace.RegressionEvent{
 		Kind: "regression_close", ProjectID: pid, Target: "LCP /", Metric: "lcp",
 		BaselineValue: 2000, CurrentValue: 2100, PctIncrease: 0.05, DurationSeconds: 3665,
@@ -160,7 +160,7 @@ func TestRegressionNotifierSkipsDisabledAndEmail(t *testing.T) {
 		t.Fatalf("CreateChannel telegram: %v", err)
 	}
 
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
 	ev := trace.RegressionEvent{
 		Kind: "regression_open", ProjectID: pid, Target: "GET /x", Metric: "duration",
 		BaselineValue: 100, CurrentValue: 250, PctIncrease: 1.5,
@@ -185,7 +185,7 @@ func TestRegressionNotifierNoChannels(t *testing.T) {
 	defer cancel()
 
 	pid := newPerfProject(t, pool, "regnotif3")
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	ev := trace.RegressionEvent{
 		Kind: "regression_open", ProjectID: pid, Target: "GET /none", Metric: "duration",
 		BaselineValue: 100, CurrentValue: 250, PctIncrease: 1.5,
@@ -201,4 +201,71 @@ func TestRegressionNotifierNoChannels(t *testing.T) {
 	if len(jobs) != 0 {
 		t.Fatalf("len(jobs) = %d, want 0", len(jobs))
 	}
+}
+
+// Трансграничный гейт: при ExternalDetails=false во внешние каналы не должно
+// уезжать имя цели регрессии (target_name/тело); при true — уезжает.
+func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	newEv := func(pid int64) trace.RegressionEvent {
+		return trace.RegressionEvent{
+			Kind: "regression_open", ProjectID: pid, Target: "GET /api/users", Metric: "duration",
+			BaselineValue: 800, CurrentValue: 1200, PctIncrease: 0.5,
+		}
+	}
+
+	t.Run("withheld when false", func(t *testing.T) {
+		pid := newPerfProject(t, pool, "regnotif-ext-off")
+		if _, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		}); err != nil {
+			t.Fatalf("CreateChannel: %v", err)
+		}
+		n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		if err := n.Notify(ctx, newEv(pid)); err != nil {
+			t.Fatalf("Notify: %v", err)
+		}
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
+		}
+		p := jobs[0].Payload
+		if _, ok := p["target_name"]; ok {
+			t.Errorf("leaks target_name: %+v", p)
+		}
+		if body, _ := p["body"].(string); strings.Contains(body, "GET /api/users") {
+			t.Errorf("body leaks target: %q", body)
+		}
+		if subj, _ := p["subject"].(string); strings.Contains(subj, "GET /api/users") {
+			t.Errorf("subject leaks target: %q", subj)
+		}
+		if p["url"] == nil {
+			t.Errorf("lost url: %+v", p)
+		}
+	})
+
+	t.Run("delivered when true", func(t *testing.T) {
+		pid := newPerfProject(t, pool, "regnotif-ext-on")
+		if _, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		}); err != nil {
+			t.Fatalf("CreateChannel: %v", err)
+		}
+		n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		if err := n.Notify(ctx, newEv(pid)); err != nil {
+			t.Fatalf("Notify: %v", err)
+		}
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
+		}
+		if jobs[0].Payload["target_name"] != "GET /api/users" {
+			t.Errorf("target_name missing at ExternalDetails=true: %+v", jobs[0].Payload)
+		}
+	})
 }

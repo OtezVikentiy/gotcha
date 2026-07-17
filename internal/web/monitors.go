@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -125,29 +126,29 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	canManage, err := h.canManageProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -156,7 +157,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 
 	inMaintenance, err := h.Uptime.InMaintenance(r.Context(), projectID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -166,7 +167,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	}
 	uptimeStats, err := h.UptimeQuery.UptimeBatch(r.Context(), ids, from, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -174,19 +175,19 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	for i, m := range monitors {
 		states, err := h.Uptime.States(r.Context(), m.ID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 
 		latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, from, now, monitorsListWindow/monitorsListBuckets)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 
 		bars, err := h.UptimeQuery.Bars(r.Context(), m.ID, from, now, monitorsListBuckets)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 
@@ -211,25 +212,25 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) loadAccessibleMonitor(w http.ResponseWriter, r *http.Request, uid int64) (uptime.Monitor, bool) {
 	monitorID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return uptime.Monitor{}, false
 	}
 	m, err := h.Uptime.Get(r.Context(), monitorID)
 	if err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			http.NotFound(w, r)
+			h.notFound(w, r)
 			return uptime.Monitor{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return uptime.Monitor{}, false
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, m.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return uptime.Monitor{}, false
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return uptime.Monitor{}, false
 	}
 	return m, true
@@ -261,62 +262,62 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 
 	canManage, err := h.canManageProject(r.Context(), m.ProjectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	states, err := h.Uptime.States(r.Context(), m.ID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	now := time.Now().UTC()
 	inMaintenance, err := h.Uptime.InMaintenance(r.Context(), m.ProjectID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	status := monitorStatus(m, states, inMaintenance)
 
 	windows, err := h.Uptime.Windows(r.Context(), m.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	uptime24h, err := h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-24*time.Hour), now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	uptime7d, err := h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-7*24*time.Hour), now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	uptime30d, err := h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-30*24*time.Hour), now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, now.Add(-24*time.Hour), now, monitorLatencyStep)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	latencyChart := latencyStackedSVG(latencyPoints, latencyChartWidth, latencyChartHeight)
 
 	checks, err := h.UptimeQuery.Recent(r.Context(), m.ID, monitorDetailChecksLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	incidents, err := h.Uptime.IncidentsForMonitor(r.Context(), m.ID, monitorDetailIncidentsLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -344,7 +345,7 @@ func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enab
 		return
 	}
 	if err := h.Uptime.SetEnabled(r.Context(), m.ID, enabled); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(m.ID), http.StatusSeeOther)
@@ -379,7 +380,7 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Uptime.Delete(r.Context(), m.ID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, monitorsPath(m.ProjectID), http.StatusSeeOther)

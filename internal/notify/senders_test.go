@@ -159,6 +159,47 @@ func TestWebhookSenderNon2xxErrors(t *testing.T) {
 	}
 }
 
+// TestWebhookSenderSSRFBlocksLoopback — без явного Client отправитель берёт
+// SSRF-safe клиент из netguard: при AllowPrivate=false доставка на loopback
+// режется до соединения (защита от мультитенантного SSRF).
+func TestWebhookSenderSSRFBlocksLoopback(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sender := &notify.WebhookSender{AllowPrivate: false}
+	target := notify.Target{Kind: "webhook", Target: srv.URL}
+	if err := sender.Send(context.Background(), target, map[string]any{"a": "b"}); err == nil {
+		t.Fatal("Send to loopback: want error (blocked), got nil")
+	}
+	if hit {
+		t.Error("request reached the loopback server, want it blocked before dial")
+	}
+}
+
+// TestWebhookSenderSSRFAllowsWhenConfigured — при AllowPrivate=true фильтр
+// отключён и доставка на loopback доходит.
+func TestWebhookSenderSSRFAllowsWhenConfigured(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sender := &notify.WebhookSender{AllowPrivate: true}
+	target := notify.Target{Kind: "webhook", Target: srv.URL}
+	if err := sender.Send(context.Background(), target, map[string]any{"a": "b"}); err != nil {
+		t.Fatalf("Send to loopback with AllowPrivate=true: %v", err)
+	}
+	if !hit {
+		t.Error("request did not reach the loopback server, want it delivered")
+	}
+}
+
 func TestTelegramSenderPostsMessage(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any

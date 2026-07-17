@@ -34,12 +34,14 @@ type Checker interface {
 // CheckerFor возвращает чекер для kind монитора. kind=heartbeat не
 // проверяется активно (ждёт входящих пингов от клиента), поэтому для него
 // возвращается ошибка — планировщик не должен пытаться его чекать.
-func CheckerFor(kind Kind) (Checker, error) {
+// allowPrivate прокидывается в HTTP/TCP-чекеры: false (по умолчанию у
+// Runner/ProbeClient) включает SSRF-фильтр приватных целей.
+func CheckerFor(kind Kind, allowPrivate bool) (Checker, error) {
 	switch kind {
 	case KindHTTP:
-		return NewHTTPChecker(), nil
+		return NewHTTPChecker(allowPrivate), nil
 	case KindTCP:
-		return NewTCPChecker(), nil
+		return NewTCPChecker(allowPrivate), nil
 	case KindDNS:
 		return NewDNSChecker(), nil
 	case KindHeartbeat:

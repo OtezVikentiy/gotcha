@@ -1,18 +1,78 @@
-/* Gotcha — минимальная тёмная тема. Без фреймворка, без сборки. */
+/* Gotcha — токен-система, тёмная и светлая темы. Без фреймворка, без сборки. */
+
+/* htmx-индикатор: обычно htmx вставляет эти правила инлайном, но CSP
+   default-src 'self' без unsafe-inline это блокирует (см. htmx-config в
+   layout.templ, includeIndicatorStyles:false), поэтому держим их здесь. */
+.htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+.htmx-request .htmx-indicator { opacity: 1; }
+.htmx-request.htmx-indicator { opacity: 1; }
 
 :root {
-	--bg: #12141a;
-	--bg-raised: #1a1d26;
-	--border: #2a2e3a;
-	--text: #e4e6eb;
-	--text-dim: #9aa0ac;
-	--accent: #5b8cff;
-	--accent-text: #0b0e14;
-	--danger: #ff5f5f;
-	--warning: #e0a52c;
-	--info: #4fb0e8;
+	--bg: #0f131b;
+	--surface: #171c28;
+	--surface-2: #1b2130;
+	--border: #263041;
+	--text: #e6ebf3;
+	--text-dim: #8a93a6;
+	--text-mute: #5c6473;
+	--accent: #3d7bff;
+	--accent-hover: #5a90ff;
+	--accent-fg: #ffffff;
+	--accent-soft: rgba(96, 132, 255, .12);
+	--rail: #0c0f16;
+	--rail-border: #1c2534;
+	--good: #2ea043;
+	--warn: #d9a521;
+	--danger: #f0574a;
+	--info: #3d7bff;
+	--link: #79aaff;
 	--radius: 6px;
-	--space: 12px;
+	--radius-lg: 10px;
+	--space: 4px;
+	--font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+:root[data-theme="light"] {
+	--bg: #f6f8fb;
+	--surface: #ffffff;
+	--surface-2: #eef2f7;
+	--border: #dde3ec;
+	--text: #1a2130;
+	--text-dim: #5a6472;
+	--text-mute: #8a93a6;
+	--accent: #2f6bff;
+	--accent-hover: #1f5aff;
+	--accent-fg: #ffffff;
+	--accent-soft: rgba(47, 107, 255, .10);
+	--rail: #eef2f7;
+	--rail-border: #dde3ec;
+	--good: #1a7f37;
+	--warn: #9a6700;
+	--danger: #cf222e;
+	--info: #2f6bff;
+	--link: #2f6bff;
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) {
+		--bg: #f6f8fb;
+		--surface: #ffffff;
+		--surface-2: #eef2f7;
+		--border: #dde3ec;
+		--text: #1a2130;
+		--text-dim: #5a6472;
+		--text-mute: #8a93a6;
+		--accent: #2f6bff;
+		--accent-hover: #1f5aff;
+		--accent-fg: #ffffff;
+		--accent-soft: rgba(47, 107, 255, .10);
+		--rail: #eef2f7;
+		--rail-border: #dde3ec;
+		--good: #1a7f37;
+		--warn: #9a6700;
+		--danger: #cf222e;
+		--info: #2f6bff;
+		--link: #2f6bff;
+	}
 }
 
 * {
@@ -23,60 +83,505 @@ body {
 	margin: 0;
 	background: var(--bg);
 	color: var(--text);
-	font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	font-family: var(--font-sans);
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+code, pre {
+	font-family: var(--font-mono);
+}
+pre {
+	overflow-x: auto;
+	max-width: 100%;
 }
 
 a {
-	color: var(--accent);
+	color: var(--link);
 	text-decoration: none;
 }
 a:hover {
 	text-decoration: underline;
 }
 
-.topbar {
+/* ============================================================
+   App shell — icon rail + context sidebar + topbar (Task 4, §5 IA).
+   Компактно, всё через токены (кроме фирменного градиента лого-
+   типа рейла — фиксированная марка бренда, см. .rail-logo).
+   ============================================================ */
+.app-shell {
+	display: grid;
+	grid-template-columns: 84px 200px 1fr;
+	min-height: 100vh;
+}
+
+/* -- Icon rail: логотип, области нав-структуры, аватар, логаут -- */
+.rail {
+	background: var(--rail);
+	border-right: 1px solid var(--rail-border);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	padding: 8px 0;
+	gap: 2px;
+}
+.rail-logo {
+	width: 30px;
+	height: 30px;
 	display: flex;
 	align-items: center;
-	gap: 24px;
-	padding: var(--space) 24px;
-	background: var(--bg-raised);
-	border-bottom: 1px solid var(--border);
+	justify-content: center;
+	margin-bottom: 8px;
+	text-decoration: none;
 }
-.topbar .logo {
-	font-weight: 700;
-	font-size: 18px;
+/* Фирменный знак: моно-«G» в уголковой рамке-прицеле (см. brandMark в
+   icons.templ). Размер задаётся здесь, не атрибутами SVG. */
+.brand-mark {
+	display: block;
+	width: 30px;
+	height: 30px;
+}
+.rail-area {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 3px;
+	width: 100%;
+	padding: 7px 4px;
+	color: var(--text-dim);
+	text-decoration: none;
+}
+.rail-area:hover {
 	color: var(--text);
 }
-.topbar nav {
+/* Двутон: иконка на мягкой плитке, активная область — плитка акцентом */
+.rail-area .rail-ic {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	border-radius: 8px;
+	background: var(--accent-soft);
+}
+.rail-area .ic {
+	width: 18px;
+	height: 18px;
+}
+.rail-area.is-active {
+	color: var(--text);
+}
+.rail-area.is-active .rail-ic {
+	background: var(--accent);
+}
+.rail-area.is-active .ic {
+	color: var(--accent-fg);
+}
+.rail-label {
+	font-size: 10px;
+	line-height: 1.1;
+	letter-spacing: .2px;
+	text-align: center;
+	overflow-wrap: anywhere;
+	max-width: 100%;
+}
+.rail-spacer {
 	flex: 1;
 }
-.logout-form {
+.rail-logout,
+.rail-logout .rail-logout-btn {
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	padding: 6px;
+	margin: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.rail-logout-btn:hover {
+	background: none;
+	color: var(--danger);
+}
+.rail-logout-btn .ic {
+	width: 18px;
+	height: 18px;
+}
+.avatar {
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	background: var(--accent-soft);
+	color: var(--accent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	font-weight: 600;
+	text-decoration: none;
+	margin-top: 6px;
+}
+
+/* -- Context sidebar: переключатель проекта + подразделы области -- */
+.ctx-sidebar {
+	background: var(--surface);
+	border-right: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	padding: 8px;
+	gap: 2px;
+	overflow-y: auto;
+}
+.proj-switch {
+	margin-bottom: 8px;
+}
+.proj-switch summary {
+	list-style: none;
+	cursor: pointer;
+	padding: 7px 9px;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-weight: 600;
+	color: var(--text);
+	overflow-wrap: anywhere;
+}
+.proj-switch summary::-webkit-details-marker {
+	display: none;
+}
+.proj-switch summary::after {
+	content: "▾";
+	float: right;
+	color: var(--text-dim);
+}
+.proj-switch ul {
+	list-style: none;
+	margin: 4px 0 0;
+	padding: 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+}
+.proj-switch li a {
+	display: block;
+	padding: 5px 8px;
+	border-radius: var(--radius);
+	color: var(--text-dim);
+	text-decoration: none;
+}
+.proj-switch li a:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+.ctx-item {
+	display: block;
+	padding: 6px 10px;
+	border-radius: var(--radius);
+	color: var(--text-dim);
+	text-decoration: none;
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+.ctx-item:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+.ctx-item.is-active {
+	background: var(--surface-2);
+	color: var(--text);
+	box-shadow: inset 2px 0 0 var(--accent);
+}
+.ctx-settings {
+	margin-top: auto;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	color: var(--text-dim);
+	text-decoration: none;
+	border-top: 1px solid var(--border);
+}
+.ctx-settings .ic {
+	width: 15px;
+	height: 15px;
+}
+.ctx-settings:hover {
+	color: var(--text);
+}
+
+/* -- Main column: topbar (breadcrumb + переключатели) + контент -- */
+.app-main {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+.topbar {
+	height: 44px;
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	margin: 0;
+	padding: 0 16px;
+	border-bottom: 1px solid var(--border);
+	background: var(--surface);
 }
-.user-email {
+.topbar-spacer {
+	flex: 1;
+}
+.lang-switcher,
+.theme-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	vertical-align: middle;
+}
+/* Компактные сегментированные переключатели — переопределяем громкую
+   акцентную кнопку по умолчанию (см. правило `button` ниже), чтобы в 44px
+   topbar они не спорили с основными действиями. */
+.lang-switcher button,
+.theme-toggle button {
+	background: transparent;
+	border: 1px solid var(--border);
+	color: var(--text-dim);
+	padding: 3px 8px;
+	font-size: 11px;
+	font-weight: 600;
+	cursor: pointer;
+	border-radius: var(--radius);
+}
+.lang-switcher button:hover:not(.is-active),
+.theme-toggle button:hover:not(.is-active) {
+	color: var(--text);
+	border-color: var(--text-dim);
+}
+.lang-btn.is-active,
+.theme-btn.is-active {
+	background: var(--accent-soft);
+	color: var(--accent);
+	border-color: var(--accent);
+}
+.app-content {
+	flex: 1;
+	padding: 16px 24px;
+	min-width: 0;
+	overflow-x: auto;
+	/* Ограничиваем ширину контента и центрируем: на широких/ультравайд
+	   экранах короткие таблицы и формы иначе растягиваются от края до края
+	   и выглядят пустыми. 1600px достаточно для самых широких таблиц. */
+	max-width: 1600px;
+	width: 100%;
+	margin: 0 auto;
+}
+
+/* Скролл-контейнер для длинных списков (участники и т.п.): ограничивает
+   высоту блока и включает вертикальный скролл, чтобы 100 строк не растягивали
+   страницу. */
+.scroll-list {
+	max-height: 340px;
+	overflow-y: auto;
+}
+
+/* No-JS модальное окно через :target (CSP запрещает инлайн-JS). Триггер —
+   ссылка на #id; оверлей скрыт, показывается при совпадении :target; закрытие
+   — ссылка-фон и крестик ведут на "#" (пустой фрагмент снимает :target). */
+.modal {
+	display: none;
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	background: rgba(0, 0, 0, .55);
+	align-items: flex-start;
+	justify-content: center;
+	padding: 56px 16px;
+	overflow-y: auto;
+}
+.modal:target {
+	display: flex;
+}
+.modal-backdrop {
+	position: absolute;
+	inset: 0;
+}
+.modal-card {
+	position: relative;
+	z-index: 1;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 20px 24px;
+	width: 100%;
+	max-width: 460px;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+}
+.modal-close {
+	position: absolute;
+	top: 12px;
+	right: 14px;
+	color: var(--text-dim);
+	font-size: 22px;
+	line-height: 1;
+	text-decoration: none;
+}
+.modal-close:hover {
+	color: var(--text);
+}
+/* Кнопка-триггер создания сущности (в шапке раздела). */
+.create-trigger {
+	margin-bottom: 16px;
+}
+/* Две подформы «Данные субъекта (ПДн)» рядом (экспорт | удаление). */
+.gdpr-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 16px 24px;
+}
+@media (min-width: 900px) {
+	.gdpr-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* Карточки правил алертинга (new_issue/regression/spike) рядами — было
+   вертикальным стеком трёх fieldset'ов, слишком высоко/разреженно. */
+.rule-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 16px;
+	margin-bottom: 16px;
+}
+@media (min-width: 900px) {
+	.rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* -- Chromeless: анонимные/setup-страницы (логин, регистрация, онбординг,
+   ошибки) — без рейла и сайдбара, тонкая верхняя полоса + центр-форма -- */
+.chromeless-top {
+	height: 48px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 16px;
+	border-bottom: 1px solid var(--border);
+	background: var(--surface);
+}
+.chromeless-main {
+	max-width: 520px;
+	margin: 40px auto;
+	padding: 0 16px;
+}
+/* Бренд-лок-ап (знак + вордмарк) в тонкой верхней полосе chromeless-страниц. */
+.brand-lockup {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	text-decoration: none;
+}
+.brand-lockup .brand-mark {
+	width: 26px;
+	height: 26px;
+}
+.brand-word {
+	font-weight: 700;
+	font-size: 16px;
+	letter-spacing: -.01em;
+	color: var(--text);
+}
+
+/* Бренд-момент на логине: крупный знак + вордмарк + слоган голосом продукта. */
+.auth-brand {
+	max-width: 360px;
+	margin: 40px auto 0;
+	text-align: center;
+}
+.auth-brand .brand-mark {
+	width: 52px;
+	height: 52px;
+	margin: 0 auto 8px;
+}
+.auth-brand-word {
+	display: block;
+	font-weight: 700;
+	font-size: 26px;
+	letter-spacing: -.02em;
+	color: var(--text);
+}
+.auth-tagline {
+	margin: 6px 0 0;
 	color: var(--text-dim);
 	font-size: 13px;
+}
+.auth-brand + .auth-form {
+	margin-top: 16px;
+}
+
+/* -- Мобильное disclosure-меню в topbar: дублирует содержимое .ctx-sidebar
+   (переключатель проекта, подразделы, настройки проекта) без JS — работает
+   через нативные <details>/<summary>. На десктопе скрыто, т.к. тот же
+   контент уже доступен в .ctx-sidebar (см. адаптив ниже). -- */
+.mobile-nav {
+	display: none;
+}
+.mobile-nav-summary {
+	list-style: none;
+	cursor: pointer;
+	padding: 6px;
+	display: inline-flex;
+	align-items: center;
+	border-radius: var(--radius);
+	color: var(--text-dim);
+}
+.mobile-nav-summary::-webkit-details-marker {
+	display: none;
+}
+.mobile-nav-summary:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+.mobile-nav-panel {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	z-index: 20;
+	min-width: 220px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+}
+
+/* -- Адаптив: на узких экранах сайдбар подразделов скрывается, рейл
+   остаётся всегда доступным; вместо сайдбара — мобильное disclosure-меню
+   в topbar (см. .mobile-nav выше) -- */
+@media (max-width: 900px) {
+	.app-shell {
+		grid-template-columns: 84px 1fr;
+	}
+	.ctx-sidebar {
+		display: none;
+	}
+	.mobile-nav {
+		display: block;
+		position: relative;
+	}
 }
 
 main {
 	max-width: 960px;
 	margin: 0 auto;
-	padding: 32px 24px;
+	padding: 24px;
 }
 
 .auth-form {
 	max-width: 360px;
-	margin: 48px auto;
+	margin: 40px auto;
 	display: flex;
 	flex-direction: column;
-	gap: 14px;
-	background: var(--bg-raised);
+	gap: 12px;
+	background: var(--surface);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	padding: 28px;
+	padding: 24px;
 }
 .auth-form h1 {
 	margin: 0 0 4px;
@@ -101,8 +606,8 @@ input {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	color: var(--text);
-	padding: 8px 10px;
-	font-size: 14px;
+	padding: 6px 10px;
+	font-size: 13px;
 }
 input:focus {
 	outline: 2px solid var(--accent);
@@ -111,47 +616,78 @@ input:focus {
 
 button {
 	background: var(--accent);
-	color: var(--accent-text);
+	color: var(--accent-fg);
 	border: none;
 	border-radius: var(--radius);
-	padding: 9px 16px;
-	font-size: 14px;
+	padding: 6px 12px;
+	font-size: 13px;
 	font-weight: 600;
 	cursor: pointer;
 }
 button:hover {
-	filter: brightness(1.1);
+	background: var(--accent-hover);
 }
 
 .error {
-	background: rgba(255, 95, 95, 0.12);
+	background: color-mix(in srgb, var(--danger) 16%, transparent);
 	border: 1px solid var(--danger);
 	color: var(--danger);
 	border-radius: var(--radius);
-	padding: 8px 10px;
+	padding: 6px 10px;
 	font-size: 13px;
 	margin: 0;
 }
 
+.quota-banner {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	background: color-mix(in srgb, var(--warn) 16%, transparent);
+	border: 1px solid var(--warn);
+	border-radius: var(--radius);
+	padding: 8px 12px;
+	font-size: 13px;
+	margin: 0 0 12px;
+}
+.quota-banner a {
+	white-space: nowrap;
+}
+
 .notice {
-	background: rgba(79, 176, 232, 0.12);
+	background: color-mix(in srgb, var(--info) 16%, transparent);
 	border: 1px solid var(--info);
 	color: var(--info);
 	border-radius: var(--radius);
-	padding: 8px 10px;
+	padding: 6px 10px;
 	font-size: 13px;
 	margin: 0;
+}
+
+.warning {
+	background: color-mix(in srgb, var(--warn) 14%, transparent);
+	color: var(--warn);
+	border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+	border-radius: var(--radius);
+	padding: 8px 12px;
+}
+
+/* Приглушённые пояснительные абзацы (подсказки полей, заметки о лимитах). */
+.hint, .apdex-note, .perf-cap-note, .trace-cap-note, .retention-notice {
+	color: var(--text-dim);
+	font-size: 12px;
+	margin: 4px 0;
 }
 
 table {
 	width: 100%;
 	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
 }
 th, td {
 	text-align: left;
-	padding: 8px 10px;
+	padding: 6px 10px;
 	border-bottom: 1px solid var(--border);
-	font-size: 14px;
+	font-size: 13px;
 }
 th {
 	color: var(--text-dim);
@@ -167,18 +703,42 @@ th {
 	font-size: 11px;
 	font-weight: 700;
 	text-transform: uppercase;
+	white-space: nowrap;
 }
-.badge-error { background: rgba(255, 95, 95, 0.15); color: var(--danger); }
-.badge-warning { background: rgba(224, 165, 44, 0.15); color: var(--warning); }
-.badge-info { background: rgba(79, 176, 232, 0.15); color: var(--info); }
-.badge-up { background: rgba(62, 207, 110, 0.15); color: #3ecf6e; }
-.badge-paused { background: rgba(154, 160, 172, 0.15); color: var(--text-dim); }
-
-/* Рейтинг Web Vitals (Google, по p75): good — зелёный, needs-improvement —
-   янтарный, poor — красный. */
-.vital-good { background: rgba(62, 207, 110, 0.15); color: #3ecf6e; }
-.vital-needs-improvement { background: rgba(224, 165, 44, 0.15); color: var(--warning); }
-.vital-poor { background: rgba(255, 95, 95, 0.15); color: var(--danger); }
+/* Inline checkbox + подпись (используется формами алертов/мониторов/обслуживания
+   и др.): чекбокс и текст на одной строке, кликабельная подпись целиком. */
+.checkbox-inline {
+	display: inline-flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+	color: var(--text);
+	font-size: 13px;
+	cursor: pointer;
+}
+.checkbox-inline input[type="checkbox"] {
+	margin: 0;
+	width: auto;
+	padding: 0;
+	flex: none;
+}
+/* Флеймграф-SVG (viewBox без width/height) — растянуть на ширину карточки. */
+.flamegraph {
+	width: 100%;
+	height: auto;
+	display: block;
+}
+/* SVG-графики (viewBox без width/height) — растянуть на ширину карточки. */
+.metric-chart, .waterfall {
+	width: 100%;
+	height: auto;
+	display: block;
+}
+.waterfall-label {
+	font-family: var(--font-mono);
+	font-size: 10px;
+}
+.badge-info { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
 
 .vital-value { margin-right: 6px; }
 .vital-chart {
@@ -187,6 +747,9 @@ th {
 	height: 48px;
 	vertical-align: middle;
 	color: var(--accent);
+}
+.vital-chart-cell {
+	white-space: nowrap;
 }
 
 .sparkline {
@@ -197,21 +760,70 @@ th {
 	color: var(--accent);
 }
 
-.issues-filters {
+/* -- Фильтр-панели разделов: единый компактный горизонтальный тулбар.
+   Общий для Issues / Performance / Web Vitals / Metrics. Тулбар намеренно
+   визуально тихий — герой страницы это таблица/график под ним. Контролы
+   по содержимому (а не во всю ширину), поиск слегка растягивается, кнопка
+   «Применить» замыкает ряд справа. На узких экранах ряд переносится. -- */
+.issues-filters,
+.performance-filters,
+.metric-filters {
 	display: flex;
 	flex-wrap: wrap;
-	align-items: center;
+	align-items: flex-end;
 	gap: 8px;
 	margin-bottom: 16px;
 }
+/* Контролы тулбара — по содержимому. Базовое .input/.select задаёт
+   width:100% (для вертикальных форм), здесь его переопределяем. */
+.issues-filters .select,
+.issues-filters .input,
+.performance-filters .select,
+.performance-filters .input,
+.metric-filters .select {
+	width: auto;
+	min-width: 128px;
+}
+/* Текстовый поиск может умеренно растянуться, заполняя ряд. */
+.issues-filters .input[type="text"] {
+	flex: 1 1 200px;
+	min-width: 180px;
+	max-width: 380px;
+}
+/* Metric-фильтр: подпись над контролом (label-обёртка) — пары стоят в ряд. */
+.metric-filters > label {
+	width: auto;
+	gap: 4px;
+	font-size: 12px;
+}
 .issues-filters select,
 .issues-filters input {
-	background: var(--bg-raised);
+	background: var(--surface);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	color: var(--text);
 	padding: 6px 8px;
 	font-size: 13px;
+}
+
+/* Metric-фильтр по лейблам (страница метрики). */
+.metric-labels {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.metric-label-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+.metric-label-key {
+	color: var(--text-dim);
+	font-size: 12px;
+	font-weight: 600;
 }
 
 .culprit {
@@ -222,32 +834,33 @@ th {
 .bulk-actions {
 	display: flex;
 	gap: 8px;
-	margin-top: 12px;
+	margin-top: 8px;
 }
-.bulk-actions button {
-	background: var(--bg-raised);
+.bulk-actions button:not(.btn) {
+	background: var(--surface);
 	color: var(--text);
 	border: 1px solid var(--border);
 	font-weight: 600;
 }
-.bulk-actions button:hover {
-	filter: none;
+.bulk-actions button:not(.btn):hover {
+	background: var(--surface);
 	border-color: var(--accent);
 }
 
 .pagination {
 	display: flex;
 	align-items: center;
-	gap: 12px;
-	margin-top: 16px;
+	gap: 8px;
+	margin-top: 12px;
 	color: var(--text-dim);
 	font-size: 13px;
+	font-variant-numeric: tabular-nums;
 }
 
 .issue-meta {
 	display: flex;
-	gap: 16px;
-	margin: 8px 0 16px;
+	gap: 12px;
+	margin: 6px 0 12px;
 	color: var(--text-dim);
 	font-size: 13px;
 }
@@ -255,8 +868,8 @@ th {
 .issue-actions {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 12px;
-	margin-bottom: 20px;
+	gap: 8px;
+	margin-bottom: 16px;
 }
 .issue-actions form {
 	display: flex;
@@ -264,7 +877,7 @@ th {
 	margin: 0;
 }
 .assign-form select {
-	background: var(--bg-raised);
+	background: var(--surface);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	color: var(--text);
@@ -278,33 +891,112 @@ th {
 	max-width: 480px;
 	height: 96px;
 	color: var(--accent);
-	margin-bottom: 20px;
+	margin-bottom: 16px;
 }
 
+/* Выбор типа проверки в форме монитора: радиокнопки-вкладки + прогрессивное
+   раскрытие полей выбранного типа без JS (см. kindPicker в monitorform.templ).
+   Радио скрыты визуально, но фокусируемы; клик по .kind-tab переключает. */
+.kind-picker {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin-bottom: 16px;
+}
+.kind-picker-label {
+	flex-basis: 100%;
+	font-size: 13px;
+	color: var(--text-dim);
+	margin-bottom: 2px;
+}
+.kind-radio {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
+.kind-tab {
+	padding: 6px 16px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	cursor: pointer;
+	font-size: 14px;
+	user-select: none;
+}
+.kind-radio:checked + .kind-tab {
+	background: var(--accent);
+	color: #fff;
+	border-color: var(--accent);
+}
+.kind-radio:focus-visible + .kind-tab {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+.kind-fields {
+	flex-basis: 100%;
+	display: none;
+}
+#kf-http:checked ~ .kind-fields--http,
+#kf-tcp:checked ~ .kind-fields--tcp,
+#kf-dns:checked ~ .kind-fields--dns,
+#kf-heartbeat:checked ~ .kind-fields--heartbeat {
+	display: block;
+}
+
+/* График частоты событий на странице issue — с осями (viewBox 360×140,
+   пропорции сохраняются, поэтому height:auto, а не фикс). */
+.chart-freq {
+	display: block;
+	width: 100%;
+	max-width: 480px;
+	height: auto;
+	color: var(--accent);
+	margin-bottom: 16px;
+}
+
+/* Оси/сетка и подписи графиков (metric-chart, chart-freq): приглушённый цвет,
+   моноширинный мелкий шрифт. Пороговые линии — цвет опасности. */
+.metric-chart text, .chart-freq text { font-size: 11px; font-family: var(--font-mono); }
+.chart-axis { color: var(--text-dim); }
+.chart-threshold { color: var(--danger); }
+
 .issue-events {
-	margin-bottom: 20px;
+	margin-bottom: 16px;
+}
+.event-row {
+	cursor: default;
 }
 .event-row-selected {
-	background: rgba(91, 140, 255, 0.1);
+	background: var(--accent-soft);
 }
 
 .event-detail {
 	border-top: 1px solid var(--border);
-	padding-top: 16px;
+	padding-top: 12px;
 }
 .event-detail h3 {
 	font-size: 13px;
 	text-transform: uppercase;
 	color: var(--text-dim);
-	margin: 16px 0 8px;
+	margin: 12px 0 6px;
 }
 .event-detail pre {
-	background: var(--bg-raised);
+	background: var(--surface);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	padding: 10px;
+	padding: 8px;
 	overflow-x: auto;
 	font-size: 13px;
+}
+.event-meta {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0 24px;
+}
+@media (min-width: 700px) {
+	.event-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .frames {
@@ -315,42 +1007,82 @@ th {
 .frame {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	padding: 8px 10px;
+	padding: 6px 10px;
 	font-size: 13px;
 }
 .frame.in-app {
 	border-color: var(--accent);
-	background: rgba(91, 140, 255, 0.08);
+	background: var(--accent-soft);
 }
 .frame-location {
 	color: var(--text-dim);
 	font-size: 12px;
+	overflow-wrap: anywhere;
 }
 .frame-function {
 	font-weight: 600;
+	overflow-wrap: anywhere;
 }
 .error-page {
-	max-width: 480px;
-	margin: 48px auto;
+	max-width: 460px;
+	margin: 72px auto;
+	padding: 0 16px;
 	text-align: center;
 }
-.error-page .error-code {
-	font-size: 48px;
+/* Код статуса — герой: моноширинный, в акценте, обрамлён скобками-рамкой
+   [код] (тот же «пойман в рамку» мотив, что и у фирменного знака). */
+.error-code {
+	font-family: var(--font-mono);
+	font-size: 66px;
 	font-weight: 700;
-	color: var(--text-dim);
-	margin: 0 0 8px;
+	line-height: 1;
+	color: var(--accent);
+	margin: 0 0 10px;
 }
-.error-page .error {
-	display: inline-block;
+.error-code::before {
+	content: "[";
+	color: var(--text-mute);
+	margin-right: 10px;
+}
+.error-code::after {
+	content: "]";
+	color: var(--text-mute);
+	margin-left: 10px;
+}
+.error-title {
+	font-size: 22px;
+	font-weight: 700;
+	margin: 0 0 6px;
+	color: var(--text);
+}
+.error-body {
+	max-width: 380px;
+	margin: 0 auto 20px;
+	color: var(--text-dim);
+	font-size: 14px;
+	line-height: 1.6;
 }
 
 .frame-module {
 	color: var(--text-dim);
 	font-size: 12px;
 }
+/* Стектрейс — это код: фреймы моноширинным. Свёрнутые system-фреймы
+   (<details>) кликабельны; длинный id события переносится. */
+.frame {
+	font-family: var(--font-mono);
+}
+.frame-system > summary {
+	cursor: pointer;
+	overflow-wrap: anywhere;
+}
+.event-id {
+	overflow-wrap: anywhere;
+	margin-bottom: 8px;
+}
 
 .monitors table, .monitor-detail table {
-	margin-bottom: 20px;
+	margin-bottom: 16px;
 }
 .availability-bars {
 	display: inline-block;
@@ -361,8 +1093,8 @@ th {
 .monitor-meta {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 16px;
-	margin: 8px 0 16px;
+	gap: 12px;
+	margin: 6px 0 12px;
 	color: var(--text-dim);
 	font-size: 13px;
 }
@@ -370,26 +1102,26 @@ th {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 12px;
-	margin-bottom: 20px;
+	gap: 8px;
+	margin-bottom: 16px;
 }
 .monitor-actions form {
 	display: flex;
 	gap: 8px;
 	margin: 0;
 }
-.monitor-actions button {
-	background: var(--bg-raised);
+.monitor-actions button:not(.btn) {
+	background: var(--surface);
 	color: var(--text);
 	border: 1px solid var(--border);
 	font-weight: 600;
 }
-.monitor-actions button:hover {
-	filter: none;
+.monitor-actions button:not(.btn):hover {
+	background: var(--surface);
 	border-color: var(--accent);
 }
 .monitor-chart {
-	margin-bottom: 20px;
+	margin-bottom: 16px;
 }
 .latency-chart {
 	display: block;
@@ -403,39 +1135,38 @@ th {
 .status-page {
 	max-width: 720px;
 	margin: 0 auto;
-	padding: 32px 20px;
+	padding: 24px 20px;
 }
 .status-overall {
 	display: inline-block;
-	padding: 10px 16px;
-	border-radius: 8px;
+	padding: 8px 16px;
+	border-radius: var(--radius-lg);
 	font-weight: 600;
-	margin: 8px 0 24px;
+	margin: 6px 0 20px;
 }
-.status-overall-ok { background: rgba(62, 207, 110, 0.15); color: #3ecf6e; }
-.status-overall-partial { background: rgba(224, 165, 44, 0.15); color: var(--warning); }
-.status-overall-major { background: rgba(255, 95, 95, 0.15); color: var(--danger); }
+.status-overall-ok { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.status-overall-partial { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.status-overall-major { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 .status-description {
 	color: var(--text-dim);
 }
 .status-tiles {
 	list-style: none;
 	padding: 0;
-	margin: 0 0 24px;
+	margin: 0 0 20px;
 }
+/* .status-tile pairs with the shared .card component (background/border/
+   radius/padding) in the template; only the tile-specific spacing lives
+   here. */
 .status-tile {
-	background: var(--bg-raised);
-	border: 1px solid var(--border);
-	border-radius: 8px;
-	padding: 12px 16px;
-	margin-bottom: 12px;
+	margin-bottom: 8px;
 }
 .status-tile-head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
-	margin-bottom: 8px;
+	margin-bottom: 6px;
 }
 .status-tile-name {
 	font-weight: 600;
@@ -444,6 +1175,7 @@ th {
 	color: var(--text-dim);
 	font-size: 13px;
 	margin-top: 6px;
+	font-variant-numeric: tabular-nums;
 }
 .status-tile-bars .availability-bars {
 	width: 100%;
@@ -453,20 +1185,20 @@ th {
 /* Настройки статус-страниц проекта. */
 .status-page-item {
 	border-bottom: 1px solid var(--border);
-	margin-bottom: 20px;
-	padding-bottom: 12px;
+	margin-bottom: 16px;
+	padding-bottom: 8px;
 }
 .status-page-monitors {
 	list-style: none;
 	padding: 0;
-	margin: 8px 0;
+	margin: 6px 0;
 }
 .status-page-monitor {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 12px;
-	margin-bottom: 8px;
+	gap: 8px;
+	margin-bottom: 6px;
 }
 .status-page-public {
 	color: var(--text-dim);
@@ -475,7 +1207,7 @@ th {
 
 /* OAuth / social login: кнопки на /login, /register и в профиле. */
 .oauth-buttons {
-	margin-top: 16px;
+	margin-top: 12px;
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
@@ -483,33 +1215,21 @@ th {
 .oauth-sep {
 	text-align: center;
 	color: var(--text-dim);
-	margin: 8px 0;
+	margin: 6px 0;
 }
 .oauth-btn {
 	display: block;
 	text-align: center;
-	padding: 8px;
+	padding: 6px;
 	border: 1px solid var(--border);
-	border-radius: 4px;
+	border-radius: var(--radius);
 	text-decoration: none;
 	color: var(--text);
 }
 .oauth-btn:hover {
-	background: var(--surface);
+	background: var(--surface-2);
 }
 /* Профиль: список связанных аккаунтов. */
-.linked-list {
-	list-style: none;
-	padding: 0;
-	margin: 8px 0;
-}
-.linked-list li {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 12px;
-	margin-bottom: 8px;
-}
 .linked-email {
 	color: var(--text-dim);
 	font-size: 13px;
@@ -520,4 +1240,556 @@ th {
 }
 form.inline {
 	display: inline;
+}
+
+/* ===== Design-system components (sub-project ②) ===== */
+/* Общие переиспользуемые классы для app-shell (③) и разделов (④).
+   Все цвета/отступы — через токены из :root выше; работает в обеих темах. */
+
+/* -- Buttons -- */
+.btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 12px;
+	border: none;
+	border-radius: var(--radius);
+	font-family: inherit;
+	font-size: 13px;
+	font-weight: 600;
+	line-height: 1.4;
+	cursor: pointer;
+	text-decoration: none;
+}
+.btn-primary {
+	background: var(--accent);
+	color: var(--accent-fg);
+}
+.btn-primary:hover {
+	background: var(--accent-hover);
+}
+.btn-ghost {
+	background: transparent;
+	color: var(--text);
+	border: 1px solid var(--border);
+}
+.btn-ghost:hover {
+	background: var(--surface-2);
+}
+.btn-danger {
+	background: var(--danger);
+	color: var(--accent-fg);
+}
+.btn-danger:hover {
+	filter: brightness(0.92);
+}
+.btn:disabled {
+	opacity: .5;
+	cursor: not-allowed;
+	filter: none;
+}
+
+/* -- Badges --
+   Базовый .badge (display/radius/padding/uppercase) уже определён выше;
+   здесь только семантические модификаторы новой палитры + служебные варианты.
+   .badge-info уже существует выше и совпадает по стилю — переиспользуется как есть. */
+.badge-good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.badge-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.badge-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.badge-neutral {
+	background: var(--surface-2);
+	color: var(--text-dim);
+}
+
+/* -- Data table --
+   Отдельный класс поверх глобальных table/th/td: компактнее, с hover-строками
+   и колонкой .num для чисел. Не конфликтует с существующими table/th/td —
+   выше по специфичности при использовании внутри .data-table. */
+.data-table {
+	width: auto;
+	max-width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+/* Таблицы с гибкой основной колонкой (issue/эндпойнт), которым нужно занимать
+   всю ширину карточки, а не льнуть к содержимому. */
+.data-table--full {
+	width: 100%;
+}
+.data-table th {
+	text-align: left;
+	padding: 0 8px 6px 0;
+	border-bottom: 1px solid var(--border);
+	color: var(--text-dim);
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+.data-table td {
+	padding: 6px 8px 6px 0;
+	border-bottom: 1px solid var(--border);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+.data-table tbody tr:hover {
+	background: var(--surface-2);
+}
+.data-table .num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+/* -- Stat tile -- */
+.stat-tile {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 10px 12px;
+}
+.stat-label {
+	color: var(--text-dim);
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: .3px;
+	text-transform: uppercase;
+}
+.stat-value {
+	margin-top: 2px;
+	font-size: 20px;
+	font-weight: 680;
+	letter-spacing: -.5px;
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+/* -- Cards / panels -- */
+.card,
+.panel {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 14px 16px;
+}
+.card-header,
+.panel-header {
+	margin-bottom: 10px;
+	font-weight: 650;
+}
+
+/* -- Адаптивная сетка блоков настроек (settings/profile/teams/org) --
+   1 колонка → 2 (≥1024px) → 3 (≥1440px). minmax(0,1fr) не даёт широкому
+   содержимому (таблицы, <pre>) распирать колонку. Карточки с широкими
+   таблицами занимают всю ширину строки через .card--wide. */
+.settings-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 16px;
+	align-items: start;
+	margin-bottom: 16px;
+}
+@media (min-width: 1024px) {
+	.settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1440px) {
+	.settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.settings-grid > .card { margin: 0; }
+.settings-grid > .card--wide { grid-column: 1 / -1; }
+
+/* Разлипание вертикально составленных действий в карточке: несколько форм/
+   кнопок подряд (напр. Опасная зона — «Покинуть» и «Удалить» шли впритык). */
+.card-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 4px;
+}
+.card-actions > form {
+	margin: 0;
+}
+
+/* -- Tabs -- */
+.tabs {
+	display: flex;
+	gap: 4px;
+	border-bottom: 1px solid var(--border);
+}
+.tab {
+	padding: 8px 10px;
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.tab:hover {
+	color: var(--text);
+}
+.tab.is-active {
+	color: var(--text);
+	box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* -- Filter chips / pills -- */
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 3px 10px;
+	color: var(--text-dim);
+	font-size: 12px;
+	cursor: pointer;
+}
+.chip.is-active {
+	background: var(--accent-soft);
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+/* -- Breadcrumb -- */
+.breadcrumb {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 600;
+}
+.breadcrumb a {
+	color: var(--text-dim);
+}
+.breadcrumb a:hover {
+	color: var(--text);
+}
+
+/* -- Empty state -- */
+.empty-state {
+	padding: 40px 20px;
+	color: var(--text-dim);
+	text-align: center;
+}
+.empty-state .ic {
+	display: block;
+	width: 28px;
+	height: 28px;
+	margin: 0 auto 10px;
+	color: var(--text-mute);
+}
+.empty-state h3,
+.empty-state .empty-title {
+	margin: 0 0 4px;
+	color: var(--text);
+	font-size: 14px;
+	font-weight: 650;
+}
+.empty-state p {
+	margin: 0 auto;
+	max-width: 380px;
+	font-size: 13px;
+	line-height: 1.5;
+}
+.empty-state .empty-cta {
+	margin-top: 14px;
+}
+.no-projects {
+	text-align: center;
+	color: var(--text-dim);
+}
+
+/* -- Compact forms -- */
+.field {
+	display: block;
+	margin-bottom: 12px;
+}
+.field label {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	color: var(--text-dim);
+	font-size: 12px;
+}
+
+/* -- Двухколоночная сетка полей внутри форм создания/редактирования
+   (монитор, metric-алерт, обслуживание, статус-страница). 1 колонка →
+   2 при ≥720px. Поля-исключения (textarea, длинные URL) занимают всю
+   ширину через .field--wide. Внутри узких карточек-настроек НЕ
+   используется — там формы остаются одноколоночными. -- */
+.form-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0 16px;
+	align-items: start;
+}
+@media (min-width: 720px) {
+	.form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.form-grid > .field--wide { grid-column: 1 / -1; }
+.input,
+.select {
+	display: block;
+	width: 100%;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text);
+	padding: 6px 10px;
+	font-family: inherit;
+	font-size: 13px;
+}
+.input:focus,
+.select:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: -1px;
+}
+textarea.input {
+	resize: vertical;
+	min-height: 64px;
+}
+
+/* -- Icon sprite (CSP: default-src 'self' без unsafe-inline запрещает
+   style="", поэтому скрываем классом, не инлайн-стилем) -- */
+.icon-sprite {
+	display: none;
+}
+
+/* -- Icon base -- */
+.ic {
+	width: 1em;
+	height: 1em;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.75;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	vertical-align: -0.125em;
+}
+
+/* -- Keyboard focus ring (shared across interactive components) -- */
+a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible,
+.rail-area:focus-visible, .rail-logout-btn:focus-visible, .ctx-item:focus-visible,
+.tab:focus-visible, .chip:focus-visible, .lang-switcher button:focus-visible,
+.theme-toggle button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* -- Help panel (helpPanel, help.templ) -- контекстная справка под <h1>
+   страниц-хабов (issues/performance/metrics/uptime/alerts). Нативный
+   <details>/<summary> (CSP: default-src 'self' без unsafe-inline не
+   допускает JS-раскрытие), свёрнут по умолчанию (нет open) -- тот же приём,
+   что .proj-switch/.mobile-nav-summary выше. */
+.help-panel {
+	margin: 10px 0 16px;
+}
+.help-panel summary {
+	list-style: none;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 0;
+	color: var(--text-dim);
+	font-size: 13px;
+	font-weight: 600;
+}
+.help-panel summary::-webkit-details-marker {
+	display: none;
+}
+.help-panel summary::before {
+	content: "▸";
+}
+.help-panel[open] summary::before {
+	content: "▾";
+}
+.help-panel summary:hover {
+	color: var(--text);
+}
+.help-panel-body {
+	margin-top: 6px;
+	padding: 10px 12px;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-size: 13px;
+	color: var(--text-dim);
+	max-width: 640px;
+}
+.help-panel-body p {
+	margin: 0 0 8px;
+}
+.help-panel-body a {
+	color: var(--link);
+	text-decoration: none;
+}
+.help-panel-body a:hover {
+	text-decoration: underline;
+}
+
+/* -- Getting started checklist (gettingStartedChecklist, help.templ) --
+   компактная карточка над списком issues (задача 5, docs-onboarding),
+   пока не закрыты все 4 шага онбординга. Список без маркеров: done-шаги
+   приглушены (текстом ✓, без зачёркивания -- это не «отменено», а
+   «выполнено»), todo-шаги ведут акцентной ссылкой на соответствующую
+   страницу (SDK/оповещения/участники). */
+.getting-started {
+	max-width: 640px;
+	margin: 0 0 16px;
+}
+.getting-started .card-header {
+	font-size: 14px;
+	font-weight: 650;
+}
+.gs-steps {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 13px;
+}
+.gs-steps li {
+	padding: 2px 0;
+}
+.gs-done {
+	color: var(--text-dim);
+}
+.gs-todo {
+	color: var(--text);
+}
+.gs-todo a {
+	color: var(--link);
+	font-weight: 600;
+	text-decoration: none;
+}
+.gs-todo a:hover {
+	text-decoration: underline;
+}
+
+/* -- Docs index (/docs) -- переиспользует .card/.settings-grid: одна
+   секция (Начало/Разделы/Интеграции) на карточку. */
+.docs-index {
+	max-width: 760px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+.docs-index-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.docs-index-list a {
+	color: var(--link);
+	text-decoration: none;
+	font-size: 13px;
+}
+.docs-index-list a:hover {
+	text-decoration: underline;
+}
+
+/* -- Doc content (/docs/{slug}) -- типографика для отрендеренного markdown
+   (goldmark + GFM, см. internal/docs). max-width держит строку читабельной,
+   line-height ~1.6 — то же, что и остальной текстовый контент кабинета. */
+.doc-content {
+	max-width: 820px;
+	font-size: 14px;
+	line-height: 1.6;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 24px 32px;
+}
+.doc-content h1 {
+	margin: 0 0 16px;
+	font-size: 24px;
+	font-weight: 700;
+	letter-spacing: -.3px;
+}
+.doc-content h2 {
+	margin: 28px 0 10px;
+	font-size: 18px;
+	font-weight: 650;
+	border-bottom: 1px solid var(--border);
+	padding-bottom: 6px;
+}
+.doc-content h3 {
+	margin: 20px 0 8px;
+	font-size: 15px;
+	font-weight: 650;
+}
+.doc-content p {
+	margin: 0 0 12px;
+	line-height: 1.6;
+}
+.doc-content ul,
+.doc-content ol {
+	margin: 0 0 12px;
+	padding-left: 22px;
+	line-height: 1.6;
+}
+.doc-content li + li {
+	margin-top: 2px;
+}
+.doc-content a {
+	color: var(--accent);
+}
+.doc-content code {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 1px 5px;
+}
+.doc-content pre {
+	margin: 0 0 14px;
+	padding: 12px 14px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	overflow-x: auto;
+}
+.doc-content pre code {
+	background: none;
+	border: none;
+	padding: 0;
+	font-size: 12px;
+}
+.doc-content table {
+	width: 100%;
+	margin: 0 0 14px;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+.doc-content th {
+	text-align: left;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+	color: var(--text-dim);
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+.doc-content td {
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+}
+.doc-content blockquote {
+	margin: 0 0 12px;
+	padding: 6px 12px;
+	border-left: 3px solid var(--border);
+	color: var(--text-dim);
+}
+.doc-content hr {
+	margin: 20px 0;
+	border: none;
+	border-top: 1px solid var(--border);
 }

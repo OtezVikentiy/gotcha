@@ -90,8 +90,8 @@ func TestStyled404Page(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
-	if !strings.Contains(string(body), `class="topbar"`) {
-		t.Fatalf("404 body missing layout (topbar): %s", body)
+	if !strings.Contains(string(body), `class="chromeless-top"`) {
+		t.Fatalf("404 body missing layout (chromeless top bar): %s", body)
 	}
 	if !strings.Contains(string(body), "Gotcha") {
 		t.Fatalf("404 body missing layout (logo/title): %s", body)

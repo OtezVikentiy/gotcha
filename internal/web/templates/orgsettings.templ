@@ -3,6 +3,7 @@ package templates
 import (
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
@@ -18,12 +19,28 @@ func orgSettingsRemovePath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/remove"
 }
 
+func orgSettingsLeavePath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/leave"
+}
+
 func orgSettingsInvitePath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/invite"
 }
 
 func orgSettingsQuotaPath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/quota"
+}
+
+func orgSettingsDeletePath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/delete"
+}
+
+func orgSettingsPurgeSubjectPath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/purge-subject"
+}
+
+func orgSettingsExportSubjectPath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/export-subject"
 }
 
 func inviteAcceptPath(token string) string {
@@ -42,11 +59,37 @@ func viewerIsOwner(members []org.Member, uid int64) bool {
 	return false
 }
 
-templ roleOption(value, label string, current org.Role) {
+// memberRoleLabelKey — i18n-ключ подписи роли; переиспользуется и статичным
+// бейджем роли (memberRow), и опциями <select> (roleOption).
+func memberRoleLabelKey(role org.Role) string {
+	switch role {
+	case org.RoleOwner:
+		return "org.role.owner"
+	case org.RoleAdmin:
+		return "org.role.admin"
+	default:
+		return "org.role.member"
+	}
+}
+
+// memberRoleBadgeClass — цвет бейджа роли через дизайн-систему: owner —
+// самый заметный (warn), admin — info, member — нейтральный.
+func memberRoleBadgeClass(role org.Role) string {
+	switch role {
+	case org.RoleOwner:
+		return "badge badge-warn"
+	case org.RoleAdmin:
+		return "badge badge-info"
+	default:
+		return "badge badge-neutral"
+	}
+}
+
+templ roleOption(value, labelKey string, current org.Role) {
 	if string(current) == value {
-		<option value={ value } selected>{ label }</option>
+		<option value={ value } selected>{ i18n.T(ctx, labelKey) }</option>
 	} else {
-		<option value={ value }>{ label }</option>
+		<option value={ value }>{ i18n.T(ctx, labelKey) }</option>
 	}
 }
 
@@ -66,29 +109,27 @@ templ roleOption(value, label string, current org.Role) {
 templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 	<tr>
 		<td>{ m.Email }</td>
-		<td>{ string(m.Role) }</td>
+		<td><span class={ memberRoleBadgeClass(m.Role) }>{ i18n.T(ctx, memberRoleLabelKey(m.Role)) }</span></td>
 		<td>
 			if !self && (viewerIsOwner || m.Role != org.RoleOwner) {
 				<form method="post" action={ templ.URL(orgSettingsRolePath(orgID)) } class="member-role-form">
 					<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
-					<select name="role">
+					<select name="role" class="select">
 						if viewerIsOwner {
-							@roleOption("owner", "Owner", m.Role)
+							@roleOption("owner", "org.role.owner", m.Role)
 						}
-						@roleOption("admin", "Admin", m.Role)
-						@roleOption("member", "Member", m.Role)
+						@roleOption("admin", "org.role.admin", m.Role)
+						@roleOption("member", "org.role.member", m.Role)
 					</select>
-					<button type="submit">Изменить</button>
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "org.members.change_role") }</button>
 				</form>
-			} else if !self {
-				Owner
 			}
 		</td>
 		<td>
 			if !self && (viewerIsOwner || m.Role != org.RoleOwner) {
 				<form method="post" action={ templ.URL(orgSettingsRemovePath(orgID)) } class="member-remove-form">
 					<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
-					<button type="submit">Удалить</button>
+					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.members.remove") }</button>
 				</form>
 			}
 		</td>
@@ -119,147 +160,334 @@ type SSOSettings struct {
 	RedirectURI string
 }
 
-templ OrgSettings(o org.Org, members []org.Member, uid int64, usage int64, errMsg, inviteLink string, sso SSOSettings, userEmail string) {
-	@layout("Настройки "+o.Name, userEmail) {
+// QuotaVM — одна строка секции «Защитный лимит приёма (rate-guard)»: вид
+// приёма (события/транзакции/метрики/профили), имя поля формы, использование
+// за текущий месяц и лимит (0 = безлимит). Собирается в renderOrgSettings из
+// o.*Quota и *Usage; так секция расширяется одним срезом, а не восемью
+// скалярными аргументами шаблона.
+type QuotaVM struct {
+	Kind  string // человекочитаемое имя вида приёма
+	Field string // имя input-поля формы (event_quota/transaction_quota/…)
+	Usage int64  // использовано за текущий месяц
+	Limit int64  // месячный лимит (0 = безлимит)
+}
+
+// rateGuardRow — строка usage + поле ввода лимита для одного вида приёма.
+templ rateGuardRow(q QuotaVM) {
+	<tr>
+		<td>{ q.Kind }</td>
+		<td class="num">
+			{ strconv.FormatInt(q.Usage, 10) } /
+			if q.Limit == 0 {
+				{ i18n.T(ctx, "org.quota.unlimited") }
+			} else {
+				{ strconv.FormatInt(q.Limit, 10) }
+			}
+		</td>
+		<td>
+			<input type="number" class="input" name={ q.Field } value={ strconv.FormatInt(q.Limit, 10) } min="0" aria-label={ i18n.Tf(ctx, "org.quota.limit_aria", "kind", q.Kind) }/>
+		</td>
+	</tr>
+}
+
+templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner) {
+	@layout(i18n.T(ctx, "org.settings.title")+" "+o.Name, userEmail) {
 		<div class="org-settings">
-			<h1>Настройки организации { o.Name }</h1>
-			<p>
-				<a href={ templ.URL(orgTeamsPath(o.ID)) }>Teams</a>
-				· <a href={ templ.URL(orgProbesPath(o.ID)) }>Probes</a>
-			</p>
+			@quotaBannerView(banner)
+			<h1>{ i18n.T(ctx, "org.settings.title") } { o.Name }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			if inviteLink != "" {
-				<p class="invite-link">
-					Ссылка-приглашение (одноразовая, показывается только сейчас):
-					<code>{ inviteLink }</code>
-				</p>
-			}
-			<h2>Квота</h2>
-			<p class="org-quota-usage">
-				Использовано событий в этом месяце: { strconv.FormatInt(usage, 10) } /
-				if o.EventQuota == 0 {
-					безлимит
-				} else {
-					{ strconv.FormatInt(o.EventQuota, 10) }
-				}
-			</p>
-			<form method="post" action={ templ.URL(orgSettingsQuotaPath(o.ID)) } class="org-quota-form">
-				<label>
-					Лимит событий в месяц (0 = безлимит)
-					<input type="number" name="quota" value={ strconv.FormatInt(o.EventQuota, 10) } min="0"/>
-				</label>
-				<button type="submit">Изменить квоту</button>
-			</form>
-			<h2>Участники</h2>
-			<table>
-				<thead>
-					<tr>
-						<th>Email</th>
-						<th>Роль</th>
-						<th></th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, m := range members {
-						@memberRow(o.ID, m, m.UserID == uid, viewerIsOwner(members, uid))
-					}
-				</tbody>
-			</table>
-			<h2>Пригласить участника</h2>
-			<form method="post" action={ templ.URL(orgSettingsInvitePath(o.ID)) } class="invite-form">
-				<label>
-					Email
-					<input type="email" name="email" required placeholder="teammate@example.com"/>
-				</label>
-				<label>
-					Роль
-					<select name="role">
-						<option value="member">Member</option>
-						<option value="admin">Admin</option>
-					</select>
-				</label>
-				<button type="submit">Пригласить</button>
-			</form>
+			<div class="settings-grid">
+			<section class="card card--wide">
+				<h2 class="card-header">{ i18n.T(ctx, "org.members.title") }</h2>
+				<div class="scroll-list"><table class="data-table">
+					<thead>
+						<tr>
+							<th>{ i18n.T(ctx, "org.members.table.email") }</th>
+							<th>{ i18n.T(ctx, "org.members.table.role") }</th>
+							<th></th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, m := range members {
+							@memberRow(o.ID, m, m.UserID == uid, viewerIsOwner(members, uid))
+						}
+					</tbody>
+				</table></div>
+			</section>
+			<section class="card card--wide rate-guard-card">
+				<h2 class="card-header">{ i18n.T(ctx, "org.quota.title") }</h2>
+				<p class="hint">{ i18n.T(ctx, "org.quota.hint") }</p>
+				<form method="post" action={ templ.URL(orgSettingsQuotaPath(o.ID)) } class="org-quota-form">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>{ i18n.T(ctx, "org.quota.table.kind") }</th>
+								<th class="num">{ i18n.T(ctx, "org.quota.table.usage") }</th>
+								<th>{ i18n.T(ctx, "org.quota.table.limit") }</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, q := range quotas {
+								@rateGuardRow(q)
+							}
+						</tbody>
+					</table>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.quota.submit") }</button>
+				</form>
+			</section>
 			if sso.IsOwner {
 				@ssoSection(o.ID, sso)
 			}
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "org.invite.title") }</h2>
+				if !emailEnabled {
+					<p class="warning">{ i18n.T(ctx, "org.invite.smtp_warning") }</p>
+				}
+				if inviteLink != "" {
+					<div class="card invite-link-block">
+						<p>{ i18n.T(ctx, "org.invite.link_hint") }</p>
+						<p><code>{ inviteLink }</code></p>
+					</div>
+				}
+				<form method="post" action={ templ.URL(orgSettingsInvitePath(o.ID)) } class="invite-form">
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "org.invite.email_label") }
+							<input type="email" name="email" required placeholder="teammate@example.com" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "org.invite.role_label") }
+							<select name="role" class="select">
+								<option value="member">{ i18n.T(ctx, "org.role.member") }</option>
+								<option value="admin">{ i18n.T(ctx, "org.role.admin") }</option>
+							</select>
+						</label>
+					</div>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.invite.submit") }</button>
+				</form>
+			</section>
+			if viewerIsOwner(members, uid) {
+				<section class="card card--wide">
+					<h2 class="card-header">{ i18n.T(ctx, "org.gdpr.title") }</h2>
+					<div class="gdpr-grid">
+						@subjectExportSection(o.ID)
+						@subjectPurgeSection(o.ID)
+					</div>
+				</section>
+			}
+			@dangerZoneSection(o.ID, viewerIsOwner(members, uid))
+			</div>
 		</div>
 	}
 }
 
+// subjectExportSection — форма выгрузки ПДн субъекта (право субъекта на доступ,
+// 152-ФЗ ст. 14, RA-L11). Только owner. project_id указывает проект, из
+// телеметрии которого экспортируются строки субъекта; заполняется хотя бы
+// одно из email/user_id/ip (проверка на сервере). Ответ — JSON-файл
+// subject-export.json (attachment).
+templ subjectExportSection(orgID int64) {
+	<div class="gdpr-block">
+		<h3>{ i18n.T(ctx, "org.gdpr.export.title") }</h3>
+		<form method="post" action={ templ.URL(orgSettingsExportSubjectPath(orgID)) } class="subject-export-form">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.project_id") }
+					<input type="number" name="project_id" min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.email") }
+					<input type="email" name="email" placeholder="subject@example.com" class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.user_id") }
+					<input type="text" name="user_id" class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.ip") }
+					<input type="text" name="ip" class="input"/>
+				</label>
+			</div>
+			<p class="hint">{ i18n.T(ctx, "org.gdpr.export.hint") }</p>
+			<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "org.gdpr.export.submit") }</button>
+		</form>
+	</div>
+}
+
+// subjectPurgeSection — форма удаления ПДн субъекта (право субъекта на
+// удаление, 152-ФЗ). Только owner. project_id указывает проект, из телеметрии
+// которого чистятся строки субъекта; заполняется хотя бы одно из email/user_id/ip
+// (проверка на сервере). PG не трогается — данные субъекта живут в ClickHouse.
+templ subjectPurgeSection(orgID int64) {
+	<div class="gdpr-block">
+		<h3>{ i18n.T(ctx, "org.gdpr.purge.title") }</h3>
+		<form method="post" action={ templ.URL(orgSettingsPurgeSubjectPath(orgID)) } class="subject-purge-form">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.project_id") }
+					<input type="number" name="project_id" min="1" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.email") }
+					<input type="email" name="email" placeholder="subject@example.com" class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.user_id") }
+					<input type="text" name="user_id" class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.gdpr.field.ip") }
+					<input type="text" name="ip" class="input"/>
+				</label>
+			</div>
+			<p class="hint">{ i18n.T(ctx, "org.gdpr.hint") }</p>
+			<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.gdpr.purge.submit") }</button>
+		</form>
+	</div>
+}
+
+// dangerZoneSection — «Опасная зона»: покинуть организацию (виден всем,
+// единственный owner получит 422 ErrLastOwner — так проще, чем прятать
+// кнопку по числу owner'ов) и удалить организацию целиком (только owner).
+// Подтверждение — server-side, двухшаговый POST: под CSP default-src 'self'
+// без unsafe-inline инлайновые onsubmit="confirm()" не исполняются, поэтому
+// первый POST без confirmed=yes рендерит страницу подтверждения
+// (templates.ConfirmPage через Handler.renderConfirm) вместо самого
+// действия — никакого JS не требуется (см. orgSettingsLeave/orgSettingsDelete).
+templ dangerZoneSection(orgID int64, isOwner bool) {
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "org.danger.title") }</h2>
+		<div class="card-actions">
+			<form
+				method="post"
+				action={ templ.URL(orgSettingsLeavePath(orgID)) }
+				class="org-leave-form"
+			>
+				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.danger.leave_org.button") }</button>
+			</form>
+			if isOwner {
+				<form
+					method="post"
+					action={ templ.URL(orgSettingsDeletePath(orgID)) }
+					class="org-delete-form"
+				>
+					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.danger.delete_org.button") }</button>
+				</form>
+			}
+		</div>
+	</section>
+}
+
 // ssoSection — секция настроек enterprise-SSO (этап 10, только owner).
 templ ssoSection(orgID int64, sso SSOSettings) {
-	<h2>SSO (OIDC)</h2>
-	if sso.Configured {
-		<p class="sso-status">
-			SSO настроен для домена <code>{ sso.Domain }</code>
-			if sso.Enforced {
-				(принудительно)
-			}
-		</p>
-	} else {
-		<p class="sso-status">SSO не настроен.</p>
-	}
-	<p class="sso-redirect">Redirect URI (укажите в своём IdP): <code>{ sso.RedirectURI }</code></p>
-	<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso") } class="sso-form">
-		<label>Issuer <input type="url" name="issuer" value={ sso.Issuer } required placeholder="https://idp.example/realms/x"/></label>
-		<label>Client ID <input type="text" name="client_id" value={ sso.ClientID } required/></label>
-		<label>
-			Client Secret
-			if sso.Configured {
-				<input type="password" name="client_secret" required placeholder="(настроено — введите заново для замены)"/>
-			} else {
-				<input type="password" name="client_secret" required/>
-			}
-		</label>
-		<label>Email-домен <input type="text" name="domain" value={ sso.Domain } required placeholder="corp.com"/></label>
-		<label>
-			Роль по умолчанию
-			<select name="default_role">
-				if sso.DefaultRole == "admin" {
-					<option value="member">Member</option>
-					<option value="admin" selected>Admin</option>
-				} else {
-					<option value="member" selected>Member</option>
-					<option value="admin">Admin</option>
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "org.sso.title") }</h2>
+		if sso.Configured {
+			<p class="sso-status">
+				{ i18n.T(ctx, "org.sso.configured_for") } <code>{ sso.Domain }</code>
+				if sso.Enforced {
+					{ i18n.T(ctx, "org.sso.enforced_suffix") }
 				}
-			</select>
-		</label>
-		<label class="sso-enforced">
-			if sso.Enforced {
-				<input type="checkbox" name="enforced" checked/>
-			} else {
-				<input type="checkbox" name="enforced"/>
-			}
-			Принудительно (юзеры этого домена входят только через SSO)
-		</label>
-		<button type="submit">Сохранить SSO</button>
-	</form>
-	if sso.Configured {
-		<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso/delete") } class="sso-delete-form">
-			<button type="submit">Удалить SSO</button>
+			</p>
+		} else {
+			<p class="sso-status">{ i18n.T(ctx, "org.sso.not_configured") }</p>
+		}
+		<p class="sso-redirect">{ i18n.T(ctx, "org.sso.redirect_uri_label") } <code>{ sso.RedirectURI }</code></p>
+		<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso") } class="sso-form" autocomplete="off">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.sso.field.issuer") }
+					<input type="url" name="issuer" value={ sso.Issuer } required placeholder="https://idp.example/realms/x" class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.sso.field.client_id") }
+					<input type="text" name="client_id" value={ sso.ClientID } required class="input" autocomplete="off" data-1p-ignore="true" data-lpignore="true" data-bwignore="true"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.sso.field.client_secret") }
+					if sso.Configured {
+						<input type="password" name="client_secret" required placeholder={ i18n.T(ctx, "org.sso.field.client_secret_hint") } class="input" autocomplete="new-password" data-1p-ignore="true" data-lpignore="true" data-bwignore="true"/>
+					} else {
+						<input type="password" name="client_secret" required class="input" autocomplete="new-password" data-1p-ignore="true" data-lpignore="true" data-bwignore="true"/>
+					}
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.sso.field.domain") }
+					<input type="text" name="domain" value={ sso.Domain } required placeholder="corp.com" class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "org.sso.field.default_role") }
+					<select name="default_role" class="select">
+						if sso.DefaultRole == "admin" {
+							<option value="member">{ i18n.T(ctx, "org.role.member") }</option>
+							<option value="admin" selected>{ i18n.T(ctx, "org.role.admin") }</option>
+						} else {
+							<option value="member" selected>{ i18n.T(ctx, "org.role.member") }</option>
+							<option value="admin">{ i18n.T(ctx, "org.role.admin") }</option>
+						}
+					</select>
+				</label>
+			</div>
+			<label class="checkbox-inline">
+				if sso.Enforced {
+					<input type="checkbox" name="enforced" checked/>
+				} else {
+					<input type="checkbox" name="enforced"/>
+				}
+				{ i18n.T(ctx, "org.sso.field.enforced") }
+			</label>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.sso.submit") }</button>
 		</form>
-	}
+		if sso.Configured {
+			<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso/delete") } class="sso-delete-form">
+				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.sso.delete") }</button>
+			</form>
+		}
+	</section>
 }
 
 // InviteAccept — GET/POST /invite/{token}: страница «принять приглашение».
 // GET не проверяет токен (просмотр не должен тратить одноразовый токен) —
 // валидность проверяется только на POST; errMsg заполняется при
 // ErrInviteInvalid (недействительный/истёкший/уже использованный токен).
+// @chromeless — минимальный layout (анонимная страница вне app-shell);
+// сам layout не трогаем, только внутреннюю разметку формы.
 templ InviteAccept(token, errMsg, userEmail string) {
-	@layout("Приглашение", userEmail) {
-		<div class="invite-accept">
-			<h1>Приглашение в организацию</h1>
+	@chromeless(i18n.T(ctx, "org.invite_accept.title"), userEmail) {
+		<div class="invite-accept card">
+			<h1>{ i18n.T(ctx, "org.invite_accept.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			} else {
-				<p>Нажмите кнопку, чтобы принять приглашение.</p>
+				<p>{ i18n.T(ctx, "org.invite_accept.hint") }</p>
 			}
 			<form method="post" action={ templ.URL(inviteAcceptPath(token)) }>
-				<button type="submit">Принять приглашение</button>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.invite_accept.submit") }</button>
 			</form>
 		</div>
 	}

@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
@@ -84,7 +85,7 @@ templ frameView(f Frame) {
 
 templ eventRow(issueID int64, ev event.Stored, selected bool) {
 	<tr class={ eventRowClass(selected) }>
-		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID)) }>{ ago(ev.Timestamp) }</a></td>
+		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID)) }>{ ago(ctx, ev.Timestamp) }</a></td>
 		<td>{ eventSummary(ev) }</td>
 		<td>{ ev.Environment }</td>
 		<td>{ ev.Release }</td>
@@ -99,82 +100,70 @@ templ eventRow(issueID int64, ev event.Stored, selected bool) {
 templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
-			<p class="breadcrumb"><a href={ templ.URL(issuesPath(it.ProjectID)) }>← Issues</a></p>
+			<p class="breadcrumb"><a href={ templ.URL(issuesPath(it.ProjectID)) }>← { i18n.T(ctx, "nav.issues") }</a></p>
 			<h1>{ it.Title }</h1>
 			if it.Culprit != "" {
 				<div class="culprit">{ it.Culprit }</div>
 			}
 			<span class={ levelBadgeClass(it.Level) }>{ it.Level }</span>
+			<span class={ statusBadgeClass(it.Status) }>{ it.Status }</span>
 			<div class="issue-meta">
-				<span>First seen: { ago(it.FirstSeen) }</span>
-				<span>Last seen: { ago(it.LastSeen) }</span>
-				<span>Times seen: { strconv.FormatInt(it.TimesSeen, 10) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: { ago(ctx, it.FirstSeen) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: { ago(ctx, it.LastSeen) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.times_seen") }: { strconv.FormatInt(it.TimesSeen, 10) }</span>
 			</div>
 
 			<div class="issue-actions">
 				<form method="post" action={ templ.URL(issueStatusPath(it.ID)) }>
 					if it.Status == "unresolved" {
-						<button type="submit" name="status" value="resolved">Resolve</button>
-						<button type="submit" name="status" value="ignored">Ignore</button>
+						<button type="submit" name="status" value="resolved" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
+						<button type="submit" name="status" value="ignored" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
 					} else {
-						<button type="submit" name="status" value="unresolved">Unresolve</button>
+						<button type="submit" name="status" value="unresolved" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
 					}
 				</form>
 				<form method="post" action={ templ.URL(issueAssignPath(it.ID)) } class="assign-form">
-					<select name="assignee">
+					<select name="assignee" class="select">
 						if it.AssigneeID == nil {
-							<option value="" selected>Unassigned</option>
+							<option value="" selected>{ i18n.T(ctx, "issues.detail.unassigned") }</option>
 						} else {
-							<option value="">Unassigned</option>
+							<option value="">{ i18n.T(ctx, "issues.detail.unassigned") }</option>
 						}
 						for _, m := range members {
 							@assigneeOption(m, it.AssigneeID)
 						}
 					</select>
-					<button type="submit">Assign</button>
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.assign") }</button>
 				</form>
 			</div>
 
-			<div class="issue-chart">
+			<div class="issue-chart card">
 				@chart
 			</div>
 
-			<table class="issue-events">
-				<thead>
-					<tr>
-						<th>When</th>
-						<th>Message</th>
-						<th>Environment</th>
-						<th>Release</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, ev := range events {
-						@eventRow(it.ID, ev, ev.ID == selectedID)
-					}
-				</tbody>
-			</table>
-
 			if selected != nil {
 				<div class="event-detail">
-					<h2>Event { selected.ID }</h2>
+					<h2>{ i18n.T(ctx, "issues.detail.event") } · { ago(ctx, selected.Timestamp) }</h2>
+					<div class="culprit event-id">{ selected.ID }</div>
 
 					if selected.TraceID != "" {
-						<p class="event-trace-link"><a href={ templ.URL(tracePath(selected.TraceID)) }>Смотреть трейс</a></p>
+						<p class="event-trace-link"><a href={ templ.URL(tracePath(selected.TraceID)) }>{ i18n.T(ctx, "issues.detail.view_trace") }</a></p>
 					}
 
 					if len(frames) > 0 {
-						<h3>Stacktrace</h3>
-						<div class="frames">
+						<h3>{ i18n.T(ctx, "issues.detail.stacktrace") }</h3>
+						<div class="frames card">
 							for _, f := range frames {
 								@frameView(f)
 							}
 						</div>
+					} else {
+						<p class="hint">{ i18n.T(ctx, "issues.detail.no_stacktrace") }</p>
 					}
 
 					if len(selected.Tags) > 0 {
-						<h3>Tags</h3>
-						<table class="tags">
+						<h3>{ i18n.T(ctx, "issues.detail.tags") }</h3>
+						<table class="tags data-table">
 							<tbody>
 								for k, v := range selected.Tags {
 									<tr>
@@ -186,18 +175,40 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 						</table>
 					}
 
-					<h3>User</h3>
-					<pre>{ selected.UserID } { selected.UserEmail } { selected.UserIP }</pre>
-
-					<h3>SDK</h3>
-					<pre>{ selected.SDK }</pre>
+					<div class="event-meta">
+						<div>
+							<h3>{ i18n.T(ctx, "issues.detail.user") }</h3>
+							<pre>{ selected.UserID } { selected.UserEmail } { selected.UserIP }</pre>
+						</div>
+						<div>
+							<h3>{ i18n.T(ctx, "issues.detail.sdk") }</h3>
+							<pre>{ selected.SDK }</pre>
+						</div>
+					</div>
 
 					if selected.Contexts != "" {
-						<h3>Contexts</h3>
+						<h3>{ i18n.T(ctx, "issues.detail.contexts") }</h3>
 						<pre>{ selected.Contexts }</pre>
 					}
 				</div>
 			}
+
+			<h2 class="issue-events-heading">{ i18n.T(ctx, "issues.detail.recent_events") }</h2>
+			<table class="issue-events data-table">
+				<thead>
+					<tr>
+						<th>{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
+						<th>{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
+						<th>{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
+						<th>{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, ev := range events {
+						@eventRow(it.ID, ev, ev.ID == selectedID)
+					}
+				</tbody>
+			</table>
 		</div>
 	}
 }

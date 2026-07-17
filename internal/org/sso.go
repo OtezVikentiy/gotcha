@@ -44,12 +44,22 @@ func (s *Service) UpsertSSO(ctx context.Context, cfg SSOConfig) error {
 	if cfg.DefaultRole != string(RoleAdmin) && cfg.DefaultRole != string(RoleMember) {
 		return ErrInvalidRole
 	}
+	// Шифруем client_secret at-rest, если задан мастер-ключ. Без ключа (dev)
+	// пишем plaintext — читатель это распознаёт по отсутствию префикса "enc:".
+	storedSecret := cfg.ClientSecret
+	if s.secretKeySet {
+		sealed, err := sealSecret(s.secretKey, cfg.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("org: seal sso secret: %w", err)
+		}
+		storedSecret = sealed
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO org_sso (org_id, issuer, client_id, client_secret, domain, default_role, enforced)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (org_id) DO UPDATE SET
 			issuer=$2, client_id=$3, client_secret=$4, domain=$5, default_role=$6, enforced=$7`,
-		cfg.OrgID, cfg.Issuer, cfg.ClientID, cfg.ClientSecret, cfg.Domain, cfg.DefaultRole, cfg.Enforced)
+		cfg.OrgID, cfg.Issuer, cfg.ClientID, storedSecret, cfg.Domain, cfg.DefaultRole, cfg.Enforced)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "domain") {
 		return ErrDomainTaken
@@ -68,6 +78,21 @@ func scanSSO(row pgx.Row) (SSOConfig, error) {
 	return c, err
 }
 
+// decryptSSO расшифровывает client_secret прочитанного конфига, если задан
+// мастер-ключ. openSecret на legacy-plaintext (без префикса "enc:") вернёт
+// значение как есть, поэтому вызов безопасен и для старых записей.
+func (s *Service) decryptSSO(c SSOConfig) (SSOConfig, error) {
+	if !s.secretKeySet {
+		return c, nil
+	}
+	secret, err := openSecret(s.secretKey, c.ClientSecret)
+	if err != nil {
+		return SSOConfig{}, fmt.Errorf("org: open sso secret: %w", err)
+	}
+	c.ClientSecret = secret
+	return c, nil
+}
+
 // SSOByOrg возвращает SSO-конфиг организации, если он есть.
 func (s *Service) SSOByOrg(ctx context.Context, orgID int64) (SSOConfig, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+ssoColumns+" FROM org_sso WHERE org_id = $1", orgID)
@@ -77,6 +102,10 @@ func (s *Service) SSOByOrg(ctx context.Context, orgID int64) (SSOConfig, bool, e
 	}
 	if err != nil {
 		return SSOConfig{}, false, fmt.Errorf("org: sso by org: %w", err)
+	}
+	c, err = s.decryptSSO(c)
+	if err != nil {
+		return SSOConfig{}, false, err
 	}
 	return c, true, nil
 }
@@ -95,6 +124,10 @@ func (s *Service) SSOByDomain(ctx context.Context, domain string) (SSOConfig, bo
 	}
 	if err != nil {
 		return SSOConfig{}, false, fmt.Errorf("org: sso by domain: %w", err)
+	}
+	c, err = s.decryptSSO(c)
+	if err != nil {
+		return SSOConfig{}, false, err
 	}
 	return c, true, nil
 }

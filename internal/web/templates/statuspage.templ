@@ -45,11 +45,28 @@ type StatusWindowView struct {
 func overallStatusText(overall string) string {
 	switch overall {
 	case "major":
-		return "Major outage"
+		return "Крупный сбой"
 	case "partial":
-		return "Partial outage"
+		return "Частичный сбой"
 	default:
-		return "All systems operational"
+		return "Все системы работают"
+	}
+}
+
+// statusMonitorText — человекочитаемый статус сервиса для публичной страницы
+// (страница RU-only, без i18n): сырой enum up/down/… наружу не показываем.
+func statusMonitorText(status string) string {
+	switch status {
+	case "up":
+		return "Работает"
+	case "down":
+		return "Недоступен"
+	case "paused":
+		return "Пауза"
+	case "maintenance":
+		return "Обслуживание"
+	default:
+		return "Неизвестно"
 	}
 }
 
@@ -74,6 +91,7 @@ templ statusLayout(title string) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>{ title }</title>
+			<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
 			<link rel="stylesheet" href="/static/app.css"/>
 		</head>
 		<body class="status-body">
@@ -85,13 +103,13 @@ templ statusLayout(title string) {
 }
 
 templ statusMonitorTile(m StatusMonitorView) {
-	<li class="status-tile">
+	<li class="status-tile card">
 		<div class="status-tile-head">
 			<span class="status-tile-name">{ m.Name }</span>
-			<span class={ monitorStatusBadgeClass(m.Status) }>{ m.Status }</span>
+			<span class={ monitorStatusBadgeClass(m.Status) }>{ statusMonitorText(m.Status) }</span>
 		</div>
 		<div class="status-tile-bars">@m.Bars</div>
-		<div class="status-tile-uptime">Uptime (90 дней): { uptimeStatText(m.Uptime90d) }</div>
+		<div class="status-tile-uptime">Доступность (90 дней): { uptimeStatText(m.Uptime90d) }</div>
 	</li>
 }
 
@@ -118,7 +136,7 @@ templ PublicStatusPage(v StatusPageView) {
 		if len(v.Incidents) == 0 {
 			<p>Инцидентов не было.</p>
 		} else {
-			<table class="status-incidents">
+			<table class="status-incidents data-table">
 				<thead>
 					<tr>
 						<th>Сервис</th>
@@ -142,7 +160,7 @@ templ PublicStatusPage(v StatusPageView) {
 		if len(v.Maintenance) == 0 {
 			<p>Работ не запланировано.</p>
 		} else {
-			<table class="status-maintenance">
+			<table class="status-maintenance data-table">
 				<thead>
 					<tr>
 						<th>Работы</th>

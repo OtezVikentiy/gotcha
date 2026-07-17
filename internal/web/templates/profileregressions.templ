@@ -1,9 +1,11 @@
 package templates
 
 import (
+	"context"
 	"math"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
@@ -43,9 +45,9 @@ func profileRegIncreasePct(r profile.Regression) string {
 	return sign + strconv.FormatInt(rounded, 10) + "%"
 }
 
-func profileRegDuration(r profile.Regression) string {
+func profileRegDuration(ctx context.Context, r profile.Regression) string {
 	if r.ResolvedAt == nil {
-		return "ongoing"
+		return i18n.T(ctx, "perf.regressions.ongoing")
 	}
 	return r.ResolvedAt.Sub(r.StartedAt).String()
 }
@@ -55,38 +57,35 @@ func profileRegServiceType(r profile.Regression) string {
 }
 
 templ profileRegStatusTab(projectID int64, value, label, active string) {
-	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(profileRegStatusURL(projectID, tabQuery(value))) }>{ label }</a>
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(profileRegStatusURL(projectID, tabQuery(value))) } if value == active { aria-current="page" }>{ label }</a>
 }
 
 // ProfileRegressionsList — GET /projects/{id}/profile-regressions: таблица
 // регрессий self-CPU функций с фильтром по статусу. Только чтение, без JS.
 templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string) {
-	@layout("Profile regressions", userEmail) {
+	@layout(i18n.T(ctx, "profiles.regressions.title"), userEmail) {
 		<div class="profile-regressions">
-			<h1>Profile regressions</h1>
-			<p>
-				<a href={ templ.URL(profilesBasePath(projectID)) }>Profiles</a> ·
-				<a href={ templ.URL(performancePath(projectID)) }>Performance</a> ·
-				<a href={ templ.URL(issuesPath(projectID)) }>Issues</a>
-			</p>
-			<nav class="perf-issues-filters">
-				@profileRegStatusTab(projectID, "open", "Open", filter)
-				@profileRegStatusTab(projectID, "resolved", "Resolved", filter)
-				@profileRegStatusTab(projectID, "all", "All", filter)
+			<p class="breadcrumb"><a href={ templ.URL(profilesBasePath(projectID)) }>← { i18n.T(ctx, "nav.profiles") }</a></p>
+			<h1>{ i18n.T(ctx, "profiles.regressions.title") }</h1>
+			@helpPanel("profileregressions", "profiling")
+			<nav class="tabs">
+				@profileRegStatusTab(projectID, "open", i18n.T(ctx, "perf.tab.open"), filter)
+				@profileRegStatusTab(projectID, "resolved", i18n.T(ctx, "issues.status.resolved"), filter)
+				@profileRegStatusTab(projectID, "all", i18n.T(ctx, "perf.tab.all"), filter)
 			</nav>
 			if len(regressions) == 0 {
-				<p class="empty">no profile regressions detected</p>
+				@emptyState("zap", "profiles.regressions.empty.title", "profiles.regressions.empty.body", "", "")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>Function</th>
-							<th>Service · Type</th>
-							<th>Increase</th>
-							<th>Baseline → Peak</th>
-							<th>Status</th>
-							<th>Started</th>
-							<th>Duration</th>
+							<th>{ i18n.T(ctx, "profiles.regressions.table.function") }</th>
+							<th>{ i18n.T(ctx, "profiles.regressions.table.service_type") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
+							<th>{ i18n.T(ctx, "issues.table.status") }</th>
+							<th>{ i18n.T(ctx, "perf.regressions.table.started") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -94,11 +93,11 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 							<tr>
 								<td>{ reg.Function }</td>
 								<td>{ profileRegServiceType(reg) }</td>
-								<td>{ profileRegIncreasePct(reg) }</td>
-								<td>{ profileRegRange(reg) }</td>
+								<td class="num">{ profileRegIncreasePct(reg) }</td>
+								<td class="num">{ profileRegRange(reg) }</td>
 								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ reg.Status }</span></td>
-								<td>{ ago(reg.StartedAt) }</td>
-								<td>{ profileRegDuration(reg) }</td>
+								<td>{ ago(ctx, reg.StartedAt) }</td>
+								<td class="num">{ profileRegDuration(ctx, reg) }</td>
 							</tr>
 						}
 					</tbody>

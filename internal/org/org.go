@@ -4,6 +4,7 @@ package org
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
@@ -55,12 +56,49 @@ type Org struct {
 
 // Service — доменная логика тенантности поверх PostgreSQL.
 type Service struct {
-	pool         *pgxpool.Pool
+	pool *pgxpool.Pool
+	// defaultQuota — дефолтная квота событий для новых орг (event_quota).
 	defaultQuota int64
+	// defaultTxQuota/defaultMetricQuota/defaultProfileQuota — дефолтные квоты
+	// транзакций/метрик/профилей для новых орг. По умолчанию 0 (безлимит);
+	// задаются через SetQuotaDefaults из конфига (см. cmd/gotcha/main.go).
+	defaultTxQuota      int64
+	defaultMetricQuota  int64
+	defaultProfileQuota int64
+	// secretKey — мастер-ключ (sha256 от cfg.SecretKey) для шифрования
+	// чувствительных полей at-rest (org_sso.client_secret). secretKeySet=false
+	// (пустой ключ, dev) → шифрование выключено, пишем plaintext.
+	secretKey    [32]byte
+	secretKeySet bool
 }
 
+// NewService создаёт сервис с дефолтной квотой событий. Прочие квоты
+// (транзакции/метрики/профили) по умолчанию 0 (безлимит); их дефолты
+// задаются отдельно через SetQuotaDefaults, чтобы не ломать вызывающих,
+// которые знают только про event-квоту.
 func NewService(pool *pgxpool.Pool, defaultQuota int64) *Service {
 	return &Service{pool: pool, defaultQuota: defaultQuota}
+}
+
+// SetQuotaDefaults задаёт дефолтные квоты транзакций/метрик/профилей для
+// новых орг (проставляются в CreateOrg). Вызывается из bootstrap'а с
+// конфиг-значениями; в OSS все они = 0 (безлимит).
+func (s *Service) SetQuotaDefaults(transaction, metric, profile int64) {
+	s.defaultTxQuota = transaction
+	s.defaultMetricQuota = metric
+	s.defaultProfileQuota = profile
+}
+
+// SetSecretKey задаёт мастер-ключ шифрования чувствительных полей at-rest.
+// Ключ выводится как sha256 от произвольной строки (cfg.SecretKey). Пустой raw
+// оставляет шифрование выключенным (dev-стенды пишут plaintext). Вызывается из
+// bootstrap'а рядом с NewService (см. cmd/gotcha/main.go).
+func (s *Service) SetSecretKey(raw string) {
+	if raw == "" {
+		return
+	}
+	s.secretKey = sha256.Sum256([]byte(raw))
+	s.secretKeySet = true
 }
 
 // CreateOrg создаёт организацию и делает ownerID её owner'ом (одна транзакция).
@@ -74,10 +112,18 @@ func (s *Service) CreateOrg(ctx context.Context, slug, name string, ownerID int6
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	o := Org{Slug: slug, Name: name, EventQuota: s.defaultQuota}
+	o := Org{
+		Slug:             slug,
+		Name:             name,
+		EventQuota:       s.defaultQuota,
+		TransactionQuota: s.defaultTxQuota,
+		MetricQuota:      s.defaultMetricQuota,
+		ProfileQuota:     s.defaultProfileQuota,
+	}
 	err = tx.QueryRow(ctx,
-		"INSERT INTO organizations (slug, name, event_quota) VALUES ($1, $2, $3) RETURNING id",
-		slug, name, s.defaultQuota).Scan(&o.ID)
+		"INSERT INTO organizations (slug, name, event_quota, transaction_quota, metric_quota, profile_quota) "+
+			"VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+		slug, name, s.defaultQuota, s.defaultTxQuota, s.defaultMetricQuota, s.defaultProfileQuota).Scan(&o.ID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Org{}, ErrSlugTaken

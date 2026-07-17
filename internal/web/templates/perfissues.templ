@@ -1,8 +1,10 @@
 package templates
 
 import (
+	"context"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -16,16 +18,30 @@ func perfIssueDetailPath(id int64) string {
 
 // perfKindLabel — человекочитаемое имя вида проблемы (в БД лежат коды
 // n_plus_one/slow_db_query/http_flood, см. trace.Kind*).
-func perfKindLabel(kind string) string {
+func perfKindLabel(ctx context.Context, kind string) string {
 	switch kind {
 	case trace.KindNPlusOne:
-		return "N+1 queries"
+		return i18n.T(ctx, "perf.issues.kind.n_plus_one")
 	case trace.KindSlowDBQuery:
-		return "Slow DB query"
+		return i18n.T(ctx, "perf.issues.kind.slow_db_query")
 	case trace.KindHTTPFlood:
-		return "HTTP flood"
+		return i18n.T(ctx, "perf.issues.kind.http_flood")
 	default:
 		return kind
+	}
+}
+
+// perfKindBadgeClass — цвет бейджа вида проблемы: N+1 (много повторов) — warn,
+// медленный запрос — info, HTTP flood — neutral (не хуже/лучше остальных, просто
+// другой характер проблемы).
+func perfKindBadgeClass(kind string) string {
+	switch kind {
+	case trace.KindNPlusOne:
+		return "badge badge-warn"
+	case trace.KindSlowDBQuery:
+		return "badge badge-info"
+	default:
+		return "badge badge-neutral"
 	}
 }
 
@@ -39,13 +55,13 @@ func perfStatusFilterURL(projectID int64, status string) string {
 
 func perfStatusFilterClass(active bool) string {
 	if active {
-		return "filter-tab filter-tab-active"
+		return "tab is-active"
 	}
-	return "filter-tab"
+	return "tab"
 }
 
 templ perfStatusTab(projectID int64, value, label, active string) {
-	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(perfStatusFilterURL(projectID, tabQuery(value))) }>{ label }</a>
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(perfStatusFilterURL(projectID, tabQuery(value))) } if value == active { aria-current="page" }>{ label }</a>
 }
 
 // tabQuery — значение query для вкладки: "all" убирает фильтр (пустой status).
@@ -60,38 +76,38 @@ func tabQuery(value string) string {
 // с вкладками фильтра по статусу. Обычные ссылки/формы — работает без JS,
 // визуально повторяет список issues этапа 1.
 templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, userEmail string) {
-	@layout("Performance Issues", userEmail) {
+	@layout(i18n.T(ctx, "nav.perf_issues"), userEmail) {
 		<div class="perf-issues">
-			<h1>Performance Issues</h1>
-			<p><a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(webVitalsPath(projectID)) }>Web Vitals</a> · <a href={ templ.URL(regressionsPath(projectID)) }>Regressions</a> · <a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a></p>
-			<nav class="perf-issues-filters">
-				@perfStatusTab(projectID, "unresolved", "Unresolved", filter)
-				@perfStatusTab(projectID, "resolved", "Resolved", filter)
-				@perfStatusTab(projectID, "ignored", "Ignored", filter)
-				@perfStatusTab(projectID, "all", "All", filter)
+			<h1>{ i18n.T(ctx, "nav.perf_issues") }</h1>
+			@helpPanel("perfissues", "performance")
+			<nav class="tabs">
+				@perfStatusTab(projectID, "unresolved", i18n.T(ctx, "issues.status.unresolved"), filter)
+				@perfStatusTab(projectID, "resolved", i18n.T(ctx, "issues.status.resolved"), filter)
+				@perfStatusTab(projectID, "ignored", i18n.T(ctx, "issues.status.ignored"), filter)
+				@perfStatusTab(projectID, "all", i18n.T(ctx, "perf.tab.all"), filter)
 			</nav>
 			if len(issues) == 0 {
-				<p class="empty">no performance issues detected</p>
+				@emptyState("zap", "perf.issues.empty.title", "perf.issues.empty.body", "", "")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th>Kind</th>
-							<th>Issue</th>
-							<th>Culprit</th>
-							<th>Count</th>
-							<th>Last seen</th>
-							<th>Status</th>
+							<th>{ i18n.T(ctx, "perf.issues.table.kind") }</th>
+							<th>{ i18n.T(ctx, "issues.table.issue") }</th>
+							<th>{ i18n.T(ctx, "perf.issues.table.culprit") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.issues.table.count") }</th>
+							<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
+							<th>{ i18n.T(ctx, "issues.table.status") }</th>
 						</tr>
 					</thead>
 					<tbody>
 						for _, iss := range issues {
 							<tr>
-								<td>{ perfKindLabel(iss.Kind) }</td>
+								<td><span class={ perfKindBadgeClass(iss.Kind) }>{ perfKindLabel(ctx, iss.Kind) }</span></td>
 								<td><a href={ templ.URL(perfIssueDetailPath(iss.ID)) }>{ iss.Title }</a></td>
 								<td>{ iss.Culprit }</td>
-								<td>{ strconv.FormatInt(iss.Count, 10) }</td>
-								<td>{ ago(iss.LastSeen) }</td>
+								<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
+								<td>{ ago(ctx, iss.LastSeen) }</td>
 								<td><span class={ perfStatusBadgeClass(iss.Status) }>{ iss.Status }</span></td>
 							</tr>
 						}
@@ -102,13 +118,16 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 	}
 }
 
+// perfStatusBadgeClass — бейдж статуса perf-проблемы: unresolved подсвечивается
+// как "требует внимания" (danger), resolved — good, ignored — нейтральный (тот
+// же приём, что statusBadgeClass в issues.templ).
 func perfStatusBadgeClass(status string) string {
 	switch status {
 	case "resolved":
-		return "badge badge-info"
+		return "badge badge-good"
 	case "ignored":
-		return "badge badge-warning"
+		return "badge badge-neutral"
 	default:
-		return "badge badge-error"
+		return "badge badge-danger"
 	}
 }

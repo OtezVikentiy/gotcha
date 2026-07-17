@@ -3,6 +3,7 @@ package templates
 import (
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
@@ -25,39 +26,49 @@ templ platformOption(value, label, selected string) {
 // отправленные значения (orgSlug, orgName, projectSlug, projectName,
 // platform), чтобы при 422 (невалидный slug) не терять то, что юзер ввёл.
 templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, userEmail string) {
-	@layout("Онбординг", userEmail) {
+	@chromeless(i18n.T(ctx, "onboarding.title"), userEmail) {
 		<form method="post" action="/onboarding" class="auth-form">
-			<h1>Создайте организацию и первый проект</h1>
+			<h1>{ i18n.T(ctx, "onboarding.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
-			<label>
-				Slug организации
-				<input type="text" name="org_slug" placeholder="my-team" autocomplete="off" required autofocus value={ orgSlug }/>
-			</label>
-			<label>
-				Название организации
-				<input type="text" name="org_name" placeholder="My Team" required value={ orgName }/>
-			</label>
-			<label>
-				Slug проекта
-				<input type="text" name="project_slug" placeholder="backend" autocomplete="off" required value={ projectSlug }/>
-			</label>
-			<label>
-				Название проекта
-				<input type="text" name="project_name" placeholder="Backend" required value={ projectName }/>
-			</label>
-			<label>
-				Платформа
-				<select name="platform" required>
-					@platformOption("go", "Go", platform)
-					@platformOption("php", "PHP", platform)
-					@platformOption("javascript", "JavaScript", platform)
-					@platformOption("python", "Python", platform)
-					@platformOption("other", "Other", platform)
-				</select>
-			</label>
-			<button type="submit">Создать</button>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "onboarding.field.org_slug") }
+					<input type="text" name="org_slug" placeholder="my-team" autocomplete="off" required autofocus value={ orgSlug } class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "onboarding.field.org_name") }
+					<input type="text" name="org_name" placeholder="My Team" required value={ orgName } class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "onboarding.field.project_slug") }
+					<input type="text" name="project_slug" placeholder="backend" autocomplete="off" required value={ projectSlug } class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "onboarding.field.project_name") }
+					<input type="text" name="project_name" placeholder="Backend" required value={ projectName } class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "onboarding.field.platform") }
+					<select name="platform" required class="select">
+						@platformOption("go", "Go", platform)
+						@platformOption("php", "PHP", platform)
+						@platformOption("javascript", "JavaScript", platform)
+						@platformOption("python", "Python", platform)
+						@platformOption("other", i18n.T(ctx, "onboarding.platform.other"), platform)
+					</select>
+				</label>
+			</div>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "onboarding.submit") }</button>
 		</form>
 	}
 }
@@ -65,22 +76,32 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 // ProjectSetup — страница «подключи SDK»: DSN проекта и сниппеты
 // подключения для нескольких платформ.
 templ ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, userEmail string) {
-	@layout("Подключение "+project.Name, userEmail) {
+	@chromeless(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
 		<div class="setup">
 			<h1>{ project.Name }</h1>
 			if dsn == "" {
-				<p class="error">У проекта нет активного ключа — выпустите новый в настройках проекта.</p>
+				<p class="error">{ i18n.T(ctx, "project.setup.no_key") }</p>
 			} else {
-				<p>DSN для отправки событий:</p>
-				<pre>{ dsn }</pre>
-				<h2>Go</h2>
-				<pre>{ goSnippet }</pre>
-				<h2>PHP</h2>
-				<pre>{ phpSnippet }</pre>
-				<h2>JavaScript</h2>
-				<pre>{ jsSnippet }</pre>
+				<section class="card">
+					<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
+					<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
+					<pre>{ dsn }</pre>
+				</section>
+				<section class="panel">
+					<h2 class="card-header">Go</h2>
+					<pre>{ goSnippet }</pre>
+				</section>
+				<section class="panel">
+					<h2 class="card-header">PHP</h2>
+					<pre>{ phpSnippet }</pre>
+				</section>
+				<section class="panel">
+					<h2 class="card-header">JavaScript</h2>
+					<pre>{ jsSnippet }</pre>
+				</section>
+				<p><a href="/docs/sdk">{ i18n.T(ctx, "project.setup.full_docs_link") }</a></p>
 			}
-			<p><a href="/projects">← Все проекты</a></p>
+			<p><a href="/projects">{ i18n.T(ctx, "project.setup.back_link") }</a></p>
 		</div>
 	}
 }
@@ -91,10 +112,9 @@ templ ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, u
 // организаций (тот уходит на /onboarding), таким юзерам организацию создавать
 // не нужно — им нужен админ, который добавит их в команду.
 templ NoProjects(userEmail string) {
-	@layout("Нет доступных проектов", userEmail) {
+	@chromeless(i18n.T(ctx, "project.none.title"), userEmail) {
 		<div class="no-projects">
-			<h1>Нет доступных проектов</h1>
-			<p>Попросите администратора организации добавить вас в команду с доступом к проекту.</p>
+			@emptyState("building", "project.none.title", "project.none.body", "", "")
 		</div>
 	}
 }
@@ -108,27 +128,44 @@ type ProjectListItem struct {
 	CanManage bool
 }
 
+templ projectRow(it ProjectListItem) {
+	<tr>
+		<td><a href={ templ.URL(issuesPath(it.Project.ID)) }>{ it.Project.Name }</a></td>
+		<td><span class="chip">{ it.Project.Platform }</span></td>
+		<td><a class="btn btn-ghost" href={ templ.URL(projectSetupPath(it.Project.ID)) }>{ i18n.T(ctx, "project.list.setup_link") }</a></td>
+		<td>
+			if it.CanManage {
+				<a class="btn btn-ghost" href={ templ.URL(orgSettingsPath(it.Project.OrgID)) }>{ i18n.T(ctx, "project.list.org_settings_link") }</a>
+			}
+		</td>
+	</tr>
+}
+
 // ProjectsList — «Projects» в шапке: все проекты, доступные юзеру. Имя
 // проекта ведёт на список issues (основной сценарий), рядом — отдельная
 // ссылка на страницу подключения SDK.
 templ ProjectsList(items []ProjectListItem, userEmail string) {
-	@layout("Проекты", userEmail) {
+	@layout(i18n.T(ctx, "project.list.title"), userEmail) {
 		<div class="projects-list">
-			<h1>Проекты</h1>
+			<h1>{ i18n.T(ctx, "project.list.title") }</h1>
 			if len(items) == 0 {
-				<p>Нет доступных проектов. <a href="/onboarding">Создать первый проект</a></p>
+				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding")
 			} else {
-				<ul>
-					for _, it := range items {
-						<li>
-							<a href={ templ.URL(issuesPath(it.Project.ID)) }>{ it.Project.Name }</a>
-							· <a href={ templ.URL(projectSetupPath(it.Project.ID)) }>Setup</a>
-							if it.CanManage {
-								· <a href={ templ.URL(orgSettingsPath(it.Project.OrgID)) }>Org settings</a>
-							}
-						</li>
-					}
-				</ul>
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th>{ i18n.T(ctx, "project.list.table.name") }</th>
+							<th>{ i18n.T(ctx, "project.list.table.platform") }</th>
+							<th></th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, it := range items {
+							@projectRow(it)
+						}
+					</tbody>
+				</table>
 			}
 		</div>
 	}

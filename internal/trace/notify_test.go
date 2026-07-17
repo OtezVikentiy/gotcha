@@ -43,7 +43,7 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 	iss := rec.Issue
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example"}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	if err := n.NotifyNew(ctx, pid, iss); err != nil {
 		t.Fatalf("NotifyNew: %v", err)
 	}
@@ -96,6 +96,93 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 }
 
+// Трансграничный гейт: при ExternalDetails=false во внешние каналы
+// (Telegram/webhook) не должны уезжать iss.Title/iss.Culprit (имя транзакции,
+// текст SQL — потенциальные ПДн, 152-ФЗ); при true — уезжают, как раньше.
+func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	asvc := alert.NewService(pool)
+	psvc := trace.NewIssueService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	t.Run("withheld when false", func(t *testing.T) {
+		pid := newPerfProject(t, pool, "perf-ext-off")
+		webhookCh, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel webhook: %v", err)
+		}
+		telegramCh, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "123", Secret: "tok",
+		})
+		if err != nil {
+			t.Fatalf("CreateChannel telegram: %v", err)
+		}
+		rec, err := psvc.Record(ctx, pid, nPlusOneFinding(), "trace-a")
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+
+		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
+			t.Fatalf("NotifyNew: %v", err)
+		}
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 2 {
+			t.Fatalf("jobs = %+v err=%v, want 2", jobs, err)
+		}
+		byChannel := map[int64]notify.Job{}
+		for _, j := range jobs {
+			byChannel[j.ChannelID] = j
+		}
+		for _, id := range []int64{webhookCh, telegramCh} {
+			p := byChannel[id].Payload
+			if _, ok := p["title"]; ok {
+				t.Errorf("channel %d leaks title: %+v", id, p)
+			}
+			if _, ok := p["culprit"]; ok {
+				t.Errorf("channel %d leaks culprit: %+v", id, p)
+			}
+			if body, _ := p["body"].(string); strings.Contains(body, "GET /api/users") {
+				t.Errorf("channel %d body leaks culprit: %q", id, body)
+			}
+			if p["url"] == nil {
+				t.Errorf("channel %d lost url: %+v", id, p)
+			}
+		}
+		if byChannel[telegramCh].Payload["secret"] != "tok" {
+			t.Errorf("telegram secret lost: %+v", byChannel[telegramCh].Payload)
+		}
+	})
+
+	t.Run("delivered when true", func(t *testing.T) {
+		pid := newPerfProject(t, pool, "perf-ext-on")
+		if _, err := asvc.CreateChannel(ctx, alert.Channel{
+			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+		}); err != nil {
+			t.Fatalf("CreateChannel webhook: %v", err)
+		}
+		rec, err := psvc.Record(ctx, pid, nPlusOneFinding(), "trace-a")
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
+			t.Fatalf("NotifyNew: %v", err)
+		}
+		jobs, err := ob.Claim(ctx, 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
+		}
+		if jobs[0].Payload["title"] != rec.Issue.Title || jobs[0].Payload["culprit"] != "GET /api/users" {
+			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
+		}
+	})
+}
+
 // Регрессия (проблему починили, она вернулась) алертит отдельным заголовком:
 // дежурному важно отличить «нашли впервые» от «сломалось опять».
 func TestOutboxNotifierNotifyRegression(t *testing.T) {
@@ -118,7 +205,7 @@ func TestOutboxNotifierNotifyRegression(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example"}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
 	if err := n.NotifyRegression(ctx, pid, rec.Issue); err != nil {
 		t.Fatalf("NotifyRegression: %v", err)
 	}
@@ -167,7 +254,7 @@ func TestOutboxNotifierSkipsDisabledAndEmailChannels(t *testing.T) {
 	}
 	iss := rec.Issue
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", EmailEnabled: false}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
 	if err := n.NotifyNew(ctx, pid, iss); err != nil {
 		t.Fatalf("NotifyNew: %v", err)
 	}
@@ -247,7 +334,7 @@ func TestOutboxNotifierThrottlesPerProject(t *testing.T) {
 		}
 	}
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example"}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
 
 	// 30 РАЗНЫХ проблем одного проекта: рассылается ровно лимит.
 	const attempts = 30

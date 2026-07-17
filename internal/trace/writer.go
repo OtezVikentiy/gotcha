@@ -8,7 +8,14 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
 )
+
+// poisonThreshold — сколько подряд-фейлов вставки одного и того же головного
+// батча терпим (транзиентные сбои CH), прежде чем перейти к изоляции ядовитых
+// рядов бинарным дроблением (chbatch.IsolatePoison).
+const poisonThreshold = 3
 
 // CHConn — минимум интерфейса ClickHouse, нужный SpanWriter.
 type CHConn interface {
@@ -72,6 +79,10 @@ type SpanWriter struct {
 	spanBuf     []spanRow
 	dropped     int64
 	lastDropLog time.Time
+	// Два независимых батча (transactions и spans) → два раздельных счётчика
+	// подряд-фейлов: изоляция ядовитых рядов включается по каждой таблице отдельно.
+	txFailStreak   int
+	spanFailStreak int
 
 	maxBuf        int
 	maxSpanBuf    int
@@ -313,6 +324,38 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 	w.mu.Unlock()
 
 	if err := w.insertTx(ctx, batch); err != nil {
+		// Data-level «яд» изолируем сразу; транзиент (сеть/ctx) терпим до порога.
+		poison := chbatch.IsServerDataError(err)
+		w.mu.Lock()
+		w.txFailStreak++
+		streak := w.txFailStreak
+		w.mu.Unlock()
+
+		if poison || streak >= poisonThreshold {
+			// Изолируем: ядовитые ряды дропнутся, хорошие вставятся, транзиентные
+			// вернутся в unresolved (обратно в буфер) без потерь.
+			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insertTx, chbatch.IsServerDataError)
+			w.mu.Lock()
+			w.dropped += int64(dropped)
+			w.txFailStreak = 0
+			var over int
+			if len(unresolved) > 0 {
+				w.txBuf = append(unresolved, w.txBuf...)
+				if over = len(w.txBuf) - w.maxBuf; over > 0 {
+					w.txBuf = append(w.txBuf[:0], w.txBuf[over:]...)
+					w.dropped += int64(over)
+				} else {
+					over = 0
+				}
+			}
+			w.mu.Unlock()
+			if dropped > 0 || over > 0 {
+				slog.Warn("transaction batch: isolated poison rows",
+					"dropped", dropped, "unresolved", len(unresolved), "overflow", over, "batch", len(batch))
+			}
+			return
+		}
+
 		w.mu.Lock()
 		w.txBuf = append(batch, w.txBuf...)
 		over := len(w.txBuf) - w.maxBuf
@@ -325,7 +368,12 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 		w.mu.Unlock()
 		slog.Warn("transaction batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)
+		return
 	}
+	// Успех — сбрасываем счётчик подряд-фейлов tx.
+	w.mu.Lock()
+	w.txFailStreak = 0
+	w.mu.Unlock()
 }
 
 func (w *SpanWriter) flushSpans(ctx context.Context) {
@@ -341,6 +389,38 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 	w.mu.Unlock()
 
 	if err := w.insertSpans(ctx, batch); err != nil {
+		// Data-level «яд» изолируем сразу; транзиент (сеть/ctx) терпим до порога.
+		poison := chbatch.IsServerDataError(err)
+		w.mu.Lock()
+		w.spanFailStreak++
+		streak := w.spanFailStreak
+		w.mu.Unlock()
+
+		if poison || streak >= poisonThreshold {
+			// Изолируем: ядовитые ряды дропнутся, хорошие вставятся, транзиентные
+			// вернутся в unresolved (обратно в буфер) без потерь.
+			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insertSpans, chbatch.IsServerDataError)
+			w.mu.Lock()
+			w.dropped += int64(dropped)
+			w.spanFailStreak = 0
+			var over int
+			if len(unresolved) > 0 {
+				w.spanBuf = append(unresolved, w.spanBuf...)
+				if over = len(w.spanBuf) - w.maxSpanBuf; over > 0 {
+					w.spanBuf = append(w.spanBuf[:0], w.spanBuf[over:]...)
+					w.dropped += int64(over)
+				} else {
+					over = 0
+				}
+			}
+			w.mu.Unlock()
+			if dropped > 0 || over > 0 {
+				slog.Warn("span batch: isolated poison rows",
+					"dropped", dropped, "unresolved", len(unresolved), "overflow", over, "batch", len(batch))
+			}
+			return
+		}
+
 		w.mu.Lock()
 		w.spanBuf = append(batch, w.spanBuf...)
 		over := len(w.spanBuf) - w.maxSpanBuf
@@ -353,7 +433,12 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 		w.mu.Unlock()
 		slog.Warn("span batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)
+		return
 	}
+	// Успех — сбрасываем счётчик подряд-фейлов spans.
+	w.mu.Lock()
+	w.spanFailStreak = 0
+	w.mu.Unlock()
 }
 
 func (w *SpanWriter) insertTx(ctx context.Context, rows []txRow) error {

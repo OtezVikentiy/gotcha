@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -65,26 +66,47 @@ func formatVitalMS(ms float64) string {
 }
 
 // vitalBadgeClass — CSS-класс бейджа рейтинга Google (good/needs-improvement/
-// poor). Пустой рейтинг (нет данных) → без бейджа.
+// poor), выражен через дизайн-систему (.badge-good/-warn/-danger). Пустой
+// рейтинг (нет данных) → без бейджа.
 func vitalBadgeClass(rating string) string {
 	switch rating {
 	case "good":
-		return "badge vital-good"
+		return "badge badge-good"
 	case "needs-improvement":
-		return "badge vital-needs-improvement"
+		return "badge badge-warn"
 	case "poor":
-		return "badge vital-poor"
+		return "badge badge-danger"
 	}
 	return ""
 }
 
+// vitalRatingKey — ключ i18n человекочитаемой подписи рейтинга (сырое
+// значение good/needs-improvement/poor — код, не текст для показа).
+func vitalRatingKey(rating string) string {
+	switch rating {
+	case "good":
+		return "perf.rating.good"
+	case "needs-improvement":
+		return "perf.rating.needs_improvement"
+	case "poor":
+		return "perf.rating.poor"
+	}
+	return ""
+}
+
+// vitalRatingBadge — бейдж рейтинга vital, общий для списка (vitalCell) и
+// панели Web Vitals на странице эндпойнта (endpoint.templ, тот же пакет).
+templ vitalRatingBadge(rating string) {
+	if rating != "" {
+		<span class={ vitalBadgeClass(rating) }>{ i18n.T(ctx, vitalRatingKey(rating)) }</span>
+	}
+}
+
 // vitalCell — ячейка таблицы с p75 и (если есть данные) бейджем рейтинга.
 templ vitalCell(v trace.Vital) {
-	<td>
+	<td class="num">
 		<span class="vital-value">{ formatVitalValue(v) }</span>
-		if v.Rating != "" {
-			<span class={ vitalBadgeClass(v.Rating) }>{ v.Rating }</span>
-		}
+		@vitalRatingBadge(v.Rating)
 	</td>
 }
 
@@ -92,39 +114,39 @@ templ vitalCell(v trace.Vital) {
 // транзакций) с p75 LCP/INP/CLS, цветными бейджами рейтинга и числом замеров.
 // Фильтры окружения/периода и сортировка — как на странице Performance.
 templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter, environments []string, userEmail string) {
-	@layout("Web Vitals", userEmail) {
+	@layout(i18n.T(ctx, "perf.webvitals"), userEmail) {
 		<div class="web-vitals">
-			<h1>Web Vitals</h1>
-			<p><a href={ templ.URL(performancePath(projectID)) }>Performance</a> · <a href={ templ.URL(regressionsPath(projectID)) }>Regressions</a> · <a href={ templ.URL(monitorsPath(projectID)) }>Monitors</a> · <a href={ templ.URL(issuesPath(projectID)) }>Issues</a></p>
+			<h1>{ i18n.T(ctx, "perf.webvitals") }</h1>
+			@helpPanel("webvitals", "performance")
 			<form method="get" action={ templ.URL(webVitalsPath(projectID)) } class="performance-filters">
-				<select name="environment">
-					@perfEnvOption("", "Все окружения", filter.Environment)
+				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
+					@perfEnvOption("", i18n.T(ctx, "perf.filter.env_all"), filter.Environment)
 					for _, env := range environments {
 						@perfEnvOption(env, env, filter.Environment)
 					}
 				</select>
-				<select name="period">
-					@perfPeriodOption("1h", "1 час", filter.Period)
-					@perfPeriodOption("24h", "24 часа", filter.Period)
-					@perfPeriodOption("7d", "7 дней", filter.Period)
-					@perfPeriodOption("30d", "30 дней", filter.Period)
+				<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
+					@perfPeriodOption("1h", i18n.T(ctx, "perf.filter.period_1h"), filter.Period)
+					@perfPeriodOption("24h", i18n.T(ctx, "perf.filter.period_24h"), filter.Period)
+					@perfPeriodOption("7d", i18n.T(ctx, "perf.filter.period_7d"), filter.Period)
+					@perfPeriodOption("30d", i18n.T(ctx, "perf.filter.period_30d"), filter.Period)
 				</select>
 				if filter.Sort != "" {
 					<input type="hidden" name="sort" value={ filter.Sort }/>
 				}
-				<button type="submit">Применить</button>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
 			if len(pages) == 0 {
-				<p class="empty">no web vitals yet — web vitals собираются из pageload-транзакций браузерного SDK (@sentry/browser): подключите его и включите трейсинг, чтобы здесь появились LCP/INP/CLS.</p>
+				@emptyState("activity", "perf.webvitals.empty.title", "perf.webvitals.empty.body", "perf.webvitals.empty.cta", "/docs/sdk")
 			} else {
-				<table>
+				<table class="data-table">
 					<thead>
 						<tr>
-							<th><a href={ templ.URL(wvListSortURL(projectID, filter, "name")) }>Page</a></th>
-							<th><a href={ templ.URL(wvListSortURL(projectID, filter, "lcp")) }>LCP</a></th>
-							<th><a href={ templ.URL(wvListSortURL(projectID, filter, "inp")) }>INP</a></th>
-							<th><a href={ templ.URL(wvListSortURL(projectID, filter, "cls")) }>CLS</a></th>
-							<th>Samples</th>
+							<th><a href={ templ.URL(wvListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.webvitals.table.page") }</a></th>
+							<th class="num"><a href={ templ.URL(wvListSortURL(projectID, filter, "lcp")) }>{ i18n.T(ctx, "perf.webvitals.table.lcp") }</a></th>
+							<th class="num"><a href={ templ.URL(wvListSortURL(projectID, filter, "inp")) }>{ i18n.T(ctx, "perf.webvitals.table.inp") }</a></th>
+							<th class="num"><a href={ templ.URL(wvListSortURL(projectID, filter, "cls")) }>{ i18n.T(ctx, "perf.webvitals.table.cls") }</a></th>
+							<th class="num">{ i18n.T(ctx, "perf.webvitals.table.samples") }</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -134,7 +156,7 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 								@vitalCell(p.LCP)
 								@vitalCell(p.INP)
 								@vitalCell(p.CLS)
-								<td>{ strconv.FormatUint(p.Count, 10) }</td>
+								<td class="num">{ strconv.FormatUint(p.Count, 10) }</td>
 							</tr>
 						}
 					</tbody>

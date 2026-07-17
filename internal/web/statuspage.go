@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -180,14 +181,14 @@ func (h *Handler) statusPage(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
 		if r.Context().Err() != nil {
 			// Клиент ушёл, пока мы ждали чужую сборку: писать некому.
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.renderStatusPage(w, r, view)
@@ -343,7 +344,7 @@ func incidentDurationText(inc uptime.Incident, now time.Time) string {
 	if inc.ResolvedAt != nil {
 		end = *inc.ResolvedAt
 	} else {
-		return "ongoing"
+		return "идёт"
 	}
 	d := end.Sub(inc.StartedAt)
 	if d < 0 {
@@ -398,7 +399,7 @@ func (h *Handler) statusPagesPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -414,12 +415,12 @@ func (h *Handler) statusPagesPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string, override *templates.StatusPageForm) {
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	pages, err := h.Uptime.StatusPagesOf(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -428,7 +429,7 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 	for _, sp := range pages {
 		selected, err := h.Uptime.StatusPageMonitors(r.Context(), sp.ID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 		forms = append(forms, templates.StatusPageForm{
@@ -530,14 +531,14 @@ func statusPageFormView(id int64, sp uptime.StatusPage, monitors []uptime.Status
 	}
 }
 
-func statusPageErrorMessage(err error) string {
+func statusPageErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, uptime.ErrSlugTaken):
-		return "такой slug уже занят"
+		return i18n.T(ctx, "error.slug.taken")
 	case errors.Is(err, uptime.ErrInvalidStatusPage):
-		return "недопустимая статус-страница: slug из латиницы, цифр и дефисов, заголовок не пустой"
+		return i18n.T(ctx, "error.statuspage.invalid")
 	default:
-		return "не удалось выполнить действие"
+		return i18n.T(ctx, "error.action_failed")
 	}
 }
 
@@ -554,7 +555,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	projectID, ok := parsePathProjectID(w, r)
+	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
 		return
 	}
@@ -568,7 +569,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 
 	projectMonitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	sp, monitors := parseStatusPageForm(r, projectID, projectMonitors)
@@ -576,10 +577,10 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Uptime.CreateStatusPage(r.Context(), sp, monitors); err != nil {
 		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
 			form := statusPageFormView(0, sp, monitors, projectMonitors)
-			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, projectID, statusPageErrorMessage(err), &form)
+			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, projectID, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	http.Redirect(w, r, statusPagesPath(projectID), http.StatusSeeOther)
@@ -593,16 +594,16 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, uid int64) (uptime.StatusPage, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return uptime.StatusPage{}, false
 	}
 	sp, err := h.Uptime.StatusPageByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return uptime.StatusPage{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return uptime.StatusPage{}, false
 	}
 	if _, ok := h.requireProjectRole(w, r, sp.ProjectID, uid); !ok {
@@ -634,7 +635,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 
 	projectMonitors, err := h.Uptime.List(r.Context(), existing.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	sp, monitors := parseStatusPageForm(r, existing.ProjectID, projectMonitors)
@@ -643,14 +644,14 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if err := h.Uptime.UpdateStatusPage(r.Context(), sp, monitors); err != nil {
 		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
 			form := statusPageFormView(sp.ID, sp, monitors, projectMonitors)
-			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, existing.ProjectID, statusPageErrorMessage(err), &form)
+			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, existing.ProjectID, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.statusCache.invalidate(existing.Slug, sp.Slug)
@@ -674,10 +675,10 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Uptime.DeleteStatusPage(r.Context(), sp.ID); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, "Страница не найдена")
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.statusCache.invalidate(sp.Slug)

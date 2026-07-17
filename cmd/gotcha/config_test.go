@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func getenvFrom(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
@@ -32,8 +35,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.SpanRetentionDays != 30 {
 		t.Errorf("SpanRetentionDays = %d, want 30", cfg.SpanRetentionDays)
 	}
-	if cfg.DefaultEventQuota != 1000000 {
-		t.Errorf("DefaultEventQuota = %d, want 1000000", cfg.DefaultEventQuota)
+	if cfg.DefaultEventQuota != 0 {
+		t.Errorf("DefaultEventQuota = %d, want 0 (oss unlimited)", cfg.DefaultEventQuota)
 	}
 	if cfg.MaxEventBytes != 1048576 {
 		t.Errorf("MaxEventBytes = %d, want 1048576", cfg.MaxEventBytes)
@@ -188,9 +191,10 @@ func TestLoadConfigNonPositiveSpanRetention(t *testing.T) {
 }
 
 func TestLoadConfigNonPositiveDefaultEventQuota(t *testing.T) {
-	env := map[string]string{"GOTCHA_DEFAULT_EVENT_QUOTA": "0"}
+	// 0 = безлимит (разрешено); ошибка только на отрицательном значении.
+	env := map[string]string{"GOTCHA_DEFAULT_EVENT_QUOTA": "-1"}
 	if _, err := loadConfig(getenvFrom(env), nil); err == nil {
-		t.Fatal("GOTCHA_DEFAULT_EVENT_QUOTA=0: want error, got nil")
+		t.Fatal("GOTCHA_DEFAULT_EVENT_QUOTA=-1: want error, got nil")
 	}
 }
 
@@ -291,8 +295,8 @@ func TestLoadConfigProfileDefaults(t *testing.T) {
 	if cfg.ProfileRetentionDays != 7 {
 		t.Errorf("ProfileRetentionDays = %d, want 7", cfg.ProfileRetentionDays)
 	}
-	if cfg.ProfileQuota != 1_000_000 {
-		t.Errorf("ProfileQuota = %d, want 1000000", cfg.ProfileQuota)
+	if cfg.DefaultProfileQuota != 0 {
+		t.Errorf("DefaultProfileQuota = %d, want 0 (oss unlimited)", cfg.DefaultProfileQuota)
 	}
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_RETENTION_DAYS": "0"}), nil); err == nil {
 		t.Error("zero profile retention must fail")
@@ -312,6 +316,47 @@ func TestLoadConfigOutboxRetention(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_RejectsDefaultSecretInProd(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL": "https://gotcha.example.com",
+		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret
+	}
+	getenv := func(k string) string { return env[k] }
+	_, err := loadConfig(getenv, []string{"--mode=all"})
+	if err == nil {
+		t.Fatal("expected error for default secret on non-local prod base url, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY") {
+		t.Fatalf("error should mention GOTCHA_SECRET_KEY, got: %v", err)
+	}
+}
+
+func TestLoadConfig_AllowsDefaultSecretOnLocalhost(t *testing.T) {
+	getenv := func(k string) string { return "" } // всё дефолтное, BaseURL=localhost
+	if _, err := loadConfig(getenv, []string{"--mode=all"}); err != nil {
+		t.Fatalf("localhost dev must be allowed with default secret, got: %v", err)
+	}
+}
+
+func TestLoadConfig_AllowsDefaultSecretWithEscapeHatch(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL":              "https://gotcha.example.com",
+		"GOTCHA_ALLOW_INSECURE_SECRET": "1",
+	}
+	getenv := func(k string) string { return env[k] }
+	if _, err := loadConfig(getenv, []string{"--mode=all"}); err != nil {
+		t.Fatalf("escape hatch must allow default secret, got: %v", err)
+	}
+}
+
+func TestLoadConfig_IngestModeDoesNotRequireSecret(t *testing.T) {
+	env := map[string]string{"GOTCHA_BASE_URL": "https://gotcha.example.com"}
+	getenv := func(k string) string { return env[k] }
+	if _, err := loadConfig(getenv, []string{"--mode=ingest"}); err != nil {
+		t.Fatalf("ingest mode has no oauth cookie, must not require secret, got: %v", err)
+	}
+}
+
 func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -322,5 +367,140 @@ func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	}
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_EVAL_INTERVAL": "0"}), nil); err == nil {
 		t.Error("zero profile eval interval must fail")
+	}
+}
+
+func TestLoadConfig_Registration(t *testing.T) {
+	// Дефолт — invite.
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.RegistrationMode != "invite" {
+		t.Errorf("RegistrationMode default = %q, want %q", cfg.RegistrationMode, "invite")
+	}
+	// Явные допустимые значения.
+	for _, mode := range []string{"open", "invite", "closed"} {
+		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_REGISTRATION": mode}), nil)
+		if err != nil {
+			t.Fatalf("loadConfig %q: %v", mode, err)
+		}
+		if cfg.RegistrationMode != mode {
+			t.Errorf("RegistrationMode = %q, want %q", cfg.RegistrationMode, mode)
+		}
+	}
+	// Мусорное значение — ошибка.
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_REGISTRATION": "bogus"}), nil); err == nil {
+		t.Error("bogus registration mode must fail")
+	}
+}
+
+func TestLoadConfig_Edition(t *testing.T) {
+	// Без env: OSS-редакция, все дефолты квот = 0 (безлимит), и это разрешено.
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Edition != "oss" {
+		t.Errorf("Edition default = %q, want %q", cfg.Edition, "oss")
+	}
+	if cfg.DefaultEventQuota != 0 {
+		t.Errorf("DefaultEventQuota (oss) = %d, want 0", cfg.DefaultEventQuota)
+	}
+	if cfg.DefaultTransactionQuota != 0 || cfg.DefaultMetricQuota != 0 || cfg.DefaultProfileQuota != 0 {
+		t.Errorf("oss quotas not all 0: tx=%d metric=%d profile=%d",
+			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+	}
+
+	// SaaS-редакция: дефолты квот = 1_000_000.
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_EDITION": "saas"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig saas: %v", err)
+	}
+	if cfg.Edition != "saas" {
+		t.Errorf("Edition = %q, want %q", cfg.Edition, "saas")
+	}
+	if cfg.DefaultEventQuota != 1_000_000 {
+		t.Errorf("DefaultEventQuota (saas) = %d, want 1000000", cfg.DefaultEventQuota)
+	}
+	if cfg.DefaultTransactionQuota != 1_000_000 || cfg.DefaultMetricQuota != 1_000_000 || cfg.DefaultProfileQuota != 1_000_000 {
+		t.Errorf("saas quotas not all 1000000: tx=%d metric=%d profile=%d",
+			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+	}
+
+	// 0 = безлимит — легитимная конфигурация в любой редакции, включая saas.
+	cfg, err = loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_EDITION":             "saas",
+		"GOTCHA_DEFAULT_EVENT_QUOTA": "0",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig saas+0: unlimited must be allowed, got: %v", err)
+	}
+	if cfg.DefaultEventQuota != 0 {
+		t.Errorf("DefaultEventQuota = %d, want 0", cfg.DefaultEventQuota)
+	}
+
+	// Явные env-переопределения всех четырёх дефолтов.
+	cfg, err = loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_DEFAULT_EVENT_QUOTA":       "10",
+		"GOTCHA_DEFAULT_TRANSACTION_QUOTA": "20",
+		"GOTCHA_DEFAULT_METRIC_QUOTA":      "30",
+		"GOTCHA_DEFAULT_PROFILE_QUOTA":     "40",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig overrides: %v", err)
+	}
+	if cfg.DefaultEventQuota != 10 || cfg.DefaultTransactionQuota != 20 ||
+		cfg.DefaultMetricQuota != 30 || cfg.DefaultProfileQuota != 40 {
+		t.Errorf("quota overrides failed: event=%d tx=%d metric=%d profile=%d",
+			cfg.DefaultEventQuota, cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+	}
+
+	// Отрицательная квота — ошибка (0 разрешён, <0 нет).
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DEFAULT_METRIC_QUOTA": "-1"}), nil); err == nil {
+		t.Error("negative GOTCHA_DEFAULT_METRIC_QUOTA must fail")
+	}
+
+	// Мусорная редакция — ошибка.
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EDITION": "bogus"}), nil); err == nil {
+		t.Error("bogus GOTCHA_EDITION must fail")
+	}
+}
+
+func TestLoadConfig_Scrub(t *testing.T) {
+	// Без env: PII-scrubbing включён по умолчанию, есть непустой denylist.
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.ScrubIP {
+		t.Error("ScrubIP default = false, want true")
+	}
+	if !cfg.ScrubEmail {
+		t.Error("ScrubEmail default = false, want true")
+	}
+	if len(cfg.ScrubKeys) == 0 {
+		t.Error("ScrubKeys default is empty, want non-empty")
+	}
+
+	// Явное выключение флага.
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_IP": "false"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.ScrubIP {
+		t.Error("ScrubIP = true с GOTCHA_SCRUB_IP=false, want false")
+	}
+	if !cfg.ScrubEmail {
+		t.Error("ScrubEmail не должен зависеть от GOTCHA_SCRUB_IP")
+	}
+
+	// Пользовательский CSV-список ключей.
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_KEYS": "a,b"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.ScrubKeys) != 2 || cfg.ScrubKeys[0] != "a" || cfg.ScrubKeys[1] != "b" {
+		t.Errorf("ScrubKeys = %v, want [a b]", cfg.ScrubKeys)
 	}
 }

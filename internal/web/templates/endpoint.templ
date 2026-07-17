@@ -3,6 +3,7 @@ package templates
 import (
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -52,109 +53,120 @@ type VitalPanelRow struct {
 templ EndpointDetail(d EndpointDetailData, userEmail string) {
 	@layout(d.Transaction, userEmail) {
 		<div class="endpoint-detail">
-			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← Performance</a></p>
+			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← { i18n.T(ctx, "nav.transactions") }</a></p>
 			<h1>{ d.Transaction }</h1>
-			<div class="endpoint-meta">
-				<span>Период: { d.Period }</span>
+			<div class="monitor-meta">
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "perf.period") }</div>
+					<div class="stat-value">{ d.Period }</div>
+				</div>
 				if d.Environment != "" {
-					<span>Окружение: { d.Environment }</span>
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "perf.environment") }</div>
+						<div class="stat-value">{ d.Environment }</div>
+					</div>
 				}
-				<span>Apdex T: { strconv.Itoa(d.ApdexT) }ms</span>
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "perf.apdex_threshold") }</div>
+					<div class="stat-value">{ strconv.Itoa(d.ApdexT) }ms</div>
+				</div>
 			</div>
 
 			if len(d.Vitals) > 0 {
-				<h2>Web Vitals</h2>
-				<table class="web-vitals-panel">
-					<thead>
-						<tr>
-							<th>Metric</th>
-							<th>p75</th>
-							<th>Rating</th>
-							<th>p75 over time</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, row := range d.Vitals {
+				<h2>{ i18n.T(ctx, "perf.webvitals") }</h2>
+				<div class="card">
+					<table class="data-table web-vitals-panel">
+						<thead>
 							<tr>
-								<td>{ vitalLabel(row.Vital.Name) }</td>
-								<td>{ formatVitalValue(row.Vital) }</td>
-								<td>
-									if row.Vital.Rating != "" {
-										<span class={ vitalBadgeClass(row.Vital.Rating) }>{ row.Vital.Rating }</span>
-									}
-								</td>
-								<td class="vital-chart-cell">@row.Chart</td>
+								<th>{ i18n.T(ctx, "perf.webvitals.table.metric") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.p75") }</th>
+								<th>{ i18n.T(ctx, "perf.webvitals.table.rating") }</th>
+								<th>{ i18n.T(ctx, "perf.webvitals.table.trend") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, row := range d.Vitals {
+								<tr>
+									<td>{ vitalLabel(row.Vital.Name) }</td>
+									<td class="num">{ formatVitalValue(row.Vital) }</td>
+									<td>@vitalRatingBadge(row.Vital.Rating)</td>
+									<td class="vital-chart-cell">@row.Chart</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 			}
 
-			<h2>Latency (p50 / p95)</h2>
-			<div class="endpoint-chart">
+			<h2>{ i18n.T(ctx, "perf.chart.latency") }</h2>
+			<div class="endpoint-chart card">
 				@d.LatencyChart
 			</div>
 
-			<h2>Throughput</h2>
-			<div class="endpoint-chart">
+			<h2>{ i18n.T(ctx, "perf.throughput") }</h2>
+			<div class="endpoint-chart card">
 				@d.Throughput
 			</div>
 
-			<h2>Duration histogram</h2>
-			<div class="endpoint-chart">
+			<h2>{ i18n.T(ctx, "perf.chart.histogram") }</h2>
+			<div class="endpoint-chart card">
 				@d.Histogram
 			</div>
 
-			<h2>Slowest traces</h2>
+			<h2>{ i18n.T(ctx, "perf.slowest") }</h2>
 			if len(d.Slowest) == 0 {
-				<p class="empty">Нет трейсов за период.</p>
+				@emptyState("activity", "perf.slowest.empty.title", "perf.slowest.empty.body", "", "")
 			} else {
-				<table>
-					<thead>
-						<tr>
-							<th>When</th>
-							<th>Duration</th>
-							<th>Status</th>
-							<th>Trace</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, tr := range d.Slowest {
+				<div class="card">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td>{ ago(tr.Timestamp) }</td>
-								<td>{ formatDurationUS(tr.DurationUS) }</td>
-								<td>{ tr.Status }</td>
-								<td><a href={ templ.URL(tracePath(tr.TraceID)) }>{ tr.TraceID }</a></td>
+								<th>{ i18n.T(ctx, "perf.slowest.table.when") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.slowest.table.duration") }</th>
+								<th>{ i18n.T(ctx, "perf.slowest.table.status") }</th>
+								<th>{ i18n.T(ctx, "perf.slowest.table.trace") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, tr := range d.Slowest {
+								<tr>
+									<td>{ ago(ctx, tr.Timestamp) }</td>
+									<td class="num">{ formatDurationUS(tr.DurationUS) }</td>
+									<td>{ tr.Status }</td>
+									<td><a href={ templ.URL(tracePath(tr.TraceID)) }>{ tr.TraceID }</a></td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 			}
 
-			<h2>Related performance issues</h2>
+			<h2>{ i18n.T(ctx, "perf.related_issues") }</h2>
 			if len(d.PerfIssues) == 0 {
-				<p class="empty">Нет связанных проблем.</p>
+				@emptyState("zap", "perf.related_issues.empty.title", "perf.related_issues.empty.body", "", "")
 			} else {
-				<table>
-					<thead>
-						<tr>
-							<th>Kind</th>
-							<th>Title</th>
-							<th>Status</th>
-							<th>Seen</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, iss := range d.PerfIssues {
+				<div class="card">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td>{ iss.Kind }</td>
-								<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ iss.Title }</a></td>
-								<td>{ iss.Status }</td>
-								<td>{ strconv.FormatInt(iss.Count, 10) }</td>
+								<th>{ i18n.T(ctx, "perf.related_issues.table.kind") }</th>
+								<th>{ i18n.T(ctx, "perf.related_issues.table.title") }</th>
+								<th>{ i18n.T(ctx, "perf.related_issues.table.status") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.related_issues.table.seen") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, iss := range d.PerfIssues {
+								<tr>
+									<td>{ iss.Kind }</td>
+									<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ iss.Title }</a></td>
+									<td>{ iss.Status }</td>
+									<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 			}
 		</div>
 	}

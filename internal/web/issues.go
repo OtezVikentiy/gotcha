@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -33,16 +35,16 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -53,12 +55,12 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// проекту у юзера мог быть только через команду).
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	canManage := role == org.RoleOwner || role == org.RoleAdmin
@@ -76,19 +78,19 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 
 	items, total, err := h.Issues.List(r.Context(), projectID, filter)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	environments, err := h.Issues.Environments(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
 	sparklines, err := h.sparklinesFor(r.Context(), projectID, items)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
@@ -112,7 +114,68 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		Environment: filter.Environment,
 		Period:      filter.Period,
 	}
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, canManage, h.currentEmail(r), environments).Render(r.Context(), w)
+	banner := h.quotaBanner(r.Context(), orgID)
+	gs := h.gettingStarted(r.Context(), projectID, orgID)
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, canManage, h.currentEmail(r), environments, banner, gs).Render(r.Context(), w)
+}
+
+// gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,
+// docs-onboarding): шаг 1 (создать проект) всегда закрыт — раз страница
+// issues открылась, проект уже существует. Остальные шаги определяются по
+// реальным данным: подключён ли SDK (есть хотя бы одна issue — фильтр
+// пустой, а не тот, что пришёл в query, иначе активный ?status=resolved
+// без открытых issues спрятал бы уже закрытый шаг), настроено ли хотя бы
+// одно оповещение, позвана ли команда (>1 участника в орге) или добавлен ли
+// хотя бы один монитор аптайма.
+//
+// Как и quotaBanner, это вспомогательная (не критичная) вьюмодель: сервисы
+// могут быть не подключены к стенду (h.Alerts/h.Uptime == nil в части
+// тестовых стендов), а сами запросы — упасть с ошибкой сети/БД. Ни то, ни
+// другое не должно ронять страницу issues 500-й — недостающий сигнал просто
+// трактуется как «шаг ещё не закрыт», а причина логируется на Warn.
+func (h *Handler) gettingStarted(ctx context.Context, projectID, orgID int64) templates.GettingStartedVM {
+	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID}
+
+	if _, total, err := h.Issues.List(ctx, projectID, issue.Filter{}); err != nil {
+		slog.Warn("gettingStarted: issues list failed", "project_id", projectID, "err", err)
+	} else {
+		gs.Step2Done = total > 0
+	}
+
+	if h.Alerts == nil {
+		slog.Warn("gettingStarted: Alerts service not configured", "project_id", projectID)
+	} else if channels, err := h.Alerts.Channels(ctx, projectID); err != nil {
+		slog.Warn("gettingStarted: alert channels failed", "project_id", projectID, "err", err)
+	} else {
+		gs.Step3Done = len(channels) > 0
+	}
+
+	var membersDone, monitorsDone bool
+	if members, err := h.Org.MembersOf(ctx, orgID); err != nil {
+		slog.Warn("gettingStarted: org members failed", "org_id", orgID, "err", err)
+	} else {
+		membersDone = len(members) > 1
+	}
+	if h.Uptime == nil {
+		slog.Warn("gettingStarted: Uptime service not configured", "project_id", projectID)
+	} else if monitors, err := h.Uptime.List(ctx, projectID); err != nil {
+		slog.Warn("gettingStarted: uptime monitors failed", "project_id", projectID, "err", err)
+	} else {
+		monitorsDone = len(monitors) > 0
+	}
+	gs.Step4Done = membersDone || monitorsDone
+
+	gs.Done = 1
+	if gs.Step2Done {
+		gs.Done++
+	}
+	if gs.Step3Done {
+		gs.Done++
+	}
+	if gs.Step4Done {
+		gs.Done++
+	}
+	return gs
 }
 
 // sparklinesFor — один запрос Events.Sparklines на все issues страницы
@@ -160,16 +223,16 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -185,7 +248,7 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	ids := parseIDs(r.Form["ids"])
 	if len(ids) > 0 {
 		if _, err := h.Issues.SetStatusBulk(r.Context(), projectID, ids, status); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, "internal error")
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 	}

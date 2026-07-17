@@ -23,6 +23,7 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allow(r.Context(), h.ProfileQuota, key.OrgID, "profile") {
+		h.countDrop(r.Context(), dropProfile, key.OrgID, 1)
 		writeQuotaExceeded(w, "profile quota exceeded")
 		return
 	}

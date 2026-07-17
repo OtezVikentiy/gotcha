@@ -155,7 +155,7 @@ func TestWebStatusPagePublicHidesInternals(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET /status/sppublic-status (anon) = %d, want 200: %s", status, body)
 	}
-	for _, want := range []string{"Acme Status", "Состояние наших сервисов", "API", "Billing", "<svg", "All systems operational"} {
+	for _, want := range []string{"Acme Status", "Состояние наших сервисов", "API", "Billing", "<svg", "Все системы работают"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("public status page missing %q: %s", want, body)
 		}
@@ -202,8 +202,8 @@ func TestWebStatusPagePartialOutage(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET status = %d, want 200: %s", status, body)
 	}
-	if !strings.Contains(body, "Partial outage") {
-		t.Fatalf("want «Partial outage» with one monitor down: %s", body)
+	if !strings.Contains(body, "Частичный сбой") {
+		t.Fatalf("want «Частичный сбой» with one monitor down: %s", body)
 	}
 	for _, leak := range []string{"10.0.0.5", "connection refused", "example.com", "db-primary", "local"} {
 		if strings.Contains(body, leak) {

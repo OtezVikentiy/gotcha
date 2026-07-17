@@ -1,32 +1,55 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
 // oauthButtons собирает кнопки включённых провайдеров для страниц входа.
-func (h *Handler) oauthButtons() []templates.OAuthButton {
+func (h *Handler) oauthButtons(ctx context.Context) []templates.OAuthButton {
 	if h.OAuth == nil {
 		return nil
 	}
 	var out []templates.OAuthButton
 	for _, p := range h.OAuth.List() {
-		out = append(out, templates.OAuthButton{Name: p.Name(), Label: "Войти через " + p.DisplayName()})
+		out = append(out, templates.OAuthButton{Name: p.Name(), Label: i18n.Tf(ctx, "auth.oauth.login_with", "provider", p.DisplayName())})
 	}
 	return out
 }
 
 func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
-	_ = templates.Login("", h.oauthButtons()).Render(r.Context(), w)
+	_ = templates.Login("", h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
-	_ = templates.Register("", h.oauthButtons()).Render(r.Context(), w)
+	// PROD-B1: если режим не open и первый пользователь уже есть — показываем
+	// экран «регистрация по приглашению» вместо формы (bootstrap уже пройден).
+	if h.registrationClosed(r) {
+		_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		return
+	}
+	_ = templates.Register("", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+}
+
+// registrationClosed сообщает, закрыта ли сейчас самостоятельная парольная
+// регистрация: режим не open и на инстансе уже есть пользователь (bootstrap
+// первого админа пройден). Ошибку подсчёта трактуем как «не закрыто», чтобы не
+// прятать форму из-за временного сбоя БД — фактический гейтинг в registerSubmit.
+func (h *Handler) registrationClosed(r *http.Request) bool {
+	if h.RegistrationMode == "open" {
+		return false
+	}
+	n, err := h.Auth.UserCount(r.Context())
+	if err != nil {
+		return false
+	}
+	return n > 0
 }
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -41,30 +64,33 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 
-	if !h.loginLimiter.Allow(rateLimitKey(r, email)) {
+	// SEC-L2: сначала per-account (ip|email), затем глобальный per-IP лимит.
+	// Любое превышение → 429. Порядок важен: при исчерпанном per-account слот
+	// per-IP не расходуется (короткое замыкание ||).
+	if !h.loginLimiter.Allow(rateLimitKey(r, email)) || !h.ipLimiter.Allow(extractIP(r)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Login("слишком много попыток входа, попробуйте через минуту", h.oauthButtons()).Render(r.Context(), w)
+		_ = templates.Login("слишком много попыток входа, попробуйте через минуту", h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
-	// Принуждение SSO (этап 10): если домен email принадлежит организации с
+	// Принуждение SSO (этап 10, SEC-H2): если домен email принадлежит организации с
 	// enforced-SSO, пароль не принимаем — только вход через SSO.
-	if cfg, ok, err := h.Org.SSOByDomain(r.Context(), emailDomain(email)); err == nil && ok && cfg.Enforced {
+	if h.enforcedSSO(r.Context(), emailDomain(email)) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login("ваша организация требует вход через SSO — используйте «Вход через SSO»", h.oauthButtons()).Render(r.Context(), w)
+		_ = templates.Login("ваша организация требует вход через SSO — используйте «Вход через SSO»", h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Authenticate(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login("неверный email или пароль", h.oauthButtons()).Render(r.Context(), w)
+		_ = templates.Login("неверный email или пароль", h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
@@ -84,44 +110,71 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	password2 := r.FormValue("password2")
 
-	if !h.loginLimiter.Allow(rateLimitKey(r, email)) {
+	// SEC-L2: per-account (ip|email) + глобальный per-IP лимит, см. loginSubmit.
+	if !h.loginLimiter.Allow(rateLimitKey(r, email)) || !h.ipLimiter.Allow(extractIP(r)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Register("слишком много попыток регистрации, попробуйте через минуту", h.oauthButtons()).Render(r.Context(), w)
+		_ = templates.Register("слишком много попыток регистрации, попробуйте через минуту", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
+	}
+
+	// PROD-B1: гейтинг регистрации по режиму. Первый пользователь инстанса
+	// всегда может зарегистрироваться (bootstrap инстанс-админа); дальше — по
+	// режиму. open — всегда открыто; invite/closed — только bootstrap первого.
+	if h.RegistrationMode != "open" {
+		n, err := h.Auth.UserCount(r.Context())
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		if n > 0 {
+			w.WriteHeader(http.StatusForbidden)
+			_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, h.oauthButtons(r.Context())).Render(r.Context(), w)
+			return
+		}
 	}
 
 	if password != password2 {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register("пароли не совпадают", h.oauthButtons()).Render(r.Context(), w)
+		_ = templates.Register("пароли не совпадают", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		return
+	}
+
+	// SEC-H2: домен с enforced-SSO не может регистрироваться паролем (обход
+	// централизованного provisioning/деprovisioning). Как в loginSubmit.
+	if h.enforcedSSO(r.Context(), emailDomain(email)) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = templates.Register("ваша организация требует вход через SSO — используйте «Вход через SSO»", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Register(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(registerErrorMessage(err), h.oauthButtons()).Render(r.Context(), w)
+		_ = templates.Register(registerErrorMessage(r.Context(), err), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func registerErrorMessage(err error) string {
+func registerErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, auth.ErrEmailTaken):
-		return "этот email уже зарегистрирован"
+		// SEC-L1: не раскрываем существование аккаунта (enumeration) —
+		// нейтральная формулировка вместо «этот email уже зарегистрирован».
+		return i18n.T(ctx, "error.register.email_taken")
 	case errors.Is(err, auth.ErrWeakPassword):
-		return "пароль должен быть от 8 до 512 символов"
+		return i18n.T(ctx, "error.register.weak_password")
 	case errors.Is(err, auth.ErrInvalidEmail):
-		return "неверный формат email"
+		return i18n.T(ctx, "error.register.invalid_email")
 	default:
-		return "не удалось зарегистрироваться"
+		return i18n.T(ctx, "error.register.failed")
 	}
 }
 
@@ -130,8 +183,8 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if c, err := r.Cookie(auth.CookieName); err == nil {
-		_ = h.Auth.DestroySession(r.Context(), c.Value)
+	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
+		_ = h.Auth.DestroySession(r.Context(), token)
 	}
 	auth.ClearSessionCookie(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -162,7 +215,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, ok, err := h.Org.SSOByDomain(r.Context(), emailDomain(email))
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "internal error")
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !ok {
