@@ -51,16 +51,53 @@ func TestKeyCache(t *testing.T) {
 		t.Fatalf("calls = %d, want 2 (expired)", fr.calls)
 	}
 
-	// Промахи не кешируются.
+	// Промахи негативно кешируются на negTTL: два подряд Resolve одного
+	// неизвестного ключа бьют в источник лишь ОДИН раз (SEC-M1).
 	if _, err := kc.Resolve(ctx, "nope"); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("miss: %v", err)
 	}
 	if _, err := kc.Resolve(ctx, "nope"); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("miss again: %v", err)
 	}
-	if fr.calls != 4 {
-		t.Fatalf("calls = %d, want 4 (misses not cached)", fr.calls)
+	if fr.calls != 3 {
+		t.Fatalf("calls = %d, want 3 (miss negative-cached)", fr.calls)
 	}
+
+	// По истечении negTTL негативная запись протухает — снова идём в источник.
+	now = now.Add(negTTL + time.Second)
+	if _, err := kc.Resolve(ctx, "nope"); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("miss after neg TTL: %v", err)
+	}
+	if fr.calls != 4 {
+		t.Fatalf("calls = %d, want 4 (neg entry expired)", fr.calls)
+	}
+}
+
+// TestKeyCacheTransientNotCached: транзиентная ошибка (не ErrNotFound) НЕ
+// кешируется — иначе валидный ключ был бы отвергнут на весь negTTL.
+func TestKeyCacheTransientNotCached(t *testing.T) {
+	fr := &flakyResolver{err: context.DeadlineExceeded}
+	kc := NewKeyCache(fr)
+	ctx := context.Background()
+	if _, err := kc.Resolve(ctx, "k"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first: %v", err)
+	}
+	if _, err := kc.Resolve(ctx, "k"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second: %v", err)
+	}
+	if fr.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (transient error not cached)", fr.calls)
+	}
+}
+
+type flakyResolver struct {
+	calls int
+	err   error
+}
+
+func (f *flakyResolver) KeyByPublic(_ context.Context, _ string) (org.Key, error) {
+	f.calls++
+	return org.Key{}, f.err
 }
 
 func TestPublicKeyFromRequest(t *testing.T) {

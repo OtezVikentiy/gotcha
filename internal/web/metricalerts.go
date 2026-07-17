@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -79,8 +80,10 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	threshold, err := strconv.ParseFloat(r.FormValue("threshold"), 64)
-	if err != nil {
-		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, "порог должен быть числом")
+	if err != nil || math.IsNaN(threshold) || math.IsInf(threshold, 0) {
+		// ParseFloat принимает "NaN"/"Inf" без ошибки; такой порог сломал бы
+		// сравнение (алерт никогда не сработает) и график (y="NaN") — отклоняем.
+		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, "порог должен быть конечным числом")
 		return
 	}
 	window, err := strconv.Atoi(r.FormValue("window_seconds"))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,7 +56,8 @@ func NewRuleService(pool *pgxpool.Pool) *RuleService {
 // Create валидирует и создаёт правило.
 func (s *RuleService) Create(ctx context.Context, r Rule) (Rule, error) {
 	if r.MetricName == "" || !validAggregations[r.Aggregation] ||
-		(r.Comparator != "gt" && r.Comparator != "lt") || r.WindowSeconds <= 0 {
+		(r.Comparator != "gt" && r.Comparator != "lt") || r.WindowSeconds <= 0 ||
+		math.IsNaN(r.Threshold) || math.IsInf(r.Threshold, 0) {
 		return Rule{}, ErrInvalidRule
 	}
 	row := s.pool.QueryRow(ctx, `

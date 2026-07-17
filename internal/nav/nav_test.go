@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/docs"
 )
 
 func TestAreaForPath(t *testing.T) {
@@ -354,8 +356,11 @@ func TestAreasDocsActiveOnDocsPath(t *testing.T) {
 func TestSubsectionsDocs(t *testing.T) {
 	s := Shell{Area: "docs", Locale: "ru", Path: "/docs/glossary"}
 	items := Subsections(s)
-	if len(items) != 9 {
-		t.Fatalf("Subsections(docs) len = %d, want 9", len(items))
+	// Docs subsections mirror the doc registry 1:1 (each page is a subsection),
+	// so compare to the registry size rather than a hardcoded count — the
+	// registry grows as pages are added and this test must not need editing.
+	if want := len(docs.Pages(s.Locale)); len(items) != want {
+		t.Fatalf("Subsections(docs) len = %d, want %d (docs registry size)", len(items), want)
 	}
 	activeIdx := -1
 	for i, it := range items {

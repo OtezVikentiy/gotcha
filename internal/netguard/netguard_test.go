@@ -19,6 +19,9 @@ func TestIsBlockedIP(t *testing.T) {
 		"fe80::1",         // link-local IPv6
 		"fc00::1",         // ULA
 		"0.0.0.0",         // unspecified
+		"100.64.0.1",      // CGNAT нижняя граница (RFC 6598)
+		"100.100.100.200", // метадата Alibaba/Oracle (CGNAT)
+		"100.127.255.255", // CGNAT верхняя граница
 	}
 	for _, s := range blocked {
 		ip := net.ParseIP(s)
@@ -30,6 +33,8 @@ func TestIsBlockedIP(t *testing.T) {
 	allowed := []string{
 		"8.8.8.8",
 		"1.1.1.1",
+		"100.63.255.255", // сразу под CGNAT — публичный, не блокируем
+		"100.128.0.0",    // сразу над CGNAT — публичный, не блокируем
 	}
 	for _, s := range allowed {
 		ip := net.ParseIP(s)

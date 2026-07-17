@@ -2,7 +2,9 @@ package notify
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"html"
 	"net"
@@ -135,29 +137,58 @@ func BuildEmail(from, to, subject, body string) []byte {
 	to = sanitizeHeader(to)
 	subject = truncateRunes(sanitizeHeader(subject), maxSubjectRunes)
 
+	htmlBody := buildHTMLBody(subject, body)
+
 	// multipart/alternative: текстовые клиенты видят text/plain, остальные —
-	// оформленный HTML. boundary фиксирован (не Math.random) — тело частей
-	// (plain body и html-экранированный html body) не может его содержать.
+	// оформленный HTML. plain-часть пишется как есть (body user-influenced),
+	// поэтому boundary генерируется случайно ПОД содержимое и проверяется на
+	// отсутствие в теле частей — тело с литеральным boundary иначе могло бы
+	// инъецировать/подменить MIME-часть (BE-L1).
+	boundary := makeBoundary(body, htmlBody)
+
 	headers := fmt.Sprintf(
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\n"+
 			"Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n",
-		from, to, subject, emailBoundary)
+		from, to, subject, boundary)
 
 	var b strings.Builder
 	b.WriteString(headers)
-	b.WriteString("--" + emailBoundary + "\r\n")
+	b.WriteString("--" + boundary + "\r\n")
 	b.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
 	b.WriteString(body)
-	b.WriteString("\r\n--" + emailBoundary + "\r\n")
+	b.WriteString("\r\n--" + boundary + "\r\n")
 	b.WriteString("Content-Type: text/html; charset=\"utf-8\"\r\n\r\n")
-	b.WriteString(buildHTMLBody(subject, body))
-	b.WriteString("\r\n--" + emailBoundary + "--\r\n")
+	b.WriteString(htmlBody)
+	b.WriteString("\r\n--" + boundary + "--\r\n")
 	return []byte(b.String())
 }
 
-// emailBoundary — MIME-разделитель частей. Содержит символы, которых нет в
-// html-экранированном/текстовом теле, поэтому коллизия с содержимым невозможна.
-const emailBoundary = "gotcha_boundary_9f3a2e17c4b8"
+// makeBoundary генерирует случайный MIME-разделитель (128 бит энтропии),
+// гарантированно НЕ встречающийся ни в одной из частей письма. Случайного
+// boundary уже достаточно, чтобы user-controlled body не мог его угадать, но
+// коллизия проверяется явно и boundary перегенерируется при совпадении —
+// так тело, содержащее literal boundary, не способно инъецировать MIME-часть.
+func makeBoundary(parts ...string) string {
+	for {
+		raw := make([]byte, 16)
+		// crypto/rand.Read на практике не возвращает ошибку; при сбое просто
+		// перегенерируем (следующая итерация даст свежие байты).
+		if _, err := rand.Read(raw); err != nil {
+			continue
+		}
+		cand := "gotcha_boundary_" + hex.EncodeToString(raw)
+		collision := false
+		for _, p := range parts {
+			if strings.Contains(p, cand) {
+				collision = true
+				break
+			}
+		}
+		if !collision {
+			return cand
+		}
+	}
+}
 
 // buildHTMLBody оборачивает текстовое тело в простой self-contained HTML
 // (inline-стили, без внешних ресурсов/картинок). Всё html-экранировано, переносы

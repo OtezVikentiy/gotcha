@@ -43,6 +43,20 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
+	// pprof присылают gzip'ом внутри тела (без Content-Encoding), поэтому h.body
+	// его не разжал — разжимаем сами с ограничением размера, иначе ParsePprof →
+	// pp.ParseData разжали бы «бомбу» без предела (OOM). Лимит тот же, что у
+	// сжатых тел в h.body (maxBytes*10).
+	raw, err = gunzipLimited(raw, h.maxBytes*10)
+	if err != nil {
+		if errors.Is(err, ErrTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "profile too large")
+			return
+		}
+		slog.Warn("ingest: bad pprof gzip", "error", err)
+		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
+		return
+	}
 	q := r.URL.Query()
 	prof, err := profile.ParsePprof(raw, q.Get("type"), time.Now().UTC())
 	if err != nil {

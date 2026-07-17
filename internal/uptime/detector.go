@@ -68,7 +68,11 @@ func aggregate(consensus Consensus, states []State) aggStatus {
 			return aggDown
 		}
 	default: // ConsensusMajority, и защитный дефолт на случай будущих значений
-		if down*2 > decided {
+		// Fail-safe: ничью (ровно половина регионов down при чётном числе
+		// определившихся, напр. 2 из 4) считаем down, а не up. Инструмент
+		// мониторинга должен скорее поднять инцидент, чем молча оставить монитор
+		// зелёным, когда половина флота репортит недоступность (>= вместо >).
+		if down*2 >= decided {
 			return aggDown
 		}
 	}

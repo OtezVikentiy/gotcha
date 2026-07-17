@@ -3,6 +3,7 @@ package profile
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -29,11 +30,21 @@ type Profile struct {
 	Samples   []Sample
 }
 
+// frameFieldEscaper экранирует символы, из которых собран разделитель ключа
+// кадра, чтобы сериализация была инъективной (разные (Function,File,Line) → разные
+// ключи). Без экранирования имя вроде "a (b:1)" без файла давало тот же ключ, что
+// {Function:"a", File:"b", Line:1}, и агрегатор writer.go схлопывал несвязанные
+// стеки. Экранируем: '\\' (делает схему обратимой), '(' (граница func/file),
+// ':' (граница file/line). Обратный слэш идёт первым — strings.Replacer не
+// перечитывает вставленное, так что двойного экранирования нет.
+var frameFieldEscaper = strings.NewReplacer(`\`, `\\`, `(`, `\(`, `:`, `\:`)
+
 // FrameKey сериализует кадр в одну строку для колонки stack Array(String):
-// "func (file:line)" либо "func", если файла нет.
+// "func (file:line)" либо "func", если файла нет. Поля экранируются, поэтому
+// разные кадры никогда не дают одинаковый ключ (см. frameFieldEscaper).
 func FrameKey(f Frame) string {
 	if f.File == "" {
-		return f.Function
+		return frameFieldEscaper.Replace(f.Function)
 	}
-	return f.Function + " (" + f.File + ":" + strconv.FormatInt(int64(f.Line), 10) + ")"
+	return frameFieldEscaper.Replace(f.Function) + " (" + frameFieldEscaper.Replace(f.File) + ":" + strconv.FormatInt(int64(f.Line), 10) + ")"
 }

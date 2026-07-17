@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -255,6 +256,40 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 		return n, ErrTooLarge
 	}
 	return n, err
+}
+
+// maxGzipLayers — предел вложенности gzip у pprof-тела. Реальный pprof сжат
+// одним слоем; несколько слоёв — это «матрёшка»-бомба, которую отклоняем.
+const maxGzipLayers = 3
+
+// gunzipLimited ПОЛНОСТЬЮ распаковывает (потенциально многослойный) gzip с
+// ограничением размера КАЖДОГО слоя. pprof-клиенты присылают профиль gzip'ом
+// ВНУТРИ тела (по конвенции pprof), без Content-Encoding, поэтому h.body такое
+// тело не разжимает и лимит на распакованный размер не применяется. Важно
+// размотать ВСЕ слои: pp.ParseData сам повторно ищет gzip-magic и разжимает
+// внутренний слой БЕЗ предела — двойной gzip обошёл бы одноразовую распаковку
+// (≤1 МБ → 10 МБ внутренний gzip под лимитом → ~1 ГБ в ParseData, OOM). После
+// цикла в данных не остаётся gzip-magic, поэтому ParseData уже не разжимает.
+// Не-gzip вход возвращается как есть.
+func gunzipLimited(raw []byte, limit int64) ([]byte, error) {
+	for layer := 0; ; layer++ {
+		if len(raw) < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
+			return raw, nil // больше не gzip — готово
+		}
+		if layer >= maxGzipLayers {
+			return nil, ErrTooLarge // слишком глубокая вложенность — бомба
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		out, err := io.ReadAll(newLimitedReader(zr, limit))
+		_ = zr.Close()
+		if err != nil {
+			return nil, err
+		}
+		raw = out
+	}
 }
 
 func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {

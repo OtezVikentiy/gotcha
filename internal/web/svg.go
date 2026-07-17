@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"html"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -399,6 +400,12 @@ func flatlineSVG(w, h int) string {
 }
 
 func formatCoord(f float64) string {
+	// Защита: нефинитное значение (NaN/±Inf) дало бы SVG-атрибут "NaN"/"+Inf" и
+	// сломало бы отрисовку. Пороги NaN/Inf уже отсекаются на входе, но значение
+	// ряда из ClickHouse теоретически может прийти нефинитным — клампим в 0.
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return "0.0"
+	}
 	return strconv.FormatFloat(f, 'f', 1, 64)
 }
 

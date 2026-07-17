@@ -24,14 +24,29 @@ type Page struct {
 
 // registry — порядок и группировка страниц оглавления (Title заполняется из H1).
 var registry = []struct{ Slug, Group string }{
+	// Начало
 	{"getting-started", "docs.group.start"},
 	{"glossary", "docs.group.start"},
+	// Установка и эксплуатация
+	{"installation", "docs.group.deploy"},
+	{"configuration", "docs.group.deploy"},
+	{"backup-restore", "docs.group.deploy"},
+	{"upgrade", "docs.group.deploy"},
+	// Разделы
 	{"issues", "docs.group.sections"},
 	{"performance", "docs.group.sections"},
 	{"metrics", "docs.group.sections"},
-	{"uptime", "docs.group.sections"},
-	{"alerts", "docs.group.sections"},
+	{"metric-alerts", "docs.group.sections"},
 	{"profiling", "docs.group.sections"},
+	{"uptime", "docs.group.sections"},
+	{"status-pages", "docs.group.sections"},
+	{"maintenance", "docs.group.sections"},
+	{"probes", "docs.group.sections"},
+	{"alerts", "docs.group.sections"},
+	// Администрирование
+	{"teams", "docs.group.admin"},
+	{"sso", "docs.group.admin"},
+	// Интеграции
 	{"sdk", "docs.group.integrations"},
 }
 

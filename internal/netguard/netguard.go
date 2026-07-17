@@ -11,6 +11,12 @@ import (
 
 var ErrBlockedTarget = errors.New("netguard: target resolves to a blocked (private/loopback/link-local) address")
 
+// cgnatRange — RFC 6598 Carrier-Grade NAT / shared address space (100.64.0.0/10).
+// net.IP.IsPrivate() этот диапазон НЕ покрывает, а часть облаков отдаёт оттуда
+// метадату (например Alibaba/Oracle — 100.100.100.200), поэтому режем явно,
+// иначе остаётся SSRF-обход фильтра приватных адресов.
+var cgnatRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
 // IsBlockedIP — адрес во внутреннем/служебном диапазоне, запросы к которому из
 // мультитенантных чекеров/вебхуков недопустимы (SSRF к метадате облака,
 // внутренним сервисам, loopback).
@@ -22,7 +28,8 @@ func IsBlockedIP(ip net.IP) bool {
 		ip = ip4
 	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
+		cgnatRange.Contains(ip)
 }
 
 // control для net.Dialer.Control: вызывается ПОСЛЕ резолва, до соединения, на

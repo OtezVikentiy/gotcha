@@ -87,13 +87,17 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("page missing rule (status %d): %s", resp.StatusCode, body)
 	}
 
-	// Невалидный порог → 422.
-	bad := url.Values{"metric_name": {"m"}, "aggregation": {"avg"}, "comparator": {"gt"}, "threshold": {"nan!!"}, "window_seconds": {"300"}}
-	resp = postForm(t, s.srv, base, bad, s.srv.URL, ownerCookie)
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("bad threshold status = %d, want 422", resp.StatusCode)
+	// Невалидный порог → 422. Включая литералы, которые ParseFloat принимает без
+	// ошибки (NaN/Inf/+Inf/-Inf) — такой порог сломал бы сравнение и график, его
+	// нужно отклонять, а не сохранять.
+	for _, badThreshold := range []string{"nan!!", "NaN", "Inf", "+Inf", "-Inf"} {
+		bad := url.Values{"metric_name": {"m"}, "aggregation": {"avg"}, "comparator": {"gt"}, "threshold": {badThreshold}, "window_seconds": {"300"}}
+		resp = postForm(t, s.srv, base, bad, s.srv.URL, ownerCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("threshold %q status = %d, want 422", badThreshold, resp.StatusCode)
+		}
 	}
 
 	// Без Origin → 403.

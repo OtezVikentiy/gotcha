@@ -165,6 +165,41 @@ func TestPipelineScrubFreeTextEvent(t *testing.T) {
 	}
 }
 
+// SEC-L2: URL-образное имя транзакции прогоняется через тот же free-text скраб,
+// что и message/span.description — email из query string маскируется на [email]
+// перед записью в SpanSink (при ScrubFreeText=true); при выключенном — цело.
+func TestPipelineScrubTransactionName(t *testing.T) {
+	makePipeline := func(freeText bool) (*Pipeline, *fakeSpanSink) {
+		spans := &fakeSpanSink{}
+		sc := NewScrubber(false, false, nil)
+		sc.ScrubFreeText = freeText
+		return &Pipeline{Spans: spans, Scrub: sc}, spans
+	}
+	newTx := func() trace.Transaction {
+		start := time.Now().UTC()
+		return trace.Transaction{
+			TraceID: "t1", SpanID: "root",
+			Name:  "GET /u?token=secret&email=a@b.com",
+			Op:    "http.server",
+			Start: start, End: start.Add(time.Second),
+		}
+	}
+
+	// Включено: email в имени замаскирован тем же способом, что и в прочих полях.
+	p, spans := makePipeline(true)
+	p.processTransaction(1, newTx())
+	if got := spans.added[0].Name; got != "GET /u?token=secret&email=[email]" {
+		t.Errorf("tx.Name = %q, want email замаскированным на [email]", got)
+	}
+
+	// Выключено: имя не тронуто (текущее поведение).
+	p, spans = makePipeline(false)
+	p.processTransaction(1, newTx())
+	if got := spans.added[0].Name; got != "GET /u?token=secret&email=a@b.com" {
+		t.Errorf("при выключенном флаге tx.Name = %q, want не тронут", got)
+	}
+}
+
 // capturingIssueSvc — issueUpserter, который запоминает title/culprit, дошедшие
 // до Upsert. Нужен, чтобы проверить: свободный текст в title маскируется ДО
 // апсерта (issues.title в PG иначе хранил бы email открытым).

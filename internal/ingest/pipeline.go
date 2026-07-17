@@ -316,6 +316,11 @@ func (p *Pipeline) processTransaction(projectID int64, tx trace.Transaction) {
 	// часто оседают в span.Data (напр. http.*). p.Scrub == nil — no-op
 	// (методы Scrubber nil-safe). Детекция работает поверх уже зачищенных спанов.
 	p.Scrub.ScrubTags(tx.Tags)
+	// SEC-L2: имя транзакции нередко URL-образное (GET /u?token=...&email=...);
+	// прогоняем его через тот же free-text скраб, что и message/span.description,
+	// иначе токены/email из query string оседают в CH-колонке transactions.transaction
+	// даже при включённом scrubbing. No-op при ScrubFreeText=false.
+	tx.Name = p.Scrub.ScrubText(tx.Name)
 	for i := range tx.Spans {
 		p.Scrub.ScrubData(tx.Spans[i].Data)
 		// RA-L10: опционально маскируем email в описании спана. No-op при

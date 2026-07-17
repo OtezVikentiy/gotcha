@@ -19,6 +19,12 @@ func TestDecide(t *testing.T) {
 		{"bump while still breached", 0.10, 0.30, 200, true, DecisionBump},
 		{"resolve on recovery", 0.10, 0.11, 200, true, DecisionResolve}, // within +20%
 		{"bump in dead zone", 0.10, 0.14, 200, true, DecisionBump},      // >+20%, <+50%
+		// База усохла до нуля, пока инцидент открыт (функция перестала попадать в
+		// базовое окно). Инцидент обязан уметь закрыться, когда доля вернулась к
+		// шумовому полу, иначе он «завис» бы в вечном Bump.
+		{"resolve when base collapsed and function died", 0.0, 0.0, 200, true, DecisionResolve},
+		{"resolve when base zero and share back to floor", 0.0, 0.05, 200, true, DecisionResolve}, // ==ShareFloor
+		{"bump when base zero but still hot", 0.0, 0.30, 200, true, DecisionBump},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
