@@ -1,8 +1,10 @@
 package templates
 
 import (
+	"context"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -57,9 +59,28 @@ func formatDurationUS(us uint32) string {
 	}
 }
 
-// formatThroughput — транзакций в минуту с одним знаком после запятой.
-func formatThroughput(perMin float64) string {
-	return strconv.FormatFloat(perMin, 'f', 1, 64) + "/min"
+// formatThroughput — трафик с единицей по величине. Фиксированные «в минуту»
+// давали «0.0/min» во всех строках: при десятке транзакций за сутки это
+// 0.007/мин, и один знак после запятой всё схлопывал в ноль — колонка
+// переставала отвечать на вопрос «сколько запросов».
+func formatThroughput(ctx context.Context, perMin float64) string {
+	switch {
+	case perMin >= 1:
+		return strconv.FormatFloat(perMin, 'f', 1, 64) + i18n.T(ctx, "perf.per_min")
+	case perMin*60 >= 1:
+		return strconv.FormatFloat(perMin*60, 'f', 1, 64) + i18n.T(ctx, "perf.per_hour")
+	default:
+		return strconv.FormatFloat(perMin*60*24, 'f', 1, 64) + i18n.T(ctx, "perf.per_day")
+	}
+}
+
+// envList — окружения эндпойнта одной строкой. Пусто быть не должно (строка
+// существует, только если транзакции были), но подстраховываемся прочерком.
+func envList(envs []string) string {
+	if len(envs) == 0 {
+		return "—"
+	}
+	return strings.Join(envs, ", ")
 }
 
 // formatFailureRate — доля ошибок (0..1) в процентах с одним знаком.
@@ -132,10 +153,13 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 				if total > len(rows) {
 					<p class="perf-cap-note">{ i18n.Tf(ctx, "perf.truncated", "shown", strconv.Itoa(len(rows)), "total", strconv.Itoa(total)) }</p>
 				}
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
 							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.endpoint") }</a></th>
+							<th>{ i18n.T(ctx, "perf.environment") }</th>
+							<th class="num">{ i18n.T(ctx, "perf.events") }</th>
 							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>{ i18n.T(ctx, "perf.throughput") }</a></th>
 							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>{ i18n.T(ctx, "perf.p50") }</a></th>
 							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>{ i18n.T(ctx, "perf.p75") }</a></th>
@@ -150,7 +174,9 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 						for _, row := range rows {
 							<tr>
 								<td><a href={ templ.URL(endpointPath(projectID, row.Stat.Transaction)) }>{ row.Stat.Transaction }</a></td>
-								<td class="num">{ formatThroughput(row.Stat.Throughput) }</td>
+								<td>{ envList(row.Stat.Environments) }</td>
+								<td class="num">{ strconv.FormatUint(row.Stat.Count, 10) }</td>
+								<td class="num">{ formatThroughput(ctx, row.Stat.Throughput) }</td>
 								<td class="num">{ formatDurationUS(row.Stat.P50) }</td>
 								<td class="num">{ formatDurationUS(row.Stat.P75) }</td>
 								<td class="num">{ formatDurationUS(row.Stat.P95) }</td>
@@ -162,6 +188,7 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

@@ -73,7 +73,7 @@ templ windowRow(projectID int64, w uptime.Window) {
 		<td>
 			<form method="post" action={ templ.URL(maintenanceDeletePath(projectID)) } class="window-delete-form">
 				<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
-				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
+				<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
 			</form>
 		</td>
 	</tr>
@@ -85,7 +85,7 @@ templ windowRow(projectID int64, w uptime.Window) {
 templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.maintenance"), userEmail) {
 		<div class="maintenance">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			@breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.maintenance") }</h1>
 			@helpPanel("maintenance", "uptime")
 			if errMsg != "" {

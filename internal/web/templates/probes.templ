@@ -61,7 +61,7 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 			if !row.Probe.Revoked {
 				<form method="post" action={ templ.URL(orgProbesRevokePath(orgID)) } class="probe-revoke-form">
 					<input type="hidden" name="probe_id" value={ strconv.FormatInt(row.Probe.ID, 10) }/>
-					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "uptime.probes.action_revoke") }</button>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.probes.action_revoke") }</button>
 				</form>
 			}
 		</td>
@@ -77,7 +77,7 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "uptime.probes.title")+" "+o.Name, userEmail) {
 		<div class="org-probes">
-			<p class="breadcrumb"><a href={ templ.URL(orgSettingsPath(o.ID)) }>← { i18n.T(ctx, "nav.members") }</a></p>
+			@breadcrumbBack(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "uptime.probes.title") } { o.Name }</h1>
 			@helpPanel("probes", "uptime")
 			if errMsg != "" {

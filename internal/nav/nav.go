@@ -143,8 +143,11 @@ func AreaForPath(path string) string {
 					return "uptime"
 				case "alerts":
 					return "alerts"
-				case "settings":
-					return ""
+				case "settings", "setup":
+					// Not a rail area (nothing lights up in the rail), but
+					// it does own the sidebar: without it the sidebar shows
+					// only the project switcher and reads as broken.
+					return "settings"
 				}
 			}
 		}
@@ -195,6 +198,11 @@ func Subsections(s Shell) []NavItem {
 		// docs.Pages), not the i18n catalog — hence Label, not LabelKey.
 		for _, p := range docs.Pages(s.Locale) {
 			items = append(items, NavItem{Label: p.Title, Href: "/docs/" + p.Slug})
+		}
+	case "settings":
+		items = []NavItem{
+			{LabelKey: "nav.project_settings", Href: "/projects/" + effID + "/settings"},
+			{LabelKey: "getting_started.title", Href: "/projects/" + effID + "/setup"},
 		}
 	case "org":
 		items = []NavItem{

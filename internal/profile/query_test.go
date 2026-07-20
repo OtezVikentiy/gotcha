@@ -72,7 +72,11 @@ func TestFlameBuildsTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListServices: %v", err)
 	}
-	if len(svcs) != 1 || svcs[0].Service != "api" || svcs[0].Samples != 10 {
+	// Weight — суммарный вес выборок (sum(value)), Samples — их количество.
+	// Раньше единственное поле Samples несло sum(value), из-за чего колонка
+	// «Замеры» показывала вес: для cpu-профиля это наносекунды, то есть
+	// «284000000» вместо 284 мс.
+	if len(svcs) != 1 || svcs[0].Service != "api" || svcs[0].Weight != 10 || svcs[0].Samples != 3 {
 		t.Fatalf("services = %+v", svcs)
 	}
 }

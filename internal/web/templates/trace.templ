@@ -36,7 +36,7 @@ func traceFlamePath(traceID string) string {
 templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 	@layout(d.Transaction, userEmail) {
 		<div class="trace-detail">
-			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← { i18n.T(ctx, "nav.performance") }</a></p>
+			@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.performance"))
 			<h1>{ d.Transaction }</h1>
 			<div class="monitor-meta">
 				<div class="stat-tile">
@@ -76,7 +76,7 @@ type TraceFlameData struct {
 templ TraceFlame(d TraceFlameData, userEmail string) {
 	@layout(i18n.T(ctx, "trace.flame.title"), userEmail) {
 		<div class="trace-flame">
-			<p class="breadcrumb"><a href={ templ.URL("/traces/" + d.TraceID) }>← { i18n.T(ctx, "trace.waterfall_link") }</a></p>
+			@breadcrumbBack(templ.URL("/traces/" + d.TraceID), i18n.T(ctx, "trace.waterfall_link"))
 			<h1>{ i18n.T(ctx, "trace.flame.title") }</h1>
 			<div class="monitor-meta">
 				<div class="stat-tile">

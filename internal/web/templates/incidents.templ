@@ -42,11 +42,12 @@ templ incidentListRow(row IncidentRow) {
 templ IncidentsList(projectID int64, rows []IncidentRow, userEmail string) {
 	@layout(i18n.T(ctx, "nav.incidents"), userEmail) {
 		<div class="incidents">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			@breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
 			if len(rows) == 0 {
 				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -65,6 +66,7 @@ templ IncidentsList(projectID int64, rows []IncidentRow, userEmail string) {
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

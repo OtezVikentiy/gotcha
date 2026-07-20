@@ -14,6 +14,16 @@ func webVitalsPath(projectID int64) string {
 
 // wvListSortURL — ссылка на список web vitals с заданной сортировкой, сохраняя
 // период и окружение фильтра (клик по заголовку колонки), как perfListSortURL.
+// endpointVitalsPath — переход на страницу эндпойнта из списка Web Vitals.
+// Страница у «Транзакций» и «Web Vitals» общая, поэтому к ссылке добавляется
+// пометка об источнике: по ней страница возвращает хлебную крошку в Web Vitals
+// и оставляет подсвеченным исходный подраздел. Якорь ведёт сразу к панели
+// Web Vitals — иначе пользователь попадает на шапку и ищет глазами тот блок,
+// ради которого пришёл.
+func endpointVitalsPath(projectID int64, transaction string) string {
+	return endpointPath(projectID, transaction) + "?from=web-vitals#web-vitals"
+}
+
 func wvListSortURL(projectID int64, f PerfFilter, sort string) string {
 	q := url.Values{}
 	if f.Period != "" {
@@ -139,10 +149,12 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 			if len(pages) == 0 {
 				@emptyState("activity", "perf.webvitals.empty.title", "perf.webvitals.empty.body", "perf.webvitals.empty.cta", "/docs/sdk")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
 							<th><a href={ templ.URL(wvListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.webvitals.table.page") }</a></th>
+							<th>{ i18n.T(ctx, "perf.environment") }</th>
 							<th class="num"><a href={ templ.URL(wvListSortURL(projectID, filter, "lcp")) }>{ i18n.T(ctx, "perf.webvitals.table.lcp") }</a></th>
 							<th class="num"><a href={ templ.URL(wvListSortURL(projectID, filter, "inp")) }>{ i18n.T(ctx, "perf.webvitals.table.inp") }</a></th>
 							<th class="num"><a href={ templ.URL(wvListSortURL(projectID, filter, "cls")) }>{ i18n.T(ctx, "perf.webvitals.table.cls") }</a></th>
@@ -152,7 +164,8 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 					<tbody>
 						for _, p := range pages {
 							<tr>
-								<td><a href={ templ.URL(endpointPath(projectID, p.Transaction)) }>{ p.Transaction }</a></td>
+								<td><a href={ templ.URL(endpointVitalsPath(projectID, p.Transaction)) }>{ p.Transaction }</a></td>
+								<td>{ envList(p.Environments) }</td>
 								@vitalCell(p.LCP)
 								@vitalCell(p.INP)
 								@vitalCell(p.CLS)
@@ -161,6 +174,7 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

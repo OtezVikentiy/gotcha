@@ -127,7 +127,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 			<a href={ templ.URL(statusPagePublicURL(baseURL, f.Slug)) }>{ statusPagePublicURL(baseURL, f.Slug) }</a>
 		</p>
 		<form method="post" action={ templ.URL(statusPageDeletePath(f.ID)) } class="status-page-delete-form">
-			<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
+			<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
 		</form>
 	}
 }
@@ -139,7 +139,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm, newForm StatusPageForm, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.status_pages"), userEmail) {
 		<div class="status-pages">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(projectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			@breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.status_pages") }</h1>
 			@helpPanel("statuspages", "uptime")
 			if errMsg != "" {

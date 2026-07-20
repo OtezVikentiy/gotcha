@@ -23,6 +23,11 @@ type Sample struct {
 // Profile — нормализованный профиль (общая модель для Sentry и pprof форматов).
 type Profile struct {
 	Service, Environment, Transaction, Platform, Type string // Type: 'cpu'|'wall'|'alloc'|...
+	// Unit — единица измерения значения выборки из pprof SampleType.Unit
+	// ('nanoseconds', 'bytes', 'count'). Хранится рядом со значением, чтобы
+	// UI не угадывал единицу по имени типа: для нестандартных типов профилей
+	// догадка не работает. Пусто — источник единицу не сообщил.
+	Unit string
 	// TraceID — привязка к трейсу (этап 8, profiling-in-context). Пусто —
 	// профиль без привязки (напр. непрерывный pprof).
 	TraceID   string

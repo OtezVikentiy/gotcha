@@ -175,7 +175,7 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 	}
 	data := templates.TraceFlameData{
 		TraceID: traceID,
-		Chart:   flamegraphSVG(root, 960),
+		Chart:   flamegraphSVG(r.Context(), root, 960),
 	}
 	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
 }

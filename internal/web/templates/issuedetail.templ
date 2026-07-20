@@ -56,6 +56,33 @@ func eventRowClass(selected bool) string {
 	return "event-row"
 }
 
+// assignControl — смена ответственного. Состояние («на кого назначено»)
+// показывает assigneeChip в шапке, а здесь только действие, поэтому форма
+// свёрнута в <details>: раньше предвыбранный <select> был единственным
+// носителем информации, и факт назначения приходилось вычитывать из элемента
+// управления. <details> — нативный, работает без JS.
+templ assignControl(it issue.Issue, members []org.Member) {
+	<details class="assign-control">
+		<summary>
+			@icon("user")
+			{ i18n.T(ctx, "issues.action.change_assignee") }
+		</summary>
+		<form method="post" action={ templ.URL(issueAssignPath(it.ID)) } class="assign-form">
+			<select name="assignee" class="select">
+				if it.AssigneeID == nil {
+					<option value="" selected>{ i18n.T(ctx, "issues.detail.unassigned") }</option>
+				} else {
+					<option value="">{ i18n.T(ctx, "issues.detail.unassigned") }</option>
+				}
+				for _, m := range members {
+					@assigneeOption(m, it.AssigneeID)
+				}
+			</select>
+			<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.assign") }</button>
+		</form>
+	</details>
+}
+
 templ assigneeOption(m org.Member, selected *int64) {
 	if selected != nil && *selected == m.UserID {
 		<option value={ strconv.FormatInt(m.UserID, 10) } selected>{ m.Email }</option>
@@ -100,13 +127,16 @@ templ eventRow(issueID int64, ev event.Stored, selected bool) {
 templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
-			<p class="breadcrumb"><a href={ templ.URL(issuesPath(it.ProjectID)) }>← { i18n.T(ctx, "nav.issues") }</a></p>
+			@breadcrumbBack(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
 			<h1>{ it.Title }</h1>
 			if it.Culprit != "" {
 				<div class="culprit">{ it.Culprit }</div>
 			}
 			<span class={ levelBadgeClass(it.Level) }>{ it.Level }</span>
 			<span class={ statusBadgeClass(it.Status) }>{ it.Status }</span>
+			<div class="issue-assignee">
+				@assigneeChip(it.AssigneeEmail)
+			</div>
 			<div class="issue-meta">
 				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: { ago(ctx, it.FirstSeen) }</span>
 				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: { ago(ctx, it.LastSeen) }</span>
@@ -122,19 +152,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 						<button type="submit" name="status" value="unresolved" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
 					}
 				</form>
-				<form method="post" action={ templ.URL(issueAssignPath(it.ID)) } class="assign-form">
-					<select name="assignee" class="select">
-						if it.AssigneeID == nil {
-							<option value="" selected>{ i18n.T(ctx, "issues.detail.unassigned") }</option>
-						} else {
-							<option value="">{ i18n.T(ctx, "issues.detail.unassigned") }</option>
-						}
-						for _, m := range members {
-							@assigneeOption(m, it.AssigneeID)
-						}
-					</select>
-					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.assign") }</button>
-				</form>
+				@assignControl(it, members)
 			</div>
 
 			<div class="issue-chart card">
@@ -163,7 +181,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 
 					if len(selected.Tags) > 0 {
 						<h3>{ i18n.T(ctx, "issues.detail.tags") }</h3>
-						<table class="tags data-table">
+						<table class="tags data-table data-table--auto">
 							<tbody>
 								for k, v := range selected.Tags {
 									<tr>
@@ -186,7 +204,9 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 						</div>
 					</div>
 
-					if selected.Contexts != "" {
+					// "{}" — пустой JSON-объект: секция с ним не несёт информации
+					// и читается как недогруженные данные.
+					if selected.Contexts != "" && selected.Contexts != "{}" {
 						<h3>{ i18n.T(ctx, "issues.detail.contexts") }</h3>
 						<pre>{ selected.Contexts }</pre>
 					}

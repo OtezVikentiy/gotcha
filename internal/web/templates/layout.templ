@@ -128,7 +128,10 @@ templ layoutBody(title string, userEmail string) {
 templ ctxNav(shell nav.Shell) {
 	if len(shell.Projects) > 0 {
 		<details class="proj-switch">
-			<summary>{ currentProjectName(shell) }</summary>
+			<summary>
+				<span class="proj-switch-name">{ currentProjectName(shell) }</span>
+				@icon("chevron-down")
+			</summary>
 			<ul>
 				for _, p := range shell.Projects {
 					<li><a href={ templ.SafeURL("/projects/" + itoa(p.ID) + "/issues") }>{ p.Name }</a></li>
@@ -144,7 +147,9 @@ templ ctxNav(shell nav.Shell) {
 				}
 			</a>
 		}
-		if shell.CanManage {
+		// В самой области настроек ссылку в футере не показываем: там она уже
+		// есть первым пунктом списка подразделов, и дублировать её незачем.
+		if shell.CanManage && shell.Area != "settings" {
 			<a class="ctx-settings" href={ templ.SafeURL("/projects/" + itoa(effectiveProjectID(shell)) + "/settings") }>
 				@icon("settings")
 				{ i18n.T(ctx, "nav.project_settings") }
@@ -255,13 +260,38 @@ func langBtnClass(ctx context.Context, code string) string {
 }
 
 // themeToggle — переключатель темы оформления (форма POST, работает без JS).
-// Активная тема помечена классом is-active.
+// Иконочный: три текстовых кнопки занимали четверть топбара и спорили с
+// основными действиями страницы. @icon печатает aria-hidden, поэтому имя
+// кнопки задаётся aria-label, а title даёт подсказку по наведению.
 templ themeToggle() {
 	<form method="post" action="/settings/theme" class="theme-toggle">
-		<button type="submit" name="theme" value="dark" class={ themeBtnClass(ctx, "dark") }>{ i18n.T(ctx, "theme.dark") }</button>
-		<button type="submit" name="theme" value="light" class={ themeBtnClass(ctx, "light") }>{ i18n.T(ctx, "theme.light") }</button>
-		<button type="submit" name="theme" value="system" class={ themeBtnClass(ctx, "system") }>{ i18n.T(ctx, "theme.system") }</button>
+		@themeBtn("dark", "moon", "theme.dark")
+		@themeBtn("light", "sun", "theme.light")
+		@themeBtn("system", "monitor", "theme.system")
 	</form>
+}
+
+templ themeBtn(code, iconName, labelKey string) {
+	<button
+		type="submit"
+		name="theme"
+		value={ code }
+		class={ themeBtnClass(ctx, code) }
+		aria-label={ i18n.T(ctx, labelKey) }
+		title={ i18n.T(ctx, labelKey) }
+		aria-pressed={ themePressed(ctx, code) }
+	>
+		@icon(iconName)
+	</button>
+}
+
+// themePressed — aria-pressed для сегмента: без него скринридер не отличит
+// выбранную тему от невыбранной, потому что визуально это делает только цвет.
+func themePressed(ctx context.Context, code string) string {
+	if theme.FromContext(ctx).Code == code {
+		return "true"
+	}
+	return "false"
 }
 
 func themeBtnClass(ctx context.Context, code string) string {

@@ -23,7 +23,11 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/7/alerts", "alerts"},
 		{"/orgs/5/teams", "org"},
 		{"/projects", "org"},
-		{"/projects/7/settings", ""},
+		// Настройки проекта — не область рейла (в рейле ничего не
+		// подсвечивается), но сайдбар они наполняют своими пунктами:
+		// иначе там оставался бы один переключатель проекта.
+		{"/projects/7/settings", "settings"},
+		{"/projects/7/setup", "settings"},
 		{"/docs", "docs"},
 		{"/docs/glossary", "docs"},
 	}

@@ -13,7 +13,10 @@ import (
 // guideSlug — соответствующая страница документации /docs/{guideSlug}.
 templ helpPanel(area, guideSlug string) {
 	<details class="help-panel">
-		<summary>{ i18n.T(ctx, "help."+area+".title") }</summary>
+		<summary>
+			@icon("chevron-right")
+			{ i18n.T(ctx, "help."+area+".title") }
+		</summary>
 		<div class="help-panel-body">
 			<p>{ i18n.T(ctx, "help."+area+".body") }</p>
 			<a href={ templ.SafeURL("/docs/" + guideSlug) }>{ i18n.T(ctx, "help.more_link") }</a>
@@ -43,7 +46,7 @@ templ gettingStartedChecklist(gs GettingStartedVM) {
 		<section class="card getting-started">
 			<h2 class="card-header">{ i18n.T(ctx, "getting_started.title") } · { i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "4") }</h2>
 			<ul class="gs-steps">
-				<li class="gs-done">✓ { i18n.T(ctx, "getting_started.step.1") }</li>
+				@gsStepDone("getting_started.step.1")
 				@gsStep(gs.Step2Done, "getting_started.step.2", projectSetupPath(gs.ProjectID), "getting_started.step.2.cta")
 				@gsStep(gs.Step3Done, "getting_started.step.3", alertsPath(gs.ProjectID), "getting_started.step.3.cta")
 				@gsStep(gs.Step4Done, "getting_started.step.4", orgSettingsPath(gs.OrgID), "getting_started.step.4.cta")
@@ -54,8 +57,23 @@ templ gettingStartedChecklist(gs GettingStartedVM) {
 
 templ gsStep(done bool, labelKey, href, ctaKey string) {
 	if done {
-		<li class="gs-done">✓ { i18n.T(ctx, labelKey) }</li>
+		@gsStepDone(labelKey)
 	} else {
-		<li class="gs-todo">○ { i18n.T(ctx, labelKey) } — <a href={ templ.SafeURL(href) }>{ i18n.T(ctx, ctaKey) }</a></li>
+		<li class="gs-todo">
+			@icon("circle")
+			<span class="visually-hidden">{ i18n.T(ctx, "getting_started.state.todo") }</span>
+			{ i18n.T(ctx, labelKey) } — <a href={ templ.SafeURL(href) }>{ i18n.T(ctx, ctaKey) }</a>
+		</li>
 	}
+}
+
+// gsStepDone — выполненный шаг. Иконка помечена aria-hidden (см. @icon),
+// поэтому состояние дублируется скрытым текстом: галочка — единственный
+// сигнал «сделано», и без него скринридер прочитал бы обе строки одинаково.
+templ gsStepDone(labelKey string) {
+	<li class="gs-done">
+		@icon("check")
+		<span class="visually-hidden">{ i18n.T(ctx, "getting_started.state.done") }</span>
+		{ i18n.T(ctx, labelKey) }
+	</li>
 }

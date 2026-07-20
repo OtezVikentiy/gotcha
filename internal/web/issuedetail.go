@@ -101,7 +101,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	chart := chartSVG(points, chartWidth, chartHeight)
+	chart := chartSVG(r.Context(), points, chartWidth, chartHeight)
 
 	selectedID := r.URL.Query().Get("event")
 	var selected *event.Stored

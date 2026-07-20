@@ -200,7 +200,7 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []org.Project, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "teams.title")+" "+o.Name, userEmail) {
 		<div class="teams">
-			<p class="breadcrumb"><a href={ templ.URL(orgSettingsPath(o.ID)) }>← { i18n.T(ctx, "nav.members") }</a></p>
+			@breadcrumbBack(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "teams.title") } { o.Name }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>

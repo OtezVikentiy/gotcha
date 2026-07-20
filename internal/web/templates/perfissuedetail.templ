@@ -47,7 +47,7 @@ func perfMS(us int64) string {
 templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 	@layout(d.Issue.Title, userEmail) {
 		<div class="perf-issue-detail issue-detail">
-			<p class="breadcrumb"><a href={ templ.URL(perfIssuesPath(d.Issue.ProjectID)) }>← { i18n.T(ctx, "nav.perf_issues") }</a></p>
+			@breadcrumbBack(templ.URL(perfIssuesPath(d.Issue.ProjectID)), i18n.T(ctx, "nav.perf_issues"))
 			<h1>{ d.Issue.Title }</h1>
 			if d.Issue.Culprit != "" {
 				<div class="culprit">{ d.Issue.Culprit }</div>

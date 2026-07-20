@@ -273,7 +273,7 @@ templ kindPicker(d MonitorFormData) {
 templ MonitorForm(d MonitorFormData, userEmail string) {
 	@layout(i18n.T(ctx, monitorFormTitleKey(d)), userEmail) {
 		<div class="monitor-form">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(d.ProjectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			@breadcrumbBack(templ.URL(monitorsPath(d.ProjectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, monitorFormTitleKey(d)) }</h1>
 			if d.ErrMsg != "" {
 				<p class="error">{ d.ErrMsg }</p>

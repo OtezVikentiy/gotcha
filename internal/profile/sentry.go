@@ -97,8 +97,11 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 		Environment: it.Environment,
 		Transaction: transaction,
 		Platform:    it.Platform,
-		Type:        "cpu",
-		TraceID:     traceID,
+		Type: "cpu",
+		// В формате Sentry значение выборки — число сэмплов с этим стеком
+		// (см. counts выше), а не время: единица «count», а не наносекунды.
+		Unit:      "count",
+		TraceID:   traceID,
 		Timestamp:   now,
 		Samples:     samples,
 	}, nil

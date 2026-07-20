@@ -69,7 +69,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// per-IP не расходуется (короткое замыкание ||).
 	if !h.loginLimiter.Allow(rateLimitKey(r, email)) || !h.ipLimiter.Allow(extractIP(r)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Login("слишком много попыток входа, попробуйте через минуту", h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -77,14 +77,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// enforced-SSO, пароль не принимаем — только вход через SSO.
 	if h.enforcedSSO(r.Context(), emailDomain(email)) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login("ваша организация требует вход через SSO — используйте «Вход через SSO»", h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.sso_required"), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Authenticate(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login("неверный email или пароль", h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.bad_credentials"), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -113,7 +113,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	// SEC-L2: per-account (ip|email) + глобальный per-IP лимит, см. loginSubmit.
 	if !h.loginLimiter.Allow(rateLimitKey(r, email)) || !h.ipLimiter.Allow(extractIP(r)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Register("слишком много попыток регистрации, попробуйте через минуту", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if password != password2 {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register("пароли не совпадают", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "err.auth.passwords_differ"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	// централизованного provisioning/деprovisioning). Как в loginSubmit.
 	if h.enforcedSSO(r.Context(), emailDomain(email)) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register("ваша организация требует вход через SSO — используйте «Вход через SSO»", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "err.auth.sso_required"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -210,7 +210,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	if !h.loginLimiter.Allow("sso|" + rateLimitKey(r, email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.SSOLogin("слишком много попыток, попробуйте через минуту").Render(r.Context(), w)
+		_ = templates.SSOLogin(i18n.T(r.Context(), "err.auth.rate_limited")).Render(r.Context(), w)
 		return
 	}
 	cfg, ok, err := h.Org.SSOByDomain(r.Context(), emailDomain(email))
@@ -220,7 +220,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.SSOLogin("SSO для этого домена не настроен").Render(r.Context(), w)
+		_ = templates.SSOLogin(i18n.T(r.Context(), "err.auth.sso_not_configured")).Render(r.Context(), w)
 		return
 	}
 	http.Redirect(w, r, "/auth/oauth/"+ssoProviderPrefix+strconv.FormatInt(cfg.OrgID, 10)+"/start", http.StatusSeeOther)

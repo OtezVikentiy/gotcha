@@ -155,7 +155,7 @@ templ incidentRow(inc uptime.Incident) {
 templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, checks []uptime.CheckRow, incidents []uptime.Incident, canManage bool, baseURL string, userEmail string) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
-			<p class="breadcrumb"><a href={ templ.URL(monitorsPath(m.ProjectID)) }>← { i18n.T(ctx, "nav.monitors") }</a></p>
+			@breadcrumbBack(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ m.Name }</h1>
 			<span class={ monitorStatusBadgeClass(status) }>{ i18n.T(ctx, monitorStatusTextKey(status)) }</span>
 			<span class="chip">{ string(m.Kind) }</span>
@@ -173,7 +173,7 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_30d") }</div>
 					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime30d) }</div>
 				</div>
-				<div class="stat-tile">
+				<div class="stat-tile stat-tile--text">
 					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.ssl") }</div>
 					<div class="stat-value">{ sslExpiryText(ctx, m.SSLExpiresAt) }</div>
 				</div>
@@ -208,6 +208,11 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 			if len(checks) == 0 {
 				@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "")
 			} else {
+				// Прокручиваемый контейнер: последних проверок до 50
+				// (monitorDetailChecksLimit), и без ограничения высоты они
+				// вытягивали страницу так, что инциденты под ними уходили
+				// далеко за экран.
+				<div class="card scroll-list">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -225,12 +230,14 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 
 			<h2>{ i18n.T(ctx, "nav.incidents") }</h2>
 			if len(incidents) == 0 {
 				@emptyState("activity", "uptime.detail.incidents_empty.title", "uptime.detail.incidents_empty.body", "", "")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -248,6 +255,7 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

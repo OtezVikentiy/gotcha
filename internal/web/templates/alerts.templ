@@ -121,7 +121,7 @@ templ channelRow(projectID int64, c alert.Channel) {
 		<td>
 			<form method="post" action={ templ.URL(alertsChannelsDeletePath(projectID)) } class="channel-delete-form">
 				<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
-				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "alerts.channels.delete") }</button>
+				<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "alerts.channels.delete") }</button>
 			</form>
 		</td>
 	</tr>

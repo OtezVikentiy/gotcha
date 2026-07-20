@@ -41,7 +41,7 @@ templ failedRow(f notify.FailedJob) {
 templ AlertDeliveries(projectID int64, failed []notify.FailedJob, userEmail string) {
 	@layout(i18n.T(ctx, "alerts.deliveries.title"), userEmail) {
 		<div class="alert-deliveries">
-			<p class="breadcrumb"><a href={ templ.URL(alertsPath(projectID)) }>← { i18n.T(ctx, "nav.alerts") }</a></p>
+			@breadcrumbBack(templ.URL(alertsPath(projectID)), i18n.T(ctx, "nav.alerts"))
 			<h1>{ i18n.T(ctx, "alerts.deliveries.title") }</h1>
 			@helpPanel("alertdeliveries", "alerts")
 			if len(failed) == 0 {

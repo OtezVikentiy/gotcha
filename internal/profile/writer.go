@@ -33,6 +33,7 @@ type profileRow struct {
 	TS          time.Time
 	Stack       []string
 	Value       uint64
+	Unit        string
 	TraceID     string
 }
 
@@ -106,6 +107,7 @@ func (w *Writer) Add(projectID int64, p Profile) {
 			TS:          p.Timestamp,
 			Stack:       keyStacks[k],
 			Value:       v,
+			Unit:        p.Unit,
 			TraceID:     p.TraceID,
 		})
 	}
@@ -266,13 +268,13 @@ func (w *Writer) flush(ctx context.Context) {
 
 func (w *Writer) insert(ctx context.Context, rows []profileRow) error {
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO profile_samples (
-		project_id, profile_type, service, environment, transaction, platform, ts, stack, value, trace_id)`)
+		project_id, profile_type, service, environment, transaction, platform, ts, stack, value, unit, trace_id)`)
 	if err != nil {
 		return err
 	}
 	for _, r := range rows {
 		if err := batch.Append(
-			r.ProjectID, r.ProfileType, r.Service, r.Environment, r.Transaction, r.Platform, r.TS, r.Stack, r.Value, r.TraceID,
+			r.ProjectID, r.ProfileType, r.Service, r.Environment, r.Transaction, r.Platform, r.TS, r.Stack, r.Value, r.Unit, r.TraceID,
 		); err != nil {
 			return err
 		}

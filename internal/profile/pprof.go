@@ -28,6 +28,7 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 		}
 	}
 	typ := p.SampleType[idx].Type
+	unit := p.SampleType[idx].Unit
 
 	var samples []Sample
 	for _, s := range p.Sample {
@@ -65,5 +66,5 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 		samples = append(samples, Sample{Stack: stack, Value: uint64(v)})
 	}
 
-	return Profile{Type: typ, Timestamp: now, Samples: samples}, nil
+	return Profile{Type: typ, Unit: unit, Timestamp: now, Samples: samples}, nil
 }

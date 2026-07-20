@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -110,14 +109,14 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 	}
 	if !hasPassword && len(ids) <= 1 {
 		h.renderProfile(w, r, http.StatusConflict, uid,
-			"нельзя отвязать единственный способ входа — сначала задайте пароль или привяжите другой провайдер", "")
+			i18n.T(r.Context(), "err.profile.last_login_method"), "")
 		return
 	}
 	switch err := h.Auth.UnlinkIdentity(r.Context(), uid, provider); {
 	case err == nil:
-		h.renderProfile(w, r, http.StatusOK, uid, "", "провайдер отвязан")
+		h.renderProfile(w, r, http.StatusOK, uid, "", i18n.T(r.Context(), "msg.profile.provider_unlinked"))
 	case errors.Is(err, auth.ErrNoIdentity):
-		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "этот провайдер не привязан", "")
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.profile.provider_not_linked"), "")
 	default:
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
@@ -138,7 +137,7 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.loginLimiter.Allow("pwset|" + strconv.FormatInt(uid, 10)) {
-		h.renderProfile(w, r, http.StatusTooManyRequests, uid, "слишком много попыток, попробуйте через минуту", "")
+		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -148,16 +147,16 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 	newPassword := r.FormValue("new")
 	newPassword2 := r.FormValue("new2")
 	if newPassword != newPassword2 {
-		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "пароли не совпадают", "")
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.auth.passwords_differ"), "")
 		return
 	}
 	switch err := h.Auth.SetPassword(r.Context(), uid, newPassword); {
 	case err == nil:
-		h.renderProfile(w, r, http.StatusOK, uid, "", "пароль задан")
+		h.renderProfile(w, r, http.StatusOK, uid, "", i18n.T(r.Context(), "msg.profile.password_set"))
 	case errors.Is(err, auth.ErrWeakPassword):
-		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "пароль должен быть от 8 до 512 символов", "")
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.profile.password_length"), "")
 	case errors.Is(err, auth.ErrPasswordAlreadySet):
-		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "пароль уже задан — используйте смену пароля", "")
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.profile.password_already_set"), "")
 	default:
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
@@ -184,7 +183,7 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 	// /login, но с отдельным ключевым пространством ("pw|"+uid), чтобы не
 	// делить бюджет попыток с логином и не зависеть от email/IP.
 	if !h.loginLimiter.Allow("pw|" + strconv.FormatInt(uid, 10)) {
-		h.renderProfile(w, r, http.StatusTooManyRequests, uid, "слишком много попыток, попробуйте через минуту", "")
+		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -196,7 +195,7 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 	newPassword2 := r.FormValue("new2")
 
 	if newPassword != newPassword2 {
-		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, "новые пароли не совпадают", "")
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.profile.new_passwords_differ"), "")
 		return
 	}
 
@@ -211,7 +210,7 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
-	h.renderProfile(w, r, http.StatusOK, uid, "", "пароль изменён")
+	h.renderProfile(w, r, http.StatusOK, uid, "", i18n.T(r.Context(), "msg.profile.password_changed"))
 }
 
 // profilePasswordErrorMessage переводит ошибки auth.ChangePassword в
@@ -251,9 +250,9 @@ func (h *Handler) profileSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	h.renderProfile(w, r, http.StatusOK, uid, "", revokedSessionsMessage(count))
+	h.renderProfile(w, r, http.StatusOK, uid, "", revokedSessionsMessage(r.Context(), count))
 }
 
-func revokedSessionsMessage(count int64) string {
-	return fmt.Sprintf("Завершено сеансов на других устройствах: %d", count)
+func revokedSessionsMessage(ctx context.Context, count int64) string {
+	return i18n.Tf(ctx, "msg.profile.sessions_revoked", "count", strconv.FormatInt(count, 10))
 }

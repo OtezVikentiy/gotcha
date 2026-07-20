@@ -196,7 +196,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 			Status:       monitorStatus(m, states, inMaintenance),
 			Uptime24h:    uptimeStats[m.ID],
 			AvgLatencyMs: avgLatencyMs(latencyPoints),
-			Bars:         availabilityBarsSVG(bars, availabilityBarsWidth, availabilityBarsHeight),
+			Bars:         availabilityBarsSVG(r.Context(), bars, availabilityBarsWidth, availabilityBarsHeight),
 			LastChecked:  latestCheckedAt(states),
 		}
 	}

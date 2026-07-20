@@ -1,6 +1,12 @@
 package templates
 
-import "gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+import (
+	"context"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+)
 
 // StatusPageView — модель публичной статус-страницы (собирается в
 // web/statuspage.go и кешируется там же на 30 секунд). Здесь только то, что
@@ -23,7 +29,12 @@ type StatusMonitorView struct {
 	Name      string
 	Status    string // up | down | unknown | paused | maintenance
 	Uptime90d uptime.UptimeStat
-	Bars      templ.Component
+	// BarStats — сырые корзины полоски за 90 дней. Готовый SVG (Bars)
+	// строится не здесь, а на рендере конкретного запроса (см.
+	// renderStatusPage в web/statuspage.go): подписи внутри полоски
+	// локализованы, а вьюха кешируется одна на всех посетителей.
+	BarStats []uptime.UptimeStat
+	Bars     templ.Component
 }
 
 // StatusIncidentView — строка ленты инцидентов: сервис, начало (UTC) и
@@ -31,7 +42,11 @@ type StatusMonitorView struct {
 type StatusIncidentView struct {
 	Name      string
 	StartedAt string
-	Duration  string
+	// Duration — длительность закрытого инцидента; для незакрытого пусто, и
+	// шаблон подставляет локализованное «идёт» по Ongoing. Слово не кладётся
+	// в модель, потому что модель кеширована и общая для всех языков.
+	Duration string
+	Ongoing  bool
 }
 
 // StatusWindowView — ближайшее окно обслуживания (на 7 дней вперёд).
@@ -42,31 +57,33 @@ type StatusWindowView struct {
 }
 
 // overallStatusText/Class — человекочитаемый общий статус страницы.
-func overallStatusText(overall string) string {
+func overallStatusText(ctx context.Context, overall string) string {
 	switch overall {
 	case "major":
-		return "Крупный сбой"
+		return i18n.T(ctx, "status.overall.major")
 	case "partial":
-		return "Частичный сбой"
+		return i18n.T(ctx, "status.overall.partial")
 	default:
-		return "Все системы работают"
+		return i18n.T(ctx, "status.overall.ok")
 	}
 }
 
-// statusMonitorText — человекочитаемый статус сервиса для публичной страницы
-// (страница RU-only, без i18n): сырой enum up/down/… наружу не показываем.
-func statusMonitorText(status string) string {
+// statusMonitorText — человекочитаемый статус сервиса для публичной
+// страницы: сырой enum up/down/… наружу не показываем. Формулировки свои
+// (status.monitor.*), а не общие uptime.status.*: внутри кабинета уместно
+// сухое «Up», посетителю статус-страницы — «Работает».
+func statusMonitorText(ctx context.Context, status string) string {
 	switch status {
 	case "up":
-		return "Работает"
+		return i18n.T(ctx, "status.monitor.up")
 	case "down":
-		return "Недоступен"
+		return i18n.T(ctx, "status.monitor.down")
 	case "paused":
-		return "Пауза"
+		return i18n.T(ctx, "status.monitor.paused")
 	case "maintenance":
-		return "Обслуживание"
+		return i18n.T(ctx, "status.monitor.maintenance")
 	default:
-		return "Неизвестно"
+		return i18n.T(ctx, "status.monitor.unknown")
 	}
 }
 
@@ -86,30 +103,47 @@ func overallStatusClass(overall string) string {
 // Стили берутся из той же публичной статики /static/app.css.
 templ statusLayout(title string) {
 	<!DOCTYPE html>
-	<html lang="ru">
-		<head>
+	if theme.FromContext(ctx).Code != "system" {
+		<html lang={ i18n.FromContext(ctx).Code } data-theme={ theme.FromContext(ctx).Code }>
+			@statusLayoutBody(title) {
+				{ children... }
+			}
+		</html>
+	} else {
+		<html lang={ i18n.FromContext(ctx).Code }>
+			@statusLayoutBody(title) {
+				{ children... }
+			}
+		</html>
+	}
+}
+
+// statusLayoutBody — общее тело для обеих веток statusLayout (с data-theme и
+// без). Вынесено, потому что templ не позволяет условно открыть тег без
+// закрывающего — тот же приём, что и в layout/chromeless.
+templ statusLayoutBody(title string) {
+	<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>{ title }</title>
 			<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
-			<link rel="stylesheet" href="/static/app.css"/>
-		</head>
-		<body class="status-body">
-			<main class="status-page">
-				{ children... }
-			</main>
-		</body>
-	</html>
+		<link rel="stylesheet" href="/static/app.css"/>
+	</head>
+	<body class="status-body">
+		<main class="status-page">
+			{ children... }
+		</main>
+	</body>
 }
 
 templ statusMonitorTile(m StatusMonitorView) {
 	<li class="status-tile card">
 		<div class="status-tile-head">
 			<span class="status-tile-name">{ m.Name }</span>
-			<span class={ monitorStatusBadgeClass(m.Status) }>{ statusMonitorText(m.Status) }</span>
+			<span class={ monitorStatusBadgeClass(m.Status) }>{ statusMonitorText(ctx, m.Status) }</span>
 		</div>
 		<div class="status-tile-bars">@m.Bars</div>
-		<div class="status-tile-uptime">Доступность (90 дней): { uptimeStatText(m.Uptime90d) }</div>
+		<div class="status-tile-uptime">{ i18n.Tf(ctx, "status.uptime_90d", "value", uptimeStatText(m.Uptime90d)) }</div>
 	</li>
 }
 
@@ -120,10 +154,10 @@ templ PublicStatusPage(v StatusPageView) {
 		if v.Description != "" {
 			<p class="status-description">{ v.Description }</p>
 		}
-		<p class={ overallStatusClass(v.Overall) }>{ overallStatusText(v.Overall) }</p>
+		<p class={ overallStatusClass(v.Overall) }>{ overallStatusText(ctx, v.Overall) }</p>
 
 		if len(v.Monitors) == 0 {
-			<p>Сервисы не настроены.</p>
+			<p>{ i18n.T(ctx, "status.monitors.empty") }</p>
 		} else {
 			<ul class="status-tiles">
 				for _, m := range v.Monitors {
@@ -132,16 +166,16 @@ templ PublicStatusPage(v StatusPageView) {
 			</ul>
 		}
 
-		<h2>Инциденты за 90 дней</h2>
+		<h2>{ i18n.T(ctx, "status.incidents.title") }</h2>
 		if len(v.Incidents) == 0 {
-			<p>Инцидентов не было.</p>
+			<p>{ i18n.T(ctx, "status.incidents.empty") }</p>
 		} else {
 			<table class="status-incidents data-table">
 				<thead>
 					<tr>
-						<th>Сервис</th>
-						<th>Начало (UTC)</th>
-						<th>Длительность</th>
+						<th>{ i18n.T(ctx, "status.col.service") }</th>
+						<th>{ i18n.T(ctx, "status.col.started") }</th>
+						<th>{ i18n.T(ctx, "status.col.duration") }</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -149,23 +183,27 @@ templ PublicStatusPage(v StatusPageView) {
 						<tr>
 							<td>{ inc.Name }</td>
 							<td>{ inc.StartedAt }</td>
-							<td>{ inc.Duration }</td>
+							if inc.Ongoing {
+								<td>{ i18n.T(ctx, "status.incident.ongoing") }</td>
+							} else {
+								<td>{ inc.Duration }</td>
+							}
 						</tr>
 					}
 				</tbody>
 			</table>
 		}
 
-		<h2>Ближайшие работы</h2>
+		<h2>{ i18n.T(ctx, "status.maintenance.title") }</h2>
 		if len(v.Maintenance) == 0 {
-			<p>Работ не запланировано.</p>
+			<p>{ i18n.T(ctx, "status.maintenance.empty") }</p>
 		} else {
 			<table class="status-maintenance data-table">
 				<thead>
 					<tr>
-						<th>Работы</th>
-						<th>Начало (UTC)</th>
-						<th>Конец (UTC)</th>
+						<th>{ i18n.T(ctx, "status.col.window") }</th>
+						<th>{ i18n.T(ctx, "status.col.started") }</th>
+						<th>{ i18n.T(ctx, "status.col.ends") }</th>
 					</tr>
 				</thead>
 				<tbody>

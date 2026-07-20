@@ -104,7 +104,7 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 		Transaction: transaction,
 		Environment: environment,
 		Period:      period,
-		Chart:       flamegraphSVG(root, 960),
+		Chart:       flamegraphSVG(r.Context(), root, 960),
 	}
 	_ = templates.ProfileFlame(vm, h.currentEmail(r)).Render(r.Context(), w)
 }

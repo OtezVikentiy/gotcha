@@ -18,5 +18,8 @@ templ createModal(id, titleKey string) {
 
 // createTrigger — кнопка «+ …» в шапке раздела, открывающая модалку #id.
 templ createTrigger(id, labelKey string) {
-	<a class="btn btn-primary create-trigger" href={ templ.SafeURL("#" + id) }>+ { i18n.T(ctx, labelKey) }</a>
+	<a class="btn btn-primary create-trigger" href={ templ.SafeURL("#" + id) }>
+		@icon("plus")
+		{ i18n.T(ctx, labelKey) }
+	</a>
 }

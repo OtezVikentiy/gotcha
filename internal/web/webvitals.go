@@ -134,8 +134,24 @@ func (h *Handler) vitalsPanel(r *http.Request, projectID int64, transaction stri
 		}
 		rows = append(rows, templates.VitalPanelRow{
 			Vital: overall[i],
-			Chart: vitalSeriesSVG(series, perfVitalChartWidth, perfVitalChartHeight),
+			Chart: vitalSeriesSVG(series, perfVitalChartWidth, perfVitalChartHeight,
+				vitalValueFormatter(name)),
 		})
 	}
 	return rows, nil
+}
+
+// vitalValueFormatter — запись значения метрики для подсказки спарклайна: та
+// же, что у значения в строке таблицы (см. formatVitalValue в шаблоне), иначе
+// подсказка показывала бы голое число без единицы измерения.
+func vitalValueFormatter(name string) func(float64) string {
+	if name == "cls" {
+		return func(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
+	}
+	return func(ms float64) string {
+		if ms < 1000 {
+			return strconv.FormatFloat(ms, 'f', 0, 64) + "ms"
+		}
+		return strconv.FormatFloat(ms/1000, 'f', 2, 64) + "s"
+	}
 }

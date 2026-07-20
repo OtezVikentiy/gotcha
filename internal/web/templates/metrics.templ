@@ -25,6 +25,7 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 			if len(metrics) == 0 {
 				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -38,11 +39,12 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 							<tr>
 								<td><a href={ templ.URL(metricLink(projectID, m.Name)) }>{ m.Name }</a></td>
 								<td>{ m.Type }</td>
-								<td class="num">{ m.Unit }</td>
+								<td class="num">{ metricUnitText(m.Unit) }</td>
 							</tr>
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}
@@ -63,6 +65,17 @@ type MetricDetailVM struct {
 	Percentiles  bool // histogram → доступны p50/p95/p99
 }
 
+// metricUnitText — юнит для показа человеку. "1" по соглашению OTLP означает
+// безразмерную метрику (счётчики, количества): показывать его как значение
+// юнита бессмысленно — в плитке это выглядит как «ЮНИТ 1», будто единица
+// измерения так и называется.
+func metricUnitText(unit string) string {
+	if unit == "" || unit == "1" {
+		return "—"
+	}
+	return unit
+}
+
 func metricAggOptions(percentiles bool) []string {
 	if percentiles {
 		return []string{"p50", "p95", "p99", "avg"}
@@ -78,7 +91,7 @@ func metricPeriodOptions() []string {
 templ MetricDetail(vm MetricDetailVM, userEmail string) {
 	@layout(i18n.Tf(ctx, "metrics.detail.title", "name", vm.Info.Name), userEmail) {
 		<div class="metric-detail">
-			<p class="breadcrumb"><a href={ templ.URL(metricsBasePath(vm.ProjectID)) }>← { i18n.T(ctx, "metrics.title") }</a></p>
+			@breadcrumbBack(templ.URL(metricsBasePath(vm.ProjectID)), i18n.T(ctx, "metrics.title"))
 			<h1>{ vm.Info.Name }</h1>
 			<div class="monitor-meta">
 				<div class="stat-tile">
@@ -87,7 +100,7 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 				</div>
 				<div class="stat-tile">
 					<div class="stat-label">{ i18n.T(ctx, "metrics.table.unit") }</div>
-					<div class="stat-value">{ vm.Info.Unit }</div>
+					<div class="stat-value">{ metricUnitText(vm.Info.Unit) }</div>
 				</div>
 			</div>
 			<form method="get" class="metric-filters">

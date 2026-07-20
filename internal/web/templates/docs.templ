@@ -53,7 +53,7 @@ templ DocsIndex(groups []DocsGroup, userEmail string) {
 templ DocsPage(slug, title, htmlBody string, pages []docs.Page, userEmail string) {
 	@layout(title, userEmail) {
 		<div class="docs-page">
-			<p class="breadcrumb"><a href="/docs">← { i18n.T(ctx, "docs.index.title") }</a></p>
+			@breadcrumbBack(templ.SafeURL("/docs"), i18n.T(ctx, "docs.index.title"))
 			<article class="doc-content">
 				@templ.Raw(htmlBody)
 			</article>

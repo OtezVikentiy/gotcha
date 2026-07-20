@@ -286,12 +286,37 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		Period:       period,
 		Environment:  environment,
 		ApdexT:       int(project.ApdexThresholdMS),
-		LatencyChart: latencyLinesSVG(points, perfLatencyChartWidth, perfLatencyChartHeight),
-		Throughput:   throughputBarsSVG(points, perfLatencyChartWidth, perfLatencyChartHeight),
-		Histogram:    durationHistogramSVG(histogram, perfLatencyChartWidth, perfLatencyChartHeight),
+		LatencyChart: latencyLinesSVG(r.Context(), points, perfLatencyChartWidth, perfLatencyChartHeight),
+		Throughput:   throughputBarsSVG(r.Context(), points, perfLatencyChartWidth, perfLatencyChartHeight),
+		Histogram:    durationHistogramSVG(r.Context(), histogram, perfLatencyChartWidth, perfLatencyChartHeight),
+		StepLabel:    formatStep(step),
+		From:         endpointOrigin(r.URL.Query().Get("from")),
 		Slowest:      slowest,
 		PerfIssues:   perfIssues,
 		Vitals:       vitals,
 	}
 	_ = templates.EndpointDetail(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// formatStep — шаг агрегации графиков для подписи под заголовком: «5m», «1h».
+// Без него высота столбика трафика ни о чём не говорит.
+func formatStep(step time.Duration) string {
+	switch {
+	case step >= time.Hour:
+		return strconv.Itoa(int(step.Hours())) + "h"
+	case step >= time.Minute:
+		return strconv.Itoa(int(step.Minutes())) + "m"
+	default:
+		return strconv.Itoa(int(step.Seconds())) + "s"
+	}
+}
+
+// endpointOrigin — подраздел, из которого пришли на страницу эндпойнта.
+// Значение приходит из адреса, поэтому сверяется со списком известных: в
+// шаблон не должна попадать произвольная строка из query.
+func endpointOrigin(from string) string {
+	if from == "web-vitals" {
+		return from
+	}
+	return ""
 }

@@ -1,0 +1,68 @@
+// userchip.templ — единый способ показать человека: цветной кружок с
+// инициалами плюс подпись. Используется и в колонке «Ответственный» списка
+// issues, и в шапке детали issue, чтобы назначение читалось одинаково в обоих
+// местах.
+package templates
+
+import (
+	"hash/fnv"
+	"strconv"
+	"strings"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// avatarPalette — количество цветовых классов аватара (.avatar--c0…c7 в
+// app.css). Цвет выбирается детерминированно по адресу, поэтому один и тот же
+// человек всегда одного цвета, а соседние строки списка различаются не только
+// буквами. Класс, а не inline-style: CSP запрещает style="" (см. layout.templ).
+const avatarPalette = 8
+
+// avatarColorClass — класс цвета по хешу адреса.
+func avatarColorClass(email string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return "avatar--c" + strconv.Itoa(int(h.Sum32()%avatarPalette))
+}
+
+// emailLocal — часть адреса до «@». В узкой колонке списка полный адрес вида
+// carol@acme.example занимает половину ширины и шумит, а различать людей
+// достаточно по локальной части; полный адрес отдаётся в title.
+func emailLocal(email string) string {
+	if i := strings.IndexByte(email, '@'); i > 0 {
+		return email[:i]
+	}
+	return email
+}
+
+// avatarBubble — кружок с инициалами. size — дополнительный класс размера
+// (пусто = базовый).
+templ avatarBubble(email, sizeClass string) {
+	<span class={ "avatar", sizeClass, avatarColorClass(email) } aria-hidden="true">
+		{ initials(email) }
+	</span>
+}
+
+// userChip — кружок + локальная часть адреса. Для колонок таблиц.
+templ userChip(email string) {
+	<span class="user-chip" title={ email }>
+		@avatarBubble(email, "avatar--sm")
+		<span class="user-chip-name">{ emailLocal(email) }</span>
+	</span>
+}
+
+// assigneeChip — состояние «на кого назначено» в шапке issue: кружок и полный
+// адрес, либо приглушённая надпись «не назначено». Это факт, а не элемент
+// управления: форма смены живёт отдельно (см. assignControl).
+templ assigneeChip(email string) {
+	if email == "" {
+		<span class="user-chip user-chip--empty">
+			{ i18n.T(ctx, "issues.detail.unassigned") }
+		</span>
+	} else {
+		<span class="user-chip" title={ email }>
+			@avatarBubble(email, "avatar--sm")
+			<span class="user-chip-name">{ email }</span>
+		</span>
+	}
+}

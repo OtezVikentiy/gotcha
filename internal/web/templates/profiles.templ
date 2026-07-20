@@ -35,6 +35,7 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, envi
 		<div class="profiles">
 			<h1>{ i18n.T(ctx, "nav.profiles") }</h1>
 			@helpPanel("profiles", "profiling")
+			<p class="chart-caption">{ i18n.T(ctx, "profiles.list.caption") }</p>
 			<p class="profiles-actions">
 				<a class="btn btn-ghost" href={ templ.URL(profileRegressionsBasePath(projectID)) }>{ i18n.T(ctx, "profiles.regressions.title") } →</a>
 			</p>
@@ -46,12 +47,15 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, envi
 			if len(services) == 0 {
 				@emptyState("activity", "profiles.empty.title", "profiles.empty.body", "profiles.empty.cta", "/docs/profiling")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
 							<th>{ i18n.T(ctx, "profiles.table.service") }</th>
 							<th>{ i18n.T(ctx, "profiles.table.type") }</th>
+							<th>{ i18n.T(ctx, "perf.environment") }</th>
 							<th>{ i18n.T(ctx, "profiles.table.transaction") }</th>
+							<th class="num">{ i18n.T(ctx, "profiles.table.weight") }</th>
 							<th class="num">{ i18n.T(ctx, "profiles.table.samples") }</th>
 						</tr>
 					</thead>
@@ -60,14 +64,91 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, period, envi
 							<tr>
 								<td><a href={ templ.URL(profileFlameLink(projectID, s, period, environment)) }>{ profileDisplayService(s.Service) }</a></td>
 								<td>{ s.Type }</td>
+								<td>{ envList(s.Environments) }</td>
 								<td>{ s.Transaction }</td>
+								<td class="num">{ profileWeightText(s.Type, s.Unit, s.Weight) }</td>
 								<td class="num">{ strconv.FormatUint(s.Samples, 10) }</td>
 							</tr>
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
+	}
+}
+
+// profileWeightText — суммарный вес выборок в его единице измерения.
+// Единица приходит из данных (pprof SampleType.Unit, колонка unit): голое
+// число вводило в заблуждение — «284000000» в колонке читалось как 284
+// миллиона замеров, хотя это 284 мс процессорного времени.
+//
+// Пустая единица — строки, записанные до миграции 0012. Для них возвращаемся
+// к догадке по имени типа профиля: это лучше, чем показать сырое число, но
+// работает только для известных типов, ради чего единица и сохраняется.
+func profileWeightText(profileType, unit string, weight uint64) string {
+	switch unit {
+	case "nanoseconds":
+		return formatProfileNanos(weight)
+	case "microseconds":
+		return formatProfileNanos(weight * 1_000)
+	case "milliseconds":
+		return formatProfileNanos(weight * 1_000_000)
+	case "seconds":
+		return formatProfileNanos(weight * 1_000_000_000)
+	case "bytes":
+		return formatProfileBytes(weight)
+	case "count":
+		// Величина без единицы: число сэмплов, объектов, вызовов.
+		return strconv.FormatUint(weight, 10)
+	case "":
+		return profileWeightByType(profileType, weight)
+	default:
+		// Единица известна источнику, но не нам: показываем как есть, а не
+		// приводим к чему-то наугад.
+		return strconv.FormatUint(weight, 10) + " " + unit
+	}
+}
+
+// profileWeightByType — запасная догадка по имени типа профиля для строк,
+// записанных до миграции 0012 (единицы у них нет). Работает только для
+// известных типов — ровно то ограничение, ради снятия которого единица теперь
+// и сохраняется рядом со значением.
+func profileWeightByType(profileType string, weight uint64) string {
+	switch profileType {
+	case "cpu", "wall", "block", "mutex":
+		return formatProfileNanos(weight)
+	case "alloc_space", "inuse_space", "heap":
+		return formatProfileBytes(weight)
+	default:
+		return strconv.FormatUint(weight, 10)
+	}
+}
+
+func formatProfileNanos(ns uint64) string {
+	switch {
+	case ns >= 1_000_000_000:
+		return strconv.FormatFloat(float64(ns)/1e9, 'f', 2, 64) + "s"
+	case ns >= 1_000_000:
+		return strconv.FormatFloat(float64(ns)/1e6, 'f', 0, 64) + "ms"
+	case ns >= 1_000:
+		return strconv.FormatFloat(float64(ns)/1e3, 'f', 0, 64) + "µs"
+	default:
+		return strconv.FormatUint(ns, 10) + "ns"
+	}
+}
+
+func formatProfileBytes(b uint64) string {
+	const unit = 1024
+	switch {
+	case b >= unit*unit*unit:
+		return strconv.FormatFloat(float64(b)/(unit*unit*unit), 'f', 2, 64) + "GB"
+	case b >= unit*unit:
+		return strconv.FormatFloat(float64(b)/(unit*unit), 'f', 1, 64) + "MB"
+	case b >= unit:
+		return strconv.FormatFloat(float64(b)/unit, 'f', 1, 64) + "KB"
+	default:
+		return strconv.FormatUint(b, 10) + "B"
 	}
 }
 
@@ -93,7 +174,7 @@ type ProfileFlameVM struct {
 templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 	@layout(i18n.T(ctx, "profiles.flame.title"), userEmail) {
 		<div class="profile-flame">
-			<p class="breadcrumb"><a href={ templ.URL(profilesBasePath(vm.ProjectID)) }>← { i18n.T(ctx, "nav.profiles") }</a></p>
+			@breadcrumbBack(templ.URL(profilesBasePath(vm.ProjectID)), i18n.T(ctx, "nav.profiles"))
 			<h1>{ i18n.T(ctx, "profiles.flame.title") }</h1>
 			<p class="metric-meta">
 				{ profileDisplayService(vm.Service) } · { vm.Type }

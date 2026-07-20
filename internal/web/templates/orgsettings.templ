@@ -129,7 +129,7 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 			if !self && (viewerIsOwner || m.Role != org.RoleOwner) {
 				<form method="post" action={ templ.URL(orgSettingsRemovePath(orgID)) } class="member-remove-form">
 					<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
-					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.members.remove") }</button>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "org.members.remove") }</button>
 				</form>
 			}
 		</td>

@@ -194,7 +194,19 @@ func (h *Handler) statusPage(w http.ResponseWriter, r *http.Request) {
 	h.renderStatusPage(w, r, view)
 }
 
+// renderStatusPage достраивает локалезависимую часть вьюхи под конкретный
+// запрос. Кешированная view общая для всех посетителей, поэтому её нельзя
+// мутировать — Monitors копируется, и SVG-полоска строится в копии.
 func (h *Handler) renderStatusPage(w http.ResponseWriter, r *http.Request, view templates.StatusPageView) {
+	if len(view.Monitors) > 0 {
+		monitors := make([]templates.StatusMonitorView, len(view.Monitors))
+		copy(monitors, view.Monitors)
+		for i := range monitors {
+			monitors[i].Bars = availabilityBarsSVG(r.Context(), monitors[i].BarStats,
+				availabilityBarsWidth, availabilityBarsHeight)
+		}
+		view.Monitors = monitors
+	}
 	_ = templates.PublicStatusPage(view).Render(r.Context(), w)
 }
 
@@ -266,11 +278,15 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 			return templates.StatusPageView{}, err
 		}
 
+		// BarStats, а не готовый SVG: вьюха кешируется на statusPageTTL и
+		// общая для всех посетителей, а подписи <title> внутри полоски
+		// локализованы. Отрендерить SVG здесь — значит впечатать язык того,
+		// кто первым прогрел кеш, всем остальным на 30 секунд.
 		view.Monitors = append(view.Monitors, templates.StatusMonitorView{
 			Name:      spm.DisplayName,
 			Status:    status,
 			Uptime90d: stat,
-			Bars:      availabilityBarsSVG(bars, availabilityBarsWidth, availabilityBarsHeight),
+			BarStats:  bars,
 		})
 
 		// Монитор в окне обслуживания и на паузе не портит общий статус: он
@@ -295,6 +311,7 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 					Name:      spm.DisplayName,
 					StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout),
 					Duration:  incidentDurationText(inc, now),
+					Ongoing:   inc.ResolvedAt == nil,
 				},
 				at: inc.StartedAt,
 			})
@@ -336,15 +353,18 @@ func overallStatus(down, counted int) string {
 	}
 }
 
-// incidentDurationText — длительность инцидента либо «ongoing» для
-// незакрытого. Причина и регионы инцидента наружу не отдаются (в них
-// хосты/IP), только имя сервиса, начало и длительность.
+// incidentDurationText — длительность закрытого инцидента. Для незакрытого
+// возвращает пустую строку: слово «идёт» локализовано и подставляется
+// шаблоном по флагу StatusIncidentView.Ongoing, потому что вьюха кешируется
+// одна на всех посетителей независимо от их языка. Причина и регионы
+// инцидента наружу не отдаются (в них хосты/IP), только имя сервиса, начало
+// и длительность.
 func incidentDurationText(inc uptime.Incident, now time.Time) string {
 	end := now
 	if inc.ResolvedAt != nil {
 		end = *inc.ResolvedAt
 	} else {
-		return "идёт"
+		return ""
 	}
 	d := end.Sub(inc.StartedAt)
 	if d < 0 {

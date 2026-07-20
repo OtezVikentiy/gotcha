@@ -61,15 +61,7 @@ func perfStatusFilterClass(active bool) string {
 }
 
 templ perfStatusTab(projectID int64, value, label, active string) {
-	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(perfStatusFilterURL(projectID, tabQuery(value))) } if value == active { aria-current="page" }>{ label }</a>
-}
-
-// tabQuery — значение query для вкладки: "all" убирает фильтр (пустой status).
-func tabQuery(value string) string {
-	if value == "all" {
-		return ""
-	}
-	return value
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(perfStatusFilterURL(projectID, value)) } if value == active { aria-current="page" }>{ label }</a>
 }
 
 // PerfIssuesList — GET /projects/{id}/perf-issues: таблица perf-проблем проекта
@@ -89,6 +81,7 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 			if len(issues) == 0 {
 				@emptyState("zap", "perf.issues.empty.title", "perf.issues.empty.body", "", "")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -113,6 +106,7 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

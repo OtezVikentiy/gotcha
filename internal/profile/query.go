@@ -15,22 +15,41 @@ type Query struct {
 
 func NewQuery(conn driver.Conn) *Query { return &Query{conn: conn} }
 
-// ServiceInfo — группа профилей (сервис/тип/транзакция) с суммарным весом.
+// ServiceInfo — группа профилей (сервис/тип/транзакция).
+//
+// Weight — суммарный вес выборок (sum(value)), Unit — его единица измерения
+// из pprof SampleType.Unit ('nanoseconds', 'bytes', 'count'). Единица берётся
+// из данных, а не угадывается по имени типа профиля: для нестандартных типов
+// догадка не работает. У строк, записанных до миграции 0012, единицы нет —
+// тогда UI возвращается к прежней догадке по типу.
+//
+// Samples — число выборок. Раньше поле с этим именем несло sum(value), и
+// колонка «Замеры» показывала 284000000 там, где имелось в виду 284 мс
+// процессорного времени.
 type ServiceInfo struct {
-	Service     string
-	Type        string
-	Transaction string
-	Samples     uint64
+	Service      string
+	Type         string
+	Transaction  string
+	Weight       uint64
+	Unit         string
+	Samples      uint64
+	Environments []string
 }
 
 // ListServices возвращает группы профилей проекта за период (для обзора/фильтров).
 func (q *Query) ListServices(ctx context.Context, projectID int64, environment string, from, to time.Time) ([]ServiceInfo, error) {
 	rows, err := q.conn.Query(ctx, `
-		SELECT service, profile_type, transaction, sum(value)
+		SELECT service, profile_type, transaction,
+			sum(value) AS weight,
+			-- Единица одна на группу (профиль одного типа), поэтому берём
+			-- любую непустую: max() пропускает пустые строки старых записей.
+			max(unit) AS unit,
+			count() AS samples,
+			arraySort(groupUniqArray(environment)) AS envs
 		FROM profile_samples
 		WHERE project_id = ? AND ts >= ? AND ts < ? AND (? = '' OR environment = ?)
 		GROUP BY service, profile_type, transaction
-		ORDER BY sum(value) DESC
+		ORDER BY weight DESC
 		LIMIT 200`,
 		projectID, from, to, environment, environment)
 	if err != nil {
@@ -40,7 +59,7 @@ func (q *Query) ListServices(ctx context.Context, projectID int64, environment s
 	var out []ServiceInfo
 	for rows.Next() {
 		var s ServiceInfo
-		if err := rows.Scan(&s.Service, &s.Type, &s.Transaction, &s.Samples); err != nil {
+		if err := rows.Scan(&s.Service, &s.Type, &s.Transaction, &s.Weight, &s.Unit, &s.Samples, &s.Environments); err != nil {
 			return nil, fmt.Errorf("profile: list services scan: %w", err)
 		}
 		out = append(out, s)

@@ -144,7 +144,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	region := strings.TrimSpace(r.FormValue("region"))
 	if !validProbeField(name) || !validProbeField(region) {
 		h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID,
-			"имя и регион пробы должны быть непустыми и не длиннее 40 символов", "")
+			i18n.T(r.Context(), "err.probe.name_region"), "")
 		return
 	}
 	// Регион встроенной пробы (in-process runner центра) занят. Сравнивать
@@ -156,7 +156,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	// а страница показывала бы регион eu-central.
 	if region == h.localRegion() {
 		h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID,
-			"регион «"+h.localRegion()+"» зарезервирован за встроенной пробой — выберите другое имя региона", "")
+			i18n.Tf(r.Context(), "err.probe.region_reserved", "region", h.localRegion()), "")
 		return
 	}
 	_, token, err := h.Uptime.CreateProbe(r.Context(), orgID, region, name)
@@ -208,7 +208,7 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Uptime.RevokeProbe(r.Context(), probeID); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID, "проба уже отозвана", "")
+			h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID, i18n.T(r.Context(), "err.probe.already_revoked"), "")
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))

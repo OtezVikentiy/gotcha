@@ -45,10 +45,15 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			}
 		}
 
-		path := r.URL.Path
+		// Путь для подсветки навигации может отличаться от фактического:
+		// страница эндпойнта общая для «Транзакций» и «Web Vitals», и без
+		// пометки об источнике переход из Web Vitals молча подсвечивал бы
+		// «Транзакции» — пользователь видел, что его унесло в соседний
+		// подраздел (см. navOriginPath).
+		path := navOriginPath(r)
 		area := nav.AreaForPath(path)
 
-		projID := projectIDFromPath(path)
+		projID := projectIDFromPath(r.URL.Path)
 
 		var orgID int64
 		if oid := orgIDFromPath(path); oid != 0 {
@@ -122,4 +127,30 @@ func orgIDFromPath(path string) int64 {
 		return 0
 	}
 	return id
+}
+
+// navOriginPath — путь, по которому подсвечивается навигация. Обычно это путь
+// запроса, но страницы, общие для нескольких подразделов, принимают пометку
+// ?from=<подраздел>: она говорит, откуда пришёл пользователь, и подсветка
+// остаётся на исходном пункте.
+//
+// Сейчас пометку использует только страница эндпойнта (из «Web Vitals»), но
+// сам механизм общий: значение сверяется со списком известных подразделов,
+// чтобы произвольная строка из адреса не влияла на навигацию.
+func navOriginPath(r *http.Request) string {
+	path := r.URL.Path
+	from := r.URL.Query().Get("from")
+	if from == "" {
+		return path
+	}
+	projID := projectIDFromPath(path)
+	if projID == 0 {
+		return path
+	}
+	switch from {
+	case "web-vitals":
+		return "/projects/" + strconv.FormatInt(projID, 10) + "/web-vitals"
+	default:
+		return path
+	}
 }

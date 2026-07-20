@@ -165,9 +165,9 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 	case errors.Is(err, org.ErrDomainTaken):
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "домен уже используется другой организацией", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.domain_taken"), "")
 	case errors.Is(err, org.ErrInvalidSSO) || errors.Is(err, org.ErrInvalidRole):
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "заполните issuer, client_id, client_secret и домен", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.sso_fields_required"), "")
 	default:
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
@@ -242,10 +242,10 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 	quotas := []templates.QuotaVM{
-		{Kind: "События", Field: "event_quota", Usage: usage, Limit: o.EventQuota},
-		{Kind: "Транзакции", Field: "transaction_quota", Usage: txUsage, Limit: o.TransactionQuota},
-		{Kind: "Метрики", Field: "metric_quota", Usage: metricUsage, Limit: o.MetricQuota},
-		{Kind: "Профили", Field: "profile_quota", Usage: profileUsage, Limit: o.ProfileQuota},
+		{Kind: i18n.T(r.Context(), "org.quota.kind.events"), Field: "event_quota", Usage: usage, Limit: o.EventQuota},
+		{Kind: i18n.T(r.Context(), "org.quota.kind.transactions"), Field: "transaction_quota", Usage: txUsage, Limit: o.TransactionQuota},
+		{Kind: i18n.T(r.Context(), "org.quota.kind.metrics"), Field: "metric_quota", Usage: metricUsage, Limit: o.MetricQuota},
+		{Kind: i18n.T(r.Context(), "org.quota.kind.profiles"), Field: "profile_quota", Usage: profileUsage, Limit: o.ProfileQuota},
 	}
 	banner := h.quotaBanner(r.Context(), orgID)
 	w.WriteHeader(status)
@@ -350,7 +350,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if targetID == uid {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "нельзя изменить собственную роль", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.own_role"), "")
 		return
 	}
 	role := org.Role(r.FormValue("role"))
@@ -475,7 +475,7 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	if !validInviteEmail(email) {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "невалидный email", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.invalid_email"), "")
 		return
 	}
 	role := org.Role(r.FormValue("role"))
@@ -494,8 +494,10 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	// всё равно показывается в UI ниже и её можно передать вручную.
 	if h.Email != nil && h.Email.Configured() {
 		payload := map[string]any{
-			"subject": "Приглашение в организацию Gotcha",
-			"body":    "Вас пригласили в организацию Gotcha. Ссылка для принятия приглашения: " + inviteLink,
+			// Письмо уходит на языке приглашающего: локаль адресата ещё
+			// неизвестна — он в системе не зарегистрирован.
+			"subject": i18n.T(r.Context(), "org.invite.email_subject"),
+			"body":    i18n.Tf(r.Context(), "org.invite.email_body", "link", inviteLink),
 		}
 		if err := h.Email.Send(r.Context(), notify.Target{Kind: "email", Target: email}, payload); err != nil {
 			slog.Warn("orgSettingsInvite: failed to send invite email", "org_id", orgID, "err", err)
@@ -652,7 +654,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "укажите проект", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.project_required"), "")
 		return
 	}
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы чистить
@@ -667,7 +669,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		IP:     strings.TrimSpace(r.FormValue("ip")),
 	}
 	if sub.Email == "" && sub.UserID == "" && sub.IP == "" {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "укажите хотя бы одно поле субъекта (email, user_id или ip)", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "")
 		return
 	}
 	if h.Purger == nil {
@@ -707,7 +709,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "укажите проект", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.project_required"), "")
 		return
 	}
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы выгрузить
@@ -722,7 +724,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 		IP:     strings.TrimSpace(r.FormValue("ip")),
 	}
 	if sub.Email == "" && sub.UserID == "" && sub.IP == "" {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, "укажите хотя бы одно поле субъекта (email, user_id или ip)", "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "")
 		return
 	}
 	if h.Purger == nil {
@@ -786,9 +788,9 @@ func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 	email := h.currentEmail(r)
 	if _, err := h.Org.AcceptInvite(r.Context(), token, uid, email); err != nil {
-		msg := "приглашение недействительно, истекло или уже использовано"
+		msg := i18n.T(r.Context(), "err.org.invite_invalid")
 		if errors.Is(err, org.ErrInviteEmailMismatch) {
-			msg = "приглашение выписано на другой email"
+			msg = i18n.T(r.Context(), "err.org.invite_other_email")
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = templates.InviteAccept(token, msg, email).Render(r.Context(), w)

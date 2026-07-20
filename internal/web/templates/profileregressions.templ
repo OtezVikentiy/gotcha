@@ -57,7 +57,7 @@ func profileRegServiceType(r profile.Regression) string {
 }
 
 templ profileRegStatusTab(projectID int64, value, label, active string) {
-	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(profileRegStatusURL(projectID, tabQuery(value))) } if value == active { aria-current="page" }>{ label }</a>
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(profileRegStatusURL(projectID, value)) } if value == active { aria-current="page" }>{ label }</a>
 }
 
 // ProfileRegressionsList — GET /projects/{id}/profile-regressions: таблица
@@ -65,7 +65,7 @@ templ profileRegStatusTab(projectID int64, value, label, active string) {
 templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string) {
 	@layout(i18n.T(ctx, "profiles.regressions.title"), userEmail) {
 		<div class="profile-regressions">
-			<p class="breadcrumb"><a href={ templ.URL(profilesBasePath(projectID)) }>← { i18n.T(ctx, "nav.profiles") }</a></p>
+			@breadcrumbBack(templ.URL(profilesBasePath(projectID)), i18n.T(ctx, "nav.profiles"))
 			<h1>{ i18n.T(ctx, "profiles.regressions.title") }</h1>
 			@helpPanel("profileregressions", "profiling")
 			<nav class="tabs">
@@ -76,6 +76,7 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 			if len(regressions) == 0 {
 				@emptyState("zap", "profiles.regressions.empty.title", "profiles.regressions.empty.body", "", "")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -102,6 +103,7 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

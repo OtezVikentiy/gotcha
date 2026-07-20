@@ -239,6 +239,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID))
 				} else {
 					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
+						<div class="card">
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -267,11 +268,18 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 										<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
 										<td>{ ago(ctx, row.Issue.LastSeen) }</td>
 										<td><span class={ statusBadgeClass(row.Issue.Status) }>{ row.Issue.Status }</span></td>
-										<td>{ assigneeDisplay(row.Issue.AssigneeEmail) }</td>
+										<td>
+										if row.Issue.AssigneeEmail == "" {
+											{ assigneeDisplay(row.Issue.AssigneeEmail) }
+										} else {
+											@userChip(row.Issue.AssigneeEmail)
+										}
+									</td>
 									</tr>
 								}
 							</tbody>
 						</table>
+						</div>
 						<div class="bulk-actions">
 							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
 							<button type="submit" name="action" value="ignore" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>

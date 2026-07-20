@@ -135,6 +135,7 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "", "")
 				}
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -162,6 +163,7 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

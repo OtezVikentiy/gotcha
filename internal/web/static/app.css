@@ -31,6 +31,15 @@
 	--space: 4px;
 	--font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 	--font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+	/* Шкала кеглей одним местом: раньше размеры были захардкожены в двух
+	   десятках правил, и подгонка «чуть крупнее» означала правку каждого.
+	   --fs-base — обычный текст, --fs-sm — вторичный (ячейки таблиц, мета),
+	   --fs-xs — мелкие подписи и бейджи, --fs-label — микро-лейблы капсом
+	   (заголовки колонок, подписи стат-плиток, ярлыки рейла). */
+	--fs-base: 15px;
+	--fs-sm: 14px;
+	--fs-xs: 12px;
+	--fs-label: 11px;
 }
 :root[data-theme="light"] {
 	--bg: #f6f8fb;
@@ -44,8 +53,12 @@
 	--accent-hover: #1f5aff;
 	--accent-fg: #ffffff;
 	--accent-soft: rgba(47, 107, 255, .10);
-	--rail: #eef2f7;
-	--rail-border: #dde3ec;
+	/* Рейл заметно глубже полотна и сайдбара: на светлой теме он иначе
+	   сливается с сайдбаром в одну серую полосу и перестаёт читаться как
+	   отдельная зона навигации. Тёмным (как в спеке §4.1) не делаем —
+	   сплошная тёмная колонка на светлом фоне читается как артефакт. */
+	--rail: #e4e9f2;
+	--rail-border: #ccd5e2;
 	--good: #1a7f37;
 	--warn: #9a6700;
 	--danger: #cf222e;
@@ -65,8 +78,8 @@
 		--accent-hover: #1f5aff;
 		--accent-fg: #ffffff;
 		--accent-soft: rgba(47, 107, 255, .10);
-		--rail: #eef2f7;
-		--rail-border: #dde3ec;
+		--rail: #e4e9f2;
+		--rail-border: #ccd5e2;
 		--good: #1a7f37;
 		--warn: #9a6700;
 		--danger: #cf222e;
@@ -84,8 +97,31 @@ body {
 	background: var(--bg);
 	color: var(--text);
 	font-family: var(--font-sans);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	line-height: 1.5;
+}
+
+/* Типографическая шкала (спека §4.2, компактная плотность). Без этих правил
+   заголовки берут дефолт браузера (h1 = 2em), и шапка каждой страницы
+   получается втрое крупнее строки таблицы — из компактной вёрстки это
+   выбивается сильнее всего. */
+h1 {
+	font-size: 22px;
+	font-weight: 650;
+	line-height: 1.25;
+	margin: 0 0 10px;
+}
+h2 {
+	font-size: 18px;
+	font-weight: 650;
+	line-height: 1.3;
+	margin: 18px 0 8px;
+}
+h3 {
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 1.3;
+	margin: 14px 0 6px;
 }
 
 code, pre {
@@ -111,7 +147,7 @@ a:hover {
    ============================================================ */
 .app-shell {
 	display: grid;
-	grid-template-columns: 84px 200px 1fr;
+	grid-template-columns: 96px 200px 1fr;
 	min-height: 100vh;
 }
 
@@ -178,11 +214,17 @@ a:hover {
 	color: var(--accent-fg);
 }
 .rail-label {
-	font-size: 10px;
+	font-size: var(--fs-label);
 	line-height: 1.1;
 	letter-spacing: .2px;
 	text-align: center;
-	overflow-wrap: anywhere;
+	/* Перенос длинных ярлыков задаётся мягким переносом (U+00AD) прямо в
+	   каталоге локалей: hyphens:auto работает только там, где у браузера есть
+	   словарь переносов для языка страницы, а без него слово рвалось в
+	   произвольном месте («Документаци/я»). Мягкий перенос не зависит от
+	   словаря и не виден, пока перенос не понадобился. */
+	hyphens: manual;
+	overflow-wrap: break-word;
 	max-width: 100%;
 }
 .rail-spacer {
@@ -217,7 +259,7 @@ a:hover {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 11px;
+	font-size: var(--fs-xs);
 	font-weight: 600;
 	text-decoration: none;
 	margin-top: 6px;
@@ -250,10 +292,23 @@ a:hover {
 .proj-switch summary::-webkit-details-marker {
 	display: none;
 }
-.proj-switch summary::after {
-	content: "▾";
-	float: right;
+.proj-switch summary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.proj-switch-name {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.proj-switch summary .ic {
+	flex: none;
 	color: var(--text-dim);
+	transition: transform 120ms ease;
+}
+.proj-switch[open] summary .ic {
+	transform: rotate(180deg);
 }
 .proj-switch ul {
 	list-style: none;
@@ -280,7 +335,7 @@ a:hover {
 	border-radius: var(--radius);
 	color: var(--text-dim);
 	text-decoration: none;
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	overflow-wrap: anywhere;
 }
 .ctx-item:hover {
@@ -328,26 +383,43 @@ a:hover {
 .topbar-spacer {
 	flex: 1;
 }
+/* Сегмент-контролы: кнопки склеены в одну пилюлю (общие границы, без
+   зазора), поэтому читаются как один переключатель с выбранным значением, а
+   не как три самостоятельные кнопки. */
 .lang-switcher,
 .theme-toggle {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
 	vertical-align: middle;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
 }
 /* Компактные сегментированные переключатели — переопределяем громкую
    акцентную кнопку по умолчанию (см. правило `button` ниже), чтобы в 44px
    topbar они не спорили с основными действиями. */
 .lang-switcher button,
 .theme-toggle button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	background: transparent;
-	border: 1px solid var(--border);
+	border: none;
+	border-left: 1px solid var(--border);
 	color: var(--text-dim);
-	padding: 3px 8px;
-	font-size: 11px;
+	padding: 4px 8px;
+	font-size: var(--fs-xs);
 	font-weight: 600;
 	cursor: pointer;
-	border-radius: var(--radius);
+	border-radius: 0;
+}
+.lang-switcher button:first-child,
+.theme-toggle button:first-child {
+	border-left: none;
+}
+.theme-toggle .ic {
+	width: 14px;
+	height: 14px;
 }
 .lang-switcher button:hover:not(.is-active),
 .theme-toggle button:hover:not(.is-active) {
@@ -358,27 +430,50 @@ a:hover {
 .theme-btn.is-active {
 	background: var(--accent-soft);
 	color: var(--accent);
-	border-color: var(--accent);
 }
 .app-content {
 	flex: 1;
 	padding: 16px 24px;
 	min-width: 0;
 	overflow-x: auto;
-	/* Ограничиваем ширину контента и центрируем: на широких/ультравайд
-	   экранах короткие таблицы и формы иначе растягиваются от края до края
-	   и выглядят пустыми. 1600px достаточно для самых широких таблиц. */
-	max-width: 1600px;
+	/* Контент прижат влево, а не центрирован: оболочка выстроена слева
+	   направо (рейл → сайдбар → контент), и центрирование разрывало эту
+	   цепочку — левый край контента переставал совпадать с краем сайдбара,
+	   и слева появлялось сиротское поле.
+	   Потолок ширины сохраняем: без него таблица из восьми колонок на
+	   ультравайде растягивается на 2400px, и связать первую колонку с
+	   последней глазом уже трудно. На 1920-мониторе потолок не срабатывает. */
+	max-width: 1920px;
 	width: 100%;
-	margin: 0 auto;
+	margin: 0;
 }
 
 /* Скролл-контейнер для длинных списков (участники и т.п.): ограничивает
    высоту блока и включает вертикальный скролл, чтобы 100 строк не растягивали
    страницу. */
+/* Формы внутри ячеек таблицы выкладываются в строку. Без этого .select с его
+   width:100% распирает ячейку и выталкивает кнопку на вторую строку, хотя
+   места в карточке вдоволь. */
+.member-role-form,
+.team-member-add-form,
+.team-project-attach-form {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.member-role-form .select,
+.team-member-add-form .select,
+.team-project-attach-form .select {
+	width: auto;
+	min-width: 140px;
+}
+
+/* Прокручиваемый список: нижний край растворяется, чтобы обрезанная строка
+   читалась как «список продолжается», а не как сломанная вёрстка. */
 .scroll-list {
 	max-height: 340px;
 	overflow-y: auto;
+	mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
 }
 
 /* No-JS модальное окно через :target (CSP запрещает инлайн-JS). Триггер —
@@ -449,6 +544,16 @@ a:hover {
 @media (min-width: 900px) {
 	.rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* На широком экране три карточки правил встают в один ряд: в две колонки
+   третья уходит вниз и оставляет справа дыру, а карточки разной высоты
+   делают сетку рваной. align-items:start не даёт короткой карточке
+   растягиваться до высоты соседней. */
+@media (min-width: 1200px) {
+	.rule-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.rule-grid {
+	align-items: start;
+}
 
 /* -- Chromeless: анонимные/setup-страницы (логин, регистрация, онбординг,
    ошибки) — без рейла и сайдбара, тонкая верхняя полоса + центр-форма -- */
@@ -505,7 +610,7 @@ a:hover {
 .auth-tagline {
 	margin: 6px 0 0;
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .auth-brand + .auth-form {
 	margin-top: 16px;
@@ -555,7 +660,7 @@ a:hover {
    в topbar (см. .mobile-nav выше) -- */
 @media (max-width: 900px) {
 	.app-shell {
-		grid-template-columns: 84px 1fr;
+		grid-template-columns: 96px 1fr;
 	}
 	.ctx-sidebar {
 		display: none;
@@ -589,7 +694,7 @@ main {
 }
 .auth-switch {
 	margin: 0;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	color: var(--text-dim);
 }
 
@@ -597,7 +702,7 @@ label {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	color: var(--text-dim);
 }
 
@@ -607,7 +712,7 @@ input {
 	border-radius: var(--radius);
 	color: var(--text);
 	padding: 6px 10px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 input:focus {
 	outline: 2px solid var(--accent);
@@ -620,7 +725,7 @@ button {
 	border: none;
 	border-radius: var(--radius);
 	padding: 6px 12px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	font-weight: 600;
 	cursor: pointer;
 }
@@ -634,7 +739,7 @@ button:hover {
 	color: var(--danger);
 	border-radius: var(--radius);
 	padding: 6px 10px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	margin: 0;
 }
 
@@ -646,7 +751,7 @@ button:hover {
 	border: 1px solid var(--warn);
 	border-radius: var(--radius);
 	padding: 8px 12px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	margin: 0 0 12px;
 }
 .quota-banner a {
@@ -659,7 +764,7 @@ button:hover {
 	color: var(--info);
 	border-radius: var(--radius);
 	padding: 6px 10px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	margin: 0;
 }
 
@@ -674,7 +779,7 @@ button:hover {
 /* Приглушённые пояснительные абзацы (подсказки полей, заметки о лимитах). */
 .hint, .apdex-note, .perf-cap-note, .trace-cap-note, .retention-notice {
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	margin: 4px 0;
 }
 
@@ -687,12 +792,12 @@ th, td {
 	text-align: left;
 	padding: 6px 10px;
 	border-bottom: 1px solid var(--border);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 th {
 	color: var(--text-dim);
 	font-weight: 600;
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	text-transform: uppercase;
 }
 
@@ -700,7 +805,7 @@ th {
 	display: inline-block;
 	border-radius: 999px;
 	padding: 2px 8px;
-	font-size: 11px;
+	font-size: var(--fs-xs);
 	font-weight: 700;
 	text-transform: uppercase;
 	white-space: nowrap;
@@ -713,7 +818,7 @@ th {
 	align-items: center;
 	gap: 8px;
 	color: var(--text);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	cursor: pointer;
 }
 .checkbox-inline input[type="checkbox"] {
@@ -736,7 +841,7 @@ th {
 }
 .waterfall-label {
 	font-family: var(--font-mono);
-	font-size: 10px;
+	font-size: var(--fs-label);
 }
 .badge-info { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
 
@@ -794,7 +899,7 @@ th {
 .metric-filters > label {
 	width: auto;
 	gap: 4px;
-	font-size: 12px;
+	font-size: var(--fs-sm);
 }
 .issues-filters select,
 .issues-filters input {
@@ -803,7 +908,7 @@ th {
 	border-radius: var(--radius);
 	color: var(--text);
 	padding: 6px 8px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 
 /* Metric-фильтр по лейблам (страница метрики). */
@@ -822,13 +927,13 @@ th {
 }
 .metric-label-key {
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 600;
 }
 
 .culprit {
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 }
 
 .bulk-actions {
@@ -853,7 +958,7 @@ th {
 	gap: 8px;
 	margin-top: 12px;
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	font-variant-numeric: tabular-nums;
 }
 
@@ -862,12 +967,13 @@ th {
 	gap: 12px;
 	margin: 6px 0 12px;
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 
 .issue-actions {
 	display: flex;
 	flex-wrap: wrap;
+	align-items: flex-start;
 	gap: 8px;
 	margin-bottom: 16px;
 }
@@ -882,7 +988,7 @@ th {
 	border-radius: var(--radius);
 	color: var(--text);
 	padding: 6px 8px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 
 .chart {
@@ -906,7 +1012,7 @@ th {
 }
 .kind-picker-label {
 	flex-basis: 100%;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	color: var(--text-dim);
 	margin-bottom: 2px;
 }
@@ -958,9 +1064,62 @@ th {
 
 /* Оси/сетка и подписи графиков (metric-chart, chart-freq): приглушённый цвет,
    моноширинный мелкий шрифт. Пороговые линии — цвет опасности. */
-.metric-chart text, .chart-freq text { font-size: 11px; font-family: var(--font-mono); }
+.metric-chart text, .chart-freq text { font-size: var(--fs-xs); font-family: var(--font-mono); }
 .chart-axis { color: var(--text-dim); }
 .chart-threshold { color: var(--danger); }
+
+/* .issue-detail — вертикальный ритм страницы issue: заголовок, мета, действия,
+   график и лента событий идут одной колонкой. Ширину не ограничиваем: потолок
+   стоит на самой контентной колонке (.app-content), а второй уровень
+   ограничения давал ступеньку — список issues шире, чем таблица событий на
+   детали того же issue. */
+.issue-detail {
+	min-width: 0;
+}
+
+/* .issue-chart парен с .card (фон/рамка/радиус/внутренний отступ оттуда) —
+   здесь только горизонтальная прокрутка: SVG за 7 дней шире узкого экрана,
+   и обрезать его нельзя. */
+.issue-chart {
+	margin-bottom: 16px;
+	overflow-x: auto;
+}
+/* График событий тянем на всю карточку: .chart/.chart-freq ограничены
+   max-width 480px (разумно для узкой врезки в списке), но в карточке детали
+   это давало график на половину ширины и пустое поле справа. Высоту не
+   задаём — она считается из пропорций холста, иначе браузер вписал бы рисунок
+   по высоте и отцентрировал, оставив поля по бокам. */
+.issue-chart .chart,
+.issue-chart .chart-freq {
+	max-width: none;
+	height: auto;
+}
+
+.issue-events-heading {
+	margin: 20px 0 8px;
+}
+
+.event-trace-link {
+	margin: 6px 0 12px;
+	font-size: var(--fs-base);
+}
+
+/* .tags парен с .data-table: таблица тегов — это узкий список ключ/значение,
+   и растягивать её на всю ширину незачем. Значение моноширинное, как и
+   остальные машинные строки (id, стектрейсы). */
+.tags {
+	width: auto;
+	min-width: min(420px, 100%);
+	margin-bottom: 12px;
+}
+.tags td:first-child {
+	color: var(--text-dim);
+	white-space: nowrap;
+}
+.tags td:last-child {
+	font-family: var(--font-mono);
+	word-break: break-all;
+}
 
 .issue-events {
 	margin-bottom: 16px;
@@ -977,7 +1136,7 @@ th {
 	padding-top: 12px;
 }
 .event-detail h3 {
-	font-size: 13px;
+	font-size: var(--fs-base);
 	text-transform: uppercase;
 	color: var(--text-dim);
 	margin: 12px 0 6px;
@@ -988,7 +1147,7 @@ th {
 	border-radius: var(--radius);
 	padding: 8px;
 	overflow-x: auto;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .event-meta {
 	display: grid;
@@ -1008,7 +1167,7 @@ th {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	padding: 6px 10px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .frame.in-app {
 	border-color: var(--accent);
@@ -1016,7 +1175,7 @@ th {
 }
 .frame-location {
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	overflow-wrap: anywhere;
 }
 .frame-function {
@@ -1065,7 +1224,7 @@ th {
 
 .frame-module {
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 }
 /* Стектрейс — это код: фреймы моноширинным. Свёрнутые system-фреймы
    (<details>) кликабельны; длинный id события переносится. */
@@ -1096,7 +1255,7 @@ th {
 	gap: 12px;
 	margin: 6px 0 12px;
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .monitor-actions {
 	display: flex;
@@ -1173,7 +1332,7 @@ th {
 }
 .status-tile-uptime {
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	margin-top: 6px;
 	font-variant-numeric: tabular-nums;
 }
@@ -1202,7 +1361,7 @@ th {
 }
 .status-page-public {
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 
 /* OAuth / social login: кнопки на /login, /register и в профиле. */
@@ -1232,11 +1391,11 @@ th {
 /* Профиль: список связанных аккаунтов. */
 .linked-email {
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .linked-note {
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 form.inline {
 	display: inline;
@@ -1255,7 +1414,7 @@ form.inline {
 	border: none;
 	border-radius: var(--radius);
 	font-family: inherit;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	font-weight: 600;
 	line-height: 1.4;
 	cursor: pointer;
@@ -1283,6 +1442,20 @@ form.inline {
 .btn-danger:hover {
 	filter: brightness(0.92);
 }
+/* .btn-danger-ghost — опасное действие В СТРОКЕ таблицы (удалить участника,
+   канал, ключ, пробу). Сплошная заливка тут не годится: строк много, и
+   столбик красных прямоугольников перетягивает на себя всё внимание, хотя
+   удаление — не то действие, к которому надо вести взгляд. Заливку
+   оставляем одиночным кнопкам в «опасной зоне». */
+.btn-danger-ghost {
+	background: none;
+	color: var(--danger);
+	border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.btn-danger-ghost:hover {
+	background: color-mix(in srgb, var(--danger) 12%, transparent);
+	color: var(--danger);
+}
 .btn:disabled {
 	opacity: .5;
 	cursor: not-allowed;
@@ -1305,30 +1478,34 @@ form.inline {
    Отдельный класс поверх глобальных table/th/td: компактнее, с hover-строками
    и колонкой .num для чисел. Не конфликтует с существующими table/th/td —
    выше по специфичности при использовании внутри .data-table. */
+/* По умолчанию таблица занимает ширину своего контейнера: у таблиц с гибкой
+   основной колонкой (issue, эндпойнт, монитор) слабину забирает эта колонка.
+   Раньше умолчанием было width:auto — таблица льнула к содержимому и
+   оставляла справа пустое поле внутри и без того ограниченной колонки. */
 .data-table {
-	width: auto;
+	width: 100%;
 	max-width: 100%;
 	border-collapse: collapse;
 	font-variant-numeric: tabular-nums;
 }
-/* Таблицы с гибкой основной колонкой (issue/эндпойнт), которым нужно занимать
-   всю ширину карточки, а не льнуть к содержимому. */
-.data-table--full {
-	width: 100%;
+/* Обратный модификатор — для узких таблиц «ключ → значение» (теги события и
+   т.п.), которые растягивать через всю страницу незачем. */
+.data-table--auto {
+	width: auto;
 }
 .data-table th {
 	text-align: left;
-	padding: 0 8px 6px 0;
+	padding: 0 8px 8px 0;
 	border-bottom: 1px solid var(--border);
 	color: var(--text-dim);
-	font-size: 10px;
+	font-size: var(--fs-label);
 	font-weight: 600;
 	text-transform: uppercase;
 }
 .data-table td {
-	padding: 6px 8px 6px 0;
+	padding: 8px 8px 8px 0;
 	border-bottom: 1px solid var(--border);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-variant-numeric: tabular-nums;
 }
 .data-table tbody tr:hover {
@@ -1348,7 +1525,7 @@ form.inline {
 }
 .stat-label {
 	color: var(--text-dim);
-	font-size: 10px;
+	font-size: var(--fs-label);
 	font-weight: 600;
 	letter-spacing: .3px;
 	text-transform: uppercase;
@@ -1419,7 +1596,7 @@ form.inline {
 	background: none;
 	border: none;
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	font-weight: 600;
 	cursor: pointer;
 }
@@ -1441,7 +1618,7 @@ form.inline {
 	border-radius: 999px;
 	padding: 3px 10px;
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	cursor: pointer;
 }
 .chip.is-active {
@@ -1456,10 +1633,16 @@ form.inline {
 	align-items: center;
 	gap: 6px;
 	color: var(--text);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	font-weight: 600;
 }
+/* Ссылка «назад» несёт иконку из спрайта (см. breadcrumbBack), поэтому сама
+   выкладывается флексом: иконка и подпись должны стоять на одной базовой
+   линии с одинаковым зазором на всех страницах-деталях. */
 .breadcrumb a {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 	color: var(--text-dim);
 }
 .breadcrumb a:hover {
@@ -1489,7 +1672,7 @@ form.inline {
 .empty-state p {
 	margin: 0 auto;
 	max-width: 380px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 	line-height: 1.5;
 }
 .empty-state .empty-cta {
@@ -1510,7 +1693,7 @@ form.inline {
 	flex-direction: column;
 	gap: 4px;
 	color: var(--text-dim);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 }
 
 /* -- Двухколоночная сетка полей внутри форм создания/редактирования
@@ -1538,7 +1721,7 @@ form.inline {
 	color: var(--text);
 	padding: 6px 10px;
 	font-family: inherit;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .input:focus,
 .select:focus {
@@ -1593,17 +1776,11 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	gap: 6px;
 	padding: 4px 0;
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	font-weight: 600;
 }
 .help-panel summary::-webkit-details-marker {
 	display: none;
-}
-.help-panel summary::before {
-	content: "▸";
-}
-.help-panel[open] summary::before {
-	content: "▾";
 }
 .help-panel summary:hover {
 	color: var(--text);
@@ -1614,7 +1791,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	background: var(--surface-2);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	color: var(--text-dim);
 	max-width: 640px;
 }
@@ -1650,7 +1827,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .gs-steps li {
 	padding: 2px 0;
@@ -1689,7 +1866,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .docs-index-list a {
 	color: var(--link);
 	text-decoration: none;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .docs-index-list a:hover {
 	text-decoration: underline;
@@ -1743,7 +1920,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 }
 .doc-content code {
 	font-family: var(--font-mono);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	background: var(--surface-2);
 	border: 1px solid var(--border);
 	border-radius: 4px;
@@ -1761,20 +1938,20 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	background: none;
 	border: none;
 	padding: 0;
-	font-size: 12px;
+	font-size: var(--fs-sm);
 }
 .doc-content table {
 	width: 100%;
 	margin: 0 0 14px;
 	border-collapse: collapse;
-	font-size: 13px;
+	font-size: var(--fs-base);
 }
 .doc-content th {
 	text-align: left;
 	padding: 6px 8px;
 	border-bottom: 1px solid var(--border);
 	color: var(--text-dim);
-	font-size: 11px;
+	font-size: var(--fs-xs);
 	font-weight: 600;
 	text-transform: uppercase;
 }
@@ -1793,3 +1970,473 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	border: none;
 	border-top: 1px solid var(--border);
 }
+
+/* ===== Многоцветные графики: цвет из токенов (под-проект ④) =====
+   Одноцветные графики наследуют currentColor от своего класса, но там, где
+   в одном SVG нужно несколько цветов (полоска доступности, waterfall,
+   перцентили, стек задержек), цвет назначается здесь по классу элемента.
+   Раньше эти значения были впечатаны в SVG hex-литералами из тёмной палитры
+   и не менялись в светлой теме. */
+.availability-bars .bar-up    { fill: var(--good); }
+.availability-bars .bar-down  { fill: var(--danger); }
+.availability-bars .bar-empty { fill: var(--border); }
+
+.waterfall .wf-ok  { fill: var(--accent); }
+.waterfall .wf-err { fill: var(--danger); }
+
+.latency-chart .series-p50 { stroke: var(--accent); }
+.latency-chart .series-p95 { stroke: var(--warn); }
+
+.latency-chart .seg-dns     { fill: var(--accent); }
+.latency-chart .seg-connect { fill: var(--accent); opacity: .65; }
+.latency-chart .seg-tls     { fill: var(--warn); }
+.latency-chart .seg-ttfb    { fill: var(--good); }
+
+/* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====
+   Эти классы стояли в разметке без определений, из-за чего блоки на страницах
+   endpoint detail, perf issue detail, trace и profiles рендерились без
+   отступов и без прокрутки широких SVG.
+
+   Классы вида *-form (alert-rules-form, member-remove-form, key-create-form
+   и т.д.) сюда сознательно НЕ добавлены: это семантические маркеры форм для
+   чтения разметки, а не стилевые хуки, и пустые правила под них были бы
+   мусором. */
+
+/* Ширину не ограничиваем — см. комментарий у .issue-detail: потолок задаёт
+   контентная колонка. */
+.endpoint-detail,
+.trace-detail {
+	display: grid;
+	gap: 12px;
+	min-width: 0;
+}
+
+/* Обёртки широких SVG: график шире узкого экрана, и обрезать его нельзя.
+   Все, кроме .trace-flame, стоят в паре с .card — фон, рамка, радиус и
+   внутренний отступ приходят оттуда, поэтому здесь только прокрутка. */
+.endpoint-chart,
+.metric-chart-wrap,
+.flamegraph-wrap,
+.trace-waterfall,
+.trace-flame {
+	overflow-x: auto;
+}
+/* .trace-flame — единственная из них без .card: отступ задаём сами. */
+.trace-flame {
+	padding: 12px;
+}
+
+/* .web-vitals-panel — это <table class="data-table web-vitals-panel">, а не
+   блок-панель. Здесь был display:grid, из-за чего thead и tbody становились
+   ячейками сетки и таблицу «рвало»: шапка уезжала влево, тело вправо.
+   Раскладку задаёт .data-table, здесь только отступ. */
+.web-vitals-panel {
+	margin-bottom: 12px;
+}
+
+.trace-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.perf-evidence {
+	display: grid;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+/* .perf-evidence-list — это <dl> с парами dt/dd, а не маркированный список:
+   без сетки браузер отбивает <dd> отступом и пары уезжают лесенкой. */
+.perf-evidence-list {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 4px 16px;
+	margin: 0;
+	align-items: baseline;
+}
+.perf-evidence-list dt {
+	color: var(--text-dim);
+}
+.perf-evidence-list dd {
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+}
+/* URL — машинная строка: моноширинная и переносится по любому символу, иначе
+   длинный путь распирает карточку по горизонтали. */
+.perf-urls {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	overflow-wrap: anywhere;
+}
+/* .perf-sample-trace — абзац-обёртка вокруг кнопки «пример трейса». Моно
+   здесь ставить нельзя: шрифт наследовала бы сама кнопка (и наследовала —
+   правка после визуального обхода). */
+.perf-sample-trace {
+	margin: 12px 0 0;
+}
+
+/* Публичная status-страница: фон задаётся на <body>, потому что у неё свой
+   layout без app-shell. */
+.status-body {
+	padding: 24px 16px;
+}
+.status-incidents,
+.status-maintenance {
+	margin-bottom: 16px;
+}
+
+.inline {
+	display: inline;
+}
+
+/* .visually-hidden — текст только для скринридера. Нужен там, где состояние
+   несёт иконка: @icon печатает aria-hidden, и без дублирующего текста
+   «сделано»/«не сделано» пункты чек-листа звучат одинаково. */
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* Disclosure «Что это за раздел?»: стрелка — иконка спрайта (раньше здесь
+   стоял текстовый глиф ▸/▾ через ::before, он был другой толщины и не
+   следовал иконографике). Поворот на раскрытии — чистый CSS, без JS. */
+.help-panel summary .ic {
+	color: var(--text-dim);
+	transition: transform 120ms ease;
+}
+.help-panel[open] summary .ic {
+	transform: rotate(90deg);
+}
+
+/* Кнопка «+ …»: иконка и подпись на одной линии. */
+.create-trigger {
+	gap: 6px;
+}
+
+/* Поля под небольшие числа (throttle, порог, окно) не растягиваем на всю
+   карточку: поле шириной 500px под двузначное число выглядит как ошибка
+   вёрстки и сбивает ожидание от вводимого значения. */
+.input[type="number"] {
+	max-width: 160px;
+}
+
+/* Таблицы, живущие внутри карточки во всю ширину, тянем на всю её ширину:
+   иначе получается широкая карточка с узкой таблицей у левого края и
+   большим пустым полем справа. */
+.card .data-table,
+.panel .data-table,
+.scroll-list .data-table,
+.issue-events {
+	width: 100%;
+}
+/* Ширину таблицы тегов задаёт модификатор .data-table--auto в разметке
+   (см. issuedetail.templ): она вне карточки, поэтому селектор с .card её не
+   доставал, а общее умолчание width:100% растягивало список ключ/значение
+   через всю страницу. */
+
+/* ===== Правки после визуального обхода 2026-07-20 ===== */
+
+/* min-width:0 нужен, чтобы карточка-грид-элемент могла быть уже своего
+   содержимого; без него длинные машинные строки распирают колонку сетки. */
+.card,
+.panel {
+	min-width: 0;
+}
+
+/* Машинные строки внутри карточки переносятся, а не уезжают за край. Раньше
+   DSN обрывался на полуслове, а кнопка «Отозвать» в таблице ключей была
+   срезана правой границей. Горизонтальная прокрутка тут не годится: она
+   прячет содержимое ровно так же, просто с полосой. */
+.card pre,
+.panel pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.card .data-table td,
+.panel .data-table td {
+	overflow-wrap: anywhere;
+}
+/* Числовые колонки не переносим: разрыв числа посреди разряда нечитаем. */
+.card .data-table td.num,
+.panel .data-table td.num {
+	overflow-wrap: normal;
+	white-space: nowrap;
+}
+/* Подписи кнопок и бейджей тоже не рвём: «Отозвать» переносилось как
+   «Отозва/ть». Перенос по любому символу нужен только машинным строкам
+   (ключам, DSN, URL), а не элементам управления. */
+.card .data-table td .btn,
+.card .data-table td .badge,
+.panel .data-table td .btn,
+.panel .data-table td .badge {
+	overflow-wrap: normal;
+	white-space: nowrap;
+}
+
+/* Соседние чекбоксы не слипаются: у .checkbox-inline свой внутренний gap, но
+   между двумя такими блоками зазора не было — получалось «eu-west☑local». */
+.checkbox-inline {
+	margin: 2px 14px 2px 0;
+}
+
+/* Сортируемые заголовки таблиц: ссылка в <th> наследует цвет заголовка, а не
+   акцент. Синие заголовки колонок спорили с данными и читались как обычные
+   ссылки. */
+.data-table th a {
+	color: inherit;
+	text-decoration: none;
+}
+.data-table th a:hover {
+	color: var(--text);
+	text-decoration: underline;
+}
+
+/* Широкие графики внутри карточки занимают её целиком (стек задержек на
+   детали монитора упирался в собственную max-width и оставлял полкарточки
+   пустой). */
+.card > .latency-chart,
+.card > .availability-bars {
+	width: 100%;
+	max-width: none;
+}
+
+/* Бейдж внутри таблицы чуть у́же по горизонтали, чтобы три бейджа в строке
+   (web-vitals) не превращали её в гирлянду. Кегль общий со всеми бейджами —
+   отдельно ужимать его больше не нужно. */
+.data-table .badge {
+	padding: 2px 6px;
+}
+
+/* Стат-плитка с текстовым значением (например «39 дн. до истечения»): крупный
+   кегль числа для фразы не годится — рядом с «100.00%» она выглядела
+   инородно. */
+.stat-tile--text .stat-value {
+	font-size: 14px;
+	font-weight: 600;
+	line-height: 1.35;
+}
+
+/* Fieldset формы монитора выглядит как карточка дизайн-системы: собственная
+   рамка с «вырезом» под legend — единственное место в продукте, где группа
+   полей оформлена иначе, чем везде. Семантику fieldset/legend сохраняем: она
+   нужна скринридеру для группировки полей. */
+.monitor-form fieldset {
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	background: var(--surface);
+	padding: 14px 16px;
+	margin: 0 0 16px;
+	min-width: 0;
+}
+.monitor-form legend {
+	padding: 0 6px;
+	color: var(--text-dim);
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: .4px;
+}
+/* Группы чекбоксов (регионы, каналы) — сетка, а не строка вплотную. */
+.monitor-form fieldset > .checkbox-inline {
+	margin-right: 18px;
+}
+
+/* Пояснение к Apdex над таблицей — служебная сноска, а не заголовок: без
+   стиля она читалась как отладочная строка. */
+.apdex-note,
+.perf-cap-note {
+	margin: 0 0 8px;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
+
+/* Формы порогов (регрессии, производительность) раскладываются в несколько
+   колонок: десять полей в один столбец растягивали карточку на всю высоту
+   экрана, оставляя соседние колонки сетки пустыми. Кнопка и чекбокс
+   «Включено» занимают всю ширину последней строкой. */
+.project-regression-form,
+.project-perf-form {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 8px 12px;
+	align-items: end;
+}
+.project-regression-form > .checkbox-inline,
+.project-regression-form > button,
+.project-perf-form > button {
+	grid-column: 1 / -1;
+	justify-self: start;
+}
+
+/* Подсветка столбика графика частоты при наведении: нативная подсказка
+   <title> всплывает с задержкой, и без визуального отклика непонятно, на
+   каком именно столбике стоит курсор. Оформленной подсказки нет сознательно —
+   она потребовала бы JS, а график должен работать и без него. */
+.chart-freq rect {
+	transition: opacity 100ms ease;
+}
+.chart-freq:hover rect {
+	opacity: .45;
+}
+.chart-freq rect:hover {
+	opacity: 1;
+}
+
+/* ===== Человек в интерфейсе: цветной аватар + чип ===== */
+
+/* Цвет аватара выводится из хеша адреса (см. avatarColorClass в
+   userchip.templ) и задаётся классом, а не inline-style: CSP запрещает
+   style="". Хранится только тон, светлота подбирается под тему. */
+.avatar--c0 { --avatar-h: 210; }
+.avatar--c1 { --avatar-h: 265; }
+.avatar--c2 { --avatar-h: 330; }
+.avatar--c3 { --avatar-h: 10; }
+.avatar--c4 { --avatar-h: 35; }
+.avatar--c5 { --avatar-h: 145; }
+.avatar--c6 { --avatar-h: 175; }
+.avatar--c7 { --avatar-h: 80; }
+
+.avatar[class*="avatar--c"] {
+	background: hsl(var(--avatar-h) 45% 24%);
+	color: hsl(var(--avatar-h) 75% 78%);
+}
+:root[data-theme="light"] .avatar[class*="avatar--c"] {
+	background: hsl(var(--avatar-h) 72% 90%);
+	color: hsl(var(--avatar-h) 55% 30%);
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) .avatar[class*="avatar--c"] {
+		background: hsl(var(--avatar-h) 72% 90%);
+		color: hsl(var(--avatar-h) 55% 30%);
+	}
+}
+
+/* Размер для таблиц и шапки: базовый .avatar рассчитан на рейл. */
+.avatar--sm {
+	width: 22px;
+	height: 22px;
+	font-size: var(--fs-label);
+	margin-top: 0;
+	flex: none;
+}
+
+.user-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	vertical-align: middle;
+}
+.user-chip-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* «не назначено» — приглушённо: это отсутствие состояния, а не значение. */
+.user-chip--empty {
+	color: var(--text-mute);
+	font-style: italic;
+}
+
+/* Смена ответственного свёрнута: в шапке показан факт назначения, здесь —
+   только действие. */
+.assign-control > summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	list-style: none;
+	cursor: pointer;
+	padding: 6px 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text-dim);
+	font-weight: 500;
+}
+.assign-control > summary::-webkit-details-marker {
+	display: none;
+}
+.assign-control > summary:hover {
+	color: var(--text);
+	border-color: var(--text-dim);
+}
+.assign-control[open] > summary {
+	color: var(--text);
+}
+.assign-control .assign-form {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 8px;
+}
+.assign-control .assign-form .select {
+	width: auto;
+	min-width: 200px;
+}
+
+/* Ответственный — отдельной строкой под бейджами уровня и статуса: в одной
+   строке с ними он читался как ещё один бейдж, а это другого рода факт. */
+.issue-assignee {
+	margin: 8px 0 0;
+}
+
+/* ===== Оси, легенда и подсказки графиков (доработка 2026-07-20) ===== */
+
+/* Графики на детали эндпойнта занимают карточку целиком — как график частоты
+   на детали issue. Собственный max-width у .chart/.chart-freq рассчитан на
+   узкую врезку в списке. */
+.endpoint-chart .chart,
+.endpoint-chart .chart-freq,
+.endpoint-chart .latency-chart {
+	max-width: none;
+	width: 100%;
+	height: auto;
+}
+
+/* Полоса наведения над интервалом линейного графика: прозрачная, потому что
+   наводиться на саму линию нечем — она в полтора пикселя. При наведении
+   подсвечивается, чтобы было видно, к какому интервалу относится подсказка. */
+.hover-band {
+	fill: transparent;
+}
+.hover-band:hover {
+	fill: var(--accent-soft);
+}
+
+/* Подпись под заголовком графика: что измеряется и с каким шагом агрегации. */
+.chart-caption {
+	margin: -4px 0 6px;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
+
+/* Легенда перцентилей: цвет линии сам по себе ничего не сообщает — две линии
+   разного цвета без подписи неразличимы по смыслу. */
+.chart-legend {
+	display: flex;
+	gap: 16px;
+	margin: 0 0 8px;
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
+}
+.legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.legend-item::before {
+	content: "";
+	width: 14px;
+	height: 2px;
+	border-radius: 1px;
+	background: currentColor;
+}
+.legend-p50::before { background: var(--accent); }
+.legend-p95::before { background: var(--warn); }

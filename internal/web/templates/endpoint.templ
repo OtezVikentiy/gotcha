@@ -30,6 +30,14 @@ type EndpointDetailData struct {
 	LatencyChart templ.Component
 	Throughput   templ.Component
 	Histogram    templ.Component
+	// StepLabel — шаг агрегации графиков («5m», «1h»): без него высота
+	// столбика трафика ни о чём не говорит — непонятно, за какой интервал
+	// это число.
+	StepLabel string
+	// From — подраздел, из которого пришёл пользователь («web-vitals» либо
+	// пусто). Страница общая для «Транзакций» и «Web Vitals», и без этого
+	// крошка всегда вела бы в «Транзакции», куда пользователь не заходил.
+	From string
 
 	Slowest    []trace.TraceRow
 	PerfIssues []trace.PerfIssue
@@ -53,7 +61,11 @@ type VitalPanelRow struct {
 templ EndpointDetail(d EndpointDetailData, userEmail string) {
 	@layout(d.Transaction, userEmail) {
 		<div class="endpoint-detail">
-			<p class="breadcrumb"><a href={ templ.URL(performancePath(d.ProjectID)) }>← { i18n.T(ctx, "nav.transactions") }</a></p>
+			if d.From == "web-vitals" {
+				@breadcrumbBack(templ.URL(webVitalsPath(d.ProjectID)), i18n.T(ctx, "nav.webvitals"))
+			} else {
+				@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.transactions"))
+			}
 			<h1>{ d.Transaction }</h1>
 			<div class="monitor-meta">
 				<div class="stat-tile">
@@ -75,7 +87,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 			if len(d.Vitals) > 0 {
 				<h2>{ i18n.T(ctx, "perf.webvitals") }</h2>
 				<div class="card">
-					<table class="data-table web-vitals-panel">
+					<table id="web-vitals" class="data-table web-vitals-panel">
 						<thead>
 							<tr>
 								<th>{ i18n.T(ctx, "perf.webvitals.table.metric") }</th>
@@ -99,16 +111,29 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 			}
 
 			<h2>{ i18n.T(ctx, "perf.chart.latency") }</h2>
+			<p class="chart-caption">
+				{ i18n.Tf(ctx, "perf.chart.latency.caption", "step", d.StepLabel) }
+			</p>
+			<p class="chart-legend">
+				<span class="legend-item legend-p50">{ i18n.T(ctx, "perf.p50") }</span>
+				<span class="legend-item legend-p95">{ i18n.T(ctx, "perf.p95") }</span>
+			</p>
 			<div class="endpoint-chart card">
 				@d.LatencyChart
 			</div>
 
 			<h2>{ i18n.T(ctx, "perf.throughput") }</h2>
+			<p class="chart-caption">
+				{ i18n.Tf(ctx, "perf.chart.throughput.caption", "step", d.StepLabel) }
+			</p>
 			<div class="endpoint-chart card">
 				@d.Throughput
 			</div>
 
 			<h2>{ i18n.T(ctx, "perf.chart.histogram") }</h2>
+			<p class="chart-caption">
+				{ i18n.T(ctx, "perf.chart.histogram.caption") }
+			</p>
 			<div class="endpoint-chart card">
 				@d.Histogram
 			</div>

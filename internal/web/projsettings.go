@@ -402,12 +402,12 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 	// math.IsNaN отдельно: NaN проходит любое сравнение <0/>1 (все сравнения с
 	// NaN ложны), так что без явной проверки «NaN» сохранился бы в колонку.
 	if err != nil || math.IsNaN(sampleRate) || sampleRate < 0 || sampleRate > 1 {
-		reject("sample rate должен быть числом в диапазоне [0, 1]")
+		reject(i18n.T(r.Context(), "err.proj.sample_rate"))
 		return
 	}
 	apdexMS, err := strconv.ParseInt(submitted.ApdexMS, 10, 32)
 	if err != nil || apdexMS <= 0 {
-		reject("Apdex threshold должен быть положительным числом")
+		reject(i18n.T(r.Context(), "err.proj.apdex"))
 		return
 	}
 	nPlusOneMin, ok1 := parsePerfThreshold(submitted.NPlusOneMin)
@@ -415,7 +415,7 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 	slowDBMs, ok3 := parsePerfThreshold(submitted.SlowDBMs)
 	httpFloodMin, ok4 := parsePerfThreshold(submitted.HTTPFloodMin)
 	if !ok1 || !ok2 || !ok3 || !ok4 {
-		reject("пороги детекторов должны быть целыми числами ≥ 1")
+		reject(i18n.T(r.Context(), "err.proj.detector_thresholds"))
 		return
 	}
 
@@ -502,17 +502,17 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 	thresholdRatio, ok1 := parseRegressionPercent(submitted.ThresholdPct)
 	recoveryRatio, ok2 := parseRegressionPercent(submitted.RecoveryPct)
 	if !ok1 || !ok2 {
-		reject("threshold_pct и recovery_pct должны быть процентами в диапазоне (0, 100]")
+		reject(i18n.T(r.Context(), "err.proj.pct_range"))
 		return
 	}
 	if recoveryRatio >= thresholdRatio {
-		reject("recovery_pct должен быть меньше threshold_pct (гистерезис)")
+		reject(i18n.T(r.Context(), "err.proj.recovery_lt_threshold"))
 		return
 	}
 	windowMinutes, ok3 := parsePerfThreshold(submitted.WindowMinutes)
 	minSamples, ok4 := parsePerfThreshold(submitted.MinSamples)
 	if !ok3 || !ok4 {
-		reject("window_minutes и min_samples должны быть целыми числами ≥ 1")
+		reject(i18n.T(r.Context(), "err.proj.window_samples"))
 		return
 	}
 	durationFloor, okd := parseRegressionFloor(submitted.DurationFloorMs)
@@ -522,7 +522,7 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 	floorFCP, okf := parseRegressionFloor(submitted.FloorFCP)
 	floorTTFB, okt := parseRegressionFloor(submitted.FloorTTFB)
 	if !okd || !okl || !oki || !okc || !okf || !okt {
-		reject("полы метрик должны быть числами ≥ 0")
+		reject(i18n.T(r.Context(), "err.proj.metric_floors"))
 		return
 	}
 

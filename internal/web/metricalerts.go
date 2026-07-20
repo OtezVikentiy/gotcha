@@ -83,12 +83,12 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil || math.IsNaN(threshold) || math.IsInf(threshold, 0) {
 		// ParseFloat принимает "NaN"/"Inf" без ошибки; такой порог сломал бы
 		// сравнение (алерт никогда не сработает) и график (y="NaN") — отклоняем.
-		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, "порог должен быть конечным числом")
+		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, i18n.T(r.Context(), "err.metricalert.threshold_finite"))
 		return
 	}
 	window, err := strconv.Atoi(r.FormValue("window_seconds"))
 	if err != nil || window <= 0 {
-		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, "окно должно быть положительным числом секунд")
+		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, i18n.T(r.Context(), "err.metricalert.window_positive"))
 		return
 	}
 	rule := metric.Rule{
@@ -105,7 +105,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.MetricRules.Create(r.Context(), rule); err != nil {
 		if errors.Is(err, metric.ErrInvalidRule) {
-			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, "неверные параметры правила")
+			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, i18n.T(r.Context(), "err.metricalert.invalid_rule"))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))

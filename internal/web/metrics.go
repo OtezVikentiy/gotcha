@@ -141,7 +141,7 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		Labels:       labels,
 		LabelKey:     matcher.Key,
 		LabelValue:   matcher.Value,
-		Chart:        metricSeriesSVG(points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), 720, 200),
+		Chart:        metricSeriesSVG(r.Context(), points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), 720, 200),
 		Percentiles:  info.Type == "histogram",
 	}
 	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)

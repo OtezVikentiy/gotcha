@@ -95,7 +95,7 @@ templ keyRow(projectID int64, k org.Key) {
 			if !k.Revoked {
 				<form method="post" action={ templ.URL(projectSettingsKeysRevokePath(projectID)) } class="key-revoke-form">
 					<input type="hidden" name="key_id" value={ strconv.FormatInt(k.ID, 10) }/>
-					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "project.settings.keys.revoke") }</button>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "project.settings.keys.revoke") }</button>
 				</form>
 			}
 		</td>

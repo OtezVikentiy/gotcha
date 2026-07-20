@@ -40,6 +40,12 @@ type EndpointStat struct {
 	P99         uint32
 	FailureRate float64 // доля транзакций со status != 'ok', 0..1
 	ApdexScore  float64 // (satisfied + tolerating/2) / total, 0..1
+	// Environments — окружения, в которых эндпойнт встречался за период.
+	// Список, а не одно значение: строка агрегирует транзакции по всем
+	// окружениям сразу, и разбивать её по окружениям означало бы менять
+	// смысл строки (один эндпойнт показывался бы дважды с разными
+	// перцентилями).
+	Environments []string
 }
 
 // LatencyPoint — точка временного ряда латентности эндпойнта: T — начало
@@ -98,7 +104,8 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 		SELECT transaction,
 			countMerge(cnt) AS c,
 			countMerge(failures) AS f,
-			quantilesMerge(0.5, 0.75, 0.95, 0.99)(dur) AS q
+			quantilesMerge(0.5, 0.75, 0.95, 0.99)(dur) AS q,
+			arraySort(groupUniqArray(environment)) AS envs
 		FROM transactions_5m
 		WHERE `+where+`
 		GROUP BY transaction
@@ -114,7 +121,7 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 		var s EndpointStat
 		var failures uint64
 		var qs []float64
-		if err := rows.Scan(&s.Transaction, &s.Count, &failures, &qs); err != nil {
+		if err := rows.Scan(&s.Transaction, &s.Count, &failures, &qs, &s.Environments); err != nil {
 			return nil, fmt.Errorf("trace: endpoints: scan: %w", err)
 		}
 		if len(qs) == 4 {
@@ -520,6 +527,10 @@ type PageVitals struct {
 	INP         Vital
 	CLS         Vital
 	Count       uint64
+	// Environments — окружения, в которых страница встречалась за период.
+	// Список, а не одно значение: строка агрегирует замеры по всем
+	// окружениям сразу (см. EndpointStat.Environments).
+	Environments []string
 }
 
 // VitalPoint — точка временного ряда p75 одного vital: T — начало корзины
@@ -625,7 +636,8 @@ func (q *Query) WebVitalsPages(ctx context.Context, projectID int64, from, to ti
 			quantilesMerge(0.75)(cls) AS cls_p,
 			countMerge(lcp_count) AS lcp_c,
 			countMerge(inp_count) AS inp_c,
-			countMerge(cls_count) AS cls_c
+			countMerge(cls_count) AS cls_c,
+			arraySort(groupUniqArray(environment)) AS envs
 		FROM web_vitals_5m
 		WHERE `+where+`
 		GROUP BY transaction
@@ -642,15 +654,17 @@ func (q *Query) WebVitalsPages(ctx context.Context, projectID int64, from, to ti
 		var transaction string
 		var lcpP, inpP, clsP []float64
 		var lcpC, inpC, clsC uint64
-		if err := rows.Scan(&transaction, &lcpP, &inpP, &clsP, &lcpC, &inpC, &clsC); err != nil {
+		var envs []string
+		if err := rows.Scan(&transaction, &lcpP, &inpP, &clsP, &lcpC, &inpC, &clsC, &envs); err != nil {
 			return nil, fmt.Errorf("trace: web vitals pages: scan: %w", err)
 		}
 		out = append(out, PageVitals{
 			Transaction: transaction,
 			LCP:         makeVital("lcp", lcpP, lcpC),
 			INP:         makeVital("inp", inpP, inpC),
-			CLS:         makeVital("cls", clsP, clsC),
-			Count:       lcpC,
+			CLS:          makeVital("cls", clsP, clsC),
+			Count:        lcpC,
+			Environments: envs,
 		})
 	}
 	if err := rows.Err(); err != nil {

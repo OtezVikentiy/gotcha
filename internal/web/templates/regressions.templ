@@ -92,7 +92,7 @@ func regressionStatusFilterURL(projectID int64, status string) string {
 }
 
 templ regressionStatusTab(projectID int64, value, label, active string) {
-	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(regressionStatusFilterURL(projectID, tabQuery(value))) } if value == active { aria-current="page" }>{ label }</a>
+	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(regressionStatusFilterURL(projectID, value)) } if value == active { aria-current="page" }>{ label }</a>
 }
 
 // RegressionsList — GET /projects/{id}/regressions: таблица регрессий
@@ -111,6 +111,7 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 			if len(regressions) == 0 {
 				@emptyState("zap", "perf.regressions.empty.title", "perf.regressions.empty.body", "", "")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -137,6 +138,7 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}

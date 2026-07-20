@@ -151,6 +151,7 @@ templ ProjectsList(items []ProjectListItem, userEmail string) {
 			if len(items) == 0 {
 				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding")
 			} else {
+				<div class="card">
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -166,6 +167,7 @@ templ ProjectsList(items []ProjectListItem, userEmail string) {
 						}
 					</tbody>
 				</table>
+				</div>
 			}
 		</div>
 	}
