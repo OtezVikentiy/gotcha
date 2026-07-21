@@ -294,22 +294,24 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 			</section>
 			@perfSettingsForm(project.ID, perf)
 			@regressionSettingsForm(project.ID, reg)
-			<section class="card">
-				<h2 class="card-header">{ i18n.T(ctx, "project.settings.retention.title") }</h2>
-				@retentionNotice(retentionDays)
-			</section>
-			<section class="card">
-				<h2 class="card-header">{ i18n.T(ctx, "project.settings.danger.title") }</h2>
-				<div class="card-actions">
-					<form
-						method="post"
-						action={ templ.URL(projectSettingsDeletePath(project.ID)) }
-						class="project-delete-form"
-					>
-						<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "project.settings.danger.delete_submit") }</button>
-					</form>
-				</div>
-			</section>
+			<div class="settings-stack">
+				<section class="card">
+					<h2 class="card-header">{ i18n.T(ctx, "project.settings.retention.title") }</h2>
+					@retentionNotice(retentionDays)
+				</section>
+				<section class="card">
+					<h2 class="card-header">{ i18n.T(ctx, "project.settings.danger.title") }</h2>
+					<div class="card-actions">
+						<form
+							method="post"
+							action={ templ.URL(projectSettingsDeletePath(project.ID)) }
+							class="project-delete-form"
+						>
+							<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "project.settings.danger.delete_submit") }</button>
+						</form>
+					</div>
+				</section>
+			</div>
 			</div>
 		</div>
 	}

@@ -6,9 +6,17 @@ import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 // id — якорь модалки (триггер ведёт на #id, крестик/фон — на "#" для закрытия).
 // titleKey — i18n-ключ заголовка. Содержимое (форма) передаётся children.
 templ createModal(id, titleKey string) {
+	@createModalWide(id, titleKey, false) {
+		{ children... }
+	}
+}
+
+// createModalWide — та же модалка, но wide=true даёт более широкую карточку
+// (для форм с длинными подписями полей, где узкая колонка рвёт вёрстку).
+templ createModalWide(id, titleKey string, wide bool) {
 	<div id={ id } class="modal">
 		<a class="modal-backdrop" href="#" aria-label={ i18n.T(ctx, "modal.close") } tabindex="-1"></a>
-		<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby={ id + "-title" }>
+		<div class={ "modal-card", templ.KV("modal-card--wide", wide) } role="dialog" aria-modal="true" aria-labelledby={ id + "-title" }>
 			<a class="modal-close" href="#" aria-label={ i18n.T(ctx, "modal.close") }>&times;</a>
 			<h2 class="card-header" id={ id + "-title" }>{ i18n.T(ctx, titleKey) }</h2>
 			{ children... }

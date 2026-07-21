@@ -381,9 +381,9 @@ func PerfIssueDetail(d PerfIssueDetailData, userEmail string) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var22 templ.SafeURL
-				templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(tracePath(d.Issue.SampleTraceID)))
+				templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(tracePathFrom(d.Issue.SampleTraceID, "perf-issue", strconv.FormatInt(d.Issue.ID, 10))))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/perfissuedetail.templ`, Line: 84, Col: 108}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/perfissuedetail.templ`, Line: 84, Col: 161}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 				if templ_7745c5c3_Err != nil {
@@ -396,7 +396,7 @@ func PerfIssueDetail(d PerfIssueDetailData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var23 string
 				templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.issues.detail.sample_trace"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/perfissuedetail.templ`, Line: 84, Col: 159}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/perfissuedetail.templ`, Line: 84, Col: 212}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 				if templ_7745c5c3_Err != nil {

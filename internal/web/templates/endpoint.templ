@@ -158,7 +158,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 									<td>{ ago(ctx, tr.Timestamp) }</td>
 									<td class="num">{ formatDurationUS(tr.DurationUS) }</td>
 									<td>{ tr.Status }</td>
-									<td><a href={ templ.URL(tracePath(tr.TraceID)) }>{ tr.TraceID }</a></td>
+									<td><a href={ templ.URL(tracePathFrom(tr.TraceID, "endpoint", d.Transaction)) }>{ tr.TraceID }</a></td>
 								</tr>
 							}
 						</tbody>

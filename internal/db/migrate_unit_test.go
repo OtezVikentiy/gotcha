@@ -1,10 +1,12 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/golang-migrate/migrate/v4"
 )
 
@@ -202,6 +204,27 @@ func TestMaxEmbeddedCHVersion(t *testing.T) {
 	}
 	if got < 11 {
 		t.Errorf("maxEmbeddedCHVersion = %d, want >= 11", got)
+	}
+}
+
+// TestRetentionValidatesDays закрепляет guard `days < 1`: функции с явной
+// валидацией возвращают ошибку ДО обращения к conn, поэтому здесь безопасно
+// передать nil — если бы guard пропал, тест упал бы паникой на nil conn, а не
+// молча. Покрывает ранние return-ветки без ClickHouse-контейнера.
+func TestRetentionValidatesDays(t *testing.T) {
+	ctx := context.Background()
+	funcs := map[string]func(context.Context, driver.Conn, int) error{
+		"metric":      ApplyMetricRetention,
+		"profile":     ApplyProfileRetention,
+		"transaction": ApplyTransactionRetention,
+		"webvitals":   ApplyWebVitalsRetention,
+	}
+	for name, fn := range funcs {
+		for _, days := range []int{0, -1} {
+			if err := fn(ctx, nil, days); err == nil {
+				t.Errorf("%s(days=%d) = nil, want error (days must be >= 1)", name, days)
+			}
+		}
 	}
 }
 

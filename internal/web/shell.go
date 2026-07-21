@@ -45,15 +45,17 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			}
 		}
 
-		// Путь для подсветки навигации может отличаться от фактического:
-		// страница эндпойнта общая для «Транзакций» и «Web Vitals», и без
-		// пометки об источнике переход из Web Vitals молча подсвечивал бы
-		// «Транзакции» — пользователь видел, что его унесло в соседний
-		// подраздел (см. navOriginPath).
-		path := navOriginPath(r)
+		path := r.URL.Path
+		// Источник перехода: страница эндпойнта общая для «Транзакций» и
+		// «Web Vitals», трейс открывается из трёх разделов. Без пометки
+		// подсветка молча уезжала в соседний подраздел (см. navOrigin).
+		origin := navOrigin(r)
 		area := nav.AreaForPath(path)
+		if origin != "" {
+			area = nav.AreaForOrigin(origin)
+		}
 
-		projID := projectIDFromPath(r.URL.Path)
+		projID := projectIDFromPath(path)
 
 		var orgID int64
 		if oid := orgIDFromPath(path); oid != 0 {
@@ -90,6 +92,7 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			Area:      area,
 			OrgMode:   orgMode,
 			Path:      path,
+			Origin:    origin,
 			// Locale feeds nav.Subsections' docs case (doc page titles
 			// are localized markdown H1s, resolved via internal/docs).
 			// withShell runs inside withLocale (see web.go mount line),
@@ -129,28 +132,17 @@ func orgIDFromPath(path string) int64 {
 	return id
 }
 
-// navOriginPath — путь, по которому подсвечивается навигация. Обычно это путь
-// запроса, но страницы, общие для нескольких подразделов, принимают пометку
-// ?from=<подраздел>: она говорит, откуда пришёл пользователь, и подсветка
-// остаётся на исходном пункте.
-//
-// Сейчас пометку использует только страница эндпойнта (из «Web Vitals»), но
-// сам механизм общий: значение сверяется со списком известных подразделов,
-// чтобы произвольная строка из адреса не влияла на навигацию.
-func navOriginPath(r *http.Request) string {
-	path := r.URL.Path
-	from := r.URL.Query().Get("from")
-	if from == "" {
-		return path
-	}
-	projID := projectIDFromPath(path)
-	if projID == 0 {
-		return path
-	}
-	switch from {
-	case "web-vitals":
-		return "/projects/" + strconv.FormatInt(projID, 10) + "/web-vitals"
+// navOrigin — подраздел, из которого пользователь пришёл на общую страницу.
+// Значение приходит из адреса (?from=), поэтому сверяется со списком
+// известных: произвольная строка не должна влиять на навигацию. Сам путь
+// подсветки строит nav.Subsections — только там известен проект, к которому
+// привязаны ссылки сайдбара (страницы-детали живут на корневых адресах без
+// идентификатора проекта).
+func navOrigin(r *http.Request) string {
+	switch from := r.URL.Query().Get("from"); from {
+	case "web-vitals", "perf-issue", "issue", "endpoint":
+		return from
 	default:
-		return path
+		return ""
 	}
 }

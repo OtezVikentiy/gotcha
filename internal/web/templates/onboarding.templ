@@ -78,6 +78,7 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 templ ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, userEmail string) {
 	@chromeless(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
 		<div class="setup">
+			@breadcrumbBack(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title"))
 			<h1>{ project.Name }</h1>
 			if dsn == "" {
 				<p class="error">{ i18n.T(ctx, "project.setup.no_key") }</p>

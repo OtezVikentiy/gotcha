@@ -182,9 +182,8 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 				}
 			</section>
 
-			@createModal("new-channel", "alerts.channels.new.title") {
+			@createModalWide("new-channel", "alerts.channels.new.title", true) {
 				<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
-					<div class="form-grid">
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "alerts.channels.new.kind") }
@@ -204,13 +203,14 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 							{ i18n.T(ctx, "alerts.channels.new.target") }
 							<input type="text" name="target" required class="input"/>
 						</label>
+						<span class="hint">{ i18n.T(ctx, "alerts.channels.new.target_hint") }</span>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "alerts.channels.new.secret") }
 							<input type="text" name="secret" class="input"/>
 						</label>
-					</div>
+						<span class="hint">{ i18n.T(ctx, "alerts.channels.new.secret_hint") }</span>
 					</div>
 					<label class="checkbox-inline">
 						<input type="checkbox" name="enabled" checked/>

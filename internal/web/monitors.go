@@ -307,7 +307,7 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	latencyChart := latencyStackedSVG(latencyPoints, latencyChartWidth, latencyChartHeight)
+	latencyChart := latencyStackedSVG(r.Context(), latencyPoints, latencyChartWidth, latencyChartHeight)
 
 	checks, err := h.UptimeQuery.Recent(r.Context(), m.ID, monitorDetailChecksLimit)
 	if err != nil {

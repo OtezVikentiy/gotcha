@@ -60,7 +60,9 @@ func maintenanceTimezone(r *http.Request) string {
 // validateWindow на стороне uptime.Service отклонит такое окно как
 // ErrInvalidWindow, а не запаникует.
 func parseMaintenanceForm(r *http.Request, projectID int64) uptime.Window {
-	weekly := formBool(r, "weekly")
+	// «kind» — radio: oneoff|weekly. Тип окна взаимоисключающий, поэтому это
+	// выбор одного из двух, а не флаг (раньше был чекбокс «weekly»).
+	weekly := r.FormValue("kind") == "weekly"
 	tz := maintenanceTimezone(r)
 
 	w := uptime.Window{

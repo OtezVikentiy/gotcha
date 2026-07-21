@@ -98,7 +98,9 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	for i, it := range items {
 		rows[i] = templates.IssueRow{
 			Issue:     it,
-			Sparkline: sparklineSVG(sparklines[it.ID], sparklineWidth, sparklineHeight),
+			// Тренд событий за сутки: значения — счётчики, поэтому в
+			// подсказке показываются как есть.
+			Sparkline: sparklineSVG(sparklines[it.ID], sparklineWidth, sparklineHeight, nil),
 		}
 	}
 

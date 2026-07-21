@@ -81,7 +81,7 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 			</section>
 
 			if d.Issue.SampleTraceID != "" {
-				<p class="perf-sample-trace"><a class="btn btn-ghost" href={ templ.URL(tracePath(d.Issue.SampleTraceID)) }>{ i18n.T(ctx, "perf.issues.detail.sample_trace") }</a></p>
+				<p class="perf-sample-trace"><a class="btn btn-ghost" href={ templ.URL(tracePathFrom(d.Issue.SampleTraceID, "perf-issue", strconv.FormatInt(d.Issue.ID, 10))) }>{ i18n.T(ctx, "perf.issues.detail.sample_trace") }</a></p>
 			}
 		</div>
 	}

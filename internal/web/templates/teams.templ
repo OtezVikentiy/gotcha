@@ -116,23 +116,25 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 	<section class="team card">
 		<h2 class="card-header">{ tm.Team.Name } <span class="chip">{ tm.Team.Slug }</span></h2>
 		<h3>{ i18n.T(ctx, "teams.members.title") }</h3>
-		if len(tm.Members) == 0 {
-			@emptyState("user", "teams.members.empty.title", "teams.members.empty.body", "", "")
-		} else {
-			<table class="data-table">
-				<thead>
-					<tr>
-						<th>{ i18n.T(ctx, "teams.members.table.email") }</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, m := range tm.Members {
-						@teamMemberRow(tm.Team.ID, m)
-					}
-				</tbody>
-			</table>
-		}
+		<div class="team-scroll">
+			if len(tm.Members) == 0 {
+				@emptyState("user", "teams.members.empty.title", "teams.members.empty.body", "", "")
+			} else {
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th>{ i18n.T(ctx, "teams.members.table.email") }</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, m := range tm.Members {
+							@teamMemberRow(tm.Team.ID, m)
+						}
+					</tbody>
+				</table>
+			}
+		</div>
 		if hasAvailableMembers(orgMembers, tm.Members) {
 			<form method="post" action={ templ.URL(teamMembersPath(tm.Team.ID)) } class="team-member-add-form">
 				<div class="field">
@@ -153,23 +155,25 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 			<p class="hint">{ i18n.T(ctx, "teams.members.add.empty") }</p>
 		}
 		<h3>{ i18n.T(ctx, "teams.projects.title") }</h3>
-		if len(tm.Projects) == 0 {
-			@emptyState("building", "teams.projects.empty.title", "teams.projects.empty.body", "", "")
-		} else {
-			<table class="data-table">
-				<thead>
-					<tr>
-						<th>{ i18n.T(ctx, "teams.projects.table.name") }</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, p := range tm.Projects {
-						@teamProjectRow(tm.Team.ID, p)
-					}
-				</tbody>
-			</table>
-		}
+		<div class="team-scroll">
+			if len(tm.Projects) == 0 {
+				@emptyState("building", "teams.projects.empty.title", "teams.projects.empty.body", "", "")
+			} else {
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th>{ i18n.T(ctx, "teams.projects.table.name") }</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, p := range tm.Projects {
+							@teamProjectRow(tm.Team.ID, p)
+						}
+					</tbody>
+				</table>
+			}
+		</div>
 		if hasAvailableProjects(orgProjects, tm.Projects) {
 			<form method="post" action={ templ.URL(teamProjectsPath(tm.Team.ID)) } class="team-project-attach-form">
 				<div class="field">

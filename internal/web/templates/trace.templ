@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"strconv"
 	"time"
 
@@ -24,10 +25,31 @@ type TraceWaterfallData struct {
 	// HasProfile — есть ли профиль для этого трейса (этап 8): при true рисуем
 	// ссылку на flamegraph.
 	HasProfile bool
+	// From/FromID/FromTransaction — откуда открыли трейс, чтобы вернуть
+	// пользователя туда же. Пусто — прямой заход, возвращаем в список
+	// транзакций.
+	From           string
+	FromID         int64
+	FromTransaction string
 }
 
 func traceFlamePath(traceID string) string {
 	return "/traces/" + traceID + "/flame"
+}
+
+// tracePathFrom — ссылка на трейс с пометкой, откуда его открыли. Трейс
+// доступен из трёх мест (проблема производительности, эндпойнт, событие
+// issue), и без пометки крошка на нём всегда вела в «Транзакции» — то есть
+// не туда, откуда пришёл пользователь.
+//
+// origin/originID проверяются на стороне сервера (см. traceOrigin в
+// web/trace.go): значения приходят из адреса.
+func tracePathFrom(traceID, origin, originID string) string {
+	u := "/traces/" + url.PathEscape(traceID) + "?from=" + url.QueryEscape(origin)
+	if originID != "" {
+		u += "&from_id=" + url.QueryEscape(originID)
+	}
+	return u
 }
 
 // TraceWaterfall — GET /traces/{trace_id}: заголовок трейса (имя транзакции,
@@ -36,7 +58,19 @@ func traceFlamePath(traceID string) string {
 templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 	@layout(d.Transaction, userEmail) {
 		<div class="trace-detail">
-			@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.performance"))
+			switch d.From {
+				case "perf-issue":
+					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
+				case "issue":
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
+				case "endpoint":
+					@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
+				default:
+					// Прямой заход: возвращаем в список транзакций. Подпись —
+					// «Транзакции», а не «Производительность»: она должна
+					// называть то место, куда ведёт.
+					@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.transactions"))
+			}
 			<h1>{ d.Transaction }</h1>
 			<div class="monitor-meta">
 				<div class="stat-tile">

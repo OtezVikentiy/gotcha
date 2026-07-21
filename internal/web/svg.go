@@ -269,6 +269,20 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	sb.WriteString(`<polyline points="`)
 	sb.WriteString(pts.String())
 	sb.WriteString(`" fill="none" stroke="#3d7bff" stroke-width="1.5"/>`)
+
+	// Полосы наведения: линия тонкая, наводиться на неё нечем, поэтому
+	// подсказку ловит прозрачная полоса над своим интервалом. Значение
+	// показывается в той же записи, что и подписи оси.
+	g := chartGeom{w: w, h: h, x0: x0, x1: x1, y0: y0, y1: y1}
+	band := (x1 - x0) / float64(n)
+	for i, p := range points {
+		x := x0
+		if n > 1 {
+			x = x0 + float64(i)/float64(n-1)*(x1-x0)
+		}
+		writeHoverBand(&sb, g, x-band/2, band,
+			p.T.UTC().Format("02.01 15:04")+" — "+formatAxisValue(p.V, unit))
+	}
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
@@ -343,11 +357,15 @@ const (
 // собранный из них SVG-текст не требует HTML-экранирования — templ.Raw здесь
 // безопасен, так как в него не попадает ничего, кроме чисел, отформатированных
 // этой функцией.
-func sparklineSVG(buckets []uint64, w, h int) templ.Component {
-	return templ.Raw(sparklinePolyline(buckets, w, h))
+// sparklineSVG — врезка-спарклайн в строке таблицы. Осей ей не даём (график
+// шириной в пару сантиметров), но подсказка со сводкой нужна: без неё линия
+// показывает только форму, а величины остаются неизвестными. format задаёт
+// запись значения (счётчик или длительность) — nil означает голое число.
+func sparklineSVG(buckets []uint64, w, h int, format func(uint64) string) templ.Component {
+	return templ.Raw(sparklinePolyline(buckets, w, h, format))
 }
 
-func sparklinePolyline(buckets []uint64, w, h int) string {
+func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) string {
 	var max uint64
 	for _, v := range buckets {
 		if v > max {
@@ -379,7 +397,26 @@ func sparklinePolyline(buckets []uint64, w, h int) string {
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg"><polyline points="`)
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	if len(buckets) > 0 {
+		if format == nil {
+			format = func(v uint64) string { return strconv.FormatUint(v, 10) }
+		}
+		lo, hi := buckets[0], buckets[0]
+		for _, v := range buckets {
+			if v < lo {
+				lo = v
+			}
+			if v > hi {
+				hi = v
+			}
+		}
+		sb.WriteString(`<title>`)
+		sb.WriteString(html.EscapeString("min " + format(lo) + " · max " + format(hi) +
+			" · " + format(buckets[len(buckets)-1])))
+		sb.WriteString(`</title>`)
+	}
+	sb.WriteString(`<polyline points="`)
 	sb.WriteString(points.String())
 	sb.WriteString(`" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`)
 	return sb.String()
@@ -430,7 +467,8 @@ func latencySparklineSVG(points []trace.LatencyPoint, w, h int) templ.Component 
 	for i, p := range points {
 		vals[i] = uint64(p.P95)
 	}
-	return sparklineSVG(vals, w, h)
+	// Значения — микросекунды: в подсказке приводим к ms/s, как на осях.
+	return sparklineSVG(vals, w, h, func(v uint64) string { return formatUSAxis(float64(v)) })
 }
 
 // perfLatencyChartWidth/Height — размер графика перцентилей p50/p95 и графика
@@ -1261,6 +1299,11 @@ const (
 // четыре разных цвета в одном SVG, одного currentColor мало.
 var latencySegmentClasses = [4]string{"seg-dns", "seg-connect", "seg-tls", "seg-ttfb"}
 
+// latencySegmentNames — подписи фаз для подсказки. Названия технические
+// (DNS, TCP, TLS, TTFB) и одинаковы во всех языках, поэтому в каталог не
+// выносятся.
+var latencySegmentNames = [4]string{"DNS", "TCP", "TLS", "TTFB"}
+
 // latencyStackedSVG строит один stacked-bar-график по сегментам таймингов
 // (DNS/connect/TLS/TTFB) на точку временного ряда uptime.Query.Latency.
 // Высота нормирована на максимум AvgTotalMs среди points; сумма
@@ -1272,11 +1315,11 @@ var latencySegmentClasses = [4]string{"seg-dns", "seg-connect", "seg-tls", "seg-
 // points приходят из uptime.Query.Latency (числа), поэтому собранный
 // SVG-текст состоит только из чисел и фиксированных цветов —
 // templ.Raw здесь безопасен по тем же причинам, что и в sparklineSVG.
-func latencyStackedSVG(points []uptime.LatencyPoint, w, h int) templ.Component {
-	return templ.Raw(latencyStackedMarkup(points, w, h))
+func latencyStackedSVG(ctx context.Context, points []uptime.LatencyPoint, w, h int) templ.Component {
+	return templ.Raw(latencyStackedMarkup(ctx, points, w, h))
 }
 
-func latencyStackedMarkup(points []uptime.LatencyPoint, w, h int) string {
+func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, h int) string {
 	var max uint32
 	for _, p := range points {
 		if p.AvgTotalMs > max {
@@ -1309,7 +1352,12 @@ func latencyStackedMarkup(points []uptime.LatencyPoint, w, h int) string {
 			bars.WriteString(formatCoord(segH))
 			bars.WriteString(`" class="`)
 			bars.WriteString(latencySegmentClasses[si])
-			bars.WriteString(`"/>`)
+			bars.WriteString(`"><title>`)
+			bars.WriteString(html.EscapeString(
+				p.T.UTC().Format("02.01 15:04") + " · " + latencySegmentNames[si] + " " +
+					strconv.FormatUint(uint64(ms), 10) + "ms · " + i18n.T(ctx, "chart.total") + " " +
+					strconv.FormatUint(uint64(p.AvgTotalMs), 10) + "ms"))
+			bars.WriteString(`</title></rect>`)
 		}
 	}
 

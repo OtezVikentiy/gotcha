@@ -23,6 +23,49 @@ func seedProfSample(t *testing.T, ch driver.Conn, projectID int64, leaf string, 
 	}
 }
 
+// TestRegressionEvaluatorRun покрывает жизненный цикл тикера Run: с реальным
+// (но пустым) списком проектов тикер срабатывает несколько раз за короткий
+// интервал (ветка tick.C→Tick), а отмена контекста корректно завершает цикл
+// (ветка ctx.Done). Отдельный прогон с Interval=0 закрывает подстановку
+// значения по умолчанию (evaluatorDefaultInterval).
+func TestRegressionEvaluatorRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	eval := &profile.RegressionEvaluator{
+		Pool: pool, Query: profile.NewQuery(ch),
+		Regressions: profile.NewRegressionService(pool),
+		Interval:    2 * time.Millisecond,
+		Config:      profile.DefaultProfileRegressionConfig(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { eval.Run(ctx); close(done) }()
+	time.Sleep(30 * time.Millisecond) // дать тикеру сработать несколько раз
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run не завершился после отмены контекста")
+	}
+
+	// Interval<=0 → используется evaluatorDefaultInterval (5m): тикер не успеет
+	// сработать, но ветка выбора интервала выполняется; отмена завершает цикл.
+	eval.Interval = 0
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan struct{})
+	go func() { eval.Run(ctx2); close(done2) }()
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run(Interval=0) не завершился после отмены")
+	}
+}
+
 func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")

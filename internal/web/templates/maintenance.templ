@@ -123,56 +123,68 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 						<input type="text" name="name" required class="input"/>
 					</label>
 				</div>
-				<label class="checkbox-inline">
-					<input type="checkbox" name="weekly"/>
-					{ i18n.T(ctx, "uptime.maintenance.field.weekly") }
-				</label>
+				<div class="field">
+					<span class="field-label">{ i18n.T(ctx, "uptime.maintenance.field.kind") }</span>
+					<div class="segmented">
+						<label>
+							<input type="radio" name="kind" value="oneoff" checked/>
+							{ i18n.T(ctx, "uptime.maintenance.kind.oneoff_label") }
+						</label>
+						<label>
+							<input type="radio" name="kind" value="weekly"/>
+							{ i18n.T(ctx, "uptime.maintenance.kind.weekly_label") }
+						</label>
+					</div>
+				</div>
 
-				<fieldset>
-					<legend>{ i18n.T(ctx, "uptime.maintenance.oneoff.legend") }</legend>
+				// Показывается только выбранный блок: тип окна — «либо-либо»,
+				// хендлер берёт поля только выбранной ветки (см. maintenance.go),
+				// поэтому второй блок при активном первом только сбивал бы с
+				// толку. Скрытие — чистый CSS через :has() по radio, без JS
+				// (см. .maintenance-form в app.css).
+				<div class="mw-oneoff">
 					<div class="form-grid">
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "uptime.maintenance.oneoff.start") }
-							<input type="datetime-local" name="starts_at" class="input"/>
-						</label>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "uptime.maintenance.oneoff.start") }
+								<input type="datetime-local" name="starts_at" class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "uptime.maintenance.oneoff.end") }
+								<input type="datetime-local" name="ends_at" class="input"/>
+							</label>
+						</div>
 					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "uptime.maintenance.oneoff.end") }
-							<input type="datetime-local" name="ends_at" class="input"/>
-						</label>
-					</div>
-					</div>
-				</fieldset>
+				</div>
 
-				<fieldset>
-					<legend>{ i18n.T(ctx, "uptime.maintenance.weekly.legend") }</legend>
+				<div class="mw-weekly">
 					<div class="form-grid">
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "uptime.maintenance.weekly.weekday") }
-							<select name="weekday" class="select">
-								for wd := 0; wd < 7; wd++ {
-									@maintenanceWeekdayOption(wd)
-								}
-							</select>
-						</label>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "uptime.maintenance.weekly.weekday") }
+								<select name="weekday" class="select">
+									for wd := 0; wd < 7; wd++ {
+										@maintenanceWeekdayOption(wd)
+									}
+								</select>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "uptime.maintenance.weekly.start") }
+								<input type="time" name="start_time" class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "uptime.maintenance.weekly.end") }
+								<input type="time" name="end_time" class="input"/>
+							</label>
+						</div>
 					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "uptime.maintenance.weekly.start") }
-							<input type="time" name="start_time" class="input"/>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "uptime.maintenance.weekly.end") }
-							<input type="time" name="end_time" class="input"/>
-						</label>
-					</div>
-					</div>
-				</fieldset>
+				</div>
 
 				<div class="form-grid">
 				<div class="field">
@@ -186,7 +198,10 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 						</select>
 					</label>
 				</div>
-				<div class="field">
+				// Поле своего IANA-пояса нужно только при выборе «Другой»
+				// (пустое value в select). Показывается через CSS :has() по
+				// выбранной option, без JS (см. .maintenance-form в app.css).
+				<div class="field mw-custom-tz">
 					<label>
 						{ i18n.T(ctx, "uptime.maintenance.field.timezone_custom") }
 						<input type="text" name="timezone_custom" placeholder={ i18n.T(ctx, "uptime.maintenance.timezone_placeholder") } class="input"/>

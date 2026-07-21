@@ -85,6 +85,7 @@ func TestWebMaintenanceCreateOneOff(t *testing.T) {
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
 	form := url.Values{
 		"name":      {"DB upgrade"},
+		"kind":      {"oneoff"},
 		"starts_at": {"2026-08-01T02:00"},
 		"ends_at":   {"2026-08-01T04:00"},
 		"timezone":  {"Europe/Moscow"},
@@ -144,7 +145,7 @@ func TestWebMaintenanceCreateWeekly(t *testing.T) {
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
 	form := url.Values{
 		"name":       {"Weekly backup window"},
-		"weekly":     {"on"},
+		"kind":       {"weekly"},
 		"weekday":    {"2"}, // вторник
 		"start_time": {"01:30"},
 		"end_time":   {"02:30"},
@@ -179,7 +180,7 @@ func TestWebMaintenanceCreateCustomTimezone(t *testing.T) {
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
 	form := url.Values{
 		"name":            {"Custom TZ window"},
-		"weekly":          {"on"},
+		"kind":            {"weekly"},
 		"weekday":         {"0"},
 		"start_time":      {"10:00"},
 		"end_time":        {"11:00"},
@@ -341,5 +342,43 @@ func TestWebMaintenanceMemberForbidden(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200", path, resp.StatusCode)
+	}
+}
+
+// TestWebMaintenanceKindIsExclusive — тип окна взаимоисключающий: при
+// kind=oneoff еженедельные поля в запросе игнорируются (форма их и не
+// показывает, но скрытые поля всё равно уходят в POST). Без этого
+// заполненные «на всякий случай» день недели и время могли бы просочиться в
+// разовое окно.
+func TestWebMaintenanceKindIsExclusive(t *testing.T) {
+	s := newMaintenanceStack(t)
+	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintexcl")
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	form := url.Values{
+		"name":       {"One-off with stray weekly fields"},
+		"kind":       {"oneoff"},
+		"starts_at":  {"2026-08-01T02:00"},
+		"ends_at":    {"2026-08-01T04:00"},
+		"timezone":   {"UTC"},
+		// поля еженедельной ветки, оставшиеся от переключения режима:
+		"weekday":    {"3"},
+		"start_time": {"05:00"},
+		"end_time":   {"06:00"},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s status = %d, want 303", path, resp.StatusCode)
+	}
+
+	windows, err := s.uptime.Windows(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("windows: %v", err)
+	}
+	w := windows[0]
+	if w.Weekly || w.Weekday != 0 || w.StartTime != "" || w.EndTime != "" {
+		t.Fatalf("еженедельные поля просочились в разовое окно: %+v", w)
 	}
 }

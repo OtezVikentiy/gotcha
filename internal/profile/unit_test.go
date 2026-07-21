@@ -66,3 +66,23 @@ func TestParsePprofKeepsUnit(t *testing.T) {
 		})
 	}
 }
+
+// TestPctIncrease закрывает обе ветки доли роста: при base<=0 сравнивать не с
+// чем — возвращается 0 (иначе было бы деление на ноль); при base>0 — доля
+// относительного прироста recent над base.
+func TestPctIncrease(t *testing.T) {
+	cases := []struct {
+		base, recent, want float64
+	}{
+		{0, 0.8, 0},     // base<=0 → 0
+		{-1, 0.8, 0},    // отрицательная база тоже 0
+		{0.1, 0.2, 1.0}, // +100%
+		{0.5, 0.5, 0},   // без изменений
+		{0.4, 0.2, -0.5},
+	}
+	for _, c := range cases {
+		if got := pctIncrease(c.base, c.recent); got != c.want {
+			t.Errorf("pctIncrease(%v,%v) = %v, want %v", c.base, c.recent, got, c.want)
+		}
+	}
+}

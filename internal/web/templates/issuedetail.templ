@@ -165,7 +165,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 					<div class="culprit event-id">{ selected.ID }</div>
 
 					if selected.TraceID != "" {
-						<p class="event-trace-link"><a href={ templ.URL(tracePath(selected.TraceID)) }>{ i18n.T(ctx, "issues.detail.view_trace") }</a></p>
+						<p class="event-trace-link"><a href={ templ.URL(tracePathFrom(selected.TraceID, "issue", strconv.FormatInt(it.ID, 10))) }>{ i18n.T(ctx, "issues.detail.view_trace") }</a></p>
 					}
 
 					if len(frames) > 0 {

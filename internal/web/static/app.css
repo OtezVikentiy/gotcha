@@ -454,12 +454,25 @@ a:hover {
 /* Формы внутри ячеек таблицы выкладываются в строку. Без этого .select с его
    width:100% распирает ячейку и выталкивает кнопку на вторую строку, хотя
    места в карточке вдоволь. */
-.member-role-form,
-.team-member-add-form,
-.team-project-attach-form {
+.member-role-form {
 	display: flex;
 	align-items: center;
 	gap: 6px;
+}
+/* Формы добавления в команде: у select есть подпись сверху, поэтому кнопку
+   выравниваем по НИЖНЕМУ краю поля (= низ select), иначе она центрируется
+   относительно «подпись + select» и висит выше самого поля. */
+.team-member-add-form,
+.team-project-attach-form {
+	display: flex;
+	align-items: end;
+	gap: 6px;
+}
+/* .field тянет нижний margin — в этой inline-форме он не нужен, иначе кнопка
+   встаёт ниже select на величину этого отступа. */
+.team-member-add-form .field,
+.team-project-attach-form .field {
+	margin-bottom: 0;
 }
 .member-role-form .select,
 .team-member-add-form .select,
@@ -508,6 +521,11 @@ a:hover {
 	max-width: 460px;
 	box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
 }
+/* Широкая модалка — для форм, где узкая колонка рвёт вёрстку (длинные подписи
+   полей). */
+.modal-card--wide {
+	max-width: 560px;
+}
 .modal-close {
 	position: absolute;
 	top: 12px;
@@ -535,24 +553,26 @@ a:hover {
 }
 /* Карточки правил алертинга (new_issue/regression/spike) рядами — было
    вертикальным стеком трёх fieldset'ов, слишком высоко/разреженно. */
+/* Правила алертов: на узком экране — колонкой. */
 .rule-grid {
 	display: grid;
 	grid-template-columns: 1fr;
 	gap: 16px;
 	margin-bottom: 16px;
 }
+/* На широком экране — две колонки: слева «Новый issue» и под ним «Регрессия»
+   (равны между собой — одинаковое содержимое, по одному полю), справа
+   «Всплеск» на всю высоту левой пары (grid-row 1/span 2, растянут). Порядок
+   в DOM: new_issue(1), regression(2), spike(3). */
 @media (min-width: 900px) {
-	.rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-/* На широком экране три карточки правил встают в один ряд: в две колонки
-   третья уходит вниз и оставляет справа дыру, а карточки разной высоты
-   делают сетку рваной. align-items:start не даёт короткой карточке
-   растягиваться до высоты соседней. */
-@media (min-width: 1200px) {
-	.rule-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-.rule-grid {
-	align-items: start;
+	.rule-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-auto-rows: 1fr;
+		align-items: stretch;
+	}
+	.rule-grid > :nth-child(1) { grid-column: 1; grid-row: 1; }
+	.rule-grid > :nth-child(2) { grid-column: 1; grid-row: 2; }
+	.rule-grid > :nth-child(3) { grid-column: 2; grid-row: 1 / span 2; }
 }
 
 /* -- Chromeless: анонимные/setup-страницы (логин, регистрация, онбординг,
@@ -1341,27 +1361,48 @@ th {
 	height: 24px;
 }
 
-/* Настройки статус-страниц проекта. */
+/* Настройки статус-страниц проекта: заголовок страницы и группа карточек
+   (настройки, сервисы, публикация). Раньше поля шли сплошным потоком, а
+   список сервисов был набором строк с повторяющейся подписью «Публичное имя»
+   и полями, начинавшимися с разного отступа, — теперь это таблица. */
 .status-page-item {
-	border-bottom: 1px solid var(--border);
 	margin-bottom: 16px;
-	padding-bottom: 8px;
 }
-.status-page-monitors {
-	list-style: none;
-	padding: 0;
-	margin: 6px 0;
-}
-.status-page-monitor {
+/* Три блока одной карточки статус-страницы — друг под другом: настройки,
+   сервисы, публикация. Разделены горизонтальными линиями, чтобы группы
+   читались как части одной формы, а не как отдельные карточки. */
+.status-page-editor {
 	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 8px;
-	margin-bottom: 6px;
+	flex-direction: column;
 }
-.status-page-public {
+.status-page-block {
+	min-width: 0;
+	padding: 12px 0;
+}
+.status-page-block:first-child {
+	padding-top: 0;
+}
+.status-page-block:last-child {
+	padding-bottom: 0;
+}
+.status-page-block + .status-page-block {
+	border-top: 1px solid var(--border);
+}
+.status-page-block > h3 {
+	margin-top: 0;
 	color: var(--text-dim);
-	font-size: var(--fs-base);
+	text-transform: uppercase;
+	font-size: var(--fs-label);
+	letter-spacing: .4px;
+}
+/* Поля настроек и публичных имён не растягиваем на всю карточку: slug,
+   заголовок и публичное имя — короткие значения, поле во всю ширину под них
+   выглядит несоразмерно. */
+/* Внутри узкой карточки (сетка 3/2/1) фиксированные ширины полей больше не
+   нужны — поля занимают ширину своего блока. Таблица сервисов тоже на всю
+   ширину карточки. */
+.status-page-editor .data-table {
+	width: 100%;
 }
 
 /* OAuth / social login: кнопки на /login, /register и в профиле. */
@@ -1572,6 +1613,22 @@ form.inline {
 }
 .settings-grid > .card { margin: 0; }
 .settings-grid > .card--wide { grid-column: 1 / -1; }
+
+/* Настройки проекта: карточки одной строки — равной высоты (ровные низа
+   вместо «лесенки», которую давал общий align-items:start). */
+.project-settings .settings-grid { align-items: stretch; }
+/* Вертикальная пара карточек в одной колонке (Хранение данных + Опасная зона).
+   Занимает одну ячейку сетки и НЕ растягивается под высокую соседнюю карточку
+   (Регрессии) — align-self:start прижимает пару к верху строки. */
+.settings-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	align-self: start;
+}
+.settings-stack > .card { margin: 0; }
+/* «Новый ключ» не должен прилипать к таблице DSN-ключей сверху. */
+.key-create-form { margin-top: 12px; }
 
 /* Разлипание вертикально составленных действий в карточке: несколько форм/
    кнопок подряд (напр. Опасная зона — «Покинуть» и «Удалить» шли впритык). */
@@ -2440,3 +2497,93 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 }
 .legend-p50::before { background: var(--accent); }
 .legend-p95::before { background: var(--warn); }
+
+/* ===== Форма окна обслуживания ===== */
+
+/* Тип окна взаимоисключающий, поэтому в форме виден только выбранный блок.
+   Скрытие — чистый CSS через :has() по radio, без JS: галка «Разовое»
+   прячет еженедельный блок и наоборот. Скрытые поля всё равно уходят в
+   POST, но хендлер читает только выбранную ветку, так что это безопасно. */
+.maintenance-form:has(input[name="kind"][value="oneoff"]:checked) .mw-weekly,
+.maintenance-form:has(input[name="kind"][value="weekly"]:checked) .mw-oneoff {
+	display: none;
+}
+
+/* Поле «Свой IANA часовой пояс» видно только при выборе «Другой» (пустая
+   option в select). Пока выбран любой готовый пояс, поле не нужно и только
+   загромождает форму. :has по выбранной option, без JS. */
+.maintenance-form:not(:has(select[name="timezone"] option[value=""]:checked)) .mw-custom-tz {
+	display: none;
+}
+
+/* Сегмент-контрол «Разовое / Еженедельное» — две склеенные кнопки, как у
+   переключателя языка/темы: сразу читается как выбор одного из двух, а не
+   как флажок-опция. Радио скрыты, подсвечивается активная подпись. */
+.segmented {
+	display: inline-flex;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
+	width: fit-content;
+}
+.segmented label {
+	display: inline-flex;
+	align-items: center;
+	padding: 6px 14px;
+	cursor: pointer;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	border-left: 1px solid var(--border);
+}
+.segmented label:first-child {
+	border-left: none;
+}
+.segmented input {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
+.segmented label:has(input:checked) {
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+.segmented label:has(input:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
+}
+/* Подпись сегмента набирается как обычная подпись поля. */
+.field > .field-label {
+	display: block;
+	margin-bottom: 4px;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
+
+/* Нижний ряд (часовой пояс + свой IANA): подписи разной длины, поэтому
+   прижимаем контролы к низу ячейки — иначе поле с однострочной подписью
+   стоит выше поля с двухстрочной. */
+.maintenance-form .form-grid .field label {
+	height: 100%;
+}
+.maintenance-form .form-grid .field .input,
+.maintenance-form .form-grid .field .select {
+	margin-top: auto;
+}
+
+/* Списки участников и проектов в карточке команды — фиксированной высоты со
+   внутренним скроллом, чтобы соседние карточки не отличались по высоте из-за
+   разного числа строк. Высота ~ три строки плюс заголовок столбца. */
+.team-scroll {
+	height: 240px;
+	overflow-y: auto;
+	margin-bottom: 4px;
+}
+/* Заголовок столбца остаётся на месте при прокрутке. */
+.team-scroll .data-table thead th {
+	position: sticky;
+	top: 0;
+	background: var(--surface);
+	z-index: 1;
+}

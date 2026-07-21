@@ -52,6 +52,13 @@ type Shell struct {
 	Area      string
 	OrgMode   bool
 	Path      string
+	// Origin — подраздел, из которого пользователь пришёл на общую страницу
+	// (?from= в адресе, значение уже проверено в web-слое). Нужен там, где по
+	// одному адресу можно попасть из разных мест: страница эндпойнта общая
+	// для «Транзакций» и «Web Vitals», трейс открывается из трёх разделов.
+	// Без него подсветка молча уезжала в соседний подраздел и спорила с
+	// хлебной крошкой.
+	Origin string
 	// Locale is the request's resolved i18n locale ("ru"/"en"), used to
 	// build the docs area's Subsections (doc page titles come from
 	// localized markdown H1s, via internal/docs, not the i18n catalog).
@@ -224,8 +231,62 @@ func Subsections(s Shell) []NavItem {
 		return nil
 	}
 
-	markActive(items, s.Path)
+	markActive(items, activePath(s.Path, effID, s.Origin))
 	return items
+}
+
+// AreaForOrigin — область рейла для подраздела-источника: подсветка области
+// должна совпадать с подсветкой подраздела, иначе на трейсе, открытом из
+// проблем производительности, светилась бы одна область, а пункт — из другой.
+func AreaForOrigin(origin string) string {
+	switch origin {
+	case "web-vitals", "perf-issue", "endpoint":
+		return "performance"
+	case "issue":
+		return "issues"
+	default:
+		return ""
+	}
+}
+
+// activePath — путь, по которому ищется активный подраздел. Страницы-детали
+// живут на корневых адресах без идентификатора проекта (/issues/{id},
+// /perf-issues/{id}, /monitors/{id}, /traces/{id}), а пункты сайдбара имеют
+// вид /projects/{id}/…, поэтому прямое сравнение не давало совпадений и на
+// детали в сайдбаре не подсвечивалось НИЧЕГО: пользователь не видел, в каком
+// разделе находится.
+//
+// Здесь корневой адрес приводится к списку своего раздела. Идентификатор
+// проекта берётся тот же (effID), что и у ссылок сайдбара, иначе подсветка
+// не совпала бы с ними.
+func activePath(path, effID, origin string) string {
+	// Источник перехода важнее пути: по одному адресу можно прийти из разных
+	// разделов, и подсветка должна остаться там, откуда пришли — иначе она
+	// спорит с хлебной крошкой.
+	switch origin {
+	case "web-vitals":
+		return "/projects/" + effID + "/web-vitals"
+	case "perf-issue":
+		return "/projects/" + effID + "/perf-issues"
+	case "issue":
+		return "/projects/" + effID + "/issues"
+	case "endpoint":
+		return "/projects/" + effID + "/performance"
+	}
+
+	prefixes := []struct{ detail, list string }{
+		{"/issues/", "/issues"},
+		{"/perf-issues/", "/perf-issues"},
+		{"/monitors/", "/monitors"},
+		// Трейс принадлежит транзакции, поэтому подсвечиваем «Транзакции».
+		{"/traces/", "/performance"},
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(path, p.detail) {
+			return "/projects/" + effID + p.list
+		}
+	}
+	return path
 }
 
 // markActive sets Active on the item whose Href is the longest prefix

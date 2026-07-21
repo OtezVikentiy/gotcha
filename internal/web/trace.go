@@ -3,6 +3,7 @@ package web
 import (
 	"math"
 	"net/http"
+	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -24,6 +25,13 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 
 	traceID := r.PathValue("trace_id")
 	if traceID == "" {
+		h.notFound(w, r)
+		return
+	}
+
+	// h.Trace может быть nil в стендах без трейсинга — тогда 404, а не паника
+	// при разыменовании (тот же guard, что и в traceFlame/performanceList).
+	if h.Trace == nil {
 		h.notFound(w, r)
 		return
 	}
@@ -128,6 +136,10 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		TotalRows:   len(spans),
 		HasProfile:  hasProfile,
 	}
+	// Откуда открыли трейс — чтобы крошка вернула туда же, а не в список
+	// транзакций. Значения приходят из адреса, поэтому источник сверяется со
+	// списком известных, а идентификатор разбирается как число.
+	data.From, data.FromID, data.FromTransaction = traceOrigin(r)
 	_ = templates.TraceWaterfall(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
@@ -178,4 +190,27 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		Chart:   flamegraphSVG(r.Context(), root, 960),
 	}
 	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// traceOrigin разбирает пометку об источнике перехода на страницу трейса.
+// Неизвестный источник игнорируется: значение пришло из адреса и не должно
+// влиять на навигацию.
+func traceOrigin(r *http.Request) (origin string, id int64, transaction string) {
+	q := r.URL.Query()
+	switch from := q.Get("from"); from {
+	case "perf-issue", "issue":
+		v, err := strconv.ParseInt(q.Get("from_id"), 10, 64)
+		if err != nil || v <= 0 {
+			return "", 0, ""
+		}
+		return from, v, ""
+	case "endpoint":
+		name := q.Get("from_id")
+		if name == "" {
+			return "", 0, ""
+		}
+		return from, 0, name
+	default:
+		return "", 0, ""
+	}
 }
