@@ -1,3 +1,23 @@
+# Build output
 /gotcha
+/devseed
+
+# Go artifacts
 *.test
+*.out
+
+# Environment / secrets
 .env
+
+# Local planning & docs (not part of the published repo)
+/cld/
+/docs
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# Tooling / agent caches
+.remember/
+.superpowers/
+.playwright-mcp/

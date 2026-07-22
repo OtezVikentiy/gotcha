@@ -40,7 +40,7 @@ func TestYandexExchange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
-	if id.Subject != "42" || id.Email != "u@yandex.ru" || !id.EmailVerified || id.DisplayName != "U" {
+	if id.Subject != "42" || id.Email != "u@yandex.ru" || !id.EmailVerified || !id.TrustedIssuer || id.DisplayName != "U" {
 		t.Fatalf("Identity = %+v", id)
 	}
 }

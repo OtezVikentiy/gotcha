@@ -10,6 +10,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
 	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
 templ layout(title string, userEmail string) {
@@ -115,6 +116,11 @@ templ layoutBody(title string, userEmail string) {
 				<main class="app-content">
 					{ children... }
 				</main>
+				<footer class="app-footer">
+					<a href="/about">
+						gotcha { version.Version() }
+					</a>
+				</footer>
 			</div>
 		</div>
 	</body>

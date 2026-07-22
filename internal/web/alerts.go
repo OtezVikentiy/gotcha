@@ -80,6 +80,13 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// h.Alerts может быть nil в стендах без подсистемы алертинга — тогда 404,
+	// а не паника при разыменовании (тот же guard, что и h.Metrics в
+	// metricsList). renderAlerts дереференсит h.Alerts.Rules/Channels.
+	if h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
@@ -160,6 +167,10 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
@@ -216,6 +227,10 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
@@ -263,6 +278,10 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
+		return
+	}
+	if h.Alerts == nil {
+		h.notFound(w, r)
 		return
 	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {

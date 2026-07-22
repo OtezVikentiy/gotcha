@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,11 +23,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -34,12 +40,40 @@ func main() {
 	}
 }
 
+// versionRequested — true, если среди аргументов есть флаг версии.
+func versionRequested(args []string) bool {
+	for _, a := range args {
+		if a == "--version" || a == "version" {
+			return true
+		}
+	}
+	return false
+}
+
+// deriveCookieKey выводит из мастер-секрета отдельный подключ для HMAC-подписи
+// oauth-flow cookie (доменное разделение, Info20): HMAC-SHA256(master, label).
+// Детерминирован (переживает рестарт), не совпадает с ключом at-rest-шифрования
+// SSO (sha256(master) в org). Пустой мастер → пустой ключ: web-слой сам
+// подставит дефолт для стендов (см. oauthflow.go secret()).
+func deriveCookieKey(master string) string {
+	if master == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(master))
+	mac.Write([]byte("gotcha:oauth-cookie-mac:v1"))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 func run() error {
+	if versionRequested(os.Args[1:]) {
+		fmt.Println("gotcha", version.String())
+		return nil
+	}
 	cfg, err := loadConfig(os.Getenv, os.Args[1:])
 	if err != nil {
 		return err
 	}
-	if cfg.SecretKey == "insecure-dev-secret" {
+	if cfg.SecretKey == devSecretKey {
 		slog.Warn("GOTCHA_SECRET_KEY is not set — using insecure dev default (fine for localhost only)")
 	}
 	// SEC-M3: сессионная cookie без Secure на не-loopback HTTP уходит открытым
@@ -47,6 +81,10 @@ func run() error {
 	if !isLocalBaseURL(cfg.BaseURL) && !strings.HasPrefix(cfg.BaseURL, "https://") {
 		slog.Warn("GOTCHA_BASE_URL is non-local plain HTTP — session cookies ride unencrypted; enable TLS (https)")
 	}
+	// Исходящие OIDC-вызовы (discovery/JWKS/token/userinfo) — SSRF-safe по тому же
+	// флагу, что webhook/uptime: приватные адреса режутся, если оператор не разрешил
+	// их явно (внутренний IdP). Ставим до любого OAuth-обмена.
+	oauth.SetAllowPrivateHosts(cfg.SSRFAllowPrivate)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -128,6 +166,7 @@ func run() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(pg, ch))
+	mux.HandleFunc("GET /version", versionHandler())
 
 	// Общие сервисы нужны и ingest-у, и web-у — строим один раз на любой
 	// активный режим, а не дублируем на каждый. alertSvc/emailSender/outbox
@@ -144,9 +183,20 @@ func run() error {
 	if cfg.Mode == "ingest" || cfg.Mode == "web" || cfg.Mode == "all" {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
 		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
-		orgSvc.SetSecretKey(cfg.SecretKey)
+		// SSO client_secret шифруется этим мастер-ключом at-rest. С публично
+		// известным dev-дефолтом шифровать бессмысленно — ключ виден в исходниках,
+		// а «enc:»-значение давало бы ложное чувство защиты (Info21). Тогда
+		// оставляем plaintext, как при пустом ключе. На не-localhost web/all
+		// дефолтный ключ и так отбивается валидацией конфига, поэтому в реальном
+		// проде сюда приходит настоящий ключ и шифрование включается.
+		if cfg.SecretKey != devSecretKey {
+			orgSvc.SetSecretKey(cfg.SecretKey)
+		}
 		issueSvc = issue.NewService(pg)
 		alertSvc = alert.NewService(pg)
+		if cfg.SecretKey != devSecretKey {
+			alertSvc.SetSecretKey(cfg.SecretKey)
+		}
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
@@ -183,6 +233,9 @@ func run() error {
 		// runs on its own.
 		if alertSvc == nil {
 			alertSvc = alert.NewService(pg)
+			if cfg.SecretKey != devSecretKey {
+				alertSvc.SetSecretKey(cfg.SecretKey)
+			}
 		}
 		if outbox == nil {
 			outbox = notify.NewOutbox(pg)
@@ -423,17 +476,47 @@ func run() error {
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
-		webHandler.SecretKey = cfg.SecretKey
+		// Ключ подписи oauth-flow cookie выводим отдельным подключом от мастера,
+		// а не берём мастер напрямую: тогда контекст HMAC-подписи cookie и
+		// контекст at-rest-шифрования SSO client_secret (sha256(master) в org)
+		// не делят один и тот же ключевой материал — доменное разделение (Info20).
+		// Ephemeral oauth-cookie при апгрейде просто инвалидируются один раз.
+		webHandler.SecretKey = deriveCookieKey(cfg.SecretKey)
+		webHandler.TrustedProxies = cfg.TrustedProxies
 		webHandler.RegistrationMode = cfg.RegistrationMode
 		webHandler.RetentionDays = cfg.RetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Purger = telemetry.NewPurger(ch)
 		webHandler.Register(mux)
-		go (&auth.Janitor{Svc: authSvc}).Run(ctx)
+		janitor := &auth.Janitor{Svc: authSvc}
+		if orgSvc != nil {
+			// Просроченные/принятые инвайты копят email приглашённых бессрочно —
+			// чистим на том же тике (минимизация ПДн, 152-ФЗ ст.5 ч.7).
+			janitor.Extra = append(janitor.Extra, auth.Cleanup{
+				Name: "expired invites", Fn: orgSvc.PurgeExpiredInvites,
+			})
+		}
+		go janitor.Run(ctx)
 		slog.Info("web enabled")
 	}
 
-	srv := &http.Server{Addr: cfg.Addr, Handler: mux}
+	// Таймауты обязательны: Go по умолчанию их НЕ ставит, а на этом же mux
+	// висят публичные приёмные эндпойнты (DSN публичен по замыслу). Без них
+	// Slowloris — медленная посылка заголовков/тела по байту — держит горутину
+	// и файловый дескриптор на каждое соединение бесконечно, и тысячи таких
+	// коннектов кладут приём для всех тенантов. MaxBytesReader от этого не
+	// спасает (тело просто не дочитывается, соединение живёт). ReadHeaderTimeout
+	// режет slow-header, ReadTimeout — slow-body, WriteTimeout — медленного
+	// читателя, IdleTimeout закрывает простаивающие keep-alive.
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB заголовков — с запасом, но не безлимит
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("listening", "addr", cfg.Addr, "mode", cfg.Mode)

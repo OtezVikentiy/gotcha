@@ -52,8 +52,17 @@ type OrgQuota struct {
 	// инкремента (ARCH-L1: отвергнутое не считается в usage).
 	checkCount func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
 
+	// quotaNegTTL — время жизни НЕГАТИВНОЙ записи «квота исчерпана». Короткий TTL
+	// (аналог negTTL у KeyCache): при over-quota флуде повторные обращения той же
+	// орги обслуживаются из памяти и НЕ бьют по PG условным INSERT..ON CONFLICT
+	// (row-lock). Квота обнуляется раз в месяц, так что задержка «снова
+	// принимаем» после роста квоты ≤ этого TTL — приемлемо.
+	quotaNegTTL time.Duration
+
 	mu      sync.Mutex
 	entries map[int64]quotaEntry
+	// exhausted — orgID → момент истечения негативной записи «квота исчерпана».
+	exhausted map[int64]time.Time
 }
 
 type quotaEntry struct {
@@ -98,12 +107,14 @@ func newOrgQuota(
 	checkCount func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error),
 ) *OrgQuota {
 	return &OrgQuota{
-		svc:        svc,
-		ttl:        30 * time.Second,
-		now:        time.Now,
-		quotaOf:    quotaOf,
-		checkCount: checkCount,
-		entries:    map[int64]quotaEntry{},
+		svc:         svc,
+		ttl:         30 * time.Second,
+		quotaNegTTL: 5 * time.Second,
+		now:         time.Now,
+		quotaOf:     quotaOf,
+		checkCount:  checkCount,
+		entries:     map[int64]quotaEntry{},
+		exhausted:   map[int64]time.Time{},
 	}
 }
 
@@ -133,9 +144,53 @@ func (q *OrgQuota) quota(ctx context.Context, orgID int64) (int64, error) {
 // исчерпанной квоте счётчик НЕ инкрементится (ARCH-L1: отвергнутое не считается
 // в usage) — условный инкремент атомарен в БД, без гонки read-then-write.
 func (q *OrgQuota) CheckAndCount(ctx context.Context, orgID int64) (bool, error) {
+	// Короткое замыкание over-quota: если недавно уже видели исчерпание, не идём
+	// в PG вовсе (иначе флуд при исчерпанной квоте бьёт условным INSERT..ON
+	// CONFLICT с row-lock'ом). Кешируем ТОЛЬКО негатив — позитив обязан
+	// инкрементить счётчик usage в БД на каждый принятый item.
+	if q.recentlyExhausted(orgID) {
+		return false, nil
+	}
 	quota, err := q.quota(ctx, orgID)
 	if err != nil {
 		return false, err
 	}
-	return q.checkCount(ctx, orgID, time.Now(), quota)
+	allowed, err := q.checkCount(ctx, orgID, time.Now(), quota)
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
+		q.markExhausted(orgID)
+	}
+	return allowed, nil
+}
+
+// recentlyExhausted сообщает, есть ли живая негативная запись «квота исчерпана»
+// для орги.
+func (q *OrgQuota) recentlyExhausted(orgID int64) bool {
+	now := q.now()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	exp, ok := q.exhausted[orgID]
+	if !ok {
+		return false
+	}
+	if !exp.After(now) {
+		delete(q.exhausted, orgID) // истёкшую запись подчищаем на месте
+		return false
+	}
+	return true
+}
+
+// markExhausted кладёт негативную запись «квота исчерпана» на quotaNegTTL. При
+// переполнении map чистится целиком (как store у KeyCache): записи короткоживущие
+// и восстановятся первым же over-quota запросом.
+func (q *OrgQuota) markExhausted(orgID int64) {
+	now := q.now()
+	q.mu.Lock()
+	if len(q.exhausted) >= maxKeyCacheEntries {
+		q.exhausted = make(map[int64]time.Time, maxKeyCacheEntries)
+	}
+	q.exhausted[orgID] = now.Add(q.quotaNegTTL)
+	q.mu.Unlock()
 }

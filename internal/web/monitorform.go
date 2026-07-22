@@ -360,6 +360,13 @@ func (h *Handler) monitorNewPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// renderMonitorForm дереференсит h.Uptime (регионы) и h.Alerts (каналы) —
+	// в стендах без этих подсистем 404, а не паника (тот же guard, что и в
+	// monitorsList/metricsList).
+	if h.Uptime == nil || h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
 	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
 	if !ok {
 		return
@@ -375,6 +382,12 @@ func (h *Handler) monitorEditPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	// nil-guard до loadAccessibleMonitor (h.Uptime) и renderMonitorForm
+	// (h.Uptime + h.Alerts): в стендах без мониторинга — 404, а не паника.
+	if h.Uptime == nil || h.Alerts == nil {
+		h.notFound(w, r)
 		return
 	}
 	m, ok := h.loadAccessibleMonitor(w, r, uid)
@@ -407,6 +420,13 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Create дереференсит h.Uptime; renderMonitorForm (ветка 422) — h.Uptime и
+	// h.Alerts; renderMonitorDetail (heartbeat) — h.UptimeQuery. Guard после
+	// sameOrigin (403 остаётся раньше 404), но до первого обращения к сервисам.
+	if h.Uptime == nil || h.UptimeQuery == nil || h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
 	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
 	if !ok {
 		return
@@ -430,7 +450,57 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	if created.Kind == uptime.KindHeartbeat && created.HeartbeatToken != "" {
+		// Сырой heartbeat-токен доступен только сейчас (в БД — sha256). Рендерим
+		// деталь с URL пинга один раз, а не редиректим: redirect потерял бы токен
+		// и пользователь не получил бы URL для настройки пинга. requireProjectRole
+		// выше уже подтвердил owner/admin, поэтому canManage=true.
+		h.renderMonitorDetail(w, r, created, true)
+		return
+	}
 	http.Redirect(w, r, monitorDetailPath(created.ID), http.StatusSeeOther)
+}
+
+// monitorHeartbeatRegenerate — POST /monitors/{id}/heartbeat/regenerate: выдаёт
+// новый heartbeat-токен (старый становится недействителен) и показывает новый
+// URL пинга один раз. Смысл: токен хранится хешем, поэтому «посмотреть» старый
+// URL нельзя — только перевыпустить.
+func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	// nil-guard до loadAccessibleMonitor (h.Uptime) и renderMonitorDetail
+	// (h.UptimeQuery): в стендах без мониторинга — 404, а не паника.
+	if h.Uptime == nil || h.UptimeQuery == nil {
+		h.notFound(w, r)
+		return
+	}
+	m, ok := h.loadAccessibleMonitor(w, r, uid)
+	if !ok {
+		return
+	}
+	canManage, err := h.canManageProject(r.Context(), m.ProjectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canManage || m.Kind != uptime.KindHeartbeat {
+		h.notFound(w, r)
+		return
+	}
+	token, err := h.Uptime.RotateHeartbeatToken(r.Context(), m.ID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	m.HeartbeatToken = token
+	h.renderMonitorDetail(w, r, m, canManage)
 }
 
 // monitorUpdate — POST /monitors/{id}: тот же принцип, что и monitorCreate,
@@ -444,6 +514,12 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	// Update дереференсит h.Uptime; renderMonitorForm (ветка 422) — h.Uptime и
+	// h.Alerts. Guard после sameOrigin, до loadAccessibleMonitor.
+	if h.Uptime == nil || h.Alerts == nil {
+		h.notFound(w, r)
 		return
 	}
 	m, ok := h.loadAccessibleMonitor(w, r, uid)

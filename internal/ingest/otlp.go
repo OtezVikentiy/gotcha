@@ -62,6 +62,13 @@ const maxDataValue = maxSpanDescription
 // детерминирован — первые maxDataKeys в отсортированном порядке.
 const maxDataKeys = 64
 
+// maxOTLPSpans — потолок числа спанов, разбираемых из одного OTLP-запроса
+// /v1/traces. Без него недоверенный экспорт с сотнями тысяч спанов раздул бы
+// плоский список flat и карту parents (амплификация CPU/памяти) в обход
+// дисциплины maxEnvelopeItems Sentry-пути. Щедрый (10× maxSpans), но конечный.
+// Датапойнты /v1/metrics каппит metric.MapOTLP своим maxOTLPMetricPoints.
+const maxOTLPSpans = 10000
+
 // maxParentHops — предел подъёма по цепочке parent_span_id при поиске корня
 // спана (см. MapOTLP). Реальные трейсы столько не вкладывают; кап нужен, чтобы
 // битый батч с циклом в parent_span_id не крутил нас вечно.
@@ -100,6 +107,9 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	// квоты транзакций смотрит на TracingEnabled.
 	if !h.pipeline.TracingEnabled() {
 		writeOTLPResponse(w, enc)
+		return
+	}
+	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
 	if !h.allow(r.Context(), h.TxQuota, key.OrgID, "transaction") {
@@ -158,6 +168,9 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.Metrics == nil {
 		writeOTLPResponse(w, enc)
+		return
+	}
+	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
 	if !h.allow(r.Context(), h.MetricQuota, key.OrgID, "metric") {
@@ -446,6 +459,7 @@ func MapOTLP(rs []*tracepb.ResourceSpans, now time.Time) []trace.Transaction {
 	// parents: (trace_id, span_id) → parent_span_id по всем спанам батча. Нужна,
 	// чтобы поднять ребёнка до ближайшего корня через промежуточные спаны.
 	parents := make(map[string]string, 8)
+otlpSpans:
 	for _, r := range rs {
 		if r == nil {
 			continue
@@ -453,6 +467,9 @@ func MapOTLP(rs []*tracepb.ResourceSpans, now time.Time) []trace.Transaction {
 		res := mapOTLPResource(r.GetResource())
 		for _, ss := range r.GetScopeSpans() {
 			for _, s := range ss.GetSpans() {
+				if len(flat) >= maxOTLPSpans {
+					break otlpSpans // потолок спанов на запрос — лишнее отбрасываем
+				}
 				if s == nil {
 					continue
 				}
@@ -899,6 +916,36 @@ func otlpAttrMap(attrs []*commonpb.KeyValue) map[string]any {
 	out := make(map[string]any, len(keys))
 	for _, k := range keys {
 		out[k] = vals[k]
+	}
+	return out
+}
+
+// capDataMap ограничивает УЖЕ готовую span.Data (map[string]any): не более
+// maxDataKeys ключей (детерминированно — первые в отсортированном порядке, как
+// otlpAttrMap), длина ключа и строкового значения каппится (64 руны / maxDataValue).
+// Sentry-путь (transaction.go) кладёт сюда data спанов КАК ЕСТЬ из payload'а SDK;
+// без капа спан со 100k атрибутов или гигантским значением утаскивает их все в
+// CH-колонку data. Не-строковые значения (числа/булевы/вложенные) длину колонки
+// заметно не раздувают — оставляем как есть, чтобы не терять типы.
+func capDataMap(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return m
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	if len(keys) > maxDataKeys {
+		sort.Strings(keys)
+		keys = keys[:maxDataKeys]
+	}
+	out := make(map[string]any, len(keys))
+	for _, k := range keys {
+		v := m[k]
+		if s, ok := v.(string); ok {
+			v = capRunes(s, maxDataValue)
+		}
+		out[capRunes(k, 64)] = v
 	}
 	return out
 }

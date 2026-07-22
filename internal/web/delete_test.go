@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,10 +20,11 @@ import (
 // PurgeProject/PurgeSubject, чтобы web-тесты проверяли, что best-effort
 // CH-очистка вызвана с нужными аргументами, не поднимая CH-контейнер.
 type fakePurger struct {
-	mu       sync.Mutex
-	projects []int64
-	subjects []purgeSubjectCall
-	exports  []purgeSubjectCall
+	mu         sync.Mutex
+	projects   []int64
+	subjects   []purgeSubjectCall
+	exports    []purgeSubjectCall
+	subjectErr error // если задан — PurgeSubject возвращает его (тест error-ветки)
 }
 
 type purgeSubjectCall struct {
@@ -41,7 +43,7 @@ func (f *fakePurger) PurgeSubject(_ context.Context, projectID int64, sub teleme
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.subjects = append(f.subjects, purgeSubjectCall{projectID: projectID, sub: sub})
-	return nil
+	return f.subjectErr
 }
 
 // ExportSubject фиксирует вызов и возвращает заглушку — web-тесту важен только
@@ -303,6 +305,15 @@ func TestWebPurgeSubject(t *testing.T) {
 	call := fp.subjects[0]
 	if call.projectID != proj.ID || call.sub.Email != "subject@example.com" {
 		t.Fatalf("PurgeSubject call = %+v, want projectID=%d email=subject@example.com", call, proj.ID)
+	}
+
+	// Ошибка удаления НЕ выдаётся за успех (право на удаление ПДн): → 500, а не 303.
+	fp.subjectErr = errors.New("clickhouse down")
+	resp = postForm(t, s.srv, purgePath, form(), s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("POST %s (purge error) status = %d, want 500", purgePath, resp.StatusCode)
 	}
 }
 

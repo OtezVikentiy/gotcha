@@ -294,15 +294,11 @@ func (s *Service) StaleHeartbeats(ctx context.Context) ([]Monitor, error) {
 	var out []Monitor
 	for rows.Next() {
 		var m Monitor
-		var heartbeatToken *string
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
-			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt, &heartbeatToken,
+			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
 			&m.LastBeatAt, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("uptime: stale heartbeats: %w", err)
-		}
-		if heartbeatToken != nil {
-			m.HeartbeatToken = *heartbeatToken
 		}
 		out = append(out, m)
 	}
@@ -326,15 +322,11 @@ func (s *Service) SSLCandidates(ctx context.Context) ([]Monitor, error) {
 	var out []Monitor
 	for rows.Next() {
 		var m Monitor
-		var heartbeatToken *string
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
-			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt, &heartbeatToken,
+			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
 			&m.LastBeatAt, &m.CreatedAt, &m.SSLAlertedDays); err != nil {
 			return nil, fmt.Errorf("uptime: ssl candidates: %w", err)
-		}
-		if heartbeatToken != nil {
-			m.HeartbeatToken = *heartbeatToken
 		}
 		out = append(out, m)
 	}
@@ -383,7 +375,7 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at,
 			m.id, m.project_id, m.name, m.kind, m.enabled, m.interval_seconds, m.timeout_seconds,
 			m.config, m.fail_threshold, m.recovery_threshold, m.consensus, m.remind_every_minutes,
-			m.ssl_alert_days, m.ssl_expires_at, m.heartbeat_token, m.last_beat_at, m.created_at
+			m.ssl_alert_days, m.ssl_expires_at, m.last_beat_at, m.created_at
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
 		WHERE i.resolved_at IS NULL
@@ -401,16 +393,12 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 	for rows.Next() {
 		var inc Incident
 		var m Monitor
-		var heartbeatToken *string
 		if err := rows.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause, &inc.Regions,
 			&inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
 			&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 			&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
-			&m.SSLAlertDays, &m.SSLExpiresAt, &heartbeatToken, &m.LastBeatAt, &m.CreatedAt); err != nil {
+			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("uptime: incidents due for reminder: %w", err)
-		}
-		if heartbeatToken != nil {
-			m.HeartbeatToken = *heartbeatToken
 		}
 		out = append(out, ReminderItem{Incident: inc, Monitor: m})
 	}

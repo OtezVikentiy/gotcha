@@ -190,7 +190,10 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 			Start:        sStart,
 			End:          sEnd,
 			Status:       transactionStatus(ss.Status),
-			Data:         ss.Data,
+			// SEC: span.Data едет из SDK как есть; каппим число ключей и длины
+			// значений тем же ограничителем, что OTLP-путь (см. capDataMap/otlpAttrMap),
+			// иначе раздутый data утащит в CH-колонку сотни ключей / мегабайтные строки.
+			Data: capDataMap(ss.Data),
 		})
 	}
 	return tx, nil

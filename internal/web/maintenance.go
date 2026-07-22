@@ -127,6 +127,13 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// renderMaintenance дереференсит h.Uptime (окна обслуживания) — в стендах
+	// без подсистемы мониторинга 404, а не паника (тот же guard, что и в
+	// metricsList).
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
@@ -165,6 +172,10 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
@@ -200,6 +211,10 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, ok := h.parsePathProjectID(w, r)
 	if !ok {
+		return
+	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
 		return
 	}
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {

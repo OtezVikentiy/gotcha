@@ -643,13 +643,18 @@ func TestWebOrgSettingsSSO(t *testing.T) {
 	if err := orgSvc.AddMember(ctx, o.ID, adminID, org.RoleAdmin); err != nil {
 		t.Fatalf("add admin: %v", err)
 	}
+	// SSO настраивает только админ инстанса (requireInstanceAdminForSSO) —
+	// делаем owner'а инстанс-админом для проверки happy-path сохранения.
+	if _, err := s.pool.Exec(ctx, "UPDATE users SET is_instance_admin = true WHERE id = $1", ownerID); err != nil {
+		t.Fatalf("promote owner to instance admin: %v", err)
+	}
 	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/sso"
 	form := url.Values{
 		"issuer": {"https://idp.example/realms/x"}, "client_id": {"cid"}, "client_secret": {"sec"},
 		"domain": {"corp.com"}, "default_role": {"member"}, "enforced": {"on"},
 	}
 
-	// Owner сохраняет SSO → 303, конфиг в БД.
+	// Owner (инстанс-админ) сохраняет SSO → 303, конфиг в БД.
 	resp := postForm(t, s.srv, base, form, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -670,26 +675,26 @@ func TestWebOrgSettingsSSO(t *testing.T) {
 		t.Fatalf("settings page missing SSO redirect/domain: %s", body)
 	}
 
-	// Admin (не owner) → 404.
+	// Не-инстанс-админ (org-admin adminID) настраивать SSO не может → 403.
 	resp = postForm(t, s.srv, base, form, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("admin sso save status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-instance-admin sso save status = %d, want 403", resp.StatusCode)
 	}
 
-	// Домен занят другой организацией → 422.
-	owner2, owner2Cookie := orgSettingsRegister(t, authSvc, "sso-set-owner2@example.com")
-	o2, _ := orgSvc.CreateOrg(ctx, "sso-set-co2", "SSO Set Co2", owner2)
+	// Инстанс-админ (ownerID) настраивает SSO любого орга; тот же домен, что уже
+	// занят org o, → 422 (владеть o2 инстанс-админу не требуется).
+	o2, _ := orgSvc.CreateOrg(ctx, "sso-set-co2", "SSO Set Co2", adminID)
 	base2 := "/orgs/" + strconv.FormatInt(o2.ID, 10) + "/settings/sso"
-	resp = postForm(t, s.srv, base2, form, s.srv.URL, owner2Cookie) // тот же domain corp.com
+	resp = postForm(t, s.srv, base2, form, s.srv.URL, ownerCookie) // тот же domain corp.com
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("domain-taken status = %d, want 422", resp.StatusCode)
 	}
 
-	// Delete (owner) → конфиг убран.
+	// Delete (инстанс-админ) → конфиг убран.
 	resp = postForm(t, s.srv, base+"/delete", url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

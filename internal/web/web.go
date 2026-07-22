@@ -9,6 +9,7 @@ import (
 	"embed"
 	"errors"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -48,6 +49,12 @@ type Handler struct {
 	// oauthstate.go). Проставляется из cfg.SecretKey в main.go; в стендах может
 	// быть пустым — тогда используется дефолт (см. secret()).
 	SecretKey string
+
+	// TrustedProxies — сети доверенных reverse-proxy (GOTCHA_TRUSTED_PROXIES).
+	// Только когда непосредственный пир входит сюда, clientIP доверяет
+	// X-Forwarded-For и извлекает настоящий IP клиента (SEC-L2, см. clientIP).
+	// Пусто — XFF игнорируется, ключом лимитера служит RemoteAddr.
+	TrustedProxies []*net.IPNet
 
 	// RegistrationMode — режим самостоятельной регистрации (PROD-B1):
 	// open|invite|closed. Проставляется из cfg.RegistrationMode в main.go.
@@ -185,6 +192,13 @@ type Handler struct {
 	ssoProviders ssoCache
 
 	loginLimiter *rateLimiter
+	// emailLimiter — глобальный per-EMAIL лимитер входа (без IP): per-account
+	// (ip|email) и per-IP лимиты не сдерживают распределённый перебор ОДНОГО
+	// аккаунта с пула IP (каждый IP получает свежий бакет). Этот кап (щедрый,
+	// 50/15мин) ограничивает суммарный поток попыток на email со всех адресов,
+	// не задевая легитимного пользователя; порог намеренно высокий, чтобы
+	// сдержать брутфорс, но не дать тривиального account-lockout DoS.
+	emailLimiter *rateLimiter
 	// ipLimiter — глобальный per-IP лимитер входа/регистрации (SEC-L2): в
 	// дополнение к per-account (ip|email) ограничивает суммарный поток попыток с
 	// одного IP по РАЗНЫМ email, закрывая обход per-account лимита перебором.
@@ -222,6 +236,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		RegistrationMode: "open",
 		loginLimiter:     newRateLimiter(time.Now, 5, time.Minute),
 		ipLimiter:        newRateLimiter(time.Now, 20, time.Minute),
+		emailLimiter:     newRateLimiter(time.Now, 50, 15*time.Minute),
 	}
 }
 
@@ -267,6 +282,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /profile", h.requireUser(http.HandlerFunc(h.profilePage)))
 	inner.Handle("POST /profile/password", h.requireUser(http.HandlerFunc(h.profilePasswordSubmit)))
 	inner.Handle("POST /profile/password/set", h.requireUser(http.HandlerFunc(h.profilePasswordSet)))
+	inner.Handle("POST /profile/delete", h.requireUser(http.HandlerFunc(h.profileDelete)))
 	inner.Handle("POST /profile/sessions/revoke", h.requireUser(http.HandlerFunc(h.profileSessionsRevoke)))
 	inner.Handle("POST /profile/identities/unlink", h.requireUser(http.HandlerFunc(h.profileIdentityUnlink)))
 
@@ -274,6 +290,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /onboarding", h.requireUser(http.HandlerFunc(h.onboardingSubmit)))
 	inner.Handle("GET /docs", h.requireUser(http.HandlerFunc(h.docsIndex)))
 	inner.Handle("GET /docs/{slug}", h.requireUser(http.HandlerFunc(h.docsPage)))
+	inner.Handle("GET /about", h.requireUser(http.HandlerFunc(h.aboutPage)))
 	inner.Handle("GET /projects", h.requireUser(http.HandlerFunc(h.projectsList)))
 	inner.Handle("GET /projects/{id}/setup", h.requireUser(http.HandlerFunc(h.projectSetup)))
 	inner.Handle("GET /projects/{id}/issues", h.requireUser(http.HandlerFunc(h.issuesList)))
@@ -350,6 +367,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /monitors/{id}/pause", h.requireUser(http.HandlerFunc(h.monitorPause)))
 	inner.Handle("POST /monitors/{id}/resume", h.requireUser(http.HandlerFunc(h.monitorResume)))
 	inner.Handle("POST /monitors/{id}/delete", h.requireUser(http.HandlerFunc(h.monitorDelete)))
+	inner.Handle("POST /monitors/{id}/heartbeat/regenerate", h.requireUser(http.HandlerFunc(h.monitorHeartbeatRegenerate)))
 
 	// Формы создания/редактирования монитора, инциденты и окна обслуживания
 	// (план 4, задача 3): создание/редактирование — только owner/admin
@@ -481,6 +499,12 @@ func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 		hdr.Set("X-Frame-Options", "DENY")
 		hdr.Set("Referrer-Policy", "same-origin")
 		hdr.Set("Content-Security-Policy", cspHeader)
+		// no-store по умолчанию: аутентифицированные SSR-страницы несут ПДн
+		// (email участников, ключи, телеметрия) — они не должны оседать в
+		// дисковом кэше браузера/bfcache и показываться Назад после логаута, ни
+		// кэшироваться прокси. Статика ставит свой Cache-Control ниже по цепочке
+		// (cacheControl для /static) и это значение перекрывает.
+		hdr.Set("Cache-Control", "no-store")
 		if h.Secure {
 			hdr.Set("Strict-Transport-Security", "max-age=31536000")
 		}

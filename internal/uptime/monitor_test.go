@@ -363,8 +363,14 @@ func TestUpdateDoesNotChangeKindOrHeartbeatToken(t *testing.T) {
 	if got.Kind != uptime.KindHeartbeat {
 		t.Errorf("Kind = %v, want heartbeat (unchanged)", got.Kind)
 	}
-	if got.HeartbeatToken != created.HeartbeatToken {
-		t.Errorf("HeartbeatToken changed: got %q, want %q", got.HeartbeatToken, created.HeartbeatToken)
+	// Get больше не возвращает сырой токен (в БД лежит только его sha256),
+	// поэтому неизменность токена проверяем через ByHeartbeatToken: исходный
+	// токен по-прежнему находит этот монитор, а подсунутый в Update — нет.
+	if found, err := svc.ByHeartbeatToken(ctx, created.HeartbeatToken); err != nil || found.ID != created.ID {
+		t.Errorf("original token must still resolve to the monitor: found id %d, err %v", found.ID, err)
+	}
+	if _, err := svc.ByHeartbeatToken(ctx, "attacker-supplied-token"); !errors.Is(err, uptime.ErrNotFound) {
+		t.Errorf("attacker-supplied token must not resolve: err = %v, want ErrNotFound", err)
 	}
 }
 

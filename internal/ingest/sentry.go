@@ -147,7 +147,11 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 		pe.SDK = capRunes(se.SDK.Name+"/"+se.SDK.Version, 200)
 	}
 	if se.User != nil {
-		pe.UserID, pe.UserIP, pe.UserEmail = se.User.ID, se.User.IP, se.User.Email
+		// user_* — недоверенные строки события, каппим по длине как прочие поля
+		// (Environment/Release/ServerName выше), чтобы не раздувать колонки events.
+		pe.UserID = capRunes(se.User.ID, 200)
+		pe.UserIP = capRunes(se.User.IP, 200)
+		pe.UserEmail = capRunes(se.User.Email, 200)
 	}
 	parseTags(se.Tags, pe.Tags)
 	pe.Tags = capTags(pe.Tags)

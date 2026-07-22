@@ -87,10 +87,9 @@ func (rl *rateLimiter) size() int {
 	return len(rl.hits)
 }
 
-// extractIP извлекает host из RemoteAddr — ключ для глобального per-IP лимита
-// (SEC-L2). Порт отбрасываем, чтобы разные исходящие порты одного клиента
-// считались как один IP.
-func extractIP(r *http.Request) string {
+// remoteHost — host из RemoteAddr (порт отброшен), т.е. адрес непосредственного
+// TCP-пира. За reverse-proxy это адрес прокси, а не клиента (см. clientIP).
+func remoteHost(r *http.Request) string {
 	host := r.RemoteAddr
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		host = h
@@ -98,7 +97,54 @@ func extractIP(r *http.Request) string {
 	return host
 }
 
+// clientIP — реальный IP клиента, ключ для глобального per-IP лимита (SEC-L2).
+//
+// По умолчанию (TrustedProxies пуст) — это адрес непосредственного пира
+// (RemoteAddr). За TLS-терминирующим reverse-proxy (штатная HTTPS-топология —
+// nginx/traefik) RemoteAddr у ВСЕХ клиентов схлопывается в один IP прокси: тогда
+// глобальный per-IP лимитер и обесценивается (все — один ключ), и превращается в
+// self-DoS (один актор выбирает общий бакет и лочит логин всем). Поэтому, только
+// когда непосредственный пир входит в доверенный список TrustedProxies
+// (GOTCHA_TRUSTED_PROXIES), доверяем X-Forwarded-For и берём из него настоящего
+// клиента. Иначе XFF — данные, подконтрольные клиенту, и их игнорируем (иначе
+// тривиальный обход лимита подделкой заголовка).
+func (h *Handler) clientIP(r *http.Request) string {
+	host := remoteHost(r)
+	if len(h.TrustedProxies) == 0 {
+		return host
+	}
+	peer := net.ParseIP(host)
+	if peer == nil || !ipInNets(peer, h.TrustedProxies) {
+		return host // пир не доверенный прокси — XFF не доверяем
+	}
+	// Пир — доверенный прокси: идём по X-Forwarded-For справа налево и берём
+	// первый адрес НЕ из доверенного набора — это клиент, ближайший к первому
+	// нашему прокси (правые хопы дописаны нашими же прокси).
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		p := strings.TrimSpace(parts[i])
+		ip := net.ParseIP(p)
+		if ip == nil {
+			continue
+		}
+		if !ipInNets(ip, h.TrustedProxies) {
+			return p
+		}
+	}
+	return host // все хопы доверенные или XFF пуст — остаёмся на пире
+}
+
+// ipInNets — принадлежит ли ip хоть одной из сетей.
+func ipInNets(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // rateLimitKey строит ключ ip|email для per-account лимитера логина/регистрации.
-func rateLimitKey(r *http.Request, email string) string {
-	return extractIP(r) + "|" + strings.ToLower(strings.TrimSpace(email))
+func (h *Handler) rateLimitKey(r *http.Request, email string) string {
+	return h.clientIP(r) + "|" + strings.ToLower(strings.TrimSpace(email))
 }

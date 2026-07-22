@@ -221,7 +221,7 @@ func TestOrgSettings(t *testing.T) {
 		{Kind: "События", Field: "event_quota", Usage: 5000, Limit: 100000},
 		{Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0},
 	}
-	sso := SSOSettings{IsOwner: true, Configured: true, Issuer: "https://idp", ClientID: "cid", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://gotcha/sso"}
+	sso := SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "cid", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://gotcha/sso"}
 	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil))
 	if !strings.Contains(out, "owner@x.io") || !strings.Contains(out, "admin@x.io") {
 		t.Error("участники должны отрендериться")

@@ -1,10 +1,34 @@
 package uptime
 
 import (
+	"bytes"
 	"math"
 	"testing"
 	"time"
 )
+
+// TestHeartbeatTokenHash — токен в БД хранится как sha256: хеш детерминирован,
+// имеет длину 32 байта, не равен сырому токену, различает разные токены и
+// совпадает с probeTokenHash (единый алгоритм sha256 на весь пакет).
+func TestHeartbeatTokenHash(t *testing.T) {
+	const tok = "0123456789abcdef0123456789abcdef"
+	h1 := heartbeatTokenHash(tok)
+	if !bytes.Equal(h1, heartbeatTokenHash(tok)) {
+		t.Fatal("хеш недетерминирован")
+	}
+	if len(h1) != 32 {
+		t.Fatalf("len = %d, want 32 (sha256)", len(h1))
+	}
+	if string(h1) == tok {
+		t.Fatal("хранимый хеш не должен равняться сырому токену")
+	}
+	if bytes.Equal(heartbeatTokenHash("a"), heartbeatTokenHash("b")) {
+		t.Fatal("разные токены → разные хеши")
+	}
+	if !bytes.Equal(heartbeatTokenHash(tok), probeTokenHash(tok)) {
+		t.Fatal("heartbeatTokenHash должен совпадать с probeTokenHash (один sha256)")
+	}
+}
 
 // TestMsToUint32 — миллисекунды в uint32 с насыщением по краям.
 func TestMsToUint32(t *testing.T) {

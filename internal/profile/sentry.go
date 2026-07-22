@@ -12,7 +12,22 @@ var ErrBadProfile = errors.New("profile: malformed profile")
 const (
 	maxFrames = 1024
 	maxStacks = 100000
+	// maxMetaField — кап недоверенных строковых полей профиля (environment/
+	// transaction/platform/trace_id) до записи, как capRunes в пакете ingest
+	// (otlp.go/transaction.go — те же 200 рун). Свой хелпер здесь, а не импорт
+	// из ingest: пакет profile не должен зависеть от приёмного слоя.
+	maxMetaField = 200
 )
+
+// capRunes обрезает недоверенную строку профиля до n рун (дубль ingest.capRunes:
+// поля профиля из SDK не должны раздувать колонки/индексы БД без ограничений).
+func capRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
 
 type sentryEnvelopeItem struct {
 	Platform    string `json:"platform"`
@@ -94,14 +109,16 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 	}
 
 	return Profile{
-		Environment: it.Environment,
-		Transaction: transaction,
-		Platform:    it.Platform,
+		// Недоверенные строковые поля из payload'а каппим до записи (maxMetaField),
+		// как и остальные строки приёма.
+		Environment: capRunes(it.Environment, maxMetaField),
+		Transaction: capRunes(transaction, maxMetaField),
+		Platform:    capRunes(it.Platform, maxMetaField),
 		Type: "cpu",
 		// В формате Sentry значение выборки — число сэмплов с этим стеком
 		// (см. counts выше), а не время: единица «count», а не наносекунды.
 		Unit:      "count",
-		TraceID:   traceID,
+		TraceID:   capRunes(traceID, maxMetaField),
 		Timestamp:   now,
 		Samples:     samples,
 	}, nil

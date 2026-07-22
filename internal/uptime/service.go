@@ -3,6 +3,7 @@ package uptime
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -53,6 +54,15 @@ func generateHeartbeatToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+// heartbeatTokenHash — sha256 сырого heartbeat-токена. В БД хранится только он
+// (monitors.heartbeat_token_hash), а не сам токен — так же, как probe-токены
+// (probeTokenHash) и session-токены. Сырой токен вызывающий видит один раз при
+// Create; на приёме пинга входящий токен снова хешируется и ищется по хешу.
+func heartbeatTokenHash(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
 }
 
 // checkChannelsBelongToProject проверяет, что все channelIDs — каналы
@@ -139,20 +149,22 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 	} else {
 		m.HeartbeatToken = ""
 	}
-	var heartbeatToken *string
+	// В БД сохраняем только sha256 токена. Сырой m.HeartbeatToken остаётся в
+	// возвращаемом мониторе и показывается вызывающему один раз (как probe).
+	var heartbeatTokenHashVal []byte
 	if m.HeartbeatToken != "" {
-		heartbeatToken = &m.HeartbeatToken
+		heartbeatTokenHashVal = heartbeatTokenHash(m.HeartbeatToken)
 	}
 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO monitors (project_id, name, kind, enabled, interval_seconds, timeout_seconds,
 			config, fail_threshold, recovery_threshold, consensus, remind_every_minutes,
-			ssl_alert_days, heartbeat_token)
+			ssl_alert_days, heartbeat_token_hash)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING id, created_at`,
 		m.ProjectID, m.Name, string(m.Kind), m.Enabled, m.IntervalSeconds, m.TimeoutSeconds,
 		m.Config, m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes,
-		m.SSLAlertDays, heartbeatToken,
+		m.SSLAlertDays, heartbeatTokenHashVal,
 	).Scan(&m.ID, &m.CreatedAt)
 	if err != nil {
 		return Monitor{}, fmt.Errorf("uptime: create: %w", err)
@@ -289,22 +301,19 @@ func channelIDsOf(ctx context.Context, pool *pgxpool.Pool, monitorID int64) ([]i
 	return out, rows.Err()
 }
 
+// scanMonitor заполняет монитор из строки monitorColumns. HeartbeatToken при
+// чтении не восстанавливается: в БД хранится только sha256 токена
+// (heartbeat_token_hash), а сырой токен вызывающий видит лишь один раз при
+// Create.
 func scanMonitor(row pgx.Row, m *Monitor) error {
-	var heartbeatToken *string
-	if err := row.Scan(&m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
+	return row.Scan(&m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 		&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
-		&m.SSLAlertDays, &m.SSLExpiresAt, &heartbeatToken, &m.LastBeatAt, &m.CreatedAt); err != nil {
-		return err
-	}
-	if heartbeatToken != nil {
-		m.HeartbeatToken = *heartbeatToken
-	}
-	return nil
+		&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt)
 }
 
 const monitorColumns = `project_id, name, kind, enabled, interval_seconds, timeout_seconds, config,
 	fail_threshold, recovery_threshold, consensus, remind_every_minutes, ssl_alert_days,
-	ssl_expires_at, heartbeat_token, last_beat_at, created_at`
+	ssl_expires_at, last_beat_at, created_at`
 
 // Get возвращает монитор вместе с его regions и channels.
 func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
@@ -343,16 +352,12 @@ func (s *Service) List(ctx context.Context, projectID int64) ([]Monitor, error) 
 	var out []Monitor
 	for rows.Next() {
 		var m Monitor
-		var heartbeatToken *string
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
-			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt, &heartbeatToken,
+			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
 			&m.LastBeatAt, &m.CreatedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("uptime: list: %w", err)
-		}
-		if heartbeatToken != nil {
-			m.HeartbeatToken = *heartbeatToken
 		}
 		out = append(out, m)
 	}
@@ -387,7 +392,8 @@ func (s *Service) SetEnabled(ctx context.Context, monitorID int64, enabled bool)
 // эндпоинтом приёма heartbeat-пингов.
 func (s *Service) ByHeartbeatToken(ctx context.Context, token string) (Monitor, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx, "SELECT id FROM monitors WHERE heartbeat_token = $1", token).Scan(&id)
+	err := s.pool.QueryRow(ctx,
+		"SELECT id FROM monitors WHERE heartbeat_token_hash = $1", heartbeatTokenHash(token)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Monitor{}, ErrNotFound
 	}
@@ -465,4 +471,25 @@ func (s *Service) TouchHeartbeat(ctx context.Context, monitorID int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// RotateHeartbeatToken выдаёт монитору новый heartbeat-токен, сохраняет только
+// его sha256 и возвращает сырой токен — он показывается пользователю ОДИН РАЗ
+// (в БД плейнтекста нет, «посмотреть» старый URL нельзя, можно лишь перевыпустить).
+// Старый токен сразу перестаёт работать. Только для kind=heartbeat.
+func (s *Service) RotateHeartbeatToken(ctx context.Context, monitorID int64) (string, error) {
+	token, err := generateHeartbeatToken()
+	if err != nil {
+		return "", err
+	}
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE monitors SET heartbeat_token_hash = $2 WHERE id = $1 AND kind = 'heartbeat'",
+		monitorID, heartbeatTokenHash(token))
+	if err != nil {
+		return "", fmt.Errorf("uptime: rotate heartbeat token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrInvalidMonitor
+	}
+	return token, nil
 }

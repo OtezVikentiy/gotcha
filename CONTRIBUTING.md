@@ -1,3 +1,5 @@
+[English](CONTRIBUTING.md) · [Русский](CONTRIBUTING.ru.md)
+
 # Contributing to Gotcha
 
 Thanks for your interest in improving Gotcha. This document covers dev
@@ -11,7 +13,12 @@ environment setup, testing, and the project's coding conventions.
 ## Dev setup
 
 ```bash
-git clone git@gitflic.ru:otezvikentiy/gotcha.git
+# gitflic (main, guaranteed anonymous HTTPS)
+git clone https://gitflic.ru/project/otezvikentiy/gotcha.git
+# GitHub (mirror, if published)
+git clone https://github.com/OtezVikentiy/gotcha.git
+# Contributors with SSH access can use:
+# git clone git@gitflic.ru:otezvikentiy/gotcha.git
 cd gotcha
 docker compose up -d
 ```

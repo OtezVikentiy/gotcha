@@ -46,6 +46,7 @@ var registry = []struct{ Slug, Group string }{
 	// Администрирование
 	{"teams", "docs.group.admin"},
 	{"sso", "docs.group.admin"},
+	{"privacy", "docs.group.admin"},
 	// Интеграции
 	{"sdk", "docs.group.integrations"},
 }

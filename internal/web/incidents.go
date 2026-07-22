@@ -31,6 +31,12 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// h.Uptime может быть nil в стендах без подсистемы мониторинга — тогда
+	// 404, а не паника при разыменовании (тот же guard, что и в metricsList).
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))

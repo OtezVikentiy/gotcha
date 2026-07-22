@@ -822,7 +822,7 @@ func TestDetectHTTPFloodBoundedConcurrency(t *testing.T) {
 // такая же проблема, как с числовыми, и должна схлопываться в одну находку.
 func TestDetectRedisNPlusOneAlphabeticKeys(t *testing.T) {
 	spans := make([]Span, 0, 8)
-	names := []string{"jsmith", "mbrown", "adoe", "kpetrov", "lgroshev", "nsmirnov", "pivanov", "rsidorov"}
+	names := []string{"jsmith", "mbrown", "adoe", "kpetrov", "tkozlov", "nsmirnov", "pivanov", "rsidorov"}
 	for i, n := range names {
 		spans = append(spans, mkSpan(fmt.Sprintf("r%d", i), "p1", "db.redis", "GET user:"+n, 5))
 	}

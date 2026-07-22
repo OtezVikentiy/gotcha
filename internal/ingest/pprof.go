@@ -22,6 +22,9 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
+	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+		return
+	}
 	if !h.allow(r.Context(), h.ProfileQuota, key.OrgID, "profile") {
 		h.countDrop(r.Context(), dropProfile, key.OrgID, 1)
 		writeQuotaExceeded(w, "profile quota exceeded")
@@ -64,10 +67,13 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
 		return
 	}
-	prof.Service = q.Get("service")
-	prof.Transaction = q.Get("transaction")
-	prof.Environment = q.Get("environment")
-	prof.TraceID = q.Get("trace_id")
+	// Метаданные из query недоверенные (их шлёт клиент): каппим до 200 рун, как
+	// и остальные строковые поля приёма (см. capRunes / transaction.go), иначе
+	// гигантский ?service=... раздул бы колонки profiles без ограничений.
+	prof.Service = capRunes(q.Get("service"), 200)
+	prof.Transaction = capRunes(q.Get("transaction"), 200)
+	prof.Environment = capRunes(q.Get("environment"), 200)
+	prof.TraceID = capRunes(q.Get("trace_id"), 200)
 	h.Profiles.Add(key.ProjectID, prof)
 	w.WriteHeader(http.StatusAccepted)
 }

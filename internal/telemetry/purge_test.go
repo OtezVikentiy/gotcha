@@ -178,6 +178,39 @@ func TestPurgeSubjectMetricPoints(t *testing.T) {
 	}
 }
 
+// TestPurgeSubjectTransactionTags проверяет, что PurgeSubject чистит транзакции,
+// где субъект выделяется не колонкой user_id, а тегами (OTLP-приём: user.id/
+// enduser.id ← UserID, user.email/enduser.email ← Email), не задевая посторонних.
+func TestPurgeSubjectTransactionTags(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p = int64(50)
+	ts := time.Now().UTC()
+
+	// Транзакции субъекта victim / a@b.com — по разным конвенциям тегов.
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.id": "victim"}, ts)
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"enduser.id": "victim"}, ts)
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.email": "a@b.com"}, ts)
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"enduser.email": "a@b.com"}, ts)
+	// Транзакция субъекта по колонке user_id (Sentry-приём).
+	seedTransactions(t, ctx, conn, p, "victim", ts)
+	// Посторонние: чужой user.id в тегах и чужой user_id в колонке.
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.id": "other"}, ts)
+	seedTransactions(t, ctx, conn, p, "other", ts)
+
+	purger := telemetry.NewPurger(conn)
+	if err := purger.PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim", Email: "a@b.com"}); err != nil {
+		t.Fatalf("PurgeSubject: %v", err)
+	}
+
+	// Должны остаться только 2 транзакции постороннего (тег + колонка).
+	if got := count(t, ctx, conn, "transactions", p); got != 2 {
+		t.Errorf("transactions p: осталось %d, ждали 2 (только other)", got)
+	}
+}
+
 // --- helpers наполнения таблиц (только нужные колонки, остальные по умолчанию) ---
 
 func seedEvents(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, userID, ip, email string, ts time.Time) {
@@ -195,6 +228,18 @@ func seedTransactions(t *testing.T, ctx context.Context, conn driver.Conn, proje
 		"INSERT INTO transactions (project_id, trace_id, span_id, transaction, timestamp, user_id) VALUES (?, 'tr', 'sp', '/x', ?, ?)",
 		projectID, ts, userID); err != nil {
 		t.Fatalf("insert transactions: %v", err)
+	}
+}
+
+// seedTransactionTags вставляет транзакцию с заданными tags (без user_id):
+// так OTLP-приём кладёт идентификаторы субъекта — user.id/enduser.id/user.email/
+// enduser.email попадают в tags, а не в колонку user_id.
+func seedTransactionTags(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, tags map[string]string, ts time.Time) {
+	t.Helper()
+	if err := conn.Exec(ctx,
+		"INSERT INTO transactions (project_id, trace_id, span_id, transaction, timestamp, tags) VALUES (?, 'tr', 'sp', '/x', ?, ?)",
+		projectID, ts, tags); err != nil {
+		t.Fatalf("insert transactions with tags: %v", err)
 	}
 }
 

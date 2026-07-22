@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +37,12 @@ func normalizeDomain(d string) string { return strings.ToLower(strings.TrimSpace
 func (s *Service) UpsertSSO(ctx context.Context, cfg SSOConfig) error {
 	cfg.Domain = normalizeDomain(cfg.Domain)
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ClientSecret == "" || cfg.Domain == "" {
+		return ErrInvalidSSO
+	}
+	// Issuer обязан быть https с непустым хостом: по нему идут исходящие вызовы
+	// discovery/JWKS/token (SSRF-поверхность), а http/относительный/битый URL —
+	// либо ошибка, либо попытка увести обмен на подставной эндпойнт.
+	if u, err := url.Parse(cfg.Issuer); err != nil || u.Scheme != "https" || u.Host == "" {
 		return ErrInvalidSSO
 	}
 	if cfg.DefaultRole == "" {

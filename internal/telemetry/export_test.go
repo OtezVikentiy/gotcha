@@ -69,6 +69,33 @@ func TestExportSubject(t *testing.T) {
 	}
 }
 
+// TestExportSubjectTransactionTags проверяет паритет выгрузки с чисткой: субъект,
+// заданный email, ДОЛЖЕН видеть свои транзакции, где email лежит в тегах (OTLP),
+// а не только в колонке user_id. Чужие транзакции в выгрузку не попадают.
+func TestExportSubjectTransactionTags(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p = int64(250)
+	ts := time.Now().UTC()
+
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.email": "a@b.com"}, ts)
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"enduser.email": "a@b.com"}, ts)
+	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.email": "keep@x.com"}, ts)
+
+	p2 := telemetry.NewPurger(conn)
+
+	// Экспорт по email тянет обе транзакции субъекта из тегов, чужую — нет.
+	exp, err := p2.ExportSubject(ctx, p, telemetry.Subject{Email: "a@b.com"})
+	if err != nil {
+		t.Fatalf("ExportSubject by email: %v", err)
+	}
+	if len(exp.Transactions) != 2 {
+		t.Errorf("transactions по email в тегах: получили %d, ждали 2", len(exp.Transactions))
+	}
+}
+
 // TestExportSubjectMetricPoints проверяет паритет выгрузки с чисткой (152-ФЗ):
 // ПДн субъекта из metric_points.attributes попадают в экспорт по user_id, но не
 // по IP-only субъекту (метрики по IP не сегментируются).

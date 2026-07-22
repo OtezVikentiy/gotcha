@@ -1,3 +1,5 @@
+[English](CODE_OF_CONDUCT.md) · [Русский](CODE_OF_CONDUCT.ru.md)
+
 # Contributor Covenant Code of Conduct
 
 ## Our Pledge
@@ -61,11 +63,8 @@ an appointed representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-`<contact>`. All complaints will be reviewed and investigated promptly and
-fairly.
-
-*(Maintainers: replace `<contact>` above with a real, monitored contact
-address before publishing this repository.)*
+otezvikentiy@gmail.com. All complaints will be reviewed and investigated
+promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of
 the reporter of any incident.

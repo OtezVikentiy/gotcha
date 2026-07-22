@@ -81,6 +81,12 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// renderProbes дереференсит h.Uptime.Probes — в стендах без подсистемы
+	// мониторинга 404, а не паника (тот же guard, что и в metricsList).
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
@@ -133,6 +139,10 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
@@ -183,6 +193,10 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID, ok := h.parsePathOrgID(w, r)
 	if !ok {
+		return
+	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
 		return
 	}
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {

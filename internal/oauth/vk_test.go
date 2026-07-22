@@ -38,7 +38,7 @@ func TestVKExchange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
-	if id.Subject != "777" || id.Email != "u@vk.com" || !id.EmailVerified || id.DisplayName != "Ivan Petrov" {
+	if id.Subject != "777" || id.Email != "u@vk.com" || !id.EmailVerified || !id.TrustedIssuer || id.DisplayName != "Ivan Petrov" {
 		t.Fatalf("Identity = %+v", id)
 	}
 }

@@ -8,19 +8,31 @@ SHELL := /bin/bash
 GOTCHA_PORT ?= 59080
 export GOTCHA_PORT
 
+### Build metadata (ldflags) ###
+GIT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE        ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VPKG        := gitflic.ru/otezvikentiy/gotcha/internal/version
+LDFLAGS     := -X $(VPKG).version=$(GIT_VERSION) -X $(VPKG).commit=$(COMMIT) -X $(VPKG).date=$(DATE)
+
+# Проброс метаданных версии в docker-сборку: compose подставляет эти env в
+# build.args → Dockerfile ARG → ldflags. Без префикса `docker compose build`
+# напрямую даёт версию "dev" (ARG-дефолты).
+DOCKER_BUILD_ENV := GOTCHA_VERSION=$(GIT_VERSION) GOTCHA_COMMIT=$(COMMIT) GOTCHA_DATE=$(DATE)
+
 ### Docker commands ###
 
 build: ## Build containers
-	docker compose build
+	$(DOCKER_BUILD_ENV) docker compose build
 
 rebuild: ## ReBuild containers without cache
-	docker compose build --no-cache
+	$(DOCKER_BUILD_ENV) docker compose build --no-cache
 
 up: ## Up containers
 	docker compose up -d
 
 up-rebuild: ## Up containers with force recreate and build
-	docker compose up -d --force-recreate --build
+	$(DOCKER_BUILD_ENV) docker compose up -d --force-recreate --build
 
 up-alone: ## Up containers from current project and remove others
 	docker compose up -d --remove-orphans
@@ -67,7 +79,7 @@ run: ## Run the app locally (нужны поднятые postgres+clickhouse: ma
 	go run ./cmd/gotcha
 
 go-build: ## Build the binary into ./gotcha
-	go build -o gotcha ./cmd/gotcha
+	go build -ldflags "$(LDFLAGS)" -o gotcha ./cmd/gotcha
 
 templ: ## Regenerate templ templates (*_templ.go)
 	go run github.com/a-h/templ/cmd/templ@$$(go list -m -f '{{.Version}}' github.com/a-h/templ) generate
@@ -91,6 +103,21 @@ test-race: ## Run unit tests with race detector
 	go test ./... -short -race -count=1
 
 check: fmt vet test-short ## fmt + vet + быстрые тесты (перед коммитом)
+
+# Версию можно передать позиционно (`make release 0.1.0`) или как VERSION=0.1.0.
+# Лишние слова-«цели» после release гасим пустыми правилами — но ТОЛЬКО когда
+# release реально среди целей, иначе проглотили бы опечатки в других вызовах make.
+ifneq (,$(filter release,$(MAKECMDGOALS)))
+RELEASE_VERSION := $(filter-out release,$(MAKECMDGOALS))
+ifneq (,$(RELEASE_VERSION))
+$(eval $(RELEASE_VERSION):;@:)
+endif
+endif
+
+release: ## Cut a release: make release 0.1.0 (changelog+tag; пуш вручную)
+	@ver="$(or $(VERSION),$(RELEASE_VERSION))"; \
+	  test -n "$$ver" || { echo "usage: make release 0.1.0"; exit 2; }; \
+	  ./scripts/release.sh "$$ver"
 
 ### HELP commands ###
 

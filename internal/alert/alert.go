@@ -4,12 +4,15 @@ package alert
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/mail"
 	"net/url"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
 // Kinds правил — совпадают с CHECK-ограничением alert_rules.kind.
@@ -55,7 +58,21 @@ type Channel struct {
 
 // Service — CRUD над правилами и каналами алертинга.
 type Service struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	secretKey    [32]byte
+	secretKeySet bool
+}
+
+// SetSecretKey включает шифрование секретов каналов (Telegram bot-токен, HMAC-
+// ключ webhook) at-rest тем же мастер-ключом, что и SSO client_secret. Пустой
+// ключ (dev) → секреты хранятся plaintext (openSecret/Open распознаёт это по
+// отсутствию префикса "enc:"). Ставится из main.go.
+func (s *Service) SetSecretKey(raw string) {
+	if raw == "" {
+		return
+	}
+	s.secretKey = sha256.Sum256([]byte(raw))
+	s.secretKeySet = true
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -182,6 +199,15 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Kind, &c.Enabled, &c.Target, &c.Secret); err != nil {
 			return nil, fmt.Errorf("alert: channels: %w", err)
 		}
+		// Расшифровываем секрет, если задан мастер-ключ (legacy plaintext без
+		// префикса "enc:" Open вернёт как есть — совместимость со старыми записями).
+		if s.secretKeySet {
+			secret, err := secretbox.Open(s.secretKey, c.Secret)
+			if err != nil {
+				return nil, fmt.Errorf("alert: open channel secret: %w", err)
+			}
+			c.Secret = secret
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -192,11 +218,21 @@ func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 	if err := validateChannel(c); err != nil {
 		return 0, err
 	}
+	// Шифруем секрет at-rest, если задан мастер-ключ (иначе plaintext, как для
+	// пустого ключа — читатель распознаёт по отсутствию префикса "enc:").
+	storedSecret := c.Secret
+	if s.secretKeySet {
+		sealed, err := secretbox.Seal(s.secretKey, c.Secret)
+		if err != nil {
+			return 0, fmt.Errorf("alert: seal channel secret: %w", err)
+		}
+		storedSecret = sealed
+	}
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO alert_channels (project_id, kind, enabled, target, secret)
 		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		c.ProjectID, c.Kind, c.Enabled, c.Target, c.Secret).Scan(&id)
+		c.ProjectID, c.Kind, c.Enabled, c.Target, storedSecret).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("alert: create channel: %w", err)
 	}

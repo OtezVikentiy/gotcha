@@ -12,7 +12,10 @@ import (
 func NewClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
 	opts, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("clickhouse dsn: %w", err)
+		// Сырую ошибку ParseDSN намеренно НЕ оборачиваем через %w и не
+		// логируем: она может содержать сам DSN с паролем и утечь в логи
+		// оператора. Отдаём обобщённую формулировку без credentials.
+		return nil, fmt.Errorf("clickhouse: invalid DSN")
 	}
 	conn, err := clickhouse.Open(opts)
 	if err != nil {

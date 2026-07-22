@@ -114,3 +114,42 @@ func TestParseEnvelopeGarbageWithNewline(t *testing.T) {
 		t.Fatal("want error for garbage header")
 	}
 }
+
+// TestParseEnvelopeItemLimit: сверх maxEnvelopeItems item'ы отбрасываются
+// (защита от амплификации), принятые — сохраняются, лишние учтены в Dropped.
+func TestParseEnvelopeItemLimit(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("{}\n")
+	const extra = 5
+	for i := 0; i < maxEnvelopeItems+extra; i++ {
+		b.WriteString("{\"type\":\"event\"}\n{\"message\":\"x\"}\n")
+	}
+	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20)
+	if err != nil {
+		t.Fatalf("ParseEnvelope: %v", err)
+	}
+	if len(env.Events) != maxEnvelopeItems {
+		t.Fatalf("kept events = %d, want %d", len(env.Events), maxEnvelopeItems)
+	}
+	if env.Dropped != extra {
+		t.Fatalf("Dropped = %d, want %d", env.Dropped, extra)
+	}
+}
+
+// TestParseEnvelopeUnknownTypesNotCounted: неизвестные типы не считаются в лимит
+// (амплификацию не создают — они и так игнорируются).
+func TestParseEnvelopeUnknownTypesNotCounted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("{}\n")
+	for i := 0; i < maxEnvelopeItems; i++ {
+		b.WriteString("{\"type\":\"session\"}\n{\"x\":1}\n") // игнорируемый тип
+	}
+	b.WriteString("{\"type\":\"event\"}\n{\"message\":\"kept\"}\n")
+	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20)
+	if err != nil {
+		t.Fatalf("ParseEnvelope: %v", err)
+	}
+	if len(env.Events) != 1 || env.Dropped != 0 {
+		t.Fatalf("events=%d dropped=%d, want 1/0 (unknown types uncounted)", len(env.Events), env.Dropped)
+	}
+}

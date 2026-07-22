@@ -1,3 +1,5 @@
+[English](SECURITY.md) · [Русский](SECURITY.ru.md)
+
 # Security Policy
 
 ## Reporting a vulnerability
@@ -8,10 +10,7 @@ vulnerabilities. Instead, report privately using one of:
 - Open a private security advisory on the repository host (if the hosting
   platform you're viewing this on supports private vulnerability reporting,
   e.g. GitHub Security Advisories), or
-- Email the maintainers at: `<security contact>`
-
-*(Maintainers: replace `<security contact>` above with a real, monitored
-security contact address before publishing this repository.)*
+- Email the maintainers at: otezvikentiy@gmail.com
 
 Please include:
 

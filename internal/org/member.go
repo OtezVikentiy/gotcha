@@ -311,3 +311,29 @@ func ensureNotLastOwner(ctx context.Context, tx pgx.Tx, orgID, userID int64) err
 	}
 	return nil
 }
+
+// SoleOwnedOrgNames возвращает названия организаций, где userID — ЕДИНСТВЕННЫЙ
+// владелец. Удаление такого пользователя осиротило бы организацию (не осталось
+// бы ни одного владельца), поэтому самоудаление аккаунта блокируется, пока
+// такие есть: сначала передать владение или удалить организацию.
+func (s *Service) SoleOwnedOrgNames(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.name
+		FROM organizations o
+		JOIN org_members m ON m.org_id = o.id AND m.user_id = $1 AND m.role = 'owner'
+		WHERE (SELECT count(*) FROM org_members m2 WHERE m2.org_id = o.id AND m2.role = 'owner') = 1
+		ORDER BY o.name`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("org: sole owned orgs: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("org: sole owned orgs: %w", err)
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}

@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
 type fakePinger struct {
@@ -69,5 +73,36 @@ func TestHealthzSlowPostgresDoesNotStarveClickHouse(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"clickhouse":"ok"`) || !strings.Contains(body, `"postgres":"unavailable"`) {
 		t.Errorf("body = %s", body)
+	}
+}
+
+func TestVersionHandler(t *testing.T) {
+	rec := httptest.NewRecorder()
+	versionHandler()(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код %d, ждали 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	var info version.Info
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatalf("невалидный JSON: %v", err)
+	}
+	if info.Version != version.Version() {
+		t.Fatalf("version = %q, ждали %q", info.Version, version.Version())
+	}
+}
+
+func TestHealthzCarriesVersion(t *testing.T) {
+	h := healthHandler(fakePinger{}, fakePinger{})
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["version"] != version.Version() {
+		t.Fatalf("healthz.version = %q, ждали %q", body["version"], version.Version())
 	}
 }

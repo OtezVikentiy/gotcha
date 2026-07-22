@@ -90,14 +90,15 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
 
 	// Purger не задан (nil) на этом стенде.
-	// purge-subject валидный субъект → 303 (best-effort, ветка nil-Purger).
+	// purge-subject без Purger → 503 (право на удаление ПДн: удаление НЕ
+	// выполнено, не выдаём успех — симметрично export-subject).
 	resp := postForm(t, s.srv, base+"/purge-subject", url.Values{
 		"project_id": {strconv.FormatInt(proj.ID, 10)}, "email": {"subj@example.com"},
 	}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("POST purge-subject (nil purger) = %d, want 303", resp.StatusCode)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST purge-subject (nil purger) = %d, want 503", resp.StatusCode)
 	}
 
 	// export-subject без Purger → 503.

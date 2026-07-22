@@ -6,10 +6,20 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
 type pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// versionHandler — GET /version: публичные сведения о сборке (без секретов).
+func versionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(version.Get())
+	}
 }
 
 func healthHandler(pg, ch pinger) http.HandlerFunc {
@@ -27,7 +37,7 @@ func healthHandler(pg, ch pinger) http.HandlerFunc {
 		go check(r.Context(), "postgres", pg, results)
 		go check(r.Context(), "clickhouse", ch, results)
 
-		status := map[string]string{}
+		status := map[string]string{"version": version.Version()}
 		code := http.StatusOK
 		for i := 0; i < 2; i++ {
 			res := <-results

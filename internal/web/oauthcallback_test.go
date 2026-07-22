@@ -88,7 +88,10 @@ func TestCallbackExistingUserVerifiedEmailLinksAndLogsIn(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
 	uid, _ := s.auth.Register(ctx, "u@corp.com", "password12")
-	s.mp.id = oauth.Identity{Subject: "sub-1", Email: "u@corp.com", EmailVerified: true}
+	// TrustedIssuer=true: неявная привязка к существующему аккаунту допустима
+	// только для доверенных провайдеров (VK/Яндекс сами верифицируют владение
+	// email). Для generic-OIDC см. TestCallbackExistingUserUntrustedIssuerRefused.
+	s.mp.id = oauth.Identity{Subject: "sub-1", Email: "u@corp.com", EmailVerified: true, TrustedIssuer: true}
 
 	resp := s.doCallback(t, oauthFlow{})
 	defer resp.Body.Close()
@@ -106,6 +109,27 @@ func TestCallbackExistingUserVerifiedEmailLinksAndLogsIn(t *testing.T) {
 	}
 	if got, err := s.auth.IdentityUser(ctx, "oidc", "sub-1"); err != nil || got != uid {
 		t.Fatalf("IdentityUser = (%d,%v), want (%d,nil)", got, err, uid)
+	}
+}
+
+// TestCallbackExistingUserUntrustedIssuerRefused — generic-OIDC (TrustedIssuer=
+// false) НЕ должен неявно привязываться к существующему парольному аккаунту по
+// заявленному провайдером email, даже если тот помечен verified: email_verified
+// контролирует произвольный IdP (риск угона аккаунта). Требуется вход паролем и
+// ручная привязка в /profile → 403, identity не создаётся.
+func TestCallbackExistingUserUntrustedIssuerRefused(t *testing.T) {
+	s := newCallbackStack(t)
+	ctx := context.Background()
+	s.auth.Register(ctx, "victim@corp.com", "password12")
+	s.mp.id = oauth.Identity{Subject: "sub-untrusted", Email: "victim@corp.com", EmailVerified: true, TrustedIssuer: false}
+
+	resp := s.doCallback(t, oauthFlow{})
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusSeeOther {
+		t.Fatal("untrusted-issuer verified email must NOT auto-link/login (got 303)")
+	}
+	if _, err := s.auth.IdentityUser(ctx, "oidc", "sub-untrusted"); err == nil {
+		t.Fatal("identity must not be linked for untrusted issuer")
 	}
 }
 

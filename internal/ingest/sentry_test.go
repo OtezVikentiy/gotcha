@@ -218,6 +218,32 @@ func TestParseEventCapsUntrustedFields(t *testing.T) {
 	}
 }
 
+func TestParseEventCapsUserFields(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		"user": map[string]any{
+			"id":         strings.Repeat("i", 500),
+			"ip_address": strings.Repeat("p", 500),
+			"email":      strings.Repeat("e", 500),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	pe, err := ParseEvent(raw)
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	if n := len([]rune(pe.UserID)); n != 200 {
+		t.Errorf("UserID len = %d, want 200", n)
+	}
+	if n := len([]rune(pe.UserIP)); n != 200 {
+		t.Errorf("UserIP len = %d, want 200", n)
+	}
+	if n := len([]rune(pe.UserEmail)); n != 200 {
+		t.Errorf("UserEmail len = %d, want 200", n)
+	}
+}
+
 func TestParseEventCapsCulprit(t *testing.T) {
 	ev := map[string]any{
 		"exception": map[string]any{

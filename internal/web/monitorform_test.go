@@ -348,14 +348,24 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 		"regions":                 {"local"},
 	}
 
+	// Heartbeat create рендерит деталь СРАЗУ (200) с URL пинга, показанным один
+	// раз: сырой токен живёт только в этом ответе (в БД — sha256), redirect его
+	// потерял бы. Раньше был 303 + чтение токена из БД.
 	resp := postForm(t, s.srv, createPath, form, s.srv.URL, ownerCookie)
-	loc := resp.Header.Get("Location")
-	io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("POST %s status = %d, want 303", createPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s status = %d, want 200: %s", createPath, resp.StatusCode, body)
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, s.srv.URL+"/uptime/hb/") {
+		t.Fatalf("POST %s missing ping URL prefix: %s", createPath, bodyStr)
+	}
+	if !strings.Contains(bodyStr, "curl") {
+		t.Fatalf("POST %s missing cron snippet: %s", createPath, bodyStr)
 	}
 
+	// Монитор сохранён; Get больше НЕ возвращает сырой токен (хранится хешем).
 	monitors, err := s.uptime.List(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("list monitors: %v", err)
@@ -367,22 +377,8 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get monitor: %v", err)
 	}
-	if full.HeartbeatToken == "" {
-		t.Fatalf("HeartbeatToken empty, want non-empty for kind=heartbeat")
-	}
-
-	resp = getWithCookie(t, s.srv, loc, ownerCookie)
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200: %s", loc, resp.StatusCode, body)
-	}
-	wantURL := s.srv.URL + "/uptime/hb/" + full.HeartbeatToken
-	if !strings.Contains(string(body), wantURL) {
-		t.Fatalf("GET %s missing ping URL %q: %s", loc, wantURL, body)
-	}
-	if !strings.Contains(string(body), "curl") {
-		t.Fatalf("GET %s missing cron snippet: %s", loc, body)
+	if full.HeartbeatToken != "" {
+		t.Fatalf("HeartbeatToken = %q on read, want empty (hashed at rest)", full.HeartbeatToken)
 	}
 }
 

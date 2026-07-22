@@ -12,13 +12,26 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
 // httpTimeout — потолок на любой вызов провайдера. Без ретраев в горячем пути.
 const httpTimeout = 5 * time.Second
 
-// sharedClient переиспользуется всеми адаптерами (пул соединений).
-var sharedClient = &http.Client{Timeout: httpTimeout}
+// sharedClient переиспользуется всеми адаптерами (пул соединений). SSRF-safe по
+// умолчанию: issuer per-org SSO задаёт человек (пусть и админ инстанса), и
+// исходящие вызовы OIDC (discovery/JWKS/token/userinfo) не должны доставать
+// внутренние сервисы по приватным адресам. GOTCHA_SSRF_ALLOW_PRIVATE (внутренний
+// IdP на приватной сети) снимает фильтр через SetAllowPrivateHosts.
+var sharedClient = netguard.SafeHTTPClient(false, httpTimeout)
+
+// SetAllowPrivateHosts переключает SSRF-фильтр исходящих OAuth/OIDC-вызовов.
+// Вызывается один раз на старте (main.go) из GOTCHA_SSRF_ALLOW_PRIVATE, до
+// обслуживания запросов, поэтому переприсваивание sharedClient безопасно.
+func SetAllowPrivateHosts(allow bool) {
+	sharedClient = netguard.SafeHTTPClient(allow, httpTimeout)
+}
 
 // RandomToken — 32 случайных байта в base64url (state, nonce).
 func RandomToken() (string, error) {

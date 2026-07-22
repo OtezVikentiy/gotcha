@@ -130,7 +130,27 @@ func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID,
 	return true
 }
 
-// orgSettingsSSO — POST /orgs/{id}/settings/sso: owner настраивает per-org OIDC.
+// requireInstanceAdminForSSO гейтит настройку/удаление per-org SSO админом
+// инстанса. Само-обслуживаемая настройка SSO владельцем орга для НЕпроверенного
+// на владение домена — захват аккаунта (см. ssoCallback): атакующий создал бы
+// свой орг, заявил domain=victim.com со СВОИМ IdP и, пройдя domain-guard,
+// залогинился бы в чужой парольный аккаунт. Поэтому федерацию настраивает только
+// оператор инстанса — для доменов, которыми владеет. Возвращает false и рендерит
+// ответ, если проверка не пройдена.
+func (h *Handler) requireInstanceAdminForSSO(w http.ResponseWriter, r *http.Request, uid int64) bool {
+	admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return false
+	}
+	if !admin {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "err.org.sso_admin_only"))
+		return false
+	}
+	return true
+}
+
+// orgSettingsSSO — POST /orgs/{id}/settings/sso: инстанс-админ настраивает per-org OIDC.
 func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -145,7 +165,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.requireOrgOwner(w, r, orgID, uid) {
+	if !h.requireInstanceAdminForSSO(w, r, uid) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -188,7 +208,7 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.requireOrgOwner(w, r, orgID, uid) {
+	if !h.requireInstanceAdminForSSO(w, r, uid) {
 		return
 	}
 	if err := h.Org.DeleteSSO(r.Context(), orgID); err != nil {
@@ -307,6 +327,11 @@ func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSO
 	}
 	if role, err := h.Org.Role(r.Context(), orgID, uid); err == nil && role == org.RoleOwner {
 		vm.IsOwner = true
+	}
+	// Настройку федерации выполняет только админ инстанса (см.
+	// requireInstanceAdminForSSO): владельцу орга показываем статус, но форму — нет.
+	if admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid); err == nil && admin {
+		vm.CanConfigure = true
 	}
 	if cfg, ok, err := h.Org.SSOByOrg(r.Context(), orgID); err == nil && ok {
 		vm.Configured = true
@@ -672,10 +697,20 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "")
 		return
 	}
+	// Право на удаление ПДн (152-ФЗ ст.14): не выдаём успех, если удаление не
+	// выполнено. Нет Purger (стенд без ClickHouse) или ошибка очистки → 5xx, а не
+	// молчаливый redirect-как-успех — оператор должен знать, что ПДн НЕ удалены.
 	if h.Purger == nil {
-		slog.Warn("orgSettingsPurgeSubject: Purger not configured, ClickHouse subject data left in place", "org_id", orgID, "project_id", projectID)
-	} else if err := h.Purger.PurgeSubject(r.Context(), projectID, sub); err != nil {
+		// Как ExportSubject: подсистема очистки не сконфигурирована → 503, а не
+		// молчаливый успех (ПДн субъекта НЕ удалены).
+		slog.Error("orgSettingsPurgeSubject: Purger not configured, subject data NOT purged", "org_id", orgID, "project_id", projectID)
+		h.renderError(w, r, http.StatusServiceUnavailable, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if err := h.Purger.PurgeSubject(r.Context(), projectID, sub); err != nil {
 		slog.Error("orgSettingsPurgeSubject: failed to purge subject data", "org_id", orgID, "project_id", projectID, "err", err)
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
 	}
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }

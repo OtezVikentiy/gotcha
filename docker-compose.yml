@@ -1,6 +1,14 @@
 services:
   gotcha:
-    build: .
+    build:
+      context: .
+      # Метаданные версии для ldflags. Значения приходят из окружения (их
+      # проставляет `make build`/`up-rebuild` из git); при прямом
+      # `docker compose build` без них образ честно помечается версией "dev".
+      args:
+        VERSION: ${GOTCHA_VERSION:-dev}
+        COMMIT: ${GOTCHA_COMMIT:-}
+        DATE: ${GOTCHA_DATE:-}
     restart: unless-stopped
     ports:
       # Внешний порт вынесен в 59xxx, чтобы не конфликтовать с другими
@@ -12,6 +20,7 @@ services:
       # BaseURL обязан совпадать с внешним портом: из него строятся DSN проекта,
       # ссылки на issue в алертах и ссылки-приглашения.
       GOTCHA_BASE_URL: ${GOTCHA_BASE_URL:-http://localhost:59080}
+      # Local quickstart secret only — MUST be overridden for any real deployment.
       GOTCHA_SECRET_KEY: ${GOTCHA_SECRET_KEY:-insecure-dev-secret}
     depends_on:
       postgres:
@@ -22,6 +31,7 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
+      # Local quickstart credentials only — change these for any real deployment.
       POSTGRES_USER: gotcha
       POSTGRES_PASSWORD: gotcha
       POSTGRES_DB: gotcha
@@ -37,6 +47,7 @@ services:
     image: clickhouse/clickhouse-server:25.3-alpine
     environment:
       CLICKHOUSE_DB: gotcha
+      # Local quickstart credentials only — change these for any real deployment.
       CLICKHOUSE_USER: gotcha
       CLICKHOUSE_PASSWORD: gotcha
     healthcheck:

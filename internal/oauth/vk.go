@@ -73,6 +73,7 @@ func (v *VK) Exchange(ctx context.Context, code, _, redirectURI, _ string) (Iden
 		Subject:       strconv.FormatInt(tok.UserID, 10),
 		Email:         tok.Email,
 		EmailVerified: true,
+		TrustedIssuer: true,
 	}
 	// Имя — best-effort через users.get; ошибка не критична для входа.
 	q := url.Values{

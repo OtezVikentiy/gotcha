@@ -59,13 +59,25 @@ func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 	return nil
 }
 
-// PurgeSubject удаляет ПДн субъекта в рамках проекта. Субъектные данные лежат в
-// events (user_email/user_id/user_ip), transactions (user_id) и metric_points
-// (attributes: user.id/enduser.id/user.email) — этими тремя таблицами охват
-// исчерпывается, остальные таблицы whitelist'а ПДн субъекта не содержат.
+// PurgeSubject удаляет ПДн субъекта в рамках проекта. Надёжно матчатся и
+// удаляются строки, где субъект выделяется по ТОЧНОМУ значению поля:
+//   - events: колонки user_email / user_id / user_ip;
+//   - transactions: колонка user_id и теги tags['user.id']/tags['enduser.id']
+//     (← UserID), tags['user.email']/tags['enduser.email'] (← Email) — OTLP-приём
+//     кладёт атрибуты спана в tags как есть, поэтому субъект по email виден в
+//     transactions только через теги (см. txSubjectConds);
+//   - metric_points: attributes['user.id']/['enduser.id'] (← UserID),
+//     attributes['user.email'] (← Email).
 //
-// В events и metric_points удаляются строки, совпавшие ХОТЯ БЫ по одному
-// непустому критерию. Пустые поля Subject в условие не попадают.
+// НЕ чистятся программно free-form поля, где субъекта нельзя выделить надёжно, не
+// рискуя удалить чужое или пропустить нужное: spans.data и spans.description
+// (произвольный JSON/URL/SQL от SDK — субъект в них не адресуется по ключу),
+// а также profile_samples.stack (кадры стека; ПДн там практически не бывает).
+// Эти поля обезличиваются ретенцией по TTL из миграций ch/: spans — 30 дней,
+// transactions — 90 дней, metric_points — 30 дней, profile_samples — 7 дней.
+//
+// В events, transactions и metric_points удаляются строки, совпавшие ХОТЯ БЫ по
+// одному непустому критерию субъекта. Пустые поля Subject в условие не попадают.
 func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject) error {
 	// events: OR по всем непустым идентификаторам субъекта.
 	var conds []string
@@ -93,10 +105,13 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 		return fmt.Errorf("telemetry: purge subject from events (project %d): %w", projectID, err)
 	}
 
-	// transactions хранят из субъектных ПДн только user_id.
-	if sub.UserID != "" {
-		txQ := "ALTER TABLE transactions DELETE WHERE project_id = ? AND user_id = ? SETTINGS mutations_sync = 2"
-		if err := p.conn.Exec(ctx, txQ, projectID, sub.UserID); err != nil {
+	// transactions: субъект живёт в колонке user_id и в тегах (см. txSubjectConds).
+	// Матчим по обоим, иначе субъект, заданный email, не удаляет свои транзакции.
+	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
+		args := append([]any{projectID}, txArgs...)
+		txQ := "ALTER TABLE transactions DELETE WHERE project_id = ? AND (" +
+			strings.Join(txConds, " OR ") + ") SETTINGS mutations_sync = 2"
+		if err := p.conn.Exec(ctx, txQ, args...); err != nil {
 			return fmt.Errorf("telemetry: purge subject from transactions (project %d): %w", projectID, err)
 		}
 	}
@@ -122,4 +137,27 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 		}
 	}
 	return nil
+}
+
+// txSubjectConds строит OR-условия и bound-параметры, относящие строку
+// transactions к субъекту. transactions хранят субъекта двумя способами:
+//   - колонка user_id — заполняется Sentry-приёмом (contexts.user.id);
+//   - теги tags (Map(String,String)) — OTLP-приём кладёт туда атрибуты спана как
+//     есть, включая OTel-идентификаторы субъекта. По ним матчим ТОЧНО, по ключу:
+//     user.id/enduser.id ← UserID, user.email/enduser.email ← Email.
+//
+// Совпадение ХОТЯ БЫ по одному критерию относит строку к субъекту. IP в
+// transactions не хранится (нет колонки, в теги приём его не кладёт), поэтому
+// IP-only субъект не даёт условий и транзакции не затрагивает — как и раньше.
+// Порядок conds/args согласован: N-е условие связано с N-м параметром.
+func txSubjectConds(sub Subject) (conds []string, args []any) {
+	if sub.UserID != "" {
+		conds = append(conds, "user_id = ?", "tags['user.id'] = ?", "tags['enduser.id'] = ?")
+		args = append(args, sub.UserID, sub.UserID, sub.UserID)
+	}
+	if sub.Email != "" {
+		conds = append(conds, "tags['user.email'] = ?", "tags['enduser.email'] = ?")
+		args = append(args, sub.Email, sub.Email)
+	}
+	return conds, args
 }

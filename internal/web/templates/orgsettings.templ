@@ -151,6 +151,10 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 // пре-заполняется (Configured сигналит «настроено»).
 type SSOSettings struct {
 	IsOwner     bool
+	// CanConfigure — зритель может РЕДАКТИРОВАТЬ SSO (админ инстанса). Владелец
+	// орга видит статус, но настройку федерации выполняет оператор инстанса —
+	// иначе self-service SSO по непроверенному домену даёт захват аккаунта.
+	CanConfigure bool
 	Configured  bool
 	Issuer      string
 	ClientID    string
@@ -238,7 +242,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.quota.submit") }</button>
 				</form>
 			</section>
-			if sso.IsOwner {
+			if sso.IsOwner || sso.CanConfigure {
 				@ssoSection(o.ID, sso)
 			}
 			<section class="card">
@@ -410,7 +414,8 @@ templ ssoSection(orgID int64, sso SSOSettings) {
 			<p class="sso-status">{ i18n.T(ctx, "org.sso.not_configured") }</p>
 		}
 		<p class="sso-redirect">{ i18n.T(ctx, "org.sso.redirect_uri_label") } <code>{ sso.RedirectURI }</code></p>
-		<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso") } class="sso-form" autocomplete="off">
+		if sso.CanConfigure {
+			<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso") } class="sso-form" autocomplete="off">
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.sso.field.issuer") }
@@ -463,10 +468,13 @@ templ ssoSection(orgID int64, sso SSOSettings) {
 			</label>
 			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.sso.submit") }</button>
 		</form>
-		if sso.Configured {
-			<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso/delete") } class="sso-delete-form">
-				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.sso.delete") }</button>
-			</form>
+			if sso.Configured {
+				<form method="post" action={ templ.URL(orgSettingsPath(orgID) + "/sso/delete") } class="sso-delete-form">
+					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.sso.delete") }</button>
+				</form>
+			}
+		} else {
+			<p class="sso-status hint">{ i18n.T(ctx, "org.sso.admin_managed") }</p>
 		}
 	</section>
 }

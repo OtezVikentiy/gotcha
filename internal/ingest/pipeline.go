@@ -141,10 +141,33 @@ func (p *Pipeline) Start() {
 		go func() {
 			defer p.wg.Done()
 			for t := range p.queue {
-				p.process(t)
+				p.processGuarded(t)
 			}
 		}()
 	}
+}
+
+// processGuarded обрабатывает одну задачу под recover(). Паника в разборе
+// одного события/транзакции (битый payload, nil-разыменование в детекторе и
+// т.п.) обязана терять РОВНО это событие, а не убивать воркер и через него весь
+// процесс приёма. Точно как recover вокруг detectPerfIssues, но на ОСНОВНОМ
+// пути: без него паника на горячем пути роняла бы go-процесс целиком.
+func (p *Pipeline) processGuarded(t task) {
+	defer func() {
+		if r := recover(); r != nil {
+			var eventID, traceID string
+			if t.ev != nil {
+				eventID = t.ev.EventID
+			}
+			if t.tx != nil {
+				traceID = t.tx.TraceID
+			}
+			slog.Error("ingest task panicked, item dropped",
+				"project_id", t.projectID, "event_id", eventID,
+				"trace_id", traceID, "panic", r)
+		}
+	}()
+	p.process(t)
 }
 
 // Enqueue не блокирует: при полной очереди событие дропается с warn-логом —
@@ -265,8 +288,10 @@ func (p *Pipeline) process(t task) {
 	}
 
 	// Зачистка ПДн перед записью: обнуляем ip/email по флагам и редактим
-	// denylist-поля в tags/contexts/stacktrace. p.Scrub == nil — no-op
-	// (методы Scrubber nil-safe).
+	// denylist-поля в tags/contexts/stacktrace. ScrubJSON вдобавок прогоняет
+	// текстовые ЗНАЧЕНИЯ (кадры стектрейса, поля contexts) через free-text
+	// маскирование email (RA-L10) — no-op при ScrubFreeText=false. p.Scrub == nil —
+	// no-op (методы Scrubber nil-safe).
 	p.Scrub.ScrubUser(&ev.UserIP, &ev.UserEmail)
 	p.Scrub.ScrubTags(ev.Tags)
 	ev.ContextsJSON = p.Scrub.ScrubJSON(ev.ContextsJSON)

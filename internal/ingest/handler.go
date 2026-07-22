@@ -27,6 +27,12 @@ type Handler struct {
 	pipeline *Pipeline
 	maxBytes int64
 
+	// rate — дешёвый per-DSN (по project id) токен-бакет ПЕРЕД quota-проверкой:
+	// срезает флуд с одного ключа до похода в PG (см. ratelimit.go). Задаётся в
+	// NewHandler дефолтом; заменяем на nil/свой через SetRateLimit для тестов и
+	// тонкой настройки. nil → лимит выключен.
+	rate *rateLimiter
+
 	// TxQuota — квота ТРАНЗАКЦИЙ, отдельная от quota (квоты ошибок): у них
 	// разные лимиты и разные счётчики, исчерпание одной не закрывает приём по
 	// другой. nil → транзакции не квотируются.
@@ -86,7 +92,38 @@ type ProfileSink interface {
 }
 
 func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEventBytes int64) *Handler {
-	return &Handler{keys: keys, quota: quota, pipeline: pipeline, maxBytes: maxEventBytes}
+	return &Handler{
+		keys:     keys,
+		quota:    quota,
+		pipeline: pipeline,
+		maxBytes: maxEventBytes,
+		rate:     newRateLimiter(time.Now, defaultIngestRatePerSec, defaultIngestBurst),
+	}
+}
+
+// SetRateLimit заменяет per-DSN лимитер приёма (см. Handler.rate): позволяет
+// подстроить дефолт или выключить лимит (ratePerSec<=0), не меняя сигнатуру
+// NewHandler. rl==nil в вызове также означает «лимит выключен».
+func (h *Handler) SetRateLimit(now func() time.Time, ratePerSec, burst float64) {
+	if now == nil {
+		now = time.Now
+	}
+	h.rate = newRateLimiter(now, ratePerSec, burst)
+}
+
+// rateLimited проверяет per-DSN лимит по project id и, если превышен, пишет 429 с
+// коротким Retry-After (в отличие от квоты — окно не месяц, а доли секунды).
+// Возвращает true, если запрос НАДО отклонить (ответ уже записан). Вызывается
+// ПОСЛЕ аутентификации (нужен project id) и ДО quota-проверки (дешевле её).
+func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64) bool {
+	if h.rate == nil || h.rate.Allow(projectID) {
+		return false
+	}
+	slog.Warn("ingest: per-DSN rate limit exceeded",
+		"project_id", projectID, "org_id", orgID)
+	w.Header().Set("Retry-After", "1")
+	writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
+	return true
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -298,6 +335,9 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectID := key.ProjectID
+	if h.rateLimited(w, key.OrgID, projectID) {
+		return
+	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
@@ -313,6 +353,17 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSONError(w, status, "malformed envelope")
 		return
+	}
+	// Item'ы, отброшенные по лимиту maxEnvelopeItems (защита от амплификации):
+	// считаем их дропом и логируем. Класс точно не известен (перебор мог быть по
+	// любому из типов), поэтому списываем best-effort в события — доминирующий
+	// класс приёма; сам DropCounter best-effort. Принятые item'ы обрабатываются
+	// дальше как обычно (ответ 200 по ним, а не отказ всему envelope'у).
+	if env.Dropped > 0 {
+		slog.Warn("ingest: envelope item limit exceeded, extra items dropped",
+			"limit", maxEnvelopeItems, "dropped", env.Dropped,
+			"project_id", projectID, "org_id", key.OrgID)
+		h.countDrop(r.Context(), dropEvent, key.OrgID, env.Dropped)
 	}
 
 	// Квоты списываются раздельно и только за те типы item'ов, которые в
@@ -437,6 +488,9 @@ func (h *Handler) sampleRate(ctx context.Context, projectID int64) float64 {
 func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	key, ok := h.authenticate(w, r)
 	if !ok {
+		return
+	}
+	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
 	if !h.allow(r.Context(), h.quota, key.OrgID, "event") {

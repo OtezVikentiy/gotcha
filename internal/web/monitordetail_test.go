@@ -122,7 +122,8 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
-	// Owner GET -> 200, must contain the heartbeat token.
+	// Owner GET -> 200. Сырой токен на чтении НЕ показывается (в БД — хеш):
+	// owner видит секцию Heartbeat-пинг с кнопкой перевыпуска, но не сам токен.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -130,8 +131,8 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
 	bodyStr := string(body)
-	if !strings.Contains(bodyStr, created.HeartbeatToken) {
-		t.Fatalf("GET %s (owner) missing heartbeat token %q in body: %s", path, created.HeartbeatToken, bodyStr)
+	if strings.Contains(bodyStr, created.HeartbeatToken) {
+		t.Fatalf("GET %s (owner) must NOT show raw token on read (stored hashed): %s", path, bodyStr)
 	}
 	if !strings.Contains(bodyStr, "Heartbeat-пинг") {
 		t.Fatalf("GET %s (owner) missing 'Heartbeat-пинг' section: %s", path, bodyStr)

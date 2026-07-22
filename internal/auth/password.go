@@ -54,9 +54,13 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if version != argon2.Version {
 		return false, ErrMalformedHash
 	}
-	// Границы против паник и гигантских аллокаций в argon2.IDKey:
-	// библиотека паникует при t<1 или p<1; m ограничиваем 2 GiB.
-	if t < 1 || p < 1 || m < 8*uint32(p) || m > 1<<21 {
+	// Границы против паник и гигантских аллокаций/CPU в argon2.IDKey:
+	// библиотека паникует при t<1 или p<1; m ограничиваем 2 GiB. t тоже
+	// каппим сверху: стоимость argon2 линейна по t, а t приходит из PHC-строки
+	// в БД — при её порче/подмене гигантский t (до 2^32) при m=2 GiB превратил
+	// бы одну проверку пароля в неограниченный CPU-DoS. HashPassword всегда
+	// пишет t=argonTime (маленькое), так что реальные хеши потолок не задевают.
+	if t < 1 || t > 16 || p < 1 || m < 8*uint32(p) || m > 1<<21 {
 		return false, ErrMalformedHash
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])

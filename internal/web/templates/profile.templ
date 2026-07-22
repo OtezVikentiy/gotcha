@@ -127,6 +127,13 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "profile.sessions.revoke_submit") }</button>
 				</form>
 			</section>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "profile.danger.title") }</h2>
+				<p class="hint">{ i18n.T(ctx, "profile.danger.delete_account.hint") }</p>
+				<form method="post" action="/profile/delete">
+					<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "profile.danger.delete_account.button") }</button>
+				</form>
+			</section>
 			</div>
 		</div>
 	}

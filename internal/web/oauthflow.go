@@ -193,7 +193,12 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	uid, err := h.Auth.UserByEmail(r.Context(), id.Email)
 	switch {
 	case err == nil:
-		if !id.EmailVerified {
+		// Неявная привязка к УЖЕ существующему аккаунту допустима только когда
+		// провайдер сам доверенный источник верификации email (VK/Яндекс). Для
+		// generic-OIDC email_verified контролирует произвольный IdP — доверять
+		// ему для auto-link нельзя (иначе IdP, заявивший чужой адрес, угнал бы
+		// парольный аккаунт). Тогда — вход паролем и ручная привязка в /profile.
+		if !id.EmailVerified || !id.TrustedIssuer {
 			h.renderError(w, r, http.StatusForbidden,
 				i18n.T(r.Context(), "error.oauth.email_not_verified_link_profile"))
 			return

@@ -23,6 +23,13 @@ type Identity struct {
 	Subject       string // стабильный id пользователя у провайдера
 	Email         string
 	EmailVerified bool
+	// TrustedIssuer — провайдер сам по себе доверенный источник верификации
+	// email (курируемая интеграция: VK/Яндекс подтверждают владение адресом).
+	// Только тогда EmailVerified можно доверять для НЕЯВНОЙ привязки к уже
+	// существующему аккаунту с тем же email. У generic-OIDC false: email_verified
+	// приходит от произвольного IdP и им нельзя доверять для auto-link (иначе
+	// IdP, заявивший чужой адрес, угнал бы существующий парольный аккаунт).
+	TrustedIssuer bool
 	DisplayName   string
 }
 

@@ -130,6 +130,13 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// h.Uptime/h.UptimeQuery могут быть nil в стендах без подсистемы
+	// мониторинга — тогда 404 (как несуществующая фича), а не паника при
+	// разыменовании (тот же guard, что и h.Metrics в metricsList).
+	if h.Uptime == nil || h.UptimeQuery == nil {
+		h.notFound(w, r)
+		return
+	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -255,6 +262,13 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	// nil-guard до loadAccessibleMonitor (сам дереференсит h.Uptime) и до
+	// renderMonitorDetail (дереференсит h.UptimeQuery): в стендах без
+	// мониторинга — 404, а не паника (тот же класс, что и traceWaterfall).
+	if h.Uptime == nil || h.UptimeQuery == nil {
+		h.notFound(w, r)
+		return
+	}
 	m, ok := h.loadAccessibleMonitor(w, r, uid)
 	if !ok {
 		return
@@ -266,6 +280,14 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.renderMonitorDetail(w, r, m, canManage)
+}
+
+// renderMonitorDetail собирает и рендерит страницу детали монитора. Для показа
+// heartbeat-URL один раз сразу после создания/ротации токена вызывающий выставляет
+// сырой токен в m.HeartbeatToken (в БД хранится только его sha256): при обычном
+// GET поле пустое и URL пинга не рендерится — нужно перегенерировать токен.
+func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canManage bool) {
 	states, err := h.Uptime.States(r.Context(), m.ID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -337,6 +359,10 @@ func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enab
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
 	m, ok := h.loadAccessibleMonitor(w, r, uid)
 	if !ok {
 		return
@@ -370,6 +396,10 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
 		return
 	}
 	m, ok := h.loadAccessibleMonitor(w, r, uid)

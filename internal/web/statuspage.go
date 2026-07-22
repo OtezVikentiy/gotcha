@@ -433,6 +433,10 @@ func (h *Handler) statusPagesPage(w http.ResponseWriter, r *http.Request) {
 // (если не nil) подменяет одну из форм на введённые пользователем значения:
 // ID == 0 — форму создания, иначе форму редактирования страницы с этим id.
 func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string, override *templates.StatusPageForm) {
+	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
+		h.notFound(w, r)
+		return
+	}
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -587,6 +591,10 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
+		h.notFound(w, r)
+		return
+	}
 	projectMonitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -644,6 +652,10 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
+		h.notFound(w, r)
+		return
+	}
 	existing, ok := h.loadManagedStatusPage(w, r, uid)
 	if !ok {
 		return
@@ -687,6 +699,10 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
+		h.notFound(w, r)
 		return
 	}
 	sp, ok := h.loadManagedStatusPage(w, r, uid)

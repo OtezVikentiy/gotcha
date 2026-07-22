@@ -8,8 +8,8 @@ import (
 func TestPagesRegistryBothLocales(t *testing.T) {
 	for _, loc := range []string{"ru", "en"} {
 		pages := Pages(loc)
-		if len(pages) != 19 {
-			t.Fatalf("Pages(%q) = %d pages, want 19", loc, len(pages))
+		if len(pages) != len(registry) {
+			t.Fatalf("Pages(%q) = %d pages, want %d (registry size)", loc, len(pages), len(registry))
 		}
 		for _, p := range pages {
 			if p.Slug == "" || p.Title == "" {

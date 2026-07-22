@@ -26,6 +26,10 @@ func monitorEditPath(monitorID int64) string {
 	return monitorDetailPath(monitorID) + "/edit"
 }
 
+func monitorHeartbeatRegeneratePath(monitorID int64) string {
+	return monitorDetailPath(monitorID) + "/heartbeat/regenerate"
+}
+
 // monitorToggleAction — куда шлёт форма Pause/Resume: enabled монитор
 // паузится, paused — резюмируется. Один и тот же <button> текстом отражает
 // действие, которое произойдёт при нажатии, не текущее состояние.
@@ -180,11 +184,19 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 			</div>
 
 			if canManage {
-				if m.Kind == uptime.KindHeartbeat && m.HeartbeatToken != "" {
+				if m.Kind == uptime.KindHeartbeat {
 					<div class="monitor-heartbeat card">
 						<h2>{ i18n.T(ctx, "uptime.detail.heartbeat_title") }</h2>
-						<p>{ i18n.T(ctx, "uptime.detail.heartbeat_url") }: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
-						<p>{ i18n.T(ctx, "uptime.detail.heartbeat_cron") }: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
+						if m.HeartbeatToken != "" {
+							<p class="notice">{ i18n.T(ctx, "uptime.detail.heartbeat_copy_now") }</p>
+							<p>{ i18n.T(ctx, "uptime.detail.heartbeat_url") }: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
+							<p>{ i18n.T(ctx, "uptime.detail.heartbeat_cron") }: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
+						} else {
+							<p class="hint">{ i18n.T(ctx, "uptime.detail.heartbeat_hidden") }</p>
+						}
+						<form method="post" action={ templ.URL(monitorHeartbeatRegeneratePath(m.ID)) }>
+							<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "uptime.detail.heartbeat_regenerate") }</button>
+						</form>
 					</div>
 				}
 

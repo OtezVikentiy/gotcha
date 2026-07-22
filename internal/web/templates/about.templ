@@ -1,0 +1,30 @@
+package templates
+
+import (
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
+)
+
+// About — GET /about: сведения о сборке (версия, коммит, дата, Go) + ссылки.
+templ About(info version.Info, userEmail string) {
+	@layout(i18n.T(ctx, "about.title"), userEmail) {
+		<div class="about">
+			<h1>{ i18n.T(ctx, "about.title") }</h1>
+			<dl class="about-list card">
+				<dt>{ i18n.T(ctx, "about.version") }</dt>
+				<dd>{ info.Version }</dd>
+				<dt>{ i18n.T(ctx, "about.commit") }</dt>
+				<dd>{ info.Commit }</dd>
+				<dt>{ i18n.T(ctx, "about.date") }</dt>
+				<dd>{ info.Date }</dd>
+				<dt>{ i18n.T(ctx, "about.go") }</dt>
+				<dd>{ info.Go }</dd>
+			</dl>
+			<p class="about-links">
+				<a href="https://gitflic.ru/project/otezvikentiy/gotcha/blob/main/CHANGELOG.md" target="_blank" rel="noopener">{ i18n.T(ctx, "about.changelog") }</a>
+				·
+				<a href="https://gitflic.ru/project/otezvikentiy/gotcha" target="_blank" rel="noopener">{ i18n.T(ctx, "about.source") }</a>
+			</p>
+		</div>
+	}
+}

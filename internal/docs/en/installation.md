@@ -4,10 +4,26 @@ This guide assumes you've never deployed a Docker application or administered a 
 
 ## What you need
 
-- **A Linux server** (VPS/dedicated) — Ubuntu 22.04/24.04 or Debian 12 both work, with at least 2 GB RAM (Gotcha runs three processes at once: the app itself, PostgreSQL, and ClickHouse).
+- **A Linux server** (VPS/dedicated) — Ubuntu 22.04/24.04 or Debian 12 both work. CPU/RAM/disk requirements are in the table below.
 - **Docker and Docker Compose** — the only dependency. You don't need to install PHP, nginx, or a database by hand — all of that is already packaged into containers.
 - SSH access to the server.
 - (Optional, but recommended for a real deployment) a domain name pointing at the server's IP.
+
+## System requirements
+
+Gotcha runs three processes on a single server: the app itself (Go), PostgreSQL, and ClickHouse. The main consumer of memory and disk is ClickHouse, which stores the telemetry (events, traces, metrics, profiles) — so it drives the requirements.
+
+|      | Minimum | Recommended |
+|------|---------|-------------|
+| CPU  | 2 vCPU  | 4 vCPU      |
+| RAM  | 2 GB    | 4 GB or more |
+| Disk | 20 GB SSD | 40 GB SSD or more |
+
+- **OS:** Ubuntu 22.04/24.04 or Debian 12, x86-64 (amd64) architecture.
+- **RAM.** 2 GB is a workable minimum for getting started and light load (personal projects, staging). For production with a real stream of events, budget 4 GB and up: under load ClickHouse is more stable the more memory it has.
+- **Disk.** Grows with the volume of telemetry and how long you retain it. 20 GB is enough to start; with noticeable traffic or long retention, plan for more and keep an eye on free space. Use an SSD — both ClickHouse and PostgreSQL are sensitive to disk latency.
+- **CPU.** Two cores are enough; extra cores speed up ingesting bursts of events and ClickHouse queries.
+- **Network.** Only a single application port needs to be exposed (59080 by default). PostgreSQL and ClickHouse are not exposed externally — they're reachable only inside the docker network.
 
 ## Step 1. Check whether Docker is already installed
 
@@ -40,7 +56,12 @@ SSH back in and run `docker --version` again — it should work now. Docker Comp
 If `git` isn't installed, install it first (`sudo apt update && sudo apt install -y git` on Ubuntu/Debian). Then:
 
 ```bash
-git clone git@gitflic.ru:otezvikentiy/gotcha.git
+# gitflic (main, anonymous HTTPS)
+git clone https://gitflic.ru/project/otezvikentiy/gotcha.git
+# GitHub (mirror)
+git clone https://github.com/OtezVikentiy/gotcha.git
+# Contributors with SSH access can use:
+# git clone git@gitflic.ru:otezvikentiy/gotcha.git
 cd gotcha
 ```
 

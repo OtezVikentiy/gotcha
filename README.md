@@ -1,3 +1,5 @@
+[English](README.md) · [Русский](README.ru.md)
+
 # Gotcha
 
 Gotcha is a self-hosted observability platform: error tracking, performance
@@ -39,7 +41,12 @@ metric/profile/uptime-result data, with configurable per-signal retention.
 Requires Docker and Docker Compose.
 
 ```bash
-git clone git@gitflic.ru:otezvikentiy/gotcha.git
+# gitflic (main, guaranteed anonymous HTTPS)
+git clone https://gitflic.ru/project/otezvikentiy/gotcha.git
+# GitHub (mirror, if published)
+git clone https://github.com/OtezVikentiy/gotcha.git
+# Contributors with SSH access can use:
+# git clone git@gitflic.ru:otezvikentiy/gotcha.git
 cd gotcha
 docker compose up -d
 ```

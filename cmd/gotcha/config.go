@@ -3,10 +3,16 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
 )
+
+// devSecretKey — публично известный дефолт GOTCHA_SECRET_KEY для localhost-стендов.
+// Вынесен в константу, т.к. по нему принимаются решения в нескольких местах
+// (валидация запуска, отказ от бессмысленного at-rest-шифрования SSO — Info21).
+const devSecretKey = "insecure-dev-secret"
 
 // Config собирается из env (префикс GOTCHA_) и флагов командной строки.
 type Config struct {
@@ -39,6 +45,10 @@ type Config struct {
 	ProfileEvalInterval     int
 	OutboxRetentionDays     int
 	SecretKey               string
+	// TrustedProxies — CIDR/IP доверенных reverse-proxy (GOTCHA_TRUSTED_PROXIES).
+	// Пусто — X-Forwarded-For не доверяется, per-IP лимитер ключуется по
+	// RemoteAddr (см. web.clientIP, SEC-L2).
+	TrustedProxies []*net.IPNet
 	// RegistrationMode — режим самостоятельной регистрации (PROD-B1):
 	// open (открыта всем), invite (по приглашению, кроме bootstrap первого
 	// админа), closed (только bootstrap первого админа). Дефолт — invite.
@@ -244,7 +254,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.ScrubFreeText = boolEnv("GOTCHA_SCRUB_FREETEXT")
 	cfg.SSRFAllowPrivate = boolEnv("GOTCHA_SSRF_ALLOW_PRIVATE")
 	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE", true)
-	cfg.ExternalChannelDetails = boolEnvDef("GOTCHA_EXTERNAL_CHANNEL_DETAILS", true)
+	// Privacy-by-default: полный текст ошибок/стектрейсов/имён транзакций может
+	// нести ПДн, а внешние каналы (Telegram — серверы за пределами РФ, webhook)
+	// уводят его наружу, потенциально трансгранично (152-ФЗ ст.12). По умолчанию
+	// шлём обезличенный payload (только ссылка/заголовок); оператор осознанно
+	// включает детали через GOTCHA_EXTERNAL_CHANNEL_DETAILS=true.
+	cfg.ExternalChannelDetails = boolEnvDef("GOTCHA_EXTERNAL_CHANNEL_DETAILS", false)
 	if keys := strings.TrimSpace(getenv("GOTCHA_SCRUB_KEYS")); keys != "" {
 		for _, k := range strings.Split(keys, ",") {
 			if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
@@ -253,6 +268,34 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		}
 	} else {
 		cfg.ScrubKeys = defaultScrubKeys()
+	}
+	// GOTCHA_TRUSTED_PROXIES — список CIDR («10.0.0.0/8») и/или голых IP
+	// («192.168.1.5», трактуется как /32 или /128) доверенных прокси.
+	// Невалидные записи — ошибка конфигурации, а не тихий пропуск: молча
+	// проигнорированный прокси означал бы, что XFF не доверяется и лимитер
+	// снова ключуется по IP прокси (тихая деградация защиты).
+	if tp := strings.TrimSpace(getenv("GOTCHA_TRUSTED_PROXIES")); tp != "" {
+		for _, item := range strings.Split(tp, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if !strings.Contains(item, "/") {
+				if ip := net.ParseIP(item); ip != nil {
+					if ip.To4() != nil {
+						item += "/32"
+					} else {
+						item += "/128"
+					}
+				}
+			}
+			_, n, err := net.ParseCIDR(item)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("GOTCHA_TRUSTED_PROXIES: invalid entry %q: %w", item, err))
+				continue
+			}
+			cfg.TrustedProxies = append(cfg.TrustedProxies, n)
+		}
 	}
 	if len(errs) > 0 {
 		return Config{}, errs[0]
@@ -344,13 +387,29 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// через OAuth-link) — отказываемся стартовать. Escape-hatch для нестандартного
 	// dev-окружения — GOTCHA_ALLOW_INSECURE_SECRET=1.
 	if (cfg.Mode == "web" || cfg.Mode == "all") &&
-		cfg.SecretKey == "insecure-dev-secret" &&
+		cfg.SecretKey == devSecretKey &&
 		!isLocalBaseURL(cfg.BaseURL) &&
 		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
 		return Config{}, fmt.Errorf(
 			"GOTCHA_SECRET_KEY must be set to a strong random value for a non-local %s instance "+
 				"(default key is public and enables OAuth account takeover); "+
 				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development", cfg.Mode)
+	}
+
+	// SEC: слишком короткий кастомный ключ — слабый ключ подписи oauth-cookie и
+	// мастер шифрования SSO client_secret. В серверных режимах на не-local
+	// требуем >= 32 байт (стандартный минимум для ключа). Тот же escape-hatch,
+	// что и у проверки дефолтного ключа выше.
+	if (cfg.Mode == "web" || cfg.Mode == "all") &&
+		cfg.SecretKey != devSecretKey &&
+		len(cfg.SecretKey) < 32 &&
+		!isLocalBaseURL(cfg.BaseURL) &&
+		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
+		return Config{}, fmt.Errorf(
+			"GOTCHA_SECRET_KEY is too short (%d bytes) for a non-local %s instance; "+
+				"use at least 32 random bytes (e.g. `openssl rand -hex 32`); "+
+				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development",
+			len(cfg.SecretKey), cfg.Mode)
 	}
 
 	return cfg, nil

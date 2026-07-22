@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -64,10 +65,13 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 
-	// SEC-L2: сначала per-account (ip|email), затем глобальный per-IP лимит.
-	// Любое превышение → 429. Порядок важен: при исчерпанном per-account слот
-	// per-IP не расходуется (короткое замыкание ||).
-	if !h.loginLimiter.Allow(rateLimitKey(r, email)) || !h.ipLimiter.Allow(extractIP(r)) {
+	// SEC-L2: сначала per-account (ip|email), затем глобальный per-IP лимит, затем
+	// per-email (без IP) — против распределённого перебора одного аккаунта с пула
+	// IP. Любое превышение → 429. Порядок важен: короткое замыкание || не
+	// расходует последующие бакеты, если ранний уже отказал.
+	emailKey := strings.ToLower(strings.TrimSpace(email))
+	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
+		!h.emailLimiter.Allow(emailKey) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
@@ -111,7 +115,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	password2 := r.FormValue("password2")
 
 	// SEC-L2: per-account (ip|email) + глобальный per-IP лимит, см. loginSubmit.
-	if !h.loginLimiter.Allow(rateLimitKey(r, email)) || !h.ipLimiter.Allow(extractIP(r)) {
+	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.Register(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
@@ -208,7 +212,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := r.FormValue("email")
-	if !h.loginLimiter.Allow("sso|" + rateLimitKey(r, email)) {
+	if !h.loginLimiter.Allow("sso|" + h.rateLimitKey(r, email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.SSOLogin(i18n.T(r.Context(), "err.auth.rate_limited")).Render(r.Context(), w)
 		return

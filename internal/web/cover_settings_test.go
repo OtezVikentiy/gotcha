@@ -65,7 +65,19 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// SSO с неполными полями (owner) → 422 (ErrInvalidSSO).
+	// SSO настраивает только инстанс-админ (requireInstanceAdminForSSO): не-админ
+	// (org-admin adminID) → 403 ещё до валидации полей.
+	resp = postForm(t, s.srv, base+"/sso", url.Values{"issuer": {""}, "client_id": {""}}, s.srv.URL, adminCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST sso (non-instance-admin) status = %d, want 403", resp.StatusCode)
+	}
+
+	// Делаем ownerID инстанс-админом → доходит до валидации; неполные поля → 422.
+	if _, err := s.pool.Exec(context.Background(), "UPDATE users SET is_instance_admin = true WHERE id = $1", ownerID); err != nil {
+		t.Fatalf("promote owner: %v", err)
+	}
 	resp = postForm(t, s.srv, base+"/sso", url.Values{"issuer": {""}, "client_id": {""}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -73,7 +85,7 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso (invalid fields) status = %d, want 422", resp.StatusCode)
 	}
 
-	// SSODelete не-owner (admin) → 404; без Origin → 403.
+	// SSODelete не-инстанс-админ (admin) → 403; без Origin → 403.
 	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -83,11 +95,11 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST sso/delete (admin) status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST sso/delete (non-instance-admin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// SSODelete owner без сохранённой конфигурации → всё равно 303 (идемпотентно).
+	// SSODelete инстанс-админ без сохранённой конфигурации → всё равно 303 (идемпотентно).
 	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

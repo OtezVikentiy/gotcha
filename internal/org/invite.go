@@ -150,3 +150,30 @@ func (s *Service) AcceptPendingInviteByEmail(ctx context.Context, email string, 
 	}
 	return orgID, true, nil
 }
+
+// PurgeExpiredInvites удаляет инвайты, которые больше не нужны: просроченные
+// (expires_at < now — приняты уже не будут) и принятые (accepted_at IS NOT NULL —
+// членство создано, а email приглашённого дальше хранить незачем). Живые
+// pending-инвайты остаются. Минимизация хранения ПДн (152-ФЗ ст.5 ч.7):
+// иначе email приглашённых копятся бессрочно, пока жива организация. Вызывается
+// периодически из auth.Janitor (см. main.go).
+func (s *Service) PurgeExpiredInvites(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM org_invites WHERE expires_at < now() OR accepted_at IS NOT NULL")
+	if err != nil {
+		return 0, fmt.Errorf("org: purge expired invites: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteInvitesByEmail удаляет все pending-инвайты на указанный email во всех
+// организациях. Вызывается при самоудалении аккаунта: email приглашённого —
+// ПДн, а org_invites не связаны с users по FK, поэтому каскад их не удаляет
+// (минимизация, 152-ФЗ ст.5 ч.7).
+func (s *Service) DeleteInvitesByEmail(ctx context.Context, email string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, "DELETE FROM org_invites WHERE email = $1", email)
+	if err != nil {
+		return 0, fmt.Errorf("org: delete invites by email: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

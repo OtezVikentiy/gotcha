@@ -447,6 +447,19 @@ a:hover {
 	width: 100%;
 	margin: 0;
 }
+.app-footer {
+	padding: 8px 16px;
+	font-size: 12px;
+	text-align: right;
+	color: var(--text-dim);
+}
+.app-footer a {
+	color: var(--link);
+	text-decoration: none;
+}
+.app-footer a:hover {
+	text-decoration: underline;
+}
 
 /* Скролл-контейнер для длинных списков (участники и т.п.): ограничивает
    высоту блока и включает вертикальный скролл, чтобы 100 строк не растягивали
@@ -1641,6 +1654,29 @@ form.inline {
 .card-actions > form {
 	margin: 0;
 }
+
+/* -- About page (/about): build-info list + outbound links -- */
+.about-list {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 6px 16px;
+	margin: 0;
+}
+.about-list dt { color: var(--text-dim); }
+.about-list dd {
+	margin: 0;
+	color: var(--text);
+	font-variant-numeric: tabular-nums;
+}
+.about-links {
+	margin-top: 16px;
+	color: var(--text-dim);
+}
+.about-links a {
+	color: var(--link);
+	text-decoration: none;
+}
+.about-links a:hover { text-decoration: underline; }
 
 /* -- Tabs -- */
 .tabs {

@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,5 +50,30 @@ func TestParseSentry(t *testing.T) {
 func TestParseSentryBadJSON(t *testing.T) {
 	if _, err := ParseSentry([]byte("{bad"), time.Now()); err == nil {
 		t.Fatal("bad json must error")
+	}
+}
+
+// TestParseSentryCapsMetaFields: недоверенные строковые поля каппятся до
+// maxMetaField рун перед записью (иначе раздувают колонки profiles).
+func TestParseSentryCapsMetaFields(t *testing.T) {
+	big := strings.Repeat("Ж", maxMetaField+300) // многобайтные руны — проверяем кап именно по рунам
+	raw := []byte(`{
+		"platform":"` + big + `","environment":"` + big + `",
+		"transaction":{"name":"` + big + `","trace_id":"` + big + `"},
+		"profile":{"frames":[],"stacks":[],"samples":[]}
+	}`)
+	p, err := ParseSentry(raw, time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for name, got := range map[string]string{
+		"Platform":    p.Platform,
+		"Environment": p.Environment,
+		"Transaction": p.Transaction,
+		"TraceID":     p.TraceID,
+	} {
+		if n := len([]rune(got)); n != maxMetaField {
+			t.Fatalf("%s len = %d runes, want %d", name, n, maxMetaField)
+		}
 	}
 }

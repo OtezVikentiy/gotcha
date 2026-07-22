@@ -1,3 +1,5 @@
+[English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md)
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -7,6 +9,8 @@ and this project intends to adhere to [Semantic Versioning](https://semver.org/s
 once tagged releases begin.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-07-22
 
 Initial feature set of the self-hosted release:
 
@@ -38,3 +42,5 @@ Initial feature set of the self-hosted release:
 - In-product documentation (`/docs`) in English and Russian.
 - Open-source project files: README, LICENSE (Apache-2.0), CONTRIBUTING,
   SECURITY, CODE_OF_CONDUCT, `.env.example`.
+- Build version surfaced in the UI footer, an About page, `--version`, and
+  `/version`.

@@ -92,6 +92,7 @@ func (y *Yandex) Exchange(ctx context.Context, code, _, redirectURI, _ string) (
 		Subject:       info.ID,
 		Email:         info.DefaultEmail,
 		EmailVerified: true,
+		TrustedIssuer: true,
 		DisplayName:   info.DisplayName,
 	}, nil
 }

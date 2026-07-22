@@ -3,13 +3,72 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
+
+// profileDelete — POST /profile/delete: самоудаление аккаунта (право субъекта на
+// удаление своих ПДн, 152-ФЗ ст.14 / GDPR art.17). Двухшаговое подтверждение,
+// как у delete-org (под CSP без inline-JS confirm() невозможен). auth.DeleteUser
+// каскадно (FK) удаляет личности/членства/сессии. Блокируется, если юзер —
+// единственный владелец каких-то организаций: иначе они остались бы без владельца.
+func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if h.Org != nil {
+		owned, err := h.Org.SoleOwnedOrgNames(r.Context(), uid)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		if len(owned) > 0 {
+			h.renderError(w, r, http.StatusConflict,
+				i18n.Tf(r.Context(), "profile.danger.delete_account.sole_owner", "orgs", strings.Join(owned, ", ")))
+			return
+		}
+	}
+	// Без confirmed=yes — страница подтверждения вместо удаления.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.account_delete.message",
+			"profile.danger.delete_account.button", "/profile", "/profile/delete", nil)
+		return
+	}
+	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
+		_ = h.Auth.DestroySession(r.Context(), token)
+	}
+	if err := h.Auth.DeleteUser(r.Context(), uid); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	// Pending-инвайты на email пользователя не связаны с users по FK, поэтому
+	// каскад их не трогает — чистим отдельно (ПДн, минимизация). Best-effort:
+	// аккаунт уже удалён, ошибку логируем, но пользователю всё равно редирект.
+	// Субъектная телеметрия в ClickHouse (данные КОНЕЧНЫХ пользователей
+	// наблюдаемых приложений) при этом не затрагивается — это не ПДн владельца
+	// аккаунта; см. privacy-доку.
+	if h.Org != nil {
+		if email := h.currentEmail(r); email != "" {
+			if _, err := h.Org.DeleteInvitesByEmail(r.Context(), email); err != nil {
+				slog.Error("profileDelete: purge pending invites", "error", err)
+			}
+		}
+	}
+	auth.ClearSessionCookie(w)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
 
 // profilePage — GET /profile: email юзера, форма смены пароля, кнопка
 // «выйти со всех других устройств».

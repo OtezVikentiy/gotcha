@@ -41,8 +41,9 @@ type EventRow struct {
 	Contexts       string            `json:"contexts"`
 }
 
-// TransactionRow — строка transactions субъекта. Из субъектных ПДн transactions
-// хранят только user_id, остальные колонки отдаём для полноты выгрузки.
+// TransactionRow — строка transactions субъекта. Субъект хранится в колонке
+// user_id и в тегах tags (user.id/enduser.id/user.email/enduser.email — см.
+// txSubjectConds); остальные колонки отдаём для полноты выгрузки.
 type TransactionRow struct {
 	ProjectID   uint64            `json:"project_id"`
 	TraceID     string            `json:"trace_id"`
@@ -83,7 +84,8 @@ type SubjectExport struct {
 }
 
 // ExportSubject возвращает всё, что хранится о субъекте в рамках проекта: строки
-// events (по непустым user_email/user_id/user_ip), transactions (по user_id) и
+// events (по непустым user_email/user_id/user_ip), transactions (по колонке
+// user_id и тегам user.id/enduser.id/user.email/enduser.email) и
 // metric_points (по attributes user.id/enduser.id/user.email) — тот же охват, что
 // чистит PurgeSubject, чтобы право на доступ было паритетно праву на удаление.
 // Имена таблиц и колонок фиксированы; значения субъекта — только bound-параметры,
@@ -144,13 +146,17 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		return SubjectExport{}, fmt.Errorf("telemetry: export subject events close (project %d): %w", projectID, err)
 	}
 
-	// transactions хранят из субъектных ПДн только user_id.
-	if sub.UserID != "" {
+	// transactions: субъект живёт в колонке user_id и в тегах (см. txSubjectConds).
+	// Выгружаем по обоим — паритетно PurgeSubject, иначе субъект по email не увидит
+	// свои транзакции (в них email лежит только в тегах).
+	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
+		args := append([]any{projectID}, txArgs...)
+		args = append(args, exportRowLimit)
 		txQ := `SELECT project_id, trace_id, span_id, transaction, op, timestamp,
 			duration_us, status, environment, release, server_name, user_id, tags, source
-			FROM transactions WHERE project_id = ? AND user_id = ?
+			FROM transactions WHERE project_id = ? AND (` + strings.Join(txConds, " OR ") + `)
 			ORDER BY timestamp DESC LIMIT ?`
-		txRows, err := p.conn.Query(ctx, txQ, projectID, sub.UserID, exportRowLimit)
+		txRows, err := p.conn.Query(ctx, txQ, args...)
 		if err != nil {
 			return SubjectExport{}, fmt.Errorf("telemetry: export subject transactions (project %d): %w", projectID, err)
 		}
