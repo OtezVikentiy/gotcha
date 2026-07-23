@@ -75,6 +75,45 @@ php artisan sentry:test
 
 Событие появится в **«Проблемах»** проекта, DSN которого вы указали.
 
+## PHP (Symfony)
+
+```bash
+composer require sentry/sentry-symfony
+```
+
+Репозиторий: https://github.com/getsentry/sentry-symfony
+
+Рецепт Flex по умолчанию включает бандл только в `prod` и без трейсинга. Для self-hosted удобнее держать его активным во всех окружениях, но по наличию DSN (пусто = SDK выключен), и включить трейсинг через env — `config/packages/sentry.yaml`:
+
+```yaml
+sentry:
+    dsn: '%env(SENTRY_DSN)%'
+    options:
+        traces_sample_rate: '%env(float:SENTRY_TRACES_SAMPLE_RATE)%'
+        environment: '%kernel.environment%'
+        # 404/405 — обычный веб-шум (сканеры, битые ссылки), а не ошибки приложения
+        ignore_exceptions:
+            - 'Symfony\Component\HttpKernel\Exception\NotFoundHttpException'
+            - 'Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException'
+```
+
+Бандл — во всех окружениях (`config/bundles.php`):
+
+```php
+Sentry\SentryBundle\SentryBundle::class => ['all' => true],
+```
+
+Переменные в `.env`:
+
+```
+SENTRY_DSN=<ВАШ_DSN>
+SENTRY_TRACES_SAMPLE_RATE=0.2
+```
+
+Бандл сам ловит необработанные исключения. Тест — `\Sentry\captureMessage('проверка')` или временный роут, бросающий исключение; событие появится в **«Проблемах»**.
+
+> **`ignore_exceptions` важен:** без него `NotFoundHttpException` летит в Gotcha как ошибка, и каждый скан/битая ссылка засоряет issues. Игнор клиентских 404/405 оставляет только реальные ошибки приложения.
+
 ## JavaScript / Node.js (сервер)
 
 ```bash
@@ -133,6 +172,8 @@ Sentry.captureException(new Error("Тестовая ошибка Gotcha"));
 ```
 
 Если у сайта настроен Content-Security-Policy с директивой `connect-src`, добавьте туда адрес вашего инстанса Gotcha — иначе браузер молча заблокирует запрос к DSN.
+
+Браузер шлёт события на адрес из DSN — часто это **другой домен**, чем у самого сайта (сайт на `app.example.com`, Gotcha на `gotcha.example.com`). Приёмник Gotcha отвечает CORS-заголовками и обрабатывает preflight (`OPTIONS`), поэтому браузерный SDK шлёт **напрямую**, без прокси и туннелей. Public key в DSN публичен по замыслу — приёмник разрешает любой origin.
 
 ## Python
 

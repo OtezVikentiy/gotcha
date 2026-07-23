@@ -62,6 +62,25 @@ A separate page at `/projects/{id}/alerts/deliveries` (labeled "Delivery log" in
 
 While there are no failed deliveries, the page shows an empty state: "No failed deliveries".
 
+### Telegram: events don't reach the bot
+
+If Telegram delivery consistently fails (the delivery log shows a timeout/network error) while webhook/email work, check **how the instance resolves `api.telegram.org`**:
+
+```bash
+docker compose exec gotcha getent hosts api.telegram.org
+```
+
+If the name resolves to an **IPv6** address while the server has no global IPv6 (common on a VPS), the connection to the Bot API will time out — even though Telegram's IPv4 is reachable. It looks like "blocking", but the fix is to pin `api.telegram.org` to a working IPv4 in the gotcha container — add to `docker-compose.override.yml`:
+
+```yaml
+services:
+  gotcha:
+    extra_hosts:
+      - "api.telegram.org:149.154.167.220"
+```
+
+After `docker compose up -d gotcha` delivery recovers. Telegram's IP is stable, but update the pin if it fails again.
+
 ## Privacy: what external channels see
 
 Webhook and Telegram are external services outside your infrastructure; email is treated as internal (delivered through your own SMTP). The instance environment variable

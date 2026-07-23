@@ -205,6 +205,9 @@ then `docker compose up -d`. The app inside the container still listens on 8080 
 - If your server is with a cloud provider/hosting panel, check its Security Group / firewall separately from `ufw` — traffic is often blocked there instead.
 - Run `curl -sf http://localhost:59080/healthz` **from the server itself** — if that works but access from outside doesn't, the problem is networking (firewall/provider), not Gotcha.
 
+**Forms, registration or login return `forbidden` (403).**
+Gotcha protects POST requests with an origin check: the request's `Origin`/`Referer` must match `GOTCHA_BASE_URL` by scheme and host. If you open the UI at an address other than `GOTCHA_BASE_URL` (e.g. via `http://localhost` while `BASE_URL` is a public HTTPS domain, or through a tunnel/proxy with a different host), any POST is rejected with `403`. Open the UI strictly at the `GOTCHA_BASE_URL` address.
+
 **`/healthz` returns `503` with `unavailable` for postgres/clickhouse.**
 The app is alive but can't reach one of the databases. This usually means the database hasn't finished starting yet (ClickHouse's first boot can take up to a minute) — wait and retry. If it persists, check `docker compose logs postgres` / `docker compose logs clickhouse`.
 

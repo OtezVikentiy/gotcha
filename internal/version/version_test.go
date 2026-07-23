@@ -7,12 +7,20 @@ import (
 	"testing"
 )
 
-func TestVersionDefaultHasDevSuffix(t *testing.T) {
-	if !strings.HasSuffix(Version(), "-dev") {
-		t.Fatalf("ждали суффикс -dev в дефолтной сборке, получили %q", Version())
+// Сборки без git-версии (version="" при go build, "dev" при docker compose
+// build, base+"-dev" — старый дефолт) резолвятся в чистый base, а не «dev»:
+// именно из-за «dev» релизная сборка показывала неверную версию.
+func TestVersionDefaultResolvesToBase(t *testing.T) {
+	if got := Version(); got != base {
+		t.Fatalf("дефолтная версия = %q, ждали base %q", got, base)
 	}
-	if !strings.HasPrefix(Version(), base) {
-		t.Fatalf("ждали базу %q в начале %q", base, Version())
+	oldV := version
+	t.Cleanup(func() { version = oldV })
+	for _, sentinel := range []string{"", "dev", base + "-dev"} {
+		version = sentinel
+		if got := Version(); got != base {
+			t.Fatalf("version=%q → Version()=%q, ждали base %q", sentinel, got, base)
+		}
 	}
 }
 

@@ -1,8 +1,13 @@
 // Package version — единая точка сведений о версии бинаря gotcha.
 // base — канон версии в репозитории: его двигает `make release`, и он совпадает
 // с git-тегом vX.Y.Z. Переменные version/commit/date перезаписываются при
-// сборке через -ldflags -X (см. Makefile и Dockerfile); без ldflags бинарь
-// честно докладывает "<base>-dev".
+// сборке через -ldflags -X (см. Makefile и Dockerfile).
+//
+// Сборка через `docker compose build` (штатный путь обновления в доках) не
+// прокидывает git-версию — Dockerfile передаёт ARG VERSION=dev. Такой сентинел
+// («dev»/пусто/base+"-dev") резолвится в base, поэтому релизная сборка честно
+// показывает версию релиза, а не «dev». Точную git-версию (с суффиксом -N-gHASH)
+// даёт сборка через `make` (up-rebuild/build), которая её вычисляет.
 package version
 
 import (
@@ -10,21 +15,32 @@ import (
 	"strings"
 )
 
-const base = "0.2.0"
+const base = "0.2.1"
 
 var (
-	version = base + "-dev" // git describe --tags --always --dirty
-	commit  = ""            // git rev-parse --short HEAD
-	date    = ""            // дата сборки, RFC3339 UTC
+	version = "" // git describe --tags --always --dirty (через ldflags)
+	commit  = "" // git rev-parse --short HEAD
+	date    = "" // дата сборки, RFC3339 UTC
 )
 
-// Version — сырая строка версии: "v0.1.0" | "v0.1.0-5-gabcdef-dirty" | "0.1.0-dev".
-func Version() string { return version }
+// resolved — итоговая строка версии: git-описание из ldflags, если оно осмысленно;
+// иначе канон base (сборки без git-версии показывают версию релиза, а не «dev»).
+func resolved() string {
+	switch version {
+	case "", "dev", base + "-dev":
+		return base
+	default:
+		return version
+	}
+}
 
-// String — человекочитаемо: "0.1.0-dev" либо "v0.1.0 (abcdef, 2026-07-22)".
+// Version — сырая строка версии: "v0.2.0" | "v0.2.0-5-gabcdef-dirty" | "0.2.0".
+func Version() string { return resolved() }
+
+// String — человекочитаемо: "0.2.0" либо "v0.2.0 (abcdef, 2026-07-22)".
 func String() string {
 	var b strings.Builder
-	b.WriteString(version)
+	b.WriteString(resolved())
 	switch {
 	case commit != "" && date != "":
 		b.WriteString(" (" + commit + ", " + date + ")")
@@ -46,5 +62,5 @@ type Info struct {
 
 // Get — снимок сведений о версии.
 func Get() Info {
-	return Info{Version: version, Commit: commit, Date: date, Go: runtime.Version()}
+	return Info{Version: resolved(), Commit: commit, Date: date, Go: runtime.Version()}
 }

@@ -75,6 +75,45 @@ php artisan sentry:test
 
 It shows up under **"Issues"** in the project whose DSN you configured.
 
+## PHP (Symfony)
+
+```bash
+composer require sentry/sentry-symfony
+```
+
+Repository: https://github.com/getsentry/sentry-symfony
+
+The default Flex recipe enables the bundle only in `prod` and without tracing. For a self-hosted setup it's handier to keep it active in every environment but gated on the DSN (empty = SDK off), and enable tracing via env — `config/packages/sentry.yaml`:
+
+```yaml
+sentry:
+    dsn: '%env(SENTRY_DSN)%'
+    options:
+        traces_sample_rate: '%env(float:SENTRY_TRACES_SAMPLE_RATE)%'
+        environment: '%kernel.environment%'
+        # 404/405 are ordinary web noise (scanners, dead links), not app errors
+        ignore_exceptions:
+            - 'Symfony\Component\HttpKernel\Exception\NotFoundHttpException'
+            - 'Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException'
+```
+
+Register the bundle in every environment (`config/bundles.php`):
+
+```php
+Sentry\SentryBundle\SentryBundle::class => ['all' => true],
+```
+
+Variables in `.env`:
+
+```
+SENTRY_DSN=<YOUR_DSN>
+SENTRY_TRACES_SAMPLE_RATE=0.2
+```
+
+The bundle captures unhandled exceptions on its own. To test — `\Sentry\captureMessage('check')` or a temporary route that throws; the event shows up under **Issues**.
+
+> **`ignore_exceptions` matters:** without it, `NotFoundHttpException` flows into Gotcha as an error, and every scan or dead link clutters your issues. Ignoring client 404/405 leaves only real application errors.
+
 ## JavaScript / Node.js (server)
 
 ```bash
@@ -133,6 +172,8 @@ Sentry.captureException(new Error("Gotcha test error"));
 ```
 
 If your site sets a Content-Security-Policy with `connect-src`, add your Gotcha instance's address to it — otherwise the browser will silently block the request to your DSN.
+
+The browser sends events to the address in the DSN — often a **different domain** than the site itself (site on `app.example.com`, Gotcha on `gotcha.example.com`). Gotcha's ingest replies with CORS headers and handles the preflight (`OPTIONS`), so the browser SDK sends **directly**, with no proxy or tunnel. The public key in the DSN is public by design — the receiver allows any origin.
 
 ## Python
 
