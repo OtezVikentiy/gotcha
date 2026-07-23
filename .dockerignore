@@ -1,5 +1,4 @@
 .git
-cld
 .idea
 docker-compose.yml
 .env
@@ -13,13 +12,7 @@ docker-compose.yml
 *.out
 
 # Local planning & docs (not part of the published repo)
-/cld/
 /docs
 
 # Editor / IDE
 .vscode/
-
-# Tooling / agent caches
-.remember/
-.superpowers/
-.playwright-mcp/
