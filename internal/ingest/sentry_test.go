@@ -84,6 +84,27 @@ func TestParseEventPHP(t *testing.T) {
 	}
 }
 
+// ParseEvent сохраняет breadcrumbs события как есть (raw JSON) и не выдумывает
+// их, когда поля нет.
+func TestParseEventBreadcrumbs(t *testing.T) {
+	want := `{"values":[{"category":"query","message":"SELECT 1"}]}`
+	js := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error","breadcrumbs":` + want + `}`
+	pe, err := ParseEvent([]byte(js))
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	if pe.BreadcrumbsJSON != want {
+		t.Fatalf("BreadcrumbsJSON = %q, want %q", pe.BreadcrumbsJSON, want)
+	}
+	pe2, err := ParseEvent([]byte(`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error"}`))
+	if err != nil {
+		t.Fatalf("ParseEvent(no bc): %v", err)
+	}
+	if pe2.BreadcrumbsJSON != "" {
+		t.Fatalf("без breadcrumbs ожидали пусто, got %q", pe2.BreadcrumbsJSON)
+	}
+}
+
 func TestParseEventMessageOnly(t *testing.T) {
 	// sentry-js captureMessage: message-объект, ISO-timestamp, тэги массивом.
 	want := time.Now().UTC().Add(-2 * time.Hour).Truncate(100 * time.Millisecond)

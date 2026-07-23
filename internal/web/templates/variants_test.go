@@ -67,7 +67,7 @@ func TestIssueDetailBareFrame(t *testing.T) {
 	// Системный кадр (InApp=false) с модулем — рендерится через <details>.
 	frames := []Frame{{Function: "runtime.main", Module: "runtime", Filename: "", Lineno: 0, InApp: false}}
 	ev := event.Stored{ID: "e9", Level: "info", Message: "just a message"}
-	out := renderTo(t, IssueDetail(it, nil, stub(), []event.Stored{ev}, "e9", &ev, frames, "u@e.com"))
+	out := renderTo(t, IssueDetail(it, nil, stub(), []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false))
 	if !strings.Contains(out, "runtime.main") || !strings.Contains(out, "frame-system") {
 		t.Error("системный кадр не из приложения должен отрендериться через <details>")
 	}

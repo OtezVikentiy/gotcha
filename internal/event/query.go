@@ -33,8 +33,9 @@ type Stored struct {
 	UserIP    string
 	UserEmail string
 
-	Tags     map[string]string
-	Contexts string
+	Tags        map[string]string
+	Contexts    string
+	Breadcrumbs string
 
 	// TraceID — trace_id события (пустой, если SDK трейсинг не включил):
 	// страница issue показывает по нему ссылку «Смотреть трейс» на waterfall
@@ -59,7 +60,7 @@ func NewQuery(conn driver.Conn) *Query {
 }
 
 const storedColumns = `event_id, timestamp, level, message, exception_type, exception_value, stacktrace,
-	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id`
+	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id, breadcrumbs`
 
 // scanner — общая часть driver.Row и driver.Rows, достаточная для Scan.
 type scanner interface {
@@ -74,7 +75,7 @@ func scanStored(s scanner) (Stored, error) {
 		&out.ExceptionType, &out.ExceptionValue, &out.Stacktrace,
 		&out.Environment, &out.Release, &out.ServerName, &out.SDK,
 		&out.UserID, &out.UserIP, &out.UserEmail,
-		&out.Tags, &out.Contexts, &out.TraceID,
+		&out.Tags, &out.Contexts, &out.TraceID, &out.Breadcrumbs,
 	); err != nil {
 		return Stored{}, err
 	}

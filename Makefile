@@ -114,7 +114,7 @@ $(eval $(RELEASE_VERSION):;@:)
 endif
 endif
 
-release: ## Cut a release: make release 0.1.0 (changelog+tag; пуш вручную)
+release: ## Cut a release: make release 0.1.0 (changelog+tag+push; NO_PUSH=1 — без пуша)
 	@ver="$(or $(VERSION),$(RELEASE_VERSION))"; \
 	  test -n "$$ver" || { echo "usage: make release 0.1.0"; exit 2; }; \
 	  ./scripts/release.sh "$$ver"

@@ -23,6 +23,7 @@ type Event struct {
 	UserEmail      string
 	Tags           map[string]string
 	Contexts       string // JSON
+	Breadcrumbs    string // JSON (Sentry breadcrumbs.values)
 	// TraceID/SpanID — из contexts.trace события: связывают ошибку с
 	// транзакцией трейсинга (пустые, если SDK трейсинг не включил).
 	TraceID string

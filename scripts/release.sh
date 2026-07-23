@@ -33,9 +33,15 @@ git -C "$ROOT" add CHANGELOG.md CHANGELOG.ru.md internal/version/version.go
 git -C "$ROOT" commit -m "release: $TAG"
 git -C "$ROOT" tag -a "$TAG" -m "$TAG"
 
-cat <<EOF
-Готово: коммит и тег $TAG созданы локально.
-Осталось запушить в ОБА remote (проверь имена: git remote -v):
-  git push origin main --follow-tags
-  git push github main --follow-tags
+# 4. Пуш в remote. У origin оба push-URL (gitflic + github) — уедет в оба зеркала.
+#    Пропустить автопуш (локальный релиз): NO_PUSH=1 make release X.Y.Z.
+if [ -n "${NO_PUSH:-}" ]; then
+  cat <<EOF
+Готово: коммит и тег $TAG созданы локально (автопуш отключён NO_PUSH).
+Запушить вручную: git push origin main --follow-tags
 EOF
+else
+  echo "Пушу main и тег $TAG в origin (gitflic + github)…"
+  git -C "$ROOT" push origin main --follow-tags
+  echo "Готово: $TAG опубликован в оба зеркала."
+fi

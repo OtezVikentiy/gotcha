@@ -131,7 +131,21 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		frames = parseStacktraceFrames(events[0].Stacktrace)
 	}
 
-	_ = templates.IssueDetail(it, members, chart, events, selectedID, selected, frames, h.currentEmail(r)).Render(r.Context(), w)
+	// Ссылку «Смотреть трейс» показываем только если для trace_id реально есть
+	// транзакция: при сэмплировании (traces_sample_rate<1) трейс ошибки часто
+	// не записан, и страница трейса отдала бы 404 (см. traceWaterfall).
+	hasTrace := false
+	if selected != nil && selected.TraceID != "" && h.Trace != nil {
+		if _, found, err := h.Trace.ProjectForTrace(r.Context(), selected.TraceID); err == nil {
+			hasTrace = found
+		}
+	}
+
+	// showAllFrames (?frames=all) раскрывает системные кадры стектрейса серверно
+	// (строгий CSP запрещает клиентский JS) — переключается ссылкой на странице.
+	showAllFrames := r.URL.Query().Get("frames") == "all"
+
+	_ = templates.IssueDetail(it, members, chart, events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames).Render(r.Context(), w)
 }
 
 // issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored
@@ -244,11 +258,16 @@ func isOrgMember(members []org.Member, userID int64) bool {
 // (у него свой более широкий тип события) — этому пакету нужны только
 // фреймы для отображения.
 type exceptionFrame struct {
-	Function string `json:"function"`
-	Module   string `json:"module"`
-	Filename string `json:"filename"`
-	Lineno   int    `json:"lineno"`
-	InApp    bool   `json:"in_app"`
+	Function    string          `json:"function"`
+	Module      string          `json:"module"`
+	Filename    string          `json:"filename"`
+	Lineno      int             `json:"lineno"`
+	InApp       bool            `json:"in_app"`
+	AbsPath     string          `json:"abs_path"`
+	ContextLine string          `json:"context_line"`
+	PreContext  []string        `json:"pre_context"`
+	PostContext []string        `json:"post_context"`
+	Vars        json.RawMessage `json:"vars"`
 }
 
 type exceptionValue struct {
@@ -280,11 +299,16 @@ func parseStacktraceFrames(raw string) []templates.Frame {
 	out := make([]templates.Frame, len(frames))
 	for i, f := range frames {
 		out[len(frames)-1-i] = templates.Frame{
-			Function: f.Function,
-			Module:   f.Module,
-			Filename: f.Filename,
-			Lineno:   f.Lineno,
-			InApp:    f.InApp,
+			Function:    f.Function,
+			Module:      f.Module,
+			Filename:    f.Filename,
+			Lineno:      f.Lineno,
+			InApp:       f.InApp,
+			AbsPath:     f.AbsPath,
+			ContextLine: f.ContextLine,
+			PreContext:  f.PreContext,
+			PostContext: f.PostContext,
+			Vars:        string(f.Vars),
 		}
 	}
 	return out

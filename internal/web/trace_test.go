@@ -225,8 +225,10 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 	}
 
 	const traceID = "link-trace-01"
+	const unsampledTrace = "unsampled-trace-99"
 	withTraceID := uuid.NewString()
 	noTraceID := uuid.NewString()
+	unsampledID := uuid.NewString()
 	s.batcher.Add(event.Event{
 		ID:        withTraceID,
 		ProjectID: proj.ID,
@@ -245,6 +247,30 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 		Level:     "error",
 		Message:   "no trace",
 		Tags:      map[string]string{},
+	})
+	// Событие с trace_id, но БЕЗ записанной транзакции (сэмплирование): ссылки
+	// быть не должно — иначе клик ведёт на 404-й трейс.
+	s.batcher.Add(event.Event{
+		ID:        unsampledID,
+		ProjectID: proj.ID,
+		IssueID:   iss.IssueID,
+		Timestamp: now.Add(-3 * time.Minute),
+		Level:     "error",
+		Message:   "unsampled trace",
+		TraceID:   unsampledTrace,
+		Tags:      map[string]string{},
+	})
+	// Для traceID записываем транзакцию — только тогда ссылка «Смотреть трейс»
+	// осмысленна (страница трейса что-то покажет), иначе traceWaterfall даёт 404.
+	s.spans.Add(proj.ID, trace.Transaction{
+		TraceID:     traceID,
+		SpanID:      "root-link-span",
+		Name:        "GET /linked",
+		Op:          "http.server",
+		Status:      "ok",
+		Start:       now.Add(-2 * time.Minute),
+		End:         now.Add(-2 * time.Minute).Add(50 * time.Millisecond),
+		Environment: "production",
 	})
 	s.flush(t)
 
@@ -273,6 +299,15 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 	}
 	if strings.Contains(string(body), "Смотреть трейс") {
 		t.Fatalf("GET %s (event without trace) must not show 'Смотреть трейс': %s", issuePath, body)
+	}
+
+	// Событие с trace_id, но без записанной транзакции → ссылки тоже нет: клик
+	// вёл бы на 404 (traceWaterfall не находит трейс в transactions).
+	resp = getWithCookie(t, s.srv, issuePath+"?event="+unsampledID, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), "Смотреть трейс") {
+		t.Fatalf("GET %s (trace без транзакции) must not show 'Смотреть трейс': %s", issuePath, body)
 	}
 }
 

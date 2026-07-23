@@ -44,24 +44,25 @@ func normalizeID(s string, n int) string {
 
 // ParsedEvent — нормализованное Sentry-событие, готовое для пайплайна.
 type ParsedEvent struct {
-	EventID        string
-	Timestamp      time.Time
-	Level          string
-	Message        string
-	Exceptions     []fingerprint.Exception
-	StacktraceJSON string
-	Environment    string
-	Release        string
-	ServerName     string
-	SDK            string
-	UserID         string
-	UserIP         string
-	UserEmail      string
-	Tags           map[string]string
-	ContextsJSON   string
-	Fingerprint    []string
-	Title          string
-	Culprit        string
+	EventID         string
+	Timestamp       time.Time
+	Level           string
+	Message         string
+	Exceptions      []fingerprint.Exception
+	StacktraceJSON  string
+	Environment     string
+	Release         string
+	ServerName      string
+	SDK             string
+	UserID          string
+	UserIP          string
+	UserEmail       string
+	Tags            map[string]string
+	ContextsJSON    string
+	BreadcrumbsJSON string
+	Fingerprint     []string
+	Title           string
+	Culprit         string
 	// TraceID/SpanID — из contexts.trace: SDK кладут их в событие, когда
 	// включён трейсинг. Едут в одноимённые колонки events и связывают ошибку
 	// с транзакцией (пустые, если трейсинга нет).
@@ -105,6 +106,7 @@ type sentryEvent struct {
 	} `json:"user"`
 	Tags        json.RawMessage `json:"tags"`
 	Contexts    json.RawMessage `json:"contexts"`
+	Breadcrumbs json.RawMessage `json:"breadcrumbs"`
 	Fingerprint []string        `json:"fingerprint"`
 }
 
@@ -158,6 +160,9 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 	if len(se.Contexts) > 0 && string(se.Contexts) != "null" {
 		pe.ContextsJSON = string(se.Contexts)
 		pe.TraceID, pe.SpanID = parseTraceIDs(se.Contexts)
+	}
+	if len(se.Breadcrumbs) > 0 && string(se.Breadcrumbs) != "null" {
+		pe.BreadcrumbsJSON = string(se.Breadcrumbs)
 	}
 
 	pe.Exceptions = parseExceptions(se.Exception)

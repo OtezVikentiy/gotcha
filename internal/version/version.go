@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const base = "0.1.0"
+const base = "0.2.0"
 
 var (
 	version = base + "-dev" // git describe --tags --always --dirty

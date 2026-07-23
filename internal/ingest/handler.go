@@ -127,8 +127,14 @@ func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64) boo
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/{project}/envelope/{$}", h.envelope)
-	mux.HandleFunc("POST /api/{project}/store/{$}", h.store)
+	// Браузерные SDK шлют телеметрию с ПРОИЗВОЛЬНОГО origin (сайт и gotcha —
+	// разные домены), поэтому envelope/store отвечают CORS-заголовками и
+	// обрабатывают preflight (OPTIONS). DSN (public key) не секрет — как у
+	// Sentry, разрешаем любой origin.
+	mux.HandleFunc("POST /api/{project}/envelope/{$}", cors(h.envelope))
+	mux.HandleFunc("OPTIONS /api/{project}/envelope/{$}", corsPreflight)
+	mux.HandleFunc("POST /api/{project}/store/{$}", cors(h.store))
+	mux.HandleFunc("OPTIONS /api/{project}/store/{$}", corsPreflight)
 	// OTLP — ВТОРОЙ ВХОД в тот же пайплайн (см. otlp.go): своей квоты, своей
 	// модели и своих таблиц у него нет.
 	mux.HandleFunc("POST /v1/traces", h.otlpTraces)
@@ -138,6 +144,32 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Профили pprof (этап 7): свой минимальный эндпоинт (стандарта пуша pprof
 	// нет), Bearer-DSN auth + метаданные из query.
 	mux.HandleFunc("POST /profiles/pprof", h.pprofIngest)
+}
+
+// corsHeaders разрешает кросс-origin отправку телеметрии из браузера: DSN
+// (public key) публичен по замыслу, а браузерные SDK приходят с произвольных
+// доменов — как и Sentry, ingest отвечает Access-Control-Allow-Origin: *.
+// Credentials не используются, поэтому wildcard-origin безопасен.
+func corsHeaders(w http.ResponseWriter) {
+	head := w.Header()
+	head.Set("Access-Control-Allow-Origin", "*")
+	head.Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	head.Set("Access-Control-Allow-Headers", "content-type, x-sentry-auth, x-requested-with, baggage, sentry-trace")
+	head.Set("Access-Control-Max-Age", "86400")
+}
+
+// cors оборачивает POST-обработчик ingest, добавляя CORS-заголовки к ответу.
+func cors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		corsHeaders(w)
+		next(w, r)
+	}
+}
+
+// corsPreflight отвечает на CORS-preflight (OPTIONS) без тела.
+func corsPreflight(w http.ResponseWriter, _ *http.Request) {
+	corsHeaders(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // authenticate проверяет ключ проекта; при успехе возвращает ключ и true. При

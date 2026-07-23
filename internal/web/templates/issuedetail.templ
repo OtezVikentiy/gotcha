@@ -1,7 +1,10 @@
 package templates
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/url"
+	"sort"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
@@ -20,6 +23,222 @@ type Frame struct {
 	Filename string
 	Lineno   int
 	InApp    bool
+	// Исходный код кадра (шлёт sentry-php по опции context_lines): строки до
+	// ошибки, сама строка и строки после. Пустые — фрейм без исходника.
+	AbsPath     string
+	ContextLine string
+	PreContext  []string
+	PostContext []string
+	// Vars — локальные переменные кадра (JSON-объект), если SDK их прислал
+	// (sentry-php: опция include_local_variables). Пусто — не показываем.
+	Vars string
+}
+
+// frameHasVars — есть ли у кадра сохранённые локальные переменные.
+func frameHasVars(f Frame) bool {
+	return f.Vars != "" && f.Vars != "{}" && f.Vars != "null"
+}
+
+// frameVars разворачивает vars кадра в строки ключ/значение (тем же плоским
+// парсером, что и контексты).
+func frameVars(f Frame) []ctxRow {
+	if !frameHasVars(f) {
+		return nil
+	}
+	var rows []ctxRow
+	flattenContext("", json.RawMessage(f.Vars), &rows)
+	return rows
+}
+
+// sourceLine — одна строка исходника кадра с абсолютным номером и признаком
+// «та самая строка ошибки» (для подсветки).
+type sourceLine struct {
+	No      int
+	Code    string
+	Current bool
+}
+
+// frameHasSource — есть ли у кадра исходный код для показа в развороте.
+func frameHasSource(f Frame) bool {
+	return f.ContextLine != "" || len(f.PreContext) > 0 || len(f.PostContext) > 0
+}
+
+// frameSourceLines собирает pre_context + context_line + post_context в единый
+// список с корректной сквозной нумерацией: context_line стоит на f.Lineno,
+// pre_context — строки прямо перед ним, post_context — сразу после.
+func frameSourceLines(f Frame) []sourceLine {
+	if !frameHasSource(f) {
+		return nil
+	}
+	lines := make([]sourceLine, 0, len(f.PreContext)+1+len(f.PostContext))
+	start := f.Lineno - len(f.PreContext)
+	for i, code := range f.PreContext {
+		lines = append(lines, sourceLine{No: start + i, Code: code})
+	}
+	lines = append(lines, sourceLine{No: f.Lineno, Code: f.ContextLine, Current: true})
+	for i, code := range f.PostContext {
+		lines = append(lines, sourceLine{No: f.Lineno + 1 + i, Code: code})
+	}
+	return lines
+}
+
+func sourceLineClass(l sourceLine) string {
+	if l.Current {
+		return "src-line src-line-current"
+	}
+	return "src-line"
+}
+
+// prettyJSON форматирует JSON с отступами для читаемости. Невалидный JSON
+// возвращается как есть — лучше показать сырьё, чем ничего.
+func prettyJSON(s string) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(s), "", "  "); err != nil {
+		return s
+	}
+	return buf.String()
+}
+
+// ctxRow — пара ключ/значение в карточке контекста.
+type ctxRow struct{ Key, Val string }
+
+// ctxGroup — именованная группа контекста события (os, runtime, trace…),
+// показывается таблицей ключ/значение вместо сырого JSON.
+type ctxGroup struct {
+	Title string
+	Rows  []ctxRow
+}
+
+// contextTitle — заголовок группы контекста; неизвестные ключи как есть.
+func contextTitle(key string) string {
+	switch key {
+	case "os":
+		return "OS"
+	case "runtime":
+		return "Runtime"
+	case "trace":
+		return "Trace"
+	case "browser":
+		return "Browser"
+	case "device":
+		return "Device"
+	case "app":
+		return "App"
+	case "gpu":
+		return "GPU"
+	case "response":
+		return "Response"
+	default:
+		return key
+	}
+}
+
+// jsonScalar приводит JSON-значение к строке: строки как есть, целые без .0,
+// объект/массив — компактным JSON.
+func jsonScalar(raw json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	case nil:
+		return ""
+	default:
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+}
+
+// flattenContext разворачивает вложенный объект в плоские строки с точечными
+// ключами (data.http.url). Массивы/скаляры кладём как значение.
+func flattenContext(prefix string, raw json.RawMessage, out *[]ctxRow) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err == nil && len(obj) > 0 {
+		keys := sortedKeys(obj)
+		for _, k := range keys {
+			key := k
+			if prefix != "" {
+				key = prefix + "." + k
+			}
+			flattenContext(key, obj[k], out)
+		}
+		return
+	}
+	*out = append(*out, ctxRow{Key: prefix, Val: jsonScalar(raw)})
+}
+
+func sortedKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// contextGroups парсит contexts-JSON события в упорядоченные группы для показа
+// таблицами. Пустой/битый JSON → nil (тогда шаблон падает на raw-JSON).
+func contextGroups(contextsJSON string) []ctxGroup {
+	if contextsJSON == "" || contextsJSON == "{}" {
+		return nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(contextsJSON), &top); err != nil || len(top) == 0 {
+		return nil
+	}
+	groups := make([]ctxGroup, 0, len(top))
+	for _, k := range sortedKeys(top) {
+		var rows []ctxRow
+		flattenContext("", top[k], &rows)
+		if len(rows) == 0 {
+			continue
+		}
+		groups = append(groups, ctxGroup{Title: contextTitle(k), Rows: rows})
+	}
+	return groups
+}
+
+// requestRows вытаскивает суть HTTP-запроса из contexts.trace.data (method, url,
+// route, статус) — отдельная карточка «Запрос» сверху. Пусто → nil.
+func requestRows(contextsJSON string) []ctxRow {
+	if contextsJSON == "" {
+		return nil
+	}
+	var top struct {
+		Trace struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"trace"`
+	}
+	if err := json.Unmarshal([]byte(contextsJSON), &top); err != nil || top.Trace.Data == nil {
+		return nil
+	}
+	get := func(k string) string {
+		if raw, ok := top.Trace.Data[k]; ok {
+			return jsonScalar(raw)
+		}
+		return ""
+	}
+	var rows []ctxRow
+	for _, p := range []struct{ label, key string }{
+		{"Method", "http.request.method"},
+		{"URL", "http.url"},
+		{"Route", "route"},
+		{"Status", "http.status_code"},
+	} {
+		if v := get(p.key); v != "" {
+			rows = append(rows, ctxRow{Key: p.label, Val: v})
+		}
+	}
+	return rows
 }
 
 func issueStatusPath(issueID int64) string {
@@ -91,7 +310,102 @@ templ assigneeOption(m org.Member, selected *int64) {
 	}
 }
 
-templ frameView(f Frame) {
+// frameSource — исходный код кадра: строки с номерами, строка ошибки подсвечена.
+templ frameSource(f Frame) {
+	<div class="frame-source">
+		for _, l := range frameSourceLines(f) {
+			<div class={ sourceLineClass(l) }>
+				<span class="src-lineno">{ strconv.Itoa(l.No) }</span>
+				<span class="src-code">{ l.Code }</span>
+			</div>
+		}
+	</div>
+}
+
+// breadcrumb — один «след» до ошибки (лог/HTTP/навигация), как шлёт SDK.
+type breadcrumb struct {
+	Category string
+	Type     string
+	Level    string
+	Message  string
+	Data     string
+}
+
+// breadcrumbLabel — что показать слева: категория, иначе тип, иначе прочерк.
+func breadcrumbLabel(b breadcrumb) string {
+	switch {
+	case b.Category != "":
+		return b.Category
+	case b.Type != "":
+		return b.Type
+	default:
+		return "—"
+	}
+}
+
+// parseBreadcrumbs разбирает breadcrumbs события: Sentry шлёт {"values":[…]}
+// либо прямой массив. Порядок сохраняем как есть (SDK шлёт хронологически).
+func parseBreadcrumbs(js string) []breadcrumb {
+	if js == "" || js == "{}" || js == "null" {
+		return nil
+	}
+	var items []json.RawMessage
+	var wrap struct {
+		Values []json.RawMessage `json:"values"`
+	}
+	if json.Unmarshal([]byte(js), &wrap) == nil && len(wrap.Values) > 0 {
+		items = wrap.Values
+	} else {
+		_ = json.Unmarshal([]byte(js), &items)
+	}
+	out := make([]breadcrumb, 0, len(items))
+	for _, raw := range items {
+		var b struct {
+			Category string          `json:"category"`
+			Type     string          `json:"type"`
+			Level    string          `json:"level"`
+			Message  string          `json:"message"`
+			Data     json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(raw, &b) != nil {
+			continue
+		}
+		data := ""
+		if len(b.Data) > 0 && string(b.Data) != "null" && string(b.Data) != "{}" {
+			data = string(b.Data)
+		}
+		out = append(out, breadcrumb{Category: b.Category, Type: b.Type, Level: b.Level, Message: b.Message, Data: data})
+	}
+	return out
+}
+
+// breadcrumbsView — таймлайн следов до ошибки.
+templ breadcrumbsView(js string) {
+	<ul class="breadcrumbs">
+		for _, b := range parseBreadcrumbs(js) {
+			<li class="bc-item">
+				<span class="bc-cat">{ breadcrumbLabel(b) }</span>
+				if b.Level != "" {
+					<span class={ "bc-level", "bc-level-" + b.Level }>{ b.Level }</span>
+				}
+				<span class="bc-msg">{ b.Message }</span>
+				if b.Data != "" {
+					<pre class="bc-data">{ b.Data }</pre>
+				}
+			</li>
+		}
+	</ul>
+}
+
+// frameVarsView — локальные переменные кадра таблицей ключ/значение.
+templ frameVarsView(f Frame) {
+	<div class="frame-vars">
+		<div class="frame-vars-title">{ i18n.T(ctx, "issues.detail.variables") }</div>
+		@contextTable(frameVars(f))
+	</div>
+}
+
+templ frameView(f Frame, expandSystem bool) {
 	if f.InApp {
 		<div class="frame in-app">
 			<div class="frame-location">{ frameLocation(f) }</div>
@@ -99,15 +413,41 @@ templ frameView(f Frame) {
 			if f.Module != "" {
 				<div class="frame-module">{ f.Module }</div>
 			}
+			if frameHasSource(f) {
+				@frameSource(f)
+			}
+			if frameHasVars(f) {
+				@frameVarsView(f)
+			}
 		</div>
 	} else {
-		<details class="frame frame-system">
+		<details class="frame frame-system" open?={ expandSystem }>
 			<summary>{ f.Function } ({ frameLocation(f) })</summary>
 			if f.Module != "" {
 				<div class="frame-module">{ f.Module }</div>
 			}
+			if frameHasSource(f) {
+				@frameSource(f)
+			}
+			if frameHasVars(f) {
+				@frameVarsView(f)
+			}
 		</details>
 	}
+}
+
+// contextTable — таблица ключ/значение для группы контекста или Request-карточки.
+templ contextTable(rows []ctxRow) {
+	<table class="ctx-table data-table data-table--auto">
+		<tbody>
+			for _, r := range rows {
+				<tr>
+					<td class="ctx-key">{ r.Key }</td>
+					<td class="ctx-val">{ r.Val }</td>
+				</tr>
+			}
+		</tbody>
+	</table>
 }
 
 templ eventRow(issueID int64, ev event.Stored, selected bool) {
@@ -124,7 +464,7 @@ templ eventRow(issueID int64, ev event.Stored, selected bool) {
 // selectedID — id события из query (для подсветки строки в таблице), может
 // не совпадать ни с одним из events, если событие устарело/удалено — тогда
 // selected/frames приходят пустыми и блок деталей просто не рендерится.
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string) {
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
 			@breadcrumbBack(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
@@ -164,15 +504,20 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 					<h2>{ i18n.T(ctx, "issues.detail.event") } · { ago(ctx, selected.Timestamp) }</h2>
 					<div class="culprit event-id">{ selected.ID }</div>
 
-					if selected.TraceID != "" {
+					if hasTrace {
 						<p class="event-trace-link"><a href={ templ.URL(tracePathFrom(selected.TraceID, "issue", strconv.FormatInt(it.ID, 10))) }>{ i18n.T(ctx, "issues.detail.view_trace") }</a></p>
 					}
 
 					if len(frames) > 0 {
 						<h3>{ i18n.T(ctx, "issues.detail.stacktrace") }</h3>
+						if showAllFrames {
+							<p class="frames-toggle"><a href={ templ.URL(issueEventPath(it.ID, selectedID)) }>{ i18n.T(ctx, "issues.detail.hide_system_frames") }</a></p>
+						} else {
+							<p class="frames-toggle"><a href={ templ.URL(issueEventPath(it.ID, selectedID) + "&frames=all") }>{ i18n.T(ctx, "issues.detail.show_system_frames") }</a></p>
+						}
 						<div class="frames card">
 							for _, f := range frames {
-								@frameView(f)
+								@frameView(f, showAllFrames)
 							}
 						</div>
 					} else {
@@ -193,6 +538,11 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 						</table>
 					}
 
+					if selected.Breadcrumbs != "" && selected.Breadcrumbs != "{}" {
+						<h3>{ i18n.T(ctx, "issues.detail.breadcrumbs") }</h3>
+						@breadcrumbsView(selected.Breadcrumbs)
+					}
+
 					<div class="event-meta">
 						<div>
 							<h3>{ i18n.T(ctx, "issues.detail.user") }</h3>
@@ -206,9 +556,30 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 
 					// "{}" — пустой JSON-объект: секция с ним не несёт информации
 					// и читается как недогруженные данные.
+					if reqRows := requestRows(selected.Contexts); len(reqRows) > 0 {
+						<h3>{ i18n.T(ctx, "issues.detail.request") }</h3>
+						<div class="ctx-card card">
+							@contextTable(reqRows)
+						</div>
+					}
 					if selected.Contexts != "" && selected.Contexts != "{}" {
 						<h3>{ i18n.T(ctx, "issues.detail.contexts") }</h3>
-						<pre>{ selected.Contexts }</pre>
+						if groups := contextGroups(selected.Contexts); len(groups) > 0 {
+							<div class="ctx-groups">
+								for _, g := range groups {
+									<div class="ctx-card card">
+										<h4 class="ctx-title">{ g.Title }</h4>
+										@contextTable(g.Rows)
+									</div>
+								}
+							</div>
+							<details class="raw-json">
+								<summary>{ i18n.T(ctx, "issues.detail.raw_json") }</summary>
+								<pre class="contexts-json">{ prettyJSON(selected.Contexts) }</pre>
+							</details>
+						} else {
+							<pre class="contexts-json">{ prettyJSON(selected.Contexts) }</pre>
+						}
 					}
 				</div>
 			}

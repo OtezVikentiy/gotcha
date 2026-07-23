@@ -69,7 +69,7 @@ func TestIssueDetail(t *testing.T) {
 	members := []org.Member{{UserID: 2, Email: "dev@x.io", Role: org.RoleAdmin}}
 	ev := event.Stored{ID: "ev1", Level: "error", ExceptionType: "NPE", ExceptionValue: "nil ptr", Environment: "production", Release: "1.2.3", TraceID: "abc", Tags: map[string]string{"k": "v"}}
 	frames := []Frame{{Function: "main", Module: "app", Filename: "main.go", Lineno: 10, InApp: true}}
-	out := renderTo(t, IssueDetail(it, members, stub(), []event.Stored{ev}, "ev1", &ev, frames, "u@e.com"))
+	out := renderTo(t, IssueDetail(it, members, stub(), []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true))
 	if !strings.Contains(out, "NPE") || !strings.Contains(out, "main.go:10") {
 		t.Error("деталь issue должна показать исключение и локацию кадра")
 	}

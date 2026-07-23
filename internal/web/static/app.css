@@ -1268,6 +1268,148 @@ th {
 	cursor: pointer;
 	overflow-wrap: anywhere;
 }
+/* Исходный код кадра: строки с номерами, строка ошибки подсвечена акцентом. */
+.frame-source {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px solid var(--border);
+	overflow-x: auto;
+	font-size: var(--fs-sm);
+	line-height: 1.55;
+}
+.src-line {
+	display: flex;
+}
+.src-line-current {
+	background: var(--accent-soft);
+}
+.src-lineno {
+	flex: 0 0 auto;
+	width: 44px;
+	padding-right: 12px;
+	text-align: right;
+	color: var(--text-mute);
+	user-select: none;
+}
+.src-line-current .src-lineno {
+	color: var(--accent);
+	font-weight: 700;
+}
+.src-code {
+	flex: 1 1 auto;
+	white-space: pre;
+}
+/* Локальные переменные кадра (если SDK их прислал). */
+.frame-vars {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px dashed var(--border);
+}
+.frame-vars-title {
+	margin-bottom: 4px;
+	font-size: var(--fs-sm);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--text-dim);
+}
+/* Ссылка-переключатель «показать/свернуть системные кадры» (серверно, без JS). */
+.frames-toggle {
+	margin: 0 0 6px;
+	font-size: var(--fs-sm);
+}
+/* Контексты — читаемый отформатированный JSON (json.Indent), а не одна строка. */
+.contexts-json {
+	white-space: pre;
+	overflow-x: auto;
+}
+/* Структурные контексты: карточки-группы (os/runtime/trace…) и Request. */
+.ctx-groups {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+	gap: 10px;
+	margin-bottom: 12px;
+}
+.ctx-card {
+	padding: 10px 12px;
+}
+.ctx-title {
+	margin: 0 0 6px;
+	font-size: var(--fs-sm);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-dim);
+}
+.ctx-table td {
+	vertical-align: top;
+	padding: 2px 8px 2px 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+}
+.ctx-key {
+	color: var(--text-dim);
+	white-space: nowrap;
+}
+.ctx-val {
+	overflow-wrap: anywhere;
+}
+.raw-json > summary {
+	cursor: pointer;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	margin-bottom: 6px;
+}
+/* Breadcrumbs — таймлайн следов до ошибки (лог/HTTP/навигация). */
+.breadcrumbs {
+	list-style: none;
+	margin: 0 0 12px;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
+}
+.bc-item {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 8px;
+	padding: 5px 10px;
+	border-top: 1px solid var(--border);
+	font-size: var(--fs-sm);
+}
+.bc-item:first-child {
+	border-top: none;
+}
+.bc-cat {
+	flex: 0 0 auto;
+	min-width: 120px;
+	color: var(--text-dim);
+	font-family: var(--font-mono);
+}
+.bc-level {
+	flex: 0 0 auto;
+	font-size: 11px;
+	text-transform: uppercase;
+	color: var(--text-mute);
+}
+.bc-level-error,
+.bc-level-fatal {
+	color: var(--danger, #e5484d);
+}
+.bc-level-warning {
+	color: var(--warn, #f5a623);
+}
+.bc-msg {
+	flex: 1 1 200px;
+	overflow-wrap: anywhere;
+}
+.bc-data {
+	flex-basis: 100%;
+	margin: 4px 0 0;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
 .event-id {
 	overflow-wrap: anywhere;
 	margin-bottom: 8px;
