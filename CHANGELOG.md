@@ -10,6 +10,8 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-24
+
 ### Added
 
 - **Low-resource deployment overlay** (`docker-compose.small.yml`) for minimal
