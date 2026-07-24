@@ -1,0 +1,60 @@
+<clickhouse>
+    <!-- ===== Настройки ClickHouse для СТЕСНЁННОЙ инсталляции =====
+         Включается только оверлеем docker-compose.small.yml.
+         Ориентир: документированный минимум 2 vCPU / 2 ГБ RAM.
+
+         ⚠️ НЕ применять на сервере с запасом ресурсов: здесь стоят потолки
+         (пулы, кэши), которые на мощном железе ограничат пропускную
+         способность приёма и замедлят запросы.
+
+         Замерено на боевом VPS 2 ядра / 2 ГБ (2026-07-24):
+         память контейнера 880 → 295 МБ, диск освободилось 2.8 ГБ,
+         load average 1.15 → 0.79, merge-работа упала ~в 1900 раз. -->
+
+    <!-- 1. Тяжёлые системные логи. На двух ядрах они давали 99.8% всех
+         вставок и мерж-амплификацию ~680x: 11 млн смерженных строк на
+         16 тыс. вставленных. Диагностику теряем сознательно — на такой
+         машине она стоит дороже, чем даёт. -->
+    <asynchronous_metric_log remove="1"/>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+    <latency_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <error_log remove="1"/>
+
+    <!-- 2. metric_log оставлен, но собирается раз в 30с вместо секунды:
+         иначе он один плодит два десятка мелких партов. -->
+    <metric_log>
+        <database>system</database>
+        <table>metric_log</table>
+        <collect_interval_milliseconds>30000</collect_interval_milliseconds>
+        <flush_interval_milliseconds>60000</flush_interval_milliseconds>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </metric_log>
+
+    <!-- 3. Асинхронные метрики считались каждую секунду. -->
+    <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>
+
+    <!-- 4. Фоновые пулы. Дефолт background_schedule_pool_size — 128 потоков,
+         рассчитан на многоядерные серверы. -->
+    <background_pool_size>4</background_pool_size>
+    <background_schedule_pool_size>8</background_schedule_pool_size>
+    <background_common_pool_size>2</background_common_pool_size>
+    <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size>
+    <background_distributed_schedule_pool_size>2</background_distributed_schedule_pool_size>
+    <background_message_broker_schedule_pool_size>2</background_message_broker_schedule_pool_size>
+    <background_fetches_pool_size>2</background_fetches_pool_size>
+    <background_move_pool_size>2</background_move_pool_size>
+
+    <!-- 5. Кэш засечек: дефолт 5 ГиБ при типовом лимите контейнера 1 ГиБ. -->
+    <mark_cache_size>268435456</mark_cache_size>
+
+    <!-- 6. Пороги merge_tree обязаны укладываться в
+         background_pool_size * background_merges_mutations_concurrency_ratio
+         (4*2=8), иначе ClickHouse не стартует: sanity check, BAD_ARGUMENTS. -->
+    <merge_tree>
+        <number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>2</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+    </merge_tree>
+</clickhouse>

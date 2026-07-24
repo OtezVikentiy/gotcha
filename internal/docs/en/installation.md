@@ -25,6 +25,20 @@ Gotcha runs three processes on a single server: the app itself (Go), PostgreSQL,
 - **CPU.** Two cores are enough; extra cores speed up ingesting bursts of events and ClickHouse queries.
 - **Network.** Only a single application port needs to be exposed (59080 by default). PostgreSQL and ClickHouse are not exposed externally — they're reachable only inside the docker network.
 
+### If your server is at the minimum (2 vCPU / 2 GB)
+
+Stock PostgreSQL and ClickHouse settings target large servers. On a minimal box they waste a noticeable share of it: ClickHouse keeps detailed system logs with no retention limit by default, and on a small machine servicing them costs more than the useful work does.
+
+For such servers there's a ready-made overlay — start with both files:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.small.yml up -d
+```
+
+Measured on a 2-core / 2 GB / 20 GB SSD VPS: ClickHouse memory dropped from 880 to 295 MB, disk usage from 12 to 9.2 GB, load average from 1.15 to 0.79.
+
+The overlay sets ceilings that only make sense on weak hardware. **Do not apply it on a server with resources to spare** — there it would cap event ingestion and slow down queries. The regular `docker compose up -d` already includes the settings that help on any machine.
+
 ## Step 1. Check whether Docker is already installed
 
 SSH into the server and run:

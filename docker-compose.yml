@@ -30,6 +30,18 @@ services:
 
   postgres:
     image: postgres:17-alpine
+    # Здесь только УНИВЕРСАЛЬНЫЕ настройки — верные на любом железе.
+    # Обе описывают носитель, а не размер сервера: дефолты PostgreSQL
+    # рассчитаны на диски со шпинделем, а Gotcha требует SSD (см. документацию).
+    # Всё, что пропорционально ресурсам (shared_buffers, effective_cache_size,
+    # число воркеров), сознательно НЕ трогаем: на большом сервере такие потолки
+    # сделают только хуже. Для стеснённых машин есть docker-compose.small.yml.
+    command:
+      - postgres
+      - -c
+      - random_page_cost=1.1                # SSD (дефолт 4 — это про «блины»)
+      - -c
+      - effective_io_concurrency=200        # SSD (дефолт 1)
     environment:
       # Local quickstart credentials only — change these for any real deployment.
       POSTGRES_USER: gotcha
@@ -59,6 +71,11 @@ services:
       retries: 60
     volumes:
       - chdata:/var/lib/clickhouse
+      # Универсальные настройки: TTL на системные логи. По умолчанию у trace_log,
+      # text_log и asynchronous_metric_log его нет, и они растут бесконечно —
+      # это вредно на любом железе. Сами логи оставлены: это диагностика.
+      # Настройки под слабое железо — в docker-compose.small.yml.
+      - ./deploy/clickhouse/00-common.xml:/etc/clickhouse-server/config.d/00-common.xml:ro
     ulimits:
       nofile:
         soft: 262144

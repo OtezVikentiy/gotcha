@@ -1,0 +1,50 @@
+# Оверлей для СТЕСНЁННЫХ инсталляций: ориентир — документированный минимум
+# 2 vCPU / 2 ГБ RAM / 20 ГБ SSD.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.small.yml up -d
+#
+# ⚠️ НЕ применять на сервере с запасом ресурсов. Здесь выставлены потолки
+# (пулы, кэши, размеры памяти), которые на мощном железе ограничат приём
+# событий и замедлят запросы. Обычный запуск — просто `docker compose up -d`.
+#
+# Замерено на боевом VPS 2 ядра 2.2ГГц / 2 ГБ / 20 ГБ SATA SSD (2026-07-24):
+#   память ClickHouse   880 → 295 МБ
+#   диск занято          12 → 9.2 ГБ
+#   load average       1.15 → 0.79
+#   merge-работа        11 млн → ~5.7 тыс. строк за 30с
+
+services:
+  gotcha:
+    mem_limit: 256m
+
+  postgres:
+    mem_limit: 256m
+    command:
+      - postgres
+      # Универсальные (продублированы, т.к. command заменяется целиком):
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      # Пропорциональные железу — только для стеснённой машины:
+      - -c
+      - shared_buffers=64MB                 # дефолт 128МБ — половина лимита в 256МБ
+      - -c
+      - effective_cache_size=192MB          # дефолт 4ГБ, которых на машине нет
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=50                  # приложению хватает ~10
+      - -c
+      - max_worker_processes=2              # по числу ядер
+      - -c
+      - max_parallel_workers=2
+      - -c
+      - max_parallel_workers_per_gather=1
+
+  clickhouse:
+    mem_limit: 1024m
+    volumes:
+      # 00-common.xml приезжает из базового compose; 10-small.xml накладывается
+      # поверх — ClickHouse читает config.d по алфавиту, поэтому побеждает он.
+      - ./deploy/clickhouse/10-small.xml:/etc/clickhouse-server/config.d/10-small.xml:ro

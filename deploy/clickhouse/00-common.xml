@@ -1,0 +1,46 @@
+<clickhouse>
+    <!-- ===== Универсальные настройки ClickHouse =====
+         Применяются на ЛЮБОМ железе. Здесь не должно быть ничего, что
+         пропорционально размеру сервера (пулы, кэши, лимиты памяти) —
+         такие настройки живут в 10-small.xml и включаются оверлеем
+         docker-compose.small.yml только для стеснённых инсталляций.
+
+         Смысл этого файла один: ограничить рост системных логов.
+         По умолчанию у trace_log, text_log, asynchronous_metric_log,
+         query_log и latency_log НЕТ TTL — они растут бесконечно.
+         На боевом инстансе это дало 579 МБ системных логов против 543 КБ
+         данных приложения и постоянную перезапись при мержах.
+         Бесконечный рост вреден на любом железе, поэтому TTL — здесь.
+
+         Сами логи НЕ отключаем: trace_log нужен, чтобы профилировать
+         медленные запросы, text_log — чтобы разбирать инциденты.
+         На сервере с запасом ресурсов это ценная диагностика. -->
+
+    <trace_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </trace_log>
+
+    <text_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </text_log>
+
+    <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </asynchronous_metric_log>
+
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+
+    <metric_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </metric_log>
+
+    <latency_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </latency_log>
+
+    <processors_profile_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </processors_profile_log>
+</clickhouse>
