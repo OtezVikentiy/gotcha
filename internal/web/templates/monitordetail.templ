@@ -212,6 +212,13 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 			}
 
 			<h2>{ i18n.T(ctx, "uptime.detail.latency_title") }</h2>
+			<p class="chart-caption">{ i18n.T(ctx, "uptime.detail.latency_caption") }</p>
+			<p class="chart-legend">
+				<span class="legend-item legend-dns">DNS</span>
+				<span class="legend-item legend-tcp">TCP</span>
+				<span class="legend-item legend-tls">TLS</span>
+				<span class="legend-item legend-ttfb">TTFB</span>
+			</p>
 			<div class="card monitor-chart">
 				@latencyChart
 			</div>

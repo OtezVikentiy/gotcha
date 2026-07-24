@@ -216,6 +216,20 @@ func formatUSAxis(us float64) string {
 	}
 }
 
+// formatMsAxis — длительность оси для рядов в миллисекундах (проверки uptime
+// приходят уже в мс, в отличие от трасс в микросекундах у formatUSAxis).
+// Крупные значения приводятся к секундам, чтобы на оси не было «30000».
+func formatMsAxis(ms float64) string {
+	switch {
+	case ms == 0:
+		return "0"
+	case ms >= 1_000:
+		return trimZero(strconv.FormatFloat(ms/1_000, 'f', 1, 64)) + "s"
+	default:
+		return trimZero(strconv.FormatFloat(ms, 'f', 0, 64)) + "ms"
+	}
+}
+
 func trimZero(s string) string {
 	s = strings.TrimSuffix(s, ".0")
 	if s == "" {

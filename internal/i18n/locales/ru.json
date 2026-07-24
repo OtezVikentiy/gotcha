@@ -352,6 +352,8 @@
     "uptime.detail.action_edit": "Редактировать",
     "uptime.detail.action_delete": "Удалить",
     "uptime.detail.latency_title": "Задержка (24ч)",
+    "uptime.detail.latency_caption": "Средняя длительность проверки по фазам, шаг 1 ч",
+    "uptime.chart.over_scale": "выше шкалы",
     "uptime.detail.checks_title": "Последние проверки",
     "uptime.detail.checks_empty.title": "Проверок ещё не было",
     "uptime.detail.checks_empty.body": "Первые результаты появятся, когда монитор отработает.",

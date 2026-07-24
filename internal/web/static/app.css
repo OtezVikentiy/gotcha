@@ -1461,7 +1461,18 @@ th {
 	display: block;
 	width: 100%;
 	max-width: 480px;
-	height: 120px;
+	height: auto;
+}
+
+/* Стек задержек на детали монитора: без осей это была плашка «прочерков» на
+   всю ширину карточки. Теперь график с осями и сеткой — ширину ограничиваем,
+   чтобы 24 часовых столбика читались, а не размазывались на всю карточку.
+   Пропорции держит viewBox (height:auto), поэтому preserveAspectRatio не
+   нужен. */
+.monitor-chart .latency-chart {
+	width: 100%;
+	max-width: min(760px, 100%);
+	height: auto;
 }
 
 /* Публичная статус-страница (/status/{slug}): свой layout, без шапки
@@ -2227,6 +2238,16 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .latency-chart .seg-connect { fill: var(--accent); opacity: .65; }
 .latency-chart .seg-tls     { fill: var(--warn); }
 .latency-chart .seg-ttfb    { fill: var(--good); }
+/* Метка выброса (час выше шкалы: медленно/таймаут). Цветом события, не фазы. */
+.latency-chart .seg-cap     { fill: var(--danger); }
+
+/* Свотчи легенды фаз задержки — те же цвета, что и сегменты столбика; без них
+   цвет в графике ни с чем не связан. .legend-item::before красит currentColor,
+   поэтому оттенок фазы задаём здесь. */
+.legend-dns::before  { background: var(--accent); }
+.legend-tcp::before  { background: var(--accent); opacity: .65; }
+.legend-tls::before  { background: var(--warn); }
+.legend-ttfb::before { background: var(--good); }
 
 /* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====
    Эти классы стояли в разметке без определений, из-за чего блоки на страницах
@@ -2435,10 +2456,9 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	text-decoration: underline;
 }
 
-/* Широкие графики внутри карточки занимают её целиком (стек задержек на
-   детали монитора упирался в собственную max-width и оставлял полкарточки
-   пустой). */
-.card > .latency-chart,
+/* Полоска доступности внутри карточки занимает её целиком (упиралась в
+   собственную max-width и оставляла полкарточки пустой). Стек задержек теперь
+   график с осями — у него своя, более узкая ширина (.monitor-chart выше). */
 .card > .availability-bars {
 	width: 100%;
 	max-width: none;

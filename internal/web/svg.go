@@ -1297,7 +1297,7 @@ func vitalSeriesMarkup(points []trace.VitalPoint, w, h int, format func(float64)
 // монитора.
 const (
 	latencyChartWidth  = 480
-	latencyChartHeight = 120
+	latencyChartHeight = 160
 )
 
 // latencySegmentClasses — классы сегментов stacked-bar-графика задержек, по
@@ -1306,18 +1306,29 @@ const (
 // четыре разных цвета в одном SVG, одного currentColor мало.
 var latencySegmentClasses = [4]string{"seg-dns", "seg-connect", "seg-tls", "seg-ttfb"}
 
+// latencyCapClass — метка выброса над столбиком: час, чей средний total не
+// влез в шкалу (медленно/таймаут). Красная, чтобы читаться как событие, а не
+// как обычная фаза.
+const latencyCapClass = "seg-cap"
+
 // latencySegmentNames — подписи фаз для подсказки. Названия технические
 // (DNS, TCP, TLS, TTFB) и одинаковы во всех языках, поэтому в каталог не
 // выносятся.
 var latencySegmentNames = [4]string{"DNS", "TCP", "TLS", "TTFB"}
 
-// latencyStackedSVG строит один stacked-bar-график по сегментам таймингов
-// (DNS/connect/TLS/TTFB) на точку временного ряда uptime.Query.Latency.
-// Высота нормирована на максимум AvgTotalMs среди points; сумма
-// DNS+connect+TLS+TTFB обычно меньше total_ms (остаток — тело ответа и
-// прочий оверхед вне этой разбивки), поэтому столбики сегментов не всегда
-// доходят до верхней границы бакета total — это ожидаемо, график показывает
-// только известную разбивку, а не весь total.
+// latencyStackedSVG строит stacked-bar-график по фазам таймингов
+// (DNS/TCP/TLS/TTFB) на точку временного ряда uptime.Query.Latency, с осями,
+// сеткой (в мс), метками времени и подсказкой на каждый час — тем же каркасом
+// (svgaxis.go), что и графики перфоманса.
+//
+// Шкалу задаёт максимум СУММЫ рисуемых фаз, а НЕ AvgTotalMs. У часа с
+// таймаутом фазы ≈ 0 (соединения/TTFB не было), зато total ≈ 30000мс: если
+// нормировать на total, здоровые часы (90–150мс) схлопываются в невидимые
+// огрызки у дна — ровно так график и стал нечитаемым. Час, чей средний total
+// вылез за шкалу (медленно/таймаут), помечаем красной меткой сверху
+// (latencyCapClass), но саму шкалу он не ломает. Сумма фаз обычно меньше total
+// (остаток — тело ответа и прочий оверхед вне разбивки); полный total виден в
+// подсказке.
 //
 // points приходят из uptime.Query.Latency (числа), поэтому собранный
 // SVG-текст состоит только из чисел и фиксированных цветов —
@@ -1327,54 +1338,90 @@ func latencyStackedSVG(ctx context.Context, points []uptime.LatencyPoint, w, h i
 }
 
 func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, h int) string {
-	var max uint32
+	var maxPhase uint32
 	for _, p := range points {
-		if p.AvgTotalMs > max {
-			max = p.AvgTotalMs
+		if sum := p.AvgDNSMs + p.AvgConnectMs + p.AvgTLSMs + p.AvgTTFBMs; sum > maxPhase {
+			maxPhase = sum
 		}
 	}
-	if len(points) == 0 || max == 0 {
+	if len(points) == 0 || maxPhase == 0 {
 		return chartEmptyAxis(w, h)
 	}
 
+	g := newChartGeom(w, h, 48, 16, 26, 26)
+	scale := newYScaleFloat(float64(maxPhase), 3)
 	n := len(points)
-	barW := float64(w) / float64(n)
+	barW := g.barWidth(n)
 	gap := barW * 0.15
-
-	var bars strings.Builder
-	for i, p := range points {
-		x := float64(i)*barW + gap/2
-		segments := [4]uint32{p.AvgDNSMs, p.AvgConnectMs, p.AvgTLSMs, p.AvgTTFBMs}
-		y := float64(h)
-		for si, ms := range segments {
-			segH := float64(ms) / float64(max) * float64(h)
-			y -= segH
-			bars.WriteString(`<rect x="`)
-			bars.WriteString(formatCoord(x))
-			bars.WriteString(`" y="`)
-			bars.WriteString(formatCoord(y))
-			bars.WriteString(`" width="`)
-			bars.WriteString(formatCoord(barW - gap))
-			bars.WriteString(`" height="`)
-			bars.WriteString(formatCoord(segH))
-			bars.WriteString(`" class="`)
-			bars.WriteString(latencySegmentClasses[si])
-			bars.WriteString(`"><title>`)
-			bars.WriteString(html.EscapeString(
-				p.T.UTC().Format("02.01 15:04") + " · " + latencySegmentNames[si] + " " +
-					strconv.FormatUint(uint64(ms), 10) + "ms · " + i18n.T(ctx, "chart.total") + " " +
-					strconv.FormatUint(uint64(p.AvgTotalMs), 10) + "ms"))
-			bars.WriteString(`</title></rect>`)
-		}
-	}
+	plotH := g.y1 - g.y0
 
 	var sb strings.Builder
 	sb.WriteString(`<svg class="latency-chart" viewBox="0 0 `)
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">`)
-	sb.WriteString(bars.String())
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+
+	sb.WriteString(`<g class="chart-axis">`)
+	writeFrame(&sb, g)
+	writeYGrid(&sb, g, scale, formatMsAxis)
+	times := make([]time.Time, n)
+	for i, p := range points {
+		times[i] = p.T
+	}
+	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.x0 + float64(i)*barW }, 70))
+	sb.WriteString(`</g>`)
+
+	for i, p := range points {
+		slotX := g.x0 + float64(i)*barW + gap/2
+		bw := barW - gap
+		segments := [4]uint32{p.AvgDNSMs, p.AvgConnectMs, p.AvgTLSMs, p.AvgTTFBMs}
+		y := g.y1
+		for si, ms := range segments {
+			if ms == 0 {
+				continue
+			}
+			segH := float64(ms) / scale.top * plotH
+			y -= segH
+			sb.WriteString(`<rect x="`)
+			sb.WriteString(formatCoord(slotX))
+			sb.WriteString(`" y="`)
+			sb.WriteString(formatCoord(y))
+			sb.WriteString(`" width="`)
+			sb.WriteString(formatCoord(bw))
+			sb.WriteString(`" height="`)
+			sb.WriteString(formatCoord(segH))
+			sb.WriteString(`" class="`)
+			sb.WriteString(latencySegmentClasses[si])
+			sb.WriteString(`"/>`)
+		}
+
+		// Метка выброса: средний total выше видимой шкалы (медленный час или
+		// таймаут). Треугольник у верхней рамки над своим слотом.
+		capped := float64(p.AvgTotalMs) > scale.top
+		if capped {
+			cx := slotX + bw/2
+			sb.WriteString(`<path class="`)
+			sb.WriteString(latencyCapClass)
+			sb.WriteString(`" d="M`)
+			sb.WriteString(formatCoord(cx))
+			sb.WriteByte(' ')
+			sb.WriteString(formatCoord(g.y0))
+			sb.WriteString(`l-4 7h8z"/>`)
+		}
+
+		// Полоса наведения на весь слот: подсказка появляется в любом месте над
+		// часом, даже если фазы нулевые (таймаут).
+		title := p.T.UTC().Format("02.01 15:04")
+		for si, ms := range segments {
+			title += " · " + latencySegmentNames[si] + " " + strconv.FormatUint(uint64(ms), 10) + "ms"
+		}
+		title += " · " + i18n.T(ctx, "chart.total") + " " + strconv.FormatUint(uint64(p.AvgTotalMs), 10) + "ms"
+		if capped {
+			title += " · " + i18n.T(ctx, "uptime.chart.over_scale")
+		}
+		writeHoverBand(&sb, g, slotX-gap/2, barW, title)
+	}
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
