@@ -37,9 +37,9 @@ var evaluatorVitalMetrics = []string{"lcp", "inp", "cls"}
 // росте p95 этого достаточно: регрессия, продержавшаяся дольше окна, будет
 // поймана следующим живым тиком.
 type Evaluator struct {
-	Pool        *pgxpool.Pool      // конфиг и список проектов
-	Query       *Query             // агрегаты производительности из CH
-	Regressions *RegressionService // инциденты в perf_regressions (PG)
+	Pool        *pgxpool.Pool       // конфиг и список проектов
+	Query       *Query              // агрегаты производительности из CH
+	Regressions *RegressionService  // инциденты в perf_regressions (PG)
 	Notifier    *RegressionNotifier // nil → только инциденты, без алертов
 
 	Interval     time.Duration // период тика, дефолт 5 минут

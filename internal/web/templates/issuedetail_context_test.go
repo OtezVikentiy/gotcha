@@ -78,12 +78,12 @@ func TestRequestRows(t *testing.T) {
 
 func TestJSONScalar(t *testing.T) {
 	cases := map[string]string{
-		`"hi"`:        "hi",
-		`42`:          "42",   // целое без .0
-		`3.5`:         "3.5",
-		`true`:        "true",
-		`["a","b"]`:   `["a","b"]`,
-		`null`:        "",
+		`"hi"`:      "hi",
+		`42`:        "42", // целое без .0
+		`3.5`:       "3.5",
+		`true`:      "true",
+		`["a","b"]`: `["a","b"]`,
+		`null`:      "",
 	}
 	for in, want := range cases {
 		if got := jsonScalar(json.RawMessage(in)); got != want {

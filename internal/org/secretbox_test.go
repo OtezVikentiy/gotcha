@@ -51,10 +51,10 @@ func TestSecretPlaintextLooksEncrypted(t *testing.T) {
 	// Значения, которые начинаются с "enc:", но не являются валидным
 	// nonce||ciphertext: невалидный base64 и валидный, но слишком короткий.
 	cases := []string{
-		"enc:hello",         // "hello" — не кратно 4, не декодится в base64
+		"enc:hello",             // "hello" — не кратно 4, не декодится в base64
 		"enc:this is not b64@@", // явно не base64
-		"enc:aGVsbG8=",      // валидный base64 "hello", но короче nonce+overhead
-		"enc:",              // пустой хвост
+		"enc:aGVsbG8=",          // валидный base64 "hello", но короче nonce+overhead
+		"enc:",                  // пустой хвост
 	}
 	for _, in := range cases {
 		got, err := openSecret(key, in)

@@ -502,11 +502,11 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	}
 
 	form := url.Values{
-		"slug":                                        {"spcrud-status"},
-		"title":                                       {"CRUD Status"},
-		"description":                                 {"desc"},
-		"enabled":                                     {"on"},
-		"monitors":                                    {strconv.FormatInt(m.ID, 10)},
+		"slug":        {"spcrud-status"},
+		"title":       {"CRUD Status"},
+		"description": {"desc"},
+		"enabled":     {"on"},
+		"monitors":    {strconv.FormatInt(m.ID, 10)},
 		"display_name_" + strconv.FormatInt(m.ID, 10): {"Public API"},
 	}
 	resp = postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
@@ -565,10 +565,10 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	// Update: новый display_name виден на публичной странице.
 	updatePath := "/statuspages/" + strconv.FormatInt(pageID, 10)
 	update := url.Values{
-		"slug":                                        {"spcrud-status"},
-		"title":                                       {"CRUD Status"},
-		"enabled":                                     {"on"},
-		"monitors":                                    {strconv.FormatInt(m.ID, 10)},
+		"slug":     {"spcrud-status"},
+		"title":    {"CRUD Status"},
+		"enabled":  {"on"},
+		"monitors": {strconv.FormatInt(m.ID, 10)},
 		"display_name_" + strconv.FormatInt(m.ID, 10): {"Renamed API"},
 	}
 	resp = postForm(t, s.srv, updatePath, update, s.srv.URL, ownerCookie)

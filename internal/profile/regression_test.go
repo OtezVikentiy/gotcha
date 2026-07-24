@@ -5,11 +5,11 @@ import "testing"
 func TestDecide(t *testing.T) {
 	cfg := DefaultProfileRegressionConfig() // Threshold 0.5, Recovery 0.2, MinSamples 100, ShareFloor 0.05
 	cases := []struct {
-		name          string
-		base, recent  float64
-		samples       uint64
-		open          bool
-		want          DecisionKind
+		name         string
+		base, recent float64
+		samples      uint64
+		open         bool
+		want         DecisionKind
 	}{
 		{"open on +60% above base", 0.10, 0.16, 200, false, DecisionOpen},
 		{"no open below floor", 0.02, 0.04, 200, false, DecisionNone},

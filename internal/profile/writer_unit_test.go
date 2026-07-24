@@ -19,7 +19,7 @@ type fakeCHConn struct {
 	mu     sync.Mutex
 	rows   int
 	sends  int
-	fail   bool                           // если true — Send падает транзиентной (не серверной) ошибкой
+	fail   bool                          // если true — Send падает транзиентной (не серверной) ошибкой
 	poison func(profileType string) bool // если задан и в батче есть ядовитый ряд — Send падает
 }
 

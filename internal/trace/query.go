@@ -52,9 +52,9 @@ type EndpointStat struct {
 // интервала (UTC), P50/P95 — перцентили в микросекундах, Count — число
 // транзакций в интервале (0, если их не было).
 type LatencyPoint struct {
-	T   time.Time
-	P50 uint32
-	P95 uint32
+	T     time.Time
+	P50   uint32
+	P95   uint32
 	Count uint64
 }
 
@@ -659,9 +659,9 @@ func (q *Query) WebVitalsPages(ctx context.Context, projectID int64, from, to ti
 			return nil, fmt.Errorf("trace: web vitals pages: scan: %w", err)
 		}
 		out = append(out, PageVitals{
-			Transaction: transaction,
-			LCP:         makeVital("lcp", lcpP, lcpC),
-			INP:         makeVital("inp", inpP, inpC),
+			Transaction:  transaction,
+			LCP:          makeVital("lcp", lcpP, lcpC),
+			INP:          makeVital("inp", inpP, inpC),
 			CLS:          makeVital("cls", clsP, clsC),
 			Count:        lcpC,
 			Environments: envs,

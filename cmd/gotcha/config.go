@@ -196,6 +196,23 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return n
 	}
 
+	// intNum — как num, но для полей типа int. Парсит с bitSize = разрядность
+	// int (strconv.IntSize), поэтому итоговое int(n) заведомо без усечения на
+	// любой платформе — это закрывает CodeQL go/incorrect-integer-conversion
+	// для доверенного env-конфига (значения задаёт оператор, не атакующий).
+	intNum := func(key string, def int) int {
+		v := getenv(key)
+		if v == "" {
+			return def
+		}
+		n, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", key, err))
+			return def
+		}
+		return int(n)
+	}
+
 	// PROD-B2: редакция определяет дефолт квот. В oss безлимит (0),
 	// в saas — прежний 1_000_000. Явный GOTCHA_DEFAULT_*_QUOTA перекрывает.
 	edition := str("GOTCHA_EDITION", "oss")
@@ -211,26 +228,26 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		PostgresDSN:             str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
 		ClickHouseDSN:           str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
 		SMTPHost:                str("GOTCHA_SMTP_HOST", ""),
-		SMTPPort:                int(num("GOTCHA_SMTP_PORT", 587)),
+		SMTPPort:                intNum("GOTCHA_SMTP_PORT", 587),
 		SMTPUser:                str("GOTCHA_SMTP_USER", ""),
 		SMTPPassword:            str("GOTCHA_SMTP_PASSWORD", ""),
 		SMTPFrom:                str("GOTCHA_SMTP_FROM", ""),
-		RetentionDays:           int(num("GOTCHA_RETENTION_DAYS", 90)),
-		SpanRetentionDays:       int(num("GOTCHA_SPAN_RETENTION_DAYS", 30)),
-		MetricRetentionDays:     int(num("GOTCHA_METRIC_RETENTION_DAYS", 30)),
-		ProfileRetentionDays:    int(num("GOTCHA_PROFILE_RETENTION_DAYS", 7)),
+		RetentionDays:           intNum("GOTCHA_RETENTION_DAYS", 90),
+		SpanRetentionDays:       intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
+		MetricRetentionDays:     intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
+		ProfileRetentionDays:    intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
 		Edition:                 edition,
 		DefaultEventQuota:       num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
 		DefaultTransactionQuota: num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
 		DefaultMetricQuota:      num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
 		DefaultProfileQuota:     num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
 		MaxEventBytes:           num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
-		MetricEvalInterval:      int(num("GOTCHA_METRIC_EVAL_INTERVAL", 60)),
-		ProfileEvalInterval:     int(num("GOTCHA_PROFILE_EVAL_INTERVAL", 300)),
-		OutboxRetentionDays:     int(num("GOTCHA_OUTBOX_RETENTION_DAYS", 7)),
+		MetricEvalInterval:      intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
+		ProfileEvalInterval:     intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
+		OutboxRetentionDays:     intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
 		SecretKey:               str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		RegistrationMode:        str("GOTCHA_REGISTRATION", "invite"),
-		UptimeConcurrency:       int(num("GOTCHA_UPTIME_CONCURRENCY", 50)),
+		UptimeConcurrency:       intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
 		LocalRegion:             str("GOTCHA_LOCAL_REGION", "local"),
 		ProbeToken:              str("GOTCHA_PROBE_TOKEN", ""),
 		ServerURL:               str("GOTCHA_SERVER_URL", ""),

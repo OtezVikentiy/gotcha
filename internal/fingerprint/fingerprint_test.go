@@ -100,11 +100,11 @@ func TestComputePriorities(t *testing.T) {
 
 func TestNormalizeMessage(t *testing.T) {
 	cases := map[string]string{
-		"user 123 not found":                    "user <num> not found",
+		"user 123 not found":                      "user <num> not found",
 		"id 550e8400-e29b-41d4-a716-4466554400aa": "id <uuid>",
-		"token deadbeefcafe0123":                 "token <hex>",
-		"addr 0xDEADBEEF":                        "addr <hex>",
-		"plain text":                             "plain text",
+		"token deadbeefcafe0123":                  "token <hex>",
+		"addr 0xDEADBEEF":                         "addr <hex>",
+		"plain text":                              "plain text",
 	}
 	for in, want := range cases {
 		if got := NormalizeMessage(in); got != want {

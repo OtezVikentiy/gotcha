@@ -173,15 +173,15 @@ func TestWebMonitorCreateInvalidTCPPortReturns422(t *testing.T) {
 
 	createPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors"
 	form := url.Values{
-		"name":                   {"TCP monitor with bad port"},
-		"kind":                   {"tcp"},
-		"tcp_host":               {"example.com"},
-		"tcp_port":               {"999999"}, // Out of range (max 65535)
-		"interval_seconds":       {"60"},
-		"timeout_seconds":        {"10"},
-		"fail_threshold":         {"1"},
-		"recovery_threshold":     {"1"},
-		"consensus":              {"any"},
+		"name":               {"TCP monitor with bad port"},
+		"kind":               {"tcp"},
+		"tcp_host":           {"example.com"},
+		"tcp_port":           {"999999"}, // Out of range (max 65535)
+		"interval_seconds":   {"60"},
+		"timeout_seconds":    {"10"},
+		"fail_threshold":     {"1"},
+		"recovery_threshold": {"1"},
+		"consensus":          {"any"},
 	}
 
 	resp := postForm(t, s.srv, createPath, form, s.srv.URL, ownerCookie)

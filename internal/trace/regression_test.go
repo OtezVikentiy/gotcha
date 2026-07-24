@@ -37,9 +37,9 @@ func TestDecide(t *testing.T) {
 		{"open floor not binding", s(800, 200), s(1050, 200), false, "open"}, // 1050 > 1000 и > 900
 		{"floor blocks small base", s(40, 200), s(80, 200), false, "none"},   // +100% но 80 < 40+100=140
 		// Открытый инцидент: recovery-порог 800×1.1 = 880.
-		{"resolve under recovery", s(800, 200), s(860, 200), true, "resolve"}, // 860 ≤ 880
+		{"resolve under recovery", s(800, 200), s(860, 200), true, "resolve"},       // 860 ≤ 880
 		{"resolve at recovery boundary", s(800, 200), s(880, 200), true, "resolve"}, // 880 == 880, граница включительна
-		{"stay open above recovery", s(800, 200), s(900, 200), true, "none"},  // 900 > 880
+		{"stay open above recovery", s(800, 200), s(900, 200), true, "none"},        // 900 > 880
 		// Отсечки.
 		{"low recent samples", s(800, 200), s(1100, 50), false, "none"},
 		{"low base samples", s(800, 50), s(1100, 200), false, "none"},

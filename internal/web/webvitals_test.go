@@ -80,9 +80,9 @@ func TestWebVitalsOverview(t *testing.T) {
 	}
 	for _, want := range []string{
 		"GET /home", "GET /slow",
-		"2.50s",   // lcp home p75
-		"5.00s",   // lcp slow p75
-		"0.05",    // cls home p75 (безразмерный, 2 знака — не мс)
+		"2.50s", // lcp home p75
+		"5.00s", // lcp slow p75
+		"0.05",  // cls home p75 (безразмерный, 2 знака — не мс)
 		"badge-good",
 		"badge-danger",
 	} {

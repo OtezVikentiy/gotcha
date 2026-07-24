@@ -10,6 +10,33 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+### Added
+
+- **Low-resource deployment overlay** (`docker-compose.small.yml`) for minimal
+  servers (2 vCPU / 2 GB): caps ClickHouse memory and event ingestion to fit
+  constrained hardware. On a 2-core / 2 GB VPS it cut ClickHouse memory
+  880 → 295 MB, disk 12 → 9.2 GB and load average 1.15 → 0.79. Apply it only on
+  weak hardware — on a server with headroom it would throttle ingestion.
+
+### Fixed
+
+- **Uptime latency chart** now renders with axes, a millisecond scale, time
+  labels, a phase legend (DNS/TCP/TLS/TTFB) and per-hour tooltips. Its scale
+  is set by the drawn phase timings rather than the average total, so a single
+  request timeout no longer flattens healthy bars into an unreadable row of
+  stubs; hours above the scale are flagged with a marker whose tooltip shows
+  the real total.
+- **Availability bar** gained a distinct "partial" (amber) state: a monitor
+  that is mostly healthy but has occasional failed checks no longer shows as
+  fully red, so a ~90 %-up monitor reads as "occasional blips", not "down".
+- Hardened integer parsing in configuration and migration-version handling
+  (bounded conversions), clearing CodeQL incorrect-conversion warnings. No
+  behaviour change — inputs are trusted operator env config and embedded
+  migration filenames.
+- ClickHouse system logs now carry a retention TTL and the PostgreSQL planner
+  assumes SSD storage — universal defaults added to the base compose file;
+  previously ClickHouse system-log disk usage grew without bound on any server.
+
 ## [0.2.1] - 2026-07-23
 
 ## [0.2.0] - 2026-07-23

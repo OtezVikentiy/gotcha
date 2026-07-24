@@ -23,9 +23,9 @@ func mustCIDR(t *testing.T, s string) *net.IPNet {
 func TestClientIP(t *testing.T) {
 	trusted := []*net.IPNet{mustCIDR(t, "10.0.0.0/8"), mustCIDR(t, "192.168.0.0/16")}
 	cases := []struct {
-		name               string
-		trusted            []*net.IPNet
-		remote, xff, want  string
+		name              string
+		trusted           []*net.IPNet
+		remote, xff, want string
 	}{
 		{"no trusted proxies -> RemoteAddr, XFF ignored", nil, "203.0.113.7:1234", "1.2.3.4", "203.0.113.7"},
 		{"trusted peer -> client from XFF", trusted, "10.1.2.3:9", "203.0.113.9", "203.0.113.9"},

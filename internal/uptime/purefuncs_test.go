@@ -38,7 +38,7 @@ func TestMsToUint32(t *testing.T) {
 	if msToUint32(150*time.Millisecond) != 150 {
 		t.Error("150ms → 150")
 	}
-	if msToUint32(time.Duration(math.MaxUint32+1000) * time.Millisecond) != math.MaxUint32 {
+	if msToUint32(time.Duration(math.MaxUint32+1000)*time.Millisecond) != math.MaxUint32 {
 		t.Error("переполнение → MaxUint32")
 	}
 }

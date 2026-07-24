@@ -15,10 +15,10 @@ import (
 // битый идентификатор игнорируются.
 func TestTraceOrigin(t *testing.T) {
 	cases := []struct {
-		url      string
-		origin   string
-		id       int64
-		txn      string
+		url    string
+		origin string
+		id     int64
+		txn    string
 	}{
 		{"/traces/abc?from=perf-issue&from_id=218", "perf-issue", 218, ""},
 		{"/traces/abc?from=issue&from_id=42", "issue", 42, ""},

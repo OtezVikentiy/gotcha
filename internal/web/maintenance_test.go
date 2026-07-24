@@ -356,11 +356,11 @@ func TestWebMaintenanceKindIsExclusive(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
 	form := url.Values{
-		"name":       {"One-off with stray weekly fields"},
-		"kind":       {"oneoff"},
-		"starts_at":  {"2026-08-01T02:00"},
-		"ends_at":    {"2026-08-01T04:00"},
-		"timezone":   {"UTC"},
+		"name":      {"One-off with stray weekly fields"},
+		"kind":      {"oneoff"},
+		"starts_at": {"2026-08-01T02:00"},
+		"ends_at":   {"2026-08-01T04:00"},
+		"timezone":  {"UTC"},
 		// поля еженедельной ветки, оставшиеся от переключения режима:
 		"weekday":    {"3"},
 		"start_time": {"05:00"},

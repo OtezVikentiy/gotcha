@@ -31,11 +31,11 @@ func TestEvaluatorLifecycle(t *testing.T) {
 	ob := notify.NewOutbox(pool)
 	notifier := &RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"}
 	ev := &Evaluator{
-		Pool:        pool,
-		Query:       NewQuery(conn),
-		Regressions: NewRegressionService(pool),
-		Notifier:    notifier,
-		TopK:        50,
+		Pool:         pool,
+		Query:        NewQuery(conn),
+		Regressions:  NewRegressionService(pool),
+		Notifier:     notifier,
+		TopK:         50,
 		BaselineDays: 7,
 	}
 
@@ -150,15 +150,15 @@ func TestEvaluatorLifecycle(t *testing.T) {
 
 	// --- топ-K: низкотрафичная цель отсекается -----------------------------
 	pidK := createEvalProject(t, pool, "eval-topk")
-	const hiTarget = "GET /hi"   // высокий трафик, стабильный
-	const loTarget = "GET /lo"   // низкий трафик, но со скачком
+	const hiTarget = "GET /hi" // высокий трафик, стабильный
+	const loTarget = "GET /lo" // низкий трафик, но со скачком
 	wk := NewSpanWriter(conn)
 	go wk.Run()
 	for d := 1; d <= 6; d++ {
 		addEndpointTx(wk, pidK, hiTarget, now.Add(-time.Duration(d)*24*time.Hour), 800, 200, fmt.Sprintf("hibase-%d", d))
 		addEndpointTx(wk, pidK, loTarget, now.Add(-time.Duration(d)*24*time.Hour), 800, 20, fmt.Sprintf("lobase-%d", d))
 	}
-	addEndpointTx(wk, pidK, hiTarget, now.Add(-2*time.Minute), 800, 300, "hirec")   // стабильный
+	addEndpointTx(wk, pidK, hiTarget, now.Add(-2*time.Minute), 800, 300, "hirec")    // стабильный
 	addEndpointTx(wk, pidK, loTarget, now.Add(-2*time.Minute), 1200, 120, "lospike") // скачок, но мало трафика
 	if err := wk.Close(ctx); err != nil {
 		t.Fatalf("seed topk close: %v", err)

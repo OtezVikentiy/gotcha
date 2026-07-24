@@ -36,10 +36,10 @@ const (
 )
 
 var (
-	pgOnce  sync.Once
-	pgPool  *pgxpool.Pool // админ-пул к базе gotcha общего контейнера
-	pgDSN   string
-	pgErr   error
+	pgOnce sync.Once
+	pgPool *pgxpool.Pool // админ-пул к базе gotcha общего контейнера
+	pgDSN  string
+	pgErr  error
 
 	chOnce sync.Once
 	chConn driver.Conn // админ-соединение с базой gotcha общего контейнера

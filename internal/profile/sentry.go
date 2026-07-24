@@ -114,12 +114,12 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 		Environment: capRunes(it.Environment, maxMetaField),
 		Transaction: capRunes(transaction, maxMetaField),
 		Platform:    capRunes(it.Platform, maxMetaField),
-		Type: "cpu",
+		Type:        "cpu",
 		// В формате Sentry значение выборки — число сэмплов с этим стеком
 		// (см. counts выше), а не время: единица «count», а не наносекунды.
 		Unit:      "count",
 		TraceID:   capRunes(traceID, maxMetaField),
-		Timestamp:   now,
-		Samples:     samples,
+		Timestamp: now,
+		Samples:   samples,
 	}, nil
 }

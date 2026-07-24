@@ -175,12 +175,15 @@ func maxMigrationVersion(names []string) uint {
 		if i == 0 {
 			continue
 		}
-		n, err := strconv.ParseUint(name[:i], 10, 64)
+		// bitSize = разрядность uint (strconv.IntSize): n гарантированно
+		// помещается в uint, поэтому uint(n) без усечения на любой платформе
+		// (закрывает CodeQL go/incorrect-integer-conversion).
+		n, err := strconv.ParseUint(name[:i], 10, strconv.IntSize)
 		if err != nil {
 			continue
 		}
-		if uint(n) > max {
-			max = uint(n)
+		if v := uint(n); v > max {
+			max = v
 		}
 	}
 	return max

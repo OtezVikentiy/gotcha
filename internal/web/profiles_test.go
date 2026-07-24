@@ -111,4 +111,5 @@ func TestWebProfilesNilService(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil Profiles status = %d, want 404", resp.StatusCode)
-	}}
+	}
+}

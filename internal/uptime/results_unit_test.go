@@ -165,7 +165,7 @@ func TestResultWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 
 	at := time.Now()
 	w.Add(1, 1, "poison", at, Result{OK: true}) // 1 ядовитый
-	for i := 0; i < 5; i++ {                     // + 5 хороших
+	for i := 0; i < 5; i++ {                    // + 5 хороших
 		w.Add(1, 1, "local", at, Result{OK: true})
 	}
 
