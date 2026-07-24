@@ -44,12 +44,13 @@ type Evaluator struct {
 	EmailEnabled bool
 
 	// ExternalDetails управляет тем, раскрывать ли детали ошибки во внешние
-	// каналы (Telegram/webhook). true (дефолт логики, проставляется в main.go
-	// из cfg.ExternalChannelDetails) — слать полный payload с title/culprit/
-	// level/телом, как раньше. false — не раскрывать: текст ошибки может
-	// нести ПДн, а Telegram/webhook уводят их за пределы РФ (152-ФЗ), поэтому
-	// во внешние каналы уходит только ссылка на issue и вид алерта. Email —
-	// внутренний SMTP оператора — гейтом не затрагивается.
+	// каналы (Telegram/webhook). Дефолт — false (проставляется в main.go из
+	// cfg.ExternalChannelDetails; GOTCHA_EXTERNAL_CHANNEL_DETAILS по умолчанию
+	// false): во внешние каналы уходит только ссылка на issue и вид алерта —
+	// текст ошибки может нести ПДн, а Telegram/webhook уводят их за пределы
+	// РФ (152-ФЗ). true (явное включение оператором) — слать полный payload с
+	// title/culprit/level/телом. Email — внутренний SMTP оператора — гейтом
+	// не затрагивается.
 	ExternalDetails bool
 }
 

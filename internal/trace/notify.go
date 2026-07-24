@@ -61,7 +61,8 @@ type OutboxNotifier struct {
 	// ExternalDetails — см. alert.Evaluator.ExternalDetails: при false во
 	// внешние каналы (Telegram/webhook) уходит обезличенный payload без
 	// iss.Title/iss.Culprit (имя транзакции, текст SQL — потенциальные ПДн за
-	// пределами РФ, 152-ФЗ). true (дефолт из cfg) — поведение прежнее.
+	// пределами РФ, 152-ФЗ). Дефолт — false (обезличенный); true — явное
+	// включение оператором (GOTCHA_EXTERNAL_CHANNEL_DETAILS).
 	ExternalDetails bool
 }
 
