@@ -902,15 +902,17 @@ const (
 )
 
 // Классы корзин полоски доступности: зелёная (все проверки в корзине
-// успешны), красная (хотя бы одна провалилась), серая (в корзине нет ни одной
-// проверки — "нет данных", не путать с провалом). Цвет назначает app.css из
-// токенов, поэтому полоска следует теме. Одного currentColor тут мало —
-// нужны три разных цвета в одном SVG, а не один цвет из контекста, как у
-// sparklineSVG/chartSVG.
+// успешны), жёлтая (большинство успешно, но были сбои — «иногда
+// постреливает»), красная (большинство проверок провалилось), серая (в
+// корзине нет ни одной проверки — "нет данных", не путать с провалом). Цвет
+// назначает app.css из токенов, поэтому полоска следует теме. Одного
+// currentColor тут мало — нужны разные цвета в одном SVG, а не один цвет из
+// контекста, как у sparklineSVG/chartSVG.
 const (
-	availabilityClassUp    = "bar-up"
-	availabilityClassDown  = "bar-down"
-	availabilityClassEmpty = "bar-empty"
+	availabilityClassUp      = "bar-up"
+	availabilityClassPartial = "bar-partial"
+	availabilityClassDown    = "bar-down"
+	availabilityClassEmpty   = "bar-empty"
 )
 
 // availabilityBarsSVG строит полоску доступности: один прямоугольник на
@@ -967,7 +969,12 @@ func availabilityBarClass(b uptime.UptimeStat) string {
 		return availabilityClassEmpty
 	case b.OK == b.Total:
 		return availabilityClassUp
+	case b.OK*2 >= b.Total:
+		// Большинство проверок успешно, но были и сбои — «постреливает».
+		// Целочисленно (OK*2 >= Total) == доля успехов >= 50%, без float.
+		return availabilityClassPartial
 	default:
+		// Большинство проверок в корзине провалилось.
 		return availabilityClassDown
 	}
 }

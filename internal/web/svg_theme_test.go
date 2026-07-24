@@ -16,9 +16,10 @@ import (
 func TestMultiColourChartsEmitClassesNotHex(t *testing.T) {
 	ctx := context.Background()
 	bars := []uptime.UptimeStat{
-		{Total: 10, OK: 10}, // все проверки успешны
-		{Total: 10, OK: 4},  // есть провал
-		{Total: 0},          // проверок не было
+		{Total: 10, OK: 10}, // все успешны → зелёная
+		{Total: 10, OK: 9},  // мелкие сбои, большинство ок → жёлтая
+		{Total: 10, OK: 3},  // большинство провалилось → красная
+		{Total: 0},          // проверок не было → серая
 	}
 
 	got := availabilityBarsMarkup(ctx, bars, 300, 24)
@@ -28,7 +29,7 @@ func TestMultiColourChartsEmitClassesNotHex(t *testing.T) {
 			t.Errorf("в полоске доступности остался хардкод-цвет %s", hex)
 		}
 	}
-	for _, cls := range []string{"bar-up", "bar-down", "bar-empty"} {
+	for _, cls := range []string{"bar-up", "bar-partial", "bar-down", "bar-empty"} {
 		if !strings.Contains(got, cls) {
 			t.Errorf("нет класса %q; got: %s", cls, got)
 		}
@@ -41,6 +42,28 @@ func TestMultiColourChartsEmitClassesNotHex(t *testing.T) {
 	}
 }
 
+// TestAvailabilityBarClassThresholds пришпиливает пороги окраски корзины:
+// зелёная — все ок, жёлтая — большинство ок при наличии сбоев (граница ровно
+// 50%), красная — большинство провалилось, серая — нет данных.
+func TestAvailabilityBarClassThresholds(t *testing.T) {
+	cases := []struct {
+		stat uptime.UptimeStat
+		want string
+	}{
+		{uptime.UptimeStat{Total: 0, OK: 0}, "bar-empty"},
+		{uptime.UptimeStat{Total: 10, OK: 10}, "bar-up"},
+		{uptime.UptimeStat{Total: 10, OK: 9}, "bar-partial"},
+		{uptime.UptimeStat{Total: 10, OK: 5}, "bar-partial"}, // ровно 50% → жёлтая
+		{uptime.UptimeStat{Total: 10, OK: 4}, "bar-down"},    // ниже 50% → красная
+		{uptime.UptimeStat{Total: 10, OK: 0}, "bar-down"},
+	}
+	for _, c := range cases {
+		if got := availabilityBarClass(c.stat); got != c.want {
+			t.Errorf("availabilityBarClass(%+v) = %q, want %q", c.stat, got, c.want)
+		}
+	}
+}
+
 // TestChartColourClassesAreStyled — класс без правила в app.css красит SVG
 // ничем: элемент просто отрисуется чёрным/прозрачным. Проверяем, что каждому
 // классу назначен цвет.
@@ -50,7 +73,7 @@ func TestChartColourClassesAreStyled(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cls := range []string{
-		"bar-up", "bar-down", "bar-empty",
+		"bar-up", "bar-partial", "bar-down", "bar-empty",
 		"wf-ok", "wf-err",
 		"series-p50", "series-p95",
 		"seg-dns", "seg-connect", "seg-tls", "seg-ttfb",

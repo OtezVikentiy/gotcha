@@ -2212,9 +2212,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    перцентили, стек задержек), цвет назначается здесь по классу элемента.
    Раньше эти значения были впечатаны в SVG hex-литералами из тёмной палитры
    и не менялись в светлой теме. */
-.availability-bars .bar-up    { fill: var(--good); }
-.availability-bars .bar-down  { fill: var(--danger); }
-.availability-bars .bar-empty { fill: var(--border); }
+.availability-bars .bar-up      { fill: var(--good); }
+.availability-bars .bar-partial { fill: var(--warn); }
+.availability-bars .bar-down    { fill: var(--danger); }
+.availability-bars .bar-empty   { fill: var(--border); }
 
 .waterfall .wf-ok  { fill: var(--accent); }
 .waterfall .wf-err { fill: var(--danger); }
