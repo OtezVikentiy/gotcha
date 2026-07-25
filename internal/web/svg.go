@@ -252,23 +252,17 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		sb.WriteString(`</text></g>`)
 	}
 
-	// Линия данных.
-	var pts strings.Builder
+	// Линия данных с мягкой заливкой под ней. У метрики нет сигнала пропусков
+	// (ряд сплошной), поэтому has=true у всех точек — линия не рвётся.
+	linePts := make([]seriesPoint, n)
 	for i, p := range points {
 		x := x0
 		if n > 1 {
 			x = x0 + float64(i)/float64(n-1)*(x1-x0)
 		}
-		if i > 0 {
-			pts.WriteByte(' ')
-		}
-		pts.WriteString(formatCoord(x))
-		pts.WriteByte(',')
-		pts.WriteString(formatCoord(yFor(p.V)))
+		linePts[i] = seriesPoint{x: x, y: yFor(p.V), has: true}
 	}
-	sb.WriteString(`<polyline points="`)
-	sb.WriteString(pts.String())
-	sb.WriteString(`" fill="none" stroke="#3d7bff" stroke-width="1.5"/>`)
+	writeLineWithArea(&sb, linePts, y1, "#3d7bff", "gradMetric", `stroke="#3d7bff"`)
 
 	// Полосы наведения: линия тонкая, наводиться на неё нечем, поэтому
 	// подсказку ловит прозрачная полоса над своим интервалом. Значение
@@ -298,6 +292,80 @@ func axisLine(sb *strings.Builder, x1, y1v, x2, y2 float64) {
 	sb.WriteString(`" y2="`)
 	sb.WriteString(formatCoord(y2))
 	sb.WriteString(`" stroke="currentColor" stroke-width="0.5" stroke-opacity="0.5"/>`)
+}
+
+// seriesPoint — точка линейного графика на холсте: координаты и признак
+// наличия данных в этой корзине (has=false — пропуск).
+type seriesPoint struct {
+	x, y float64
+	has  bool
+}
+
+// writeLineWithArea рисует линию по точкам с РАЗРЫВАМИ на пропусках (has=false)
+// — линия не проваливается в ноль на пустых корзинах, а прерывается — и с
+// мягкой заливкой-градиентом под линией (fade к прозрачному). Прямые отрезки, а
+// НЕ сплайн: сглаживание рисует значения между точками, которых не было, что
+// для мониторинга недопустимо. gradID должен быть уникален на странице; при
+// fillHex=="" заливка не рисуется (только линия). lineAttr — атрибуты штриха
+// (class="…" или stroke="#…"). baseline — низ области заливки (обычно g.y1).
+func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64, fillHex, gradID, lineAttr string) {
+	if fillHex != "" {
+		sb.WriteString(`<defs><linearGradient id="`)
+		sb.WriteString(gradID)
+		sb.WriteString(`" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="`)
+		sb.WriteString(fillHex)
+		sb.WriteString(`" stop-opacity="0.26"/><stop offset="1" stop-color="`)
+		sb.WriteString(fillHex)
+		sb.WriteString(`" stop-opacity="0"/></linearGradient></defs>`)
+	}
+
+	// Идём сегментами подряд идущих точек с данными; на пропуске сегмент рвётся.
+	for i := 0; i < len(pts); {
+		if !pts[i].has {
+			i++
+			continue
+		}
+		j := i
+		for j < len(pts) && pts[j].has {
+			j++
+		}
+		seg := pts[i:j]
+		i = j
+		if len(seg) < 2 {
+			continue // одиночную точку линией не нарисовать
+		}
+		if fillHex != "" {
+			sb.WriteString(`<path fill="url(#`)
+			sb.WriteString(gradID)
+			sb.WriteString(`)" stroke="none" d="M`)
+			sb.WriteString(formatCoord(seg[0].x))
+			sb.WriteByte(' ')
+			sb.WriteString(formatCoord(baseline))
+			for _, p := range seg {
+				sb.WriteString(`L`)
+				sb.WriteString(formatCoord(p.x))
+				sb.WriteByte(' ')
+				sb.WriteString(formatCoord(p.y))
+			}
+			sb.WriteString(`L`)
+			sb.WriteString(formatCoord(seg[len(seg)-1].x))
+			sb.WriteByte(' ')
+			sb.WriteString(formatCoord(baseline))
+			sb.WriteString(`Z"/>`)
+		}
+		sb.WriteString(`<polyline points="`)
+		for k, p := range seg {
+			if k > 0 {
+				sb.WriteByte(' ')
+			}
+			sb.WriteString(formatCoord(p.x))
+			sb.WriteByte(',')
+			sb.WriteString(formatCoord(p.y))
+		}
+		sb.WriteString(`" fill="none" `)
+		sb.WriteString(lineAttr)
+		sb.WriteString(` stroke-width="1.5"/>`)
+	}
 }
 
 // comparatorSymbol — знак сравнения для подписи пороговой линии.
@@ -377,19 +445,13 @@ func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) s
 	}
 
 	n := len(buckets)
-	var points strings.Builder
+	linePts := make([]seriesPoint, n)
 	for i, v := range buckets {
 		var x float64
 		if n > 1 {
 			x = float64(i) / float64(n-1) * float64(w)
 		}
-		y := float64(h) - float64(v)/float64(max)*float64(h)
-		if i > 0 {
-			points.WriteByte(' ')
-		}
-		points.WriteString(formatCoord(x))
-		points.WriteByte(',')
-		points.WriteString(formatCoord(y))
+		linePts[i] = seriesPoint{x: x, y: float64(h) - float64(v)/float64(max)*float64(h), has: true}
 	}
 
 	var sb strings.Builder
@@ -416,9 +478,8 @@ func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) s
 			" · " + format(buckets[len(buckets)-1])))
 		sb.WriteString(`</title>`)
 	}
-	sb.WriteString(`<polyline points="`)
-	sb.WriteString(points.String())
-	sb.WriteString(`" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`)
+	writeLineWithArea(&sb, linePts, float64(h), "#3d7bff", "gradSpark", `stroke="currentColor"`)
+	sb.WriteString(`</svg>`)
 	return sb.String()
 }
 
@@ -530,27 +591,19 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, w, h i
 	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.xForIndex(i, n) }, 70))
 	sb.WriteString(`</g>`)
 
-	// Линии перцентилей.
-	series := [2]func(trace.LatencyPoint) uint32{
-		func(p trace.LatencyPoint) uint32 { return p.P50 },
-		func(p trace.LatencyPoint) uint32 { return p.P95 },
+	// Перцентили. p50 — с заливкой под линией; p95 — только линия (заливка обеих
+	// дала бы мутное наложение). На пустых корзинах (Count==0) линия рвётся, а
+	// не проваливается в ноль — это убирает резкие V-пики.
+	p50pts := make([]seriesPoint, n)
+	p95pts := make([]seriesPoint, n)
+	for i, p := range points {
+		x := g.xForIndex(i, n)
+		has := p.Count > 0
+		p50pts[i] = seriesPoint{x: x, y: scale.yFor(g, float64(p.P50)), has: has}
+		p95pts[i] = seriesPoint{x: x, y: scale.yFor(g, float64(p.P95)), has: has}
 	}
-	for si, pick := range series {
-		var pts strings.Builder
-		for i, p := range points {
-			if i > 0 {
-				pts.WriteByte(' ')
-			}
-			pts.WriteString(formatCoord(g.xForIndex(i, n)))
-			pts.WriteByte(',')
-			pts.WriteString(formatCoord(scale.yFor(g, float64(pick(p)))))
-		}
-		sb.WriteString(`<polyline points="`)
-		sb.WriteString(pts.String())
-		sb.WriteString(`" fill="none" class="`)
-		sb.WriteString(perfLatencyLineClasses[si])
-		sb.WriteString(`" stroke-width="1.5"/>`)
-	}
+	writeLineWithArea(&sb, p50pts, g.y1, "#3d7bff", "gradLatP50", `class="`+perfLatencyLineClasses[0]+`"`)
+	writeLineWithArea(&sb, p95pts, g.y1, "", "", `class="`+perfLatencyLineClasses[1]+`"`)
 
 	// Полосы наведения: по одной на точку, с обоими перцентилями в подсказке.
 	band := (g.x1 - g.x0) / float64(n)
@@ -1249,19 +1302,13 @@ func vitalSeriesMarkup(points []trace.VitalPoint, w, h int, format func(float64)
 	}
 
 	n := len(points)
-	var pts strings.Builder
+	linePts := make([]seriesPoint, n)
 	for i, p := range points {
 		var x float64
 		if n > 1 {
 			x = float64(i) / float64(n-1) * float64(w)
 		}
-		y := float64(h) - p.P75/max*float64(h)
-		if i > 0 {
-			pts.WriteByte(' ')
-		}
-		pts.WriteString(formatCoord(x))
-		pts.WriteByte(',')
-		pts.WriteString(formatCoord(y))
+		linePts[i] = seriesPoint{x: x, y: float64(h) - p.P75/max*float64(h), has: true}
 	}
 
 	var sb strings.Builder
@@ -1287,16 +1334,15 @@ func vitalSeriesMarkup(points []trace.VitalPoint, w, h int, format func(float64)
 				" · min " + format(lo) + " · max " + format(hi) + " · " + format(last.P75)))
 		sb.WriteString(`</title>`)
 	}
-	sb.WriteString(`<polyline points="`)
-	sb.WriteString(pts.String())
-	sb.WriteString(`" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`)
+	writeLineWithArea(&sb, linePts, float64(h), "#3d7bff", "gradVital", `stroke="currentColor"`)
+	sb.WriteString(`</svg>`)
 	return sb.String()
 }
 
 // latencyChartWidth/Height — размер stacked-bar-графика задержек на странице
 // монитора.
 const (
-	latencyChartWidth  = 480
+	latencyChartWidth  = 720
 	latencyChartHeight = 160
 )
 
@@ -1376,21 +1422,31 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, 
 		slotX := g.x0 + float64(i)*barW + gap/2
 		bw := barW - gap
 		segments := [4]uint32{p.AvgDNSMs, p.AvgConnectMs, p.AvgTLSMs, p.AvgTTFBMs}
-		y := g.y1
+		// segGap — тонкий зазор между фазами (единицы viewBox): сегмент рисуется
+		// на segGap короче сверху, обнажая фон карточки, — фазы разделяются не
+		// только цветом. Для очень тонких сегментов зазор пропускается, иначе
+		// они бы исчезли.
+		const segGap = 1.5
+		bottom := g.y1
 		for si, ms := range segments {
 			if ms == 0 {
 				continue
 			}
 			segH := float64(ms) / scale.top * plotH
-			y -= segH
+			top := bottom - segH
+			bottom = top
+			drawY, drawH := top, segH
+			if segH > segGap*2 {
+				drawY, drawH = top+segGap, segH-segGap
+			}
 			sb.WriteString(`<rect x="`)
 			sb.WriteString(formatCoord(slotX))
 			sb.WriteString(`" y="`)
-			sb.WriteString(formatCoord(y))
+			sb.WriteString(formatCoord(drawY))
 			sb.WriteString(`" width="`)
 			sb.WriteString(formatCoord(bw))
 			sb.WriteString(`" height="`)
-			sb.WriteString(formatCoord(segH))
+			sb.WriteString(formatCoord(drawH))
 			sb.WriteString(`" class="`)
 			sb.WriteString(latencySegmentClasses[si])
 			sb.WriteString(`"/>`)

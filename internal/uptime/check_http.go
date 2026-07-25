@@ -64,6 +64,31 @@ func (t *httpTiming) clientTrace() *httptrace.ClientTrace {
 	}
 }
 
+// stalledPhase — фаза запроса, на которой он завис (по httptrace): последний
+// начавшийся, но не завершившийся этап. Помогает диагностировать таймауты:
+// «TLS handshake» (сервер принял TCP, но не отвечает на ClientHello) отличается
+// от «awaiting response» (TLS прошёл, но нет ответа) и от «DNS»/«TCP connect».
+func stalledPhase(t httpTiming) string {
+	switch {
+	case !t.firstByte.IsZero():
+		return "reading response"
+	case !t.tlsDone.IsZero():
+		return "awaiting response"
+	case !t.tlsStart.IsZero():
+		return "TLS handshake"
+	case !t.connectDone.IsZero():
+		return "after connect"
+	case !t.connectStart.IsZero():
+		return "TCP connect"
+	case !t.dnsDone.IsZero():
+		return "after DNS"
+	case !t.dnsStart.IsZero():
+		return "DNS"
+	default:
+		return "pre-connect"
+	}
+}
+
 // durMs возвращает продолжительность между двумя моментами в мс, или 0,
 // если одно из событий не произошло (например DNS для литерального IP).
 func durMs(start, end time.Time) uint32 {
@@ -129,7 +154,14 @@ func (c *HTTPChecker) Check(ctx context.Context, m Monitor) Result {
 	resp, err := client.Do(req)
 	total := time.Since(start)
 	if err != nil {
-		return Result{Error: errMessage(err, m.TimeoutSeconds), TotalMs: msToUint32(total)}
+		msg := errMessage(err, m.TimeoutSeconds)
+		// На таймауте дописываем ФАЗУ, до которой дошёл запрос (по httptrace):
+		// без неё «timeout after 30s» не отличает зависший TLS-handshake от
+		// молчащего сервера или медленного DNS. Диагностика прямо в проверке.
+		if isTimeout(err) {
+			msg += " (" + stalledPhase(timing) + ")"
+		}
+		return Result{Error: msg, TotalMs: msToUint32(total)}
 	}
 	defer resp.Body.Close()
 

@@ -1095,9 +1095,26 @@ th {
 	margin-bottom: 16px;
 }
 
-/* Оси/сетка и подписи графиков (metric-chart, chart-freq): приглушённый цвет,
-   моноширинный мелкий шрифт. Пороговые линии — цвет опасности. */
-.metric-chart text, .chart-freq text { font-size: var(--fs-xs); font-family: var(--font-mono); }
+/* metric-chart не имел правила размера и рендерился в дефолтном масштабе SVG,
+   из-за чего подписи осей были непропорционально крупными. Тянем на ширину
+   карточки — тогда viewBox 720 масштабируется предсказуемо (как у остальных). */
+.metric-chart {
+	display: block;
+	width: 100%;
+	height: auto;
+	margin-bottom: 16px;
+}
+
+/* Оси/сетка и подписи графиков: приглушённый цвет, моноширинный мелкий шрифт.
+   Пороговые линии — цвет опасности. */
+.metric-chart text, .chart-freq text, .latency-chart text, .chart text { font-size: var(--fs-xs); font-family: var(--font-mono); }
+
+/* Скруглённый верх у баров (трафик, гистограмма, частота событий) — мягче и
+   современнее, единый язык с остальными графиками. Прозрачные полосы наведения
+   (.hover-band) не трогаем; полоска доступности — отдельный класс со своей
+   семантикой. rx в координатах viewBox масштабируется вместе с графиком. */
+.chart-freq rect:not(.hover-band),
+.chart rect:not(.hover-band) { rx: 2px; }
 .chart-axis { color: var(--text-dim); }
 .chart-threshold { color: var(--danger); }
 
@@ -1464,14 +1481,12 @@ th {
 	height: auto;
 }
 
-/* Стек задержек на детали монитора: без осей это была плашка «прочерков» на
-   всю ширину карточки. Теперь график с осями и сеткой — ширину ограничиваем,
-   чтобы 24 часовых столбика читались, а не размазывались на всю карточку.
-   Пропорции держит viewBox (height:auto), поэтому preserveAspectRatio не
-   нужен. */
+/* Стек задержек на детали монитора занимает карточку целиком: широкий viewBox
+   (720×160 ≈ 4.5:1) даёт крупные читаемые столбики без пустого поля справа.
+   Пропорции держит viewBox (height:auto). */
 .monitor-chart .latency-chart {
 	width: 100%;
-	max-width: min(760px, 100%);
+	max-width: none;
 	height: auto;
 }
 
@@ -2224,30 +2239,38 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    Раньше эти значения были впечатаны в SVG hex-литералами из тёмной палитры
    и не менялись в светлой теме. */
 .availability-bars .bar-up      { fill: var(--good); }
-.availability-bars .bar-partial { fill: var(--warn); }
+/* Жёлтый «частично» — самостоятельный чистый жёлтый, а не --warn (#d9a521
+   выглядел мутно-коричневым). Один тон на обе темы: как заливка небольшого
+   сегмента читается ярко и на светлой, и на тёмной карточке. */
+.availability-bars .bar-partial { fill: #f5b70a; }
 .availability-bars .bar-down    { fill: var(--danger); }
 .availability-bars .bar-empty   { fill: var(--border); }
 
 .waterfall .wf-ok  { fill: var(--accent); }
 .waterfall .wf-err { fill: var(--danger); }
+/* Скруглённые span-бары — единый язык с остальными графиками. */
+.waterfall rect { rx: 2px; }
 
 .latency-chart .series-p50 { stroke: var(--accent); }
-.latency-chart .series-p95 { stroke: var(--warn); }
+/* p95 — бренд-фиолетовый (#7c5cff), не --warn: коричневый как ЦВЕТ ДАННЫХ
+   выглядел грязно и ложно читался как «предупреждение». --warn оставлен за
+   порогами. p50-синий + p95-фиолетовый — та же бренд-пара, что в градиенте. */
+.latency-chart .series-p95 { stroke: #7c5cff; }
 
-.latency-chart .seg-dns     { fill: var(--accent); }
-.latency-chart .seg-connect { fill: var(--accent); opacity: .65; }
-.latency-chart .seg-tls     { fill: var(--warn); }
-.latency-chart .seg-ttfb    { fill: var(--good); }
+/* Фазы запроса — секвенция по бренд-градиенту #3d7bff→#7c5cff. Снизу вверх =
+   порядок во времени (DNS→TCP→TLS→TTFB), тёмный низ → светлый верх: цвет сам
+   кодирует последовательность фаз, а не набор произвольных категорий. Каждый
+   столбик — миниатюра «путешествия» запроса. */
+.latency-chart .seg-dns     { fill: #2f6bff; }
+.latency-chart .seg-connect { fill: #6a74ff; }
+.latency-chart .seg-tls     { fill: #9a7cff; }
+.latency-chart .seg-ttfb    { fill: #c3b8fc; }
 /* Метка выброса (час выше шкалы: медленно/таймаут). Цветом события, не фазы. */
 .latency-chart .seg-cap     { fill: var(--danger); }
-
-/* Свотчи легенды фаз задержки — те же цвета, что и сегменты столбика; без них
-   цвет в графике ни с чем не связан. .legend-item::before красит currentColor,
-   поэтому оттенок фазы задаём здесь. */
-.legend-dns::before  { background: var(--accent); }
-.legend-tcp::before  { background: var(--accent); opacity: .65; }
-.legend-tls::before  { background: var(--warn); }
-.legend-ttfb::before { background: var(--good); }
+/* Метки осей мельче: viewBox 720 масштабируется до ширины карточки (~1.5×),
+   поэтому 8px в координатах viewBox дают ~12px на экране (переопределяем общее
+   правило .latency-chart text = 12px). */
+.latency-chart text, .metric-chart text { font-size: 8px; }
 
 /* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====
    Эти классы стояли в разметке без определений, из-за чего блоки на страницах
@@ -2695,7 +2718,21 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	background: currentColor;
 }
 .legend-p50::before { background: var(--accent); }
-.legend-p95::before { background: var(--warn); }
+.legend-p95::before { background: #7c5cff; }
+
+/* Свотчи фаз задержки (DNS/TCP/TLS/TTFB) = цвета сегментов столбика
+   (.latency-chart .seg-*). Стоят ПОСЛЕ .legend-item::before, иначе его
+   currentColor перебивал бы цвет (одинаковая специфичность → побеждает
+   поздний — из-за этого свотчи были серыми). Фаза — заливка, а не линия,
+   поэтому свотч квадратный, а не 2px-штрих. */
+.legend-dns::before,
+.legend-tcp::before,
+.legend-tls::before,
+.legend-ttfb::before { width: 11px; height: 11px; border-radius: 3px; }
+.legend-dns::before  { background: #2f6bff; }
+.legend-tcp::before  { background: #6a74ff; }
+.legend-tls::before  { background: #9a7cff; }
+.legend-ttfb::before { background: #c3b8fc; }
 
 /* ===== Форма окна обслуживания ===== */
 
