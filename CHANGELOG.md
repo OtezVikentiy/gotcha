@@ -10,6 +10,8 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-25
+
 ### Added
 
 - **Per-check retries** for uptime monitors: a monitor can retry a failed check
