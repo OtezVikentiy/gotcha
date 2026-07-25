@@ -26,6 +26,7 @@ type MonitorFormData struct {
 	TimeoutSeconds      string
 	FailThreshold       string
 	RecoveryThreshold   string
+	Retries             string
 	Consensus           string
 	RemindEveryMinutes  string
 	SSLAlertDays        string
@@ -327,6 +328,12 @@ templ MonitorForm(d MonitorFormData, userEmail string) {
 						<label>
 							{ i18n.T(ctx, "uptime.form.common.recovery_threshold") }
 							<input type="number" name="recovery_threshold" value={ d.RecoveryThreshold } min="1" class="input"/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "uptime.form.common.retries") }
+							<input type="number" name="retries" value={ d.Retries } min="0" max="10" class="input"/>
 						</label>
 					</div>
 					<div class="field">

@@ -408,6 +408,7 @@
     "uptime.form.common.timeout": "Timeout (seconds)",
     "uptime.form.common.fail_threshold": "Fail threshold (consecutive checks)",
     "uptime.form.common.recovery_threshold": "Recovery threshold (consecutive checks)",
+    "uptime.form.common.retries": "Retries on failure (before recording the check)",
     "uptime.form.common.consensus": "Region consensus",
     "uptime.form.common.remind": "Remind every (minutes, 0 = off)",
     "uptime.form.regions.legend": "Regions",

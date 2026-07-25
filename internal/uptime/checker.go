@@ -51,6 +51,30 @@ func CheckerFor(kind Kind, allowPrivate bool) (Checker, error) {
 	}
 }
 
+// retryDelay — пауза между повторами одной проверки. Немедленный повтор почти
+// всегда проходит (транзиентный блип), но короткая пауза не даёт молотить цель.
+// var (не const) — тесты понижают её, чтобы не ждать реальную секунду.
+var retryDelay = time.Second
+
+// checkWithRetries выполняет проверку и, при неуспехе, повторяет её ещё
+// m.Retries раз (с паузой retryDelay), пока не получит OK или не исчерпает
+// повторы. Возвращает первый успешный результат либо последний неуспешный.
+// Гасит транзиентные сбои (например периодический TLS-тарпит фронта, проходящий
+// на немедленном повторе), не поднимая ложных инцидентов — в отличие от
+// FailThreshold, который считает уже ЗАПИСАННЫЕ сбои подряд.
+func checkWithRetries(ctx context.Context, checker Checker, m Monitor) Result {
+	res := checker.Check(ctx, m)
+	for i := 0; i < m.Retries && !res.OK; i++ {
+		select {
+		case <-ctx.Done():
+			return res
+		case <-time.After(retryDelay):
+		}
+		res = checker.Check(ctx, m)
+	}
+	return res
+}
+
 // msToUint32 переводит d в целые миллисекунды, отрицательные значения
 // (не должны возникать, но береженого бог бережёт) превращает в 0, а
 // значения, не влезающие в uint32, — насыщает math.MaxUint32.

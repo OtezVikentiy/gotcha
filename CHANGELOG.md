@@ -10,6 +10,15 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-check retries** for uptime monitors: a monitor can retry a failed check
+  up to N times (0–10, 1s apart) before recording it, absorbing transient blips
+  — such as a periodic front-side TLS-handshake tarpit that passes on an
+  immediate retry — without raising false incidents. Orthogonal to the fail
+  threshold (which counts already-recorded failures). Set it when creating or
+  editing a monitor.
+
 ## [0.3.1] - 2026-07-25
 
 ## [0.3.0] - 2026-07-24

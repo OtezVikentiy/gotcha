@@ -210,7 +210,7 @@ func (c *ProbeClient) runOne(ctx context.Context, j JobDTO) (ResultDTO, bool) {
 				res = Result{OK: false, Error: "internal checker panic"}
 			}
 		}()
-		return checker.Check(ctx, m)
+		return checkWithRetries(ctx, checker, m)
 	}()
 
 	return NewResultDTO(j.QueueID, result), true

@@ -191,7 +191,7 @@ func (r *Runner) runOne(ctx context.Context, j Job) {
 				res = Result{OK: false, Error: "internal checker panic"}
 			}
 		}()
-		return checker.Check(ctx, j.Monitor)
+		return checkWithRetries(ctx, checker, j.Monitor)
 	}()
 	at := time.Now().UTC()
 

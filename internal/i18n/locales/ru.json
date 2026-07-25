@@ -408,6 +408,7 @@
     "uptime.form.common.timeout": "Таймаут (секунд)",
     "uptime.form.common.fail_threshold": "Порог отказа (проверок подряд)",
     "uptime.form.common.recovery_threshold": "Порог восстановления (проверок подряд)",
+    "uptime.form.common.retries": "Повторы при сбое (до записи проверки)",
     "uptime.form.common.consensus": "Консенсус по регионам",
     "uptime.form.common.remind": "Повторное уведомление каждые (минут, 0 = выключено)",
     "uptime.form.regions.legend": "Регионы",

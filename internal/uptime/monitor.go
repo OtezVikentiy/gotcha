@@ -19,16 +19,21 @@ const (
 // Service.Get/List; сам Monitor их не хранит в БД напрямую (см.
 // monitor_regions/monitor_channels).
 type Monitor struct {
-	ID                 int64
-	ProjectID          int64
-	Name               string
-	Kind               Kind
-	Enabled            bool
-	IntervalSeconds    int
-	TimeoutSeconds     int
-	Config             json.RawMessage // валидированный конфиг соответствующего типа
-	FailThreshold      int
-	RecoveryThreshold  int
+	ID                int64
+	ProjectID         int64
+	Name              string
+	Kind              Kind
+	Enabled           bool
+	IntervalSeconds   int
+	TimeoutSeconds    int
+	Config            json.RawMessage // валидированный конфиг соответствующего типа
+	FailThreshold     int
+	RecoveryThreshold int
+	// Retries — сколько РАЗ повторить одну проверку при неуспехе, прежде чем
+	// записать её как сбой (0 = без повторов). Гасит транзиентные блипы
+	// (например периодический TLS-тарпит фронта, проходящий на повторе) — в
+	// отличие от FailThreshold, который считает уже записанные сбои подряд.
+	Retries            int
 	Consensus          Consensus
 	RemindEveryMinutes int
 	SSLAlertDays       int
@@ -87,6 +92,9 @@ func validateMonitor(m Monitor, regions []string) error {
 	}
 	if m.RecoveryThreshold < 1 {
 		return fmt.Errorf("%w: recovery_threshold must be >= 1", ErrInvalidMonitor)
+	}
+	if m.Retries < 0 || m.Retries > 10 {
+		return fmt.Errorf("%w: retries must be 0..10", ErrInvalidMonitor)
 	}
 	if !validConsensus(m.Consensus) {
 		return fmt.Errorf("%w: consensus must be any, majority or all", ErrInvalidMonitor)

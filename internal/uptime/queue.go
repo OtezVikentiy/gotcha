@@ -82,7 +82,7 @@ func scanLeasedJobs(rows interface {
 			&j.QueueID, &j.MonitorID, &j.Region, &j.LeaseUntil,
 			&m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 			&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
-			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt,
+			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt, &m.Retries,
 		); err != nil {
 			return nil, err
 		}

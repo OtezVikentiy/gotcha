@@ -159,12 +159,12 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 	err = tx.QueryRow(ctx, `
 		INSERT INTO monitors (project_id, name, kind, enabled, interval_seconds, timeout_seconds,
 			config, fail_threshold, recovery_threshold, consensus, remind_every_minutes,
-			ssl_alert_days, heartbeat_token_hash)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			ssl_alert_days, heartbeat_token_hash, retries)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, created_at`,
 		m.ProjectID, m.Name, string(m.Kind), m.Enabled, m.IntervalSeconds, m.TimeoutSeconds,
 		m.Config, m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes,
-		m.SSLAlertDays, heartbeatTokenHashVal,
+		m.SSLAlertDays, heartbeatTokenHashVal, m.Retries,
 	).Scan(&m.ID, &m.CreatedAt)
 	if err != nil {
 		return Monitor{}, fmt.Errorf("uptime: create: %w", err)
@@ -221,10 +221,10 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 	tag, err := tx.Exec(ctx, `
 		UPDATE monitors SET name=$2, enabled=$3, interval_seconds=$4, timeout_seconds=$5,
 			config=$6, fail_threshold=$7, recovery_threshold=$8, consensus=$9,
-			remind_every_minutes=$10, ssl_alert_days=$11
+			remind_every_minutes=$10, ssl_alert_days=$11, retries=$12
 		WHERE id = $1`,
 		m.ID, m.Name, m.Enabled, m.IntervalSeconds, m.TimeoutSeconds, m.Config,
-		m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes, m.SSLAlertDays)
+		m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes, m.SSLAlertDays, m.Retries)
 	if err != nil {
 		return fmt.Errorf("uptime: update: %w", err)
 	}
@@ -308,12 +308,12 @@ func channelIDsOf(ctx context.Context, pool *pgxpool.Pool, monitorID int64) ([]i
 func scanMonitor(row pgx.Row, m *Monitor) error {
 	return row.Scan(&m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 		&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
-		&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt)
+		&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt, &m.Retries)
 }
 
 const monitorColumns = `project_id, name, kind, enabled, interval_seconds, timeout_seconds, config,
 	fail_threshold, recovery_threshold, consensus, remind_every_minutes, ssl_alert_days,
-	ssl_expires_at, last_beat_at, created_at`
+	ssl_expires_at, last_beat_at, created_at, retries`
 
 // Get возвращает монитор вместе с его regions и channels.
 func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
@@ -355,7 +355,7 @@ func (s *Service) List(ctx context.Context, projectID int64) ([]Monitor, error) 
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
 			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
-			&m.LastBeatAt, &m.CreatedAt); err != nil {
+			&m.LastBeatAt, &m.CreatedAt, &m.Retries); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("uptime: list: %w", err)
 		}

@@ -91,6 +91,10 @@ type JobDTO struct {
 	Kind           Kind            `json:"kind"`
 	Config         json.RawMessage `json:"config"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
+	// Retries — параметр ВЫПОЛНЕНИЯ проверки (как timeout), поэтому едет пробе:
+	// повтор делает сама проба, а не сервер. Пороги (fail/recovery) — состояние,
+	// их пробе знать не надо.
+	Retries int `json:"retries"`
 }
 
 // NewJobDTO переводит задание из очереди в его сетевое представление.
@@ -101,6 +105,7 @@ func NewJobDTO(j Job) JobDTO {
 		Kind:           j.Monitor.Kind,
 		Config:         j.Monitor.Config,
 		TimeoutSeconds: j.Monitor.TimeoutSeconds,
+		Retries:        j.Monitor.Retries,
 	}
 }
 
@@ -112,6 +117,7 @@ func (j JobDTO) Monitor() Monitor {
 		Kind:           j.Kind,
 		Config:         j.Config,
 		TimeoutSeconds: j.TimeoutSeconds,
+		Retries:        j.Retries,
 	}
 }
 

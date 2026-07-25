@@ -297,7 +297,7 @@ func (s *Service) StaleHeartbeats(ctx context.Context) ([]Monitor, error) {
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
 			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
-			&m.LastBeatAt, &m.CreatedAt); err != nil {
+			&m.LastBeatAt, &m.CreatedAt, &m.Retries); err != nil {
 			return nil, fmt.Errorf("uptime: stale heartbeats: %w", err)
 		}
 		out = append(out, m)
@@ -325,7 +325,7 @@ func (s *Service) SSLCandidates(ctx context.Context) ([]Monitor, error) {
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
 			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
-			&m.LastBeatAt, &m.CreatedAt, &m.SSLAlertedDays); err != nil {
+			&m.LastBeatAt, &m.CreatedAt, &m.Retries, &m.SSLAlertedDays); err != nil {
 			return nil, fmt.Errorf("uptime: ssl candidates: %w", err)
 		}
 		out = append(out, m)
