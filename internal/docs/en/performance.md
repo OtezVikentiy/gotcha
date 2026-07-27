@@ -17,7 +17,7 @@ Every language's SDK (Go/PHP/Python, etc.) has an equivalent option — check yo
 
 ## Endpoint list
 
-The section opens from the **"Performance"** entry in the left rail — URL `/projects/<id>/performance` (the subsection is labeled **"Transactions"**). Filters at the top are environment and period (1 hour / 24 hours / 7 days / 30 days). The endpoint table:
+The section opens from the **"Performance"** entry in the left rail — URL `/projects/<id>/performance` (the subsection is labeled **"Transactions"**). Filters at the top are environment and a [time range](/docs/time-range) (presets or a custom range). Every column header carries a tooltip explaining the metric — hover the dotted underline. The endpoint table:
 
 | Column | Meaning |
 |---|---|
@@ -34,9 +34,21 @@ Column headers are links; clicking one sorts the list by that column. The endpoi
 
 ## Endpoint detail
 
-Clicking an endpoint's name opens `/projects/<id>/performance/<transaction>`: period/environment/Apdex threshold in the header, a Web Vitals panel (if this is a page-load transaction — more on that below), a latency chart (p50/p95 over time), a throughput chart, a duration histogram, a table of the slowest traces for the period (a link to each one's waterfall), and a list of related performance issues.
+Clicking an endpoint's name opens `/projects/<id>/performance/<transaction>`: the time range / environment / Apdex threshold in the header, a Web Vitals panel (if this is a page-load transaction — more on that below), a latency chart (p50/p95 over time), a throughput chart, a duration histogram, a table of the slowest traces for the window (a link to each one's waterfall), and a list of related performance issues. As on the list, the metric labels (p50/p95, Apdex, and the Web Vitals) carry hover tooltips.
 
-**Performance issues** (N+1 queries, slow DB queries, HTTP floods) are a separate, automatically detected category of findings inside transactions — not the same thing as the regressions covered later in this doc. The full list lives in the **"Performance Issues"** section (`/projects/<id>/perf-issues`), reachable from the same "Performance" subsection menu.
+## Performance issues
+
+Performance issues — **N+1 queries**, **slow DB queries**, and **HTTP floods** — are a separate, automatically detected category of findings inside transactions (not the same thing as the regressions covered later in this doc). The full list is the **"Performance Issues"** section (`/projects/<id>/perf-issues`), reachable from the same "Performance" subsection menu, with an "Unresolved / Resolved / Ignored / All" status filter. Each row is a detected issue: its kind, the endpoint it was found in, how many times it's been seen, and when.
+
+Opening an issue explains what's wrong, not just the numbers:
+
+- **What's happening / How to fix** — a plain-language description of the kind (why an N+1 is slow, what a slow query or an HTTP flood is) and a concrete direction to fix it.
+- **Query** — the full, un-truncated statement from the offending span, with its operation, database, and duration. This is the real query text, not the shortened, parameterized title above.
+- **Code location** — the file, line, and function behind the query, when your SDK reports it in the span's data (`code.filepath` / `code.lineno` / `code.function`). This is opportunistic: if the SDK doesn't send a code location, the section is simply absent.
+- **Evidence** — the kind-specific counters (repeat count, total or max time, sequential share, sample URLs).
+- **Sample trace** — a link to a real trace where the issue was detected, so you can see it in the waterfall in context.
+
+An owner or admin can mark an issue **Resolved** or **Ignored**; it reopens automatically if the pattern is detected again.
 
 ## Trace waterfall
 
@@ -70,7 +82,7 @@ The good boundary is inclusive (a p75 equal to the threshold is still "good"), a
 
 ### How p75 is computed
 
-For each page (page-load transaction) and metric, Gotcha takes the 75th percentile of the values collected over the selected filter period (1 hour / 24 hours / 7 days / 30 days) and assigns a rating from the table above. If there are no samples for a metric in the period, "—" is shown instead of a value, with no badge.
+For each page (page-load transaction) and metric, Gotcha takes the 75th percentile of the values collected over the selected [time range](/docs/time-range) and assigns a rating from the table above. If there are no samples for a metric in the period, "—" is shown instead of a value, with no badge.
 
 ### Reading the page
 

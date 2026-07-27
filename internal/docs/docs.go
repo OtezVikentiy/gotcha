@@ -27,6 +27,7 @@ var registry = []struct{ Slug, Group string }{
 	// Начало
 	{"getting-started", "docs.group.start"},
 	{"glossary", "docs.group.start"},
+	{"time-range", "docs.group.start"},
 	// Установка и эксплуатация
 	{"installation", "docs.group.deploy"},
 	{"configuration", "docs.group.deploy"},
