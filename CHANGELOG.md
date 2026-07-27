@@ -10,6 +10,54 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+### Added
+
+- **One time-range control on every chart page.** Issues, performance and
+  endpoint views, Web Vitals, metrics, profiles and the monitor latency chart
+  now share a single time-window control — presets (1h / 24h / 7d / 30d) plus a
+  custom range — where each page used to have its own fixed or ad-hoc window.
+  The issue frequency and monitor latency charts, which had no window control at
+  all, gain one.
+- **Single-popup date-range picker.** Choosing a custom range opens one popup
+  with a two-month calendar and the quick presets: click the start, click the
+  end. It is a progressive enhancement — with JavaScript off the control falls
+  back to the preset dropdown and two native date fields, still fully working.
+- **Performance issues now explain the problem.** A perf-issue page opens with a
+  plain-language "What's happening / How to fix" for its kind (N+1, slow query,
+  HTTP flood), shows the full, un-truncated query from the offending span (with
+  its operation, database and duration), and — when the SDK reports it — the
+  code location (file, line, function) behind the query.
+- **Tooltips that explain the numbers.** Hover any endpoint metric (p50 / p75 /
+  p95 / p99, failure rate, Apdex, throughput) on the endpoint list and detail to
+  see what it means; Web Vitals (LCP / INP / CLS / FCP / TTFB) and the
+  performance and regression settings fields get the same hints.
+- **Full request details on issues.** The request that triggered an error —
+  method, URL, query parameters, body and headers — is captured (scrubbed for
+  PII) and shown on the issue page.
+- **"Back where you came from" navigation.** The back-link on a detail page now
+  returns to the page you actually arrived from, not a fixed parent.
+- **Pagination** on the incidents list and on a monitor's incident feed.
+- The **issues list defaults to the "unresolved" filter**, still overridable.
+
+### Changed
+
+- **Charts span the selected window.** A 30-day window now draws all 30 days,
+  with gaps where there is no data, instead of squeezing the axis to whatever
+  range happens to contain data (Grafana/Elasticsearch behaviour); time labels
+  thin adaptively so a wide window no longer overlaps them into an unreadable
+  strip.
+- Clicking a project name in the projects table opens its settings.
+- A pass of UI-consistency polish: a distinct colour for "partial outage",
+  chart x-axis and flamegraph fixes, equal-height alert-rule cards, a responsive
+  docs index, and a centred status-page settings column.
+
+### Fixed
+
+- **Dark-theme contrast.** The time-range preset dropdown rendered white-on-white
+  and the trace-waterfall span labels rendered black-on-dark — both now follow
+  the theme, and native date pickers render in the active theme.
+- Spacing above the quota and SSO save buttons in organisation settings.
+
 ## [0.3.2] - 2026-07-25
 
 ### Added
