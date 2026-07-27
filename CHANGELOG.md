@@ -10,6 +10,8 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-27
+
 ## [0.4.0] - 2026-07-27
 
 ### Added
