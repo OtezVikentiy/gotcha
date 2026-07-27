@@ -107,6 +107,15 @@ templ keyRow(projectID int64, k org.Key) {
 // форма выпуска нового ключа, DSN текущего живого ключа. errMsg —
 // сообщение об ошибке последнего POST, рендерится с тем же статусом (422),
 // что и ответ — тот же принцип, что и у OrgSettings/Teams.
+// helpLabel — подпись поля с всплывающей расшифровкой (нативный title, без JS
+// и CSP-исключений). Пунктирное подчёркивание и курсор-help сигналят, что при
+// наведении будет пояснение. Для форм с «непрозрачными» техническими полями
+// (пороги детекторов производительности/регрессий), где непосвящённому имя
+// поля ничего не говорит.
+templ helpLabel(labelKey, helpKey string) {
+	<span class="help-label" title={ i18n.T(ctx, helpKey) }>{ i18n.T(ctx, labelKey) }</span>
+}
+
 // perfSettingsForm — секция «Performance»: доля семплирования транзакций,
 // порог Apdex и пороги детекторов. Один POST на /settings/performance
 // (sameOrigin + owner|admin), при невалидном вводе — 422 с этой же формой.
@@ -116,37 +125,37 @@ templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
 		<form method="post" action={ templ.URL(projectSettingsPerformancePath(projectID)) } class="project-perf-form">
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.perf.sample_rate") }
+					@helpLabel("project.settings.perf.sample_rate", "project.settings.perf.sample_rate.help")
 					<input type="number" name="sample_rate" value={ f.SampleRate } min="0" max="1" step="0.01" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.perf.apdex_ms") }
+					@helpLabel("project.settings.perf.apdex_ms", "project.settings.perf.apdex_ms.help")
 					<input type="number" name="apdex_threshold_ms" value={ f.ApdexMS } min="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.perf.n_plus_one_min") }
+					@helpLabel("project.settings.perf.n_plus_one_min", "project.settings.perf.n_plus_one_min.help")
 					<input type="number" name="n_plus_one_min" value={ f.NPlusOneMin } min="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.perf.n_plus_one_total_ms") }
+					@helpLabel("project.settings.perf.n_plus_one_total_ms", "project.settings.perf.n_plus_one_total_ms.help")
 					<input type="number" name="n_plus_one_min_total_ms" value={ f.NPlusOneMinTotalMs } min="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.perf.slow_db_ms") }
+					@helpLabel("project.settings.perf.slow_db_ms", "project.settings.perf.slow_db_ms.help")
 					<input type="number" name="slow_db_ms" value={ f.SlowDBMs } min="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.perf.http_flood_min") }
+					@helpLabel("project.settings.perf.http_flood_min", "project.settings.perf.http_flood_min.help")
 					<input type="number" name="http_flood_min" value={ f.HTTPFloodMin } min="1" required class="input"/>
 				</label>
 			</div>
@@ -165,61 +174,61 @@ templ regressionSettingsForm(projectID int64, f RegressionSettingsForm) {
 		<form method="post" action={ templ.URL(projectSettingsRegressionsPath(projectID)) } class="project-regression-form">
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.threshold_pct") }
+					@helpLabel("project.settings.regressions.threshold_pct", "project.settings.regressions.threshold_pct.help")
 					<input type="number" name="threshold_pct" value={ f.ThresholdPct } min="1" max="100" step="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.recovery_pct") }
+					@helpLabel("project.settings.regressions.recovery_pct", "project.settings.regressions.recovery_pct.help")
 					<input type="number" name="recovery_pct" value={ f.RecoveryPct } min="1" max="100" step="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.window_minutes") }
+					@helpLabel("project.settings.regressions.window_minutes", "project.settings.regressions.window_minutes.help")
 					<input type="number" name="window_minutes" value={ f.WindowMinutes } min="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.min_samples") }
+					@helpLabel("project.settings.regressions.min_samples", "project.settings.regressions.min_samples.help")
 					<input type="number" name="min_samples" value={ f.MinSamples } min="1" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.duration_floor_ms") }
+					@helpLabel("project.settings.regressions.duration_floor_ms", "project.settings.regressions.duration_floor_ms.help")
 					<input type="number" name="duration_floor_ms" value={ f.DurationFloorMs } min="0" step="any" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.floor_lcp") }
+					@helpLabel("project.settings.regressions.floor_lcp", "project.settings.regressions.floor_lcp.help")
 					<input type="number" name="floor_lcp" value={ f.FloorLCP } min="0" step="any" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.floor_inp") }
+					@helpLabel("project.settings.regressions.floor_inp", "project.settings.regressions.floor_inp.help")
 					<input type="number" name="floor_inp" value={ f.FloorINP } min="0" step="any" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.floor_cls") }
+					@helpLabel("project.settings.regressions.floor_cls", "project.settings.regressions.floor_cls.help")
 					<input type="number" name="floor_cls" value={ f.FloorCLS } min="0" step="any" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.floor_fcp") }
+					@helpLabel("project.settings.regressions.floor_fcp", "project.settings.regressions.floor_fcp.help")
 					<input type="number" name="floor_fcp" value={ f.FloorFCP } min="0" step="any" required class="input"/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "project.settings.regressions.floor_ttfb") }
+					@helpLabel("project.settings.regressions.floor_ttfb", "project.settings.regressions.floor_ttfb.help")
 					<input type="number" name="floor_ttfb" value={ f.FloorTTFB } min="0" step="any" required class="input"/>
 				</label>
 			</div>

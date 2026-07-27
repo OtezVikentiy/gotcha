@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -239,6 +240,137 @@ func requestRows(contextsJSON string) []ctxRow {
 		}
 	}
 	return rows
+}
+
+// sentryRequest — распарсенный Sentry request-интерфейс к показу на детали issue.
+type sentryRequest struct {
+	Method  string
+	URL     string
+	Query   []ctxRow // разобранные query-параметры (из query_string)
+	Headers []ctxRow
+	Body    string // тело запроса: pretty-JSON для объекта, иначе как есть
+}
+
+// parseRequest разбирает JSON Sentry request-интерфейса (уже отскрабленного в
+// пайплайне приёма). Терпим к вариациям SDK: query_string — строкой "a=1&b=2"
+// либо объектом/массивом пар; data — телом-строкой либо объектом; headers —
+// объектом {name:value} либо массивом пар [name, value]. Пусто/битый JSON → nil.
+func parseRequest(requestJSON string) *sentryRequest {
+	if requestJSON == "" || requestJSON == "{}" || requestJSON == "null" {
+		return nil
+	}
+	var r struct {
+		Method      string          `json:"method"`
+		URL         string          `json:"url"`
+		QueryString json.RawMessage `json:"query_string"`
+		Data        json.RawMessage `json:"data"`
+		Headers     json.RawMessage `json:"headers"`
+	}
+	if err := json.Unmarshal([]byte(requestJSON), &r); err != nil {
+		return nil
+	}
+	out := &sentryRequest{
+		Method:  r.Method,
+		URL:     r.URL,
+		Query:   parseQueryParams(r.QueryString),
+		Headers: pairsOrObjectRows(r.Headers),
+		Body:    requestBody(r.Data),
+	}
+	if out.Method == "" && out.URL == "" && len(out.Query) == 0 && len(out.Headers) == 0 && out.Body == "" {
+		return nil
+	}
+	return out
+}
+
+// parseQueryParams разбирает query_string в пары ключ/значение: строка
+// "a=1&b=2" — как URL-query; объект/массив — разворачивается flattenContext'ом.
+func parseQueryParams(raw json.RawMessage) []ctxRow {
+	if len(raw) == 0 {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if s == "" {
+			return nil
+		}
+		vals, err := url.ParseQuery(strings.TrimPrefix(s, "?"))
+		if err != nil {
+			return []ctxRow{{Key: "", Val: s}}
+		}
+		keys := make([]string, 0, len(vals))
+		for k := range vals {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		rows := make([]ctxRow, 0, len(keys))
+		for _, k := range keys {
+			rows = append(rows, ctxRow{Key: k, Val: strings.Join(vals[k], ", ")})
+		}
+		return rows
+	}
+	var rows []ctxRow
+	flattenContext("", raw, &rows)
+	return rows
+}
+
+// pairsOrObjectRows разворачивает headers-подобное значение: массив пар
+// [[name, value], …] либо объект {name: value} — в пары ключ/значение.
+func pairsOrObjectRows(raw json.RawMessage) []ctxRow {
+	if len(raw) == 0 {
+		return nil
+	}
+	var pairs [][]json.RawMessage
+	if json.Unmarshal(raw, &pairs) == nil && len(pairs) > 0 {
+		rows := make([]ctxRow, 0, len(pairs))
+		for _, p := range pairs {
+			if len(p) == 2 {
+				rows = append(rows, ctxRow{Key: jsonScalar(p[0]), Val: jsonScalar(p[1])})
+			}
+		}
+		if len(rows) > 0 {
+			return rows
+		}
+	}
+	var rows []ctxRow
+	flattenContext("", raw, &rows)
+	return rows
+}
+
+// requestBody нормализует тело запроса: тело-строку возвращает как есть,
+// объект/массив — отформатированным JSON (prettyJSON).
+func requestBody(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == `""` {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return prettyJSON(string(raw))
+}
+
+// requestFullView — карточка «Запрос»: строка «METHOD URL», параметры, тело и
+// (сворачиваемые) заголовки. Данные уже отскраблены на приёме.
+templ requestFullView(r *sentryRequest) {
+	<div class="request-view">
+		if r.Method != "" || r.URL != "" {
+			<p class="request-line"><span class="request-method">{ r.Method }</span> <span class="request-url">{ r.URL }</span></p>
+		}
+		if len(r.Query) > 0 {
+			<h4 class="ctx-title">{ i18n.T(ctx, "issues.detail.request.query") }</h4>
+			@contextTable(r.Query)
+		}
+		if r.Body != "" {
+			<h4 class="ctx-title">{ i18n.T(ctx, "issues.detail.request.body") }</h4>
+			<pre class="contexts-json">{ r.Body }</pre>
+		}
+		if len(r.Headers) > 0 {
+			<details class="raw-json">
+				<summary>{ i18n.T(ctx, "issues.detail.request.headers") }</summary>
+				@contextTable(r.Headers)
+			</details>
+		}
+	</div>
 }
 
 func issueStatusPath(issueID int64) string {
@@ -556,7 +688,12 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 
 					// "{}" — пустой JSON-объект: секция с ним не несёт информации
 					// и читается как недогруженные данные.
-					if reqRows := requestRows(selected.Contexts); len(reqRows) > 0 {
+					if req := parseRequest(selected.Request); req != nil {
+						<h3>{ i18n.T(ctx, "issues.detail.request") }</h3>
+						<div class="ctx-card card">
+							@requestFullView(req)
+						</div>
+					} else if reqRows := requestRows(selected.Contexts); len(reqRows) > 0 {
 						<h3>{ i18n.T(ctx, "issues.detail.request") }</h3>
 						<div class="ctx-card card">
 							@contextTable(reqRows)

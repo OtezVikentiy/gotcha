@@ -60,9 +60,13 @@ type ParsedEvent struct {
 	Tags            map[string]string
 	ContextsJSON    string
 	BreadcrumbsJSON string
-	Fingerprint     []string
-	Title           string
-	Culprit         string
+	// RequestJSON — Sentry-интерфейс request верхнего уровня (method/url/
+	// query_string/data/headers/cookies). Хранится как есть (после скраба PII в
+	// пайплайне), парсится к показу на детали issue.
+	RequestJSON string
+	Fingerprint []string
+	Title       string
+	Culprit     string
 	// TraceID/SpanID — из contexts.trace: SDK кладут их в событие, когда
 	// включён трейсинг. Едут в одноимённые колонки events и связывают ошибку
 	// с транзакцией (пустые, если трейсинга нет).
@@ -107,6 +111,7 @@ type sentryEvent struct {
 	Tags        json.RawMessage `json:"tags"`
 	Contexts    json.RawMessage `json:"contexts"`
 	Breadcrumbs json.RawMessage `json:"breadcrumbs"`
+	Request     json.RawMessage `json:"request"`
 	Fingerprint []string        `json:"fingerprint"`
 }
 
@@ -163,6 +168,9 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 	}
 	if len(se.Breadcrumbs) > 0 && string(se.Breadcrumbs) != "null" {
 		pe.BreadcrumbsJSON = string(se.Breadcrumbs)
+	}
+	if len(se.Request) > 0 && string(se.Request) != "null" {
+		pe.RequestJSON = string(se.Request)
 	}
 
 	pe.Exceptions = parseExceptions(se.Exception)

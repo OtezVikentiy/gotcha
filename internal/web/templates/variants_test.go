@@ -106,7 +106,7 @@ func TestMetricDetailPlain(t *testing.T) {
 func TestMonitorDetailPausedDisabled(t *testing.T) {
 	m := uptime.Monitor{ID: 9, Name: "paused-mon", Kind: uptime.KindTCP, Enabled: false, IntervalSeconds: 120}
 	stat := uptime.UptimeStat{}
-	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), nil, nil, true, "https://x", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), nil, nil, 1, 0, true, "https://x", "u@e.com"))
 	if !strings.Contains(out, "paused-mon") {
 		t.Error("выключенный монитор должен отрендериться")
 	}
@@ -133,7 +133,7 @@ func TestEmptyStates(t *testing.T) {
 		"perfissues":   renderTo(t, PerfIssuesList(7, nil, "unresolved", "u@e.com")),
 		"profiles":     renderTo(t, ProfilesList(7, nil, "24h", "", "u@e.com")),
 		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com")),
-		"incidents":    renderTo(t, IncidentsList(7, nil, "u@e.com")),
+		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
 		"regressions":  renderTo(t, RegressionsList(7, nil, "open", "u@e.com")),
 		"profileregs":  renderTo(t, ProfileRegressionsList(7, nil, "open", "u@e.com")),
 		"alerts":       renderTo(t, Alerts(7, nil, nil, false, "", "u@e.com")),

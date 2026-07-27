@@ -13,10 +13,10 @@ func incidentsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incidents"
 }
 
-// incidentsListLimit — сколько последних инцидентов проекта показывать;
-// тот же порядок величины, что и maxFailedDeliveries в alerts.go —
-// обзорная лента, не полный архив.
-const incidentsListLimit = 200
+// incidentsPerPage — размер страницы ленты инцидентов проекта. Раньше лента
+// была капом на 200 без пагинации (длинный неограниченный список); теперь —
+// постранично, чтобы страница не выгребала и не рендерила весь архив разом.
+const incidentsPerPage = 50
 
 // incidentsList — GET /projects/{id}/incidents: инциденты по всем мониторам
 // проекта, самые свежие первыми. Доступ — CanAccessProject (любой участник
@@ -47,7 +47,11 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	incidents, err := h.Uptime.Incidents(r.Context(), projectID, incidentsListLimit)
+	page := parsePage(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	incidents, total, err := h.Uptime.IncidentsPaged(r.Context(), projectID, incidentsPerPage, (page-1)*incidentsPerPage)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -71,5 +75,5 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 		rows[i] = templates.IncidentRow{Incident: inc, MonitorName: names[inc.MonitorID]}
 	}
 
-	_ = templates.IncidentsList(projectID, rows, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.IncidentsList(projectID, rows, page, total, h.currentEmail(r)).Render(r.Context(), w)
 }

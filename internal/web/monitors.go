@@ -21,11 +21,12 @@ const (
 	monitorsListBuckets = 24
 )
 
-// monitorDetailChecksLimit/IncidentsLimit — сколько последних проверок и
-// инцидентов показывает страница монитора.
+// monitorDetailChecksLimit — сколько последних проверок показывает страница
+// монитора. monitorDetailIncidentsPerPage — размер страницы ленты инцидентов
+// на детали монитора (постранично через ?incpage=N, а не единый кап-список).
 const (
-	monitorDetailChecksLimit    = 50
-	monitorDetailIncidentsLimit = 50
+	monitorDetailChecksLimit      = 50
+	monitorDetailIncidentsPerPage = 20
 )
 
 // monitorLatencyStep — шаг графика задержек за 24 часа на странице монитора
@@ -337,13 +338,17 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	incidents, err := h.Uptime.IncidentsForMonitor(r.Context(), m.ID, monitorDetailIncidentsLimit)
+	incPage := parsePage(r.URL.Query().Get("incpage"))
+	if incPage < 1 {
+		incPage = 1
+	}
+	incidents, incTotal, err := h.Uptime.IncidentsForMonitorPaged(r.Context(), m.ID, monitorDetailIncidentsPerPage, (incPage-1)*monitorDetailIncidentsPerPage)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 
-	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, checks, incidents, canManage, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, checks, incidents, incPage, incTotal, canManage, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // monitorSetEnabled — общая часть POST /monitors/{id}/pause и /resume:

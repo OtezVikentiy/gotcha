@@ -12,6 +12,26 @@ func incidentsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incidents"
 }
 
+// incidentsPerPage дублирует incidentsPerPage из web/incidents.go (не
+// экспортирован): нужно то же число, чтобы верно посчитать totalPages.
+const incidentsPerPage = 50
+
+func incidentsTotalPages(total int64) int64 {
+	if total <= 0 {
+		return 1
+	}
+	return (total + incidentsPerPage - 1) / incidentsPerPage
+}
+
+// incidentsPageURL — ссылка на страницу ленты инцидентов (page>1 добавляет
+// ?page=N, первая страница — чистый путь).
+func incidentsPageURL(projectID int64, page int) string {
+	if page > 1 {
+		return incidentsPath(projectID) + "?page=" + strconv.Itoa(page)
+	}
+	return incidentsPath(projectID)
+}
+
 // IncidentRow — инцидент вместе с именем его монитора (Incident сам по себе
 // хранит только monitor_id, см. web/incidents.go) — тот же приём, что и
 // MonitorRow/IssueRow: числовая/справочная агрегация остаётся в web-пакете,
@@ -39,7 +59,7 @@ templ incidentListRow(row IncidentRow) {
 // MonitorsList. Breadcrumb "← Monitors" ведёт к родительскому списку (тот же
 // паттерн, что у MonitorDetail), боковая панель app-shell уже даёт прямую
 // ссылку на "Incidents" из любого раздела uptime — здесь не дублируется.
-templ IncidentsList(projectID int64, rows []IncidentRow, userEmail string) {
+templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, userEmail string) {
 	@layout(i18n.T(ctx, "nav.incidents"), userEmail) {
 		<div class="incidents">
 			@breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
@@ -67,6 +87,17 @@ templ IncidentsList(projectID int64, rows []IncidentRow, userEmail string) {
 					</tbody>
 				</table>
 				</div>
+				if incidentsTotalPages(total) > 1 {
+					<nav class="pagination">
+						if page > 1 {
+							<a href={ templ.URL(incidentsPageURL(projectID, page-1)) }>« { i18n.T(ctx, "pagination.prev") }</a>
+						}
+						<span>{ strconv.Itoa(page) } / { strconv.FormatInt(incidentsTotalPages(total), 10) }</span>
+						if int64(page) < incidentsTotalPages(total) {
+							<a href={ templ.URL(incidentsPageURL(projectID, page+1)) }>{ i18n.T(ctx, "pagination.next") } »</a>
+						}
+					</nav>
+				}
 			}
 		</div>
 	}

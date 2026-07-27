@@ -97,12 +97,17 @@ func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int
 	}
 }
 
-// flameColor — детерминированный тёплый цвет по имени функции.
+// flameColor — детерминированный тёплый цвет по имени функции. Диапазон hue
+// намеренно начинается с янтаря (24), а не с красного: чистый красный (<20) —
+// семантический цвет ошибки во всём приложении (--danger), и красноватые
+// кадры флеймграфа с ним ложно перекликались. Остаётся «пламя» (янтарь →
+// оранжевый → золото), но без клеша с error-red. Светлота фиксирована на 58%,
+// поэтому тёмная подпись (#111) читается на любом кадре в обеих темах.
 func flameColor(name string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(name))
-	hue := int(h.Sum32() % 40) // 0..40 — красно-оранжевый диапазон
-	return fmt.Sprintf("hsl(%d,65%%,60%%)", hue+10)
+	hue := int(h.Sum32()%26) + 24 // 24..49 — янтарь→оранжевый→золото, без красного
+	return fmt.Sprintf("hsl(%d,70%%,58%%)", hue)
 }
 
 // truncateRunes обрезает строку до n рун (без многоточия), n<=0 → пусто.
@@ -890,11 +895,21 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		if i > 0 {
 			axisLine(&sb, x, y0, x, y1)
 		}
+		// У краёв холста подпись прижимаем к своей стороне (как в writeXTicks):
+		// центрированная метка первого дня у левой оси наезжала на подпись «0»
+		// оси Y и рамку.
+		anchor := "middle"
+		switch {
+		case x > x1-24:
+			anchor = "end"
+		case x < x0+24:
+			anchor = "start"
+		}
 		sb.WriteString(`<text x="`)
 		sb.WriteString(formatCoord(x))
 		sb.WriteString(`" y="`)
 		sb.WriteString(formatCoord(float64(h) - 7))
-		sb.WriteString(`" text-anchor="middle" fill="currentColor">`)
+		sb.WriteString(`" text-anchor="` + anchor + `" fill="currentColor">`)
 		sb.WriteString(html.EscapeString(p.T.UTC().Format("02.01")))
 		sb.WriteString(`</text>`)
 	}

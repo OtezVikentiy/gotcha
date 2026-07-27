@@ -124,13 +124,13 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), checks, incidents, true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com"))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
 
 	// Без прав управления — рендер не должен падать и остаётся валидным.
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), nil, nil, false, "https://x", "u@e.com"))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), nil, nil, 1, 0, false, "https://x", "u@e.com"))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
 	}
@@ -372,7 +372,7 @@ func TestIncidentsAndRegressionsLists(t *testing.T) {
 		{Incident: uptime.Incident{ID: 1, StartedAt: now.Add(-time.Hour), Cause: "timeout"}, MonitorName: "web"},
 		{Incident: uptime.Incident{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"}, MonitorName: "api"},
 	}
-	out := renderTo(t, IncidentsList(7, incRows, "u@e.com"))
+	out := renderTo(t, IncidentsList(7, incRows, 1, int64(len(incRows)), "u@e.com"))
 	if !strings.Contains(out, "web") || !strings.Contains(out, "api") {
 		t.Error("инциденты должны содержать имена мониторов")
 	}

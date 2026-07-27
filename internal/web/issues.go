@@ -66,8 +66,17 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	canManage := role == org.RoleOwner || role == org.RoleAdmin
 
 	q := r.URL.Query()
+	// Дефолтный вид списка — только «Не решено»: решённые и игнорируемые
+	// проблемы обычно не нужны при первом открытии и лишь зашумляют список.
+	// Отличаем «параметр не задан» (первый заход → unresolved) от «пользователь
+	// явно выбрал Все» (?status= присутствует, но пусто → без фильтра): так
+	// дефолт остаётся полностью переопределяемым из UI-фильтра.
+	status := q.Get("status")
+	if !q.Has("status") {
+		status = "unresolved"
+	}
 	filter := issue.Filter{
-		Status:      q.Get("status"),
+		Status:      status,
 		Level:       q.Get("level"),
 		Query:       q.Get("q"),
 		Sort:        q.Get("sort"),

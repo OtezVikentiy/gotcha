@@ -241,7 +241,7 @@ func (b *Batcher) insert(ctx context.Context, events []Event) error {
 		level, message, exception_type, exception_value, stacktrace,
 		environment, release, server_name, sdk,
 		user_id, user_ip, user_email, tags, contexts,
-		trace_id, span_id, breadcrumbs)`)
+		trace_id, span_id, breadcrumbs, request)`)
 	if err != nil {
 		return err
 	}
@@ -255,7 +255,7 @@ func (b *Batcher) insert(ctx context.Context, events []Event) error {
 			e.Level, e.Message, e.ExceptionType, e.ExceptionValue, e.Stacktrace,
 			e.Environment, e.Release, e.ServerName, e.SDK,
 			e.UserID, e.UserIP, e.UserEmail, e.Tags, e.Contexts,
-			e.TraceID, e.SpanID, e.Breadcrumbs,
+			e.TraceID, e.SpanID, e.Breadcrumbs, e.Request,
 		); err != nil {
 			return err
 		}

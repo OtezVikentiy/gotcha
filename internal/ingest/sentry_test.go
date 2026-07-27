@@ -105,6 +105,27 @@ func TestParseEventBreadcrumbs(t *testing.T) {
 	}
 }
 
+// ParseEvent сохраняет Sentry request-интерфейс (method/url/query_string/data/
+// headers) как есть; без поля request — пусто.
+func TestParseEventRequest(t *testing.T) {
+	want := `{"method":"POST","url":"https://x/api","query_string":"a=1&b=2","data":{"name":"bob"},"headers":{"Content-Type":"application/json"}}`
+	js := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error","request":` + want + `}`
+	pe, err := ParseEvent([]byte(js))
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	if pe.RequestJSON != want {
+		t.Fatalf("RequestJSON = %q, want %q", pe.RequestJSON, want)
+	}
+	pe2, err := ParseEvent([]byte(`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error"}`))
+	if err != nil {
+		t.Fatalf("ParseEvent(no request): %v", err)
+	}
+	if pe2.RequestJSON != "" {
+		t.Fatalf("без request ожидали пусто, got %q", pe2.RequestJSON)
+	}
+}
+
 func TestParseEventMessageOnly(t *testing.T) {
 	// sentry-js captureMessage: message-объект, ISO-timestamp, тэги массивом.
 	want := time.Now().UTC().Add(-2 * time.Hour).Truncate(100 * time.Millisecond)

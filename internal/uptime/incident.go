@@ -143,6 +143,52 @@ func (s *Service) IncidentsForMonitor(ctx context.Context, monitorID int64, limi
 		LIMIT $2`, monitorID, limit)
 }
 
+// queryIncidentsPaged runs an incident query whose LAST selected column is
+// count(*) OVER() AS total, returning the page rows together with the
+// unpaginated total (0 for an empty page — no row carries the window count).
+func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, query string, args ...any) ([]Incident, int64, error) {
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []Incident
+	var total int64
+	for rows.Next() {
+		var inc Incident
+		if err := rows.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
+			&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt, &total); err != nil {
+			return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
+		}
+		out = append(out, inc)
+	}
+	return out, total, rows.Err()
+}
+
+// IncidentsPaged returns one page (limit/offset) of projectID's incidents,
+// freshest first, plus the total across all pages for the pager.
+func (s *Service) IncidentsPaged(ctx context.Context, projectID int64, limit, offset int) ([]Incident, int64, error) {
+	return queryIncidentsPaged(ctx, s.pool, `
+		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
+			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at,
+			count(*) OVER() AS total
+		FROM incidents i
+		JOIN monitors m ON m.id = i.monitor_id
+		WHERE m.project_id = $1
+		ORDER BY i.started_at DESC
+		LIMIT $2 OFFSET $3`, projectID, limit, offset)
+}
+
+// IncidentsForMonitorPaged returns one page (limit/offset) of monitorID's
+// incidents, freshest first, plus the total across all pages.
+func (s *Service) IncidentsForMonitorPaged(ctx context.Context, monitorID int64, limit, offset int) ([]Incident, int64, error) {
+	return queryIncidentsPaged(ctx, s.pool, `
+		SELECT `+incidentColumns+`, count(*) OVER() AS total
+		FROM incidents WHERE monitor_id = $1
+		ORDER BY started_at DESC
+		LIMIT $2 OFFSET $3`, monitorID, limit, offset)
+}
+
 // MarkNotified records that an open/close notification was sent for an
 // incident: open=true sets notified_open, otherwise notified_close.
 func (s *Service) MarkNotified(ctx context.Context, incidentID int64, open bool) error {

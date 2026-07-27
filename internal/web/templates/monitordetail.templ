@@ -156,7 +156,28 @@ templ incidentRow(inc uptime.Incident) {
 // (owner/admin организации проекта). Ссылка "← Monitors" в шапке — это
 // breadcrumb к родительскому списку (тот же паттерн, что у issuedetail.templ
 // и perfissuedetail.templ), не дублирование боковой панели app-shell.
-templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, checks []uptime.CheckRow, incidents []uptime.Incident, canManage bool, baseURL string, userEmail string) {
+// monitorDetailIncidentsPerPage дублирует одноимённую константу из
+// web/monitors.go (не экспортирована): нужно то же число для totalPages.
+const monitorDetailIncidentsPerPage = 20
+
+func monitorIncidentsTotalPages(total int64) int64 {
+	if total <= 0 {
+		return 1
+	}
+	return (total + monitorDetailIncidentsPerPage - 1) / monitorDetailIncidentsPerPage
+}
+
+// monitorIncidentsPageURL — ссылка на страницу ленты инцидентов монитора
+// (?incpage=N; отдельный параметр, чтобы не конфликтовать с прочими на
+// странице). Первая страница — чистый путь детали.
+func monitorIncidentsPageURL(monitorID int64, page int) string {
+	if page > 1 {
+		return monitorDetailPath(monitorID) + "?incpage=" + strconv.Itoa(page)
+	}
+	return monitorDetailPath(monitorID)
+}
+
+templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, baseURL string, userEmail string) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
 			@breadcrumbBack(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
@@ -275,6 +296,17 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 					</tbody>
 				</table>
 				</div>
+				if monitorIncidentsTotalPages(incTotal) > 1 {
+					<nav class="pagination">
+						if incPage > 1 {
+							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage-1)) }>« { i18n.T(ctx, "pagination.prev") }</a>
+						}
+						<span>{ strconv.Itoa(incPage) } / { strconv.FormatInt(monitorIncidentsTotalPages(incTotal), 10) }</span>
+						if int64(incPage) < monitorIncidentsTotalPages(incTotal) {
+							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage+1)) }>{ i18n.T(ctx, "pagination.next") } »</a>
+						}
+					</nav>
+				}
 			}
 		</div>
 	}

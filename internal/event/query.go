@@ -36,6 +36,7 @@ type Stored struct {
 	Tags        map[string]string
 	Contexts    string
 	Breadcrumbs string
+	Request     string // JSON: Sentry request-интерфейс (method/url/query_string/data/headers)
 
 	// TraceID — trace_id события (пустой, если SDK трейсинг не включил):
 	// страница issue показывает по нему ссылку «Смотреть трейс» на waterfall
@@ -60,7 +61,7 @@ func NewQuery(conn driver.Conn) *Query {
 }
 
 const storedColumns = `event_id, timestamp, level, message, exception_type, exception_value, stacktrace,
-	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id, breadcrumbs`
+	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id, breadcrumbs, request`
 
 // scanner — общая часть driver.Row и driver.Rows, достаточная для Scan.
 type scanner interface {
@@ -75,7 +76,7 @@ func scanStored(s scanner) (Stored, error) {
 		&out.ExceptionType, &out.ExceptionValue, &out.Stacktrace,
 		&out.Environment, &out.Release, &out.ServerName, &out.SDK,
 		&out.UserID, &out.UserIP, &out.UserEmail,
-		&out.Tags, &out.Contexts, &out.TraceID, &out.Breadcrumbs,
+		&out.Tags, &out.Contexts, &out.TraceID, &out.Breadcrumbs, &out.Request,
 	); err != nil {
 		return Stored{}, err
 	}

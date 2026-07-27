@@ -99,7 +99,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 						<tbody>
 							for _, row := range d.Vitals {
 								<tr>
-									<td>{ vitalLabel(row.Vital.Name) }</td>
+									<td>@vitalAbbr(row.Vital.Name)</td>
 									<td class="num">{ formatVitalValue(row.Vital) }</td>
 									<td>@vitalRatingBadge(row.Vital.Rating)</td>
 									<td class="vital-chart-cell">@row.Chart</td>

@@ -276,3 +276,37 @@ func TestEnumRenderBadges(t *testing.T) {
 		t.Error("бейдж включённости канала должен отличаться")
 	}
 }
+
+// parseRequest разбирает Sentry request-интерфейс: method/url, query_string
+// строкой и массивом пар, тело-объект, headers объектом и массивом пар.
+func TestParseRequest(t *testing.T) {
+	r := parseRequest(`{"method":"POST","url":"https://x/api","query_string":"a=1&b=2","data":{"name":"bob"},"headers":{"Content-Type":"application/json","Accept":"*/*"}}`)
+	if r == nil {
+		t.Fatal("parseRequest вернул nil на валидном request")
+	}
+	if r.Method != "POST" || r.URL != "https://x/api" {
+		t.Errorf("method/url = %q %q", r.Method, r.URL)
+	}
+	if len(r.Query) != 2 {
+		t.Errorf("query params = %d, want 2", len(r.Query))
+	}
+	if !strings.Contains(r.Body, "bob") {
+		t.Errorf("body не содержит тело: %q", r.Body)
+	}
+	if len(r.Headers) != 2 {
+		t.Errorf("headers = %d, want 2", len(r.Headers))
+	}
+	if parseRequest("") != nil || parseRequest("{}") != nil || parseRequest("null") != nil {
+		t.Error("пустой request должен давать nil")
+	}
+	// query_string и headers массивами пар
+	r2 := parseRequest(`{"query_string":[["x","1"]],"headers":[["H","v"]]}`)
+	if r2 == nil || len(r2.Query) != 1 || len(r2.Headers) != 1 {
+		t.Errorf("массив-пары разобраны неверно: %+v", r2)
+	}
+	// рендер компонента не падает и содержит method/url
+	out := renderTo(t, requestFullView(r))
+	if !strings.Contains(out, "POST") || !strings.Contains(out, "https://x/api") {
+		t.Errorf("requestFullView не содержит method/url: %s", out)
+	}
+}

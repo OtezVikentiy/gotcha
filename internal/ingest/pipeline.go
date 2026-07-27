@@ -297,6 +297,10 @@ func (p *Pipeline) process(t task) {
 	ev.ContextsJSON = p.Scrub.ScrubJSON(ev.ContextsJSON)
 	ev.StacktraceJSON = p.Scrub.ScrubJSON(ev.StacktraceJSON)
 	ev.BreadcrumbsJSON = p.Scrub.ScrubJSON(ev.BreadcrumbsJSON)
+	// Тело/заголовки/куки запроса часто несут PII и секреты (Authorization,
+	// session-cookie, пароли в form-data) — прогоняем через тот же denylist-скраб,
+	// что и contexts, до записи в CH.
+	ev.RequestJSON = p.Scrub.ScrubJSON(ev.RequestJSON)
 	// RA-L10: опционально маскируем email в свободном тексте (message/exception
 	// value). No-op при ScrubFreeText=false — текущее поведение не меняется.
 	ev.Message = p.Scrub.ScrubText(ev.Message)
@@ -322,6 +326,7 @@ func (p *Pipeline) process(t task) {
 		Tags:           ev.Tags,
 		Contexts:       ev.ContextsJSON,
 		Breadcrumbs:    ev.BreadcrumbsJSON,
+		Request:        ev.RequestJSON,
 		TraceID:        ev.TraceID,
 		SpanID:         ev.SpanID,
 	})

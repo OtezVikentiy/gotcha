@@ -27,16 +27,18 @@ templ DocsIndex(groups []DocsGroup, userEmail string) {
 	@layout(i18n.T(ctx, "docs.index.title"), userEmail) {
 		<div class="docs-index">
 			<h1>{ i18n.T(ctx, "docs.index.title") }</h1>
-			for _, g := range groups {
-				<section class="card">
-					<h2 class="card-header">{ i18n.T(ctx, g.Key) }</h2>
-					<ul class="docs-index-list">
-						for _, p := range g.Pages {
-							<li><a href={ templ.URL(docPagePath(p.Slug)) }>{ p.Title }</a></li>
-						}
-					</ul>
-				</section>
-			}
+			<div class="docs-index-groups">
+				for _, g := range groups {
+					<section class="card">
+						<h2 class="card-header">{ i18n.T(ctx, g.Key) }</h2>
+						<ul class="docs-index-list">
+							for _, p := range g.Pages {
+								<li><a href={ templ.URL(docPagePath(p.Slug)) }>{ p.Title }</a></li>
+							}
+						</ul>
+					</section>
+				}
+			</div>
 		</div>
 	}
 }

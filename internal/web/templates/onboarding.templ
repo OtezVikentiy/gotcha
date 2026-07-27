@@ -131,7 +131,7 @@ type ProjectListItem struct {
 
 templ projectRow(it ProjectListItem) {
 	<tr>
-		<td><a href={ templ.URL(issuesPath(it.Project.ID)) }>{ it.Project.Name }</a></td>
+		<td><a href={ templ.URL(projectSettingsPath(it.Project.ID)) }>{ it.Project.Name }</a></td>
 		<td><span class="chip">{ it.Project.Platform }</span></td>
 		<td><a class="btn btn-ghost" href={ templ.URL(projectSetupPath(it.Project.ID)) }>{ i18n.T(ctx, "project.list.setup_link") }</a></td>
 		<td>

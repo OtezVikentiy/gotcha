@@ -23,6 +23,11 @@
 	--rail-border: #1c2534;
 	--good: #2ea043;
 	--warn: #d9a521;
+	/* «Частично / деградация» — самостоятельный чистый жёлтый, отдельный от
+	   --warn (мутно-коричневый амбер «предупреждение/нужно улучшить»). Бар
+	   доступности, плашка «Частичный сбой» на статус-странице. Светлый вариант
+	   темнее для читаемости как текст на белом (--warn-golden, не олива). */
+	--partial: #f5b70a;
 	--danger: #f0574a;
 	--info: #3d7bff;
 	--link: #79aaff;
@@ -61,6 +66,7 @@
 	--rail-border: #ccd5e2;
 	--good: #1a7f37;
 	--warn: #9a6700;
+	--partial: #b47600;
 	--danger: #cf222e;
 	--info: #2f6bff;
 	--link: #2f6bff;
@@ -82,6 +88,7 @@
 		--rail-border: #ccd5e2;
 		--good: #1a7f37;
 		--warn: #9a6700;
+		--partial: #b47600;
 		--danger: #cf222e;
 		--info: #2f6bff;
 		--link: #2f6bff;
@@ -447,6 +454,37 @@ a:hover {
 	width: 100%;
 	margin: 0;
 }
+/* Единый принцип ширины (UI-аудит §2): узкие detail/форм/settings-колонки
+   ЦЕНТРИРУЮТСЯ в .app-content, а не жмутся влево с пустой правой половиной —
+   так пустое поле читается как симметричные отступы, а не «недоделанность».
+   Таблицы и графики остаются во всю ширину: им ширина нужна для чтения.
+   Двухколоночные страницы (форма + естественный «сосед»: live-превью или
+   панель-подсказка) используют .content-split. */
+.content-col {
+	max-width: 880px;
+	margin-inline: auto;
+}
+.content-split {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 24px;
+	align-items: start;
+}
+@media (min-width: 1040px) {
+	.content-split {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
+	}
+}
+/* Правый «сосед» split-раскладки: липкий на широком экране, чтобы подсказка/
+   превью оставались в поле зрения при длинной форме слева. */
+.content-split-aside {
+	position: sticky;
+	top: 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
 .app-footer {
 	padding: 8px 16px;
 	font-size: 12px;
@@ -586,6 +624,10 @@ a:hover {
 	.rule-grid > :nth-child(1) { grid-column: 1; grid-row: 1; }
 	.rule-grid > :nth-child(2) { grid-column: 1; grid-row: 2; }
 	.rule-grid > :nth-child(3) { grid-column: 2; grid-row: 1 / span 2; }
+	/* Карточки-fieldset тянутся на всю высоту своей ячейки, а не по контенту:
+	   иначе короткие «Новый issue»/«Регрессия» слева не дотягивались до низа
+	   высокого «Всплеска» справа — сетка читалась «ступенькой». */
+	.rule-grid > .alert-rule { height: 100%; margin: 0; }
 }
 
 /* -- Chromeless: анонимные/setup-страницы (логин, регистрация, онбординг,
@@ -841,6 +883,12 @@ th {
 	font-size: var(--fs-xs);
 	font-weight: 700;
 	text-transform: uppercase;
+	/* Единый трекинг для всех капс-пилюль. Базовый .badge был без него, а
+	   соседние капс-элементы (ctx-title, статус-плашки) — с .04em/.4px, отчего
+	   бейджи читались чуть плотнее прочего капса. Все семейства (уровень/статус/
+	   канал/вайтлс/монитор/инцидент) идут через .badge + .badge-{good,warn,
+	   danger,neutral,info}, так что одно правило выравнивает трекинг везде. */
+	letter-spacing: .4px;
 	white-space: nowrap;
 }
 /* Inline checkbox + подпись (используется формами алертов/мониторов/обслуживания
@@ -879,6 +927,22 @@ th {
 .badge-info { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
 
 .vital-value { margin-right: 6px; }
+/* Аббревиатуры web-vital'ов (LCP/INP/CLS/FCP/TTFB) с расшифровкой по наведению
+   (нативный <abbr title>): пунктирное подчёркивание и курсор-help подсказывают,
+   что на них можно навести. Наследует цвет ссылки в заголовках-сортировках. */
+.vital-abbr {
+	text-decoration: underline dotted;
+	text-underline-offset: 2px;
+	cursor: help;
+}
+/* Подпись поля-формы с всплывающей расшифровкой (title). Тот же язык, что у
+   .vital-abbr: пунктир + курсор-help. Для «непрозрачных» технических полей
+   настроек производительности/регрессий (см. helpLabel в projsettings.templ). */
+.help-label {
+	text-decoration: underline dotted;
+	text-underline-offset: 3px;
+	cursor: help;
+}
 .vital-chart {
 	display: inline-block;
 	width: 240px;
@@ -1207,6 +1271,21 @@ th {
 @media (min-width: 700px) {
 	.event-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* Пользователь/SDK — это ОТОБРАЖАЕМЫЕ значения, а не поля ввода. Общий
+   .event-detail pre одевает их в рамку+фон+padding (уместно для JSON/стека),
+   отчего блок читался как редактируемый input. Здесь снимаем «поле» и
+   оставляем моно-значение под заголовком — тот же язык, что у блока «Теги».
+   Специфичность (0,2,1) осознанно выше .event-detail pre (0,1,1), чтобы
+   правило выигрывало независимо от порядка. */
+.event-detail .event-meta pre {
+	background: none;
+	border: 0;
+	border-radius: 0;
+	padding: 2px 0;
+	color: var(--text);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
 
 .frames {
 	display: flex;
@@ -1338,6 +1417,22 @@ th {
 .contexts-json {
 	white-space: pre;
 	overflow-x: auto;
+}
+/* Карточка «Запрос» на детали issue (Sentry request-интерфейс: строка
+   METHOD URL, параметры, тело, заголовки). */
+.request-line {
+	margin: 0 0 8px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	overflow-wrap: anywhere;
+}
+.request-method {
+	font-weight: 700;
+	color: var(--accent);
+	margin-right: 6px;
+}
+.request-view .ctx-title:first-of-type {
+	margin-top: 0;
 }
 /* Структурные контексты: карточки-группы (os/runtime/trace…) и Request. */
 .ctx-groups {
@@ -1505,7 +1600,7 @@ th {
 	margin: 6px 0 20px;
 }
 .status-overall-ok { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
-.status-overall-partial { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.status-overall-partial { background: color-mix(in srgb, var(--partial) 16%, transparent); color: var(--partial); }
 .status-overall-major { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 .status-description {
 	color: var(--text-dim);
@@ -1552,6 +1647,20 @@ th {
 /* Три блока одной карточки статус-страницы — друг под другом: настройки,
    сервисы, публикация. Разделены горизонтальными линиями, чтобы группы
    читались как части одной формы, а не как отдельные карточки. */
+/* Настройки статус-страниц: одна страница = одна узкая карточка в settings-grid,
+   прижатая влево с пустой правой половиной (UI-аудит §2). Публичное live-превью
+   справа невозможно — публичная страница отдаёт X-Frame-Options: DENY, а
+   ослаблять защиту от кликджекинга ради превью нельзя. Поэтому по принципу
+   гибрида падаем в дефолт: центрируем колонку комфортной ширины, карточки — в
+   один столбец (их обычно немного). */
+.status-pages {
+	max-width: 760px;
+	margin-inline: auto;
+}
+.status-pages .settings-grid {
+	grid-template-columns: 1fr;
+}
+
 .status-page-editor {
 	display: flex;
 	flex-direction: column;
@@ -1759,6 +1868,16 @@ form.inline {
 	letter-spacing: -.5px;
 	font-variant-numeric: tabular-nums;
 	overflow-wrap: anywhere;
+}
+
+/* Кнопка отправки не должна прилипать к предыдущему блоку. В форме квот
+   («Использование и лимиты») кнопка «Сохранить» шла сразу за таблицей, в форме
+   SSO — сразу за строкой-чекбоксом «Принудительный вход»: вплотную, без
+   воздуха. Задаём верхний отступ прямым submit-кнопкам этих форм (в остальных
+   формах перед кнопкой идёт .field со своим отступом — там правка не нужна). */
+.org-quota-form > button[type="submit"],
+.sso-form > button[type="submit"] {
+	margin-top: 16px;
 }
 
 /* -- Cards / panels -- */
@@ -2111,10 +2230,20 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 /* -- Docs index (/docs) -- переиспользует .card/.settings-grid: одна
    секция (Начало/Разделы/Интеграции) на карточку. */
 .docs-index {
-	max-width: 760px;
 	display: flex;
 	flex-direction: column;
 	gap: 16px;
+}
+/* Группы-разделы — адаптивная сетка карточек, а не одна колонка слева с пустой
+   правой половиной (UI-аудит §2). auto-fill заполняет доступную ширину: три
+   группы (Начало/Разделы/Интеграции) встают в ряд на широком экране и в одну
+   колонку на узком. Контекстный сайдбар остаётся быстрым переходником, а этот
+   индекс — визуальной посадочной с группировкой. */
+.docs-index-groups {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	gap: 16px;
+	align-items: start;
 }
 .docs-index-list {
 	list-style: none;
@@ -2239,10 +2368,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    Раньше эти значения были впечатаны в SVG hex-литералами из тёмной палитры
    и не менялись в светлой теме. */
 .availability-bars .bar-up      { fill: var(--good); }
-/* Жёлтый «частично» — самостоятельный чистый жёлтый, а не --warn (#d9a521
-   выглядел мутно-коричневым). Один тон на обе темы: как заливка небольшого
-   сегмента читается ярко и на светлой, и на тёмной карточке. */
-.availability-bars .bar-partial { fill: #f5b70a; }
+/* Жёлтый «частично» — через токен --partial (dark #f5b70a / light #b47600),
+   отдельный от --warn. Как заливка сегмента читается ярко на тёмной карточке
+   и достаточно контрастно (темнее) на светлой. */
+.availability-bars .bar-partial { fill: var(--partial); }
 .availability-bars .bar-down    { fill: var(--danger); }
 .availability-bars .bar-empty   { fill: var(--border); }
 
