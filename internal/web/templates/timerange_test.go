@@ -38,7 +38,8 @@ func TestTimeRangeLabelCustom(t *testing.T) {
 	if err := timeRangeLabel(customRange).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if out := sb.String(); !strings.Contains(out, "2026-07-01T00:00") || !strings.Contains(out, "2026-07-10T00:00") {
+	// Подпись — в читаемом формате ДД.ММ.ГГГГ ЧЧ:ММ, а не сырой ISO.
+	if out := sb.String(); !strings.Contains(out, "01.07.2026 00:00") || !strings.Contains(out, "10.07.2026 00:00") {
 		t.Errorf("timeRangeLabel(custom) = %q", out)
 	}
 
@@ -49,6 +50,15 @@ func TestTimeRangeLabelCustom(t *testing.T) {
 	}
 	if out := sb.String(); strings.TrimSpace(out) == "" {
 		t.Error("timeRangeLabel(preset) empty")
+	}
+
+	// нераспарсенная граница — prettyBound отдаёт её как есть (fallback).
+	sb.Reset()
+	if err := timeRangeLabel(TimeRangeVM{Custom: true, Start: "raw-x", End: "raw-y"}).Render(ctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if out := sb.String(); !strings.Contains(out, "raw-x") {
+		t.Errorf("prettyBound fallback lost the raw value: %q", out)
 	}
 }
 

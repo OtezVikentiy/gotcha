@@ -56,17 +56,39 @@ func TestParseTimeRangeCustom(t *testing.T) {
 	}
 }
 
-func TestParseTimeRangePresetWinsOverStaleInputs(t *testing.T) {
-	// после переключения с custom на пресет поля start/end ещё держат
-	// старые значения — известный пресет обязан их перебить.
+func TestParseTimeRangeVisibleDatesWin(t *testing.T) {
+	// Введённые видимые поля start+end включают произвольный диапазон САМИ,
+	// даже если в списке стоит пресет — отдельно выбирать «свой диапазон» не
+	// нужно (устранение лишнего действия).
 	q := vals(map[string]string{
 		"period": "7d",
 		"start":  "2026-07-01T00:00",
 		"end":    "2026-07-10T00:00",
 	})
 	tr := parseTimeRange(q, "24h")
+	if !tr.Custom {
+		t.Errorf("filled start+end should activate custom over the preset: %+v", tr)
+	}
+}
+
+func TestParseTimeRangeCarryOver(t *testing.T) {
+	// period=custom + скрытые cstart/cend (видимые пусты) → перенесённый
+	// активный произвольный диапазон сохраняется при смене прочих фильтров.
+	q := vals(map[string]string{
+		"period": "custom",
+		"cstart": "2026-07-01T00:00",
+		"cend":   "2026-07-10T00:00",
+	})
+	tr := parseTimeRange(q, "24h")
+	if !tr.Custom {
+		t.Errorf("carry-over cstart/cend should keep custom: %+v", tr)
+	}
+
+	// Выбор пресета в списке перебивает перенос custom (переключение обратно).
+	q.Set("period", "7d")
+	tr = parseTimeRange(q, "24h")
 	if tr.Custom || tr.Key != "7d" {
-		t.Errorf("preset should win over stale start/end: %+v", tr)
+		t.Errorf("preset should win over carried custom: %+v", tr)
 	}
 }
 
@@ -117,14 +139,25 @@ func TestParseCustomRangeClampsFutureEnd(t *testing.T) {
 }
 
 func TestParseTimeRangeCustomEndDefaultsToNow(t *testing.T) {
+	// end присутствует, но не парсится → parseCustomRange подставляет «сейчас».
+	// (Правило видимых полей требует непустой end, поэтому даём непустой мусор.)
 	now := time.Now().UTC()
 	start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04")
-	tr := parseTimeRange(vals(map[string]string{"start": start}), "24h")
+	tr := parseTimeRange(vals(map[string]string{"start": start, "end": "garbage"}), "24h")
 	if !tr.Custom {
 		t.Fatalf("expected custom, got %+v", tr)
 	}
 	if tr.To.Before(now.Add(-2 * time.Minute)) {
 		t.Errorf("end should default to ~now, got %v", tr.To)
+	}
+}
+
+func TestParseTimeRangePartialVisibleFallsBack(t *testing.T) {
+	// Только start (end пуст) — неполный ввод, правило видимых полей требует
+	// оба; падаем на пресет по умолчанию, а не в custom.
+	tr := parseTimeRange(vals(map[string]string{"start": "2026-07-01T00:00"}), "24h")
+	if tr.Custom || tr.Key != "24h" {
+		t.Errorf("partial visible input should fall back to default: %+v", tr)
 	}
 }
 

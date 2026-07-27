@@ -336,6 +336,11 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Дозаполняем окно пустыми корзинами, чтобы ось графика задержек шла по
+	// выбранному интервалу целиком (пустые корзины — нулевой столбик).
+	latencyPoints = fillSeries(latencyPoints, tr.From, tr.To, latencyStep,
+		func(p uptime.LatencyPoint) time.Time { return p.T },
+		func(t time.Time) uptime.LatencyPoint { return uptime.LatencyPoint{T: t} })
 	latencyChart := latencyStackedSVG(r.Context(), latencyPoints, latencyChartWidth, latencyChartHeight)
 
 	checks, err := h.UptimeQuery.Recent(r.Context(), m.ID, monitorDetailChecksLimit)

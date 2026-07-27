@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -113,6 +114,11 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Дозаполняем окно: пустые корзины помечаем NaN — линия рвётся на них, а
+	// ось X идёт по всему выбранному интервалу (а не по диапазону с данными).
+	points = fillSeries(points, from, now, step,
+		func(p metric.Point) time.Time { return p.T },
+		func(t time.Time) metric.Point { return metric.Point{T: t, V: math.NaN()} })
 	labels, err := h.Metrics.Labels(r.Context(), projectID, name)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))

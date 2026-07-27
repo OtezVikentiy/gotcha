@@ -222,6 +222,11 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Дозаполняем окно пустыми корзинами (Count==0 — разрыв линии/нет столбика),
+	// чтобы оси латентности и трафика шли по выбранному интервалу целиком.
+	points = fillSeries(points, from, now, step,
+		func(p trace.LatencyPoint) time.Time { return p.T },
+		func(t time.Time) trace.LatencyPoint { return trace.LatencyPoint{T: t} })
 
 	histogram, err := h.Trace.DurationHistogram(r.Context(), projectID, transaction, from, now, environment, perfHistogramBuckets)
 	if err != nil {

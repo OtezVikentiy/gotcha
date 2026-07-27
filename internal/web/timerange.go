@@ -41,22 +41,36 @@ var timeRangePresets = map[string]time.Duration{
 // timeRangePresetOrder — порядок пресетов в селекторе (map не упорядочен).
 var timeRangePresetOrder = []string{"1h", "24h", "7d", "30d"}
 
-// parseTimeRange разбирает окно времени из query-параметров: пресет period или
-// произвольный диапазон start/end. Приоритет — у известного пресета в period:
-// он выигрывает у оставшихся в форме start/end (после переключения с custom на
-// пресет поля даты ещё держат старые значения, но выбор пресета должен победить).
-// Только period=custom (или пустой period при заполненных start/end) уводит в
-// произвольный диапазон; битый диапазон тихо падает на пресет по умолчанию def.
+// parseTimeRange разбирает окно времени из query-параметров. Приоритеты
+// подобраны так, чтобы произвольный диапазон включался БЕЗ отдельного выбора
+// «свой диапазон» в списке (лишнее действие), и при этом переключение
+// custom→пресет и сохранение custom при смене прочих фильтров работали без JS:
+//
+//  1. Видимые поля start+end заполнены → произвольный диапазон (пользователь
+//     просто ввёл даты — этого достаточно, пресет в списке не важен).
+//  2. Иначе известный пресет в period → он (выбор пресета в списке уводит с
+//     произвольного диапазона: скрытый перенос custom из п.3 при этом
+//     игнорируется, т.к. period уже не "custom").
+//  3. Иначе period=custom + скрытые cstart/cend → перенесённый активный
+//     произвольный диапазон (чтобы смена окружения/сортировки его не сбросила;
+//     видимые поля при активном custom пусты — под ввод НОВОГО диапазона).
+//  4. Иначе пресет по умолчанию def; битый диапазон тоже падает сюда.
 func parseTimeRange(q url.Values, def string) TimeRange {
 	now := time.Now().UTC()
+
+	if q.Get("start") != "" && q.Get("end") != "" {
+		if tr, ok := parseCustomRange(q.Get("start"), q.Get("end"), now); ok {
+			return tr
+		}
+	}
 
 	key := q.Get("period")
 	if w, ok := timeRangePresets[key]; ok {
 		return TimeRange{From: now.Add(-w), To: now, Key: key}
 	}
 
-	if key == "custom" || q.Get("start") != "" || q.Get("end") != "" {
-		if tr, ok := parseCustomRange(q, now); ok {
+	if key == "custom" {
+		if tr, ok := parseCustomRange(q.Get("cstart"), q.Get("cend"), now); ok {
 			return tr
 		}
 	}
@@ -65,16 +79,16 @@ func parseTimeRange(q url.Values, def string) TimeRange {
 	return TimeRange{From: now.Add(-w), To: now, Key: def}
 }
 
-// parseCustomRange собирает произвольный диапазон из start/end. Нормализует:
-// end не в будущем (по умолчанию — «сейчас»), start строго раньше end, размах
-// не больше окна хранения. Возвращает ok=false, если start не распарсился или
-// диапазон вырожден — тогда вызывающий берёт пресет по умолчанию.
-func parseCustomRange(q url.Values, now time.Time) (TimeRange, bool) {
-	from, ok := parseRangeTime(q.Get("start"))
+// parseCustomRange собирает произвольный диапазон из строк начала/конца.
+// Нормализует: конец не в будущем (по умолчанию — «сейчас»), начало строго
+// раньше конца, размах не больше окна хранения. ok=false, если начало не
+// распарсилось или диапазон вырожден — тогда вызывающий берёт пресет.
+func parseCustomRange(startStr, endStr string, now time.Time) (TimeRange, bool) {
+	from, ok := parseRangeTime(startStr)
 	if !ok {
 		return TimeRange{}, false
 	}
-	to, ok := parseRangeTime(q.Get("end"))
+	to, ok := parseRangeTime(endStr)
 	if !ok {
 		to = now
 	}

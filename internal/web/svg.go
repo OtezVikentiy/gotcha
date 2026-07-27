@@ -159,7 +159,27 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	axisLine(&sb, x0, y0, x0, y1)
 	axisLine(&sb, x0, y1, x1, y1)
 
-	if len(points) == 0 {
+	// Домен значений: данные (пропуская пустые NaN-корзины дозаполнения окна) +
+	// пороги (чтобы пороговые линии попадали в область). Пустые корзины ряд
+	// покрывает разрывом, а не нулём — иначе на пропусках линия падала бы в 0.
+	haveData := false
+	var dataMin, dataMax float64
+	for _, p := range points {
+		if math.IsNaN(p.V) {
+			continue
+		}
+		if !haveData {
+			dataMin, dataMax, haveData = p.V, p.V, true
+			continue
+		}
+		if p.V < dataMin {
+			dataMin = p.V
+		}
+		if p.V > dataMax {
+			dataMax = p.V
+		}
+	}
+	if !haveData {
 		sb.WriteString(`<text x="`)
 		sb.WriteString(formatCoord((x0 + x1) / 2))
 		sb.WriteString(`" y="`)
@@ -168,17 +188,6 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		sb.WriteString(html.EscapeString(i18n.T(ctx, "chart.no_data_period")))
 		sb.WriteString(`</text></g></svg>`)
 		return sb.String()
-	}
-
-	// Домен значений: данные + пороги (чтобы пороговые линии попадали в область).
-	dataMin, dataMax := points[0].V, points[0].V
-	for _, p := range points {
-		if p.V < dataMin {
-			dataMin = p.V
-		}
-		if p.V > dataMax {
-			dataMax = p.V
-		}
 	}
 	domMin, domMax := dataMin, dataMax
 	for _, t := range thresholds {
@@ -257,13 +266,18 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		sb.WriteString(`</text></g>`)
 	}
 
-	// Линия данных с мягкой заливкой под ней. У метрики нет сигнала пропусков
-	// (ряд сплошной), поэтому has=true у всех точек — линия не рвётся.
+	// Линия данных с мягкой заливкой под ней. Пустые корзины дозаполнения окна
+	// (NaN) — разрыв линии (has=false), а не провал в ноль: так график
+	// покрывает всё выбранное окно, но не рисует данных там, где их нет.
 	linePts := make([]seriesPoint, n)
 	for i, p := range points {
 		x := x0
 		if n > 1 {
 			x = x0 + float64(i)/float64(n-1)*(x1-x0)
+		}
+		if math.IsNaN(p.V) {
+			linePts[i] = seriesPoint{x: x, has: false}
+			continue
 		}
 		linePts[i] = seriesPoint{x: x, y: yFor(p.V), has: true}
 	}
@@ -271,10 +285,14 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 
 	// Полосы наведения: линия тонкая, наводиться на неё нечем, поэтому
 	// подсказку ловит прозрачная полоса над своим интервалом. Значение
-	// показывается в той же записи, что и подписи оси.
+	// показывается в той же записи, что и подписи оси. Пустые корзины
+	// пропускаем — подсказки «нет данных» не нужны.
 	g := chartGeom{w: w, h: h, x0: x0, x1: x1, y0: y0, y1: y1}
 	band := (x1 - x0) / float64(n)
 	for i, p := range points {
+		if math.IsNaN(p.V) {
+			continue
+		}
 		x := x0
 		if n > 1 {
 			x = x0 + float64(i)/float64(n-1)*(x1-x0)
@@ -882,11 +900,17 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		sb.WriteString(`</text>`)
 	}
 
-	// Вертикальная сетка: линия и подпись на каждой границе суток. Шаг
-	// корзины меньше суток (3 часа), поэтому подписывать каждую корзину
-	// нечитаемо — привязку ко времени даёт день.
+	// Вертикальная сетка: линия и подпись на границе суток. Шаг корзины меньше
+	// суток, поэтому подписывать каждую корзину нечитаемо — привязку ко времени
+	// даёт день. На длинном окне (30 дней) даже дни встают слишком плотно и
+	// подписи наезжают, поэтому пропускаем метку, если она ближе minLabelGap
+	// пикселей к предыдущей (как minGapPx в timeAxis). Линию сетки при этом
+	// рисуем на каждой границе суток — тонкие линии не наезжают, а подпись
+	// оставляем только там, где хватает места.
 	n := len(points)
 	barW := (x1 - x0) / float64(n)
+	const minLabelGap = 48
+	lastLabelX := -1e9
 	for i, p := range points {
 		if i > 0 && p.T.UTC().YearDay() == points[i-1].T.UTC().YearDay() {
 			continue
@@ -895,6 +919,10 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		if i > 0 {
 			axisLine(&sb, x, y0, x, y1)
 		}
+		if x-lastLabelX < minLabelGap {
+			continue
+		}
+		lastLabelX = x
 		// У краёв холста подпись прижимаем к своей стороне (как в writeXTicks):
 		// центрированная метка первого дня у левой оси наезжала на подпись «0»
 		// оси Y и рамку.

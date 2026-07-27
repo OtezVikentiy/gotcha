@@ -100,6 +100,11 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Дозаполняем пустые корзины по всему окну, чтобы ось X частотного графика
+	// шла по выбранному интервалу, а не только по диапазону с данными.
+	points = fillSeries(points, tr.From, tr.To, step,
+		func(p event.Point) time.Time { return p.T },
+		func(t time.Time) event.Point { return event.Point{T: t} })
 	chart := chartSVG(r.Context(), points, chartWidth, chartHeight)
 
 	selectedID := r.URL.Query().Get("event")

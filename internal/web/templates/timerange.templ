@@ -2,6 +2,7 @@ package templates
 
 import (
 	"net/url"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
@@ -35,22 +36,37 @@ func (r TimeRangeVM) apply(q url.Values) {
 
 // timeRangeLabel — человекочитаемая подпись текущего окна для плиток/заголовков
 // (там, где раньше печатался сырой period). Пресет — локализованная короткая
-// подпись, произвольный диапазон — «с – по».
+// подпись, произвольный диапазон — «с – по» в читаемом формате (ДД.ММ.ГГГГ
+// ЧЧ:ММ, а не сырой ISO datetime-local).
 templ timeRangeLabel(r TimeRangeVM) {
 	if r.Custom {
-		{ r.Start + " – " + r.End }
+		{ prettyBound(r.Start) + " – " + prettyBound(r.End) }
 	} else {
 		{ i18n.T(ctx, "range."+r.Key) }
 	}
 }
 
-// timeRangeFields — общий блок выбора окна: пресеты 1ч/24ч/7д/30д и «свой
-// диапазон» одним <select>, плюс два поля datetime-local. Встраивается в
-// GET-форму фильтров каждой страницы с графиками (у форм разные прочие поля,
-// поэтому общий только этот блок, а не вся форма). Работает без JS: submit
-// формы применяет выбор. Произвольный диапазон включается выбором «свой
-// диапазон» в списке — известный пресет всегда перебивает поля дат
-// (см. parseTimeRange), поэтому оставшиеся значения не мешают.
+// prettyBound переформатирует границу диапазона из формата datetime-local
+// ("2006-01-02T15:04") в читаемый "02.01.2006 15:04". Скрытые поля переноса
+// (cstart/cend) остаются в исходном формате — там важен round-trip, а не вид.
+func prettyBound(s string) string {
+	if t, err := time.Parse("2006-01-02T15:04", s); err == nil {
+		return t.Format("02.01.2006 15:04")
+	}
+	return s
+}
+
+// timeRangeFields — общий блок выбора окна: пресеты 1ч/24ч/7д/30д одним
+// <select> плюс два поля datetime-local для произвольного диапазона.
+// Встраивается в GET-форму фильтров каждой страницы с графиками. Работает без
+// JS: submit формы применяет выбор.
+//
+// Произвольный диапазон включается САМИМ вводом дат — отдельно выбирать «свой
+// диапазон» в списке не нужно (см. parseTimeRange, приоритет видимых start/end).
+// Поэтому видимые поля всегда пусты (под ввод нового диапазона), а активный
+// произвольный диапазон показывается подписью и переносится скрытыми cstart/
+// cend — так смена окружения/сортировки его не сбрасывает, а выбор пресета в
+// списке уводит обратно на пресет.
 templ timeRangeFields(r TimeRangeVM) {
 	<span class="time-range">
 		<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
@@ -59,14 +75,11 @@ templ timeRangeFields(r TimeRangeVM) {
 			}
 			if r.Custom {
 				<option value="custom" selected>{ i18n.T(ctx, "range.custom") }</option>
-			} else {
-				<option value="custom">{ i18n.T(ctx, "range.custom") }</option>
 			}
 		</select>
 		<input
 			type="datetime-local"
 			name="start"
-			value={ r.Start }
 			class="input time-range-input"
 			aria-label={ i18n.T(ctx, "range.start") }
 		/>
@@ -74,10 +87,16 @@ templ timeRangeFields(r TimeRangeVM) {
 		<input
 			type="datetime-local"
 			name="end"
-			value={ r.End }
 			class="input time-range-input"
 			aria-label={ i18n.T(ctx, "range.end") }
 		/>
+		if r.Custom {
+			// Активный произвольный диапазон: подпись (видимые поля пусты) +
+			// скрытый перенос, чтобы submit других фильтров его сохранил.
+			<span class="time-range-active">@timeRangeLabel(r)</span>
+			<input type="hidden" name="cstart" value={ r.Start }/>
+			<input type="hidden" name="cend" value={ r.End }/>
+		}
 	</span>
 }
 
