@@ -99,6 +99,13 @@ type EndpointRow struct {
 	Sparkline templ.Component
 }
 
+// metricHead — заголовок колонки-метрики с всплывающей расшифровкой (native
+// title, без JS, как у Web Vitals). Пунктир + курсор-help подсказывают, что на
+// метрику можно навести. Оборачивается в ссылку сортировки на месте вызова.
+templ metricHead(labelKey, helpKey string) {
+	<abbr class="metric-abbr" title={ i18n.T(ctx, helpKey) }>{ i18n.T(ctx, labelKey) }</abbr>
+}
+
 // perfEnvOption — <option> окружения с отметкой выбранного.
 templ perfEnvOption(value, label, selected string) {
 	if value == selected {
@@ -143,15 +150,15 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 						<tr>
 							<th><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.endpoint") }</a></th>
 							<th>{ i18n.T(ctx, "perf.environment") }</th>
-							<th class="num">{ i18n.T(ctx, "perf.events") }</th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>{ i18n.T(ctx, "perf.throughput") }</a></th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>{ i18n.T(ctx, "perf.p50") }</a></th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>{ i18n.T(ctx, "perf.p75") }</a></th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>{ i18n.T(ctx, "perf.p95") }</a></th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>{ i18n.T(ctx, "perf.p99") }</a></th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>{ i18n.T(ctx, "perf.failure") }</a></th>
-							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>{ i18n.T(ctx, "perf.apdex") }</a></th>
-							<th>{ i18n.T(ctx, "perf.p95_period") }</th>
+							<th class="num">@metricHead("perf.events", "perf.help.events")</th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>@metricHead("perf.throughput", "perf.help.throughput")</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>@metricHead("perf.p50", "perf.help.p50")</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>@metricHead("perf.p75", "perf.help.p75")</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>@metricHead("perf.p95", "perf.help.p95")</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>@metricHead("perf.p99", "perf.help.p99")</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>@metricHead("perf.failure", "perf.help.failure")</a></th>
+							<th class="num"><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>@metricHead("perf.apdex", "perf.help.apdex")</a></th>
+							<th>@metricHead("perf.p95_period", "perf.help.p95_period")</th>
 						</tr>
 					</thead>
 					<tbody>

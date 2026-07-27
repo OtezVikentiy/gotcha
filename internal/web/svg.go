@@ -900,29 +900,34 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		sb.WriteString(`</text>`)
 	}
 
-	// Вертикальная сетка: линия и подпись на границе суток. Шаг корзины меньше
-	// суток, поэтому подписывать каждую корзину нечитаемо — привязку ко времени
-	// даёт день. На длинном окне (30 дней) даже дни встают слишком плотно и
-	// подписи наезжают, поэтому пропускаем метку, если она ближе minLabelGap
-	// пикселей к предыдущей (как minGapPx в timeAxis). Линию сетки при этом
-	// рисуем на каждой границе суток — тонкие линии не наезжают, а подпись
-	// оставляем только там, где хватает места.
+	// Вертикальная сетка и подписи — по границам суток (шаг корзины меньше
+	// суток, подписывать каждую корзину нечитаемо; привязку ко времени даёт
+	// день). На длинном окне (30 дней) суток слишком много и метки наезжают,
+	// поэтому целимся примерно в targetDayLabels равномерных подписей: сначала
+	// собираем индексы границ суток, затем берём каждую k-ю. Так ось «дышит»
+	// на любом окне (7д → все дни, 30д → ~каждый 4-й), а не прореживается
+	// по пикселям неравномерно.
 	n := len(points)
 	barW := (x1 - x0) / float64(n)
-	const minLabelGap = 48
-	lastLabelX := -1e9
+	const targetDayLabels = 7
+	var dayIdx []int
 	for i, p := range points {
-		if i > 0 && p.T.UTC().YearDay() == points[i-1].T.UTC().YearDay() {
+		if i == 0 || p.T.UTC().YearDay() != points[i-1].T.UTC().YearDay() {
+			dayIdx = append(dayIdx, i)
+		}
+	}
+	k := (len(dayIdx) + targetDayLabels - 1) / targetDayLabels
+	if k < 1 {
+		k = 1
+	}
+	for j, idx := range dayIdx {
+		if j%k != 0 {
 			continue
 		}
-		x := x0 + float64(i)*barW
-		if i > 0 {
+		x := x0 + float64(idx)*barW
+		if idx > 0 {
 			axisLine(&sb, x, y0, x, y1)
 		}
-		if x-lastLabelX < minLabelGap {
-			continue
-		}
-		lastLabelX = x
 		// У краёв холста подпись прижимаем к своей стороне (как в writeXTicks):
 		// центрированная метка первого дня у левой оси наезжала на подпись «0»
 		// оси Y и рамку.
@@ -938,7 +943,7 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		sb.WriteString(`" y="`)
 		sb.WriteString(formatCoord(float64(h) - 7))
 		sb.WriteString(`" text-anchor="` + anchor + `" fill="currentColor">`)
-		sb.WriteString(html.EscapeString(p.T.UTC().Format("02.01")))
+		sb.WriteString(html.EscapeString(points[idx].T.UTC().Format("02.01")))
 		sb.WriteString(`</text>`)
 	}
 	sb.WriteString(`</g>`)

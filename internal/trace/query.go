@@ -3,9 +3,11 @@ package trace
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -455,6 +457,102 @@ func (q *Query) Trace(ctx context.Context, projectID int64, traceID string) (roo
 		root.Status = spans[0].Status
 	}
 	return root, spans, nil
+}
+
+// maxOffendingSpans — потолок загружаемых спанов проблемы (evidence.span_ids
+// уже ≤10, но страхуемся от кривых данных).
+const maxOffendingSpans = 10
+
+// SpanDetail — спан с ПОЛНЫМ описанием и распарсенным data. Нужен странице
+// perf-проблемы: полный текст запроса (в отличие от нормализованного и
+// обрезанного Title проблемы) и опциональная привязка к коду из data
+// (code.filepath/code.lineno/code.function, db.system — если их прислал SDK).
+type SpanDetail struct {
+	SpanID      string
+	Op          string
+	Description string
+	DurationUS  uint32
+	Data        map[string]string
+}
+
+// OffendingSpans загружает конкретные спаны трейса по их id (обычно из
+// evidence.span_ids проблемы) с полным description и data, отсортированные по
+// длительности убыв. — первым идёт самый показательный. Пустой traceID/список,
+// истёкший по TTL трейс или отсутствие спанов дают nil без ошибки: страница
+// проблемы должна отрисоваться и без примера.
+func (q *Query) OffendingSpans(ctx context.Context, projectID int64, traceID string, spanIDs []string) ([]SpanDetail, error) {
+	if traceID == "" || len(spanIDs) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(spanIDs))
+	for _, s := range spanIDs {
+		if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
+			ids = append(ids, s)
+		}
+		if len(ids) >= maxOffendingSpans {
+			break
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT span_id, op, description, duration_us, data
+		FROM spans
+		WHERE project_id = ? AND trace_id = ? AND span_id IN ?
+		ORDER BY duration_us DESC
+		LIMIT ?`,
+		uint64(projectID), traceID, ids, maxOffendingSpans)
+	if err != nil {
+		return nil, fmt.Errorf("trace: offending spans: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SpanDetail
+	for rows.Next() {
+		var s SpanDetail
+		var data string
+		if err := rows.Scan(&s.SpanID, &s.Op, &s.Description, &s.DurationUS, &data); err != nil {
+			return nil, fmt.Errorf("trace: offending spans: scan: %w", err)
+		}
+		s.Data = decodeSpanData(data)
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: offending spans: %w", err)
+	}
+	return out, nil
+}
+
+// decodeSpanData разбирает JSON-строку колонки data спана в плоскую
+// map[string]string: строковые значения как есть, числовые/булевы — их текст;
+// вложенные объекты/массивы пропускаются (нам нужны скалярные ключи вроде
+// code.filepath/code.lineno). Пустой/битый JSON → nil.
+func decodeSpanData(s string) map[string]string {
+	if s == "" || s == "{}" || s == "null" {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		var str string
+		if json.Unmarshal(v, &str) == nil {
+			out[k] = str
+			continue
+		}
+		t := strings.TrimSpace(string(v))
+		if t == "" || t[0] == '{' || t[0] == '[' {
+			continue
+		}
+		out[k] = t
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Environments возвращает окружения проекта, встречавшиеся у транзакций за

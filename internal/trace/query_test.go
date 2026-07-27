@@ -22,6 +22,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	const projectID2 = int64(56) // отдельный проект для тестов LIMIT/индексов
 	const projectID3 = int64(57) // отдельный проект для Web Vitals
 	const projectID4 = int64(58) // отдельный проект для запросов регрессий (данные по дням)
+	const projectID5 = int64(59) // отдельный проект для OffendingSpans (не влияет на Endpoints)
 
 	w := trace.NewSpanWriter(conn)
 	go w.Run()
@@ -103,6 +104,19 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				Start: wfStart.Add(20 * time.Millisecond), End: wfStart.Add(80 * time.Millisecond), Status: "ok"},
 			{SpanID: "wf-http", ParentSpanID: "wf-root", Op: "http.client", Description: "GET https://x/y",
 				Start: wfStart.Add(90 * time.Millisecond), End: wfStart.Add(150 * time.Millisecond), Status: "ok"},
+		},
+	})
+
+	// «off-trace» — трейс с виновным db-спаном, несущим ПОЛНЫЙ текст запроса и
+	// data с привязкой к коду (как реальный SDK). Питает подтест OffendingSpans.
+	w.Add(projectID5, trace.Transaction{
+		TraceID: "off-trace", SpanID: "off-root", Name: "POST /pay", Op: "http.server",
+		Status: "ok", Start: wfStart, End: wfStart.Add(950 * time.Millisecond), Environment: "production",
+		Spans: []trace.Span{
+			{SpanID: "offdb1", ParentSpanID: "off-root", Op: "db.sql.query",
+				Description: "SELECT * FROM payments JOIN ledger ON ledger.id = payments.id",
+				Start:       wfStart, End: wfStart.Add(900 * time.Millisecond), Status: "ok",
+				Data: map[string]any{"db.system": "postgresql", "code.filepath": "app/pay.py", "code.lineno": 42}},
 		},
 	})
 
@@ -518,6 +532,36 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 		if got[0].TraceID == "" {
 			t.Fatalf("slowest TraceID empty")
+		}
+	})
+
+	t.Run("OffendingSpans", func(t *testing.T) {
+		spans, err := q.OffendingSpans(ctx, projectID5, "off-trace", []string{"offdb1", "missing"})
+		if err != nil {
+			t.Fatalf("OffendingSpans: %v", err)
+		}
+		if len(spans) != 1 {
+			t.Fatalf("len(spans) = %d, want 1", len(spans))
+		}
+		s := spans[0]
+		if s.Description != "SELECT * FROM payments JOIN ledger ON ledger.id = payments.id" {
+			t.Errorf("full description not returned: %q", s.Description)
+		}
+		if s.Op != "db.sql.query" || s.DurationUS != 900000 {
+			t.Errorf("op/duration = %q %d", s.Op, s.DurationUS)
+		}
+		if s.Data["db.system"] != "postgresql" || s.Data["code.filepath"] != "app/pay.py" {
+			t.Errorf("data not decoded: %v", s.Data)
+		}
+		if s.Data["code.lineno"] != "42" {
+			t.Errorf("numeric data value not decoded to text: %q", s.Data["code.lineno"])
+		}
+		// пустой список id и несуществующий трейс → nil без ошибки.
+		if got, err := q.OffendingSpans(ctx, projectID5, "off-trace", nil); err != nil || got != nil {
+			t.Errorf("empty ids → want nil,nil; got %v %v", got, err)
+		}
+		if got, err := q.OffendingSpans(ctx, projectID5, "no-such-trace", []string{"x"}); err != nil || got != nil {
+			t.Errorf("missing trace → want nil,nil; got %v %v", got, err)
 		}
 	})
 

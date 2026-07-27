@@ -77,26 +77,36 @@ templ timeRangeFields(r TimeRangeVM) {
 				<option value="custom" selected>{ i18n.T(ctx, "range.custom") }</option>
 			}
 		</select>
-		<input
-			type="datetime-local"
-			name="start"
-			class="input time-range-input"
-			aria-label={ i18n.T(ctx, "range.start") }
-		/>
-		<span class="time-range-sep" aria-hidden="true">–</span>
-		<input
-			type="datetime-local"
-			name="end"
-			class="input time-range-input"
-			aria-label={ i18n.T(ctx, "range.end") }
-		/>
-		if r.Custom {
-			// Активный произвольный диапазон: подпись (видимые поля пусты) +
-			// скрытый перенос, чтобы submit других фильтров его сохранил.
-			<span class="time-range-active">@timeRangeLabel(r)</span>
-			<input type="hidden" name="cstart" value={ r.Start }/>
-			<input type="hidden" name="cend" value={ r.End }/>
-		}
+		// Поля произвольного диапазона убраны под нативный <details>, чтобы на
+		// пресетах (частый случай) не висели два пустых поля даты. Раскрывается
+		// без JS. При активном произвольном диапазоне — открыт по умолчанию.
+		// (С JS весь control прячется и заменяется единым попап-пикером.)
+		<details class="time-range-custom" open?={ r.Custom }>
+			<summary class="time-range-summary">{ i18n.T(ctx, "range.set_dates") }</summary>
+			<span class="time-range-fields">
+				<input
+					type="datetime-local"
+					name="start"
+					class="input time-range-input"
+					aria-label={ i18n.T(ctx, "range.start") }
+				/>
+				<span class="time-range-sep" aria-hidden="true">–</span>
+				<input
+					type="datetime-local"
+					name="end"
+					class="input time-range-input"
+					aria-label={ i18n.T(ctx, "range.end") }
+				/>
+				if r.Custom {
+					// Активный произвольный диапазон: подпись (видимые поля
+					// пусты) + скрытый перенос, чтобы submit других фильтров его
+					// сохранил.
+					<span class="time-range-active">@timeRangeLabel(r)</span>
+					<input type="hidden" name="cstart" value={ r.Start }/>
+					<input type="hidden" name="cend" value={ r.End }/>
+				}
+			</span>
+		</details>
 	</span>
 }
 

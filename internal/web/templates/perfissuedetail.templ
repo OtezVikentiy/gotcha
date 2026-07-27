@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -23,12 +24,29 @@ type PerfEvidence struct {
 	HasSequential  bool
 }
 
+// PerfCodeLoc — привязка проблемы к месту в коде из data показательного спана
+// (code.filepath/lineno/function). Заполняется, только если её прислал SDK.
+type PerfCodeLoc struct {
+	File     string
+	Line     string
+	Function string
+}
+
 // PerfIssueDetailData — всё для страницы проблемы: сама строка, распарсенный
-// evidence и признак owner/admin (видимость кнопок статуса).
+// evidence, признак owner/admin (видимость кнопок статуса) и обогащение из
+// показательного спана примера-трейса: полный текст запроса и привязка к коду.
 type PerfIssueDetailData struct {
 	Issue     trace.PerfIssue
 	Evidence  PerfEvidence
 	CanManage bool
+	// Query — ПОЛНЫЙ текст показательного запроса (сырой description спана, в
+	// отличие от нормализованного и обрезанного Title). Пусто для http-флуда
+	// и когда пример-трейс истёк по TTL.
+	Query          string
+	QueryOp        string
+	SpanDurationUS int64
+	DBSystem       string
+	Code           *PerfCodeLoc
 }
 
 func perfIssueStatusPath(id int64) string {
@@ -39,6 +57,52 @@ func perfIssueStatusPath(id int64) string {
 // evidence хранит время в µs (Redis-спаны субмиллисекундны), человек читает мс.
 func perfMS(us int64) string {
 	return strconv.FormatFloat(float64(us)/1000, 'f', 1, 64) + "ms"
+}
+
+// perfKindExplainKey/perfKindFixKey — i18n-ключи разбора «что происходит» и
+// «как чинить» по виду проблемы. Ключ строится из известного вида (иначе
+// общий), чтобы в T() не попадала произвольная строка.
+func perfKindExplainKey(kind string) string {
+	switch kind {
+	case trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood:
+		return "perf.kind.explain." + kind
+	}
+	return "perf.kind.explain.default"
+}
+
+func perfKindFixKey(kind string) string {
+	switch kind {
+	case trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood:
+		return "perf.kind.fix." + kind
+	}
+	return "perf.kind.fix.default"
+}
+
+// perfQueryMeta — строка мета над запросом: операция · СУБД · длительность
+// показательного спана (что из этого есть).
+func perfQueryMeta(d PerfIssueDetailData) string {
+	var parts []string
+	if d.QueryOp != "" {
+		parts = append(parts, d.QueryOp)
+	}
+	if d.DBSystem != "" {
+		parts = append(parts, d.DBSystem)
+	}
+	if d.SpanDurationUS > 0 {
+		parts = append(parts, perfMS(d.SpanDurationUS))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// perfCodeLine — «файл:строка» (или просто файл, если строки нет).
+func perfCodeLine(c *PerfCodeLoc) string {
+	if c == nil {
+		return ""
+	}
+	if c.Line != "" {
+		return c.File + ":" + c.Line
+	}
+	return c.File
 }
 
 // PerfIssueDetail — GET /perf-issues/{id}: шапка проблемы, метаданные,
@@ -71,6 +135,40 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 						}
 					</form>
 				</div>
+			}
+
+			// Что происходит: разбор проблемы простым языком + как чинить —
+			// главное, чего не хватало (сами числа evidence ниже).
+			<section class="perf-explain">
+				<h2>{ i18n.T(ctx, "perf.issues.detail.whats_wrong") }</h2>
+				<div class="card">
+					<p>{ i18n.T(ctx, perfKindExplainKey(d.Issue.Kind)) }</p>
+					<p class="perf-fix"><strong>{ i18n.T(ctx, "perf.issues.detail.fix") }:</strong> { i18n.T(ctx, perfKindFixKey(d.Issue.Kind)) }</p>
+				</div>
+			</section>
+
+			// Полный текст запроса из показательного спана (не обрезанный).
+			if d.Query != "" {
+				<section class="perf-query-sec">
+					<h2>
+						{ i18n.T(ctx, "perf.issues.detail.query") }
+						<span class="perf-query-meta">{ perfQueryMeta(d) }</span>
+					</h2>
+					<pre class="perf-query">{ d.Query }</pre>
+				</section>
+			}
+
+			// Привязка к коду — если SDK её прислал (оппортунистично).
+			if d.Code != nil {
+				<section class="perf-code-sec">
+					<h2>{ i18n.T(ctx, "perf.issues.detail.code") }</h2>
+					<div class="card perf-code">
+						<span class="perf-code-loc">{ perfCodeLine(d.Code) }</span>
+						if d.Code.Function != "" {
+							<span class="perf-code-fn">{ i18n.T(ctx, "perf.issues.detail.code_in") } { d.Code.Function }</span>
+						}
+					</div>
+				</section>
 			}
 
 			<section class="perf-evidence">

@@ -89,7 +89,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 					</div>
 				}
 				<div class="stat-tile">
-					<div class="stat-label">{ i18n.T(ctx, "perf.apdex_threshold") }</div>
+					<div class="stat-label">@metricHead("perf.apdex_threshold", "perf.help.apdex")</div>
 					<div class="stat-value">{ strconv.Itoa(d.ApdexT) }ms</div>
 				</div>
 			</div>
@@ -101,7 +101,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 						<thead>
 							<tr>
 								<th>{ i18n.T(ctx, "perf.webvitals.table.metric") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.p75") }</th>
+								<th class="num">@metricHead("perf.p75", "perf.help.p75")</th>
 								<th>{ i18n.T(ctx, "perf.webvitals.table.rating") }</th>
 								<th>{ i18n.T(ctx, "perf.webvitals.table.trend") }</th>
 							</tr>
@@ -125,8 +125,8 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				{ i18n.Tf(ctx, "perf.chart.latency.caption", "step", d.StepLabel) }
 			</p>
 			<p class="chart-legend">
-				<span class="legend-item legend-p50">{ i18n.T(ctx, "perf.p50") }</span>
-				<span class="legend-item legend-p95">{ i18n.T(ctx, "perf.p95") }</span>
+				<span class="legend-item legend-p50">@metricHead("perf.p50", "perf.help.p50")</span>
+				<span class="legend-item legend-p95">@metricHead("perf.p95", "perf.help.p95")</span>
 			</p>
 			<div class="endpoint-chart card">
 				@d.LatencyChart

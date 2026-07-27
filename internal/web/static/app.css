@@ -930,6 +930,9 @@ th {
 .waterfall-label {
 	font-family: var(--font-mono);
 	font-size: var(--fs-label);
+	/* Без явного fill SVG-текст рисуется чёрным (дефолт SVG) — на светлой теме
+	   читаемо, а на тёмной чёрное на тёмном пропадает. Привязываем к теме. */
+	fill: var(--text);
 }
 .badge-info { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
 
@@ -937,7 +940,7 @@ th {
 /* Аббревиатуры web-vital'ов (LCP/INP/CLS/FCP/TTFB) с расшифровкой по наведению
    (нативный <abbr title>): пунктирное подчёркивание и курсор-help подсказывают,
    что на них можно навести. Наследует цвет ссылки в заголовках-сортировках. */
-.vital-abbr {
+.vital-abbr, .metric-abbr {
 	text-decoration: underline dotted;
 	text-underline-offset: 2px;
 	cursor: help;
@@ -1013,11 +1016,16 @@ th {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 }
-/* Пресет-<select> внутри обоймы — без своей рамки/фона, чтобы группа читалась
-   единым контролом, а не тремя разрозненными полями. */
+/* Пресет-<select> внутри обоймы — без своей рамки, но с фоном обоймы
+   (--surface-2), чтобы группа читалась единым контролом. Прозрачный фон здесь
+   НЕЛЬЗЯ: нативный дропдаун-попап <option> берёт цвет фона у самого <select>,
+   и на transparent браузер рисует его системным белым, а текст остаётся
+   светлым (--text) — белое на белом в тёмной теме. Явный фон + color-scheme
+   (см. :root) держат попап читаемым в обеих темах. */
 .time-range > .select {
 	border: 0;
-	background: transparent;
+	background: var(--surface-2);
+	color: var(--text);
 	min-width: 0;
 	width: auto;
 	font-weight: 500;
@@ -1044,6 +1052,26 @@ th {
 .time-range-sep {
 	color: var(--text-mute);
 }
+/* Нативный фолбэк (без JS): поля произвольного диапазона под <details>, чтобы
+   на пресетах не висели два пустых поля. Сводка — компактная «Задать даты». */
+.time-range-custom { display: inline-flex; }
+.time-range-summary {
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
+	cursor: pointer;
+	padding: 5px 8px;
+	white-space: nowrap;
+	user-select: none;
+}
+.time-range-summary:hover { color: var(--text); }
+.time-range-custom[open] > .time-range-summary { color: var(--text); }
+.time-range-fields {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 8px 4px;
+}
 /* Активный произвольный диапазон: подпись-капсула «с – по» (видимые поля при
    этом пусты, под ввод нового диапазона). Акцентная, чтобы было видно, что
    окно нестандартное. */
@@ -1055,6 +1083,184 @@ th {
 	border-radius: var(--radius);
 	padding: 3px 8px;
 	white-space: nowrap;
+}
+
+/* --- Прогрессивное улучшение: единый попап-пикер диапазона (daterange.js) ---
+   Когда скрипт улучшил control, он вешает .dr-enhanced: нативные части
+   (select/поля/разделитель/подпись) прячем, но НЕ удаляем — они остаются
+   источником значений для сабмита формы. Без скрипта .dr-enhanced не ставится
+   и всё работает нативно. */
+.time-range { position: relative; }
+/* В JS-режиме обойма-контейнер лишняя: остаётся один триггер, который несёт
+   собственную рамку/фон. Схлопываем хром контейнера, чтобы не было рамки в
+   рамке. Нативные части прячем (остаются в DOM как значения формы). */
+.dr-enhanced {
+	background: transparent;
+	border: 0;
+	padding: 0;
+}
+.dr-enhanced > .select,
+.dr-enhanced > details,
+.dr-enhanced > .time-range-input,
+.dr-enhanced > .time-range-sep,
+.dr-enhanced > .time-range-active {
+	display: none;
+}
+.dr-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font: inherit;
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
+	color: var(--text);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) - 2px);
+	padding: 5px 10px;
+	cursor: pointer;
+}
+/* Явный фон на :hover обязателен: базовое button:hover (0,1,1) специфичнее
+   .dr-trigger (0,1,0) и иначе перекрашивает триггер в акцент. Даём тонкую
+   подсветку surface-2 через .dr-trigger:hover (0,2,0), чтобы победить. */
+.dr-trigger:hover { border-color: var(--text-mute); background: var(--surface-2); }
+/* Иконки триггера из общего спрайта (как @icon): календарь-аффорданс слева,
+   шеврон-вниз справа. Приглушены, чтобы вести подпись, а не спорить с ней. */
+.dr-trigger .ic { width: 15px; height: 15px; color: var(--text-dim); flex: none; }
+.dr-trigger-label { color: var(--text); }
+
+.dr-popup {
+	position: absolute;
+	z-index: 40;
+	top: calc(100% + 6px);
+	left: 0;
+	display: flex;
+	gap: 12px;
+	padding: 12px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+}
+/* На светлой теме глубокая чёрная тень тяжеловата — смягчаем и уводим в синеву
+   полотна (оба способа задать светлую тему: явный data-theme и системная). */
+:root[data-theme="light"] .dr-popup { box-shadow: 0 10px 28px rgba(20, 30, 50, .14); }
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) .dr-popup { box-shadow: 0 10px 28px rgba(20, 30, 50, .14); }
+}
+.dr-popup[hidden] { display: none; }
+/* Если двухмесячный попап у правого края вьюпорта — якорь к правому краю
+   триггера (см. dr-popup--right в daterange.js), чтобы не уезжал за экран. */
+.dr-popup--right { left: auto; right: 0; }
+
+.dr-presets {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding-right: 12px;
+	border-right: 1px solid var(--border);
+}
+.dr-preset {
+	font: inherit;
+	font-size: var(--fs-sm);
+	text-align: left;
+	white-space: nowrap;
+	color: var(--text-dim);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	padding: 6px 10px;
+	cursor: pointer;
+}
+.dr-preset:hover { background: var(--surface-2); color: var(--text); }
+
+.dr-cal { display: flex; flex-direction: column; gap: 8px; }
+.dr-cal-head { display: flex; align-items: center; gap: 8px; }
+.dr-nav {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	width: 28px; height: 28px;
+	cursor: pointer;
+}
+.dr-nav .ic { width: 16px; height: 16px; }
+.dr-nav:hover:not(:disabled) { border-color: var(--text-mute); }
+.dr-nav:disabled { opacity: .35; cursor: default; }
+.dr-months { display: flex; gap: 16px; flex: 1; }
+.dr-month { display: flex; flex-direction: column; gap: 4px; }
+.dr-month-title {
+	text-align: center;
+	font-size: var(--fs-sm);
+	font-weight: 600;
+	text-transform: capitalize;
+}
+.dr-week-head, .dr-days {
+	display: grid;
+	grid-template-columns: repeat(7, 30px);
+	gap: 2px;
+}
+.dr-wd {
+	text-align: center;
+	font-size: var(--fs-label);
+	color: var(--text-mute);
+	padding: 2px 0;
+}
+.dr-day {
+	font: inherit;
+	font-size: var(--fs-sm);
+	font-weight: 400; /* базовое button задаёт 600 — дни не должны быть жирными */
+	font-variant-numeric: tabular-nums;
+	height: 30px;
+	color: var(--text);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	cursor: pointer;
+}
+.dr-day.dr-empty { visibility: hidden; }
+.dr-day:hover:not(.dr-future):not(.dr-empty) { background: var(--surface-2); }
+.dr-day.dr-future { color: var(--text-mute); opacity: .4; cursor: default; }
+/* «Сегодня» — заметнее, чем тонкая рамка: приглушённое кольцо + полужирный. */
+.dr-day.dr-today { box-shadow: inset 0 0 0 1px var(--text-mute); font-weight: 600; }
+/* Внутри выбранного диапазона — мягкая акцентная подложка, края — сплошной
+   акцент; так интервал читается как единое выделение, а не набор точек. */
+.dr-day.dr-in { background: var(--accent-soft); border-radius: 0; }
+.dr-day.dr-start, .dr-day.dr-end {
+	background: var(--accent);
+	color: var(--accent-fg);
+}
+.dr-day.dr-start { border-top-left-radius: var(--radius); border-bottom-left-radius: var(--radius); }
+.dr-day.dr-end { border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+/* Скругляем концы полосы на переносах недель: крайний левый столбец (Пн) и
+   крайний правый (Вс) внутри диапазона получают скруглённый внешний кап, иначе
+   полоса обрывается прямым углом на границе строки. Сетка .dr-days — ровно 7
+   столбцов (пустые lead-ячейки тоже считаются), поэтому nth-child(7n±) точно
+   попадает в края строк. */
+.dr-days .dr-in:nth-child(7n+1) { border-top-left-radius: var(--radius); border-bottom-left-radius: var(--radius); }
+.dr-days .dr-in:nth-child(7n)   { border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+
+.dr-foot {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding-top: 8px;
+	border-top: 1px solid var(--border);
+}
+.dr-range-text {
+	flex: 1;
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
+	color: var(--text-dim);
+}
+
+@media (max-width: 720px) {
+	.dr-popup { flex-direction: column; }
+	.dr-presets { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 8px; }
+	.dr-months { flex-direction: column; }
 }
 /* Metric-фильтр: подпись над контролом (label-обёртка) — пары стоят в ряд. */
 .metric-filters > label {
@@ -2513,6 +2719,50 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	gap: 8px;
 	align-items: center;
 }
+
+/* Разбор проблемы, полный запрос и привязка к коду — секции над сухими
+   числами evidence: сначала «что не так», потом сам запрос, потом где в коде. */
+.perf-explain, .perf-query-sec, .perf-code-sec {
+	display: grid;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+.perf-explain p { margin: 0; }
+.perf-explain .perf-fix { margin-top: 8px; color: var(--text-dim); }
+.perf-explain .perf-fix strong { color: var(--text); font-weight: 600; }
+.perf-query-meta {
+	margin-left: 8px;
+	font-size: var(--fs-sm);
+	font-weight: 400;
+	color: var(--text-dim);
+	font-variant-numeric: tabular-nums;
+}
+/* Полный текст запроса: НЕ обрезаем — переносим длинные строки, оставляя
+   горизонтальную прокрутку на крайний случай (одна очень длинная лексема). */
+.perf-query {
+	margin: 0;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 12px 14px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	line-height: 1.5;
+	color: var(--text);
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-x: auto;
+}
+.perf-code {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 10px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+}
+.perf-code-loc { color: var(--text); }
+.perf-code-fn { color: var(--text-dim); }
 
 .perf-evidence {
 	display: grid;

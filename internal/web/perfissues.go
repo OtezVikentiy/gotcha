@@ -160,7 +160,81 @@ func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 		Evidence:  parsePerfEvidence(iss.Evidence),
 		CanManage: canManage,
 	}
+	// Показательный спан из примера-трейса: полный текст запроса (в отличие от
+	// нормализованного/обрезанного Title) и, если SDK прислал, привязка к коду.
+	// Любая ошибка/истёкший трейс — не критично, страница рисуется и без этого.
+	if h.Trace != nil && iss.SampleTraceID != "" {
+		if ids := perfEvidenceSpanIDs(iss.Evidence); len(ids) > 0 {
+			if spans, err := h.Trace.OffendingSpans(r.Context(), iss.ProjectID, iss.SampleTraceID, ids); err == nil {
+				enrichPerfDetail(&data, spans)
+			}
+		}
+	}
 	_ = templates.PerfIssueDetail(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// perfEvidenceSpanIDs достаёт из evidence список id показательных спанов
+// (пишется детектором как "span_ids", ≤10). Пусто/битый JSON → nil.
+func perfEvidenceSpanIDs(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m struct {
+		SpanIDs []string `json:"span_ids"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return m.SpanIDs
+}
+
+// enrichPerfDetail дополняет данные страницы полным запросом и привязкой к коду
+// из показательного спана: берём первый спан с непустым описанием (спаны
+// отсортированы по длительности убыв.), иначе — первый (например, http-флуд без
+// текста запроса, но с возможной привязкой к коду).
+func enrichPerfDetail(d *templates.PerfIssueDetailData, spans []trace.SpanDetail) {
+	if len(spans) == 0 {
+		return
+	}
+	rep := spans[0]
+	for _, s := range spans {
+		if s.Description != "" {
+			rep = s
+			break
+		}
+	}
+	d.Query = rep.Description
+	d.QueryOp = rep.Op
+	d.SpanDurationUS = int64(rep.DurationUS)
+	d.DBSystem = rep.Data["db.system"]
+	d.Code = codeLocFromData(rep.Data)
+}
+
+// codeLocFromData собирает привязку к коду из data спана по общим ключам SDK
+// (Sentry/OTLP: code.filepath/code.function/code.lineno). nil, если ни файла,
+// ни функции нет — показывать нечего.
+func codeLocFromData(data map[string]string) *templates.PerfCodeLoc {
+	if len(data) == 0 {
+		return nil
+	}
+	pick := func(keys ...string) string {
+		for _, k := range keys {
+			if v := data[k]; v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	file := pick("code.filepath", "code.file", "filename")
+	fn := pick("code.function", "code.namespace")
+	if file == "" && fn == "" {
+		return nil
+	}
+	return &templates.PerfCodeLoc{
+		File:     file,
+		Line:     pick("code.lineno", "code.line"),
+		Function: fn,
+	}
 }
 
 // perfIssueSetStatus — POST /perf-issues/{id}/status: status из формы
