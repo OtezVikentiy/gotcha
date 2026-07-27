@@ -17,11 +17,21 @@
 (function () {
 	"use strict";
 
-	var WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-	var MONTHS = [
-		"январь", "февраль", "март", "апрель", "май", "июнь",
-		"июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
-	];
+	// Локаль берём из <html lang> (её ставит layout.templ по i18n). Месяцы, дни
+	// недели и формат дат локализуются через Intl — без хардкода языка. Кнопки и
+	// aria-подписи приходят из data-l-* на .time-range (см. timeRangeFields).
+	var LANG = (document.documentElement.getAttribute("lang") || "ru");
+	var fmtMonthTitle = new Intl.DateTimeFormat(LANG, { month: "long", year: "numeric" });
+	var fmtDayAria = new Intl.DateTimeFormat(LANG, { day: "numeric", month: "long", year: "numeric" });
+	var fmtDate = new Intl.DateTimeFormat(LANG, { day: "2-digit", month: "2-digit", year: "numeric" });
+
+	// Короткие имена дней недели в ISO-порядке (Пн…Вс). 2024-01-01 — понедельник,
+	// поэтому семь дней от него дают нужный порядок в любой локали.
+	var WEEKDAYS = (function () {
+		var f = new Intl.DateTimeFormat(LANG, { weekday: "short" }), out = [];
+		for (var i = 0; i < 7; i++) out.push(f.format(new Date(2024, 0, 1 + i)));
+		return out;
+	})();
 
 	function pad(n) { return (n < 10 ? "0" : "") + n; }
 
@@ -43,7 +53,7 @@
 	function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0); }
 	function endOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59); }
 	function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
-	function fmtHuman(d) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1) + "." + d.getFullYear(); }
+	function fmtHuman(d) { return fmtDate.format(d); }
 
 	// Создать элемент с классом и (опц.) текстом. Атрибуты — объектом.
 	function el(tag, cls, text, attrs) {
@@ -79,6 +89,17 @@
 		root.dataset.drReady = "1";
 		root.classList.add("dr-enhanced");
 
+		// Локализованные подписи из data-l-* (fallback — RU, если атрибут снят).
+		var L = {
+			apply: root.dataset.lApply || "Применить",
+			cancel: root.dataset.lCancel || "Отмена",
+			hint: root.dataset.lHint || "Выберите начало и конец",
+			trigger: root.dataset.lTrigger || "Выбрать окно времени",
+			dialog: root.dataset.lDialog || "Выбор диапазона",
+			prev: root.dataset.lPrev || "Предыдущий месяц",
+			next: root.dataset.lNext || "Следующий месяц",
+		};
+
 		// Текущее состояние из уже отрендеренного сервером control:
 		//  - активный произвольный диапазон переносится скрытыми cstart/cend;
 		//  - иначе активен пресет (выбранная опция, кроме "custom").
@@ -94,7 +115,7 @@
 			if (o.value !== "custom") presets.push({ value: o.value, label: o.textContent });
 		});
 
-		var trigger = el("button", "dr-trigger", null, { type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-label": "Выбрать окно времени" });
+		var trigger = el("button", "dr-trigger", null, { type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-label": L.trigger });
 		var triggerLabel = el("span", "dr-trigger-label");
 		trigger.appendChild(icon("calendar"));
 		trigger.appendChild(triggerLabel);
@@ -110,7 +131,7 @@
 		root.insertBefore(trigger, root.firstChild);
 
 		// --- Попап ---
-		var popup = el("div", "dr-popup", null, { role: "dialog", "aria-label": "Выбор диапазона" });
+		var popup = el("div", "dr-popup", null, { role: "dialog", "aria-label": L.dialog });
 		popup.hidden = true;
 
 		// Пресеты (слева).
@@ -131,8 +152,8 @@
 		// Календарь (справа).
 		var calWrap = el("div", "dr-cal");
 		var calHead = el("div", "dr-cal-head");
-		var prevBtn = el("button", "dr-nav", null, { type: "button", "aria-label": "Предыдущий месяц" });
-		var nextBtn = el("button", "dr-nav", null, { type: "button", "aria-label": "Следующий месяц" });
+		var prevBtn = el("button", "dr-nav", null, { type: "button", "aria-label": L.prev });
+		var nextBtn = el("button", "dr-nav", null, { type: "button", "aria-label": L.next });
 		prevBtn.appendChild(icon("chevron-left"));
 		nextBtn.appendChild(icon("chevron-right"));
 		var monthsWrap = el("div", "dr-months");
@@ -143,8 +164,8 @@
 
 		var footer = el("div", "dr-foot");
 		var rangeText = el("span", "dr-range-text");
-		var applyBtn = el("button", "dr-apply btn btn-primary", "Применить", { type: "button" });
-		var cancelBtn = el("button", "dr-cancel btn btn-ghost", "Отмена", { type: "button" });
+		var applyBtn = el("button", "dr-apply btn btn-primary", L.apply, { type: "button" });
+		var cancelBtn = el("button", "dr-cancel btn btn-ghost", L.cancel, { type: "button" });
 		footer.appendChild(rangeText);
 		footer.appendChild(cancelBtn);
 		footer.appendChild(applyBtn);
@@ -169,7 +190,7 @@
 				rangeText.textContent = fmtHuman(selStart) + " – …";
 				applyBtn.disabled = true;
 			} else {
-				rangeText.textContent = "Выберите начало и конец";
+				rangeText.textContent = L.hint;
 				applyBtn.disabled = true;
 			}
 		}
@@ -181,7 +202,7 @@
 
 		function renderMonth(base) {
 			var grid = el("div", "dr-month");
-			var title = el("div", "dr-month-title", MONTHS[base.getMonth()] + " " + base.getFullYear());
+			var title = el("div", "dr-month-title", fmtMonthTitle.format(base));
 			grid.appendChild(title);
 			var head = el("div", "dr-week dr-week-head");
 			WEEKDAYS.forEach(function (w) { head.appendChild(el("span", "dr-wd", w)); });
@@ -206,7 +227,7 @@
 				var selected = sameDay(d, selStart) || sameDay(d, selEnd) || inRange(d);
 				var cell = el("button", cls, String(i), {
 					type: "button",
-					"aria-label": i + " " + MONTHS[d.getMonth()] + " " + d.getFullYear(),
+					"aria-label": fmtDayAria.format(d),
 					"aria-pressed": selected ? "true" : "false",
 				});
 				if (future) {

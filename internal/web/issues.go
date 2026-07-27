@@ -203,10 +203,20 @@ func (h *Handler) sparklinesFor(ctx context.Context, projectID int64, items []is
 	return h.Events.Sparklines(ctx, projectID, ids, since, sparklineBuckets)
 }
 
+// maxPage — верхняя граница номера страницы. Без неё `?page=<огромное>` даёт
+// (page-1)*perPage с переполнением int → отрицательный SQL OFFSET → 500 на
+// списках проблем/инцидентов/детали монитора. Потолок заведомо выше любого
+// реального набора (при perPage≤100 это ≥100M строк), поэтому легитимную
+// глубокую пагинацию не ограничивает, а перелившийся ввод даёт пустую страницу.
+const maxPage = 1_000_000
+
 func parsePage(s string) int {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 {
 		return 1
+	}
+	if n > maxPage {
+		return maxPage
 	}
 	return n
 }

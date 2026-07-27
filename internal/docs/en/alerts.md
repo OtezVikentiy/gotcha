@@ -91,8 +91,8 @@ GOTCHA_EXTERNAL_CHANNEL_DETAILS=true|false
 
 controls what goes out to webhook/Telegram when an alert fires (both for issues and for metrics):
 
-- **`true`** (default) — the full text: issue title, culprit, level, notification body, metric values, and so on;
-- **`false`** — an anonymized payload: only routing fields (project/issue/rule id, counters, alert kind) plus a link back to the card in Gotcha — no error text, transaction/function names, or values that could be personal data.
+- **`false`** (default, privacy-by-default) — an anonymized payload: only routing fields (project/issue/rule id, counters, alert kind) plus a link back to the card in Gotcha — no error text, transaction/function names, or values that could be personal data;
+- **`true`** — the full text: issue title, culprit, level, notification body, metric values, and so on.
 
 Email is not affected by this switch — SMTP is treated as a trusted channel inside the organization. It's set at the instance level by the operator; see [Configuration](/docs/configuration).
 

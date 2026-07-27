@@ -117,9 +117,11 @@ func TestWebProbes(t *testing.T) {
 	if !strings.Contains(string(body), "GOTCHA_SERVER_URL="+s.srv.URL) {
 		t.Fatalf("POST %s missing docker run line with server url: %s", probesPath, body)
 	}
-	// Проба без last_seen_at — offline.
-	if !strings.Contains(string(body), "offline") {
-		t.Fatalf("POST %s: fresh probe must render as offline: %s", probesPath, body)
+	// Проба без last_seen_at — offline. Статус локализован (B5), поэтому
+	// проверяем семантический класс бейджа offline (badge-danger), а не сырой
+	// код "offline": в единственной строке пробы это однозначно offline.
+	if !strings.Contains(string(body), "badge-danger") {
+		t.Fatalf("POST %s: fresh probe must render as offline (badge-danger): %s", probesPath, body)
 	}
 
 	// Токен есть в БД (в виде хеша): ProbeByToken его находит.
@@ -165,11 +167,16 @@ func TestWebProbes(t *testing.T) {
 	}
 
 	// Отозванная проба показана как revoked, кнопки Revoke у неё больше нет.
+	// Статус локализован (B5): revoked → бейдж badge-neutral (единственный
+	// бейдж в строке), и форма отзыва у отозванной пробы отсутствует.
 	resp = getWithCookie(t, s.srv, probesPath, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(body), "revoked") {
-		t.Fatalf("GET %s missing revoked marker: %s", probesPath, body)
+	if !strings.Contains(string(body), "badge-neutral") {
+		t.Fatalf("GET %s missing revoked marker (badge-neutral): %s", probesPath, body)
+	}
+	if strings.Contains(string(body), "probe-revoke-form") {
+		t.Fatalf("GET %s: revoked probe must not show a revoke form: %s", probesPath, body)
 	}
 
 	// Повторный revoke той же пробы → 422 (ErrNotFound из RevokeProbe).

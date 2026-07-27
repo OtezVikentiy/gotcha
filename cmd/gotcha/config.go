@@ -75,8 +75,9 @@ type Config struct {
 	// app-реплики не клинили все разом на dirty-состоянии.
 	AutoMigrate bool
 	// ExternalChannelDetails — слать ли текст ошибки (title/culprit/body) во
-	// внешние каналы (Telegram/webhook). По умолчанию true; false шлёт только
-	// обезличенную ссылку (152-ФЗ: текст может нести ПДн, уезжающие за пределы РФ).
+	// внешние каналы (Telegram/webhook). По умолчанию false (privacy-by-default):
+	// шлётся только обезличенная ссылка. true включает полный текст (152-ФЗ:
+	// текст может нести ПДн, уезжающие за пределы РФ). См. boolEnvDef ниже.
 	ExternalChannelDetails bool
 
 	// UptimeConcurrency — сколько проверок uptime.Runner выполняет

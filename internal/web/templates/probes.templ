@@ -41,6 +41,16 @@ func probeStatusBadgeClass(status string) string {
 	}
 }
 
+// probeStatusLabel — локализованное имя статуса пробы (online/offline/revoked).
+// Неизвестный статус возвращается как есть.
+func probeStatusLabel(ctx context.Context, status string) string {
+	switch status {
+	case "online", "offline", "revoked":
+		return i18n.T(ctx, "probe.status."+status)
+	}
+	return status
+}
+
 // probeLastSeenText — «никогда» для только что созданной пробы, которая ещё ни
 // разу не постучалась в центр (тот же принцип, что и lastCheckedText).
 func probeLastSeenText(ctx context.Context, row ProbeRow) string {
@@ -54,7 +64,7 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 	<tr>
 		<td>{ row.Probe.Name }</td>
 		<td>{ row.Probe.Region }</td>
-		<td><span class={ probeStatusBadgeClass(row.Status) }>{ row.Status }</span></td>
+		<td><span class={ probeStatusBadgeClass(row.Status) }>{ probeStatusLabel(ctx, row.Status) }</span></td>
 		<td>{ probeLastSeenText(ctx, row) }</td>
 		<td>{ ago(ctx, row.Probe.CreatedAt) }</td>
 		<td>

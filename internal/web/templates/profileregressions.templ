@@ -96,7 +96,7 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 								<td>{ profileRegServiceType(reg) }</td>
 								<td class="num">{ profileRegIncreasePct(reg) }</td>
 								<td class="num">{ profileRegRange(reg) }</td>
-								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ reg.Status }</span></td>
+								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
 								<td>{ ago(ctx, reg.StartedAt) }</td>
 								<td class="num">{ profileRegDuration(ctx, reg) }</td>
 							</tr>

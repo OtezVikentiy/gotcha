@@ -521,7 +521,7 @@ templ breadcrumbsView(js string) {
 			<li class="bc-item">
 				<span class="bc-cat">{ breadcrumbLabel(b) }</span>
 				if b.Level != "" {
-					<span class={ "bc-level", "bc-level-" + b.Level }>{ b.Level }</span>
+					<span class={ "bc-level", "bc-level-" + b.Level }>{ issueLevelLabel(ctx, b.Level) }</span>
 				}
 				<span class="bc-msg">{ b.Message }</span>
 				if b.Data != "" {
@@ -607,8 +607,8 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 			if it.Culprit != "" {
 				<div class="culprit">{ it.Culprit }</div>
 			}
-			<span class={ levelBadgeClass(it.Level) }>{ it.Level }</span>
-			<span class={ statusBadgeClass(it.Status) }>{ it.Status }</span>
+			<span class={ levelBadgeClass(it.Level) }>{ issueLevelLabel(ctx, it.Level) }</span>
+			<span class={ statusBadgeClass(it.Status) }>{ issueStatusLabel(ctx, it.Status) }</span>
 			<div class="issue-assignee">
 				@assigneeChip(it.AssigneeEmail)
 			</div>

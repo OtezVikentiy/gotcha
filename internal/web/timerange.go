@@ -149,6 +149,13 @@ func autoStep(window, minStep, align time.Duration, buckets int) time.Duration {
 			step += align - r
 		}
 	}
+	// CH бакетит по ЦЕЛЫМ секундам (toStartOfInterval, INTERVAL stepSec second),
+	// а gapfill заливает сетку тем же шагом. Обрезаем до целых секунд, чтобы обе
+	// сетки совпадали по построению — иначе при нецелом шаге (произвольное окно,
+	// не делящееся на число бакетов) самый свежий бакет не находил соответствия
+	// в данных и рисовался как «нет данных». minStep у всех вызовов ≥ 1m, так что
+	// обрезка не может дать ноль.
+	step -= step % time.Second
 	return step
 }
 

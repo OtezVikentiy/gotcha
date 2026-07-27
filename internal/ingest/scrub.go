@@ -2,11 +2,18 @@ package ingest
 
 import (
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"strings"
 )
 
 const scrubMask = "[scrubbed]"
+
+// sepReplacer убирает разделители из имени ключа перед сравнением с denylist:
+// заголовок X-Api-Key и ключ api_key должны совпасть, хотя дефис ≠ подчёркивание.
+var sepReplacer = strings.NewReplacer("-", "", "_", "", " ", "")
+
+func normKey(s string) string { return sepReplacer.Replace(strings.ToLower(s)) }
 
 // emailTextMask — маска для email, найденного в СВОБОДНОМ тексте (RA-L10).
 // Отдельна от scrubMask: тут редактируется подстрока значения, а не всё поле.
@@ -26,16 +33,19 @@ type Scrubber struct {
 	// установкой поля после NewScrubber (GOTCHA_SCRUB_FREETEXT).
 	ScrubFreeText bool
 	deny          map[string]bool
+	denyNorm      map[string]bool // те же ключи без разделителей (см. sepReplacer)
 }
 
 func NewScrubber(scrubIP, scrubEmail bool, denyKeys []string) *Scrubber {
 	deny := make(map[string]bool, len(denyKeys))
+	denyNorm := make(map[string]bool, len(denyKeys))
 	for _, k := range denyKeys {
 		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
 			deny[k] = true
+			denyNorm[normKey(k)] = true
 		}
 	}
-	return &Scrubber{ScrubIP: scrubIP, ScrubEmail: scrubEmail, deny: deny}
+	return &Scrubber{ScrubIP: scrubIP, ScrubEmail: scrubEmail, deny: deny, denyNorm: denyNorm}
 }
 
 // emailAttrKeys — ключи атрибутов, несущие email конечного пользователя. При
@@ -72,6 +82,14 @@ func (s *Scrubber) denied(key string) bool {
 	}
 	for d := range s.deny {
 		if strings.Contains(k, d) {
+			return true
+		}
+	}
+	// Нормализованное сравнение: X-Api-Key/Api-Key ловятся ключом api_key,
+	// хотя дефис не совпадает с подчёркиванием при подстрочном матче выше.
+	kn := normKey(k)
+	for d := range s.denyNorm {
+		if strings.Contains(kn, d) {
 			return true
 		}
 	}
@@ -140,8 +158,92 @@ func (s *Scrubber) walk(m map[string]any) {
 			m[k] = scrubMask
 			continue
 		}
+		// denylist сравнивает КЛЮЧИ, но url/query_string/тело-формы несут
+		// секреты (token=…&password=…) ВНУТРИ строкового значения. Их надо
+		// разобрать по параметрам и вычистить по тем же denylist-именам —
+		// иначе reset-токены/API-ключи/пароли осели бы в CH и на детали issue.
+		switch strings.ToLower(k) {
+		case "url", "http.url":
+			if str, ok := val.(string); ok {
+				m[k] = s.scrubURLParams(str)
+				continue
+			}
+		case "query_string", "querystring", "data", "body":
+			m[k] = s.scrubQueryLike(val)
+			continue
+		}
 		m[k] = s.scrubValue(val)
 	}
+}
+
+// scrubParams вычищает значения denylist-параметров в form-encoded строке
+// (a=b&token=…&c=d), сохраняя остальные сегменты байт-в-байт: незапрещённые
+// параметры и non-form-строки (JSON-тело и т.п.) не искажаются.
+func (s *Scrubber) scrubParams(query string) string {
+	if query == "" {
+		return query
+	}
+	parts := strings.Split(query, "&")
+	changed := false
+	for i, p := range parts {
+		eq := strings.IndexByte(p, '=')
+		if eq < 0 {
+			continue
+		}
+		name := p[:eq]
+		dec := name
+		if u, err := url.QueryUnescape(name); err == nil {
+			dec = u
+		}
+		if s.denied(dec) {
+			parts[i] = name + "=" + scrubMask
+			changed = true
+		}
+	}
+	if !changed {
+		return query
+	}
+	return strings.Join(parts, "&")
+}
+
+// scrubURLParams вычищает denylist-параметры в query-части URL, не трогая путь
+// и фрагмент. Схема/хост остаются как есть (basic-auth в userinfo — отдельно).
+func (s *Scrubber) scrubURLParams(u string) string {
+	q := strings.IndexByte(u, '?')
+	if q < 0 {
+		return u
+	}
+	base, rest := u[:q], u[q+1:]
+	frag := ""
+	if h := strings.IndexByte(rest, '#'); h >= 0 {
+		frag, rest = rest[h:], rest[:h]
+	}
+	return base + "?" + s.scrubParams(rest) + frag
+}
+
+// scrubQueryLike чистит query_string/тело формы в любой из форм, что шлют SDK:
+// строка (a=b&…), массив пар [[name,value],…] или объект {name:value}.
+func (s *Scrubber) scrubQueryLike(v any) any {
+	switch t := v.(type) {
+	case string:
+		return s.scrubParams(t)
+	case map[string]any:
+		s.walk(t) // объектная форма: имена — это КЛЮЧИ, ловятся denied()
+		return t
+	case []any:
+		for i, e := range t {
+			if pair, ok := e.([]any); ok && len(pair) == 2 {
+				if name, ok := pair[0].(string); ok && s.denied(name) {
+					pair[1] = scrubMask
+				}
+				t[i] = pair
+				continue
+			}
+			t[i] = s.scrubValue(e)
+		}
+		return t
+	}
+	return s.scrubValue(v)
 }
 
 // scrubValue рекурсивно чистит произвольное значение и возвращает результат

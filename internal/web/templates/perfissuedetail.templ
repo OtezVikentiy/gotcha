@@ -117,7 +117,7 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 				<div class="culprit">{ d.Issue.Culprit }</div>
 			}
 			<span class={ perfKindBadgeClass(d.Issue.Kind) }>{ perfKindLabel(ctx, d.Issue.Kind) }</span>
-			<span class={ perfStatusBadgeClass(d.Issue.Status) }>{ d.Issue.Status }</span>
+			<span class={ perfStatusBadgeClass(d.Issue.Status) }>{ issueStatusLabel(ctx, d.Issue.Status) }</span>
 			<div class="issue-meta">
 				<span>{ i18n.T(ctx, "issues.detail.times_seen") }: { strconv.FormatInt(d.Issue.Count, 10) }</span>
 				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: { ago(ctx, d.Issue.FirstSeen) }</span>

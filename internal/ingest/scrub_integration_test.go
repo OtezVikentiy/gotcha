@@ -37,7 +37,7 @@ func TestPipelineScrubEvent(t *testing.T) {
 	p := &Pipeline{
 		issues:  &fakeIssueSvc{res: issue.UpsertResult{IssueID: 1}},
 		batcher: fb,
-		Scrub:   NewScrubber(true, false, []string{"password", "token"}),
+		Scrub:   NewScrubber(true, false, []string{"password", "token", "api_key", "authorization", "cookie"}),
 	}
 
 	ev := &ParsedEvent{
@@ -48,6 +48,16 @@ func TestPipelineScrubEvent(t *testing.T) {
 		Tags:           map[string]string{"password": "hunter2", "user": "bob"},
 		ContextsJSON:   `{"trace":{"token":"secret","ok":1}}`,
 		StacktraceJSON: `{"frames":[]}`,
+		// Request-интерфейс: секреты сидят ВНУТРИ строковых значений url/
+		// query_string/data (не как отдельные ключи) и в дефисном заголовке
+		// X-Api-Key — всё это должно быть зачищено на приёме (иначе reset-токены
+		// и пароли осели бы в CH и на детали issue).
+		RequestJSON: `{"method":"POST",` +
+			`"url":"https://app/reset?token=SECRET&next=/home",` +
+			`"query_string":"api_key=AKIA&q=ok",` +
+			`"headers":{"Authorization":"Bearer z","X-Api-Key":"AKIA","Accept":"*/*"},` +
+			`"cookies":"sid=abc",` +
+			`"data":"username=bob&password=hunter2"}`,
 	}
 
 	p.process(task{projectID: 1, ev: ev})
@@ -80,6 +90,37 @@ func TestPipelineScrubEvent(t *testing.T) {
 	}
 	if tr["ok"] == nil {
 		t.Errorf("contexts.trace.ok пропал — не-denylist поле не должно тереться")
+	}
+
+	// Request-интерфейс зачищен (guard на wiring pipeline.go: удаление строки
+	// ScrubJSON(ev.RequestJSON) должно валить этот тест). Секреты сидят внутри
+	// строковых значений и в дефисном заголовке — их ловит param-scrubbing и
+	// нормализация ключей.
+	var req map[string]any
+	if err := json.Unmarshal([]byte(got.Request), &req); err != nil {
+		t.Fatalf("request не JSON: %v", err)
+	}
+	if got, want := req["url"], "https://app/reset?token=[scrubbed]&next=/home"; got != want {
+		t.Errorf("request.url = %v, want %q (token в query вычищен, путь цел)", got, want)
+	}
+	if got, want := req["query_string"], "api_key=[scrubbed]&q=ok"; got != want {
+		t.Errorf("request.query_string = %v, want %q", got, want)
+	}
+	if got, want := req["data"], "username=bob&password=[scrubbed]"; got != want {
+		t.Errorf("request.data = %v, want %q (password в теле формы вычищен, username цел)", got, want)
+	}
+	if req["cookies"] != scrubMask {
+		t.Errorf("request.cookies = %v, want %q", req["cookies"], scrubMask)
+	}
+	hdr, _ := req["headers"].(map[string]any)
+	if hdr["Authorization"] != scrubMask {
+		t.Errorf("headers.Authorization = %v, want %q", hdr["Authorization"], scrubMask)
+	}
+	if hdr["X-Api-Key"] != scrubMask {
+		t.Errorf("headers.X-Api-Key = %v, want %q (дефисный ключ ловится нормализацией)", hdr["X-Api-Key"], scrubMask)
+	}
+	if hdr["Accept"] != "*/*" {
+		t.Errorf("headers.Accept = %v, want не тронут", hdr["Accept"])
 	}
 }
 

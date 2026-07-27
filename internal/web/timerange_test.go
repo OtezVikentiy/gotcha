@@ -184,30 +184,43 @@ func TestParseRangeTime(t *testing.T) {
 }
 
 func TestAutoStep(t *testing.T) {
-	// perf: align=5m, min=5m — шаг всегда кратен 5 минутам и не мельче 5m.
 	cases := []struct {
-		window       time.Duration
-		min, align   time.Duration
-		buckets      int
-		wantMultiple time.Duration
-		wantMin      time.Duration
+		name       string
+		window     time.Duration
+		min, align time.Duration
+		buckets    int
+		want       time.Duration // точное ожидаемое значение
 	}{
-		{time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 5 * time.Minute, 5 * time.Minute},
-		{24 * time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 5 * time.Minute, 5 * time.Minute},
-		{30 * 24 * time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 5 * time.Minute, 5 * time.Minute},
-		// метрики: align=0 — любой шаг ≥ min.
-		{time.Hour, time.Minute, 0, 120, time.Nanosecond, time.Minute},
-		// buckets<1 — защитная ветка (нормализуется к 1).
-		{time.Hour, time.Minute, 0, 0, time.Nanosecond, time.Minute},
+		{"perf 1h floors to min", time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 5 * time.Minute},
+		{"perf 24h", 24 * time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 30 * time.Minute},
+		{"perf 30d", 30 * 24 * time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 15 * time.Hour},
+		{"metrics 1h floors to min", time.Hour, time.Minute, 0, 120, time.Minute},
+		{"buckets<1 normalizes to 1", time.Hour, time.Minute, 0, 0, time.Hour},
+		// align round-up: 2h/7 = 17m8.57s → ближайшее кратное 5m вверх = 20m.
+		{"align round-up branch", 2 * time.Hour, time.Minute, 5 * time.Minute, 7, 20 * time.Minute},
+		// custom-окно, не делящееся на bucket-count: раньше давало нецелый шаг
+		// (10801.07s) и расхождение с CH-сеткой — теперь ровно 10801s (B4).
+		{"custom 7d+1m whole seconds", 7*24*time.Hour + time.Minute, 5 * time.Minute, 0, 56, 10801 * time.Second},
 	}
 	for _, c := range cases {
-		step := autoStep(c.window, c.min, c.align, c.buckets)
-		if step < c.wantMin {
-			t.Errorf("autoStep(%s) = %s, below min %s", c.window, step, c.wantMin)
-		}
-		if c.align > 0 && step%c.align != 0 {
-			t.Errorf("autoStep(%s) = %s, not multiple of %s", c.window, step, c.align)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			step := autoStep(c.window, c.min, c.align, c.buckets)
+			if step != c.want {
+				t.Errorf("autoStep(%s,%s,%s,%d) = %s, want %s", c.window, c.min, c.align, c.buckets, step, c.want)
+			}
+			// B4-инвариант: шаг всегда кратен целой секунде (совпадает с CH-сеткой).
+			if step%time.Second != 0 {
+				t.Errorf("autoStep(%s) = %s — не кратно секунде, CH-сетка разъедется", c.name, step)
+			}
+			// Назначение функции: шаг покрывает окно не более чем bucket-count слотами.
+			b := c.buckets
+			if b < 1 {
+				b = 1
+			}
+			if step > 0 && c.window/step > time.Duration(b) {
+				t.Errorf("autoStep(%s): window/step = %d > buckets %d", c.name, c.window/step, b)
+			}
+		})
 	}
 }
 

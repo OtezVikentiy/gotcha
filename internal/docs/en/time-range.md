@@ -1,6 +1,6 @@
 # Time range
 
-Every page with a chart — Issues, Performance and the endpoint page, Web Vitals, Metrics, Profiles, and a monitor's latency chart — shares one control for the time window the chart and its numbers cover. It sits in the filter row, usually labeled **"Period"**.
+Every page with a chart — Performance and the endpoint page, Web Vitals, Metrics, Profiles, a monitor's latency chart, and an issue's frequency chart — shares one control for the time window the chart and its numbers cover. It sits in the filter row, usually labeled **"Period"**. (The issues *list* has a simpler period filter — all-time / 24h / 7d / 30d, no custom range; see [Issues](/docs/issues).)
 
 ## Presets and a custom range
 

@@ -75,6 +75,28 @@ func statusBadgeClass(status string) string {
 	}
 }
 
+// issueLevelLabel — локализованное имя уровня issue (в БД коды debug/info/
+// warning/error/fatal). Неизвестный код возвращается как есть. Один и тот же
+// набор ключей используется в фильтре-дропдауне выше — иначе в таблице ячейка
+// показывала бы "warning", а фильтр рядом — «Предупреждение».
+func issueLevelLabel(ctx context.Context, level string) string {
+	switch level {
+	case "debug", "info", "warning", "error", "fatal":
+		return i18n.T(ctx, "issues.level."+level)
+	}
+	return level
+}
+
+// issueStatusLabel — локализованное имя статуса issue/perf-issue (unresolved/
+// resolved/ignored). Неизвестный статус возвращается как есть.
+func issueStatusLabel(ctx context.Context, status string) string {
+	switch status {
+	case "unresolved", "resolved", "ignored":
+		return i18n.T(ctx, "issues.status."+status)
+	}
+	return status
+}
+
 // ago — локализованное относительное время вида "3 секунды назад"/"5 минут
 // назад"/"2 часа назад"/"4 дня назад" (см. plurals time.ago.* в каталогах
 // i18n). Отрицательная разница (небольшой перекос часов между БД и
@@ -257,7 +279,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 								for _, row := range rows {
 									<tr>
 										<td><input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) }/></td>
-										<td><span class={ levelBadgeClass(row.Issue.Level) }>{ row.Issue.Level }</span></td>
+										<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
 										<td>
 											<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
 											if row.Issue.Culprit != "" {
@@ -267,7 +289,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 										<td>@row.Sparkline</td>
 										<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
 										<td>{ ago(ctx, row.Issue.LastSeen) }</td>
-										<td><span class={ statusBadgeClass(row.Issue.Status) }>{ row.Issue.Status }</span></td>
+										<td><span class={ statusBadgeClass(row.Issue.Status) }>{ issueStatusLabel(ctx, row.Issue.Status) }</span></td>
 										<td>
 										if row.Issue.AssigneeEmail == "" {
 											{ assigneeDisplay(row.Issue.AssigneeEmail) }

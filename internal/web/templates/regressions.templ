@@ -74,6 +74,18 @@ func regressionStatusBadgeClass(status string) string {
 	return "badge badge-good"
 }
 
+// regressionStatusLabel — локализованное имя статуса регрессии (open/resolved),
+// теми же ключами, что и вкладки-фильтры выше. Неизвестный статус — как есть.
+func regressionStatusLabel(ctx context.Context, status string) string {
+	switch status {
+	case "open":
+		return i18n.T(ctx, "perf.tab.open")
+	case "resolved":
+		return i18n.T(ctx, "issues.status.resolved")
+	}
+	return status
+}
+
 // regressionDurationText — «ongoing» для открытой регрессии, иначе длительность
 // между started_at и resolved_at (тот же приём, что incidentDurationText).
 func regressionDurationText(ctx context.Context, r trace.Regression) string {
@@ -131,7 +143,7 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 								<td>{ regressionMetricLabel(ctx, reg.Metric) }</td>
 								<td class="num">{ regressionIncreasePct(reg) }</td>
 								<td class="num">{ regressionValueRange(reg) }</td>
-								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ reg.Status }</span></td>
+								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
 								<td>{ ago(ctx, reg.StartedAt) }</td>
 								<td class="num">{ regressionDurationText(ctx, reg) }</td>
 							</tr>

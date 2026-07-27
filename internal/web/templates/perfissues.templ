@@ -101,7 +101,7 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 								<td>{ iss.Culprit }</td>
 								<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
 								<td>{ ago(ctx, iss.LastSeen) }</td>
-								<td><span class={ perfStatusBadgeClass(iss.Status) }>{ iss.Status }</span></td>
+								<td><span class={ perfStatusBadgeClass(iss.Status) }>{ issueStatusLabel(ctx, iss.Status) }</span></td>
 							</tr>
 						}
 					</tbody>

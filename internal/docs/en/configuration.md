@@ -133,7 +133,7 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_REGISTRATION` | `invite` | Self-registration mode: `open` — anyone can register; `invite` — self-registration is closed, new users can only join via an invite link; `closed` — self-registration is disabled entirely. The very first user on a fresh instance can always register regardless of this setting (instance-admin bootstrap). |
 | `GOTCHA_SSRF_ALLOW_PRIVATE` | `false` | Allow uptime checks and outbound webhook alert deliveries to target private/loopback/link-local addresses (e.g. `192.168.x.x`, `127.0.0.1`, `169.254.x.x`). Keep this `false` on any instance shared across multiple users/organizations — otherwise one user could set up an "uptime check" or webhook that actually probes your internal network (SSRF). |
 | `GOTCHA_AUTO_MIGRATE` | `true` | Apply database schema migrations automatically on startup. `false` means migrations must be applied as a separate step beforehand — otherwise the app refuses to start against a schema that's out of date. See [Upgrade](/docs/upgrade) for details and when this is needed. |
-| `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `true` | Whether to send error text (title/culprit/body) to external alert channels (Telegram/webhook). `false` sends only an anonymized link back to the instance, without the error text (which may contain personal data you don't want leaving the instance). |
+| `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `false` | Whether to send error text (title/culprit/body) to external alert channels (Telegram/webhook). `false` sends only an anonymized link back to the instance, without the error text (which may contain personal data you don't want leaving the instance). |
 
 ## Uptime & probe
 

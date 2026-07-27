@@ -68,7 +68,20 @@ func prettyBound(s string) string {
 // cend — так смена окружения/сортировки его не сбрасывает, а выбор пресета в
 // списке уводит обратно на пресет.
 templ timeRangeFields(r TimeRangeVM) {
-	<span class="time-range">
+	// data-l-* — локализованные подписи для JS-пикера (daterange.js). Он больше
+	// не хардкодит русские строки: месяцы/дни/формат дат берёт из Intl по
+	// <html lang>, а кнопки/aria — отсюда. Без JS эти атрибуты просто не
+	// читаются (нативный fallback сам локализован через i18n.T выше).
+	<span
+		class="time-range"
+		data-l-apply={ i18n.T(ctx, "range.picker.apply") }
+		data-l-cancel={ i18n.T(ctx, "range.picker.cancel") }
+		data-l-hint={ i18n.T(ctx, "range.picker.hint") }
+		data-l-trigger={ i18n.T(ctx, "range.picker.trigger") }
+		data-l-dialog={ i18n.T(ctx, "range.picker.dialog") }
+		data-l-prev={ i18n.T(ctx, "range.picker.prev_month") }
+		data-l-next={ i18n.T(ctx, "range.picker.next_month") }
+	>
 		<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
 			for _, p := range []string{"1h", "24h", "7d", "30d"} {
 				@timeRangePresetOpt(p, r)
