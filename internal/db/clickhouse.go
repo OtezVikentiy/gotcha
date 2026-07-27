@@ -17,6 +17,18 @@ func NewClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
 		// оператора. Отдаём обобщённую формулировку без credentials.
 		return nil, fmt.Errorf("clickhouse: invalid DSN")
 	}
+	// Потолок времени выполнения запроса. Без него один тяжёлый скан (например
+	// поиск по неиндексированному trace_id на большом объёме) может занять сервер
+	// целиком и уронить инстанс. 60с заведомо выше любого легитимного запроса
+	// (в т.ч. батч-вставок), но превращает runaway-скан в ошибку страницы, а не в
+	// отказ всей БД. Оператор может переопределить через DSN
+	// (?max_execution_time=...) — тогда своё значение не трогаем.
+	if opts.Settings == nil {
+		opts.Settings = clickhouse.Settings{}
+	}
+	if _, ok := opts.Settings["max_execution_time"]; !ok {
+		opts.Settings["max_execution_time"] = 60
+	}
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse: %w", err)
