@@ -104,28 +104,15 @@ func TestCoverErrorMessages(t *testing.T) {
 	}
 }
 
-// TestCoverPeriodAndStepHelpers покрывает нормализацию периода/шага для страниц
-// перформанса и профилей и форматирование шага.
+// TestCoverPeriodAndStepHelpers покрывает нормализацию шага для страниц
+// перформанса и форматирование шага (окно теперь общее — см. timerange_test).
 func TestCoverPeriodAndStepHelpers(t *testing.T) {
-	// perfPeriodWindow: известный период и дефолт.
-	if _, name := perfPeriodWindow("24h"); name == "" {
-		t.Error("perfPeriodWindow(24h) empty name")
-	}
-	if _, name := perfPeriodWindow("bogus-period"); name == "" {
-		t.Error("perfPeriodWindow(bogus) empty name")
-	}
 	// perfBucketStep: окно, требующее округления до 5 минут, и слишком маленькое.
 	if step := perfBucketStep(23*time.Hour, 24); step%(5*time.Minute) != 0 {
 		t.Errorf("perfBucketStep not multiple of 5m: %v", step)
 	}
 	if step := perfBucketStep(time.Minute, 24); step != 5*time.Minute {
 		t.Errorf("perfBucketStep(tiny) = %v, want 5m floor", step)
-	}
-	// profilePeriodWindow: все три ветки.
-	for _, p := range []string{"1h", "7d", "24h", "other"} {
-		if _, name := profilePeriodWindow(p); name == "" {
-			t.Errorf("profilePeriodWindow(%q) empty", p)
-		}
 	}
 	// formatStep: часы, минуты, секунды.
 	for _, d := range []time.Duration{2 * time.Hour, 30 * time.Minute, 15 * time.Second} {

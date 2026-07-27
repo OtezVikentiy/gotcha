@@ -154,6 +154,16 @@ func TestWebPerformanceList(t *testing.T) {
 		}
 	}
 
+	// Произвольный диапазон: селектор в режиме custom, ссылки сортировки
+	// колонок несут period=custom (parseTimeRange custom + apply).
+	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, path+cq, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("GET %s custom range status=%d: %s", path, resp.StatusCode, cbody)
+	}
+
 	// Environment=staging: только staging-эндпойнт, users не показывается.
 	resp = getWithCookie(t, s.srv, path+"?environment=staging", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)

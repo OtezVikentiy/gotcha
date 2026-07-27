@@ -76,4 +76,17 @@ func TestWebEndpointDetailVitalsAndParams(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s?period=1h status = %d, want 200", txPath, resp.StatusCode)
 	}
+
+	// Произвольный диапазон (?period=custom&start&end) — путь parseTimeRange
+	// custom + autoStep + рендер селектора/подписи в режиме custom.
+	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, txPath+cq, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", txPath+cq, resp.StatusCode, cbody)
+	}
+	if !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("GET %s did not render the custom range as selected: %s", txPath+cq, cbody)
+	}
 }

@@ -12,15 +12,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// perfPeriods — окна списка/страницы эндпойнтов: query-параметр period →
-// длительность окна. Дефолт — 24h (см. perfDefaultPeriod).
-var perfPeriods = map[string]time.Duration{
-	"1h":  time.Hour,
-	"24h": 24 * time.Hour,
-	"7d":  7 * 24 * time.Hour,
-	"30d": 30 * 24 * time.Hour,
-}
-
+// perfDefaultPeriod — пресет окна по умолчанию для perf-страниц (см.
+// parseTimeRange). Пресеты и их окна теперь в едином timerange.go.
 const perfDefaultPeriod = "24h"
 
 // perfSparklineBuckets — сколько корзин в спарклайне p95 списка (та же грубость,
@@ -44,15 +37,6 @@ const (
 // последовательных round-trip'ов на загрузку страницы. Усечение раскрывается в
 // UI, как и потолок waterfall.
 const perfEndpointLimit = 100
-
-// perfPeriodWindow возвращает длительность окна для query-параметра period и его
-// нормализованное имя (неизвестное/пустое → дефолт).
-func perfPeriodWindow(period string) (time.Duration, string) {
-	if d, ok := perfPeriods[period]; ok {
-		return d, period
-	}
-	return perfPeriods[perfDefaultPeriod], perfDefaultPeriod
-}
 
 // perfBucketStep выбирает шаг корзины для окна window и числа корзин buckets так,
 // чтобы он был кратен 5 минутам (тогда trace.Query читает из дешёвой MV
@@ -107,12 +91,11 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	window, period := perfPeriodWindow(r.URL.Query().Get("period"))
+	tr := parseTimeRange(r.URL.Query(), perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
 	sortKey := r.URL.Query().Get("sort")
 
-	now := time.Now().UTC()
-	from := now.Add(-window)
+	from, now := tr.From, tr.To
 
 	stats, err := h.Trace.Endpoints(r.Context(), projectID, from, now, environment, int(project.ApdexThresholdMS))
 	if err != nil {
@@ -136,7 +119,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		stats = stats[:perfEndpointLimit]
 	}
 
-	step := perfBucketStep(window, perfSparklineBuckets)
+	step := perfBucketStep(tr.Window(), perfSparklineBuckets)
 	rows := make([]templates.EndpointRow, len(stats))
 	for i, st := range stats {
 		points, err := h.Trace.EndpointLatency(r.Context(), projectID, st.Transaction, from, now, step, environment)
@@ -150,7 +133,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	filter := templates.PerfFilter{Period: period, Environment: environment, Sort: sortKey}
+	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
 	_ = templates.PerformanceList(projectID, rows, total, filter, environments, int(project.ApdexThresholdMS), h.currentEmail(r)).
 		Render(r.Context(), w)
 }
@@ -228,13 +211,12 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	window, period := perfPeriodWindow(r.URL.Query().Get("period"))
+	tr := parseTimeRange(r.URL.Query(), perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
 
-	now := time.Now().UTC()
-	from := now.Add(-window)
+	from, now := tr.From, tr.To
 
-	step := perfBucketStep(window, perfLatencyBuckets)
+	step := perfBucketStep(tr.Window(), perfLatencyBuckets)
 	points, err := h.Trace.EndpointLatency(r.Context(), projectID, transaction, from, now, step, environment)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -274,7 +256,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	// Панель Web Vitals (этап 4, план 2, задача 2): только если у транзакции
 	// есть хоть один web vital за период (иначе vitals == nil и панель не
 	// рендерится).
-	vitals, err := h.vitalsPanel(r, projectID, transaction, from, now, window, environment)
+	vitals, err := h.vitalsPanel(r, projectID, transaction, from, now, tr.Window(), environment)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -283,7 +265,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	data := templates.EndpointDetailData{
 		ProjectID:    projectID,
 		Transaction:  transaction,
-		Period:       period,
+		Range:        timeRangeVM(tr),
 		Environment:  environment,
 		ApdexT:       int(project.ApdexThresholdMS),
 		LatencyChart: latencyLinesSVG(r.Context(), points, perfLatencyChartWidth, perfLatencyChartHeight),

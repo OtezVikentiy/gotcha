@@ -138,6 +138,19 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 		t.Fatalf("GET %s (owner) missing 'Heartbeat-пинг' section: %s", path, bodyStr)
 	}
 
+	// Произвольный диапазон графика задержек (?period=custom&start&end):
+	// handler parseTimeRange/autoStep для латентности + селектор в режиме custom.
+	custQ := path + "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, custQ, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", custQ, resp.StatusCode, cbody)
+	}
+	if !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("GET %s did not render custom range selected: %s", custQ, cbody)
+	}
+
 	// Member (view access, not owner/admin) GET -> 200, must NOT contain the
 	// heartbeat token or the Heartbeat-пинг section.
 	resp = getWithCookie(t, s.srv, path, memberCookie)

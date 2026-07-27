@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -99,6 +100,7 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			// so the locale is already resolved in ctx by this point.
 			Locale:    i18n.FromContext(ctx).Code,
 			CanManage: canManage,
+			Back:      backOrigin(r, h.BaseURL, path),
 		}
 		next.ServeHTTP(w, r.WithContext(nav.WithShell(ctx, sh)))
 	})
@@ -130,6 +132,36 @@ func orgIDFromPath(path string) int64 {
 		return 0
 	}
 	return id
+}
+
+// backOrigin возвращает относительный путь «откуда пришёл» из заголовка
+// Referer для хлебной крошки «назад». Пусто, когда Referer нет, он с чужого
+// origin, ведёт на тот же путь (перезагрузка) или на служебные адреса —
+// тогда крошка падает на жёстко зашитого родителя. Возвращается только
+// относительный путь+запрос (без scheme/host), проверенный на same-origin
+// тем же isSameOriginURL, что и CSRF-защита POST-ов: в шаблоне он уходит в
+// templ.SafeURL, поэтому чужой или протокол-относительный адрес недопустим.
+func backOrigin(r *http.Request, baseURL, curPath string) string {
+	ref := r.Header.Get("Referer")
+	if ref == "" || !isSameOriginURL(ref, baseURL) {
+		return ""
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+	p := u.EscapedPath()
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
+		return ""
+	}
+	if p == curPath || strings.HasPrefix(p, "/static/") ||
+		strings.HasPrefix(p, "/login") || strings.HasPrefix(p, "/logout") {
+		return ""
+	}
+	if u.RawQuery != "" {
+		return p + "?" + u.RawQuery
+	}
+	return p
 }
 
 // navOrigin — подраздел, из которого пользователь пришёл на общую страницу.

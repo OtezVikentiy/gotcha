@@ -91,6 +91,15 @@ func TestWebVitalsOverview(t *testing.T) {
 		}
 	}
 
+	// Произвольный диапазон: селектор в режиме custom (parseTimeRange custom).
+	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, path+cq, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("GET %s custom range status=%d: %s", path, resp.StatusCode, cbody)
+	}
+
 	// Пустой проект: «no web vitals», не падает.
 	emptyPath := "/projects/" + strconv.FormatInt(empty.ID, 10) + "/web-vitals"
 	resp = getWithCookie(t, s.srv, emptyPath, ownerCookie)

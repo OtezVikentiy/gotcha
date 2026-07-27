@@ -116,7 +116,7 @@ func TestInviteAccept(t *testing.T) {
 
 // TestProfileFlame — страница флеймграфа профиля с графиком.
 func TestProfileFlame(t *testing.T) {
-	vm := ProfileFlameVM{ProjectID: 7, Service: "web", Type: "cpu", Transaction: "GET /", Environment: "production", Period: "24h", Chart: stub()}
+	vm := ProfileFlameVM{ProjectID: 7, Service: "web", Type: "cpu", Transaction: "GET /", Environment: "production", Range: TimeRangeVM{Key: "24h"}, Chart: stub()}
 	out := renderTo(t, ProfileFlame(vm, "u@e.com"))
 	if !strings.Contains(out, "web") {
 		t.Error("флейм профиля должен содержать сервис")
@@ -184,7 +184,7 @@ func TestPublicStatusPage(t *testing.T) {
 func TestHeartbeatMonitorDetail(t *testing.T) {
 	m := uptime.Monitor{ID: 4, Name: "cron", Kind: uptime.KindHeartbeat, Enabled: false, IntervalSeconds: 3600, HeartbeatToken: "hbtok"}
 	stat := uptime.UptimeStat{Total: 10, OK: 10}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), nil, nil, 1, 0, true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, "https://gotcha.example", "u@e.com"))
 	if !strings.Contains(out, "hbtok") {
 		t.Error("деталь heartbeat должна содержать токен пинга")
 	}

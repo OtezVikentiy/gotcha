@@ -38,6 +38,35 @@ func TestAreaForPath(t *testing.T) {
 	}
 }
 
+func TestBackLabelKey(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/projects/7/issues?status=resolved", "nav.issues"},
+		{"/issues/9", "nav.issues"},
+		{"/projects/7/web-vitals", "nav.webvitals"},
+		{"/projects/7/performance", "nav.transactions"},
+		{"/projects/7/metrics", "nav.metrics"},
+		{"/projects/7/metrics/alerts", "nav.metric_alerts"},
+		{"/monitors/3", "nav.monitors"},
+		{"/projects/7/incidents", "nav.incidents"},
+		{"/projects/7/alerts", "nav.alerts"},
+		{"/projects/7/alerts/deliveries", "nav.alert_deliveries"},
+		{"/projects", "nav.projects"},
+		{"/projects/7/settings", "nav.project_settings"},
+		{"/docs/glossary", "docs.index.title"},
+		// Неопознанный путь — общий ключ подставляет вызывающий, здесь "".
+		{"/setup", ""},
+		{"/whatever", ""},
+	}
+	for _, c := range cases {
+		if got := BackLabelKey(c.path); got != c.want {
+			t.Errorf("BackLabelKey(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
 func TestAreaForPathExtras(t *testing.T) {
 	cases := []struct {
 		path string

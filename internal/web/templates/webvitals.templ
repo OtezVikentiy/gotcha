@@ -26,9 +26,7 @@ func endpointVitalsPath(projectID int64, transaction string) string {
 
 func wvListSortURL(projectID int64, f PerfFilter, sort string) string {
 	q := url.Values{}
-	if f.Period != "" {
-		q.Set("period", f.Period)
-	}
+	f.Range.apply(q)
 	if f.Environment != "" {
 		q.Set("environment", f.Environment)
 	}
@@ -164,12 +162,7 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 						@perfEnvOption(env, env, filter.Environment)
 					}
 				</select>
-				<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
-					@perfPeriodOption("1h", i18n.T(ctx, "perf.filter.period_1h"), filter.Period)
-					@perfPeriodOption("24h", i18n.T(ctx, "perf.filter.period_24h"), filter.Period)
-					@perfPeriodOption("7d", i18n.T(ctx, "perf.filter.period_7d"), filter.Period)
-					@perfPeriodOption("30d", i18n.T(ctx, "perf.filter.period_30d"), filter.Period)
-				</select>
+				@timeRangeFields(filter.Range)
 				if filter.Sort != "" {
 					<input type="hidden" name="sort" value={ filter.Sort }/>
 				}

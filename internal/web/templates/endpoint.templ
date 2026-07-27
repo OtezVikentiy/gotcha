@@ -23,7 +23,7 @@ func perfIssuePath(id int64) string {
 type EndpointDetailData struct {
 	ProjectID   int64
 	Transaction string
-	Period      string
+	Range       TimeRangeVM
 	Environment string
 	ApdexT      int
 
@@ -67,10 +67,20 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.transactions"))
 			}
 			<h1>{ d.Transaction }</h1>
+			<form method="get" action={ templ.URL(endpointPath(d.ProjectID, d.Transaction)) } class="performance-filters">
+				if d.Environment != "" {
+					<input type="hidden" name="environment" value={ d.Environment }/>
+				}
+				if d.From != "" {
+					<input type="hidden" name="from" value={ d.From }/>
+				}
+				@timeRangeFields(d.Range)
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
+			</form>
 			<div class="monitor-meta">
 				<div class="stat-tile">
 					<div class="stat-label">{ i18n.T(ctx, "perf.period") }</div>
-					<div class="stat-value">{ d.Period }</div>
+					<div class="stat-value">@timeRangeLabel(d.Range)</div>
 				</div>
 				if d.Environment != "" {
 					<div class="stat-tile">

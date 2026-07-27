@@ -65,3 +65,33 @@ func TestOrgIDFromPath(t *testing.T) {
 		}
 	}
 }
+
+func TestBackOrigin(t *testing.T) {
+	const base = "https://gotcha.example"
+	cur := "/monitors/9"
+
+	cases := []struct {
+		name    string
+		referer string
+		want    string
+	}{
+		{"empty referer falls back to parent", "", ""},
+		{"cross-origin ignored", "https://evil.example/monitors", ""},
+		{"same path is a reload, not a back-target", base + "/monitors/9", ""},
+		{"static asset ignored", base + "/static/app.css", ""},
+		{"login page ignored", base + "/login", ""},
+		{"same-origin page kept", base + "/projects/7/incidents", "/projects/7/incidents"},
+		{"query string preserved", base + "/projects/7/issues?status=resolved&page=2", "/projects/7/issues?status=resolved&page=2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", cur, nil)
+			if c.referer != "" {
+				r.Header.Set("Referer", c.referer)
+			}
+			if got := backOrigin(r, base, cur); got != c.want {
+				t.Errorf("backOrigin(referer=%q) = %q, want %q", c.referer, got, c.want)
+			}
+		})
+	}
+}

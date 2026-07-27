@@ -69,7 +69,7 @@ func TestIssueDetail(t *testing.T) {
 	members := []org.Member{{UserID: 2, Email: "dev@x.io", Role: org.RoleAdmin}}
 	ev := event.Stored{ID: "ev1", Level: "error", ExceptionType: "NPE", ExceptionValue: "nil ptr", Environment: "production", Release: "1.2.3", TraceID: "abc", Tags: map[string]string{"k": "v"}}
 	frames := []Frame{{Function: "main", Module: "app", Filename: "main.go", Lineno: 10, InApp: true}}
-	out := renderTo(t, IssueDetail(it, members, stub(), []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true))
+	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true))
 	if !strings.Contains(out, "NPE") || !strings.Contains(out, "main.go:10") {
 		t.Error("деталь issue должна показать исключение и локацию кадра")
 	}
@@ -84,7 +84,7 @@ func TestPerformanceList(t *testing.T) {
 	rows := []EndpointRow{
 		{Stat: trace.EndpointStat{Transaction: "GET /api", Count: 1000, Throughput: 12, P50: 5000, P95: 20000, P99: 50000, FailureRate: 0.02, ApdexScore: 0.95, Environments: []string{"production"}}, Sparkline: stub()},
 	}
-	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Period: "24h", Sort: "throughput"}, []string{"production"}, 500, "u@e.com"))
+	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}, Sort: "throughput"}, []string{"production"}, 500, "u@e.com"))
 	if !strings.Contains(out, "GET /api") {
 		t.Error("список должен содержать транзакцию")
 	}
@@ -98,7 +98,7 @@ func TestPerformanceList(t *testing.T) {
 // панелью web-vitals.
 func TestEndpointDetail(t *testing.T) {
 	d := EndpointDetailData{
-		ProjectID: 7, Transaction: "GET /api", Period: "24h", Environment: "production", ApdexT: 500,
+		ProjectID: 7, Transaction: "GET /api", Range: TimeRangeVM{Key: "24h"}, Environment: "production", ApdexT: 500,
 		LatencyChart: stub(), Throughput: stub(), Histogram: stub(), StepLabel: "1h",
 		Slowest:    []trace.TraceRow{{TraceID: "t1", DurationUS: 120000, Timestamp: time.Now(), Status: "ok"}},
 		PerfIssues: []trace.PerfIssue{{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Status: "unresolved", Count: 9}},
@@ -124,13 +124,13 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com"))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
 
 	// Без прав управления — рендер не должен падать и остаётся валидным.
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), nil, nil, 1, 0, false, "https://x", "u@e.com"))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, "https://x", "u@e.com"))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
 	}
@@ -262,11 +262,11 @@ func TestProfilesList(t *testing.T) {
 		{Service: "web", Type: "cpu", Transaction: "GET /", Weight: 2_000_000_000, Unit: "nanoseconds", Samples: 1000, Environments: []string{"production"}},
 		{Service: "web", Type: "alloc_space", Transaction: "POST /", Weight: 5 * 1024 * 1024, Unit: "bytes", Samples: 500},
 	}
-	out := renderTo(t, ProfilesList(7, services, "24h", "production", "u@e.com"))
+	out := renderTo(t, ProfilesList(7, services, TimeRangeVM{Key: "24h"}, "production", "u@e.com"))
 	if !strings.Contains(out, "web") {
 		t.Error("список профилей должен содержать сервис")
 	}
-	empty := renderTo(t, ProfilesList(7, nil, "24h", "", "u@e.com"))
+	empty := renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com"))
 	if strings.Contains(empty, ">GET /<") {
 		t.Error("пустой список профилей")
 	}
@@ -295,7 +295,7 @@ func TestMetricsListAndDetail(t *testing.T) {
 
 	vm := MetricDetailVM{
 		ProjectID: 7, Info: metric.MetricInfo{Name: "http.rps", Type: "histogram", Unit: "ms"},
-		Period: "24h", Agg: "avg", Environment: "production", Environments: []string{"production", "staging"},
+		Range: TimeRangeVM{Key: "24h"}, Agg: "avg", Environment: "production", Environments: []string{"production", "staging"},
 		Labels: map[string][]string{"route": {"/a", "/b"}}, LabelKey: "route", LabelValue: "/a",
 		Chart: stub(), Percentiles: true,
 	}
@@ -328,7 +328,7 @@ func TestWebVitalsList(t *testing.T) {
 	pages := []trace.PageVitals{
 		{Transaction: "/home", LCP: trace.Vital{Name: "lcp", P75: 2400, Rating: "good"}, INP: trace.Vital{Name: "inp", P75: 300, Rating: "needs-improvement"}, CLS: trace.Vital{Name: "cls", P75: 0.3, Rating: "poor"}, Count: 500, Environments: []string{"production"}},
 	}
-	out := renderTo(t, WebVitalsList(7, pages, PerfFilter{Period: "24h"}, []string{"production"}, "u@e.com"))
+	out := renderTo(t, WebVitalsList(7, pages, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, "u@e.com"))
 	if !strings.Contains(out, "/home") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("список web-vitals должен содержать страницу и разные бейджи рейтинга")
 	}

@@ -90,6 +90,20 @@ func TestWebIssueDetail(t *testing.T) {
 		t.Fatalf("GET %s missing breadcrumb link %q: %s", issuePath, backToIssues, body)
 	}
 
+	// Произвольный диапазон графика частоты (?period=custom&start&end):
+	// handler parseTimeRange/autoStep + селектор в режиме custom, событие
+	// сохраняется как скрытое поле формы.
+	custQ := issuePath + "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, custQ, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", custQ, resp.StatusCode, cbody)
+	}
+	if !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("GET %s did not render custom range selected: %s", custQ, cbody)
+	}
+
 	// ?event=ev2ID → фреймы: function присутствует, in-app класс есть.
 	resp = getWithCookie(t, s.srv, issuePath+"?event="+ev2ID, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)

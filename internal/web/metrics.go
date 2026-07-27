@@ -17,19 +17,9 @@ func metricsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics"
 }
 
-// metricPeriodWindow — окно и шаг корзины для query-параметра period. В отличие
-// от perf-страниц, метрики читаются из сырой metric_points (без 5m MV), поэтому
-// шаг может быть мельче.
-func metricPeriodWindow(period string) (window, step time.Duration, name string) {
-	switch period {
-	case "1h":
-		return time.Hour, time.Minute, "1h"
-	case "7d":
-		return 7 * 24 * time.Hour, time.Hour, "7d"
-	default:
-		return 24 * time.Hour, 10 * time.Minute, "24h"
-	}
-}
+// metricChartBuckets — целевое число корзин графика метрики. Шаг подбирается
+// autoStep по окну (не мельче минуты): 1ч→~1м, 24ч→~12м, 7д→~1.4ч, 30д→~6ч.
+const metricChartBuckets = 120
 
 // metricsList — GET /projects/{id}/metrics: перечень метрик проекта.
 func (h *Handler) metricsList(w http.ResponseWriter, r *http.Request) {
@@ -109,13 +99,15 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	window, step, period := metricPeriodWindow(r.URL.Query().Get("period"))
+	tr := parseTimeRange(r.URL.Query(), "24h")
 	environment := r.URL.Query().Get("environment")
 	agg := metricAggFor(info.Type, r.URL.Query().Get("agg"))
 	matcher := metric.LabelMatcher{Key: r.URL.Query().Get("label_key"), Value: r.URL.Query().Get("label_value")}
 
-	now := time.Now().UTC()
-	from := now.Add(-window)
+	from, now := tr.From, tr.To
+	// Метрики читают сырую metric_points (без 5m-MV, как у perf), поэтому шаг
+	// может быть мельче — не мельче минуты, без выравнивания (align=0).
+	step := autoStep(tr.Window(), time.Minute, 0, metricChartBuckets)
 	points, err := h.Metrics.Series(r.Context(), projectID, name, environment, matcher, agg, from, now, step)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -134,7 +126,7 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	vm := templates.MetricDetailVM{
 		ProjectID:    projectID,
 		Info:         info,
-		Period:       period,
+		Range:        timeRangeVM(tr),
 		Agg:          agg,
 		Environment:  environment,
 		Environments: environments,

@@ -2,6 +2,7 @@ package templates
 
 import (
 	"context"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -170,17 +171,19 @@ func monitorIncidentsTotalPages(total int64) int64 {
 // monitorIncidentsPageURL — ссылка на страницу ленты инцидентов монитора
 // (?incpage=N; отдельный параметр, чтобы не конфликтовать с прочими на
 // странице). Первая страница — чистый путь детали.
-func monitorIncidentsPageURL(monitorID int64, page int) string {
+func monitorIncidentsPageURL(monitorID int64, page int, rng TimeRangeVM) string {
+	q := url.Values{}
+	rng.apply(q)
 	if page > 1 {
-		return monitorDetailPath(monitorID) + "?incpage=" + strconv.Itoa(page)
+		q.Set("incpage", strconv.Itoa(page))
 	}
-	return monitorDetailPath(monitorID)
+	return monitorDetailPath(monitorID) + "?" + q.Encode()
 }
 
-templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, baseURL string, userEmail string) {
+templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, rng TimeRangeVM, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, baseURL string, userEmail string) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
-			@breadcrumbBack(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
+			@breadcrumbBackTo(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ m.Name }</h1>
 			<span class={ monitorStatusBadgeClass(status) }>{ i18n.T(ctx, monitorStatusTextKey(status)) }</span>
 			<span class="chip">{ string(m.Kind) }</span>
@@ -233,6 +236,10 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 			}
 
 			<h2>{ i18n.T(ctx, "uptime.detail.latency_title") }</h2>
+			<form method="get" action={ templ.URL(monitorDetailPath(m.ID)) } class="performance-filters">
+				@timeRangeFields(rng)
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
+			</form>
 			<p class="chart-caption">{ i18n.T(ctx, "uptime.detail.latency_caption") }</p>
 			<p class="chart-legend">
 				<span class="legend-item legend-dns">DNS</span>
@@ -299,11 +306,11 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				if monitorIncidentsTotalPages(incTotal) > 1 {
 					<nav class="pagination">
 						if incPage > 1 {
-							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage-1)) }>« { i18n.T(ctx, "pagination.prev") }</a>
+							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage-1, rng)) }>« { i18n.T(ctx, "pagination.prev") }</a>
 						}
 						<span>{ strconv.Itoa(incPage) } / { strconv.FormatInt(monitorIncidentsTotalPages(incTotal), 10) }</span>
 						if int64(incPage) < monitorIncidentsTotalPages(incTotal) {
-							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage+1)) }>{ i18n.T(ctx, "pagination.next") } »</a>
+							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage+1, rng)) }>{ i18n.T(ctx, "pagination.next") } »</a>
 						}
 					</nav>
 				}

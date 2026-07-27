@@ -54,7 +54,7 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 type MetricDetailVM struct {
 	ProjectID    int64
 	Info         metric.MetricInfo
-	Period       string
+	Range        TimeRangeVM
 	Agg          string
 	Environment  string
 	Environments []string
@@ -83,15 +83,11 @@ func metricAggOptions(percentiles bool) []string {
 	return []string{"avg", "max", "min", "sum"}
 }
 
-func metricPeriodOptions() []string {
-	return []string{"1h", "24h", "7d"}
-}
-
 // MetricDetail — GET /projects/{id}/metrics/{name}: график ряда с фильтрами.
 templ MetricDetail(vm MetricDetailVM, userEmail string) {
 	@layout(i18n.Tf(ctx, "metrics.detail.title", "name", vm.Info.Name), userEmail) {
 		<div class="metric-detail">
-			@breadcrumbBack(templ.URL(metricsBasePath(vm.ProjectID)), i18n.T(ctx, "metrics.title"))
+			@breadcrumbBackTo(templ.URL(metricsBasePath(vm.ProjectID)), i18n.T(ctx, "metrics.title"))
 			<h1>{ vm.Info.Name }</h1>
 			<div class="monitor-meta">
 				<div class="stat-tile">
@@ -106,15 +102,7 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 			<form method="get" class="metric-filters">
 				<label>
 					{ i18n.T(ctx, "metrics.filter.period") }
-					<select name="period" class="select">
-						for _, p := range metricPeriodOptions() {
-							if p == vm.Period {
-								<option value={ p } selected>{ p }</option>
-							} else {
-								<option value={ p }>{ p }</option>
-							}
-						}
-					</select>
+					@timeRangeFields(vm.Range)
 				</label>
 				<label>
 					{ i18n.T(ctx, "metrics.filter.aggregation") }
@@ -170,7 +158,7 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 // metricLabelFilterURL — ссылка на ту же метрику с фильтром по лейблу.
 func metricLabelFilterURL(vm MetricDetailVM, key, value string) string {
 	q := url.Values{}
-	q.Set("period", vm.Period)
+	vm.Range.apply(q)
 	q.Set("agg", vm.Agg)
 	if vm.Environment != "" {
 		q.Set("environment", vm.Environment)

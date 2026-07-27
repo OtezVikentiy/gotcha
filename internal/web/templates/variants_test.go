@@ -67,7 +67,7 @@ func TestIssueDetailBareFrame(t *testing.T) {
 	// Системный кадр (InApp=false) с модулем — рендерится через <details>.
 	frames := []Frame{{Function: "runtime.main", Module: "runtime", Filename: "", Lineno: 0, InApp: false}}
 	ev := event.Stored{ID: "e9", Level: "info", Message: "just a message"}
-	out := renderTo(t, IssueDetail(it, nil, stub(), []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false))
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false))
 	if !strings.Contains(out, "runtime.main") || !strings.Contains(out, "frame-system") {
 		t.Error("системный кадр не из приложения должен отрендериться через <details>")
 	}
@@ -94,7 +94,7 @@ func TestMonitorFormTCPandDNS(t *testing.T) {
 // TestMetricDetailPlain — метрика-gauge без перцентилей и без лейблов: ветки
 // без p50/p95/p99 и без матчера лейблов.
 func TestMetricDetailPlain(t *testing.T) {
-	vm := MetricDetailVM{ProjectID: 7, Info: metric.MetricInfo{Name: "cpu", Type: "gauge", Unit: ""}, Period: "1h", Agg: "avg", Chart: stub(), Percentiles: false}
+	vm := MetricDetailVM{ProjectID: 7, Info: metric.MetricInfo{Name: "cpu", Type: "gauge", Unit: ""}, Range: TimeRangeVM{Key: "1h"}, Agg: "avg", Chart: stub(), Percentiles: false}
 	out := renderTo(t, MetricDetail(vm, "u@e.com"))
 	if !strings.Contains(out, "cpu") {
 		t.Error("деталь метрики без перцентилей должна отрендериться")
@@ -106,7 +106,7 @@ func TestMetricDetailPlain(t *testing.T) {
 func TestMonitorDetailPausedDisabled(t *testing.T) {
 	m := uptime.Monitor{ID: 9, Name: "paused-mon", Kind: uptime.KindTCP, Enabled: false, IntervalSeconds: 120}
 	stat := uptime.UptimeStat{}
-	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), nil, nil, 1, 0, true, "https://x", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, "https://x", "u@e.com"))
 	if !strings.Contains(out, "paused-mon") {
 		t.Error("выключенный монитор должен отрендериться")
 	}
@@ -131,7 +131,7 @@ func TestEmptyStates(t *testing.T) {
 		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, "u@e.com")),
 		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com")),
 		"perfissues":   renderTo(t, PerfIssuesList(7, nil, "unresolved", "u@e.com")),
-		"profiles":     renderTo(t, ProfilesList(7, nil, "24h", "", "u@e.com")),
+		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com")),
 		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com")),
 		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
 		"regressions":  renderTo(t, RegressionsList(7, nil, "open", "u@e.com")),

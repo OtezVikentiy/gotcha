@@ -309,4 +309,26 @@ func TestParseRequest(t *testing.T) {
 	if !strings.Contains(out, "POST") || !strings.Contains(out, "https://x/api") {
 		t.Errorf("requestFullView не содержит method/url: %s", out)
 	}
+
+	// query_string объектом (не строкой) → flattenContext-ветка parseQueryParams.
+	r3 := parseRequest(`{"method":"GET","query_string":{"page":"2"}}`)
+	if r3 == nil || len(r3.Query) != 1 {
+		t.Errorf("query_string объектом разобран неверно: %+v", r3)
+	}
+	// нераспознаваемая query-строка (не k=v) → одна строка со значением как есть.
+	r4 := parseRequest(`{"url":"/x","query_string":"%zz"}`)
+	if r4 == nil || len(r4.Query) != 1 {
+		t.Errorf("сырая query-строка: %+v", r4)
+	}
+
+	// Минимальный запрос (только тело) — покрывает ложные ветки requestFullView
+	// (нет method/url, нет query, нет headers).
+	bodyOnly := &sentryRequest{Body: "raw-body-text"}
+	outMin := renderTo(t, requestFullView(bodyOnly))
+	if !strings.Contains(outMin, "raw-body-text") {
+		t.Errorf("requestFullView(body-only) не содержит тело: %s", outMin)
+	}
+	if strings.Contains(outMin, "request-method") {
+		t.Errorf("requestFullView(body-only) не должен рендерить строку метода: %s", outMin)
+	}
 }

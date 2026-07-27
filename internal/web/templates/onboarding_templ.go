@@ -389,7 +389,7 @@ func ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, us
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = breadcrumbBack(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title")).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = breadcrumbBackTo(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title")).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

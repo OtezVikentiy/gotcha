@@ -58,6 +58,19 @@ func TestWebMetricDetail(t *testing.T) {
 		t.Fatalf("GET %s (defaults) status = %d, want 200", detail, resp.StatusCode)
 	}
 
+	// Произвольный диапазон: parseTimeRange custom + autoStep, селектор в
+	// режиме custom, чипы лейблов несут period=custom+start+end.
+	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, detail+cq, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", detail+cq, resp.StatusCode, cbody)
+	}
+	if !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("GET %s did not render custom range selected: %s", detail+cq, cbody)
+	}
+
 	// Несуществующая метрика → 404.
 	missing := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/metrics/" + url.PathEscape("nope.metric")
 	resp = getWithCookie(t, s.srv, missing, ownerCookie)

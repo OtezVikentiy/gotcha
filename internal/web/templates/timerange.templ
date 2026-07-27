@@ -1,0 +1,92 @@
+package templates
+
+import (
+	"net/url"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// TimeRangeVM — состояние единого селектора окна времени для шаблона. Строится
+// в web-слое из web.TimeRange: границы уже отформатированы под значение
+// <input type="datetime-local"> (на пресетах — пустые, чтобы форма не уводила
+// в произвольный диапазон при переключении пресета).
+type TimeRangeVM struct {
+	// Key — активный пресет ("1h"/"24h"/"7d"/"30d") или "custom".
+	Key    string
+	Custom bool
+	// Start/End — value= для полей произвольного диапазона; пусты на пресетах.
+	Start string
+	End   string
+}
+
+// apply переносит текущее окно в query-параметры ссылки, чтобы соседние
+// переходы страницы (смена сортировки/окружения, под-навигация) сохраняли
+// выбранный диапазон, а не сбрасывали его на дефолт. Для произвольного
+// диапазона несёт period=custom + start/end, для пресета — только period.
+func (r TimeRangeVM) apply(q url.Values) {
+	if r.Custom {
+		q.Set("period", "custom")
+		q.Set("start", r.Start)
+		q.Set("end", r.End)
+		return
+	}
+	q.Set("period", r.Key)
+}
+
+// timeRangeLabel — человекочитаемая подпись текущего окна для плиток/заголовков
+// (там, где раньше печатался сырой period). Пресет — локализованная короткая
+// подпись, произвольный диапазон — «с – по».
+templ timeRangeLabel(r TimeRangeVM) {
+	if r.Custom {
+		{ r.Start + " – " + r.End }
+	} else {
+		{ i18n.T(ctx, "range."+r.Key) }
+	}
+}
+
+// timeRangeFields — общий блок выбора окна: пресеты 1ч/24ч/7д/30д и «свой
+// диапазон» одним <select>, плюс два поля datetime-local. Встраивается в
+// GET-форму фильтров каждой страницы с графиками (у форм разные прочие поля,
+// поэтому общий только этот блок, а не вся форма). Работает без JS: submit
+// формы применяет выбор. Произвольный диапазон включается выбором «свой
+// диапазон» в списке — известный пресет всегда перебивает поля дат
+// (см. parseTimeRange), поэтому оставшиеся значения не мешают.
+templ timeRangeFields(r TimeRangeVM) {
+	<span class="time-range">
+		<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
+			for _, p := range []string{"1h", "24h", "7d", "30d"} {
+				@timeRangePresetOpt(p, r)
+			}
+			if r.Custom {
+				<option value="custom" selected>{ i18n.T(ctx, "range.custom") }</option>
+			} else {
+				<option value="custom">{ i18n.T(ctx, "range.custom") }</option>
+			}
+		</select>
+		<input
+			type="datetime-local"
+			name="start"
+			value={ r.Start }
+			class="input time-range-input"
+			aria-label={ i18n.T(ctx, "range.start") }
+		/>
+		<span class="time-range-sep" aria-hidden="true">–</span>
+		<input
+			type="datetime-local"
+			name="end"
+			value={ r.End }
+			class="input time-range-input"
+			aria-label={ i18n.T(ctx, "range.end") }
+		/>
+	</span>
+}
+
+// timeRangePresetOpt — <option> пресета с локализованной подписью и отметкой
+// выбранного (только когда активен именно пресет, не произвольный диапазон).
+templ timeRangePresetOpt(value string, r TimeRangeVM) {
+	if r.Key == value && !r.Custom {
+		<option value={ value } selected>{ i18n.T(ctx, "range."+value) }</option>
+	} else {
+		<option value={ value }>{ i18n.T(ctx, "range."+value) }</option>
+	}
+}

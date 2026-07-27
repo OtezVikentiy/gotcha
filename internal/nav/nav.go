@@ -68,6 +68,12 @@ type Shell struct {
 	// Probes in the org subsections, and the project-settings link in the
 	// layout) so plain members never see links to pages that 404 for them.
 	CanManage bool
+	// Back — валидированный same-origin относительный путь «откуда пришёл»
+	// (из заголовка Referer, посчитан в web-слое). Пустой, если Referer
+	// отсутствует, ведёт на текущую же страницу (перезагрузка) или на чужой
+	// origin. Питает хлебную крошку «назад»: страница-деталь возвращает туда,
+	// откуда на неё пришли, а не на жёстко зашитого родителя.
+	Back string
 }
 
 type ctxKey struct{}
@@ -158,6 +164,77 @@ func AreaForPath(path string) string {
 				}
 			}
 		}
+	}
+	return ""
+}
+
+// BackLabelKey возвращает i18n-ключ подписи для ссылки «назад» по её пути.
+// Для страниц вида /projects/{id}/{section} подпись берётся по самому разделу
+// (та же таблица, что и в AreaForPath/Subsections), поэтому «← Инциденты» ведут
+// именно в инциденты, а не в общую «Аптайм». Корневые detail-адреса и прочее
+// опознаются по области. Пустая строка — путь не опознан; вызывающий
+// подставляет общий "nav.back".
+func BackLabelKey(rawPath string) string {
+	path := rawPath
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	if strings.HasPrefix(path, "/projects/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/projects/"), "/", 4)
+		if len(parts) >= 2 {
+			switch parts[1] {
+			case "issues":
+				return "nav.issues"
+			case "performance":
+				return "nav.transactions"
+			case "web-vitals":
+				return "nav.webvitals"
+			case "profiles", "profile-regressions":
+				return "nav.profiles"
+			case "perf-issues":
+				return "nav.perf_issues"
+			case "regressions":
+				return "nav.regressions"
+			case "metrics":
+				if len(parts) >= 3 && parts[2] == "alerts" {
+					return "nav.metric_alerts"
+				}
+				return "nav.metrics"
+			case "monitors":
+				return "nav.monitors"
+			case "incidents":
+				return "nav.incidents"
+			case "maintenance":
+				return "nav.maintenance"
+			case "statuspages":
+				return "nav.status_pages"
+			case "alerts":
+				if len(parts) >= 3 && parts[2] == "deliveries" {
+					return "nav.alert_deliveries"
+				}
+				return "nav.alerts"
+			case "settings", "setup":
+				return "nav.project_settings"
+			}
+		}
+	}
+	switch AreaForPath(path) {
+	case "issues":
+		return "nav.issues"
+	case "performance":
+		return "nav.performance"
+	case "metrics":
+		return "nav.metrics"
+	case "uptime":
+		return "nav.monitors"
+	case "alerts":
+		return "nav.alerts"
+	case "org":
+		return "nav.projects"
+	case "settings":
+		return "nav.project_settings"
+	case "docs":
+		return "docs.index.title"
 	}
 	return ""
 }

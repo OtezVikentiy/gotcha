@@ -69,19 +69,6 @@ func TestHeartbeatSnippets(t *testing.T) {
 	}
 }
 
-// TestMetricPeriodWindow — окно/шаг/имя по query-параметру period.
-func TestMetricPeriodWindow(t *testing.T) {
-	cases := []struct{ in, name string }{
-		{"1h", "1h"}, {"7d", "7d"}, {"24h", "24h"}, {"", "24h"}, {"garbage", "24h"},
-	}
-	for _, c := range cases {
-		w, s, name := metricPeriodWindow(c.in)
-		if name != c.name || w <= 0 || s <= 0 {
-			t.Errorf("period %q → name %q (w=%v s=%v)", c.in, name, w, s)
-		}
-	}
-}
-
 // TestMetricAggFor — допустимая агрегация зависит от типа метрики: у histogram
 // разрешены перцентили, у прочих — max/min/sum/avg; неизвестное → дефолт.
 func TestMetricAggFor(t *testing.T) {

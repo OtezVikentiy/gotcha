@@ -992,6 +992,27 @@ th {
 	min-width: 180px;
 	max-width: 380px;
 }
+/* Единый селектор окна времени: пресеты (<select>) и два поля произвольного
+   диапазона стоят одной группой. Поля дат компактны и приглушены — на
+   пресетах они пусты и не должны перетягивать внимание с основного выбора. */
+.time-range {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.time-range-input {
+	width: auto;
+	min-width: 0;
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
+}
+.time-range-input:focus {
+	color: var(--text);
+}
+.time-range-sep {
+	color: var(--text-dim);
+}
 /* Metric-фильтр: подпись над контролом (label-обёртка) — пары стоят в ряд. */
 .metric-filters > label {
 	width: auto;

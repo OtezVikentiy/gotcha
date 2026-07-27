@@ -65,7 +65,7 @@ templ profileRegStatusTab(projectID int64, value, label, active string) {
 templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string) {
 	@layout(i18n.T(ctx, "profiles.regressions.title"), userEmail) {
 		<div class="profile-regressions">
-			@breadcrumbBack(templ.URL(profilesBasePath(projectID)), i18n.T(ctx, "nav.profiles"))
+			@breadcrumbBackTo(templ.URL(profilesBasePath(projectID)), i18n.T(ctx, "nav.profiles"))
 			<h1>{ i18n.T(ctx, "profiles.regressions.title") }</h1>
 			@helpPanel("profileregressions", "profiling")
 			<nav class="tabs">

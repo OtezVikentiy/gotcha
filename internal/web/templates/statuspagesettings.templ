@@ -196,7 +196,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm, newForm StatusPageForm, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.status_pages"), userEmail) {
 		<div class="status-pages">
-			@breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
+			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.status_pages") }</h1>
 			@helpPanel("statuspages", "uptime")
 			if errMsg != "" {

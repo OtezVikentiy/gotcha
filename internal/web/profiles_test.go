@@ -89,6 +89,23 @@ func TestWebProfiles(t *testing.T) {
 		t.Fatalf("flame status=%d body=%s", resp.StatusCode, body)
 	}
 
+	// Произвольный диапазон на списке и flamegraph — селектор в режиме custom
+	// (parseTimeRange custom, ссылки flame несут period=custom).
+	custList := base + "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, custList, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("custom list status=%d body=%s", resp.StatusCode, cbody)
+	}
+	custFlame := base + "/flame?service=api&type=cpu&period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
+	resp = getWithCookie(t, s.srv, custFlame, ownerCookie)
+	cbody, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(cbody), `value="custom" selected`) {
+		t.Fatalf("custom flame status=%d body=%s", resp.StatusCode, cbody)
+	}
+
 	// Чужой → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "prof-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base, outsider)

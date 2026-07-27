@@ -62,7 +62,7 @@ templ incidentListRow(row IncidentRow) {
 templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, userEmail string) {
 	@layout(i18n.T(ctx, "nav.incidents"), userEmail) {
 		<div class="incidents">
-			@breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
+			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
 			if len(rows) == 0 {
 				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "")

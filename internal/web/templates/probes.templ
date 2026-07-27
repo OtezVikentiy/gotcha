@@ -77,7 +77,7 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "uptime.probes.title")+" "+o.Name, userEmail) {
 		<div class="org-probes">
-			@breadcrumbBack(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
+			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "uptime.probes.title") } { o.Name }</h1>
 			@helpPanel("probes", "uptime")
 			if errMsg != "" {

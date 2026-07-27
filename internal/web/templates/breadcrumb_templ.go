@@ -16,6 +16,13 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
+import (
+	"context"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
+)
+
 // breadcrumbBack — «← Родительский раздел». label уже локализован вызывающим
 // (обычно i18n.T(ctx, "nav.…")): подставлять ключ здесь нельзя, ключи у
 // разных страниц разные. Иконка помечена aria-hidden в @icon, смысл ссылки
@@ -48,7 +55,7 @@ func breadcrumbBack(href templ.SafeURL, label string) templ.Component {
 		var templ_7745c5c3_Var2 templ.SafeURL
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinURLErrs(href)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/breadcrumb.templ`, Line: 13, Col: 16}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/breadcrumb.templ`, Line: 20, Col: 16}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -65,7 +72,7 @@ func breadcrumbBack(href templ.SafeURL, label string) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/breadcrumb.templ`, Line: 15, Col: 10}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/breadcrumb.templ`, Line: 22, Col: 10}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -77,6 +84,62 @@ func breadcrumbBack(href templ.SafeURL, label string) templ.Component {
 		}
 		return nil
 	})
+}
+
+// breadcrumbBackTo — та же ссылка «назад», но целью служит страница, откуда
+// пользователь пришёл (Referer, посчитан в withShell). Если источник не
+// определён (прямой заход, перезагрузка, чужой origin) — падает на
+// defaultHref/defaultLabel родителя, переданные вызывающим. Так одна и та же
+// страница-деталь возвращает туда, откуда на неё реально пришли, а не на
+// жёстко зашитого родителя.
+func breadcrumbBackTo(defaultHref templ.SafeURL, defaultLabel string) templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var4 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var4 == nil {
+			templ_7745c5c3_Var4 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		href, label := backTarget(ctx, defaultHref, defaultLabel)
+		templ_7745c5c3_Err = breadcrumbBack(href, label).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+// backTarget разрешает цель и подпись хлебной крошки «назад». Приоритет — у
+// страницы-источника (nav.Shell.Back из Referer): туда пользователь и хочет
+// вернуться. Подпись строится по разделу пути (nav.BackLabelKey), поэтому
+// «← Проблемы»/«← Мониторы» согласованы с рейлом; неопознанный путь получает
+// общий «Назад». Без источника берётся родитель по умолчанию, переданный
+// вызывающей страницей.
+func backTarget(ctx context.Context, defaultHref templ.SafeURL, defaultLabel string) (templ.SafeURL, string) {
+	back := nav.FromContext(ctx).Back
+	if back == "" {
+		return defaultHref, defaultLabel
+	}
+	key := nav.BackLabelKey(back)
+	if key == "" {
+		key = "nav.back"
+	}
+	// back — валидированный в withShell same-origin относительный путь,
+	// поэтому templ.SafeURL здесь без риска обхода санитайзинга URL.
+	return templ.SafeURL(back), i18n.T(ctx, key)
 }
 
 var _ = templruntime.GeneratedTemplate

@@ -22,21 +22,19 @@ func endpointPath(projectID int64, transaction string) string {
 	return performancePath(projectID) + "/" + url.PathEscape(transaction)
 }
 
-// PerfFilter — состояние фильтров списка эндпойнтов (период, окружение,
+// PerfFilter — состояние фильтров списка эндпойнтов (окно времени, окружение,
 // сортировка), нужно и для GET-формы фильтров, и для ссылок сортировки колонок.
 type PerfFilter struct {
-	Period      string
+	Range       TimeRangeVM
 	Environment string
 	Sort        string
 }
 
-// perfListSortURL — ссылка на список с заданной сортировкой, сохраняя период и
+// perfListSortURL — ссылка на список с заданной сортировкой, сохраняя окно и
 // окружение фильтра (клик по заголовку колонки).
 func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
 	q := url.Values{}
-	if f.Period != "" {
-		q.Set("period", f.Period)
-	}
+	f.Range.apply(q)
 	if f.Environment != "" {
 		q.Set("environment", f.Environment)
 	}
@@ -101,15 +99,6 @@ type EndpointRow struct {
 	Sparkline templ.Component
 }
 
-// perfPeriodOption — <option> периода с отметкой выбранного.
-templ perfPeriodOption(value, label, selected string) {
-	if value == selected {
-		<option value={ value } selected>{ label }</option>
-	} else {
-		<option value={ value }>{ label }</option>
-	}
-}
-
 // perfEnvOption — <option> окружения с отметкой выбранного.
 templ perfEnvOption(value, label, selected string) {
 	if value == selected {
@@ -135,12 +124,7 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 						@perfEnvOption(env, env, filter.Environment)
 					}
 				</select>
-				<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
-					@perfPeriodOption("1h", i18n.T(ctx, "perf.filter.period_1h"), filter.Period)
-					@perfPeriodOption("24h", i18n.T(ctx, "perf.filter.period_24h"), filter.Period)
-					@perfPeriodOption("7d", i18n.T(ctx, "perf.filter.period_7d"), filter.Period)
-					@perfPeriodOption("30d", i18n.T(ctx, "perf.filter.period_30d"), filter.Period)
-				</select>
+				@timeRangeFields(filter.Range)
 				if filter.Sort != "" {
 					<input type="hidden" name="sort" value={ filter.Sort }/>
 				}

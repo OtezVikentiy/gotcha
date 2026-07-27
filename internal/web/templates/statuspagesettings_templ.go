@@ -687,7 +687,7 @@ func StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = breadcrumbBack(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors")).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors")).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

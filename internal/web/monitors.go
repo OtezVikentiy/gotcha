@@ -29,9 +29,10 @@ const (
 	monitorDetailIncidentsPerPage = 20
 )
 
-// monitorLatencyStep — шаг графика задержек за 24 часа на странице монитора
-// (24 точки, одна на час — тот же шаг, что и у полоски доступности списка).
-const monitorLatencyStep = time.Hour
+// monitorLatencyBuckets — целевое число точек графика задержек монитора; шаг
+// подбирает autoStep по выбранному окну (для 24ч по умолчанию — 30м). Данные
+// из сырых проверок, поэтому выравнивание не нужно (align=0), только пол 5 мин.
+const monitorLatencyBuckets = 48
 
 func monitorsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/monitors"
@@ -325,7 +326,12 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, now.Add(-24*time.Hour), now, monitorLatencyStep)
+	// Три плитки аптайма выше — намеренно фиксированные окна (24ч/7д/30д —
+	// сводка SLA). Селектор диапазона управляет только графиком задержек:
+	// это исследуемый ряд, а не сводка.
+	tr := parseTimeRange(r.URL.Query(), "24h")
+	latencyStep := autoStep(tr.Window(), 5*time.Minute, 0, monitorLatencyBuckets)
+	latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, tr.From, tr.To, latencyStep)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -348,7 +354,7 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, checks, incidents, incPage, incTotal, canManage, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // monitorSetEnabled — общая часть POST /monitors/{id}/pause и /resume:

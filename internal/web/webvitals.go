@@ -54,12 +54,11 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	window, period := perfPeriodWindow(r.URL.Query().Get("period"))
+	tr := parseTimeRange(r.URL.Query(), perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
 	sortKey := r.URL.Query().Get("sort")
 
-	now := time.Now().UTC()
-	from := now.Add(-window)
+	from, now := tr.From, tr.To
 
 	pages, err := h.Trace.WebVitalsPages(r.Context(), projectID, from, now, environment)
 	if err != nil {
@@ -75,7 +74,7 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 
 	sortPageVitals(pages, sortKey)
 
-	filter := templates.PerfFilter{Period: period, Environment: environment, Sort: sortKey}
+	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
 	_ = templates.WebVitalsList(projectID, pages, filter, environments, h.currentEmail(r)).
 		Render(r.Context(), w)
 }

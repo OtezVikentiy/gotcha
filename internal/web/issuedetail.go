@@ -17,13 +17,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// issueChartWindow/Step — окно и шаг графика частоты на странице issue:
-// 7 дней с шагом 3 часа даёт 56 точек — разумное разрешение для bar-chart
-// шириной chartWidth (см. svg.go).
-const (
-	issueChartWindow = 7 * 24 * time.Hour
-	issueChartStep   = 3 * time.Hour
-)
+// issueChartBuckets — целевое число столбиков графика частоты (при окне по
+// умолчанию 7д даёт шаг 3ч — прежнее разрешение). Шаг подбирает autoStep по
+// выбранному окну; события читаются из сырой events (без 5m-MV), поэтому
+// выравнивание не нужно (align=0), лишь пол в 5 минут.
+const issueChartBuckets = 56
 
 // issueEventsLimit — сколько последних событий issue показывается списком.
 const issueEventsLimit = 20
@@ -95,8 +93,9 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
-	points, err := h.Events.Series(r.Context(), it.ProjectID, it.ID, now.Add(-issueChartWindow), now, issueChartStep)
+	tr := parseTimeRange(r.URL.Query(), "7d")
+	step := autoStep(tr.Window(), 5*time.Minute, 0, issueChartBuckets)
+	points, err := h.Events.Series(r.Context(), it.ProjectID, it.ID, tr.From, tr.To, step)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -145,7 +144,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	// (строгий CSP запрещает клиентский JS) — переключается ссылкой на странице.
 	showAllFrames := r.URL.Query().Get("frames") == "all"
 
-	_ = templates.IssueDetail(it, members, chart, events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames).Render(r.Context(), w)
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames).Render(r.Context(), w)
 }
 
 // issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored

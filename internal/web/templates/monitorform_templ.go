@@ -1088,7 +1088,7 @@ func MonitorForm(d MonitorFormData, userEmail string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = breadcrumbBack(templ.URL(monitorsPath(d.ProjectID)), i18n.T(ctx, "nav.monitors")).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = breadcrumbBackTo(templ.URL(monitorsPath(d.ProjectID)), i18n.T(ctx, "nav.monitors")).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

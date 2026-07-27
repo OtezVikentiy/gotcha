@@ -381,8 +381,11 @@ func issueAssignPath(issueID int64) string {
 	return issueDetailPath(issueID) + "/assign"
 }
 
-func issueEventPath(issueID int64, eventID string) string {
-	return issueDetailPath(issueID) + "?event=" + url.QueryEscape(eventID)
+func issueEventPath(issueID int64, eventID string, rng TimeRangeVM) string {
+	q := url.Values{}
+	q.Set("event", eventID)
+	rng.apply(q)
+	return issueDetailPath(issueID) + "?" + q.Encode()
 }
 
 // frameLocation — "filename:lineno", пусто для фреймов без адреса.
@@ -582,9 +585,9 @@ templ contextTable(rows []ctxRow) {
 	</table>
 }
 
-templ eventRow(issueID int64, ev event.Stored, selected bool) {
+templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 	<tr class={ eventRowClass(selected) }>
-		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID)) }>{ ago(ctx, ev.Timestamp) }</a></td>
+		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID, rng)) }>{ ago(ctx, ev.Timestamp) }</a></td>
 		<td>{ eventSummary(ev) }</td>
 		<td>{ ev.Environment }</td>
 		<td>{ ev.Release }</td>
@@ -596,10 +599,10 @@ templ eventRow(issueID int64, ev event.Stored, selected bool) {
 // selectedID — id события из query (для подсветки строки в таблице), может
 // не совпадать ни с одним из events, если событие устарело/удалено — тогда
 // selected/frames приходят пустыми и блок деталей просто не рендерится.
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool) {
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
-			@breadcrumbBack(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
+			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
 			<h1>{ it.Title }</h1>
 			if it.Culprit != "" {
 				<div class="culprit">{ it.Culprit }</div>
@@ -627,6 +630,16 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 				@assignControl(it, members)
 			</div>
 
+			<form method="get" action={ templ.URL(issueDetailPath(it.ID)) } class="performance-filters">
+				if selectedID != "" {
+					<input type="hidden" name="event" value={ selectedID }/>
+				}
+				if showAllFrames {
+					<input type="hidden" name="frames" value="all"/>
+				}
+				@timeRangeFields(rng)
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
+			</form>
 			<div class="issue-chart card">
 				@chart
 			</div>
@@ -643,9 +656,9 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 					if len(frames) > 0 {
 						<h3>{ i18n.T(ctx, "issues.detail.stacktrace") }</h3>
 						if showAllFrames {
-							<p class="frames-toggle"><a href={ templ.URL(issueEventPath(it.ID, selectedID)) }>{ i18n.T(ctx, "issues.detail.hide_system_frames") }</a></p>
+							<p class="frames-toggle"><a href={ templ.URL(issueEventPath(it.ID, selectedID, rng)) }>{ i18n.T(ctx, "issues.detail.hide_system_frames") }</a></p>
 						} else {
-							<p class="frames-toggle"><a href={ templ.URL(issueEventPath(it.ID, selectedID) + "&frames=all") }>{ i18n.T(ctx, "issues.detail.show_system_frames") }</a></p>
+							<p class="frames-toggle"><a href={ templ.URL(issueEventPath(it.ID, selectedID, rng) + "&frames=all") }>{ i18n.T(ctx, "issues.detail.show_system_frames") }</a></p>
 						}
 						<div class="frames card">
 							for _, f := range frames {
@@ -733,7 +746,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, e
 				</thead>
 				<tbody>
 					for _, ev := range events {
-						@eventRow(it.ID, ev, ev.ID == selectedID)
+						@eventRow(it.ID, ev, ev.ID == selectedID, rng)
 					}
 				</tbody>
 			</table>
