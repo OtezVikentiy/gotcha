@@ -10,6 +10,8 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
 ### Added
 
 - **One time-range control on every chart page.** Issues, performance and
