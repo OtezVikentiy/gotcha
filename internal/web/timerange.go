@@ -58,7 +58,11 @@ var timeRangePresetOrder = []string{"1h", "24h", "7d", "30d"}
 func parseTimeRange(q url.Values, def string) TimeRange {
 	now := time.Now().UTC()
 
-	if q.Get("start") != "" && q.Get("end") != "" {
+	// Достаточно заполненного «начала»: parseCustomRange по умолчанию берёт
+	// конец = «сейчас», поэтому «с X и до сих пор» — валидный диапазон без
+	// отдельного ввода конца (раньше при пустом end этот ввод молча терялся и
+	// страница уходила на пресет).
+	if q.Get("start") != "" {
 		if tr, ok := parseCustomRange(q.Get("start"), q.Get("end"), now); ok {
 			return tr
 		}

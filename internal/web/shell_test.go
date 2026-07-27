@@ -95,3 +95,25 @@ func TestBackOrigin(t *testing.T) {
 		})
 	}
 }
+
+// TestBackOriginEncodedPath (S4b): на странице эндпойнта имя транзакции в URL
+// %-кодировано, а curPath приходит декодированным. Сравнение идёт по
+// декодированному пути (иначе крошка «назад» ссылалась бы сама на себя), а
+// ссылка строится по escaped-форме.
+func TestBackOriginEncodedPath(t *testing.T) {
+	const base = "https://gotcha.example"
+	cur := "/projects/7/performance/GET /api/users" // decoded r.URL.Path
+	// Тот же адрес в Referer — %-кодированный (reload/submit формы) → это тот же
+	// экран, крошка не должна на него же и вести.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("Referer", base+"/projects/7/performance/GET%20%2Fapi%2Fusers")
+	if got := backOrigin(r, base, cur); got != "" {
+		t.Errorf("encoded self-reference must be treated as reload, got %q", got)
+	}
+	// Другой эндпойнт: возвращаем escaped-путь (кодировку сохраняем для ссылки).
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.Header.Set("Referer", base+"/projects/7/performance/POST%20%2Fpay")
+	if got, want := backOrigin(r2, base, cur), "/projects/7/performance/POST%20%2Fpay"; got != want {
+		t.Errorf("different encoded page: got %q, want %q (escaped preserved)", got, want)
+	}
+}

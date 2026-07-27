@@ -199,6 +199,17 @@ func (s *Service) Get(ctx context.Context, issueID int64) (Issue, error) {
 
 // Environments возвращает отсортированный уникальный список environment,
 // в которых видели issue проекта (из денормализованной issue_environments).
+// Exists — есть ли у проекта хоть одна проблема. Для онбординг-галочки нужен
+// только факт наличия, поэтому EXISTS вместо List(Filter{}): последний из-за
+// count(*) OVER() материализует весь набор проблем проекта на каждый рендер.
+func (s *Service) Exists(ctx context.Context, projectID int64) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = $1)", projectID).Scan(&ok); err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
 func (s *Service) Environments(ctx context.Context, projectID int64) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT DISTINCT environment FROM issue_environments WHERE project_id = $1 ORDER BY environment", projectID)

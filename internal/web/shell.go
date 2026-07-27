@@ -150,18 +150,22 @@ func backOrigin(r *http.Request, baseURL, curPath string) string {
 	if err != nil {
 		return ""
 	}
-	p := u.EscapedPath()
-	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
+	esc := u.EscapedPath() // форма для построения ссылки (сохраняет %-кодировку)
+	dec := u.Path          // декодированная — для сравнения с curPath (тоже decoded)
+	if !strings.HasPrefix(esc, "/") || strings.HasPrefix(esc, "//") {
 		return ""
 	}
-	if p == curPath || strings.HasPrefix(p, "/static/") ||
-		strings.HasPrefix(p, "/login") || strings.HasPrefix(p, "/logout") {
+	// Сравниваем ДЕКОДИРОВАННЫЙ путь: curPath приходит из r.URL.Path (decoded),
+	// а имена транзакций в URL эндпойнта %-кодированы — иначе крошка «назад» на
+	// такой странице ссылалась бы сама на себя (escaped ≠ decoded).
+	if dec == curPath || strings.HasPrefix(dec, "/static/") ||
+		strings.HasPrefix(dec, "/login") || strings.HasPrefix(dec, "/logout") {
 		return ""
 	}
 	if u.RawQuery != "" {
-		return p + "?" + u.RawQuery
+		return esc + "?" + u.RawQuery
 	}
-	return p
+	return esc
 }
 
 // navOrigin — подраздел, из которого пользователь пришёл на общую страницу.

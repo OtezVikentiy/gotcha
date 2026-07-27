@@ -162,6 +162,7 @@
     "issues.action.assign": "Assign",
     "issues.pagination.prev": "Prev",
     "issues.pagination.next": "Next",
+    "pagination.label": "Pagination",
     "pagination.prev": "Prev",
     "pagination.next": "Next",
     "issues.detail.first_seen": "First seen",

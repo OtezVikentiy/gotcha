@@ -606,6 +606,26 @@ func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID 
 	return int64(pid), true, nil
 }
 
+// TraceExistsInProject проверяет, есть ли у trace_id хоть одна транзакция в
+// конкретном проекте. В отличие от ProjectForTrace (ищет по одному trace_id и
+// потому обходит все партиции всех проектов), project_id здесь — префикс
+// первичного ключа transactions (ORDER BY project_id, ...), поэтому запрос
+// прунит гранулы до проекта. Используется на детали issue, где project_id уже
+// известен, только чтобы решить, показывать ли ссылку «Смотреть трейс».
+func (q *Query) TraceExistsInProject(ctx context.Context, projectID int64, traceID string) (bool, error) {
+	row := q.conn.QueryRow(ctx, `
+		SELECT 1 FROM transactions WHERE project_id = ? AND trace_id = ? LIMIT 1`,
+		uint64(projectID), traceID)
+	var one uint8
+	if err := row.Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("trace: exists in project: %w", err)
+	}
+	return true, nil
+}
+
 // Vital — один web vital с рейтингом: P75 — 75-й перцентиль (мс, кроме CLS),
 // Count — число замеров за период. Rating — оценка Google по P75
 // ("good"|"needs-improvement"|"poor"), либо "" если замеров нет (Count == 0).

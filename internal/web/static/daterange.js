@@ -33,6 +33,8 @@
 		return out;
 	})();
 
+	var drUid = 0; // уникализирует id попапа для aria-controls (несколько .time-range)
+
 	function pad(n) { return (n < 10 ? "0" : "") + n; }
 
 	// Значение для <input type="datetime-local"> (минутная точность, без зоны).
@@ -115,7 +117,8 @@
 			if (o.value !== "custom") presets.push({ value: o.value, label: o.textContent });
 		});
 
-		var trigger = el("button", "dr-trigger", null, { type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-label": L.trigger });
+		var popupId = "dr-popup-" + (++drUid);
+		var trigger = el("button", "dr-trigger", null, { type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": popupId, "aria-label": L.trigger });
 		var triggerLabel = el("span", "dr-trigger-label");
 		trigger.appendChild(icon("calendar"));
 		trigger.appendChild(triggerLabel);
@@ -131,7 +134,7 @@
 		root.insertBefore(trigger, root.firstChild);
 
 		// --- Попап ---
-		var popup = el("div", "dr-popup", null, { role: "dialog", "aria-label": L.dialog });
+		var popup = el("div", "dr-popup", null, { role: "dialog", "aria-modal": "true", "aria-label": L.dialog, id: popupId });
 		popup.hidden = true;
 
 		// Пресеты (слева).
@@ -181,6 +184,7 @@
 		var selStart = initStart ? startOfDay(initStart) : null;
 		var selEnd = initEnd ? startOfDay(initEnd) : null;
 		var view = addMonths(selEnd || now, -1); // левый месяц — прошлый относительно конца
+		var focusDay = null; // день с tabindex=0 (roving); им управляют стрелки клавиатуры
 
 		function updateFooter() {
 			if (selStart && selEnd) {
@@ -225,8 +229,13 @@
 				if (sameDay(d, selEnd)) cls += " dr-end";
 				if (sameDay(d, now)) cls += " dr-today";
 				var selected = sameDay(d, selStart) || sameDay(d, selEnd) || inRange(d);
+				// Roving tabindex: таббельна ровно одна ячейка (focusDay) — так в
+				// сетку один tab-стоп, а не 60+; перемещение внутри — стрелками.
+				var isFocus = focusDay && sameDay(d, focusDay);
 				var cell = el("button", cls, String(i), {
 					type: "button",
+					"data-ymd": ymd(d),
+					tabindex: (isFocus && !future) ? "0" : "-1",
 					"aria-label": fmtDayAria.format(d),
 					"aria-pressed": selected ? "true" : "false",
 				});
@@ -234,7 +243,7 @@
 					cell.disabled = true;
 				} else {
 					(function (day) {
-						cell.addEventListener("click", function () { pickDay(day); });
+						cell.addEventListener("click", function () { focusDay = day; pickDay(day); });
 					})(startOfDay(d));
 				}
 				cells.appendChild(cell);
@@ -253,6 +262,32 @@
 			updateFooter();
 		}
 
+		// Вернуть фокус на ячейку focusDay после пересборки сетки: renderCal
+		// стирает DOM, иначе фокус клавиатурника падал бы на <body> при каждом
+		// выборе дня или сдвиге стрелкой.
+		function focusFocusDay() {
+			if (!focusDay) return;
+			var c = monthsWrap.querySelector('[data-ymd="' + ymd(focusDay) + '"]');
+			if (c) c.focus();
+		}
+
+		// Держим focusDay в пределах двух видимых месяцев, сдвигая view.
+		function ensureVisible(d) {
+			var leftStart = new Date(view.getFullYear(), view.getMonth(), 1);
+			var rightEnd = new Date(view.getFullYear(), view.getMonth() + 2, 0);
+			if (d < leftStart) view = new Date(d.getFullYear(), d.getMonth(), 1);
+			else if (d > rightEnd) view = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+		}
+
+		// Перенести фокус клавиатуры на день nd (не в будущее), сдвинув месяцы.
+		function moveFocus(nd) {
+			if (nd > now) nd = now;
+			focusDay = startOfDay(nd);
+			ensureVisible(focusDay);
+			renderCal();
+			focusFocusDay();
+		}
+
 		function pickDay(day) {
 			if (!selStart || (selStart && selEnd)) {
 				selStart = day; selEnd = null;
@@ -261,8 +296,32 @@
 			} else {
 				selEnd = day;
 			}
+			focusDay = day;
 			renderCal();
+			focusFocusDay();
 		}
+
+		// Навигация по сетке дней с клавиатуры (WAI-ARIA date-grid): стрелки — на
+		// день/неделю, Home/End — на края недели, PageUp/Down — на ±месяц. Enter/
+		// Space обрабатывает сама кнопка-ячейка (нативный click), поэтому здесь их
+		// не трогаем, чтобы выбор не срабатывал дважды.
+		monthsWrap.addEventListener("keydown", function (ev) {
+			if (!focusDay) return;
+			var f = focusDay, nd, wd = (f.getDay() + 6) % 7; // 0 = понедельник
+			switch (ev.key) {
+				case "ArrowLeft": nd = new Date(f.getFullYear(), f.getMonth(), f.getDate() - 1); break;
+				case "ArrowRight": nd = new Date(f.getFullYear(), f.getMonth(), f.getDate() + 1); break;
+				case "ArrowUp": nd = new Date(f.getFullYear(), f.getMonth(), f.getDate() - 7); break;
+				case "ArrowDown": nd = new Date(f.getFullYear(), f.getMonth(), f.getDate() + 7); break;
+				case "Home": nd = new Date(f.getFullYear(), f.getMonth(), f.getDate() - wd); break;
+				case "End": nd = new Date(f.getFullYear(), f.getMonth(), f.getDate() + (6 - wd)); break;
+				case "PageUp": nd = new Date(f.getFullYear(), f.getMonth() - 1, f.getDate()); break;
+				case "PageDown": nd = new Date(f.getFullYear(), f.getMonth() + 1, f.getDate()); break;
+				default: return;
+			}
+			ev.preventDefault();
+			moveFocus(nd);
+		});
 
 		prevBtn.addEventListener("click", function () { view = addMonths(view, -1); renderCal(); });
 		nextBtn.addEventListener("click", function () { view = addMonths(view, 1); renderCal(); });
@@ -280,13 +339,22 @@
 			form.submit();
 		});
 
-		function close() {
+		// refocus=true возвращает фокус на триггер (закрытие по Esc/Отмена/клику
+		// по триггеру); при закрытии кликом мимо фокус остаётся там, куда кликнули.
+		function close(refocus) {
 			popup.hidden = true;
 			trigger.setAttribute("aria-expanded", "false");
 			document.removeEventListener("click", onDocClick, true);
 			document.removeEventListener("keydown", onKey, true);
+			if (refocus) trigger.focus();
 		}
 		function open() {
+			// Начальная таббельная ячейка: выбранное начало, иначе сегодня; не в
+			// будущем и обязательно в пределах видимых месяцев (иначе в сетке не
+			// было бы ячейки с tabindex=0).
+			focusDay = startOfDay(selStart || now);
+			if (focusDay > now) focusDay = startOfDay(now);
+			ensureVisible(focusDay);
 			renderCal();
 			popup.classList.remove("dr-popup--right");
 			popup.hidden = false;
@@ -297,22 +365,33 @@
 			if (r.right > document.documentElement.clientWidth - 4) {
 				popup.classList.add("dr-popup--right");
 			}
-			// Фокус — в календарь (клавиатурник не должен пробиваться табом
-			// через весь попап): выбранное начало, иначе сегодня, иначе
-			// первый доступный день.
-			var f = popup.querySelector(".dr-start") ||
-				popup.querySelector(".dr-today:not(.dr-future)") ||
-				popup.querySelector(".dr-day:not(.dr-future):not(.dr-empty)");
-			if (f) f.focus();
+			focusFocusDay();
 			document.addEventListener("click", onDocClick, true);
 			document.addEventListener("keydown", onKey, true);
 		}
-		function onDocClick(ev) { if (!root.contains(ev.target)) close(); }
-		function onKey(ev) { if (ev.key === "Escape") { close(); trigger.focus(); } }
-		cancelBtn.addEventListener("click", close);
+		function onDocClick(ev) { if (!root.contains(ev.target)) close(false); }
+		// popupFocusables — таббельные элементы попапа по порядку (сетка даёт одну
+		// ячейку через roving tabindex). Нужен для удержания фокуса (aria-modal).
+		function popupFocusables() {
+			return Array.prototype.filter.call(
+				popup.querySelectorAll('button:not([disabled]):not([tabindex="-1"]), a[href], [tabindex="0"]'),
+				function (e) { return e.offsetParent !== null; });
+		}
+		function onKey(ev) {
+			if (ev.key === "Escape") { close(true); return; }
+			if (ev.key !== "Tab") return;
+			// Фокус-ловушка: попап модальный (aria-modal), Tab не должен уводить в
+			// страницу за открытым диалогом — заворачиваем по кругу.
+			var f = popupFocusables();
+			if (!f.length) return;
+			var first = f[0], last = f[f.length - 1];
+			if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+			else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+		}
+		cancelBtn.addEventListener("click", function () { close(true); });
 
 		trigger.addEventListener("click", function () {
-			if (popup.hidden) open(); else close();
+			if (popup.hidden) open(); else close(true);
 		});
 	}
 

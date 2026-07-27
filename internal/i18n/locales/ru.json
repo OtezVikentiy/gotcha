@@ -162,6 +162,7 @@
     "issues.action.assign": "Назначить",
     "issues.pagination.prev": "Назад",
     "issues.pagination.next": "Далее",
+    "pagination.label": "Пагинация",
     "pagination.prev": "Назад",
     "pagination.next": "Далее",
     "issues.detail.first_seen": "Впервые",

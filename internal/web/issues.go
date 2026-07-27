@@ -147,10 +147,10 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) gettingStarted(ctx context.Context, projectID, orgID int64) templates.GettingStartedVM {
 	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID}
 
-	if _, total, err := h.Issues.List(ctx, projectID, issue.Filter{}); err != nil {
-		slog.Warn("gettingStarted: issues list failed", "project_id", projectID, "err", err)
+	if exists, err := h.Issues.Exists(ctx, projectID); err != nil {
+		slog.Warn("gettingStarted: issues exists check failed", "project_id", projectID, "err", err)
 	} else {
-		gs.Step2Done = total > 0
+		gs.Step2Done = exists
 	}
 
 	if h.Alerts == nil {

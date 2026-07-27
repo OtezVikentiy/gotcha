@@ -110,6 +110,24 @@ func TestParseTimeRangeCustomFallsBackWhenInvalid(t *testing.T) {
 	}
 }
 
+// TestParseTimeRangeStartOnly (S4a): заполнено только «начало» — «с X и до сих
+// пор» включает произвольный диапазон, конец = «сейчас». Раньше пустой end
+// молча ронял ввод на пресет.
+func TestParseTimeRangeStartOnly(t *testing.T) {
+	now := time.Now().UTC()
+	start := now.Add(-48 * time.Hour).Format("2006-01-02T15:04")
+	tr := parseTimeRange(vals(map[string]string{"start": start}), "24h")
+	if !tr.Custom {
+		t.Fatalf("start-only ввод должен включать custom, got %+v", tr)
+	}
+	if tr.To.After(now.Add(time.Minute)) {
+		t.Errorf("конец должен быть ≈сейчас, got %v", tr.To)
+	}
+	if !tr.From.Before(tr.To) {
+		t.Errorf("from должен быть раньше to: %+v", tr)
+	}
+}
+
 func TestParseTimeRangeCustomClampsToRetention(t *testing.T) {
 	q := vals(map[string]string{
 		"start": "2020-01-01T00:00",
@@ -140,7 +158,6 @@ func TestParseCustomRangeClampsFutureEnd(t *testing.T) {
 
 func TestParseTimeRangeCustomEndDefaultsToNow(t *testing.T) {
 	// end присутствует, но не парсится → parseCustomRange подставляет «сейчас».
-	// (Правило видимых полей требует непустой end, поэтому даём непустой мусор.)
 	now := time.Now().UTC()
 	start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04")
 	tr := parseTimeRange(vals(map[string]string{"start": start, "end": "garbage"}), "24h")
@@ -149,15 +166,6 @@ func TestParseTimeRangeCustomEndDefaultsToNow(t *testing.T) {
 	}
 	if tr.To.Before(now.Add(-2 * time.Minute)) {
 		t.Errorf("end should default to ~now, got %v", tr.To)
-	}
-}
-
-func TestParseTimeRangePartialVisibleFallsBack(t *testing.T) {
-	// Только start (end пуст) — неполный ввод, правило видимых полей требует
-	// оба; падаем на пресет по умолчанию, а не в custom.
-	tr := parseTimeRange(vals(map[string]string{"start": "2026-07-01T00:00"}), "24h")
-	if tr.Custom || tr.Key != "24h" {
-		t.Errorf("partial visible input should fall back to default: %+v", tr)
 	}
 }
 

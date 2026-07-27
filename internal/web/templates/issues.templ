@@ -136,6 +136,17 @@ func totalPages(total int64) int64 {
 	return (total + issuesPerPage - 1) / issuesPerPage
 }
 
+// pagerPrev — номер страницы для ссылки «назад» в пагинаторе. На пустой
+// (out-of-range) странице total=0 — count() OVER() не с чего взять, — поэтому
+// ведём сразу на первую страницу: иначе пользователь застревает на пустом
+// экране без счётчика и без пути назад к данным (S1).
+func pagerPrev(page int, total int64) int {
+	if total <= 0 {
+		return 1
+	}
+	return page - 1
+}
+
 // issuesPageURL строит ссылку на список issues с сохранением текущих
 // фильтров и заменой page.
 func issuesPageURL(projectID int64, f IssuesFilter, page int) string {
@@ -309,15 +320,19 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 						</div>
 					</form>
 				}
-				<nav class="pagination">
-					if page > 1 {
-						<a href={ templ.URL(issuesPageURL(projectID, filter, page-1)) }>« { i18n.T(ctx, "issues.pagination.prev") }</a>
-					}
-					<span>{ strconv.Itoa(page) } / { strconv.FormatInt(totalPages(total), 10) }</span>
-					if int64(page) < totalPages(total) {
-						<a href={ templ.URL(issuesPageURL(projectID, filter, page+1)) }>{ i18n.T(ctx, "issues.pagination.next") } »</a>
-					}
-				</nav>
+				if totalPages(total) > 1 || page > 1 {
+					<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
+						if page > 1 {
+							<a href={ templ.URL(issuesPageURL(projectID, filter, pagerPrev(page, total))) }><span aria-hidden="true">« </span>{ i18n.T(ctx, "issues.pagination.prev") }</a>
+						}
+						if total > 0 {
+							<span>{ strconv.Itoa(page) } / { strconv.FormatInt(totalPages(total), 10) }</span>
+						}
+						if int64(page) < totalPages(total) {
+							<a href={ templ.URL(issuesPageURL(projectID, filter, page+1)) }>{ i18n.T(ctx, "issues.pagination.next") }<span aria-hidden="true"> »</span></a>
+						}
+					</nav>
+				}
 			</div>
 		</div>
 	}

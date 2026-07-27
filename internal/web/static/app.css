@@ -1228,7 +1228,12 @@ th {
 .dr-day.dr-today { box-shadow: inset 0 0 0 1px var(--text-mute); font-weight: 600; }
 /* Внутри выбранного диапазона — мягкая акцентная подложка, края — сплошной
    акцент; так интервал читается как единое выделение, а не набор точек. */
-.dr-day.dr-in { background: var(--accent-soft); border-radius: 0; }
+/* Полоса «в диапазоне» — единственный сигнал того, какие дни попали в интервал,
+   поэтому нужен различимый контраст: --accent-soft (~12% акцента) давал ~1.2:1 и
+   на глаз читался как «нет подсветки». Берём заметно более плотный замес акцента
+   (~24%) — контраст к поверхности карточки поднимается до различимого. Крышки
+   диапазона (.dr-start/.dr-end) остаются сплошным акцентом (ниже). */
+.dr-day.dr-in { background: color-mix(in srgb, var(--accent) 24%, transparent); border-radius: 0; }
 .dr-day.dr-start, .dr-day.dr-end {
 	background: var(--accent);
 	color: var(--accent-fg);
@@ -2103,6 +2108,13 @@ form.inline {
 	font-weight: 600;
 	text-transform: uppercase;
 }
+/* Индикатор сортировки. Стрелка рисуется по aria-sort через ::after, поэтому
+   направление (для глаза) и семантика (для скринридера, читающего aria-sort) —
+   из одного источника; глиф декоративен. Активная колонка подсвечивается
+   акцентным цветом текста, чтобы «по какой колонке сортировка» читалось сразу. */
+.data-table th[aria-sort]:not([aria-sort="none"]) { color: var(--accent); }
+.data-table th[aria-sort="ascending"] a::after { content: " \25B4"; font-size: 0.85em; }
+.data-table th[aria-sort="descending"] a::after { content: " \25BE"; font-size: 0.85em; }
 .data-table td {
 	padding: 8px 8px 8px 0;
 	border-bottom: 1px solid var(--border);

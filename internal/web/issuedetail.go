@@ -140,7 +140,11 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	// не записан, и страница трейса отдала бы 404 (см. traceWaterfall).
 	hasTrace := false
 	if selected != nil && selected.TraceID != "" && h.Trace != nil {
-		if _, found, err := h.Trace.ProjectForTrace(r.Context(), selected.TraceID); err == nil {
+		// Проверяем существование трейса В ЭТОМ проекте (project_id уже известен)
+		// — префикс первичного ключа прунит запрос до проекта, а не сканирует
+		// транзакции всех проектов, как это делал ProjectForTrace на самой
+		// частой странице (деталь issue). См. TraceExistsInProject.
+		if found, err := h.Trace.TraceExistsInProject(r.Context(), it.ProjectID, selected.TraceID); err == nil {
 			hasTrace = found
 		}
 	}
