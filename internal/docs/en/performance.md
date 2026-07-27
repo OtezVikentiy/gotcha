@@ -43,7 +43,7 @@ Performance issues — **N+1 queries**, **slow DB queries**, and **HTTP floods**
 Opening an issue explains what's wrong, not just the numbers:
 
 - **What's happening / How to fix** — a plain-language description of the kind (why an N+1 is slow, what a slow query or an HTTP flood is) and a concrete direction to fix it.
-- **Query** — the full, un-truncated statement from the offending span, with its operation, database, and duration. This is the real query text, not the shortened, parameterized title above.
+- **Query** — the query text from the offending span in full (up to 2000 characters; longer statements are truncated to that limit at ingest), with its operation, database, and duration. This is the real query text, not the shortened, parameterized title above.
 - **Code location** — the file, line, and function behind the query, when your SDK reports it in the span's data (`code.filepath` / `code.lineno` / `code.function`). This is opportunistic: if the SDK doesn't send a code location, the section is simply absent.
 - **Evidence** — the kind-specific counters (repeat count, total or max time, sequential share, sample URLs).
 - **Sample trace** — a link to a real trace where the issue was detected, so you can see it in the waterfall in context.

@@ -12,6 +12,9 @@ once tagged releases begin.
 
 ## [0.4.1] - 2026-07-27
 
+### Documentation
+- Docs pages for the time-range control and for reading a performance issue.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

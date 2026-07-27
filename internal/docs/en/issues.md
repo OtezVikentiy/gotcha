@@ -19,6 +19,8 @@ The section opens from the **"Issues"** entry in the left rail (bug icon) — a 
 | Environment | environments actually seen in the project |
 | Period | all time / 24h / 7 days / 30 days |
 
+By default the list opens filtered to status **"unresolved"** — you see what needs attention rather than the whole history; to look at closed ones, switch the status to "resolved", "ignored", or "all".
+
 The table shows, for each issue: level (badge), title and culprit, a 24-hour trend sparkline, event count ("Events"), when it was last seen, status, and the assignee. The list is paginated (25 issues per page), with "Prev / N of M / Next" navigation at the bottom.
 
 Checking issues via the checkboxes on the left lets you apply a bulk action — **"Resolve"**, **"Ignore"**, or **"Unresolve"** — to several rows at once.
@@ -40,6 +42,7 @@ Because messages and stack traces are normalized, errors that are essentially th
 
 Clicking a row's title opens `/issues/<id>`:
 
+- **Back link** at the top (`← Issues`) returns you to wherever you opened the detail from — the issue list, an endpoint page, a trace, and so on; the label adapts to the source section. On a direct visit or a reload it goes to the project's issue list.
 - Title, culprit, a level badge, and a status badge.
 - Metadata: **First seen** / **Last seen** / **Times seen**.
 - Action buttons (see below) and an assignee form.
@@ -56,6 +59,7 @@ With an event selected, the page shows a block with:
 
 - **Stack trace** — frames from your application's own code (in-app) are shown in full right away: file path with line number, function, module. Frames from frameworks/runtime/dependencies (not in-app) are collapsed into a `<details>` element — by default only the `function (file:line)` summary line is visible, and the full frame expands on click. This separates your code from library noise right in the stack trace.
 - **Trace link** — if the event has an associated `trace_id` (the request was part of a traced transaction), a "View trace" link to the waterfall in [Performance](/docs/performance) is shown.
+- **HTTP request** — if the event happened while handling an HTTP request, a "Request" card is shown: the `METHOD URL` line, query-string parameters, the body, and (collapsible) headers. Sensitive data is stripped at ingest (see [Privacy](/docs/privacy)) — it's in neither storage nor the UI.
 - **Tags** — arbitrary key-value pairs the SDK attached to the event.
 - **User and SDK** — the user's id/email/IP (if the SDK sent them) and SDK information.
 - **Contexts** — raw structured data from the event (runtime environment, device, etc. — whatever the SDK sent).

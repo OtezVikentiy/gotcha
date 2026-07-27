@@ -6,12 +6,15 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -274,6 +277,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	if err != nil {
 		panic("web: embedded static assets missing: " + err.Error())
 	}
+	// Версия статики (хэш содержимого встроенных ассетов) — шаблоны ссылаются
+	// на app.css/js как /static/<файл>?v=<хэш>, чтобы после деплоя браузеры не
+	// отдавали старый закэшированный CSS (иначе новый daterange.js уже подтянут,
+	// а правил скрытия в CSS ещё нет — контрол разъезжается).
+	templates.SetAssetVersion(staticAssetVersion(staticSub))
 	fileServer := http.FileServer(http.FS(staticSub))
 	inner.Handle("GET /static/", http.StripPrefix("/static/", cacheControl(fileServer)))
 
@@ -470,10 +478,41 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withShell(inner)))))
 }
 
-// cacheControl проставляет Cache-Control на статику.
+// staticAssetVersion возвращает короткий хэш содержимого встроенных статических
+// ассетов. Шаблоны подставляют его в URL как ?v=<хэш>, поэтому любое изменение
+// CSS/JS меняет ссылку — браузеры не отдают старую версию из кэша после деплоя.
+func staticAssetVersion(fsys fs.FS) string {
+	names := make([]string, 0, 8)
+	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			names = append(names, p)
+		}
+		return nil
+	})
+	sort.Strings(names) // детерминированный порядок независимо от обхода FS
+	h := sha256.New()
+	for _, n := range names {
+		b, err := fs.ReadFile(fsys, n)
+		if err != nil {
+			continue
+		}
+		_, _ = h.Write([]byte(n))
+		_, _ = h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// cacheControl проставляет Cache-Control на статику. Версионированный запрос
+// (/static/<файл>?v=<хэш>) неизменяем: хэш в URL меняется при любом изменении
+// содержимого, поэтому кэшируем надолго и без ревалидации. Прямой запрос без
+// версии (favicon, ручной ввод URL) — короткий кэш, как раньше.
 func cacheControl(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "max-age=3600")
+		if r.URL.Query().Get("v") != "" {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "max-age=3600")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

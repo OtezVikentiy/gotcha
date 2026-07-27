@@ -63,13 +63,13 @@ templ headTag(title string) {
 		// Отключаем инъекцию декларативно; сами правила .htmx-indicator — в app.css.
 		<meta name="htmx-config" content='{"includeIndicatorStyles":false}'/>
 		<title>{ title } · Gotcha</title>
-		<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
-		<link rel="stylesheet" href="/static/app.css"/>
-		<script src="/static/htmx.min.js"></script>
+		<link rel="icon" href={ assetURL("/static/favicon.svg") } type="image/svg+xml"/>
+		<link rel="stylesheet" href={ assetURL("/static/app.css") }/>
+		<script src={ assetURL("/static/htmx.min.js") }></script>
 		// Прогрессивное улучшение селектора окна времени в единый попап-пикер
 		// диапазона. Не обязателен: без него .time-range работает нативно
 		// (пресеты + два поля datetime-local). Тот же origin — CSP разрешает.
-		<script src="/static/daterange.js" defer></script>
+		<script src={ assetURL("/static/daterange.js") } defer></script>
 	</head>
 }
 

@@ -57,7 +57,7 @@ When a monitor's region-aggregated status flips to down, an **incident** opens: 
 
 An incident that opens during an active [maintenance window](/docs/maintenance) is marked "in maintenance" and does not send a notification — so planned work doesn't create false noise. Ordinary incidents notify through the channels attached to the monitor (see [Alerts](/docs/alerts)).
 
-A monitor's incident list appears both at `/projects/{id}/incidents` and as a timeline at the bottom of the monitor's detail page.
+A monitor's incident list appears both at `/projects/{id}/incidents` and as a timeline at the bottom of the monitor's detail page. The list is paginated: with many incidents, "Prev / N of M / Next" navigation appears at the bottom; the recent-checks table on the monitor page is paginated the same way.
 
 ## Monitor detail page
 
