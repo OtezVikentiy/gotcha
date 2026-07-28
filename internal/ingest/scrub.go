@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 const scrubMask = "[scrubbed]"
@@ -135,43 +136,59 @@ func (s *Scrubber) deniedKey(key string, substr bool) bool {
 		}
 		return false
 	}
-	// substr=false: матч по СЛОВАМ (см. deniedParam). splitWords по ОРИГИНАЛУ key,
-	// чтобы поймать границы camelCase до ToLower (idToken → id, Token).
-	for _, w := range splitWords(key) {
-		if s.denyNorm[strings.ToLower(w)] {
-			return true
+	// substr=false: матч по N-ГРАММАМ слов (см. deniedParam). splitWords по ОРИГИНАЛУ
+	// key (границы camelCase до ToLower). Проверяем каждую непрерывную последовательность
+	// слов: одиночное слово ловит client_secret→secret, id_token→token; склейка соседних
+	// ловит СОСТАВНЫЕ ключи денилиста, лежащие в denyNorm без разделителя — api_key
+	// (x_api_key→api|key→"apikey"), credit_card (billing_credit_card→"creditcard"),
+	// card_number→"cardnumber". author/tokenizer/session_expired при этом целы.
+	words := splitWords(key)
+	for i := range words {
+		var joined strings.Builder
+		for j := i; j < len(words); j++ {
+			joined.WriteString(strings.ToLower(words[j]))
+			if s.denyNorm[joined.String()] {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 // splitWords режет имя на слова по не-буквенно-цифровым разделителям И границам
-// camelCase (fooBar → foo, Bar; client_secret → client, secret). Регистр слов
-// сохранён (вызывающий нормализует сам).
+// camelCase (fooBar → foo, Bar; client_secret → client, secret) и границе
+// аббревиатуры (IDToken → ID, Token; APIKey → API, Key), но APIKEY остаётся цел.
+// Разбор по РУНАМ (unicode.IsLetter/IsDigit): кириллический денилист (152-ФЗ)
+// работает и в именах параметров, не только в ключах. Регистр слов сохранён.
 func splitWords(s string) []string {
+	runes := []rune(s)
 	var words []string
 	start := 0
 	flush := func(end int) {
 		if end > start {
-			words = append(words, s[start:end])
+			words = append(words, string(runes[start:end]))
 		}
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		alnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
-		if !alnum {
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		if !(unicode.IsLetter(c) || unicode.IsDigit(c)) {
 			flush(i)
 			start = i + 1
 			continue
 		}
-		if i > start && c >= 'A' && c <= 'Z' {
-			if p := s[i-1]; p >= 'a' && p <= 'z' || p >= '0' && p <= '9' {
+		if i > start && unicode.IsUpper(c) {
+			prev := runes[i-1]
+			switch {
+			case unicode.IsLower(prev) || unicode.IsDigit(prev): // fooBar → foo|Bar
 				flush(i)
+				start = i
+			case unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]):
+				flush(i) // XMLToken → XML|Token (заглавная перед началом нового слова)
 				start = i
 			}
 		}
 	}
-	flush(len(s))
+	flush(len(runes))
 	return words
 }
 
@@ -287,18 +304,42 @@ func (s *Scrubber) scrubURLToken(tok string) string {
 		for end < len(tok) && isURLByte(tok[end]) {
 			end++
 		}
+		// Наличие открывающих скобок в ядре считаем ОДИН раз (иначе IndexByte внутри
+		// цикла тримминга даёт O(n²): токен из миллиона ')' вешал бы воркер — SEC-P1-B).
+		var hasParen, hasBracket, hasBrace bool
+		for k := start; k < end; k++ {
+			switch tok[k] {
+			case '(':
+				hasParen = true
+			case '[':
+				hasBracket = true
+			case '{':
+				hasBrace = true
+			}
+		}
 		// Хвостовая пунктуация не входит в URL. Но закрывающую скобку )]} оставляем,
 		// если внутри URL есть парная открывающая — это часть значения (маска SDK
 		// token=[Filtered], IPv6 [::1]), а не обрамление предложения: иначе ']'
 		// приклеился бы к маске как [scrubbed]] и рос при ре-обработке (SEC-P2-3).
 		trimEnd := end
 		for trimEnd > p+3 && isURLTrailByte(tok[trimEnd-1]) {
-			c := tok[trimEnd-1]
-			if op := matchingOpener(c); op != 0 && strings.IndexByte(tok[start:trimEnd-1], op) >= 0 {
-				break
+			switch tok[trimEnd-1] {
+			case ')':
+				if hasParen {
+					goto trimmed
+				}
+			case ']':
+				if hasBracket {
+					goto trimmed
+				}
+			case '}':
+				if hasBrace {
+					goto trimmed
+				}
 			}
 			trimEnd--
 		}
+	trimmed:
 		b.WriteString(tok[i:start])
 		b.WriteString(s.scrubURLParams(tok[start:trimEnd]))
 		i = trimEnd
@@ -322,25 +363,18 @@ func isURLByte(c byte) bool {
 	if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
 		return true
 	}
+	// Байты UTF-8-продолжения (≥0x80) — часть не-ASCII символа в пути/query (кириллица,
+	// умляуты), а не разделитель URL: иначе первый же такой байт обрывал бы разбор и
+	// весь хвост с токеном уезжал бы сырым (SEC-P1: "…/поиск?token=…").
+	if c >= 0x80 {
+		return true
+	}
 	switch c {
 	case '-', '.', '_', '~', ':', '/', '?', '#', '[', ']', '@',
 		'!', '$', '&', '\'', '(', ')', '*', '+', ';', '=', '%':
 		return true
 	}
 	return false
-}
-
-// matchingOpener — парная открывающая скобка для закрывающей, иначе 0.
-func matchingOpener(c byte) byte {
-	switch c {
-	case ')':
-		return '('
-	case ']':
-		return '['
-	case '}':
-		return '{'
-	}
-	return 0
 }
 
 // isURLTrailByte — хвостовая пунктуация, не входящая в URL (обрамление предложения).
@@ -596,9 +630,12 @@ func (s *Scrubber) scrubMaybeJSON(str string) string {
 // scrubJSONStream чистит поток из одного или нескольких JSON-значений подряд
 // (обычное тело — одно; NDJSON / concatenated — несколько), сохраняя данные из
 // всех: раньше хвост после первого значения молча терялся, а с ним утекал секрет
-// (SEC-P2-1). ok=false, если это не валидная последовательность JSON (тогда
-// вызывающий трактует вход как form/URL). Многозначный поток пере-склеивается
-// через '\n' (канон NDJSON); одиночное значение сериализуется как есть.
+// (SEC-P2-1). Если после успешно разобранного префикса идёт МУСОРНЫЙ хвост, префикс
+// всё равно чистится, а остаток (граница — dec.InputOffset()) прогоняется через
+// текстовый фолбэк и приклеивается — иначе секрет в префиксе уезжал бы открытым
+// (SEC-P1-C). ok=false только если НИ ОДНО значение не разобралось (тогда вызывающий
+// трактует вход как form/URL). Многозначный поток склеивается через '\n' (канон
+// NDJSON — форма любого concatenated-потока канонизируется); одиночное — как есть.
 func (s *Scrubber) scrubJSONStream(str string) (string, bool) {
 	dec := json.NewDecoder(strings.NewReader(str))
 	dec.UseNumber()
@@ -610,7 +647,12 @@ func (s *Scrubber) scrubJSONStream(str string) (string, bool) {
 			break
 		}
 		if err != nil {
-			return "", false
+			if len(parts) == 0 {
+				return "", false // ничего не разобрали — пусть решает вызывающий
+			}
+			// разобранный префикс уже почищен; необработанный остаток — текстом
+			rest := s.scrubEmbeddedURLs(s.scrubParams(str[dec.InputOffset():]))
+			return strings.Join(parts, "\n") + rest, true
 		}
 		out, ok := encodeJSONValue(s.scrubQueryLike(v))
 		if !ok {

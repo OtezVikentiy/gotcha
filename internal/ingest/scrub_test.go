@@ -464,3 +464,73 @@ func TestScrubReAuditRound3(t *testing.T) {
 		t.Errorf("не-идемпотентно, вырос ']' (P2-3): %s", idem)
 	}
 }
+
+// TestScrubReAuditRound4 фиксирует правки четвёртого re-audit: составные ключи
+// денилиста в параметрах, UTF-8 в URL, DoS-триммер, JSON с мусорным хвостом,
+// границы splitWords.
+func TestScrubReAuditRound4(t *testing.T) {
+	// Денилист с составными записями (нормализуются в apikey/creditcard/cardnumber).
+	s := NewScrubber(true, true, []string{"password", "token", "secret", "auth", "session", "api_key", "credit_card", "card_number", "access_token"})
+
+	// P1-A: составные ключи денилиста матчатся в ИМЕНАХ query-параметров.
+	comp := s.ScrubJSON(`{"data":"x_api_key=SEEKRET&X-Api-Key=K2&billing_credit_card=4111&cc_card_number=4222&author=jane&tokenizer=bpe"}`)
+	for _, leak := range []string{"SEEKRET", "K2", "4111", "4222"} {
+		if contains(comp, leak) {
+			t.Errorf("составной ключ не замаскирован в параметре (P1-A): %q в %s", leak, comp)
+		}
+	}
+	for _, keep := range []string{"author=jane", "tokenizer=bpe"} {
+		if !contains(comp, keep) {
+			t.Errorf("безобидный параметр over-scrub (P1-A): нет %q в %s", keep, comp)
+		}
+	}
+
+	// P1: UTF-8 (кириллица) в пути/query не обрывает разбор URL — токен вычищен.
+	for _, in := range []string{
+		"GET https://api/x?q=привет&token=SECRET",
+		"GET https://api/поиск?token=SECRET",
+		"GET https://пример.рф/?token=SECRET",
+	} {
+		if out := s.ScrubMessage(in); contains(out, "SECRET") {
+			t.Errorf("UTF-8 оборвал разбор URL, токен утёк (P1): %q → %q", in, out)
+		}
+	}
+
+	// P1-B: гигантский хвост из ')' не вешает триммер (был O(n²)); токен вычищен.
+	huge := "https://a/?token=x" + strings.Repeat(")", 100000)
+	out := s.ScrubMessage(huge)
+	if contains(out, "token=x") {
+		t.Error("DoS-триммер: токен не вычищен (P1-B)")
+	}
+
+	// P1-C: JSON-тело с мусорным хвостом — префикс чистится, секрет не утекает.
+	for _, in := range []string{
+		`{"data":"{\"password\":\"P4SS\"} trailing"}`,
+		`{"data":"{\"password\":\"P4SS\"}}"}`,
+	} {
+		if got := s.ScrubJSON(in); contains(got, "P4SS") {
+			t.Errorf("JSON с хвостом: секрет утёк (P1-C): %q → %q", in, got)
+		}
+	}
+
+	// splitWords: границы camelCase/аббревиатуры/разделителя/кириллицы.
+	cases := map[string][]string{
+		"IDToken":       {"ID", "Token"},
+		"apiKey":        {"api", "Key"},
+		"APIKEY":        {"APIKEY"},
+		"client_secret": {"client", "secret"},
+		"новый_пароль":  {"новый", "пароль"},
+	}
+	for in, want := range cases {
+		got := splitWords(in)
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("splitWords(%q) = %v, want %v", in, got, want)
+		}
+	}
+
+	// Кириллический денилист работает и в имени параметра, не только в ключе.
+	ru := NewScrubber(false, false, []string{"пароль"})
+	if got := ru.scrubMaybeJSON("новый_пароль=SECRET&x=1"); contains(got, "SECRET") {
+		t.Errorf("кириллический денилист не сработал в параметре: %s", got)
+	}
+}
