@@ -29,6 +29,13 @@ func NewClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
 	if _, ok := opts.Settings["max_execution_time"]; !ok {
 		opts.Settings["max_execution_time"] = 60
 	}
+	// Приложение опирается на инвариант «агрегат без GROUP BY возвращает ровно одну
+	// строку с дефолтами» в ~11 read-путях (metric/uptime/trace/event/profile): пустое
+	// окно должно давать нули, а не ErrNoRows. При empty_result_for_aggregation_by_empty_set=1
+	// это ломается (алертинг падал бы на каждом пустом окне), поэтому фиксируем 0
+	// жёстко — не даём DSN случайно переопределить. Guard'ы ErrNoRows в metric/uptime
+	// остаются как defense-in-depth.
+	opts.Settings["empty_result_for_aggregation_by_empty_set"] = 0
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse: %w", err)

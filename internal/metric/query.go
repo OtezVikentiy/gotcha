@@ -299,6 +299,9 @@ func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environmen
 		var eb []float64
 		var cnt uint64
 		if err := row.Scan(&bc, &eb, &cnt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, false, nil // пустое окно при empty_result_for_aggregation_by_empty_set=1
+			}
 			return 0, false, fmt.Errorf("metric: aggregate histogram: %w", err)
 		}
 		if cnt == 0 {
@@ -311,6 +314,9 @@ func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environmen
 	var v float64
 	var cnt uint64
 	if err := row.Scan(&v, &cnt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil // пустое окно при empty_result_for_aggregation_by_empty_set=1
+		}
 		return 0, false, fmt.Errorf("metric: aggregate: %w", err)
 	}
 	if cnt == 0 {

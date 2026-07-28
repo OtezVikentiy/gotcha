@@ -46,7 +46,7 @@ Clicking a row's title opens `/issues/<id>`:
 - Title, culprit, a level badge, and a status badge.
 - Metadata: **First seen** / **Last seen** / **Times seen**.
 - Action buttons (see below) and an assignee form.
-- **Frequency chart** — a bar chart of event counts across the selected [time range](/docs/time-range) (the page has the shared period control, default 7 days), in up to 56 bars; the bar width adapts to the window (3-hour bars at the 7-day default, wider — so fewer bars — on short windows, since the step never drops below 5 minutes).
+- **Frequency chart** — a bar chart of event counts across the selected [time range](/docs/time-range) (the page has the shared period control, default 7 days), in up to 57 bars; the bar width adapts to the window (3-hour bars at the 7-day default). On windows shorter than ~4h40m the step floors at 5 minutes, so you get fewer bars.
 - **Recent events** — a table of the 20 most recent events for this issue: when, message, environment, release. Clicking the timestamp opens that event's detail (`?event=<id>` in the URL, the row is highlighted).
 
 ### Reading the frequency chart

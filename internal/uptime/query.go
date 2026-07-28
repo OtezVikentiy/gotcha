@@ -2,6 +2,8 @@ package uptime
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -172,6 +174,12 @@ func (q *Query) Uptime(ctx context.Context, monitorID int64, from, to time.Time,
 	row := q.conn.QueryRow(ctx, query, args...)
 	var total, ok uint64
 	if err := row.Scan(&total, &ok); err != nil {
+		// Пустое окно: агрегат без GROUP BY обычно отдаёт строку с нулями, но при
+		// empty_result_for_aggregation_by_empty_set=1 вернёт ErrNoRows — трактуем
+		// как «проверок не было» (Total=0), а не как жёсткую ошибку.
+		if errors.Is(err, sql.ErrNoRows) {
+			return UptimeStat{}, nil
+		}
 		return UptimeStat{}, fmt.Errorf("uptime: uptime: %w", err)
 	}
 	return UptimeStat{Total: total, OK: ok}, nil
@@ -362,6 +370,11 @@ func (q *Query) BarsBatch(ctx context.Context, monitorIDs []int64, from, to time
 // 24 часа, 90 — за 90 дней). Корзины без проверок остаются структурно
 // нулевыми (UptimeStat{0, 0}), а не отсутствуют в слайсе: длина результата
 // всегда равна buckets.
+//
+// Продовые вызовы вытеснены BarsBatch (списки/статус-страница делают один запрос
+// на N мониторов); Bars остаётся как эталонная реализация арифметики корзин для
+// теста паритета BarsBatch (см. query_test.go). Удалять до появления новых
+// одиночных потребителей не нужно — на нём держится проверка батч-версии.
 func (q *Query) Bars(ctx context.Context, monitorID int64, from, to time.Time, buckets int) ([]UptimeStat, error) {
 	if buckets <= 0 || !to.After(from) {
 		return nil, nil

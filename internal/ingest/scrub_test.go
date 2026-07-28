@@ -292,3 +292,175 @@ func TestScrubRequestReAuditFixes(t *testing.T) {
 		t.Errorf("текст без URL не должен меняться (M2): %q", plain)
 	}
 }
+
+// TestScrubReAuditRound2 фиксирует правки второго re-audit: fidelity на боевом
+// пути ScrubJSON, PAT-userinfo, URL под data/в тексте/в кавычках, сохранение
+// переносов строк, точный матч имён параметров, хвост JSON и forwarding-IP.
+func TestScrubReAuditRound2(t *testing.T) {
+	s := NewScrubber(true /*IP*/, true /*email*/, []string{"password", "token", "access_token"})
+
+	// P2-5/D1: ScrubJSON (боевой путь для Request/Contexts/Breadcrumbs) сохраняет
+	// точность bigint и НЕ эскейпит &<>.
+	body := s.ScrubJSON(`{"id":12345678901234567890,"q":"a<b&c","password":"x"}`)
+	if !contains(body, "12345678901234567890") {
+		t.Errorf("ScrubJSON потерял точность bigint (P2-5): %s", body)
+	}
+	if contains(body, "&amp;") || !contains(body, "a<b&c") {
+		// эскейпнутый вывод был бы a<b&c или a&amp;b — позитивная проверка ловит оба.
+		t.Errorf("ScrubJSON сэскейпил &<> (P2-5): %s", body)
+	}
+	if !contains(body, "[scrubbed]") {
+		t.Errorf("ScrubJSON не замаскировал password: %s", body)
+	}
+
+	// P1-2 (re-code): одиночный userinfo (PAT) маскируется целиком.
+	pat := s.scrubURLParams("https://ghp_SECRETTOKEN@github.com/o/r.git")
+	if contains(pat, "ghp_SECRETTOKEN") || !contains(pat, "[scrubbed]@github.com") {
+		t.Errorf("одиночный userinfo/PAT не замаскирован (P1-2): %s", pat)
+	}
+
+	// P1-1: URL под ключом data — фрагмент (implicit-flow) и basic-auth чистятся.
+	dat := s.ScrubJSON(`{"data":"https://u:pw@app/cb?state=xyz#access_token=SECRET"}`)
+	if contains(dat, "SECRET") || contains(dat, ":pw@") || !contains(dat, "access_token=[scrubbed]") {
+		t.Errorf("URL под data не вычищен полностью (P1-1): %s", dat)
+	}
+
+	// P1-2 (re-sec): URL, встроенный в breadcrumb.message, чистится.
+	crumb := s.ScrubJSON(`[{"type":"http","message":"GET https://api/x?token=SEC1","data":{"url":"https://api/x?token=SEC2"}}]`)
+	if contains(crumb, "SEC1") || contains(crumb, "SEC2") {
+		t.Errorf("токен во встроенном URL breadcrumb не вычищен (P1-2): %s", crumb)
+	}
+
+	// P1-3: URL в кавычках / скобках / с префиксом url= — тоже чистится.
+	for _, in := range []string{
+		`fetch failed for "https://api/x?token=SECRET"`,
+		`see (https://api/x?token=SECRET) now`,
+		`req url=https://api/x?token=SECRET`,
+	} {
+		if out := s.ScrubMessage(in); contains(out, "SECRET") {
+			t.Errorf("обрамлённый URL не вычищен (P1-3): %q → %q", in, out)
+		}
+	}
+
+	// P2-1: переводы строк в многострочном сообщении сохраняются даже при чистке.
+	multi := s.ScrubMessage("could not connect\n  DSN https://u:pw@db/app?token=SECRET\n  hint: firewall")
+	if contains(multi, "SECRET") || contains(multi, ":pw@") {
+		t.Errorf("многострочный секрет не вычищен (P2-1): %q", multi)
+	}
+	if strings.Count(multi, "\n") != 2 {
+		t.Errorf("переводы строк схлопнуты (P2-1): %q", multi)
+	}
+
+	// P2-2: подстрока denylist больше НЕ маскирует безобидные имена параметров.
+	safe := s.ScrubJSON(`{"note":"https://blog/p?author=jane&session_expired=1&tokenizer=bpe&password=x"}`)
+	for _, keep := range []string{"author=jane", "session_expired=1", "tokenizer=bpe"} {
+		if !contains(safe, keep) {
+			t.Errorf("безобидный параметр over-scrub (P2-2): нет %q в %s", keep, safe)
+		}
+	}
+	if !contains(safe, "password=[scrubbed]") {
+		t.Errorf("password должен маскироваться (P2-2): %s", safe)
+	}
+
+	// P2-3: NDJSON / мусорный хвост не усекается молча (падаем во form-путь).
+	ndjson := s.ScrubJSON(`{"body":"{\"a\":1}\n{\"second\":2}"}`)
+	if !contains(ndjson, "second") {
+		t.Errorf("хвост JSON усечён (P2-3): %s", ndjson)
+	}
+
+	// P2-4: расширенные forwarding-заголовки маскируются, а -Proto/-Host — нет.
+	ips := s.ScrubJSON(`{"headers":{"True-Client-IP":"1.2.3.4","CF-Connecting-IP":"1.2.3.4","X-Forwarded-Proto":"https"}}`)
+	if contains(ips, "1.2.3.4") {
+		t.Errorf("forwarding-IP не замаскирован (P2-4): %s", ips)
+	}
+	if !contains(ips, `"https"`) {
+		t.Errorf("X-Forwarded-Proto ошибочно замаскирован (P2-4): %s", ips)
+	}
+
+	// scrubEmbeddedURLs: текст с "://" без denied-параметров возвращается байт-в-байт.
+	same := "visit https://example.com/docs?page=2 for help"
+	if out := s.ScrubMessage(same); out != same {
+		t.Errorf("текст без секретов изменён: %q → %q", same, out)
+	}
+
+	// looksLikeURL: длинная невалидная «схема» и голый //host — не URL.
+	if looksLikeURL("this is not a url but contains :// inside") {
+		t.Error("looksLikeURL: пробел в схеме должен отвергаться")
+	}
+	if looksLikeURL("//host/path") {
+		t.Error("looksLikeURL: //host без схемы — не URL")
+	}
+}
+
+// TestScrubReAuditRound3 фиксирует правки третьего re-audit: составные имена
+// секретов, сохранность хвоста после URL, встроенный URL под data, NDJSON,
+// }/]-хвост, ScrubTags-значения, разделение URL запятой, обрамление.
+func TestScrubReAuditRound3(t *testing.T) {
+	// Денилист, близкий к дефолтному (со словами secret/token/password/session/cookie).
+	s := NewScrubber(true, true, []string{"password", "token", "secret", "auth", "session", "cookie", "api_key"})
+
+	// P1-1: составные имена секретов маскируются по СЛОВУ; безобидные — нет.
+	comp := s.ScrubJSON(`{"data":"client_secret=CS&id_token=JWT&new_password=P&author=jane&tokenizer=bpe&cookies_accepted=1"}`)
+	for _, leak := range []string{"client_secret=CS", "id_token=JWT", "new_password=P"} {
+		if contains(comp, leak) {
+			t.Errorf("составной секрет не замаскирован (P1-1): %q в %s", leak, comp)
+		}
+	}
+	for _, keep := range []string{"author=jane", "tokenizer=bpe", "cookies_accepted=1"} {
+		if !contains(comp, keep) {
+			t.Errorf("безобидный параметр over-scrub (P1-1): нет %q в %s", keep, comp)
+		}
+	}
+
+	// P1-2: всё после URL внутри непробельного токена сохраняется, токен вычищен.
+	tail := s.ScrubMessage(`payload={"url":"https://a?token=X","next":"KEEP","id":7}`)
+	if contains(tail, "token=X") || !contains(tail, `"next":"KEEP"`) || !contains(tail, `"id":7`) {
+		t.Errorf("хвост после URL потерян/секрет не вычищен (P1-2): %s", tail)
+	}
+
+	// P1-3: встроенный URL под ключом data чистится (не слабее произвольного ключа).
+	dat := s.ScrubJSON(`{"data":"GET https://api/x?token=SECRET"}`)
+	if contains(dat, "SECRET") {
+		t.Errorf("встроенный URL под data не вычищен (P1-3): %s", dat)
+	}
+
+	// P2-1: NDJSON-тело — оба значения чистятся, ни одно не теряется.
+	nd := s.ScrubJSON(`{"body":"{\"password\":\"SEC_A\"}\n{\"password\":\"SEC_B\"}"}`)
+	if contains(nd, "SEC_A") || contains(nd, "SEC_B") {
+		t.Errorf("NDJSON: секрет утёк (P2-1): %s", nd)
+	}
+
+	// P2-2: хвост '}' / ']' не усекается молча (вход не наш → возвращается как есть).
+	if _, ok := decodeJSONValue(`{"a":1}}`); ok {
+		t.Error("decodeJSONValue должен отвергать хвост '}' (P2-2)")
+	}
+	if _, ok := decodeJSONValue(`[1,2]}`); ok {
+		t.Error("decodeJSONValue должен отвергать хвост ']' (P2-2)")
+	}
+
+	// P2-6: ScrubTags чистит значение тега (URL с токеном), не только по ключу.
+	tags := map[string]string{"url": "https://h/p?token=SECRET", "server_name": "https://u:pw@h/"}
+	s.ScrubTags(tags)
+	if contains(tags["url"], "SECRET") || contains(tags["server_name"], ":pw@") {
+		t.Errorf("ScrubTags не почистил значения (P2-6): %v", tags)
+	}
+
+	// Запятая разделяет два URL — вычищаются оба, безобидный параметр цел.
+	comma := s.ScrubMessage(`https://a/x?keep=1,https://b/y?token=SECRET`)
+	if contains(comma, "token=SECRET") || !contains(comma, "keep=1") {
+		t.Errorf("URL через запятую обработаны неверно: %s", comma)
+	}
+
+	// Обрамление (скобки/кавычки/точка) сохраняется точно, переносы строк целы.
+	framed := s.ScrubMessage("see (https://a?token=S)\n\tand \"https://b?token=T\".")
+	want := "see (https://a?token=[scrubbed])\n\tand \"https://b?token=[scrubbed]\"."
+	if framed != want {
+		t.Errorf("обрамление/переносы не сохранены:\n got %q\nwant %q", framed, want)
+	}
+
+	// Идемпотентность: маска SDK [Filtered] в query не растит хвост ']'.
+	idem := s.ScrubMessage("GET https://h/?token=[Filtered]")
+	if contains(idem, "[scrubbed]]") {
+		t.Errorf("не-идемпотентно, вырос ']' (P2-3): %s", idem)
+	}
+}
