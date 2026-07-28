@@ -28,7 +28,7 @@ type RegressionEvent struct {
 // RegressionNotifier — алерты об открытии/закрытии регрессий поверх того же
 // notify.Outbox и тех же каналов проекта, что и алерты uptime
 // (uptime.OutboxNotifier) и perf-issues (trace.OutboxNotifier): формат payload
-// намеренно совпадает с ними — обязательные channel_kind/target/secret читает
+// намеренно совпадает с ними — обязательные channel_kind/target читает
 // notify.Worker, доставляют те же Sender'ы.
 type RegressionNotifier struct {
 	Alerts *alert.Service // каналы проекта: Alerts.Channels(projectID)
@@ -91,7 +91,10 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 			"body":           body,
 			"channel_kind":   ch.Kind,
 			"target":         ch.Target,
-			"secret":         ch.Secret,
+			// Секрета в payload нет намеренно: notification_outbox.payload —
+			// обычный jsonb, и bot-токен в нём обесценил бы шифрование
+			// alert_channels.secret. notify.Worker достаёт секрет по
+			// channel_id в момент отправки (см. notify.SecretResolver).
 		}
 		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).

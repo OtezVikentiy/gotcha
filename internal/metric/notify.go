@@ -81,7 +81,10 @@ func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 			// что в trace.RegressionNotifier).
 			"channel_kind": ch.Kind,
 			"target":       ch.Target,
-			"secret":       ch.Secret,
+			// Секрета в payload нет намеренно: notification_outbox.payload —
+			// обычный jsonb, и bot-токен в нём обесценил бы шифрование
+			// alert_channels.secret. notify.Worker достаёт секрет по
+			// channel_id в момент отправки (см. notify.SecretResolver).
 		}
 		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).

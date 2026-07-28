@@ -26,7 +26,9 @@ VictoriaMetrics, Grafana Agent, OpenTelemetry Collector:
 scrape_configs:
   - job_name: gotcha
     static_configs:
-      - targets: ["gotcha.example.com:8080"]
+      # 8080 — порт ВНУТРИ контейнера; наружу штатный compose публикует 59080
+      # (GOTCHA_PORT). Укажите тот порт, по которому инстанс доступен вам.
+      - targets: ["gotcha.example.com:59080"]
 ```
 
 ## Что означают метрики

@@ -15,10 +15,11 @@ import "fmt"
 // осознанно не признают безопасным здесь.
 var externalSafeKeys = map[string]struct{}{
 	// Маршрут доставки — читает notify.Worker, чтобы собрать notify.Target
-	// (channel_kind/target/secret). Без них воркер не доставит сообщение.
+	// (channel_kind/target). Без них воркер не доставит сообщение. Секрета
+	// здесь нет намеренно: воркер достаёт его по channel_id в момент отправки
+	// (см. notify.SecretResolver), а в payload он не попадает вовсе.
 	"channel_kind": {},
 	"target":       {},
-	"secret":       {},
 	// Вид алерта и ссылка на карточку — безопасный обезличенный минимум.
 	"kind": {},
 	"url":  {},

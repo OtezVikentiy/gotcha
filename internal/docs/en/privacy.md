@@ -4,6 +4,24 @@ Gotcha is a self-hosted platform: you run it on your own infrastructure and cont
 
 > This is technical guidance, not legal advice. Consult a qualified lawyer for a full assessment of your obligations.
 
+## A dev secret key means no encryption at rest
+
+`GOTCHA_SECRET_KEY` is what encrypts SSO client secrets and channel tokens in
+PostgreSQL. While it is left at the built-in development default, encryption is
+**not enabled at all** — those secrets sit in the database as plain text.
+Encrypting them with a key that is published in the source would be theatre, so
+the product does not pretend otherwise.
+
+Two consequences worth knowing:
+
+- Setting a real key later does **not** encrypt what is already stored. Existing
+  rows stay readable as legacy plain text; only values written afterwards are
+  encrypted. If an instance ever ran on the dev key with real credentials,
+  re-enter those credentials after setting a proper key.
+- On a non-local `GOTCHA_BASE_URL` the app refuses to start with the default key
+  in `web`/`all` mode, so this normally only affects local instances — unless
+  the refusal was explicitly overridden.
+
 ## What personal data is processed
 
 | Category | Where it lives | Examples |
@@ -49,7 +67,7 @@ When you connect an alert channel or SSO, personal data can leave your perimeter
 | Webhook | alert payload | the address you configured |
 | OAuth/SSO (Yandex ID, VK ID, generic OIDC) | email/subject at sign-in | the provider (Yandex/VK — Russia) |
 
-Sending error text (with possible personal data) to Telegram is a potential **cross-border transfer** (152-FZ art. 12). That is why details are off by default (`GOTCHA_EXTERNAL_CHANNEL_DETAILS=false`). If you enable details, make sure you have a lawful basis for cross-border transfer. `TelegramSender` lets you override the API base URL, so you can proxy through infrastructure in the required jurisdiction.
+Sending error text (with possible personal data) to Telegram is a potential **cross-border transfer** (152-FZ art. 12). That is why details are off by default (`GOTCHA_EXTERNAL_CHANNEL_DETAILS=false`). If you enable details, make sure you have a lawful basis for cross-border transfer. If your jurisdiction requires it, prefer a webhook channel pointed at infrastructure you control over Telegram, or keep details off. (Overriding the Telegram API endpoint is not exposed as a setting: it exists only as a field in the code.)
 
 ## Your obligations as an operator (152-FZ)
 

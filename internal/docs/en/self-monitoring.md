@@ -26,7 +26,9 @@ Agent, the OpenTelemetry Collector:
 scrape_configs:
   - job_name: gotcha
     static_configs:
-      - targets: ["gotcha.example.com:8080"]
+      # 8080 is the in-container port; the stock compose publishes 59080
+      # (GOTCHA_PORT). Use whichever port the instance is reachable on for you.
+      - targets: ["gotcha.example.com:59080"]
 ```
 
 ## What the metrics mean

@@ -118,12 +118,23 @@ func emailDomain(email string) string {
 // enforcedSSO — принадлежит ли домен организации с обязательным (enforced) SSO.
 // Централизует SEC-H2-проверку для password-логина, env-OAuth и регистрации.
 // Безопасно при h.Org == nil и пустом домене.
-func (h *Handler) enforcedSSO(ctx context.Context, domain string) bool {
+//
+// Ошибка возвращается наружу, а не сворачивается в false. Раньше здесь стояло
+// `return err == nil && ok && cfg.Enforced`, то есть ЛЮБОЙ сбой означал «SSO не
+// обязателен»: SSOByDomain расшифровывает конфигурацию, и после смены
+// GOTCHA_SECRET_KEY (или транзиентной ошибки pgx) обязательный SSO молча
+// исчезал сразу для всех доменов — уволенный сотрудник заходил по старому
+// паролю, и ни в логе, ни в UI следа не оставалось. Вызывающие обязаны падать
+// в 500: отказать во входе при неизвестном состоянии дешевле, чем пустить.
+func (h *Handler) enforcedSSO(ctx context.Context, domain string) (bool, error) {
 	if h.Org == nil || domain == "" {
-		return false
+		return false, nil
 	}
 	cfg, ok, err := h.Org.SSOByDomain(ctx, domain)
-	return err == nil && ok && cfg.Enforced
+	if err != nil {
+		return false, err
+	}
+	return ok && cfg.Enforced, nil
 }
 
 // ssoCallback — SSO-ветка callback (этап 10, JIT-провижининг вместо invite-gated).

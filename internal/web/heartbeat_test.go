@@ -31,6 +31,7 @@ type uptimeStack struct {
 	srv    *httptest.Server
 	uptime *uptime.Service
 	writer *uptime.ResultWriter
+	h      *web.Handler
 }
 
 func newUptimeStack(t *testing.T) *uptimeStack {
@@ -73,7 +74,7 @@ func newUptimeStackInRegion(t *testing.T, localRegion string) *uptimeStack {
 	h.LocalRegion = localRegion
 	h.Register(mux)
 
-	return &uptimeStack{pool: pool, srv: srv, uptime: uptimeSvc, writer: writer}
+	return &uptimeStack{pool: pool, srv: srv, uptime: uptimeSvc, writer: writer, h: h}
 }
 
 var heartbeatProjectSeq atomic.Int64
@@ -228,5 +229,55 @@ func TestHeartbeatUnknownTokenReturns404(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestHeartbeatFeedsDetector фиксирует P0: успешный пинг применял результат к
+// состоянию, но НЕ звал детектор. Инцидент по heartbeat открывает watchdog
+// (пропущенный удар), а закрыть его больше некому — у heartbeat нет ни очереди
+// заданий, ни пробы, этот эндпойнт и есть единственный сигнал «жив». Без
+// вызова монитор в UI зеленел, а инцидент оставался открытым навсегда: ни
+// уведомления о восстановлении, ни конца напоминаниям «всё ещё DOWN».
+func TestHeartbeatFeedsDetector(t *testing.T) {
+	s := newUptimeStack(t)
+	pid := newProject(t, s.pool)
+
+	created, err := s.uptime.Create(context.Background(), uptime.Monitor{
+		ProjectID: pid, Name: "Cron job", Kind: uptime.KindHeartbeat, Enabled: true,
+		IntervalSeconds: 60, TimeoutSeconds: 10, FailThreshold: 3, RecoveryThreshold: 1,
+		Consensus: uptime.ConsensusMajority, SSLAlertDays: 14,
+		Config: heartbeatConfigJSON(t, uptime.HeartbeatConfig{GraceSeconds: 60}),
+	}, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type call struct {
+		region string
+		ok     bool
+		status string
+	}
+	var got []call
+	s.h.UptimeIngestor = &uptime.Ingestor{
+		OnResult: func(_ context.Context, m uptime.Monitor, region string, r uptime.Result, st uptime.State) {
+			got = append(got, call{region: region, ok: r.OK, status: st.Status})
+		},
+	}
+
+	resp, err := http.Post(s.srv.URL+"/uptime/hb/"+created.HeartbeatToken, "", nil)
+	if err != nil {
+		t.Fatalf("POST heartbeat: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("OnResult вызван %d раз, want 1 — без него инцидент heartbeat не закроется никогда", len(got))
+	}
+	if !got[0].ok || got[0].status != "up" {
+		t.Fatalf("OnResult получил %+v, want ok=true status=up", got[0])
 	}
 }

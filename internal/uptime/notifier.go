@@ -18,7 +18,7 @@ import (
 // формат payload и правило пропуска email намеренно совпадают).
 type OutboxNotifier struct {
 	Alerts *alert.Service // для Alerts.Channels(projectID) — фолбэк, если у монитора нет своих каналов
-	Uptime *Service       // для Uptime.MonitorChannels(monitorID)
+	Uptime *Service       // для Uptime.MonitorChannelIDs(monitorID)
 	Outbox *notify.Outbox
 
 	// BaseURL — префикс для ссылки на монитор в уведомлении:
@@ -44,15 +44,34 @@ type OutboxNotifier struct {
 // постановку остальных: все такие ошибки логируются и собираются через
 // errors.Join в возвращаемое значение.
 func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
-	channels, err := n.Uptime.MonitorChannels(ctx, ev.Monitor.ID)
+	own, err := n.Uptime.MonitorChannelIDs(ctx, ev.Monitor.ID)
 	if err != nil {
 		return fmt.Errorf("uptime: notify: monitor channels: %w", err)
 	}
-	if len(channels) == 0 {
-		channels, err = n.Alerts.Channels(ctx, ev.Monitor.ProjectID)
-		if err != nil {
-			return fmt.Errorf("uptime: notify: project channels: %w", err)
+	// Тела каналов всегда берём у alert.Service: только он держит мастер-ключ
+	// и умеет расшифровать secret (и он же поканально пропускает каналы с
+	// испорченным секретом, залогировав их).
+	channels, err := n.Alerts.Channels(ctx, ev.Monitor.ProjectID)
+	if err != nil {
+		return fmt.Errorf("uptime: notify: project channels: %w", err)
+	}
+	if len(own) > 0 {
+		// У монитора есть свои каналы — сужаем до них. Именно до
+		// ПРИВЯЗАННЫХ, а не до «того, что удалось расшифровать»: если все
+		// собственные каналы монитора отсеялись, уведомление не уходит
+		// никуда, и это правильнее отката на каналы проекта — тот разослал
+		// бы его ровно туда, откуда оператор монитор явно исключил.
+		want := make(map[int64]struct{}, len(own))
+		for _, id := range own {
+			want[id] = struct{}{}
 		}
+		filtered := make([]alert.Channel, 0, len(own))
+		for _, ch := range channels {
+			if _, ok := want[ch.ID]; ok {
+				filtered = append(filtered, ch)
+			}
+		}
+		channels = filtered
 	}
 
 	url := fmt.Sprintf("%s/monitors/%d", n.BaseURL, ev.Monitor.ID)
@@ -84,7 +103,6 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 			"body":             body,
 			"channel_kind":     ch.Kind,
 			"target":           ch.Target,
-			"secret":           ch.Secret,
 		}
 		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).

@@ -11,6 +11,7 @@ import (
 	"net/mail"
 	"net/url"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
@@ -244,6 +245,38 @@ func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 		return 0, fmt.Errorf("alert: create channel: %w", err)
 	}
 	return id, nil
+}
+
+// ChannelSecret возвращает РАСШИФРОВАННЫЙ секрет канала по его id — bot-токен
+// Telegram или HMAC-ключ вебхука.
+//
+// Существует ради notify.Worker: раньше секрет клали в payload задачи
+// (notification_outbox.payload — обычный jsonb), и шифрование alert_channels
+// .secret этим обесценивалось полностью — `SELECT payload->>'secret'` отдавал
+// живые токены за всё окно хранения очереди. Теперь в очереди лежит только
+// channel_id, а секрет достаётся здесь, в момент отправки, и живёт лишь в
+// памяти воркера.
+//
+// ErrNotFound — канал удалили между постановкой в очередь и отправкой; это не
+// сбой доставки, а исчезнувший адресат, и слать уже некуда.
+func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, error) {
+	var secret string
+	err := s.pool.QueryRow(ctx,
+		"SELECT secret FROM alert_channels WHERE id = $1", channelID).Scan(&secret)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("alert: channel secret: %w", err)
+	}
+	if !s.secretKeySet {
+		return secret, nil
+	}
+	open, err := secretbox.Open(s.secretKey, secret)
+	if err != nil {
+		return "", fmt.Errorf("alert: channel %d secret cannot be decrypted: %w", channelID, err)
+	}
+	return open, nil
 }
 
 // DeleteChannel удаляет канал по id. Каскадом удаляет и его записи в outbox.

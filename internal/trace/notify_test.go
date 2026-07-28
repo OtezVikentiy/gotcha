@@ -90,9 +90,11 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 	if j2.Payload["channel_kind"] != alert.ChannelTelegram ||
 		j2.Payload["target"] != "123" ||
-		j2.Payload["secret"] != "tok" ||
 		j2.Payload["subject"] != wantSubject {
 		t.Errorf("telegram job payload = %+v", j2.Payload)
+	}
+	if _, ok := j2.Payload["secret"]; ok {
+		t.Errorf("секрет попал в payload очереди: %+v", j2.Payload)
 	}
 }
 
@@ -153,8 +155,8 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 				t.Errorf("channel %d lost url: %+v", id, p)
 			}
 		}
-		if byChannel[telegramCh].Payload["secret"] != "tok" {
-			t.Errorf("telegram secret lost: %+v", byChannel[telegramCh].Payload)
+		if _, ok := byChannel[telegramCh].Payload["secret"]; ok {
+			t.Errorf("секрет попал в payload очереди: %+v", byChannel[telegramCh].Payload)
 		}
 	})
 

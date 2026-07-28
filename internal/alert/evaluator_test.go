@@ -125,9 +125,14 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("no job for telegram channel %d", ch2)
 		}
 		if j2.Payload["channel_kind"] != alert.ChannelTelegram ||
-			j2.Payload["target"] != "123" ||
-			j2.Payload["secret"] != "tok" {
+			j2.Payload["target"] != "123" {
 			t.Errorf("telegram job payload = %+v", j2.Payload)
+		}
+		// Секрета в очереди быть не должно: notification_outbox.payload —
+		// обычный jsonb, и bot-токен в нём обесценивал бы шифрование
+		// alert_channels.secret. Воркер достаёт его по channel_id при отправке.
+		if _, ok := j2.Payload["secret"]; ok {
+			t.Errorf("секрет попал в payload очереди: %+v", j2.Payload)
 		}
 	})
 
@@ -358,8 +363,8 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		if byChannel[webhookCh].Payload["target"] != "https://example.com/hook" {
 			t.Errorf("webhook target lost: %+v", byChannel[webhookCh].Payload)
 		}
-		if byChannel[telegramCh].Payload["secret"] != "tok" {
-			t.Errorf("telegram secret lost: %+v", byChannel[telegramCh].Payload)
+		if _, ok := byChannel[telegramCh].Payload["secret"]; ok {
+			t.Errorf("секрет попал в payload очереди: %+v", byChannel[telegramCh].Payload)
 		}
 	})
 

@@ -437,10 +437,17 @@ func run() error {
 			slog.Warn("GOTCHA_SMTP_HOST is not set, email alert channels are disabled")
 		}
 		notifyWorker := &notify.Worker{Outbox: outbox, Senders: senders}
+		// Секрет канала воркер достаёт по channel_id в момент отправки: в
+		// payload задачи его больше нет (см. notify.SecretResolver). Проверка
+		// на nil обязательна — присваивание nil-указателя *alert.Service в
+		// интерфейс дало бы НЕ-nil интерфейс и панику на первой же доставке.
+		if alertSvc != nil {
+			notifyWorker.Secrets = alertSvc
+		}
 		go notifyWorker.Run(ctx)
 
 		// Чистка notification_outbox (техдолг): доставленные/проваленные строки
-		// несут секреты каналов в payload и без ретенции копятся бесконечно.
+		// без ретенции копятся бесконечно.
 		outboxJanitor := &notify.OutboxJanitor{
 			Outbox:    outbox,
 			Retention: time.Duration(cfg.OutboxRetentionDays) * 24 * time.Hour,

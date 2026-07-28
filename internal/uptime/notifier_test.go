@@ -106,9 +106,11 @@ func TestOutboxNotifierOwnChannelsWebhookAndTelegram(t *testing.T) {
 	}
 	if j2.Payload["channel_kind"] != alert.ChannelTelegram ||
 		j2.Payload["target"] != "123" ||
-		j2.Payload["secret"] != "tok" ||
 		j2.Payload["subject"] != wantSubject {
 		t.Errorf("telegram job payload = %+v", j2.Payload)
+	}
+	if _, ok := j2.Payload["secret"]; ok {
+		t.Errorf("секрет попал в payload очереди: %+v", j2.Payload)
 	}
 }
 
@@ -285,32 +287,32 @@ func TestServiceMonitorChannelsOnlyEnabled(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{enabledCh, disabledCh})
 
-	// MonitorChannels отдаёт СОБСТВЕННЫЕ каналы монитора, включая выключенные:
+	// MonitorChannelIDs отдаёт СОБСТВЕННЫЕ каналы монитора, включая выключенные:
 	// пустой результат означает «своих каналов нет» и включает фолбэк на каналы
 	// проекта. Если бы выключенные отсеивались здесь, монитор с единственным
 	// выключенным каналом выглядел бы как «без своих каналов» и его уведомления
 	// уехали бы ВО ВСЕ каналы проекта — ровно в те, что оператор исключил.
 	// Выключенные пропускает сам Notify (см. TestOutboxNotifierAllOwnChannelsDisabled).
-	channels, err := usvc.MonitorChannels(ctx, m.ID)
+	ids, err := usvc.MonitorChannelIDs(ctx, m.ID)
 	if err != nil {
-		t.Fatalf("MonitorChannels: %v", err)
+		t.Fatalf("MonitorChannelIDs: %v", err)
 	}
-	if len(channels) != 2 {
-		t.Fatalf("MonitorChannels = %+v, want both linked channels (enabled and disabled)", channels)
+	if len(ids) != 2 {
+		t.Fatalf("MonitorChannelIDs = %v, want both linked channels (enabled and disabled)", ids)
 	}
 	var gotEnabled, gotDisabled bool
-	for _, c := range channels {
-		switch c.ID {
+	for _, id := range ids {
+		switch id {
 		case enabledCh:
 			gotEnabled = true
 		case disabledCh:
 			gotDisabled = true
 		default:
-			t.Fatalf("MonitorChannels вернул непривязанный канал %d: %+v", c.ID, channels)
+			t.Fatalf("MonitorChannelIDs вернул непривязанный канал %d: %v", id, ids)
 		}
 	}
 	if !gotEnabled || !gotDisabled {
-		t.Fatalf("MonitorChannels = %+v, want [%d %d]", channels, enabledCh, disabledCh)
+		t.Fatalf("MonitorChannelIDs = %v, want [%d %d]", ids, enabledCh, disabledCh)
 	}
 }
 
@@ -417,8 +419,8 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 				t.Errorf("channel %d lost url: %+v", id, p)
 			}
 		}
-		if byChannel[telegramCh].Payload["secret"] != "tok" {
-			t.Errorf("telegram secret lost: %+v", byChannel[telegramCh].Payload)
+		if _, ok := byChannel[telegramCh].Payload["secret"]; ok {
+			t.Errorf("секрет попал в payload очереди: %+v", byChannel[telegramCh].Payload)
 		}
 	})
 
@@ -446,4 +448,74 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
 		}
 	})
+}
+
+// TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue закрывает два дефекта
+// сразу, оба про собственные каналы монитора при включённом мастер-ключе.
+//
+// Первый: uptime читал alert_channels.secret своим запросом, а ключ есть
+// только у alert.Service — расшифровать было нечем, и в Telegram уезжала
+// строка "enc:AAAA…" в качестве токена бота. Молча: попытки расшифровать не
+// было, значит не было и ошибки в логе.
+//
+// Второй: секрет клали в notification_outbox.payload — обычный jsonb, — и
+// `SELECT payload->>'secret'` отдавал живые токены за всё окно хранения
+// очереди, обесценивая шифрование at-rest целиком.
+//
+// Поэтому здесь проверяется, что задача уходит именно в СВОЙ канал монитора,
+// что секрета в очереди нет вовсе, и что по channel_id секрет достаётся
+// расшифрованным — тем самым путём, которым его берёт notify.Worker.
+func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	usvc := uptime.NewService(pool)
+	asvc := alert.NewService(pool)
+	asvc.SetSecretKey("test-master-key-at-least-32-bytes-long")
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const botToken = "123456:AAHplaintext-bot-token"
+	pid := newProject(t, pool)
+	ownCh, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true,
+		Target: "-100500", Secret: botToken,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	// Секрет обязан лежать в базе зашифрованным — иначе тест ничего не proves.
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT secret FROM alert_channels WHERE id = $1`, ownCh).Scan(&stored); err != nil {
+		t.Fatalf("read stored secret: %v", err)
+	}
+	if !strings.HasPrefix(stored, "enc:") {
+		t.Fatalf("secret at rest = %q, want enc:-prefixed ciphertext", stored)
+	}
+
+	m := newNotifierMonitor(t, usvc, pid, []int64{ownCh})
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs = %+v err=%v, want exactly 1 job", jobs, err)
+	}
+	if jobs[0].ChannelID != ownCh {
+		t.Fatalf("job ушла в канал %d, want собственный канал монитора %d", jobs[0].ChannelID, ownCh)
+	}
+	if _, ok := jobs[0].Payload["secret"]; ok {
+		t.Fatalf("секрет попал в payload очереди: %+v", jobs[0].Payload)
+	}
+
+	// Путь доставки: воркер спрашивает секрет по channel_id и получает
+	// расшифрованный токен, а не хранимый шифротекст.
+	secret, err := asvc.ChannelSecret(ctx, jobs[0].ChannelID)
+	if err != nil {
+		t.Fatalf("ChannelSecret: %v", err)
+	}
+	if secret != botToken {
+		t.Fatalf("ChannelSecret = %q, want расшифрованный %q (шифротекст в доставке = канал не работает никогда)", secret, botToken)
+	}
 }

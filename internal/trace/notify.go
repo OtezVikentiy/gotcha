@@ -39,7 +39,7 @@ const (
 // notify.Outbox и тех же каналов проекта, что и алерты об ошибках
 // (alert.Evaluator) и об инцидентах uptime (uptime.OutboxNotifier): формат
 // payload намеренно совпадает с ними — его читает notify.Worker
-// (channel_kind/target/secret), а доставляют те же Sender'ы.
+// (channel_kind/target), а доставляют те же Sender'ы.
 type OutboxNotifier struct {
 	Alerts *alert.Service // каналы проекта: Alerts.Channels(projectID)
 	Outbox *notify.Outbox
@@ -152,7 +152,10 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 			"body":          body,
 			"channel_kind":  ch.Kind,
 			"target":        ch.Target,
-			"secret":        ch.Secret,
+			// Секрета в payload нет намеренно: notification_outbox.payload —
+			// обычный jsonb, и bot-токен в нём обесценил бы шифрование
+			// alert_channels.secret. notify.Worker достаёт секрет по
+			// channel_id в момент отправки (см. notify.SecretResolver).
 		}
 		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).

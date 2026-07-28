@@ -40,7 +40,7 @@ If you're running **multiple** `gotcha` processes at once (e.g. separate `--mode
      gotcha /bin/sh -c "true"
    ```
 
-   In practice, starting a normal `gotcha` container once (in any `--mode`) with `GOTCHA_AUTO_MIGRATE=true` is enough — migrations are applied right at the start of startup, before the HTTP port opens, regardless of `--mode`.
+   In practice, starting a normal `gotcha` container once with `GOTCHA_AUTO_MIGRATE=true` is enough — migrations are applied at the start of startup, before the HTTP port opens. This holds for `ingest`, `web`, `uptime` and `all`; `--mode=probe` is the exception, as a probe never opens a database connection at all.
 3. After that, start (or restart) all replicas with `GOTCHA_AUTO_MIGRATE=false` — they'll verify the database schema matches the version built into the binary and refuse to start if it doesn't (this is a safeguard against silently accepting data into a stale schema — an explicit refusal at startup beats silent errors on every insert).
 
 For the stock `docker-compose.yml` in this repository (a single `gotcha` service in `all` mode), separate migrations aren't needed — use the standard upgrade flow above.

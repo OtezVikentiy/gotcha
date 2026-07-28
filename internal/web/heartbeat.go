@@ -65,13 +65,24 @@ func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	region := h.localRegion()
 	at := time.Now().UTC()
 	result := uptime.Result{OK: true}
-	if _, err := h.Uptime.ApplyResult(ctx, m.ID, region, true, "", at); err != nil {
+	st, err := h.Uptime.ApplyResult(ctx, m.ID, region, true, "", at)
+	if err != nil {
 		slog.Error("heartbeat: apply result failed", "monitor_id", m.ID, "error", err)
 		writeHeartbeatJSON(w, http.StatusInternalServerError, false)
 		return
 	}
 	if h.UptimeWriter != nil {
 		h.UptimeWriter.Add(m.ProjectID, m.ID, region, at, result)
+	}
+
+	// Детектор обязателен именно здесь. Инцидент по heartbeat открывает
+	// watchdog (пропущенный удар), а закрыть его больше некому: у heartbeat
+	// нет ни очереди заданий, ни пробы — единственный сигнал «жив» приходит
+	// сюда. Без этого вызова ApplyResult вернёт статус в up, монитор в UI
+	// позеленеет, а инцидент останется открытым навсегда: ни уведомления о
+	// восстановлении, ни конца напоминаниям «всё ещё DOWN».
+	if h.UptimeIngestor != nil && h.UptimeIngestor.OnResult != nil {
+		h.UptimeIngestor.OnResult(ctx, m, region, result, st)
 	}
 
 	writeHeartbeatJSON(w, http.StatusOK, true)

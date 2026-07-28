@@ -92,9 +92,11 @@ func TestRegressionNotifierEnqueuesPerChannel(t *testing.T) {
 	}
 	if j2.Payload["channel_kind"] != alert.ChannelTelegram ||
 		j2.Payload["target"] != "123" ||
-		j2.Payload["secret"] != "tok" ||
 		j2.Payload["target_name"] != "GET /api/users" {
 		t.Errorf("telegram job payload = %+v", j2.Payload)
+	}
+	if _, ok := j2.Payload["secret"]; ok {
+		t.Errorf("секрет попал в payload очереди: %+v", j2.Payload)
 	}
 }
 

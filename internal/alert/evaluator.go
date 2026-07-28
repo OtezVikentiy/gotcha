@@ -111,7 +111,6 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 			"body":         body,
 			"channel_kind": ch.Kind,
 			"target":       ch.Target,
-			"secret":       ch.Secret,
 		}
 		if !e.ExternalDetails && (ch.Kind == ChannelTelegram || ch.Kind == ChannelWebhook) {
 			// Обезличиваем payload для внешних каналов: без title/culprit/

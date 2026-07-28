@@ -11,8 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 )
 
 var (
@@ -432,34 +430,38 @@ func (s *Service) SetSSLExpiry(ctx context.Context, monitorID int64, expires tim
 	return nil
 }
 
-// MonitorChannels returns monitorID's own delivery channels — the ones
-// linked via monitor_channels — ordered by id, ВКЛЮЧАЯ выключенные. Пустой
-// (nil) результат не ошибка: он означает, что у монитора нет собственных
-// каналов, и вызывающий (см. OutboxNotifier.Notify) откатывается на каналы
-// проекта. Выключенные каналы намеренно НЕ отфильтрованы здесь: иначе монитор,
-// у которого единственный канал выключили, выглядел бы как «без собственных
-// каналов» и его уведомления уходили бы ВО ВСЕ каналы проекта — ровно в те,
-// которые оператор явно исключил. Пропуск выключенных делает сам Notify.
-// internal/uptime importing internal/alert here does not create an import
-// cycle: alert never imports uptime.
-func (s *Service) MonitorChannels(ctx context.Context, monitorID int64) ([]alert.Channel, error) {
+// MonitorChannelIDs returns the ids of monitorID's own delivery channels —
+// the ones linked via monitor_channels — ordered by id, ВКЛЮЧАЯ выключенные.
+// Пустой (nil) результат не ошибка: он означает, что у монитора нет
+// собственных каналов, и вызывающий (см. OutboxNotifier.Notify) откатывается
+// на каналы проекта. Выключенные каналы намеренно НЕ отфильтрованы здесь:
+// иначе монитор, у которого единственный канал выключили, выглядел бы как
+// «без собственных каналов» и его уведомления уходили бы ВО ВСЕ каналы
+// проекта — ровно в те, которые оператор явно исключил. Пропуск выключенных
+// делает сам Notify.
+//
+// Возвращаются именно идентификаторы, а не строки каналов: секреты лежат в
+// alert_channels зашифрованными (secretbox, префикс "enc:"), а мастер-ключ
+// есть только у alert.Service. Читая тут c.secret напрямую, uptime отдавал бы
+// в доставку шифротекст в качестве токена бота — и молча, потому что попытки
+// расшифровать не было, а значит не было и ошибки. Тело канала (включая
+// расшифрованный секрет) добирается через alert.Service.Channels.
+func (s *Service) MonitorChannelIDs(ctx context.Context, monitorID int64) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, c.project_id, c.kind, c.enabled, c.target, c.secret
-		FROM monitor_channels mc
-		JOIN alert_channels c ON c.id = mc.channel_id
-		WHERE mc.monitor_id = $1
-		ORDER BY c.id`, monitorID)
+		SELECT channel_id FROM monitor_channels
+		WHERE monitor_id = $1
+		ORDER BY channel_id`, monitorID)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: monitor channels: %w", err)
 	}
 	defer rows.Close()
-	var out []alert.Channel
+	var out []int64
 	for rows.Next() {
-		var c alert.Channel
-		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Kind, &c.Enabled, &c.Target, &c.Secret); err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("uptime: monitor channels: %w", err)
 		}
-		out = append(out, c)
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

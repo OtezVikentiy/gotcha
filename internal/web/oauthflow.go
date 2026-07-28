@@ -152,7 +152,15 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	// Гейт НЕ зависит от id.EmailVerified: generic-OIDC без email_verified иначе
 	// проскакивал бы мимо гейта в ветку «login by subject» (RA-L2). Домен нормализован
 	// в emailDomain (регистр + trailing-dot), чтобы "user@enforced.com." не обходил гейт.
-	if h.enforcedSSO(r.Context(), emailDomain(id.Email)) {
+	enforced, err := h.enforcedSSO(r.Context(), emailDomain(id.Email))
+	if err != nil {
+		// Fail closed: гейт не смог ответить — уводим на SSO, а не пропускаем
+		// мимо централизованного provisioning.
+		slog.Error("oauth: enforced SSO lookup failed", "error", err)
+		http.Redirect(w, r, "/sso", http.StatusSeeOther)
+		return
+	}
+	if enforced {
 		http.Redirect(w, r, "/sso", http.StatusSeeOther)
 		return
 	}

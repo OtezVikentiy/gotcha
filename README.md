@@ -73,8 +73,8 @@ curl -sf http://localhost:59080/healthz
    ("bootstrap" — see `GOTCHA_REGISTRATION` below for how later signups are
    gated).
 2. Create an organization and a project from the UI.
-3. Open the project's **Settings → Connect** page for its DSN and per-language
-   snippets.
+3. Open the project's **Setup** page for its DSN and per-language snippets —
+   the button is in the project list, or via Project settings → DSN keys.
 4. Point an official Sentry SDK at that DSN — Gotcha speaks the Sentry
    ingestion protocol, so any language's Sentry SDK works unmodified, e.g.:
 
@@ -116,13 +116,16 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 | `GOTCHA_SSRF_ALLOW_PRIVATE` | `false` | Allow uptime checks and outbound webhooks to target private/loopback/link-local addresses. Keep `false` on any multi-tenant instance. |
 | `GOTCHA_OIDC_ENABLED` / `GOTCHA_YANDEX_ENABLED` / `GOTCHA_VK_ENABLED` | `false` | Enable each SSO provider independently; each requires its own client ID/secret (and issuer, for OIDC) once enabled. |
 
-Build-from-source variables (`GOTCHA_MAX_EVENT_BYTES`,
+Further runtime variables (`GOTCHA_MAX_EVENT_BYTES`,
 `GOTCHA_METRIC_EVAL_INTERVAL`, `GOTCHA_PROFILE_EVAL_INTERVAL`,
 `GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE`,
 `GOTCHA_EXTERNAL_CHANNEL_DETAILS`, `GOTCHA_UPTIME_CONCURRENCY`,
 `GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_SERVER_URL`,
 `GOTCHA_SCRUB_FREETEXT`) and the full OIDC/Yandex/VK variable set are listed
-with their defaults in [`.env.example`](.env.example).
+with their defaults in [`.env.example`](.env.example) and described in the
+built-in [Configuration](internal/docs/en/configuration.md) guide. They are
+ordinary environment variables — no rebuild needed; `GOTCHA_PROBE_TOKEN` and
+`GOTCHA_SERVER_URL` are in fact required to run a remote probe.
 
 ## Build from source
 

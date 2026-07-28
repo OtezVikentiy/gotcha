@@ -73,16 +73,24 @@ func FuzzScrub(f *testing.F) {
 			}
 		}
 
-		// (3): секрет под denylist-именем не переживает скраб.
+		// (3): секрет под denylist-именем не переживает скраб. Каждая форма
+		// проверяется той функцией, которой она достаётся в проде: свободный
+		// текст и URL — ScrubMessage, JSON-тело — ScrubJSON. Раньше тут стоял
+		// один ассерт через && сразу по обеим функциям: он падал, только если
+		// секрет протекал И там, И там, — то есть утечку ровно на одном пути
+		// (единственный реальный сценарий) инвариант не ловил вовсе.
 		leak := NewScrubber(false, false, []string{"token"})
-		for _, shape := range []string{
-			"https://h/?token=" + "S3CRET",
-			"GET https://h/?token=" + "S3CRET" + " " + in,
-			`{"token":"S3CRET"}`,
+		for _, c := range []struct {
+			name  string
+			in    string
+			scrub func(string) string
+		}{
+			{"URL в свободном тексте", "https://h/?token=" + "S3CRET", leak.ScrubMessage},
+			{"URL среди фаззового текста", "GET https://h/?token=" + "S3CRET" + " " + in, leak.ScrubMessage},
+			{"JSON-тело", `{"token":"S3CRET"}`, leak.ScrubJSON},
 		} {
-			if strings.Contains(leak.ScrubMessage(shape), "S3CRET") &&
-				strings.Contains(leak.ScrubJSON(shape), "S3CRET") {
-				t.Fatalf("секрет пережил скраб в %q", shape)
+			if strings.Contains(c.scrub(c.in), "S3CRET") {
+				t.Fatalf("секрет пережил скраб (%s) в %q", c.name, c.in)
 			}
 		}
 	})

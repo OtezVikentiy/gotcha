@@ -54,8 +54,13 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	if out["kind"] != "new_issue" {
 		t.Errorf("kind lost: %+v", out)
 	}
-	if out["channel_kind"] != "telegram" || out["target"] != "123" || out["secret"] != "tok" {
+	if out["channel_kind"] != "telegram" || out["target"] != "123" {
 		t.Errorf("transport fields lost: %+v", out)
+	}
+	// Секрет вырезается наравне с прочим: воркеру он из payload больше не
+	// нужен (резолвит по channel_id), а в белом списке был только ради него.
+	if _, ok := out["secret"]; ok {
+		t.Errorf("secret не должен переживать редакцию: %+v", out)
 	}
 	if out["subject"] != "[gotcha] new_issue" {
 		t.Errorf("subject = %v, want route-only", out["subject"])

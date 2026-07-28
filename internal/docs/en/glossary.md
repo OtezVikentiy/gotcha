@@ -38,7 +38,7 @@ A short dictionary of Gotcha's terms — from organizations and projects to prof
 
 **Regression** — a statistically significant degradation of a metric (endpoint latency, Web Vitals, time spent in a profile) relative to a baseline from a prior period, detected automatically. Performance regressions show up as issues under [Performance](/docs/performance).
 
-**Retention** — how long a given kind of data (events/transactions, trace spans, metrics, profiles) is kept in ClickHouse before it's deleted. Has an instance-wide default and can be narrowed (but not extended) per project in "Project settings".
+**Retention** — how long a given kind of data (events/transactions, trace spans, metrics, profiles) is kept in ClickHouse before it's deleted. Set instance-wide by `GOTCHA_RETENTION_DAYS` and friends; there is no per-project override — the "Data retention" card in project settings shows the instance value, it does not change it.
 
 **Quota** — a monthly cap on ingesting a given kind of data (events, transactions, metrics, profiles) per organization. Once exhausted, new items of that kind are rejected (ingest responds `429`) until the next month starts; already-ingested data is not deleted. Configured under "Organization settings → Usage & rate limits"; `0` means unlimited.
 

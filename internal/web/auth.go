@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,7 +80,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// Принуждение SSO (этап 10, SEC-H2): если домен email принадлежит организации с
 	// enforced-SSO, пароль не принимаем — только вход через SSO.
-	if h.enforcedSSO(r.Context(), emailDomain(email)) {
+	enforced, err := h.enforcedSSO(r.Context(), emailDomain(email))
+	if err != nil {
+		// Fail closed: неизвестно, обязателен ли SSO для домена — не пускаем.
+		slog.Error("login: enforced SSO lookup failed", "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = templates.Login(i18n.T(r.Context(), "err.auth.sso_required"), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
@@ -145,7 +153,14 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// SEC-H2: домен с enforced-SSO не может регистрироваться паролем (обход
 	// централизованного provisioning/деprovisioning). Как в loginSubmit.
-	if h.enforcedSSO(r.Context(), emailDomain(email)) {
+	enforced, err := h.enforcedSSO(r.Context(), emailDomain(email))
+	if err != nil {
+		// Fail closed: домен может требовать SSO — регистрацию паролем не даём.
+		slog.Error("register: enforced SSO lookup failed", "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = templates.Register(i18n.T(r.Context(), "err.auth.sso_required"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return

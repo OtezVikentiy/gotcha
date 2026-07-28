@@ -33,17 +33,33 @@ func (f *fakeSender) Send(ctx context.Context, t notify.Target, payload map[stri
 	return nil
 }
 
-func enqueueJob(t *testing.T, ob *notify.Outbox, chID int64, kind, target, secret string) {
+// enqueueJob кладёт задачу БЕЗ секрета — ровно как боевые нотифаеры: секрет в
+// notification_outbox.payload обесценивал бы шифрование alert_channels.secret,
+// поэтому воркер достаёт его по channel_id в момент отправки.
+func enqueueJob(t *testing.T, ob *notify.Outbox, chID int64, kind, target string) {
 	t.Helper()
 	err := ob.Enqueue(context.Background(), chID, map[string]any{
 		"channel_kind": kind,
 		"target":       target,
-		"secret":       secret,
 		"body":         "hi",
 	})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
+}
+
+// fakeSecrets — заглушка notify.SecretResolver: отдаёт секрет по id канала и
+// считает обращения, чтобы тест мог убедиться, что воркер спросил именно её,
+// а не взял значение из payload.
+type fakeSecrets struct {
+	secret string
+	err    error
+	calls  int32
+}
+
+func (f *fakeSecrets) ChannelSecret(context.Context, int64) (string, error) {
+	atomic.AddInt32(&f.calls, 1)
+	return f.secret, f.err
 }
 
 type jobState struct {
@@ -158,7 +174,7 @@ func TestWorkerSendTimeoutDoesNotHang(t *testing.T) {
 		Interval:    20 * time.Millisecond,
 		SendTimeout: 50 * time.Millisecond,
 	}
-	enqueueJob(t, ob, chID, "blocker", "dest", "")
+	enqueueJob(t, ob, chID, "blocker", "dest")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runWorker(t, w, ctx)
@@ -290,12 +306,14 @@ func TestWorkerDeliversSuccessfulJob(t *testing.T) {
 	chID := newChannel(t, pool)
 
 	ok := &fakeSender{}
+	secrets := &fakeSecrets{secret: "sek"}
 	w := &notify.Worker{
 		Outbox:   ob,
 		Senders:  map[string]notify.Sender{"ok": ok},
+		Secrets:  secrets,
 		Interval: 20 * time.Millisecond,
 	}
-	enqueueJob(t, ob, chID, "ok", "dest", "sek")
+	enqueueJob(t, ob, chID, "ok", "dest")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runWorker(t, w, ctx)
@@ -310,6 +328,10 @@ func TestWorkerDeliversSuccessfulJob(t *testing.T) {
 	if len(ok.targets) != 1 || ok.targets[0].Target != "dest" || ok.targets[0].Secret != "sek" {
 		t.Errorf("target = %+v, want {Target:dest Secret:sek}", ok.targets)
 	}
+	// Секрет пришёл именно от резолвера: в payload его не было вовсе.
+	if got := atomic.LoadInt32(&secrets.calls); got != 1 {
+		t.Errorf("ChannelSecret вызван %d раз, want 1 — секрет обязан резолвиться по channel_id", got)
+	}
 }
 
 func TestWorkerRetriesFailingJob(t *testing.T) {
@@ -323,7 +345,7 @@ func TestWorkerRetriesFailingJob(t *testing.T) {
 		Senders:  map[string]notify.Sender{"bad": bad},
 		Interval: 20 * time.Millisecond,
 	}
-	enqueueJob(t, ob, chID, "bad", "dest", "")
+	enqueueJob(t, ob, chID, "bad", "dest")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runWorker(t, w, ctx)
@@ -357,7 +379,7 @@ func TestWorkerFailsAfterFiveAttempts(t *testing.T) {
 		Senders:  map[string]notify.Sender{"bad": bad},
 		Interval: 20 * time.Millisecond,
 	}
-	enqueueJob(t, ob, chID, "bad", "dest", "")
+	enqueueJob(t, ob, chID, "bad", "dest")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runWorker(t, w, ctx)

@@ -385,7 +385,6 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 			over = 0
 		}
 		w.insertFails++
-		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("transaction batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)
@@ -451,6 +450,7 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 		} else {
 			over = 0
 		}
+		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("span batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)
