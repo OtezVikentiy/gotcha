@@ -117,7 +117,35 @@ type Pipeline struct {
 
 	closeMu sync.RWMutex
 	closed  bool
+
+	// dropped — сколько задач потеряно из-за переполнения очереди или паники
+	// обработчика. Раньше эти потери ТОЛЬКО логировались и никуда не считались:
+	// org_usage.dropped_* их не видел, поэтому в отчёте о потерях они не
+	// появлялись вовсе — оператор не мог узнать, что часть событий не доехала.
+	droppedMu sync.Mutex
+	dropped   int64
 }
+
+// countDropped увеличивает счётчик потерянных задач.
+func (p *Pipeline) countDropped() {
+	p.droppedMu.Lock()
+	p.dropped++
+	p.droppedMu.Unlock()
+}
+
+// Dropped — сколько задач потеряно за время жизни процесса (переполнение
+// очереди + паники обработчика). Для самотелеметрии.
+func (p *Pipeline) Dropped() int64 {
+	p.droppedMu.Lock()
+	defer p.droppedMu.Unlock()
+	return p.dropped
+}
+
+// Queued — сколько задач ждёт обработки прямо сейчас.
+func (p *Pipeline) Queued() int64 { return int64(len(p.queue)) }
+
+// QueueCap — вместимость очереди (знаменатель для глубины).
+func (p *Pipeline) QueueCap() int64 { return int64(cap(p.queue)) }
 
 // task — единица работы воркера: ЛИБО событие (ev), ЛИБО транзакция (tx).
 type task struct {
@@ -162,6 +190,7 @@ func (p *Pipeline) processGuarded(t task) {
 			if t.tx != nil {
 				traceID = t.tx.TraceID
 			}
+			p.countDropped()
 			slog.Error("ingest task panicked, item dropped",
 				"project_id", t.projectID, "event_id", eventID,
 				"trace_id", traceID, "panic", r)
@@ -185,6 +214,7 @@ func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
 	select {
 	case p.queue <- task{projectID: projectID, ev: ev}:
 	default:
+		p.countDropped()
 		slog.Warn("ingest queue full, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
 	}
@@ -210,6 +240,7 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 	select {
 	case p.queue <- task{projectID: projectID, tx: &tx}:
 	default:
+		p.countDropped()
 		slog.Warn("ingest queue full, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
 	}

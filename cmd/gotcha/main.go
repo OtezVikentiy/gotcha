@@ -26,6 +26,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -88,6 +89,29 @@ func setupLogging(level, format string) {
 		h = slog.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(h))
+}
+
+// writerStats — то, что каждый буферизованный писатель рассказывает о себе.
+// Один интерфейс на пятерых (события, спаны, метрики, профили, аптайм) —
+// добавление шестого не потребует трогать регистрацию.
+type writerStats interface {
+	Buffered() int64
+	Dropped() int64
+	InsertFailures() int64
+}
+
+// registerWriterMetrics публикует три счётчика писателя под меткой writer=.
+// Именно этих трёх не хватало при разборе «часть событий не доезжает»: глубина
+// буфера показывает, принимает ли хранилище, отказы вставки — почему, а потери
+// говорят, что данные уже НЕ вернуть.
+func registerWriterMetrics(r *selfmetrics.Registry, name string, w writerStats) {
+	lbl := map[string]string{"writer": name}
+	r.AddInt(selfmetrics.Gauge, "gotcha_writer_buffered_rows",
+		"Rows buffered in memory, waiting to be written to ClickHouse.", lbl, w.Buffered)
+	r.AddInt(selfmetrics.Counter, "gotcha_writer_dropped_rows_total",
+		"Rows dropped because the buffer overflowed; these are lost for good.", lbl, w.Dropped)
+	r.AddInt(selfmetrics.Counter, "gotcha_writer_insert_failures_total",
+		"Failed batch inserts. The batch is retried, so this is not data loss by itself.", lbl, w.InsertFailures)
 }
 
 func run() error {
@@ -195,6 +219,20 @@ func run() error {
 	mux.HandleFunc("GET /healthz", healthHandler(pg, ch))
 	mux.HandleFunc("GET /version", versionHandler())
 
+	// Самотелеметрия. Роут регистрируется здесь, а метрики добавляются ниже по
+	// мере создания писателей: реестр ленив — он хранит функции и опрашивает их
+	// на каждом скрапе, поэтому порядок регистрации значения не имеет.
+	//
+	// Без аутентификации, как /healthz и /version: тут нет ни ПДн, ни секретов —
+	// только счётчики буферов и потерь. И, в отличие от /healthz, ни одного
+	// обращения к БД: /metrics обязан отвечать именно тогда, когда БД лежит.
+	var selfMetrics selfmetrics.Registry
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_build_info",
+		"Build metadata; the value is always 1, the version lives in the label.",
+		map[string]string{"version": version.String(), "mode": cfg.Mode},
+		func() float64 { return 1 })
+	mux.HandleFunc("GET /metrics", selfMetrics.Handler())
+
 	// Общие сервисы нужны и ingest-у, и web-у — строим один раз на любой
 	// активный режим, а не дублируем на каждый. alertSvc/emailSender/outbox
 	// тоже общие: ingest использует их для срабатывания правил
@@ -251,6 +289,7 @@ func run() error {
 		// никто.
 		uptimeSvc.LocalRegion = cfg.LocalRegion
 		uptimeWriter = uptime.NewResultWriter(ch)
+		registerWriterMetrics(&selfMetrics, "uptime_results", uptimeWriter)
 		go uptimeWriter.Run()
 
 		// alertSvc/outbox/emailSender are only built for ingest/web/all above —
@@ -411,22 +450,26 @@ func run() error {
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
+		registerWriterMetrics(&selfMetrics, "events", batcher)
 		go batcher.Run()
 
 		// Трейсинг — часть ingest-контура: транзакции приезжают тем же
 		// envelope-эндпойнтом, что и ошибки, и пишутся своим батчером
 		// (transactions + spans), независимым от батчера событий.
 		spanWriter = trace.NewSpanWriter(ch)
+		registerWriterMetrics(&selfMetrics, "spans", spanWriter)
 		go spanWriter.Run()
 
 		// Метрики (этап 6) — третий приёмник ingest-контура: OTLP /v1/metrics
 		// пишет точки в metric_points своим батчером.
 		metricWriter = metric.NewWriter(ch)
+		registerWriterMetrics(&selfMetrics, "metrics", metricWriter)
 		go metricWriter.Run()
 
 		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и
 		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
 		profileWriter = profile.NewWriter(ch)
+		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
 		evaluator := &alert.Evaluator{
@@ -454,6 +497,13 @@ func run() error {
 		}
 
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queued_tasks",
+			"Tasks waiting in the ingest pipeline queue.", nil, pipeline.Queued)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queue_capacity",
+			"Ingest pipeline queue capacity.", nil, pipeline.QueueCap)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_pipeline_dropped_tasks_total",
+			"Tasks dropped by the ingest pipeline: queue full, or the handler panicked.",
+			nil, pipeline.Dropped)
 		pipeline.Alerts = evaluator
 		pipeline.Spans = spanWriter
 		pipeline.Perf = trace.NewIssueService(pg)

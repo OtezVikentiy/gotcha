@@ -319,3 +319,32 @@ func TestPerfDetectionStopsWhenBudgetExhausted(t *testing.T) {
 		t.Errorf("транзакций в CH = %d, want 1: детекция не влияет на запись трейса", spans.count())
 	}
 }
+
+// TestPipelineDropCounters фиксирует то, чего раньше не существовало: потери
+// очереди ТОЛЬКО логировались и никуда не считались, поэтому оператор не мог
+// узнать, что часть событий не доехала (org_usage.dropped_* их не видел).
+func TestPipelineDropCounters(t *testing.T) {
+	p := NewPipeline(nil, nil)
+	// Воркеры НЕ запускаем: очередь никто не разбирает, значит переполнится.
+	if got := p.QueueCap(); got <= 0 {
+		t.Fatalf("QueueCap = %d, want > 0", got)
+	}
+	if got := p.Dropped(); got != 0 {
+		t.Fatalf("Dropped = %d на старте, want 0", got)
+	}
+
+	for i := 0; i < int(p.QueueCap())+50; i++ {
+		p.Enqueue(1, &ParsedEvent{EventID: "e"})
+	}
+
+	if got := p.Queued(); got != p.QueueCap() {
+		t.Errorf("Queued = %d, want %d (очередь должна быть полна)", got, p.QueueCap())
+	}
+	dropped := p.Dropped()
+	if dropped == 0 {
+		t.Fatal("Dropped = 0: переполнение очереди обязано считаться, а не только логироваться")
+	}
+	if dropped != 50 {
+		t.Errorf("Dropped = %d, want 50 (ровно столько не поместилось)", dropped)
+	}
+}

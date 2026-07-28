@@ -33,6 +33,7 @@ var registry = []struct{ Slug, Group string }{
 	{"configuration", "docs.group.deploy"},
 	{"backup-restore", "docs.group.deploy"},
 	{"upgrade", "docs.group.deploy"},
+	{"self-monitoring", "docs.group.deploy"},
 	// Разделы
 	{"issues", "docs.group.sections"},
 	{"performance", "docs.group.sections"},

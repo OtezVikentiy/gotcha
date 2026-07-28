@@ -255,3 +255,41 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met in 5s")
 }
+
+// TestBatcherSelfMetrics — три счётчика, которые видит /metrics. Проверяем, что
+// они различают три РАЗНЫХ состояния: данные ждут записи, вставка падает но
+// ретраится (потери ещё нет), буфер переполнен (данные потеряны).
+func TestBatcherSelfMetrics(t *testing.T) {
+	c := &fakeConn{fail: true}
+	b := NewBatcher(c)
+	b.batchSize = 2
+	b.maxBuf = 4
+	b.interval = 20 * time.Millisecond
+	go b.Run()
+
+	for i := 0; i < 2; i++ {
+		b.Add(Event{ID: "x", ProjectID: 1, IssueID: 1, Timestamp: time.Now()})
+	}
+	// Вставка падает — растут отказы, но данные лежат в буфере, а не потеряны.
+	waitFor(t, func() bool { return b.InsertFailures() > 0 })
+	if got := b.Buffered(); got == 0 {
+		t.Error("Buffered = 0, ожидались строки в буфере при падающей вставке")
+	}
+	if got := b.Dropped(); got != 0 {
+		t.Errorf("Dropped = %d, ожидался 0: неудачная вставка ретраится, это ещё не потеря", got)
+	}
+
+	// Переполняем буфер — вот теперь потеря.
+	for i := 0; i < 20; i++ {
+		b.Add(Event{ID: "y", ProjectID: 1, IssueID: 1, Timestamp: time.Now()})
+	}
+	waitFor(t, func() bool { return b.Dropped() > 0 })
+	if got := b.Buffered(); got > int64(b.maxBuf) {
+		t.Errorf("Buffered = %d, больше maxBuf = %d", got, b.maxBuf)
+	}
+
+	c.mu.Lock()
+	c.fail = false
+	c.mu.Unlock()
+	_ = b.Close(context.Background())
+}

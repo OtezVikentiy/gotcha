@@ -41,6 +41,7 @@ type ResultWriter struct {
 	mu          sync.Mutex
 	buf         []resultRow
 	dropped     int64
+	insertFails int64 // накопительно: сколько флашей провалилось
 	failStreak  int
 	lastDropLog time.Time
 
@@ -104,6 +105,23 @@ func (w *ResultWriter) Dropped() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.dropped
+}
+
+// Buffered — сколько строк ждёт записи прямо сейчас. Для самотелеметрии:
+// растущая глубина буфера — первый признак, что хранилище не принимает.
+func (w *ResultWriter) Buffered() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return int64(len(w.buf))
+}
+
+// InsertFailures — сколько флашей провалилось за время жизни процесса.
+// Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
+// повторяется, потеря наступает только при переполнении буфера.
+func (w *ResultWriter) InsertFailures() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.insertFails
 }
 
 // flushWithTimeout ограничивает одну попытку флаша, даже если у parent ctx
@@ -229,6 +247,7 @@ func (w *ResultWriter) flush(ctx context.Context) {
 		} else {
 			over = 0
 		}
+		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("check result batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)

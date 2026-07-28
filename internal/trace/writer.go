@@ -78,6 +78,7 @@ type SpanWriter struct {
 	txBuf       []txRow
 	spanBuf     []spanRow
 	dropped     int64
+	insertFails int64 // накопительно: сколько флашей провалилось
 	lastDropLog time.Time
 	// Два независимых батча (transactions и spans) → два раздельных счётчика
 	// подряд-фейлов: изоляция ядовитых рядов включается по каждой таблице отдельно.
@@ -236,6 +237,24 @@ func (w *SpanWriter) Dropped() int64 {
 	return w.dropped
 }
 
+// Buffered — сколько строк ждёт записи прямо сейчас: транзакции и спаны
+// суммарно (у писателя два независимых буфера). Для самотелеметрии: растущая
+// глубина — первый признак, что хранилище не принимает.
+func (w *SpanWriter) Buffered() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return int64(len(w.txBuf) + len(w.spanBuf))
+}
+
+// InsertFailures — сколько флашей провалилось за время жизни процесса.
+// Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
+// повторяется, потеря наступает только при переполнении буфера.
+func (w *SpanWriter) InsertFailures() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.insertFails
+}
+
 // flushWithTimeout ограничивает одну попытку флаша, даже если у parent ctx
 // нет собственного дедлайна (context.Background()) или его бюджет большой:
 // сетевая чёрная дыра в PrepareBatch/Send не должна вешать Run/Close навсегда.
@@ -365,6 +384,8 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 		} else {
 			over = 0
 		}
+		w.insertFails++
+		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("transaction batch insert failed, will retry",
 			"rows", len(batch), "error", err, "dropped", over)

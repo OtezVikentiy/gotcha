@@ -31,6 +31,7 @@ type Batcher struct {
 	mu          sync.Mutex
 	buf         []Event
 	dropped     int64
+	insertFails int64 // накопительно: сколько флашей провалилось
 	failStreak  int
 	lastDropLog time.Time
 
@@ -93,6 +94,23 @@ func (b *Batcher) Dropped() int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.dropped
+}
+
+// Buffered — сколько строк ждёт записи прямо сейчас. Для самотелеметрии:
+// растущая глубина буфера — первый признак, что хранилище не принимает.
+func (b *Batcher) Buffered() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return int64(len(b.buf))
+}
+
+// InsertFailures — сколько флашей провалилось за время жизни процесса.
+// Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
+// повторяется, потеря наступает только при переполнении буфера.
+func (b *Batcher) InsertFailures() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.insertFails
 }
 
 // flushWithTimeout ограничивает одну попытку флаша, даже если у parent ctx
@@ -221,6 +239,7 @@ func (b *Batcher) flush(ctx context.Context) {
 		} else {
 			over = 0
 		}
+		b.insertFails++
 		b.mu.Unlock()
 		slog.Warn("event batch insert failed, will retry",
 			"events", len(batch), "error", err, "dropped", over)
