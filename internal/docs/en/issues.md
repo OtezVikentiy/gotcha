@@ -46,12 +46,12 @@ Clicking a row's title opens `/issues/<id>`:
 - Title, culprit, a level badge, and a status badge.
 - Metadata: **First seen** / **Last seen** / **Times seen**.
 - Action buttons (see below) and an assignee form.
-- **Frequency chart** — a bar chart of events over the last 7 days in 3-hour steps (56 bars).
+- **Frequency chart** — a bar chart of event counts across the selected [time range](/docs/time-range) (the page has the shared period control, default 7 days), in 56 bars; the bar width adapts to the window (3-hour bars at the 7-day default).
 - **Recent events** — a table of the 20 most recent events for this issue: when, message, environment, release. Clicking the timestamp opens that event's detail (`?event=<id>` in the URL, the row is highlighted).
 
 ### Reading the frequency chart
 
-Each bar is the number of events in a 3-hour window. A flat, low background with occasional single bars usually means the error is one-off or very rare. A single sharp spike points to a short-lived incident (an outage in a third-party service, or one bad deploy that got rolled back). A steadily climbing "staircase" of bars is a sign of an ongoing degradation that won't fix itself — worth acting on right away, not just waiting for an alert.
+Each bar is the number of events in one time bucket (3 hours at the default 7-day window). A flat, low background with occasional single bars usually means the error is one-off or very rare. A single sharp spike points to a short-lived incident (an outage in a third-party service, or one bad deploy that got rolled back). A steadily climbing "staircase" of bars is a sign of an ongoing degradation that won't fix itself — worth acting on right away, not just waiting for an alert.
 
 ### Event detail
 

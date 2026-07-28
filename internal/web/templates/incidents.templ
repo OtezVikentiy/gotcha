@@ -87,19 +87,22 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 					</tbody>
 				</table>
 				</div>
-				if incidentsTotalPages(total) > 1 || page > 1 {
-					<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
-						if page > 1 {
-							<a href={ templ.URL(incidentsPageURL(projectID, pagerPrev(page, total))) }><span aria-hidden="true">« </span>{ i18n.T(ctx, "pagination.prev") }</a>
-						}
-						if total > 0 {
-							<span>{ strconv.Itoa(page) } / { strconv.FormatInt(incidentsTotalPages(total), 10) }</span>
-						}
-						if int64(page) < incidentsTotalPages(total) {
-							<a href={ templ.URL(incidentsPageURL(projectID, page+1)) }>{ i18n.T(ctx, "pagination.next") }<span aria-hidden="true"> »</span></a>
-						}
-					</nav>
-				}
+			}
+			// Пагинатор — ВНЕ ветки len(rows)==0: на out-of-range странице строк нет,
+			// но пейджер (с ссылкой на первую) обязан остаться, иначе пользователь
+			// застревает на пустом экране (S1). Как в issues.templ.
+			if incidentsTotalPages(total) > 1 || page > 1 {
+				<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
+					if page > 1 {
+						<a href={ templ.URL(incidentsPageURL(projectID, pagerPrev(page, total))) }><span aria-hidden="true">« </span>{ i18n.T(ctx, "pagination.prev") }</a>
+					}
+					if total > 0 {
+						<span>{ strconv.Itoa(page) } / { strconv.FormatInt(incidentsTotalPages(total), 10) }</span>
+					}
+					if int64(page) < incidentsTotalPages(total) {
+						<a href={ templ.URL(incidentsPageURL(projectID, page+1)) }>{ i18n.T(ctx, "pagination.next") }<span aria-hidden="true"> »</span></a>
+					}
+				</nav>
 			}
 		</div>
 	}

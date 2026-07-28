@@ -310,7 +310,7 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 				view: templates.StatusIncidentView{
 					Name:      spm.DisplayName,
 					StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout),
-					Duration:  incidentDurationText(inc, now),
+					Duration:  incidentDurationText(inc),
 					Ongoing:   inc.ResolvedAt == nil,
 				},
 				at: inc.StartedAt,
@@ -359,14 +359,11 @@ func overallStatus(down, counted int) string {
 // одна на всех посетителей независимо от их языка. Причина и регионы
 // инцидента наружу не отдаются (в них хосты/IP), только имя сервиса, начало
 // и длительность.
-func incidentDurationText(inc uptime.Incident, now time.Time) string {
-	end := now
-	if inc.ResolvedAt != nil {
-		end = *inc.ResolvedAt
-	} else {
-		return ""
+func incidentDurationText(inc uptime.Incident) string {
+	if inc.ResolvedAt == nil {
+		return "" // незакрытый инцидент: «идёт» подставляет шаблон, длительности нет
 	}
-	d := end.Sub(inc.StartedAt)
+	d := inc.ResolvedAt.Sub(inc.StartedAt)
 	if d < 0 {
 		d = 0
 	}

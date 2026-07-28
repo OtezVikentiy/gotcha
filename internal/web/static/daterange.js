@@ -130,6 +130,10 @@
 			return sel ? sel.textContent : "";
 		}
 		triggerLabel.textContent = currentLabel();
+		// Accessible name должен СОДЕРЖАТЬ видимый текст (WCAG 2.5.3 Label in
+		// Name): иначе SR/голосовое управление не знают текущее окно. Компонуем
+		// «Выбрать окно времени: 24 ч».
+		trigger.setAttribute("aria-label", L.trigger + ": " + currentLabel());
 
 		root.insertBefore(trigger, root.firstChild);
 
@@ -279,6 +283,18 @@
 			else if (d > rightEnd) view = new Date(d.getFullYear(), d.getMonth() - 1, 1);
 		}
 
+		// Обратное к ensureVisible: после смены view кнопками месяца затягиваем
+		// focusDay в новые видимые месяцы. Иначе tabindex="0" стоит на ячейке,
+		// которой в сетке уже нет, и вся сетка становится недостижимой с
+		// клавиатуры (roving-tabindex оставляет ровно одну таббельную ячейку).
+		function clampFocusToView() {
+			var leftStart = new Date(view.getFullYear(), view.getMonth(), 1);
+			var rightEnd = new Date(view.getFullYear(), view.getMonth() + 2, 0);
+			if (!focusDay || focusDay < leftStart) focusDay = leftStart;
+			else if (focusDay > rightEnd) focusDay = rightEnd;
+			if (focusDay > now) focusDay = startOfDay(now); // не в будущее
+		}
+
 		// Перенести фокус клавиатуры на день nd (не в будущее), сдвинув месяцы.
 		function moveFocus(nd) {
 			if (nd > now) nd = now;
@@ -323,8 +339,10 @@
 			moveFocus(nd);
 		});
 
-		prevBtn.addEventListener("click", function () { view = addMonths(view, -1); renderCal(); });
-		nextBtn.addEventListener("click", function () { view = addMonths(view, 1); renderCal(); });
+		prevBtn.addEventListener("click", function () { view = addMonths(view, -1); clampFocusToView(); renderCal(); });
+		// Если «вперёд» сам себя отключил (дошли до текущего месяца), фокус с
+		// disabled-кнопки перекидываем в сетку, а не роняем на <body>.
+		nextBtn.addEventListener("click", function () { view = addMonths(view, 1); clampFocusToView(); renderCal(); if (nextBtn.disabled) focusFocusDay(); });
 
 		applyBtn.addEventListener("click", function () {
 			if (!selStart || !selEnd) return;
@@ -339,9 +357,17 @@
 			form.submit();
 		});
 
+		// Снимок выбора на момент открытия — чтобы закрытие без «Применить»
+		// (Отмена/Esc/клик мимо) откатывало недособранный диапазон, а не
+		// оставляло «01.07.2026 – …» до следующего открытия.
+		var snapStart = null, snapEnd = null;
+
 		// refocus=true возвращает фокус на триггер (закрытие по Esc/Отмена/клику
 		// по триггеру); при закрытии кликом мимо фокус остаётся там, куда кликнули.
+		// Любое закрытие БЕЗ применения откатывает выбор к снимку open().
 		function close(refocus) {
+			selStart = snapStart;
+			selEnd = snapEnd;
 			popup.hidden = true;
 			trigger.setAttribute("aria-expanded", "false");
 			document.removeEventListener("click", onDocClick, true);
@@ -349,6 +375,8 @@
 			if (refocus) trigger.focus();
 		}
 		function open() {
+			snapStart = selStart;
+			snapEnd = selEnd;
 			// Начальная таббельная ячейка: выбранное начало, иначе сегодня; не в
 			// будущем и обязательно в пределах видимых месяцев (иначе в сетке не
 			// было бы ячейки с tabindex=0).

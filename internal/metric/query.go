@@ -2,6 +2,8 @@ package metric
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +14,12 @@ import (
 type Query struct {
 	conn driver.Conn
 }
+
+// labelSampleRows — потолок строк, читаемых Labels для наполнения дропдауна
+// фильтра. arrayJoin(mapKeys(attributes)) раздувает вход, поэтому без потолка
+// метрика с миллионами точек и десятком ключей давала бы сотни миллионов
+// промежуточных строк ради двух десятков значений на ключ.
+const labelSampleRows = 200_000
 
 func NewQuery(conn driver.Conn) *Query {
 	return &Query{conn: conn}
@@ -61,20 +69,47 @@ func (q *Query) ListMetrics(ctx context.Context, projectID int64, environment st
 	return out, rows.Err()
 }
 
+// MetricInfoByName возвращает имя/тип/юнит ОДНОЙ метрики. Деталь метрики иначе
+// звала ListMetrics (GROUP BY name по всему проекту, полный 30-дневный скан) и
+// линейно искала одну в Go. Здесь (project_id, name) — префикс первичного ключа
+// metric_points, а LIMIT 1 короткозамыкает на первой гранле: тип/юнит стабильны
+// на приёме, агрегат не нужен. ok=false, если метрики нет.
+func (q *Query) MetricInfoByName(ctx context.Context, projectID int64, name string) (MetricInfo, bool, error) {
+	row := q.conn.QueryRow(ctx, `
+		SELECT name, type, unit FROM metric_points
+		WHERE project_id = ? AND name = ? LIMIT 1`,
+		projectID, name)
+	var m MetricInfo
+	if err := row.Scan(&m.Name, &m.Type, &m.Unit); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return MetricInfo{}, false, nil
+		}
+		return MetricInfo{}, false, fmt.Errorf("metric: info by name: %w", err)
+	}
+	return m, true, nil
+}
+
 // Labels возвращает ключи→значения лейблов метрики (до 20 значений на ключ) для
-// фильтров UI.
-func (q *Query) Labels(ctx context.Context, projectID int64, name string) (map[string][]string, error) {
+// фильтров UI. Ограничено окном [from,to] и выборкой не более labelSampleRows
+// строк: это самый тяжёлый запрос (arrayJoin(mapKeys) раздувает вход в rows ×
+// число ключей до groupUniqArray), а для наполнения дропдауна-фильтра хватает
+// выборки точек за окно страницы (LIMIT без ORDER BY — порядок первичного
+// ключа, т.е. не обязательно самые свежие; для дропдауна-фильтра достаточно).
+func (q *Query) Labels(ctx context.Context, projectID int64, name string, from, to time.Time) (map[string][]string, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT k, groupUniqArray(20)(v) FROM (
 			SELECT
 				arrayJoin(mapKeys(attributes)) AS k,
 				attributes[k] AS v
-			FROM metric_points
-			WHERE project_id = ? AND name = ?
+			FROM (
+				SELECT attributes FROM metric_points
+				WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
+				LIMIT ?
+			)
 		)
 		GROUP BY k
 		ORDER BY k`,
-		projectID, name)
+		projectID, name, from, to, labelSampleRows)
 	if err != nil {
 		return nil, fmt.Errorf("metric: labels: %w", err)
 	}
@@ -91,13 +126,15 @@ func (q *Query) Labels(ctx context.Context, projectID int64, name string) (map[s
 	return out, rows.Err()
 }
 
-// Environments возвращает известные окружения метрики (для фильтра).
-func (q *Query) Environments(ctx context.Context, projectID int64, name string) ([]string, error) {
+// Environments возвращает известные окружения метрики (для фильтра). Ограничено
+// окном [from,to] — как metricType/Labels на той же странице; иначе DISTINCT
+// сканировал бы весь 30-дневный ретеншн метрики.
+func (q *Query) Environments(ctx context.Context, projectID int64, name string, from, to time.Time) ([]string, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT DISTINCT environment FROM metric_points
-		WHERE project_id = ? AND name = ? AND environment != ''
+		WHERE project_id = ? AND name = ? AND environment != '' AND ts >= ? AND ts < ?
 		ORDER BY environment`,
-		projectID, name)
+		projectID, name, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("metric: environments: %w", err)
 	}
@@ -114,12 +151,16 @@ func (q *Query) Environments(ctx context.Context, projectID int64, name string) 
 }
 
 // metricType возвращает тип метрики (gauge/sum/histogram) и признак monotonic —
-// нужно, чтобы Series выбрал стратегию агрегации.
-func (q *Query) metricType(ctx context.Context, projectID int64, name string) (typ string, monotonic bool, temporality string, err error) {
+// нужно, чтобы Series/Aggregate выбрали стратегию агрегации. Ограничено окном
+// [from,to] вызывающего: тип эффективно неизменен для метрики, но без границы
+// any() читал бы весь 30-дневный ретеншн на КАЖДЫЙ Series/Aggregate (в т.ч. на
+// каждый тик оценщика метрик-алертов). Если в окне точек нет, Series/Aggregate
+// всё равно вернут пусто — тип тогда не важен.
+func (q *Query) metricType(ctx context.Context, projectID int64, name string, from, to time.Time) (typ string, monotonic bool, temporality string, err error) {
 	row := q.conn.QueryRow(ctx, `
 		SELECT any(type), any(monotonic), any(temporality)
-		FROM metric_points WHERE project_id = ? AND name = ?`,
-		projectID, name)
+		FROM metric_points WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?`,
+		projectID, name, from, to)
 	var mono uint8
 	if err := row.Scan(&typ, &mono, &temporality); err != nil {
 		return "", false, "", fmt.Errorf("metric: metric type: %w", err)
@@ -131,7 +172,7 @@ func (q *Query) metricType(ctx context.Context, projectID int64, name string) (t
 // (gauge/sum non-monotonic → agg; sum monotonic cumulative → rate; histogram +
 // p50/p95/p99 → перцентиль интерполяцией, histogram + avg → sum/count).
 func (q *Query) Series(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time, step time.Duration) ([]Point, error) {
-	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name)
+	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +276,7 @@ func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, envi
 // суммирует bucket_counts всего окна и считает квантиль. Используется оценщиком
 // пороговых алертов: «avg метрики за окно ⋛ порог». ok=false — данных нет.
 func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
-	typ, _, _, err := q.metricType(ctx, projectID, name)
+	typ, _, _, err := q.metricType(ctx, projectID, name, from, to)
 	if err != nil {
 		return 0, false, err
 	}

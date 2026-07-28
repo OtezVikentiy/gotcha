@@ -39,7 +39,7 @@ A successful submission returns `202 Accepted`. If profiling is disabled on the 
 
 ## Profile list
 
-The section opens from the **"Profiles"** link in the "Performance" subsection menu — `/projects/<id>/profiles`. Period tabs are 1 hour / 24 hours / 7 days. The table groups profiles by (service, type, transaction) and shows the sample count for each group; clicking a row opens that group's flame graph for the selected period. A link to **"Profile regressions"** (see below) sits at the top.
+The section opens from the **"Profiles"** link in the "Performance" subsection menu — `/projects/<id>/profiles`. At the top is the shared [time range](/docs/time-range) control (presets 1h / 24h / 7d / 30d or a custom range, default 24h). The table groups profiles by (service, type, transaction) and shows the sample count for each group; clicking a row opens that group's flame graph for the selected period. A link to **"Profile regressions"** (see below) sits at the top.
 
 ## Flame graph
 

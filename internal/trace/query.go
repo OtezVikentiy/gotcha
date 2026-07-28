@@ -1073,7 +1073,9 @@ func valueSample(v float64, cnt uint64) RegressionSample {
 // usFromFloat округляет квантиль (Float64 из quantiles/quantilesMerge) до
 // микросекунд с насыщением на границах UInt32.
 func usFromFloat(v float64) uint32 {
-	if v <= 0 {
+	// NaN проскакивает оба сравнения ниже (NaN <= 0 и NaN > MaxUint32 оба false),
+	// оставляя implementation-defined uint32(NaN); отсекаем явно.
+	if math.IsNaN(v) || v <= 0 {
 		return 0
 	}
 	r := math.Round(v)

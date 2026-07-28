@@ -39,6 +39,8 @@ type EventRow struct {
 	UserEmail      string            `json:"user_email"`
 	Tags           map[string]string `json:"tags"`
 	Contexts       string            `json:"contexts"`
+	Breadcrumbs    string            `json:"breadcrumbs"`
+	Request        string            `json:"request"`
 }
 
 // TransactionRow — строка transactions субъекта. Субъект хранится в колонке
@@ -119,9 +121,10 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 
 	eventsQ := `SELECT event_id, project_id, issue_id, timestamp, level, message,
 		exception_type, exception_value, stacktrace, environment, release,
-		server_name, sdk, user_id, user_ip, user_email, tags, contexts
+		server_name, sdk, user_id, user_ip, user_email, tags, contexts,
+		breadcrumbs, request
 		FROM events WHERE project_id = ? AND (` + strings.Join(conds, " OR ") + `)
-		ORDER BY timestamp DESC LIMIT ?`
+		ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time = 0`
 	args = append(args, exportRowLimit)
 
 	rows, err := p.conn.Query(ctx, eventsQ, args...)
@@ -135,6 +138,7 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 			&id, &r.ProjectID, &r.IssueID, &r.Timestamp, &r.Level, &r.Message,
 			&r.ExceptionType, &r.ExceptionValue, &r.Stacktrace, &r.Environment, &r.Release,
 			&r.ServerName, &r.SDK, &r.UserID, &r.UserIP, &r.UserEmail, &r.Tags, &r.Contexts,
+			&r.Breadcrumbs, &r.Request,
 		); err != nil {
 			_ = rows.Close()
 			return SubjectExport{}, fmt.Errorf("telemetry: scan event row (project %d): %w", projectID, err)
@@ -155,7 +159,7 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		txQ := `SELECT project_id, trace_id, span_id, transaction, op, timestamp,
 			duration_us, status, environment, release, server_name, user_id, tags, source
 			FROM transactions WHERE project_id = ? AND (` + strings.Join(txConds, " OR ") + `)
-			ORDER BY timestamp DESC LIMIT ?`
+			ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time = 0`
 		txRows, err := p.conn.Query(ctx, txQ, args...)
 		if err != nil {
 			return SubjectExport{}, fmt.Errorf("telemetry: export subject transactions (project %d): %w", projectID, err)
@@ -192,7 +196,7 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 	if len(mpConds) > 0 {
 		mpQ := `SELECT project_id, name, type, service, environment, attributes, ts, value
 			FROM metric_points WHERE project_id = ? AND (` + strings.Join(mpConds, " OR ") + `)
-			ORDER BY ts DESC LIMIT ?`
+			ORDER BY ts DESC LIMIT ? SETTINGS max_execution_time = 0`
 		mpArgs = append(mpArgs, exportRowLimit)
 		mpRows, err := p.conn.Query(ctx, mpQ, mpArgs...)
 		if err != nil {

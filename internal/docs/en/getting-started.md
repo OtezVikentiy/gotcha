@@ -41,7 +41,7 @@ If nothing shows up, don't panic — the end of the [SDK & Integrations](/docs/s
 To avoid checking "Issues" manually, open the project's **"Alerts"** section:
 
 1. In **"Delivery channels"**, click **"Add channel"** and pick a type (email, webhook, or Telegram) plus a target.
-2. In **"Rules"**, enable the conditions you want — a new issue, a regression (an issue reopening), or a spike in errors — and attach a channel to them.
+2. In **"Rules"**, enable the conditions you want — a new issue, a regression (an issue reopening), or a spike in errors. An enabled rule automatically notifies every enabled channel in the project — there is no separate "attach a channel to this rule" step (see [Alerts](/docs/alerts)).
 
 From then on your team hears about new issues and spikes without watching a dashboard. More on throttling repeated notifications and the delivery history: [Alerts](/docs/alerts).
 

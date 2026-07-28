@@ -129,3 +129,45 @@ func TestScrubTextEnabled(t *testing.T) {
 		}
 	}
 }
+
+// TestScrubRequestFreeTextAndPairs (re-audit H2 + headers-array): при
+// ScrubFreeText=true email маскируется на [email] ВНУТРИ url/query_string/data
+// (иначе новый разбор параметров молча ослаблял бы free-text-скраб), а denylist
+// ловит секреты и в массиве пар headers (Sentry шлёт заголовки как [[k,v],…]).
+func TestScrubRequestFreeTextAndPairs(t *testing.T) {
+	s := NewScrubber(false, false, []string{"password", "token", "authorization"})
+	s.ScrubFreeText = true
+
+	raw := `{` +
+		`"url":"https://app/users/bob@example.com?token=SECRET",` +
+		`"query_string":"q=carol@example.com&password=hunter2",` +
+		`"data":"note=write to dave@example.com",` +
+		`"headers":[["Authorization","Bearer x"],["X-Contact","erin@example.com"]]` +
+		`}`
+	var r map[string]any
+	if err := json.Unmarshal([]byte(s.ScrubJSON(raw)), &r); err != nil {
+		t.Fatalf("scrubbed request не JSON: %v", err)
+	}
+
+	if got, want := r["url"], "https://app/users/[email]?token=[scrubbed]"; got != want {
+		t.Errorf("url = %v, want %q (email в пути + token в query)", got, want)
+	}
+	if got, want := r["query_string"], "q=[email]&password=[scrubbed]"; got != want {
+		t.Errorf("query_string = %v, want %q", got, want)
+	}
+	if got, want := r["data"], "note=write to [email]"; got != want {
+		t.Errorf("data = %v, want %q", got, want)
+	}
+	hdrs, _ := r["headers"].([]any)
+	if len(hdrs) != 2 {
+		t.Fatalf("headers = %v, want 2 пары", r["headers"])
+	}
+	a0, _ := hdrs[0].([]any)
+	if len(a0) != 2 || a0[1] != scrubMask {
+		t.Errorf("headers[0] = %v, want Authorization → %q", hdrs[0], scrubMask)
+	}
+	a1, _ := hdrs[1].([]any)
+	if len(a1) != 2 || a1[1] != "[email]" {
+		t.Errorf("headers[1] = %v, want X-Contact email → [email]", hdrs[1])
+	}
+}

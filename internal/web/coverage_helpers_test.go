@@ -10,30 +10,67 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// TestCacheControl проверяет, что cacheControl проставляет заголовок
-// Cache-Control: max-age=3600 на ответ и при этом реально вызывает
-// обёрнутый handler (а не проглатывает запрос).
+// TestCacheControl: неизменяемый кэш ставится ТОЛЬКО при ?v == текущая версия;
+// отсутствие ?v или чужой/устаревший ?v — короткий кэш. И в любом случае
+// обёрнутый handler реально вызывается (а не проглатывается).
 func TestCacheControl(t *testing.T) {
-	called := false
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusTeapot)
-	})
-
-	wrapped := cacheControl(inner)
-
-	req := httptest.NewRequest(http.MethodGet, "/app.css", nil)
-	rec := httptest.NewRecorder()
-	wrapped.ServeHTTP(rec, req)
-
-	if !called {
-		t.Fatal("cacheControl не вызвал обёрнутый handler")
+	const version = "abc123def456"
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"no version → short cache", "", "max-age=3600"},
+		{"matching version → immutable", "?v=" + version, "public, max-age=31536000, immutable"},
+		{"stale/foreign version → short cache", "?v=deadbeef", "max-age=3600"},
 	}
-	if got := rec.Header().Get("Cache-Control"); got != "max-age=3600" {
-		t.Fatalf("Cache-Control = %q, want %q", got, "max-age=3600")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			called := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusTeapot)
+			})
+			wrapped := cacheControl(version, inner)
+			rec := httptest.NewRecorder()
+			wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.css"+c.query, nil))
+			if !called {
+				t.Fatal("cacheControl не вызвал обёрнутый handler")
+			}
+			if got := rec.Header().Get("Cache-Control"); got != c.want {
+				t.Fatalf("Cache-Control = %q, want %q", got, c.want)
+			}
+			if rec.Code != http.StatusTeapot {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusTeapot)
+			}
+		})
 	}
-	if rec.Code != http.StatusTeapot {
-		t.Fatalf("status = %d, want %d (доказывает, что тело хендлера отработало)", rec.Code, http.StatusTeapot)
+}
+
+// TestNoDirListing: запрос каталога (пустой путь после StripPrefix или "…/")
+// даёт 404 и не пробрасывается в файловый сервер; обычный файл — пробрасывается.
+func TestNoDirListing(t *testing.T) {
+	cases := []struct {
+		path       string
+		wantServed bool
+	}{
+		{"", false},       // /static/ после StripPrefix
+		{"icons/", false}, // /static/icons/
+		{"app.css", true}, // обычный файл
+	}
+	for _, c := range cases {
+		served := false
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { served = true })
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req.URL.Path = c.path
+		noDirListing(inner).ServeHTTP(rec, req)
+		if served != c.wantServed {
+			t.Errorf("path %q: served=%v, want %v", c.path, served, c.wantServed)
+		}
+		if !c.wantServed && rec.Code != http.StatusNotFound {
+			t.Errorf("path %q: status=%d, want 404", c.path, rec.Code)
+		}
 	}
 }
 

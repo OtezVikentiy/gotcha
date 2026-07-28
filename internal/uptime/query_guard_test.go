@@ -53,3 +53,29 @@ func TestRecentGuardBeforeAllocate(t *testing.T) {
 		t.Fatalf("Recent with limit=-5 returned non-empty result: %v", rows)
 	}
 }
+
+// TestBarsBatchGuardBeforeAllocate: BarsBatch, как и Bars, отсекает buckets<=0
+// ДО make([]UptimeStat, buckets) — иначе отрицательный buckets паникует в
+// makeslice. Мис-копирование формы из UptimeBatch тихо сняло бы этот guard.
+func TestBarsBatchGuardBeforeAllocate(t *testing.T) {
+	q := NewQuery(nil) // nil conn достаточно: вырожденный вход возвращается рано
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("BarsBatch with buckets=-1 panicked: %v", r)
+		}
+	}()
+
+	out, err := q.BarsBatch(ctx, []int64{1, 2}, now.Add(-time.Hour), now, -1)
+	if err != nil {
+		t.Fatalf("BarsBatch with buckets=-1 returned error: %v", err)
+	}
+	// Вырожденный вход: как одиночный Bars — nil-срез на каждый монитор.
+	for _, id := range []int64{1, 2} {
+		if out[id] != nil {
+			t.Fatalf("BarsBatch[%d] = %v, want nil on degenerate input", id, out[id])
+		}
+	}
+}

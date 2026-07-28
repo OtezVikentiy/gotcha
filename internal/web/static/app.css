@@ -1047,7 +1047,9 @@ th {
 .time-range-input:focus {
 	color: var(--text);
 	border-color: var(--accent);
-	outline: none;
+	/* Без outline: none — иначе для no-JS-пользователей (эти поля дат ИХ контрол)
+	   пропадал бы видимый фокус-ринг (WCAG 2.4.7); наследуем глобальный
+	   input:focus { outline: 2px solid var(--accent) }. */
 }
 .time-range-sep {
 	color: var(--text-mute);

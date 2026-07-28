@@ -281,9 +281,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// на app.css/js как /static/<файл>?v=<хэш>, чтобы после деплоя браузеры не
 	// отдавали старый закэшированный CSS (иначе новый daterange.js уже подтянут,
 	// а правил скрытия в CSS ещё нет — контрол разъезжается).
-	templates.SetAssetVersion(staticAssetVersion(staticSub))
+	assetVer := staticAssetVersion(staticSub)
+	templates.SetAssetVersion(assetVer)
 	fileServer := http.FileServer(http.FS(staticSub))
-	inner.Handle("GET /static/", http.StripPrefix("/static/", cacheControl(fileServer)))
+	inner.Handle("GET /static/", http.StripPrefix("/static/", cacheControl(assetVer, noDirListing(fileServer))))
 
 	inner.Handle("GET /{$}", h.requireUser(http.HandlerFunc(h.index)))
 
@@ -502,16 +503,31 @@ func staticAssetVersion(fsys fs.FS) string {
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
-// cacheControl проставляет Cache-Control на статику. Версионированный запрос
-// (/static/<файл>?v=<хэш>) неизменяем: хэш в URL меняется при любом изменении
-// содержимого, поэтому кэшируем надолго и без ревалидации. Прямой запрос без
-// версии (favicon, ручной ввод URL) — короткий кэш, как раньше.
-func cacheControl(next http.Handler) http.Handler {
+// cacheControl проставляет Cache-Control на статику. Неизменяемый кэш ставится
+// только когда ?v совпадает с ТЕКУЩИМ хэшем содержимого (version): хэш меняется
+// при любом изменении ассета, поэтому под текущей версией контент вечен. Чужой/
+// устаревший ?v (или его отсутствие) — короткий кэш: так клиент не «прибивает»
+// на год произвольное значение под неизменяемым URL (churn кэша прокси/CDN).
+func cacheControl(version string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("v") != "" {
+		if v := r.URL.Query().Get("v"); v != "" && v == version {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		} else {
 			w.Header().Set("Cache-Control", "max-age=3600")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// noDirListing отдаёт 404 на запрос каталога (пустой путь после StripPrefix или
+// путь, заканчивающийся "/"): иначе http.FileServer печатает листинг каталога
+// (/static/, /static/icons/) с именами файлов. Раскрытие имён — мелочь, но не
+// нужно; файлы по прямому пути отдаются как раньше.
+func noDirListing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

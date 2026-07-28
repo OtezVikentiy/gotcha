@@ -174,7 +174,25 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	for i, m := range monitors {
 		ids[i] = m.ID
 	}
+	// Пакетные запросы по всему набору мониторов вместо N+1 в цикле: uptime,
+	// состояния (PG), латентность и полоски доступности (CH) — по одному запросу
+	// на всех (списочная страница иначе делала ~3N round-trip, из них ~2N в CH).
 	uptimeStats, err := h.UptimeQuery.UptimeBatch(r.Context(), ids, from, now)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	statesByMon, err := h.Uptime.StatesBatch(r.Context(), ids)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	latencyByMon, err := h.UptimeQuery.LatencyBatch(r.Context(), ids, from, now, monitorsListWindow/monitorsListBuckets)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	barsByMon, err := h.UptimeQuery.BarsBatch(r.Context(), ids, from, now, monitorsListBuckets)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -182,23 +200,9 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]templates.MonitorRow, len(monitors))
 	for i, m := range monitors {
-		states, err := h.Uptime.States(r.Context(), m.ID)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-
-		latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, from, now, monitorsListWindow/monitorsListBuckets)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-
-		bars, err := h.UptimeQuery.Bars(r.Context(), m.ID, from, now, monitorsListBuckets)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
+		states := statesByMon[m.ID]
+		latencyPoints := latencyByMon[m.ID]
+		bars := barsByMon[m.ID]
 
 		rows[i] = templates.MonitorRow{
 			Monitor:      m,

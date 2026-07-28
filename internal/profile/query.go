@@ -2,6 +2,8 @@ package profile
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -99,14 +101,20 @@ func (q *Query) HasProfileForTrace(ctx context.Context, projectID int64, traceID
 	if traceID == "" {
 		return false, nil
 	}
-	var n uint64
+	// LIMIT 1 вместо count(): нужен только факт наличия, а count() читает все
+	// гранулы (project_id,trace_id) — LIMIT 1 короткозамыкает на первой (запускается
+	// на каждом рендере waterfall). Индекс на trace_id — миграция 0017.
+	var one uint8
 	err := q.conn.QueryRow(ctx,
-		"SELECT count() FROM profile_samples WHERE project_id = ? AND trace_id = ?",
-		projectID, traceID).Scan(&n)
+		"SELECT 1 FROM profile_samples WHERE project_id = ? AND trace_id = ? LIMIT 1",
+		projectID, traceID).Scan(&one)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
 		return false, fmt.Errorf("profile: has profile for trace: %w", err)
 	}
-	return n > 0, nil
+	return true, nil
 }
 
 // FlameForTrace строит flamegraph по всем профилям, привязанным к trace_id

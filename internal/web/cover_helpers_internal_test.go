@@ -154,23 +154,23 @@ func TestCoverSortHelpers(t *testing.T) {
 func TestCoverIncidentDurationText(t *testing.T) {
 	now := time.Now().UTC()
 	// Незакрытый → "".
-	if got := incidentDurationText(uptime.Incident{StartedAt: now.Add(-time.Hour)}, now); got != "" {
+	if got := incidentDurationText(uptime.Incident{StartedAt: now.Add(-time.Hour)}); got != "" {
 		t.Errorf("ongoing incident duration = %q, want empty", got)
 	}
 	// Закрытый, 2ч30м → «2h 30m».
 	resolved := now
 	started := now.Add(-(2*time.Hour + 30*time.Minute))
-	if got := incidentDurationText(uptime.Incident{StartedAt: started, ResolvedAt: &resolved}, now); got == "" {
+	if got := incidentDurationText(uptime.Incident{StartedAt: started, ResolvedAt: &resolved}); got == "" {
 		t.Error("closed incident duration empty")
 	}
 	// Закрытый только минуты.
 	started2 := now.Add(-20 * time.Minute)
-	if got := incidentDurationText(uptime.Incident{StartedAt: started2, ResolvedAt: &resolved}, now); got == "" {
+	if got := incidentDurationText(uptime.Incident{StartedAt: started2, ResolvedAt: &resolved}); got == "" {
 		t.Error("closed incident (minutes) duration empty")
 	}
 	// Отрицательная длительность (resolved до started) → «0m», без паники.
 	badStart := now.Add(time.Hour)
-	if got := incidentDurationText(uptime.Incident{StartedAt: badStart, ResolvedAt: &resolved}, now); got == "" {
+	if got := incidentDurationText(uptime.Incident{StartedAt: badStart, ResolvedAt: &resolved}); got == "" {
 		t.Error("negative duration incident empty")
 	}
 }

@@ -222,6 +222,141 @@ func (q *Query) UptimeBatch(ctx context.Context, monitorIDs []int64, from, to ti
 	return out, nil
 }
 
+// LatencyBatch — то же, что Latency, но сразу для набора мониторов одним
+// запросом (GROUP BY monitor_id, bucket), с той же сеткой заливки на монитор.
+// Списочная страница мониторов иначе звала Latency() в цикле. Каждый монитор в
+// карте получает полный, выровненный по epoch ряд (пустые бакеты — нулевые).
+func (q *Query) LatencyBatch(ctx context.Context, monitorIDs []int64, from, to time.Time, step time.Duration) (map[int64][]LatencyPoint, error) {
+	out := make(map[int64][]LatencyPoint, len(monitorIDs))
+	if len(monitorIDs) == 0 {
+		return out, nil
+	}
+	stepSec := int64(step / time.Second)
+	if stepSec <= 0 {
+		return nil, fmt.Errorf("uptime: latency batch: step must be at least one second, got %s", step)
+	}
+	ids := make([]uint64, len(monitorIDs))
+	for i, id := range monitorIDs {
+		ids[i] = uint64(id)
+	}
+
+	perMon := make(map[int64]map[int64]LatencyPoint, len(monitorIDs))
+	rows, err := q.conn.Query(ctx, `
+		SELECT monitor_id, toStartOfInterval(timestamp, INTERVAL ? second) AS bucket_ts,
+			toUInt32(round(avg(total_ms))), toUInt32(round(avg(dns_ms))),
+			toUInt32(round(avg(connect_ms))), toUInt32(round(avg(tls_ms))), toUInt32(round(avg(ttfb_ms)))
+		FROM check_results
+		WHERE monitor_id IN (?) AND timestamp >= ? AND timestamp < ?
+		GROUP BY monitor_id, bucket_ts
+		ORDER BY bucket_ts`,
+		stepSec, ids, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: latency batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mid uint64
+		var t time.Time
+		var p LatencyPoint
+		if err := rows.Scan(&mid, &t, &p.AvgTotalMs, &p.AvgDNSMs, &p.AvgConnectMs, &p.AvgTLSMs, &p.AvgTTFBMs); err != nil {
+			return nil, fmt.Errorf("uptime: latency batch: scan: %w", err)
+		}
+		m := perMon[int64(mid)]
+		if m == nil {
+			m = make(map[int64]LatencyPoint)
+			perMon[int64(mid)] = m
+		}
+		m[t.UTC().Unix()] = p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: latency batch: %w", err)
+	}
+
+	// Сетка, выровненная по epoch, как в Latency — одинаковая для всех мониторов.
+	fromUnix := from.UTC().Unix()
+	toUnix := to.UTC().Unix()
+	startUnix := (fromUnix / stepSec) * stepSec
+	endUnix := (toUnix / stepSec) * stepSec
+	if toUnix%stepSec > 0 {
+		endUnix += stepSec
+	}
+	for _, id := range monitorIDs {
+		byBucket := perMon[id]
+		var pts []LatencyPoint
+		for curUnix := startUnix; curUnix <= endUnix; curUnix += stepSec {
+			p := byBucket[curUnix] // нулевой LatencyPoint, если в бакете проверок нет
+			p.T = time.Unix(curUnix, 0).UTC()
+			pts = append(pts, p)
+		}
+		out[id] = pts
+	}
+	return out, nil
+}
+
+// BarsBatch — то же, что Bars, но для набора мониторов одним запросом (GROUP BY
+// monitor_id, bucket). Каждый монитор в карте получает срез длины buckets
+// (пустые корзины структурно нулевые).
+func (q *Query) BarsBatch(ctx context.Context, monitorIDs []int64, from, to time.Time, buckets int) (map[int64][]UptimeStat, error) {
+	out := make(map[int64][]UptimeStat, len(monitorIDs))
+	// Вырожденный вход отсекаем ДО make([]UptimeStat, buckets): отрицательный
+	// buckets иначе паникует в makeslice (тот же guard, что у одиночного Bars —
+	// см. TestBarsGuardBeforeAllocate). Для вырожденного входа отдаём nil-срезы,
+	// как Bars, а не нулевой длины.
+	if len(monitorIDs) == 0 || buckets <= 0 || !to.After(from) {
+		for _, id := range monitorIDs {
+			out[id] = nil
+		}
+		return out, nil
+	}
+	for _, id := range monitorIDs {
+		out[id] = make([]UptimeStat, buckets)
+	}
+
+	fromUnix := from.UTC().Unix()
+	toUnix := to.UTC().Unix()
+	bucketSec := (toUnix - fromUnix) / int64(buckets)
+	if bucketSec <= 0 {
+		bucketSec = 1
+	}
+	ids := make([]uint64, len(monitorIDs))
+	for i, id := range monitorIDs {
+		ids[i] = uint64(id)
+	}
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT monitor_id, toUInt32(floor((toUnixTimestamp(timestamp) - ?) / ?)) AS bucket, count(), sum(ok)
+		FROM check_results
+		WHERE monitor_id IN (?) AND timestamp >= ? AND timestamp < ?
+		GROUP BY monitor_id, bucket`,
+		fromUnix, bucketSec, ids, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: bars batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mid uint64
+		var bucket uint32
+		var total, ok uint64
+		if err := rows.Scan(&mid, &bucket, &total, &ok); err != nil {
+			return nil, fmt.Errorf("uptime: bars batch: scan: %w", err)
+		}
+		bars := out[int64(mid)]
+		if bars == nil {
+			continue // строка для монитора не из запрошенного набора — пропускаем
+		}
+		idx := int(bucket)
+		if idx >= buckets {
+			idx = buckets - 1
+		}
+		bars[idx].Total += total
+		bars[idx].OK += ok
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: bars batch: %w", err)
+	}
+	return out, nil
+}
+
 // Bars разбивает [from, to) на buckets равных корзин и считает в каждой
 // UptimeStat — для полоски доступности (например, 24 корзины за последние
 // 24 часа, 90 — за 90 дней). Корзины без проверок остаются структурно

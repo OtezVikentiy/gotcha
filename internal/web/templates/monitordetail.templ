@@ -303,19 +303,21 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 					</tbody>
 				</table>
 				</div>
-				if monitorIncidentsTotalPages(incTotal) > 1 || incPage > 1 {
-					<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
-						if incPage > 1 {
-							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, pagerPrev(incPage, incTotal), rng)) }><span aria-hidden="true">« </span>{ i18n.T(ctx, "pagination.prev") }</a>
-						}
-						if incTotal > 0 {
-							<span>{ strconv.Itoa(incPage) } / { strconv.FormatInt(monitorIncidentsTotalPages(incTotal), 10) }</span>
-						}
-						if int64(incPage) < monitorIncidentsTotalPages(incTotal) {
-							<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage+1, rng)) }>{ i18n.T(ctx, "pagination.next") }<span aria-hidden="true"> »</span></a>
-						}
-					</nav>
-				}
+			}
+			// Пагинатор — ВНЕ ветки len(incidents)==0 (S1): на out-of-range
+			// странице строк нет, но пейджер (ссылка на первую) обязан остаться.
+			if monitorIncidentsTotalPages(incTotal) > 1 || incPage > 1 {
+				<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
+					if incPage > 1 {
+						<a href={ templ.URL(monitorIncidentsPageURL(m.ID, pagerPrev(incPage, incTotal), rng)) }><span aria-hidden="true">« </span>{ i18n.T(ctx, "pagination.prev") }</a>
+					}
+					if incTotal > 0 {
+						<span>{ strconv.Itoa(incPage) } / { strconv.FormatInt(monitorIncidentsTotalPages(incTotal), 10) }</span>
+					}
+					if int64(incPage) < monitorIncidentsTotalPages(incTotal) {
+						<a href={ templ.URL(monitorIncidentsPageURL(m.ID, incPage+1, rng)) }>{ i18n.T(ctx, "pagination.next") }<span aria-hidden="true"> »</span></a>
+					}
+				</nav>
 			}
 		</div>
 	}

@@ -42,6 +42,37 @@ func (s *Service) States(ctx context.Context, monitorID int64) ([]State, error) 
 	return out, rows.Err()
 }
 
+// StatesBatch — региональные состояния для набора мониторов за один запрос:
+// списочная страница мониторов иначе звала States() в цикле (N запросов в PG).
+// Мониторы без строк состояния присутствуют в карте с nil-слайсом. Строки
+// сортируются по (monitor_id, region), так что порядок регионов внутри монитора
+// тот же, что у States.
+func (s *Service) StatesBatch(ctx context.Context, monitorIDs []int64) (map[int64][]State, error) {
+	out := make(map[int64][]State, len(monitorIDs))
+	if len(monitorIDs) == 0 {
+		return out, nil
+	}
+	for _, id := range monitorIDs {
+		out[id] = nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT monitor_id, region, status, consecutive_fails, consecutive_oks, last_checked_at, last_error
+		FROM monitor_state WHERE monitor_id = ANY($1) ORDER BY monitor_id, region`, monitorIDs)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: states batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st State
+		if err := rows.Scan(&st.MonitorID, &st.Region, &st.Status, &st.ConsecutiveFails,
+			&st.ConsecutiveOKs, &st.LastCheckedAt, &st.LastError); err != nil {
+			return nil, fmt.Errorf("uptime: states batch: scan: %w", err)
+		}
+		out[st.MonitorID] = append(out[st.MonitorID], st)
+	}
+	return out, rows.Err()
+}
+
 // ApplyResult records one check result for (monitorID, region) and
 // recomputes status from the monitor's fail_threshold/recovery_threshold —
 // all in a single INSERT ... ON CONFLICT DO UPDATE statement, so the

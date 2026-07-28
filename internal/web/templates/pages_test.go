@@ -471,3 +471,22 @@ func TestProfilePage(t *testing.T) {
 		t.Error("ошибка профиля должна отрендериться")
 	}
 }
+
+// TestIncidentsPagerOnEmptyPage (S1 regression guard): на out-of-range странице
+// (строк нет, total=0) пейджер обязан остаться — со ссылкой «назад» на первую
+// страницу, иначе пользователь застревает на пустом экране. До фикла пейджер
+// сидел внутри else-ветки len(rows)==0 и не рендерился.
+func TestIncidentsPagerOnEmptyPage(t *testing.T) {
+	out := renderTo(t, IncidentsList(7, nil, 5, 0, "u@e.com"))
+	if !strings.Contains(out, `class="pagination"`) {
+		t.Fatalf("на пустой out-of-range странице нет пейджера:\n%s", out)
+	}
+	// pagerPrev(5,0)=1, а первая страница — это базовый URL без ?page.
+	if !strings.Contains(out, `href="/projects/7/incidents"`) {
+		t.Errorf("ссылка «назад» должна вести на первую страницу:\n%s", out)
+	}
+	// total=0 → счётчик «N / M» не показываем.
+	if strings.Contains(out, "5 / 0") {
+		t.Errorf("не должно быть счётчика при total=0:\n%s", out)
+	}
+}

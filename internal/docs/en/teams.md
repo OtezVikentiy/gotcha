@@ -24,7 +24,7 @@ The "Organization" → "Members" page (`/orgs/{id}/settings`, owner/admin only) 
 
 1. Enter the invitee's email.
 2. Pick a role — **member** or **admin** (the **owner** role cannot be granted through an invite — it can only be assigned to an existing member afterward).
-3. Click "Send invite".
+3. Click "Invite".
 
 If the server has no SMTP configured, the invite is still created but no email is sent — instead, the page shows a direct invite link once, which you forward to the person manually (it's not shown again).
 

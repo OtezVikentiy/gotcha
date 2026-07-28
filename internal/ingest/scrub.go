@@ -11,7 +11,7 @@ const scrubMask = "[scrubbed]"
 
 // sepReplacer убирает разделители из имени ключа перед сравнением с denylist:
 // заголовок X-Api-Key и ключ api_key должны совпасть, хотя дефис ≠ подчёркивание.
-var sepReplacer = strings.NewReplacer("-", "", "_", "", " ", "")
+var sepReplacer = strings.NewReplacer("-", "", "_", "", " ", "", ".", "")
 
 func normKey(s string) string { return sepReplacer.Replace(strings.ToLower(s)) }
 
@@ -168,7 +168,10 @@ func (s *Scrubber) walk(m map[string]any) {
 				m[k] = s.scrubURLParams(str)
 				continue
 			}
-		case "query_string", "querystring", "data", "body":
+		case "query_string", "querystring", "data", "body", "headers":
+			// headers — тоже: Sentry шлёт их и как массив пар [[name,value],…],
+			// где denied() по имени иначе не срабатывает (Authorization/X-Api-Key
+			// в паре утекали бы). scrubQueryLike знает все три формы.
 			m[k] = s.scrubQueryLike(val)
 			continue
 		}
@@ -184,7 +187,6 @@ func (s *Scrubber) scrubParams(query string) string {
 		return query
 	}
 	parts := strings.Split(query, "&")
-	changed := false
 	for i, p := range parts {
 		eq := strings.IndexByte(p, '=')
 		if eq < 0 {
@@ -197,13 +199,14 @@ func (s *Scrubber) scrubParams(query string) string {
 		}
 		if s.denied(dec) {
 			parts[i] = name + "=" + scrubMask
-			changed = true
 		}
 	}
-	if !changed {
-		return query
-	}
-	return strings.Join(parts, "&")
+	// Свободный текст в значениях (email при ScrubFreeText) маскируется тем же
+	// ScrubText, что и раньше через scrubValue: без этого новый разбор параметров
+	// молча ослаблял free-text-скраб именно в url/query_string/теле. ScrubText —
+	// no-op при ScrubFreeText=false, а Join(Split(x,"&"),"&") == x, поэтому в
+	// дефолте строка возвращается байт-в-байт.
+	return s.ScrubText(strings.Join(parts, "&"))
 }
 
 // scrubURLParams вычищает denylist-параметры в query-части URL, не трогая путь
@@ -211,14 +214,16 @@ func (s *Scrubber) scrubParams(query string) string {
 func (s *Scrubber) scrubURLParams(u string) string {
 	q := strings.IndexByte(u, '?')
 	if q < 0 {
-		return u
+		return s.ScrubText(u) // query нет, но путь может нести email (free-text)
 	}
 	base, rest := u[:q], u[q+1:]
 	frag := ""
 	if h := strings.IndexByte(rest, '#'); h >= 0 {
 		frag, rest = rest[h:], rest[:h]
 	}
-	return base + "?" + s.scrubParams(rest) + frag
+	// scrubParams уже прогоняет query через ScrubText; путь и фрагмент — тоже,
+	// чтобы email в них тоже маскировался при ScrubFreeText.
+	return s.ScrubText(base) + "?" + s.scrubParams(rest) + s.ScrubText(frag)
 }
 
 // scrubQueryLike чистит query_string/тело формы в любой из форм, что шлют SDK:
@@ -233,8 +238,11 @@ func (s *Scrubber) scrubQueryLike(v any) any {
 	case []any:
 		for i, e := range t {
 			if pair, ok := e.([]any); ok && len(pair) == 2 {
-				if name, ok := pair[0].(string); ok && s.denied(name) {
+				name, _ := pair[0].(string)
+				if s.denied(name) {
 					pair[1] = scrubMask
+				} else if sv, ok := pair[1].(string); ok {
+					pair[1] = s.ScrubText(sv) // free-text в значении не-denied пары
 				}
 				t[i] = pair
 				continue

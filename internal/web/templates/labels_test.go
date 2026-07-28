@@ -332,3 +332,31 @@ func TestParseRequest(t *testing.T) {
 		t.Errorf("requestFullView(body-only) не должен рендерить строку метода: %s", outMin)
 	}
 }
+
+// TestIssueEnumLabelsLocalized (B5): уровни/статусы/виды рендерятся
+// локализованно, а не сырым enum. Ключевая проверка got != code — она поймает
+// откат к сырым значениям (ошибка, которую пропускали рендер-тесты вокруг).
+func TestIssueEnumLabelsLocalized(t *testing.T) {
+	ctx := ruCtx()
+	check := func(name, code, got string) {
+		if got == "" || got == code {
+			t.Errorf("%s(%q) не локализован: %q", name, code, got)
+		}
+	}
+	for _, l := range []string{"debug", "info", "warning", "error", "fatal"} {
+		check("issueLevelLabel", l, issueLevelLabel(ctx, l))
+	}
+	for _, s := range []string{"unresolved", "resolved", "ignored"} {
+		check("issueStatusLabel", s, issueStatusLabel(ctx, s))
+	}
+	for _, s := range []string{"online", "offline", "revoked"} {
+		check("probeStatusLabel", s, probeStatusLabel(ctx, s))
+	}
+	for _, s := range []string{"open", "resolved"} {
+		check("regressionStatusLabel", s, regressionStatusLabel(ctx, s))
+	}
+	// Неизвестный код возвращается как есть (без паники/пустоты).
+	if got := issueStatusLabel(ctx, "weird"); got != "weird" {
+		t.Errorf("неизвестный статус как есть: %q", got)
+	}
+}

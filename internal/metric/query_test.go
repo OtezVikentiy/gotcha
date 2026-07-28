@@ -105,8 +105,10 @@ func TestQueryListAndSeries(t *testing.T) {
 		t.Fatalf("stage metrics = %+v", stageMetrics)
 	}
 
-	// Labels cpu → host: h1,h2.
-	labels, err := q.Labels(ctx, 9, "cpu")
+	// Labels cpu → host: h1,h2. Окно заведомо покрывает засеянные точки.
+	wideFrom := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	wideTo := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	labels, err := q.Labels(ctx, 9, "cpu", wideFrom, wideTo)
 	if err != nil {
 		t.Fatalf("Labels: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestQueryListAndSeries(t *testing.T) {
 	}
 
 	// Environments cpu → prod,stage.
-	envs, _ := q.Environments(ctx, 9, "cpu")
+	envs, _ := q.Environments(ctx, 9, "cpu", wideFrom, wideTo)
 	if len(envs) != 2 {
 		t.Fatalf("envs = %v", envs)
 	}

@@ -119,7 +119,7 @@ A point timestamped more than 90 days in the past, or more than a day in the fut
 
 Clicking a metric name opens `/projects/{id}/metrics/{name}` — a time series chart with filters:
 
-- **Period** — `1h` / `24h` / `7d` (the bucket step adapts: a minute / 10 minutes / an hour);
+- **Period** — `1h` / `24h` / `7d` / `30d`, or a custom range (the [time range](/docs/time-range) control); the bucket step adapts to keep roughly 120 points — about a minute at `1h`, ~12 minutes at `24h`, ~1.4 hours at `7d`, ~6 hours at `30d`;
 - **Aggregation** — the choices depend on the metric type (see the table above: histograms default to percentiles, everything else to avg/max/min/sum);
 - **Environment** — from the environments known for this metric, "all" by default.
 

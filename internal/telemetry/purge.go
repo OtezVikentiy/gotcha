@@ -49,9 +49,13 @@ func NewPurger(conn driver.Conn) *Purger {
 // PurgeProject удаляет всю телеметрию проекта из всех таблиц whitelist'а.
 // ALTER ... DELETE — мутация, асинхронная по умолчанию; mutations_sync = 2
 // делает её синхронной, чтобы удаление было завершённым по возврату.
+// max_execution_time = 0 снимает пер-соединенческий потолок (60с в
+// clickhouse.go): синхронная мутация по 90-дневным данным идёт минуты, и без
+// снятия потолка субъектное удаление (152-ФЗ) падало бы с TIMEOUT посередине,
+// оставляя данные наполовину удалёнными.
 func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 	for _, t := range projectTables {
-		q := "ALTER TABLE " + t + " DELETE WHERE project_id = ? SETTINGS mutations_sync = 2"
+		q := "ALTER TABLE " + t + " DELETE WHERE project_id = ? SETTINGS mutations_sync = 2, max_execution_time = 0"
 		if err := p.conn.Exec(ctx, q, projectID); err != nil {
 			return fmt.Errorf("telemetry: purge project %d from %s: %w", projectID, t, err)
 		}
@@ -100,7 +104,7 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 	}
 
 	eventsQ := "ALTER TABLE events DELETE WHERE project_id = ? AND (" +
-		strings.Join(conds, " OR ") + ") SETTINGS mutations_sync = 2"
+		strings.Join(conds, " OR ") + ") SETTINGS mutations_sync = 2, max_execution_time = 0"
 	if err := p.conn.Exec(ctx, eventsQ, args...); err != nil {
 		return fmt.Errorf("telemetry: purge subject from events (project %d): %w", projectID, err)
 	}
@@ -110,7 +114,7 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
 		args := append([]any{projectID}, txArgs...)
 		txQ := "ALTER TABLE transactions DELETE WHERE project_id = ? AND (" +
-			strings.Join(txConds, " OR ") + ") SETTINGS mutations_sync = 2"
+			strings.Join(txConds, " OR ") + ") SETTINGS mutations_sync = 2, max_execution_time = 0"
 		if err := p.conn.Exec(ctx, txQ, args...); err != nil {
 			return fmt.Errorf("telemetry: purge subject from transactions (project %d): %w", projectID, err)
 		}
@@ -131,7 +135,7 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 	}
 	if len(mpConds) > 0 {
 		mpQ := "ALTER TABLE metric_points DELETE WHERE project_id = ? AND (" +
-			strings.Join(mpConds, " OR ") + ") SETTINGS mutations_sync = 2"
+			strings.Join(mpConds, " OR ") + ") SETTINGS mutations_sync = 2, max_execution_time = 0"
 		if err := p.conn.Exec(ctx, mpQ, mpArgs...); err != nil {
 			return fmt.Errorf("telemetry: purge subject from metric_points (project %d): %w", projectID, err)
 		}

@@ -1,23 +1,28 @@
 package templates
 
+import "sync/atomic"
+
 // assetVersion — короткий хэш содержимого встроенной статики. Устанавливается
 // web-слоем один раз при старте (SetAssetVersion) и подставляется в ссылки на
 // app.css/js как ?v=<хэш>, чтобы после деплоя браузер не отдавал старую версию
 // из кэша. Пусто в юнит-тестах, которые рендерят шаблоны без вызова web.New —
-// тогда assetURL отдаёт путь без версии (просто без кэш-бастинга).
-var assetVersion string
+// тогда assetURL отдаёт путь без версии (просто без кэш-бастинга). Хранится в
+// atomic.Value: в проде пишется один раз до начала обслуживания, но параллельные
+// тест-серверы могут писать, пока другой рендерит — atomic снимает гонку (-race).
+var assetVersion atomic.Value // string
 
 // SetAssetVersion задаёт версию статики. Идемпотентна: значение детерминировано
 // (хэш содержимого), повторные вызовы из разных тест-серверов перезапишут его
 // тем же хэшем.
-func SetAssetVersion(v string) { assetVersion = v }
+func SetAssetVersion(v string) { assetVersion.Store(v) }
 
 // assetURL возвращает путь к статике с версией содержимого в query-строке.
 // Файловый сервер query игнорирует и отдаёт тот же файл; браузер же кэширует
 // по полному URL, поэтому смена хэша после деплоя гарантирует свежую загрузку.
 func assetURL(path string) string {
-	if assetVersion == "" {
+	v, _ := assetVersion.Load().(string) // до первого Store — nil → "" → без версии
+	if v == "" {
 		return path
 	}
-	return path + "?v=" + assetVersion
+	return path + "?v=" + v
 }

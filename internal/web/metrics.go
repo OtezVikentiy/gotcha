@@ -81,19 +81,12 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 
-	// Тип метрики: перцентили допустимы только для histogram.
-	metrics, err := h.Metrics.ListMetrics(r.Context(), projectID, "")
+	// Тип метрики: перцентили допустимы только для histogram. Точечный поиск по
+	// (project_id, name) вместо скана всех метрик проекта ради одной.
+	info, found, err := h.Metrics.MetricInfoByName(r.Context(), projectID, name)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
-	}
-	var info metric.MetricInfo
-	found := false
-	for _, m := range metrics {
-		if m.Name == name {
-			info, found = m, true
-			break
-		}
 	}
 	if !found {
 		h.notFound(w, r)
@@ -119,12 +112,12 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	points = fillSeries(points, from, now, step,
 		func(p metric.Point) time.Time { return p.T },
 		func(t time.Time) metric.Point { return metric.Point{T: t, V: math.NaN()} })
-	labels, err := h.Metrics.Labels(r.Context(), projectID, name)
+	labels, err := h.Metrics.Labels(r.Context(), projectID, name, from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	environments, err := h.Metrics.Environments(r.Context(), projectID, name)
+	environments, err := h.Metrics.Environments(r.Context(), projectID, name, from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return

@@ -17,7 +17,7 @@ The form starts with a **check type** picker — HTTP, TCP, DNS, or Heartbeat. E
 
 The type is fixed once a monitor is created — editing lets you change its settings, not its type.
 
-For a Heartbeat monitor, the monitor's detail page shows a personal URL of the form `{base_url}/uptime/hb/{token}` plus a ready-made cron line that pings it with `curl` at the configured interval:
+For a Heartbeat monitor, the personal ping URL of the form `{base_url}/uptime/hb/{token}` — plus a ready-made `curl` cron line — is shown **once, right after you create or regenerate** the monitor. The token is stored hashed and can't be shown again, so copy it then; if you lose it, use **Regenerate** on the detail page to mint a new URL. A normal visit to the detail page shows a "regenerate to get a new URL" hint instead of the token.
 
 ```
 */5 * * * * curl -fsS https://gotcha.example.com/uptime/hb/6e1f...af92 >/dev/null
@@ -29,6 +29,7 @@ Add that to your application's cron/systemd timer — every successful call rese
 
 - **Interval** — how often the check runs, in seconds (minimum 30).
 - **Timeout** — how long to wait for a response, in seconds (1–120, and must be less than the interval).
+- **Retries** — how many times to re-run a single failed check before it counts as a failure (0–10). Absorbs a transient blip (a dropped packet, a brief TLS hiccup) so it doesn't flip the monitor or open an incident.
 - **Fail threshold** — how many consecutive failed checks flip the monitor to down and open an incident.
 - **Recovery threshold** — how many consecutive successful checks flip it back to up and close the incident.
 - **Remind every (minutes)** — how often to resend a notification for a still-open incident (0 = never remind).
@@ -44,7 +45,7 @@ When a monitor has more than one region, its overall status is computed with a *
 | Consensus | Rule | When to use it |
 |---|---|---|
 | **any** | Down if at least one region is down | Strict: any single point of unavailability is already a problem |
-| **majority** | Down if more than half of the decided regions are down | A compromise: tolerates a single regional blip |
+| **majority** | Down if half or more of the decided regions are down | A compromise: tolerates a single regional blip |
 | **all** | Down only if every region is down | Lenient: alert only on a total outage |
 
 **Important note about majority with an even number of regions**: if exactly half the regions are down (e.g. 2 of 4), that also counts as **down**, not up — a deliberate fail-safe so the monitor is never shown green when half the fleet is reporting an outage.

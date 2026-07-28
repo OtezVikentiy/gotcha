@@ -38,9 +38,6 @@ var timeRangePresets = map[string]time.Duration{
 	"30d": 30 * 24 * time.Hour,
 }
 
-// timeRangePresetOrder — порядок пресетов в селекторе (map не упорядочен).
-var timeRangePresetOrder = []string{"1h", "24h", "7d", "30d"}
-
 // parseTimeRange разбирает окно времени из query-параметров. Приоритеты
 // подобраны так, чтобы произвольный диапазон включался БЕЗ отдельного выбора
 // «свой диапазон» в списке (лишнее действие), и при этом переключение

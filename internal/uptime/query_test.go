@@ -2,6 +2,7 @@ package uptime_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -191,6 +192,38 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 		if zeros == 0 {
 			t.Fatalf("expected some zero-filled buckets, got none: %v", bars)
+		}
+	})
+
+	// BatchParity: LatencyBatch/BarsBatch должны давать ПОБАЙТНО тот же результат,
+	// что одиночные Latency/Bars, для КАЖДОГО монитора. Два монитора засеяны
+	// разными данными, поэтому мис-ключевание (данные одного приписаны другому)
+	// провалит DeepEqual — обычный smoke-тест списка его бы не поймал.
+	t.Run("BatchParity", func(t *testing.T) {
+		ids := []int64{monitorID, otherMonitorID}
+		latBatch, err := q.LatencyBatch(ctx, ids, windowFrom, windowTo, 10*time.Minute)
+		if err != nil {
+			t.Fatalf("LatencyBatch: %v", err)
+		}
+		barBatch, err := q.BarsBatch(ctx, ids, windowFrom, windowTo, 6)
+		if err != nil {
+			t.Fatalf("BarsBatch: %v", err)
+		}
+		for _, id := range ids {
+			single, err := q.Latency(ctx, id, windowFrom, windowTo, 10*time.Minute)
+			if err != nil {
+				t.Fatalf("Latency(%d): %v", id, err)
+			}
+			if !reflect.DeepEqual(latBatch[id], single) {
+				t.Errorf("LatencyBatch[%d] != Latency(%d):\n batch =%+v\n single=%+v", id, id, latBatch[id], single)
+			}
+			bs, err := q.Bars(ctx, id, windowFrom, windowTo, 6)
+			if err != nil {
+				t.Fatalf("Bars(%d): %v", id, err)
+			}
+			if !reflect.DeepEqual(barBatch[id], bs) {
+				t.Errorf("BarsBatch[%d] != Bars(%d):\n batch =%+v\n single=%+v", id, id, barBatch[id], bs)
+			}
 		}
 	})
 

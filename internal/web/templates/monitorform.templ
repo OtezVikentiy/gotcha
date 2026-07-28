@@ -87,7 +87,7 @@ templ regionCheckbox(region string, selected map[string]bool) {
 templ channelCheckbox(c alert.Channel, selected map[int64]bool) {
 	<label class="checkbox-inline">
 		<input type="checkbox" name="channels" value={ strconv.FormatInt(c.ID, 10) } checked?={ selected[c.ID] }/>
-		{ c.Kind }: { c.Target }
+		{ channelKindLabel(ctx, c.Kind) }: { c.Target }
 	</label>
 }
 

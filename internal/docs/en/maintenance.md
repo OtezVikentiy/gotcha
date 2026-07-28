@@ -6,13 +6,13 @@ The page lives at `/projects/{id}/maintenance`, available to an org owner/admin 
 
 ## Creating a window
 
-1. On the "Maintenance" page, click "New maintenance window" — a create modal opens.
+1. On the "Maintenance" page, click "New window" — a create modal opens.
 2. Enter a **Name** — a short description of the work (e.g. "Database upgrade").
-3. Pick the type with the **Weekly** checkbox:
-   - **unchecked** — a one-off window: set **Start** and **End** (date and time, `datetime-local` fields);
-   - **checked** — a recurring weekly window: set the **Weekday** and a **Start**/**End** time in HH:MM, which repeats every week on that day.
+3. Pick the type — **One-off** or **Weekly** (a radio pair, one-off selected by default):
+   - **One-off** — set **Start** and **End** (date and time, `datetime-local` fields);
+   - **Weekly** — a recurring weekly window: set the **Weekday** and a **Start**/**End** time in HH:MM, which repeats every week on that day.
 4. Set the **Timezone** — pick one from the list (UTC, Europe/Moscow, Europe/Berlin, Asia/Yekaterinburg), or, if the one you need isn't listed, pick "Other" and type an IANA name into the adjacent field (e.g. `America/New_York`).
-5. Save with "Create".
+5. Save with "Create window".
 
 Created windows are listed with their name, type, and schedule, each with a delete button.
 
