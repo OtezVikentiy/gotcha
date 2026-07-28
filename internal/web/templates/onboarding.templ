@@ -41,7 +41,7 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "onboarding.field.org_name") }
-					<input type="text" name="org_name" placeholder="My Team" required value={ orgName } class="input"/>
+					<input type="text" name="org_name" placeholder={ i18n.T(ctx, "onboarding.org_placeholder") } required value={ orgName } class="input"/>
 				</label>
 			</div>
 			<div class="field">
@@ -53,7 +53,7 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "onboarding.field.project_name") }
-					<input type="text" name="project_name" placeholder="Backend" required value={ projectName } class="input"/>
+					<input type="text" name="project_name" placeholder={ i18n.T(ctx, "onboarding.project_placeholder") } required value={ projectName } class="input"/>
 				</label>
 			</div>
 			<div class="field">

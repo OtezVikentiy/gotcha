@@ -89,7 +89,7 @@ templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail str
 		<div class="org-probes">
 			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "uptime.probes.title") } { o.Name }</h1>
-			@helpPanel("probes", "uptime")
+			@helpPanel("probes", "probes")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}
@@ -130,7 +130,7 @@ templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail str
 				<div class="field">
 					<label>
 						{ i18n.T(ctx, "uptime.probes.field.name") }
-						<input type="text" name="name" required maxlength="40" placeholder="Moscow probe" class="input"/>
+						<input type="text" name="name" required maxlength="40" placeholder={ i18n.T(ctx, "uptime.probes.name_placeholder") } class="input"/>
 					</label>
 				</div>
 				<div class="field">

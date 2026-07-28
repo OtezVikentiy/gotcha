@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/url"
 	"regexp"
@@ -67,6 +68,12 @@ var ipAttrKeys = map[string]bool{
 	"user.ip": true, "sentry.user.ip_address": true, "http.client_ip": true,
 }
 
+// ipHeaderKeysNorm — нормализованные (без разделителей) имена forwarding-заголовков
+// и env-переменных с IP клиента, ловятся ПОДСТРОЧНО по normKey. Так совпадают все
+// формы, в которых их шлют SDK: X-Forwarded-For, x_forwarded_for и CGI/WSGI-форма
+// HTTP_X_FORWARDED_FOR (PHP/WSGI кладут её в request.env) — все дают «…xforwardedfor…».
+var ipHeaderKeysNorm = []string{"xforwardedfor", "xrealip", "xclientip", "remoteaddr"}
+
 // denied — совпадает ли ключ (или его подстрока) с denylist, либо это email-ключ
 // при включённом ScrubEmail / IP-ключ при включённом ScrubIP.
 func (s *Scrubber) denied(key string) bool {
@@ -74,8 +81,16 @@ func (s *Scrubber) denied(key string) bool {
 	if s.ScrubEmail && emailAttrKeys[k] {
 		return true
 	}
-	if s.ScrubIP && ipAttrKeys[k] {
-		return true
+	if s.ScrubIP {
+		if ipAttrKeys[k] {
+			return true
+		}
+		kn := normKey(k)
+		for _, ipk := range ipHeaderKeysNorm {
+			if strings.Contains(kn, ipk) {
+				return true
+			}
+		}
 	}
 	if s.deny[k] {
 		return true
@@ -116,6 +131,41 @@ func (s *Scrubber) ScrubText(text string) string {
 		return text
 	}
 	return emailTextRe.ReplaceAllString(text, emailTextMask)
+}
+
+// ScrubMessage чистит человеко-читаемое поле (имя транзакции, message, exception
+// value, описание спана): free-text email через ScrubText (по флагу) ПЛЮС query-
+// токены в URL, встроенных в текст вида "GET https://api/x?token=…". В отличие от
+// ScrubText URL-часть чистится ВСЕГДА, а не только при ScrubFreeText: query-токен
+// в имени/описании — утечка и при дефолтном скрабинге (SEC-M2).
+func (s *Scrubber) ScrubMessage(text string) string {
+	if s == nil || text == "" {
+		return text
+	}
+	return s.scrubEmbeddedURLs(s.ScrubText(text))
+}
+
+// scrubEmbeddedURLs находит URL-подстроки (scheme://… до пробела) в свободном
+// тексте и прогоняет каждую через scrubURLParams. Не-URL текст и текст без "://"
+// возвращаются байт-в-байт (форматирование не трогаем, если чистить нечего).
+func (s *Scrubber) scrubEmbeddedURLs(text string) string {
+	if !strings.Contains(text, "://") {
+		return text
+	}
+	fields := strings.Fields(text)
+	changed := false
+	for i, f := range fields {
+		if looksLikeURL(f) {
+			if scrubbed := s.scrubURLParams(f); scrubbed != f {
+				fields[i] = scrubbed
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return text // "://" есть, но чистить нечего — не нормализуем пробелы
+	}
+	return strings.Join(fields, " ")
 }
 
 func (s *Scrubber) ScrubTags(tags map[string]string) {
@@ -209,21 +259,63 @@ func (s *Scrubber) scrubParams(query string) string {
 	return s.ScrubText(strings.Join(parts, "&"))
 }
 
-// scrubURLParams вычищает denylist-параметры в query-части URL, не трогая путь
-// и фрагмент. Схема/хост остаются как есть (basic-auth в userinfo — отдельно).
+// scrubURLParams вычищает секреты в URL: denylist-параметры и в query, и во
+// ФРАГМЕНТЕ (implicit-flow OAuth кладёт access_token в #fragment), пароль в
+// basic-auth (scheme://user:pass@host), плюс email в пути/значениях (free-text).
 func (s *Scrubber) scrubURLParams(u string) string {
+	// Фрагмент отделяем первым — он может нести токены (#access_token=… или
+	// hash-router #/path?token=…), а не только якорь.
+	frag := ""
+	if h := strings.IndexByte(u, '#'); h >= 0 {
+		frag, u = s.scrubFragment(u[h:]), u[:h]
+	}
 	q := strings.IndexByte(u, '?')
 	if q < 0 {
-		return s.ScrubText(u) // query нет, но путь может нести email (free-text)
+		return s.ScrubText(s.stripUserinfo(u)) + frag // query нет
 	}
 	base, rest := u[:q], u[q+1:]
-	frag := ""
-	if h := strings.IndexByte(rest, '#'); h >= 0 {
-		frag, rest = rest[h:], rest[:h]
+	return s.ScrubText(s.stripUserinfo(base)) + "?" + s.scrubParams(rest) + frag
+}
+
+// scrubFragment чистит параметры во фрагменте URL. Просто путь/якорь (#/path,
+// #section) → без изменений; #access_token=… и #/path?token=… → параметры
+// прогоняются через denylist.
+func (s *Scrubber) scrubFragment(frag string) string {
+	if frag == "" {
+		return frag
 	}
-	// scrubParams уже прогоняет query через ScrubText; путь и фрагмент — тоже,
-	// чтобы email в них тоже маскировался при ScrubFreeText.
-	return s.ScrubText(base) + "?" + s.scrubParams(rest) + s.ScrubText(frag)
+	body := frag[1:] // без ведущего '#'
+	if q := strings.IndexByte(body, '?'); q >= 0 {
+		// body[:q] — путь hash-роутера (#/users/john@example.com): тоже free-text,
+		// прогоняем через ScrubText, иначе email в нём переживёт маскирование.
+		return "#" + s.ScrubText(body[:q]) + "?" + s.scrubParams(body[q+1:])
+	}
+	return "#" + s.scrubParams(body)
+}
+
+// stripUserinfo маскирует пароль в basic-auth части URL: scheme://user:pass@host
+// → scheme://user:[scrubbed]@host. Трогает только authority (до первого '/').
+func (s *Scrubber) stripUserinfo(u string) string {
+	si := strings.Index(u, "://")
+	if si < 0 {
+		return u
+	}
+	rest := u[si+3:]
+	// authority — часть до первого '/'; '@' ищем в ней и берём ПОСЛЕДНИЙ,
+	// чтобы незакодированный '@' в пароле (user:p@ss@host) не оставил хвост.
+	authority := rest
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		authority = rest[:slash]
+	}
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return u // '@' нет в authority (или он в пути) — не userinfo
+	}
+	userinfo := rest[:at]
+	if colon := strings.IndexByte(userinfo, ':'); colon >= 0 {
+		userinfo = userinfo[:colon+1] + scrubMask
+	}
+	return u[:si+3] + userinfo + rest[at:]
 }
 
 // scrubQueryLike чистит query_string/тело формы в любой из форм, что шлют SDK:
@@ -231,7 +323,7 @@ func (s *Scrubber) scrubURLParams(u string) string {
 func (s *Scrubber) scrubQueryLike(v any) any {
 	switch t := v.(type) {
 	case string:
-		return s.scrubParams(t)
+		return s.scrubMaybeJSON(t)
 	case map[string]any:
 		s.walk(t) // объектная форма: имена — это КЛЮЧИ, ловятся denied()
 		return t
@@ -242,7 +334,7 @@ func (s *Scrubber) scrubQueryLike(v any) any {
 				if s.denied(name) {
 					pair[1] = scrubMask
 				} else if sv, ok := pair[1].(string); ok {
-					pair[1] = s.ScrubText(sv) // free-text в значении не-denied пары
+					pair[1] = s.scrubStringLeaf(sv) // значение пары: URL → params, иначе free-text
 				}
 				t[i] = pair
 				continue
@@ -252,6 +344,31 @@ func (s *Scrubber) scrubQueryLike(v any) any {
 		return t
 	}
 	return s.scrubValue(v)
+}
+
+// scrubMaybeJSON: строковое тело/данные, начинающееся с { или [ — это JSON
+// (частая форма тела запроса), поэтому разбираем и чистим рекурсивно (denylist
+// по ключам + free-text по значениям), иначе трактуем как form-encoded. Так JSON
+// с паролем реально вычищается и НЕ портится, если значение содержит '=' (иначе
+// scrubParams обрезал бы сегмент по первому '=').
+func (s *Scrubber) scrubMaybeJSON(str string) string {
+	if t := strings.TrimSpace(str); strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
+		dec := json.NewDecoder(strings.NewReader(str))
+		dec.UseNumber() // не терять точность bigint/snowflake-id при round-trip
+		var v any
+		if err := dec.Decode(&v); err == nil {
+			// объект → чистка по КЛЮЧАМ (denied); массив пар [[name,value]] →
+			// парная чистка (scrubValue не знает про пары, а scrubQueryLike знает).
+			v = s.scrubQueryLike(v)
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false) // не ломать &,<,> в URL/HTML внутри тела
+			if err := enc.Encode(v); err == nil {
+				return strings.TrimRight(buf.String(), "\n") // Encode добавляет '\n'
+			}
+		}
+	}
+	return s.scrubParams(str)
 }
 
 // scrubValue рекурсивно чистит произвольное значение и возвращает результат
@@ -271,7 +388,35 @@ func (s *Scrubber) scrubValue(v any) any {
 		}
 		return t
 	case string:
-		return s.ScrubText(t)
+		return s.scrubStringLeaf(t)
 	}
 	return v
+}
+
+// looksLikeURL — дешёвый признак «строка это URL» (scheme://…) без regexp на
+// горячем пути инжеста: схема ≤10 символов из [a-z0-9+.-], затем "://".
+func looksLikeURL(s string) bool {
+	i := strings.Index(s, "://")
+	if i <= 0 || i > 10 {
+		return false
+	}
+	for j := 0; j < i; j++ {
+		c := s[j]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			c == '+' || c == '.' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// scrubStringLeaf чистит строковый лист: если это URL — через scrubURLParams
+// (query-токены, fragment, basic-auth), иначе free-text через ScrubText. Так
+// токен в url.full / request.url / значении заголовка Referer|Location
+// маскируется независимо от имени ключа, под которым URL прилетел (SEC-M1/M3).
+func (s *Scrubber) scrubStringLeaf(t string) string {
+	if looksLikeURL(t) {
+		return s.scrubURLParams(t)
+	}
+	return s.ScrubText(t)
 }

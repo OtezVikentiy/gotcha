@@ -56,7 +56,7 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 | Variable | Default | Description |
 |---|---|---|
 | `GOTCHA_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_PORT` instead (see [Installation](/docs/installation)), not via this variable. |
-| `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default [`GOTCHA_SECRET_KEY`](#security) in `web`/`all` mode — see below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
+| `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default `GOTCHA_SECRET_KEY` in `web`/`all` mode — see the Security section below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
 
 ## Database
 

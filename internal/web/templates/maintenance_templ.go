@@ -343,7 +343,7 @@ func Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail str
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpPanel("maintenance", "uptime").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = helpPanel("maintenance", "maintenance").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

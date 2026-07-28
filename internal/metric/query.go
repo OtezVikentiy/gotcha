@@ -163,6 +163,13 @@ func (q *Query) metricType(ctx context.Context, projectID int64, name string, fr
 		projectID, name, from, to)
 	var mono uint8
 	if err := row.Scan(&typ, &mono, &temporality); err != nil {
+		// Пустое окно: агрегат без GROUP BY сейчас отдаёт строку с дефолтами, но
+		// при empty_result_for_aggregation_by_empty_set=1 вернул бы ErrNoRows —
+		// трактуем как «тип не важен» (Series/Aggregate по пустому окну вернут пусто),
+		// симметрично MetricInfoByName/HasProfileForTrace.
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, "", nil
+		}
 		return "", false, "", fmt.Errorf("metric: metric type: %w", err)
 	}
 	return typ, mono == 1, temporality, nil

@@ -230,7 +230,7 @@ templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "teams.create.name_label") }
-							<input type="text" name="name" placeholder="Backend" required class="input"/>
+							<input type="text" name="name" placeholder={ i18n.T(ctx, "teams.create.name_placeholder") } required class="input"/>
 						</label>
 					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "teams.create.submit") }</button>

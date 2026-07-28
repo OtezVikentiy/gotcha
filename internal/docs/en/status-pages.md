@@ -11,7 +11,7 @@ A public status page is a public view of the state of selected [monitors](/docs/
    - **Title** — the heading visitors will see.
    - **Description** — a short blurb under the title (optional).
    - **Published** — turns the page on; a disabled page still shows in the dashboard but is not publicly reachable.
-4. In the monitor list, check the ones that should appear on the page, and set a **Public name** for each — the public-facing name. It doesn't have to match the monitor's internal name: the real name is shown only to admins in this form, and only the display name is exposed publicly. The order you check monitors in is the order the tiles appear in.
+4. In the monitor list, check the ones that should appear on the page, and set a **Public name** for each — the public-facing name. It doesn't have to match the monitor's internal name: the real name is shown only to admins in this form, and only the public name is exposed publicly. The order you check monitors in is the order the tiles appear in.
 5. Save with "Create page".
 
 You can later edit the page with the same form or remove it with "Delete". Once saved, the ready-made public link is shown right under the form.

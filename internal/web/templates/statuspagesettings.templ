@@ -198,7 +198,7 @@ templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageFor
 		<div class="status-pages">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.status_pages") }</h1>
-			@helpPanel("statuspages", "uptime")
+			@helpPanel("statuspages", "status-pages")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}

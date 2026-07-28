@@ -708,7 +708,7 @@ func StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpPanel("statuspages", "uptime").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = helpPanel("statuspages", "status-pages").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

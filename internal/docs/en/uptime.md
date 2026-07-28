@@ -17,7 +17,7 @@ The form starts with a **check type** picker — HTTP, TCP, DNS, or Heartbeat. E
 
 The type is fixed once a monitor is created — editing lets you change its settings, not its type.
 
-For a Heartbeat monitor, the personal ping URL of the form `{base_url}/uptime/hb/{token}` — plus a ready-made `curl` cron line — is shown **once, right after you create or regenerate** the monitor. The token is stored hashed and can't be shown again, so copy it then; if you lose it, use **Regenerate** on the detail page to mint a new URL. A normal visit to the detail page shows a "regenerate to get a new URL" hint instead of the token.
+For a Heartbeat monitor, the personal ping URL of the form `{base_url}/uptime/hb/{token}` — plus a ready-made `curl` cron line — is shown **once, right after you create or regenerate** the monitor. The token is stored hashed and can't be shown again, so copy it then; if you lose it, use **Regenerate token** on the detail page to mint a new URL. A normal visit to the detail page shows a "regenerate to get a new URL" hint instead of the token.
 
 ```
 */5 * * * * curl -fsS https://gotcha.example.com/uptime/hb/6e1f...af92 >/dev/null

@@ -69,7 +69,7 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 	@layout(i18n.T(ctx, "metrics.alerts.title"), userEmail) {
 		<div class="metric-alerts">
 			<h1>{ i18n.T(ctx, "metrics.alerts.title") }</h1>
-			@helpPanel("metricalerts", "metrics")
+			@helpPanel("metricalerts", "metric-alerts")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}

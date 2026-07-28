@@ -245,6 +245,24 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 		at   time.Time
 	}
 
+	// Состояния (PG) и полоски доступности (CH, 90 дней × 90 корзин — самый
+	// тяжёлый запрос страницы) берём пакетно на все мониторы разом, а не в цикле:
+	// публичная страница с десятками мониторов иначе делала 2N запросов сверх
+	// остальных и упиралась в statusPageBuildTimeout. Uptime (с exclude-окнами),
+	// Get и IncidentsForMonitor пока остаются по-мониторно.
+	spIDs := make([]int64, len(spMonitors))
+	for i, spm := range spMonitors {
+		spIDs[i] = spm.MonitorID
+	}
+	statesByMon, err := h.Uptime.StatesBatch(ctx, spIDs)
+	if err != nil {
+		return templates.StatusPageView{}, err
+	}
+	barsByMon, err := h.UptimeQuery.BarsBatch(ctx, spIDs, from, now, statusPageBuckets)
+	if err != nil {
+		return templates.StatusPageView{}, err
+	}
+
 	var down, counted int
 	var incidents []datedIncident
 	for _, spm := range spMonitors {
@@ -261,10 +279,7 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 			continue
 		}
 
-		states, err := h.Uptime.States(ctx, m.ID)
-		if err != nil {
-			return templates.StatusPageView{}, err
-		}
+		states := statesByMon[m.ID]
 		// Тот же приоритет, что и в списке мониторов (пауза → обслуживание →
 		// consensus-агрегат uptime.Aggregate) — consensus не дублируем.
 		status := monitorStatus(m, states, inMaintenance)
@@ -273,10 +288,7 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 		if err != nil {
 			return templates.StatusPageView{}, err
 		}
-		bars, err := h.UptimeQuery.Bars(ctx, m.ID, from, now, statusPageBuckets)
-		if err != nil {
-			return templates.StatusPageView{}, err
-		}
+		bars := barsByMon[m.ID]
 
 		// BarStats, а не готовый SVG: вьюха кешируется на statusPageTTL и
 		// общая для всех посетителей, а подписи <title> внутри полоски

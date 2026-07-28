@@ -87,7 +87,7 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 		<div class="maintenance">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.maintenance") }</h1>
-			@helpPanel("maintenance", "uptime")
+			@helpPanel("maintenance", "maintenance")
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}

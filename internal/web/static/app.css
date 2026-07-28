@@ -1235,7 +1235,7 @@ th {
    на глаз читался как «нет подсветки». Берём заметно более плотный замес акцента
    (~24%) — контраст к поверхности карточки поднимается до различимого. Крышки
    диапазона (.dr-start/.dr-end) остаются сплошным акцентом (ниже). */
-.dr-day.dr-in { background: color-mix(in srgb, var(--accent) 24%, transparent); border-radius: 0; }
+.dr-day.dr-in { background: color-mix(in srgb, var(--accent) 34%, transparent); border-radius: 0; }
 .dr-day.dr-start, .dr-day.dr-end {
 	background: var(--accent);
 	color: var(--accent-fg);

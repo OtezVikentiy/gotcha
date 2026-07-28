@@ -246,7 +246,7 @@ func (p *Pipeline) process(t task) {
 	// PG и в алерт открытым. fingerprint уже посчитан выше на ИСХОДНОМ тексте
 	// (Message/Exceptions, не Title), поэтому scrubbing здесь не трогает
 	// группировку. No-op при ScrubFreeText=false.
-	ev.Title = p.Scrub.ScrubText(ev.Title)
+	ev.Title = p.Scrub.ScrubMessage(ev.Title)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -303,8 +303,8 @@ func (p *Pipeline) process(t task) {
 	ev.RequestJSON = p.Scrub.ScrubJSON(ev.RequestJSON)
 	// RA-L10: опционально маскируем email в свободном тексте (message/exception
 	// value). No-op при ScrubFreeText=false — текущее поведение не меняется.
-	ev.Message = p.Scrub.ScrubText(ev.Message)
-	excValue = p.Scrub.ScrubText(excValue)
+	ev.Message = p.Scrub.ScrubMessage(ev.Message)
+	excValue = p.Scrub.ScrubMessage(excValue)
 
 	p.batcher.Add(event.Event{
 		ID:             ev.EventID,
@@ -348,16 +348,16 @@ func (p *Pipeline) processTransaction(projectID int64, tx trace.Transaction) {
 	// часто оседают в span.Data (напр. http.*). p.Scrub == nil — no-op
 	// (методы Scrubber nil-safe). Детекция работает поверх уже зачищенных спанов.
 	p.Scrub.ScrubTags(tx.Tags)
-	// SEC-L2: имя транзакции нередко URL-образное (GET /u?token=...&email=...);
-	// прогоняем его через тот же free-text скраб, что и message/span.description,
-	// иначе токены/email из query string оседают в CH-колонке transactions.transaction
-	// даже при включённом scrubbing. No-op при ScrubFreeText=false.
-	tx.Name = p.Scrub.ScrubText(tx.Name)
+	// SEC-L2/M2: имя транзакции нередко URL-образное (GET /u?token=...&email=...);
+	// ScrubMessage чистит и email во free-text (по флагу), и query-токены в
+	// встроенном URL (всегда), иначе токены из query string оседают в CH-колонке
+	// transactions.transaction даже при дефолтном scrubbing.
+	tx.Name = p.Scrub.ScrubMessage(tx.Name)
 	for i := range tx.Spans {
 		p.Scrub.ScrubData(tx.Spans[i].Data)
-		// RA-L10: опционально маскируем email в описании спана. No-op при
-		// ScrubFreeText=false.
-		tx.Spans[i].Description = p.Scrub.ScrubText(tx.Spans[i].Description)
+		// span.description часто "METHOD https://host/path?token=…" — ScrubMessage
+		// вычищает query-токены всегда, email — при ScrubFreeText.
+		tx.Spans[i].Description = p.Scrub.ScrubMessage(tx.Spans[i].Description)
 	}
 
 	p.Spans.Add(projectID, tx)
