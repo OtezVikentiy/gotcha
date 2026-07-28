@@ -67,15 +67,36 @@ type Config struct {
 	// маскируются по умолчанию. Оператор возвращает нужные ему поля явно —
 	// GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer.
 	ScrubAllowKeys []string
+
+	// LogLevel/LogFormat — управление логами (GOTCHA_LOG_LEVEL: debug|info|warn|
+	// error, GOTCHA_LOG_FORMAT: text|json). Без них уровень был жёстко зашит в
+	// Info, а формат — текстовый: поднять детализацию во время инцидента было
+	// нельзя вообще, а текстовый вывод плохо ложится в Loki/ELK.
+	LogLevel  string
+	LogFormat string
 	// ScrubFreeText (RA-L10) — опционально маскировать email-адреса в свободном
 	// тексте (message/exception_value/span.description). По умолчанию выключено
 	// (консервативно, чтобы не портить SQL/URL); только email, не номера.
 	ScrubFreeText bool
 
-	// SSRFAllowPrivate (SEC-M1) — разрешить uptime-чекерам и webhook'ам
-	// ходить на приватные/loopback/link-local адреса. По умолчанию false
+	// SSRFAllowPrivate* (SEC-M1) — разрешить исходящим запросам ходить на
+	// приватные/loopback/link-local адреса. По умолчанию всё false
 	// (мультитенантная защита от SSRF к метадате/внутренним сервисам).
-	SSRFAllowPrivate bool
+	//
+	// Флаги РАЗДЕЛЬНЫЕ, потому что риск у трёх контуров разный:
+	//   Uptime  — самый безобидный: мониторить свой внутренний сервис нужно
+	//             постоянно, цель задаёт админ организации.
+	//   Webhook — цель задаёт админ проекта, а ответ цели (до 1 КБ) виден в UI
+	//             на странице доставок: это полноценный внутренний ридер.
+	//   OIDC    — туда уходит client_secret на token_endpoint из discovery.
+	// Раньше один GOTCHA_SSRF_ALLOW_PRIVATE расслаблял все три сразу, поэтому
+	// «разрешить мониторить внутренний сервис» незаметно открывало и остальные два.
+	//
+	// Старая переменная сохранена как ДЕФОЛТ для всех трёх — существующие
+	// инсталляции не ломаются, но могут сузить разрешение точечно.
+	SSRFAllowPrivateUptime  bool
+	SSRFAllowPrivateWebhook bool
+	SSRFAllowPrivateOIDC    bool
 	// AutoMigrate (ARCH-M3) — применять миграции схемы на старте. По
 	// умолчанию true; false выносит миграции в отдельный init-job, чтобы
 	// app-реплики не клинили все разом на dirty-состоянии.
@@ -276,7 +297,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.ScrubIP = boolEnvDef("GOTCHA_SCRUB_IP", true)
 	cfg.ScrubEmail = boolEnvDef("GOTCHA_SCRUB_EMAIL", true)
 	cfg.ScrubFreeText = boolEnv("GOTCHA_SCRUB_FREETEXT")
-	cfg.SSRFAllowPrivate = boolEnv("GOTCHA_SSRF_ALLOW_PRIVATE")
+	// Общий флаг — дефолт для трёх раздельных (обратная совместимость).
+	ssrfAll := boolEnv("GOTCHA_SSRF_ALLOW_PRIVATE")
+	cfg.SSRFAllowPrivateUptime = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME", ssrfAll)
+	cfg.SSRFAllowPrivateWebhook = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK", ssrfAll)
+	cfg.SSRFAllowPrivateOIDC = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_OIDC", ssrfAll)
 	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE", true)
 	// Privacy-by-default: полный текст ошибок/стектрейсов/имён транзакций может
 	// нести ПДн, а внешние каналы (Telegram — серверы за пределами РФ, webhook)
@@ -293,6 +318,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	} else {
 		cfg.ScrubKeys = defaultScrubKeys()
 	}
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOG_LEVEL")))
+	cfg.LogFormat = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOG_FORMAT")))
+
 	// Исключения из denylist — точными именами (см. Config.ScrubAllowKeys).
 	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_ALLOW_KEYS"), ",") {
 		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {

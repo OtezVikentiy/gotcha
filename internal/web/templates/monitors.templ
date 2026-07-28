@@ -136,33 +136,35 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 				}
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "uptime.monitors.table.name") }</th>
-							<th>{ i18n.T(ctx, "uptime.monitors.table.type") }</th>
-							<th>{ i18n.T(ctx, "uptime.monitors.table.status") }</th>
-							<th class="num">{ i18n.T(ctx, "uptime.monitors.table.uptime_24h") }</th>
-							<th class="num">{ i18n.T(ctx, "uptime.monitors.table.avg_latency_24h") }</th>
-							<th>{ i18n.T(ctx, "uptime.monitors.table.availability_24h") }</th>
-							<th>{ i18n.T(ctx, "uptime.monitors.table.last_check") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, row := range rows {
-							<tr>
-								<td><a href={ templ.URL(monitorDetailPath(row.Monitor.ID)) }>{ row.Monitor.Name }</a></td>
-								<td><span class="chip">{ string(row.Monitor.Kind) }</span></td>
-								<td><span class={ monitorStatusBadgeClass(row.Status) }>{ i18n.T(ctx, monitorStatusTextKey(row.Status)) }</span></td>
-								<td class="num">{ uptimeStatTextCtx(ctx, row.Uptime24h) }</td>
-								<td class="num">{ avgLatencyText(row.Uptime24h, row.AvgLatencyMs) }</td>
-								<td>@row.Bars
-</td>
-								<td>{ lastCheckedText(ctx, row.LastChecked) }</td>
-							</tr>
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>{ i18n.T(ctx, "uptime.monitors.table.name") }</th>
+									<th>{ i18n.T(ctx, "uptime.monitors.table.type") }</th>
+									<th>{ i18n.T(ctx, "uptime.monitors.table.status") }</th>
+									<th class="num">{ i18n.T(ctx, "uptime.monitors.table.uptime_24h") }</th>
+									<th class="num">{ i18n.T(ctx, "uptime.monitors.table.avg_latency_24h") }</th>
+									<th>{ i18n.T(ctx, "uptime.monitors.table.availability_24h") }</th>
+									<th>{ i18n.T(ctx, "uptime.monitors.table.last_check") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, row := range rows {
+									<tr>
+										<td><a href={ templ.URL(monitorDetailPath(row.Monitor.ID)) }>{ row.Monitor.Name }</a></td>
+										<td><span class="chip">{ string(row.Monitor.Kind) }</span></td>
+										<td><span class={ monitorStatusBadgeClass(row.Status) }>{ i18n.T(ctx, monitorStatusTextKey(row.Status)) }</span></td>
+										<td class="num">{ uptimeStatTextCtx(ctx, row.Uptime24h) }</td>
+										<td class="num">{ avgLatencyText(row.Uptime24h, row.AvgLatencyMs) }</td>
+										<td>@row.Bars
+						</td>
+										<td>{ lastCheckedText(ctx, row.LastChecked) }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+				</div>
 				</div>
 			}
 		</div>

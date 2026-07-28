@@ -48,23 +48,25 @@ templ AlertDeliveries(projectID int64, failed []notify.FailedJob, userEmail stri
 				@emptyState("bell", "alerts.deliveries.empty.title", "alerts.deliveries.empty.body", "", "")
 			} else {
 				<div class="card">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "alerts.failed.table.kind") }</th>
-								<th>{ i18n.T(ctx, "alerts.failed.table.target") }</th>
-								<th>{ i18n.T(ctx, "alerts.failed.table.status") }</th>
-								<th class="num">{ i18n.T(ctx, "alerts.failed.table.attempts") }</th>
-								<th>{ i18n.T(ctx, "alerts.failed.table.error") }</th>
-								<th>{ i18n.T(ctx, "alerts.failed.table.when") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, f := range failed {
-								@failedRow(f)
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>{ i18n.T(ctx, "alerts.failed.table.kind") }</th>
+										<th>{ i18n.T(ctx, "alerts.failed.table.target") }</th>
+										<th>{ i18n.T(ctx, "alerts.failed.table.status") }</th>
+										<th class="num">{ i18n.T(ctx, "alerts.failed.table.attempts") }</th>
+										<th>{ i18n.T(ctx, "alerts.failed.table.error") }</th>
+										<th>{ i18n.T(ctx, "alerts.failed.table.when") }</th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, f := range failed {
+										@failedRow(f)
+									}
+								</tbody>
+							</table>
+					</div>
 				</div>
 			}
 		</div>

@@ -97,21 +97,23 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 				if len(windows) == 0 {
 					@emptyState("clock", "uptime.maintenance.empty.title", "uptime.maintenance.empty.body", "", "")
 				} else {
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "uptime.maintenance.table.name") }</th>
-								<th>{ i18n.T(ctx, "uptime.maintenance.table.type") }</th>
-								<th>{ i18n.T(ctx, "uptime.maintenance.table.schedule") }</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, w := range windows {
-								@windowRow(projectID, w)
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>{ i18n.T(ctx, "uptime.maintenance.table.name") }</th>
+										<th>{ i18n.T(ctx, "uptime.maintenance.table.type") }</th>
+										<th>{ i18n.T(ctx, "uptime.maintenance.table.schedule") }</th>
+										<th></th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, w := range windows {
+										@windowRow(projectID, w)
+									}
+								</tbody>
+							</table>
+					</div>
 				}
 			</section>
 

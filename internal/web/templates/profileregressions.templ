@@ -77,32 +77,34 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 				@emptyState("zap", "profiles.regressions.empty.title", "profiles.regressions.empty.body", "", "")
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "profiles.regressions.table.function") }</th>
-							<th>{ i18n.T(ctx, "profiles.regressions.table.service_type") }</th>
-							<th class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
-							<th class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
-							<th>{ i18n.T(ctx, "issues.table.status") }</th>
-							<th>{ i18n.T(ctx, "perf.regressions.table.started") }</th>
-							<th class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, reg := range regressions {
+				<div class="table-scroll">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td>{ reg.Function }</td>
-								<td>{ profileRegServiceType(reg) }</td>
-								<td class="num">{ profileRegIncreasePct(reg) }</td>
-								<td class="num">{ profileRegRange(reg) }</td>
-								<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
-								<td>{ ago(ctx, reg.StartedAt) }</td>
-								<td class="num">{ profileRegDuration(ctx, reg) }</td>
+								<th>{ i18n.T(ctx, "profiles.regressions.table.function") }</th>
+								<th>{ i18n.T(ctx, "profiles.regressions.table.service_type") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
+								<th>{ i18n.T(ctx, "issues.table.status") }</th>
+								<th>{ i18n.T(ctx, "perf.regressions.table.started") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, reg := range regressions {
+								<tr>
+									<td>{ reg.Function }</td>
+									<td>{ profileRegServiceType(reg) }</td>
+									<td class="num">{ profileRegIncreasePct(reg) }</td>
+									<td class="num">{ profileRegRange(reg) }</td>
+									<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
+									<td>{ ago(ctx, reg.StartedAt) }</td>
+									<td class="num">{ profileRegDuration(ctx, reg) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 				</div>
 			}
 		</div>

@@ -275,9 +275,15 @@ func (q *Query) EndpointLatency(ctx context.Context, projectID int64, transactio
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	endUnix := (toUnix / stepSec) * stepSec
-	if toUnix%stepSec > 0 {
-		endUnix += stepSec
+	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
+	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
+	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
+	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
+	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
+	// заканчивались принудительным падением в ноль.
+	endUnix := ((toUnix - 1) / stepSec) * stepSec
+	if endUnix < startUnix {
+		endUnix = startUnix
 	}
 
 	var out []LatencyPoint

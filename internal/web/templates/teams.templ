@@ -120,19 +120,21 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 			if len(tm.Members) == 0 {
 				@emptyState("user", "teams.members.empty.title", "teams.members.empty.body", "", "")
 			} else {
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "teams.members.table.email") }</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, m := range tm.Members {
-							@teamMemberRow(tm.Team.ID, m)
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>{ i18n.T(ctx, "teams.members.table.email") }</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, m := range tm.Members {
+								@teamMemberRow(tm.Team.ID, m)
+							}
+						</tbody>
+					</table>
+				</div>
 			}
 		</div>
 		if hasAvailableMembers(orgMembers, tm.Members) {
@@ -159,19 +161,21 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 			if len(tm.Projects) == 0 {
 				@emptyState("building", "teams.projects.empty.title", "teams.projects.empty.body", "", "")
 			} else {
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "teams.projects.table.name") }</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, p := range tm.Projects {
-							@teamProjectRow(tm.Team.ID, p)
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>{ i18n.T(ctx, "teams.projects.table.name") }</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, p := range tm.Projects {
+								@teamProjectRow(tm.Team.ID, p)
+							}
+						</tbody>
+					</table>
+				</div>
 			}
 		</div>
 		if hasAvailableProjects(orgProjects, tm.Projects) {

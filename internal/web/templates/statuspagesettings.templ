@@ -145,20 +145,22 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 			if len(f.Monitors) == 0 {
 				<p class="hint">{ i18n.T(ctx, "uptime.statuspages.monitors_empty") }</p>
 			} else {
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th></th>
-							<th>{ i18n.T(ctx, "uptime.statuspages.table.monitor") }</th>
-							<th>{ i18n.T(ctx, "uptime.statuspages.field.display_name") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, m := range f.Monitors {
-							@statusPageMonitorRow(statusPageFormID(f), m)
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th></th>
+								<th>{ i18n.T(ctx, "uptime.statuspages.table.monitor") }</th>
+								<th>{ i18n.T(ctx, "uptime.statuspages.field.display_name") }</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, m := range f.Monitors {
+								@statusPageMonitorRow(statusPageFormID(f), m)
+							}
+						</tbody>
+					</table>
+				</div>
 			}
 		</div>
 

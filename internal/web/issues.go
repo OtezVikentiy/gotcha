@@ -109,7 +109,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 			Issue: it,
 			// Тренд событий за сутки: значения — счётчики, поэтому в
 			// подсказке показываются как есть.
-			Sparkline: sparklineSVG(sparklines[it.ID], sparklineWidth, sparklineHeight, nil),
+			Sparkline: sparklineSVG(r.Context(), sparklines[it.ID], sparklineWidth, sparklineHeight, nil),
 		}
 	}
 

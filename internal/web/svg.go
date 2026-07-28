@@ -26,6 +26,25 @@ const flameRowHeight = 18
 // фрейма ∝ его доле от корня; глубина = уровень стека. Текст SVG строится из
 // чисел и html-экранированных имён — templ.Raw безопасен. Пустое дерево
 // (Value==0) → плейсхолдер «нет данных».
+// svgRoot открывает корневой <svg> с доступным ИМЕНЕМ. role="img" + aria-label
+// обязательны: без них скринридер объявляет график как безымянную графику, а
+// <title> внутри отдельных <rect> (тултипы для мыши) на нефокусируемых фигурах,
+// как правило, не озвучивается и недостижим с клавиатуры. Имя описывает, ЧТО
+// изображено; сами числа доступны в соседних таблицах и подписях осей.
+func svgRoot(class string, w, h int, label string) string {
+	var sb strings.Builder
+	sb.WriteString(`<svg class="`)
+	sb.WriteString(class)
+	sb.WriteString(`" viewBox="0 0 `)
+	sb.WriteString(strconv.Itoa(w))
+	sb.WriteByte(' ')
+	sb.WriteString(strconv.Itoa(h))
+	sb.WriteString(`" role="img" aria-label="`)
+	sb.WriteString(html.EscapeString(label))
+	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	return sb.String()
+}
+
 func flamegraphSVG(ctx context.Context, root *profile.FlameNode, width int) templ.Component {
 	if root == nil || root.Value == 0 {
 		return templ.Raw(`<p class="empty">` + html.EscapeString(i18n.T(ctx, "profile.flame.no_data")) + `</p>`)
@@ -33,11 +52,8 @@ func flamegraphSVG(ctx context.Context, root *profile.FlameNode, width int) temp
 	depth := flameDepth(root)
 	height := depth * flameRowHeight
 	var sb strings.Builder
-	sb.WriteString(`<svg class="flamegraph" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(width))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(height))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="10">`)
+	sb.WriteString(strings.TrimSuffix(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")), ">"))
+	sb.WriteString(` font-family="monospace" font-size="10">`)
 	flameRow(&sb, root, 0, float64(width), 0, root.Value)
 	sb.WriteString(`</svg>`)
 	return templ.Raw(sb.String())
@@ -148,11 +164,7 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	y0, y1 := float64(padT), float64(h-padB)
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="metric-chart" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("metric-chart", w, h, i18n.T(ctx, "a11y.chart.metric")))
 
 	// Рамка осей (левая вертикаль + нижняя горизонталь).
 	sb.WriteString(`<g class="chart-axis">`)
@@ -452,11 +464,11 @@ const (
 // шириной в пару сантиметров), но подсказка со сводкой нужна: без неё линия
 // показывает только форму, а величины остаются неизвестными. format задаёт
 // запись значения (счётчик или длительность) — nil означает голое число.
-func sparklineSVG(buckets []uint64, w, h int, format func(uint64) string) templ.Component {
-	return templ.Raw(sparklinePolyline(buckets, w, h, format))
+func sparklineSVG(ctx context.Context, buckets []uint64, w, h int, format func(uint64) string) templ.Component {
+	return templ.Raw(sparklinePolyline(ctx, buckets, w, h, format))
 }
 
-func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) string {
+func sparklinePolyline(ctx context.Context, buckets []uint64, w, h int, format func(uint64) string) string {
 	var max uint64
 	for _, v := range buckets {
 		if v > max {
@@ -464,7 +476,7 @@ func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) s
 		}
 	}
 	if len(buckets) == 0 || max == 0 {
-		return flatlineSVG(w, h)
+		return flatlineSVG(ctx, w, h)
 	}
 
 	n := len(buckets)
@@ -478,11 +490,7 @@ func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) s
 	}
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="sparkline" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("sparkline", w, h, i18n.T(ctx, "a11y.chart.sparkline")))
 	if len(buckets) > 0 {
 		if format == nil {
 			format = func(v uint64) string { return strconv.FormatUint(v, 10) }
@@ -508,14 +516,11 @@ func sparklinePolyline(buckets []uint64, w, h int, format func(uint64) string) s
 
 // flatlineSVG — горизонтальная линия посередине: issue без событий в окне
 // спарклайна (или без данных вовсе).
-func flatlineSVG(w, h int) string {
+func flatlineSVG(ctx context.Context, w, h int) string {
 	y := formatCoord(float64(h) / 2)
 	var sb strings.Builder
-	sb.WriteString(`<svg class="sparkline" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg"><polyline points="0,`)
+	sb.WriteString(svgRoot("sparkline", w, h, i18n.T(ctx, "a11y.chart.sparkline")))
+	sb.WriteString(`<polyline points="0,`)
 	sb.WriteString(y)
 	sb.WriteByte(' ')
 	sb.WriteString(strconv.Itoa(w))
@@ -546,13 +551,13 @@ const (
 // переиспользует sparklineSVG, скармливая ему P95 каждой точки как []uint64.
 // Числа приходят из trace.Query.EndpointLatency (посчитаны CH), поэтому
 // templ.Raw внутри sparklineSVG остаётся безопасным.
-func latencySparklineSVG(points []trace.LatencyPoint, w, h int) templ.Component {
+func latencySparklineSVG(ctx context.Context, points []trace.LatencyPoint, w, h int) templ.Component {
 	vals := make([]uint64, len(points))
 	for i, p := range points {
 		vals[i] = uint64(p.P95)
 	}
 	// Значения — микросекунды: в подсказке приводим к ms/s, как на осях.
-	return sparklineSVG(vals, w, h, func(v uint64) string { return formatUSAxis(float64(v)) })
+	return sparklineSVG(ctx, vals, w, h, func(v uint64) string { return formatUSAxis(float64(v)) })
 }
 
 // perfLatencyChartWidth/Height — размер графика перцентилей p50/p95 и графика
@@ -590,7 +595,7 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, w, h i
 		}
 	}
 	if len(points) == 0 || max == 0 {
-		return flatlineSVG(w, h)
+		return flatlineSVG(ctx, w, h)
 	}
 
 	g := newChartGeom(w, h, 64, 16, 26, 26)
@@ -598,11 +603,7 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, w, h i
 	n := len(points)
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="latency-chart" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("latency-chart", w, h, i18n.T(ctx, "a11y.chart.latency")))
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
@@ -654,7 +655,7 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, w, h
 		}
 	}
 	if len(points) == 0 || max == 0 {
-		return chartEmptyAxis(w, h)
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.latency"))
 	}
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
@@ -664,11 +665,7 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, w, h
 	gap := barW * 0.15
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="chart-freq" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.frequency")))
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
@@ -716,7 +713,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 		}
 	}
 	if len(buckets) == 0 || max == 0 {
-		return chartEmptyAxis(w, h)
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.throughput"))
 	}
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
@@ -726,11 +723,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 	gap := barW * 0.15
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="chart-freq" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.frequency")))
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
@@ -850,11 +843,7 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	// с рисунком и буквы. Чтобы график занимал широкую карточку целиком,
 	// увеличены сами размеры холста (chartWidth/chartHeight ниже), а не
 	// способ его вписывания.
-	sb.WriteString(`<svg class="chart-freq" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.frequency")))
 
 	// Оси: левая вертикаль + базовая линия.
 	sb.WriteString(`<g class="chart-axis">`)
@@ -977,14 +966,14 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 // chartEmptyAxis — горизонтальная линия у нижнего края: пустой ряд (нет данных)
 // у bar-графиков с классом .chart (throughput, гистограмма длительностей) —
 // "нет данных" не должно выглядеть как ошибка рендера.
-func chartEmptyAxis(w, h int) string {
+// label передаёт ВЫЗЫВАЮЩИЙ: эта заглушка обслуживает три разных графика
+// (задержка, throughput, Web Vital), и зашитое имя одного из них было бы враньём
+// для остальных двух.
+func chartEmptyAxis(w, h int, label string) string {
 	y := formatCoord(float64(h) - 0.5)
 	var sb strings.Builder
-	sb.WriteString(`<svg class="chart" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"><line x1="0" y1="`)
+	sb.WriteString(strings.TrimSuffix(svgRoot("chart", w, h, label), ">"))
+	sb.WriteString(` preserveAspectRatio="none"><line x1="0" y1="`)
 	sb.WriteString(y)
 	sb.WriteString(`" x2="`)
 	sb.WriteString(strconv.Itoa(w))
@@ -1030,7 +1019,7 @@ func availabilityBarsSVG(ctx context.Context, bars []uptime.UptimeStat, w, h int
 
 func availabilityBarsMarkup(ctx context.Context, bars []uptime.UptimeStat, w, h int) string {
 	if len(bars) == 0 {
-		return availabilityEmptyBarsSVG(w, h)
+		return availabilityEmptyBarsSVG(ctx, w, h)
 	}
 
 	n := len(bars)
@@ -1054,11 +1043,7 @@ func availabilityBarsMarkup(ctx context.Context, bars []uptime.UptimeStat, w, h 
 	}
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="availability-bars" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")))
 	sb.WriteString(rects.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()
@@ -1098,13 +1083,10 @@ func availabilityBarLabel(ctx context.Context, b uptime.UptimeStat) string {
 	}
 }
 
-func availabilityEmptyBarsSVG(w, h int) string {
+func availabilityEmptyBarsSVG(ctx context.Context, w, h int) string {
 	var sb strings.Builder
-	sb.WriteString(`<svg class="availability-bars" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="`)
+	sb.WriteString(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")))
+	sb.WriteString(`<rect x="0" y="0" width="`)
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteString(`" height="`)
 	sb.WriteString(strconv.Itoa(h))
@@ -1150,11 +1132,11 @@ const (
 // (templ.EscapeString): в отличие от прочих SVG-хелперов здесь в текст SVG
 // попадают строки пользователя, а не только числа, поэтому templ.Raw без
 // экранирования был бы XSS-дырой.
-func waterfallSVG(spans []trace.SpanRow, errIssues map[string]int64, totalUS uint32, w int) templ.Component {
-	return templ.Raw(waterfallMarkup(spans, errIssues, totalUS, w))
+func waterfallSVG(ctx context.Context, spans []trace.SpanRow, errIssues map[string]int64, totalUS uint32, w int) templ.Component {
+	return templ.Raw(waterfallMarkup(ctx, spans, errIssues, totalUS, w))
 }
 
-func waterfallMarkup(spans []trace.SpanRow, errIssues map[string]int64, totalUS uint32, w int) string {
+func waterfallMarkup(ctx context.Context, spans []trace.SpanRow, errIssues map[string]int64, totalUS uint32, w int) string {
 	ordered := orderSpanTree(spans, waterfallMaxRows)
 	if len(ordered) == 0 {
 		return ""
@@ -1171,11 +1153,8 @@ func waterfallMarkup(spans []trace.SpanRow, errIssues map[string]int64, totalUS 
 	h := len(ordered) * waterfallRowH
 
 	var b strings.Builder
-	b.WriteString(`<svg class="waterfall" viewBox="0 0 `)
-	b.WriteString(strconv.Itoa(w))
-	b.WriteByte(' ')
-	b.WriteString(strconv.Itoa(h))
-	b.WriteString(`" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="10">`)
+	b.WriteString(strings.TrimSuffix(svgRoot("waterfall", w, h, i18n.T(ctx, "a11y.chart.waterfall")), ">"))
+	b.WriteString(` font-family="monospace" font-size="10">`)
 
 	for i, os := range ordered {
 		s := os.span
@@ -1334,11 +1313,11 @@ const (
 // format приводит число к той же записи, что и значение рядом в строке
 // (миллисекунды/секунды либо безразмерный CLS), иначе в подсказке висели бы
 // голые числа без единицы.
-func vitalSeriesSVG(points []trace.VitalPoint, w, h int, format func(float64) string) templ.Component {
-	return templ.Raw(vitalSeriesMarkup(points, w, h, format))
+func vitalSeriesSVG(ctx context.Context, points []trace.VitalPoint, w, h int, format func(float64) string) templ.Component {
+	return templ.Raw(vitalSeriesMarkup(ctx, points, w, h, format))
 }
 
-func vitalSeriesMarkup(points []trace.VitalPoint, w, h int, format func(float64) string) string {
+func vitalSeriesMarkup(ctx context.Context, points []trace.VitalPoint, w, h int, format func(float64) string) string {
 	var max float64
 	for _, p := range points {
 		if p.P75 > max {
@@ -1346,7 +1325,7 @@ func vitalSeriesMarkup(points []trace.VitalPoint, w, h int, format func(float64)
 		}
 	}
 	if len(points) == 0 || max <= 0 {
-		return flatlineSVG(w, h)
+		return flatlineSVG(ctx, w, h)
 	}
 
 	n := len(points)
@@ -1360,11 +1339,7 @@ func vitalSeriesMarkup(points []trace.VitalPoint, w, h int, format func(float64)
 	}
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="vital-chart" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("vital-chart", w, h, i18n.T(ctx, "a11y.chart.vital")))
 	if format != nil && len(points) > 0 {
 		lo, hi := points[0].P75, points[0].P75
 		for _, p := range points {
@@ -1439,7 +1414,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, 
 		}
 	}
 	if len(points) == 0 || maxPhase == 0 {
-		return chartEmptyAxis(w, h)
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.vital"))
 	}
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
@@ -1450,11 +1425,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, 
 	plotH := g.y1 - g.y0
 
 	var sb strings.Builder
-	sb.WriteString(`<svg class="latency-chart" viewBox="0 0 `)
-	sb.WriteString(strconv.Itoa(w))
-	sb.WriteByte(' ')
-	sb.WriteString(strconv.Itoa(h))
-	sb.WriteString(`" xmlns="http://www.w3.org/2000/svg">`)
+	sb.WriteString(svgRoot("latency-chart", w, h, i18n.T(ctx, "a11y.chart.latency")))
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)

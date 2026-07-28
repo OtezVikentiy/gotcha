@@ -116,8 +116,8 @@
     "range.30d": "30d",
     "range.custom": "Custom range",
     "range.set_dates": "Set dates",
-    "range.start": "From",
-    "range.end": "To",
+    "range.start": "From (UTC)",
+    "range.end": "To (UTC)",
     "range.picker.apply": "Apply",
     "range.picker.cancel": "Cancel",
     "range.picker.hint": "Pick a start and end",
@@ -751,7 +751,6 @@
     "profile.danger.delete_account.button": "Delete account",
     "profile.danger.delete_account.sole_owner": "Cannot delete your account: you are the sole owner of these organizations: {orgs}. Transfer ownership to another member or delete those organizations first.",
     "time.just_now": "just now",
-
     "error.internal": "internal error",
     "error.not_found": "Page not found",
     "error.request_denied": "Request denied",
@@ -759,7 +758,6 @@
     "error.export_unavailable": "export unavailable: telemetry storage is not configured",
     "error.slug.invalid": "slug must consist of lowercase latin letters, digits and hyphens (1..64 characters)",
     "error.slug.taken": "this slug is already taken",
-
     "error.oauth.session_expired": "your sign-in session has expired, please try again",
     "error.oauth.provider_no_email": "the provider did not verify the email",
     "error.oauth.unknown_provider": "unknown provider",
@@ -770,23 +768,19 @@
     "error.oauth.email_not_verified_link_profile": "the provider did not verify the email; link the account from your profile after signing in with a password",
     "error.oauth.no_invite": "there is no invitation for this email — ask an administrator to invite you",
     "error.oauth.login_failed": "sign-in via {provider} failed, please try again",
-
     "error.org.last_owner": "cannot demote or remove the organization's last owner",
     "error.org.invalid_role": "invalid role",
     "error.org.not_member": "user is not a member of the organization",
     "error.org.owner_only": "only an owner can manage owner-level access",
     "error.org.invalid_quota": "quota cannot be negative",
-
     "error.profile_password.invalid_current": "incorrect current password",
     "error.profile_password.weak": "new password must be 8 to 512 characters",
     "error.profile_password.failed": "failed to change password",
-
     "error.register.email_taken": "could not register, check your details or sign in",
     "error.register.weak_password": "password must be 8 to 512 characters",
     "error.register.invalid_email": "invalid email format",
     "error.register.failed": "could not register",
     "error.register.closed": "registration on this instance is closed — contact an administrator for an invite",
-
     "error.maintenance.invalid_window": "invalid maintenance window: {detail}",
     "error.onboarding.failed": "could not create organization or project",
     "error.monitor.invalid": "monitor: {detail}",
@@ -796,10 +790,8 @@
     "error.team.cross_org_project": "project belongs to another organization",
     "error.alerts.invalid_rule": "invalid rule: spike requires threshold and window (> 0), throttle cannot be negative",
     "error.alerts.invalid_channel": "invalid channel: check the address/URL and required fields for the selected type",
-
     "auth.oauth.login_with": "Sign in with {provider}",
     "org.quota.near_limit": "Event ingestion is approaching the limit: {used} of {limit} used this month",
-
     "getting_started.title": "Getting started",
     "getting_started.progress": "{done}/{total} done",
     "getting_started.step.1": "Create a project",
@@ -899,16 +891,54 @@
     "uptime.maintenance.kind.oneoff_label": "One-off",
     "uptime.maintenance.kind.weekly_label": "Weekly",
     "alerts.channels.new.target_hint": "email — address; webhook — URL; telegram — chat_id",
-    "alerts.channels.new.secret_hint": "webhook — request signature; telegram — bot token; not needed for email"
+    "alerts.channels.new.secret_hint": "webhook — request signature; telegram — bot token; not needed for email",
+    "range.utc_note": "UTC",
+    "a11y.skip_to_content": "Skip to content",
+    "a11y.chart.flamegraph": "Flame graph of the profile",
+    "a11y.chart.metric": "Metric time series chart",
+    "a11y.chart.sparkline": "Sparkline of recent activity",
+    "a11y.chart.latency": "Request latency over time",
+    "a11y.chart.throughput": "Request throughput over time",
+    "a11y.chart.histogram": "Request duration distribution",
+    "a11y.chart.frequency": "Event frequency over time",
+    "a11y.chart.availability": "Availability over time",
+    "a11y.chart.waterfall": "Trace span waterfall",
+    "a11y.chart.vital": "Web Vital over time"
   },
   "plurals": {
-    "chart.bar.transactions": {"one": "{n} transaction", "other": "{n} transactions"},
-    "chart.bar.events": {"one": "{n} event", "other": "{n} events"},
-    "issue.times_seen": {"one": "{n} time", "few": "{n} times", "many": "{n} times", "other": "{n} times"},
-    "time.ago.seconds": {"one": "{n} second ago", "other": "{n} seconds ago"},
-    "time.ago.minutes": {"one": "{n} minute ago", "other": "{n} minutes ago"},
-    "time.ago.hours": {"one": "{n} hour ago", "other": "{n} hours ago"},
-    "time.ago.days": {"one": "{n} day ago", "other": "{n} days ago"},
-    "org.quota.dropped_banner": {"one": "Event ingestion is limited: {n} item was dropped this month", "other": "Event ingestion is limited: {n} items were dropped this month"}
+    "chart.bar.transactions": {
+      "one": "{n} transaction",
+      "other": "{n} transactions"
+    },
+    "chart.bar.events": {
+      "one": "{n} event",
+      "other": "{n} events"
+    },
+    "issue.times_seen": {
+      "one": "{n} time",
+      "few": "{n} times",
+      "many": "{n} times",
+      "other": "{n} times"
+    },
+    "time.ago.seconds": {
+      "one": "{n} second ago",
+      "other": "{n} seconds ago"
+    },
+    "time.ago.minutes": {
+      "one": "{n} minute ago",
+      "other": "{n} minutes ago"
+    },
+    "time.ago.hours": {
+      "one": "{n} hour ago",
+      "other": "{n} hours ago"
+    },
+    "time.ago.days": {
+      "one": "{n} day ago",
+      "other": "{n} days ago"
+    },
+    "org.quota.dropped_banner": {
+      "one": "Event ingestion is limited: {n} item was dropped this month",
+      "other": "Event ingestion is limited: {n} items were dropped this month"
+    }
   }
 }

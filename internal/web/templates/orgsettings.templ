@@ -225,20 +225,22 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 				<h2 class="card-header">{ i18n.T(ctx, "org.quota.title") }</h2>
 				<p class="hint">{ i18n.T(ctx, "org.quota.hint") }</p>
 				<form method="post" action={ templ.URL(orgSettingsQuotaPath(o.ID)) } class="org-quota-form">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "org.quota.table.kind") }</th>
-								<th class="num">{ i18n.T(ctx, "org.quota.table.usage") }</th>
-								<th>{ i18n.T(ctx, "org.quota.table.limit") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, q := range quotas {
-								@rateGuardRow(q)
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>{ i18n.T(ctx, "org.quota.table.kind") }</th>
+									<th class="num">{ i18n.T(ctx, "org.quota.table.usage") }</th>
+									<th>{ i18n.T(ctx, "org.quota.table.limit") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, q := range quotas {
+									@rateGuardRow(q)
+								}
+							</tbody>
+						</table>
+					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.quota.submit") }</button>
 				</form>
 			</section>

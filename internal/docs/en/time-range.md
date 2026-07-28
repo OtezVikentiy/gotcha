@@ -2,6 +2,15 @@
 
 Every page with a chart — Performance and the endpoint page, Web Vitals, Metrics, Profiles, a monitor's latency chart, and an issue's frequency chart — shares one control for the time window the chart and its numbers cover. It sits in the filter row, usually labeled **"Period"**. (The issues *list* has a simpler period filter — all-time / 24h / 7d / 30d, no custom range; see [Issues](/docs/issues).)
 
+## All times are UTC
+
+Times in gotcha are UTC everywhere — chart axes, event timestamps and the range
+control alike. When you pick 21 July 00:00, that is 21 July 00:00 **UTC**, not
+00:00 in your own timezone, so the window always lines up with the labels on the
+chart you are reading. The control and the active-range caption say `UTC` for
+this reason: if your machine is at UTC+3, a window that looks like "midnight"
+starts at 03:00 local, and during an incident that difference matters.
+
 ## Presets and a custom range
 
 The control offers four quick presets — **1h / 24h / 7d / 30d** — and a **custom range** for anything else. A preset is relative to "now"; a custom range is two fixed points in time. Applying a window re-scopes the whole page to it and keeps the page's other filters (environment, sorting, and so on).

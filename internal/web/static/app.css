@@ -1,11 +1,5 @@
 /* Gotcha — токен-система, тёмная и светлая темы. Без фреймворка, без сборки. */
 
-/* htmx-индикатор: обычно htmx вставляет эти правила инлайном, но CSP
-   default-src 'self' без unsafe-inline это блокирует (см. htmx-config в
-   layout.templ, includeIndicatorStyles:false), поэтому держим их здесь. */
-.htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
-.htmx-request .htmx-indicator { opacity: 1; }
-.htmx-request.htmx-indicator { opacity: 1; }
 
 :root {
 	/* color-scheme синхронизирован с темой: без него нативные контролы форм
@@ -20,7 +14,13 @@
 	--text: #e6ebf3;
 	--text-dim: #8a93a6;
 	--text-mute: #5c6473;
-	--accent: #3d7bff;
+	/* --accent служит ФОНОМ первичной кнопки под белой подписью (--accent-fg),
+	   поэтому обязан давать >= 4.5:1 по WCAG 1.4.3. Прежний бренд-синий #3d7bff
+	   давал 3.84:1 — главная кнопка действия не проходила на каждом экране.
+	   #3169e8 = 4.87:1: минимальное отклонение от бренда с реальным запасом.
+	   Бренд-градиент знака (#3d7bff→#7c5cff в icons.templ/favicon.svg) НЕ трогаем:
+	   это графика, а не текст на подложке, там действует правило 3:1. */
+	--accent: #3169e8;
 	--accent-hover: #5a90ff;
 	--accent-fg: #ffffff;
 	--accent-soft: rgba(96, 132, 255, .12);
@@ -408,6 +408,12 @@ a:hover {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	overflow: hidden;
+	/* flex: none обязателен вместе с overflow: hidden. Без него переключатели
+	   сжимались наравне с остальным содержимым topbar и ОБРЕЗАЛИСЬ: на 375px
+	   кнопка «EN» пропадала целиком, а «Системная» уезжала за вьюпорт — по её
+	   центру elementFromPoint возвращал шапку, то есть нажать было физически
+	   нельзя. Сжиматься должна хлебная крошка (см. .breadcrumb ниже). */
+	flex: none;
 }
 /* Компактные сегментированные переключатели — переопределяем громкую
    акцентную кнопку по умолчанию (см. правило `button` ниже), чтобы в 44px
@@ -445,6 +451,25 @@ a:hover {
 	background: var(--accent-soft);
 	color: var(--accent);
 }
+/* Skip-link: вне потока и невидим, пока не получит фокус с клавиатуры. Не
+   display:none и не visibility:hidden — иначе он выпадет и из порядка
+   табуляции, ради которого существует. */
+.skip-link {
+	position: absolute;
+	left: -9999px;
+	top: 0;
+	z-index: 100;
+	padding: 10px 16px;
+	background: var(--accent);
+	color: var(--accent-fg);
+	border-radius: 0 0 var(--radius) 0;
+	font-weight: 600;
+}
+.skip-link:focus {
+	left: 0;
+}
+.app-content:focus { outline: none; }
+
 .app-content {
 	flex: 1;
 	padding: 16px 24px;
@@ -541,9 +566,24 @@ a:hover {
 
 /* Прокручиваемый список: нижний край растворяется, чтобы обрезанная строка
    читалась как «список продолжается», а не как сломанная вёрстка. */
+/* Скролл-контейнер широкой таблицы. Без него горизонтально уезжала ВСЯ
+   контентная колонка (единственным скроллером был .app-content), утаскивая с
+   собой заголовок страницы и фильтры: на 375px таблица эндпойнтов шириной 745px
+   в колонке 216px делала страницу непригодной. Таблица скроллится сама. */
+.table-scroll {
+	overflow-x: auto;
+	max-width: 100%;
+}
+.table-scroll > .data-table {
+	width: 100%;
+}
+
 .scroll-list {
 	max-height: 340px;
 	overflow-y: auto;
+	/* И по горизонтали тоже: этот контейнер держит .data-table (orgsettings),
+	   которая на узком экране шире него. */
+	overflow-x: auto;
 	mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
 }
 
@@ -750,6 +790,21 @@ a:hover {
 	.mobile-nav {
 		display: block;
 		position: relative;
+	}
+}
+
+/* Ниже 560px рейл ужимается до иконок: 96px колонка съедала четверть вьюпорта
+   телефона, из-за чего topbar оставался тесным даже после flex: none выше. */
+@media (max-width: 560px) {
+	.app-shell {
+		grid-template-columns: 56px 1fr;
+	}
+	.rail-label {
+		display: none;
+	}
+	.topbar {
+		padding: 0 8px;
+		gap: 4px;
 	}
 }
 
@@ -2299,6 +2354,13 @@ form.inline {
 	color: var(--text);
 	font-size: var(--fs-base);
 	font-weight: 600;
+	/* Крошка — единственный гибкий элемент topbar: именно она уступает место на
+	   узких экранах, обрезаясь многоточием, а не переключатели языка и темы,
+	   которые обязаны оставаться нажимаемыми. */
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 /* Ссылка «назад» несёт иконку из спрайта (см. breadcrumbBack), поэтому сама
    выкладывается флексом: иконка и подпись должны стоять на одной базовой

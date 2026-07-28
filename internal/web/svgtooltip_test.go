@@ -67,7 +67,7 @@ func TestChartsHaveTooltips(t *testing.T) {
 	})
 
 	t.Run("спарклайн", func(t *testing.T) {
-		out := sparklinePolyline([]uint64{3, 12, 7}, 96, 24, nil)
+		out := sparklinePolyline(context.Background(), []uint64{3, 12, 7}, 96, 24, nil)
 		for _, want := range []string{"min 3", "max 12", "· 7"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("сводка без %q: %s", want, out)
@@ -76,7 +76,7 @@ func TestChartsHaveTooltips(t *testing.T) {
 	})
 
 	t.Run("спарклайн латентности приводит микросекунды", func(t *testing.T) {
-		out := sparklinePolyline([]uint64{50_000}, 96, 24, func(v uint64) string {
+		out := sparklinePolyline(context.Background(), []uint64{50_000}, 96, 24, func(v uint64) string {
 			return formatUSAxis(float64(v))
 		})
 		if !strings.Contains(out, "50ms") {

@@ -153,21 +153,23 @@ templ ProjectsList(items []ProjectListItem, userEmail string) {
 				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding")
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "project.list.table.name") }</th>
-							<th>{ i18n.T(ctx, "project.list.table.platform") }</th>
-							<th></th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, it := range items {
-							@projectRow(it)
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>{ i18n.T(ctx, "project.list.table.name") }</th>
+									<th>{ i18n.T(ctx, "project.list.table.platform") }</th>
+									<th></th>
+									<th></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, it := range items {
+									@projectRow(it)
+								}
+							</tbody>
+						</table>
+				</div>
 				</div>
 			}
 		</div>

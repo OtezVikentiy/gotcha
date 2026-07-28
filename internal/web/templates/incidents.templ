@@ -68,24 +68,26 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "")
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.monitor") }</th>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
-							<th>{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, row := range rows {
-							@incidentListRow(row)
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.monitor") }</th>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
+									<th>{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, row := range rows {
+									@incidentListRow(row)
+								}
+							</tbody>
+						</table>
+				</div>
 				</div>
 			}
 			// Пагинатор — ВНЕ ветки len(rows)==0: на out-of-range странице строк нет,

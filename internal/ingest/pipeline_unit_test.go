@@ -130,7 +130,7 @@ func nPlusOneTx() trace.Transaction {
 func TestEnqueueAfterCloseDoesNotPanic(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	p.Start()
-	p.Close()
+	p.Close(context.Background())
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -151,8 +151,8 @@ func TestDoubleCloseDoesNotPanic(t *testing.T) {
 			t.Fatalf("double Close panicked: %v", r)
 		}
 	}()
-	p.Close()
-	p.Close()
+	p.Close(context.Background())
+	p.Close(context.Background())
 }
 
 // TestTransactionDetectionAlertsOnlyOnFirstDetection: находка, увиденная
@@ -169,7 +169,7 @@ func TestTransactionDetectionAlertsOnlyOnFirstDetection(t *testing.T) {
 	p.Start()
 	p.EnqueueTransaction(1, nPlusOneTx())
 	p.EnqueueTransaction(1, nPlusOneTx())
-	p.Close()
+	p.Close(context.Background())
 
 	if spans.count() != 2 {
 		t.Fatalf("spans added = %d, want 2", spans.count())
@@ -206,7 +206,7 @@ func TestTransactionDetectionAlertsOnRegression(t *testing.T) {
 	p.EnqueueTransaction(1, nPlusOneTx())
 	p.EnqueueTransaction(1, nPlusOneTx())
 	p.EnqueueTransaction(1, nPlusOneTx())
-	p.Close()
+	p.Close(context.Background())
 
 	if got := notifier.count(); got != 1 {
 		t.Errorf("алертов о новой проблеме = %d, want 1", got)
@@ -235,7 +235,7 @@ func TestTransactionDetectionFailureDoesNotBreakIngest(t *testing.T) {
 			p.Start()
 			p.EnqueueTransaction(1, nPlusOneTx())
 			p.EnqueueTransaction(1, nPlusOneTx())
-			p.Close()
+			p.Close(context.Background())
 
 			if spans.count() != 2 {
 				t.Fatalf("spans added = %d, want 2: транзакция должна писаться в CH несмотря на сбой детекции", spans.count())
@@ -252,7 +252,7 @@ func TestTransactionWithoutPerfSinkStillWrites(t *testing.T) {
 	p.Spans = spans
 	p.Start()
 	p.EnqueueTransaction(1, nPlusOneTx())
-	p.Close()
+	p.Close(context.Background())
 
 	if spans.count() != 1 {
 		t.Fatalf("spans added = %d, want 1", spans.count())
@@ -281,7 +281,7 @@ func TestPerfDetectionSharesOneBudget(t *testing.T) {
 	p.Perf = perf
 	p.Start()
 	p.EnqueueTransaction(7, twoFindingTx())
-	p.Close()
+	p.Close(context.Background())
 
 	perf.mu.Lock()
 	defer perf.mu.Unlock()
@@ -308,7 +308,7 @@ func TestPerfDetectionStopsWhenBudgetExhausted(t *testing.T) {
 	p.testPerfBudget = 10 * time.Millisecond
 	p.Start()
 	p.EnqueueTransaction(7, twoFindingTx())
-	p.Close()
+	p.Close(context.Background())
 
 	perf.mu.Lock()
 	defer perf.mu.Unlock()

@@ -230,6 +230,16 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 // oauthProvisionByInvite заводит аккаунт по действующему инвайту на verified
 // email и логинит. Нет инвайта → отказ, аккаунт не создаётся.
 func (h *Handler) oauthProvisionByInvite(w http.ResponseWriter, r *http.Request, provider string, id oauth.Identity) {
+	// closed — «регистрация выключена полностью»: новых аккаунтов не появляется
+	// ВООБЩЕ, даже по действующему приглашению. Именно этим closed отличается от
+	// invite: раньше оба режима проверялись как `!= "open"`, приглашения работали
+	// в обоих, и различия между ними на деле не существовало — документация
+	// обещала то, чего код не делал. Приглашение УЖЕ существующего пользователя в
+	// организацию closed не трогает: это членство, а не регистрация.
+	if h.RegistrationMode == "closed" {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.no_invite"))
+		return
+	}
 	if !id.EmailVerified {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
 		return

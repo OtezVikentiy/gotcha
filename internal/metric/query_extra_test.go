@@ -141,3 +141,70 @@ func TestAggregateNoData(t *testing.T) {
 		t.Fatalf("Aggregate no-data: ok=true (v=%v), want false", v)
 	}
 }
+
+// TestQueryRateSeriesSparseScrape фиксирует деление на РЕАЛЬНЫЙ интервал между
+// точками: GROUP BY отдаёт только непустые корзины, поэтому при скрейпе реже
+// шага соседние точки отстоят на несколько шагов. Деление на ширину корзины
+// завышало скорость ровно в (интервал/шаг) раз.
+func TestQueryRateSeriesSparseScrape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+
+	const pid = 7101
+	// Скрейп раз в 5 минут, счётчик растёт на 300 → истинная скорость 1/с.
+	seedSumCumulative(t, conn, pid, "sparse.total", "prod", now.Add(-10*time.Minute), 0)
+	seedSumCumulative(t, conn, pid, "sparse.total", "prod", now.Add(-5*time.Minute), 300)
+
+	// Шаг корзины — минута, то есть ВПЯТЕРО меньше интервала скрейпа.
+	pts, err := q.Series(ctx, pid, "sparse.total", "prod", LabelMatcher{}, "avg",
+		now.Add(-30*time.Minute), now.Add(time.Minute), time.Minute)
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	if len(pts) != 1 {
+		t.Fatalf("точек = %d, want 1: %+v", len(pts), pts)
+	}
+	if pts[0].V < 0.99 || pts[0].V > 1.01 {
+		t.Fatalf("скорость = %v, want ≈1/с (деление на ширину корзины дало бы ≈5/с)", pts[0].V)
+	}
+}
+
+// TestAggregateMatchesSeriesForCumulativeCounter фиксирует согласованность алерта
+// и графика: монотонный кумулятивный счётчик Series показывает СКОРОСТЬЮ, значит
+// и Aggregate обязан считать скорость. Раньше он агрегировал сырое значение, и
+// правило «avg > порога» срабатывало на абсолютном значении счётчика — навсегда.
+func TestAggregateMatchesSeriesForCumulativeCounter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+
+	const pid = 7102
+	// Счётчик уже намотал миллион и растёт на 60 в минуту → скорость 1/с.
+	seedSumCumulative(t, conn, pid, "huge.total", "prod", now.Add(-3*time.Minute), 1_000_000)
+	seedSumCumulative(t, conn, pid, "huge.total", "prod", now.Add(-2*time.Minute), 1_000_060)
+	seedSumCumulative(t, conn, pid, "huge.total", "prod", now.Add(-1*time.Minute), 1_000_120)
+
+	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
+	got, ok, err := q.Aggregate(ctx, pid, "huge.total", "prod", LabelMatcher{}, "avg", from, to)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if !ok {
+		t.Fatal("Aggregate: данных нет, ожидались")
+	}
+	if got > 100 {
+		t.Fatalf("Aggregate = %v — это сырое значение счётчика, а график показывает скорость ≈1/с", got)
+	}
+	if got < 0.5 || got > 2 {
+		t.Fatalf("Aggregate = %v, want ≈1/с (как на графике)", got)
+	}
+}

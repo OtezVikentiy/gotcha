@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"net/url"
 
@@ -204,7 +205,13 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 		if s.secretKeySet {
 			secret, err := secretbox.Open(s.secretKey, c.Secret)
 			if err != nil {
-				return nil, fmt.Errorf("alert: open channel secret: %w", err)
+				// Деградируем ПОКАНАЛЬНО, а не роняем весь список: раньше один
+				// нерасшифруемый секрет (сменившийся/потерянный GOTCHA_SECRET_KEY)
+				// убивал доставку по ВСЕМ каналам проекта и страницу их настроек.
+				// Сломанный канал пропускаем — остальные продолжают работать.
+				slog.Error("alert: channel secret cannot be decrypted, channel skipped",
+					"channel_id", c.ID, "project_id", c.ProjectID, "kind", c.Kind, "error", err)
+				continue
 			}
 			c.Secret = secret
 		}

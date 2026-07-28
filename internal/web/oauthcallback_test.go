@@ -359,3 +359,31 @@ func TestOAuthCallback_LinkRejectsInjectedFlowCookie(t *testing.T) {
 		t.Fatalf("ЗАХВАТ АККАУНТА: identity атакующего привязана к жертве (uid=%d)", victimUID)
 	}
 }
+
+// TestOAuthCallback_ClosedModeBlocksInviteProvisioning фиксирует различие режимов
+// регистрации: closed обещает «регистрация выключена полностью», значит новый
+// аккаунт не должен появляться даже по действующему приглашению. Раньше closed и
+// invite проверялись одинаково (`!= "open"`), и различия между ними не было.
+func TestOAuthCallback_ClosedModeBlocksInviteProvisioning(t *testing.T) {
+	s := newCallbackStack(t)
+	ctx := context.Background()
+	s.h.RegistrationMode = "closed"
+
+	// Действующее приглашение на этот email существует.
+	ownerID, _ := s.auth.Register(ctx, "closed-owner@corp.com", "password12")
+	o, _ := s.org.CreateOrg(ctx, "closed-co", "Closed Co", ownerID)
+	if _, err := s.org.Invite(ctx, o.ID, "invited@corp.com", org.RoleMember); err != nil {
+		t.Fatalf("Invite: %v", err)
+	}
+	s.mp.id = oauth.Identity{Subject: "sub-closed", Email: "invited@corp.com", EmailVerified: true}
+
+	resp := s.doCallback(t, oauthFlow{})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: в closed аккаунт не должен создаваться", resp.StatusCode)
+	}
+	if _, err := s.auth.UserByEmail(ctx, "invited@corp.com"); err == nil {
+		t.Fatal("в режиме closed создан аккаунт по приглашению")
+	}
+}

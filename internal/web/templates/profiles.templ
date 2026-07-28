@@ -48,30 +48,32 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 				@emptyState("activity", "profiles.empty.title", "profiles.empty.body", "profiles.empty.cta", "/docs/profiling")
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "profiles.table.service") }</th>
-							<th>{ i18n.T(ctx, "profiles.table.type") }</th>
-							<th>{ i18n.T(ctx, "perf.environment") }</th>
-							<th>{ i18n.T(ctx, "profiles.table.transaction") }</th>
-							<th class="num">{ i18n.T(ctx, "profiles.table.weight") }</th>
-							<th class="num">{ i18n.T(ctx, "profiles.table.samples") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, s := range services {
+				<div class="table-scroll">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td><a href={ templ.URL(profileFlameLink(projectID, s, rng, environment)) }>{ profileDisplayService(s.Service) }</a></td>
-								<td>{ s.Type }</td>
-								<td>{ envList(s.Environments) }</td>
-								<td>{ s.Transaction }</td>
-								<td class="num">{ profileWeightText(s.Type, s.Unit, s.Weight) }</td>
-								<td class="num">{ strconv.FormatUint(s.Samples, 10) }</td>
+								<th>{ i18n.T(ctx, "profiles.table.service") }</th>
+								<th>{ i18n.T(ctx, "profiles.table.type") }</th>
+								<th>{ i18n.T(ctx, "perf.environment") }</th>
+								<th>{ i18n.T(ctx, "profiles.table.transaction") }</th>
+								<th class="num">{ i18n.T(ctx, "profiles.table.weight") }</th>
+								<th class="num">{ i18n.T(ctx, "profiles.table.samples") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, s := range services {
+								<tr>
+									<td><a href={ templ.URL(profileFlameLink(projectID, s, rng, environment)) }>{ profileDisplayService(s.Service) }</a></td>
+									<td>{ s.Type }</td>
+									<td>{ envList(s.Environments) }</td>
+									<td>{ s.Transaction }</td>
+									<td class="num">{ profileWeightText(s.Type, s.Unit, s.Weight) }</td>
+									<td class="num">{ strconv.FormatUint(s.Samples, 10) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 				</div>
 			}
 		</div>

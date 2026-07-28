@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -240,7 +242,16 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 		if delta < 0 {
 			delta = 0
 		}
-		out = append(out, Point{T: cum[i].T, V: delta / float64(stepSec)})
+		// Делим на РЕАЛЬНЫЙ интервал между соседними точками, а не на ширину
+		// корзины: GROUP BY возвращает только НЕПУСТЫЕ корзины, поэтому при
+		// скрейпе реже шага соседние точки отстоят на несколько шагов. Деление на
+		// stepSec завышало скорость ровно в (интервал/шаг) раз — скрейп раз в 300с
+		// при шаге 60с давал 5.0/с вместо 1.0/с.
+		gapSec := cum[i].T.Sub(cum[i-1].T).Seconds()
+		if gapSec <= 0 {
+			gapSec = float64(stepSec)
+		}
+		out = append(out, Point{T: cum[i].T, V: delta / gapSec})
 	}
 	return out, nil
 }
@@ -283,9 +294,17 @@ func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, envi
 // суммирует bucket_counts всего окна и считает квантиль. Используется оценщиком
 // пороговых алертов: «avg метрики за окно ⋛ порог». ok=false — данных нет.
 func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
-	typ, _, _, err := q.metricType(ctx, projectID, name, from, to)
+	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
 	if err != nil {
 		return 0, false, err
+	}
+	// Монотонный кумулятивный счётчик Series показывает СКОРОСТЬЮ (rateSeries), а
+	// не сырым значением. Агрегат обязан считать ровно то же: раньше monotonic и
+	// temporality здесь отбрасывались, и правило «avg > 10» на счётчике со
+	// значением 1 000 000 срабатывало на первом же тике и не закрывалось никогда,
+	// хотя на графике рядом рисовалось ~1.0 и пунктир порога «далеко».
+	if typ == "sum" && monotonic && temporality == "cumulative" {
+		return q.aggregateRate(ctx, projectID, name, environment, matcher, agg, from, to)
 	}
 	base := fmt.Sprintf(`FROM metric_points
 		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
@@ -325,6 +344,81 @@ func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environmen
 	return v, true, nil
 }
 
+// aggregateRateBuckets — на сколько корзин делить окно при агрегировании скорости.
+// Значение того же порядка, что и у графика (metricChartBuckets=120): агрегат
+// должен считаться по тем же величинам, которые видит глазами человек.
+const aggregateRateBuckets = 60
+
+// aggregateRate сводит ряд СКОРОСТЕЙ монотонного счётчика к одному числу — тем
+// же способом, каким его строит Series, поэтому алерт и график всегда согласованы.
+func (q *Query) aggregateRate(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
+	stepSec := int64(to.Sub(from).Seconds()) / aggregateRateBuckets
+	if stepSec < 1 {
+		stepSec = 1
+	}
+	pts, err := q.rateSeries(ctx, projectID, name, environment, matcher, from, to, stepSec)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(pts) == 0 {
+		return 0, false, nil
+	}
+	return aggregatePoints(pts, agg), true, nil
+}
+
+// aggregatePoints сводит точки ряда к одному числу по имени агрегации. Перцентили
+// считаются честно (ближайший ранг по отсортированным значениям), а не подменяются
+// средним, как это делал scalarAggExpr для не-гистограмм.
+func aggregatePoints(pts []Point, agg string) float64 {
+	vals := make([]float64, len(pts))
+	for i, p := range pts {
+		vals[i] = p.V
+	}
+	switch agg {
+	case "max":
+		out := vals[0]
+		for _, v := range vals[1:] {
+			if v > out {
+				out = v
+			}
+		}
+		return out
+	case "min":
+		out := vals[0]
+		for _, v := range vals[1:] {
+			if v < out {
+				out = v
+			}
+		}
+		return out
+	case "sum":
+		var out float64
+		for _, v := range vals {
+			out += v
+		}
+		return out
+	}
+	if isPercentile(agg) {
+		sort.Float64s(vals)
+		// Ближайший ранг: ceil(p*n)-1. Округление ВВЕРХ выбрано осознанно — floor
+		// линейного индекса занижал бы перцентиль, а для порогового алерта это
+		// опасное направление (пропущенное превышение хуже лишнего срабатывания).
+		idx := int(math.Ceil(percentileValue(agg)*float64(len(vals)))) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(vals) {
+			idx = len(vals) - 1
+		}
+		return vals[idx]
+	}
+	var sum float64
+	for _, v := range vals {
+		sum += v
+	}
+	return sum / float64(len(vals))
+}
+
 func (q *Query) scanPoints(ctx context.Context, sql string, args []any) ([]Point, error) {
 	rows, err := q.conn.Query(ctx, sql, args...)
 	if err != nil {
@@ -357,9 +451,14 @@ func scalarAggExpr(typ, agg string) string {
 		return "sum(value)"
 	case "last":
 		return "argMax(value, ts)"
-	default: // avg
-		return "avg(value)"
 	}
+	// Перцентиль на НЕ-гистограмме — честный квантиль по значениям. Раньше p50/p95/
+	// p99 проваливались в default и молча считались средним: правило с подписью
+	// «p95» сравнивало с порогом avg.
+	if isPercentile(agg) {
+		return fmt.Sprintf("quantile(%g)(value)", percentileValue(agg))
+	}
+	return "avg(value)"
 }
 
 func matcherClause(m LabelMatcher) string {

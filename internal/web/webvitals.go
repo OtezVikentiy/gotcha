@@ -133,7 +133,7 @@ func (h *Handler) vitalsPanel(r *http.Request, projectID int64, transaction stri
 		}
 		rows = append(rows, templates.VitalPanelRow{
 			Vital: overall[i],
-			Chart: vitalSeriesSVG(series, perfVitalChartWidth, perfVitalChartHeight,
+			Chart: vitalSeriesSVG(r.Context(), series, perfVitalChartWidth, perfVitalChartHeight,
 				vitalValueFormatter(name)),
 		})
 	}

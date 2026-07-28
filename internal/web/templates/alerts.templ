@@ -163,21 +163,23 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 					@emptyState("bell", "alerts.channels.empty.title", "alerts.channels.empty.body", "", "")
 				} else {
 					<div class="card">
-						<table class="data-table">
-							<thead>
-								<tr>
-									<th>{ i18n.T(ctx, "alerts.channels.table.kind") }</th>
-									<th>{ i18n.T(ctx, "alerts.channels.table.target") }</th>
-									<th>{ i18n.T(ctx, "alerts.channels.table.status") }</th>
-									<th></th>
-								</tr>
-							</thead>
-							<tbody>
-								for _, c := range channels {
-									@channelRow(projectID, c)
-								}
-							</tbody>
-						</table>
+						<div class="table-scroll">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th>{ i18n.T(ctx, "alerts.channels.table.kind") }</th>
+											<th>{ i18n.T(ctx, "alerts.channels.table.target") }</th>
+											<th>{ i18n.T(ctx, "alerts.channels.table.status") }</th>
+											<th></th>
+										</tr>
+									</thead>
+									<tbody>
+										for _, c := range channels {
+											@channelRow(projectID, c)
+										}
+									</tbody>
+								</table>
+						</div>
 					</div>
 				}
 			</section>

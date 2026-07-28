@@ -215,17 +215,37 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 	}
 }
 
-// Close перестаёт принимать и дожидается обработки очереди. Идемпотентен.
-func (p *Pipeline) Close() {
+// Close перестаёт принимать и дожидается обработки очереди, но не дольше, чем
+// позволяет ctx. Идемпотентен. Возвращает ctx.Err(), если бюджет исчерпан раньше,
+// чем воркеры разобрали очередь.
+//
+// Дедлайн обязателен: каждая задача — upsert в PostgreSQL с таймаутом 5с, очередь
+// 1000 задач, воркеров 4. При деградации PG безлимитное ожидание держало бы
+// shutdown до ~20 минут, за которые остальные писатели даже не начали бы дренаж —
+// а внешний stop_grace_period всё равно убьёт процесс раньше, и тогда теряется
+// содержимое ВСЕХ буферов, а не только этой очереди.
+func (p *Pipeline) Close(ctx context.Context) error {
 	p.closeMu.Lock()
 	if p.closed {
 		p.closeMu.Unlock()
-		return
+		return nil
 	}
 	p.closed = true
 	close(p.queue)
 	p.closeMu.Unlock()
-	p.wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		slog.Warn("ingest pipeline drain timed out, remaining queue dropped")
+		return ctx.Err()
+	}
 }
 
 func (p *Pipeline) process(t task) {

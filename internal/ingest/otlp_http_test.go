@@ -486,7 +486,7 @@ func TestOTLPSampleRateZeroWritesNothing(t *testing.T) {
 
 	// Дать пайплайну и писателю заведомо больше времени, чем нужно на запись.
 	time.Sleep(2 * time.Second)
-	s.pipeline.Close()
+	s.pipeline.Close(context.Background())
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := s.spans.Close(cctx); err != nil {

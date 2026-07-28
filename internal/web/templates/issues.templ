@@ -221,10 +221,10 @@ templ periodOption(value, label string, selected string) {
 
 // IssuesList — GET /projects/{id}/issues: таблица issues проекта с панелью
 // фильтров (обычная GET-форма — работает без JS) и пагинацией по ссылкам.
-// htmx намеренно не подключён: hx-get на форме фильтров подменял бы только
-// #issues-table, но обработчик всегда рендерит целую страницу, а не
-// фрагмент, так что частичный своп дал бы вложенный документ внутри div.
-// Без htmx-атрибутов работает как обычный GET, что явно допускается спекой.
+// Фильтры — обычная GET-форма без клиентского JS: подмена только списка
+// оставила бы счётчики/пагинацию рассинхронизированными с выборкой, а полная
+// перерисовка страницы браузером и проще, и всегда согласована. htmx из
+// продукта удалён (не использовался ни на одной странице).
 templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, canManage bool, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM) {
 	@layout(i18n.T(ctx, "issues.title"), userEmail) {
 		<div class="issues">
@@ -273,45 +273,47 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				} else {
 					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
 						<div class="card">
-						<table class="data-table">
-							<thead>
-								<tr>
-									<th></th>
-									<th>{ i18n.T(ctx, "issues.table.level") }</th>
-									<th>{ i18n.T(ctx, "issues.table.issue") }</th>
-									<th>{ i18n.T(ctx, "issues.table.trend") }</th>
-									<th class="num">{ i18n.T(ctx, "issues.table.events") }</th>
-									<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
-									<th>{ i18n.T(ctx, "issues.table.status") }</th>
-									<th>{ i18n.T(ctx, "issues.table.assignee") }</th>
-								</tr>
-							</thead>
-							<tbody>
-								for _, row := range rows {
-									<tr>
-										<td><input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) }/></td>
-										<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
-										<td>
-											<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
-											if row.Issue.Culprit != "" {
-												<div class="culprit">{ row.Issue.Culprit }</div>
-											}
-										</td>
-										<td>@row.Sparkline</td>
-										<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
-										<td>{ ago(ctx, row.Issue.LastSeen) }</td>
-										<td><span class={ statusBadgeClass(row.Issue.Status) }>{ issueStatusLabel(ctx, row.Issue.Status) }</span></td>
-										<td>
-										if row.Issue.AssigneeEmail == "" {
-											{ assigneeDisplay(row.Issue.AssigneeEmail) }
-										} else {
-											@userChip(row.Issue.AssigneeEmail)
+						<div class="table-scroll">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th></th>
+											<th>{ i18n.T(ctx, "issues.table.level") }</th>
+											<th>{ i18n.T(ctx, "issues.table.issue") }</th>
+											<th>{ i18n.T(ctx, "issues.table.trend") }</th>
+											<th class="num">{ i18n.T(ctx, "issues.table.events") }</th>
+											<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
+											<th>{ i18n.T(ctx, "issues.table.status") }</th>
+											<th>{ i18n.T(ctx, "issues.table.assignee") }</th>
+										</tr>
+									</thead>
+									<tbody>
+										for _, row := range rows {
+											<tr>
+												<td><input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) }/></td>
+												<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
+												<td>
+													<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
+													if row.Issue.Culprit != "" {
+														<div class="culprit">{ row.Issue.Culprit }</div>
+													}
+												</td>
+												<td>@row.Sparkline</td>
+												<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
+												<td>{ ago(ctx, row.Issue.LastSeen) }</td>
+												<td><span class={ statusBadgeClass(row.Issue.Status) }>{ issueStatusLabel(ctx, row.Issue.Status) }</span></td>
+												<td>
+												if row.Issue.AssigneeEmail == "" {
+													{ assigneeDisplay(row.Issue.AssigneeEmail) }
+												} else {
+													@userChip(row.Issue.AssigneeEmail)
+												}
+											</td>
+											</tr>
 										}
-									</td>
-									</tr>
-								}
-							</tbody>
-						</table>
+									</tbody>
+								</table>
+						</div>
 						</div>
 						<div class="bulk-actions">
 							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>

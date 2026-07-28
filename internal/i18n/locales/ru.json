@@ -11,12 +11,12 @@
     "nav.back": "Назад",
     "action.logout": "Выйти",
     "nav.issues": "Проблемы",
-    "nav.performance": "Произво\u00adдитель\u00adность",
+    "nav.performance": "Произво­дитель­ность",
     "nav.metrics": "Метрики",
     "nav.uptime": "Аптайм",
-    "nav.alerts": "Опове\u00adщения",
+    "nav.alerts": "Опове­щения",
     "nav.alert_deliveries": "Лог доставок",
-    "nav.docs": "Докумен\u00adтация",
+    "nav.docs": "Докумен­тация",
     "docs.index.title": "Документация",
     "docs.group.start": "Начало",
     "docs.group.deploy": "Установка и эксплуатация",
@@ -54,7 +54,7 @@
     "help.regressions.body": "Регрессии — это устойчивое ухудшение p95 длительности эндпойнта или p75 web vital по сравнению с недавней базой: показаны база, пик и рост в процентах, чтобы быстро оценить масштаб деградации.",
     "help.profileregressions.title": "Что это за раздел?",
     "help.profileregressions.body": "Регрессии профилей отслеживают рост доли self-CPU конкретной функции со временем — так можно заметить, что раньше незаметный код стал заметно медленнее, ещё до жалоб пользователей.",
-    "nav.org": "Органи\u00adзация",
+    "nav.org": "Органи­зация",
     "nav.transactions": "Транзакции",
     "nav.webvitals": "Web Vitals",
     "nav.profiles": "Профили",
@@ -116,8 +116,8 @@
     "range.30d": "30 дн",
     "range.custom": "Свой диапазон",
     "range.set_dates": "Задать даты",
-    "range.start": "С",
-    "range.end": "По",
+    "range.start": "С (UTC)",
+    "range.end": "По (UTC)",
     "range.picker.apply": "Применить",
     "range.picker.cancel": "Отмена",
     "range.picker.hint": "Выберите начало и конец",
@@ -751,7 +751,6 @@
     "profile.danger.delete_account.button": "Удалить аккаунт",
     "profile.danger.delete_account.sole_owner": "Нельзя удалить аккаунт: вы единственный владелец организаций: {orgs}. Сначала передайте владение другому участнику или удалите эти организации.",
     "time.just_now": "только что",
-
     "error.internal": "внутренняя ошибка",
     "error.not_found": "Страница не найдена",
     "error.request_denied": "Запрос отклонён",
@@ -759,7 +758,6 @@
     "error.export_unavailable": "выгрузка недоступна: хранилище телеметрии не настроено",
     "error.slug.invalid": "slug должен состоять из строчных латинских букв, цифр и дефисов (1..64 символа)",
     "error.slug.taken": "такой slug уже занят",
-
     "error.oauth.session_expired": "сессия входа истекла, попробуйте снова",
     "error.oauth.provider_no_email": "провайдер не подтвердил email",
     "error.oauth.unknown_provider": "неизвестный провайдер",
@@ -770,23 +768,19 @@
     "error.oauth.email_not_verified_link_profile": "провайдер не подтвердил email; привяжите аккаунт в профиле после входа паролем",
     "error.oauth.no_invite": "для этого email нет приглашения — попросите администратора пригласить вас",
     "error.oauth.login_failed": "вход через {provider} не удался, попробуйте снова",
-
     "error.org.last_owner": "нельзя понизить или удалить последнего владельца организации",
     "error.org.invalid_role": "недопустимая роль",
     "error.org.not_member": "пользователь не является участником организации",
     "error.org.owner_only": "только владелец может управлять доступом уровня владельца",
     "error.org.invalid_quota": "квота не может быть отрицательной",
-
     "error.profile_password.invalid_current": "неверный текущий пароль",
     "error.profile_password.weak": "новый пароль должен быть от 8 до 512 символов",
     "error.profile_password.failed": "не удалось изменить пароль",
-
     "error.register.email_taken": "не удалось зарегистрироваться, проверьте данные или войдите",
     "error.register.weak_password": "пароль должен быть от 8 до 512 символов",
     "error.register.invalid_email": "неверный формат email",
     "error.register.failed": "не удалось зарегистрироваться",
     "error.register.closed": "регистрация на этом инстансе закрыта — обратитесь к администратору за приглашением",
-
     "error.maintenance.invalid_window": "недопустимое окно обслуживания: {detail}",
     "error.onboarding.failed": "не удалось создать организацию или проект",
     "error.monitor.invalid": "монитор: {detail}",
@@ -796,10 +790,8 @@
     "error.team.cross_org_project": "проект принадлежит другой организации",
     "error.alerts.invalid_rule": "недопустимое правило: у spike обязательны threshold и window (> 0), throttle не может быть отрицательным",
     "error.alerts.invalid_channel": "недопустимый канал: проверьте адрес/URL и обязательные поля выбранного типа",
-
     "auth.oauth.login_with": "Войти через {provider}",
     "org.quota.near_limit": "Приём событий приближается к лимиту: использовано {used} из {limit} в этом месяце",
-
     "getting_started.title": "Первые шаги",
     "getting_started.progress": "{done}/{total} выполнено",
     "getting_started.step.1": "Создать проект",
@@ -899,16 +891,68 @@
     "uptime.maintenance.kind.oneoff_label": "Разовое",
     "uptime.maintenance.kind.weekly_label": "Еженедельное",
     "alerts.channels.new.target_hint": "email — адрес; webhook — URL; telegram — chat_id",
-    "alerts.channels.new.secret_hint": "webhook — подпись запроса; telegram — bot token; для email не нужен"
+    "alerts.channels.new.secret_hint": "webhook — подпись запроса; telegram — bot token; для email не нужен",
+    "range.utc_note": "UTC",
+    "a11y.skip_to_content": "Перейти к содержимому",
+    "a11y.chart.flamegraph": "Флеймграф профиля",
+    "a11y.chart.metric": "График значений метрики во времени",
+    "a11y.chart.sparkline": "Спарклайн недавней активности",
+    "a11y.chart.latency": "График задержки запросов во времени",
+    "a11y.chart.throughput": "График числа запросов во времени",
+    "a11y.chart.histogram": "Распределение длительности запросов",
+    "a11y.chart.frequency": "График частоты событий во времени",
+    "a11y.chart.availability": "График доступности во времени",
+    "a11y.chart.waterfall": "Водопад спанов трейса",
+    "a11y.chart.vital": "График Web Vital во времени"
   },
   "plurals": {
-    "chart.bar.transactions": {"one": "{n} транзакция", "few": "{n} транзакции", "many": "{n} транзакций", "other": "{n} транзакции"},
-    "chart.bar.events": {"one": "{n} событие", "few": "{n} события", "many": "{n} событий", "other": "{n} события"},
-    "issue.times_seen": {"one": "{n} раз", "few": "{n} раза", "many": "{n} раз", "other": "{n} раза"},
-    "time.ago.seconds": {"one": "{n} секунду назад", "few": "{n} секунды назад", "many": "{n} секунд назад", "other": "{n} секунды назад"},
-    "time.ago.minutes": {"one": "{n} минуту назад", "few": "{n} минуты назад", "many": "{n} минут назад", "other": "{n} минуты назад"},
-    "time.ago.hours": {"one": "{n} час назад", "few": "{n} часа назад", "many": "{n} часов назад", "other": "{n} часа назад"},
-    "time.ago.days": {"one": "{n} день назад", "few": "{n} дня назад", "many": "{n} дней назад", "other": "{n} дня назад"},
-    "org.quota.dropped_banner": {"one": "Приём событий ограничен: {n} элемент отклонён в этом месяце", "few": "Приём событий ограничен: {n} элемента отклонено в этом месяце", "many": "Приём событий ограничен: {n} элементов отклонено в этом месяце", "other": "Приём событий ограничен: {n} элемента отклонено в этом месяце"}
+    "chart.bar.transactions": {
+      "one": "{n} транзакция",
+      "few": "{n} транзакции",
+      "many": "{n} транзакций",
+      "other": "{n} транзакции"
+    },
+    "chart.bar.events": {
+      "one": "{n} событие",
+      "few": "{n} события",
+      "many": "{n} событий",
+      "other": "{n} события"
+    },
+    "issue.times_seen": {
+      "one": "{n} раз",
+      "few": "{n} раза",
+      "many": "{n} раз",
+      "other": "{n} раза"
+    },
+    "time.ago.seconds": {
+      "one": "{n} секунду назад",
+      "few": "{n} секунды назад",
+      "many": "{n} секунд назад",
+      "other": "{n} секунды назад"
+    },
+    "time.ago.minutes": {
+      "one": "{n} минуту назад",
+      "few": "{n} минуты назад",
+      "many": "{n} минут назад",
+      "other": "{n} минуты назад"
+    },
+    "time.ago.hours": {
+      "one": "{n} час назад",
+      "few": "{n} часа назад",
+      "many": "{n} часов назад",
+      "other": "{n} часа назад"
+    },
+    "time.ago.days": {
+      "one": "{n} день назад",
+      "few": "{n} дня назад",
+      "many": "{n} дней назад",
+      "other": "{n} дня назад"
+    },
+    "org.quota.dropped_banner": {
+      "one": "Приём событий ограничен: {n} элемент отклонён в этом месяце",
+      "few": "Приём событий ограничен: {n} элемента отклонено в этом месяце",
+      "many": "Приём событий ограничен: {n} элементов отклонено в этом месяце",
+      "other": "Приём событий ограничен: {n} элемента отклонено в этом месяце"
+    }
   }
 }

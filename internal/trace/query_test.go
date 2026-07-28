@@ -434,9 +434,11 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EndpointLatency: %v", err)
 		}
-		// Окно час, шаг 5м, выровнено по epoch → 12 интервалов + граничная точка.
-		if len(pts) != 13 {
-			t.Fatalf("len(pts) = %d, want 13", len(pts))
+		// Окно час, шаг 5м, выровнено по epoch → ровно 12 интервалов. «Граничной»
+		// 13-й точки быть не должно: она начиналась бы в to, а запрос берёт ts < to,
+		// поэтому она всегда пустая и роняла хвост графика в ноль.
+		if len(pts) != 12 {
+			t.Fatalf("len(pts) = %d, want 12", len(pts))
 		}
 		for i := 1; i < len(pts); i++ {
 			if !pts[i].T.After(pts[i-1].T) {

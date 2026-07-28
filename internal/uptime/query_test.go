@@ -102,8 +102,10 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Latency: %v", err)
 		}
-		if len(points) != 7 {
-			t.Fatalf("len(points) = %d, want 7", len(points))
+		// Окно час, шаг 10м, выровнено → 6 корзин; корзина, начинающаяся в to,
+		// данных содержать не может (запрос фильтрует timestamp < to).
+		if len(points) != 6 {
+			t.Fatalf("len(points) = %d, want 6", len(points))
 		}
 		for i := 1; i < len(points); i++ {
 			if !points[i].T.After(points[i-1].T) {

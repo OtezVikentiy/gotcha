@@ -168,8 +168,10 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Series: %v", err)
 		}
-		if len(points) != 7 {
-			t.Fatalf("len(points) = %d, want 7", len(points))
+		// Окно час, шаг 10м, выровнено по epoch → ровно 6 корзин. Седьмой быть не
+		// может: она покрывала бы [to, to+10м), а запрос фильтрует ts < to.
+		if len(points) != 6 {
+			t.Fatalf("len(points) = %d, want 6", len(points))
 		}
 		// хронологический порядок
 		for i := 1; i < len(points); i++ {
@@ -188,16 +190,16 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if !points[0].T.Equal(windowFrom) {
 			t.Fatalf("points[0].T = %v, want %v", points[0].T, windowFrom)
 		}
-		// Пропуски заполнены нулями: должна быть хотя бы одна нулевая точка
-		// (в окне 7 точек, событий только 3, значит минимум 4 нуля).
+		// Пропуски заполнены нулями: в окне 6 корзин, событий только 3, значит
+		// ровно 3 нуля (раньше ждали 4 — четвёртым был фантомный хвост сетки).
 		var zeros int
 		for _, p := range points {
 			if p.N == 0 {
 				zeros++
 			}
 		}
-		if zeros < 4 {
-			t.Fatalf("zeros = %d, want >= 4 (points=%v)", zeros, points)
+		if zeros < 3 {
+			t.Fatalf("zeros = %d, want >= 3 (points=%v)", zeros, points)
 		}
 
 		// Test with step not dividing 24h evenly (7 minutes).

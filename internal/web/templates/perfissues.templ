@@ -82,30 +82,32 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 				@emptyState("zap", "perf.issues.empty.title", "perf.issues.empty.body", "", "")
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "perf.issues.table.kind") }</th>
-							<th>{ i18n.T(ctx, "issues.table.issue") }</th>
-							<th>{ i18n.T(ctx, "perf.issues.table.culprit") }</th>
-							<th class="num">{ i18n.T(ctx, "perf.issues.table.count") }</th>
-							<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
-							<th>{ i18n.T(ctx, "issues.table.status") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, iss := range issues {
+				<div class="table-scroll">
+					<table class="data-table">
+						<thead>
 							<tr>
-								<td><span class={ perfKindBadgeClass(iss.Kind) }>{ perfKindLabel(ctx, iss.Kind) }</span></td>
-								<td><a href={ templ.URL(perfIssueDetailPath(iss.ID)) }>{ iss.Title }</a></td>
-								<td>{ iss.Culprit }</td>
-								<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
-								<td>{ ago(ctx, iss.LastSeen) }</td>
-								<td><span class={ perfStatusBadgeClass(iss.Status) }>{ issueStatusLabel(ctx, iss.Status) }</span></td>
+								<th>{ i18n.T(ctx, "perf.issues.table.kind") }</th>
+								<th>{ i18n.T(ctx, "issues.table.issue") }</th>
+								<th>{ i18n.T(ctx, "perf.issues.table.culprit") }</th>
+								<th class="num">{ i18n.T(ctx, "perf.issues.table.count") }</th>
+								<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
+								<th>{ i18n.T(ctx, "issues.table.status") }</th>
 							</tr>
-						}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							for _, iss := range issues {
+								<tr>
+									<td><span class={ perfKindBadgeClass(iss.Kind) }>{ perfKindLabel(ctx, iss.Kind) }</span></td>
+									<td><a href={ templ.URL(perfIssueDetailPath(iss.ID)) }>{ iss.Title }</a></td>
+									<td>{ iss.Culprit }</td>
+									<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
+									<td>{ ago(ctx, iss.LastSeen) }</td>
+									<td><span class={ perfStatusBadgeClass(iss.Status) }>{ issueStatusLabel(ctx, iss.Status) }</span></td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
 				</div>
 			}
 		</div>

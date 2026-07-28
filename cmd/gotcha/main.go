@@ -64,6 +64,32 @@ func deriveCookieKey(master string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// setupLogging настраивает глобальный slog по GOTCHA_LOG_LEVEL/GOTCHA_LOG_FORMAT.
+// Пустые/нераспознанные значения дают прежнее поведение (текст, уровень Info),
+// поэтому апгрейд ничего не меняет молча. json — для Loki/ELK, debug — чтобы
+// поднять детализацию во время инцидента без пересборки.
+func setupLogging(level, format string) {
+	var lv slog.Level
+	switch level {
+	case "debug":
+		lv = slog.LevelDebug
+	case "warn", "warning":
+		lv = slog.LevelWarn
+	case "error":
+		lv = slog.LevelError
+	default:
+		lv = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: lv}
+	var h slog.Handler
+	if format == "json" {
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(h))
+}
+
 func run() error {
 	if versionRequested(os.Args[1:]) {
 		fmt.Println("gotcha", version.String())
@@ -73,6 +99,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	setupLogging(cfg.LogLevel, cfg.LogFormat)
 	if cfg.SecretKey == devSecretKey {
 		slog.Warn("GOTCHA_SECRET_KEY is not set — using insecure dev default (fine for localhost only)")
 	}
@@ -84,7 +111,7 @@ func run() error {
 	// Исходящие OIDC-вызовы (discovery/JWKS/token/userinfo) — SSRF-safe по тому же
 	// флагу, что webhook/uptime: приватные адреса режутся, если оператор не разрешил
 	// их явно (внутренний IdP). Ставим до любого OAuth-обмена.
-	oauth.SetAllowPrivateHosts(cfg.SSRFAllowPrivate)
+	oauth.SetAllowPrivateHosts(cfg.SSRFAllowPrivateOIDC)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -98,7 +125,7 @@ func run() error {
 			ServerURL:           cfg.ServerURL,
 			Token:               cfg.ProbeToken,
 			Concurrency:         cfg.UptimeConcurrency,
-			AllowPrivateTargets: cfg.SSRFAllowPrivate,
+			AllowPrivateTargets: cfg.SSRFAllowPrivateUptime,
 		}
 		probe.Run(ctx)
 		slog.Info("probe stopped")
@@ -274,7 +301,7 @@ func run() error {
 			Region:              cfg.LocalRegion,
 			Concurrency:         cfg.UptimeConcurrency,
 			OnResult:            uptimeDetector.OnResult,
-			AllowPrivateTargets: cfg.SSRFAllowPrivate,
+			AllowPrivateTargets: cfg.SSRFAllowPrivateUptime,
 		}
 		go runner.Run(ctx)
 
@@ -353,6 +380,35 @@ func run() error {
 	var spanWriter *trace.SpanWriter
 	var metricWriter *metric.Writer
 	var profileWriter *profile.Writer
+	// Доставка уведомлений и чистка очереди. Гейт — НЕ режим, а сам факт наличия
+	// outbox: в очередь пишут контуры из разных режимов (uptime.OutboxNotifier в
+	// web|uptime|all, оценщики трейсов/метрик/профилей в ingest|all), и когда
+	// воркер жил только в ingest|all, инсталляция `--mode=uptime` открывала
+	// инциденты, складывала задания в notification_outbox и НЕ ДОСТАВЛЯЛА ИХ
+	// НИКОГДА — без единой строки в логе. Заодно не работал и janitor, поэтому
+	// таблица с секретами каналов в payload росла безгранично.
+	if outbox != nil {
+		senders := map[string]notify.Sender{
+			alert.ChannelWebhook:  &notify.WebhookSender{AllowPrivate: cfg.SSRFAllowPrivateWebhook},
+			alert.ChannelTelegram: &notify.TelegramSender{},
+		}
+		if emailSender != nil && emailSender.Configured() {
+			senders[alert.ChannelEmail] = emailSender
+		} else {
+			slog.Warn("GOTCHA_SMTP_HOST is not set, email alert channels are disabled")
+		}
+		notifyWorker := &notify.Worker{Outbox: outbox, Senders: senders}
+		go notifyWorker.Run(ctx)
+
+		// Чистка notification_outbox (техдолг): доставленные/проваленные строки
+		// несут секреты каналов в payload и без ретенции копятся бесконечно.
+		outboxJanitor := &notify.OutboxJanitor{
+			Outbox:    outbox,
+			Retention: time.Duration(cfg.OutboxRetentionDays) * 24 * time.Hour,
+		}
+		go outboxJanitor.Run(ctx)
+	}
+
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
 		go batcher.Run()
@@ -372,28 +428,6 @@ func run() error {
 		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
 		profileWriter = profile.NewWriter(ch)
 		go profileWriter.Run()
-
-		// Алертинг (план 6) — часть ingest-контура: правила/каналы срабатывают
-		// на события, которые проходят через этот же пайплайн.
-		senders := map[string]notify.Sender{
-			alert.ChannelWebhook:  &notify.WebhookSender{AllowPrivate: cfg.SSRFAllowPrivate},
-			alert.ChannelTelegram: &notify.TelegramSender{},
-		}
-		if emailSender.Configured() {
-			senders[alert.ChannelEmail] = emailSender
-		} else {
-			slog.Warn("GOTCHA_SMTP_HOST is not set, email alert channels are disabled")
-		}
-		notifyWorker := &notify.Worker{Outbox: outbox, Senders: senders}
-		go notifyWorker.Run(ctx)
-
-		// Чистка notification_outbox (техдолг): доставленные/проваленные строки
-		// несут секреты каналов в payload и без ретенции копятся бесконечно.
-		outboxJanitor := &notify.OutboxJanitor{
-			Outbox:    outbox,
-			Retention: time.Duration(cfg.OutboxRetentionDays) * 24 * time.Hour,
-		}
-		go outboxJanitor.Run(ctx)
 
 		evaluator := &alert.Evaluator{
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
@@ -527,7 +561,14 @@ func run() error {
 
 	drain := func() {
 		if pipeline != nil {
-			pipeline.Close()
+			// Тот же бюджет, что у остальных писателей ниже: без дедлайна деградация
+			// PostgreSQL держала бы shutdown до ~20 минут, и внешний
+			// stop_grace_period успел бы убить процесс раньше их дренажа.
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := pipeline.Close(cctx); err != nil {
+				slog.Warn("ingest pipeline drain incomplete", "error", err)
+			}
+			cancel()
 		}
 		if batcher != nil {
 			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

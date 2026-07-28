@@ -107,7 +107,7 @@ func overallStatusClass(overall string) string {
 }
 
 // statusLayout — СВОЙ layout публичной страницы: ни навигации приложения, ни
-// ссылок в кабинет, ни формы logout, ни htmx (страница целиком статична).
+// ссылок в кабинет, ни формы logout, ни JS (страница целиком статична).
 // Стили берутся из той же публичной статики /static/app.css.
 func statusLayout(title string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {

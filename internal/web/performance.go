@@ -129,7 +129,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		}
 		rows[i] = templates.EndpointRow{
 			Stat:      st,
-			Sparkline: latencySparklineSVG(points, perfSparklineWidth, perfSparklineHeight),
+			Sparkline: latencySparklineSVG(r.Context(), points, perfSparklineWidth, perfSparklineHeight),
 		}
 	}
 

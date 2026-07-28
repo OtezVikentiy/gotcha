@@ -73,6 +73,27 @@ docker compose start gotcha postgres clickhouse
 
 Pick one approach (live dumps via `pg_dump`+`clickhouse-client`, or a volume snapshot with downtime) — both are valid; what matters is doing it **regularly** and **verifying** the backup actually restores (see below).
 
+## Back up `.env` too — not just the databases
+
+`GOTCHA_SECRET_KEY` encrypts secrets at rest: SSO client secrets, Telegram bot
+tokens and webhook signing keys. It lives only in your `.env` (or the compose
+`environment:` block), never in the database — so a dump of PostgreSQL and
+ClickHouse alone is **not** a complete backup.
+
+Restore the databases with a different key and those secrets can no longer be
+decrypted: the affected alert channels are skipped (with an error in the log)
+and SSO for the organization stops working. Nothing warns you at restore time,
+because the rows are intact — only unreadable.
+
+```bash
+cp .env "$BACKUP_DIR/env-$(date +%F)"
+chmod 600 "$BACKUP_DIR/env-$(date +%F)"
+```
+
+Store it with the same care as the dumps: it is the key to everything encrypted
+inside them. There is no re-keying procedure — if the key is lost, the encrypted
+secrets have to be entered again by hand.
+
 ## Restore: PostgreSQL
 
 Restoring a `pg_dump` archive into an **empty** database (for a non-empty one, recreate the database first, or use `docker compose down -v`, which wipes all data — be careful):

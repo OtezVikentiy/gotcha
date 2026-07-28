@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"math"
 	"strconv"
 	"testing"
@@ -60,10 +61,10 @@ func TestCoverSVGHelpers(t *testing.T) {
 
 	// sparklinePolyline: все нули (max==0) уходит в ветку поиска lo/hi; обычный ряд.
 	fmtU := func(v uint64) string { return strconv.FormatUint(v, 10) }
-	if sparklinePolyline([]uint64{0, 0, 0}, 40, 12, fmtU) == "" {
+	if sparklinePolyline(context.Background(), []uint64{0, 0, 0}, 40, 12, fmtU) == "" {
 		t.Error("sparklinePolyline all-zero empty")
 	}
-	if sparklinePolyline([]uint64{1, 5, 3}, 40, 12, fmtU) == "" {
+	if sparklinePolyline(context.Background(), []uint64{1, 5, 3}, 40, 12, fmtU) == "" {
 		t.Error("sparklinePolyline normal empty")
 	}
 }

@@ -40,7 +40,11 @@ func (r TimeRangeVM) apply(q url.Values) {
 // ЧЧ:ММ, а не сырой ISO datetime-local).
 templ timeRangeLabel(r TimeRangeVM) {
 	if r.Custom {
-		{ prettyBound(r.Start) + " – " + prettyBound(r.End) }
+		// Суффикс UTC обязателен: сервер и хранилище работают в UTC, оси графиков
+		// подписаны в UTC, и введённое в пикере настенное время трактуется как UTC.
+		// Без пометки пользователь в UTC+3 читает подпись как местное время и
+		// ошибается на величину смещения — при разборе инцидента это существенно.
+		{ prettyBound(r.Start) + " – " + prettyBound(r.End) + " " + i18n.T(ctx, "range.utc_note") }
 	} else {
 		{ i18n.T(ctx, "range."+r.Key) }
 	}

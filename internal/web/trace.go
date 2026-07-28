@@ -131,7 +131,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		Transaction: transaction,
 		TotalUS:     totalUS,
 		Timestamp:   root.Timestamp,
-		Waterfall:   waterfallSVG(spans, errIssues, totalUS, waterfallWidth),
+		Waterfall:   waterfallSVG(r.Context(), spans, errIssues, totalUS, waterfallWidth),
 		ShownRows:   shown,
 		TotalRows:   len(spans),
 		HasProfile:  hasProfile,

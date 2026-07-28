@@ -80,37 +80,39 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 				if len(linked) == 0 {
 					@emptyState("user", "profile.linked.empty.title", "profile.linked.empty.body", "", "")
 				} else {
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "profile.linked.table.provider") }</th>
-								<th>{ i18n.T(ctx, "profile.linked.table.email") }</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, li := range linked {
+					<div class="table-scroll">
+						<table class="data-table">
+							<thead>
 								<tr>
-									<td><span class="badge badge-neutral">{ li.DisplayName }</span></td>
-									<td>
-										if li.Email != "" {
-											<span class="linked-email">{ li.Email }</span>
-										}
-									</td>
-									<td>
-										if li.CanUnlink {
-											<form method="post" action="/profile/identities/unlink" class="inline">
-												<input type="hidden" name="provider" value={ li.Provider }/>
-												<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "profile.linked.unlink") }</button>
-											</form>
-										} else {
-											<span class="linked-note">{ i18n.T(ctx, "profile.linked.sole_login") }</span>
-										}
-									</td>
+									<th>{ i18n.T(ctx, "profile.linked.table.provider") }</th>
+									<th>{ i18n.T(ctx, "profile.linked.table.email") }</th>
+									<th></th>
 								</tr>
-							}
-						</tbody>
-					</table>
+							</thead>
+							<tbody>
+								for _, li := range linked {
+									<tr>
+										<td><span class="badge badge-neutral">{ li.DisplayName }</span></td>
+										<td>
+											if li.Email != "" {
+												<span class="linked-email">{ li.Email }</span>
+											}
+										</td>
+										<td>
+											if li.CanUnlink {
+												<form method="post" action="/profile/identities/unlink" class="inline">
+													<input type="hidden" name="provider" value={ li.Provider }/>
+													<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "profile.linked.unlink") }</button>
+												</form>
+											} else {
+												<span class="linked-note">{ i18n.T(ctx, "profile.linked.sole_login") }</span>
+											}
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
 				}
 				if len(linkable) > 0 {
 					<div class="oauth-buttons">

@@ -58,14 +58,9 @@ templ headTag(title string) {
 	<head>
 		<meta charset="utf-8"/>
 		<meta name="viewport" content="width=device-width, initial-scale=1"/>
-		// CSP default-src 'self' без unsafe-inline запрещает htmx вставлять свой
-		// inline-<style> индикатора (иначе — ошибка в консоли на каждой странице).
-		// Отключаем инъекцию декларативно; сами правила .htmx-indicator — в app.css.
-		<meta name="htmx-config" content='{"includeIndicatorStyles":false}'/>
 		<title>{ title } · Gotcha</title>
 		<link rel="icon" href={ assetURL("/static/favicon.svg") } type="image/svg+xml"/>
 		<link rel="stylesheet" href={ assetURL("/static/app.css") }/>
-		<script src={ assetURL("/static/htmx.min.js") }></script>
 		// Прогрессивное улучшение селектора окна времени в единый попап-пикер
 		// диапазона. Не обязателен: без него .time-range работает нативно
 		// (пресеты + два поля datetime-local). Тот же origin — CSP разрешает.
@@ -82,6 +77,11 @@ templ layoutBody(title string, userEmail string) {
 	@headTag(title)
 	<body>
 		@iconSprite()
+		// Skip-link (WCAG 2.4.1, уровень A): до <main> идёт 8-30 навигационных
+		// ссылок (рейл + контекстный сайдбар), и без этой ссылки пользователь
+		// клавиатуры и скринридера протабливает их НА КАЖДОЙ странице. Видима
+		// только при фокусе (см. .skip-link в app.css).
+		<a class="skip-link" href="#main">{ i18n.T(ctx, "a11y.skip_to_content") }</a>
 		<div class="app-shell">
 			<aside class="rail">
 				<a class="rail-logo" href="/" title="Gotcha">@brandMark()</a>
@@ -117,7 +117,7 @@ templ layoutBody(title string, userEmail string) {
 					@langSwitcher()
 					@themeToggle()
 				</header>
-				<main class="app-content">
+				<main class="app-content" id="main" tabindex="-1">
 					{ children... }
 				</main>
 				<footer class="app-footer">

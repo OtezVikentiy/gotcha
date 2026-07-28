@@ -142,9 +142,15 @@ func (q *Query) Latency(ctx context.Context, monitorID int64, from, to time.Time
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	endUnix := (toUnix / stepSec) * stepSec
-	if toUnix%stepSec > 0 {
-		endUnix += stepSec
+	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
+	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
+	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
+	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
+	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
+	// заканчивались принудительным падением в ноль.
+	endUnix := ((toUnix - 1) / stepSec) * stepSec
+	if endUnix < startUnix {
+		endUnix = startUnix
 	}
 
 	var out []LatencyPoint
@@ -284,9 +290,15 @@ func (q *Query) LatencyBatch(ctx context.Context, monitorIDs []int64, from, to t
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	endUnix := (toUnix / stepSec) * stepSec
-	if toUnix%stepSec > 0 {
-		endUnix += stepSec
+	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
+	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
+	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
+	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
+	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
+	// заканчивались принудительным падением в ноль.
+	endUnix := ((toUnix - 1) / stepSec) * stepSec
+	if endUnix < startUnix {
+		endUnix = startUnix
 	}
 	for _, id := range monitorIDs {
 		byBucket := perMon[id]

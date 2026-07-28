@@ -128,7 +128,7 @@ func newStack(t *testing.T) *stack {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() {
-		pipeline.Close()
+		pipeline.Close(context.Background())
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = batcher.Close(cctx)

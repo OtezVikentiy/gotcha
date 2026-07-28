@@ -79,35 +79,37 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 				@emptyState("bell", "metrics.alerts.rules.empty.title", "metrics.alerts.rules.empty.body", "", "")
 			} else {
 				<div class="card">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "metrics.alerts.table.metric") }</th>
-								<th>{ i18n.T(ctx, "metrics.alerts.table.condition") }</th>
-								<th class="num">{ i18n.T(ctx, "metrics.alerts.table.window") }</th>
-								<th>{ i18n.T(ctx, "metrics.alerts.table.scope") }</th>
-								<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, rule := range rules {
-								<tr>
-									<td>{ rule.MetricName }</td>
-									<td>{ rule.Aggregation } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
-									<td class="num">{ strconv.Itoa(rule.WindowSeconds) }s</td>
-									<td>{ ruleScope(ctx, rule) }</td>
-									<td>@ruleEnabledBadge(rule.Enabled)</td>
-									<td>
-										<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
-											<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
-											<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "metrics.alerts.delete") }</button>
-										</form>
-									</td>
-								</tr>
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>{ i18n.T(ctx, "metrics.alerts.table.metric") }</th>
+										<th>{ i18n.T(ctx, "metrics.alerts.table.condition") }</th>
+										<th class="num">{ i18n.T(ctx, "metrics.alerts.table.window") }</th>
+										<th>{ i18n.T(ctx, "metrics.alerts.table.scope") }</th>
+										<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+										<th></th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, rule := range rules {
+										<tr>
+											<td>{ rule.MetricName }</td>
+											<td>{ rule.Aggregation } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
+											<td class="num">{ strconv.Itoa(rule.WindowSeconds) }s</td>
+											<td>{ ruleScope(ctx, rule) }</td>
+											<td>@ruleEnabledBadge(rule.Enabled)</td>
+											<td>
+												<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
+													<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
+													<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "metrics.alerts.delete") }</button>
+												</form>
+											</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+					</div>
 				</div>
 			}
 			<h2>{ i18n.T(ctx, "metrics.alerts.incidents") }</h2>
@@ -115,26 +117,28 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 				@emptyState("activity", "metrics.alerts.incidents.empty.title", "metrics.alerts.incidents.empty.body", "", "")
 			} else {
 				<div class="card">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
-								<th class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
-								<th class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
-								<th>{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, in := range incidents {
-								<tr>
-									<td>@incidentStatusBadge(in.Status)</td>
-									<td class="num">{ fmtFloat(in.PeakValue) }</td>
-									<td class="num">{ fmtFloat(in.CurrentValue) }</td>
-									<td>{ ago(ctx, in.StartedAt) }</td>
-								</tr>
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+										<th class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
+										<th class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
+										<th>{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, in := range incidents {
+										<tr>
+											<td>@incidentStatusBadge(in.Status)</td>
+											<td class="num">{ fmtFloat(in.PeakValue) }</td>
+											<td class="num">{ fmtFloat(in.CurrentValue) }</td>
+											<td>{ ago(ctx, in.StartedAt) }</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+					</div>
 				</div>
 			}
 			@createModal("new-metric-rule", "metrics.alerts.new_rule") {

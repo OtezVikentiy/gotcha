@@ -123,6 +123,8 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_SCRUB_EMAIL` | `true` | Zeroes the reporting user's email before storage. |
 | `GOTCHA_SCRUB_KEYS` | built-in list (`password,passwd,token,secret,authorization,auth,cookie,api_key,apikey,access_token,refresh_token,session,credit_card,card_number,cvv`) | Comma-separated, case-insensitive key names whose values get redacted in tags/contexts/stack traces/span data. Setting this explicitly **completely replaces** the built-in list rather than extending it — if you want to add a key (e.g. `internal_user_id`), include the standard ones you still want alongside it. |
 | `GOTCHA_SCRUB_ALLOW_KEYS` | empty | Comma-separated exact names to exempt from the denylist. Matching is deliberately fail-closed — a name is redacted when it *contains* a denylist word, so `author` (contains `auth`) and `tokenizer` (contains `token`) are redacted by default. Under-redacting leaks personal data; over-redacting only costs a debugging field, and this setting brings it back: `GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer`. |
+| `GOTCHA_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn` or `error`. Raise it to `debug` to get more detail during an incident without rebuilding. |
+| `GOTCHA_LOG_FORMAT` | `text` | Log format: `text` or `json`. Use `json` when shipping logs to Loki/ELK. |
 | `GOTCHA_SCRUB_FREETEXT` | `false` | Additionally masks email addresses found in free text (error message, exception value, span description). Off by default on purpose: naive masking can corrupt SQL or URLs embedded in error text. Only emails are masked, not phone numbers or other kinds of personal data. |
 
 ## Security
@@ -134,6 +136,9 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_ALLOW_INSECURE_SECRET` | `false` | Escape hatch that bypasses the check above — lets the app start with the default key even on a non-localhost address. **Development-only**; never set this on a real deployment. |
 | `GOTCHA_REGISTRATION` | `invite` | Self-registration mode: `open` — anyone can register; `invite` — self-registration is closed, new users can only join via an invite link; `closed` — self-registration is disabled entirely. The very first user on a fresh instance can always register regardless of this setting (instance-admin bootstrap). |
 | `GOTCHA_SSRF_ALLOW_PRIVATE` | `false` | Allow uptime checks and outbound webhook alert deliveries to target private/loopback/link-local addresses (e.g. `192.168.x.x`, `127.0.0.1`, `169.254.x.x`). Keep this `false` on any instance shared across multiple users/organizations — otherwise one user could set up an "uptime check" or webhook that actually probes your internal network (SSRF). |
+| `GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME` | inherits `GOTCHA_SSRF_ALLOW_PRIVATE` | Allow uptime checks to reach private/loopback addresses. Usually the only one you need: monitoring an internal service is routine, and the target is set by an organization admin. |
+| `GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK` | inherits `GOTCHA_SSRF_ALLOW_PRIVATE` | Allow alert webhooks to reach private addresses. Riskier: up to 1 KB of the target's response is shown on the deliveries page, which turns a webhook into a reader of internal services. |
+| `GOTCHA_SSRF_ALLOW_PRIVATE_OIDC` | inherits `GOTCHA_SSRF_ALLOW_PRIVATE` | Allow OIDC discovery/token calls to reach private addresses — needed for an internal IdP. Riskiest: the client secret is sent to the token endpoint taken from the discovery document. |
 | `GOTCHA_AUTO_MIGRATE` | `true` | Apply database schema migrations automatically on startup. `false` means migrations must be applied as a separate step beforehand — otherwise the app refuses to start against a schema that's out of date. See [Upgrade](/docs/upgrade) for details and when this is needed. |
 | `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `false` | Whether to send error text (title/culprit/body) to external alert channels (Telegram/webhook). `false` sends only an anonymized link back to the instance, without the error text (which may contain personal data you don't want leaving the instance). |
 
@@ -157,7 +162,7 @@ Each login provider is enabled independently. Enabling a provider without settin
 | `GOTCHA_OIDC_ENABLED` | `false` | Enables login via a generic OIDC provider (Keycloak, Authentik, Google Workspace, etc). Requires `GOTCHA_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`. |
 | `GOTCHA_OIDC_ISSUER` | *(empty)* | The OIDC provider's issuer URL. |
 | `GOTCHA_OIDC_CLIENT_ID` / `_CLIENT_SECRET` | *(empty)* | Credentials for the application registered with the provider. |
-| `GOTCHA_OIDC_SCOPES` | *(empty)* | Extra OAuth scopes beyond the defaults, space/comma-separated per your provider's convention. |
+| `GOTCHA_OIDC_SCOPES` | `openid email profile` | The **complete** space-separated scope list sent to the provider. Setting it **replaces** the default rather than adding to it, so always include `openid` and `email` — without them the ID token carries no subject or address and every login fails. To request an extra scope, list it alongside the defaults: `openid email profile groups`. |
 | `GOTCHA_OIDC_NAME` | *(empty)* | Display name for the login button ("Sign in with …") in the UI. |
 | `GOTCHA_YANDEX_ENABLED` | `false` | Enables login via Yandex ID. Requires `GOTCHA_YANDEX_CLIENT_ID`/`_CLIENT_SECRET`. |
 | `GOTCHA_VK_ENABLED` | `false` | Enables login via VK ID. Requires `GOTCHA_VK_CLIENT_ID`/`_CLIENT_SECRET`. |

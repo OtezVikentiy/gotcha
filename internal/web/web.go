@@ -1,7 +1,7 @@
 // Package web — серверный (SSR) UI поверх auth/org/issue/event: роутер,
 // страницы аутентификации, статика. Каждая страница работает без JS
-// (обычные формы и ссылки); htmx используется только как прогрессивное
-// улучшение.
+// (обычные формы и ссылки): клиентского JS в продукте минимум — только
+// прогрессивное улучшение пикера дат (static/daterange.js).
 package web
 
 import (
@@ -543,7 +543,7 @@ func noDirListing(next http.Handler) http.Handler {
 }
 
 // cspHeader — все страницы Gotcha загружают только собственные ресурсы:
-// app.css и htmx.min.js отдаются с того же origin (см. layout.templ), и ни
+// app.css и daterange.js отдаются с того же origin (см. layout.templ), и ни
 // один шаблон не использует inline <script>/<style> или style="" — поэтому
 // 'self' без 'unsafe-inline' ничего не ломает. base-uri 'none' и
 // frame-ancestors 'none' закрывают base-tag injection и clickjacking (второе

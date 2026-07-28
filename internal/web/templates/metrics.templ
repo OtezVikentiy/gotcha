@@ -26,24 +26,26 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics")
 			} else {
 				<div class="card">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th>{ i18n.T(ctx, "metrics.table.metric") }</th>
-							<th>{ i18n.T(ctx, "metrics.table.type") }</th>
-							<th class="num">{ i18n.T(ctx, "metrics.table.unit") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, m := range metrics {
-							<tr>
-								<td><a href={ templ.URL(metricLink(projectID, m.Name)) }>{ m.Name }</a></td>
-								<td>{ m.Type }</td>
-								<td class="num">{ metricUnitText(m.Unit) }</td>
-							</tr>
-						}
-					</tbody>
-				</table>
+				<div class="table-scroll">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>{ i18n.T(ctx, "metrics.table.metric") }</th>
+									<th>{ i18n.T(ctx, "metrics.table.type") }</th>
+									<th class="num">{ i18n.T(ctx, "metrics.table.unit") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, m := range metrics {
+									<tr>
+										<td><a href={ templ.URL(metricLink(projectID, m.Name)) }>{ m.Name }</a></td>
+										<td>{ m.Type }</td>
+										<td class="num">{ metricUnitText(m.Unit) }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+				</div>
 				</div>
 			}
 		</div>

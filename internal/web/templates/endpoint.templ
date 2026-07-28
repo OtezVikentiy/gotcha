@@ -153,26 +153,28 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				@emptyState("activity", "perf.slowest.empty.title", "perf.slowest.empty.body", "", "")
 			} else {
 				<div class="card">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "perf.slowest.table.when") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.slowest.table.duration") }</th>
-								<th>{ i18n.T(ctx, "perf.slowest.table.status") }</th>
-								<th>{ i18n.T(ctx, "perf.slowest.table.trace") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, tr := range d.Slowest {
-								<tr>
-									<td>{ ago(ctx, tr.Timestamp) }</td>
-									<td class="num">{ formatDurationUS(tr.DurationUS) }</td>
-									<td>{ tr.Status }</td>
-									<td><a href={ templ.URL(tracePathFrom(tr.TraceID, "endpoint", d.Transaction)) }>{ tr.TraceID }</a></td>
-								</tr>
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>{ i18n.T(ctx, "perf.slowest.table.when") }</th>
+										<th class="num">{ i18n.T(ctx, "perf.slowest.table.duration") }</th>
+										<th>{ i18n.T(ctx, "perf.slowest.table.status") }</th>
+										<th>{ i18n.T(ctx, "perf.slowest.table.trace") }</th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, tr := range d.Slowest {
+										<tr>
+											<td>{ ago(ctx, tr.Timestamp) }</td>
+											<td class="num">{ formatDurationUS(tr.DurationUS) }</td>
+											<td>{ tr.Status }</td>
+											<td><a href={ templ.URL(tracePathFrom(tr.TraceID, "endpoint", d.Transaction)) }>{ tr.TraceID }</a></td>
+										</tr>
+									}
+								</tbody>
+							</table>
+					</div>
 				</div>
 			}
 
@@ -181,26 +183,28 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				@emptyState("zap", "perf.related_issues.empty.title", "perf.related_issues.empty.body", "", "")
 			} else {
 				<div class="card">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>{ i18n.T(ctx, "perf.related_issues.table.kind") }</th>
-								<th>{ i18n.T(ctx, "perf.related_issues.table.title") }</th>
-								<th>{ i18n.T(ctx, "perf.related_issues.table.status") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.related_issues.table.seen") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, iss := range d.PerfIssues {
-								<tr>
-									<td>{ perfKindLabel(ctx, iss.Kind) }</td>
-									<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ iss.Title }</a></td>
-									<td>{ issueStatusLabel(ctx, iss.Status) }</td>
-									<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
-								</tr>
-							}
-						</tbody>
-					</table>
+					<div class="table-scroll">
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>{ i18n.T(ctx, "perf.related_issues.table.kind") }</th>
+										<th>{ i18n.T(ctx, "perf.related_issues.table.title") }</th>
+										<th>{ i18n.T(ctx, "perf.related_issues.table.status") }</th>
+										<th class="num">{ i18n.T(ctx, "perf.related_issues.table.seen") }</th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, iss := range d.PerfIssues {
+										<tr>
+											<td>{ perfKindLabel(ctx, iss.Kind) }</td>
+											<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ iss.Title }</a></td>
+											<td>{ issueStatusLabel(ctx, iss.Status) }</td>
+											<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+					</div>
 				</div>
 			}
 		</div>
