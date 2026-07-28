@@ -61,6 +61,12 @@ type Config struct {
 	ScrubIP    bool
 	ScrubEmail bool
 	ScrubKeys  []string
+	// ScrubAllowKeys — точные имена-исключения из ScrubKeys. Матч denylist
+	// намеренно подстрочный и fail-closed (под-scrub = утечка ПДн, over-scrub =
+	// потерянное отладочное поле), поэтому author (⊃auth) или tokenizer (⊃token)
+	// маскируются по умолчанию. Оператор возвращает нужные ему поля явно —
+	// GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer.
+	ScrubAllowKeys []string
 	// ScrubFreeText (RA-L10) — опционально маскировать email-адреса в свободном
 	// тексте (message/exception_value/span.description). По умолчанию выключено
 	// (консервативно, чтобы не портить SQL/URL); только email, не номера.
@@ -286,6 +292,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		}
 	} else {
 		cfg.ScrubKeys = defaultScrubKeys()
+	}
+	// Исключения из denylist — точными именами (см. Config.ScrubAllowKeys).
+	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_ALLOW_KEYS"), ",") {
+		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
+			cfg.ScrubAllowKeys = append(cfg.ScrubAllowKeys, k)
+		}
 	}
 	// GOTCHA_TRUSTED_PROXIES — список CIDR («10.0.0.0/8») и/или голых IP
 	// («192.168.1.5», трактуется как /32 или /128) доверенных прокси.

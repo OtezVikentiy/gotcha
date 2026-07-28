@@ -122,6 +122,7 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_SCRUB_IP` | `true` | Zeroes the reporting user's IP address before storage. |
 | `GOTCHA_SCRUB_EMAIL` | `true` | Zeroes the reporting user's email before storage. |
 | `GOTCHA_SCRUB_KEYS` | built-in list (`password,passwd,token,secret,authorization,auth,cookie,api_key,apikey,access_token,refresh_token,session,credit_card,card_number,cvv`) | Comma-separated, case-insensitive key names whose values get redacted in tags/contexts/stack traces/span data. Setting this explicitly **completely replaces** the built-in list rather than extending it — if you want to add a key (e.g. `internal_user_id`), include the standard ones you still want alongside it. |
+| `GOTCHA_SCRUB_ALLOW_KEYS` | empty | Comma-separated exact names to exempt from the denylist. Matching is deliberately fail-closed — a name is redacted when it *contains* a denylist word, so `author` (contains `auth`) and `tokenizer` (contains `token`) are redacted by default. Under-redacting leaks personal data; over-redacting only costs a debugging field, and this setting brings it back: `GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer`. |
 | `GOTCHA_SCRUB_FREETEXT` | `false` | Additionally masks email addresses found in free text (error message, exception value, span description). Off by default on purpose: naive masking can corrupt SQL or URLs embedded in error text. Only emails are masked, not phone numbers or other kinds of personal data. |
 
 ## Security

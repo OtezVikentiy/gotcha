@@ -426,6 +426,7 @@ func run() error {
 		pipeline.Projects = projectCache
 		scrubber := ingest.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
 		scrubber.ScrubFreeText = cfg.ScrubFreeText // RA-L10: opt-in маскирование email в свободном тексте
+		scrubber.SetAllowKeys(cfg.ScrubAllowKeys)  // явные исключения из fail-closed denylist
 		pipeline.Scrub = scrubber
 		pipeline.Start()
 		ingestHandler := ingest.NewHandler(

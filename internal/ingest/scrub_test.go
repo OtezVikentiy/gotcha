@@ -352,14 +352,27 @@ func TestScrubReAuditRound2(t *testing.T) {
 	}
 
 	// P2-2: подстрока denylist больше НЕ маскирует безобидные имена параметров.
-	safe := s.ScrubJSON(`{"note":"https://blog/p?author=jane&session_expired=1&tokenizer=bpe&password=x"}`)
-	for _, keep := range []string{"author=jane", "session_expired=1", "tokenizer=bpe"} {
-		if !contains(safe, keep) {
-			t.Errorf("безобидный параметр over-scrub (P2-2): нет %q в %s", keep, safe)
-		}
-	}
+	// Единое правило fail-closed: подстрока denylist маскирует и author⊃auth,
+	// и tokenizer⊃token — это осознанная цена, возвращается через SetAllowKeys.
+	safe := s.ScrubJSON(`{"note":"https://blog/p?page=2&tokenizer=bpe&password=x"}`)
 	if !contains(safe, "password=[scrubbed]") {
-		t.Errorf("password должен маскироваться (P2-2): %s", safe)
+		t.Errorf("password должен маскироваться: %s", safe)
+	}
+	if contains(safe, "tokenizer=bpe") {
+		t.Errorf("fail-closed: tokenizer (⊃token) маскируется без allowlist: %s", safe)
+	}
+	if !contains(safe, "page=2") {
+		t.Errorf("имя без denylist-подстроки не трогаем: %s", safe)
+	}
+	allowed := NewScrubber(true, true, []string{"password", "token", "access_token"})
+	allowed.ScrubFreeText = true
+	allowed.SetAllowKeys([]string{"tokenizer"})
+	back := allowed.ScrubJSON(`{"note":"https://blog/p?tokenizer=bpe&password=x"}`)
+	if !contains(back, "tokenizer=bpe") {
+		t.Errorf("allowlist должен вернуть tokenizer: %s", back)
+	}
+	if !contains(back, "password=[scrubbed]") {
+		t.Errorf("allowlist не должен снимать маску с password: %s", back)
 	}
 
 	// P2-3: NDJSON / мусорный хвост не усекается молча (падаем во form-путь).
@@ -383,12 +396,11 @@ func TestScrubReAuditRound2(t *testing.T) {
 		t.Errorf("текст без секретов изменён: %q → %q", same, out)
 	}
 
-	// looksLikeURL: длинная невалидная «схема» и голый //host — не URL.
-	if looksLikeURL("this is not a url but contains :// inside") {
-		t.Error("looksLikeURL: пробел в схеме должен отвергаться")
-	}
-	if looksLikeURL("//host/path") {
-		t.Error("looksLikeURL: //host без схемы — не URL")
+	// Не-URL с "://" и голый //host не должны ничего ломать (возврат байт-в-байт).
+	for _, in := range []string{"this is not a url but contains :// inside", "//host/path"} {
+		if out := s.ScrubMessage(in); out != in {
+			t.Errorf("не-URL текст изменён: %q → %q", in, out)
+		}
 	}
 }
 
@@ -400,16 +412,14 @@ func TestScrubReAuditRound3(t *testing.T) {
 	s := NewScrubber(true, true, []string{"password", "token", "secret", "auth", "session", "cookie", "api_key"})
 
 	// P1-1: составные имена секретов маскируются по СЛОВУ; безобидные — нет.
-	comp := s.ScrubJSON(`{"data":"client_secret=CS&id_token=JWT&new_password=P&author=jane&tokenizer=bpe&cookies_accepted=1"}`)
+	comp := s.ScrubJSON(`{"data":"client_secret=CS&id_token=JWT&new_password=P&keep_me=1"}`)
 	for _, leak := range []string{"client_secret=CS", "id_token=JWT", "new_password=P"} {
 		if contains(comp, leak) {
 			t.Errorf("составной секрет не замаскирован (P1-1): %q в %s", leak, comp)
 		}
 	}
-	for _, keep := range []string{"author=jane", "tokenizer=bpe", "cookies_accepted=1"} {
-		if !contains(comp, keep) {
-			t.Errorf("безобидный параметр over-scrub (P1-1): нет %q в %s", keep, comp)
-		}
+	if !contains(comp, "keep_me=1") {
+		t.Errorf("параметр без denylist-подстроки не должен маскироваться: %s", comp)
 	}
 
 	// P1-2: всё после URL внутри непробельного токена сохраняется, токен вычищен.
@@ -473,16 +483,14 @@ func TestScrubReAuditRound4(t *testing.T) {
 	s := NewScrubber(true, true, []string{"password", "token", "secret", "auth", "session", "api_key", "credit_card", "card_number", "access_token"})
 
 	// P1-A: составные ключи денилиста матчатся в ИМЕНАХ query-параметров.
-	comp := s.ScrubJSON(`{"data":"x_api_key=SEEKRET&X-Api-Key=K2&billing_credit_card=4111&cc_card_number=4222&author=jane&tokenizer=bpe"}`)
+	comp := s.ScrubJSON(`{"data":"x_api_key=SEEKRET&X-Api-Key=K2&billing_credit_card=4111&cc_card_number=4222&page=2"}`)
 	for _, leak := range []string{"SEEKRET", "K2", "4111", "4222"} {
 		if contains(comp, leak) {
 			t.Errorf("составной ключ не замаскирован в параметре (P1-A): %q в %s", leak, comp)
 		}
 	}
-	for _, keep := range []string{"author=jane", "tokenizer=bpe"} {
-		if !contains(comp, keep) {
-			t.Errorf("безобидный параметр over-scrub (P1-A): нет %q в %s", keep, comp)
-		}
+	if !contains(comp, "page=2") {
+		t.Errorf("параметр без denylist-подстроки не должен маскироваться: %s", comp)
 	}
 
 	// P1: UTF-8 (кириллица) в пути/query не обрывает разбор URL — токен вычищен.
@@ -513,18 +521,21 @@ func TestScrubReAuditRound4(t *testing.T) {
 		}
 	}
 
-	// splitWords: границы camelCase/аббревиатуры/разделителя/кириллицы.
-	cases := map[string][]string{
-		"IDToken":       {"ID", "Token"},
-		"apiKey":        {"api", "Key"},
-		"APIKEY":        {"APIKEY"},
-		"client_secret": {"client", "secret"},
-		"новый_пароль":  {"новый", "пароль"},
+	// Единое правило denied(): регистр, разделители и склейка не мешают матчу —
+	// одна функция обслуживает ключи, параметры, заголовки и теги одинаково.
+	for _, name := range []string{
+		"IDToken", "apiKey", "APIKEY", "client_secret", "clientsecret",
+		"X-Api-Key", "mytoken", "sessionToken", "user.password", "новый_пароль",
+	} {
+		probe := NewScrubber(false, false, []string{"password", "token", "secret", "api_key", "пароль"})
+		if !probe.denied(name) {
+			t.Errorf("denied(%q) = false, ожидается маскирование (fail-closed)", name)
+		}
 	}
-	for in, want := range cases {
-		got := splitWords(in)
-		if strings.Join(got, "|") != strings.Join(want, "|") {
-			t.Errorf("splitWords(%q) = %v, want %v", in, got, want)
+	for _, name := range []string{"page", "limit", "user_id", "endpoint"} {
+		probe := NewScrubber(false, false, []string{"password", "token", "secret", "api_key"})
+		if probe.denied(name) {
+			t.Errorf("denied(%q) = true, имя без denylist-подстроки маскировать не нужно", name)
 		}
 	}
 

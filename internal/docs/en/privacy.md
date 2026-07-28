@@ -17,7 +17,7 @@ Sessions (`sessions`) store only a token hash and `user_id` — no IP, no user a
 
 ## What is enabled by default
 
-- **IP and email scrubbing on ingest.** `GOTCHA_SCRUB_IP=true` and `GOTCHA_SCRUB_EMAIL=true` by default: `events.user_ip` and `events.user_email` are nulled before they reach ClickHouse. Denylisted keys (`GOTCHA_SCRUB_KEYS`) are stripped from tags/contexts.
+- **IP and email scrubbing on ingest.** `GOTCHA_SCRUB_IP=true` and `GOTCHA_SCRUB_EMAIL=true` by default: `events.user_ip` and `events.user_email` are nulled before they reach ClickHouse. Denylisted keys (`GOTCHA_SCRUB_KEYS`) are stripped from tags, contexts, headers, query strings and request bodies. Matching is **fail-closed**: a name is redacted when it *contains* a denylist word, so `x_api_key`, `clientSecret` and `mytoken` are all caught — and so are `author` (contains `auth`) and `tokenizer` (contains `token`). Under-redacting leaks personal data; over-redacting costs a debugging field and is reversible with `GOTCHA_SCRUB_ALLOW_KEYS`.
 - **Retention.** TTL is enforced and configurable: events and more via `GOTCHA_RETENTION_DAYS`, with spans, metrics, and profiles having their own settings (see [Configuration](/docs/configuration)). Data is deleted from ClickHouse automatically once its retention expires.
 - **Anonymized external notifications.** `GOTCHA_EXTERNAL_CHANNEL_DETAILS=false` by default (privacy-by-default): Telegram/webhook receive only an anonymized link back to the instance, not the error text. See the external-recipients section below.
 - **No phone-home.** Gotcha sends no analytics or telemetry back to its developers. The only external recipients are the ones you configure (alert channels, SSO providers).
