@@ -206,6 +206,14 @@ type Handler struct {
 	// дополнение к per-account (ip|email) ограничивает суммарный поток попыток с
 	// одного IP по РАЗНЫМ email, закрывая обход per-account лимита перебором.
 	ipLimiter *rateLimiter
+	// publicLimiter — per-IP лимитер НЕаутентифицированных машинных и публичных
+	// роутов: /uptime/hb/{token}, /probe/*, /status/{slug}, /auth/oauth/*/start.
+	// Каждый такой запрос от анонима стоит похода в PostgreSQL (резолв токена
+	// пробы/heartbeat-токена/слага), а пул общий с веб-частью, поэтому без капа
+	// аноним без единого ключа выбирает пул и роняет UI, алерты и квоты.
+	// Порог щедрый (600/мин ≈ 10/с на IP): один хост с десятками heartbeat-
+	// мониторов и пробой должен укладываться с запасом, а перебор — нет.
+	publicLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
 	// требует инициализации в New.
@@ -240,6 +248,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		loginLimiter:     newRateLimiter(time.Now, 5, time.Minute),
 		ipLimiter:        newRateLimiter(time.Now, 20, time.Minute),
 		emailLimiter:     newRateLimiter(time.Now, 50, 15*time.Minute),
+		publicLimiter:    newRateLimiter(time.Now, 600, time.Minute),
 	}
 }
 
@@ -263,7 +272,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// OAuth/social login (этап 5): открыты для анонимов (вход), сессию для
 	// потока привязки проверяем внутри хендлера.
-	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.oauthStart)
+	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.publicRateLimited(h.oauthStart))
 	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.oauthCallback)
 
 	// Переключатель языка (задача 6): доступен и анониму — например, на
@@ -462,13 +471,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// стороной; ей нужен ещё и UptimeQuery (uptime% и полоска за 90 дней из
 	// ClickHouse) — в режимах "web"/"all" оба поля выставляются вместе.
 	if h.Uptime != nil {
-		inner.HandleFunc("GET /uptime/hb/{token}", h.heartbeat)
-		inner.HandleFunc("POST /uptime/hb/{token}", h.heartbeat)
+		inner.HandleFunc("GET /uptime/hb/{token}", h.publicRateLimited(h.heartbeat))
+		inner.HandleFunc("POST /uptime/hb/{token}", h.publicRateLimited(h.heartbeat))
 
-		inner.HandleFunc("POST /probe/lease", h.probeLease)
-		inner.HandleFunc("POST /probe/results", h.probeResults)
+		inner.HandleFunc("POST /probe/lease", h.publicRateLimited(h.probeLease))
+		inner.HandleFunc("POST /probe/results", h.publicRateLimited(h.probeResults))
 
-		inner.HandleFunc("GET /status/{slug}", h.statusPage)
+		inner.HandleFunc("GET /status/{slug}", h.publicRateLimited(h.statusPage))
 	}
 
 	// Fallback: любой путь, не покрытый паттернами выше, — стилизованная 404.

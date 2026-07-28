@@ -1,6 +1,8 @@
 package web
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -42,4 +44,42 @@ func TestRateLimiterSweepExpiredEntries(t *testing.T) {
 func key(i int) string {
 	// Generate a distinct key for each iteration
 	return "192.168.1.1|test" + string(rune(i))
+}
+
+// TestPublicRateLimitedGuardsUnauthRoutes фиксирует класс «нет лимита на
+// неаутентифицированных роутах»: каждый такой запрос от анонима стоит похода в
+// PostgreSQL (резолв heartbeat-токена / токена пробы / слага статус-страницы), а
+// пул общий с веб-частью — без капа аноним без единого ключа выбирает пул и
+// роняет UI, алерты и квоты.
+func TestPublicRateLimitedGuardsUnauthRoutes(t *testing.T) {
+	h := &Handler{publicLimiter: newRateLimiter(time.Now, 3, time.Minute)}
+	var served int
+	guarded := h.publicRateLimited(func(w http.ResponseWriter, r *http.Request) {
+		served++
+		w.WriteHeader(http.StatusOK)
+	})
+
+	var last int
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/status/x", nil)
+		req.RemoteAddr = "203.0.113.7:1234"
+		guarded(rec, req)
+		last = rec.Code
+	}
+	if served != 3 {
+		t.Errorf("обслужено %d запросов, ожидалось 3 (лимит)", served)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Errorf("код сверх лимита = %d, want 429", last)
+	}
+
+	// Другой IP получает собственный бакет — лимит не глобальный.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/status/x", nil)
+	req.RemoteAddr = "198.51.100.9:5678"
+	guarded(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("другой IP получил %d, want 200: лимит должен быть per-IP", rec.Code)
+	}
 }

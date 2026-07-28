@@ -953,10 +953,22 @@ func capDataMap(m map[string]any) map[string]any {
 // otlpAttrString приводит AnyValue к строке. Составные значения (массив,
 // kvlist) схлопываем в плоскую строку: наши колонки — строки и JSON-текст,
 // вложенных типов мы не обещали.
-func otlpAttrString(v *commonpb.AnyValue) string {
+// maxAttrDepth/maxAttrLen — потолки обхода вложенного AnyValue. Глубину выбирает
+// КЛИЕНТ (protobuf допускает тысячи уровней), а каждый уровень безусловно склеивал
+// всех детей, поэтому стоимость была O(глубина × длина) и 518 КБ тела давали ~1 ГБ
+// и полсекунды CPU на HTTP-горутине. capRunes применялся ПОСЛЕ полной рекурсии,
+// то есть уже после раздувания — ограничивать надо ВО ВРЕМЯ обхода.
+const (
+	maxAttrDepth = 8
+	maxAttrLen   = 8192
+)
+
+func otlpAttrString(v *commonpb.AnyValue) string { return otlpAttrStringDepth(v, 0) }
+
+func otlpAttrStringDepth(v *commonpb.AnyValue, depth int) string {
 	switch x := v.GetValue().(type) {
 	case *commonpb.AnyValue_StringValue:
-		return x.StringValue
+		return capRunes(x.StringValue, maxAttrLen)
 	case *commonpb.AnyValue_BoolValue:
 		return strconv.FormatBool(x.BoolValue)
 	case *commonpb.AnyValue_IntValue:
@@ -964,19 +976,44 @@ func otlpAttrString(v *commonpb.AnyValue) string {
 	case *commonpb.AnyValue_DoubleValue:
 		return strconv.FormatFloat(x.DoubleValue, 'f', -1, 64)
 	case *commonpb.AnyValue_BytesValue:
-		return hex.EncodeToString(x.BytesValue)
+		return capRunes(hex.EncodeToString(x.BytesValue), maxAttrLen)
 	case *commonpb.AnyValue_ArrayValue:
-		parts := make([]string, 0, len(x.ArrayValue.GetValues()))
-		for _, e := range x.ArrayValue.GetValues() {
-			parts = append(parts, otlpAttrString(e))
+		if depth >= maxAttrDepth {
+			return ""
 		}
-		return strings.Join(parts, ",")
+		return joinAttrParts(x.ArrayValue.GetValues(), func(e *commonpb.AnyValue) string {
+			return otlpAttrStringDepth(e, depth+1)
+		})
 	case *commonpb.AnyValue_KvlistValue:
-		parts := make([]string, 0, len(x.KvlistValue.GetValues()))
-		for _, kv := range x.KvlistValue.GetValues() {
-			parts = append(parts, kv.GetKey()+"="+otlpAttrString(kv.GetValue()))
+		if depth >= maxAttrDepth {
+			return ""
+		}
+		kvs := x.KvlistValue.GetValues()
+		parts := make([]string, 0, len(kvs))
+		total := 0
+		for _, kv := range kvs {
+			p := kv.GetKey() + "=" + otlpAttrStringDepth(kv.GetValue(), depth+1)
+			if total += len(p) + 1; total > maxAttrLen {
+				break // накопленная длина исчерпана — дальше не склеиваем
+			}
+			parts = append(parts, p)
 		}
 		return strings.Join(parts, ",")
 	}
 	return ""
+}
+
+// joinAttrParts склеивает элементы, обрывая обход по достижении maxAttrLen, —
+// длина результата ограничивается ВО ВРЕМЯ склейки, а не после.
+func joinAttrParts[T any](items []T, render func(T) string) string {
+	parts := make([]string, 0, len(items))
+	total := 0
+	for _, it := range items {
+		p := render(it)
+		if total += len(p) + 1; total > maxAttrLen {
+			break
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, ",")
 }

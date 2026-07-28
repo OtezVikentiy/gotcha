@@ -167,13 +167,24 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2) Поток привязки из профиля. Доверяем ТОЛЬКО текущей сессии, а не UID из
-	// cookie (SEC-C1: при утёкшем ключе подписи UID в cookie подделывается — линковка
-	// к чужому аккаунту). Реальную привязку разрешаем лишь к залогиненному юзеру.
+	// 2) Поток привязки из профиля. Требуем СОВПАДЕНИЯ двух независимых источников:
+	// UID в подписанной cookie (кто начинал поток) и UID текущей сессии (кто
+	// завершает). Каждый по отдельности недостаточен:
+	//   - только сессия (как было) — захват аккаунта подменой cookie: атакующий
+	//     начинает свой link-поток, проходит IdP, подсовывает жертве свою cookie
+	//     потока, и на её callback ЕГО identity привязывается к ЕЁ аккаунту, после
+	//     чего он входит под жертвой;
+	//   - только cookie — при утёкшем ключе подписи UID подделывается (SEC-C1).
+	// Совпадение закрывает оба: чужая cookie несёт чужой UID, а подделанный UID не
+	// совпадёт с сессией атакующего.
 	if flow.Link {
 		uid, ok := h.sessionUID(r)
 		if !ok {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if flow.UID != uid {
+			h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.oauth.session_expired"))
 			return
 		}
 		switch err := h.Auth.LinkIdentity(r.Context(), uid, name, id.Subject, id.Email); {

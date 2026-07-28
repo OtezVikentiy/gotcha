@@ -77,3 +77,29 @@ func TestParseSentryCapsMetaFields(t *testing.T) {
 		}
 	}
 }
+
+// TestFrameFieldsCapped фиксирует P0 амплификации: формат Sentry индексный, поэтому
+// одно огромное имя функции, упомянутое во всех кадрах стека, раздувалось в
+// Writer.Add при склейке ключа (393 КБ тела → ~409 МБ аллокаций). Кап обязан
+// стоять на РАЗБОРЕ, до амплификации.
+func TestFrameFieldsCapped(t *testing.T) {
+	huge := strings.Repeat("A", 400_000)
+	body := `{"profile":{"frames":[{"function":"` + huge + `","filename":"` + huge + `"}],` +
+		`"stacks":[[0,0,0,0]],"samples":[{"stack_id":0,"elapsed_since_start_ns":1,"thread_id":"1"}]},` +
+		`"transaction":{"name":"t"},"platform":"go","environment":"prod"}`
+
+	p, err := ParseSentry([]byte(body), time.Now())
+	if err != nil {
+		t.Fatalf("ParseSentry: %v", err)
+	}
+	for _, s := range p.Samples {
+		for _, f := range s.Stack {
+			if len([]rune(f.Function)) > maxFrameField {
+				t.Fatalf("Function не обрезан: %d рун (кап %d)", len([]rune(f.Function)), maxFrameField)
+			}
+			if len([]rune(f.File)) > maxFrameField {
+				t.Fatalf("File не обрезан: %d рун (кап %d)", len([]rune(f.File)), maxFrameField)
+			}
+		}
+	}
+}

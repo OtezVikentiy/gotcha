@@ -183,6 +183,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := h.Org.UpsertSSO(r.Context(), cfg); {
 	case err == nil:
+		h.ssoProviders.invalidate(orgID) // иначе новая конфигурация применится только через ssoCacheTTL
 		http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 	case errors.Is(err, org.ErrDomainTaken):
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.domain_taken"), "")
@@ -215,6 +216,9 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Отзыв федерации обязан действовать немедленно: без сброса кеша отозванный
+	// IdP ещё до 5 минут выдавал бы логины и JIT-провижнинг участников.
+	h.ssoProviders.invalidate(orgID)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 

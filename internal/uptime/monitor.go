@@ -48,6 +48,15 @@ type Monitor struct {
 	CreatedAt      time.Time
 	Regions        []string
 	ChannelIDs     []int64
+
+	// RegionCount — сколько регионов НАСТРОЕНО у монитора. Отдельно от Regions,
+	// потому что путь детекции (lease → scanMonitor) список регионов не грузит, а
+	// консенсусу all/majority нужен именно знаменатель: без него «все регионы
+	// down» считалось по регионам, которые УЖЕ прислали результат, и у свежего
+	// монитора на 3 региона первый же упавший регион давал down==decided==1,
+	// то есть срабатывал и `all`, и `majority`. 0 — счёт неизвестен, тогда
+	// aggregate откатывается на прежнее поведение (см. detector.aggregate).
+	RegionCount int
 }
 
 func validKind(k Kind) bool {

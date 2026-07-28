@@ -87,6 +87,20 @@ func (rl *rateLimiter) size() int {
 	return len(rl.hits)
 }
 
+// publicRateLimited навешивает per-IP лимит на НЕаутентифицированный роут
+// (см. Handler.publicLimiter). Ответ — голый 429 без тела: адресаты этих роутов
+// машинные (пробы, heartbeat-крон) либо публичные, страница ошибки им не нужна.
+func (h *Handler) publicRateLimited(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.publicLimiter != nil && !h.publicLimiter.Allow(h.clientIP(r)) {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // remoteHost — host из RemoteAddr (порт отброшен), т.е. адрес непосредственного
 // TCP-пира. За reverse-proxy это адрес прокси, а не клиента (см. clientIP).
 func remoteHost(r *http.Request) string {

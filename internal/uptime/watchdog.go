@@ -41,6 +41,13 @@ type Watchdog struct {
 	Detector *Detector // heartbeat misses run through OnResult so incident thresholds/notifications behave like any other check
 	Notifier Notifier  // used directly for ssl_expiring/reminder events, which don't go through Detector
 
+	// Writer — запись пропущенного удара в check_results. ОБЯЗАТЕЛЕН для
+	// достоверности аптайма: успешный пинг строку пишет (web/heartbeat.go), а
+	// пропущенный без этого не писал ничего, поэтому доля OK/Total у heartbeat-
+	// монитора всегда оставалась 100% — даже когда монитор в down и открыт
+	// инцидент. Нулевой Writer допустим только в тестах.
+	Writer *ResultWriter
+
 	// Region — the local region a missed heartbeat is recorded under (must
 	// match the region the monitor's active-check regions use, "local" by
 	// default — see cmd/gotcha's cfg.LocalRegion). Empty means DefaultRegion.
@@ -112,8 +119,15 @@ func (w *Watchdog) checkHeartbeats(ctx context.Context) {
 			slog.Error("uptime: watchdog: apply heartbeat miss failed", "monitor_id", m.ID, "error", err)
 			continue
 		}
+		res := Result{OK: false, Error: heartbeatMissedError}
+		// Пропущенный удар пишется в check_results ровно так же, как успешный
+		// пинг в web/heartbeat.go: иначе в знаменателе аптайма остаются только
+		// успехи и доля никогда не опускается ниже 100%.
+		if w.Writer != nil {
+			w.Writer.Add(m.ProjectID, m.ID, region, at, res)
+		}
 		if w.Detector != nil {
-			w.Detector.OnResult(ctx, m, region, Result{OK: false, Error: heartbeatMissedError}, st)
+			w.Detector.OnResult(ctx, m, region, res, st)
 		}
 	}
 }

@@ -285,12 +285,76 @@ func TestServiceMonitorChannelsOnlyEnabled(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{enabledCh, disabledCh})
 
+	// MonitorChannels отдаёт СОБСТВЕННЫЕ каналы монитора, включая выключенные:
+	// пустой результат означает «своих каналов нет» и включает фолбэк на каналы
+	// проекта. Если бы выключенные отсеивались здесь, монитор с единственным
+	// выключенным каналом выглядел бы как «без своих каналов» и его уведомления
+	// уехали бы ВО ВСЕ каналы проекта — ровно в те, что оператор исключил.
+	// Выключенные пропускает сам Notify (см. TestOutboxNotifierAllOwnChannelsDisabled).
 	channels, err := usvc.MonitorChannels(ctx, m.ID)
 	if err != nil {
 		t.Fatalf("MonitorChannels: %v", err)
 	}
-	if len(channels) != 1 || channels[0].ID != enabledCh {
-		t.Fatalf("MonitorChannels = %+v, want exactly [%d]", channels, enabledCh)
+	if len(channels) != 2 {
+		t.Fatalf("MonitorChannels = %+v, want both linked channels (enabled and disabled)", channels)
+	}
+	var gotEnabled, gotDisabled bool
+	for _, c := range channels {
+		switch c.ID {
+		case enabledCh:
+			gotEnabled = true
+		case disabledCh:
+			gotDisabled = true
+		default:
+			t.Fatalf("MonitorChannels вернул непривязанный канал %d: %+v", c.ID, channels)
+		}
+	}
+	if !gotEnabled || !gotDisabled {
+		t.Fatalf("MonitorChannels = %+v, want [%d %d]", channels, enabledCh, disabledCh)
+	}
+}
+
+// TestOutboxNotifierAllOwnChannelsDisabled фиксирует суть правки: монитор,
+// у которого ВСЕ собственные каналы выключены, не должен уведомлять никуда —
+// и уж точно не должен рассылать по всем каналам проекта.
+func TestOutboxNotifierAllOwnChannelsDisabled(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	asvc := alert.NewService(pool)
+	usvc := uptime.NewService(pool)
+	pid := newProject(t, pool)
+
+	offCh, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: false, Target: "https://example.com/off",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel disabled: %v", err)
+	}
+	// Канал проекта, НЕ привязанный к монитору: именно он уезжал бы по фолбэку.
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/project-wide",
+	}); err != nil {
+		t.Fatalf("CreateChannel project-wide: %v", err)
+	}
+	m := newNotifierMonitor(t, usvc, pid, []int64{offCh})
+
+	outbox := notify.NewOutbox(pool)
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: outbox, BaseURL: "http://localhost"}
+	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	var jobs int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM notification_outbox o
+		JOIN alert_channels c ON c.id = o.channel_id
+		WHERE c.project_id = $1`, pid).Scan(&jobs); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if jobs != 0 {
+		t.Fatalf("поставлено %d заданий, ожидалось 0: выключенный собственный канал не должен включать рассылку по каналам проекта", jobs)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 // OIDCConfig — параметры generic-OIDC-провайдера (из env, см. cmd/gotcha/config.go).
@@ -18,14 +19,31 @@ type OIDCConfig struct {
 	DisplayName  string // пусто → "OIDC"
 }
 
+// discoveryTTL — срок жизни кеша discovery/JWKS. Раньше кеш жил ВЕСЬ процесс:
+// после плановой ротации подписного ключа у IdP (рутина для Keycloak/Auth0/Azure)
+// verifyRS256 переставал находить ключ, и КАЖДЫЙ OIDC-вход падал до перезапуска
+// бинаря — причём диагностировалось плохо: пользователь нормально доходил до IdP
+// и видел общую ошибку на callback.
+const discoveryTTL = 15 * time.Minute
+
 // OIDC — провайдер поверх OpenID Connect. discovery и JWKS кешируются на
-// процесс (ленивая загрузка при первом обращении).
+// discoveryTTL (ленивая загрузка при первом обращении).
 type OIDC struct {
 	cfg OIDCConfig
 
-	mu    sync.Mutex
-	disco *discoveryDoc
-	keys  []jwk
+	mu        sync.Mutex
+	disco     *discoveryDoc
+	keys      []jwk
+	fetchedAt time.Time
+	// now — часы (тесты перематывают время без ожидания). nil → time.Now.
+	now func() time.Time
+}
+
+func (o *OIDC) clock() time.Time {
+	if o.now != nil {
+		return o.now()
+	}
+	return time.Now()
 }
 
 type discoveryDoc struct {
@@ -54,11 +72,17 @@ func (o *OIDC) scopes() string {
 	return "openid email profile"
 }
 
-// discovery лениво загружает и кеширует .well-known/openid-configuration и JWKS.
+// discovery лениво загружает и кеширует .well-known/openid-configuration и JWKS
+// на discoveryTTL. force=true перезагружает независимо от возраста кеша — так
+// закрывается ротация ключа между обновлениями (см. Exchange).
 func (o *OIDC) discovery(ctx context.Context) (*discoveryDoc, []jwk, error) {
+	return o.discoveryFresh(ctx, false)
+}
+
+func (o *OIDC) discoveryFresh(ctx context.Context, force bool) (*discoveryDoc, []jwk, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.disco != nil {
+	if o.disco != nil && !force && o.clock().Sub(o.fetchedAt) < discoveryTTL {
 		return o.disco, o.keys, nil
 	}
 	docURL := strings.TrimRight(o.cfg.Issuer, "/") + "/.well-known/openid-configuration"
@@ -70,7 +94,7 @@ func (o *OIDC) discovery(ctx context.Context) (*discoveryDoc, []jwk, error) {
 	if err := getJSON(ctx, doc.JWKSURI, &ks); err != nil {
 		return nil, nil, fmt.Errorf("%w: jwks: %v", ErrExchange, err)
 	}
-	o.disco, o.keys = &doc, ks.Keys
+	o.disco, o.keys, o.fetchedAt = &doc, ks.Keys, o.clock()
 	return o.disco, o.keys, nil
 }
 
@@ -124,7 +148,17 @@ func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, no
 	}
 	claims, err := verifyRS256(tok.IDToken, keys)
 	if err != nil {
-		return Identity{}, err
+		// Подпись не сошлась ни с одним известным ключом — возможно, IdP только что
+		// ротировал ключ, а наш кеш ещё свеж. Обновляем принудительно ОДИН раз и
+		// пробуем снова, иначе вход был бы сломан до истечения discoveryTTL.
+		_, freshKeys, ferr := o.discoveryFresh(ctx, true)
+		if ferr != nil {
+			return Identity{}, err
+		}
+		claims, err = verifyRS256(tok.IDToken, freshKeys)
+		if err != nil {
+			return Identity{}, err
+		}
 	}
 	// iss / aud / exp / nonce.
 	if iss, _ := claims["iss"].(string); iss != doc.Issuer && iss != strings.TrimRight(o.cfg.Issuer, "/") {

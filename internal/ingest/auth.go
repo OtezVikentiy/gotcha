@@ -92,15 +92,55 @@ func (c *KeyCache) Resolve(ctx context.Context, publicKey string) (org.Key, erro
 	return k, nil
 }
 
-// store кладёт запись в кеш под mu, очищая map при переполнении
+// store кладёт запись в кеш под mu, вытесняя записи при переполнении
 // (см. maxKeyCacheEntries).
 func (c *KeyCache) store(publicKey string, e keyEntry) {
 	c.mu.Lock()
 	if len(c.entries) >= maxKeyCacheEntries {
-		c.entries = make(map[string]keyEntry, maxKeyCacheEntries)
+		c.evict()
 	}
 	c.entries[publicKey] = e
 	c.mu.Unlock()
+}
+
+// size — число записей в кеше (для тестов вытеснения).
+func (c *KeyCache) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// evict освобождает место в кеше. Порядок вытеснения важен: РАНЬШЕ кеш при
+// переполнении стирался ЦЕЛИКОМ, поэтому поток запросов со случайными
+// (несуществующими) ключами выбивал заодно и позитивные записи живых проектов —
+// и легитимный трафик после каждого сброса снова бил в PostgreSQL на каждое
+// событие. Теперь сначала уходит просроченное, затем НЕГАТИВНЫЕ записи (след
+// перебора ключей), и лишь если и этого мало — произвольные, до отметки в 90%.
+// Вызывать под c.mu.
+func (c *KeyCache) evict() {
+	now := c.now()
+	for k, e := range c.entries {
+		if !e.expires.After(now) {
+			delete(c.entries, k)
+		}
+	}
+	if len(c.entries) < maxKeyCacheEntries {
+		return
+	}
+	for k, e := range c.entries {
+		if e.notFound {
+			delete(c.entries, k)
+		}
+	}
+	// Крайний случай: кеш забит живыми позитивными записями. Освобождаем 10%,
+	// чтобы не сбрасывать всё и не расти без границы.
+	target := maxKeyCacheEntries - maxKeyCacheEntries/10
+	for k := range c.entries {
+		if len(c.entries) < target {
+			break
+		}
+		delete(c.entries, k)
+	}
 }
 
 // PublicKeyFromRequest достаёт sentry_key из X-Sentry-Auth или query.

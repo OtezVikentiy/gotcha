@@ -3,6 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +21,41 @@ var validLevels = map[string]bool{
 	"warning": true,
 	"error":   true,
 	"fatal":   true,
+}
+
+// maxJSONBlock — потолок сырого JSON-блока события (contexts/breadcrumbs/
+// request/exception). 256 КиБ с запасом покрывают легитимный стектрейс с исходным
+// контекстом и большой request-интерфейс; всё, что крупнее, — злоупотребление.
+const maxJSONBlock = 256 << 10
+
+// Потолки разбора exception-интерфейса. Число исключений и кадров задаёт КЛИЕНТ,
+// а строки кадров попадают в fingerprint.Frame и дальше в вычисление отпечатка —
+// без потолков 10 МиБ тела разворачивались в ~130 МБ структур (та же механика,
+// что у кадров профиля: ограничено количество ЭЛЕМЕНТОВ, но не размер строк).
+const (
+	maxExceptions      = 32
+	maxFramesPerExc    = 1024
+	maxExceptionField  = 1024 // type/value одного исключения
+	maxFrameFieldRunes = 512  // module/function одного кадра
+	maxTitleRunes      = 1024
+)
+
+// capJSONBlock возвращает блок, если он влезает в maxJSONBlock, иначе ОТБРАСЫВАЕТ
+// его целиком. Именно отбрасывает, а не обрезает: обрезанный JSON невалиден, его
+// не разберёт ни скрубер (тогда ПДн уехали бы сырыми — ScrubJSON возвращает вход
+// как есть на невалидном JSON), ни отрисовка детали issue.
+//
+// Без этого капа четыре сырых блока были единственными строками события вне
+// дисциплины capRunes, а буферы ниже по конвейеру считают СТРОКИ, а не байты:
+// очередь пайплайна 1000 задач и батч событий 10000 строк по 10 МиБ каждая дают
+// потолок памяти в десятки гигабайт от потока сжатых до килобайтов запросов.
+func capJSONBlock(raw []byte, field string) string {
+	if len(raw) <= maxJSONBlock {
+		return string(raw)
+	}
+	slog.Warn("event json block too large, dropped",
+		"field", field, "bytes", len(raw), "limit", maxJSONBlock)
+	return ""
 }
 
 // capRunes обрезает s до n рун (недоверенные поля из событий SDK не должны
@@ -163,23 +199,24 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 	parseTags(se.Tags, pe.Tags)
 	pe.Tags = capTags(pe.Tags)
 	if len(se.Contexts) > 0 && string(se.Contexts) != "null" {
-		pe.ContextsJSON = string(se.Contexts)
+		pe.ContextsJSON = capJSONBlock(se.Contexts, "contexts")
 		pe.TraceID, pe.SpanID = parseTraceIDs(se.Contexts)
 	}
 	if len(se.Breadcrumbs) > 0 && string(se.Breadcrumbs) != "null" {
-		pe.BreadcrumbsJSON = string(se.Breadcrumbs)
+		pe.BreadcrumbsJSON = capJSONBlock(se.Breadcrumbs, "breadcrumbs")
 	}
 	if len(se.Request) > 0 && string(se.Request) != "null" {
-		pe.RequestJSON = string(se.Request)
+		pe.RequestJSON = capJSONBlock(se.Request, "request")
 	}
 
 	pe.Exceptions = parseExceptions(se.Exception)
 	if len(se.Exception) > 0 && string(se.Exception) != "null" {
-		pe.StacktraceJSON = string(se.Exception)
+		pe.StacktraceJSON = capJSONBlock(se.Exception, "exception")
 	}
 
 	// Title/Culprit строятся уже из каппнутых полей (Message, фреймы).
 	pe.Title, pe.Culprit = titleAndCulprit(pe)
+	pe.Title = capRunes(pe.Title, maxTitleRunes)
 	pe.Culprit = capRunes(pe.Culprit, 200)
 	return pe, nil
 }
@@ -302,18 +339,29 @@ func parseExceptions(raw json.RawMessage) []fingerprint.Exception {
 		return nil
 	}
 
-	var out []fingerprint.Exception
+	if len(list) > maxExceptions {
+		list = list[:maxExceptions]
+	}
+	out := make([]fingerprint.Exception, 0, len(list))
 	for _, se := range list {
-		ex := fingerprint.Exception{Type: se.Type, Value: se.Value}
+		ex := fingerprint.Exception{
+			Type:  capRunes(se.Type, maxExceptionField),
+			Value: capRunes(se.Value, maxExceptionField),
+		}
 		if se.Stacktrace != nil {
-			for _, f := range se.Stacktrace.Frames {
+			frames := se.Stacktrace.Frames
+			if len(frames) > maxFramesPerExc {
+				frames = frames[:maxFramesPerExc]
+			}
+			ex.Frames = make([]fingerprint.Frame, 0, len(frames))
+			for _, f := range frames {
 				module := f.Module
 				if module == "" {
 					module = f.Filename
 				}
 				ex.Frames = append(ex.Frames, fingerprint.Frame{
-					Module:   module,
-					Function: f.Function,
+					Module:   capRunes(module, maxFrameFieldRunes),
+					Function: capRunes(f.Function, maxFrameFieldRunes),
 					InApp:    f.InApp != nil && *f.InApp,
 				})
 			}

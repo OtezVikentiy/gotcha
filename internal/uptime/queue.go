@@ -66,8 +66,16 @@ func (s *Service) Schedule(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// scanLeasedJobs consumes rows produced by the lease queries below: queue
-// id, monitor id, region, lease_until, followed by monitorColumns.
+// leasedJobColumns — СПИСОК КОЛОНОК, который читает scanLeasedJobs. Общий для
+// всех запросов, отдающих Job (lease и LeasedJob): раньше каждый держал свой
+// список, и добавление колонки в один ломало другой в рантайме («number of field
+// descriptions must equal number of destinations»), а не на компиляции. Требует
+// алиасов q (очередь) и m (монитор) в запросе.
+const leasedJobColumns = `q.id, q.monitor_id, q.region, q.lease_until, ` + monitorColumns + `,
+	(SELECT count(*) FROM monitor_regions mr WHERE mr.monitor_id = m.id)`
+
+// scanLeasedJobs consumes rows produced by the lease queries below, in the
+// order given by leasedJobColumns.
 func scanLeasedJobs(rows interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -83,6 +91,7 @@ func scanLeasedJobs(rows interface {
 			&m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 			&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
 			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt, &m.Retries,
+			&m.RegionCount,
 		); err != nil {
 			return nil, err
 		}
@@ -94,11 +103,18 @@ func scanLeasedJobs(rows interface {
 
 // lease is the shared implementation behind LeaseLocal/LeaseForProbe: picks
 // up to limit due jobs of region (not currently leased, or whose lease has
-// expired), marks them leased for 2x the monitor's interval (comfortably
-// longer than a single check, so a slow-but-alive prober isn't raced by a
-// second lease before it reports back), and returns them together with
-// their monitor. probeID is stored in leased_by when non-nil (LeaseForProbe);
-// LeaseLocal passes nil, leaving leased_by NULL.
+// expired), marks them leased, and returns them together with their monitor.
+//
+// Срок лизы — 2x интервала (с запасом длиннее одной проверки, чтобы медленную,
+// но живую пробу не обогнала вторая лиза) ПЛЮС работа, которую добавляют повторы:
+// retries * (timeout + пауза 1с). Без второго слагаемого худший случай задания —
+// (retries+1)*timeout + retries — легко перекрывал лизу (interval=30, timeout=29,
+// retries=10 → 329с работы против 60с лизы), очередь перевыдавала задание
+// следующим тиком, и ОДИН монитор опрашивался 4-5 раз параллельно, добивая
+// уже падающую цель; результаты всех «проигравших» отбрасывались.
+//
+// probeID is stored in leased_by when non-nil (LeaseForProbe); LeaseLocal
+// passes nil, leaving leased_by NULL.
 //
 // orgID scopes the pick to one tenant and MUST be non-nil whenever probeID is
 // (remote probes belong to an organization): region names are free-form, so two
@@ -121,16 +137,17 @@ func (s *Service) lease(ctx context.Context, region string, limit int, probeID, 
 			LIMIT $2
 		), leased AS (
 			UPDATE check_queue q
-			SET lease_until = now() + make_interval(secs => m.interval_seconds * 2),
+			SET lease_until = now() + make_interval(secs =>
+					m.interval_seconds * 2 + m.retries * (m.timeout_seconds + 1)),
 				leased_by = $3
 			FROM picked, monitors m
 			WHERE q.id = picked.id AND m.id = picked.monitor_id
 			RETURNING q.id, q.monitor_id, q.region, q.lease_until
 		)
-		SELECT l.id, l.monitor_id, l.region, l.lease_until, `+monitorColumns+`
-		FROM leased l
-		JOIN monitors m ON m.id = l.monitor_id
-		ORDER BY l.id`,
+		SELECT `+leasedJobColumns+`
+		FROM leased q
+		JOIN monitors m ON m.id = q.monitor_id
+		ORDER BY q.id`,
 		region, limit, probeID, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: lease: %w", err)
@@ -178,7 +195,7 @@ func (s *Service) LeaseForProbe(ctx context.Context, probe Probe, limit int) ([]
 // вызывающему нечего забыть передать.
 func (s *Service) LeasedJob(ctx context.Context, queueID, probeID int64) (Job, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT q.id, q.monitor_id, q.region, q.lease_until, `+monitorColumns+`
+		SELECT `+leasedJobColumns+`
 		FROM check_queue q
 		JOIN monitors m ON m.id = q.monitor_id
 		WHERE q.id = $1 AND q.leased_by = $2 AND q.lease_until > now()

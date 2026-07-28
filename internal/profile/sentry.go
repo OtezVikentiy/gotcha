@@ -17,6 +17,12 @@ const (
 	// (otlp.go/transaction.go — те же 200 рун). Свой хелпер здесь, а не импорт
 	// из ingest: пакет profile не должен зависеть от приёмного слоя.
 	maxMetaField = 200
+	// maxFrameField — кап имени функции и файла КАДРА. Обязателен, а не косметика:
+	// формат Sentry индексный (Stacks ссылаются на Frames по индексу), поэтому одно
+	// огромное имя, упомянутое maxFrames раз, раздувается в Writer.Add при
+	// strings.Join ключа стека — 393 КБ тела давали ~409 МБ аллокаций, а тело почти
+	// однородно и жмётся до килобайта. Кап ставится на РАЗБОРЕ, до амплификации.
+	maxFrameField = 512
 )
 
 // capRunes обрезает недоверенную строку профиля до n рун (дубль ingest.capRunes:
@@ -90,7 +96,9 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 		}
 		idxs := it.Profile.Stacks[stackID]
 		// Переворот лист→корень → корень→лист + кап кадров.
-		stack := make([]Frame, 0, len(idxs))
+		// Ёмкость по min(len, maxFrames): len(idxs) — недоверенная длина от клиента,
+		// и преаллокация по ней выделяла память ДО того, как сработает кап числа кадров.
+		stack := make([]Frame, 0, min(len(idxs), maxFrames))
 		for i := len(idxs) - 1; i >= 0; i-- {
 			if len(stack) >= maxFrames {
 				break
@@ -100,7 +108,11 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 				continue
 			}
 			fr := frames[fi]
-			stack = append(stack, Frame{Function: fr.Function, File: fr.Filename, Line: fr.Lineno})
+			stack = append(stack, Frame{
+				Function: capRunes(fr.Function, maxFrameField),
+				File:     capRunes(fr.Filename, maxFrameField),
+				Line:     fr.Lineno,
+			})
 		}
 		if len(stack) == 0 {
 			continue

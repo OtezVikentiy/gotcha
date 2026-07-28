@@ -266,12 +266,12 @@ func TestConsensusAll(t *testing.T) {
 	assertOpenIncident(t, ctx, svc, mon.ID)
 }
 
-// TestConsensusIgnoresUndecidedRegions locks in the observed behaviour for
-// a monitor whose other regions have never been checked (status stays
-// "unknown" until they reach fail/recovery threshold): only decided
-// regions enter the vote, so a single down region can already tip both
-// "any" (>=1 down) and "majority" (down > decided/2, and decided=1 here).
-func TestConsensusIgnoresUndecidedRegions(t *testing.T) {
+// TestConsensusUndecidedRegionsAreNotDown фиксирует ЗНАМЕНАТЕЛЬ голосования:
+// регион, который ещё ни разу не отчитался ("unknown"), голосом за down не
+// является. Раньше голоса считались только по определившимся регионам, поэтому
+// у свежего монитора на 3 региона первый же упавший регион давал down==decided==1
+// и срабатывал не только "any" (что верно), но и "majority" (что нет).
+func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -291,7 +291,12 @@ func TestConsensusIgnoresUndecidedRegions(t *testing.T) {
 		mon := createMonitorWith(t, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
 		notifier := &fakeNotifier{}
 		d := &uptime.Detector{Svc: svc, Notifier: notifier}
-		applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", time.Now().UTC(), nil)
+		now := time.Now().UTC()
+		// 1 из 3 настроенных регионов — не большинство, даже если остальные молчат.
+		applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", now, nil)
+		assertNoOpenIncident(t, ctx, svc, mon.ID)
+		// 2 из 3 — уже большинство.
+		applyAndDetect(t, ctx, svc, d, mon, "r2", false, "boom", now.Add(time.Second), nil)
 		assertOpenIncident(t, ctx, svc, mon.ID)
 	})
 }

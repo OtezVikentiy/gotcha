@@ -40,11 +40,18 @@ const (
 	aggDown
 )
 
-// aggregate вычисляет агрегированный статус по политике consensus by
-// states — все регионы монитора. Регионы в статусе "unknown" не
-// учитываются (они ещё не набрали ни fail_threshold, ни
-// recovery_threshold). Если ни один регион не определился — aggNone.
-func aggregate(consensus Consensus, states []State) aggStatus {
+// aggregate вычисляет агрегированный статус по политике consensus by states —
+// состояния регионов монитора. Регионы в статусе "unknown" не учитываются как
+// определившиеся (они ещё не набрали ни fail_threshold, ни recovery_threshold).
+// Если ни один регион не определился — aggNone.
+//
+// wantRegions — сколько регионов у монитора НАСТРОЕНО (Monitor.RegionCount).
+// Он служит знаменателем для all/majority: пока не все настроенные регионы
+// прислали результат, «все регионы down» и «большинство регионов down» нельзя
+// считать по одним лишь определившимся. Иначе у свежего монитора на 3 региона
+// первый же упавший регион давал down==decided==1 и срабатывал КАК `all`, ТАК И
+// `majority`. 0 (счёт неизвестен) — откат на прежнее поведение по decided.
+func aggregate(consensus Consensus, states []State, wantRegions int) aggStatus {
 	var up, down int
 	for _, s := range states {
 		switch s.Status {
@@ -58,21 +65,25 @@ func aggregate(consensus Consensus, states []State) aggStatus {
 	if decided == 0 {
 		return aggNone
 	}
+	total := decided
+	if wantRegions > decided {
+		total = wantRegions // ещё не отчитавшиеся регионы — не down
+	}
 	switch consensus {
 	case ConsensusAny:
 		if down > 0 {
 			return aggDown
 		}
 	case ConsensusAll:
-		if down == decided {
+		if down == total {
 			return aggDown
 		}
 	default: // ConsensusMajority, и защитный дефолт на случай будущих значений
-		// Fail-safe: ничью (ровно половина регионов down при чётном числе
-		// определившихся, напр. 2 из 4) считаем down, а не up. Инструмент
-		// мониторинга должен скорее поднять инцидент, чем молча оставить монитор
-		// зелёным, когда половина флота репортит недоступность (>= вместо >).
-		if down*2 >= decided {
+		// Fail-safe: ничью (ровно половина регионов down при чётном числе,
+		// напр. 2 из 4) считаем down, а не up. Инструмент мониторинга должен
+		// скорее поднять инцидент, чем молча оставить монитор зелёным, когда
+		// половина флота репортит недоступность (>= вместо >).
+		if down*2 >= total {
 			return aggDown
 		}
 	}
@@ -88,7 +99,7 @@ func aggregate(consensus Consensus, states []State) aggStatus {
 // fail_threshold/recovery_threshold, тот же случай, что aggNone у
 // внутреннего aggregate).
 func Aggregate(m Monitor, states []State) string {
-	switch aggregate(m.Consensus, states) {
+	switch aggregate(m.Consensus, states, m.RegionCount) {
 	case aggUp:
 		return "up"
 	case aggDown:
@@ -146,7 +157,7 @@ func (d *Detector) detectIncident(ctx context.Context, m Monitor, st State) {
 		slog.Error("uptime: detector: states failed", "monitor_id", m.ID, "error", err)
 		return
 	}
-	agg := aggregate(m.Consensus, states)
+	agg := aggregate(m.Consensus, states, m.RegionCount)
 	if agg == aggNone {
 		return
 	}

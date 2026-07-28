@@ -181,6 +181,7 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 		return Monitor{}, fmt.Errorf("uptime: create: %w", err)
 	}
 	m.Regions = regions
+	m.RegionCount = len(regions)
 	m.ChannelIDs = channelIDs
 	return m, nil
 }
@@ -331,6 +332,7 @@ func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 		return Monitor{}, err
 	}
 	m.Regions = regions
+	m.RegionCount = len(regions)
 
 	channelIDs, err := channelIDsOf(ctx, s.pool, monitorID)
 	if err != nil {
@@ -372,6 +374,7 @@ func (s *Service) List(ctx context.Context, projectID int64) ([]Monitor, error) 
 			return nil, err
 		}
 		out[i].Regions = regions
+		out[i].RegionCount = len(regions)
 	}
 	return out, nil
 }
@@ -430,17 +433,21 @@ func (s *Service) SetSSLExpiry(ctx context.Context, monitorID int64, expires tim
 }
 
 // MonitorChannels returns monitorID's own delivery channels — the ones
-// linked via monitor_channels — enabled only, ordered by id. An empty
-// (nil) result is not an error: it means the monitor has no channels of
-// its own, and callers (see OutboxNotifier.Notify) fall back to the
-// project's channels. internal/uptime importing internal/alert here does
-// not create an import cycle: alert never imports uptime.
+// linked via monitor_channels — ordered by id, ВКЛЮЧАЯ выключенные. Пустой
+// (nil) результат не ошибка: он означает, что у монитора нет собственных
+// каналов, и вызывающий (см. OutboxNotifier.Notify) откатывается на каналы
+// проекта. Выключенные каналы намеренно НЕ отфильтрованы здесь: иначе монитор,
+// у которого единственный канал выключили, выглядел бы как «без собственных
+// каналов» и его уведомления уходили бы ВО ВСЕ каналы проекта — ровно в те,
+// которые оператор явно исключил. Пропуск выключенных делает сам Notify.
+// internal/uptime importing internal/alert here does not create an import
+// cycle: alert never imports uptime.
 func (s *Service) MonitorChannels(ctx context.Context, monitorID int64) ([]alert.Channel, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.id, c.project_id, c.kind, c.enabled, c.target, c.secret
 		FROM monitor_channels mc
 		JOIN alert_channels c ON c.id = mc.channel_id
-		WHERE mc.monitor_id = $1 AND c.enabled
+		WHERE mc.monitor_id = $1
 		ORDER BY c.id`, monitorID)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: monitor channels: %w", err)

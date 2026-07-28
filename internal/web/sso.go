@@ -51,6 +51,17 @@ func (c *ssoCache) get(orgID int64, now time.Time) (*oauth.OIDC, ssoMeta, bool) 
 	return nil, ssoMeta{}, false
 }
 
+// invalidate выбрасывает кеш провайдера организации. Обязателен при изменении и
+// удалении федерации: без него отозванный IdP продолжал выдавать логины и
+// JIT-провижнинг участников ещё до ssoCacheTTL — то есть отзыв федерации
+// (например, из-за компрометации IdP) вступал в силу с задержкой в 5 минут.
+// Симметрично statusCache.invalidate в этом же пакете.
+func (c *ssoCache) invalidate(orgID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, orgID)
+}
+
 func (c *ssoCache) put(orgID int64, p *oauth.OIDC, meta ssoMeta, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

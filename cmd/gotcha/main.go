@@ -282,6 +282,7 @@ func run() error {
 			Svc:      uptimeSvc,
 			Detector: uptimeDetector,
 			Notifier: uptimeNotifier,
+			Writer:   uptimeWriter,
 			Region:   cfg.LocalRegion,
 		}
 		go watchdog.Run(ctx)

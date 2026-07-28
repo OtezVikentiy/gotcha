@@ -373,3 +373,74 @@ func TestParseEventCapsTagValue(t *testing.T) {
 		t.Errorf("tag value len = %d, want 256", n)
 	}
 }
+
+// TestEventBlocksAndExceptionsCapped фиксирует дочистку класса амплификации:
+// сырые JSON-блоки и exception-интерфейс были единственными частями события вне
+// дисциплины капов, а буферы ниже по конвейеру считают СТРОКИ, а не байты.
+func TestEventBlocksAndExceptionsCapped(t *testing.T) {
+	t.Run("огромный JSON-блок отбрасывается целиком", func(t *testing.T) {
+		huge := `{"a":"` + strings.Repeat("x", maxJSONBlock+1) + `"}`
+		raw := []byte(`{"message":"m","contexts":` + huge + `,"request":` + huge + `}`)
+		pe, err := ParseEvent(raw)
+		if err != nil {
+			t.Fatalf("ParseEvent: %v", err)
+		}
+		if pe.ContextsJSON != "" {
+			t.Errorf("contexts не отброшен: %d байт", len(pe.ContextsJSON))
+		}
+		if pe.RequestJSON != "" {
+			t.Errorf("request не отброшен: %d байт", len(pe.RequestJSON))
+		}
+		// Отбрасывание, а не обрезка: остаток обязан быть валидным JSON либо пустым.
+		if pe.ContextsJSON != "" && !json.Valid([]byte(pe.ContextsJSON)) {
+			t.Error("contexts обрезан до невалидного JSON — скрубер такой вход не почистит")
+		}
+	})
+
+	t.Run("блок в пределах капа сохраняется", func(t *testing.T) {
+		ok := `{"a":"` + strings.Repeat("x", 1000) + `"}`
+		pe, err := ParseEvent([]byte(`{"message":"m","contexts":` + ok + `}`))
+		if err != nil {
+			t.Fatalf("ParseEvent: %v", err)
+		}
+		if pe.ContextsJSON == "" {
+			t.Error("нормальный по размеру contexts отброшен")
+		}
+	})
+
+	t.Run("число и длины исключений и кадров ограничены", func(t *testing.T) {
+		var excs []string
+		for i := 0; i < maxExceptions+20; i++ {
+			var frames []string
+			for j := 0; j < 8; j++ {
+				frames = append(frames, `{"function":"`+strings.Repeat("F", 5000)+
+					`","module":"`+strings.Repeat("M", 5000)+`"}`)
+			}
+			excs = append(excs, `{"type":"`+strings.Repeat("T", 5000)+
+				`","value":"`+strings.Repeat("V", 5000)+
+				`","stacktrace":{"frames":[`+strings.Join(frames, ",")+`]}}`)
+		}
+		raw := []byte(`{"message":"m","exception":{"values":[` + strings.Join(excs, ",") + `]}}`)
+		pe, err := ParseEvent(raw)
+		if err != nil {
+			t.Fatalf("ParseEvent: %v", err)
+		}
+		if len(pe.Exceptions) > maxExceptions {
+			t.Errorf("исключений %d, кап %d", len(pe.Exceptions), maxExceptions)
+		}
+		for _, ex := range pe.Exceptions {
+			if len([]rune(ex.Type)) > maxExceptionField || len([]rune(ex.Value)) > maxExceptionField {
+				t.Errorf("type/value не обрезаны: %d/%d рун", len([]rune(ex.Type)), len([]rune(ex.Value)))
+			}
+			for _, f := range ex.Frames {
+				if len([]rune(f.Function)) > maxFrameFieldRunes || len([]rune(f.Module)) > maxFrameFieldRunes {
+					t.Errorf("кадр не обрезан: function %d, module %d рун",
+						len([]rune(f.Function)), len([]rune(f.Module)))
+				}
+			}
+		}
+		if len([]rune(pe.Title)) > maxTitleRunes {
+			t.Errorf("Title не обрезан: %d рун (строится из type/value)", len([]rune(pe.Title)))
+		}
+	})
+}

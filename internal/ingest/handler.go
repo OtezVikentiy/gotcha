@@ -289,7 +289,18 @@ func (h *Handler) body(w http.ResponseWriter, r *http.Request) (io.Reader, func(
 		}
 		return newLimitedReader(zr, h.maxBytes*10), func() { _ = zr.Close() }, nil
 	case "zstd":
-		zr, err := zstd.NewReader(raw)
+		// Лимиты декодера ОБЯЗАТЕЛЬНЫ: размер окна объявляет КЛИЕНТ в заголовке
+		// фрейма, и буфер под него аллоцируется при разборе заголовка — до того,
+		// как хоть один байт выхода попадёт под newLimitedReader. Без ограничения
+		// 10-байтное тело с windowLog=29 просит ~512 МиБ и убивает процесс
+		// (проверено: 10 байт → 513 МиБ), то есть даёт удалённый OOM по одному
+		// запросу с публичным DSN-ключом. Окно 8 МиБ с запасом покрывает любой
+		// легитимный zstd от SDK, MaxMemory совпадает с потолком распакованного.
+		zr, err := zstd.NewReader(raw,
+			zstd.WithDecoderMaxWindow(8<<20),
+			zstd.WithDecoderMaxMemory(uint64(h.maxBytes*10)),
+			zstd.WithDecoderConcurrency(1),
+		)
 		if err != nil {
 			return nil, noopClose, err
 		}

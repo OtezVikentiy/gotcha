@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -116,5 +117,41 @@ func TestPublicKeyFromRequest(t *testing.T) {
 	r = httptest.NewRequest("POST", "/api/1/envelope/", nil)
 	if got := PublicKeyFromRequest(r); got != "" {
 		t.Errorf("absent: %q", got)
+	}
+}
+
+// TestKeyCacheFloodKeepsLiveProjects фиксирует правку вытеснения: поток запросов
+// со случайными несуществующими ключами не должен выбивать из кеша позитивные
+// записи живых проектов. Раньше кеш при переполнении стирался ЦЕЛИКОМ, поэтому
+// перебор ключей заставлял и легитимный трафик ходить в PostgreSQL на каждое
+// событие — усиление нагрузки на общий пул.
+func TestKeyCacheFloodKeepsLiveProjects(t *testing.T) {
+	fr := &fakeResolver{keys: map[string]org.Key{"live": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "live"}}}
+	kc := NewKeyCache(fr)
+	now := time.Now()
+	kc.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	// Живой проект попадает в кеш.
+	if _, err := kc.Resolve(ctx, "live"); err != nil {
+		t.Fatalf("resolve live: %v", err)
+	}
+	callsAfterWarmup := fr.calls
+
+	// Перебор: заведомо больше ёмкости кеша несуществующих ключей.
+	for i := 0; i < maxKeyCacheEntries+5000; i++ {
+		_, _ = kc.Resolve(ctx, "miss-"+strconv.Itoa(i))
+	}
+
+	// Живой ключ обязан по-прежнему обслуживаться из кеша.
+	if _, err := kc.Resolve(ctx, "live"); err != nil {
+		t.Fatalf("resolve live after flood: %v", err)
+	}
+	if got := fr.calls - callsAfterWarmup; got != maxKeyCacheEntries+5000 {
+		t.Errorf("живой ключ вытеснен перебором: лишних обращений к источнику %d",
+			got-(maxKeyCacheEntries+5000))
+	}
+	if kc.size() > maxKeyCacheEntries {
+		t.Errorf("кеш вырос за границу: %d > %d", kc.size(), maxKeyCacheEntries)
 	}
 }

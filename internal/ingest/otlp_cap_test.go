@@ -2,9 +2,11 @@ package ingest
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
@@ -36,5 +38,31 @@ func TestMapOTLPCapsSpans(t *testing.T) {
 	out := MapOTLP(rs, now)
 	if len(out) != maxOTLPSpans {
 		t.Fatalf("MapOTLP capped transactions = %d, want %d (flat span cap)", len(out), maxOTLPSpans)
+	}
+}
+
+// TestOTLPAttrDepthBounded фиксирует P0 амплификации: глубину вложенного AnyValue
+// выбирает клиент (protobuf допускает тысячи уровней), а каждый уровень безусловно
+// склеивал всех детей — 518 КБ тела давали ~1 ГБ и полсекунды CPU на HTTP-горутине.
+// Обход обязан ограничиваться ВО ВРЕМЯ рекурсии, а не после неё.
+func TestOTLPAttrDepthBounded(t *testing.T) {
+	leaf := strings.Repeat("A", 4096)
+	// Строим глубоко вложенный kvlist: {k={k={k=…{k=leaf}}}}
+	v := &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: leaf}}
+	for i := 0; i < 2000; i++ {
+		v = &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{
+			KvlistValue: &commonpb.KeyValueList{Values: []*commonpb.KeyValue{{Key: "k", Value: v}}},
+		}}
+	}
+
+	done := make(chan string, 1)
+	go func() { done <- otlpAttrString(v) }()
+	select {
+	case got := <-done:
+		if len(got) > maxAttrLen*2 {
+			t.Fatalf("вывод не ограничен: %d байт (кап %d)", len(got), maxAttrLen)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("otlpAttrString не уложился в 5с — обход не ограничен по глубине")
 	}
 }

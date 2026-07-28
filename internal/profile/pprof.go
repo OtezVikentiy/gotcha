@@ -42,7 +42,8 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 		// Location лист→корень → переворот в корень→лист; у Location может быть
 		// несколько Line (inlining), берём их в обратном порядке для того же
 		// направления корень→лист.
-		stack := make([]Frame, 0, len(s.Location))
+		// Ёмкость по min(len, maxFrames) — см. тот же кап в sentry.go: длину задаёт клиент.
+		stack := make([]Frame, 0, min(len(s.Location), maxFrames))
 		for i := len(s.Location) - 1; i >= 0; i-- {
 			loc := s.Location[i]
 			for j := len(loc.Line) - 1; j >= 0; j-- {
@@ -54,7 +55,11 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 				if fn == nil {
 					continue
 				}
-				stack = append(stack, Frame{Function: fn.Name, File: fn.Filename, Line: int32(ln.Line)})
+				stack = append(stack, Frame{
+					Function: capRunes(fn.Name, maxFrameField),
+					File:     capRunes(fn.Filename, maxFrameField),
+					Line:     int32(ln.Line),
+				})
 			}
 		}
 		if len(stack) == 0 {

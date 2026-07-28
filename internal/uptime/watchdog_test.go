@@ -324,3 +324,62 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 		t.Fatalf("LastRemindedAt = %v, want nil (nil Notifier must not mark as delivered)", inc.LastRemindedAt)
 	}
 }
+
+// TestWatchdogHeartbeatMissRecordsCheckResult фиксирует P0: пропущенный удар
+// обязан попадать в check_results. Успешный пинг строку пишет (web/heartbeat.go),
+// поэтому без записи промаха в знаменателе аптайма остаются ОДНИ УСПЕХИ и доля
+// heartbeat-монитора никогда не опускается ниже 100% — на той же странице, где
+// горит "down" и висит открытый инцидент.
+func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	m := baseHeartbeatMonitor(t, pid, 1, 60)
+	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", created.ID); err != nil {
+		t.Fatalf("backdate last_beat_at: %v", err)
+	}
+
+	writer := uptime.NewResultWriter(ch)
+	go writer.Run()
+
+	notifier := &fakeNotifier{}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	wd := fastWatchdog(svc, d, notifier)
+	wd.Writer = writer
+
+	wctx, wcancel := context.WithCancel(ctx)
+	go wd.Run(wctx)
+
+	// Ждём, пока сторож переведёт монитор в down (значит промах обработан).
+	waitForRunner(t, func() bool {
+		states, err := svc.States(context.Background(), created.ID)
+		return err == nil && len(states) == 1 && states[0].Status == "down"
+	})
+	wcancel()
+
+	cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer ccancel()
+	if err := writer.Close(cctx); err != nil {
+		t.Fatalf("writer.Close: %v", err)
+	}
+
+	q := uptime.NewQuery(ch)
+	now := time.Now().UTC()
+	stat, err := q.Uptime(cctx, created.ID, now.Add(-time.Hour), now.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatalf("Uptime: %v", err)
+	}
+	if stat.Total == 0 {
+		t.Fatal("промах heartbeat не записан в check_results: Total=0, доля аптайма осталась бы 100%")
+	}
+	if stat.OK != 0 {
+		t.Fatalf("промах записан как успешный: OK=%d из Total=%d", stat.OK, stat.Total)
+	}
+}

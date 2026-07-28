@@ -326,3 +326,36 @@ func TestOAuthCallback_LinkIgnoresForgedFlowUID(t *testing.T) {
 		t.Fatalf("forged flow.UID linked identity to uid %d (victim=%d); must not link", got, victimUID)
 	}
 }
+
+// TestOAuthCallback_LinkRejectsInjectedFlowCookie фиксирует закрытие захвата
+// аккаунта: атакующий начинает СВОЙ link-поток (cookie подписана легитимно и
+// несёт ЕГО uid), проходит IdP, затем подсовывает эту cookie залогиненной жертве
+// и заманивает её на callback. Раньше uid брался только из сессии, поэтому
+// identity АТАКУЮЩЕГО привязывалась к аккаунту ЖЕРТВЫ — после чего он входил
+// под ней своим же IdP-аккаунтом. Теперь uid из cookie обязан совпасть с сессией.
+func TestOAuthCallback_LinkRejectsInjectedFlowCookie(t *testing.T) {
+	s := newCallbackStack(t)
+	ctx := context.Background()
+
+	attackerUID, _ := s.auth.Register(ctx, "attacker@evil.com", "password12")
+	victimUID, _ := s.auth.Register(ctx, "victim@corp.com", "password12")
+
+	// Жертва залогинена: именно её сессия придёт вместе с чужой cookie потока.
+	victimToken, err := s.auth.CreateSession(ctx, victimUID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	s.mp.id = oauth.Identity{Subject: "attacker-sub", Email: "attacker@evil.com", EmailVerified: true}
+
+	// Поток атакующего (UID атакующего) + сессия жертвы.
+	resp := s.doCallbackSession(t, oauthFlow{Link: true, UID: attackerUID}, victimToken)
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusSeeOther && resp.Header.Get("Location") == "/profile" {
+		t.Fatal("подменённая cookie потока принята: привязка выполнена")
+	}
+	// Главное: identity атакующего не должна оказаться на аккаунте жертвы.
+	if got, err := s.auth.IdentityUser(ctx, "oidc", "attacker-sub"); err == nil && got == victimUID {
+		t.Fatalf("ЗАХВАТ АККАУНТА: identity атакующего привязана к жертве (uid=%d)", victimUID)
+	}
+}
