@@ -96,9 +96,21 @@ func TestMaintenance(t *testing.T) {
 // TestProjectSetup — экран инструкций по установке SDK с DSN и сниппетами.
 func TestProjectSetup(t *testing.T) {
 	project := org.Project{ID: 7, Slug: "web", Name: "Web", Platform: "go"}
-	out := renderTo(t, ProjectSetup(project, "https://key@dsn/7", "go-snippet", "php-snippet", "js-snippet", "u@e.com"))
+	snippets := []SetupSnippet{
+		{Lang: "Go", Install: "go get github.com/getsentry/sentry-go", Code: "sentry.Init(...)"},
+		{Lang: "PHP", Install: "composer require sentry/sentry", Code: "\\Sentry\\init(...)"},
+	}
+	out := renderTo(t, ProjectSetup(project, "https://key@dsn/7", snippets, "u@e.com"))
 	if !strings.Contains(out, "https://key@dsn/7") {
 		t.Error("экран установки должен показать DSN")
+	}
+	// Команда установки обязана быть на странице: без неё сниппет инициализации
+	// бесполезен, а раньше её не было вовсе.
+	if !strings.Contains(out, "go get github.com/getsentry/sentry-go") {
+		t.Error("экран установки должен показать команду установки пакета")
+	}
+	if !strings.Contains(out, "composer require sentry/sentry") {
+		t.Error("экран установки должен показать все переданные сниппеты")
 	}
 }
 

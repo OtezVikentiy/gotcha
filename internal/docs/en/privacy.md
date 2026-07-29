@@ -35,6 +35,7 @@ Sessions (`sessions`) store only a token hash and `user_id` — no IP, no user a
 
 ## What is enabled by default
 
+- **IP and email scrubbing also matches FIELD NAMES.** With `GOTCHA_SCRUB_IP`/`GOTCHA_SCRUB_EMAIL` on, the value of any field whose name (case- and separator-insensitive) contains `email` — or one of `user_ip`, `ip_address`, `client_address`, `net_peer_ip`, `network_peer_address`, `client_ip`, `x_forwarded_for`, `x_real_ip`, `remote_addr`, `cf_connecting_ip`, `Forwarded` — is redacted, in tags, OTLP attributes, `span.data`, headers and query strings. In practice a `customer_email` tag becomes `[scrubbed]` even though it is not in `GOTCHA_SCRUB_KEYS`. Use `GOTCHA_SCRUB_ALLOW_KEYS` to get a specific name back.
 - **IP and email scrubbing on ingest.** `GOTCHA_SCRUB_IP=true` and `GOTCHA_SCRUB_EMAIL=true` by default: `events.user_ip` and `events.user_email` are nulled before they reach ClickHouse. Denylisted keys (`GOTCHA_SCRUB_KEYS`) are stripped from tags, contexts, headers, query strings and request bodies. Matching is **fail-closed**: a name is redacted when it *contains* a denylist word, so `x_api_key`, `clientSecret` and `mytoken` are all caught — and so are `author` (contains `auth`) and `tokenizer` (contains `token`). Under-redacting leaks personal data; over-redacting costs a debugging field and is reversible with `GOTCHA_SCRUB_ALLOW_KEYS`.
 - **Retention.** TTL is enforced and configurable: events and more via `GOTCHA_RETENTION_DAYS`, with spans, metrics, and profiles having their own settings (see [Configuration](/docs/configuration)). Data is deleted from ClickHouse automatically once its retention expires.
 - **Anonymized external notifications.** `GOTCHA_EXTERNAL_CHANNEL_DETAILS=false` by default (privacy-by-default): Telegram/webhook receive only an anonymized link back to the instance, not the error text. See the external-recipients section below.
@@ -48,13 +49,15 @@ Sessions (`sessions`) store only a token hash and `user_id` — no IP, no user a
 - **Export subject data** — exports an end user's data (by `user_id` or email), including events, transactions (including by identifiers in tags), and metrics.
 - **Delete subject data** — removes the same data from ClickHouse.
 
+> **Important: with the default scrubbing on, lookups by email and IP match nothing.** `GOTCHA_SCRUB_IP` and `GOTCHA_SCRUB_EMAIL` are on by default, so `events.user_email` and `events.user_ip` are nulled at ingest — there is nothing left to search by. Use **`user_id`**: it is deliberately excluded from scrubbing for exactly this right. The export and deletion forms warn about this inline, and deletion reports a count ("deleted N records" or "no records matched") so you can evidence that the request was carried out.
+
 Free text (`spans.data`/`description`, `profile_samples.stack`) is not deleted per-subject programmatically — a subject cannot be reliably identified inside arbitrary JSON/stack frames. Those fields are cleared by TTL expiry (spans 30 days, transactions 90, metrics 30, profiles 7 by default). If such data is sensitive for you, enable free-text scrubbing (below) and configure SDK-side scrubbing.
 
 **Account self-deletion.** A Gotcha account holder can delete their own account from the profile page — linked sign-in methods, organization memberships, and sessions are removed by cascade. If they are the sole owner of an organization, they must transfer ownership or delete the organization first.
 
 ## Free-text scrubbing
 
-By default `GOTCHA_SCRUB_FREETEXT=false`: error text, stack traces, and span descriptions are stored verbatim (naive masking would break SQL/URLs and reduce usefulness). If your developers might put personal data directly into error text, enable `GOTCHA_SCRUB_FREETEXT=true` (masks email in free text) and additionally configure scrubbing on the SDK side.
+By default `GOTCHA_SCRUB_FREETEXT=false`: error text, stack traces, and span descriptions are stored verbatim — except for secrets inside URLs: denylisted query parameters, the fragment and basic-auth credentials are stripped from URLs regardless of this flag (naive masking would break SQL/URLs and reduce usefulness). If your developers might put personal data directly into error text, enable `GOTCHA_SCRUB_FREETEXT=true` (masks email in free text) and additionally configure scrubbing on the SDK side.
 
 ## External recipients and cross-border transfer
 

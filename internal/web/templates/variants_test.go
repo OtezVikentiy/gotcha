@@ -139,7 +139,7 @@ func TestEmptyStates(t *testing.T) {
 		"alerts":       renderTo(t, Alerts(7, nil, nil, false, "", "u@e.com")),
 		"teams":        renderTo(t, Teams(o, nil, nil, nil, "", "u@e.com")),
 		"deliveries":   renderTo(t, AlertDeliveries(7, nil, "u@e.com")),
-		"metricalerts": renderTo(t, MetricAlerts(7, nil, nil, "", "u@e.com")),
+		"metricalerts": renderTo(t, MetricAlerts(7, nil, nil, nil, "", "u@e.com")),
 		"maintenance":  renderTo(t, Maintenance(7, nil, "", "u@e.com")),
 		"probes":       renderTo(t, Probes(o, nil, "", "", "", "u@e.com")),
 		"statuspages":  renderTo(t, StatusPagesSettings(7, "https://x", nil, StatusPageForm{}, "", "u@e.com")),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -212,6 +213,14 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	if !h.requireInstanceAdminForSSO(w, r, uid) {
 		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.sso_delete.message", "confirm.delete",
+			orgSettingsPath(orgID), orgSettingsPath(orgID)+"/sso/delete", nil)
+		return
+	}
 	if err := h.Org.DeleteSSO(r.Context(), orgID); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -273,7 +282,26 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 	}
 	banner := h.quotaBanner(r.Context(), orgID)
 	w.WriteHeader(status)
-	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner).Render(r.Context(), w)
+	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r)).Render(r.Context(), w)
+}
+
+// subjectPurgeVM собирает состояние блока удаления ПДн: итог только что
+// выполненного удаления (?purged=N в редиректе) и предупреждение о критериях,
+// которые на этом инстансе заведомо пусты.
+//
+// Предупреждение важнее итога: при включённых по умолчанию GOTCHA_SCRUB_IP и
+// GOTCHA_SCRUB_EMAIL колонки user_email и user_ip зануляются на приёме, поэтому
+// поиск субъекта по email или IP не совпадает ни с чем — а форма их спрашивает
+// и раньше молча принимала.
+func (h *Handler) subjectPurgeVM(r *http.Request) templates.SubjectPurgeVM {
+	vm := templates.SubjectPurgeVM{InertEmail: h.ScrubEmail, InertIP: h.ScrubIP}
+	if v := r.URL.Query().Get("purged"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			vm.Done = true
+			vm.Purged = n
+		}
+	}
+	return vm
 }
 
 // quotaBanner собирает вьюмодель баннера про ограничение приёма для орга orgID
@@ -427,6 +455,15 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// RemoveMemberAs — тот же TOCTOU-фикс, что и у SetRoleAs выше.
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.member_remove.message", "confirm.remove",
+			orgSettingsPath(orgID), orgSettingsRemovePath(orgID),
+			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}})
+		return
+	}
 	if err := h.Org.RemoveMemberAs(r.Context(), orgID, uid, targetID); err != nil {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "")
 		return
@@ -711,12 +748,65 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		h.renderError(w, r, http.StatusServiceUnavailable, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	if err := h.Purger.PurgeSubject(r.Context(), projectID, sub); err != nil {
+	// Двухшаговое подтверждение. Здесь оно обязательнее прочего: удаление
+	// необратимо, а проект задаётся номером — опечатка 25→26 вычистила бы
+	// телеметрию соседнего проекта того же орга без единого вопроса.
+	if r.FormValue("confirmed") != "yes" {
+		hidden := []templates.HiddenField{
+			{Name: "project_id", Value: strconv.FormatInt(projectID, 10)},
+		}
+		if sub.Email != "" {
+			hidden = append(hidden, templates.HiddenField{Name: "email", Value: sub.Email})
+		}
+		if sub.UserID != "" {
+			hidden = append(hidden, templates.HiddenField{Name: "user_id", Value: sub.UserID})
+		}
+		if sub.IP != "" {
+			hidden = append(hidden, templates.HiddenField{Name: "ip", Value: sub.IP})
+		}
+		// Показываем ИМЕННО то, что будет удалено: имя проекта, его номер и
+		// заполненные критерии. Без этого вопрос нельзя было осмысленно
+		// подтвердить — опечатку 25→26 на экране не по чему заметить, а
+		// проверка принадлежности проекта оргу соседний проект пропускает.
+		projectName := ""
+		if projects, err := h.Org.ProjectsOf(r.Context(), orgID); err == nil {
+			for _, p := range projects {
+				if p.ID == projectID {
+					projectName = p.Name
+					break
+				}
+			}
+		}
+		if projectName == "" {
+			projectName = i18n.T(r.Context(), "confirm.purge_subject.unknown_project")
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.purge_subject.message", "confirm.delete",
+			orgSettingsPath(orgID), orgSettingsPurgeSubjectPath(orgID), hidden,
+			"project", projectName,
+			"project_id", strconv.FormatInt(projectID, 10),
+			"criteria", subjectCriteriaText(r.Context(), sub))
+		return
+	}
+
+	res, err := h.Purger.PurgeSubject(r.Context(), projectID, sub)
+	if err != nil {
 		slog.Error("orgSettingsPurgeSubject: failed to purge subject data", "org_id", orgID, "project_id", projectID, "err", err)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
+	// Пишем результат в аудит-лог операций с ПДн: у экспорта такая запись есть,
+	// у удаления не было. Ноль строк — не ошибка, но это ровно тот исход, о
+	// котором оператор обязан узнать: при включённом скрубинге email/IP поиск по
+	// ним не совпадает ни с чем, работает только user_id.
+	slog.Info("subject data purged",
+		"org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub),
+		"events", res.Events, "transactions", res.Transactions,
+		"metric_points", res.MetricPoints, "total", res.Total())
+
+	// Итог уезжает в query-строку и показывается на странице настроек: молчаливый
+	// redirect не позволял отличить «удалено» от «не найдено ничего».
+	q := url.Values{"purged": {strconv.FormatUint(res.Total(), 10)}}
+	http.Redirect(w, r, orgSettingsPath(orgID)+"?"+q.Encode(), http.StatusSeeOther)
 }
 
 // orgSettingsExportSubject — POST /orgs/{id}/settings/export-subject: owner-only
@@ -789,6 +879,24 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 
 // subjectCriteria — виды заполненных идентификаторов субъекта для аудит-лога
 // (email/user_id/ip), БЕЗ самих значений ПДн.
+// subjectCriteriaText — заполненные критерии субъекта человекочитаемо, для
+// страницы подтверждения. ЗНАЧЕНИЯ показываются намеренно: подтверждать
+// удаление ПДн, не видя, по кому оно идёт, бессмысленно. В журнал при этом
+// уходят только ИМЕНА критериев (см. subjectCriteria) — там значения не нужны.
+func subjectCriteriaText(ctx context.Context, sub telemetry.Subject) string {
+	var parts []string
+	if sub.Email != "" {
+		parts = append(parts, i18n.T(ctx, "org.gdpr.field.email")+": "+sub.Email)
+	}
+	if sub.UserID != "" {
+		parts = append(parts, i18n.T(ctx, "org.gdpr.field.user_id")+": "+sub.UserID)
+	}
+	if sub.IP != "" {
+		parts = append(parts, i18n.T(ctx, "org.gdpr.field.ip")+": "+sub.IP)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func subjectCriteria(sub telemetry.Subject) []string {
 	var c []string
 	if sub.Email != "" {

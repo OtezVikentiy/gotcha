@@ -23,7 +23,7 @@ func TestMetricSeriesMarkupAxes(t *testing.T) {
 	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, 720, 200)
 
 	for _, want := range []string{
-		`class="metric-chart"`,
+		`class="metric-chart chart-vb720"`, // + класс ширины viewBox: от неё зависит кегль подписей
 		`class="chart-axis"`,
 		`class="chart-threshold"`,
 		`stroke-dasharray`, // пунктир пороговой линии
@@ -76,7 +76,7 @@ func TestChartBarsAxes(t *testing.T) {
 	}
 	out := chartBars(context.Background(), points, chartWidth, chartHeight)
 	for _, want := range []string{
-		`class="chart-freq"`,
+		`class="chart-freq chart-vb1200"`,
 		`class="chart-axis"`,
 		`<rect`,   // столбики
 		">0<",     // нижняя линия сетки

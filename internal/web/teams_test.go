@@ -174,7 +174,7 @@ func TestWebTeams(t *testing.T) {
 	}
 
 	// Удаление участника -> 303
-	resp = postForm(t, s.srv, membersRemovePath, url.Values{"user_id": {strconv.FormatInt(memberID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, membersRemovePath, url.Values{"confirmed": {"yes"}, "user_id": {strconv.FormatInt(memberID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

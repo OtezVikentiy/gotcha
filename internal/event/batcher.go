@@ -30,14 +30,16 @@ type Batcher struct {
 
 	mu          sync.Mutex
 	buf         []Event
+	bufBytes    int64 // приблизительный вес buf, см. maxBufBytes
 	dropped     int64
 	insertFails int64 // накопительно: сколько флашей провалилось
 	failStreak  int
 	lastDropLog time.Time
 
-	maxBuf    int
-	batchSize int
-	interval  time.Duration
+	maxBuf      int
+	maxBufBytes int64
+	batchSize   int
+	interval    time.Duration
 
 	kick     chan struct{}
 	stop     chan struct{}
@@ -47,29 +49,25 @@ type Batcher struct {
 
 func NewBatcher(conn Conn) *Batcher {
 	return &Batcher{
-		conn:      conn,
-		maxBuf:    10000,
-		batchSize: 1000,
-		interval:  5 * time.Second,
-		kick:      make(chan struct{}, 1),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
+		conn:        conn,
+		maxBuf:      10000,
+		maxBufBytes: defaultMaxBufBytes,
+		batchSize:   1000,
+		interval:    5 * time.Second,
+		kick:        make(chan struct{}, 1),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
 // Add кладёт событие в буфер. Никогда не блокирует и не возвращает ошибку:
 // приём событий не должен зависеть от здоровья ClickHouse.
 func (b *Batcher) Add(ev Event) {
+	size := eventBytes(ev)
 	b.mu.Lock()
-	logDrop := false
-	// Bulk-drop: считаем избыток над maxBuf с учётом добавляемого события и
-	// сдвигаем разом (O(1) сдвигов на Add вместо O(n) поштучных).
-	if drop := len(b.buf) + 1 - b.maxBuf; drop > 0 {
-		b.buf = append(b.buf[:0], b.buf[drop:]...)
-		b.dropped += int64(drop)
-		logDrop = true
-	}
 	b.buf = append(b.buf, ev)
+	b.bufBytes += size
+	logDrop := b.trimLocked()
 	dropped := b.dropped
 	full := len(b.buf) >= b.batchSize
 	if logDrop && time.Since(b.lastDropLog) > b.interval {
@@ -179,6 +177,75 @@ func (b *Batcher) closeDrain(ctx context.Context) error {
 	}
 }
 
+// defaultMaxBufBytes — потолок буфера по БАЙТАМ, в дополнение к потолку по
+// строкам.
+//
+// Одного потолка по строкам не хватает: размер строки задаёт клиент. Событие
+// несёт четыре сырых JSON-блока (stacktrace/contexts/breadcrumbs/request) по
+// maxJSONBlock=256 КиБ каждый, то есть строка доходит до ~1 МиБ, и maxBuf=10000
+// таких строк — это больше 10 ГБ в буфере, который заводился под «десять тысяч
+// небольших событий». На обычном трафике потолок по строкам срабатывает первым и
+// поведение не меняется; байтовый вступает в дело ровно тогда, когда строки
+// раздуты.
+const defaultMaxBufBytes = 256 << 20
+
+// eventBytes — приблизительный вес события в памяти. Считаем поля, размер
+// которых определяет клиент; точность не нужна, нужен порядок величины.
+// rowOverheadBytes — постоянная цена ОДНОЙ строки в буфере помимо длины строк:
+// заголовки string (16 байт каждый), элемент среза, служебные поля. Без неё
+// учёт был обходим тем же приёмом, что и бюджет профилей: строка из пустых или
+// однобуквенных значений весила бы почти ноль, и байтовый потолок не срабатывал
+// бы никогда — работал бы только счётный.
+const rowOverheadBytes = 64
+
+func eventBytes(ev Event) int64 {
+	n := len(ev.ID) + len(ev.Level) + len(ev.Message) +
+		len(ev.ExceptionType) + len(ev.ExceptionValue) + len(ev.Stacktrace) +
+		len(ev.Environment) + len(ev.Release) + len(ev.ServerName) + len(ev.SDK) +
+		len(ev.UserID) + len(ev.UserIP) + len(ev.UserEmail) +
+		len(ev.Contexts) + len(ev.Breadcrumbs) + len(ev.Request) +
+		len(ev.TraceID) + len(ev.SpanID)
+	for k, v := range ev.Tags {
+		n += len(k) + len(v)
+	}
+	return int64(n) + rowOverheadBytes
+}
+
+// trimLocked приводит буфер к обоим потолкам, выбрасывая самое старое, и
+// поддерживает bufBytes. Стоимость — O(числа выброшенных), а не O(len(buf)):
+// вес всего буфера ведётся инкрементально в Add. Вызывается под mu.
+func (b *Batcher) trimLocked() bool {
+	drop := 0
+	if over := len(b.buf) - b.maxBuf; over > 0 {
+		drop = over
+		for i := 0; i < over; i++ {
+			b.bufBytes -= eventBytes(b.buf[i])
+		}
+	}
+	// Одну строку оставляем всегда: событие тяжелее потолка само по себе не
+	// повод отдать буфер пустым — оно уйдёт ближайшим флашем.
+	for drop < len(b.buf)-1 && b.bufBytes > b.maxBufBytes {
+		b.bufBytes -= eventBytes(b.buf[drop])
+		drop++
+	}
+	if drop <= 0 {
+		return false
+	}
+	b.buf = append(b.buf[:0], b.buf[drop:]...)
+	b.dropped += int64(drop)
+	return true
+}
+
+// recountLocked пересчитывает вес буфера с нуля. Нужен там, где буфер
+// перестраивается целиком (возврат пачки при неудачной вставке), а не растёт
+// по одному событию. Вызывается под mu.
+func (b *Batcher) recountLocked() {
+	b.bufBytes = 0
+	for i := range b.buf {
+		b.bufBytes += eventBytes(b.buf[i])
+	}
+}
+
 func (b *Batcher) flush(ctx context.Context) {
 	b.mu.Lock()
 	if len(b.buf) == 0 {
@@ -192,6 +259,7 @@ func (b *Batcher) flush(ctx context.Context) {
 	batch := make([]Event, n)
 	copy(batch, b.buf[:n])
 	b.buf = append(b.buf[:0], b.buf[n:]...)
+	b.recountLocked()
 	b.mu.Unlock()
 
 	if err := b.insert(ctx, batch); err != nil {
@@ -211,16 +279,21 @@ func (b *Batcher) flush(ctx context.Context) {
 			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, b.insert, chbatch.IsServerDataError)
 			b.mu.Lock()
 			b.dropped += int64(dropped)
-			b.failStreak = 0
+			b.insertFails++
+			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
+			// разрешила. Безусловный сброс означал, что при лежащем
+			// ClickHouse писатель заново запускает дробление каждые ~15 с,
+			// хотя предыдущая попытка не дала ничего.
+			if dropped > 0 || len(unresolved) < len(batch) {
+				b.failStreak = 0
+			}
 			var over int
 			if len(unresolved) > 0 {
 				b.buf = append(unresolved, b.buf...)
-				if over = len(b.buf) - b.maxBuf; over > 0 {
-					b.buf = append(b.buf[:0], b.buf[over:]...)
-					b.dropped += int64(over)
-				} else {
-					over = 0
-				}
+				before := b.dropped
+				b.recountLocked()
+				b.trimLocked()
+				over = int(b.dropped - before)
 			}
 			b.mu.Unlock()
 			if dropped > 0 || over > 0 {
@@ -232,13 +305,10 @@ func (b *Batcher) flush(ctx context.Context) {
 
 		b.mu.Lock()
 		b.buf = append(batch, b.buf...)
-		var over int
-		if over = len(b.buf) - b.maxBuf; over > 0 {
-			b.buf = append(b.buf[:0], b.buf[over:]...)
-			b.dropped += int64(over)
-		} else {
-			over = 0
-		}
+		before := b.dropped
+		b.recountLocked()
+		b.trimLocked()
+		over := int(b.dropped - before)
 		b.insertFails++
 		b.mu.Unlock()
 		slog.Warn("event batch insert failed, will retry",
@@ -280,4 +350,19 @@ func (b *Batcher) insert(ctx context.Context, events []Event) error {
 		}
 	}
 	return batch.Send()
+}
+
+// SetMaxBufferBytes задаёт байтовый потолок буфера. Значение по умолчанию
+// (defaultMaxBufBytes) рассчитано на инстанс без ограничения памяти; на
+// стеснённом профиле (docker-compose.small.yml: mem_limit 256m) пять буферов по
+// 256 МиБ физически не могут сработать раньше OOM-killer'а, то есть защита
+// инертна ровно там, где нужнее всего. Ставится из main по
+// GOTCHA_MAX_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
+func (b *Batcher) SetMaxBufferBytes(n int64) {
+	if n <= 0 {
+		return
+	}
+	b.mu.Lock()
+	b.maxBufBytes = n
+	b.mu.Unlock()
 }

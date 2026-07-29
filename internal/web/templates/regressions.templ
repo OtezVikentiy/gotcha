@@ -128,13 +128,13 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th>{ i18n.T(ctx, "perf.regressions.table.target") }</th>
-								<th>{ i18n.T(ctx, "perf.regressions.table.metric") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
-								<th>{ i18n.T(ctx, "issues.table.status") }</th>
-								<th>{ i18n.T(ctx, "perf.regressions.table.started") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.regressions.table.target") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.regressions.table.metric") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.regressions.table.started") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
 							</tr>
 						</thead>
 						<tbody>

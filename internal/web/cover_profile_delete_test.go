@@ -27,7 +27,7 @@ func TestWebProfileDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create org: %v", err)
 	}
-	resp := postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	resp := postForm(t, s.srv, "/profile/delete", url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {

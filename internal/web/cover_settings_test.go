@@ -86,13 +86,13 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 	}
 
 	// SSODelete не-инстанс-админ (admin) → 403; без Origin → 403.
-	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, "", ownerCookie)
+	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST sso/delete (no origin) status = %d, want 403", resp.StatusCode)
 	}
-	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, s.srv.URL, adminCookie)
+	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -100,7 +100,7 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 	}
 
 	// SSODelete инстанс-админ без сохранённой конфигурации → всё равно 303 (идемпотентно).
-	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -263,7 +263,7 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 	}
 
 	// Нечисловой user_id в remove → 400.
-	resp = postForm(t, s.srv, teamBase+"/members/remove", url.Values{"user_id": {"abc"}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, teamBase+"/members/remove", url.Values{"confirmed": {"yes"}, "user_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {

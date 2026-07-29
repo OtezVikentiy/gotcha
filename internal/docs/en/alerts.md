@@ -32,7 +32,7 @@ Server-side validation: email must be a syntactically valid address, webhook mus
 
 Webhooks pointing at a private/local address (e.g. `http://localhost:...`) are blocked by default (SSRF protection), unless the operator has explicitly allowed private addresses instance-wide (for single-tenant installs).
 
-Deleting a channel — the "Delete" button on its row in the channel table; it takes effect immediately.
+Deleting a channel — the "Delete" button on its row in the channel table; it asks for confirmation and then takes effect immediately.
 
 ## Issue rules
 

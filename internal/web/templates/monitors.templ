@@ -140,13 +140,13 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "uptime.monitors.table.name") }</th>
-									<th>{ i18n.T(ctx, "uptime.monitors.table.type") }</th>
-									<th>{ i18n.T(ctx, "uptime.monitors.table.status") }</th>
-									<th class="num">{ i18n.T(ctx, "uptime.monitors.table.uptime_24h") }</th>
-									<th class="num">{ i18n.T(ctx, "uptime.monitors.table.avg_latency_24h") }</th>
-									<th>{ i18n.T(ctx, "uptime.monitors.table.availability_24h") }</th>
-									<th>{ i18n.T(ctx, "uptime.monitors.table.last_check") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.monitors.table.name") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.monitors.table.type") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.monitors.table.status") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "uptime.monitors.table.uptime_24h") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "uptime.monitors.table.avg_latency_24h") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.monitors.table.availability_24h") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.monitors.table.last_check") }</th>
 								</tr>
 							</thead>
 							<tbody>

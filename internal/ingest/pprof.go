@@ -74,6 +74,7 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	prof.Transaction = capRunes(q.Get("transaction"), 200)
 	prof.Environment = capRunes(q.Get("environment"), 200)
 	prof.TraceID = capRunes(q.Get("trace_id"), 200)
+	h.scrubProfile(&prof)
 	h.Profiles.Add(key.ProjectID, prof)
 	w.WriteHeader(http.StatusAccepted)
 }

@@ -368,3 +368,49 @@ func waitForCH(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met in 5s")
 }
+
+// TestSpanWriterBoundsBuffersByBytes — оба буфера (транзакции и спаны) были
+// ограничены только ЧИСЛОМ строк, а размер строки задаёт клиент: описание спана,
+// теги транзакции, JSON data. maxSpanBuf=100000 раздутых строк — это десятки
+// гигабайт в буфере, заведённом под сто тысяч небольших спанов.
+func TestSpanWriterBoundsBuffersByBytes(t *testing.T) {
+	w := NewSpanWriter(nil)
+	w.maxBufBytes = 1 << 20
+	w.batchSize = 1 << 30
+	w.spanBatchSize = 1 << 30
+
+	big := strings.Repeat("d", 256<<10)
+	for i := 0; i < 20; i++ {
+		w.Add(1, Transaction{
+			Name:  "GET /x",
+			Tags:  map[string]string{"k": big},
+			Spans: []Span{{Description: big}},
+		})
+	}
+
+	w.mu.Lock()
+	txRows, spanRows := len(w.txBuf), len(w.spanBuf)
+	txB, spanB, dropped := w.txBytes, w.spanBytes, w.dropped
+	var wantTx, wantSpan int64
+	for i := range w.txBuf {
+		wantTx += txRowBytes(w.txBuf[i])
+	}
+	for i := range w.spanBuf {
+		wantSpan += spanRowBytes(w.spanBuf[i])
+	}
+	w.mu.Unlock()
+
+	if txRows >= 20 {
+		t.Fatalf("в буфере транзакций %d строк из 20 — байтовый потолок не сработал", txRows)
+	}
+	if spanRows >= 20 {
+		t.Fatalf("в буфере спанов %d строк — байтовый потолок не сработал", spanRows)
+	}
+	if dropped == 0 {
+		t.Fatal("ничего не выброшено, хотя буферы переполнены по байтам")
+	}
+	if txB != wantTx || spanB != wantSpan {
+		t.Fatalf("учёт разъехался: txBytes=%d(want %d) spanBytes=%d(want %d)",
+			txB, wantTx, spanB, wantSpan)
+	}
+}

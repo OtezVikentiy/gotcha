@@ -36,6 +36,28 @@ type Subject struct {
 	IP     string
 }
 
+// PurgeResult — сколько строк совпало с критериями субъекта, по таблицам.
+// Считается ДО удаления теми же условиями.
+//
+// Нужен потому, что удаление ПДн умело завершаться «успешно», не тронув ни
+// одной строки, и вызывающий не мог их различить. Случай не гипотетический, а
+// поведение по умолчанию: GOTCHA_SCRUB_IP и GOTCHA_SCRUB_EMAIL включены, то
+// есть колонки events.user_email и events.user_ip зануляются ещё на приёме, и
+// поиск субъекта по email или IP не совпадает ни с чем никогда. Работает только
+// user_id — он намеренно исключён из скрубинга ровно для этого. Владелец орга,
+// исполняющий требование по ст. 14 152-ФЗ, обязан видеть разницу между
+// «удалено 128 записей» и «не найдено ничего».
+type PurgeResult struct {
+	Events       uint64
+	Transactions uint64
+	MetricPoints uint64
+}
+
+// Total — сколько всего строк отнесено к субъекту.
+func (r PurgeResult) Total() uint64 {
+	return r.Events + r.Transactions + r.MetricPoints
+}
+
 // Purger удаляет телеметрию из ClickHouse.
 type Purger struct {
 	conn driver.Conn
@@ -82,7 +104,9 @@ func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 //
 // В events, transactions и metric_points удаляются строки, совпавшие ХОТЯ БЫ по
 // одному непустому критерию субъекта. Пустые поля Subject в условие не попадают.
-func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject) error {
+func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject) (PurgeResult, error) {
+	var res PurgeResult
+
 	// events: OR по всем непустым идентификаторам субъекта.
 	var conds []string
 	var args []any
@@ -100,23 +124,35 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 		args = append(args, sub.IP)
 	}
 	if len(conds) == 0 {
-		return fmt.Errorf("telemetry: purge subject: empty subject")
+		return res, fmt.Errorf("telemetry: purge subject: empty subject")
 	}
 
-	eventsQ := "ALTER TABLE events DELETE WHERE project_id = ? AND (" +
-		strings.Join(conds, " OR ") + ") SETTINGS mutations_sync = 2, max_execution_time = 0"
+	where := "project_id = ? AND (" + strings.Join(conds, " OR ") + ")"
+	n, err := p.countMatching(ctx, "events", where, args)
+	if err != nil {
+		return res, err
+	}
+	res.Events = n
+	eventsQ := "ALTER TABLE events DELETE WHERE " + where +
+		" SETTINGS mutations_sync = 2, max_execution_time = 0"
 	if err := p.conn.Exec(ctx, eventsQ, args...); err != nil {
-		return fmt.Errorf("telemetry: purge subject from events (project %d): %w", projectID, err)
+		return res, fmt.Errorf("telemetry: purge subject from events (project %d): %w", projectID, err)
 	}
 
 	// transactions: субъект живёт в колонке user_id и в тегах (см. txSubjectConds).
 	// Матчим по обоим, иначе субъект, заданный email, не удаляет свои транзакции.
 	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
 		args := append([]any{projectID}, txArgs...)
-		txQ := "ALTER TABLE transactions DELETE WHERE project_id = ? AND (" +
-			strings.Join(txConds, " OR ") + ") SETTINGS mutations_sync = 2, max_execution_time = 0"
+		txWhere := "project_id = ? AND (" + strings.Join(txConds, " OR ") + ")"
+		n, err := p.countMatching(ctx, "transactions", txWhere, args)
+		if err != nil {
+			return res, err
+		}
+		res.Transactions = n
+		txQ := "ALTER TABLE transactions DELETE WHERE " + txWhere +
+			" SETTINGS mutations_sync = 2, max_execution_time = 0"
 		if err := p.conn.Exec(ctx, txQ, args...); err != nil {
-			return fmt.Errorf("telemetry: purge subject from transactions (project %d): %w", projectID, err)
+			return res, fmt.Errorf("telemetry: purge subject from transactions (project %d): %w", projectID, err)
 		}
 	}
 
@@ -134,13 +170,31 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 		mpArgs = append(mpArgs, sub.Email)
 	}
 	if len(mpConds) > 0 {
-		mpQ := "ALTER TABLE metric_points DELETE WHERE project_id = ? AND (" +
-			strings.Join(mpConds, " OR ") + ") SETTINGS mutations_sync = 2, max_execution_time = 0"
+		mpWhere := "project_id = ? AND (" + strings.Join(mpConds, " OR ") + ")"
+		n, err := p.countMatching(ctx, "metric_points", mpWhere, mpArgs)
+		if err != nil {
+			return res, err
+		}
+		res.MetricPoints = n
+		mpQ := "ALTER TABLE metric_points DELETE WHERE " + mpWhere +
+			" SETTINGS mutations_sync = 2, max_execution_time = 0"
 		if err := p.conn.Exec(ctx, mpQ, mpArgs...); err != nil {
-			return fmt.Errorf("telemetry: purge subject from metric_points (project %d): %w", projectID, err)
+			return res, fmt.Errorf("telemetry: purge subject from metric_points (project %d): %w", projectID, err)
 		}
 	}
-	return nil
+	return res, nil
+}
+
+// countMatching считает строки, попадающие под условие удаления. Имя таблицы
+// приходит только из литералов этого файла (параметризовать его нельзя), where
+// собран из фиксированных фрагментов, все значения — связанные параметры.
+func (p *Purger) countMatching(ctx context.Context, table, where string, args []any) (uint64, error) {
+	var n uint64
+	q := "SELECT count() FROM " + table + " WHERE " + where
+	if err := p.conn.QueryRow(ctx, q, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("telemetry: count subject rows in %s: %w", table, err)
+	}
+	return n, nil
 }
 
 // txSubjectConds строит OR-условия и bound-параметры, относящие строку

@@ -419,8 +419,13 @@ func TestCoverOnboarding(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200", setupPath, resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "gotcha.Init") {
+	// Реальный Sentry SDK, а не выдуманный пакет: раньше страница показывала
+	// gotcha.Init из несуществующего gitflic.ru/otezvikentiy/gotcha-go.
+	if !strings.Contains(string(body), "sentry.Init") {
 		t.Fatalf("GET %s missing go snippet: %s", setupPath, body)
+	}
+	if !strings.Contains(string(body), "go get github.com/getsentry/sentry-go") {
+		t.Fatalf("GET %s missing install command: %s", setupPath, body)
 	}
 
 	// Невалидный id → 404.

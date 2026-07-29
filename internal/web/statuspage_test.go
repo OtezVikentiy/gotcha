@@ -583,7 +583,7 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	}
 
 	// Delete.
-	resp = postForm(t, s.srv, updatePath+"/delete", url.Values{}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, updatePath+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

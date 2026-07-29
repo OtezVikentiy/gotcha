@@ -84,9 +84,9 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "profile.linked.table.provider") }</th>
-									<th>{ i18n.T(ctx, "profile.linked.table.email") }</th>
-									<th></th>
+									<th scope="col">{ i18n.T(ctx, "profile.linked.table.provider") }</th>
+									<th scope="col">{ i18n.T(ctx, "profile.linked.table.email") }</th>
+									<th scope="col"></th>
 								</tr>
 							</thead>
 							<tbody>

@@ -222,7 +222,7 @@ func TestOrgSettings(t *testing.T) {
 		{Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0},
 	}
 	sso := SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "cid", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://gotcha/sso"}
-	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil))
+	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil, SubjectPurgeVM{}))
 	if !strings.Contains(out, "owner@x.io") || !strings.Contains(out, "admin@x.io") {
 		t.Error("участники должны отрендериться")
 	}
@@ -230,7 +230,7 @@ func TestOrgSettings(t *testing.T) {
 		t.Error("пригласительная ссылка должна отрендериться")
 	}
 	// Не-владелец (uid=2): часть управления скрыта, но рендер валиден.
-	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}))
+	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}))
 	if !strings.Contains(out2, "боом") {
 		t.Error("ошибка орга должна отрендериться")
 	}
@@ -316,7 +316,13 @@ func TestMetricAlerts(t *testing.T) {
 		{ID: 1, RuleID: 1, Status: "open", PeakValue: 150, CurrentValue: 120, StartedAt: now.Add(-time.Hour)},
 		{ID: 2, RuleID: 2, Status: "resolved", PeakValue: 0.9, StartedAt: now.Add(-2 * time.Hour), ResolvedAt: ptrTime(now.Add(-time.Hour))},
 	}
-	out := renderTo(t, MetricAlerts(7, rules, incidents, "", "u@e.com"))
+	// Список известных имён метрик подсказывается в форме (datalist): опечатка
+	// в свободном поле создавала правило, которое никогда не срабатывает.
+	known := []string{"http.rps", "process.memory.usage"}
+	out := renderTo(t, MetricAlerts(7, rules, incidents, known, "", "u@e.com"))
+	if !strings.Contains(out, "process.memory.usage") {
+		t.Error("форма правила должна подсказывать уже приходившие метрики")
+	}
 	if !strings.Contains(out, "http.rps") || !strings.Contains(out, "err.rate") {
 		t.Error("правила метрик должны отрендериться")
 	}

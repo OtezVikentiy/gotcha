@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,4 +293,62 @@ func TestBatcherSelfMetrics(t *testing.T) {
 	c.fail = false
 	c.mu.Unlock()
 	_ = b.Close(context.Background())
+}
+
+// TestBatcherBoundsBufferByBytes фиксирует ресурсный дефект: буфер был ограничен
+// только ЧИСЛОМ строк, а размер строки задаёт клиент. Событие несёт четыре сырых
+// JSON-блока по 256 КиБ, то есть доходит до ~1 МиБ, и maxBuf=10000 таких строк —
+// это больше 10 ГБ в буфере, заведённом под «десять тысяч небольших событий».
+func TestBatcherBoundsBufferByBytes(t *testing.T) {
+	b := NewBatcher(nil)
+	b.maxBufBytes = 1 << 20 // 1 МиБ, чтобы тест был быстрым
+	b.batchSize = 1 << 30   // не даём флашу сработать: conn = nil
+
+	// Каждое событие ~256 КиБ: пяти хватит, чтобы перевалить за мегабайт.
+	big := strings.Repeat("x", 256<<10)
+	for i := 0; i < 20; i++ {
+		b.Add(Event{ID: "e", Stacktrace: big})
+	}
+
+	b.mu.Lock()
+	rows, bytes, dropped := len(b.buf), b.bufBytes, b.dropped
+	b.mu.Unlock()
+
+	if rows >= 20 {
+		t.Fatalf("в буфере %d строк из 20 — байтовый потолок не сработал", rows)
+	}
+	if dropped == 0 {
+		t.Fatal("ни одно событие не выброшено, хотя буфер переполнен по байтам")
+	}
+	// Допускаем перебор на одно событие: последнее добавляется до подрезки, и
+	// одну строку trimLocked оставляет всегда.
+	if limit := b.maxBufBytes + int64(len(big)) + 64; bytes > limit {
+		t.Fatalf("вес буфера %d при потолке %d", bytes, b.maxBufBytes)
+	}
+}
+
+// TestBatcherByteAccountingSurvivesDrops — счётчик веса не должен разъезжаться с
+// содержимым буфера: он ведётся инкрементально в Add и пересчитывается на путях
+// флаша, и разъехавшись однажды, он либо запрёт приём, либо снимет потолок.
+func TestBatcherByteAccountingSurvivesDrops(t *testing.T) {
+	b := NewBatcher(nil)
+	b.maxBuf = 5
+	b.batchSize = 1 << 30
+
+	for i := 0; i < 50; i++ {
+		b.Add(Event{ID: "e", Message: strings.Repeat("m", i*10)})
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.buf) != b.maxBuf {
+		t.Fatalf("строк %d, want %d", len(b.buf), b.maxBuf)
+	}
+	var want int64
+	for i := range b.buf {
+		want += eventBytes(b.buf[i])
+	}
+	if b.bufBytes != want {
+		t.Fatalf("bufBytes = %d, а фактический вес буфера %d — учёт разъехался", b.bufBytes, want)
+	}
 }

@@ -186,8 +186,14 @@ func TestWebPerformanceList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (empty) status = %d, want 200: %s", emptyPath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "Пока нет транзакций") {
-		t.Fatalf("GET %s (empty) missing 'no transaction data yet': %s", emptyPath, body)
+	// Пустое состояние ведёт с ОКНА ВРЕМЕНИ, а не с настройки SDK: дефолт периода
+	// 24 часа, и «нет данных» чаще означает «не в этом окне». Прежний текст
+	// отправлял перепроверять конфиг, которого проблема не касается.
+	if !strings.Contains(string(body), "Нет транзакций за период") {
+		t.Fatalf("GET %s (empty) missing period-first empty state: %s", emptyPath, body)
+	}
+	if !strings.Contains(string(body), "расширить окно времени") {
+		t.Fatalf("GET %s (empty) не предлагает расширить период: %s", emptyPath, body)
 	}
 
 	// Чужой проект → 404.

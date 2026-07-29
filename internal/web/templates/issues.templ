@@ -277,20 +277,25 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 								<table class="data-table">
 									<thead>
 										<tr>
-											<th></th>
-											<th>{ i18n.T(ctx, "issues.table.level") }</th>
-											<th>{ i18n.T(ctx, "issues.table.issue") }</th>
-											<th>{ i18n.T(ctx, "issues.table.trend") }</th>
-											<th class="num">{ i18n.T(ctx, "issues.table.events") }</th>
-											<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
-											<th>{ i18n.T(ctx, "issues.table.status") }</th>
-											<th>{ i18n.T(ctx, "issues.table.assignee") }</th>
+											<th scope="col"></th>
+											<th scope="col">{ i18n.T(ctx, "issues.table.level") }</th>
+											<th scope="col">{ i18n.T(ctx, "issues.table.issue") }</th>
+											<th scope="col">{ i18n.T(ctx, "issues.table.trend") }</th>
+											<th scope="col" class="num">{ i18n.T(ctx, "issues.table.events") }</th>
+											<th scope="col">{ i18n.T(ctx, "issues.table.last_seen") }</th>
+											<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
+											<th scope="col">{ i18n.T(ctx, "issues.table.assignee") }</th>
 										</tr>
 									</thead>
 									<tbody>
 										for _, row := range rows {
 											<tr>
-												<td><input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) }/></td>
+												<td>
+													// aria-label обязателен: без него скринридер объявляет
+													// «флажок, не отмечен», не сказав, о какой проблеме речь,
+													// и массовые действия становятся выбором вслепую.
+													<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ row.Issue.Title }/>
+												</td>
 												<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
 												<td>
 													<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
@@ -316,7 +321,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 						</div>
 						</div>
 						<div class="bulk-actions">
-							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
+							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve_bulk") }</button>
 							<button type="submit" name="action" value="ignore" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
 							<button type="submit" name="action" value="unresolve" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
 						</div>

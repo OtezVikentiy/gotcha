@@ -49,14 +49,16 @@ type Writer struct {
 
 	mu          sync.Mutex
 	buf         []profileRow
+	bufBytes    int64 // приблизительный вес buf, см. maxBufBytes
 	dropped     int64
 	insertFails int64 // накопительно: сколько флашей провалилось
 	failStreak  int
 	lastDropLog time.Time
 
-	maxBuf    int
-	batchSize int
-	interval  time.Duration
+	maxBuf      int
+	maxBufBytes int64
+	batchSize   int
+	interval    time.Duration
 
 	kick     chan struct{}
 	stop     chan struct{}
@@ -66,13 +68,14 @@ type Writer struct {
 
 func NewWriter(conn CHConn) *Writer {
 	return &Writer{
-		conn:      conn,
-		maxBuf:    200000,
-		batchSize: 1000,
-		interval:  5 * time.Second,
-		kick:      make(chan struct{}, 1),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
+		conn:        conn,
+		maxBuf:      200000,
+		maxBufBytes: defaultMaxBufBytes,
+		batchSize:   1000,
+		interval:    5 * time.Second,
+		kick:        make(chan struct{}, 1),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -113,17 +116,14 @@ func (w *Writer) Add(projectID int64, p Profile) {
 		})
 	}
 
-	w.mu.Lock()
-	logDrop := false
-	if drop := len(w.buf) + len(rows) - w.maxBuf; drop > 0 {
-		if drop > len(w.buf) {
-			drop = len(w.buf)
-		}
-		w.buf = append(w.buf[:0], w.buf[drop:]...)
-		w.dropped += int64(drop)
-		logDrop = true
+	size := int64(0)
+	for i := range rows {
+		size += profileRowBytes(rows[i])
 	}
+	w.mu.Lock()
 	w.buf = append(w.buf, rows...)
+	w.bufBytes += size
+	logDrop := w.trimLocked()
 	dropped := w.dropped
 	full := len(w.buf) >= w.batchSize
 	if logDrop && time.Since(w.lastDropLog) > w.interval {
@@ -141,6 +141,64 @@ func (w *Writer) Add(projectID int64, p Profile) {
 		case w.kick <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// defaultMaxBufBytes — потолок буфера по БАЙТАМ, в дополнение к потолку по
+// строкам. Одного потолка по строкам не хватает: размер строки задаёт клиент,
+// поэтому «двести тысяч строк» могут оказаться десятками гигабайт. На обычном
+// трафике первым срабатывает потолок по строкам и поведение не меняется.
+const defaultMaxBufBytes = 256 << 20
+
+// rowOverheadBytes — постоянная цена ОДНОЙ строки в буфере помимо длины строк:
+// заголовки string (16 байт каждый), элемент среза, служебные поля. Без неё
+// учёт был обходим тем же приёмом, что и бюджет профилей: строка из пустых или
+// однобуквенных значений весила бы почти ноль, и байтовый потолок не срабатывал
+// бы никогда — работал бы только счётный.
+const rowOverheadBytes = 64
+
+func profileRowBytes(r profileRow) int64 {
+	n := len(r.ProfileType) + len(r.Service) + len(r.Environment) +
+		len(r.Transaction) + len(r.Platform) + len(r.Unit) + len(r.TraceID)
+	for _, f := range r.Stack {
+		// +16 — заголовок string на кадр: у профиля Stack может быть в сотни
+		// кадров при однобуквенных именах, и без этого недоучёт достигал 16×.
+		n += len(f) + 16
+	}
+	return int64(n) + rowOverheadBytes
+}
+
+// trimLocked приводит буфер к обоим потолкам, выбрасывая самое старое.
+// Стоимость — O(числа выброшенных): вес ведётся инкрементально в Add.
+// Вызывается под mu.
+func (w *Writer) trimLocked() bool {
+	drop := 0
+	if over := len(w.buf) - w.maxBuf; over > 0 {
+		drop = over
+		for i := 0; i < over; i++ {
+			w.bufBytes -= profileRowBytes(w.buf[i])
+		}
+	}
+	// Одну строку оставляем всегда: строка тяжелее потолка сама по себе не повод
+	// отдать буфер пустым — она уйдёт ближайшим флашем.
+	for drop < len(w.buf)-1 && w.bufBytes > w.maxBufBytes {
+		w.bufBytes -= profileRowBytes(w.buf[drop])
+		drop++
+	}
+	if drop <= 0 {
+		return false
+	}
+	w.buf = append(w.buf[:0], w.buf[drop:]...)
+	w.dropped += int64(drop)
+	return true
+}
+
+// recountLocked пересчитывает вес с нуля — нужен там, где буфер перестраивается
+// целиком (возврат пачки после неудачной вставки).
+func (w *Writer) recountLocked() {
+	w.bufBytes = 0
+	for i := range w.buf {
+		w.bufBytes += profileRowBytes(w.buf[i])
 	}
 }
 
@@ -230,6 +288,7 @@ func (w *Writer) flush(ctx context.Context) {
 	batch := make([]profileRow, n)
 	copy(batch, w.buf[:n])
 	w.buf = append(w.buf[:0], w.buf[n:]...)
+	w.recountLocked()
 	w.mu.Unlock()
 
 	if err := w.insert(ctx, batch); err != nil {
@@ -246,16 +305,21 @@ func (w *Writer) flush(ctx context.Context) {
 			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insert, chbatch.IsServerDataError)
 			w.mu.Lock()
 			w.dropped += int64(dropped)
-			w.failStreak = 0
+			w.insertFails++
+			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
+			// разрешила. Безусловный сброс означал, что при лежащем
+			// ClickHouse писатель заново запускает дробление каждые ~15 с,
+			// хотя предыдущая попытка не дала ничего.
+			if dropped > 0 || len(unresolved) < len(batch) {
+				w.failStreak = 0
+			}
 			var over int
 			if len(unresolved) > 0 {
 				w.buf = append(unresolved, w.buf...)
-				if over = len(w.buf) - w.maxBuf; over > 0 {
-					w.buf = append(w.buf[:0], w.buf[over:]...)
-					w.dropped += int64(over)
-				} else {
-					over = 0
-				}
+				before := w.dropped
+				w.recountLocked()
+				w.trimLocked()
+				over = int(w.dropped - before)
 			}
 			w.mu.Unlock()
 			if dropped > 0 || over > 0 {
@@ -267,13 +331,10 @@ func (w *Writer) flush(ctx context.Context) {
 
 		w.mu.Lock()
 		w.buf = append(batch, w.buf...)
-		over := len(w.buf) - w.maxBuf
-		if over > 0 {
-			w.buf = append(w.buf[:0], w.buf[over:]...)
-			w.dropped += int64(over)
-		} else {
-			over = 0
-		}
+		before := w.dropped
+		w.recountLocked()
+		w.trimLocked()
+		over := int(w.dropped - before)
 		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("profile batch insert failed, will retry", "rows", len(batch), "error", err, "dropped", over)
@@ -299,4 +360,19 @@ func (w *Writer) insert(ctx context.Context, rows []profileRow) error {
 		}
 	}
 	return batch.Send()
+}
+
+// SetMaxBufferBytes задаёт байтовый потолок буфера. Значение по умолчанию
+// (defaultMaxBufBytes) рассчитано на инстанс без ограничения памяти; на
+// стеснённом профиле (docker-compose.small.yml: mem_limit 256m) пять буферов по
+// 256 МиБ физически не могут сработать раньше OOM-killer'а, то есть защита
+// инертна ровно там, где нужнее всего. Ставится из main по
+// GOTCHA_MAX_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
+func (w *Writer) SetMaxBufferBytes(n int64) {
+	if n <= 0 {
+		return
+	}
+	w.mu.Lock()
+	w.maxBufBytes = n
+	w.mu.Unlock()
 }

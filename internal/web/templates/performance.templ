@@ -165,17 +165,17 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th aria-sort={ sortAria(filter.Sort, "name") }><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.endpoint") }</a></th>
-								<th>{ i18n.T(ctx, "perf.environment") }</th>
-								<th class="num">@metricHead("perf.events", "perf.help.events")</th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "throughput") }><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>@metricHead("perf.throughput", "perf.help.throughput")</a></th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "p50") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>@metricHead("perf.p50", "perf.help.p50")</a></th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "p75") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>@metricHead("perf.p75", "perf.help.p75")</a></th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "p95") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>@metricHead("perf.p95", "perf.help.p95")</a></th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "p99") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>@metricHead("perf.p99", "perf.help.p99")</a></th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "failure") }><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>@metricHead("perf.failure", "perf.help.failure")</a></th>
-								<th class="num" aria-sort={ sortAria(filter.Sort, "apdex") }><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>@metricHead("perf.apdex", "perf.help.apdex")</a></th>
-								<th>@metricHead("perf.p95_period", "perf.help.p95_period")</th>
+								<th scope="col" aria-sort={ sortAria(filter.Sort, "name") }><a href={ templ.URL(perfListSortURL(projectID, filter, "name")) }>{ i18n.T(ctx, "perf.endpoint") }</a></th>
+								<th scope="col">{ i18n.T(ctx, "perf.environment") }</th>
+								<th scope="col" class="num">@metricHead("perf.events", "perf.help.events")</th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "throughput") }><a href={ templ.URL(perfListSortURL(projectID, filter, "throughput")) }>@metricHead("perf.throughput", "perf.help.throughput")</a></th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "p50") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p50")) }>@metricHead("perf.p50", "perf.help.p50")</a></th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "p75") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p75")) }>@metricHead("perf.p75", "perf.help.p75")</a></th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "p95") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p95")) }>@metricHead("perf.p95", "perf.help.p95")</a></th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "p99") }><a href={ templ.URL(perfListSortURL(projectID, filter, "p99")) }>@metricHead("perf.p99", "perf.help.p99")</a></th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "failure") }><a href={ templ.URL(perfListSortURL(projectID, filter, "failure")) }>@metricHead("perf.failure", "perf.help.failure")</a></th>
+								<th scope="col" class="num" aria-sort={ sortAria(filter.Sort, "apdex") }><a href={ templ.URL(perfListSortURL(projectID, filter, "apdex")) }>@metricHead("perf.apdex", "perf.help.apdex")</a></th>
+								<th scope="col">@metricHead("perf.p95_period", "perf.help.p95_period")</th>
 							</tr>
 						</thead>
 						<tbody>

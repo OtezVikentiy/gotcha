@@ -101,10 +101,10 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 							<table class="data-table">
 								<thead>
 									<tr>
-										<th>{ i18n.T(ctx, "uptime.maintenance.table.name") }</th>
-										<th>{ i18n.T(ctx, "uptime.maintenance.table.type") }</th>
-										<th>{ i18n.T(ctx, "uptime.maintenance.table.schedule") }</th>
-										<th></th>
+										<th scope="col">{ i18n.T(ctx, "uptime.maintenance.table.name") }</th>
+										<th scope="col">{ i18n.T(ctx, "uptime.maintenance.table.type") }</th>
+										<th scope="col">{ i18n.T(ctx, "uptime.maintenance.table.schedule") }</th>
+										<th scope="col"></th>
 									</tr>
 								</thead>
 								<tbody>

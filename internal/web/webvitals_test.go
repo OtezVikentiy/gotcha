@@ -108,8 +108,11 @@ func TestWebVitalsOverview(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (empty) status = %d, want 200: %s", emptyPath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "Пока нет Web Vitals") {
-		t.Fatalf("GET %s (empty) missing 'no web vitals': %s", emptyPath, body)
+	if !strings.Contains(string(body), "Нет Web Vitals за период") {
+		t.Fatalf("GET %s (empty) missing period-first empty state: %s", emptyPath, body)
+	}
+	if !strings.Contains(string(body), "расширить окно времени") {
+		t.Fatalf("GET %s (empty) не предлагает расширить период: %s", emptyPath, body)
 	}
 
 	// Чужой проект → 404.

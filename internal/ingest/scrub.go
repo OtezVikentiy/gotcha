@@ -25,7 +25,13 @@ const emailTextMask = "[email]"
 // emailTextRe — консервативный шаблон email для свободного текста (RA-L10).
 // Умышленно узкий: local@domain.tld. Ничего кроме email не трогаем — номера
 // карт/телефоны дают высокий процент ложных срабатываний на SQL/URL и вне скоупа.
-var emailTextRe = regexp.MustCompile(`[\w.+-]+@[\w-]+\.[\w.-]+`)
+//
+// Классы символов — Unicode (\p{L}\p{N}), а не \w: в Go \w это ASCII-only
+// [0-9A-Za-z_], поэтому прежний шаблон не видел ни адресов на кириллице
+// (иван@пример.рф — IDN-домены .рф/.москва зарегистрированы и используются), ни
+// любых других не-латинских. Для продукта, который продаётся под 152-ФЗ, это
+// была дыра ровно в том алфавите, ради которого закон и написан.
+var emailTextRe = regexp.MustCompile(`[\p{L}\p{N}._+-]+@[\p{L}\p{N}-]+\.[\p{L}\p{N}.-]+`)
 
 type Scrubber struct {
 	ScrubIP    bool
@@ -65,32 +71,49 @@ func (s *Scrubber) SetAllowKeys(keys []string) {
 	}
 }
 
-// emailAttrKeys — ключи атрибутов, несущие email конечного пользователя. При
-// ScrubEmail=true маскируются в тегах/данных/атрибутах так же, как denylist-ключи:
-// иначе user.email оседал бы в transactions.tags, metric_points.attributes и
-// span.data, хотя колонка events.user_email уже занулена (неполнота скрубинга).
+// emailAttrKeysNorm — НОРМАЛИЗОВАННЫЕ подстроки имён, несущих email конечного
+// пользователя. При ScrubEmail=true маскируются в тегах/данных/атрибутах так же,
+// как denylist-ключи: иначе email оседал бы в transactions.tags,
+// metric_points.attributes и span.data, хотя колонка events.user_email уже
+// занулена (неполнота скрубинга).
+//
+// Раньше здесь стоял список ТОЧНЫХ имён, и матч шёл по строке, приведённой лишь
+// к нижнему регистру, тогда как denylist уже работал по normKey. Из-за этого
+// user.email маскировался, а user_email — нет; e-mail — нет. Одна подстроки
+// "email" по нормализованному имени покрывает все формы разом: user.email,
+// user_email, enduser.email, sentry.user.email, E-Mail.
+//
 // user_id/enduser.id намеренно НЕ трогаем — это идентификатор (не сам email), и
 // по нему работает субъектное удаление/экспорт (152-ФЗ право на доступ/удаление).
-var emailAttrKeys = map[string]bool{
-	"user.email": true, "enduser.email": true, "email": true, "sentry.user.email": true,
-}
+var emailAttrKeysNorm = []string{"email"}
 
-// ipAttrKeys — ключи атрибутов, несущие IP конечного пользователя. При
-// ScrubIP=true маскируются в тегах/данных/атрибутах так же, как email-ключи:
-// иначе IP оседал бы в transactions.tags, metric_points.attributes и span.data,
-// хотя колонка events.user_ip уже занулена (симметрично неполноте email-скрубинга).
-var ipAttrKeys = map[string]bool{
-	"client.address": true, "net.peer.ip": true, "net.sock.peer.addr": true,
-	"user.ip": true, "sentry.user.ip_address": true, "http.client_ip": true,
-}
-
-// ipHeaderKeysNorm — нормализованные (без разделителей) имена forwarding-заголовков
-// и env-переменных с IP клиента, ловятся ПОДСТРОЧНО по normKey. Так совпадают все
-// формы, в которых их шлют SDK: X-Forwarded-For, x_forwarded_for, CGI/WSGI-форма
-// HTTP_X_FORWARDED_FOR, а также X-Real-IP, X-Client-IP, True-Client-IP,
-// X-Cluster-Client-IP, CF-Connecting-IP, Client-IP, REMOTE_ADDR (SEC-P2-4).
+// ipAttrKeysNorm — то же для IP конечного пользователя: нормализованные подстроки,
+// объединяющие имена атрибутов (OTLP/Sentry) и forwarding-заголовков. Прежний
+// список атрибутов матчился ТОЧНО и по ненормализованному имени, поэтому
+// client.address ловился, а client_address — нет; ip_address — буквальное имя
+// поля в объекте user у Sentry — не ловился ни в какой форме вовсе.
+//
 // Подстроки подобраны так, чтобы НЕ задевать X-Forwarded-Proto/Host/Port.
-var ipHeaderKeysNorm = []string{"forwardedfor", "realip", "clientip", "remoteaddr", "connectingip"}
+var ipAttrKeysNorm = []string{
+	"userip",          // user.ip, user_ip, sentry.user.ip
+	"ipaddress",       // ip_address, sentry.user.ip_address, IPAddress
+	"clientaddress",   // client.address, client_address
+	"netpeerip",       // net.peer.ip
+	"netsockpeeraddr", // net.sock.peer.addr
+	"clientip",        // http.client_ip, X-Client-IP, True-Client-IP, X-Cluster-Client-IP
+	"forwardedfor",    // X-Forwarded-For, HTTP_X_FORWARDED_FOR
+	"realip",          // X-Real-IP
+	"remoteaddr",      // REMOTE_ADDR
+	"connectingip",    // CF-Connecting-IP
+	"peeraddress",     // network.peer.address (стабильная замена net.peer.ip в OTel semconv), peer.address
+	"localaddress",    // network.local.address
+}
+
+// forwardedExact — RFC 7239 Forwarded, единственный стандартизованный IETF-
+// заголовок пересылки (его шлют Envoy, HAProxy и часть SDK). Матчится ТОЧНО, а
+// не подстрочно: подстрока "forwarded" задела бы X-Forwarded-Proto/Host/Port,
+// которые IP не несут и маскироваться не должны.
+const forwardedExact = "forwarded"
 
 // denied — маскировать ли значение под этим ИМЕНЕМ. ЕДИНОЕ правило для всех
 // поверхностей: ключи объектов, имена query-параметров, заголовки, теги, атрибуты.
@@ -111,15 +134,22 @@ func (s *Scrubber) denied(name string) bool {
 	if s.allowNorm[kn] {
 		return false // оператор явно разрешил это имя
 	}
-	if s.ScrubEmail && emailAttrKeys[k] {
-		return true
+	// email/IP матчатся по НОРМАЛИЗОВАННОМУ имени и подстрочно — тем же
+	// правилом, что denylist ниже. Раньше эти две ветки сравнивали ключ точно и
+	// без нормализации, из-за чего user.email маскировался, а user_email нет.
+	if s.ScrubEmail {
+		for _, n := range emailAttrKeysNorm {
+			if strings.Contains(kn, n) {
+				return true
+			}
+		}
 	}
 	if s.ScrubIP {
-		if ipAttrKeys[k] {
+		if kn == forwardedExact {
 			return true
 		}
-		for _, ipk := range ipHeaderKeysNorm {
-			if strings.Contains(kn, ipk) {
+		for _, n := range ipAttrKeysNorm {
+			if strings.Contains(kn, n) {
 				return true
 			}
 		}

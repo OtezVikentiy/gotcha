@@ -38,6 +38,11 @@ const (
 	maxExceptionField  = 1024 // type/value одного исключения
 	maxFrameFieldRunes = 512  // module/function одного кадра
 	maxTitleRunes      = 1024
+	// Пользовательский fingerprint: массив целиком уходит в ключ группировки и
+	// оседает в колонке issues, поэтому ограничен и по числу элементов, и по
+	// длине каждого — как и всё остальное, что приходит из события.
+	maxFingerprintParts = 32
+	maxFingerprintPart  = 256
 )
 
 // capJSONBlock возвращает блок, если он влезает в maxJSONBlock, иначе ОТБРАСЫВАЕТ
@@ -61,11 +66,43 @@ func capJSONBlock(raw []byte, field string) string {
 // capRunes обрезает s до n рун (недоверенные поля из событий SDK не должны
 // раздувать строки/индексы БД без ограничений).
 func capRunes(s string, n int) string {
+	// Быстрый путь без единой аллокации. В UTF-8 байт всегда не меньше, чем рун,
+	// поэтому len(s) <= n гарантирует, что рун тоже не больше n. Проверка стоит
+	// ДО []rune(s) намеренно: подавляющее большинство строк приёма короткие, и
+	// раньше каждая из них платила копией всей строки в срез рун — на индексных
+	// профилях это давало миллионы копий и гигабайты аллокаций.
+	if len(s) <= n {
+		return s
+	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
 	return string(r[:n])
+}
+
+// capFingerprint ограничивает пользовательский fingerprint по числу элементов и
+// длине каждого. Массив приходит из события как есть и целиком уходит в ключ
+// группировки (fingerprint.Compute склеивает его через \x00), а оттуда — в
+// колонку issues. Без капа одно событие могло нести килобайты в ключе группы,
+// который потом хранится, индексируется и сравнивается на каждом приёме.
+//
+// Кап НЕ защищает от размножения issue: уникальный отпечаток на каждое событие
+// по-прежнему создаёт новый issue, а троттлинг алертов ключуется парой
+// (issue_id, rule_id) и у нового issue не срабатывает никогда. Это отдельная
+// задача — потолок уведомлений на проект.
+func capFingerprint(fp []string) []string {
+	if len(fp) == 0 {
+		return nil
+	}
+	if len(fp) > maxFingerprintParts {
+		fp = fp[:maxFingerprintParts]
+	}
+	out := make([]string, len(fp))
+	for i, p := range fp {
+		out[i] = capRunes(p, maxFingerprintPart)
+	}
+	return out
 }
 
 // normalizeID приводит trace_id/span_id/parent_span_id к каноническому виду:
@@ -165,7 +202,7 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 		Environment: capRunes(se.Environment, 200),
 		Release:     capRunes(se.Release, 200),
 		ServerName:  capRunes(se.ServerName, 200),
-		Fingerprint: se.Fingerprint,
+		Fingerprint: capFingerprint(se.Fingerprint),
 		Tags:        map[string]string{},
 	}
 	if !validLevels[pe.Level] {

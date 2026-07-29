@@ -36,6 +36,28 @@
 	--danger: #f0574a;
 	--info: #3d7bff;
 	--link: #79aaff;
+	/* --*-ink — цвет ТЕКСТА на собственном 16%-тинте (бейджи, плашки статуса).
+	   Допущение «в тёмной теме тинт ложится на тёмную подложку, поэтому ink
+	   можно оставить равным токену» оказалось НЕВЕРНЫМ: тинт подложку
+	   осветляет, и по пикселям реального рендера получалось 3.66-4.15:1.
+	   Жёлтые (--warn, --partial) и так с запасом, остальные три осветлены
+	   расчётом до >= 4.5 на собственном тинте. В светлой теме тинт осветляет фон,
+	   а текст оставался прежним — измерено 3.10-3.69:1 вместо 4.5, а плашка
+	   «Частичный сбой» на ПУБЛИЧНОЙ статус-странице давала 2.47:1, худший
+	   показатель во всём продукте. */
+	/* --border-control — граница ИНТЕРАКТИВНЫХ элементов (поля, селекты,
+	   ghost-кнопки, чекбоксы). Отдельно от --border намеренно: WCAG 1.4.11
+	   требует 3:1 для границ контролов, но не для разделителей и рамок карточек,
+	   а поднимать контраст у всех рамок сразу — это визуально совсем другой,
+	   заметно более тяжёлый интерфейс. Измерено на прежнем --border: 1.40:1 в
+	   тёмной теме и 1.21:1 в светлой, тогда как граница поля — единственное, что
+	   показывает, куда кликать. */
+	--border-control: #657699;
+	--good-ink: #49ac5b;
+	--warn-ink: var(--warn);
+	--partial-ink: var(--partial);
+	--danger-ink: #f26d62;
+	--info-ink: #6294ff;
 	--radius: 6px;
 	--radius-lg: 10px;
 	--space: 4px;
@@ -59,7 +81,7 @@
 	--border: #dde3ec;
 	--text: #1a2130;
 	--text-dim: #5a6472;
-	--text-mute: #8a93a6;
+	--text-mute: #6b7484;
 	--accent: #2f6bff;
 	--accent-hover: #1f5aff;
 	--accent-fg: #ffffff;
@@ -70,12 +92,27 @@
 	   сплошная тёмная колонка на светлом фоне читается как артефакт. */
 	--rail: #e4e9f2;
 	--rail-border: #ccd5e2;
-	--good: #1a7f37;
-	--warn: #9a6700;
-	--partial: #b47600;
-	--danger: #cf222e;
-	--info: #2f6bff;
-	--link: #2f6bff;
+	/* Контраст светлой темы измерен на живом DOM (WCAG 1.4.3, нужно 4.5:1).
+	   Прежние значения не добирали почти везде: --link 4.00 на surface-2,
+	   --partial 3.38, --text-mute 2.75. Тёмная тема при этом шла с запасом
+	   (--link 6.9-8.2), то есть перекос был ровно в одну сторону. Значения ниже
+	   проходят 4.5:1 на всех четырёх подложках (surface/surface-2/bg/rail). */
+	--good: #187633;
+	--warn: #8c5e00;
+	--partial: #8e5d00;
+	--danger: #c3202b;
+	--info: #295ee0;
+	--link: #295ee0;
+	/* Текст на собственном 16%-тинте — темнее самого токена: тинт
+	   осветляет фон, а текст прежде не осветлялся вместе с ним.
+	   Значения проверены расчётом: >= 4.5:1 и на белой карточке,
+	   и на surface-2. */
+	--border-control: #7e8b9f;
+	--good-ink: #166b2e;
+	--warn-ink: #7d5400;
+	--partial-ink: #7f5300;
+	--danger-ink: #b01d26;
+	--info-ink: #2454c9;
 }
 @media (prefers-color-scheme: light) {
 	:root:not([data-theme="dark"]) {
@@ -86,19 +123,34 @@
 		--border: #dde3ec;
 		--text: #1a2130;
 		--text-dim: #5a6472;
-		--text-mute: #8a93a6;
+		--text-mute: #6b7484;
 		--accent: #2f6bff;
 		--accent-hover: #1f5aff;
 		--accent-fg: #ffffff;
 		--accent-soft: rgba(47, 107, 255, .10);
 		--rail: #e4e9f2;
 		--rail-border: #ccd5e2;
-		--good: #1a7f37;
-		--warn: #9a6700;
-		--partial: #b47600;
-		--danger: #cf222e;
-		--info: #2f6bff;
-		--link: #2f6bff;
+		/* Контраст светлой темы измерен на живом DOM (WCAG 1.4.3, нужно 4.5:1).
+		   Прежние значения не добирали почти везде: --link 4.00 на surface-2,
+		   --partial 3.38, --text-mute 2.75. Тёмная тема при этом шла с запасом
+		   (--link 6.9-8.2), то есть перекос был ровно в одну сторону. Значения ниже
+		   проходят 4.5:1 на всех четырёх подложках (surface/surface-2/bg/rail). */
+		--good: #187633;
+		--warn: #8c5e00;
+		--partial: #8e5d00;
+		--danger: #c3202b;
+		--info: #295ee0;
+		--link: #295ee0;
+		/* Текст на собственном 16%-тинте — темнее самого токена: тинт
+		   осветляет фон, а текст прежде не осветлялся вместе с ним.
+		   Значения проверены расчётом: >= 4.5:1 и на белой карточке,
+		   и на surface-2. */
+		--border-control: #7e8b9f;
+		--good-ink: #166b2e;
+		--warn-ink: #7d5400;
+		--partial-ink: #7f5300;
+		--danger-ink: #b01d26;
+		--info-ink: #2454c9;
 	}
 }
 
@@ -269,7 +321,9 @@ a:hover {
 	height: 28px;
 	border-radius: 50%;
 	background: var(--accent-soft);
-	color: var(--accent);
+	/* --link, а не --accent: последний рассчитан как ФОН под белой подписью и на
+	   бледной подложке давал 3.28-3.44:1 на инициалах пользователя. */
+	color: var(--link);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -446,10 +500,18 @@ a:hover {
 	color: var(--text);
 	border-color: var(--text-dim);
 }
+/* Активное состояние переключателей языка и темы.
+   --accent здесь НЕ подходит как цвет текста: токен рассчитан как ФОН под белой
+   подписью (см. его комментарий выше), и на бледной подложке --accent-soft он
+   давал 2.98:1 в тёмной теме и 3.95:1 в светлой — то есть «какой язык выбран»
+   практически не читалось. --link рассчитан именно как текст и даёт 6.2:1.
+   Заодно подложке добавлена граница: сама заливка --accent-soft отличается от
+   окружения на 1.17:1, одной ею состояние не показать. */
 .lang-btn.is-active,
 .theme-btn.is-active {
 	background: var(--accent-soft);
-	color: var(--accent);
+	color: var(--link);
+	border-color: color-mix(in srgb, var(--link) 45%, transparent);
 }
 /* Skip-link: вне потока и невидим, пока не получит фокус с клавиатуры. Не
    display:none и не visibility:hidden — иначе он выпадет и из порядка
@@ -486,36 +548,6 @@ a:hover {
 	width: 100%;
 	margin: 0;
 }
-/* Единый принцип ширины (UI-аудит §2): узкие detail/форм/settings-колонки
-   ЦЕНТРИРУЮТСЯ в .app-content, а не жмутся влево с пустой правой половиной —
-   так пустое поле читается как симметричные отступы, а не «недоделанность».
-   Таблицы и графики остаются во всю ширину: им ширина нужна для чтения.
-   Двухколоночные страницы (форма + естественный «сосед»: live-превью или
-   панель-подсказка) используют .content-split. */
-.content-col {
-	max-width: 880px;
-	margin-inline: auto;
-}
-.content-split {
-	display: grid;
-	grid-template-columns: 1fr;
-	gap: 24px;
-	align-items: start;
-}
-@media (min-width: 1040px) {
-	.content-split {
-		grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
-	}
-}
-/* Правый «сосед» split-раскладки: липкий на широком экране, чтобы подсказка/
-   превью оставались в поле зрения при длинной форме слева. */
-.content-split-aside {
-	position: sticky;
-	top: 16px;
-	display: flex;
-	flex-direction: column;
-	gap: 12px;
-}
 
 .app-footer {
 	padding: 8px 16px;
@@ -550,6 +582,12 @@ a:hover {
 	display: flex;
 	align-items: end;
 	gap: 6px;
+	/* flex-wrap обязателен: без него на 375px форма шире контейнера, и кнопка
+	   («Добавить участника», «Привязать проект») уезжает за край во вложенный
+	   горизонтальный скроллер. Вложенная горизонтальная прокрутка внутри
+	   вертикально скроллящейся страницы на тач-устройстве — из худших
+	   взаимодействий: пользователь просто не находит кнопку. */
+	flex-wrap: wrap;
 }
 /* .field тянет нижний margin — в этой inline-форме он не нужен, иначе кнопка
    встаёт ниже select на величину этого отступа. */
@@ -584,7 +622,11 @@ a:hover {
 	/* И по горизонтали тоже: этот контейнер держит .data-table (orgsettings),
 	   которая на узком экране шире него. */
 	overflow-x: auto;
-	mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
+	/* Маски-градиента здесь больше нет: она выцвечивала нижние 24px НЕЗАВИСИМО
+	   от того, есть ли что прокручивать, поэтому последняя строка короткого
+	   списка участников выглядела блёклой без всякой причины. CSS не умеет
+	   отличить «список прокручивается» от «список короткий», а нечитаемая
+	   строка дороже, чем подсказка о прокрутке. */
 }
 
 /* No-JS модальное окно через :target (CSP запрещает инлайн-JS). Триггер —
@@ -905,6 +947,19 @@ button:hover {
 	margin: 0;
 }
 
+/* Итог удаления ПДн, когда не нашлось ни одной строки: это не ошибка, но и не
+   успех — оператор обязан отличать «удалено N» от «не найдено ничего». */
+.notice--warn {
+	background: color-mix(in srgb, var(--warn) 14%, transparent);
+	border-color: var(--warn);
+	color: var(--warn);
+}
+
+/* Подсказка о том, что критерий поиска на этом инстансе заведомо пуст. */
+.hint--warn {
+	color: var(--warn);
+}
+
 .warning {
 	background: color-mix(in srgb, var(--warn) 14%, transparent);
 	color: var(--warn);
@@ -989,7 +1044,7 @@ th {
 	   читаемо, а на тёмной чёрное на тёмном пропадает. Привязываем к теме. */
 	fill: var(--text);
 }
-.badge-info { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
+.badge-info { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info-ink); }
 
 .vital-value { margin-right: 6px; }
 /* Аббревиатуры web-vital'ов (LCP/INP/CLS/FCP/TTFB) с расшифровкой по наведению
@@ -1135,7 +1190,7 @@ th {
 .time-range-active {
 	font-size: var(--fs-sm);
 	font-variant-numeric: tabular-nums;
-	color: var(--accent);
+	color: var(--link);
 	background: var(--accent-soft);
 	border-radius: var(--radius);
 	padding: 3px 8px;
@@ -1253,7 +1308,13 @@ th {
 	text-align: center;
 	font-size: var(--fs-sm);
 	font-weight: 600;
-	text-transform: capitalize;
+	/* Без text-transform: capitalize. Intl отдаёт для ru строку вида
+	   «июнь 2026 г.», и capitalize поднимал регистр КАЖДОМУ слову, включая
+	   сокращение: получалось «Июнь 2026 Г.». Первую букву поднимаем
+	   ::first-letter — она трогает ровно один символ. */
+}
+.dr-month-title::first-letter {
+	text-transform: uppercase;
 }
 .dr-week-head, .dr-days {
 	display: grid;
@@ -1369,6 +1430,9 @@ th {
 	display: flex;
 	gap: 8px;
 	margin-top: 8px;
+	/* См. .team-member-add-form: на узком экране «Вернуть в работу» уходила за
+	   край во вложенный скроллер. */
+	flex-wrap: wrap;
 }
 .bulk-actions button:not(.btn) {
 	background: var(--surface);
@@ -1462,7 +1526,7 @@ th {
 }
 .kind-radio:checked + .kind-tab {
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-fg);
 	border-color: var(--accent);
 }
 .kind-radio:focus-visible + .kind-tab {
@@ -1656,7 +1720,7 @@ th {
 	font-size: 66px;
 	font-weight: 700;
 	line-height: 1;
-	color: var(--accent);
+	color: var(--link);
 	margin: 0 0 10px;
 }
 .error-code::before {
@@ -1720,7 +1784,7 @@ th {
 	user-select: none;
 }
 .src-line-current .src-lineno {
-	color: var(--accent);
+	color: var(--link);
 	font-weight: 700;
 }
 .src-code {
@@ -1760,7 +1824,7 @@ th {
 }
 .request-method {
 	font-weight: 700;
-	color: var(--accent);
+	color: var(--link);
 	margin-right: 6px;
 }
 .request-view .ctx-title:first-of-type {
@@ -1837,10 +1901,12 @@ th {
 }
 .bc-level-error,
 .bc-level-fatal {
-	color: var(--danger, #e5484d);
+	/* Без фолбэка: токен определён в обеих темах, а значение в фолбэке от него
+	   отличалось — тихая ловушка при будущей правке палитры. */
+	color: var(--danger);
 }
 .bc-level-warning {
-	color: var(--warn, #f5a623);
+	color: var(--warn);
 }
 .bc-msg {
 	flex: 1 1 200px;
@@ -1931,9 +1997,9 @@ th {
 	font-weight: 600;
 	margin: 6px 0 20px;
 }
-.status-overall-ok { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
-.status-overall-partial { background: color-mix(in srgb, var(--partial) 16%, transparent); color: var(--partial); }
-.status-overall-major { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.status-overall-ok { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good-ink); }
+.status-overall-partial { background: color-mix(in srgb, var(--partial) 16%, transparent); color: var(--partial-ink); }
+.status-overall-major { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger-ink); }
 .status-description {
 	color: var(--text-dim);
 }
@@ -2039,18 +2105,6 @@ th {
 	color: var(--text-dim);
 	margin: 6px 0;
 }
-.oauth-btn {
-	display: block;
-	text-align: center;
-	padding: 6px;
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	text-decoration: none;
-	color: var(--text);
-}
-.oauth-btn:hover {
-	background: var(--surface-2);
-}
 /* Профиль: список связанных аккаунтов. */
 .linked-email {
 	color: var(--text-dim);
@@ -2093,7 +2147,7 @@ form.inline {
 .btn-ghost {
 	background: transparent;
 	color: var(--text);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 }
 .btn-ghost:hover {
 	background: var(--surface-2);
@@ -2104,6 +2158,20 @@ form.inline {
 }
 .btn-danger:hover {
 	filter: brightness(0.92);
+}
+/* Заливка кнопки в ТЁМНОЙ теме отличается от токена --danger: сам токен (#f0574a)
+   под белой подписью даёт 3.41:1, а это сплошная кнопка с текстом — нужно 4.5.
+   #cc4a3f даёт 4.55. В светлой теме --danger под белым проходит и так, поэтому
+   переопределение только для тёмной. */
+:root:not([data-theme="light"]) .btn-danger {
+	background: #cc4a3f;
+	border-color: #cc4a3f;
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) .btn-danger {
+		background: var(--danger);
+		border-color: var(--danger);
+	}
 }
 /* .btn-danger-ghost — опасное действие В СТРОКЕ таблицы (удалить участника,
    канал, ключ, пробу). Сплошная заливка тут не годится: строк много, и
@@ -2129,9 +2197,9 @@ form.inline {
    Базовый .badge (display/radius/padding/uppercase) уже определён выше;
    здесь только семантические модификаторы новой палитры + служебные варианты.
    .badge-info уже существует выше и совпадает по стилю — переиспользуется как есть. */
-.badge-good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
-.badge-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
-.badge-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.badge-good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good-ink); }
+.badge-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn-ink); }
+.badge-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger-ink); }
 .badge-neutral {
 	background: var(--surface-2);
 	color: var(--text-dim);
@@ -2169,7 +2237,7 @@ form.inline {
    направление (для глаза) и семантика (для скринридера, читающего aria-sort) —
    из одного источника; глиф декоративен. Активная колонка подсвечивается
    акцентным цветом текста, чтобы «по какой колонке сортировка» читалось сразу. */
-.data-table th[aria-sort]:not([aria-sort="none"]) { color: var(--accent); }
+.data-table th[aria-sort]:not([aria-sort="none"]) { color: var(--link); }
 .data-table th[aria-sort="ascending"] a::after { content: " \25B4"; font-size: 0.85em; }
 .data-table th[aria-sort="descending"] a::after { content: " \25BE"; font-size: 0.85em; }
 .data-table td {
@@ -2227,8 +2295,7 @@ form.inline {
 	border-radius: var(--radius-lg);
 	padding: 14px 16px;
 }
-.card-header,
-.panel-header {
+.card-header {
 	margin-bottom: 10px;
 	font-weight: 650;
 }
@@ -2342,8 +2409,8 @@ form.inline {
 }
 .chip.is-active {
 	background: var(--accent-soft);
-	border-color: var(--accent);
-	color: var(--accent);
+	border-color: var(--link);
+	color: var(--link);
 }
 
 /* -- Breadcrumb -- */
@@ -2425,7 +2492,6 @@ form.inline {
 /* -- Двухколоночная сетка полей внутри форм создания/редактирования
    (монитор, metric-алерт, обслуживание, статус-страница). 1 колонка →
    2 при ≥720px. Поля-исключения (textarea, длинные URL) занимают всю
-   ширину через .field--wide. Внутри узких карточек-настроек НЕ
    используется — там формы остаются одноколоночными. -- */
 .form-grid {
 	display: grid;
@@ -2436,13 +2502,12 @@ form.inline {
 @media (min-width: 720px) {
 	.form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-.form-grid > .field--wide { grid-column: 1 / -1; }
 .input,
 .select {
 	display: block;
 	width: 100%;
 	background: var(--surface);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	color: var(--text);
 	padding: 6px 10px;
@@ -2652,7 +2717,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	margin-top: 2px;
 }
 .doc-content a {
-	color: var(--accent);
+	color: var(--link);
 }
 .doc-content code {
 	font-family: var(--font-mono);
@@ -2742,10 +2807,40 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .latency-chart .seg-ttfb    { fill: #c3b8fc; }
 /* Метка выброса (час выше шкалы: медленно/таймаут). Цветом события, не фазы. */
 .latency-chart .seg-cap     { fill: var(--danger); }
-/* Метки осей мельче: viewBox 720 масштабируется до ширины карточки (~1.5×),
-   поэтому 8px в координатах viewBox дают ~12px на экране (переопределяем общее
-   правило .latency-chart text = 12px). */
-.latency-chart text, .metric-chart text { font-size: 8px; }
+/* Кегль подписей осей задаётся В ЕДИНИЦАХ viewBox, а на экране равен
+   font-size × ширинаКарточки / ширинаViewBox. Значит один и тот же font-size
+   даёт разный размер у графиков с разным viewBox, а их в продукте два.
+
+   Раньше здесь стояло безусловное 8px с комментарием «viewBox масштабируется
+   ~1.5×» — верно только около 1440 и только для viewBox 720. Измерено на живых
+   страницах ДО правки: 2.6px при 375, 6.6px при 768, 7.2px при 1024.
+
+   Селектор идёт по классу chart-vb<ширина>, который проставляет сам генератор
+   (svgRoot): новый график получает нужный кегль по построению, а не по памяти
+   автора. Значения для 1200 = значения для 720 × 1200/720. Порядок правил
+   строго по возрастанию min-width — они перекрывают друг друга. */
+.chart-vb720 text { font-size: 34px; }
+.chart-vb1200 text { font-size: 57px; }
+
+@media (min-width: 700px) {
+	.chart-vb720 text { font-size: 15px; }
+	.chart-vb1200 text { font-size: 25px; }
+}
+
+@media (min-width: 1000px) {
+	.chart-vb720 text { font-size: 13px; }
+	.chart-vb1200 text { font-size: 22px; }
+}
+
+@media (min-width: 1300px) {
+	.chart-vb720 text { font-size: 10px; }
+	.chart-vb1200 text { font-size: 17px; }
+}
+
+@media (min-width: 1700px) {
+	.chart-vb720 text { font-size: 8px; }
+	.chart-vb1200 text { font-size: 13px; }
+}
 
 /* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====
    Эти классы стояли в разметке без определений, из-за чего блоки на страницах
@@ -2959,9 +3054,16 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
+/* break-word, а не anywhere: anywhere рвёт СЛОВО в любом месте, даже когда
+   строка уместилась бы переносом по границам. На узкой колонке (~70px это
+   давало «alice / @ac / me.e / xamp / le» вместо «alice@ / acme.example» —
+   данные превращались в вертикальный столбик букв. break-word рвёт длинное
+   слово только тогда, когда иначе оно не влезает вовсе, что и требовалось:
+   правило вводилось против распирания карточки, а не против переноса. */
 .card .data-table td,
 .panel .data-table td {
-	overflow-wrap: anywhere;
+	overflow-wrap: break-word;
+	word-break: normal;
 }
 /* Числовые колонки не переносим: разрыв числа посреди разряда нечитаем. */
 .card .data-table td.num,
@@ -3173,10 +3275,15 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	align-items: center;
 	gap: 8px;
 	margin-top: 8px;
+	/* См. .team-member-add-form: кнопка «Назначить» уезжала за край на 375px. */
+	flex-wrap: wrap;
 }
 .assign-control .assign-form .select {
 	width: auto;
 	min-width: 200px;
+	/* min-width в 200px шире, чем колонка на телефоне: без max-width селект
+	   сам распирает форму и возвращает ту же горизонтальную прокрутку. */
+	max-width: 100%;
 }
 
 /* Ответственный — отдельной строкой под бейджами уровня и статуса: в одной
@@ -3341,4 +3448,42 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	top: 0;
 	background: var(--surface);
 	z-index: 1;
+}
+
+/* Нативные чекбоксы и радио рисуются браузером и по умолчанию берут системную
+   рамку, которая на обеих темах давала 1.06-1.09:1. accent-color красит
+   отмеченное состояние брендом, а рамку неотмеченного задаём явно — иначе
+   пустой чекбокс на карточке практически не виден (WCAG 1.4.11). */
+input[type="checkbox"],
+input[type="radio"] {
+	accent-color: var(--accent);
+	outline: 1px solid var(--border-control);
+	outline-offset: -1px;
+	border-radius: 2px;
+}
+input[type="radio"] {
+	border-radius: 50%;
+}
+/* Фокус-ринг обязан перебивать рамку покоя. Правило выше имеет ту же
+   специфичность, что общий input:focus, но стоит ПОЗЖЕ — и выигрывало даже в
+   фокусе, из-за чего у чекбоксов и радио фокус переставал быть виден вовсе
+   (WCAG 2.4.7). Здесь состояние :focus поднимает специфичность до (0,2,1). */
+input[type="checkbox"]:focus,
+input[type="radio"]:focus,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* Пользователь просил уменьшить анимацию — уважаем. Переходов в продукте всего
+   три (поворот шеврона, смена прозрачности), поэтому цена правки нулевая, но
+   заявленное системой предпочтение должно работать, а не игнорироваться. */
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
 }

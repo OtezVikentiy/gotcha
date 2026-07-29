@@ -87,7 +87,7 @@ How many days ClickHouse keeps each kind of data before deleting old rows. Lower
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans (the detail inside transactions). |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points (ingested via OTLP). |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profiling samples (the heaviest data by volume, hence the shorter default). |
-| `GOTCHA_OUTBOX_RETENTION_DAYS` | `7` | Retention for records of already-delivered/failed notifications (email/webhook/Telegram) in PostgreSQL. Deliberately short: these records carry delivery-channel secrets (e.g. a webhook token). |
+| `GOTCHA_OUTBOX_RETENTION_DAYS` | `7` | Retention for records of already-delivered/failed notifications (email/webhook/Telegram) in PostgreSQL. Deliberately short: this is a working queue rather than an archive: it lives in PostgreSQL and grows with notification volume. |
 
 Retention changes apply on the next application start (the value is used to set a TTL on the ClickHouse tables) — data already deleted doesn't come back retroactively.
 
@@ -121,7 +121,7 @@ Server-side removal of personal data before storage — on by default.
 |---|---|---|
 | `GOTCHA_SCRUB_IP` | `true` | Zeroes the reporting user's IP address before storage. |
 | `GOTCHA_SCRUB_EMAIL` | `true` | Zeroes the reporting user's email before storage. |
-| `GOTCHA_SCRUB_KEYS` | built-in list (`password,passwd,token,secret,authorization,auth,cookie,api_key,apikey,access_token,refresh_token,session,credit_card,card_number,cvv`) | Comma-separated, case-insensitive key names whose values get redacted in tags/contexts/stack traces/span data. Setting this explicitly **completely replaces** the built-in list rather than extending it — if you want to add a key (e.g. `internal_user_id`), include the standard ones you still want alongside it. |
+| `GOTCHA_SCRUB_KEYS` | built-in list (`password,passwd,token,secret,authorization,auth,cookie,api_key,apikey,access_token,refresh_token,session,credit_card,card_number,cvv`) | Comma-separated, case-insensitive key names whose values get redacted in tags/contexts/stack traces/span data. This variable **extends** the built-in list rather than replacing it, so adding your own key (e.g. `internal_user_id`) takes one value and does not require re-listing the standard ones. To drop a specific built-in key, name it exactly in `GOTCHA_SCRUB_ALLOW_KEYS`. |
 | `GOTCHA_SCRUB_ALLOW_KEYS` | empty | Comma-separated exact names to exempt from the denylist. Matching is deliberately fail-closed — a name is redacted when it *contains* a denylist word, so `author` (contains `auth`) and `tokenizer` (contains `token`) are redacted by default. Under-redacting leaks personal data; over-redacting only costs a debugging field, and this setting brings it back: `GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer`. |
 | `GOTCHA_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn` or `error`. Raise it to `debug` to get more detail during an incident without rebuilding. |
 | `GOTCHA_LOG_FORMAT` | `text` | Log format: `text` or `json`. Use `json` when shipping logs to Loki/ELK. |

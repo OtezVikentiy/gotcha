@@ -90,6 +90,14 @@ type Handler struct {
 	// h.Email!=nil && h.Email.Configured(), но вынесено отдельно, чтобы UI не
 	// зависел от того, проставлен ли Email в конкретном стенде.
 	EmailEnabled bool
+
+	// ScrubIP/ScrubEmail — зеркало серверного скрубинга приёма
+	// (GOTCHA_SCRUB_IP/GOTCHA_SCRUB_EMAIL). Веб-слою они нужны не для того,
+	// чтобы что-то маскировать, а чтобы не врать в форме удаления ПДн: при
+	// включённом скрубинге колонки user_email/user_ip зануляются на приёме, и
+	// поиск субъекта по ним не найдёт ничего никогда.
+	ScrubIP    bool
+	ScrubEmail bool
 	// Outbox — очередь доставки алертов (план 6, задача 5, spec §7): страница
 	// /projects/{id}/alerts показывает таблицу failed-доставок
 	// (FailedForProject), чтобы отказы каналов были видны в UI, а не только в
@@ -293,7 +301,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	assetVer := staticAssetVersion(staticSub)
 	templates.SetAssetVersion(assetVer)
 	fileServer := http.FileServer(http.FS(staticSub))
-	inner.Handle("GET /static/", http.StripPrefix("/static/", cacheControl(assetVer, noDirListing(fileServer))))
+	// Предсжатая статика: содержимое встроено и неизменно, поэтому жмём один раз
+	// при старте (см. buildGzipAssets) — на запросе остаётся отдать готовые байты.
+	gz := buildGzipAssets(staticSub)
+	inner.Handle("GET /static/", http.StripPrefix("/static/", cacheControl(assetVer, noDirListing(serveGzip(gz, fileServer)))))
 
 	inner.Handle("GET /{$}", h.requireUser(http.HandlerFunc(h.index)))
 
@@ -603,8 +614,21 @@ func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 // hidden — поля исходного POST, которые нужно сохранить до подтверждённого
 // повтора (например key_id).
 func (h *Handler) renderConfirm(w http.ResponseWriter, r *http.Request, titleKey, messageKey, confirmLabelKey, cancelHref, action string, hidden []templates.HiddenField) {
+	h.renderConfirmf(w, r, titleKey, messageKey, confirmLabelKey, cancelHref, action, hidden)
+}
+
+// renderConfirmf — renderConfirm с подстановками в текст сообщения (пары
+// ключ-значение для i18n.Tf).
+//
+// Нужен там, где вопрос без деталей бессмыслен. Пример — удаление данных
+// субъекта: страница спрашивала «Удалить данные субъекта из телеметрии
+// проекта?», не показывая НИ проекта, НИ критериев, потому что те лежат в
+// hidden-полях. Защищать она была должна ровно от опечатки в номере проекта
+// (25 вместо 26), но заметить эту опечатку на экране было не по чему —
+// подтверждение существовало, а страховки не давало.
+func (h *Handler) renderConfirmf(w http.ResponseWriter, r *http.Request, titleKey, messageKey, confirmLabelKey, cancelHref, action string, hidden []templates.HiddenField, kv ...string) {
 	title := i18n.T(r.Context(), titleKey)
-	message := i18n.T(r.Context(), messageKey)
+	message := i18n.Tf(r.Context(), messageKey, kv...)
 	confirmLabel := i18n.T(r.Context(), confirmLabelKey)
 	w.WriteHeader(http.StatusOK)
 	_ = templates.ConfirmPage(title, message, confirmLabel, cancelHref, templ.SafeURL(action), hidden, h.currentEmail(r)).Render(r.Context(), w)
@@ -689,7 +713,12 @@ func (h *Handler) requireUser(next http.Handler) http.Handler {
 // пользовательскую операцию не роняет.
 type ProjectPurger interface {
 	PurgeProject(ctx context.Context, projectID int64) error
-	PurgeSubject(ctx context.Context, projectID int64, sub telemetry.Subject) error
+	// PurgeSubject возвращает, сколько строк было отнесено к субъекту: удаление
+	// умеет завершаться «успешно», не тронув ничего (при включённом по умолчанию
+	// скрубинге email/IP колонки зануляются на приёме, и поиск по ним не
+	// совпадает ни с чем), а исполняющий требование по 152-ФЗ обязан видеть
+	// разницу между «удалено N записей» и «не найдено ничего».
+	PurgeSubject(ctx context.Context, projectID int64, sub telemetry.Subject) (telemetry.PurgeResult, error)
 	// ExportSubject — выгрузка всех ПДн субъекта в рамках проекта (право
 	// субъекта на доступ, 152-ФЗ ст. 14). В отличие от Purge*-методов не
 	// best-effort: результат отдаётся пользователю, ошибку нельзя проглотить.

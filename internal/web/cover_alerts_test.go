@@ -100,7 +100,7 @@ func TestCoverAlertsBranches(t *testing.T) {
 	}
 
 	// channels/delete без Origin → 403.
-	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"channel_id": {"1"}}, "", ownerCookie)
+	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"confirmed": {"yes"}, "channel_id": {"1"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -108,7 +108,7 @@ func TestCoverAlertsBranches(t *testing.T) {
 	}
 
 	// channels/delete нечисловой channel_id → 400.
-	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"channel_id": {"abc"}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"confirmed": {"yes"}, "channel_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -126,7 +126,7 @@ func TestCoverAlertsBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create foreign channel: %v", err)
 	}
-	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"channel_id": {strconv.FormatInt(foreignChID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"confirmed": {"yes"}, "channel_id": {strconv.FormatInt(foreignChID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -140,7 +140,7 @@ func TestCoverAlertsBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create my channel: %v", err)
 	}
-	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"channel_id": {strconv.FormatInt(myChID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, base+"/channels/delete", url.Values{"confirmed": {"yes"}, "channel_id": {strconv.FormatInt(myChID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

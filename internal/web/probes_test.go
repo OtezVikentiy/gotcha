@@ -149,7 +149,7 @@ func TestWebProbes(t *testing.T) {
 
 	// Revoke: проба помечена отозванной и перестаёт аутентифицироваться
 	// (ProbeByToken фильтрует revoked_at IS NULL — лизить она больше не может).
-	resp = postForm(t, s.srv, revokePath, url.Values{"probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
+	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -180,7 +180,7 @@ func TestWebProbes(t *testing.T) {
 	}
 
 	// Повторный revoke той же пробы → 422 (ErrNotFound из RevokeProbe).
-	resp = postForm(t, s.srv, revokePath, url.Values{"probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
+	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -239,7 +239,7 @@ func TestWebProbesAccess(t *testing.T) {
 	}
 
 	// member: POST revoke → 404.
-	resp = postForm(t, s.srv, revokePath, url.Values{"probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -248,7 +248,7 @@ func TestWebProbesAccess(t *testing.T) {
 
 	// owner своей организации пытается отозвать пробу ЧУЖОЙ организации → 404,
 	// проба не отозвана.
-	resp = postForm(t, s.srv, revokePath, url.Values{"probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

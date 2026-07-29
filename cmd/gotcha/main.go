@@ -181,6 +181,20 @@ func run() error {
 			if err := db.MigrateCH(cfg.ClickHouseDSN); err != nil {
 				return err
 			}
+			// Проверка схемы нужна И ЗДЕСЬ, после успешной миграции. Гейт ловит
+			// не только отставание, но и ОПЕРЕЖЕНИЕ: схема новее встроенной —
+			// значит бинарь откатили после неудачного релиза. Для m.Up() такая
+			// схема выглядит как ErrNoChange, то есть старый бинарь стартовал
+			// молча и падал уже на вставках. А upgrade.md обещает оператору
+			// ровно обратное — внятную ошибку при старте. AUTO_MIGRATE включён
+			// по умолчанию, так что до этой правки обещание не выполнялось в
+			// самой частой конфигурации.
+			if err := db.CheckSchemaCurrent(cfg.PostgresDSN); err != nil {
+				return err
+			}
+			if err := db.CheckSchemaCurrentCH(cfg.ClickHouseDSN); err != nil {
+				return err
+			}
 		} else {
 			// RA-8: без авто-миграции app не должен стартовать на отставшей схеме
 			// (иначе insert падает на каждой вставке → тихий дроп телеметрии).
@@ -457,6 +471,7 @@ func run() error {
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		batcher = event.NewBatcher(ch)
+		batcher.SetMaxBufferBytes(cfg.MaxBufferBytes)
 		registerWriterMetrics(&selfMetrics, "events", batcher)
 		go batcher.Run()
 
@@ -464,18 +479,21 @@ func run() error {
 		// envelope-эндпойнтом, что и ошибки, и пишутся своим батчером
 		// (transactions + spans), независимым от батчера событий.
 		spanWriter = trace.NewSpanWriter(ch)
+		spanWriter.SetMaxBufferBytes(cfg.MaxBufferBytes)
 		registerWriterMetrics(&selfMetrics, "spans", spanWriter)
 		go spanWriter.Run()
 
 		// Метрики (этап 6) — третий приёмник ingest-контура: OTLP /v1/metrics
 		// пишет точки в metric_points своим батчером.
 		metricWriter = metric.NewWriter(ch)
+		metricWriter.SetMaxBufferBytes(cfg.MaxBufferBytes)
 		registerWriterMetrics(&selfMetrics, "metrics", metricWriter)
 		go metricWriter.Run()
 
 		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и
 		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
 		profileWriter = profile.NewWriter(ch)
+		profileWriter.SetMaxBufferBytes(cfg.MaxBufferBytes)
 		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
@@ -547,6 +565,10 @@ func run() error {
 		webHandler.Alerts = alertSvc
 		webHandler.Email = emailSender
 		webHandler.EmailEnabled = emailSender.Configured()
+		// Форма удаления ПДн должна знать, обезличиваются ли email/IP на приёме:
+		// при включённом скрубинге поиск субъекта по ним не найдёт ничего.
+		webHandler.ScrubIP = cfg.ScrubIP
+		webHandler.ScrubEmail = cfg.ScrubEmail
 		webHandler.Outbox = outbox
 		webHandler.Uptime = uptimeSvc
 		webHandler.UptimeWriter = uptimeWriter

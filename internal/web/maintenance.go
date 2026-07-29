@@ -239,6 +239,15 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.maintenance_delete.message", "confirm.delete",
+			maintenancePath(projectID), maintenanceDeletePath(projectID),
+			[]templates.HiddenField{{Name: "window_id", Value: strconv.FormatInt(windowID, 10)}})
+		return
+	}
 	if err := h.Uptime.DeleteWindow(r.Context(), windowID); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return

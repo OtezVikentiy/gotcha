@@ -76,7 +76,9 @@ type SpanWriter struct {
 
 	mu          sync.Mutex
 	txBuf       []txRow
+	txBytes     int64 // приблизительный вес txBuf, см. maxBufBytes
 	spanBuf     []spanRow
+	spanBytes   int64 // приблизительный вес spanBuf
 	dropped     int64
 	insertFails int64 // накопительно: сколько флашей провалилось
 	lastDropLog time.Time
@@ -87,6 +89,7 @@ type SpanWriter struct {
 
 	maxBuf        int
 	maxSpanBuf    int
+	maxBufBytes   int64
 	batchSize     int
 	spanBatchSize int
 	interval      time.Duration
@@ -103,6 +106,7 @@ func NewSpanWriter(conn CHConn) *SpanWriter {
 		// Спанов на порядок больше, чем транзакций, — и буфер, и пачка шире.
 		maxBuf:        10000,
 		maxSpanBuf:    100000,
+		maxBufBytes:   defaultMaxBufBytes,
 		batchSize:     1000,
 		spanBatchSize: 10000,
 		interval:      5 * time.Second,
@@ -178,23 +182,21 @@ func (w *SpanWriter) Add(projectID int64, t Transaction) {
 		})
 	}
 
+	txSize := txRowBytes(tx)
+	spanSize := int64(0)
+	for i := range spans {
+		spanSize += spanRowBytes(spans[i])
+	}
+
 	w.mu.Lock()
-	logDrop := false
-	if drop := len(w.txBuf) + 1 - w.maxBuf; drop > 0 {
-		w.txBuf = append(w.txBuf[:0], w.txBuf[drop:]...)
-		w.dropped += int64(drop)
-		logDrop = true
-	}
-	if drop := len(w.spanBuf) + len(spans) - w.maxSpanBuf; drop > 0 {
-		if drop > len(w.spanBuf) {
-			drop = len(w.spanBuf)
-		}
-		w.spanBuf = append(w.spanBuf[:0], w.spanBuf[drop:]...)
-		w.dropped += int64(drop)
-		logDrop = true
-	}
 	w.txBuf = append(w.txBuf, tx)
+	w.txBytes += txSize
 	w.spanBuf = append(w.spanBuf, spans...)
+	w.spanBytes += spanSize
+	logDrop := w.trimTxLocked()
+	if w.trimSpansLocked() {
+		logDrop = true
+	}
 	dropped := w.dropped
 	full := len(w.txBuf) >= w.batchSize || len(w.spanBuf) >= w.spanBatchSize
 	if logDrop && time.Since(w.lastDropLog) > w.interval {
@@ -227,6 +229,98 @@ func encodeData(data map[string]any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// defaultMaxBufBytes — потолок КАЖДОГО из буферов по байтам, в дополнение к
+// потолку по строкам. Одного потолка по строкам не хватает: размер строки задаёт
+// клиент (описание спана, теги транзакции, JSON data), и maxSpanBuf=100000
+// раздутых строк — это десятки гигабайт в буфере, заведённом под сто тысяч
+// небольших спанов. На обычном трафике первым срабатывает потолок по строкам.
+const defaultMaxBufBytes = 256 << 20
+
+// rowOverheadBytes — постоянная цена ОДНОЙ строки в буфере помимо длины строк:
+// заголовки string (16 байт каждый), элемент среза, служебные поля. Без неё
+// учёт был обходим тем же приёмом, что и бюджет профилей: строка из пустых или
+// однобуквенных значений весила бы почти ноль, и байтовый потолок не срабатывал
+// бы никогда — работал бы только счётный.
+const rowOverheadBytes = 64
+
+func txRowBytes(r txRow) int64 {
+	n := len(r.TraceID) + len(r.SpanID) + len(r.Transaction) + len(r.Op) +
+		len(r.Status) + len(r.Environment) + len(r.Release) + len(r.ServerName) +
+		len(r.UserID) + len(r.Source)
+	for k, v := range r.Tags {
+		n += len(k) + len(v)
+	}
+	for k := range r.Measurements {
+		n += len(k) + 8
+	}
+	return int64(n) + rowOverheadBytes
+}
+
+func spanRowBytes(r spanRow) int64 {
+	return int64(len(r.TraceID)+len(r.SpanID)+len(r.ParentSpanID)+
+		len(r.Transaction)+len(r.Op)+len(r.Description)+len(r.Status)+
+		len(r.Environment)+len(r.Data)+len(r.Source)) + rowOverheadBytes
+}
+
+// trimTxLocked/trimSpansLocked приводят буфер к обоим потолкам, выбрасывая самое
+// старое. Стоимость — O(числа выброшенных): вес ведётся инкрементально в Add.
+// Вызываются под mu.
+func (w *SpanWriter) trimTxLocked() bool {
+	drop := 0
+	if over := len(w.txBuf) - w.maxBuf; over > 0 {
+		drop = over
+		for i := 0; i < over; i++ {
+			w.txBytes -= txRowBytes(w.txBuf[i])
+		}
+	}
+	for drop < len(w.txBuf)-1 && w.txBytes > w.maxBufBytes {
+		w.txBytes -= txRowBytes(w.txBuf[drop])
+		drop++
+	}
+	if drop <= 0 {
+		return false
+	}
+	w.txBuf = append(w.txBuf[:0], w.txBuf[drop:]...)
+	w.dropped += int64(drop)
+	return true
+}
+
+func (w *SpanWriter) trimSpansLocked() bool {
+	drop := 0
+	if over := len(w.spanBuf) - w.maxSpanBuf; over > 0 {
+		drop = over
+		for i := 0; i < over; i++ {
+			w.spanBytes -= spanRowBytes(w.spanBuf[i])
+		}
+	}
+	for drop < len(w.spanBuf)-1 && w.spanBytes > w.maxBufBytes {
+		w.spanBytes -= spanRowBytes(w.spanBuf[drop])
+		drop++
+	}
+	if drop <= 0 {
+		return false
+	}
+	w.spanBuf = append(w.spanBuf[:0], w.spanBuf[drop:]...)
+	w.dropped += int64(drop)
+	return true
+}
+
+// recountTxLocked/recountSpansLocked пересчитывают вес с нуля — нужны там, где
+// буфер перестраивается целиком (возврат пачки после неудачной вставки).
+func (w *SpanWriter) recountTxLocked() {
+	w.txBytes = 0
+	for i := range w.txBuf {
+		w.txBytes += txRowBytes(w.txBuf[i])
+	}
+}
+
+func (w *SpanWriter) recountSpansLocked() {
+	w.spanBytes = 0
+	for i := range w.spanBuf {
+		w.spanBytes += spanRowBytes(w.spanBuf[i])
+	}
 }
 
 // Dropped — сколько строк (транзакций и спанов) выброшено из-за переполнения
@@ -340,6 +434,7 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 	batch := make([]txRow, n)
 	copy(batch, w.txBuf[:n])
 	w.txBuf = append(w.txBuf[:0], w.txBuf[n:]...)
+	w.recountTxLocked()
 	w.mu.Unlock()
 
 	if err := w.insertTx(ctx, batch); err != nil {
@@ -356,16 +451,20 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insertTx, chbatch.IsServerDataError)
 			w.mu.Lock()
 			w.dropped += int64(dropped)
-			w.txFailStreak = 0
+			w.insertFails++
+			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
+			// разрешила: иначе при лежащем ClickHouse дробление запускается
+			// заново каждые ~15 с, не дав ничего в прошлый раз.
+			if dropped > 0 || len(unresolved) < len(batch) {
+				w.txFailStreak = 0
+			}
 			var over int
 			if len(unresolved) > 0 {
 				w.txBuf = append(unresolved, w.txBuf...)
-				if over = len(w.txBuf) - w.maxBuf; over > 0 {
-					w.txBuf = append(w.txBuf[:0], w.txBuf[over:]...)
-					w.dropped += int64(over)
-				} else {
-					over = 0
-				}
+				before := w.dropped
+				w.recountTxLocked()
+				w.trimTxLocked()
+				over = int(w.dropped - before)
 			}
 			w.mu.Unlock()
 			if dropped > 0 || over > 0 {
@@ -377,13 +476,10 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 
 		w.mu.Lock()
 		w.txBuf = append(batch, w.txBuf...)
-		over := len(w.txBuf) - w.maxBuf
-		if over > 0 {
-			w.txBuf = append(w.txBuf[:0], w.txBuf[over:]...)
-			w.dropped += int64(over)
-		} else {
-			over = 0
-		}
+		before := w.dropped
+		w.recountTxLocked()
+		w.trimTxLocked()
+		over := int(w.dropped - before)
 		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("transaction batch insert failed, will retry",
@@ -406,6 +502,7 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 	batch := make([]spanRow, n)
 	copy(batch, w.spanBuf[:n])
 	w.spanBuf = append(w.spanBuf[:0], w.spanBuf[n:]...)
+	w.recountSpansLocked()
 	w.mu.Unlock()
 
 	if err := w.insertSpans(ctx, batch); err != nil {
@@ -422,16 +519,20 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insertSpans, chbatch.IsServerDataError)
 			w.mu.Lock()
 			w.dropped += int64(dropped)
-			w.spanFailStreak = 0
+			w.insertFails++
+			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
+			// разрешила: иначе при лежащем ClickHouse дробление запускается
+			// заново каждые ~15 с, не дав ничего в прошлый раз.
+			if dropped > 0 || len(unresolved) < len(batch) {
+				w.spanFailStreak = 0
+			}
 			var over int
 			if len(unresolved) > 0 {
 				w.spanBuf = append(unresolved, w.spanBuf...)
-				if over = len(w.spanBuf) - w.maxSpanBuf; over > 0 {
-					w.spanBuf = append(w.spanBuf[:0], w.spanBuf[over:]...)
-					w.dropped += int64(over)
-				} else {
-					over = 0
-				}
+				before := w.dropped
+				w.recountSpansLocked()
+				w.trimSpansLocked()
+				over = int(w.dropped - before)
 			}
 			w.mu.Unlock()
 			if dropped > 0 || over > 0 {
@@ -443,13 +544,10 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 
 		w.mu.Lock()
 		w.spanBuf = append(batch, w.spanBuf...)
-		over := len(w.spanBuf) - w.maxSpanBuf
-		if over > 0 {
-			w.spanBuf = append(w.spanBuf[:0], w.spanBuf[over:]...)
-			w.dropped += int64(over)
-		} else {
-			over = 0
-		}
+		before := w.dropped
+		w.recountSpansLocked()
+		w.trimSpansLocked()
+		over := int(w.dropped - before)
 		w.insertFails++
 		w.mu.Unlock()
 		slog.Warn("span batch insert failed, will retry",
@@ -500,4 +598,19 @@ func (w *SpanWriter) insertSpans(ctx context.Context, rows []spanRow) error {
 		}
 	}
 	return batch.Send()
+}
+
+// SetMaxBufferBytes задаёт байтовый потолок буфера. Значение по умолчанию
+// (defaultMaxBufBytes) рассчитано на инстанс без ограничения памяти; на
+// стеснённом профиле (docker-compose.small.yml: mem_limit 256m) пять буферов по
+// 256 МиБ физически не могут сработать раньше OOM-killer'а, то есть защита
+// инертна ровно там, где нужнее всего. Ставится из main по
+// GOTCHA_MAX_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
+func (w *SpanWriter) SetMaxBufferBytes(n int64) {
+	if n <= 0 {
+		return
+	}
+	w.mu.Lock()
+	w.maxBufBytes = n
+	w.mu.Unlock()
 }

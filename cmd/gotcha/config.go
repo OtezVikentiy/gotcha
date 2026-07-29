@@ -41,10 +41,16 @@ type Config struct {
 	DefaultMetricQuota      int64
 	DefaultProfileQuota     int64
 	MaxEventBytes           int64
-	MetricEvalInterval      int
-	ProfileEvalInterval     int
-	OutboxRetentionDays     int
-	SecretKey               string
+	// MaxBufferBytes — байтовый потолок КАЖДОГО буфера писателя. 0 = значение
+	// по умолчанию из пакета писателя (256 МиБ). Нужен для стеснённых профилей:
+	// пять независимых буферов по 256 МиБ дают 1.25 ГиБ, тогда как
+	// docker-compose.small.yml ставит контейнеру mem_limit 256m — там потолок
+	// физически не может сработать раньше OOM-killer'а.
+	MaxBufferBytes      int64
+	MetricEvalInterval  int
+	ProfileEvalInterval int
+	OutboxRetentionDays int
+	SecretKey           string
 	// TrustedProxies — CIDR/IP доверенных reverse-proxy (GOTCHA_TRUSTED_PROXIES).
 	// Пусто — X-Forwarded-For не доверяется, per-IP лимитер ключуется по
 	// RemoteAddr (см. web.clientIP, SEC-L2).
@@ -160,6 +166,29 @@ func isLocalBaseURL(baseURL string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
+// secretKeyMattersFor — режимы, для которых мастер-ключ обязателен.
+//
+// Раньше проверялись только web и all — по логике «ключ подписывает cookie, а
+// cookie бывают только там». Но тем же ключом шифруются секреты каналов
+// доставки (alert_channels.secret) и SSO client_secret, а РАСШИФРОВЫВАЮТ их
+// теперь ingest и uptime тоже: секрет резолвится в момент отправки, а очередь
+// уведомлений наполняют оценщики из ingest и детектор аптайма.
+//
+// Реплика --mode=ingest с дефолтным ключом стартовала молча, а её
+// alert.Service шёл без ключа — и отдавал в доставку СЫРОЙ шифротекст
+// "enc:…" в качестве bot-токена. Telegram отвечал 401, задача уходила в
+// ретраи и в failed, а по симптому это не диагностируется никак.
+//
+// probe исключён намеренно: он не ходит ни в PG, ни в CH и секретов не видит.
+func secretKeyMattersFor(mode string) bool {
+	switch mode {
+	case "web", "all", "ingest", "uptime":
+		return true
+	default:
+		return false
+	}
+}
+
 func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	fs := flag.NewFlagSet("gotcha", flag.ContinueOnError)
 	mode := fs.String("mode", "all", "process role: ingest | web | uptime | probe | all")
@@ -270,6 +299,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultMetricQuota:      num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
 		DefaultProfileQuota:     num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
 		MaxEventBytes:           num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
+		MaxBufferBytes:          num("GOTCHA_MAX_BUFFER_BYTES", 0),
 		MetricEvalInterval:      intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
 		ProfileEvalInterval:     intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
 		OutboxRetentionDays:     intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
@@ -309,14 +339,22 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// шлём обезличенный payload (только ссылка/заголовок); оператор осознанно
 	// включает детали через GOTCHA_EXTERNAL_CHANNEL_DETAILS=true.
 	cfg.ExternalChannelDetails = boolEnvDef("GOTCHA_EXTERNAL_CHANNEL_DETAILS", false)
-	if keys := strings.TrimSpace(getenv("GOTCHA_SCRUB_KEYS")); keys != "" {
-		for _, k := range strings.Split(keys, ",") {
-			if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
-				cfg.ScrubKeys = append(cfg.ScrubKeys, k)
-			}
+	// GOTCHA_SCRUB_KEYS ДОПОЛНЯЕТ дефолтный denylist, а не заменяет его.
+	//
+	// Раньше заменял, и это был тихий откат защиты: оператор дописывал одно своё
+	// поле — и терял скрубинг password/token/secret/cookie/cvv целиком, ничего об
+	// этом не узнав. Хуже того, значение вида ",," проходило проверку на
+	// непустоту, все элементы отсеивались как пустые, ветка с дефолтами
+	// пропускалась, и denylist оставался ПУСТЫМ.
+	//
+	// Убрать конкретный дефолт по-прежнему можно — точным именем через
+	// GOTCHA_SCRUB_ALLOW_KEYS. Это осознанное действие оператора, а не побочный
+	// эффект добавления своего ключа.
+	cfg.ScrubKeys = defaultScrubKeys()
+	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_KEYS"), ",") {
+		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
+			cfg.ScrubKeys = append(cfg.ScrubKeys, k)
 		}
-	} else {
-		cfg.ScrubKeys = defaultScrubKeys()
 	}
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOG_LEVEL")))
 	cfg.LogFormat = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOG_FORMAT")))
@@ -441,10 +479,10 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 
 	// SEC-C1: дефолтный ключ подписи oauth-cookie публично известен из исходников.
-	// В серверных режимах (web/all) на не-localhost BaseURL это дыра (угон аккаунта
+	// В серверных режимах на не-localhost BaseURL это дыра (угон аккаунта
 	// через OAuth-link) — отказываемся стартовать. Escape-hatch для нестандартного
 	// dev-окружения — GOTCHA_ALLOW_INSECURE_SECRET=1.
-	if (cfg.Mode == "web" || cfg.Mode == "all") &&
+	if secretKeyMattersFor(cfg.Mode) &&
 		cfg.SecretKey == devSecretKey &&
 		!isLocalBaseURL(cfg.BaseURL) &&
 		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
@@ -458,7 +496,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// мастер шифрования SSO client_secret. В серверных режимах на не-local
 	// требуем >= 32 байт (стандартный минимум для ключа). Тот же escape-hatch,
 	// что и у проверки дефолтного ключа выше.
-	if (cfg.Mode == "web" || cfg.Mode == "all") &&
+	if secretKeyMattersFor(cfg.Mode) &&
 		cfg.SecretKey != devSecretKey &&
 		len(cfg.SecretKey) < 32 &&
 		!isLocalBaseURL(cfg.BaseURL) &&

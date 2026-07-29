@@ -167,10 +167,10 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 								<table class="data-table">
 									<thead>
 										<tr>
-											<th>{ i18n.T(ctx, "alerts.channels.table.kind") }</th>
-											<th>{ i18n.T(ctx, "alerts.channels.table.target") }</th>
-											<th>{ i18n.T(ctx, "alerts.channels.table.status") }</th>
-											<th></th>
+											<th scope="col">{ i18n.T(ctx, "alerts.channels.table.kind") }</th>
+											<th scope="col">{ i18n.T(ctx, "alerts.channels.table.target") }</th>
+											<th scope="col">{ i18n.T(ctx, "alerts.channels.table.status") }</th>
+											<th scope="col"></th>
 										</tr>
 									</thead>
 									<tbody>

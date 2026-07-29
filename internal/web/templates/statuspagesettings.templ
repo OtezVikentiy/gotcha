@@ -76,10 +76,12 @@ templ statusPageMonitorRow(formID string, f StatusPageFormMonitor) {
 			// Поля лежат в соседней карточке, вне тега <form>, поэтому
 			// связываются с ней атрибутом form= — иначе браузер их просто не
 			// отправит, и выбор сервисов молча терялся бы при сохранении.
+			// aria-label с именем монитора: имя лежит в соседней ячейке, и без
+			// него скринридер объявляет голый «флажок».
 			if f.Selected {
-				<input type="checkbox" form={ formID } name="monitors" value={ strconv.FormatInt(f.ID, 10) } checked/>
+				<input type="checkbox" form={ formID } name="monitors" value={ strconv.FormatInt(f.ID, 10) } aria-label={ f.MonitorName } checked/>
 			} else {
-				<input type="checkbox" form={ formID } name="monitors" value={ strconv.FormatInt(f.ID, 10) }/>
+				<input type="checkbox" form={ formID } name="monitors" value={ strconv.FormatInt(f.ID, 10) } aria-label={ f.MonitorName }/>
 			}
 		</td>
 		<td>{ f.MonitorName }</td>
@@ -149,9 +151,9 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th></th>
-								<th>{ i18n.T(ctx, "uptime.statuspages.table.monitor") }</th>
-								<th>{ i18n.T(ctx, "uptime.statuspages.field.display_name") }</th>
+								<th scope="col"></th>
+								<th scope="col">{ i18n.T(ctx, "uptime.statuspages.table.monitor") }</th>
+								<th scope="col">{ i18n.T(ctx, "uptime.statuspages.field.display_name") }</th>
 							</tr>
 						</thead>
 						<tbody>

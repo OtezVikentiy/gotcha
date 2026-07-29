@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
 // ScrubUser: при ScrubIP=true ip зануляется; при ScrubEmail=false email не трогаем.
@@ -543,5 +545,134 @@ func TestScrubReAuditRound4(t *testing.T) {
 	ru := NewScrubber(false, false, []string{"пароль"})
 	if got := ru.scrubMaybeJSON("новый_пароль=SECRET&x=1"); contains(got, "SECRET") {
 		t.Errorf("кириллический денилист не сработал в параметре: %s", got)
+	}
+}
+
+// TestScrubNormalizesEmailAndIPKeys фиксирует дыру в приватности: ключи email и
+// IP матчились ТОЧНО и по имени, приведённому лишь к нижнему регистру, тогда как
+// denylist уже работал по нормализованному имени подстрочно. Итог: user.email
+// маскировался, а user_email — нет; ip_address (буквальное имя поля в объекте
+// user у Sentry) не ловился ни в какой форме. Значение уезжало в events.tags,
+// contexts, transactions.tags и metric_points.attributes, показывалось в UI и не
+// убиралось субъектным удалением.
+func TestScrubNormalizesEmailAndIPKeys(t *testing.T) {
+	s := NewScrubber(true, true, nil) // ScrubIP, ScrubEmail, без denylist
+
+	masked := []string{
+		// email во всех формах написания
+		"user.email", "user_email", "userEmail", "USER_EMAIL",
+		"enduser.email", "sentry.user.email", "email", "e-mail", "E_Mail",
+		"customer_email",
+		// IP: атрибуты
+		"user.ip", "user_ip", "ip_address", "ipAddress", "IP-ADDRESS",
+		"sentry.user.ip_address", "client.address", "client_address",
+		"net.peer.ip", "net.sock.peer.addr", "http.client_ip",
+		// IP: forwarding-заголовки
+		"X-Forwarded-For", "HTTP_X_FORWARDED_FOR", "X-Real-IP",
+		"X-Cluster-Client-IP", "CF-Connecting-IP", "REMOTE_ADDR",
+		// RFC 7239 — единственный стандартизованный заголовок пересылки.
+		"Forwarded", "forwarded",
+		// OTel semconv: network.peer.address заменил net.peer.ip.
+		"network.peer.address", "network.local.address", "peer.address",
+	}
+	for _, k := range masked {
+		if !s.denied(k) {
+			t.Errorf("ключ %q НЕ маскируется — ПДн уедет в теги/атрибуты", k)
+		}
+	}
+
+	// Не задеваем соседей: идентификатор субъекта нужен для 152-ФЗ-удаления,
+	// а Forwarded-Proto/Host/Port — не ПДн.
+	kept := []string{
+		"user_id", "user.id", "enduser.id", "userId",
+		"X-Forwarded-Proto", "X-Forwarded-Host", "X-Forwarded-Port",
+		// Точный матч Forwarded не должен задевать эти три.
+		"description", "zip_code", "recipient",
+	}
+	for _, k := range kept {
+		if s.denied(k) {
+			t.Errorf("ключ %q замаскирован напрасно", k)
+		}
+	}
+}
+
+// TestScrubEmailIPKeysRespectAllowList — оператор может вернуть себе поле точным
+// именем, как и для denylist: правило fail-closed, но обратимое.
+func TestScrubEmailIPKeysRespectAllowList(t *testing.T) {
+	s := NewScrubber(true, true, nil)
+	s.SetAllowKeys([]string{"email_provider"})
+
+	if s.denied("email_provider") {
+		t.Error("allowlist не сработал для email_provider")
+	}
+	if !s.denied("user_email") {
+		t.Error("allowlist не должен снимать маскировку с user_email")
+	}
+}
+
+// TestScrubFreeTextMatchesUnicodeEmail — шаблон email в свободном тексте должен
+// видеть не только латиницу. Прежние классы \w в Go — ASCII-only, поэтому
+// иван@пример.рф проезжал мимо маски: дыра ровно в том алфавите, ради которого
+// 152-ФЗ и написан (домены .рф/.москва зарегистрированы и используются).
+func TestScrubFreeTextMatchesUnicodeEmail(t *testing.T) {
+	s := NewScrubber(false, false, nil)
+	s.ScrubFreeText = true
+
+	cases := []string{
+		"иван@пример.рф",
+		"пользователь@почта.москва",
+		"ivan@example.com",
+		"Ivan.Petrov+tag@sub.example.co.uk",
+	}
+	for _, addr := range cases {
+		in := "ошибка у пользователя " + addr + " при входе"
+		got := s.ScrubMessage(in)
+		if strings.Contains(got, addr) {
+			t.Errorf("email %q пережил маскирование: %q", addr, got)
+		}
+		if !strings.Contains(got, emailTextMask) {
+			t.Errorf("маска не проставлена для %q: %q", addr, got)
+		}
+	}
+
+	// Не задеваем то, что email не является.
+	keep := []string{"5 @ 10 рублей", "массив[@index]", "user @ host"}
+	for _, in := range keep {
+		if got := s.ScrubMessage(in); got != in {
+			t.Errorf("текст %q изменён напрасно: %q", in, got)
+		}
+	}
+}
+
+// TestScrubProfileMetadata — путь профилей шёл мимо скрубера целиком, хотя имя
+// транзакции здесь полностью клиентское (?transaction= у pprof, поле конверта у
+// Sentry) и регулярно несёт URL с идентификаторами. Значение оседало в
+// profile_samples сырым и показывалось в UI.
+func TestScrubProfileMetadata(t *testing.T) {
+	h := &Handler{Scrub: NewScrubber(true, true, []string{"token"})}
+
+	p := profile.Profile{
+		Transaction: "GET https://api.example.com/users?token=S3CRET&id=7",
+		Service:     "https://svc/?token=S3CRET",
+		Environment: "prod",
+	}
+	h.scrubProfile(&p)
+
+	if strings.Contains(p.Transaction, "S3CRET") {
+		t.Errorf("токен пережил скрубинг имени транзакции: %q", p.Transaction)
+	}
+	if strings.Contains(p.Service, "S3CRET") {
+		t.Errorf("токен пережил скрубинг сервиса: %q", p.Service)
+	}
+	if p.Environment != "prod" {
+		t.Errorf("environment изменён напрасно: %q", p.Environment)
+	}
+
+	// nil-скрубер не должен паниковать и ничего не меняет.
+	h2 := &Handler{}
+	p2 := profile.Profile{Transaction: "x?token=S3CRET"}
+	h2.scrubProfile(&p2)
+	if p2.Transaction != "x?token=S3CRET" {
+		t.Errorf("без скрубера значение изменено: %q", p2.Transaction)
 	}
 }

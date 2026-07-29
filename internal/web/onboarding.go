@@ -215,15 +215,14 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	publicKey := firstLiveKey(keys)
 
-	var dsn, goSnip, phpSnip, jsSnip string
+	var dsn string
+	var snippets []templates.SetupSnippet
 	if publicKey != "" {
 		dsn = buildDSN(h.BaseURL, publicKey, projectID)
-		goSnip = goSnippet(dsn)
-		phpSnip = phpSnippet(dsn)
-		jsSnip = jsSnippet(dsn)
+		snippets = setupSnippets(project.Platform, dsn)
 	}
 
-	_ = templates.ProjectSetup(project, dsn, goSnip, phpSnip, jsSnip, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.ProjectSetup(project, dsn, snippets, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 func findProject(projects []org.Project, id int64) (org.Project, bool) {
@@ -253,24 +252,83 @@ func buildDSN(baseURL, publicKey string, projectID int64) string {
 	return u.Scheme + "://" + publicKey + "@" + u.Host + "/" + strconv.FormatInt(projectID, 10)
 }
 
-func goSnippet(dsn string) string {
-	return "package main\n\n" +
-		"import gotcha \"gitflic.ru/otezvikentiy/gotcha-go\"\n\n" +
-		"func main() {\n" +
-		"\tgotcha.Init(gotcha.Options{DSN: \"" + dsn + "\"})\n" +
-		"\tdefer gotcha.Flush()\n" +
-		"}\n"
-}
+// setupSnippets собирает блоки «как подключить» для страницы проекта: сперва
+// платформа, выбранная при создании проекта, затем остальные.
+//
+// Сниппеты воспроизводят то же, что написано в /docs/sdk, и это принципиально:
+// собственного протокола у Gotcha нет, она принимает данные по протоколу приёма
+// Sentry, поэтому подключается ОФИЦИАЛЬНЫЙ Sentry SDK нужного языка, которому
+// подсовывается DSN проекта Gotcha. Раньше здесь были захардкожены три сниппета
+// с пакетами, которых не существует (gotcha-go, @gotcha/browser, Gotcha\init), и
+// без команд установки — новый пользователь упирался в 404 на первом же шаге.
+func setupSnippets(platform, dsn string) []templates.SetupSnippet {
+	all := map[string]templates.SetupSnippet{
+		"go": {
+			Lang:    "Go",
+			Install: "go get github.com/getsentry/sentry-go",
+			Code: "package main\n\n" +
+				"import (\n" +
+				"\t\"log\"\n" +
+				"\t\"time\"\n\n" +
+				"\t\"github.com/getsentry/sentry-go\"\n" +
+				")\n\n" +
+				"func main() {\n" +
+				"\tif err := sentry.Init(sentry.ClientOptions{\n" +
+				"\t\tDsn:              \"" + dsn + "\",\n" +
+				"\t\tEnvironment:      \"production\",\n" +
+				"\t\tTracesSampleRate: 0.2,\n" +
+				"\t}); err != nil {\n" +
+				"\t\tlog.Fatal(err)\n" +
+				"\t}\n" +
+				"\tdefer sentry.Flush(2 * time.Second)\n" +
+				"}\n",
+		},
+		"php": {
+			Lang:    "PHP",
+			Install: "composer require sentry/sentry",
+			Code: "<?php\n" +
+				"require __DIR__ . '/vendor/autoload.php';\n\n" +
+				"\\Sentry\\init([\n" +
+				"    'dsn' => '" + dsn + "',\n" +
+				"    'environment' => getenv('APP_ENV') ?: 'production',\n" +
+				"    'traces_sample_rate' => 0.2,\n" +
+				"]);\n",
+		},
+		"javascript": {
+			Lang:    "JavaScript",
+			Install: "npm install @sentry/browser",
+			Code: "import * as Sentry from \"@sentry/browser\";\n\n" +
+				"Sentry.init({\n" +
+				"  dsn: \"" + dsn + "\",\n" +
+				"  environment: \"production\",\n" +
+				"  tracesSampleRate: 0.2,\n" +
+				"});\n",
+		},
+		"python": {
+			Lang:    "Python",
+			Install: "pip install sentry-sdk",
+			Code: "import sentry_sdk\n\n" +
+				"sentry_sdk.init(\n" +
+				"    dsn=\"" + dsn + "\",\n" +
+				"    environment=\"production\",\n" +
+				"    traces_sample_rate=0.2,\n" +
+				")\n",
+		},
+	}
 
-func phpSnippet(dsn string) string {
-	return "<?php\n" +
-		"require 'vendor/autoload.php';\n\n" +
-		"Gotcha\\init(['dsn' => '" + dsn + "']);\n"
-}
-
-func jsSnippet(dsn string) string {
-	return "import * as Gotcha from \"@gotcha/browser\";\n\n" +
-		"Gotcha.init({ dsn: \"" + dsn + "\" });\n"
+	// Порядок: платформа проекта первой — за ней пришли, её и показываем сверху.
+	order := []string{"go", "php", "javascript", "python"}
+	out := make([]templates.SetupSnippet, 0, len(order))
+	if sn, ok := all[platform]; ok {
+		out = append(out, sn)
+	}
+	for _, k := range order {
+		if k == platform {
+			continue
+		}
+		out = append(out, all[k])
+	}
+	return out
 }
 
 // projectsList — GET /projects: все проекты, доступные текущему юзеру.

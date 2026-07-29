@@ -3,6 +3,8 @@ package profile
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -121,5 +123,45 @@ func TestWriterTransientFailureDropsNothing(t *testing.T) {
 	}
 	if got := w.Dropped(); got != 0 {
 		t.Fatalf("Dropped() = %d, want 0 (транзиент не должен ничего терять)", got)
+	}
+}
+
+// TestWriterBoundsBufferByBytes — буфер профилей был ограничен только ЧИСЛОМ
+// строк, а вес строки задаёт клиент: строка несёт весь стек кадров. maxBuf=200000
+// раздутых строк — это десятки гигабайт в буфере, заведённом под двести тысяч
+// небольших стеков.
+func TestWriterBoundsBufferByBytes(t *testing.T) {
+	w := NewWriter(nil)
+	w.maxBufBytes = 1 << 20
+	w.batchSize = 1 << 30
+
+	big := strings.Repeat("F", 64<<10)
+	for i := 0; i < 40; i++ {
+		// Каждый профиль даёт одну строку со стеком из четырёх тяжёлых кадров.
+		w.Add(1, Profile{Samples: []Sample{{
+			Stack: []Frame{
+				{Function: big + strconv.Itoa(i)},
+				{Function: big}, {Function: big}, {Function: big},
+			},
+			Value: 1,
+		}}})
+	}
+
+	w.mu.Lock()
+	rows, bytes, dropped := len(w.buf), w.bufBytes, w.dropped
+	var want int64
+	for i := range w.buf {
+		want += profileRowBytes(w.buf[i])
+	}
+	w.mu.Unlock()
+
+	if rows >= 40 {
+		t.Fatalf("в буфере %d строк из 40 — байтовый потолок не сработал", rows)
+	}
+	if dropped == 0 {
+		t.Fatal("ничего не выброшено, хотя буфер переполнен по байтам")
+	}
+	if bytes != want {
+		t.Fatalf("bufBytes = %d, фактический вес %d — учёт разъехался", bytes, want)
 	}
 }

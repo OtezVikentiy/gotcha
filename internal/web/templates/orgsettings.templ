@@ -194,7 +194,7 @@ templ rateGuardRow(q QuotaVM) {
 	</tr>
 }
 
-templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner) {
+templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner, purge SubjectPurgeVM) {
 	@layout(i18n.T(ctx, "org.settings.title")+" "+o.Name, userEmail) {
 		<div class="org-settings">
 			@quotaBannerView(banner)
@@ -208,10 +208,10 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 				<div class="scroll-list"><table class="data-table">
 					<thead>
 						<tr>
-							<th>{ i18n.T(ctx, "org.members.table.email") }</th>
-							<th>{ i18n.T(ctx, "org.members.table.role") }</th>
-							<th></th>
-							<th></th>
+							<th scope="col">{ i18n.T(ctx, "org.members.table.email") }</th>
+							<th scope="col">{ i18n.T(ctx, "org.members.table.role") }</th>
+							<th scope="col"></th>
+							<th scope="col"></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -229,9 +229,9 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "org.quota.table.kind") }</th>
-									<th class="num">{ i18n.T(ctx, "org.quota.table.usage") }</th>
-									<th>{ i18n.T(ctx, "org.quota.table.limit") }</th>
+									<th scope="col">{ i18n.T(ctx, "org.quota.table.kind") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "org.quota.table.usage") }</th>
+									<th scope="col">{ i18n.T(ctx, "org.quota.table.limit") }</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -281,8 +281,8 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 				<section class="card card--wide">
 					<h2 class="card-header">{ i18n.T(ctx, "org.gdpr.title") }</h2>
 					<div class="gdpr-grid">
-						@subjectExportSection(o.ID)
-						@subjectPurgeSection(o.ID)
+						@subjectExportSection(o.ID, purge)
+						@subjectPurgeSection(o.ID, purge)
 					</div>
 				</section>
 			}
@@ -297,7 +297,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 // телеметрии которого экспортируются строки субъекта; заполняется хотя бы
 // одно из email/user_id/ip (проверка на сервере). Ответ — JSON-файл
 // subject-export.json (attachment).
-templ subjectExportSection(orgID int64) {
+templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 	<div class="gdpr-block">
 		<h3>{ i18n.T(ctx, "org.gdpr.export.title") }</h3>
 		<form method="post" action={ templ.URL(orgSettingsExportSubjectPath(orgID)) } class="subject-export-form">
@@ -326,6 +326,9 @@ templ subjectExportSection(orgID int64) {
 				</label>
 			</div>
 			<p class="hint">{ i18n.T(ctx, "org.gdpr.export.hint") }</p>
+			if purge.InertKey() != "" {
+				<p class="hint hint--warn">{ i18n.T(ctx, purge.InertKey()) }</p>
+			}
 			<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "org.gdpr.export.submit") }</button>
 		</form>
 	</div>
@@ -335,9 +338,16 @@ templ subjectExportSection(orgID int64) {
 // удаление, 152-ФЗ). Только owner. project_id указывает проект, из телеметрии
 // которого чистятся строки субъекта; заполняется хотя бы одно из email/user_id/ip
 // (проверка на сервере). PG не трогается — данные субъекта живут в ClickHouse.
-templ subjectPurgeSection(orgID int64) {
+templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 	<div class="gdpr-block">
 		<h3>{ i18n.T(ctx, "org.gdpr.purge.title") }</h3>
+		if purge.Done {
+			if purge.Purged > 0 {
+				<p class="notice">{ i18n.Tn(ctx, "org.gdpr.purge.result", purge.Purged) }</p>
+			} else {
+				<p class="notice notice--warn">{ i18n.T(ctx, "org.gdpr.purge.result_none") }</p>
+			}
+		}
 		<form method="post" action={ templ.URL(orgSettingsPurgeSubjectPath(orgID)) } class="subject-purge-form">
 			<div class="field">
 				<label>
@@ -364,6 +374,9 @@ templ subjectPurgeSection(orgID int64) {
 				</label>
 			</div>
 			<p class="hint">{ i18n.T(ctx, "org.gdpr.hint") }</p>
+			if purge.InertKey() != "" {
+				<p class="hint hint--warn">{ i18n.T(ctx, purge.InertKey()) }</p>
+			}
 			<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "org.gdpr.purge.submit") }</button>
 		</form>
 	</div>

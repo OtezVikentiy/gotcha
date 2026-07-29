@@ -135,7 +135,7 @@ func TestWebProjectSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other key: %v", err)
 	}
-	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(otherKey.ID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "key_id": {strconv.FormatInt(otherKey.ID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

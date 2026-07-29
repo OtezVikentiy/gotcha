@@ -86,12 +86,12 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th>{ i18n.T(ctx, "perf.issues.table.kind") }</th>
-								<th>{ i18n.T(ctx, "issues.table.issue") }</th>
-								<th>{ i18n.T(ctx, "perf.issues.table.culprit") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.issues.table.count") }</th>
-								<th>{ i18n.T(ctx, "issues.table.last_seen") }</th>
-								<th>{ i18n.T(ctx, "issues.table.status") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.issues.table.kind") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.table.issue") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.issues.table.culprit") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.issues.table.count") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.table.last_seen") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
 							</tr>
 						</thead>
 						<tbody>

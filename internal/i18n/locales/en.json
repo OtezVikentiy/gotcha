@@ -194,8 +194,8 @@
     "perf.webvitals": "Web Vitals",
     "perf.filter.env_all": "All environments",
     "perf.filter.apply": "Apply",
-    "perf.empty.title": "No transactions yet",
-    "perf.empty.body": "Enable tracing in your SDK and raise traces_sample_rate — endpoints will show up here.",
+    "perf.empty.title": "No transactions in this period",
+    "perf.empty.body": "No transactions in the selected period — try widening the time range above. If a longer period is also empty, enable tracing in your SDK and raise traces_sample_rate.",
     "perf.empty.cta": "How to enable tracing",
     "perf.apdex_note": "Apdex T = {t}ms",
     "perf.truncated": "Showing the first {shown} of {total} endpoints (truncated).",
@@ -230,8 +230,8 @@
     "perf.webvitals.table.inp": "INP",
     "perf.webvitals.table.cls": "CLS",
     "perf.webvitals.table.samples": "Samples",
-    "perf.webvitals.empty.title": "No Web Vitals yet",
-    "perf.webvitals.empty.body": "Web Vitals come from the browser SDK (@sentry/browser). Add it and enable tracing.",
+    "perf.webvitals.empty.title": "No Web Vitals in this period",
+    "perf.webvitals.empty.body": "No Web Vitals in the selected period — try widening the time range above. If a longer period is also empty, add the browser SDK (@sentry/browser) and enable tracing in it.",
     "perf.webvitals.empty.cta": "How to connect",
     "perf.webvitals.table.metric": "Metric",
     "perf.webvitals.table.rating": "Rating",
@@ -903,7 +903,31 @@
     "a11y.chart.frequency": "Event frequency over time",
     "a11y.chart.availability": "Availability over time",
     "a11y.chart.waterfall": "Trace span waterfall",
-    "a11y.chart.vital": "Web Vital over time"
+    "a11y.chart.vital": "Web Vital over time",
+    "org.gdpr.purge.result_none": "No records matched the criteria — there was nothing to delete.",
+    "org.gdpr.purge.inert": "This instance scrubs email and IP on ingest, so searching by them will match nothing. Use user_id instead.",
+    "org.gdpr.purge.inert_email": "This instance scrubs email on ingest, so searching by it will match nothing. Use user_id instead.",
+    "org.gdpr.purge.inert_ip": "This instance scrubs IP on ingest, so searching by it will match nothing. Use user_id instead.",
+    "project.setup.sdk_note": "Gotcha has no SDK of its own: it accepts data over the Sentry ingest protocol. Install the official Sentry SDK for your language and point it at the DSN above.",
+    "project.setup.install": "Install:",
+    "project.setup.init": "Initialize:",
+    "confirm.monitor_delete.message": "Delete this monitor? Its incidents and check history go with it. This cannot be undone.",
+    "confirm.channel_delete.message": "Delete this delivery channel? Alerts routed to it will stop arriving. This cannot be undone.",
+    "confirm.metric_rule_delete.message": "Delete this metric alert rule? Existing incidents stay, but it will not fire again.",
+    "confirm.maintenance_delete.message": "Delete this maintenance window? Checks in that period will open incidents again.",
+    "confirm.statuspage_delete.message": "Delete this status page? Its public URL will stop working. This cannot be undone.",
+    "confirm.sso_delete.message": "Delete the SSO configuration? Members who signed in through the provider lose that method.",
+    "confirm.member_remove.message": "Remove this member from the organization? They lose access to all its projects.",
+    "confirm.team_member_remove.message": "Remove this member from the team? They lose access to the team’s projects.",
+    "confirm.probe_revoke.message": "Revoke this probe? The remote agent using its token stops receiving jobs immediately.",
+    "confirm.purge_subject.message": "Delete subject data from project “{project}” (ID {project_id})? Criteria: {criteria}. This is irreversible and covers events, transactions and metrics.",
+    "confirm.delete": "Delete",
+    "confirm.remove": "Remove",
+    "confirm.revoke": "Revoke",
+    "nav.primary": "Primary navigation",
+    "nav.section": "Section navigation",
+    "confirm.purge_subject.unknown_project": "project not found",
+    "issues.action.resolve_bulk": "Mark as resolved"
   },
   "plurals": {
     "chart.bar.transactions": {
@@ -939,6 +963,10 @@
     "org.quota.dropped_banner": {
       "one": "Event ingestion is limited: {n} item was dropped this month",
       "other": "Event ingestion is limited: {n} items were dropped this month"
+    },
+    "org.gdpr.purge.result": {
+      "one": "Deleted {n} record for the subject.",
+      "other": "Deleted {n} records for the subject."
     }
   }
 }

@@ -429,6 +429,14 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, m.ProjectID, uid); !ok {
 		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.monitor_delete.message", "confirm.delete",
+			monitorDetailPath(m.ID), monitorDeletePath(m.ID), nil)
+		return
+	}
 	if err := h.Uptime.Delete(r.Context(), m.ID); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return

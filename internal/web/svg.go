@@ -35,6 +35,15 @@ func svgRoot(class string, w, h int, label string) string {
 	var sb strings.Builder
 	sb.WriteString(`<svg class="`)
 	sb.WriteString(class)
+	// Класс с ШИРИНОЙ viewBox. Кегль подписей осей задаётся в единицах viewBox,
+	// а на экране он равен font-size × ширинаКарточки/ширинаViewBox — то есть
+	// один и тот же font-size даёт разный размер у графиков с разным viewBox.
+	// В продукте их два (720 и 1200), и правило «на класс графика» накрывало
+	// только половину: у 1200 подписи оставались вдвое мельче цели. Класс
+	// проставляет сам генератор — новый график получит его по построению, а не
+	// по памяти автора.
+	sb.WriteString(` chart-vb`)
+	sb.WriteString(strconv.Itoa(w))
 	sb.WriteString(`" viewBox="0 0 `)
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteByte(' ')

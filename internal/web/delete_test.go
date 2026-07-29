@@ -25,6 +25,9 @@ type fakePurger struct {
 	subjects   []purgeSubjectCall
 	exports    []purgeSubjectCall
 	subjectErr error // если задан — PurgeSubject возвращает его (тест error-ветки)
+	// subjectResult — сколько строк «нашлось». Ноль (значение по умолчанию) —
+	// это ровно тот исход, ради различения которого счётчик и заведён.
+	subjectResult telemetry.PurgeResult
 }
 
 type purgeSubjectCall struct {
@@ -39,11 +42,11 @@ func (f *fakePurger) PurgeProject(_ context.Context, projectID int64) error {
 	return nil
 }
 
-func (f *fakePurger) PurgeSubject(_ context.Context, projectID int64, sub telemetry.Subject) error {
+func (f *fakePurger) PurgeSubject(_ context.Context, projectID int64, sub telemetry.Subject) (telemetry.PurgeResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.subjects = append(f.subjects, purgeSubjectCall{projectID: projectID, sub: sub})
-	return f.subjectErr
+	return f.subjectResult, f.subjectErr
 }
 
 // ExportSubject фиксирует вызов и возвращает заглушку — web-тесту важен только
@@ -84,7 +87,7 @@ func TestWebDeleteProject(t *testing.T) {
 	deletePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/delete"
 
 	// POST без Origin → 403.
-	resp := postForm(t, s.srv, deletePath, url.Values{}, "", ownerCookie)
+	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -92,7 +95,7 @@ func TestWebDeleteProject(t *testing.T) {
 	}
 
 	// POST member (role=member, не owner) → 404, проект жив, Purger не вызван.
-	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -180,7 +183,7 @@ func TestWebDeleteOrg(t *testing.T) {
 	deletePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/delete"
 
 	// POST без Origin → 403.
-	resp := postForm(t, s.srv, deletePath, url.Values{}, "", ownerCookie)
+	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -188,7 +191,7 @@ func TestWebDeleteOrg(t *testing.T) {
 	}
 
 	// POST member → 404, орг жив.
-	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -255,8 +258,11 @@ func TestWebPurgeSubject(t *testing.T) {
 	}
 
 	purgePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/purge-subject"
+	// confirmed=yes во всех вызовах: удаление ПДн теперь двухшаговое, как и
+	// прочие деструктивные действия — без него отдаётся страница подтверждения.
 	form := func() url.Values {
 		return url.Values{
+			"confirmed":  {"yes"},
 			"project_id": {strconv.FormatInt(proj.ID, 10)},
 			"email":      {"subject@example.com"},
 		}
@@ -282,7 +288,7 @@ func TestWebPurgeSubject(t *testing.T) {
 	}
 
 	// POST owner с пустым субъектом → 422 (хотя бы одно поле обязательно).
-	resp = postForm(t, s.srv, purgePath, url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, purgePath, url.Values{"confirmed": {"yes"}, "project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -290,6 +296,24 @@ func TestWebPurgeSubject(t *testing.T) {
 	}
 	if len(fp.subjects) != 0 {
 		t.Fatalf("PurgeSubject called on empty subject: %v", fp.subjects)
+	}
+
+	// POST owner БЕЗ confirmed=yes → 200, страница подтверждения, Purger НЕ вызван.
+	// Подтверждение здесь обязательнее прочего: удаление необратимо, а проект
+	// задаётся числом — опечатка 25→26 вычистила бы телеметрию соседнего проекта.
+	unconfirmed := form()
+	unconfirmed.Del("confirmed")
+	resp = postForm(t, s.srv, purgePath, unconfirmed, s.srv.URL, ownerCookie)
+	cbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (unconfirmed) status = %d, want 200", purgePath, resp.StatusCode)
+	}
+	if !strings.Contains(string(cbody), `name="confirmed" value="yes"`) {
+		t.Fatalf("POST %s (unconfirmed) не отдал страницу подтверждения", purgePath)
+	}
+	if len(fp.subjects) != 0 {
+		t.Fatalf("PurgeSubject вызван без подтверждения: %v", fp.subjects)
 	}
 
 	// POST owner с email → 303 обратно на настройки, Purger.PurgeSubject вызван.

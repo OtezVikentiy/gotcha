@@ -173,9 +173,9 @@ templ PublicStatusPage(v StatusPageView) {
 			<table class="status-incidents data-table">
 				<thead>
 					<tr>
-						<th>{ i18n.T(ctx, "status.col.service") }</th>
-						<th>{ i18n.T(ctx, "status.col.started") }</th>
-						<th>{ i18n.T(ctx, "status.col.duration") }</th>
+						<th scope="col">{ i18n.T(ctx, "status.col.service") }</th>
+						<th scope="col">{ i18n.T(ctx, "status.col.started") }</th>
+						<th scope="col">{ i18n.T(ctx, "status.col.duration") }</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -201,9 +201,9 @@ templ PublicStatusPage(v StatusPageView) {
 			<table class="status-maintenance data-table">
 				<thead>
 					<tr>
-						<th>{ i18n.T(ctx, "status.col.window") }</th>
-						<th>{ i18n.T(ctx, "status.col.started") }</th>
-						<th>{ i18n.T(ctx, "status.col.ends") }</th>
+						<th scope="col">{ i18n.T(ctx, "status.col.window") }</th>
+						<th scope="col">{ i18n.T(ctx, "status.col.started") }</th>
+						<th scope="col">{ i18n.T(ctx, "status.col.ends") }</th>
 					</tr>
 				</thead>
 				<tbody>

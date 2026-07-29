@@ -75,7 +75,7 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 
 // ProjectSetup — страница «подключи SDK»: DSN проекта и сниппеты
 // подключения для нескольких платформ.
-templ ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, userEmail string) {
+templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, userEmail string) {
 	@chromeless(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
 		<div class="setup">
 			@breadcrumbBackTo(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title"))
@@ -88,18 +88,16 @@ templ ProjectSetup(project org.Project, dsn, goSnippet, phpSnippet, jsSnippet, u
 					<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
 					<pre>{ dsn }</pre>
 				</section>
-				<section class="panel">
-					<h2 class="card-header">Go</h2>
-					<pre>{ goSnippet }</pre>
-				</section>
-				<section class="panel">
-					<h2 class="card-header">PHP</h2>
-					<pre>{ phpSnippet }</pre>
-				</section>
-				<section class="panel">
-					<h2 class="card-header">JavaScript</h2>
-					<pre>{ jsSnippet }</pre>
-				</section>
+				<p class="hint">{ i18n.T(ctx, "project.setup.sdk_note") }</p>
+				for _, sn := range snippets {
+					<section class="panel">
+						<h2 class="card-header">{ sn.Lang }</h2>
+						<p class="hint">{ i18n.T(ctx, "project.setup.install") }</p>
+						<pre>{ sn.Install }</pre>
+						<p class="hint">{ i18n.T(ctx, "project.setup.init") }</p>
+						<pre>{ sn.Code }</pre>
+					</section>
+				}
 				<p><a href="/docs/sdk">{ i18n.T(ctx, "project.setup.full_docs_link") }</a></p>
 			}
 			<p><a href="/projects">{ i18n.T(ctx, "project.setup.back_link") }</a></p>
@@ -157,10 +155,10 @@ templ ProjectsList(items []ProjectListItem, userEmail string) {
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "project.list.table.name") }</th>
-									<th>{ i18n.T(ctx, "project.list.table.platform") }</th>
-									<th></th>
-									<th></th>
+									<th scope="col">{ i18n.T(ctx, "project.list.table.name") }</th>
+									<th scope="col">{ i18n.T(ctx, "project.list.table.platform") }</th>
+									<th scope="col"></th>
+									<th scope="col"></th>
 								</tr>
 							</thead>
 							<tbody>

@@ -125,7 +125,7 @@ func TestWebOrgSettings(t *testing.T) {
 	}
 
 	// POST remove себе → 422.
-	resp = postForm(t, s.srv, removePath, url.Values{"user_id": {strconv.FormatInt(ownerID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, removePath, url.Values{"confirmed": {"yes"}, "user_id": {strconv.FormatInt(ownerID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -133,7 +133,7 @@ func TestWebOrgSettings(t *testing.T) {
 	}
 
 	// POST remove: попытка удалить единственного owner'а → 422.
-	resp = postForm(t, s.srv, removePath, url.Values{"user_id": {strconv.FormatInt(ownerID, 10)}}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, removePath, url.Values{"confirmed": {"yes"}, "user_id": {strconv.FormatInt(ownerID, 10)}}, s.srv.URL, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -141,7 +141,7 @@ func TestWebOrgSettings(t *testing.T) {
 	}
 
 	// POST remove: owner убирает admin'а (бывший member) → 303, участник удалён.
-	resp = postForm(t, s.srv, removePath, url.Values{"user_id": {strconv.FormatInt(memberID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, removePath, url.Values{"confirmed": {"yes"}, "user_id": {strconv.FormatInt(memberID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -315,7 +315,7 @@ func TestWebOrgSettingsOwnerOnlyManagesOwnerRole(t *testing.T) {
 	}
 
 	// admin пытается удалить существующего owner'а → 422, участник не удалён.
-	resp = postForm(t, s.srv, removePath, url.Values{"user_id": {strconv.FormatInt(ownerID, 10)}}, s.srv.URL, adminCookie)
+	resp = postForm(t, s.srv, removePath, url.Values{"confirmed": {"yes"}, "user_id": {strconv.FormatInt(ownerID, 10)}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -695,7 +695,7 @@ func TestWebOrgSettingsSSO(t *testing.T) {
 	}
 
 	// Delete (инстанс-админ) → конфиг убран.
-	resp = postForm(t, s.srv, base+"/delete", url.Values{}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, base+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

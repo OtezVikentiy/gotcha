@@ -220,6 +220,15 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.probe_revoke.message", "confirm.revoke",
+			orgProbesPath(orgID), orgProbesPath(orgID)+"/revoke",
+			[]templates.HiddenField{{Name: "probe_id", Value: strconv.FormatInt(probeID, 10)}})
+		return
+	}
 	if err := h.Uptime.RevokeProbe(r.Context(), probeID); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
 			h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID, i18n.T(r.Context(), "err.probe.already_revoked"), "")

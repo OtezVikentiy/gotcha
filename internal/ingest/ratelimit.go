@@ -17,8 +17,7 @@ const (
 
 // maxRateLimitKeys — верхняя граница числа отслеживаемых проектов. Как у
 // KeyCache: поток из миллионов разных project id иначе раздул бы map. При
-// переполнении подчищаем простаивающие бакеты (а если и это не помогло —
-// сбрасываем целиком: бакеты дешёвые, восстановятся первым же запросом).
+// переполнении освобождаем место ярусами (см. evict) — никогда полным сбросом.
 const maxRateLimitKeys = 10000
 
 // rateLimiter — простой per-key токен-бакет (образец — internal/web/ratelimit.go,
@@ -60,10 +59,7 @@ func (rl *rateLimiter) Allow(key int64) bool {
 	defer rl.mu.Unlock()
 
 	if len(rl.buckets) >= maxRateLimitKeys {
-		rl.sweep(now)
-		if len(rl.buckets) >= maxRateLimitKeys {
-			rl.buckets = make(map[int64]*rateBucket)
-		}
+		rl.evict(now)
 	}
 
 	b, ok := rl.buckets[key]
@@ -83,6 +79,51 @@ func (rl *rateLimiter) Allow(key int64) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// evict освобождает место в карте бакетов ярусами — от самых безобидных потерь
+// к менее безобидным. Вызывается под mu при переполнении.
+//
+// Раньше здесь стоял ПОЛНЫЙ СБРОС карты, если sweep ничего не освободил. Но
+// sweep не освобождает ничего ровно в одном случае: когда все maxRateLimitKeys
+// ключей активно расходуют токены, то есть когда лимит и работает. Сброс выдавал
+// каждому из них свежий ПОЛНЫЙ бакет — на инстансе с числом активных проектов
+// выше потолка карта переполнялась постоянно, и per-DSN лимит приёма
+// выключался целиком. Тот же класс дефекта уже чинили в KeyCache (auth.go),
+// но исправление тогда получил только он.
+func (rl *rateLimiter) evict(now time.Time) {
+	// Ярус 1: полностью восстановившиеся — их состояние неотличимо от свежего,
+	// потери нулевые.
+	rl.sweep(now)
+	if len(rl.buckets) < maxRateLimitKeys {
+		return
+	}
+	// Ярус 2: восстановившиеся больше чем наполовину. Такому ключу сброс
+	// возвращает меньше половины бакета — цена мала.
+	half := rl.burst / 2
+	for key, b := range rl.buckets {
+		if b.tokens >= half {
+			delete(rl.buckets, key)
+		}
+	}
+	if len(rl.buckets) < maxRateLimitKeys {
+		return
+	}
+	// Ярус 3: карта целиком состоит из активно лимитируемых ключей. Вычищаем
+	// десятую часть — случайную, порядок обхода map и есть случайность. Это
+	// по-прежнему поблажка для тех, кого вычистили, но ограниченная десятой
+	// частью вместо всех, и enforcement для остальных сохраняется.
+	drop := len(rl.buckets) / 10
+	if drop == 0 {
+		drop = 1
+	}
+	for key := range rl.buckets {
+		if drop == 0 {
+			break
+		}
+		delete(rl.buckets, key)
+		drop--
+	}
 }
 
 // sweep удаляет полностью восстановившиеся (простаивающие) бакеты: их состояние

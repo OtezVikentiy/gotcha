@@ -31,6 +31,20 @@ import (
 // сразу, что позволяет проверить распространение ошибок writer'а на каждой
 // границе записи (см. TestRenderPropagatesWriteErrors). На корректность вывода
 // это не влияет — bufio лишь чаще сбрасывается.
+//
+// Значение обязано выставляться в TestMain, ДО первого рендера в процессе:
+// templ берёт Buffer из sync.Pool, а Buffer.Reset создаёт bufio.Writer только
+// если тот ещё nil, — то есть размер фиксируется на первом же рендере и
+// последующая правка DefaultBufferSize ни на что не влияет. Попытка вынести
+// это в per-test хелпер была ошибкой: файлы пакета идут по алфавиту, about_test
+// рендерит раньше, и в пул успевает лечь буфер на 4096 байт. Тест при этом
+// оставался зелёным, проверяя уже не то — границы flush по 4 КБ вместо каждой
+// записи.
+//
+// Прежняя цена (52 с на пакет) была не от этой строки, а от того, что
+// TestRenderPropagatesWriteErrors рендерил каждую страницу по разу НА КАЖДЫЙ
+// байт вывода. Это лечится выборкой смещений (writeOffsets), и однобайтовый
+// буфер сам по себе стоит дёшево.
 func TestMain(m *testing.M) {
 	templruntime.DefaultBufferSize = 1
 	os.Exit(m.Run())
@@ -99,13 +113,13 @@ func pageComponents() map[string]templ.Component {
 		"MonitorFormHTTP":      MonitorForm(MonitorFormData{ProjectID: 7, Kind: uptime.KindHTTP, Name: "m", IntervalSeconds: "60", TimeoutSeconds: "10", FailThreshold: "3", RecoveryThreshold: "2", AllRegions: []string{"eu"}, SelectedRegions: map[string]bool{"eu": true}, AllChannels: []alert.Channel{{ID: 1, Kind: "email", Target: "a@b.c"}}, SelectedChannels: map[int64]bool{1: true}, HTTPMethod: "GET", HTTPURL: "https://x", HTTPExpectedStatus: "200"}, "u@e.com"),
 		"MonitorFormHeartbeat": MonitorForm(MonitorFormData{ProjectID: 7, Kind: uptime.KindHeartbeat, IsEdit: true, MonitorID: 4, Name: "cron", ErrMsg: "err", HeartbeatGraceSeconds: "300", TCPHost: "h", TCPPort: "1", DNSHostname: "d", DNSRecordType: "A"}, "u@e.com"),
 		"Alerts":               Alerts(7, []alert.Rule{{ID: 1, Kind: alert.KindNewIssue, Enabled: true}, {ID: 2, Kind: alert.KindSpike, Enabled: false, Threshold: 10, WindowMinutes: 5}}, []alert.Channel{{ID: 1, Kind: "email", Enabled: true, Target: "t@x.io"}, {ID: 2, Kind: "telegram", Enabled: false, Target: "@ch"}}, true, "err", "u@e.com"),
-		"OrgSettings":          OrgSettings(o, members, 1, []QuotaVM{{Kind: "События", Field: "event_quota", Usage: 50, Limit: 1000}, {Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0}}, true, "err", "https://g/invite/t", SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "c", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://g/sso"}, "o@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}),
+		"OrgSettings":          OrgSettings(o, members, 1, []QuotaVM{{Kind: "События", Field: "event_quota", Usage: 50, Limit: 1000}, {Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0}}, true, "err", "https://g/invite/t", SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "c", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://g/sso"}, "o@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}),
 		"Teams":                Teams(o, []TeamView{{Team: org.Team{ID: 100, Slug: "core", Name: "Core"}, Members: []org.Member{{UserID: 1, Email: "o@x.io", Role: org.RoleOwner}}, Projects: []org.Project{{ID: 10, Name: "web"}}}}, members, []org.Project{{ID: 10, Name: "web"}, {ID: 20, Name: "api"}}, "err", "u@e.com"),
 		"ProfilesList":         ProfilesList(7, []profile.ServiceInfo{{Service: "web", Type: "cpu", Transaction: "GET /", Weight: 2_000_000_000, Unit: "nanoseconds", Samples: 100, Environments: []string{"production"}}, {Service: "api", Type: "alloc_space", Transaction: "POST /", Weight: 5 * 1024 * 1024, Unit: "bytes", Samples: 50}}, TimeRangeVM{Key: "24h"}, "production", "u@e.com"),
 		"ProfileRegList":       ProfileRegressionsList(7, []profile.Regression{{ID: 1, Service: "web", ProfileType: "cpu", Function: "hot()", Status: "open", BaselineShare: 0.1, PeakShare: 0.3, StartedAt: now}, {ID: 2, Service: "api", ProfileType: "heap", Function: "leak()", Status: "resolved", StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, "open", "u@e.com"),
 		"MetricsList":          MetricsList(7, []metric.MetricInfo{{Name: "http.rps", Type: "gauge", Unit: "1/s"}, {Name: "q.depth", Type: "histogram"}}, "production", "u@e.com"),
 		"MetricDetail":         MetricDetail(MetricDetailVM{ProjectID: 7, Info: metric.MetricInfo{Name: "http.rps", Type: "histogram", Unit: "ms"}, Range: TimeRangeVM{Key: "24h"}, Agg: "avg", Environment: "production", Environments: []string{"production", "staging"}, Labels: map[string][]string{"route": {"/a", "/b"}}, LabelKey: "route", LabelValue: "/a", Chart: stubC, Percentiles: true}, "u@e.com"),
-		"MetricAlerts":         MetricAlerts(7, []metric.Rule{{ID: 1, MetricName: "http.rps", Aggregation: "avg", Comparator: "gt", Threshold: 100, WindowSeconds: 300, Enabled: true}, {ID: 2, MetricName: "err", Aggregation: "max", Comparator: "lt", Threshold: 0.5, WindowSeconds: 60, Environment: "production", LabelKey: "route", LabelValue: "/a"}}, []metric.Incident{{ID: 1, RuleID: 1, Status: "open", PeakValue: 150, CurrentValue: 120, StartedAt: now}, {ID: 2, RuleID: 2, Status: "resolved", StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, "err", "u@e.com"),
+		"MetricAlerts":         MetricAlerts(7, []metric.Rule{{ID: 1, MetricName: "http.rps", Aggregation: "avg", Comparator: "gt", Threshold: 100, WindowSeconds: 300, Enabled: true}, {ID: 2, MetricName: "err", Aggregation: "max", Comparator: "lt", Threshold: 0.5, WindowSeconds: 60, Environment: "production", LabelKey: "route", LabelValue: "/a"}}, []metric.Incident{{ID: 1, RuleID: 1, Status: "open", PeakValue: 150, CurrentValue: 120, StartedAt: now}, {ID: 2, RuleID: 2, Status: "resolved", StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, []string{"http.rps", "http.server.duration"}, "err", "u@e.com"),
 		"WebVitalsList":        WebVitalsList(7, []trace.PageVitals{{Transaction: "/home", LCP: trace.Vital{Name: "lcp", P75: 2400, Rating: "good"}, INP: trace.Vital{Name: "inp", P75: 300, Rating: "needs-improvement"}, CLS: trace.Vital{Name: "cls", P75: 0.3, Rating: "poor"}, Count: 100, Environments: []string{"production"}}}, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, "u@e.com"),
 		"PerfIssuesList":       PerfIssuesList(7, []trace.PerfIssue{{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Culprit: "db", Status: "unresolved", Count: 12, FirstSeen: now, LastSeen: now, SampleTraceID: "t1"}, {ID: 2, Kind: trace.KindSlowDBQuery, Title: "slow", Status: "resolved", SampleTraceID: "t2"}}, "unresolved", "u@e.com"),
 		"PerfIssueDetail":      PerfIssueDetail(PerfIssueDetailData{Issue: trace.PerfIssue{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Culprit: "db", Status: "unresolved", Count: 12, SampleTraceID: "t1"}, Evidence: PerfEvidence{Count: 12, TotalUS: 1000, MaxUS: 300, ParentOp: "http", SequentialPct: 80, MaxConcurrency: 1, URLs: []string{"/a"}, HasTotal: true, HasMax: true, HasSequential: true}, CanManage: true, Query: "SELECT * FROM line_items WHERE order_id = $1", QueryOp: "db.sql.query", SpanDurationUS: 6000, DBSystem: "postgresql", Code: &PerfCodeLoc{File: "app/reports/orders.py", Line: "88", Function: "build_report_rows"}}, "u@e.com"),
@@ -118,7 +132,7 @@ func pageComponents() map[string]templ.Component {
 		"AlertDeliveries":      AlertDeliveries(7, []notify.FailedJob{{ID: 1, ChannelKind: "email", Target: "a@b.c", LastError: strings.Repeat("x", 400), Attempts: 5, CreatedAt: now}}, "u@e.com"),
 		"Profile":              Profile("u@e.com", "", "ok", true, []LinkedIdentity{{Provider: "yandex", DisplayName: "Я", Email: "u@ya.ru", CanUnlink: true}}, []LinkableProvider{{Name: "github", DisplayName: "GitHub"}}, "u@e.com"),
 		"Maintenance":          Maintenance(7, []uptime.Window{{ID: 1, Name: "one", StartsAt: &now, EndsAt: &now, Timezone: "UTC"}, {ID: 2, Name: "wk", Weekly: true, Weekday: 1, StartTime: "02:00", EndTime: "04:00", Timezone: "Europe/Moscow"}}, "err", "u@e.com"),
-		"ProjectSetup":         ProjectSetup(org.Project{ID: 7, Slug: "web", Name: "Web", Platform: "go"}, "https://dsn", "go", "php", "js", "u@e.com"),
+		"ProjectSetup":         ProjectSetup(org.Project{ID: 7, Slug: "web", Name: "Web", Platform: "go"}, "https://dsn", []SetupSnippet{{Lang: "Go", Install: "go get x", Code: "code"}}, "u@e.com"),
 		"StatusPagesSet":       StatusPagesSettings(7, "https://g.example", []StatusPageForm{{ID: 1, Slug: "p", Title: "T", Description: "d", Enabled: true, Monitors: []StatusPageFormMonitor{{ID: 10, MonitorName: "web", Selected: true, DisplayName: "W"}, {ID: 20, MonitorName: "api"}}}}, StatusPageForm{Monitors: []StatusPageFormMonitor{{ID: 10, MonitorName: "web"}}}, "err", "u@e.com"),
 		"PublicStatus":         PublicStatusPage(StatusPageView{Title: "S", Description: "d", Overall: "partial", Monitors: []StatusMonitorView{{Name: "web", Status: "up", Uptime90d: uptime.UptimeStat{Total: 100, OK: 99}, Bars: stubC}, {Name: "api", Status: "down", Bars: stubC}}, Incidents: []StatusIncidentView{{Name: "I", StartedAt: "t", Ongoing: true}, {Name: "J", StartedAt: "t", Duration: "2h"}}, Maintenance: []StatusWindowView{{Name: "M", From: "a", To: "b"}}}),
 		"ProfileFlame":         ProfileFlame(ProfileFlameVM{ProjectID: 7, Service: "web", Type: "cpu", Transaction: "GET /", Environment: "production", Range: TimeRangeVM{Key: "24h"}, Chart: stubC}, "u@e.com"),
@@ -149,20 +163,64 @@ func pageComponents() map[string]templ.Component {
 // её распространил.
 func TestRenderPropagatesWriteErrors(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	// tripped хотя бы раз за весь тест: без этой проверки тест оставался бы
+	// зелёным, даже если failAfter перестанет срабатывать вовсе — он молотил бы
+	// впустую и ничего не проверял.
+	trippedAny := false
 	for name, comp := range pageComponents() {
 		var good strings.Builder
 		if err := comp.Render(ctx, &good); err != nil {
 			t.Fatalf("%s: базовый рендер упал: %v", name, err)
 		}
 		full := good.Len()
-		for k := 0; k < full; k++ {
+		for _, k := range writeOffsets(full) {
 			fw := &failAfter{n: k}
 			err := comp.Render(ctx, fw)
-			if fw.tripped && err == nil {
-				t.Fatalf("%s: обрыв записи на %d/%d байт проглочен (ошибка не всплыла)", name, k, full)
+			if fw.tripped {
+				trippedAny = true
+				if err == nil {
+					t.Fatalf("%s: обрыв записи на %d/%d байт проглочен (ошибка не всплыла)", name, k, full)
+				}
 			}
 		}
 	}
+	if !trippedAny {
+		t.Fatal("ни один обрыв записи не сработал — тест ничего не проверил")
+	}
+}
+
+// writeOffsets — смещения обрыва записи для одного шаблона.
+//
+// Раньше проверялся КАЖДЫЙ байт вывода каждой страницы, то есть работа росла
+// квадратично от размера шаблона: пакет отрабатывал 41 секунду без -race и
+// уходил в таймаут 10 минут под -race, из-за чего `make test-race` не проходил
+// вовсе. Плотно берём начало (там сосредоточены границы записи заголовка и
+// первых элементов), дальше — равномерная выборка: границы записи распределены
+// по выводу, и выборка ловит те же классы обрыва за линейное время.
+func writeOffsets(full int) []int {
+	const (
+		dense   = 96  // первые N байт — подряд
+		samples = 160 // сколько точек дальше
+	)
+	if full <= dense+samples {
+		out := make([]int, full)
+		for i := range out {
+			out[i] = i
+		}
+		return out
+	}
+	out := make([]int, 0, dense+samples)
+	for i := 0; i < dense; i++ {
+		out = append(out, i)
+	}
+	step := (full - dense) / samples
+	if step < 1 {
+		step = 1
+	}
+	for k := dense; k < full; k += step {
+		out = append(out, k)
+	}
+	return out
 }
 
 // TestRenderRespectsCancelledContext — при уже отменённом контексте рендер

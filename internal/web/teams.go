@@ -238,6 +238,15 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad user_id", http.StatusBadRequest)
 		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.team_member_remove.message", "confirm.remove",
+			orgTeamsPath(orgID), teamMembersRemovePath(teamID),
+			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}})
+		return
+	}
 	if err := h.Org.RemoveTeamMember(r.Context(), teamID, targetID); err != nil {
 		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, teamsErrorMessage(r.Context(), err))
 		return

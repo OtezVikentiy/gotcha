@@ -100,10 +100,10 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 					<table id="web-vitals" class="data-table web-vitals-panel">
 						<thead>
 							<tr>
-								<th>{ i18n.T(ctx, "perf.webvitals.table.metric") }</th>
-								<th class="num">@metricHead("perf.p75", "perf.help.p75")</th>
-								<th>{ i18n.T(ctx, "perf.webvitals.table.rating") }</th>
-								<th>{ i18n.T(ctx, "perf.webvitals.table.trend") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.webvitals.table.metric") }</th>
+								<th scope="col" class="num">@metricHead("perf.p75", "perf.help.p75")</th>
+								<th scope="col">{ i18n.T(ctx, "perf.webvitals.table.rating") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.webvitals.table.trend") }</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -157,10 +157,10 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 							<table class="data-table">
 								<thead>
 									<tr>
-										<th>{ i18n.T(ctx, "perf.slowest.table.when") }</th>
-										<th class="num">{ i18n.T(ctx, "perf.slowest.table.duration") }</th>
-										<th>{ i18n.T(ctx, "perf.slowest.table.status") }</th>
-										<th>{ i18n.T(ctx, "perf.slowest.table.trace") }</th>
+										<th scope="col">{ i18n.T(ctx, "perf.slowest.table.when") }</th>
+										<th scope="col" class="num">{ i18n.T(ctx, "perf.slowest.table.duration") }</th>
+										<th scope="col">{ i18n.T(ctx, "perf.slowest.table.status") }</th>
+										<th scope="col">{ i18n.T(ctx, "perf.slowest.table.trace") }</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -187,10 +187,10 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 							<table class="data-table">
 								<thead>
 									<tr>
-										<th>{ i18n.T(ctx, "perf.related_issues.table.kind") }</th>
-										<th>{ i18n.T(ctx, "perf.related_issues.table.title") }</th>
-										<th>{ i18n.T(ctx, "perf.related_issues.table.status") }</th>
-										<th class="num">{ i18n.T(ctx, "perf.related_issues.table.seen") }</th>
+										<th scope="col">{ i18n.T(ctx, "perf.related_issues.table.kind") }</th>
+										<th scope="col">{ i18n.T(ctx, "perf.related_issues.table.title") }</th>
+										<th scope="col">{ i18n.T(ctx, "perf.related_issues.table.status") }</th>
+										<th scope="col" class="num">{ i18n.T(ctx, "perf.related_issues.table.seen") }</th>
 									</tr>
 								</thead>
 								<tbody>

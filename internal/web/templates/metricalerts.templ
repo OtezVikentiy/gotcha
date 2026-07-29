@@ -65,7 +65,7 @@ func ruleScope(ctx context.Context, r metric.Rule) string {
 }
 
 // MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
-templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, errMsg, userEmail string) {
+templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "metrics.alerts.title"), userEmail) {
 		<div class="metric-alerts">
 			<h1>{ i18n.T(ctx, "metrics.alerts.title") }</h1>
@@ -83,12 +83,12 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 							<table class="data-table">
 								<thead>
 									<tr>
-										<th>{ i18n.T(ctx, "metrics.alerts.table.metric") }</th>
-										<th>{ i18n.T(ctx, "metrics.alerts.table.condition") }</th>
-										<th class="num">{ i18n.T(ctx, "metrics.alerts.table.window") }</th>
-										<th>{ i18n.T(ctx, "metrics.alerts.table.scope") }</th>
-										<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
-										<th></th>
+										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.metric") }</th>
+										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.condition") }</th>
+										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.window") }</th>
+										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.scope") }</th>
+										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+										<th scope="col"></th>
 									</tr>
 								</thead>
 								<tbody>
@@ -121,10 +121,10 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 							<table class="data-table">
 								<thead>
 									<tr>
-										<th>{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
-										<th class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
-										<th class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
-										<th>{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
+										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
+										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
+										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -147,7 +147,15 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.metric") }
-							<input type="text" name="metric_name" required placeholder="http.server.duration" class="input"/>
+							<input type="text" name="metric_name" required placeholder="http.server.duration" class="input" list="known-metrics"/>
+							// datalist, а не select: правило можно завести и на метрику,
+							// которая ещё не приходила (новый сервис только выкатывают),
+							// но опечатка в уже известном имени больше не проходит молча.
+							<datalist id="known-metrics">
+								for _, name := range knownMetrics {
+									<option value={ name }></option>
+								}
+							</datalist>
 						</label>
 					</div>
 					<div class="field">

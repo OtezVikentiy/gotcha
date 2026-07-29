@@ -738,10 +738,10 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 			<table class="issue-events data-table">
 				<thead>
 					<tr>
-						<th>{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
-						<th>{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
-						<th>{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
-						<th>{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
+						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
+						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
+						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
+						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
 					</tr>
 				</thead>
 				<tbody>

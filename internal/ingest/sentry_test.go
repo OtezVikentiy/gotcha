@@ -444,3 +444,75 @@ func TestEventBlocksAndExceptionsCapped(t *testing.T) {
 		}
 	})
 }
+
+// TestCapFingerprint фиксирует кап пользовательского отпечатка: массив целиком
+// уходит в ключ группировки (fingerprint.Compute склеивает его через \x00) и
+// оседает в колонке issues, поэтому ограничен и по числу элементов, и по длине
+// каждого. Без капа одно событие несло килобайты в ключе, который затем
+// хранится, индексируется и сравнивается на каждом приёме.
+func TestCapFingerprint(t *testing.T) {
+	t.Run("пустой остаётся пустым", func(t *testing.T) {
+		if got := capFingerprint(nil); got != nil {
+			t.Fatalf("capFingerprint(nil) = %v, want nil", got)
+		}
+		if got := capFingerprint([]string{}); got != nil {
+			t.Fatalf("capFingerprint([]) = %v, want nil", got)
+		}
+	})
+
+	t.Run("короткий не трогается", func(t *testing.T) {
+		in := []string{"my-group", "{{ default }}"}
+		got := capFingerprint(in)
+		if len(got) != 2 || got[0] != "my-group" || got[1] != "{{ default }}" {
+			t.Fatalf("capFingerprint(%v) = %v", in, got)
+		}
+	})
+
+	t.Run("режется по числу элементов и по длине", func(t *testing.T) {
+		in := make([]string, maxFingerprintParts+50)
+		for i := range in {
+			in[i] = strings.Repeat("x", maxFingerprintPart+100)
+		}
+		got := capFingerprint(in)
+		if len(got) != maxFingerprintParts {
+			t.Fatalf("элементов %d, want %d", len(got), maxFingerprintParts)
+		}
+		for i, p := range got {
+			if len([]rune(p)) != maxFingerprintPart {
+				t.Fatalf("элемент %d длиной %d рун, want %d", i, len([]rune(p)), maxFingerprintPart)
+			}
+		}
+	})
+
+	t.Run("многобайтовые режутся по рунам, а не по байтам", func(t *testing.T) {
+		got := capFingerprint([]string{strings.Repeat("щ", maxFingerprintPart+10)})
+		if len([]rune(got[0])) != maxFingerprintPart {
+			t.Fatalf("рун %d, want %d", len([]rune(got[0])), maxFingerprintPart)
+		}
+	})
+}
+
+// TestCapRunesFastPath — быстрый путь не меняет семантику. Он опирается на то,
+// что в UTF-8 байт не меньше, чем рун, поэтому len(s) <= n достаточно для
+// вывода «капать нечего»; проверяем это и на многобайтовых строках.
+func TestCapRunesFastPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 5, ""},
+		{"abc", 5, "abc"},
+		{"abcde", 5, "abcde"},
+		{"abcdef", 5, "abcde"},
+		{"щщщ", 5, "щщщ"},      // 6 байт, 3 руны — быстрый путь не сработает, но резать нечего
+		{"щщщщщщ", 5, "щщщщщ"}, // 6 рун → режем до 5
+		{"日本語", 3, "日本語"},
+		{"日本語です", 3, "日本語"},
+	}
+	for _, c := range cases {
+		if got := capRunes(c.in, c.n); got != c.want {
+			t.Errorf("capRunes(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}

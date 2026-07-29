@@ -81,13 +81,13 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th>{ i18n.T(ctx, "profiles.regressions.table.function") }</th>
-								<th>{ i18n.T(ctx, "profiles.regressions.table.service_type") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
-								<th>{ i18n.T(ctx, "issues.table.status") }</th>
-								<th>{ i18n.T(ctx, "perf.regressions.table.started") }</th>
-								<th class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
+								<th scope="col">{ i18n.T(ctx, "profiles.regressions.table.function") }</th>
+								<th scope="col">{ i18n.T(ctx, "profiles.regressions.table.service_type") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.regressions.table.started") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
 							</tr>
 						</thead>
 						<tbody>

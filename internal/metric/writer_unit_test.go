@@ -3,6 +3,7 @@ package metric
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -115,5 +116,45 @@ func TestMetricWriterTransientFailureDropsNothing(t *testing.T) {
 	}
 	if got := w.Dropped(); got != 0 {
 		t.Fatalf("Dropped() = %d, want 0 (транзиент не должен ничего терять)", got)
+	}
+}
+
+// TestWriterBoundsBufferByBytes — буфер метрик был ограничен только ЧИСЛОМ
+// строк, а размер строки задаёт клиент: имя, атрибуты и границы гистограммы
+// приходят из payload. maxBuf=100000 раздутых строк — это десятки гигабайт в
+// буфере, заведённом под сто тысяч небольших точек.
+func TestWriterBoundsBufferByBytes(t *testing.T) {
+	w := NewWriter(nil)
+	w.maxBufBytes = 1 << 20
+	w.batchSize = 1 << 30
+
+	big := strings.Repeat("a", 256<<10)
+	for i := 0; i < 20; i++ {
+		w.Add(1, MetricPoint{Name: "m", Attributes: map[string]string{"k": big}})
+	}
+
+	w.mu.Lock()
+	rows, bytes, dropped := len(w.buf), w.bufBytes, w.dropped
+	w.mu.Unlock()
+
+	if rows >= 20 {
+		t.Fatalf("в буфере %d строк из 20 — байтовый потолок не сработал", rows)
+	}
+	if dropped == 0 {
+		t.Fatal("ничего не выброшено, хотя буфер переполнен по байтам")
+	}
+	if limit := w.maxBufBytes + int64(len(big)) + 256; bytes > limit {
+		t.Fatalf("вес буфера %d при потолке %d", bytes, w.maxBufBytes)
+	}
+	// Учёт не разъехался с содержимым.
+	w.mu.Lock()
+	var want int64
+	for i := range w.buf {
+		want += metricRowBytes(w.buf[i])
+	}
+	got := w.bufBytes
+	w.mu.Unlock()
+	if got != want {
+		t.Fatalf("bufBytes = %d, фактический вес %d — учёт разъехался", got, want)
 	}
 }

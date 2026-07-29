@@ -82,7 +82,7 @@ Say your app sends a histogram metric `http.server.duration` (unit `ms`) — see
 
 ## Deleting a rule
 
-The "Delete" button on the rule's row removes it immediately (no confirmation step). Past or open incidents already recorded for that rule stay in the incident history.
+The "Delete" button on the rule's row removes it after a confirmation step on a separate page. Past or open incidents already recorded for that rule stay in the incident history.
 
 ## See also
 

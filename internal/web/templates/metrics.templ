@@ -30,9 +30,9 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "metrics.table.metric") }</th>
-									<th>{ i18n.T(ctx, "metrics.table.type") }</th>
-									<th class="num">{ i18n.T(ctx, "metrics.table.unit") }</th>
+									<th scope="col">{ i18n.T(ctx, "metrics.table.metric") }</th>
+									<th scope="col">{ i18n.T(ctx, "metrics.table.type") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "metrics.table.unit") }</th>
 								</tr>
 							</thead>
 							<tbody>

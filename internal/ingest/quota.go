@@ -134,6 +134,12 @@ func (q *OrgQuota) quota(ctx context.Context, orgID int64) (int64, error) {
 	}
 	quota := q.quotaOf(o)
 	q.mu.Lock()
+	// Кеш квот раньше не имел границы вообще: записи только перезаписывались, а
+	// по истечении TTL не удалялись никогда, поэтому карта росла до числа
+	// организаций, когда-либо приходивших на приём, и обратно не сжималась.
+	if len(q.entries) >= maxKeyCacheEntries {
+		q.evictEntries(now)
+	}
 	q.entries[orgID] = quotaEntry{quota: quota, expires: now.Add(q.ttl)}
 	q.mu.Unlock()
 	return quota, nil
@@ -155,7 +161,12 @@ func (q *OrgQuota) CheckAndCount(ctx context.Context, orgID int64) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	allowed, err := q.checkCount(ctx, orgID, time.Now(), quota)
+	// q.now(), а НЕ time.Now(): часы инжектируются ради тестов, и единственное
+	// место, где здесь стояло реальное время, — это же и есть граница месяца
+	// (checkCount считает usage за месяц от переданного момента). Из-за неё
+	// поведение «квота обнулилась 1-го числа» было непроверяемым в принципе,
+	// хотя это биллинговая логика.
+	allowed, err := q.checkCount(ctx, orgID, q.now(), quota)
 	if err != nil {
 		return false, err
 	}
@@ -182,15 +193,67 @@ func (q *OrgQuota) recentlyExhausted(orgID int64) bool {
 	return true
 }
 
-// markExhausted кладёт негативную запись «квота исчерпана» на quotaNegTTL. При
-// переполнении map чистится целиком (как store у KeyCache): записи короткоживущие
-// и восстановятся первым же over-quota запросом.
+// markExhausted кладёт негативную запись «квота исчерпана» на quotaNegTTL.
+//
+// При переполнении вытесняем истёкшие записи, а не стираем карту целиком. Полный
+// сброс здесь не ломал учёт (квота всё равно проверяется в БД), но выбрасывал
+// именно те записи, ради которых кеш и заведён: организации, стабильно
+// упирающиеся в квоту, снова начинали ходить в PostgreSQL на каждом событии —
+// то есть нагрузка подскакивала ровно в момент, когда инстанс и так под потоком.
 func (q *OrgQuota) markExhausted(orgID int64) {
 	now := q.now()
 	q.mu.Lock()
 	if len(q.exhausted) >= maxKeyCacheEntries {
-		q.exhausted = make(map[int64]time.Time, maxKeyCacheEntries)
+		q.evictExhausted(now)
 	}
 	q.exhausted[orgID] = now.Add(q.quotaNegTTL)
 	q.mu.Unlock()
+}
+
+// evictEntries освобождает место в кеше квот: сперва истёкшие (их потеря
+// бесплатна), затем десятая часть произвольных — порядок обхода map и есть
+// случайность. Вызывается под mu.
+func (q *OrgQuota) evictEntries(now time.Time) {
+	for id, e := range q.entries {
+		if !e.expires.After(now) {
+			delete(q.entries, id)
+		}
+	}
+	if len(q.entries) < maxKeyCacheEntries {
+		return
+	}
+	drop := len(q.entries) / 10
+	if drop == 0 {
+		drop = 1
+	}
+	for id := range q.entries {
+		if drop == 0 {
+			break
+		}
+		delete(q.entries, id)
+		drop--
+	}
+}
+
+// evictExhausted — то же для негативных записей.
+func (q *OrgQuota) evictExhausted(now time.Time) {
+	for id, exp := range q.exhausted {
+		if !exp.After(now) {
+			delete(q.exhausted, id)
+		}
+	}
+	if len(q.exhausted) < maxKeyCacheEntries {
+		return
+	}
+	drop := len(q.exhausted) / 10
+	if drop == 0 {
+		drop = 1
+	}
+	for id := range q.exhausted {
+		if drop == 0 {
+			break
+		}
+		delete(q.exhausted, id)
+		drop--
+	}
 }

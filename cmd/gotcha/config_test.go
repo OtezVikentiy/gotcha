@@ -73,7 +73,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 		"GOTCHA_SPAN_RETENTION_DAYS": "7",
 		"GOTCHA_DEFAULT_EVENT_QUOTA": "50000",
 		"GOTCHA_MAX_EVENT_BYTES":     "2097152",
-		"GOTCHA_SECRET_KEY":          "prod-secret",
+		"GOTCHA_SECRET_KEY":          "prod-secret-at-least-32-bytes-long!",
 		"GOTCHA_UPTIME_CONCURRENCY":  "10",
 		"GOTCHA_LOCAL_REGION":        "eu-fra",
 		"GOTCHA_PROBE_TOKEN":         "ptok",
@@ -100,7 +100,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.SpanRetentionDays != 7 {
 		t.Errorf("SpanRetentionDays = %d, want 7", cfg.SpanRetentionDays)
 	}
-	if cfg.SecretKey != "prod-secret" {
+	if cfg.SecretKey != "prod-secret-at-least-32-bytes-long!" {
 		t.Errorf("SecretKey = %q", cfg.SecretKey)
 	}
 	if cfg.UptimeConcurrency != 10 {
@@ -349,11 +349,33 @@ func TestLoadConfig_AllowsDefaultSecretWithEscapeHatch(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_IngestModeDoesNotRequireSecret(t *testing.T) {
-	env := map[string]string{"GOTCHA_BASE_URL": "https://gotcha.example.com"}
+// TestLoadConfig_SecretRequiredInDecryptingModes — мастер-ключ обязателен во ВСЕХ
+// режимах, которые расшифровывают секреты at-rest, а не только там, где есть
+// cookie.
+//
+// Раньше проверялись только web и all. Но тем же ключом зашифрованы секреты
+// каналов доставки, а расшифровывают их теперь ingest и uptime тоже: секрет
+// резолвится в момент отправки, а очередь наполняют оценщики из ingest и
+// детектор аптайма. Реплика --mode=ingest с дефолтным ключом стартовала молча и
+// отдавала в Telegram сырой шифротекст "enc:…" вместо bot-токена — 401 и вечные
+// ретраи, не диагностируемые по симптому.
+func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
+	for _, mode := range []string{"web", "all", "ingest", "uptime"} {
+		env := map[string]string{"GOTCHA_BASE_URL": "https://gotcha.example.com"}
+		getenv := func(k string) string { return env[k] }
+		if _, err := loadConfig(getenv, []string{"--mode=" + mode}); err == nil {
+			t.Errorf("режим %s стартовал с дефолтным ключом на не-локальном URL", mode)
+		}
+	}
+
+	// probe секретов не видит: ни PG, ни CH, ни каналов — ключ ему не нужен.
+	env := map[string]string{
+		"GOTCHA_SERVER_URL":  "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN": "ptok",
+	}
 	getenv := func(k string) string { return env[k] }
-	if _, err := loadConfig(getenv, []string{"--mode=ingest"}); err != nil {
-		t.Fatalf("ingest mode has no oauth cookie, must not require secret, got: %v", err)
+	if _, err := loadConfig(getenv, []string{"--mode=probe"}); err != nil {
+		t.Errorf("probe не расшифровывает секреты, ключ не нужен: %v", err)
 	}
 }
 
@@ -495,12 +517,41 @@ func TestLoadConfig_Scrub(t *testing.T) {
 		t.Error("ScrubEmail не должен зависеть от GOTCHA_SCRUB_IP")
 	}
 
-	// Пользовательский CSV-список ключей.
+	// Пользовательский CSV-список ДОПОЛНЯЕТ дефолты, а не заменяет их: иначе
+	// добавление одного своего поля молча снимало скрубинг с password/token/cvv.
 	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_KEYS": "a,b"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if len(cfg.ScrubKeys) != 2 || cfg.ScrubKeys[0] != "a" || cfg.ScrubKeys[1] != "b" {
-		t.Errorf("ScrubKeys = %v, want [a b]", cfg.ScrubKeys)
+	if !hasAll(cfg.ScrubKeys, defaultScrubKeys()) {
+		t.Errorf("ScrubKeys = %v, дефолтный denylist потерян", cfg.ScrubKeys)
 	}
+	if !hasAll(cfg.ScrubKeys, []string{"a", "b"}) {
+		t.Errorf("ScrubKeys = %v, пользовательские ключи не добавлены", cfg.ScrubKeys)
+	}
+
+	// Значение из одних разделителей не должно обнулять denylist: раньше ",,"
+	// проходило проверку на непустоту, все элементы отсеивались, а ветка с
+	// дефолтами пропускалась — скрубинг ключей выключался целиком и молча.
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_KEYS": ",,"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !hasAll(cfg.ScrubKeys, defaultScrubKeys()) {
+		t.Errorf("ScrubKeys = %v при GOTCHA_SCRUB_KEYS=\",,\" — denylist обнулён", cfg.ScrubKeys)
+	}
+}
+
+// hasAll — все want присутствуют в got.
+func hasAll(got, want []string) bool {
+	set := make(map[string]bool, len(got))
+	for _, g := range got {
+		set[g] = true
+	}
+	for _, w := range want {
+		if !set[w] {
+			return false
+		}
+	}
+	return true
 }

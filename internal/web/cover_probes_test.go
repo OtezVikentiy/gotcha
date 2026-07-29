@@ -93,7 +93,7 @@ func TestCoverProbesValidation(t *testing.T) {
 	if err := s.uptime.RevokeProbe(ctx, mine.ID); err != nil {
 		t.Fatalf("revoke my probe: %v", err)
 	}
-	resp = postForm(t, s.srv, base+"/revoke", url.Values{"probe_id": {strconv.FormatInt(mine.ID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, base+"/revoke", url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(mine.ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {

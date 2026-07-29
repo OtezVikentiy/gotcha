@@ -92,7 +92,7 @@ func TestPurgeSubject(t *testing.T) {
 	seedTransactions(t, ctx, conn, p2, "other", ts)
 
 	p := telemetry.NewPurger(conn)
-	if err := p.PurgeSubject(ctx, p2, telemetry.Subject{Email: "a@b.com"}); err != nil {
+	if _, err := p.PurgeSubject(ctx, p2, telemetry.Subject{Email: "a@b.com"}); err != nil {
 		t.Fatalf("PurgeSubject: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestPurgeSubject(t *testing.T) {
 	}
 
 	// Теперь чистим субъекта по user_id — уходят и события, и транзакции.
-	if err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "other"}); err != nil {
+	if _, err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "other"}); err != nil {
 		t.Fatalf("PurgeSubject by user_id: %v", err)
 	}
 	var evLeft, txLeft uint64
@@ -156,7 +156,7 @@ func TestPurgeSubjectMetricPoints(t *testing.T) {
 	seedMetricPointAttr(t, ctx, conn, p1, map[string]string{"user.id": "victim"}, ts)
 
 	p := telemetry.NewPurger(conn)
-	if err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "victim", Email: "a@b.com"}); err != nil {
+	if _, err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "victim", Email: "a@b.com"}); err != nil {
 		t.Fatalf("PurgeSubject: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestPurgeSubjectTransactionTags(t *testing.T) {
 	seedTransactions(t, ctx, conn, p, "other", ts)
 
 	purger := telemetry.NewPurger(conn)
-	if err := purger.PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim", Email: "a@b.com"}); err != nil {
+	if _, err := purger.PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim", Email: "a@b.com"}); err != nil {
 		t.Fatalf("PurgeSubject: %v", err)
 	}
 
@@ -295,5 +295,49 @@ func seedWebVitals(t *testing.T, ctx context.Context, conn driver.Conn, projectI
 			"VALUES (?, 'tr', 'sp', '/wv', 'pageload', ?, 'production', map('lcp', 2000.0))",
 		projectID, ts); err != nil {
 		t.Fatalf("insert transaction for web_vitals_5m: %v", err)
+	}
+}
+
+// TestPurgeSubjectReportsMatchedRows фиксирует правку 152-ФЗ: удаление обязано
+// сообщать, сколько строк оно затронуло.
+//
+// Раньше PurgeSubject возвращал только error, и «успех» без единой удалённой
+// строки был неотличим от настоящего удаления. Случай не гипотетический, а
+// поведение по умолчанию: GOTCHA_SCRUB_IP и GOTCHA_SCRUB_EMAIL включены, значит
+// events.user_email и events.user_ip зануляются на приёме и поиск по ним не
+// совпадает ни с чем никогда. Владелец орга, исполняющий требование по ст. 14,
+// обязан видеть разницу между «удалено N записей» и «не найдено ничего».
+func TestPurgeSubjectReportsMatchedRows(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const pid = int64(90210)
+	ts := time.Now().UTC()
+	seedEvents(t, ctx, conn, pid, "victim", "192.168.0.1", "victim@example.com", ts)
+	seedEvents(t, ctx, conn, pid, "other", "192.168.0.2", "keep@example.com", ts)
+
+	p := telemetry.NewPurger(conn)
+
+	// Совпадение есть — счётчик обязан его показать.
+	res, err := p.PurgeSubject(ctx, pid, telemetry.Subject{Email: "victim@example.com"})
+	if err != nil {
+		t.Fatalf("PurgeSubject: %v", err)
+	}
+	if res.Events == 0 {
+		t.Fatal("res.Events = 0, хотя события субъекта были — счётчик не считает")
+	}
+	if res.Total() < res.Events {
+		t.Fatalf("res.Total() = %d меньше res.Events = %d", res.Total(), res.Events)
+	}
+
+	// Совпадений нет — ноль, и это НЕ ошибка. Ровно этот исход раньше выглядел
+	// как успешное удаление.
+	res, err = p.PurgeSubject(ctx, pid, telemetry.Subject{Email: "nobody@example.com"})
+	if err != nil {
+		t.Fatalf("PurgeSubject (нет совпадений): %v", err)
+	}
+	if res.Total() != 0 {
+		t.Fatalf("res.Total() = %d, want 0", res.Total())
 	}
 }

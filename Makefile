@@ -99,8 +99,16 @@ test: ## Run all tests (нужен docker: интеграционные подн
 test-short: ## Run unit tests only (без docker, быстро)
 	go test ./... -short -count=1
 
-test-race: ## Run unit tests with race detector
-	go test ./... -short -race -count=1
+test-race: ## Run unit tests with race detector (без docker)
+	go test ./... -short -race -count=1 -timeout 900s
+
+# -race БЕЗ -short: именно интеграционные тесты и есть те, ради которых детектор
+# гонок существует — конкурентный claim троттлинга алертов, TestClaimConcurrentNoOverlap,
+# TestLastOwnerRace, гонка регистрации, две реплики uptime в одной БД,
+# WithMigrationLock. Под -short они все пропускаются (см. testenv), поэтому
+# `make test-race` годами не видел ни одного из них.
+test-race-integration: ## Run integration tests with race detector (нужен docker, долго)
+	go test ./... -race -count=1 -p 1 -timeout 2400s
 
 check: fmt vet test-short ## fmt + vet + быстрые тесты (перед коммитом)
 

@@ -718,6 +718,14 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.statuspage_delete.message", "confirm.delete",
+			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/delete", nil)
+		return
+	}
 	if err := h.Uptime.DeleteStatusPage(r.Context(), sp.ID); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))

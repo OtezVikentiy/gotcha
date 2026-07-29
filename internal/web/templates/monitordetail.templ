@@ -264,12 +264,12 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
-									<th>{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
-									<th>{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
-									<th class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
-									<th>{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
-									<th class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -291,12 +291,12 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th>{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
-									<th>{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
-									<th>{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
-									<th>{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
-									<th>{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
-									<th>{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
 								</tr>
 							</thead>
 							<tbody>

@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -49,8 +50,23 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Имена уже приходивших метрик — для выбора в форме вместо ввода руками.
+	// Опечатка в свободном поле создавала правило, которое выглядит рабочим и не
+	// срабатывает никогда: молчаливый отказ, о котором узнаёшь во время инцидента.
+	// Ошибка чтения списка не должна ронять страницу — тогда просто нет подсказок.
+	var known []string
+	if h.Metrics != nil {
+		if infos, err := h.Metrics.ListMetrics(r.Context(), projectID, ""); err == nil {
+			known = make([]string, 0, len(infos))
+			for _, mi := range infos {
+				known = append(known, mi.Name)
+			}
+		} else {
+			slog.Warn("metric alerts: cannot list known metric names", "project_id", projectID, "error", err)
+		}
+	}
 	w.WriteHeader(status)
-	_ = templates.MetricAlerts(projectID, rules, incidents, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MetricAlerts(projectID, rules, incidents, known, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // metricAlertCreate — POST /projects/{id}/metrics/alerts: создать правило.
@@ -143,6 +159,15 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	ruleID, err := strconv.ParseInt(r.FormValue("rule_id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad rule id", http.StatusBadRequest)
+		return
+	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.metric_rule_delete.message", "confirm.delete",
+			metricAlertsPath(projectID), metricAlertsPath(projectID)+"/delete",
+			[]templates.HiddenField{{Name: "rule_id", Value: strconv.FormatInt(ruleID, 10)}})
 		return
 	}
 	if err := h.MetricRules.Delete(r.Context(), ruleID, projectID); err != nil {

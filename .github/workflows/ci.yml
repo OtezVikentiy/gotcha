@@ -1,0 +1,103 @@
+# CI для gotcha.
+#
+# До этого файла CI не было вовсе: gofmt, vet, тесты и порог покрытия
+# запускались только руками. Храповик покрытия, который никто не крутит
+# автоматически, — договорённость, а не гарантия.
+#
+# Разбито на две работы намеренно. `quick` не требует docker и отвечает за
+# минуту — это то, что должно гореть красным на каждый push. `integration`
+# поднимает postgres и clickhouse через testcontainers, идёт минуты и включает
+# детектор гонок на конкурентных тестах с БД (под -short они пропускаются, и
+# годами не проверялись вовсе).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: fmt + vet + unit + race
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "не отформатировано (запустите make fmt):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # Сгенерированные шаблоны обязаны совпадать с исходниками: иначе правка
+      # .templ уезжает в main, а рендерится старый *_templ.go — расхождение,
+      # которое не ловится ни компилятором, ни тестами.
+      - name: templ generate — нет расхождений
+        run: |
+          go run github.com/a-h/templ/cmd/templ@$(go list -m -f '{{.Version}}' github.com/a-h/templ) generate
+          if ! git diff --quiet -- '*_templ.go'; then
+            echo "*_templ.go расходится с *.templ — выполните make templ и закоммитьте:"
+            git --no-pager diff --stat -- '*_templ.go'
+            exit 1
+          fi
+
+      - name: unit-тесты
+        run: go test ./... -short -count=1 -timeout 900s
+
+      - name: детектор гонок (unit)
+        run: go test ./... -short -race -count=1 -timeout 900s
+
+  integration:
+    name: интеграционные + покрытие
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Порог покрытия — храповик: снижать нельзя, см. scripts/coverage.sh.
+      # Он же прогоняет весь набор с поднятыми контейнерами, поэтому отдельного
+      # шага с `go test ./...` не нужно.
+      - name: покрытие + пороги
+        run: bash scripts/coverage.sh
+
+  race-integration:
+    name: гонки на интеграционных
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Отдельной работой и только на main: прогон долгий, а ценность — в том,
+    # чтобы гонка в конкурентных путях с БД не доехала до релиза.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test -race (интеграционные)
+        run: go test ./... -race -count=1 -p 1 -timeout 2400s

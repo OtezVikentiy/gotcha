@@ -4,6 +4,19 @@
 
 An upgrade applies database schema migrations — this is not reversible automatically (nobody runs a "just in case" down-migration for you). Before upgrading, back up both PostgreSQL and ClickHouse — see [Backup & Restore](/docs/backup-restore). Don't skip this even if the upgrade looks minor.
 
+
+## One-off step when upgrading from versions before 0.4.2: rotate channel secrets
+
+Before this version a delivery channel's secret (Telegram bot token, webhook signing key) was written into the `notification_outbox` queue **in the clear** — the `payload` column is a plain `jsonb`, which made the encryption of `alert_channels.secret` pointless. Migration `0025` strips those values from the queue during the upgrade, and the new code no longer puts them there: the secret is fetched by channel id at send time.
+
+The migration only cleans the **live database**, though. If the instance ran an older version, those secrets sit in the clear in **every PostgreSQL backup taken before the upgrade** — and you are, we hope, taking backups regularly. So after upgrading:
+
+1. Rotate the Telegram bot tokens Gotcha uses (`/revoke` in @BotFather, then put the new token in the channel).
+2. Change the webhook signing keys on the receiving side and in the channel.
+3. Delete the old backups if you no longer need them; if you do need them, store them at the same protection level as secrets.
+
+You can skip this only if you had no delivery channels at all.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

@@ -473,6 +473,7 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
 					continue
 				}
+				h.scrubProfile(&prof)
 				h.Profiles.Add(key.ProjectID, prof)
 			}
 		} else {
@@ -482,6 +483,25 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// scrubProfile чистит метаданные профиля. Путь профилей шёл МИМО скрубера
+// целиком, хотя имя транзакции здесь полностью клиентское (?transaction= у
+// pprof, поле конверта у Sentry) и регулярно несёт URL с идентификаторами:
+// /users/ivan@example.com/settings. Значение оседает в profile_samples и
+// показывается в UI.
+//
+// Имена кадров (функция/файл) НЕ трогаем: это идентификаторы кода, а не ПДн, и
+// маскирование сломало бы схлопывание стеков.
+func (h *Handler) scrubProfile(p *profile.Profile) {
+	if h.Scrub == nil || p == nil {
+		return
+	}
+	// ScrubMessage, а не ScrubJSON: это свободный текст. URL-часть чистится в нём
+	// всегда, независимо от ScrubFreeText.
+	p.Transaction = h.Scrub.ScrubMessage(p.Transaction)
+	p.Service = h.Scrub.ScrubMessage(p.Service)
+	p.Environment = h.Scrub.ScrubMessage(p.Environment)
 }
 
 // ingestTransactions разбирает transaction-item'ы, отбрасывает несемплированные

@@ -109,7 +109,7 @@ func TestWebMetricAlerts(t *testing.T) {
 	}
 
 	// Удаление правила.
-	del := url.Values{"rule_id": {strconv.FormatInt(rules[0].ID, 10)}}
+	del := url.Values{"confirmed": {"yes"}, "rule_id": {strconv.FormatInt(rules[0].ID, 10)}}
 	resp = postForm(t, s.srv, base+"/delete", del, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

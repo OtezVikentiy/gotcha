@@ -247,7 +247,7 @@ func TestWebMaintenanceDelete(t *testing.T) {
 	}
 
 	deletePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance/delete"
-	resp := postForm(t, s.srv, deletePath, url.Values{"window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, ownerCookie)
+	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -281,7 +281,7 @@ func TestWebMaintenanceDeleteForeignProject404(t *testing.T) {
 
 	// Try to delete A's window through B's maintenance/delete path.
 	deletePathB := "/projects/" + strconv.FormatInt(projB.ID, 10) + "/maintenance/delete"
-	resp := postForm(t, s.srv, deletePathB, url.Values{"window_id": {strconv.FormatInt(winA.ID, 10)}}, s.srv.URL, ownerCookieB)
+	resp := postForm(t, s.srv, deletePathB, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(winA.ID, 10)}}, s.srv.URL, ownerCookieB)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -329,7 +329,7 @@ func TestWebMaintenanceMemberForbidden(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 404", path, resp.StatusCode)
 	}
 
-	resp = postForm(t, s.srv, deletePath, url.Values{"window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

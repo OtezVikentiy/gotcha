@@ -52,12 +52,12 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th>{ i18n.T(ctx, "profiles.table.service") }</th>
-								<th>{ i18n.T(ctx, "profiles.table.type") }</th>
-								<th>{ i18n.T(ctx, "perf.environment") }</th>
-								<th>{ i18n.T(ctx, "profiles.table.transaction") }</th>
-								<th class="num">{ i18n.T(ctx, "profiles.table.weight") }</th>
-								<th class="num">{ i18n.T(ctx, "profiles.table.samples") }</th>
+								<th scope="col">{ i18n.T(ctx, "profiles.table.service") }</th>
+								<th scope="col">{ i18n.T(ctx, "profiles.table.type") }</th>
+								<th scope="col">{ i18n.T(ctx, "perf.environment") }</th>
+								<th scope="col">{ i18n.T(ctx, "profiles.table.transaction") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "profiles.table.weight") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "profiles.table.samples") }</th>
 							</tr>
 						</thead>
 						<tbody>

@@ -204,17 +204,83 @@ func TestWithMigrationLockSerializes(t *testing.T) {
 	}
 }
 
+// TestMigratePGUpDownUp — up/down/up для PostgreSQL.
+//
+// После down проверяется, что схема ДЕЙСТВИТЕЛЬНО пуста, а не только что вызов
+// вернул nil. Раньше тест смотрел лишь на err, и down-миграция, которая молча
+// ничего не делает, проходила его — все 24 down-файла PG были фактически
+// неверифицированы. CH-версия ниже таблицы считала, PG-версия — нет.
 func TestMigratePGUpDownUp(t *testing.T) {
 	dsn := testenv.PostgresDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
 	if err := db.MigratePG(dsn); err != nil {
 		t.Fatalf("up: %v", err)
 	}
+
+	pool, err := db.NewPostgres(ctx, dsn)
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	defer pool.Close()
+
+	before := userTableCount(t, ctx, pool)
+	if before == 0 {
+		t.Fatal("после up в public нет ни одной таблицы — up ничего не создал")
+	}
+
 	if err := db.MigrateDownPG(dsn); err != nil {
 		t.Fatalf("down: %v", err)
 	}
+	// schema_migrations заводит сам golang-migrate и down её не трогает —
+	// поэтому «пусто» здесь означает «не осталось ничего, кроме неё».
+	if after := userTableCount(t, ctx, pool); after != 0 {
+		names := userTableNames(t, ctx, pool)
+		t.Fatalf("после down осталось %d таблиц: %v — down-миграции не откатывают схему", after, names)
+	}
+
 	if err := db.MigratePG(dsn); err != nil {
 		t.Fatalf("up again: %v", err)
 	}
+	if again := userTableCount(t, ctx, pool); again != before {
+		t.Fatalf("повторный up дал %d таблиц вместо %d", again, before)
+	}
+}
+
+// userTableCount — сколько таблиц в public, не считая служебной schema_migrations.
+func userTableCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+		  AND table_name <> 'schema_migrations'`).Scan(&n)
+	if err != nil {
+		t.Fatalf("count tables: %v", err)
+	}
+	return n
+}
+
+func userTableNames(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(ctx, `
+		SELECT table_name FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+		  AND table_name <> 'schema_migrations' ORDER BY table_name`)
+	if err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 func TestMigrateCHUpDownUp(t *testing.T) {

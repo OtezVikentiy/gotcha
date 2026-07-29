@@ -83,7 +83,11 @@ templ layoutBody(title string, userEmail string) {
 		// только при фокусе (см. .skip-link в app.css).
 		<a class="skip-link" href="#main">{ i18n.T(ctx, "a11y.skip_to_content") }</a>
 		<div class="app-shell">
-			<aside class="rail">
+			// <nav>, а не <aside>: это основная навигация. <aside> объявляет
+			// «дополнительный контент», поэтому пользователь скринридера не мог
+			// перейти к меню через список ориентиров — на 27 из 29 страниц
+			// ориентира navigation не было вовсе.
+			<nav class="rail" aria-label={ i18n.T(ctx, "nav.primary") }>
 				<a class="rail-logo" href="/" title="Gotcha">@brandMark()</a>
 				if shell := nav.FromContext(ctx); len(shell.Projects) > 0 {
 					for _, a := range nav.Areas(shell) {
@@ -100,10 +104,10 @@ templ layoutBody(title string, userEmail string) {
 						@icon("log-out")
 					</button>
 				</form>
-			</aside>
-			<aside class="ctx-sidebar">
+			</nav>
+			<nav class="ctx-sidebar" aria-label={ i18n.T(ctx, "nav.section") }>
 				@ctxNav(nav.FromContext(ctx))
-			</aside>
+			</nav>
 			<div class="app-main">
 				<header class="topbar">
 					<details class="mobile-nav">

@@ -431,7 +431,7 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	}
 
 	// Member delete -> 404, monitor still there.
-	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -439,7 +439,7 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	}
 
 	// Owner deletes -> 303, monitor gone.
-	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

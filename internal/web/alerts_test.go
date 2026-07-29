@@ -250,7 +250,7 @@ func TestWebAlertsChannels(t *testing.T) {
 	}
 
 	// Удаление своего канала -> 303, канал исчез.
-	resp = postForm(t, s.srv, channelsDeletePath, url.Values{"channel_id": {strconv.FormatInt(channels[0].ID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, channelsDeletePath, url.Values{"confirmed": {"yes"}, "channel_id": {strconv.FormatInt(channels[0].ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
