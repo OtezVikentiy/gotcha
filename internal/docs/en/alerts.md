@@ -85,18 +85,29 @@ After `docker compose up -d gotcha` delivery recovers. Telegram's IP is stable, 
 
 ## Privacy: what external channels see
 
-Webhook and Telegram are external services outside your infrastructure; email is treated as internal (delivered through your own SMTP). The instance environment variable
+Event details — issue title, culprit, level, notification body, metric values — reach **trusted recipients only**. Everyone else gets an anonymized notification: routing fields (project, issue, and rule ids, counters, alert kind) plus a link back to the card in Gotcha.
+
+The decision is made **per recipient, not per channel type**:
+
+| Recipient | Trusted when |
+|---|---|
+| Email | the address domain is the instance host (or a subdomain of it), or is listed in `GOTCHA_TRUSTED_RECIPIENTS` |
+| Webhook | the URL host is the same, or any internal address (`localhost`, private ranges, the `.local`, `.internal`, `.lan`, `.home.arpa` zones) |
+| Telegram | never: the recipient is a `chat_id` with no domain, and the service is outside your perimeter by definition |
+
+A mailbox on a public mail service (`@gmail.com`, `@yandex.ru`) is someone else's infrastructure exactly as Telegram is — details do not go there. A webhook pointed at your own server on an internal network, conversely, always receives them.
+
+If your organization's mail lives on a domain other than the instance host, list it:
 
 ```
-GOTCHA_EXTERNAL_CHANNEL_DETAILS=true|false
+GOTCHA_TRUSTED_RECIPIENTS=corp.example
 ```
 
-controls what goes out to webhook/Telegram when an alert fires (both for issues and for metrics):
+```
+GOTCHA_EXTERNAL_CHANNEL_DETAILS=true
+```
 
-- **`false`** (default, privacy-by-default) — an anonymized payload: only routing fields (project/issue/rule id, counters, alert kind) plus a link back to the card in Gotcha — no error text, transaction/function names, or values that could be personal data;
-- **`true`** — the full text: issue title, culprit, level, notification body, metric values, and so on.
-
-Email is not affected by this switch — SMTP is treated as a trusted channel inside the organization. It's set at the instance level by the operator; see [Configuration](/docs/configuration).
+lifts the restriction entirely — details then go to every recipient, Telegram included. Enable it only if you have a lawful basis for cross-border transfer. Both are instance-level settings; see [Privacy and 152-FZ](/docs/privacy) for the reasoning.
 
 ## See also
 

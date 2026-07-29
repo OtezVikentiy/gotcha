@@ -143,10 +143,24 @@ templ projectRow(it ProjectListItem) {
 // ProjectsList — «Projects» в шапке: все проекты, доступные юзеру. Имя
 // проекта ведёт на список issues (основной сценарий), рядом — отдельная
 // ссылка на страницу подключения SDK.
-templ ProjectsList(items []ProjectListItem, userEmail string) {
+// OrgOption — организация, в которой текущий человек может завести проект
+// (owner/admin). Нужна селекту в форме создания: организаций у него может быть
+// несколько, и выбирать надо явно.
+type OrgOption struct {
+	ID   int64
+	Name string
+}
+
+templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "project.list.title"), userEmail) {
 		<div class="projects-list">
 			<h1>{ i18n.T(ctx, "project.list.title") }</h1>
+			if errMsg != "" && !form.Has() {
+				<p class="error">{ errMsg }</p>
+			}
+			if len(canCreate) > 0 {
+				@createTrigger("new-project", "project.create.title")
+			}
 			if len(items) == 0 {
 				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding")
 			} else {
@@ -169,6 +183,55 @@ templ ProjectsList(items []ProjectListItem, userEmail string) {
 						</table>
 				</div>
 				</div>
+			}
+			if len(canCreate) > 0 {
+				@createModalOpen("new-project", "project.create.title", false, form.Opens("new-project")) {
+					<form method="post" action="/projects/new" class="project-create-form">
+						if errMsg != "" && form.Opens("new-project") {
+							<p class="error" role="alert">{ errMsg }</p>
+						}
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.org") }
+								<select name="org_id" class="select">
+									for _, o := range canCreate {
+										if form.Selected("org_id", strconv.FormatInt(o.ID, 10), strconv.FormatInt(canCreate[0].ID, 10)) {
+											<option value={ strconv.FormatInt(o.ID, 10) } selected>{ o.Name }</option>
+										} else {
+											<option value={ strconv.FormatInt(o.ID, 10) }>{ o.Name }</option>
+										}
+									}
+								</select>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.slug") }
+								<input type="text" name="slug" required class="input" placeholder="backend-api" value={ form.Get("slug", "") }/>
+							</label>
+							<span class="hint">{ i18n.T(ctx, "project.create.slug_hint") }</span>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.name") }
+								<input type="text" name="name" required class="input" value={ form.Get("name", "") }/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.platform") }
+								<select name="platform" required class="select">
+									@platformOption("go", "Go", form.Get("platform", "go"))
+									@platformOption("php", "PHP", form.Get("platform", "go"))
+									@platformOption("javascript", "JavaScript", form.Get("platform", "go"))
+									@platformOption("python", "Python", form.Get("platform", "go"))
+									@platformOption("other", i18n.T(ctx, "onboarding.platform.other"), form.Get("platform", "go"))
+								</select>
+							</label>
+						</div>
+						<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.create.submit") }</button>
+					</form>
+				}
 			}
 		</div>
 	}

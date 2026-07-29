@@ -181,10 +181,17 @@ func (d *Detector) openIncident(ctx context.Context, m Monitor, states []State, 
 	downRegions := regionsWithStatus(states, "down")
 	cause := causeFrom(st, states)
 
+	// Ошибка проверки обслуживания НЕ отменяет инцидент: она лишь означает, что
+	// мы не смогли выяснить, плановые ли это работы. Раньше здесь стоял return,
+	// и одно окно с поясом, который не удалось загрузить, глушило мониторинг
+	// всего проекта — ровно в тот момент, когда сервис лёг. Открыть инцидент и
+	// уведомить лишний раз во время плановых работ дешевле, чем промолчать при
+	// настоящем падении.
 	inMaintenance, err := d.Svc.InMaintenance(ctx, m.ProjectID, now)
 	if err != nil {
-		slog.Error("uptime: detector: in maintenance check failed", "monitor_id", m.ID, "error", err)
-		return
+		slog.Error("uptime: detector: in maintenance check failed, treating as not in maintenance",
+			"monitor_id", m.ID, "error", err)
+		inMaintenance = false
 	}
 
 	inc, created, err := d.Svc.OpenIncident(ctx, m.ID, cause, downRegions, inMaintenance)

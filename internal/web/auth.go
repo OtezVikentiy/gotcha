@@ -61,6 +61,13 @@ func (h *Handler) registrationClosed(r *http.Request) bool {
 	return n > 0
 }
 
+// normalizeEmail — адрес в том виде, в котором он хранится: нижний регистр без
+// обрамляющих пробелов (та же нормализация, что в auth.Service.Register и в
+// форме приглашения).
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 // invitedByEmail — пускать ли этот адрес на регистрацию по приглашению. Сам
 // отвечает отказом (403 со страницей регистрации), если нет: решение и ответ
 // живут рядом, чтобы вызывающий не мог забыть один из двух исходов.
@@ -193,7 +200,12 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
-		if n > 0 && !h.invitedByEmail(w, r, email) {
+		// Адрес нормализуем так же, как Auth.Register и форма приглашения.
+		// Регистр закрывает сама колонка (org_invites.email — citext), а вот
+		// обрамляющие пробелы — нет: Register их отрежет и заведёт аккаунт, а
+		// поиск приглашения по строке с пробелами ничего не найдёт, и человек
+		// получит «регистрация закрыта» при живом приглашении.
+		if n > 0 && !h.invitedByEmail(w, r, normalizeEmail(email)) {
 			return
 		}
 	}

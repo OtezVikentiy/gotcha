@@ -66,10 +66,19 @@ func TestWatchdogHeartbeatOpensIncidentOnStaleBeat(t *testing.T) {
 	defer wcancel()
 	go wd.Run(wctx)
 
+	// Ждём именно ИНЦИДЕНТА, а не состояния. Состояние монитора пишется на шаг
+	// раньше открытия инцидента, и ожидание по нему возвращало управление в
+	// промежутке между двумя записями: тест шёл проверять инцидент, которого
+	// ещё секунду не будет. Гонка была латентной и вылезла, когда порядок
+	// работ в Run сдвинулся на пару миллисекунд.
 	waitForRunner(t, func() bool {
-		states, err := svc.States(context.Background(), created.ID)
-		return err == nil && len(states) == 1 && states[0].Status == "down"
+		_, found, err := svc.OpenIncidentFor(context.Background(), created.ID)
+		return err == nil && found
 	})
+	states, err := svc.States(ctx, created.ID)
+	if err != nil || len(states) != 1 || states[0].Status != "down" {
+		t.Fatalf("States = %+v err=%v, want single down state", states, err)
+	}
 
 	inc := assertOpenIncident(t, ctx, svc, created.ID)
 	if inc.Cause == "" {

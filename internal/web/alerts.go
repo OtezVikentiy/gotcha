@@ -421,7 +421,7 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 			[]templates.HiddenField{{Name: "channel_id", Value: strconv.FormatInt(channelID, 10)}})
 		return
 	}
-	if err := h.Alerts.DeleteChannel(r.Context(), channelID); err != nil {
+	if err := h.Alerts.DeleteChannel(r.Context(), projectID, channelID); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}

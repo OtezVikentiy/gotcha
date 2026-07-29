@@ -39,3 +39,85 @@ func TestDecideLT(t *testing.T) {
 		t.Fatalf("lt nothing = %+v", got)
 	}
 }
+
+// TestDecideNegativeThresholdHysteresis — полоса гистерезиса берётся от модуля
+// порога. Умножение на (1±band) разворачивало её на отрицательных порогах:
+// при пороге -100 «безопасной стороной» для gt оказывалось -95, то есть выше
+// порога, и значение -98 было одновременно нарушением и восстановлением. Decide
+// открывал инцидент, следующим тиком закрывал, и так каждую минуту.
+func TestDecideNegativeThresholdHysteresis(t *testing.T) {
+	const th = -100.0
+
+	// Нарушение и восстановление взаимоисключающи при любом значении — это и
+	// есть свойство, которое ломалось.
+	for _, cur := range []float64{-120, -106, -105, -104, -100, -98, -95, -50, 0, 50} {
+		for _, cmp := range []string{"gt", "lt"} {
+			opened := Decide(cur, cmp, th, false)
+			held := Decide(cur, cmp, th, true)
+			if opened.Open && held.Close {
+				t.Errorf("%s threshold=%v current=%v: одновременно нарушение и восстановление", cmp, th, cur)
+			}
+		}
+	}
+
+	// gt: нарушение выше -100, восстановление только ниже -105 (полоса 5% от 100).
+	if d := Decide(-98, "gt", th, false); !d.Open {
+		t.Error("gt: -98 при пороге -100 должно открывать инцидент")
+	}
+	if d := Decide(-98, "gt", th, true); !d.Bump {
+		t.Error("gt: -98 при открытом инциденте должно держать его открытым")
+	}
+	if d := Decide(-104, "gt", th, true); !d.Bump {
+		t.Error("gt: -104 внутри полосы — инцидент ещё не закрывается")
+	}
+	if d := Decide(-106, "gt", th, true); !d.Close {
+		t.Error("gt: -106 вышло за полосу — инцидент закрывается")
+	}
+
+	// lt: зеркально — нарушение ниже -100, восстановление выше -95.
+	if d := Decide(-102, "lt", th, false); !d.Open {
+		t.Error("lt: -102 при пороге -100 должно открывать инцидент")
+	}
+	if d := Decide(-96, "lt", th, true); !d.Bump {
+		t.Error("lt: -96 внутри полосы — инцидент ещё не закрывается")
+	}
+	if d := Decide(-94, "lt", th, true); !d.Close {
+		t.Error("lt: -94 вышло за полосу — инцидент закрывается")
+	}
+}
+
+// TestDecideZeroThresholdIsExclusive — при нулевом пороге полосы нет (её не от
+// чего считать), но нарушение и восстановление обязаны оставаться
+// взаимоисключающими: «порог 0» значит «любое ненулевое значение — нарушение».
+func TestDecideZeroThresholdIsExclusive(t *testing.T) {
+	for _, cur := range []float64{-1, -0.0001, 0, 0.0001, 1} {
+		for _, cmp := range []string{"gt", "lt"} {
+			opened := Decide(cur, cmp, 0, false)
+			held := Decide(cur, cmp, 0, true)
+			if opened.Open && held.Close {
+				t.Errorf("%s threshold=0 current=%v: одновременно нарушение и восстановление", cmp, cur)
+			}
+		}
+	}
+	if d := Decide(0.5, "gt", 0, false); !d.Open {
+		t.Error("gt: 0.5 при пороге 0 должно открывать инцидент")
+	}
+	if d := Decide(0, "gt", 0, true); !d.Close {
+		t.Error("gt: 0 при пороге 0 должно закрывать инцидент")
+	}
+}
+
+// TestDecidePositiveThresholdUnchanged — положительные пороги, самый частый
+// случай, ведут себя ровно как прежде: полоса 5% ниже порога для gt.
+func TestDecidePositiveThresholdUnchanged(t *testing.T) {
+	const th = 100.0
+	if d := Decide(101, "gt", th, false); !d.Open {
+		t.Error("gt: 101 при пороге 100 должно открывать инцидент")
+	}
+	if d := Decide(96, "gt", th, true); !d.Bump {
+		t.Error("gt: 96 внутри полосы — инцидент ещё не закрывается")
+	}
+	if d := Decide(94, "gt", th, true); !d.Close {
+		t.Error("gt: 94 вышло за полосу — инцидент закрывается")
+	}
+}

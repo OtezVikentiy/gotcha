@@ -327,6 +327,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /docs/{slug}", h.requireUser(http.HandlerFunc(h.docsPage)))
 	inner.Handle("GET /about", h.requireUser(http.HandlerFunc(h.aboutPage)))
 	inner.Handle("GET /projects", h.requireUser(http.HandlerFunc(h.projectsList)))
+	inner.Handle("POST /projects/new", h.requireUser(http.HandlerFunc(h.projectCreate)))
 	inner.Handle("GET /projects/{id}/setup", h.requireUser(http.HandlerFunc(h.projectSetup)))
 	inner.Handle("GET /projects/{id}/issues", h.requireUser(http.HandlerFunc(h.issuesList)))
 	inner.Handle("POST /projects/{id}/issues/bulk", h.requireUser(http.HandlerFunc(h.issuesBulk)))

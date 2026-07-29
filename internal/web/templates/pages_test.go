@@ -439,7 +439,7 @@ func TestProjectsListAndNoProjects(t *testing.T) {
 		{Project: org.Project{ID: 1, Name: "web", Slug: "web", Platform: "go"}, CanManage: true},
 		{Project: org.Project{ID: 2, Name: "api", Slug: "api", Platform: "php"}, CanManage: false},
 	}
-	out := renderTo(t, ProjectsList(items, "u@e.com"))
+	out := renderTo(t, ProjectsList(items, []OrgOption{{ID: 1, Name: "Acme"}}, nil, "", "u@e.com"))
 	if !strings.Contains(out, "web") || !strings.Contains(out, "api") {
 		t.Error("список проектов должен содержать имена")
 	}

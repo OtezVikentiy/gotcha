@@ -2,6 +2,7 @@ package alert
 
 import (
 	"net"
+	"net/mail"
 	"net/url"
 	"strings"
 )
@@ -101,10 +102,23 @@ func (p DetailPolicy) trusts(host string) bool {
 	return false
 }
 
-// emailDomain — доменная часть адреса, нормализованная. Берётся ПОСЛЕДНИЙ '@':
-// локальная часть по RFC может содержать его в кавычках, и разбор по первому
-// отдал бы за домен кусок локальной части.
+// emailDomain — доменная часть адреса, нормализованная.
+//
+// Сначала пробуем разобрать адрес по RFC 5322: канал принимается валидатором
+// через mail.ParseAddress, а тот допускает форму «Ops Team <a@corp.example>».
+// Для неё наивный разбор дал бы домен «corp.example>» — с угловой скобкой,
+// которая не совпадёт ни с чем, и доверенный получатель тихо перестал бы
+// получать детали.
+//
+// Если адрес не разобрался, берём подстроку после ПОСЛЕДНЕГО '@': локальная
+// часть по RFC может содержать его в кавычках, и разбор по первому отдал бы за
+// домен кусок локальной части — то есть чужой адрес мог бы притвориться своим.
 func emailDomain(addr string) string {
+	if a, err := mail.ParseAddress(strings.TrimSpace(addr)); err == nil {
+		if i := strings.LastIndex(a.Address, "@"); i >= 0 {
+			return normalizeHost(a.Address[i+1:])
+		}
+	}
 	i := strings.LastIndex(addr, "@")
 	if i < 0 {
 		return ""

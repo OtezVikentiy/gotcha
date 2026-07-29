@@ -88,7 +88,7 @@ func TestChannelSecretByID(t *testing.T) {
 	// Канал удалили между постановкой в очередь и отправкой — адресат исчез,
 	// и это ErrNotFound, а не «пустой секрет», с которым воркер молча ушёл бы
 	// слать на несуществующий канал.
-	if err := svc.DeleteChannel(ctx, id); err != nil {
+	if err := svc.DeleteChannel(ctx, pid, id); err != nil {
 		t.Fatalf("DeleteChannel: %v", err)
 	}
 	if _, err := svc.ChannelSecret(ctx, id); !errors.Is(err, alert.ErrNotFound) {

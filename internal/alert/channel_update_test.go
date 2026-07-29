@@ -185,3 +185,54 @@ func TestChannelTelegramTargetMustBeChatID(t *testing.T) {
 		t.Errorf("UpdateChannel with bad chat_id = %v, want ErrInvalidChannel", err)
 	}
 }
+
+// TestChannelEmailTargetNormalized — адрес с отображаемым именем сохраняется
+// только своей адресной частью.
+//
+// mail.ParseAddress принимает «Ops Team <ops@corp.example>», и раньше эта
+// строка попадала в базу целиком. Дальше ломались обе стороны сразу:
+// отправитель кладёт Target прямо в SMTP-команду RCPT TO — сервер отвечает
+// отказом, а политика раскрытия деталей видела домен «corp.example>» и не
+// признавала его своим, даже если corp.example перечислен как доверенный.
+func TestChannelEmailTargetNormalized(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ctx := context.Background()
+	pid := newEvalProject(t, pool, "chantarget-norm")
+
+	id, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelEmail, Enabled: true,
+		Target: "Ops Team <ops@corp.example>",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chs, err := svc.Channels(ctx, pid)
+	if err != nil || len(chs) != 1 {
+		t.Fatalf("Channels = %+v err=%v", chs, err)
+	}
+	if chs[0].Target != "ops@corp.example" {
+		t.Fatalf("Target = %q, want адрес без отображаемого имени", chs[0].Target)
+	}
+
+	// Политика теперь видит нормальный домен и признаёт его своим.
+	p := alert.NewDetailPolicy("https://gotcha.example", []string{"corp.example"}, false)
+	if !p.AllowsDetails(chs[0]) {
+		t.Error("доверенный домен не распознан после сохранения канала")
+	}
+
+	// Та же нормализация при правке.
+	if err := svc.UpdateChannel(ctx, alert.Channel{
+		ID: id, ProjectID: pid, Kind: alert.ChannelEmail, Enabled: true,
+		Target: "  Дежурный <duty@corp.example>  ",
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	chs, err = svc.Channels(ctx, pid)
+	if err != nil || len(chs) != 1 || chs[0].Target != "duty@corp.example" {
+		t.Fatalf("Target после правки = %+v err=%v, want duty@corp.example", chs, err)
+	}
+}

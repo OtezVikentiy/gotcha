@@ -85,6 +85,18 @@ func (w *Watchdog) Run(ctx context.Context) {
 	sslTick := time.NewTicker(sslEvery)
 	defer sslTick.Stop()
 
+	// Первый прогон проверки сертификатов — сразу, не дожидаясь тика.
+	// time.NewTicker срабатывает через ПОЛНЫЙ период, а период здесь сутки:
+	// процесс, который перезапускают чаще раза в день (деплой, рестарт
+	// контейнера, обновление образа), не выполнял checkSSL вообще никогда, и
+	// уведомления об истекающем сертификате не уходили. С heartbeat и
+	// напоминаниями этого не видно — там тик минутный.
+	//
+	// Стартовый прогон безопасен для нескольких реплик: порог помечается
+	// доставленным через ClaimSSLAlert, атомарным UPDATE ... RETURNING, и
+	// второй процесс на том же пороге просто не выиграет клейм.
+	w.checkSSL(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -237,13 +249,18 @@ func (w *Watchdog) checkSSL(ctx context.Context) {
 //
 // Claim-before-notify, same rationale as checkSSL: Svc.ClaimReminder is a
 // single atomic UPDATE ... RETURNING keyed on "hasn't been reminded (or
-// opened) more recently than notBefore", so of several `--mode=uptime`
-// replicas racing this method for the same incident, only one gets
-// won=true. notBefore is computed here (now - remind_every_minutes) rather
-// than inside ClaimReminder, so its notion of "due" stays driven by the same
-// now() this tick already used to compute duration/pick items — passing the
-// interval instead of a raw cutoff would just move that subtraction inside
-// Service for no benefit, since the caller always has "now" in hand anyway.
+// opened) within remind_every", so of several `--mode=uptime` replicas racing
+// this method for the same incident, only one gets won=true.
+//
+// The cutoff is computed by the DATABASE, not here. It used to be computed
+// from the process clock (now - remind_every) and compared against columns
+// written by the server's now(), while IncidentsDueForReminder picked items by
+// the server clock too — three sources for one decision, and the doc comment
+// claimed they were one. A container whose clock lags the database (no NTP is
+// ordinary) then lost the claim for incidents the query had just selected, and
+// reminders were held back silently until the clocks converged; a clock that
+// runs ahead sent them early instead.
+//
 // As with checkSSL, a Notify failure after a successful claim is NOT
 // retried next tick — the price of not double-sending across replicas.
 func (w *Watchdog) checkReminders(ctx context.Context) {
@@ -259,8 +276,7 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 	}
 	now := time.Now().UTC()
 	for _, it := range items {
-		notBefore := now.Add(-time.Duration(it.Monitor.RemindEveryMinutes) * time.Minute)
-		won, err := w.Svc.ClaimReminder(ctx, it.Incident.ID, notBefore)
+		won, err := w.Svc.ClaimReminder(ctx, it.Incident.ID, it.Monitor.RemindEveryMinutes)
 		if err != nil {
 			slog.Error("uptime: watchdog: claim reminder failed", "incident_id", it.Incident.ID, "error", err)
 			continue
@@ -420,28 +436,30 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 }
 
 // ClaimReminder atomically records that a reminder was just sent for
-// incidentID (last_reminded_at = now()) and reports whether THIS call won
-// the claim: true only when the incident is still open (resolved_at IS
-// NULL) and hasn't been reminded (or opened, via COALESCE) more recently
-// than notBefore. The caller computes notBefore as now - remind_every —
-// see watchdog.go's checkReminders, this method's only caller, for why that
-// shape (an absolute cutoff, not a duration) is the cleaner fit: it already
-// has "now" in hand from the same tick that picked this incident via
-// IncidentsDueForReminder, so the two use the same clock reading.
+// incidentID (last_reminded_at = now()) and reports whether THIS call won the
+// claim: true only when the incident is still open (resolved_at IS NULL) and
+// hasn't been reminded (or opened, via COALESCE) within remindEveryMinutes.
+//
+// The cutoff is derived inside the statement, from the server's now(), so this
+// check and the one in IncidentsDueForReminder read the same clock. Passing an
+// absolute cutoff computed by the caller looked tidier and was wrong: the
+// caller's clock is the container's, the columns are written by the database,
+// and the two drift apart in ordinary deployments — see checkReminders.
 //
 // Race-safety: the check-and-set is one UPDATE statement, not a
 // read-then-write pair — so of several `gotcha --mode=uptime` replicas
 // racing ClaimReminder for the same incident, exactly one observes
 // won=true. Callers MUST NOT Notify before calling this, and MUST only
 // Notify when won is true.
-func (s *Service) ClaimReminder(ctx context.Context, incidentID int64, notBefore time.Time) (bool, error) {
+func (s *Service) ClaimReminder(ctx context.Context, incidentID int64, remindEveryMinutes int) (bool, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		UPDATE incidents
 		SET last_reminded_at = now()
-		WHERE id = $1 AND resolved_at IS NULL AND coalesce(last_reminded_at, started_at) <= $2
+		WHERE id = $1 AND resolved_at IS NULL
+		  AND coalesce(last_reminded_at, started_at) + make_interval(mins => $2) <= now()
 		RETURNING id`,
-		incidentID, notBefore,
+		incidentID, remindEveryMinutes,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil

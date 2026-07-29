@@ -11,6 +11,7 @@ import (
 	"net/mail"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -112,6 +113,26 @@ func validateRule(r Rule) error {
 		return ErrInvalidRule
 	}
 	return nil
+}
+
+// normalizeChannelTarget приводит получателя к тому виду, в котором он
+// пригоден к использованию, и возвращает канал с исправленным Target.
+//
+// Для email это значит «только адрес, без отображаемого имени».
+// mail.ParseAddress принимает и форму «Ops Team <ops@corp.example>», и раньше
+// она сохранялась в БД как есть — со всеми последствиями: отправитель кладёт
+// Target прямо в SMTP-команду RCPT TO, и сервер отвечает отказом, а политика
+// раскрытия деталей видит домен «corp.example>» и не признаёт его своим. Обе
+// поломки тихие: первая всплывает в журнале неудачных доставок уже после того,
+// как алерт не пришёл, вторая не всплывает нигде.
+func normalizeChannelTarget(c Channel) Channel {
+	c.Target = strings.TrimSpace(c.Target)
+	if c.Kind == ChannelEmail {
+		if a, err := mail.ParseAddress(c.Target); err == nil {
+			c.Target = a.Address
+		}
+	}
+	return c
 }
 
 // validateChannel проверяет канал до похода в БД: email — валидный адрес,
@@ -234,8 +255,10 @@ func (s *Service) UpsertRules(ctx context.Context, rules []Rule) error {
 }
 
 // DeleteRule удаляет правило по id.
-func (s *Service) DeleteRule(ctx context.Context, ruleID int64) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM alert_rules WHERE id = $1", ruleID)
+func (s *Service) DeleteRule(ctx context.Context, projectID, ruleID int64) error {
+	// project_id в условии — см. DeleteChannel.
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM alert_rules WHERE id = $1 AND project_id = $2", ruleID, projectID)
 	if err != nil {
 		return fmt.Errorf("alert: delete rule: %w", err)
 	}
@@ -285,6 +308,7 @@ func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 	if err := validateChannel(c); err != nil {
 		return 0, err
 	}
+	c = normalizeChannelTarget(c)
 	// Шифруем секрет at-rest, если задан мастер-ключ (иначе plaintext, как для
 	// пустого ключа — читатель распознаёт по отсутствию префикса "enc:").
 	storedSecret := c.Secret
@@ -352,6 +376,7 @@ func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 	if err := validateChannelForUpdate(c); err != nil {
 		return err
 	}
+	c = normalizeChannelTarget(c)
 	if c.Secret == "" {
 		tag, err := s.pool.Exec(ctx, `
 			UPDATE alert_channels SET target = $2, enabled = $3
@@ -398,8 +423,13 @@ func validateChannelForUpdate(c Channel) error {
 }
 
 // DeleteChannel удаляет канал по id. Каскадом удаляет и его записи в outbox.
-func (s *Service) DeleteChannel(ctx context.Context, channelID int64) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM alert_channels WHERE id = $1", channelID)
+func (s *Service) DeleteChannel(ctx context.Context, projectID, channelID int64) error {
+	// project_id в условии — тот же скоуп, что и у UpdateChannel. Хендлер и так
+	// проверяет принадлежность перед удалением, но правило «id пришёл из формы,
+	// значит скоуп в WHERE» должно жить в одном месте: разложенное по двум,
+	// оно разъедется на первом вызывающем, который про предпроверку забудет.
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM alert_channels WHERE id = $1 AND project_id = $2", channelID, projectID)
 	if err != nil {
 		return fmt.Errorf("alert: delete channel: %w", err)
 	}

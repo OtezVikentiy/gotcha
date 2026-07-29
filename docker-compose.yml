@@ -30,6 +30,18 @@ services:
       # Внешний порт вынесен в 59xxx, чтобы не конфликтовать с другими
       # локальными докер-проектами. Переопределяется: GOTCHA_PORT=... docker compose up
       - "${GOTCHA_PORT:-59080}:8080"
+    # Всё остальное — из .env рядом с этим файлом. Без env_file Compose читает
+    # .env ТОЛЬКО для подстановки ${...} в сам YAML и в контейнер не передаёт
+    # ничего: оператор клал туда SMTP, ретенцию, GOTCHA_REGISTRATION — и ни одна
+    # из этих настроек не применялась, причём Compose даже не пересоздавал
+    # контейнер, потому что итоговая конфигурация не менялась.
+    #
+    # required: false — файла может не быть (быстрый старт без настройки).
+    env_file:
+      - path: .env
+        required: false
+    # Значения ниже заданы явно и ПЕРЕКРЫВАЮТ .env: DSN указывают на соседние
+    # сервисы этого же compose-файла, и подменять их через .env нечего.
     environment:
       GOTCHA_PG_DSN: postgres://gotcha:gotcha@postgres:5432/gotcha?sslmode=disable
       GOTCHA_CH_DSN: clickhouse://gotcha:gotcha@clickhouse:9000/gotcha

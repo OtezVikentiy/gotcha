@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -139,6 +140,76 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	http.Redirect(w, r, projectSetupPath(p.ID), http.StatusSeeOther)
+}
+
+// projectCreate — POST /projects/new: заводит проект в СУЩЕСТВУЮЩЕЙ
+// организации.
+//
+// До этого создать проект можно было только через онбординг, а он открывается
+// лишь тому, у кого нет ни одного проекта. То есть добавить второй сервис в
+// уже работающую установку было нельзя вообще: ни кнопки, ни маршрута. Для
+// продукта, который наблюдает за сервисами, «добавить ещё один сервис» —
+// повторяющийся сценарий, а не разовая настройка.
+//
+// Организация приходит из формы (у человека их может быть несколько), поэтому
+// права проверяются по ней, а не по сессии: requireOrgRole пускает только
+// owner/admin — тех же, кто и так управляет проектами организации.
+func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	orgID, err := strconv.ParseInt(r.FormValue("org_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad org_id", http.StatusBadRequest)
+		return
+	}
+	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
+		return
+	}
+
+	slug := strings.TrimSpace(r.FormValue("slug"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	platform := r.FormValue("platform")
+	form := templates.FormState{
+		"org_id": r.FormValue("org_id"), "slug": slug, "name": name, "platform": platform,
+	}.Open("new-project")
+
+	if !org.ValidSlug(slug) {
+		h.renderProjectsList(w, r, http.StatusUnprocessableEntity, uid, form,
+			onboardingErrorMessage(r.Context(), org.ErrInvalidSlug))
+		return
+	}
+	p, err := h.Org.CreateProject(r.Context(), orgID, slug, name, platform)
+	if err != nil {
+		h.renderProjectsList(w, r, http.StatusUnprocessableEntity, uid, form,
+			onboardingErrorMessage(r.Context(), err))
+		return
+	}
+
+	// Дальше — то же, что делает онбординг для своего первого проекта: правила
+	// алертинга по умолчанию и первый ключ приёма. Без ключа страница
+	// подключения SDK показала бы проект без DSN, то есть бесполезный.
+	if h.Alerts != nil {
+		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+	}
+	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	http.Redirect(w, r, projectSetupPath(p.ID), http.StatusSeeOther)
 }
 
@@ -344,6 +415,12 @@ func (h *Handler) projectsList(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	h.renderProjectsList(w, r, http.StatusOK, uid, nil, "")
+}
+
+// renderProjectsList — общий рендер списка проектов: GET и POST /projects/new
+// на 422 (то же сообщение на месте, без редиректа — как у renderAlerts).
+func (h *Handler) renderProjectsList(w http.ResponseWriter, r *http.Request, status int, uid int64, form templates.FormState, errMsg string) {
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -366,5 +443,31 @@ func (h *Handler) projectsList(w http.ResponseWriter, r *http.Request) {
 			CanManage: role == org.RoleOwner || role == org.RoleAdmin,
 		}
 	}
-	_ = templates.ProjectsList(items, h.currentEmail(r)).Render(r.Context(), w)
+	// Организации, в которых человек может завести проект: те же owner/admin,
+	// что и в rolesByOrg — но перечислить надо ВСЕ его организации, а не
+	// только те, где у него уже есть проекты, иначе пустая организация
+	// осталась бы без способа завести в ней первый проект.
+	orgs, err := h.Org.OrgsOf(r.Context(), uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	var canCreate []templates.OrgOption
+	for _, o := range orgs {
+		role, ok := rolesByOrg[o.ID]
+		if !ok {
+			role, err = h.Org.Role(r.Context(), o.ID, uid)
+			if err != nil && !errors.Is(err, org.ErrNotMember) {
+				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+				return
+			}
+			rolesByOrg[o.ID] = role
+		}
+		if role == org.RoleOwner || role == org.RoleAdmin {
+			canCreate = append(canCreate, templates.OrgOption{ID: o.ID, Name: o.Name})
+		}
+	}
+
+	w.WriteHeader(status)
+	_ = templates.ProjectsList(items, canCreate, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }

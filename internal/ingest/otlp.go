@@ -331,28 +331,182 @@ func otlpUnmarshal(enc otlpEncoding, raw []byte, req *tracepb.TracesData) error 
 // неоднозначности здесь нет, base64 16 байт — это 24 символа, 8 байт — 12, ни
 // то, ни другое не совпадает с 32/16.
 //
-// Тело уже ограничено по размеру (см. Handler.body), поэтому обход разобранного
-// JSON допустим; глубина рекурсии ограничена maxJSONIDDepth, а числа читаются
-// как json.Number — иначе большие наносекундные таймстемпы уехали бы через
-// float64 и вернулись в JSON в экспоненциальной записи, которую protojson не
-// примет. Любая ошибка разбора — не наша забота: возвращаем тело нетронутым и
-// даём protojson отчитаться об ошибке самому.
+// Разбор ПОТОКОВЫЙ: токен за токеном, сразу в выходной буфер. Раньше тело
+// целиком материализовалось в map[string]any/[]any, и это была удалённая
+// амплификация памяти — измерено: 10 МиБ тела (предел Handler.body для
+// распакованного) превращались в 507 МиБ кучи, ×51. На проводе с gzip такое
+// тело весит около 15 КБ, а ключ приёма публичен по построению — он лежит в
+// браузерных бандлах. Одного запроса хватало, чтобы положить процесс на
+// профиле с mem_limit 256 МиБ. Тот же класс уже чинили для zstd; это была
+// соседняя дверь.
+//
+// Числа переносятся как json.Number — иначе большие наносекундные таймстемпы
+// уехали бы через float64 и вернулись в экспоненциальной записи, которую
+// protojson не примет. Глубина ограничена maxJSONIDDepth. Любая ошибка
+// разбора — не наша забота: возвращаем тело нетронутым и даём protojson
+// отчитаться об ошибке самому.
 func otlpJSONHexIDs(raw []byte) []byte {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	var doc any
-	if err := dec.Decode(&doc); err != nil {
+
+	// Выход не больше входа плюс небольшой запас: hex→base64 короче исходного
+	// (32 символа против 24), а всё остальное переписывается один в один.
+	var out bytes.Buffer
+	out.Grow(len(raw))
+
+	w := &otlpIDRewriter{dec: dec, out: &out}
+	if err := w.value(0); err != nil {
 		return raw
 	}
-	if !rewriteOTLPIDs(doc, 0) {
+	// В теле обязан быть ровно один документ; хвост означает мусор, и разбирать
+	// его — забота protojson, а не наша.
+	if _, err := dec.Token(); err != io.EOF {
+		return raw
+	}
+	if !w.changed {
 		return raw // hex-идентификаторов не было: тело уже в base64
 	}
-	out, err := json.Marshal(doc)
-	if err != nil {
-		return raw
-	}
-	return out
+	return out.Bytes()
 }
+
+// otlpIDRewriter переписывает поток JSON-токенов в выходной буфер, подменяя
+// значения идентификаторов из otlpJSONIDLen с hex на base64.
+//
+// Существует вместо обхода разобранного дерева, потому что дерево — это и был
+// вектор амплификации: json.Decoder читает по токену, а держать в памяти
+// приходится только выход.
+type otlpIDRewriter struct {
+	dec     *json.Decoder
+	out     *bytes.Buffer
+	changed bool
+}
+
+// value переписывает одно значение (скаляр, объект или массив) с его позиции в
+// потоке. Глубже maxJSONIDDepth идентификаторов не бывает, но копировать
+// содержимое всё равно надо — иначе тело потеряло бы данные, поэтому глубина
+// только отключает подмену, а не обход.
+func (w *otlpIDRewriter) value(depth int) error {
+	tok, err := w.dec.Token()
+	if err != nil {
+		return err
+	}
+	return w.valueFrom(tok, depth, "")
+}
+
+// valueFrom переписывает значение, первый токен которого уже прочитан. key —
+// имя поля, в котором это значение лежит (пусто для элементов массива и
+// корня): по нему решается, подменять ли идентификатор.
+func (w *otlpIDRewriter) valueFrom(tok json.Token, depth int, key string) error {
+	switch t := tok.(type) {
+	case json.Delim:
+		switch t {
+		case '{':
+			return w.object(depth)
+		case '[':
+			return w.array(depth)
+		default:
+			// '}' или ']' на месте значения — сломанный JSON.
+			return errUnexpectedJSONDelim
+		}
+	case string:
+		if n, ok := otlpJSONIDLen[key]; ok && depth <= maxJSONIDDepth {
+			if b64, ok := hexIDToBase64(t, n); ok {
+				w.changed = true
+				return w.writeString(b64)
+			}
+		}
+		return w.writeString(t)
+	case json.Number:
+		_, err := w.out.WriteString(t.String())
+		return err
+	case bool:
+		if t {
+			_, err := w.out.WriteString("true")
+			return err
+		}
+		_, err := w.out.WriteString("false")
+		return err
+	case nil:
+		_, err := w.out.WriteString("null")
+		return err
+	default:
+		return errUnexpectedJSONToken
+	}
+}
+
+func (w *otlpIDRewriter) object(depth int) error {
+	w.out.WriteByte('{')
+	first := true
+	for w.dec.More() {
+		keyTok, err := w.dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return errUnexpectedJSONToken
+		}
+		if !first {
+			w.out.WriteByte(',')
+		}
+		first = false
+		if err := w.writeString(key); err != nil {
+			return err
+		}
+		w.out.WriteByte(':')
+
+		valTok, err := w.dec.Token()
+		if err != nil {
+			return err
+		}
+		if err := w.valueFrom(valTok, depth+1, key); err != nil {
+			return err
+		}
+	}
+	if _, err := w.dec.Token(); err != nil { // закрывающая '}'
+		return err
+	}
+	w.out.WriteByte('}')
+	return nil
+}
+
+func (w *otlpIDRewriter) array(depth int) error {
+	w.out.WriteByte('[')
+	first := true
+	for w.dec.More() {
+		if !first {
+			w.out.WriteByte(',')
+		}
+		first = false
+		if err := w.value(depth + 1); err != nil {
+			return err
+		}
+	}
+	if _, err := w.dec.Token(); err != nil { // закрывающая ']'
+		return err
+	}
+	w.out.WriteByte(']')
+	return nil
+}
+
+// writeString пишет строку как JSON-литерал БЕЗ HTML-эскейпа: тела спанов несут
+// URL и SQL с символами &, < и >, и превращать их в \u0026 значило бы менять
+// данные ради ничего — этот JSON уходит не в браузер, а в protojson.
+func (w *otlpIDRewriter) writeString(s string) error {
+	enc := json.NewEncoder(w.out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return err
+	}
+	// Encode дописывает перевод строки — он здесь лишний.
+	w.out.Truncate(w.out.Len() - 1)
+	return nil
+}
+
+var (
+	errUnexpectedJSONToken = errors.New("ingest: unexpected json token")
+	errUnexpectedJSONDelim = errors.New("ingest: unexpected json delimiter")
+)
 
 // maxJSONIDDepth — предел глубины обхода в otlpJSONHexIDs. Идентификаторы живут
 // на глубине ~6 (resourceSpans → scopeSpans → spans → links); всё, что глубже, —
@@ -369,39 +523,6 @@ var otlpJSONIDLen = map[string]int{
 	"span_id":        maxSpanID,
 	"parentSpanId":   maxSpanID,
 	"parent_span_id": maxSpanID,
-}
-
-// rewriteOTLPIDs — обход разобранного JSON; возвращает true, если что-то
-// переписал (тогда тело придётся собрать заново).
-func rewriteOTLPIDs(v any, depth int) bool {
-	if depth > maxJSONIDDepth {
-		return false
-	}
-	changed := false
-	switch x := v.(type) {
-	case map[string]any:
-		for k, val := range x {
-			if n, ok := otlpJSONIDLen[k]; ok {
-				if s, ok := val.(string); ok {
-					if b64, ok := hexIDToBase64(s, n); ok {
-						x[k] = b64
-						changed = true
-						continue
-					}
-				}
-			}
-			if rewriteOTLPIDs(val, depth+1) {
-				changed = true
-			}
-		}
-	case []any:
-		for _, e := range x {
-			if rewriteOTLPIDs(e, depth+1) {
-				changed = true
-			}
-		}
-	}
-	return changed
 }
 
 // hexIDToBase64 переводит hex-идентификатор ровно длины n в base64. ok=false —

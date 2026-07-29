@@ -66,10 +66,10 @@ func TestRuleCRUDAndUpsert(t *testing.T) {
 		t.Errorf("Rules[0] after update = %+v, want enabled=false throttle=60", rules[0])
 	}
 
-	if err := svc.DeleteRule(ctx, id); err != nil {
+	if err := svc.DeleteRule(ctx, pid, id); err != nil {
 		t.Fatalf("DeleteRule: %v", err)
 	}
-	if err := svc.DeleteRule(ctx, id); !errors.Is(err, alert.ErrNotFound) {
+	if err := svc.DeleteRule(ctx, pid, id); !errors.Is(err, alert.ErrNotFound) {
 		t.Fatalf("DeleteRule (already gone): got %v, want ErrNotFound", err)
 	}
 }
@@ -176,10 +176,10 @@ func TestChannelCRUDAndValidation(t *testing.T) {
 		t.Fatalf("Channels: %+v err=%v, want 3", channels, err)
 	}
 
-	if err := svc.DeleteChannel(ctx, id); err != nil {
+	if err := svc.DeleteChannel(ctx, pid, id); err != nil {
 		t.Fatalf("DeleteChannel: %v", err)
 	}
-	if err := svc.DeleteChannel(ctx, id); !errors.Is(err, alert.ErrNotFound) {
+	if err := svc.DeleteChannel(ctx, pid, id); !errors.Is(err, alert.ErrNotFound) {
 		t.Fatalf("DeleteChannel (already gone): got %v, want ErrNotFound", err)
 	}
 	channels, err = svc.Channels(ctx, pid)
