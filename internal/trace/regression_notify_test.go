@@ -38,7 +38,7 @@ func TestRegressionNotifierEnqueuesPerChannel(t *testing.T) {
 		t.Fatalf("CreateChannel telegram: %v", err)
 	}
 
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
 		Kind: "regression_open", ProjectID: pid, Target: "GET /api/users", Metric: "duration",
 		BaselineValue: 800, CurrentValue: 1200, PctIncrease: 0.5,
@@ -116,7 +116,7 @@ func TestRegressionNotifierCloseSubject(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
 		Kind: "regression_close", ProjectID: pid, Target: "LCP /", Metric: "lcp",
 		BaselineValue: 2000, CurrentValue: 2100, PctIncrease: 0.05, DurationSeconds: 3665,
@@ -162,7 +162,7 @@ func TestRegressionNotifierSkipsDisabledAndEmail(t *testing.T) {
 		t.Fatalf("CreateChannel telegram: %v", err)
 	}
 
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
 		Kind: "regression_open", ProjectID: pid, Target: "GET /x", Metric: "duration",
 		BaselineValue: 100, CurrentValue: 250, PctIncrease: 1.5,
@@ -187,7 +187,7 @@ func TestRegressionNotifierNoChannels(t *testing.T) {
 	defer cancel()
 
 	pid := newPerfProject(t, pool, "regnotif3")
-	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
 		Kind: "regression_open", ProjectID: pid, Target: "GET /none", Metric: "duration",
 		BaselineValue: 100, CurrentValue: 250, PctIncrease: 1.5,
@@ -205,7 +205,7 @@ func TestRegressionNotifierNoChannels(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при ExternalDetails=false во внешние каналы не должно
+// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
 // уезжать имя цели регрессии (target_name/тело); при true — уезжает.
 func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
@@ -228,7 +228,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("CreateChannel: %v", err)
 		}
-		n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, false)}
 		if err := n.Notify(ctx, newEv(pid)); err != nil {
 			t.Fatalf("Notify: %v", err)
 		}
@@ -258,7 +258,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("CreateChannel: %v", err)
 		}
-		n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		if err := n.Notify(ctx, newEv(pid)); err != nil {
 			t.Fatalf("Notify: %v", err)
 		}
@@ -267,7 +267,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
 		}
 		if jobs[0].Payload["target_name"] != "GET /api/users" {
-			t.Errorf("target_name missing at ExternalDetails=true: %+v", jobs[0].Payload)
+			t.Errorf("target_name missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
 }

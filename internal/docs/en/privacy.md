@@ -38,7 +38,7 @@ Sessions (`sessions`) store only a token hash and `user_id` — no IP, no user a
 - **IP and email scrubbing also matches FIELD NAMES.** With `GOTCHA_SCRUB_IP`/`GOTCHA_SCRUB_EMAIL` on, the value of any field whose name (case- and separator-insensitive) contains `email` — or one of `user_ip`, `ip_address`, `client_address`, `net_peer_ip`, `network_peer_address`, `client_ip`, `x_forwarded_for`, `x_real_ip`, `remote_addr`, `cf_connecting_ip`, `Forwarded` — is redacted, in tags, OTLP attributes, `span.data`, headers and query strings. In practice a `customer_email` tag becomes `[scrubbed]` even though it is not in `GOTCHA_SCRUB_KEYS`. Use `GOTCHA_SCRUB_ALLOW_KEYS` to get a specific name back.
 - **IP and email scrubbing on ingest.** `GOTCHA_SCRUB_IP=true` and `GOTCHA_SCRUB_EMAIL=true` by default: `events.user_ip` and `events.user_email` are nulled before they reach ClickHouse. Denylisted keys (`GOTCHA_SCRUB_KEYS`) are stripped from tags, contexts, headers, query strings and request bodies. Matching is **fail-closed**: a name is redacted when it *contains* a denylist word, so `x_api_key`, `clientSecret` and `mytoken` are all caught — and so are `author` (contains `auth`) and `tokenizer` (contains `token`). Under-redacting leaks personal data; over-redacting costs a debugging field and is reversible with `GOTCHA_SCRUB_ALLOW_KEYS`.
 - **Retention.** TTL is enforced and configurable: events and more via `GOTCHA_RETENTION_DAYS`, with spans, metrics, and profiles having their own settings (see [Configuration](/docs/configuration)). Data is deleted from ClickHouse automatically once its retention expires.
-- **Anonymized external notifications.** `GOTCHA_EXTERNAL_CHANNEL_DETAILS=false` by default (privacy-by-default): Telegram/webhook receive only an anonymized link back to the instance, not the error text. See the external-recipients section below.
+- **Anonymized external notifications.** By default, error text reaches trusted recipients only — those on your own domains or internal network; everyone else, Telegram included, gets an anonymized link back to the instance. See the external-recipients section below.
 - **No phone-home.** Gotcha sends no analytics or telemetry back to its developers. The only external recipients are the ones you configure (alert channels, SSO providers).
 - **SSRF protection.** Outbound requests (webhook alerts, uptime checks) do not target private/loopback addresses by default (`GOTCHA_SSRF_ALLOW_PRIVATE=false`).
 
@@ -65,12 +65,34 @@ When you connect an alert channel or SSO, personal data can leave your perimeter
 
 | Recipient | What is sent | Jurisdiction |
 |---|---|---|
-| Telegram | alert text/link (recipient `chat_id`) | servers outside Russia |
-| Email (SMTP) | alert text/link, recipient email | your SMTP server |
-| Webhook | alert payload | the address you configured |
+| Telegram | alert link and the recipient `chat_id`; the text only with `GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` | servers outside Russia |
+| Email (SMTP) | the recipient address and the alert link; the text only for trusted recipients (below) | your SMTP server and the recipient's mail server |
+| Webhook | the alert payload; details only for trusted hosts (below) | the address you configured |
 | OAuth/SSO (Yandex ID, VK ID, generic OIDC) | email/subject at sign-in | the provider (Yandex/VK — Russia) |
 
-Sending error text (with possible personal data) to Telegram is a potential **cross-border transfer** (152-FZ art. 12). That is why details are off by default (`GOTCHA_EXTERNAL_CHANNEL_DETAILS=false`). If you enable details, make sure you have a lawful basis for cross-border transfer. If your jurisdiction requires it, prefer a webhook channel pointed at infrastructure you control over Telegram, or keep details off. (Overriding the Telegram API endpoint is not exposed as a setting: it exists only as a field in the code.)
+Sending error text (with possible personal data) outside your perimeter is a potential **cross-border transfer** (152-FZ art. 12). By default, event details — title, culprit, level, message body — therefore reach **trusted recipients only**; everyone else gets an anonymized notification with a link back to the instance.
+
+A recipient is trusted when its address belongs to your infrastructure:
+
+| Recipient | Trusted when |
+|---|---|
+| Email | the address domain is the instance host (or a subdomain of it), or is listed in `GOTCHA_TRUSTED_RECIPIENTS` |
+| Webhook | the URL host is the same, or any internal address: `localhost`, private ranges (`10.0.0.0/8`, `192.168.0.0/16`, …), the `.local`, `.internal`, `.lan`, `.home.arpa` zones |
+| Telegram | never: the recipient is a `chat_id` with no domain, and the service is outside your perimeter by definition |
+
+The decision is made per **recipient**, not per channel type. A mailbox on a public mail service is someone else's infrastructure exactly as Telegram is; a webhook pointed at your own server on an internal network never leaves your perimeter at all.
+
+If your organization's domain differs from the instance host, list it explicitly:
+
+```
+GOTCHA_TRUSTED_RECIPIENTS=corp.example,ops.corp.example
+```
+
+Matching happens on label boundaries: `corp.example` covers `mail.corp.example` but not `evilcorp.example`. The instance's parent domain is **not** trusted automatically — walking one level up from `gotcha.github.io` would extend trust to all of `github.io`, meaning every unrelated project on that host.
+
+`GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` lifts the restriction entirely: details then go to every recipient, Telegram included. Enable it only if you have a lawful basis for cross-border transfer. (Overriding the Telegram API endpoint is not exposed as a setting: it exists only as a field in the code.)
+
+The active policy is printed at startup: the line `alert details: sent only to trusted recipients` lists the instance host and the configured list.
 
 ## Your obligations as an operator (152-FZ)
 

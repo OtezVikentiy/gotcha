@@ -37,9 +37,10 @@ type Digester struct {
 	// EmailEnabled — см. Evaluator.EmailEnabled.
 	EmailEnabled bool
 
-	// ExternalDetails — см. Evaluator.ExternalDetails. Сводка деталей события не
-	// несёт (только число и ссылку), но гейт применяем единообразно.
-	ExternalDetails bool
+	// Details — политика раскрытия деталей события получателю уведомления
+	// (см. DetailPolicy). Нулевое значение не доверяет никому: детали уходят
+	// только тем, кого оператор подтвердил как свой контур.
+	Details DetailPolicy
 
 	// Interval — период тика; 0 → digestInterval.
 	Interval time.Duration
@@ -112,7 +113,7 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 			"target":       ch.Target,
 		}
 		// Тот же гейт трансграничной передачи, что у остальных нотифаеров.
-		if !d.ExternalDetails && (ch.Kind == ChannelTelegram || ch.Kind == ChannelWebhook) {
+		if !d.Details.AllowsDetails(ch) {
 			payload = notify.RedactExternalPayload(payload)
 		}
 		if err := d.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {

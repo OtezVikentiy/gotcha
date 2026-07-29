@@ -58,12 +58,9 @@ type OutboxNotifier struct {
 	// задачи, которые notify.Worker всё равно не сможет доставить.
 	EmailEnabled bool
 
-	// ExternalDetails — см. alert.Evaluator.ExternalDetails: при false во
-	// внешние каналы (Telegram/webhook) уходит обезличенный payload без
-	// iss.Title/iss.Culprit (имя транзакции, текст SQL — потенциальные ПДн за
-	// пределами РФ, 152-ФЗ). Дефолт — false (обезличенный); true — явное
-	// включение оператором (GOTCHA_EXTERNAL_CHANNEL_DETAILS).
-	ExternalDetails bool
+	// Details — политика раскрытия деталей события получателю уведомления
+	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
+	Details alert.DetailPolicy
 }
 
 // NotifyNew ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -157,9 +154,9 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 			// alert_channels.secret. notify.Worker достаёт секрет по
 			// channel_id в момент отправки (см. notify.SecretResolver).
 		}
-		// Гейт трансграничной передачи: во внешние каналы без ExternalDetails
+		// Гейт трансграничной передачи: получателю вне контура оператора
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).
-		if !n.ExternalDetails && (ch.Kind == alert.ChannelTelegram || ch.Kind == alert.ChannelWebhook) {
+		if !n.Details.AllowsDetails(ch) {
 			payload = notify.RedactExternalPayload(payload)
 		}
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {

@@ -40,7 +40,7 @@ func TestAlertBudgetSuppressesFloodAndKeepsCount(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertRule: %v", err)
 	}
-	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 
 	// Десять РАЗНЫХ issue: пер-issue троттлинг их не сдерживает — у каждого
 	// своя строка в alert_throttle, и каждая claim'ится успешно.
@@ -88,7 +88,7 @@ func TestAlertBudgetDigestReportsSuppressed(t *testing.T) {
 		t.Fatalf("UpsertRule: %v", err)
 	}
 	ob := notify.NewOutbox(pool)
-	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 
 	for i := 0; i < 7; i++ {
 		issueID := newEvalIssue(t, pool, pid, fmt.Sprintf("fp-digest-%d", i))
@@ -152,7 +152,7 @@ func TestAlertBudgetDisabled(t *testing.T) {
 		t.Fatalf("UpsertRule: %v", err)
 	}
 	ob := notify.NewOutbox(pool)
-	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 
 	for i := 0; i < 20; i++ {
 		issueID := newEvalIssue(t, pool, pid, fmt.Sprintf("fp-nobudget-%d", i))
@@ -197,7 +197,7 @@ func TestDigesterSendsSummary(t *testing.T) {
 	}
 
 	ob := notify.NewOutbox(pool)
-	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	for i := 0; i < 4; i++ {
 		issueID := newEvalIssue(t, pool, pid, fmt.Sprintf("fp-dg-%d", i))
 		e.OnIssue(ctx, alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom"})
@@ -207,7 +207,7 @@ func TestDigesterSendsSummary(t *testing.T) {
 	}
 	time.Sleep(1200 * time.Millisecond) // окно должно закрыться
 
-	d := &alert.Digester{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	d := &alert.Digester{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	d.Tick(ctx)
 
 	jobs, err := ob.Claim(ctx, 100)

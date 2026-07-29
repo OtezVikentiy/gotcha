@@ -555,3 +555,35 @@ func hasAll(got, want []string) bool {
 	}
 	return true
 }
+
+// TestTrustedRecipientsParsed — список доменов своего контура разбирается из
+// запятых, чистится от пробелов и регистра, пустые записи отбрасываются.
+func TestTrustedRecipientsParsed(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_TRUSTED_RECIPIENTS": " Corp.Example , ,ops.example,",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := []string{"corp.example", "ops.example"}
+	if len(cfg.TrustedRecipients) != len(want) {
+		t.Fatalf("TrustedRecipients = %v, want %v", cfg.TrustedRecipients, want)
+	}
+	for i, w := range want {
+		if cfg.TrustedRecipients[i] != w {
+			t.Errorf("TrustedRecipients[%d] = %q, want %q", i, cfg.TrustedRecipients[i], w)
+		}
+	}
+}
+
+// TestTrustedRecipientsEmptyByDefault — без настройки список пуст: доверие
+// хосту инстанса политика выводит сама, конфиг тут ничего не подставляет.
+func TestTrustedRecipientsEmptyByDefault(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.TrustedRecipients) != 0 {
+		t.Fatalf("TrustedRecipients = %v, want empty", cfg.TrustedRecipients)
+	}
+}

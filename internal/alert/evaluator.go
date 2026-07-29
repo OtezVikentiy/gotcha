@@ -43,15 +43,10 @@ type Evaluator struct {
 	// очередь задачи, которые notify.Worker всё равно не сможет доставить.
 	EmailEnabled bool
 
-	// ExternalDetails управляет тем, раскрывать ли детали ошибки во внешние
-	// каналы (Telegram/webhook). Дефолт — false (проставляется в main.go из
-	// cfg.ExternalChannelDetails; GOTCHA_EXTERNAL_CHANNEL_DETAILS по умолчанию
-	// false): во внешние каналы уходит только ссылка на issue и вид алерта —
-	// текст ошибки может нести ПДн, а Telegram/webhook уводят их за пределы
-	// РФ (152-ФЗ). true (явное включение оператором) — слать полный payload с
-	// title/culprit/level/телом. Email — внутренний SMTP оператора — гейтом
-	// не затрагивается.
-	ExternalDetails bool
+	// Details — политика раскрытия деталей события получателю уведомления
+	// (см. DetailPolicy). Нулевое значение не доверяет никому: детали уходят
+	// только тем, кого оператор подтвердил как свой контур.
+	Details DetailPolicy
 }
 
 // OnIssue — точка входа для ingest.Pipeline (new_issue/regression) и
@@ -129,10 +124,10 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 			"channel_kind": ch.Kind,
 			"target":       ch.Target,
 		}
-		if !e.ExternalDetails && (ch.Kind == ChannelTelegram || ch.Kind == ChannelWebhook) {
+		if !e.Details.AllowsDetails(ch) {
 			// Обезличиваем payload для внешних каналов: без title/culprit/
 			// level и без текста ошибки в теле/subject — только маршрутные
-			// поля, ссылка на issue и вид алерта (см. Evaluator.ExternalDetails
+			// поля, ссылка на issue и вид алерта (см. Evaluator.Details
 			// и notify.RedactExternalPayload — тот же гейт во всех нотифаерах).
 			payload = notify.RedactExternalPayload(payload)
 		}

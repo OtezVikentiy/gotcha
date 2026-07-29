@@ -158,6 +158,10 @@ func run() error {
 		return nil
 	}
 
+	// Кому уйдут детали события — печатаем один раз на старте, до того как
+	// заработает первый нотифаер (в режиме probe нотифаеров нет вовсе).
+	logDetailPolicy(cfg)
+
 	pg, err := db.NewPostgres(ctx, cfg.PostgresDSN)
 	if err != nil {
 		return err
@@ -331,12 +335,12 @@ func run() error {
 			})
 		}
 		uptimeNotifier = &uptime.OutboxNotifier{
-			Alerts:          alertSvc,
-			Uptime:          uptimeSvc,
-			Outbox:          outbox,
-			BaseURL:         cfg.BaseURL,
-			EmailEnabled:    emailSender.Configured(),
-			ExternalDetails: cfg.ExternalChannelDetails,
+			Alerts:       alertSvc,
+			Uptime:       uptimeSvc,
+			Outbox:       outbox,
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+			Details:      detailPolicy(cfg),
 		}
 		uptimeDetector = &uptime.Detector{Svc: uptimeSvc, Notifier: uptimeNotifier}
 		// Ingestor нужен и режиму web (через него /probe/results проводит
@@ -449,11 +453,11 @@ func run() error {
 		// потеря, а «тишина в Telegram» неотличима от «всё спокойно».
 		if alertSvc != nil {
 			digester := &alert.Digester{
-				Svc:             alertSvc,
-				Outbox:          outbox,
-				BaseURL:         cfg.BaseURL,
-				EmailEnabled:    emailSender != nil && emailSender.Configured(),
-				ExternalDetails: cfg.ExternalChannelDetails,
+				Svc:          alertSvc,
+				Outbox:       outbox,
+				BaseURL:      cfg.BaseURL,
+				EmailEnabled: emailSender != nil && emailSender.Configured(),
+				Details:      detailPolicy(cfg),
 			}
 			go digester.Run(ctx)
 		}
@@ -497,7 +501,7 @@ func run() error {
 
 		evaluator := &alert.Evaluator{
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
-			ExternalDetails: cfg.ExternalChannelDetails,
+			Details: detailPolicy(cfg),
 		}
 		spikeWorker := &alert.Spike{
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
@@ -511,12 +515,12 @@ func run() error {
 		// один инстанс на процесс, чтобы не держать два кеша одного и того же.
 		projectCache := ingest.NewProjectCache(orgSvc)
 		perfNotifier := &trace.OutboxNotifier{
-			Alerts:          alertSvc,
-			Outbox:          outbox,
-			Pool:            pg, // perf_alert_throttle: рассылка ограничена по проекту
-			BaseURL:         cfg.BaseURL,
-			EmailEnabled:    emailSender.Configured(),
-			ExternalDetails: cfg.ExternalChannelDetails,
+			Alerts:       alertSvc,
+			Outbox:       outbox,
+			Pool:         pg, // perf_alert_throttle: рассылка ограничена по проекту
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+			Details:      detailPolicy(cfg),
 		}
 
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
@@ -734,11 +738,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:       trace.NewQuery(ch),
 		Regressions: trace.NewRegressionService(pg),
 		Notifier: &trace.RegressionNotifier{
-			Alerts:          alertSvc,
-			Outbox:          outbox,
-			BaseURL:         cfg.BaseURL,
-			EmailEnabled:    emailSender.Configured(),
-			ExternalDetails: cfg.ExternalChannelDetails,
+			Alerts:       alertSvc,
+			Outbox:       outbox,
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+			Details:      detailPolicy(cfg),
 		},
 	}
 	go evaluator.Run(ctx)
@@ -752,11 +756,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:     metric.NewQuery(ch),
 		Incidents: metric.NewIncidentService(pg),
 		Notifier: &metric.MetricNotifier{
-			Alerts:          alertSvc,
-			Outbox:          outbox,
-			BaseURL:         cfg.BaseURL,
-			EmailEnabled:    emailSender.Configured(),
-			ExternalDetails: cfg.ExternalChannelDetails,
+			Alerts:       alertSvc,
+			Outbox:       outbox,
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+			Details:      detailPolicy(cfg),
 		},
 		Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
 	}
@@ -770,11 +774,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pg),
 		Notifier: &profile.RegressionNotifier{
-			Alerts:          alertSvc,
-			Outbox:          outbox,
-			BaseURL:         cfg.BaseURL,
-			EmailEnabled:    emailSender.Configured(),
-			ExternalDetails: cfg.ExternalChannelDetails,
+			Alerts:       alertSvc,
+			Outbox:       outbox,
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+			Details:      detailPolicy(cfg),
 		},
 		Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
 		Config:   profile.DefaultProfileRegressionConfig(),
@@ -785,6 +789,34 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 // runEvaluators — запускать ли оценщики в режиме uptime|all. Явное значение
 // переменной перекрывает дефолт (например, чтобы выключить их на реплике,
 // которая крутит только проверки аптайма).
+// detailPolicy — политика раскрытия деталей события получателю уведомления.
+// Одна на процесс и собирается из конфига: раньше каждый нотифаер получал
+// голый bool и сам решал по типу канала, и правило разъезжалось от нотифаера к
+// нотифаеру (их семь). Теперь решение живёт в одном типе, а поле обязано быть
+// заполнено — компилятор не даст завести восьмой нотифаер, забыв про гейт.
+func detailPolicy(cfg Config) alert.DetailPolicy {
+	return alert.NewDetailPolicy(cfg.BaseURL, cfg.TrustedRecipients, cfg.ExternalChannelDetails)
+}
+
+// logDetailPolicy — один раз при старте пишет, кому уйдут детали события.
+//
+// Правило перестало быть очевидным из одного флага: раньше «email — всегда,
+// остальные — по GOTCHA_EXTERNAL_CHANNEL_DETAILS», теперь решает домен
+// получателя. Оператор, у которого почта на другом домене, обнаружил бы
+// пропажу деталей только по отсутствию текста в письме — а из лога видно
+// сразу, какой список действует и чего в нём не хватает.
+func logDetailPolicy(cfg Config) {
+	switch {
+	case cfg.ExternalChannelDetails:
+		slog.Info("alert details: sent to every recipient (GOTCHA_EXTERNAL_CHANNEL_DETAILS=true)")
+	default:
+		slog.Info("alert details: sent only to trusted recipients",
+			"instance_host", cfg.BaseURL,
+			"trusted_recipients", cfg.TrustedRecipients,
+			"hint", "add organization mail/webhook domains via GOTCHA_TRUSTED_RECIPIENTS")
+	}
+}
+
 func runEvaluators(cfg Config) bool {
 	if cfg.RunEvaluators != nil {
 		return *cfg.RunEvaluators

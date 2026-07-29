@@ -51,7 +51,7 @@ func TestOutboxNotifierOwnChannelsWebhookAndTelegram(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{webhookCh, telegramCh})
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	err = n.Notify(ctx, uptime.Event{
 		Kind:    "down",
 		Monitor: m,
@@ -132,7 +132,7 @@ func TestOutboxNotifierFallsBackToProjectChannels(t *testing.T) {
 	// Монитор без своих каналов.
 	m := newNotifierMonitor(t, usvc, pid, nil)
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m, Cause: "timeout"}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestOutboxNotifierSkipsEmailWhenDisabled(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{emailCh, webhookCh})
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestOutboxNotifierSkipsDisabledChannel(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{disabledCh, enabledCh})
 
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestOutboxNotifierSubjectsPerKind(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{ch})
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 
 	cases := []struct {
 		ev      uptime.Event
@@ -360,7 +360,7 @@ func TestOutboxNotifierAllOwnChannelsDisabled(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при ExternalDetails=false во внешние каналы не должно
+// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
 // уезжать имя монитора/причина падения (тело/subject/monitor_name/cause);
 // при true — уезжает, как раньше.
 func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
@@ -387,7 +387,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 		}
 		m := newNotifierMonitor(t, usvc, pid, []int64{webhookCh, telegramCh})
 
-		n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, false)}
 		if err := n.Notify(ctx, uptime.Event{
 			Kind: "down", Monitor: m, Regions: []string{"eu"}, Cause: "connection refused",
 		}); err != nil {
@@ -434,7 +434,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 		}
 		m := newNotifierMonitor(t, usvc, pid, []int64{webhookCh})
 
-		n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		if err := n.Notify(ctx, uptime.Event{
 			Kind: "down", Monitor: m, Regions: []string{"eu"}, Cause: "connection refused",
 		}); err != nil {
@@ -445,7 +445,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
 		}
 		if jobs[0].Payload["monitor_name"] != "API health" || jobs[0].Payload["cause"] != "connection refused" {
-			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
+			t.Errorf("external details missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
 }
@@ -493,7 +493,7 @@ func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 	}
 
 	m := newNotifierMonitor(t, usvc, pid, []int64{ownCh})
-	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.Notify(ctx, uptime.Event{Kind: "down", Monitor: m}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}

@@ -27,7 +27,7 @@ func TestRegressionNotifierEnqueues(t *testing.T) {
 		t.Fatalf("channel: %v", err)
 	}
 
-	n := &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := profile.ProfileRegressionEvent{
 		ProjectID: pid, Service: "api", ProfileType: "cpu", Function: "compress",
 		BaselineShare: 0.1, CurrentShare: 0.3, PctIncrease: 2.0, Opened: true,
@@ -54,7 +54,7 @@ func TestRegressionNotifierEnqueues(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при ExternalDetails=false во внешние каналы не должно
+// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
 // уезжать имя функции/сервиса (тело/subject); при true — уезжает.
 func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 	if testing.Short() {
@@ -77,7 +77,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("channel: %v", err)
 		}
-		n := &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		n := &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, false)}
 		e := ev
 		e.ProjectID = pid
 		if err := n.Notify(ctx, e); err != nil {
@@ -109,7 +109,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("channel: %v", err)
 		}
-		n := &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		n := &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		e := ev
 		e.ProjectID = pid
 		if err := n.Notify(ctx, e); err != nil {
@@ -120,7 +120,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 			t.Fatalf("jobs = %d, want 1", len(jobs))
 		}
 		if jobs[0].Payload["function"] != "compress" {
-			t.Errorf("function missing at ExternalDetails=true: %+v", jobs[0].Payload)
+			t.Errorf("function missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
 }

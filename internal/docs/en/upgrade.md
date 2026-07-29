@@ -5,6 +5,24 @@
 An upgrade applies database schema migrations — this is not reversible automatically (nobody runs a "just in case" down-migration for you). Before upgrading, back up both PostgreSQL and ClickHouse — see [Backup & Restore](/docs/backup-restore). Don't skip this even if the upgrade looks minor.
 
 
+## What changes when upgrading from versions before 0.4.2: details no longer reach everyone
+
+Whether an alert carried the error text used to be decided by channel type: Telegram and webhooks counted as external, email as internal — so any mailbox received the full text. It is now decided per recipient: trusted means an address on your instance host, on a domain listed in `GOTCHA_TRUSTED_RECIPIENTS`, or on an internal network.
+
+In practice:
+
+- **mail on a public service** (`@gmail.com`, `@yandex.ru`, and the like) no longer receives the error text — only a link to the issue in the interface;
+- **mail on your organization's domain** stops receiving details too, if that domain differs from the instance host, until you list it in `GOTCHA_TRUSTED_RECIPIENTS`;
+- **a webhook pointed at your internal infrastructure** now does receive details — previously that required turning `GOTCHA_EXTERNAL_CHANNEL_DETAILS` on globally, which opened up Telegram as well.
+
+If your mail lives on an organization domain, add it before upgrading:
+
+```
+GOTCHA_TRUSTED_RECIPIENTS=corp.example
+```
+
+The startup log confirms what took effect: the line `alert details: sent only to trusted recipients` lists the active set. Details are in [Privacy and 152-FZ](/docs/privacy).
+
 ## One-off step when upgrading from versions before 0.4.2: rotate channel secrets
 
 Before this version a delivery channel's secret (Telegram bot token, webhook signing key) was written into the `notification_outbox` queue **in the clear** — the `payload` column is a plain `jsonb`, which made the encryption of `alert_channels.secret` pointless. Migration `0025` strips those values from the queue during the upgrade, and the new code no longer puts them there: the secret is fetched by channel id at send time.

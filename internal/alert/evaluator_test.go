@@ -78,7 +78,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("CreateChannel telegram: %v", err)
 		}
 
-		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		e.OnIssue(ctx, alert.Event{
 			ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue,
 			Title: "boom", Culprit: "app.x", Level: "error", TimesSeen: 3,
@@ -289,10 +289,10 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		}
 	})
 
-	// ExternalDetails=false: во внешние каналы (Telegram/webhook) не должны
+	// политике без доверия получателю: во внешние каналы (Telegram/webhook) не должны
 	// уезжать текст ошибки/детали (title/culprit/level/тело) — только ссылка
 	// на issue и вид алерта. Защита от трансграничной передачи ПДн (152-ФЗ).
-	t.Run("external details withheld from telegram/webhook when ExternalDetails=false", func(t *testing.T) {
+	t.Run("external details withheld from telegram/webhook when the recipient is not trusted", func(t *testing.T) {
 		pid := newEvalProject(t, pool, "eval7")
 		issueID := newEvalIssue(t, pool, pid, "fp-1")
 		if _, err := svc.UpsertRule(ctx, alert.Rule{
@@ -313,7 +313,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("CreateChannel telegram: %v", err)
 		}
 
-		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, false)}
 		e.OnIssue(ctx, alert.Event{
 			ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue,
 			Title: "boom", Culprit: "app.x", Level: "error", TimesSeen: 3,
@@ -368,9 +368,9 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		}
 	})
 
-	// ExternalDetails=true: поведение прежнее — детали доставляются во внешние
+	// разрешающей политике: поведение прежнее — детали доставляются во внешние
 	// каналы без изменений (обратная совместимость).
-	t.Run("external details delivered to telegram/webhook when ExternalDetails=true", func(t *testing.T) {
+	t.Run("external details delivered to telegram/webhook when the policy allows it", func(t *testing.T) {
 		pid := newEvalProject(t, pool, "eval8")
 		issueID := newEvalIssue(t, pool, pid, "fp-1")
 		if _, err := svc.UpsertRule(ctx, alert.Rule{
@@ -384,7 +384,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("CreateChannel webhook: %v", err)
 		}
 
-		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		e.OnIssue(ctx, alert.Event{
 			ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue,
 			Title: "boom", Culprit: "app.x", Level: "error", TimesSeen: 3,
@@ -395,7 +395,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("Claim: jobs=%d err=%v, want 1", len(jobs), err)
 		}
 		if jobs[0].Payload["title"] != "boom" || jobs[0].Payload["culprit"] != "app.x" {
-			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
+			t.Errorf("external details missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
 

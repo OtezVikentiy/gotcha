@@ -27,7 +27,7 @@ func TestMetricNotifierEnqueues(t *testing.T) {
 		t.Fatalf("create channel: %v", err)
 	}
 
-	n := &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
+	n := &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, Details: alert.NewDetailPolicy("", nil, true)}
 	ev := metric.MetricEvent{
 		ProjectID: projectID, MetricName: "http.errors", Aggregation: "avg", Comparator: "gt",
 		Threshold: 100, Current: 250, Peak: 300, Environment: "prod", Opened: true,
@@ -62,7 +62,7 @@ func TestMetricNotifierEnqueues(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при ExternalDetails=false во внешние каналы не должно
+// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
 // уезжать имя метрики/значения (тело/subject); при true — уезжает.
 func TestMetricNotifierExternalDetailsGate(t *testing.T) {
 	if testing.Short() {
@@ -85,7 +85,7 @@ func TestMetricNotifierExternalDetailsGate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("create channel: %v", err)
 		}
-		n := &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		n := &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, false)}
 		e := ev
 		e.ProjectID = pid
 		if err := n.Notify(ctx, e); err != nil {
@@ -117,7 +117,7 @@ func TestMetricNotifierExternalDetailsGate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("create channel: %v", err)
 		}
-		n := &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		n := &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		e := ev
 		e.ProjectID = pid
 		if err := n.Notify(ctx, e); err != nil {
@@ -128,7 +128,7 @@ func TestMetricNotifierExternalDetailsGate(t *testing.T) {
 			t.Fatalf("jobs = %d err=%v, want 1", len(jobs), err)
 		}
 		if jobs[0].Payload["metric"] != "http.errors" {
-			t.Errorf("metric missing at ExternalDetails=true: %+v", jobs[0].Payload)
+			t.Errorf("metric missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
 }

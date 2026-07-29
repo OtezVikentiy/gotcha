@@ -146,6 +146,7 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_SSRF_ALLOW_PRIVATE_OIDC` | inherits `GOTCHA_SSRF_ALLOW_PRIVATE` | Allow OIDC discovery/token calls to reach private addresses — needed for an internal IdP. Riskiest: the client secret is sent to the token endpoint taken from the discovery document. |
 | `GOTCHA_AUTO_MIGRATE` | `true` | Apply database schema migrations automatically on startup. `false` means migrations must be applied as a separate step beforehand — otherwise the app refuses to start against a schema that's out of date. See [Upgrade](/docs/upgrade) for details and when this is needed. |
 | `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `false` | Whether to send error text (title/culprit/body) to external alert channels (Telegram/webhook). `false` sends only an anonymized link back to the instance, without the error text (which may contain personal data you don't want leaving the instance). |
+| `GOTCHA_TRUSTED_RECIPIENTS` | empty | Comma-separated domains and hosts of your own perimeter: mail on these domains and webhooks on these hosts receive event details even with `GOTCHA_EXTERNAL_CHANNEL_DETAILS` off. Matching is on label boundaries (`corp.example` covers `mail.corp.example`, not `evilcorp.example`). The instance host from `GOTCHA_BASE_URL` and internal-network addresses are always trusted, with no configuration. See [Privacy and 152-FZ](/docs/privacy). |
 
 ## Uptime & probe
 

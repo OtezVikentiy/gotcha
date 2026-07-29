@@ -43,7 +43,7 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 	iss := rec.Issue
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.NotifyNew(ctx, pid, iss); err != nil {
 		t.Fatalf("NotifyNew: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при ExternalDetails=false во внешние каналы
+// Трансграничный гейт: при политике без доверия получателю во внешние каналы
 // (Telegram/webhook) не должны уезжать iss.Title/iss.Culprit (имя транзакции,
 // текст SQL — потенциальные ПДн, 152-ФЗ); при true — уезжают, как раньше.
 func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
@@ -128,7 +128,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 			t.Fatalf("Record: %v", err)
 		}
 
-		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: false}
+		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, false)}
 		if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
 			t.Fatalf("NotifyNew: %v", err)
 		}
@@ -171,7 +171,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Record: %v", err)
 		}
-		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
+		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 		if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
 			t.Fatalf("NotifyNew: %v", err)
 		}
@@ -180,7 +180,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
 		}
 		if jobs[0].Payload["title"] != rec.Issue.Title || jobs[0].Payload["culprit"] != "GET /api/users" {
-			t.Errorf("external details missing at ExternalDetails=true: %+v", jobs[0].Payload)
+			t.Errorf("external details missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
 }
@@ -207,7 +207,7 @@ func TestOutboxNotifierNotifyRegression(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.NotifyRegression(ctx, pid, rec.Issue); err != nil {
 		t.Fatalf("NotifyRegression: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestOutboxNotifierSkipsDisabledAndEmailChannels(t *testing.T) {
 	}
 	iss := rec.Issue
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", EmailEnabled: false, ExternalDetails: true}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", EmailEnabled: false, Details: alert.NewDetailPolicy("", nil, true)}
 	if err := n.NotifyNew(ctx, pid, iss); err != nil {
 		t.Fatalf("NotifyNew: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestOutboxNotifierThrottlesPerProject(t *testing.T) {
 		}
 	}
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", ExternalDetails: true}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 
 	// 30 РАЗНЫХ проблем одного проекта: рассылается ровно лимит.
 	const attempts = 30

@@ -130,11 +130,21 @@ type Config struct {
 	// умолчанию true; false выносит миграции в отдельный init-job, чтобы
 	// app-реплики не клинили все разом на dirty-состоянии.
 	AutoMigrate bool
-	// ExternalChannelDetails — слать ли текст ошибки (title/culprit/body) во
-	// внешние каналы (Telegram/webhook). По умолчанию false (privacy-by-default):
-	// шлётся только обезличенная ссылка. true включает полный текст (152-ФЗ:
-	// текст может нести ПДн, уезжающие за пределы РФ). См. boolEnvDef ниже.
+	// ExternalChannelDetails — разрешить текст ошибки (title/culprit/body)
+	// ЛЮБОМУ получателю уведомления, включая заведомо внешних. По умолчанию
+	// false (privacy-by-default): недоверенным получателям уходит только
+	// обезличенная ссылка. Оператор включает это, когда у него есть законное
+	// основание для трансграничной передачи (152-ФЗ ст. 12).
 	ExternalChannelDetails bool
+	// TrustedRecipients — домены и хосты, считающиеся своим контуром: почта на
+	// этих доменах и вебхуки на этих хостах получают детали события даже при
+	// ExternalChannelDetails=false. Совпадение суффиксом, поэтому запись
+	// «corp.example» покрывает и «mail.corp.example».
+	//
+	// Домен из BaseURL доверенный всегда и без настройки — см.
+	// alert.NewDetailPolicy. Эта настройка нужна там, где почта и вебхуки
+	// живут на другом домене той же организации.
+	TrustedRecipients []string
 
 	// UptimeConcurrency — сколько проверок uptime.Runner выполняет
 	// одновременно (режимы uptime|all).
@@ -402,6 +412,15 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_ALLOW_KEYS"), ",") {
 		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
 			cfg.ScrubAllowKeys = append(cfg.ScrubAllowKeys, k)
+		}
+	}
+	// GOTCHA_TRUSTED_RECIPIENTS — домены/хосты своего контура (см.
+	// Config.TrustedRecipients). Разбираем как список имён: невалидное имя тут
+	// не опасно (просто ни с чем не совпадёт), поэтому — в отличие от
+	// TRUSTED_PROXIES — падать на нём не за что.
+	for _, h := range strings.Split(getenv("GOTCHA_TRUSTED_RECIPIENTS"), ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			cfg.TrustedRecipients = append(cfg.TrustedRecipients, h)
 		}
 	}
 	// GOTCHA_TRUSTED_PROXIES — список CIDR («10.0.0.0/8») и/или голых IP
