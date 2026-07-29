@@ -39,12 +39,19 @@ func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
 	_ = templates.Register("", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
-// registrationClosed сообщает, закрыта ли сейчас самостоятельная парольная
-// регистрация: режим не open и на инстансе уже есть пользователь (bootstrap
-// первого админа пройден). Ошибку подсчёта трактуем как «не закрыто», чтобы не
-// прятать форму из-за временного сбоя БД — фактический гейтинг в registerSubmit.
+// registrationClosed сообщает, надо ли вместо формы регистрации показать
+// заглушку «регистрация закрыта».
+//
+// В режиме invite форма ПОКАЗЫВАЕТСЯ: человек приходит по ссылке-приглашению и
+// должен завести аккаунт, а есть ли на его адрес действующее приглашение,
+// известно только после ввода адреса. Отказ выдаётся уже на отправку
+// (registerSubmit) — иначе приглашённому просто некуда вводить свой email.
+//
+// closed прячет форму сразу: там новых аккаунтов не появляется вовсе.
+// Ошибку подсчёта трактуем как «не закрыто», чтобы не прятать форму из-за
+// временного сбоя БД — фактический гейтинг всё равно в registerSubmit.
 func (h *Handler) registrationClosed(r *http.Request) bool {
-	if h.RegistrationMode == "open" {
+	if h.RegistrationMode != "closed" {
 		return false
 	}
 	n, err := h.Auth.UserCount(r.Context())
@@ -52,6 +59,41 @@ func (h *Handler) registrationClosed(r *http.Request) bool {
 		return false
 	}
 	return n > 0
+}
+
+// invitedByEmail — пускать ли этот адрес на регистрацию по приглашению. Сам
+// отвечает отказом (403 со страницей регистрации), если нет: решение и ответ
+// живут рядом, чтобы вызывающий не мог забыть один из двух исходов.
+//
+// Приглашение здесь только проверяется, но не гасится: гасит его AcceptInvite
+// по токену из ссылки, уже после входа. Регистрация — это лишь пропуск к форме
+// приглашения, и потратить приглашение раньше, чем человек им воспользуется,
+// означало бы оставить его с аккаунтом, но без организации.
+func (h *Handler) invitedByEmail(w http.ResponseWriter, r *http.Request, email string) bool {
+	// closed — новых аккаунтов не появляется вообще, даже по действующему
+	// приглашению; ровно этим он и отличается от invite (та же граница, что и в
+	// oauthProvisionByInvite).
+	if h.RegistrationMode != "invite" || h.Org == nil {
+		h.denyRegistration(w, r)
+		return false
+	}
+	has, err := h.Org.HasPendingInvite(r.Context(), email)
+	if err != nil {
+		// Fail closed: не знаем, приглашён ли — не заводим аккаунт.
+		slog.Error("register: pending invite lookup failed", "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return false
+	}
+	if !has {
+		h.denyRegistration(w, r)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) denyRegistration(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusForbidden)
+	_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -131,16 +173,27 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// PROD-B1: гейтинг регистрации по режиму. Первый пользователь инстанса
 	// всегда может зарегистрироваться (bootstrap инстанс-админа); дальше — по
-	// режиму. open — всегда открыто; invite/closed — только bootstrap первого.
+	// режиму.
+	//
+	//   open   — всегда открыто;
+	//   invite — только если на этот адрес есть действующее приглашение;
+	//   closed — только bootstrap первого.
+	//
+	// Проверка приглашения раньше жила ТОЛЬКО в OAuth-ветке
+	// (oauthProvisionByInvite), а парольная регистрация при любом не-open
+	// режиме отдавала 403. То есть в режиме invite — а он по умолчанию —
+	// приглашённый мог войти лишь через OAuth-провайдера, и на типовой
+	// self-hosted-инсталляции без такого провайдера ссылка-приглашение не
+	// работала вовсе: человек шёл по ней, его отправляло на регистрацию, и там
+	// он получал «регистрация закрыта». Документация при этом обещала ровно
+	// обратное.
 	if h.RegistrationMode != "open" {
 		n, err := h.Auth.UserCount(r.Context())
 		if err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
-		if n > 0 {
-			w.WriteHeader(http.StatusForbidden)
-			_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		if n > 0 && !h.invitedByEmail(w, r, email) {
 			return
 		}
 	}

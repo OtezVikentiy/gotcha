@@ -88,12 +88,22 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	m := baseHeartbeatMonitor(t, pid, 1, 60)
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
-
+	fresh := mustCreateMonitor(t, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
 	if _, err := pool.Exec(ctx,
-		"UPDATE monitors SET last_beat_at = now() WHERE id = $1", created.ID); err != nil {
+		"UPDATE monitors SET last_beat_at = now() WHERE id = $1", fresh.ID); err != nil {
 		t.Fatalf("set last_beat_at: %v", err)
+	}
+
+	// Позитивный контроль: второй монитор с ПРОТУХШИМ ударом. Раньше тест
+	// запускал watchdog, спал и утверждал, что ничего не произошло — и оставался
+	// зелёным, даже если бы watchdog не тикнул ни разу (сломанный тикер,
+	// упавший Run, изменившийся запрос выборки). «Ничего не произошло» — это
+	// утверждение о бездействии, и оно чего-то стоит только рядом с
+	// доказательством, что действовать было кому.
+	stale := mustCreateMonitor(t, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
+	if _, err := pool.Exec(ctx,
+		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", stale.ID); err != nil {
+		t.Fatalf("backdate last_beat_at: %v", err)
 	}
 
 	notifier := &fakeNotifier{}
@@ -101,21 +111,28 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	wd := fastWatchdog(svc, d, notifier)
 
 	wctx, wcancel := context.WithCancel(ctx)
+	defer wcancel()
 	go wd.Run(wctx)
-	// Give the fast ticker a handful of chances to (wrongly) act, then stop.
-	time.Sleep(150 * time.Millisecond)
+
+	// Ждём срабатывания по протухшему — этим и доказано, что тик состоялся.
+	waitForRunner(t, func() bool {
+		states, err := svc.States(context.Background(), stale.ID)
+		return err == nil && len(states) == 1 && states[0].Status == "down"
+	})
 	wcancel()
 
-	states, err := svc.States(ctx, created.ID)
+	states, err := svc.States(ctx, fresh.ID)
 	if err != nil {
 		t.Fatalf("States: %v", err)
 	}
 	if len(states) != 0 {
 		t.Fatalf("States = %+v, want none (fresh beat, watchdog must not touch it)", states)
 	}
-	assertNoOpenIncident(t, ctx, svc, created.ID)
-	if len(notifier.Events()) != 0 {
-		t.Fatalf("notifier.Events() = %+v, want none", notifier.Events())
+	assertNoOpenIncident(t, ctx, svc, fresh.ID)
+	for _, e := range notifier.Events() {
+		if e.Monitor.ID == fresh.ID {
+			t.Fatalf("notifier got %+v for the fresh monitor, want nothing", e)
+		}
 	}
 }
 
@@ -303,12 +320,27 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 		t.Fatalf("backdate incident: %v", err)
 	}
 
+	// Позитивный контроль: heartbeat-монитор с протухшим ударом. Он не требует
+	// Notifier — инцидент открывает Detector, — поэтому годится маркером «тик
+	// состоялся» именно в этом тесте. Без него утверждения ниже («ничего не
+	// помечено доставленным») остались бы зелёными и в случае, когда watchdog не
+	// тикнул ни разу.
+	beatMon := mustCreateMonitor(t, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
+	if _, err := pool.Exec(ctx,
+		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", beatMon.ID); err != nil {
+		t.Fatalf("backdate last_beat_at: %v", err)
+	}
+
 	// wd.Notifier is deliberately nil — the field's zero value, matching the
 	// "incidents only" deployment mode.
 	wd := fastWatchdog(svc, d, nil)
 	wctx, wcancel := context.WithCancel(ctx)
+	defer wcancel()
 	go wd.Run(wctx)
-	time.Sleep(200 * time.Millisecond)
+	waitForRunner(t, func() bool {
+		states, err := svc.States(context.Background(), beatMon.ID)
+		return err == nil && len(states) == 1 && states[0].Status == "down"
+	})
 	wcancel()
 
 	var alerted []int
