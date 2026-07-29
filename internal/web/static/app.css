@@ -643,8 +643,25 @@ a:hover {
 	padding: 56px 16px;
 	overflow-y: auto;
 }
-.modal:target {
+.modal:target,
+/* .modal--open — серверное открытие. При ошибке валидации страница
+   отрисовывается заново, фрагмента #id в адресе уже нет, и модалка закрывалась
+   вместе с введёнными данными: человек заполнял семь полей, ошибался в одном и
+   получал пустую форму и сообщение где-то вверху страницы. */
+.modal--open {
 	display: flex;
+}
+/* Пустой якорь перед модалкой; сам по себе невидим. */
+.modal-dismiss {
+	display: block;
+	height: 0;
+}
+/* Закрытие серверно открытой модалки. Она держится классом, а не :target,
+   поэтому переход на "#" её не закрывал — крестик и клик по фону не работали
+   вовсе. Переход на якорь закрытия включает это правило, а его специфичность
+   (три класса) перебивает .modal--open (один). */
+.modal-dismiss:target + .modal--open {
+	display: none;
 }
 .modal-backdrop {
 	position: absolute;
@@ -1297,9 +1314,12 @@ th {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	width: 28px; height: 28px;
+	/* Сброс padding обязателен: глобальное `button` даёт 6px 12px, и внутри
+	   28px-квадрата на иконку остаётся 2px — стрелка схлопывается в чёрточку. */
+	padding: 0;
 	cursor: pointer;
 }
-.dr-nav .ic { width: 16px; height: 16px; }
+.dr-nav .ic { width: 16px; height: 16px; flex: none; }
 .dr-nav:hover:not(:disabled) { border-color: var(--text-mute); }
 .dr-nav:disabled { opacity: .35; cursor: default; }
 .dr-months { display: flex; gap: 16px; flex: 1; }
@@ -1577,6 +1597,15 @@ th {
 .chart rect:not(.hover-band) { rx: 2px; }
 .chart-axis { color: var(--text-dim); }
 .chart-threshold { color: var(--danger); }
+/* Подпись порога стоит у правого края и на плотном ряде оказывается прямо
+   поверх линии данных. Обводка цветом карточки (рисуется ПОД заливкой глифа
+   благодаря paint-order) отделяет её от графика, не пряча данные. */
+.chart-threshold text {
+	paint-order: stroke fill;
+	stroke: var(--surface);
+	stroke-width: 2px;
+	stroke-linejoin: round;
+}
 
 /* .issue-detail — вертикальный ритм страницы issue: заголовок, мета, действия,
    график и лента событий идут одной колонкой. Ширину не ограничиваем: потолок
@@ -2187,6 +2216,19 @@ form.inline {
 	background: color-mix(in srgb, var(--danger) 12%, transparent);
 	color: var(--danger);
 }
+/* .row-actions — действия в строке таблицы, когда их больше одного: правка
+   лежит ссылкой (модалка на CSS :target), удаление — формой с POST, и без
+   обёртки форма своим display:block роняла бы ссылку на строку выше.
+   flex-wrap — на узком экране, где столбец действий сжимается. */
+.row-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: calc(var(--space) * 2);
+}
+.row-actions form {
+	margin: 0;
+}
 .btn:disabled {
 	opacity: .5;
 	cursor: not-allowed;
@@ -2298,6 +2340,21 @@ form.inline {
 .card-header {
 	margin-bottom: 10px;
 	font-weight: 650;
+}
+/* .card-header-action — действие в заголовке карточки (переименовать команду).
+   Прижато вправо, чтобы название и его идентификатор читались слитно, а кнопка
+   не разрывала строку заголовка. Кегль обычный: заголовок крупный, и кнопка,
+   унаследовав его размер, спорила бы с самим названием. */
+.card-header:has(.card-header-action) {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: calc(var(--space) * 2);
+}
+.card-header-action {
+	margin-left: auto;
+	font-size: var(--fs-sm);
+	font-weight: 500;
 }
 
 /* -- Адаптивная сетка блоков настроек (settings/profile/teams/org) --
@@ -3486,4 +3543,102 @@ input[type="radio"]:focus-visible {
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
 	}
+}
+
+/* Предупреждение о схлопнутой кардинальности. Не .error и не .warning: это не
+   поломка и не ошибка оператора, а диагноз с инструкцией — оформляем как
+   заметный, но спокойный блок. */
+.cardinality-notice {
+	background: color-mix(in srgb, var(--warn) 10%, transparent);
+	border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+	border-radius: var(--radius-lg);
+	padding: 12px 14px;
+	margin: 0 0 16px;
+}
+.cardinality-notice p {
+	margin: 0 0 6px;
+}
+.cardinality-notice p:last-child {
+	margin-bottom: 0;
+}
+.cardinality-notice-head {
+	font-weight: 650;
+	color: var(--warn-ink);
+}
+/* Примеры — главная ценность блока, поэтому моноширинные и с воздухом:
+   именно по ним человек узнаёт идентификатор внутри имени. */
+.cardinality-samples {
+	margin: 4px 0 8px;
+	padding-left: 18px;
+	list-style: disc;
+}
+.cardinality-samples code {
+	font-size: var(--fs-sm);
+	overflow-wrap: anywhere;
+}
+
+/* Сообщение о результате действия. Показывается один раз после редиректа,
+   поэтому не занимает место постоянно и не требует кнопки закрытия. */
+.flash {
+	position: relative;
+	background: color-mix(in srgb, var(--good) 12%, transparent);
+	border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+	color: var(--good-ink);
+	border-radius: var(--radius);
+	padding: 8px 34px 8px 12px;
+	margin: 0 0 14px;
+	font-size: var(--fs-base);
+	/* Автозакрытие — чистым CSS, без JS: сообщение о результате не должно
+	   висеть до следующего перехода. Держим 6 секунд (успеть прочитать даже
+	   длинную фразу), затем плавно убираем и схлопываем по высоте, чтобы
+	   содержимое страницы не дёргалось рывком. */
+	animation: flash-dismiss 0.4s ease-in 6s forwards;
+}
+@keyframes flash-dismiss {
+	to {
+		opacity: 0;
+		margin-bottom: 0;
+		padding-top: 0;
+		padding-bottom: 0;
+		max-height: 0;
+		border-width: 0;
+		overflow: hidden;
+	}
+}
+/* Пользователь просил уменьшить анимацию — не убираем сообщение вовсе, а
+   прячем его сразу без движения: анимация тут функциональна, а не декоративна,
+   и полностью отменять её значило бы оставить плашку висеть навсегда. */
+@media (prefers-reduced-motion: reduce) {
+	.flash {
+		animation: flash-dismiss 1ms linear 6s forwards;
+	}
+}
+/* Крестик закрывает сразу. Кнопка, а не ссылка: это действие на странице, а не
+   переход, и href="#" сломал бы :target-модалки на той же странице. Без JS
+   кнопка просто ничего не делает — сообщение уйдёт само по таймеру, поэтому
+   она скрыта до тех пор, пока скрипт её не включит. */
+.flash-close {
+	display: none;
+	position: absolute;
+	top: 4px;
+	right: 6px;
+	background: none;
+	border: none;
+	color: inherit;
+	font-size: 18px;
+	line-height: 1;
+	padding: 2px 6px;
+	cursor: pointer;
+}
+.js .flash-close {
+	display: block;
+}
+.flash-close:hover {
+	opacity: 0.7;
+}
+/* «Ничего не выбрано» и подобное — не успех, но и не ошибка. */
+.flash--warn {
+	background: color-mix(in srgb, var(--warn) 12%, transparent);
+	border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+	color: var(--warn-ink);
 }

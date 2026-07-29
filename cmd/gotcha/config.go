@@ -46,7 +46,30 @@ type Config struct {
 	// пять независимых буферов по 256 МиБ дают 1.25 ГиБ, тогда как
 	// docker-compose.small.yml ставит контейнеру mem_limit 256m — там потолок
 	// физически не может сработать раньше OOM-killer'а.
-	MaxBufferBytes      int64
+	MaxBufferBytes int64
+	// AlertBudgetWindowSeconds/AlertBudgetLimit — пер-проектный потолок
+	// уведомлений. Троттлинг alert_throttle ключуется парой (issue_id, rule_id),
+	// и у НОВОГО issue строки там нет по определению — он проходит всегда, а
+	// значит уникальный fingerprint на событие давал уведомление на событие.
+	// 0 у лимита ВЫКЛЮЧАЕТ ограничение — осознанный выбор для инсталляции с
+	// доверенными отправителями, а не аварийный режим.
+	AlertBudgetWindowSeconds int
+	AlertBudgetLimit         int
+	// CardinalityLimit/CardinalityWindowSeconds — потолок РАЗЛИЧНЫХ значений
+	// открытых полей (имя транзакции, окружение, имя метрики, сервис, операция)
+	// на проект за окно. Эти значения стоят в ключах сортировки ClickHouse и в
+	// GROUP BY материализованных представлений: идентификатор, случайно
+	// попавший в имя, превращает десяток эндпойнтов в сотни тысяч строк
+	// агрегатов, а ClickHouse общий на всех тенантов. 0 выключает ограничение.
+	CardinalityLimit         int
+	CardinalityWindowSeconds int
+	// RunEvaluators — запускать ли оценщики регрессий производительности,
+	// правил по метрикам и регрессий профилей. По умолчанию они идут вместе с
+	// режимом uptime (исторически), хотя к аптайму отношения не имеют: при
+	// раздельном развёртывании web+ingest — а оно документировано как
+	// поддерживаемое — правило по метрике выглядело включённым и не
+	// вычислялось НИКОГДА, без единой строки в логе.
+	RunEvaluators       *bool
 	MetricEvalInterval  int
 	ProfileEvalInterval int
 	OutboxRetentionDays int
@@ -144,6 +167,17 @@ type Config struct {
 
 var validModes = map[string]bool{
 	"ingest": true, "web": true, "uptime": true, "probe": true, "all": true,
+}
+
+// optionalBoolEnv — тристабильный флаг: nil, если переменная не задана. Нужен
+// там, где «не задано» и «задано false» означают разное.
+func optionalBoolEnv(getenv func(string) string, name string) *bool {
+	raw := strings.TrimSpace(getenv(name))
+	if raw == "" {
+		return nil
+	}
+	v := raw == "1" || strings.EqualFold(raw, "true") || strings.EqualFold(raw, "yes")
+	return &v
 }
 
 // defaultScrubKeys — denylist ключей для PII-scrubbing по умолчанию (PRIV-H1).
@@ -279,36 +313,41 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 
 	cfg := Config{
-		Mode:                    *mode,
-		Addr:                    str("GOTCHA_ADDR", ":8080"),
-		BaseURL:                 str("GOTCHA_BASE_URL", "http://localhost:8080"),
-		PostgresDSN:             str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
-		ClickHouseDSN:           str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
-		SMTPHost:                str("GOTCHA_SMTP_HOST", ""),
-		SMTPPort:                intNum("GOTCHA_SMTP_PORT", 587),
-		SMTPUser:                str("GOTCHA_SMTP_USER", ""),
-		SMTPPassword:            str("GOTCHA_SMTP_PASSWORD", ""),
-		SMTPFrom:                str("GOTCHA_SMTP_FROM", ""),
-		RetentionDays:           intNum("GOTCHA_RETENTION_DAYS", 90),
-		SpanRetentionDays:       intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
-		MetricRetentionDays:     intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
-		ProfileRetentionDays:    intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
-		Edition:                 edition,
-		DefaultEventQuota:       num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
-		DefaultTransactionQuota: num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
-		DefaultMetricQuota:      num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
-		DefaultProfileQuota:     num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
-		MaxEventBytes:           num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
-		MaxBufferBytes:          num("GOTCHA_MAX_BUFFER_BYTES", 0),
-		MetricEvalInterval:      intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
-		ProfileEvalInterval:     intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
-		OutboxRetentionDays:     intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
-		SecretKey:               str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
-		RegistrationMode:        str("GOTCHA_REGISTRATION", "invite"),
-		UptimeConcurrency:       intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
-		LocalRegion:             str("GOTCHA_LOCAL_REGION", "local"),
-		ProbeToken:              str("GOTCHA_PROBE_TOKEN", ""),
-		ServerURL:               str("GOTCHA_SERVER_URL", ""),
+		Mode:                     *mode,
+		Addr:                     str("GOTCHA_ADDR", ":8080"),
+		BaseURL:                  str("GOTCHA_BASE_URL", "http://localhost:8080"),
+		PostgresDSN:              str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
+		ClickHouseDSN:            str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
+		SMTPHost:                 str("GOTCHA_SMTP_HOST", ""),
+		SMTPPort:                 intNum("GOTCHA_SMTP_PORT", 587),
+		SMTPUser:                 str("GOTCHA_SMTP_USER", ""),
+		SMTPPassword:             str("GOTCHA_SMTP_PASSWORD", ""),
+		SMTPFrom:                 str("GOTCHA_SMTP_FROM", ""),
+		RetentionDays:            intNum("GOTCHA_RETENTION_DAYS", 90),
+		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
+		MetricRetentionDays:      intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
+		ProfileRetentionDays:     intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
+		Edition:                  edition,
+		DefaultEventQuota:        num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
+		DefaultTransactionQuota:  num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
+		DefaultMetricQuota:       num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
+		DefaultProfileQuota:      num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
+		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
+		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
+		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
+		AlertBudgetLimit:         intNum("GOTCHA_ALERT_BUDGET_LIMIT", 50),
+		CardinalityLimit:         intNum("GOTCHA_CARDINALITY_LIMIT", 10000),
+		CardinalityWindowSeconds: intNum("GOTCHA_CARDINALITY_WINDOW_SECONDS", 3600),
+		RunEvaluators:            optionalBoolEnv(getenv, "GOTCHA_RUN_EVALUATORS"),
+		MetricEvalInterval:       intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
+		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
+		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
+		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
+		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
+		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
+		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
+		ProbeToken:               str("GOTCHA_PROBE_TOKEN", ""),
+		ServerURL:                str("GOTCHA_SERVER_URL", ""),
 	}
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
@@ -417,6 +456,18 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.MetricRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_METRIC_RETENTION_DAYS must be >= 1, got %d", cfg.MetricRetentionDays)
+	}
+	if cfg.AlertBudgetWindowSeconds < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS must be >= 1, got %d", cfg.AlertBudgetWindowSeconds)
+	}
+	if cfg.AlertBudgetLimit < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_LIMIT must be >= 0 (0 disables the ceiling), got %d", cfg.AlertBudgetLimit)
+	}
+	if cfg.CardinalityLimit < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit)
+	}
+	if cfg.CardinalityWindowSeconds < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_WINDOW_SECONDS must be >= 1, got %d", cfg.CardinalityWindowSeconds)
 	}
 	if cfg.MetricEvalInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL must be >= 1, got %d", cfg.MetricEvalInterval)

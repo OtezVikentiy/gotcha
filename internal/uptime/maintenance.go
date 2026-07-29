@@ -115,6 +115,53 @@ func (s *Service) CreateWindow(ctx context.Context, w Window) (Window, error) {
 	return w, nil
 }
 
+// UpdateWindow rewrites a maintenance window in place.
+//
+// Windows were create-and-delete only, which meant that shifting a weekly
+// window by an hour — the most common edit there is — cost the operator a
+// retype of every field, and a one-off window whose end date moved could not be
+// extended at all.
+//
+// project_id is part of the WHERE clause for scope: the id arrives from a form,
+// and without it the owner of one project could rewrite another's window.
+//
+// The columns of the other schedule kind are nulled rather than left alone: a
+// window switched from one-off to weekly with stale starts_at would satisfy
+// neither validateWindow nor windowActive.
+func (s *Service) UpdateWindow(ctx context.Context, w Window) error {
+	if err := validateWindow(w); err != nil {
+		return err
+	}
+
+	var startsAt, endsAt *time.Time
+	var weekday *int
+	var startTime, endTime *pgtype.Time
+	if w.Weekly {
+		wd := w.Weekday
+		weekday = &wd
+		st, _ := hhmmToPgTime(w.StartTime) // already validated above
+		et, _ := hhmmToPgTime(w.EndTime)   // already validated above
+		startTime, endTime = &st, &et
+	} else {
+		startsAt, endsAt = w.StartsAt, w.EndsAt
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE maintenance_windows
+		SET name = $3, weekly = $4, starts_at = $5, ends_at = $6,
+		    weekday = $7, start_time = $8, end_time = $9, timezone = $10
+		WHERE id = $1 AND project_id = $2`,
+		w.ID, w.ProjectID, w.Name, w.Weekly, startsAt, endsAt, weekday, startTime, endTime, w.Timezone,
+	)
+	if err != nil {
+		return fmt.Errorf("uptime: update window: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteWindow deletes a maintenance window by id.
 func (s *Service) DeleteWindow(ctx context.Context, id int64) error {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM maintenance_windows WHERE id = $1", id)

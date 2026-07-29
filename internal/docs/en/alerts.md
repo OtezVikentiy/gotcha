@@ -28,9 +28,11 @@ A channel is a specific address/recipient a notification is sent to. A single ch
    - Telegram — the bot token issued by `@BotFather` (`123456789:AA...`).
 5. Leave "Enabled" checked (default) and click **"Add channel"**.
 
-Server-side validation: email must be a syntactically valid address, webhook must be a valid `http`/`https` URL with a host, Telegram requires a non-empty recipient and secret. Invalid input returns `422` with an error message and the channel is not created.
+Server-side validation: email must be a syntactically valid address, webhook must be a valid `http`/`https` URL with a host, Telegram requires a `chat_id` that parses as an integer (negative for groups and supergroups) and a non-empty secret. Invalid input returns `422` with an error message and the channel is not created.
 
 Webhooks pointing at a private/local address (e.g. `http://localhost:...`) are blocked by default (SSRF protection), unless the operator has explicitly allowed private addresses instance-wide (for single-tenant installs).
+
+Editing a channel — the "Edit" button on its row. The recipient, the secret, and whether the channel is enabled can all change: a disabled channel can be switched back on, and a typo in the address fixed, without losing the delivery history. Leave the secret field empty to keep the current one — it is entered blind and never rendered back into the form. The channel type does not change: address and secret mean different things for email, webhook, and Telegram, so "switch the type" is a separate channel.
 
 Deleting a channel — the "Delete" button on its row in the channel table; it asks for confirmation and then takes effect immediately.
 

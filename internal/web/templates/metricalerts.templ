@@ -65,14 +65,17 @@ func ruleScope(ctx context.Context, r metric.Rule) string {
 }
 
 // MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
-templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, errMsg, userEmail string) {
+templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "metrics.alerts.title"), userEmail) {
 		<div class="metric-alerts">
 			<h1>{ i18n.T(ctx, "metrics.alerts.title") }</h1>
 			@helpPanel("metricalerts", "metric-alerts")
-			if errMsg != "" {
-				<p class="error">{ errMsg }</p>
-			}
+			// Ошибка валидации формы показывается ВНУТРИ модалки, рядом с полями.
+			// Раньше она рисовалась здесь, на странице: модалка при этом
+			// закрывалась, и сообщение оставалось где-то в фоне, приклеенное к
+			// кнопке «Новое правило» — то есть в стороне от того, что человек
+			// заполнял. Ошибки, не относящиеся к форме, показывать тут больше
+			// нечему: других действий на странице нет.
 			@createTrigger("new-metric-rule", "metrics.alerts.new_rule")
 			<h2>{ i18n.T(ctx, "metrics.alerts.rules") }</h2>
 			if len(rules) == 0 {
@@ -141,13 +144,16 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 					</div>
 				</div>
 			}
-			@createModal("new-metric-rule", "metrics.alerts.new_rule") {
+			@createModalOpen("new-metric-rule", "metrics.alerts.new_rule", false, form.Has()) {
 				<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
+					if errMsg != "" {
+						<p class="error" role="alert">{ errMsg }</p>
+					}
 					<div class="form-grid">
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.metric") }
-							<input type="text" name="metric_name" required placeholder="http.server.duration" class="input" list="known-metrics"/>
+							<input type="text" name="metric_name" required placeholder="http.server.duration" class="input" list="known-metrics" value={ form.Get("metric_name", "") }/>
 							// datalist, а не select: правило можно завести и на метрику,
 							// которая ещё не приходила (новый сервис только выкатывают),
 							// но опечатка в уже известном имени больше не проходит молча.
@@ -163,7 +169,11 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 							{ i18n.T(ctx, "metrics.alerts.form.aggregation") }
 							<select name="aggregation" class="select">
 								for _, a := range []string{"avg", "max", "min", "sum", "p50", "p95", "p99"} {
-									<option value={ a }>{ a }</option>
+									if form.Selected("aggregation", a, "avg") {
+										<option value={ a } selected>{ a }</option>
+									} else {
+										<option value={ a }>{ a }</option>
+									}
 								}
 							</select>
 						</label>
@@ -172,39 +182,44 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.condition") }
 							<select name="comparator" class="select">
-								<option value="gt">&gt;</option>
-								<option value="lt">&lt;</option>
+								if form.Selected("comparator", "lt", "gt") {
+									<option value="gt">&gt;</option>
+									<option value="lt" selected>&lt;</option>
+								} else {
+									<option value="gt" selected>&gt;</option>
+									<option value="lt">&lt;</option>
+								}
 							</select>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.threshold") }
-							<input type="text" name="threshold" required placeholder="100" class="input"/>
+							<input type="text" name="threshold" required placeholder="100" class="input" value={ form.Get("threshold", "") }/>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.window") }
-							<input type="number" name="window_seconds" value="300" min="1" required class="input"/>
+							<input type="number" name="window_seconds" value={ form.Get("window_seconds", "300") } min="1" required class="input"/>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.environment") }
-							<input type="text" name="environment" placeholder={ i18n.T(ctx, "metrics.alerts.form.environment_any") } class="input"/>
+							<input type="text" name="environment" placeholder={ i18n.T(ctx, "metrics.alerts.form.environment_any") } class="input" value={ form.Get("environment", "") }/>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.label_key") }
-							<input type="text" name="label_key" placeholder={ i18n.T(ctx, "metrics.alerts.form.label_key_none") } class="input"/>
+							<input type="text" name="label_key" placeholder={ i18n.T(ctx, "metrics.alerts.form.label_key_none") } class="input" value={ form.Get("label_key", "") }/>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.label_value") }
-							<input type="text" name="label_value" class="input"/>
+							<input type="text" name="label_value" class="input" value={ form.Get("label_value", "") }/>
 						</label>
 					</div>
 					</div>

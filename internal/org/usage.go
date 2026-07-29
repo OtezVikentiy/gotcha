@@ -217,58 +217,94 @@ func (s *Service) IncDroppedProfiles(ctx context.Context, orgID int64, month tim
 	return s.incDropped(ctx, "dropped_profiles", orgID, month, n)
 }
 
-// checkAndCount — атомарный УСЛОВНЫЙ инкремент счётчика приёма col за месяц:
-// увеличивает col на 1 только если организация ещё укладывается в квоту, и
-// сообщает, разрешён ли приём. В отличие от Inc*, отклонённая единица НЕ
-// инкрементит счётчик (ARCH-L1: usage не считает отвергнутое).
+// checkAndCount условно списывает want единиц из месячной квоты и возвращает,
+// СКОЛЬКО удалось списать. Отклонённое НЕ инкрементит счётчик (usage не считает
+// то, что не приняли).
 //
-// Семантика ON CONFLICT ... WHERE:
-//   - строки месяца ещё нет → INSERT VALUES(...,1) проходит (первая единица
-//     всегда влезает при quota>=1 или безлимите) → RETURNING 1 → allowed;
-//   - строка есть → DO UPDATE применяет WHERE «$3=0 (безлимит) ИЛИ col<$3»:
-//     при col==quota условие ложно, апдейта нет → RETURNING пусто →
-//     pgx.ErrNoRows → allowed=false БЕЗ инкремента.
+// Списание ЧАСТИЧНОЕ: если до квоты осталось меньше, чем просят, засчитывается
+// остаток, а вызывающий выбрасывает разницу и считает её в дропы. Так
+// организация получает ровно свою квоту, а не «последний конверт целиком мимо»,
+// и org_usage остаётся точным. Раньше списывалась единица за HTTP-ЗАПРОС: один
+// конверт с тысячей событий или десятью тысячами OTLP-спанов стоил ровно
+// столько же, сколько одно событие, то есть квоту можно было обойти на четыре
+// порядка, а usage — источник правды по потреблению — врал на столько же.
 //
-// quota==0 — безлимит: инкремент всегда, allowed=true. col — доверенное имя
+// Одним оператором это не выражается: чтобы вернуть СКОЛЬКО списано, нужно
+// знать значение до инкремента, а RETURNING в PostgreSQL 17 отдаёт только новую
+// строку (RETURNING OLD появился в 18). Поэтому короткая транзакция с
+// SELECT ... FOR UPDATE — блокировка строки закрывает гонку двух приёмов той же
+// организации, ровно как это делал условный WHERE раньше.
+//
+// quota==0 — безлимит: списывается всё запрошенное. col — доверенное имя
 // колонки из фиксированного набора (не из пользовательского ввода).
-func (s *Service) checkAndCount(ctx context.Context, col string, orgID int64, month time.Time, quota int64) (bool, error) {
-	var n int64
-	sql := `
-		INSERT INTO org_usage (org_id, period_month, ` + col + `)
-		VALUES ($1, $2, 1)
-		ON CONFLICT (org_id, period_month) DO UPDATE SET
-			` + col + ` = org_usage.` + col + ` + 1
-		WHERE $3 = 0 OR org_usage.` + col + ` < $3
-		RETURNING ` + col
-	err := s.pool.QueryRow(ctx, sql, orgID, monthStart(month), quota).Scan(&n)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil // квота исчерпана: WHERE не сработал, счётчик не тронут
+func (s *Service) checkAndCount(ctx context.Context, col string, orgID int64, month time.Time, quota, want int64) (int64, error) {
+	if want <= 0 {
+		return 0, nil
 	}
+	m := monthStart(month)
+
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("org: check %s: %w", col, err)
+		return 0, fmt.Errorf("org: check %s: %w", col, err)
 	}
-	return true, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Строка месяца может отсутствовать — создаём пустую, чтобы дальше её можно
+	// было заблокировать. DO NOTHING: конкурент мог успеть первым.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_usage (org_id, period_month) VALUES ($1, $2)
+		 ON CONFLICT (org_id, period_month) DO NOTHING`, orgID, m); err != nil {
+		return 0, fmt.Errorf("org: check %s: %w", col, err)
+	}
+
+	var used int64
+	if err := tx.QueryRow(ctx,
+		`SELECT `+col+` FROM org_usage WHERE org_id = $1 AND period_month = $2 FOR UPDATE`,
+		orgID, m).Scan(&used); err != nil {
+		return 0, fmt.Errorf("org: check %s: %w", col, err)
+	}
+
+	granted := want
+	if quota > 0 {
+		room := quota - used
+		if room <= 0 {
+			return 0, tx.Commit(ctx) // квота исчерпана, счётчик не тронут
+		}
+		if room < granted {
+			granted = room
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE org_usage SET `+col+` = `+col+` + $3 WHERE org_id = $1 AND period_month = $2`,
+		orgID, m, granted); err != nil {
+		return 0, fmt.Errorf("org: check %s: %w", col, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("org: check %s: %w", col, err)
+	}
+	return granted, nil
 }
 
 // CheckAndCountEvents условно инкрементит счётчик событий за месяц (квота 0 —
 // безлимит) и сообщает, разрешён ли приём. Отклонённые не считаются.
-func (s *Service) CheckAndCountEvents(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error) {
-	return s.checkAndCount(ctx, "events_count", orgID, month, quota)
+func (s *Service) CheckAndCountEvents(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
+	return s.checkAndCount(ctx, "events_count", orgID, month, quota, want)
 }
 
 // CheckAndCountTransactions — то же для счётчика транзакций (независимая квота).
-func (s *Service) CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error) {
-	return s.checkAndCount(ctx, "transactions_count", orgID, month, quota)
+func (s *Service) CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
+	return s.checkAndCount(ctx, "transactions_count", orgID, month, quota, want)
 }
 
 // CheckAndCountMetrics — то же для счётчика метрик (независимая квота).
-func (s *Service) CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error) {
-	return s.checkAndCount(ctx, "metrics_count", orgID, month, quota)
+func (s *Service) CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
+	return s.checkAndCount(ctx, "metrics_count", orgID, month, quota, want)
 }
 
 // CheckAndCountProfiles — то же для счётчика профилей (независимая квота).
-func (s *Service) CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error) {
-	return s.checkAndCount(ctx, "profiles_count", orgID, month, quota)
+func (s *Service) CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
+	return s.checkAndCount(ctx, "profiles_count", orgID, month, quota, want)
 }
 
 // SetProfileQuota меняет месячную квоту профилей организации. Quota >= 0 required

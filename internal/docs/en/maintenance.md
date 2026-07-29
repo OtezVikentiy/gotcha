@@ -14,7 +14,11 @@ The page lives at `/projects/{id}/maintenance`, available to an org owner/admin 
 4. Set the **Timezone** — pick one from the list (UTC, Europe/Moscow, Europe/Berlin, Asia/Yekaterinburg), or, if the one you need isn't listed, pick "Other" and type an IANA name into the adjacent field (e.g. `America/New_York`).
 5. Save with "Create window".
 
-Created windows are listed with their name, type, and schedule, each with a delete button.
+Created windows are listed with their name, type, and schedule, each with an "Edit" and a "Delete" button.
+
+## Editing a window
+
+"Edit" opens the same form, already filled in with the window's values: name, type, schedule, and time zone. Everything is editable, the type included — a one-off window can become weekly and back, and the columns of the previous schedule are cleared. A one-off window is shown in its own time zone rather than in UTC, so shifting it by an hour is a one-field edit.
 
 ## Effect on monitors and alerts
 

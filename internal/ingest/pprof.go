@@ -25,7 +25,7 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
-	if !h.allow(r.Context(), h.ProfileQuota, key.OrgID, "profile") {
+	if h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", 1) == 0 {
 		h.countDrop(r.Context(), dropProfile, key.OrgID, 1)
 		writeQuotaExceeded(w, "profile quota exceeded")
 		return
@@ -75,6 +75,7 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	prof.Environment = capRunes(q.Get("environment"), 200)
 	prof.TraceID = capRunes(q.Get("trace_id"), 200)
 	h.scrubProfile(&prof)
+	h.limitProfileCardinality(key.ProjectID, &prof)
 	h.Profiles.Add(key.ProjectID, prof)
 	w.WriteHeader(http.StatusAccepted)
 }

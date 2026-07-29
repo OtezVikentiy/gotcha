@@ -69,6 +69,10 @@ type Handler struct {
 	// нужен и здесь. Присваивается опционально (как Metrics/DropCounter); nil →
 	// scrubbing выключен (методы Scrubber nil-safe, вызов делается без проверки).
 	Scrub *Scrubber
+
+	// Cardinality ограничивает число различных значений полей на проект.
+	// nil — ограничение выключено (методы nil-safe).
+	Cardinality *CardinalityGuard
 }
 
 // DropCounter учитывает отклонённые единицы приёма по орге за текущий месяц.
@@ -203,20 +207,30 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key,
 	return key, true
 }
 
-// allow списывает единицу из квоты q и говорит, принимать ли содержимое.
+// grant списывает want единиц из квоты q и возвращает, СКОЛЬКО разрешено
+// принять: 0 — квота исчерпана, want — влезло всё, промежуточное — влезла
+// часть, и остаток вызывающий обязан выбросить и посчитать в дропы.
+//
+// Считается за элемент, а не за запрос: конверт с тысячей событий стоил ровно
+// столько же, сколько одно событие, поэтому квота обходилась на порядки, а
+// org_usage — то, по чему оператор судит о потреблении, — врал на столько же.
+//
 // nil-квота (не сконфигурирована) и сбой счётчика → fail-open: терять данные
 // из-за сбоя квот хуже, чем иногда пропустить организацию сверх квоты.
-func (h *Handler) allow(ctx context.Context, q QuotaChecker, orgID int64, kind string) bool {
+func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, kind string, want int) int {
+	if want <= 0 {
+		return 0
+	}
 	if q == nil {
-		return true
+		return want
 	}
-	allowed, err := q.CheckAndCount(ctx, orgID)
+	granted, err := q.CheckAndCount(ctx, orgID, int64(want))
 	if err != nil {
-		slog.Warn("ingest: quota check failed, allowing item",
-			"org_id", orgID, "kind", kind, "error", err)
-		return true
+		slog.Warn("ingest: quota check failed, allowing items",
+			"org_id", orgID, "kind", kind, "want", want, "error", err)
+		return want
 	}
-	return allowed
+	return int(granted)
 }
 
 // dropKind — класс отклонённой единицы для countDrop.
@@ -415,15 +429,25 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	// за квоту — иначе приняли бы 200 и молча выбросили половину envelope'а.
 	hasEvents := len(env.Events) > 0
 	hasTx := len(env.Transactions) > 0 && h.pipeline.TracingEnabled()
-	eventsAllowed := hasEvents && h.allow(r.Context(), h.quota, key.OrgID, "event")
-	txAllowed := hasTx && h.allow(r.Context(), h.TxQuota, key.OrgID, "transaction")
-	// Учёт дропов до развилки ответа: отклонённый класс считаем и когда 429 по
-	// ВСЕМ типам (ранний return ниже), и когда 200 по смешанному envelope'у.
-	if hasEvents && !eventsAllowed {
-		h.countDrop(r.Context(), dropEvent, key.OrgID, len(env.Events))
+	// Квота списывается ЗА ЭЛЕМЕНТ. Списание частичное: если до квоты осталось
+	// меньше, чем в конверте, принимаем сколько влезло, остаток идёт в дропы —
+	// организация получает ровно свою квоту, а не «последний конверт целиком
+	// мимо», и org_usage остаётся точным.
+	eventsGranted := h.grant(r.Context(), h.quota, key.OrgID, "event", len(env.Events))
+	txGranted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(env.Transactions))
+	if !hasTx {
+		txGranted = 0
 	}
-	if hasTx && !txAllowed {
-		h.countDrop(r.Context(), dropTransaction, key.OrgID, len(env.Transactions))
+	eventsAllowed := eventsGranted > 0
+	txAllowed := txGranted > 0
+	// Учёт дропов до развилки ответа: отклонённое считаем и когда 429 по ВСЕМ
+	// типам (ранний return ниже), и когда 200 по смешанному конверту, и когда
+	// принята лишь часть.
+	if dropped := len(env.Events) - eventsGranted; hasEvents && dropped > 0 {
+		h.countDrop(r.Context(), dropEvent, key.OrgID, dropped)
+	}
+	if dropped := len(env.Transactions) - txGranted; hasTx && dropped > 0 {
+		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
 	}
 	if (hasEvents || hasTx) && !eventsAllowed && !txAllowed {
 		detail := "event quota exceeded"
@@ -436,50 +460,54 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	// Смешанный envelope, где по ОДНОМУ классу квота исчерпана: отвечаем 200 (по
 	// второму классу приняли), но выброшенный класс обязан быть виден в логах —
 	// иначе оператор не отличит «ошибок не было» от «ошибки молча выброшены».
-	if hasEvents && !eventsAllowed {
-		slog.Warn("ingest: quota exceeded, dropping items from mixed envelope",
-			"class", "event", "items", len(env.Events),
+	if dropped := len(env.Events) - eventsGranted; hasEvents && dropped > 0 {
+		slog.Warn("ingest: quota exceeded, dropping items from envelope",
+			"class", "event", "dropped", dropped, "accepted", eventsGranted,
 			"project_id", projectID, "org_id", key.OrgID)
 	}
-	if hasTx && !txAllowed {
-		slog.Warn("ingest: quota exceeded, dropping items from mixed envelope",
-			"class", "transaction", "items", len(env.Transactions),
+	if dropped := len(env.Transactions) - txGranted; hasTx && dropped > 0 {
+		slog.Warn("ingest: quota exceeded, dropping items from envelope",
+			"class", "transaction", "dropped", dropped, "accepted", txGranted,
 			"project_id", projectID, "org_id", key.OrgID)
 	}
 
 	id := env.EventID
-	if eventsAllowed {
-		for _, raw := range env.Events {
-			pe, err := ParseEvent(raw)
-			if err != nil {
-				continue // битый item не валит весь envelope
-			}
-			if id == "" {
-				id = pe.EventID
-			}
-			h.pipeline.Enqueue(projectID, pe)
+	// Принимаем ровно столько, сколько списала квота: остальное уже посчитано
+	// в дропы выше.
+	for _, raw := range env.Events[:eventsGranted] {
+		pe, err := ParseEvent(raw)
+		if err != nil {
+			continue // битый item не валит весь envelope
 		}
+		if id == "" {
+			id = pe.EventID
+		}
+		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
+		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
+		h.pipeline.Enqueue(projectID, pe)
 	}
-	if txAllowed {
-		h.ingestTransactions(r.Context(), projectID, env.Transactions)
+	if txGranted > 0 {
+		h.ingestTransactions(r.Context(), projectID, env.Transactions[:txGranted])
 	}
 	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
 	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
 	if len(env.Profiles) > 0 && h.Profiles != nil {
-		if h.allow(r.Context(), h.ProfileQuota, key.OrgID, "profile") {
-			for _, raw := range env.Profiles {
-				prof, err := profile.ParseSentry(raw, time.Now().UTC())
-				if err != nil {
-					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
-					continue
-				}
-				h.scrubProfile(&prof)
-				h.Profiles.Add(key.ProjectID, prof)
-			}
-		} else {
+		profGranted := h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
+		if dropped := len(env.Profiles) - profGranted; dropped > 0 {
 			slog.Warn("ingest: profile quota exceeded, dropping profiles",
-				"items", len(env.Profiles), "project_id", projectID, "org_id", key.OrgID)
-			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
+				"dropped", dropped, "accepted", profGranted,
+				"project_id", projectID, "org_id", key.OrgID)
+			h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
+		}
+		for _, raw := range env.Profiles[:profGranted] {
+			prof, err := profile.ParseSentry(raw, time.Now().UTC())
+			if err != nil {
+				slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
+				continue
+			}
+			h.scrubProfile(&prof)
+			h.limitProfileCardinality(projectID, &prof)
+			h.Profiles.Add(key.ProjectID, prof)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
@@ -502,6 +530,18 @@ func (h *Handler) scrubProfile(p *profile.Profile) {
 	p.Transaction = h.Scrub.ScrubMessage(p.Transaction)
 	p.Service = h.Scrub.ScrubMessage(p.Service)
 	p.Environment = h.Scrub.ScrubMessage(p.Environment)
+}
+
+// limitProfileCardinality — то же, что limitCardinality, для профилей: service
+// и profile_type стоят в ключе сортировки profile_samples, а имя транзакции
+// приходит от клиента полностью.
+func (h *Handler) limitProfileCardinality(projectID int64, p *profile.Profile) {
+	if h.Cardinality == nil || p == nil {
+		return
+	}
+	p.Transaction = h.Cardinality.Value(projectID, FieldTransaction, p.Transaction)
+	p.Service = h.Cardinality.Value(projectID, FieldService, p.Service)
+	p.Environment = h.Cardinality.Value(projectID, FieldEnvironment, p.Environment)
 }
 
 // ingestTransactions разбирает transaction-item'ы, отбрасывает несемплированные
@@ -527,7 +567,35 @@ func (h *Handler) enqueueSampled(projectID int64, rate float64, tx trace.Transac
 	if !trace.Keep(tx.TraceID, rate) {
 		return
 	}
+	h.limitCardinality(projectID, &tx)
 	h.pipeline.EnqueueTransaction(projectID, tx)
+}
+
+// limitCardinality схлопывает значения, которыми проект уже исчерпал потолок
+// различных значений.
+//
+// Эти поля стоят в ключах сортировки ClickHouse и в GROUP BY материализованных
+// представлений: каждое новое значение создаёт новую строку агрегата с
+// состояниями квантилей, которая не схлопнётся ни с чем и переживёт всю
+// ретенцию. Один идентификатор, случайно попавший в имя транзакции
+// (/users/8812/profile вместо /users/:id/profile), превращает десяток
+// эндпойнтов в сотни тысяч — и, поскольку ClickHouse общий на всех тенантов,
+// платят за это все.
+//
+// Схлопываем, а не отбрасываем: суммарные throughput и латентность проекта
+// остаются верными, пропадает лишь разбивка по хвосту. Что именно схлопнуто и
+// примеры значений видны в отчёте (CardinalityGuard.Report) — без примеров
+// человек не догадается, что в имя попал идентификатор.
+func (h *Handler) limitCardinality(projectID int64, tx *trace.Transaction) {
+	if h.Cardinality == nil {
+		return
+	}
+	tx.Name = h.Cardinality.Value(projectID, FieldTransaction, tx.Name)
+	tx.Environment = h.Cardinality.Value(projectID, FieldEnvironment, tx.Environment)
+	tx.Op = h.Cardinality.Value(projectID, FieldOp, tx.Op)
+	for i := range tx.Spans {
+		tx.Spans[i].Op = h.Cardinality.Value(projectID, FieldOp, tx.Spans[i].Op)
+	}
 }
 
 // sampleRate — transaction_sample_rate проекта. Сбой чтения настроек →
@@ -556,7 +624,7 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
-	if !h.allow(r.Context(), h.quota, key.OrgID, "event") {
+	if h.grant(r.Context(), h.quota, key.OrgID, "event", 1) == 0 {
 		h.countDrop(r.Context(), dropEvent, key.OrgID, 1)
 		writeQuotaExceeded(w, "event quota exceeded")
 		return

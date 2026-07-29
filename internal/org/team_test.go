@@ -196,3 +196,101 @@ func TestRemoveTeamMember(t *testing.T) {
 		t.Fatalf("RemoveTeamMember (already gone): got %v, want ErrNotMember", err)
 	}
 }
+
+// TestRenameTeam — переименование команды не трогает slug, участников и
+// привязанные проекты. До этого правки не было вовсе, и единственным способом
+// поправить название было пересоздать команду, потеряв и то, и другое.
+func TestRenameTeam(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "rename-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "rename-org", "Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	tm, err := svc.CreateTeam(ctx, o.ID, "backend", "Бэкенд")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	if err := svc.AddTeamMember(ctx, tm.ID, owner); err != nil {
+		t.Fatalf("AddTeamMember: %v", err)
+	}
+
+	if err := svc.RenameTeam(ctx, o.ID, tm.ID, "Платформа"); err != nil {
+		t.Fatalf("RenameTeam: %v", err)
+	}
+
+	teams, err := svc.TeamsOf(ctx, o.ID)
+	if err != nil || len(teams) != 1 {
+		t.Fatalf("TeamsOf = %+v err=%v", teams, err)
+	}
+	if teams[0].Name != "Платформа" {
+		t.Fatalf("name after rename = %q, want %q", teams[0].Name, "Платформа")
+	}
+	if teams[0].Slug != "backend" {
+		t.Fatalf("slug changed to %q; it is used in URLs and grants and must stay", teams[0].Slug)
+	}
+	members, err := svc.TeamMembers(ctx, tm.ID)
+	if err != nil || len(members) != 1 {
+		t.Fatalf("TeamMembers after rename = %+v err=%v, want one", members, err)
+	}
+}
+
+// TestRenameTeamScopedToOrg — id команды приходит из формы, поэтому org_id
+// стоит в условии UPDATE: без него администратор одной организации
+// переименовал бы команду соседней, подобрав id.
+func TestRenameTeamScopedToOrg(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	victimOwner := newUser(t, pool, "rename-victim@example.com")
+	victim, err := svc.CreateOrg(ctx, "rename-victim-org", "Victim", victimOwner)
+	if err != nil {
+		t.Fatalf("CreateOrg (victim): %v", err)
+	}
+	tm, err := svc.CreateTeam(ctx, victim.ID, "backend", "Бэкенд")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+
+	attackerOwner := newUser(t, pool, "rename-attacker@example.com")
+	attacker, err := svc.CreateOrg(ctx, "rename-attacker-org", "Attacker", attackerOwner)
+	if err != nil {
+		t.Fatalf("CreateOrg (attacker): %v", err)
+	}
+
+	if err := svc.RenameTeam(ctx, attacker.ID, tm.ID, "Hijacked"); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("RenameTeam across orgs = %v, want ErrNotFound", err)
+	}
+	teams, err := svc.TeamsOf(ctx, victim.ID)
+	if err != nil || len(teams) != 1 || teams[0].Name != "Бэкенд" {
+		t.Fatalf("victim team = %+v err=%v, want untouched", teams, err)
+	}
+}
+
+// TestRenameTeamRejectsEmptyName — пустое название отклоняется: команда без
+// имени неотличима от соседней в любом списке.
+func TestRenameTeamRejectsEmptyName(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "rename-empty@example.com")
+	o, err := svc.CreateOrg(ctx, "rename-empty-org", "Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	tm, err := svc.CreateTeam(ctx, o.ID, "backend", "Бэкенд")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	if err := svc.RenameTeam(ctx, o.ID, tm.ID, "   "); !errors.Is(err, org.ErrInvalidName) {
+		t.Fatalf("RenameTeam with blank name = %v, want ErrInvalidName", err)
+	}
+}

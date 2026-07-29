@@ -82,12 +82,12 @@ func TestMaintenance(t *testing.T) {
 		{ID: 1, Name: "разовое", Weekly: false, StartsAt: ptrTime(now), EndsAt: ptrTime(now.Add(time.Hour)), Timezone: "UTC"},
 		{ID: 2, Name: "еженедельное", Weekly: true, Weekday: 1, StartTime: "02:00", EndTime: "04:00", Timezone: "Europe/Moscow"},
 	}
-	out := renderTo(t, Maintenance(7, windows, "", "u@e.com"))
+	out := renderTo(t, Maintenance(7, windows, nil, "", "u@e.com"))
 	if !strings.Contains(out, "разовое") || !strings.Contains(out, "еженедельное") {
 		t.Error("окна обслуживания должны отрендериться")
 	}
 	// С ошибкой и пустым списком.
-	outErr := renderTo(t, Maintenance(7, nil, "плохое время", "u@e.com"))
+	outErr := renderTo(t, Maintenance(7, nil, nil, "плохое время", "u@e.com"))
 	if !strings.Contains(outErr, "плохое время") {
 		t.Error("ошибка обслуживания должна отрендериться")
 	}

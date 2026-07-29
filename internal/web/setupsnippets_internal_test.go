@@ -1,8 +1,7 @@
 package web
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"context"
 	"strings"
 	"testing"
 )
@@ -117,38 +116,28 @@ func TestGoSnippetCompiles(t *testing.T) {
 	}
 }
 
-// TestSubjectPurgeVMFromQuery — итог удаления ПДн приезжает на страницу
-// настроек через ?purged=N. Отличать «удалено N» от «не найдено ничего»
-// обязательно: раньше оба исхода выглядели одинаковым молчаливым редиректом.
-func TestSubjectPurgeVMFromQuery(t *testing.T) {
-	h := &Handler{ScrubEmail: true, ScrubIP: true}
+// TestSubjectPurgeVMWarnsAboutInertCriteria — форма удаления ПДн обязана
+// предупреждать, что при включённом обезличивании поиск по email и IP не найдёт
+// ничего: иначе владелец орга вводит email субъекта, получает «не найдено» и не
+// понимает почему.
+//
+// Итог самого удаления сюда больше не входит — он показывается общим
+// сообщением о результате действия (flash), а не query-параметром: параметр
+// залипал в адресе при F5, и ссылку вида ?purged=9999 можно было подсунуть
+// владельцу, показав ему выдуманное число.
+func TestSubjectPurgeVMWarnsAboutInertCriteria(t *testing.T) {
+	ctx := context.Background()
 
-	cases := []struct {
-		query      string
-		wantDone   bool
-		wantPurged int
-	}{
-		{"", false, 0},
-		{"?purged=0", true, 0}, // ноль — тоже результат, показываем
-		{"?purged=128", true, 128},
-		{"?purged=abc", false, 0}, // мусор игнорируем
-		{"?purged=-5", false, 0},  // отрицательное игнорируем
+	both := (&Handler{ScrubEmail: true, ScrubIP: true}).subjectPurgeVM(ctx, 1)
+	if both.InertKey() != "org.gdpr.purge.inert" {
+		t.Errorf("оба критерия мертвы: ключ %q", both.InertKey())
 	}
-	for _, c := range cases {
-		r := httptest.NewRequest(http.MethodGet, "/orgs/1/settings"+c.query, nil)
-		vm := h.subjectPurgeVM(r)
-		if vm.Done != c.wantDone || vm.Purged != c.wantPurged {
-			t.Errorf("query %q: Done=%v Purged=%d, want Done=%v Purged=%d",
-				c.query, vm.Done, vm.Purged, c.wantDone, c.wantPurged)
-		}
-		// Флаги обезличивания зеркалят конфиг приёма и от query не зависят.
-		if !vm.InertEmail || !vm.InertIP {
-			t.Errorf("query %q: флаги обезличивания потеряны: %+v", c.query, vm)
-		}
+	onlyEmail := (&Handler{ScrubEmail: true}).subjectPurgeVM(ctx, 1)
+	if onlyEmail.InertKey() != "org.gdpr.purge.inert_email" {
+		t.Errorf("мёртв только email: ключ %q", onlyEmail.InertKey())
 	}
-
 	// Скрубинг выключен — предупреждать не о чем.
-	off := (&Handler{}).subjectPurgeVM(httptest.NewRequest(http.MethodGet, "/x", nil))
+	off := (&Handler{}).subjectPurgeVM(ctx, 1)
 	if off.InertKey() != "" {
 		t.Errorf("при выключенном скрубинге предупреждение не нужно: %q", off.InertKey())
 	}

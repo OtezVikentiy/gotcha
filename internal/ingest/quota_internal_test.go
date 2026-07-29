@@ -91,9 +91,9 @@ func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 		quotaNegTTL: time.Hour,
 		now:         func() time.Time { return now },
 		quotaOf:     func(o org.Org) int64 { return o.EventQuota },
-		checkCount: func(_ context.Context, _ int64, at time.Time, _ int64) (bool, error) {
+		checkCount: func(_ context.Context, _ int64, at time.Time, _, want int64) (int64, error) {
 			seen = append(seen, at)
-			return true, nil
+			return want, nil
 		},
 		entries:   map[int64]quotaEntry{},
 		exhausted: map[int64]time.Time{},
@@ -101,12 +101,12 @@ func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 	ctx := context.Background()
 
 	now = time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)
-	if allowed, err := q.CheckAndCount(ctx, 7); err != nil || !allowed {
-		t.Fatalf("январь: allowed=%v err=%v", allowed, err)
+	if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
+		t.Fatalf("январь: granted=%v err=%v", granted, err)
 	}
 	now = time.Date(2026, time.February, 1, 0, 0, 1, 0, time.UTC)
-	if allowed, err := q.CheckAndCount(ctx, 7); err != nil || !allowed {
-		t.Fatalf("февраль: allowed=%v err=%v", allowed, err)
+	if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
+		t.Fatalf("февраль: granted=%v err=%v", granted, err)
 	}
 
 	if len(seen) != 2 {

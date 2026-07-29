@@ -95,16 +95,16 @@ func TestUsageErrorBranches(t *testing.T) {
 	if err := svc.IncDroppedProfiles(ctx, 1, now, 1); err == nil {
 		t.Fatal("IncDroppedProfiles: want error")
 	}
-	if _, err := svc.CheckAndCountEvents(ctx, 1, now, 10); err == nil {
+	if _, err := svc.CheckAndCountEvents(ctx, 1, now, 10, 1); err == nil {
 		t.Fatal("CheckAndCountEvents: want error")
 	}
-	if _, err := svc.CheckAndCountTransactions(ctx, 1, now, 10); err == nil {
+	if _, err := svc.CheckAndCountTransactions(ctx, 1, now, 10, 1); err == nil {
 		t.Fatal("CheckAndCountTransactions: want error")
 	}
-	if _, err := svc.CheckAndCountMetrics(ctx, 1, now, 10); err == nil {
+	if _, err := svc.CheckAndCountMetrics(ctx, 1, now, 10, 1); err == nil {
 		t.Fatal("CheckAndCountMetrics: want error")
 	}
-	if _, err := svc.CheckAndCountProfiles(ctx, 1, now, 10); err == nil {
+	if _, err := svc.CheckAndCountProfiles(ctx, 1, now, 10, 1); err == nil {
 		t.Fatal("CheckAndCountProfiles: want error")
 	}
 }

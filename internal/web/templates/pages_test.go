@@ -84,11 +84,24 @@ func TestPerformanceList(t *testing.T) {
 	rows := []EndpointRow{
 		{Stat: trace.EndpointStat{Transaction: "GET /api", Count: 1000, Throughput: 12, P50: 5000, P95: 20000, P99: 50000, FailureRate: 0.02, ApdexScore: 0.95, Environments: []string{"production"}}, Sparkline: stub()},
 	}
-	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}, Sort: "throughput"}, []string{"production"}, 500, "u@e.com"))
+	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}, Sort: "throughput"}, []string{"production"}, 500,
+		// Предупреждение о схлопнутой кардинальности с примерами: без примеров
+		// человек не догадается, что в имя транзакции попал идентификатор.
+		[]CardinalityNotice{{Field: "transaction name", Limit: 10000, Collapsed: 47213,
+			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com"))
 	if !strings.Contains(out, "GET /api") {
 		t.Error("список должен содержать транзакцию")
 	}
-	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, "u@e.com"))
+	// Примеры схлопнутых значений обязаны быть на странице: диагностика без них
+	// сводится к «что-то пропало».
+	if !strings.Contains(out, "GET /users/8812/profile") {
+		t.Error("страница производительности должна показывать примеры схлопнутых имён")
+	}
+	if !strings.Contains(out, "/docs/cardinality") {
+		t.Error("предупреждение должно вести на страницу документации")
+	}
+
+	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com"))
 	if strings.Contains(empty, "GET /api") {
 		t.Error("пустой список не должен содержать транзакций")
 	}
@@ -197,12 +210,12 @@ func TestAlerts(t *testing.T) {
 		{ID: 1, Kind: "email", Enabled: true, Target: "team@x.io"},
 		{ID: 2, Kind: "webhook", Enabled: false, Target: "https://hook"},
 	}
-	out := renderTo(t, Alerts(7, rules, channels, true, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, rules, channels, true, nil, "", "u@e.com"))
 	if !strings.Contains(out, "team@x.io") || !strings.Contains(out, "https://hook") {
 		t.Error("каналы должны отрендериться")
 	}
 	// С ошибкой.
-	outErr := renderTo(t, Alerts(7, nil, nil, false, "ошибка сохранения", "u@e.com"))
+	outErr := renderTo(t, Alerts(7, nil, nil, false, nil, "ошибка сохранения", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка сохранения") {
 		t.Error("ошибка должна отрендериться")
 	}
@@ -244,12 +257,12 @@ func TestTeams(t *testing.T) {
 	teams := []TeamView{
 		{Team: org.Team{ID: 100, Slug: "core", Name: "Core"}, Members: []org.Member{{UserID: 1, Email: "a@x.io", Role: org.RoleOwner}}, Projects: []org.Project{{ID: 10, Name: "web"}}},
 	}
-	out := renderTo(t, Teams(o, teams, orgMembers, orgProjects, "", "u@e.com"))
+	out := renderTo(t, Teams(o, teams, orgMembers, orgProjects, nil, "", "u@e.com"))
 	if !strings.Contains(out, "Core") || !strings.Contains(out, "web") {
 		t.Error("команды и проекты должны отрендериться")
 	}
 	// Пустой список команд + ошибка.
-	outEmpty := renderTo(t, Teams(o, nil, orgMembers, orgProjects, "ошибка", "u@e.com"))
+	outEmpty := renderTo(t, Teams(o, nil, orgMembers, orgProjects, nil, "ошибка", "u@e.com"))
 	if !strings.Contains(outEmpty, "ошибка") {
 		t.Error("ошибка должна отрендериться")
 	}
@@ -319,7 +332,7 @@ func TestMetricAlerts(t *testing.T) {
 	// Список известных имён метрик подсказывается в форме (datalist): опечатка
 	// в свободном поле создавала правило, которое никогда не срабатывает.
 	known := []string{"http.rps", "process.memory.usage"}
-	out := renderTo(t, MetricAlerts(7, rules, incidents, known, "", "u@e.com"))
+	out := renderTo(t, MetricAlerts(7, rules, incidents, known, nil, "", "u@e.com"))
 	if !strings.Contains(out, "process.memory.usage") {
 		t.Error("форма правила должна подсказывать уже приходившие метрики")
 	}

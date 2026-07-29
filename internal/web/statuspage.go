@@ -477,7 +477,11 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 
 	if override != nil {
 		if override.ID == 0 {
+			// ID==0 — это форма СОЗДАНИЯ: возвращаем введённое и помечаем, что
+			// её отправляли, иначе модалка закроется вместе с заполненными
+			// полями (она держится на :target, а фрагмента в адресе уже нет).
 			newForm = *override
+			newForm.Submitted = true
 		}
 		for i := range forms {
 			if forms[i].ID == override.ID {

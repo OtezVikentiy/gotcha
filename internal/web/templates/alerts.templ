@@ -20,6 +20,11 @@ func alertsChannelsPath(projectID int64) string {
 	return alertsPath(projectID) + "/channels"
 }
 
+// alertsChannelsUpdatePath — POST-приёмник формы правки канала.
+func alertsChannelsUpdatePath(projectID int64) string {
+	return alertsPath(projectID) + "/channels/update"
+}
+
 func alertsChannelsDeletePath(projectID int64) string {
 	return alertsChannelsPath(projectID) + "/delete"
 }
@@ -113,18 +118,89 @@ templ channelStatusBadge(c alert.Channel) {
 	}
 }
 
-templ channelRow(projectID int64, c alert.Channel) {
+// EditChannelModalID — якорь модалки правки канала. Модалка на строку таблицы:
+// они построены на CSS :target, а якорь обязан быть уникальным на странице.
+// Экспортирована, потому что обработчик в пакете web должен сказать, какую
+// именно модалку открыть заново после ошибки валидации.
+func EditChannelModalID(channelID int64) string {
+	return "edit-channel-" + strconv.FormatInt(channelID, 10)
+}
+
+templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string) {
 	<tr>
 		<td><span class="badge badge-neutral">{ channelKindLabel(ctx, c.Kind) }</span></td>
 		<td>{ c.Target }</td>
 		<td>@channelStatusBadge(c)</td>
 		<td>
-			<form method="post" action={ templ.URL(alertsChannelsDeletePath(projectID)) } class="channel-delete-form">
-				<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
-				<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "alerts.channels.delete") }</button>
-			</form>
+			<div class="row-actions">
+				<a class="btn btn-ghost" href={ templ.SafeURL("#" + EditChannelModalID(c.ID)) }>{ i18n.T(ctx, "alerts.channels.edit") }</a>
+				<form method="post" action={ templ.URL(alertsChannelsDeletePath(projectID)) } class="channel-delete-form">
+					<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "alerts.channels.delete") }</button>
+				</form>
+			</div>
+			@channelEditModal(projectID, c, form, errMsg)
 		</td>
 	</tr>
+}
+
+// channelEditModal — правка канала: адрес, секрет и включённость. Тип канала
+// показан подписью и не редактируется: у email, webhook и telegram разный смысл
+// адреса и секрета, и «сменить тип» — это другой канал.
+templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg string) {
+	{{ open := form.Opens(EditChannelModalID(c.ID)) }}
+	@createModalOpen(EditChannelModalID(c.ID), "alerts.channels.edit.title", true, open) {
+		<form method="post" action={ templ.URL(alertsChannelsUpdatePath(projectID)) } class="channel-edit-form">
+			if errMsg != "" && open {
+				<p class="error" role="alert">{ errMsg }</p>
+			}
+			<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
+			<p class="hint">{ i18n.Tf(ctx, "alerts.channels.edit.kind", "kind", channelKindLabel(ctx, c.Kind)) }</p>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alerts.channels.new.target") }
+					<input type="text" name="target" required class="input" value={ formValueFor(form, open, "target", c.Target) }/>
+				</label>
+				<span class="hint">{ i18n.T(ctx, "alerts.channels.new.target_hint") }</span>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alerts.channels.new.secret") }
+					<input type="password" name="secret" class="input" autocomplete="new-password" data-1p-ignore/>
+				</label>
+				<span class="hint">{ i18n.T(ctx, "alerts.channels.edit.secret_hint") }</span>
+			</div>
+			<label class="checkbox-inline">
+				if channelEnabledChecked(form, open, c.Enabled) {
+					<input type="checkbox" name="enabled" checked/>
+				} else {
+					<input type="checkbox" name="enabled"/>
+				}
+				{ i18n.T(ctx, "alerts.channels.new.enabled") }
+			</label>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alerts.channels.edit.submit") }</button>
+		</form>
+	}
+}
+
+// formValueFor — значение поля из состояния формы, но только если это форма
+// той самой строки. Модалок правки на странице столько же, сколько каналов, а
+// состояние формы одно: без этой проверки введённый адрес попал бы во все
+// формы сразу.
+func formValueFor(form FormState, open bool, name, fallback string) string {
+	if !open {
+		return fallback
+	}
+	return form.Get(name, fallback)
+}
+
+// channelEnabledChecked — та же логика для чекбокса; снятый флажок приходит
+// пустой строкой, поэтому сравниваем именно с ней, а не с наличием ключа.
+func channelEnabledChecked(form FormState, open bool, fallback bool) bool {
+	if !open {
+		return fallback
+	}
+	return form.Get("enabled", "") != ""
 }
 
 // Alerts — GET/POST /projects/{id}/alerts: правила алертинга (new_issue,
@@ -135,12 +211,14 @@ templ channelRow(projectID int64, c alert.Channel) {
 // последнего POST (ErrInvalidRule / ErrInvalidChannel), рендерится с тем же
 // статусом 422, что и ответ — тот же принцип, что и у
 // ProjectSettings/OrgSettings.
-templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled bool, errMsg, userEmail string) {
+templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled bool, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "alerts.title"), userEmail) {
 		<div class="alerts">
 			<h1>{ i18n.T(ctx, "alerts.title") }</h1>
 			@helpPanel("alerts", "alerts")
-			if errMsg != "" {
+			// Ошибка формы создания канала показывается внутри модалки, рядом с
+			// полями; здесь остаются ошибки прочих действий страницы (правила).
+			if errMsg != "" && !form.Has() {
 				<p class="error">{ errMsg }</p>
 			}
 			@createTrigger("new-channel", "alerts.channels.new.title")
@@ -175,7 +253,7 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 									</thead>
 									<tbody>
 										for _, c := range channels {
-											@channelRow(projectID, c)
+											@channelRow(projectID, c, form, errMsg)
 										}
 									</tbody>
 								</table>
@@ -184,8 +262,11 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 				}
 			</section>
 
-			@createModalWide("new-channel", "alerts.channels.new.title", true) {
+			@createModalOpen("new-channel", "alerts.channels.new.title", true, form.Opens("new-channel")) {
 				<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
+					if errMsg != "" && form.Opens("new-channel") {
+						<p class="error" role="alert">{ errMsg }</p>
+					}
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "alerts.channels.new.kind") }
@@ -195,22 +276,30 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 								} else {
 									<option value={ alert.ChannelEmail } disabled>{ i18n.T(ctx, "alerts.channels.new.kind_email_disabled") }</option>
 								}
-								<option value={ alert.ChannelWebhook }>{ i18n.T(ctx, "alerts.channels.kind.webhook") }</option>
-								<option value={ alert.ChannelTelegram }>{ i18n.T(ctx, "alerts.channels.kind.telegram") }</option>
+								if form.Selected("kind", alert.ChannelWebhook, alert.ChannelEmail) {
+									<option value={ alert.ChannelWebhook } selected>{ i18n.T(ctx, "alerts.channels.kind.webhook") }</option>
+								} else {
+									<option value={ alert.ChannelWebhook }>{ i18n.T(ctx, "alerts.channels.kind.webhook") }</option>
+								}
+								if form.Selected("kind", alert.ChannelTelegram, alert.ChannelEmail) {
+									<option value={ alert.ChannelTelegram } selected>{ i18n.T(ctx, "alerts.channels.kind.telegram") }</option>
+								} else {
+									<option value={ alert.ChannelTelegram }>{ i18n.T(ctx, "alerts.channels.kind.telegram") }</option>
+								}
 							</select>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "alerts.channels.new.target") }
-							<input type="text" name="target" required class="input"/>
+							<input type="text" name="target" required class="input" value={ form.Get("target", "") }/>
 						</label>
 						<span class="hint">{ i18n.T(ctx, "alerts.channels.new.target_hint") }</span>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "alerts.channels.new.secret") }
-							<input type="text" name="secret" class="input"/>
+							<input type="password" name="secret" class="input" autocomplete="new-password" data-1p-ignore/>
 						</label>
 						<span class="hint">{ i18n.T(ctx, "alerts.channels.new.secret_hint") }</span>
 					</div>

@@ -228,6 +228,13 @@ var bulkActionStatus = map[string]string{
 	"unresolve": "unresolved",
 }
 
+// bulkActionFlashKey — сообщение об итоге каждого массового действия.
+var bulkActionFlashKey = map[string]string{
+	"resolve":   "flash.issues_resolved",
+	"ignore":    "flash.issues_ignored",
+	"unresolve": "flash.issues_reopened",
+}
+
 // issuesBulk — POST /projects/{id}/issues/bulk: action=resolve|ignore|unresolve
 // + ids[] → SetStatusBulk → 303. Редирект идёт на Referer (сохраняет текущие
 // фильтры/страницу), если Referer same-origin, иначе на список issues без
@@ -267,12 +274,21 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids := parseIDs(r.Form["ids"])
-	if len(ids) > 0 {
-		if _, err := h.Issues.SetStatusBulk(r.Context(), projectID, ids, status); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
+	if len(ids) == 0 {
+		// Раньше пустой выбор давал полную перезагрузку и ровно ничего: человек
+		// не мог отличить «не отметил» от «не сработало».
+		h.flashWarn(w, "flash.nothing_selected", 0)
+		http.Redirect(w, r, BulkRedirectTarget(r, h.BaseURL, projectID), http.StatusSeeOther)
+		return
 	}
+	n, err := h.Issues.SetStatusBulk(r.Context(), projectID, ids, status)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	// Сообщаем ЧИСЛО и действие: строка просто исчезала из списка, и понять,
+	// сработало ли и на скольких, было нельзя.
+	h.flashOK(w, bulkActionFlashKey[r.FormValue("action")], int(n))
 
 	http.Redirect(w, r, BulkRedirectTarget(r, h.BaseURL, projectID), http.StatusSeeOther)
 }

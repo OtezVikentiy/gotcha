@@ -19,17 +19,17 @@ func (f *fakeQuotaResolver) Get(context.Context, int64) (org.Org, error) {
 	f.getCalls++
 	return org.Org{EventQuota: f.quota}, nil
 }
-func (f *fakeQuotaResolver) CheckAndCountEvents(context.Context, int64, time.Time, int64) (bool, error) {
-	return true, nil
+func (f *fakeQuotaResolver) CheckAndCountEvents(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
+	return want, nil
 }
-func (f *fakeQuotaResolver) CheckAndCountTransactions(context.Context, int64, time.Time, int64) (bool, error) {
-	return true, nil
+func (f *fakeQuotaResolver) CheckAndCountTransactions(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
+	return want, nil
 }
-func (f *fakeQuotaResolver) CheckAndCountMetrics(context.Context, int64, time.Time, int64) (bool, error) {
-	return true, nil
+func (f *fakeQuotaResolver) CheckAndCountMetrics(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
+	return want, nil
 }
-func (f *fakeQuotaResolver) CheckAndCountProfiles(context.Context, int64, time.Time, int64) (bool, error) {
-	return true, nil
+func (f *fakeQuotaResolver) CheckAndCountProfiles(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
+	return want, nil
 }
 
 // TestQuotaNegativeCacheShortCircuits: после первого over-quota повторные
@@ -44,9 +44,9 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 		quotaNegTTL: 5 * time.Second,
 		now:         func() time.Time { return now },
 		quotaOf:     func(o org.Org) int64 { return o.EventQuota },
-		checkCount: func(context.Context, int64, time.Time, int64) (bool, error) {
+		checkCount: func(context.Context, int64, time.Time, int64, int64) (int64, error) {
 			checkCalls++
-			return false, nil // всегда over-quota
+			return 0, nil // всегда over-quota
 		},
 		entries:   map[int64]quotaEntry{},
 		exhausted: map[int64]time.Time{},
@@ -54,8 +54,8 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 	ctx := context.Background()
 
 	// Первый вызов реально ходит в PG (Get + checkCount) и кладёт негатив.
-	if allowed, err := q.CheckAndCount(ctx, 7); err != nil || allowed {
-		t.Fatalf("first: allowed=%v err=%v, want false/nil", allowed, err)
+	if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 0 {
+		t.Fatalf("first: granted=%v err=%v, want false/nil", granted, err)
 	}
 	if checkCalls != 1 || fake.getCalls != 1 {
 		t.Fatalf("first: checkCalls=%d getCalls=%d, want 1/1", checkCalls, fake.getCalls)
@@ -63,7 +63,7 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 
 	// Следующие 3 в пределах TTL — из кеша, без PG.
 	for i := 0; i < 3; i++ {
-		if allowed, _ := q.CheckAndCount(ctx, 7); allowed {
+		if granted, _ := q.CheckAndCount(ctx, 7, 1); granted != 0 {
 			t.Fatalf("cached call %d allowed, want denied", i)
 		}
 	}
@@ -73,7 +73,7 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 
 	// За пределами TTL кеш протухает — снова идём в PG.
 	now = now.Add(6 * time.Second)
-	if allowed, _ := q.CheckAndCount(ctx, 7); allowed {
+	if granted, _ := q.CheckAndCount(ctx, 7, 1); granted != 0 {
 		t.Fatal("after TTL: allowed, want denied")
 	}
 	if checkCalls != 2 {
@@ -93,17 +93,17 @@ func TestQuotaPositiveNeverCached(t *testing.T) {
 		quotaNegTTL: 5 * time.Second,
 		now:         func() time.Time { return now },
 		quotaOf:     func(o org.Org) int64 { return o.EventQuota },
-		checkCount: func(context.Context, int64, time.Time, int64) (bool, error) {
+		checkCount: func(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
 			calls++
-			return true, nil
+			return want, nil
 		},
 		entries:   map[int64]quotaEntry{},
 		exhausted: map[int64]time.Time{},
 	}
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		if allowed, err := q.CheckAndCount(ctx, 7); err != nil || !allowed {
-			t.Fatalf("call %d: allowed=%v err=%v, want true/nil", i, allowed, err)
+		if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
+			t.Fatalf("call %d: granted=%v err=%v, want true/nil", i, granted, err)
 		}
 	}
 	if calls != 5 {

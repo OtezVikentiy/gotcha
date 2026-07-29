@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -155,5 +156,63 @@ func TestChartBarsHeadroom(t *testing.T) {
 		if !strings.Contains(out, c.wantTop) {
 			t.Errorf("max=%d: верх шкалы не %s\n%s", c.max, c.wantTop, out)
 		}
+	}
+}
+
+// TestMetricSeriesSparseSeriesIsOneLine — ряд, который приходит реже сетки
+// корзин (метрика раз в час при 12-минутном шаге), обязан рисоваться ОДНОЙ
+// линией, а не рассыпаться на изолированные отметки: до правки каждая непустая
+// корзина оказывалась одиночным сегментом и график превращался в «лес спичек».
+func TestMetricSeriesSparseSeriesIsOneLine(t *testing.T) {
+	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	// 24 часа по 12-минутным корзинам; данные — раз в час (каждая 5-я корзина).
+	var points []metric.Point
+	for i := 0; i < 120; i++ {
+		p := metric.Point{T: base.Add(time.Duration(i) * 12 * time.Minute), V: math.NaN()}
+		if i%5 == 0 {
+			p.V = 100 + float64(i)
+		}
+		points = append(points, p)
+	}
+	out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+	if got := strings.Count(out, "<polyline"); got != 1 {
+		t.Errorf("разрежённый ряд должен давать одну линию, получено %d polyline\n%s", got, out)
+	}
+}
+
+// TestMetricSeriesRealGapBreaksLine — пропуск, заметно больший обычного
+// интервала ряда (простой приложения), обязан остаться РАЗРЫВОМ: мост через
+// короткие пропуски не должен маскировать отсутствие данных.
+func TestMetricSeriesRealGapBreaksLine(t *testing.T) {
+	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	var points []metric.Point
+	for i := 0; i < 120; i++ {
+		p := metric.Point{T: base.Add(time.Duration(i) * 12 * time.Minute), V: math.NaN()}
+		// Данные раз в час, но с 40-й по 80-ю корзину (8 часов) их нет вовсе.
+		if i%5 == 0 && (i < 40 || i > 80) {
+			p.V = 100 + float64(i)
+		}
+		points = append(points, p)
+	}
+	out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+	if got := strings.Count(out, "<polyline"); got != 2 {
+		t.Errorf("длинный пропуск должен рвать линию надвое, получено %d polyline\n%s", got, out)
+	}
+}
+
+// TestBridgeSparseGapsKeepsDenseSeries — плотный ряд (данные в каждой корзине)
+// правка не трогает: одиночная пустая корзина в нём — настоящий провал и
+// обязана остаться разрывом.
+func TestBridgeSparseGapsKeepsDenseSeries(t *testing.T) {
+	pts := make([]seriesPoint, 10)
+	for i := range pts {
+		pts[i] = seriesPoint{x: float64(i), y: 1, has: i != 5}
+	}
+	got := bridgeSparseGaps(pts)
+	if len(got) != len(pts) {
+		t.Fatalf("плотный ряд не должен переписываться: было %d точек, стало %d", len(pts), len(got))
+	}
+	if got[5].has {
+		t.Errorf("пустая корзина плотного ряда обязана остаться разрывом: %+v", got[5])
 	}
 }

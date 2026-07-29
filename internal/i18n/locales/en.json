@@ -487,6 +487,9 @@
     "uptime.maintenance.field.timezone_custom": "Custom IANA timezone",
     "uptime.maintenance.timezone_placeholder": "e.g. America/New_York",
     "uptime.maintenance.submit": "Create window",
+    "uptime.maintenance.edit": "Edit",
+    "uptime.maintenance.edit.title": "Edit maintenance window",
+    "uptime.maintenance.edit.submit": "Save window",
     "uptime.statuspages.empty.title": "No status pages yet",
     "uptime.statuspages.empty.body": "Create a public status page using the button above.",
     "uptime.statuspages.new_title": "New status page",
@@ -539,6 +542,7 @@
     "alerts.channels.status.enabled": "Enabled",
     "alerts.channels.status.disabled": "Disabled",
     "alerts.channels.delete": "Delete",
+    "alerts.channels.edit": "Edit",
     "alerts.channels.kind.email": "Email",
     "alerts.channels.kind.webhook": "Webhook",
     "alerts.channels.kind.telegram": "Telegram",
@@ -585,13 +589,13 @@
     "org.gdpr.title": "Subject data (GDPR)",
     "org.gdpr.export.title": "Export subject data",
     "org.gdpr.field.project_id": "Project ID",
-    "org.gdpr.field.email": "Email",
-    "org.gdpr.field.user_id": "User ID",
-    "org.gdpr.field.ip": "IP",
+    "org.gdpr.field.email": "End-user email",
+    "org.gdpr.field.user_id": "End-user identifier from your application",
+    "org.gdpr.field.ip": "End-user IP address",
     "org.gdpr.export.hint": "Provide at least one subject field. The response is a JSON file.",
     "org.gdpr.export.submit": "Export subject data",
     "org.gdpr.purge.title": "Delete subject data",
-    "org.gdpr.hint": "Provide at least one subject field.",
+    "org.gdpr.hint": "Pick a project and fill at least one subject field. A match on any one field attributes the record to the subject.",
     "org.gdpr.purge.submit": "Delete subject data",
     "org.danger.title": "Danger zone",
     "org.danger.leave_org.button": "Leave organization",
@@ -629,6 +633,10 @@
     "teams.create.name_label": "Name",
     "teams.create.name_placeholder": "Backend",
     "teams.create.submit": "Create",
+    "teams.rename.title": "Rename team",
+    "teams.rename.action": "Rename",
+    "teams.rename.slug_note": "The {slug} identifier stays: it is used in URLs and in access grants.",
+    "teams.rename.submit": "Save name",
     "teams.members.title": "Members",
     "teams.members.empty.title": "No team members",
     "teams.members.empty.body": "Add organization members in the form below.",
@@ -758,6 +766,7 @@
     "error.export_unavailable": "export unavailable: telemetry storage is not configured",
     "error.slug.invalid": "slug must consist of lowercase latin letters, digits and hyphens (1..64 characters)",
     "error.slug.taken": "this slug is already taken",
+    "error.name.empty": "Name must not be empty",
     "error.oauth.session_expired": "your sign-in session has expired, please try again",
     "error.oauth.provider_no_email": "the provider did not verify the email",
     "error.oauth.unknown_provider": "unknown provider",
@@ -892,6 +901,10 @@
     "uptime.maintenance.kind.weekly_label": "Weekly",
     "alerts.channels.new.target_hint": "email — address; webhook — URL; telegram — chat_id",
     "alerts.channels.new.secret_hint": "webhook — request signature; telegram — bot token; not needed for email",
+    "alerts.channels.edit.title": "Edit channel",
+    "alerts.channels.edit.kind": "Channel type: {kind}. To deliver another way, add a separate channel.",
+    "alerts.channels.edit.secret_hint": "Leave empty to keep the current secret.",
+    "alerts.channels.edit.submit": "Save channel",
     "range.utc_note": "UTC",
     "a11y.skip_to_content": "Skip to content",
     "a11y.chart.flamegraph": "Flame graph of the profile",
@@ -927,7 +940,25 @@
     "nav.primary": "Primary navigation",
     "nav.section": "Section navigation",
     "confirm.purge_subject.unknown_project": "project not found",
-    "issues.action.resolve_bulk": "Mark as resolved"
+    "issues.action.resolve_bulk": "Mark as resolved",
+    "cardinality.notice.title": "This project hit the limit of distinct values for “{field}”: {limit}. New values are grouped under <cardinality-limit>.",
+    "cardinality.notice.samples": "Examples of grouped values:",
+    "cardinality.notice.cause": "The usual cause is an identifier inside the value — replace it with a parameter.",
+    "cardinality.notice.link": "How to fix this",
+    "flash.saved": "Saved.",
+    "flash.created": "Created.",
+    "flash.deleted": "Deleted.",
+    "flash.invite_sent": "Invitation sent.",
+    "flash.nothing_selected": "Nothing selected — tick at least one issue.",
+    "flash.channel_created": "Delivery channel added.",
+    "flash.channel_updated": "Channel saved",
+    "flash.rules_saved": "Alert rules saved.",
+    "flash.member_removed": "Member removed.",
+    "flash.probe_revoked": "Probe revoked.",
+    "flash.close": "Dismiss message",
+    "org.gdpr.field.project": "Project",
+    "org.gdpr.field.project_placeholder": "— select a project —",
+    "org.gdpr.field.user_id.help": "This is what your application passes to the SDK as user.id — it is shown on the event card under “User”. Not to be confused with organization members."
   },
   "plurals": {
     "chart.bar.transactions": {
@@ -965,6 +996,26 @@
       "other": "Event ingestion is limited: {n} items were dropped this month"
     },
     "org.gdpr.purge.result": {
+      "one": "Deleted {n} record for the subject.",
+      "other": "Deleted {n} records for the subject."
+    },
+    "cardinality.notice.collapsed": {
+      "one": "{n} value was grouped in the current window.",
+      "other": "{n} values were grouped in the current window."
+    },
+    "flash.issues_resolved": {
+      "one": "Marked {n} issue as resolved.",
+      "other": "Marked {n} issues as resolved."
+    },
+    "flash.issues_ignored": {
+      "one": "Ignored {n} issue.",
+      "other": "Ignored {n} issues."
+    },
+    "flash.issues_reopened": {
+      "one": "Reopened {n} issue.",
+      "other": "Reopened {n} issues."
+    },
+    "flash.subject_purged": {
       "one": "Deleted {n} record for the subject.",
       "other": "Deleted {n} records for the subject."
     }

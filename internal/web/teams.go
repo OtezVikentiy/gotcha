@@ -73,6 +73,8 @@ func teamsErrorMessage(ctx context.Context, err error) string {
 		return i18n.T(ctx, "error.slug.invalid")
 	case errors.Is(err, org.ErrSlugTaken):
 		return i18n.T(ctx, "error.slug.taken")
+	case errors.Is(err, org.ErrInvalidName):
+		return i18n.T(ctx, "error.name.empty")
 	case errors.Is(err, org.ErrNotMember):
 		return i18n.T(ctx, "error.org.not_member")
 	case errors.Is(err, errCrossOrgProject):
@@ -97,13 +99,13 @@ func (h *Handler) teamsPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	h.renderTeamsPage(w, r, http.StatusOK, orgID, "")
+	h.renderTeamsPage(w, r, http.StatusOK, orgID, nil, "")
 }
 
 // renderTeamsPage — общий рендер: используется и GET-обработчиком, и всеми
 // POST-обработчиками этого файла на 422 (то же сообщение об ошибке на месте,
 // без редиректа — тот же принцип, что и renderOrgSettings).
-func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status int, orgID int64, errMsg string) {
+func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status int, orgID int64, form templates.FormState, errMsg string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -139,7 +141,7 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 		return
 	}
 	w.WriteHeader(status)
-	_ = templates.Teams(o, views, orgMembers, orgProjects, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Teams(o, views, orgMembers, orgProjects, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // teamsCreate — POST /orgs/{id}/teams: slug, name. ErrInvalidSlug/ErrSlugTaken
@@ -168,9 +170,58 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	slug := r.FormValue("slug")
 	name := r.FormValue("name")
 	if _, err := h.Org.CreateTeam(r.Context(), orgID, slug, name); err != nil {
-		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, teamsErrorMessage(r.Context(), err))
+		// Состояние формы возвращает введённое и открывает модалку: без него
+		// человек получал закрытую пустую форму и сообщение где-то на странице.
+		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID,
+			templates.FormState{"slug": slug, "name": name}.Open("new-team"),
+			teamsErrorMessage(r.Context(), err))
 		return
 	}
+	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
+}
+
+// teamRename — POST /teams/{id}/rename: name.
+//
+// У команд был только жизненный цикл «создать/удалить»: опечатку в названии или
+// переезд отдела нельзя было отразить, а пересоздание команды теряло и её
+// участников, и привязанные проекты. Slug остаётся прежним — он участвует в
+// адресах и в выдаче прав.
+func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	teamID, ok := h.parsePathTeamID(w, r)
+	if !ok {
+		return
+	}
+	// Проверка роли идёт по организации команды — она же даёт orgID для
+	// перерисовки страницы и служит скоупом для самого UPDATE.
+	orgID, ok := h.requireTeamRole(w, r, teamID, uid)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	name := r.FormValue("name")
+	if err := h.Org.RenameTeam(r.Context(), orgID, teamID, name); err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return
+		}
+		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID,
+			templates.FormState{"name": name}.Open(templates.EditTeamModalID(teamID)),
+			teamsErrorMessage(r.Context(), err))
+		return
+	}
+	h.flashOK(w, "flash.saved", 0)
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
@@ -204,7 +255,7 @@ func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Org.AddTeamMember(r.Context(), teamID, targetID); err != nil {
-		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, teamsErrorMessage(r.Context(), err))
+		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, nil, teamsErrorMessage(r.Context(), err))
 		return
 	}
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
@@ -248,7 +299,7 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Org.RemoveTeamMember(r.Context(), teamID, targetID); err != nil {
-		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, teamsErrorMessage(r.Context(), err))
+		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, nil, teamsErrorMessage(r.Context(), err))
 		return
 	}
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
@@ -288,14 +339,14 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 	projectOrgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, teamsErrorMessage(r.Context(), errCrossOrgProject))
+			h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, nil, teamsErrorMessage(r.Context(), errCrossOrgProject))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if projectOrgID != orgID {
-		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, teamsErrorMessage(r.Context(), errCrossOrgProject))
+		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, nil, teamsErrorMessage(r.Context(), errCrossOrgProject))
 		return
 	}
 	if err := h.Org.AttachTeam(r.Context(), projectID, teamID); err != nil {

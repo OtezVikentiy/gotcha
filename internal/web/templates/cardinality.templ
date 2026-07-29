@@ -1,0 +1,52 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// CardinalityNotice — предупреждение о том, что проект упёрся в потолок
+// различных значений поля и хвост схлопывается.
+//
+// Существует потому, что одного сигнального значения в данных мало: увидев в
+// списке «<cardinality-limit>», человек не поймёт ни что произошло, ни что с
+// этим делать. Причина почти всегда одна и та же и не злонамеренная — в имя
+// попала переменная (/users/8812/profile вместо /users/:id/profile), — и
+// узнаётся она по ПРИМЕРАМ схлопнутых значений: три строки подряд с разными
+// числами объясняют всё быстрее любого счётчика.
+type CardinalityNotice struct {
+	// Field — человекочитаемое имя поля («имя транзакции», «окружение»).
+	Field string
+	// Limit — потолок различных значений.
+	Limit int
+	// Collapsed — сколько значений схлопнуто в текущем окне.
+	Collapsed int64
+	// Samples — примеры схлопнутых значений. Ради них блок и нужен.
+	Samples []string
+}
+
+// cardinalityNoticeView рендерит предупреждения, если они есть.
+templ cardinalityNoticeView(notices []CardinalityNotice) {
+	for _, n := range notices {
+		<div class="cardinality-notice">
+			<p class="cardinality-notice-head">
+				{ i18n.Tf(ctx, "cardinality.notice.title", "field", n.Field, "limit", strconv.Itoa(n.Limit)) }
+			</p>
+			<p>{ i18n.Tn(ctx, "cardinality.notice.collapsed", int(n.Collapsed)) }</p>
+			if len(n.Samples) > 0 {
+				<p class="hint">{ i18n.T(ctx, "cardinality.notice.samples") }</p>
+				<ul class="cardinality-samples">
+					for _, s := range n.Samples {
+						<li><code>{ s }</code></li>
+					}
+				</ul>
+			}
+			<p>
+				{ i18n.T(ctx, "cardinality.notice.cause") }
+				{ " " }
+				<a href="/docs/cardinality">{ i18n.T(ctx, "cardinality.notice.link") }</a>
+			</p>
+		</div>
+	}
+}

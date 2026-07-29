@@ -11,6 +11,11 @@ func orgTeamsPath(orgID int64) string {
 	return "/orgs/" + strconv.FormatInt(orgID, 10) + "/teams"
 }
 
+// teamRenamePath — POST-приёмник формы переименования команды.
+func teamRenamePath(teamID int64) string {
+	return "/teams/" + strconv.FormatInt(teamID, 10) + "/rename"
+}
+
 func teamMembersPath(teamID int64) string {
 	return "/teams/" + strconv.FormatInt(teamID, 10) + "/members"
 }
@@ -112,9 +117,43 @@ templ teamProjectRow(teamID int64, p org.Project) {
 // нечего (все участники/проекты организации уже в команде, либо их вовсе
 // нет), select не рендерится — вместо пустого <select></select> короткая
 // заметка (см. hasAvailableMembers/hasAvailableProjects).
-templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Project) {
+// EditTeamModalID — якорь модалки переименования команды. Одна модалка на
+// команду: они построены на CSS :target, а якорь обязан быть уникальным.
+// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
+// после ошибки валидации.
+func EditTeamModalID(teamID int64) string {
+	return "edit-team-" + strconv.FormatInt(teamID, 10)
+}
+
+// teamRenameModal — переименование команды. Slug показан подписью и не
+// редактируется: он участвует в адресах и в выдаче прав, а его смена ломала бы
+// уже сохранённые ссылки.
+templ teamRenameModal(tm TeamView, form FormState, errMsg string) {
+	{{ open := form.Opens(EditTeamModalID(tm.Team.ID)) }}
+	@createModalOpen(EditTeamModalID(tm.Team.ID), "teams.rename.title", false, open) {
+		<form method="post" action={ templ.URL(teamRenamePath(tm.Team.ID)) } class="team-rename-form">
+			if errMsg != "" && open {
+				<p class="error" role="alert">{ errMsg }</p>
+			}
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "teams.create.name_label") }
+					<input type="text" name="name" required class="input" value={ formValueFor(form, open, "name", tm.Team.Name) }/>
+				</label>
+				<span class="hint">{ i18n.Tf(ctx, "teams.rename.slug_note", "slug", tm.Team.Slug) }</span>
+			</div>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "teams.rename.submit") }</button>
+		</form>
+	}
+}
+
+templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Project, form FormState, errMsg string) {
 	<section class="team card">
-		<h2 class="card-header">{ tm.Team.Name } <span class="chip">{ tm.Team.Slug }</span></h2>
+		<h2 class="card-header">
+			{ tm.Team.Name } <span class="chip">{ tm.Team.Slug }</span>
+			<a class="btn btn-ghost card-header-action" href={ templ.SafeURL("#" + EditTeamModalID(tm.Team.ID)) }>{ i18n.T(ctx, "teams.rename.action") }</a>
+		</h2>
+		@teamRenameModal(tm, form, errMsg)
 		<h3>{ i18n.T(ctx, "teams.members.title") }</h3>
 		<div class="team-scroll">
 			if len(tm.Members) == 0 {
@@ -205,12 +244,16 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 // errMsg — сообщение об ошибке последнего POST, рендерится с тем же статусом
 // (422), что и ответ — тот же принцип, что и у OrgSettings. Ссылка «назад» на
 // Members (breadcrumb) — тот же принцип, что и у Probes.
-templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []org.Project, errMsg, userEmail string) {
+templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []org.Project, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "teams.title")+" "+o.Name, userEmail) {
 		<div class="teams">
 			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "teams.title") } { o.Name }</h1>
-			if errMsg != "" {
+			// Ошибка показывается ЗДЕСЬ только если она не от формы создания
+			// команды: на странице есть ещё формы (добавить участника, привязать
+			// проект), и их ошибки относятся к самой странице. Ошибка формы
+			// создания уезжает внутрь модалки, рядом с полями.
+			if errMsg != "" && !form.Has() {
 				<p class="error">{ errMsg }</p>
 			}
 			@createTrigger("new-team", "teams.create.title")
@@ -219,22 +262,25 @@ templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []
 				@emptyState("building", "teams.empty.title", "teams.empty.body", "", "")
 			} else {
 				for _, tm := range teams {
-					@teamSection(tm, orgMembers, orgProjects)
+					@teamSection(tm, orgMembers, orgProjects, form, errMsg)
 				}
 			}
 			</div>
-			@createModal("new-team", "teams.create.title") {
+			@createModalOpen("new-team", "teams.create.title", false, form.Opens("new-team")) {
 				<form method="post" action={ templ.URL(orgTeamsPath(o.ID)) } class="team-create-form">
+					if errMsg != "" && form.Opens("new-team") {
+						<p class="error" role="alert">{ errMsg }</p>
+					}
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "teams.create.slug_label") }
-							<input type="text" name="slug" placeholder="backend" autocomplete="off" required class="input"/>
+							<input type="text" name="slug" placeholder="backend" autocomplete="off" required class="input" value={ form.Get("slug", "") }/>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "teams.create.name_label") }
-							<input type="text" name="name" placeholder={ i18n.T(ctx, "teams.create.name_placeholder") } required class="input"/>
+							<input type="text" name="name" placeholder={ i18n.T(ctx, "teams.create.name_placeholder") } required class="input" value={ form.Get("name", "") }/>
 						</label>
 					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "teams.create.submit") }</button>

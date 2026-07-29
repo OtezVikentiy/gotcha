@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"html"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -345,6 +346,60 @@ type seriesPoint struct {
 	has  bool
 }
 
+// bridgeSparseGaps соединяет соседние непустые корзины ЧЕРЕЗ короткие пропуски,
+// оставляя разрывы только там, где данных не было заметно дольше обычного.
+//
+// Сетка корзин считается по ширине окна (autoStep), а не по частоте ряда, и
+// ряд легко оказывается реже сетки: метрика раз в час на 24-часовом окне
+// попадает в каждую пятую 12-минутную корзину. Тогда каждая точка — одиночный
+// сегмент, и линейный график вырождается в частокол отметок с заливкой в пол.
+//
+// Порог адаптивный: медианный шаг ряда (в корзинах) × 1.5. Это не сглаживание и
+// не досочинение данных — отрезок соединяет две РЕАЛЬНЫЕ соседние точки, ровно
+// как в любом линейном графике; промежуточные значения не появляются, подсказки
+// по-прежнему висят только над корзинами с данными. Пропуск длиннее порога
+// (простой приложения) остаётся разрывом: для мониторинга это главное.
+//
+// Плотный ряд (медиана = 1 корзина) не трогаем вовсе: там одиночная пустая
+// корзина — настоящий провал, и он обязан читаться как разрыв.
+func bridgeSparseGaps(pts []seriesPoint) []seriesPoint {
+	idx := make([]int, 0, len(pts))
+	for i, p := range pts {
+		if p.has {
+			idx = append(idx, i)
+		}
+	}
+	if len(idx) < 3 {
+		return pts
+	}
+	gaps := make([]int, 0, len(idx)-1)
+	for i := 0; i+1 < len(idx); i++ {
+		gaps = append(gaps, idx[i+1]-idx[i])
+	}
+	sort.Ints(gaps)
+	median := gaps[len(gaps)/2]
+	if median < 2 {
+		return pts
+	}
+	limit := median * 3 / 2
+
+	out := make([]seriesPoint, 0, len(pts))
+	prev := -1
+	for i, p := range pts {
+		if !p.has {
+			continue
+		}
+		if prev >= 0 && i-prev > limit {
+			// Маркер разрыва: одной пустой точки достаточно, чтобы сегмент
+			// оборвался — координаты у неё не читаются.
+			out = append(out, seriesPoint{})
+		}
+		out = append(out, p)
+		prev = i
+	}
+	return out
+}
+
 // writeLineWithArea рисует линию по точкам с РАЗРЫВАМИ на пропусках (has=false)
 // — линия не проваливается в ноль на пустых корзинах, а прерывается — и с
 // мягкой заливкой-градиентом под линией (fade к прозрачному). Прямые отрезки, а
@@ -363,6 +418,25 @@ func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64,
 		sb.WriteString(`" stop-opacity="0"/></linearGradient></defs>`)
 	}
 
+	// Ширина отметки для ОДИНОЧНОЙ корзины: половина шага между точками.
+	// Одиночную корзину нельзя нарисовать полилинией — для неё нужны две точки,
+	// — и раньше она просто пропускалась. Для мониторинга это худший из
+	// возможных пропусков: одиночный всплеск в тишине ровно то, что надо
+	// увидеть, а подсказка при наведении рисуется на каждой корзине независимо
+	// и честно сообщала «3 транзакции» там, где на графике был разрыв.
+	markW := 2.0
+	if len(pts) > 1 {
+		if step := (pts[len(pts)-1].x - pts[0].x) / float64(len(pts)-1); step > 0 {
+			markW = step * 0.6
+		}
+	}
+
+	// Ряд может приходить реже сетки корзин (метрика раз в час на 12-минутном
+	// шаге 24-часового окна). Тогда КАЖДАЯ непустая корзина изолирована, и без
+	// моста график распадается на отдельные отметки с заливкой в пол — «лес
+	// спичек» вместо линии. Мостим только короткие пропуски: см. bridgeSparseGaps.
+	pts = bridgeSparseGaps(pts)
+
 	// Идём сегментами подряд идущих точек с данными; на пропуске сегмент рвётся.
 	for i := 0; i < len(pts); {
 		if !pts[i].has {
@@ -375,8 +449,47 @@ func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64,
 		}
 		seg := pts[i:j]
 		i = j
-		if len(seg) < 2 {
-			continue // одиночную точку линией не нарисовать
+		if len(seg) == 1 {
+			// Одиночная корзина — короткая горизонтальная отметка на её
+			// значении, шириной в саму корзину. Рисуется теми же атрибутами
+			// штриха, что и линия, поэтому совпадает с ней по цвету и теме
+			// (у p95 это class=, у метрик — stroke=, окружность с fill здесь
+			// не годится).
+			pt := seg[0]
+			x0, x1 := pt.x-markW/2, pt.x+markW/2
+			if fillHex != "" {
+				sb.WriteString(`<path fill="url(#`)
+				sb.WriteString(gradID)
+				sb.WriteString(`)" stroke="none" d="M`)
+				sb.WriteString(formatCoord(x0))
+				sb.WriteByte(' ')
+				sb.WriteString(formatCoord(baseline))
+				sb.WriteString(`L`)
+				sb.WriteString(formatCoord(x0))
+				sb.WriteByte(' ')
+				sb.WriteString(formatCoord(pt.y))
+				sb.WriteString(`L`)
+				sb.WriteString(formatCoord(x1))
+				sb.WriteByte(' ')
+				sb.WriteString(formatCoord(pt.y))
+				sb.WriteString(`L`)
+				sb.WriteString(formatCoord(x1))
+				sb.WriteByte(' ')
+				sb.WriteString(formatCoord(baseline))
+				sb.WriteString(`Z"/>`)
+			}
+			sb.WriteString(`<polyline points="`)
+			sb.WriteString(formatCoord(x0))
+			sb.WriteByte(',')
+			sb.WriteString(formatCoord(pt.y))
+			sb.WriteByte(' ')
+			sb.WriteString(formatCoord(x1))
+			sb.WriteByte(',')
+			sb.WriteString(formatCoord(pt.y))
+			sb.WriteString(`" fill="none" `)
+			sb.WriteString(lineAttr)
+			sb.WriteString(` stroke-width="1.5"/>`)
+			continue
 		}
 		if fillHex != "" {
 			sb.WriteString(`<path fill="url(#`)

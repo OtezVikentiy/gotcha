@@ -122,6 +122,7 @@ templ layoutBody(title string, userEmail string) {
 					@themeToggle()
 				</header>
 				<main class="app-content" id="main" tabindex="-1">
+					@flashView()
 					{ children... }
 				</main>
 				<footer class="app-footer">
@@ -187,6 +188,7 @@ templ chromelessBody(title string, userEmail string) {
 			@themeToggle()
 		</header>
 		<main class="chromeless-main">
+			@flashView()
 			{ children... }
 		</main>
 	</body>

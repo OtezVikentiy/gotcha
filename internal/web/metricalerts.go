@@ -36,10 +36,29 @@ func (h *Handler) metricAlertsPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	h.renderMetricAlerts(w, r, http.StatusOK, projectID, "")
+	h.renderMetricAlerts(w, r, http.StatusOK, projectID, nil, "")
 }
 
-func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string) {
+// metricRuleFormState — введённые значения формы правила, чтобы вернуть их
+// пользователю при ошибке валидации.
+func metricRuleFormState(r *http.Request) templates.FormState {
+	f := templates.FormState{}
+	for _, name := range []string{
+		"metric_name", "aggregation", "comparator", "threshold",
+		"window_seconds", "environment", "label_key", "label_value",
+	} {
+		if v := r.FormValue(name); v != "" {
+			f[name] = v
+		}
+	}
+	return f
+}
+
+// renderMetricAlerts отрисовывает страницу. form — введённые пользователем
+// значения: при ошибке валидации они возвращаются в форму, а сама модалка
+// открывается с сервера. Раньше страница перерисовывалась без них, модалка
+// закрывалась, и человек, ошибившийся в одном поле из семи, начинал сначала.
+func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	rules, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -66,7 +85,7 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 		}
 	}
 	w.WriteHeader(status)
-	_ = templates.MetricAlerts(projectID, rules, incidents, known, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MetricAlerts(projectID, rules, incidents, known, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // metricAlertCreate — POST /projects/{id}/metrics/alerts: создать правило.
@@ -99,12 +118,12 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil || math.IsNaN(threshold) || math.IsInf(threshold, 0) {
 		// ParseFloat принимает "NaN"/"Inf" без ошибки; такой порог сломал бы
 		// сравнение (алерт никогда не сработает) и график (y="NaN") — отклоняем.
-		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, i18n.T(r.Context(), "err.metricalert.threshold_finite"))
+		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, metricRuleFormState(r), i18n.T(r.Context(), "err.metricalert.threshold_finite"))
 		return
 	}
 	window, err := strconv.Atoi(r.FormValue("window_seconds"))
 	if err != nil || window <= 0 {
-		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, i18n.T(r.Context(), "err.metricalert.window_positive"))
+		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, metricRuleFormState(r), i18n.T(r.Context(), "err.metricalert.window_positive"))
 		return
 	}
 	rule := metric.Rule{
@@ -121,7 +140,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.MetricRules.Create(r.Context(), rule); err != nil {
 		if errors.Is(err, metric.ErrInvalidRule) {
-			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, i18n.T(r.Context(), "err.metricalert.invalid_rule"))
+			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, metricRuleFormState(r), i18n.T(r.Context(), "err.metricalert.invalid_rule"))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))

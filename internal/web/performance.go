@@ -134,7 +134,8 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
-	_ = templates.PerformanceList(projectID, rows, total, filter, environments, int(project.ApdexThresholdMS), h.currentEmail(r)).
+	_ = templates.PerformanceList(projectID, rows, total, filter, environments, int(project.ApdexThresholdMS),
+		h.cardinalityNotices(projectID), h.currentEmail(r)).
 		Render(r.Context(), w)
 }
 

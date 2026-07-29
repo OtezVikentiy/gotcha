@@ -137,20 +137,40 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	h.renderMaintenance(w, r, http.StatusOK, projectID, "")
+	h.renderMaintenance(w, r, http.StatusOK, projectID, nil, "")
+}
+
+// maintenanceFormState — введённые значения формы окна обслуживания, чтобы
+// вернуть их при ошибке валидации: форма из восьми полей, и терять её целиком
+// из-за перепутанных дат было дорого.
+func maintenanceFormState(r *http.Request) templates.FormState {
+	f := templates.FormState{}
+	for _, name := range []string{
+		"name", "kind", "starts_at", "ends_at",
+		"weekday", "start_time", "end_time", "timezone_custom",
+	} {
+		if v := r.FormValue(name); v != "" {
+			f[name] = v
+		}
+	}
+	// Пояс сохраняем всегда, даже пустой: пустое значение select'а — это выбор
+	// «Другой», и пропустив его, форма после ошибки возвращалась бы на UTC,
+	// пряча заодно поле со введённым вручную поясом.
+	f["timezone"] = r.FormValue("timezone")
+	return f
 }
 
 // renderMaintenance — общий рендер: GET-обработчик и оба POST в этом файле
 // на 422 (то же сообщение на месте, без редиректа — тот же принцип, что и у
 // renderAlerts/renderProjectSettings).
-func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string) {
+func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	w.WriteHeader(status)
-	_ = templates.Maintenance(projectID, windows, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Maintenance(projectID, windows, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // maintenanceCreate — POST /projects/{id}/maintenance: sameOrigin +
@@ -187,12 +207,81 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	win := parseMaintenanceForm(r, projectID)
 	if _, err := h.Uptime.CreateWindow(r.Context(), win); err != nil {
 		if errors.Is(err, uptime.ErrInvalidWindow) {
-			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID, maintenanceErrorMessage(r.Context(), err))
+			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID,
+				maintenanceFormState(r).Open("new-maintenance-window"),
+				maintenanceErrorMessage(r.Context(), err))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
+}
+
+// maintenanceUpdate — POST /projects/{id}/maintenance/update: window_id и те
+// же поля, что и у создания.
+//
+// У окон был только жизненный цикл «создать/удалить»: сдвинуть еженедельное
+// окно на час — самая частая правка — стоило перенабора всех восьми полей, а
+// разовое окно, которое затянулось, нельзя было продлить вовсе.
+func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.Uptime == nil {
+		h.notFound(w, r)
+		return
+	}
+	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	windowID, err := strconv.ParseInt(r.FormValue("window_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad window_id", http.StatusBadRequest)
+		return
+	}
+	windows, err := h.Uptime.Windows(r.Context(), projectID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	// Тот же скоуп, что и у удаления: id окна приходит из формы.
+	if !windowBelongsToProject(windows, windowID) {
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		return
+	}
+
+	win := parseMaintenanceForm(r, projectID)
+	win.ID = windowID
+	if err := h.Uptime.UpdateWindow(r.Context(), win); err != nil {
+		if errors.Is(err, uptime.ErrInvalidWindow) {
+			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID,
+				maintenanceFormState(r).Open(templates.EditWindowModalID(windowID)),
+				maintenanceErrorMessage(r.Context(), err))
+			return
+		}
+		if errors.Is(err, uptime.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	h.flashOK(w, "flash.saved", 0)
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
 }
 

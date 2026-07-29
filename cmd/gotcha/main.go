@@ -32,6 +32,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -276,6 +278,7 @@ func run() error {
 		if cfg.SecretKey != devSecretKey {
 			alertSvc.SetSecretKey(cfg.SecretKey)
 		}
+		alertSvc.SetBudget(time.Duration(cfg.AlertBudgetWindowSeconds)*time.Second, cfg.AlertBudgetLimit)
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
@@ -316,6 +319,7 @@ func run() error {
 			if cfg.SecretKey != devSecretKey {
 				alertSvc.SetSecretKey(cfg.SecretKey)
 			}
+			alertSvc.SetBudget(time.Duration(cfg.AlertBudgetWindowSeconds)*time.Second, cfg.AlertBudgetLimit)
 		}
 		if outbox == nil {
 			outbox = notify.NewOutbox(pg)
@@ -367,65 +371,42 @@ func run() error {
 		}
 		go watchdog.Run(ctx)
 
-		// Оценщик регрессий производительности (этап 4, план 4) живёт в том же
-		// процессе, что и uptime-watchdog: оба — периодические джобы, которым
-		// нужны PG (инциденты/конфиг) и общий outbox/каналы. Он обходит топ-K
-		// целей каждого проекта и шлёт алерт об открытии/закрытии регрессии через
-		// тот же outbox. alertSvc/outbox/emailSender гарантированно построены
-		// выше в этом же блоке (uptime|all), даже если процесс не крутит web.
-		evaluator := &trace.Evaluator{
-			Pool:        pg,
-			Query:       trace.NewQuery(ch),
-			Regressions: trace.NewRegressionService(pg),
-			Notifier: &trace.RegressionNotifier{
-				Alerts:          alertSvc,
-				Outbox:          outbox,
-				BaseURL:         cfg.BaseURL,
-				EmailEnabled:    emailSender.Configured(),
-				ExternalDetails: cfg.ExternalChannelDetails,
-			},
+		// Оценщики регрессий производительности, правил по метрикам и регрессий
+		// профилей — периодические джобы, которым нужны PG (инциденты/конфиг) и
+		// общий outbox/каналы. К аптайму они отношения не имеют: они живут здесь
+		// исторически, потому что тут уже собраны alertSvc, outbox и emailSender.
+		//
+		// Из-за этого при документированном раздельном развёртывании web+ingest
+		// (оператор, которому аптайм не нужен, никогда не запустит --mode=uptime)
+		// правило по метрике выглядело включённым и не вычислялось НИКОГДА —
+		// ни строки в логе, ни признака в интерфейсе. Ровно тот же класс дефекта
+		// уже находили у воркера доставки.
+		//
+		// GOTCHA_RUN_EVALUATORS позволяет включить их в любом режиме с БД. Дефолт
+		// оставлен прежним намеренно: включать их автоматически везде значило бы
+		// в связке web+uptime гонять двойную оценку.
+		if runEvaluators(cfg) {
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender)
 		}
-		go evaluator.Run(ctx)
-
-		// Оценщик пороговых алертов на метрики (этап 6, план 4) — та же ниша, что
-		// и regression-evaluator: периодическая джоба на PG (правила/инциденты) +
-		// CH (агрегаты метрик), алертит через общий outbox. alertSvc/outbox/
-		// emailSender построены выше в этом же блоке (uptime|all).
-		metricEval := &metric.Evaluator{
-			Rules:     metric.NewRuleService(pg),
-			Query:     metric.NewQuery(ch),
-			Incidents: metric.NewIncidentService(pg),
-			Notifier: &metric.MetricNotifier{
-				Alerts:          alertSvc,
-				Outbox:          outbox,
-				BaseURL:         cfg.BaseURL,
-				EmailEnabled:    emailSender.Configured(),
-				ExternalDetails: cfg.ExternalChannelDetails,
-			},
-			Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
-		}
-		go metricEval.Run(ctx)
-
-		// Оценщик регрессий профилей (этап 9): рост self-CPU доли функции над
-		// скользящей базой → инцидент + алерт через общий outbox. Та же ниша,
-		// что regression/metric-оценщики; alertSvc/outbox/emailSender/pg/ch в scope.
-		profileRegEval := &profile.RegressionEvaluator{
-			Pool:        pg,
-			Query:       profile.NewQuery(ch),
-			Regressions: profile.NewRegressionService(pg),
-			Notifier: &profile.RegressionNotifier{
-				Alerts:          alertSvc,
-				Outbox:          outbox,
-				BaseURL:         cfg.BaseURL,
-				EmailEnabled:    emailSender.Configured(),
-				ExternalDetails: cfg.ExternalChannelDetails,
-			},
-			Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
-			Config:   profile.DefaultProfileRegressionConfig(),
-		}
-		go profileRegEval.Run(ctx)
 
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
+	}
+
+	// Оценщики вне режима uptime — только по явному включению.
+	if cfg.Mode != "uptime" && cfg.Mode != "all" && cfg.Mode != "probe" {
+		switch {
+		case runEvaluatorsExplicit(cfg):
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender)
+			slog.Info("evaluators enabled by GOTCHA_RUN_EVALUATORS", "mode", cfg.Mode)
+		default:
+			// Молчать здесь нельзя: правило по метрике в интерфейсе выглядит
+			// включённым, а не вычисляется. Оператор должен узнать об этом при
+			// старте, а не во время инцидента.
+			slog.Warn("metric/performance/profile evaluators are NOT running in this mode; "+
+				"metric alert rules and regression detection will never fire — "+
+				"run a --mode=uptime (or --mode=all) replica, or set GOTCHA_RUN_EVALUATORS=true here",
+				"mode", cfg.Mode)
+		}
 	}
 
 	var pipeline *ingest.Pipeline
@@ -433,6 +414,9 @@ func run() error {
 	var spanWriter *trace.SpanWriter
 	var metricWriter *metric.Writer
 	var profileWriter *profile.Writer
+	// cardinality — ограничитель кардинальности; нужен и приёму (схлопывание),
+	// и веб-слою (диагностика: что схлопнуто и примеры значений).
+	var cardinality *ingest.CardinalityGuard
 	// Доставка уведомлений и чистка очереди. Гейт — НЕ режим, а сам факт наличия
 	// outbox: в очередь пишут контуры из разных режимов (uptime.OutboxNotifier в
 	// web|uptime|all, оценщики трейсов/метрик/профилей в ingest|all), и когда
@@ -459,6 +443,20 @@ func run() error {
 			notifyWorker.Secrets = alertSvc
 		}
 		go notifyWorker.Run(ctx)
+
+		// Сводки о подавленных уведомлениях. Гейт тот же, что у воркера доставки
+		// (наличие outbox, а не режим процесса): потолок без сводки — молчаливая
+		// потеря, а «тишина в Telegram» неотличима от «всё спокойно».
+		if alertSvc != nil {
+			digester := &alert.Digester{
+				Svc:             alertSvc,
+				Outbox:          outbox,
+				BaseURL:         cfg.BaseURL,
+				EmailEnabled:    emailSender != nil && emailSender.Configured(),
+				ExternalDetails: cfg.ExternalChannelDetails,
+			}
+			go digester.Run(ctx)
+		}
 
 		// Чистка notification_outbox (техдолг): доставленные/проваленные строки
 		// без ретенции копятся бесконечно.
@@ -554,6 +552,17 @@ func run() error {
 		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
 		ingestHandler.DropCounter = orgSvc
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
+		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех
+		// путей приёма — иначе один и тот же проект набирал бы отдельные наборы
+		// значений на Sentry-входе и на OTLP-входе.
+		cardinality = ingest.NewCardinalityGuard(
+			cfg.CardinalityLimit, time.Duration(cfg.CardinalityWindowSeconds)*time.Second)
+		ingestHandler.Cardinality = cardinality
+		// Схлопнутое обязано быть видно оператору: без счётчика «часть имён
+		// пропала» неотличимо от «их и не было».
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_cardinality_collapsed_total",
+			"Field values collapsed into the overflow bucket because a project hit its cardinality limit.",
+			nil, cardinality.CollapsedTotal)
 		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
@@ -569,6 +578,10 @@ func run() error {
 		// при включённом скрубинге поиск субъекта по ним не найдёт ничего.
 		webHandler.ScrubIP = cfg.ScrubIP
 		webHandler.ScrubEmail = cfg.ScrubEmail
+		// Диагностика кардинальности: в режиме all это тот же экземпляр, что у
+		// приёма. В раздельном развёртывании веб-узел его не видит — тогда
+		// предупреждения доступны через /metrics и логи ingest-узла.
+		webHandler.Cardinality = cardinality
 		webHandler.Outbox = outbox
 		webHandler.Uptime = uptimeSvc
 		webHandler.UptimeWriter = uptimeWriter
@@ -708,4 +721,81 @@ func run() error {
 		drain()
 		return nil
 	}
+}
+
+// startEvaluators запускает периодические оценщики: регрессии
+// производительности, правила по метрикам и регрессии профилей. Вынесено в
+// функцию, потому что запускать их надо из двух мест — режима uptime|all и
+// явного GOTCHA_RUN_EVALUATORS в прочих режимах с БД.
+func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
+	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender) {
+	evaluator := &trace.Evaluator{
+		Pool:        pg,
+		Query:       trace.NewQuery(ch),
+		Regressions: trace.NewRegressionService(pg),
+		Notifier: &trace.RegressionNotifier{
+			Alerts:          alertSvc,
+			Outbox:          outbox,
+			BaseURL:         cfg.BaseURL,
+			EmailEnabled:    emailSender.Configured(),
+			ExternalDetails: cfg.ExternalChannelDetails,
+		},
+	}
+	go evaluator.Run(ctx)
+
+	// Оценщик пороговых алертов на метрики (этап 6, план 4) — та же ниша, что
+	// и regression-evaluator: периодическая джоба на PG (правила/инциденты) +
+	// CH (агрегаты метрик), алертит через общий outbox. alertSvc/outbox/
+	// emailSender построены выше в этом же блоке (uptime|all).
+	metricEval := &metric.Evaluator{
+		Rules:     metric.NewRuleService(pg),
+		Query:     metric.NewQuery(ch),
+		Incidents: metric.NewIncidentService(pg),
+		Notifier: &metric.MetricNotifier{
+			Alerts:          alertSvc,
+			Outbox:          outbox,
+			BaseURL:         cfg.BaseURL,
+			EmailEnabled:    emailSender.Configured(),
+			ExternalDetails: cfg.ExternalChannelDetails,
+		},
+		Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
+	}
+	go metricEval.Run(ctx)
+
+	// Оценщик регрессий профилей (этап 9): рост self-CPU доли функции над
+	// скользящей базой → инцидент + алерт через общий outbox. Та же ниша,
+	// что regression/metric-оценщики; alertSvc/outbox/emailSender/pg/ch в scope.
+	profileRegEval := &profile.RegressionEvaluator{
+		Pool:        pg,
+		Query:       profile.NewQuery(ch),
+		Regressions: profile.NewRegressionService(pg),
+		Notifier: &profile.RegressionNotifier{
+			Alerts:          alertSvc,
+			Outbox:          outbox,
+			BaseURL:         cfg.BaseURL,
+			EmailEnabled:    emailSender.Configured(),
+			ExternalDetails: cfg.ExternalChannelDetails,
+		},
+		Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
+		Config:   profile.DefaultProfileRegressionConfig(),
+	}
+	go profileRegEval.Run(ctx)
+}
+
+// runEvaluators — запускать ли оценщики в режиме uptime|all. Явное значение
+// переменной перекрывает дефолт (например, чтобы выключить их на реплике,
+// которая крутит только проверки аптайма).
+func runEvaluators(cfg Config) bool {
+	if cfg.RunEvaluators != nil {
+		return *cfg.RunEvaluators
+	}
+	return true
+}
+
+// runEvaluatorsExplicit — включены ли оценщики ЯВНО. В режимах без аптайма
+// дефолта нет: включать их самим значило бы в связке web+uptime гонять двойную
+// оценку, а молча не включать — то, что уже привело к «правило включено и не
+// срабатывает никогда».
+func runEvaluatorsExplicit(cfg Config) bool {
+	return cfg.RunEvaluators != nil && *cfg.RunEvaluators
 }

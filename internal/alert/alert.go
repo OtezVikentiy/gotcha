@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/mail"
 	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -63,6 +65,12 @@ type Service struct {
 	pool         *pgxpool.Pool
 	secretKey    [32]byte
 	secretKeySet bool
+
+	// Пер-проектный потолок уведомлений (см. budget.go). budgetSet отличает
+	// «оператор задал 0, значит выключил» от «не настраивалось, берём дефолт».
+	budgetWindow time.Duration
+	budgetLimit  int
+	budgetSet    bool
 }
 
 // SetSecretKey включает шифрование секретов каналов (Telegram bot-токен, HMAC-
@@ -121,7 +129,15 @@ func validateChannel(c Channel) error {
 			return ErrInvalidChannel
 		}
 	case ChannelTelegram:
-		if c.Target == "" || c.Secret == "" {
+		if c.Secret == "" {
+			return ErrInvalidChannel
+		}
+		// chat_id у Telegram — целое число (у групп и супергрупп
+		// отрицательное). Раньше проверялась только непустота, и любая
+		// опечатка — «не-урл», скопированное имя чата, пробел — принималась
+		// молча, а узнать о ней было негде: доставка падала уже в фоне, в логе
+		// неудачных отправок. Пусть форма ловит это сразу.
+		if _, err := strconv.ParseInt(c.Target, 10, 64); err != nil {
 			return ErrInvalidChannel
 		}
 	default:
@@ -172,6 +188,49 @@ func (s *Service) UpsertRule(ctx context.Context, r Rule) (int64, error) {
 		return 0, fmt.Errorf("alert: upsert rule: %w", err)
 	}
 	return id, nil
+}
+
+// UpsertRules сохраняет НАБОР правил проекта атомарно: либо применяются все,
+// либо ни одно.
+//
+// Раньше страница писала правила по очереди, и первая же ошибка обрывала цикл —
+// уже записанные оставались. Пользователь получал 422, форма перерисовывалась из
+// БД, и понять, что именно сохранилось, было нельзя: «нажал Сохранить, получил
+// ошибку, а половина изменений всё-таки применилась».
+//
+// Валидация идёт целиком ДО первой записи, а сами записи — в одной транзакции:
+// так частичное применение невозможно ни из-за невалидного правила, ни из-за
+// сбоя БД посередине.
+func (s *Service) UpsertRules(ctx context.Context, rules []Rule) error {
+	for _, r := range rules {
+		if err := validateRule(r); err != nil {
+			return err
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("alert: upsert rules: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, r := range rules {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO alert_rules (project_id, kind, enabled, threshold, window_minutes, throttle_minutes)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (project_id, kind) DO UPDATE SET
+				enabled = EXCLUDED.enabled,
+				threshold = EXCLUDED.threshold,
+				window_minutes = EXCLUDED.window_minutes,
+				throttle_minutes = EXCLUDED.throttle_minutes`,
+			r.ProjectID, r.Kind, r.Enabled, r.Threshold, r.WindowMinutes, r.ThrottleMinutes)
+		if err != nil {
+			return fmt.Errorf("alert: upsert rules: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("alert: upsert rules: %w", err)
+	}
+	return nil
 }
 
 // DeleteRule удаляет правило по id.
@@ -277,6 +336,65 @@ func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, e
 		return "", fmt.Errorf("alert: channel %d secret cannot be decrypted: %w", channelID, err)
 	}
 	return open, nil
+}
+
+// UpdateChannel меняет канал доставки: получателя, секрет и включённость.
+//
+// Раньше у канала был только жизненный цикл «создать/удалить»: выключенный
+// Telegram-канал нельзя было включить из интерфейса, а опечатку в адресе —
+// исправить. Приходилось удалять и заводить заново, теряя историю доставок.
+//
+// Пустой Secret означает «оставить прежний»: секрет вводится вслепую
+// (type=password) и в форму не возвращается, поэтому требовать его при каждом
+// изменении адреса значило бы заставлять оператора искать bot-токен ради
+// правки опечатки.
+func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
+	if err := validateChannelForUpdate(c); err != nil {
+		return err
+	}
+	if c.Secret == "" {
+		tag, err := s.pool.Exec(ctx, `
+			UPDATE alert_channels SET target = $2, enabled = $3
+			WHERE id = $1 AND project_id = $4`, c.ID, c.Target, c.Enabled, c.ProjectID)
+		if err != nil {
+			return fmt.Errorf("alert: update channel: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+
+	stored := c.Secret
+	if s.secretKeySet {
+		sealed, err := secretbox.Seal(s.secretKey, c.Secret)
+		if err != nil {
+			return fmt.Errorf("alert: seal channel secret: %w", err)
+		}
+		stored = sealed
+	}
+	// project_id в условии — скоуп: id канала приходит из формы, и без него
+	// владелец одного проекта мог бы править канал соседнего.
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE alert_channels SET target = $2, enabled = $3, secret = $4
+		WHERE id = $1 AND project_id = $5`, c.ID, c.Target, c.Enabled, stored, c.ProjectID)
+	if err != nil {
+		return fmt.Errorf("alert: update channel: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// validateChannelForUpdate — как validateChannel, но пустой секрет допустим:
+// при изменении он означает «оставить прежний».
+func validateChannelForUpdate(c Channel) error {
+	probe := c
+	if probe.Kind == ChannelTelegram && probe.Secret == "" {
+		probe.Secret = "keep" // проверяем всё, кроме наличия секрета
+	}
+	return validateChannel(probe)
 }
 
 // DeleteChannel удаляет канал по id. Каскадом удаляет и его записи в outbox.

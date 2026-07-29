@@ -135,11 +135,15 @@ templ perfEnvOption(value, label, selected string) {
 // перцентилями, failure rate, Apdex (порог T = apdexT мс) и спарклайном p95.
 // total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
 // если total больше, показывается пометка об усечении (как у waterfall).
-templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, userEmail string) {
+templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string) {
 	@layout(i18n.T(ctx, "perf.endpoints"), userEmail) {
 		<div class="performance">
 			<h1>{ i18n.T(ctx, "perf.endpoints") }</h1>
 			@helpPanel("performance", "performance")
+			// Предупреждение о схлопнутом хвосте — ЗДЕСЬ, а не в логах: человек
+			// смотрит на список эндпойнтов, и именно тут он замечает, что часть
+			// имён пропала.
+			@cardinalityNoticeView(cardinality)
 			<form method="get" action={ templ.URL(performancePath(projectID)) } class="performance-filters">
 				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
 					@perfEnvOption("", i18n.T(ctx, "perf.filter.env_all"), filter.Environment)

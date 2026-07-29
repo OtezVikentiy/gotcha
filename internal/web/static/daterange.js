@@ -434,3 +434,22 @@
 		init();
 	}
 })();
+
+/* Сообщения о результате действия: крестик закрывает сразу.
+ *
+ * Прогрессивное улучшение. Без скрипта сообщение уходит само через шесть секунд
+ * по CSS-анимации, а кнопка скрыта — мёртвая кнопка хуже её отсутствия. Класс
+ * js на <html> её показывает.
+ *
+ * Отдельным слушателем на document, а не на каждой плашке: сообщение рисуется
+ * один раз за загрузку страницы, и делегирование дешевле поиска элементов. */
+(function () {
+	"use strict";
+	document.documentElement.classList.add("js");
+	document.addEventListener("click", function (e) {
+		var btn = e.target.closest && e.target.closest(".flash-close");
+		if (!btn) return;
+		var box = btn.closest(".flash");
+		if (box && box.parentNode) box.parentNode.removeChild(box);
+	});
+})();

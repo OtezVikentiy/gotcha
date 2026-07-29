@@ -303,8 +303,17 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 		<form method="post" action={ templ.URL(orgSettingsExportSubjectPath(orgID)) } class="subject-export-form">
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "org.gdpr.field.project_id") }
-					<input type="number" name="project_id" min="1" required class="input"/>
+					{ i18n.T(ctx, "org.gdpr.field.project") }
+					// Селект с названиями, а не номер числом: списка проектов на
+					// этой странице нет, и номер приходилось добывать из адреса
+					// другого раздела — отсюда и риск опечатки в необратимой
+					// операции.
+					<select name="project_id" required class="select">
+						<option value="">{ i18n.T(ctx, "org.gdpr.field.project_placeholder") }</option>
+						for _, p := range purge.Projects {
+							<option value={ strconv.FormatInt(p.ID, 10) }>{ p.Name }</option>
+						}
+					</select>
 				</label>
 			</div>
 			<div class="field">
@@ -316,8 +325,9 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.user_id") }
-					<input type="text" name="user_id" class="input"/>
+					<input type="text" name="user_id" class="input" aria-describedby="gdpr-user-id-help"/>
 				</label>
+				<p class="hint" id="gdpr-user-id-help">{ i18n.T(ctx, "org.gdpr.field.user_id.help") }</p>
 			</div>
 			<div class="field">
 				<label>
@@ -341,18 +351,20 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 	<div class="gdpr-block">
 		<h3>{ i18n.T(ctx, "org.gdpr.purge.title") }</h3>
-		if purge.Done {
-			if purge.Purged > 0 {
-				<p class="notice">{ i18n.Tn(ctx, "org.gdpr.purge.result", purge.Purged) }</p>
-			} else {
-				<p class="notice notice--warn">{ i18n.T(ctx, "org.gdpr.purge.result_none") }</p>
-			}
-		}
 		<form method="post" action={ templ.URL(orgSettingsPurgeSubjectPath(orgID)) } class="subject-purge-form">
 			<div class="field">
 				<label>
-					{ i18n.T(ctx, "org.gdpr.field.project_id") }
-					<input type="number" name="project_id" min="1" required class="input"/>
+					{ i18n.T(ctx, "org.gdpr.field.project") }
+					// Селект с названиями, а не номер числом: списка проектов на
+					// этой странице нет, и номер приходилось добывать из адреса
+					// другого раздела — отсюда и риск опечатки в необратимой
+					// операции.
+					<select name="project_id" required class="select">
+						<option value="">{ i18n.T(ctx, "org.gdpr.field.project_placeholder") }</option>
+						for _, p := range purge.Projects {
+							<option value={ strconv.FormatInt(p.ID, 10) }>{ p.Name }</option>
+						}
+					</select>
 				</label>
 			</div>
 			<div class="field">
@@ -364,8 +376,9 @@ templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.user_id") }
-					<input type="text" name="user_id" class="input"/>
+					<input type="text" name="user_id" class="input" aria-describedby="gdpr-user-id-help"/>
 				</label>
+				<p class="hint" id="gdpr-user-id-help">{ i18n.T(ctx, "org.gdpr.field.user_id.help") }</p>
 			</div>
 			<div class="field">
 				<label>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -33,6 +34,29 @@ func (s *Service) CreateTeam(ctx context.Context, orgID int64, slug, name string
 		return Team{}, fmt.Errorf("org: create team: %w", err)
 	}
 	return tm, nil
+}
+
+// RenameTeam меняет отображаемое имя команды.
+//
+// Slug не меняется намеренно: он участвует в адресах и в выдаче прав, а его
+// смена ломала бы уже сохранённые ссылки — переименование же нужно ровно затем,
+// чтобы поправить опечатку или отразить смену названия отдела.
+//
+// org_id в условии — скоуп: id команды приходит из формы, и без него
+// администратор одной организации переименовал бы команду соседней.
+func (s *Service) RenameTeam(ctx context.Context, orgID, teamID int64, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return ErrInvalidName
+	}
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE teams SET name = $3 WHERE id = $2 AND org_id = $1", orgID, teamID, name)
+	if err != nil {
+		return fmt.Errorf("org: rename team: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // TeamsOf возвращает команды организации, отсортированные по name —

@@ -24,6 +24,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+	"log/slog"
 )
 
 // Атрибуты OTel-семантики, которые мы промотируем в поля нашей модели. Всё
@@ -112,14 +113,6 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
-	if !h.allow(r.Context(), h.TxQuota, key.OrgID, "transaction") {
-		// Тело ещё не разобрано — точного числа транзакций в экспорте нет;
-		// считаем один отклонённый батч (best-effort сигнал о потерях).
-		h.countDrop(r.Context(), dropTransaction, key.OrgID, 1)
-		writeQuotaExceeded(w, "transaction quota exceeded")
-		return
-	}
-
 	// Лимит тела и распаковка — общий Handler.body: коллектор по умолчанию жмёт
 	// gzip'ом, и защита от «бомбы» здесь ровно та же, что у Sentry-входа.
 	body, closeBody, err := h.body(w, r)
@@ -145,8 +138,25 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := key.ProjectID
+	// Квота списывается ПОСЛЕ разбора и ЗА ЭЛЕМЕНТ. Раньше она проверялась до
+	// разбора — тогда числа транзакций в экспорте ещё нет, и списывалась одна
+	// единица за весь батч: экспорт с десятью тысячами спанов стоил столько же,
+	// сколько один. Разбор до списания безопасен: и rate-лимитер, и потолок
+	// размера тела отрабатывают выше.
+	txs := MapOTLP(req.GetResourceSpans(), time.Now().UTC())
+	granted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txs))
+	if dropped := len(txs) - granted; dropped > 0 {
+		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
+		slog.Warn("ingest: transaction quota exceeded, dropping items from OTLP export",
+			"dropped", dropped, "accepted", granted, "project_id", projectID, "org_id", key.OrgID)
+	}
+	if granted == 0 && len(txs) > 0 {
+		writeQuotaExceeded(w, "transaction quota exceeded")
+		return
+	}
+
 	rate := h.sampleRate(r.Context(), projectID)
-	for _, tx := range MapOTLP(req.GetResourceSpans(), time.Now().UTC()) {
+	for _, tx := range txs[:granted] {
 		h.enqueueSampled(projectID, rate, tx)
 	}
 	writeOTLPResponse(w, enc)
@@ -173,12 +183,6 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	if h.rateLimited(w, key.OrgID, key.ProjectID) {
 		return
 	}
-	if !h.allow(r.Context(), h.MetricQuota, key.OrgID, "metric") {
-		// Тело ещё не разобрано — считаем один отклонённый батч метрик.
-		h.countDrop(r.Context(), dropMetric, key.OrgID, 1)
-		writeQuotaExceeded(w, "metric quota exceeded")
-		return
-	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
@@ -200,11 +204,32 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed otlp payload")
 		return
 	}
-	for _, p := range metric.MapOTLP(req.GetResourceMetrics(), time.Now().UTC()) {
+	// Квота ПОСЛЕ разбора и за датапойнт, а не за батч: экспорт коллектора
+	// несёт тысячи точек, и одна единица за весь батч делала квоту метрик
+	// декоративной.
+	points := metric.MapOTLP(req.GetResourceMetrics(), time.Now().UTC())
+	granted := h.grant(r.Context(), h.MetricQuota, key.OrgID, "metric", len(points))
+	if dropped := len(points) - granted; dropped > 0 {
+		h.countDrop(r.Context(), dropMetric, key.OrgID, dropped)
+		slog.Warn("ingest: metric quota exceeded, dropping points from OTLP export",
+			"dropped", dropped, "accepted", granted,
+			"project_id", key.ProjectID, "org_id", key.OrgID)
+	}
+	if granted == 0 && len(points) > 0 {
+		writeQuotaExceeded(w, "metric quota exceeded")
+		return
+	}
+
+	for _, p := range points[:granted] {
 		// Зачистка ПДн: атрибуты датапойнта — единственный носитель denylist-
 		// значений на этом пути, и он идёт мимо Pipeline/Scrubber. h.Scrub == nil
 		// — no-op (ScrubTags nil-safe). p.Attributes — map[string]string.
 		h.Scrub.ScrubTags(p.Attributes)
+		// Имя метрики и сервис стоят в ключе сортировки metric_points, поэтому
+		// их кардинальность ограничена так же, как у имён транзакций.
+		p.Name = h.Cardinality.Value(key.ProjectID, FieldMetricName, p.Name)
+		p.Service = h.Cardinality.Value(key.ProjectID, FieldService, p.Service)
+		p.Environment = h.Cardinality.Value(key.ProjectID, FieldEnvironment, p.Environment)
 		h.Metrics.Add(key.ProjectID, p)
 	}
 	writeOTLPResponse(w, enc)

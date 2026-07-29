@@ -1,0 +1,145 @@
+package web
+
+import (
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/web/flashctx"
+)
+
+// flashCookie — имя cookie, переносящей сообщение через редирект.
+const flashCookie = "flash"
+
+// Сообщение переносится cookie, а не query-параметром, ровно по одной причине:
+// параметр остаётся в адресе, и сообщение залипает при F5 и уезжает в закладку.
+// Cookie читается и гасится тем же запросом, поэтому показывается ровно один раз.
+//
+// Сам тип живёт в листовом пакете flashctx: его читает слой шаблонов, а тот
+// импортируется из web — обратный импорт замкнул бы цикл.
+
+// flashKeys — белый список ключей, которые разрешено показывать. Всё, чего тут
+// нет, отбрасывается: значение cookie полностью подконтрольно клиенту.
+var flashKeys = map[string]bool{
+	"flash.saved":            true,
+	"flash.created":          true,
+	"flash.deleted":          true,
+	"flash.invite_sent":      true,
+	"flash.issues_resolved":  true,
+	"flash.issues_ignored":   true,
+	"flash.issues_reopened":  true,
+	"flash.nothing_selected": true,
+	"flash.channel_created":  true,
+	"flash.channel_updated":  true,
+	"flash.rules_saved":      true,
+	"flash.member_removed":   true,
+	"flash.probe_revoked":    true,
+	"flash.subject_purged":   true,
+}
+
+// setFlash кладёт сообщение в cookie перед редиректом. Path=/ — сообщение может
+// показаться на любой странице, куда ведёт редирект. MaxAge короткий: если
+// показать не удалось (пользователь закрыл вкладку), оно не всплывёт через час.
+func setFlash(w http.ResponseWriter, secure bool, kind, key string, n int) {
+	if !flashKeys[key] {
+		return
+	}
+	v := kind + "|" + key
+	if n != 0 {
+		v += "|" + strconv.Itoa(n)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     flashCookie,
+		Value:    url.QueryEscape(v),
+		Path:     "/",
+		MaxAge:   60,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// clearFlash гасит cookie. Вызывается сразу при чтении, поэтому сообщение
+// показывается ровно один раз и переживает F5 корректно (второй показ не
+// случится).
+func clearFlash(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     flashCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// parseFlash разбирает значение cookie. Возвращает nil на всём, чего нет в
+// белом списке.
+func parseFlash(raw string) *flashctx.Flash {
+	v, err := url.QueryUnescape(raw)
+	if err != nil {
+		return nil
+	}
+	parts := strings.Split(v, "|")
+	if len(parts) < 2 {
+		return nil
+	}
+	kind, key := parts[0], parts[1]
+	if kind != "ok" && kind != "warn" {
+		return nil
+	}
+	if !flashKeys[key] {
+		return nil
+	}
+	f := &flashctx.Flash{Kind: kind, Key: key}
+	if len(parts) > 2 {
+		if n, err := strconv.Atoi(parts[2]); err == nil && n >= 0 {
+			f.N = n
+		}
+	}
+	return f
+}
+
+// withFlash достаёт сообщение из cookie, гасит её и кладёт сообщение в контекст.
+//
+// Через контекст, а не параметром layout: layout зовут все страницы продукта, и
+// протаскивать сообщение через каждую сигнатуру значило бы менять их все ради
+// того, что к содержимому страницы отношения не имеет. Тем же приёмом сделаны
+// локаль и тема.
+func (h *Handler) withFlash(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/static/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		c, err := r.Cookie(flashCookie)
+		if err != nil || c.Value == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		clearFlash(w, h.secureCookies())
+		f := parseFlash(c.Value)
+		if f == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(flashctx.With(r.Context(), f)))
+	})
+}
+
+// secureCookies — ставить ли Secure на служебные cookie. То же правило, что у
+// сессионной: HTTPS-инстанс.
+func (h *Handler) secureCookies() bool {
+	return strings.HasPrefix(h.BaseURL, "https://")
+}
+
+// flashOK/flashWarn — сокращения для обработчиков.
+func (h *Handler) flashOK(w http.ResponseWriter, key string, n int) {
+	setFlash(w, h.secureCookies(), "ok", key, n)
+}
+
+func (h *Handler) flashWarn(w http.ResponseWriter, key string, n int) {
+	setFlash(w, h.secureCookies(), "warn", key, n)
+}

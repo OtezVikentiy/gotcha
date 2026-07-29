@@ -88,6 +88,11 @@ How many days ClickHouse keeps each kind of data before deleting old rows. Lower
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points (ingested via OTLP). |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profiling samples (the heaviest data by volume, hence the shorter default). |
 | `GOTCHA_OUTBOX_RETENTION_DAYS` | `7` | Retention for records of already-delivered/failed notifications (email/webhook/Telegram) in PostgreSQL. Deliberately short: this is a working queue rather than an archive: it lives in PostgreSQL and grows with notification volume. |
+| `GOTCHA_ALERT_BUDGET_WINDOW_SECONDS` | `3600` | Window of the per-project notification ceiling. |
+| `GOTCHA_ALERT_BUDGET_LIMIT` | `50` | How many notifications a project may send within that window. Rule throttling keys on (issue, rule), and a brand-new issue has no throttle row — so a sender using a unique `fingerprint` per event got one notification per event. Suppressed alerts are not lost: once the window closes a digest reports "N alerts suppressed". `0` disables the ceiling entirely. |
+| `GOTCHA_CARDINALITY_LIMIT` | `10000` | Cap on DISTINCT values of open-ended fields (transaction name, environment, metric name, service, span operation) per project per window. Values beyond the cap are grouped under `<cardinality-limit>` rather than dropped; the affected page shows which field hit the cap and examples of the grouped values. The cause is almost always an identifier inside a name — see [Cardinality](/docs/cardinality). `0` removes the limit. |
+| `GOTCHA_CARDINALITY_WINDOW_SECONDS` | `3600` | Window after which the set of distinct values starts fresh, so a project that fixed its names recovers on its own. |
+| `GOTCHA_RUN_EVALUATORS` | by mode | Whether to run the periodic evaluators: performance regressions, metric alert rules, profile regressions. They ship with `uptime` and `all` by default, although they have nothing to do with uptime. In a `web`+`ingest` split (no uptime in use) a metric alert rule looks enabled and **never fires** — set this on exactly one replica. A warning is logged at startup in modes without evaluators. |
 
 Retention changes apply on the next application start (the value is used to set a TTL on the ClickHouse tables) — data already deleted doesn't come back retroactively.
 

@@ -136,27 +136,27 @@ func TestCheckAndCountEvents(t *testing.T) {
 	now := time.Now()
 
 	// Квота 2: две попытки принимаются (счётчик 1, затем 2).
-	if ok, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2); err != nil || !ok {
-		t.Fatalf("1st: ok=%v err=%v, want (true,nil)", ok, err)
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
+		t.Fatalf("1st: granted=%v err=%v, want (1,nil)", granted, err)
 	}
-	if ok, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2); err != nil || !ok {
-		t.Fatalf("2nd: ok=%v err=%v, want (true,nil)", ok, err)
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
+		t.Fatalf("2nd: granted=%v err=%v, want (1,nil)", granted, err)
 	}
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 2 {
 		t.Fatalf("usage after 2 accepted = %d, want 2", n)
 	}
 
 	// usage==quota: третья попытка отклоняется, счётчик НЕ растёт.
-	if ok, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2); err != nil || ok {
-		t.Fatalf("3rd (over quota): ok=%v err=%v, want (false,nil)", ok, err)
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2, 1); err != nil || granted != 0 {
+		t.Fatalf("3rd (over quota): granted=%v err=%v, want (0,nil)", granted, err)
 	}
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 2 {
 		t.Fatalf("usage after rejected = %d, want 2 (rejected must not count)", n)
 	}
 
 	// Безлимит (quota=0): всегда разрешает, счётчик продолжает расти.
-	if ok, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0); err != nil || !ok {
-		t.Fatalf("unlimited: ok=%v err=%v, want (true,nil)", ok, err)
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0, 1); err != nil || granted != 1 {
+		t.Fatalf("unlimited: granted=%v err=%v, want (1,nil)", granted, err)
 	}
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 3 {
 		t.Fatalf("usage after unlimited inc = %d, want 3", n)
@@ -181,7 +181,7 @@ func TestCheckAndCountOtherClasses(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		check func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
+		check func(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
 		usage func(ctx context.Context, orgID int64, month time.Time) (int64, error)
 	}{
 		{"transactions", svc.CheckAndCountTransactions, svc.TransactionUsage},
@@ -190,11 +190,11 @@ func TestCheckAndCountOtherClasses(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Квота 1: первая принята, вторая отклонена без инкремента.
-		if ok, err := c.check(ctx, o.ID, now, 1); err != nil || !ok {
-			t.Fatalf("%s 1st: ok=%v err=%v, want (true,nil)", c.name, ok, err)
+		if granted, err := c.check(ctx, o.ID, now, 1, 1); err != nil || granted != 1 {
+			t.Fatalf("%s 1st: granted=%v err=%v, want (1,nil)", c.name, granted, err)
 		}
-		if ok, err := c.check(ctx, o.ID, now, 1); err != nil || ok {
-			t.Fatalf("%s 2nd (over quota): ok=%v err=%v, want (false,nil)", c.name, ok, err)
+		if granted, err := c.check(ctx, o.ID, now, 1, 1); err != nil || granted != 0 {
+			t.Fatalf("%s 2nd (over quota): granted=%v err=%v, want (0,nil)", c.name, granted, err)
 		}
 		if n, _ := c.usage(ctx, o.ID, now); n != 1 {
 			t.Fatalf("%s usage = %d, want 1 (rejected must not count)", c.name, n)
@@ -204,5 +204,72 @@ func TestCheckAndCountOtherClasses(t *testing.T) {
 	// Классы независимы: events_count не задет.
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
 		t.Fatalf("events_count = %d, want 0 (untouched by other classes)", n)
+	}
+}
+
+// TestCheckAndCountPartialGrant — квота списывается ЗА ЭЛЕМЕНТ, и списание
+// частичное.
+//
+// Раньше списывалась единица за HTTP-ЗАПРОС: конверт с тысячей событий или
+// экспорт с десятью тысячами OTLP-спанов стоил ровно столько же, сколько одно
+// событие. Квоту можно было обойти на четыре порядка, а org_usage — то, по чему
+// оператор судит о потреблении, — врал на столько же.
+//
+// Частичность важна не меньше: если до квоты осталось меньше, чем в пачке,
+// организация должна получить остаток, а не «последняя пачка целиком мимо».
+func TestCheckAndCountPartialGrant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "partial-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "partial", "Partial", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	// Квота 10, просим 4 — влезает всё.
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 10, 4); err != nil || granted != 4 {
+		t.Fatalf("пачка из 4 при квоте 10: granted=%d err=%v, want 4", granted, err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 4 {
+		t.Fatalf("usage = %d, want 4 — списано не за элемент", n)
+	}
+
+	// Просим 100, осталось 6 — влезает ровно остаток.
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 10, 100); err != nil || granted != 6 {
+		t.Fatalf("пачка из 100 при остатке 6: granted=%d err=%v, want 6", granted, err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 10 {
+		t.Fatalf("usage = %d, want ровно квоту 10", n)
+	}
+
+	// Квота выбрана — следующая пачка не даёт ничего и счётчик не растёт.
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 10, 50); err != nil || granted != 0 {
+		t.Fatalf("пачка при исчерпанной квоте: granted=%d err=%v, want 0", granted, err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 10 {
+		t.Fatalf("usage = %d, want 10 — отвергнутое не должно считаться", n)
+	}
+
+	// Безлимит: списывается вся пачка целиком.
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0, 1000); err != nil || granted != 1000 {
+		t.Fatalf("безлимит: granted=%d err=%v, want 1000", granted, err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 1010 {
+		t.Fatalf("usage = %d, want 1010", n)
+	}
+
+	// Нулевая и отрицательная пачка не трогают счётчик.
+	for _, want := range []int64{0, -5} {
+		if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0, want); err != nil || granted != 0 {
+			t.Fatalf("пачка %d: granted=%d err=%v, want 0", want, granted, err)
+		}
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 1010 {
+		t.Fatalf("usage после пустых пачек = %d, want 1010", n)
 	}
 }

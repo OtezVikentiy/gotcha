@@ -17,6 +17,73 @@ func maintenanceDeletePath(projectID int64) string {
 	return maintenancePath(projectID) + "/delete"
 }
 
+// EditWindowModalID — якорь модалки правки окна обслуживания. Одна модалка на
+// строку таблицы: они построены на CSS :target, а якорь обязан быть уникальным.
+// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
+// после ошибки валидации.
+func EditWindowModalID(windowID int64) string {
+	return "edit-window-" + strconv.FormatInt(windowID, 10)
+}
+
+func maintenanceUpdatePath(projectID int64) string {
+	return maintenancePath(projectID) + "/update"
+}
+
+// windowFieldDefaults — значения полей формы для уже сохранённого окна.
+//
+// Форма одна на создание и на правку, а значения полей у них берутся из разных
+// мест: у создания — пустые, у правки — из окна. Возвращаем плоскую карту тех
+// же имён, что и у FormState, чтобы фрагмент полей не знал, какой он из двух.
+func windowFieldDefaults(w uptime.Window) FormState {
+	f := FormState{"name": w.Name, "kind": "oneoff", "timezone": w.Timezone}
+	if w.Weekly {
+		f["kind"] = "weekly"
+		f["weekday"] = strconv.Itoa(w.Weekday)
+		f["start_time"] = w.StartTime
+		f["end_time"] = w.EndTime
+	} else {
+		// datetime-local понимает только этот формат и только местное время —
+		// то же, в котором окно и было задано, поэтому переводим в его пояс.
+		loc, err := time.LoadLocation(w.Timezone)
+		if err != nil {
+			loc = time.UTC
+		}
+		if w.StartsAt != nil {
+			f["starts_at"] = w.StartsAt.In(loc).Format("2006-01-02T15:04")
+		}
+		if w.EndsAt != nil {
+			f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04")
+		}
+	}
+	if !knownTimezone(w.Timezone) {
+		// Пояса нет в фиксированном списке — select переключается на «Другой»
+		// (пустое значение), а сам пояс уезжает в соседнее свободное поле.
+		f["timezone"] = ""
+		f["timezone_custom"] = w.Timezone
+	}
+	return f
+}
+
+func knownTimezone(tz string) bool {
+	for _, known := range maintenanceTimezones {
+		if known == tz {
+			return true
+		}
+	}
+	return false
+}
+
+// windowFormValues — какие значения показывать в полях: введённые человеком,
+// если ошиблась именно эта форма, иначе значения самого окна (или пустые у
+// формы создания). Модалок правки на странице столько же, сколько окон, а
+// состояние формы одно — без этой развилки введённое попало бы во все сразу.
+func windowFormValues(form FormState, open bool, defaults FormState) FormState {
+	if open {
+		return form
+	}
+	return defaults
+}
+
 // maintenanceTimezones — фиксированный список TZ из спеки задачи; "Другой"
 // (пустое значение select'а) переключает форму на соседнее свободное
 // IANA-поле, см. web/maintenance.go:maintenanceTimezone.
@@ -57,38 +124,175 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	return starts + " → " + ends + " (" + w.Timezone + ")"
 }
 
-templ maintenanceTimezoneOption(tz string) {
-	<option value={ tz }>{ tz }</option>
+templ maintenanceTimezoneOption(tz string, selected bool) {
+	if selected {
+		<option value={ tz } selected>{ tz }</option>
+	} else {
+		<option value={ tz }>{ tz }</option>
+	}
 }
 
-templ maintenanceWeekdayOption(value int) {
-	<option value={ strconv.Itoa(value) }>{ i18n.T(ctx, weekdayLabelKey(value)) }</option>
+templ maintenanceWeekdayOption(value int, selected bool) {
+	if selected {
+		<option value={ strconv.Itoa(value) } selected>{ i18n.T(ctx, weekdayLabelKey(value)) }</option>
+	} else {
+		<option value={ strconv.Itoa(value) }>{ i18n.T(ctx, weekdayLabelKey(value)) }</option>
+	}
 }
 
-templ windowRow(projectID int64, w uptime.Window) {
+templ windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) {
 	<tr>
 		<td>{ w.Name }</td>
 		<td>{ i18n.T(ctx, windowKindTextKey(w)) }</td>
 		<td>{ windowScheduleText(ctx, w) }</td>
 		<td>
-			<form method="post" action={ templ.URL(maintenanceDeletePath(projectID)) } class="window-delete-form">
-				<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
-				<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
-			</form>
+			<div class="row-actions">
+				<a class="btn btn-ghost" href={ templ.SafeURL("#" + EditWindowModalID(w.ID)) }>{ i18n.T(ctx, "uptime.maintenance.edit") }</a>
+				<form method="post" action={ templ.URL(maintenanceDeletePath(projectID)) } class="window-delete-form">
+					<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
+				</form>
+			</div>
+			@windowEditModal(projectID, w, form, errMsg)
 		</td>
 	</tr>
+}
+
+// windowEditModal — правка окна обслуживания теми же полями, что и создание.
+templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg string) {
+	{{ open := form.Opens(EditWindowModalID(w.ID)) }}
+	@createModalOpen(EditWindowModalID(w.ID), "uptime.maintenance.edit.title", false, open) {
+		<form method="post" action={ templ.URL(maintenanceUpdatePath(projectID)) } class="maintenance-form">
+			if errMsg != "" && open {
+				<p class="error" role="alert">{ errMsg }</p>
+			}
+			<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
+			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit")
+		</form>
+	}
+}
+
+// maintenanceFields — поля окна обслуживания. Общие для создания и правки:
+// формы отличаются только адресом, идентификатором окна и подписью кнопки, а
+// восемь полей с их взаимными зависимостями (тип окна прячет половину, «Другой»
+// пояс открывает свободное поле) незачем держать в двух экземплярах — они
+// разъедутся при первой же правке.
+//
+// values — что показывать в полях: введённое человеком после ошибки либо
+// значения самого окна; см. windowFormValues.
+templ maintenanceFields(values FormState, submitKey string) {
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "uptime.maintenance.field.name") }
+			<input type="text" name="name" required class="input" value={ values.Get("name", "") }/>
+		</label>
+	</div>
+	<div class="field">
+		<span class="field-label">{ i18n.T(ctx, "uptime.maintenance.field.kind") }</span>
+		<div class="segmented">
+			<label>
+				if values.Selected("kind", "oneoff", "oneoff") {
+					<input type="radio" name="kind" value="oneoff" checked/>
+				} else {
+					<input type="radio" name="kind" value="oneoff"/>
+				}
+				{ i18n.T(ctx, "uptime.maintenance.kind.oneoff_label") }
+			</label>
+			<label>
+				if values.Selected("kind", "weekly", "oneoff") {
+					<input type="radio" name="kind" value="weekly" checked/>
+				} else {
+					<input type="radio" name="kind" value="weekly"/>
+				}
+				{ i18n.T(ctx, "uptime.maintenance.kind.weekly_label") }
+			</label>
+		</div>
+	</div>
+	// Показывается только выбранный блок: тип окна — «либо-либо», хендлер
+	// берёт поля только выбранной ветки (см. maintenance.go), поэтому второй
+	// блок при активном первом только сбивал бы с толку. Скрытие — чистый CSS
+	// через :has() по radio, без JS (см. .maintenance-form в app.css).
+	<div class="mw-oneoff">
+		<div class="form-grid">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "uptime.maintenance.oneoff.start") }
+					<input type="datetime-local" name="starts_at" class="input" value={ values.Get("starts_at", "") }/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "uptime.maintenance.oneoff.end") }
+					<input type="datetime-local" name="ends_at" class="input" value={ values.Get("ends_at", "") }/>
+				</label>
+			</div>
+		</div>
+	</div>
+	<div class="mw-weekly">
+		<div class="form-grid">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "uptime.maintenance.weekly.weekday") }
+					<select name="weekday" class="select">
+						for wd := 0; wd < 7; wd++ {
+							@maintenanceWeekdayOption(wd, values.Selected("weekday", strconv.Itoa(wd), "0"))
+						}
+					</select>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "uptime.maintenance.weekly.start") }
+					<input type="time" name="start_time" class="input" value={ values.Get("start_time", "") }/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "uptime.maintenance.weekly.end") }
+					<input type="time" name="end_time" class="input" value={ values.Get("end_time", "") }/>
+				</label>
+			</div>
+		</div>
+	</div>
+	<div class="form-grid">
+		<div class="field">
+			<label>
+				{ i18n.T(ctx, "uptime.maintenance.field.timezone") }
+				<select name="timezone" class="select">
+					for _, tz := range maintenanceTimezones {
+						@maintenanceTimezoneOption(tz, values.Selected("timezone", tz, "UTC"))
+					}
+					if values.Selected("timezone", "", "UTC") {
+						<option value="" selected>{ i18n.T(ctx, "uptime.maintenance.field.timezone_other") }</option>
+					} else {
+						<option value="">{ i18n.T(ctx, "uptime.maintenance.field.timezone_other") }</option>
+					}
+				</select>
+			</label>
+		</div>
+		// Поле своего IANA-пояса нужно только при выборе «Другой» (пустое value
+		// в select). Показывается через CSS :has() по выбранной option, без JS
+		// (см. .maintenance-form в app.css).
+		<div class="field mw-custom-tz">
+			<label>
+				{ i18n.T(ctx, "uptime.maintenance.field.timezone_custom") }
+				<input type="text" name="timezone_custom" placeholder={ i18n.T(ctx, "uptime.maintenance.timezone_placeholder") } class="input" value={ values.Get("timezone_custom", "") }/>
+			</label>
+		</div>
+	</div>
+	<button type="submit" class="btn btn-primary">{ i18n.T(ctx, submitKey) }</button>
 }
 
 // Maintenance — GET/POST /projects/{id}/maintenance: список окон
 // обслуживания проекта + форма создания (разового или еженедельного).
 // Доступ только owner/admin организации проекта (requireProjectRole).
-templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail string) {
+templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.maintenance"), userEmail) {
 		<div class="maintenance">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.maintenance") }</h1>
 			@helpPanel("maintenance", "maintenance")
-			if errMsg != "" {
+			if errMsg != "" && !form.Has() {
 				<p class="error">{ errMsg }</p>
 			}
 			@createTrigger("new-maintenance-window", "uptime.maintenance.new_title")
@@ -109,7 +313,7 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 								</thead>
 								<tbody>
 									for _, w := range windows {
-										@windowRow(projectID, w)
+										@windowRow(projectID, w, form, errMsg)
 									}
 								</tbody>
 							</table>
@@ -117,101 +321,12 @@ templ Maintenance(projectID int64, windows []uptime.Window, errMsg, userEmail st
 				}
 			</section>
 
-			@createModal("new-maintenance-window", "uptime.maintenance.new_title") {
+			@createModalOpen("new-maintenance-window", "uptime.maintenance.new_title", false, form.Opens("new-maintenance-window")) {
 			<form method="post" action={ templ.URL(maintenancePath(projectID)) } class="maintenance-form">
-				<div class="field">
-					<label>
-						{ i18n.T(ctx, "uptime.maintenance.field.name") }
-						<input type="text" name="name" required class="input"/>
-					</label>
-				</div>
-				<div class="field">
-					<span class="field-label">{ i18n.T(ctx, "uptime.maintenance.field.kind") }</span>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="kind" value="oneoff" checked/>
-							{ i18n.T(ctx, "uptime.maintenance.kind.oneoff_label") }
-						</label>
-						<label>
-							<input type="radio" name="kind" value="weekly"/>
-							{ i18n.T(ctx, "uptime.maintenance.kind.weekly_label") }
-						</label>
-					</div>
-				</div>
-
-				// Показывается только выбранный блок: тип окна — «либо-либо»,
-				// хендлер берёт поля только выбранной ветки (см. maintenance.go),
-				// поэтому второй блок при активном первом только сбивал бы с
-				// толку. Скрытие — чистый CSS через :has() по radio, без JS
-				// (см. .maintenance-form в app.css).
-				<div class="mw-oneoff">
-					<div class="form-grid">
-						<div class="field">
-							<label>
-								{ i18n.T(ctx, "uptime.maintenance.oneoff.start") }
-								<input type="datetime-local" name="starts_at" class="input"/>
-							</label>
-						</div>
-						<div class="field">
-							<label>
-								{ i18n.T(ctx, "uptime.maintenance.oneoff.end") }
-								<input type="datetime-local" name="ends_at" class="input"/>
-							</label>
-						</div>
-					</div>
-				</div>
-
-				<div class="mw-weekly">
-					<div class="form-grid">
-						<div class="field">
-							<label>
-								{ i18n.T(ctx, "uptime.maintenance.weekly.weekday") }
-								<select name="weekday" class="select">
-									for wd := 0; wd < 7; wd++ {
-										@maintenanceWeekdayOption(wd)
-									}
-								</select>
-							</label>
-						</div>
-						<div class="field">
-							<label>
-								{ i18n.T(ctx, "uptime.maintenance.weekly.start") }
-								<input type="time" name="start_time" class="input"/>
-							</label>
-						</div>
-						<div class="field">
-							<label>
-								{ i18n.T(ctx, "uptime.maintenance.weekly.end") }
-								<input type="time" name="end_time" class="input"/>
-							</label>
-						</div>
-					</div>
-				</div>
-
-				<div class="form-grid">
-				<div class="field">
-					<label>
-						{ i18n.T(ctx, "uptime.maintenance.field.timezone") }
-						<select name="timezone" class="select">
-							for _, tz := range maintenanceTimezones {
-								@maintenanceTimezoneOption(tz)
-							}
-							<option value="">{ i18n.T(ctx, "uptime.maintenance.field.timezone_other") }</option>
-						</select>
-					</label>
-				</div>
-				// Поле своего IANA-пояса нужно только при выборе «Другой»
-				// (пустое value в select). Показывается через CSS :has() по
-				// выбранной option, без JS (см. .maintenance-form в app.css).
-				<div class="field mw-custom-tz">
-					<label>
-						{ i18n.T(ctx, "uptime.maintenance.field.timezone_custom") }
-						<input type="text" name="timezone_custom" placeholder={ i18n.T(ctx, "uptime.maintenance.timezone_placeholder") } class="input"/>
-					</label>
-				</div>
-				</div>
-
-				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "uptime.maintenance.submit") }</button>
+				if errMsg != "" && form.Opens("new-maintenance-window") {
+					<p class="error" role="alert">{ errMsg }</p>
+				}
+				@maintenanceFields(form, "uptime.maintenance.submit")
 			</form>
 			}
 		</div>

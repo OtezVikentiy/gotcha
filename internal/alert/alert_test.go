@@ -232,3 +232,64 @@ func TestEnsureDefaultRules(t *testing.T) {
 		}
 	}
 }
+
+// TestUpsertRulesIsAtomic — набор правил применяется целиком или никак.
+//
+// Раньше страница писала правила по очереди, и первая ошибка обрывала цикл:
+// уже записанные оставались, пользователь получал 422, форма перерисовывалась
+// из БД, и понять, что именно сохранилось, было нельзя.
+func TestUpsertRulesIsAtomic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ctx := context.Background()
+	pid := newEvalProject(t, pool, "atomic")
+
+	// Второе правило невалидно (spike без порога и окна) — не должно записаться
+	// НИЧЕГО, включая валидное первое.
+	err := svc.UpsertRules(ctx, []alert.Rule{
+		{ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30},
+		{ProjectID: pid, Kind: alert.KindSpike, Enabled: true, Threshold: 0, WindowMinutes: 0},
+	})
+	if err == nil {
+		t.Fatal("невалидное правило должно давать ошибку")
+	}
+	rules, err := svc.Rules(ctx, pid)
+	if err != nil {
+		t.Fatalf("Rules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("записано %d правил при ошибке — применение частичное: %+v", len(rules), rules)
+	}
+
+	// Валидный набор применяется целиком.
+	if err := svc.UpsertRules(ctx, []alert.Rule{
+		{ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30},
+		{ProjectID: pid, Kind: alert.KindRegression, Enabled: false, ThrottleMinutes: 60},
+		{ProjectID: pid, Kind: alert.KindSpike, Enabled: true, Threshold: 10, WindowMinutes: 5},
+	}); err != nil {
+		t.Fatalf("валидный набор: %v", err)
+	}
+	rules, _ = svc.Rules(ctx, pid)
+	if len(rules) != 3 {
+		t.Fatalf("записано %d правил, want 3", len(rules))
+	}
+
+	// Повторный вызов обновляет, а не дублирует (UNIQUE project_id+kind).
+	if err := svc.UpsertRules(ctx, []alert.Rule{
+		{ProjectID: pid, Kind: alert.KindNewIssue, Enabled: false, ThrottleMinutes: 15},
+	}); err != nil {
+		t.Fatalf("повторный upsert: %v", err)
+	}
+	rules, _ = svc.Rules(ctx, pid)
+	if len(rules) != 3 {
+		t.Fatalf("после повторного upsert правил %d, want 3", len(rules))
+	}
+	for _, r := range rules {
+		if r.Kind == alert.KindNewIssue && (r.Enabled || r.ThrottleMinutes != 15) {
+			t.Errorf("правило не обновлено: %+v", r)
+		}
+	}
+}

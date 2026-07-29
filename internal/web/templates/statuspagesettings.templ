@@ -35,6 +35,11 @@ type StatusPageForm struct {
 	Description string
 	Enabled     bool
 	Monitors    []StatusPageFormMonitor
+	// Submitted — форму только что отправляли и она не прошла валидацию.
+	// Модалка строится на CSS :target: при перерисовке страницы фрагмента #id в
+	// адресе уже нет, и без этого флага она закрывалась вместе с заполненными
+	// полями, хотя сами значения сюда возвращались.
+	Submitted bool
 }
 
 // StatusPageFormMonitor — чекбокс монитора проекта в форме: Selected — стоит
@@ -220,7 +225,7 @@ templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageFor
 				</div>
 			}
 
-			@createModal("new-statuspage", "uptime.statuspages.new_title") {
+			@createModalOpen("new-statuspage", "uptime.statuspages.new_title", false, newForm.Submitted) {
 				@statusPageFormBlock(projectID, baseURL, newForm)
 			}
 		</div>

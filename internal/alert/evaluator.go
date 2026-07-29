@@ -77,6 +77,23 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		return
 	}
 
+	// Пер-проектный потолок. Троттлинг выше ключуется парой (issue_id, rule_id),
+	// и у НОВОГО issue строки там нет по определению — он проходит всегда.
+	// Отправитель с уникальным fingerprint на каждое событие получал issue на
+	// событие и уведомление на событие, а ключ DSN публичен. Подавленное не
+	// теряется: счётчик копится, и Digester рассылает сводку «подавлено ещё N».
+	budget, err := e.Svc.claimBudget(ctx, ev.ProjectID)
+	if err != nil {
+		slog.Error("alert: budget claim failed", "project_id", ev.ProjectID, "error", err)
+		return
+	}
+	if !budget.Allowed {
+		slog.Warn("alert: project notification budget exhausted, alert suppressed",
+			"project_id", ev.ProjectID, "issue_id", ev.IssueID,
+			"suppressed_in_window", budget.Suppressed)
+		return
+	}
+
 	channels, err := e.Svc.Channels(ctx, ev.ProjectID)
 	if err != nil {
 		slog.Error("alert: channels lookup failed", "project_id", ev.ProjectID, "error", err)

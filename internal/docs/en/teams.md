@@ -44,6 +44,7 @@ Creating a team:
 2. Enter a **Slug** (a short identifier, e.g. `backend`) and a **Name** (the display name, e.g. "Backend").
 3. Save.
 
+Each team gets its own card on the page, with two lists and forms underneath. The card heading carries a "Rename" button: it changes the display name without touching members or attached projects. The slug stays as it is — it is used in URLs and in access grants.
 Each team gets its own card on the page, with two lists and forms underneath:
 
 - **Members** — a table of current members, an add form with a dropdown (listing only organization members not yet in this team), and a remove button on each row.

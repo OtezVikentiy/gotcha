@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -282,24 +281,31 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 	}
 	banner := h.quotaBanner(r.Context(), orgID)
 	w.WriteHeader(status)
-	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r)).Render(r.Context(), w)
+	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID)).Render(r.Context(), w)
 }
 
-// subjectPurgeVM собирает состояние блока удаления ПДн: итог только что
-// выполненного удаления (?purged=N в редиректе) и предупреждение о критериях,
-// которые на этом инстансе заведомо пусты.
+// subjectPurgeVM собирает состояние блока удаления ПДн: предупреждение о
+// критериях, которые на этом инстансе заведомо пусты. Итог самого удаления
+// показывается общим сообщением о результате действия (см. flash.go).
 //
 // Предупреждение важнее итога: при включённых по умолчанию GOTCHA_SCRUB_IP и
 // GOTCHA_SCRUB_EMAIL колонки user_email и user_ip зануляются на приёме, поэтому
 // поиск субъекта по email или IP не совпадает ни с чем — а форма их спрашивает
 // и раньше молча принимала.
-func (h *Handler) subjectPurgeVM(r *http.Request) templates.SubjectPurgeVM {
+func (h *Handler) subjectPurgeVM(ctx context.Context, orgID int64) templates.SubjectPurgeVM {
 	vm := templates.SubjectPurgeVM{InertEmail: h.ScrubEmail, InertIP: h.ScrubIP}
-	if v := r.URL.Query().Get("purged"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			vm.Done = true
-			vm.Purged = n
+	if h.Org == nil {
+		return vm
+	}
+	if projects, err := h.Org.ProjectsOf(ctx, orgID); err == nil {
+		vm.Projects = make([]templates.ProjectOption, 0, len(projects))
+		for _, p := range projects {
+			vm.Projects = append(vm.Projects, templates.ProjectOption{ID: p.ID, Name: p.Name})
 		}
+	} else {
+		// Список проектов вспомогательный: без него форма всё ещё работает
+		// (селект будет пуст), но ронять страницу настроек из-за него нельзя.
+		slog.Warn("orgSettings: cannot list projects for GDPR form", "org_id", orgID, "error", err)
 	}
 	return vm
 }
@@ -803,10 +809,11 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		"events", res.Events, "transactions", res.Transactions,
 		"metric_points", res.MetricPoints, "total", res.Total())
 
-	// Итог уезжает в query-строку и показывается на странице настроек: молчаливый
-	// redirect не позволял отличить «удалено» от «не найдено ничего».
-	q := url.Values{"purged": {strconv.FormatUint(res.Total(), 10)}}
-	http.Redirect(w, r, orgSettingsPath(orgID)+"?"+q.Encode(), http.StatusSeeOther)
+	// Итог показывается сообщением, а не query-параметром: параметр оставался в
+	// адресе, залипал при F5 и уезжал в закладку, а ссылку вида ?purged=9999
+	// можно было подсунуть владельцу и показать ему выдуманное число.
+	h.flashOK(w, "flash.subject_purged", int(res.Total()))
+	http.Redirect(w, r, orgSettingsPath(orgID)+"#gdpr", http.StatusSeeOther)
 }
 
 // orgSettingsExportSubject — POST /orgs/{id}/settings/export-subject: owner-only

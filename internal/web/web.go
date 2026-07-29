@@ -25,6 +25,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -98,6 +99,11 @@ type Handler struct {
 	// поиск субъекта по ним не найдёт ничего никогда.
 	ScrubIP    bool
 	ScrubEmail bool
+
+	// Cardinality — ограничитель кардинальности приёма. Веб-слою нужен не для
+	// ограничения, а для ДИАГНОСТИКИ: показать, по какому полю проект упёрся в
+	// потолок и какие значения схлопнулись. nil — методы nil-safe.
+	Cardinality *ingest.CardinalityGuard
 	// Outbox — очередь доставки алертов (план 6, задача 5, spec §7): страница
 	// /projects/{id}/alerts показывает таблицу failed-доставок
 	// (FailedForProject), чтобы отказы каналов были видны в UI, а не только в
@@ -354,6 +360,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	inner.Handle("GET /orgs/{id}/teams", h.requireUser(http.HandlerFunc(h.teamsPage)))
 	inner.Handle("POST /orgs/{id}/teams", h.requireUser(http.HandlerFunc(h.teamsCreate)))
+	inner.Handle("POST /teams/{id}/rename", h.requireUser(http.HandlerFunc(h.teamRename)))
 	inner.Handle("POST /teams/{id}/members", h.requireUser(http.HandlerFunc(h.teamMembersAdd)))
 	inner.Handle("POST /teams/{id}/members/remove", h.requireUser(http.HandlerFunc(h.teamMembersRemove)))
 	inner.Handle("POST /teams/{id}/projects", h.requireUser(http.HandlerFunc(h.teamProjectsAttach)))
@@ -383,6 +390,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/alerts/deliveries", h.requireUser(http.HandlerFunc(h.alertDeliveriesPage)))
 	inner.Handle("POST /projects/{id}/alerts/rules", h.requireUser(http.HandlerFunc(h.alertsRulesSave)))
 	inner.Handle("POST /projects/{id}/alerts/channels", h.requireUser(http.HandlerFunc(h.alertsChannelCreate)))
+	inner.Handle("POST /projects/{id}/alerts/channels/update", h.requireUser(http.HandlerFunc(h.alertsChannelUpdate)))
 	inner.Handle("POST /projects/{id}/alerts/channels/delete", h.requireUser(http.HandlerFunc(h.alertsChannelDelete)))
 
 	inner.Handle("POST /orgs/{id}/settings/quota", h.requireUser(http.HandlerFunc(h.orgSettingsQuota)))
@@ -465,6 +473,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	inner.Handle("GET /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenancePage)))
 	inner.Handle("POST /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenanceCreate)))
+	inner.Handle("POST /projects/{id}/maintenance/update", h.requireUser(http.HandlerFunc(h.maintenanceUpdate)))
 	inner.Handle("POST /projects/{id}/maintenance/delete", h.requireUser(http.HandlerFunc(h.maintenanceDelete)))
 
 	// Публичный heartbeat-пинг (этап 2, план 2, задача 3): без requireUser
@@ -496,7 +505,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 	})
 
-	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withShell(inner)))))
+	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(inner))))))
 }
 
 // staticAssetVersion возвращает короткий хэш содержимого встроенных статических

@@ -8,25 +8,30 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// QuotaChecker учитывает единицу приёма (событие или транзакцию) и сообщает,
-// укладывается ли организация в месячную квоту. Реализация: OrgQuota.
+// QuotaChecker учитывает единицы приёма (события, транзакции, метрики,
+// профили) и сообщает, сколько из них укладывается в месячную квоту.
+// Реализация: OrgQuota.
 type QuotaChecker interface {
-	// CheckAndCount увеличивает счётчик организации за текущий месяц и
-	// возвращает, разрешён ли приём. Handler зовёт его один раз на принятый
-	// HTTP-запрос (не на событие внутри envelope — envelope может нести
-	// несколько событий; считать per-request проще и это принятое
-	// приближение к точной per-event квоте).
-	CheckAndCount(ctx context.Context, orgID int64) (allowed bool, err error)
+	// CheckAndCount списывает want единиц из квоты организации за текущий
+	// месяц и возвращает, СКОЛЬКО удалось списать: 0 — квота исчерпана, want —
+	// влезло всё, промежуточное значение — влезла часть, остаток вызывающий
+	// обязан выбросить и посчитать в дропы.
+	//
+	// Считается ЗА ЭЛЕМЕНТ, а не за HTTP-запрос. Раньше за запрос: конверт с
+	// тысячей событий стоил столько же, сколько одно событие, — квота
+	// обходилась на три-четыре порядка, и ровно на столько же врал org_usage,
+	// который для оператора является источником правды по потреблению.
+	CheckAndCount(ctx context.Context, orgID int64, want int64) (granted int64, err error)
 }
 
 // quotaResolver — часть org.Service, нужная OrgQuota; *org.Service ей
 // удовлетворяет.
 type quotaResolver interface {
 	Get(ctx context.Context, orgID int64) (org.Org, error)
-	CheckAndCountEvents(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
-	CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
-	CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
-	CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
+	CheckAndCountEvents(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
+	CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
+	CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
+	CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
 }
 
 // OrgQuota — QuotaChecker поверх org.Service. Квота организации кешируется на
@@ -50,7 +55,7 @@ type OrgQuota struct {
 	// checkCount — условный атомарный инкремент соответствующего счётчика:
 	// растит его лишь если приём укладывается в quota, иначе отклоняет БЕЗ
 	// инкремента (ARCH-L1: отвергнутое не считается в usage).
-	checkCount func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error)
+	checkCount func(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
 
 	// quotaNegTTL — время жизни НЕГАТИВНОЙ записи «квота исчерпана». Короткий TTL
 	// (аналог negTTL у KeyCache): при over-quota флуде повторные обращения той же
@@ -104,7 +109,7 @@ func NewOrgProfileQuota(svc *org.Service) *OrgQuota {
 func newOrgQuota(
 	svc quotaResolver,
 	quotaOf func(org.Org) int64,
-	checkCount func(ctx context.Context, orgID int64, month time.Time, quota int64) (bool, error),
+	checkCount func(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error),
 ) *OrgQuota {
 	return &OrgQuota{
 		svc:         svc,
@@ -147,33 +152,37 @@ func (q *OrgQuota) quota(ctx context.Context, orgID int64) (int64, error) {
 
 // CheckAndCount — см. QuotaChecker. Квота 0 означает безлимит: счётчик всё
 // равно растёт (для usage-репортинга), но приём никогда не блокируется. При
-// исчерпанной квоте счётчик НЕ инкрементится (ARCH-L1: отвергнутое не считается
-// в usage) — условный инкремент атомарен в БД, без гонки read-then-write.
-func (q *OrgQuota) CheckAndCount(ctx context.Context, orgID int64) (bool, error) {
+// исчерпанной квоте счётчик НЕ инкрементится (отвергнутое не считается в usage).
+func (q *OrgQuota) CheckAndCount(ctx context.Context, orgID int64, want int64) (int64, error) {
+	if want <= 0 {
+		return 0, nil
+	}
 	// Короткое замыкание over-quota: если недавно уже видели исчерпание, не идём
-	// в PG вовсе (иначе флуд при исчерпанной квоте бьёт условным INSERT..ON
-	// CONFLICT с row-lock'ом). Кешируем ТОЛЬКО негатив — позитив обязан
-	// инкрементить счётчик usage в БД на каждый принятый item.
+	// в PG вовсе (иначе флуд при исчерпанной квоте бьёт транзакцией с row-lock'ом).
+	// Кешируем ТОЛЬКО негатив — позитив обязан инкрементить счётчик usage в БД.
 	if q.recentlyExhausted(orgID) {
-		return false, nil
+		return 0, nil
 	}
 	quota, err := q.quota(ctx, orgID)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	// q.now(), а НЕ time.Now(): часы инжектируются ради тестов, и единственное
 	// место, где здесь стояло реальное время, — это же и есть граница месяца
 	// (checkCount считает usage за месяц от переданного момента). Из-за неё
 	// поведение «квота обнулилась 1-го числа» было непроверяемым в принципе,
 	// хотя это биллинговая логика.
-	allowed, err := q.checkCount(ctx, orgID, q.now(), quota)
+	granted, err := q.checkCount(ctx, orgID, q.now(), quota, want)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	if !allowed {
+	// Негативную запись ставим, когда влезло НЕ ВСЁ: значит квота уперлась в
+	// потолок, и следующему запросу тоже ловить нечего. Ставим и при частичном
+	// списании — остаток квоты нулевой по построению.
+	if granted < want {
 		q.markExhausted(orgID)
 	}
-	return allowed, nil
+	return granted, nil
 }
 
 // recentlyExhausted сообщает, есть ли живая негативная запись «квота исчерпана»

@@ -55,6 +55,17 @@ func formBool(r *http.Request, name string) bool {
 	return r.FormValue(name) != ""
 }
 
+// formBoolValue — то же состояние чекбокса, но строкой для FormState: "on" или
+// пустая строка. Нужно потому, что FormState хранит значения полей как есть, а
+// снятый пользователем флажок надо вернуть в форму снятым — иначе правка,
+// упавшая на валидации адреса, молча включала бы канал обратно.
+func formBoolValue(r *http.Request, name string) string {
+	if formBool(r, name) {
+		return "on"
+	}
+	return ""
+}
+
 // formInt — числовое поле формы; пустое значение или не-число трактуются как
 // 0 (а не как ошибка запроса) — итоговую валидность решает уже
 // alert.Service.UpsertRule/CreateChannel (ErrInvalidRule/ErrInvalidChannel).
@@ -90,13 +101,13 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	h.renderAlerts(w, r, http.StatusOK, projectID, "")
+	h.renderAlerts(w, r, http.StatusOK, projectID, nil, "")
 }
 
 // renderAlerts — общий рендер: GET-обработчик и все POST в этом файле на 422
 // (то же сообщение на месте, без редиректа — тот же принцип, что и у
 // renderProjectSettings/renderOrgSettings).
-func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string) {
+func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	rules, err := h.Alerts.Rules(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -108,7 +119,7 @@ func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status in
 		return
 	}
 	w.WriteHeader(status)
-	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // alertDeliveriesPage — GET /projects/{id}/alerts/deliveries: лог последних
@@ -201,12 +212,15 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 			ThrottleMinutes: formInt(r, "spike_throttle"),
 		},
 	}
-	for _, rule := range rules {
-		if _, err := h.Alerts.UpsertRule(r.Context(), rule); err != nil {
-			h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, alertsErrorMessage(r.Context(), err))
-			return
-		}
+	// Атомарно: либо применяются все три правила, либо ни одно. Раньше цикл
+	// писал их по очереди и обрывался на первой ошибке — уже записанные
+	// оставались, а по перерисованной из БД форме понять, что сохранилось,
+	// было нельзя.
+	if err := h.Alerts.UpsertRules(r.Context(), rules); err != nil {
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, nil, alertsErrorMessage(r.Context(), err))
+		return
 	}
+	h.flashOK(w, "flash.rules_saved", 0)
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
 }
 
@@ -246,9 +260,15 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 		Secret:    r.FormValue("secret"),
 	}
 	if _, err := h.Alerts.CreateChannel(r.Context(), c); err != nil {
-		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, alertsErrorMessage(r.Context(), err))
+		// Секрет намеренно НЕ возвращаем в форму: он и так вводится вслепую
+		// (type=password), а класть bot-токен обратно в HTML на странице с
+		// ошибкой — лишний повод ему оказаться в кеше или в скриншоте.
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID,
+			templates.FormState{"kind": c.Kind, "target": c.Target}.Open("new-channel"),
+			alertsErrorMessage(r.Context(), err))
 		return
 	}
+	h.flashOK(w, "flash.channel_created", 0)
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
 }
 
@@ -262,6 +282,93 @@ func channelBelongsToProject(channels []alert.Channel, channelID int64) bool {
 		}
 	}
 	return false
+}
+
+// alertsChannelUpdate — POST /projects/{id}/alerts/channels/update:
+// channel_id, target, secret, enabled.
+//
+// До этого у канала был только жизненный цикл «создать/удалить»: выключенный
+// канал нельзя было включить обратно, а опечатку в адресе — исправить, и
+// единственным выходом было удалить канал и завести заново.
+//
+// Тип канала не меняется намеренно: у email, webhook и telegram разный смысл
+// адреса и секрета, и «сменить тип» — это другой канал, а не правка этого.
+func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
+	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad channel_id", http.StatusBadRequest)
+		return
+	}
+	channels, err := h.Alerts.Channels(r.Context(), projectID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	// Тот же скоуп, что и у удаления: id канала приходит из формы, и без
+	// проверки принадлежности владелец одного проекта правил бы чужой канал.
+	kind, ok := channelKind(channels, channelID)
+	if !ok {
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		return
+	}
+	c := alert.Channel{
+		ID:        channelID,
+		ProjectID: projectID,
+		Kind:      kind,
+		Enabled:   formBool(r, "enabled"),
+		Target:    r.FormValue("target"),
+		Secret:    r.FormValue("secret"),
+	}
+	if err := h.Alerts.UpdateChannel(r.Context(), c); err != nil {
+		if errors.Is(err, alert.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return
+		}
+		// Секрет в форму не возвращаем по той же причине, что и при создании.
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID,
+			templates.FormState{"target": c.Target, "enabled": formBoolValue(r, "enabled")}.
+				Open(templates.EditChannelModalID(channelID)),
+			alertsErrorMessage(r.Context(), err))
+		return
+	}
+	h.flashOK(w, "flash.channel_updated", 0)
+	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
+}
+
+// channelKind — тип канала, если он принадлежит проекту. Возвращает и признак
+// принадлежности: тот же приём, что и channelBelongsToProject, но заодно даёт
+// тип, который правка не меняет и потому берёт из базы, а не из формы.
+func channelKind(channels []alert.Channel, channelID int64) (string, bool) {
+	for _, c := range channels {
+		if c.ID == channelID {
+			return c.Kind, true
+		}
+	}
+	return "", false
 }
 
 // alertsChannelDelete — POST /projects/{id}/alerts/channels/delete:
@@ -318,5 +425,6 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
 }

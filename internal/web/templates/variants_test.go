@@ -128,7 +128,7 @@ func TestEmptyStates(t *testing.T) {
 	empties := map[string]string{
 		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, true, "u@e.com", nil, nil, GettingStartedVM{})),
 		"monitors":     renderTo(t, MonitorsList(7, nil, true, "u@e.com")),
-		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, "u@e.com")),
+		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com")),
 		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com")),
 		"perfissues":   renderTo(t, PerfIssuesList(7, nil, "unresolved", "u@e.com")),
 		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com")),
@@ -136,11 +136,11 @@ func TestEmptyStates(t *testing.T) {
 		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
 		"regressions":  renderTo(t, RegressionsList(7, nil, "open", "u@e.com")),
 		"profileregs":  renderTo(t, ProfileRegressionsList(7, nil, "open", "u@e.com")),
-		"alerts":       renderTo(t, Alerts(7, nil, nil, false, "", "u@e.com")),
-		"teams":        renderTo(t, Teams(o, nil, nil, nil, "", "u@e.com")),
+		"alerts":       renderTo(t, Alerts(7, nil, nil, false, nil, "", "u@e.com")),
+		"teams":        renderTo(t, Teams(o, nil, nil, nil, nil, "", "u@e.com")),
 		"deliveries":   renderTo(t, AlertDeliveries(7, nil, "u@e.com")),
-		"metricalerts": renderTo(t, MetricAlerts(7, nil, nil, nil, "", "u@e.com")),
-		"maintenance":  renderTo(t, Maintenance(7, nil, "", "u@e.com")),
+		"metricalerts": renderTo(t, MetricAlerts(7, nil, nil, nil, nil, "", "u@e.com")),
+		"maintenance":  renderTo(t, Maintenance(7, nil, nil, "", "u@e.com")),
 		"probes":       renderTo(t, Probes(o, nil, "", "", "", "u@e.com")),
 		"statuspages":  renderTo(t, StatusPagesSettings(7, "https://x", nil, StatusPageForm{}, "", "u@e.com")),
 	}
@@ -159,7 +159,7 @@ func TestChannelStatusBadgeKinds(t *testing.T) {
 		{ID: 2, Kind: alert.ChannelWebhook, Enabled: false, Target: "https://h"},
 		{ID: 3, Kind: alert.ChannelTelegram, Enabled: true, Target: "@ch"},
 	}
-	out := renderTo(t, Alerts(7, nil, channels, true, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, nil, channels, true, nil, "", "u@e.com"))
 	if !strings.Contains(out, "@ch") || !strings.Contains(out, "https://h") {
 		t.Error("каналы всех типов должны отрендериться")
 	}
