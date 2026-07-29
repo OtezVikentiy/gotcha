@@ -237,6 +237,20 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 	if err := insertRegions(ctx, tx, m.ID, regions); err != nil {
 		return err
 	}
+	// Состояние и невыполненные задания снятых регионов — вслед за самими
+	// регионами. Иначе строка состояния остаётся навсегда (её больше некому
+	// перезаписать: задание для снятого региона не ставится), а задание в
+	// очереди будет один раз взято в лизу и выполнено уже после того, как
+	// регион у монитора убрали. Чтение дополнительно защищено JOIN'ом в
+	// States/StatesBatch — это для тех строк, что уже накопились.
+	if _, err := tx.Exec(ctx,
+		"DELETE FROM monitor_state WHERE monitor_id = $1 AND region <> ALL($2)", m.ID, regions); err != nil {
+		return fmt.Errorf("uptime: update: drop stale state: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		"DELETE FROM check_queue WHERE monitor_id = $1 AND region <> ALL($2)", m.ID, regions); err != nil {
+		return fmt.Errorf("uptime: update: drop stale queue: %w", err)
+	}
 
 	if _, err := tx.Exec(ctx, "DELETE FROM monitor_channels WHERE monitor_id = $1", m.ID); err != nil {
 		return fmt.Errorf("uptime: update channels: %w", err)

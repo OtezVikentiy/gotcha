@@ -102,7 +102,7 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 | `GOTCHA_BASE_URL` | `http://localhost:8080` | Public URL of this instance; used to build project DSNs, alert links, and invite links. Must match how users reach the instance. |
 | `GOTCHA_PG_DSN` | `postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable` | PostgreSQL connection string. |
 | `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | ClickHouse connection string. |
-| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs OAuth state/session cookies. **The default is public** (it's in the source) and enables account takeover via OAuth on any non-localhost deployment — the process refuses to start in `web`/`all` mode on a non-local `GOTCHA_BASE_URL` unless this is overridden (escape hatch: `GOTCHA_ALLOW_INSECURE_SECRET=1`, dev only). Generate a strong random value for any real deployment. |
+| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs OAuth state/session cookies. **The default is public** (it's in the source) and enables account takeover via OAuth on any non-localhost deployment — the process refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) on a non-local `GOTCHA_BASE_URL` unless this is overridden (escape hatch: `GOTCHA_ALLOW_INSECURE_SECRET=1`, dev only). Generate a strong random value for any real deployment. |
 | `GOTCHA_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_FROM` | unset / `587` / unset / unset / unset | Outbound email for invites and email alert channels; email delivery is disabled until `GOTCHA_SMTP_HOST` is set. |
 | `GOTCHA_RETENTION_DAYS` | `90` | Retention for events/transactions/Web Vitals in ClickHouse. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans. |

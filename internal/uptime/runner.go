@@ -13,19 +13,21 @@ import (
 const DefaultRegion = "local"
 
 const (
-	defaultScheduleEvery = 5 * time.Second
-	defaultLeaseEvery    = time.Second
-	defaultConcurrency   = 50
+	defaultLeaseEvery  = time.Second
+	defaultConcurrency = 50
 )
 
-// Runner — локальная проба: исполняет проверки в том же процессе, что и
-// центр (регион DefaultRegion, если Region не задан). Два тикера —
-// планировщик (ScheduleEvery, ставит задания через Svc.Schedule) и
-// исполнитель (LeaseEvery, забирает задания через Svc.LeaseLocal и
-// выполняет их пулом, ограниченным Concurrency). Zero-value полей
-// (ScheduleEvery/LeaseEvery/Concurrency/Region) означает "используй
-// дефолт" — так Runner можно собрать литералом без конструктора, как
-// notify.Worker/alert.Spike.
+// Runner — локальная проба: исполняет проверки в том же процессе, что и центр
+// (регион DefaultRegion, если Region не задан). Забирает задания через
+// Svc.LeaseLocal раз в LeaseEvery и выполняет их пулом, ограниченным
+// Concurrency. Zero-value полей (LeaseEvery/Concurrency/Region) означает
+// "используй дефолт" — так Runner можно собрать литералом без конструктора,
+// как notify.Worker/alert.Spike.
+//
+// ПОСТАНОВКУ заданий Runner не делает: она вынесена в Scheduler, который
+// запускается в любом процессе с базой. Пока постановка была вторым тикером
+// здесь, аптайм в раздельном развёртывании web+ingest не работал вовсе — см.
+// комментарий к Scheduler.
 type Runner struct {
 	Svc    *Service
 	Writer *ResultWriter
@@ -38,8 +40,7 @@ type Runner struct {
 	// включён: чекеры режут loopback/приватные/link-local адреса.
 	AllowPrivateTargets bool
 
-	ScheduleEvery time.Duration
-	LeaseEvery    time.Duration
+	LeaseEvery time.Duration
 
 	// Checkers — опциональное переопределение CheckerFor по Kind, для
 	// тестов (инъекция фейкового чекера, например паникующего). nil
@@ -103,17 +104,11 @@ func (r *Runner) Run(ctx context.Context) {
 	r.init()
 	defer close(r.done)
 
-	scheduleEvery := r.ScheduleEvery
-	if scheduleEvery <= 0 {
-		scheduleEvery = defaultScheduleEvery
-	}
 	leaseEvery := r.LeaseEvery
 	if leaseEvery <= 0 {
 		leaseEvery = defaultLeaseEvery
 	}
 
-	scheduleTick := time.NewTicker(scheduleEvery)
-	defer scheduleTick.Stop()
 	leaseTick := time.NewTicker(leaseEvery)
 	defer leaseTick.Stop()
 
@@ -125,10 +120,6 @@ func (r *Runner) Run(ctx context.Context) {
 			return
 		case <-r.stop:
 			return
-		case <-scheduleTick.C:
-			if _, err := r.Svc.Schedule(ctx); err != nil {
-				slog.Error("uptime: runner: schedule failed", "error", err)
-			}
 		case <-leaseTick.C:
 			r.leaseAndDispatch(ctx, sem)
 		}
@@ -194,6 +185,23 @@ func (r *Runner) runOne(ctx context.Context, j Job) {
 		return checkWithRetries(ctx, checker, j.Monitor)
 	}()
 	at := time.Now().UTC()
+
+	// Проверка, оборванная НАШЕЙ остановкой, — не отказ сервиса. Отмена ctx
+	// приходит от SIGTERM (деплой, рестарт контейнера), и checkWithRetries в
+	// этот момент возвращает Result{OK:false} с «context canceled»: строка
+	// уезжала в check_results как настоящее падение. При конкурентности по
+	// умолчанию в полёте бывает до полусотни проверок — каждый деплой занижал
+	// аптайм, а у монитора с fail_threshold=1 ещё и открывал инцидент с
+	// рассылкой «сервис недоступен». Постфактум отличить это от реального
+	// падения в данных невозможно.
+	//
+	// Задание при этом остаётся зализенным и будет перевыполнено после
+	// истечения лизы — тем же путём, что при перехвате другой репликой.
+	if ctx.Err() != nil && !result.OK {
+		slog.Info("uptime: runner: check aborted by shutdown, result discarded",
+			"monitor_id", j.MonitorID, "region", j.Region, "queue_id", j.QueueID)
+		return
+	}
 
 	// The check itself uses ctx (so a shutdown aborts a slow in-flight HTTP
 	// check quickly), but everything after this point is a fire-once DB

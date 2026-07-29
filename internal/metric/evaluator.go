@@ -11,8 +11,16 @@ const evaluatorDefaultInterval = 60 * time.Second
 // Evaluator периодически считает агрегат каждой enabled-метрики за окно правила
 // и открывает/закрывает инциденты, шлёт алерт ровно один раз на открытие и
 // закрытие (калька trace.Evaluator). Тикер живёт в режимах uptime|all.
+// ruleLister — источник включённых правил. Интерфейс, а не конкретный тип,
+// ровно по той же причине, что issueUpserter/eventSink в пакете ingest: без
+// него у цикла Run нет наблюдаемого следа, и тест «поспал и убедился, что
+// горутина вышла» оставался зелёным, даже если вырезать тело тика целиком.
+type ruleLister interface {
+	ListEnabled(ctx context.Context) ([]Rule, error)
+}
+
 type Evaluator struct {
-	Rules     *RuleService
+	Rules     ruleLister
 	Query     *Query
 	Incidents *IncidentService
 	Notifier  *MetricNotifier

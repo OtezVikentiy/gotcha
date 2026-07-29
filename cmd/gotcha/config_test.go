@@ -587,3 +587,47 @@ func TestTrustedRecipientsEmptyByDefault(t *testing.T) {
 		t.Fatalf("TrustedRecipients = %v, want empty", cfg.TrustedRecipients)
 	}
 }
+
+// TestMigrateOnlyImpliesAutoMigrate — флаг существует ради применения
+// миграций, поэтому он их и включает.
+//
+// Иначе `--migrate-only` вместе с GOTCHA_AUTO_MIGRATE=false — а это ровно та
+// конфигурация, для которой флаг и нужен, — только проверил бы схему и вышел,
+// ничего не применив.
+func TestMigrateOnlyImpliesAutoMigrate(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_AUTO_MIGRATE": "false"}), []string{"--migrate-only"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.MigrateOnly {
+		t.Error("MigrateOnly = false, want true")
+	}
+	if !cfg.AutoMigrate {
+		t.Error("AutoMigrate = false при --migrate-only: запуск не применит миграции")
+	}
+}
+
+// TestMigrateOnlyRejectedForProbe — проба не открывает базу вовсе, и молча
+// выйти нулём было бы обманом: оператор решил бы, что схема применена.
+func TestMigrateOnlyRejectedForProbe(t *testing.T) {
+	_, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_TOKEN": "t",
+	}), []string{"--migrate-only", "--mode=probe"})
+	if err == nil {
+		t.Fatal("loadConfig принял --migrate-only с --mode=probe")
+	}
+	if !strings.Contains(err.Error(), "migrate-only") {
+		t.Errorf("ошибка = %v, want упоминание --migrate-only", err)
+	}
+}
+
+// TestMigrateOnlyDefaultsOff — обычный запуск флага не несёт.
+func TestMigrateOnlyDefaultsOff(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.MigrateOnly {
+		t.Error("MigrateOnly = true без флага")
+	}
+}

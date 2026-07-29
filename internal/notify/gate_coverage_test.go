@@ -58,6 +58,50 @@ func TestEveryNotifierPassesThroughTheDetailGate(t *testing.T) {
 	}
 }
 
+// TestEveryNotifierChecksDeliverable — второй сторож той же формы: канал,
+// у которого не читается секрет, не должен получать уведомлений.
+//
+// Правило «слать можно только во включённый канал с рабочим секретом» живёт в
+// Channel.Deliverable(). Разложенное по семи нотифаерам условие разъедется:
+// проверка на выключенность уже была в каждом из них по отдельности, и добавить
+// к ней вторую половину в шести местах из семи — вопрос одного невнимательного
+// патча. Отправка с пустым секретом означает вебхук без подписи и запрос в
+// Telegram без токена.
+func TestEveryNotifierChecksDeliverable(t *testing.T) {
+	root := filepath.Join("..")
+	var offenders []string
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		text := string(src)
+		if !strings.Contains(text, ".Outbox.Enqueue(") {
+			return nil
+		}
+		// Голая проверка включённости вместо Deliverable() — ровно та ошибка,
+		// от которой этот сторож защищает.
+		if strings.Contains(text, "!ch.Enabled") || !strings.Contains(text, "Deliverable()") {
+			offenders = append(offenders, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("обход дерева: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("эти нотифаеры фильтруют каналы не через Channel.Deliverable() — "+
+			"канал с нечитаемым секретом получит уведомление с пустым секретом: %v", offenders)
+	}
+}
+
 // TestGateCoverageTestItselfWorks — контроль самой ловушки: если бы она не
 // находила ни одного файла с постановкой в очередь, она была бы зелёной всегда
 // и не проверяла ничего (ровно та же болезнь, что у «поспал и убедился, что

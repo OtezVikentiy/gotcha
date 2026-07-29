@@ -142,7 +142,7 @@ func pageComponents() map[string]templ.Component {
 		"DocsPage":             DocsPage("q", "Q", "<p>body</p>", []docs.Page{{Slug: "q", Title: "Q"}}, "u@e.com"),
 		"ConfirmPage":          ConfirmPage("T", "M", "OK", "/back", "/do", []HiddenField{{Name: "id", Value: "1"}}, "u@e.com"),
 		"ErrorPage":            ErrorPage(404, "нет", "u@e.com"),
-		"Login":                Login("err", []OAuthButton{{Name: "yandex", Label: "Я"}}),
+		"Login":                Login("err", "", []OAuthButton{{Name: "yandex", Label: "Я"}}),
 		"Register":             Register("", false, []OAuthButton{{Name: "github", Label: "GH"}}),
 		"SSOLogin":             SSOLogin("err"),
 		"InviteAccept":         InviteAccept("tok", "err", "u@e.com"),

@@ -100,6 +100,26 @@ func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 // начинающиеся с "//" (protocol-relative) или "/\" (браузер нормализует "\"
 // в "/", т.е. "/\evil.com" → "//evil.com"), чтобы предотвратить открытый
 // редирект.
+// safeNextPath — куда вернуть человека после входа. Пустая строка означает
+// «некуда, веди на главную».
+//
+// Значение приходит из формы, то есть от клиента, поэтому проверяется теми же
+// правилами, что и Referer в safeRedirect: только относительный путь этого же
+// сайта. Отдельно отбрасывается «/\»: браузер нормализует обратную косую в
+// прямую, и «/\evil.example» превратилось бы в протокол-относительный адрес,
+// то есть в переход на чужой сайт.
+func safeNextPath(raw string) string {
+	if raw == "" || !strings.HasPrefix(raw, "/") ||
+		strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "" || u.Host != "" {
+		return ""
+	}
+	return u.RequestURI()
+}
+
 func safeRedirect(r *http.Request, baseURL string) string {
 	ref := r.Referer()
 	if ref != "" && isSameOriginURL(ref, baseURL) {

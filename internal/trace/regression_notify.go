@@ -64,7 +64,7 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 
 	var errs error
 	for _, ch := range channels {
-		if !ch.Enabled {
+		if !ch.Deliverable() {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {

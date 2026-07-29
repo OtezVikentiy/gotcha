@@ -111,7 +111,13 @@ func channelKindLabel(ctx context.Context, kind string) string {
 // channelStatusBadge — бейдж состояния канала (включён/выключен), тот же
 // принцип, что и ruleEnabledBadge в metricalerts.templ.
 templ channelStatusBadge(c alert.Channel) {
-	if c.Enabled {
+	if c.SecretBroken {
+		// Секрет не расшифровывается — уведомления по этому каналу не уходят.
+		// Показываем это прямо в строке: раньше канал просто исчезал из
+		// таблицы, и «тишина в Telegram» была неотличима от «инцидентов не
+		// было».
+		<span class="badge badge-danger">{ i18n.T(ctx, "alerts.channels.status.secret_broken") }</span>
+	} else if c.Enabled {
 		<span class="badge badge-good">{ i18n.T(ctx, "alerts.channels.status.enabled") }</span>
 	} else {
 		<span class="badge badge-neutral">{ i18n.T(ctx, "alerts.channels.status.disabled") }</span>
@@ -168,7 +174,11 @@ templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg 
 					{ i18n.T(ctx, "alerts.channels.new.secret") }
 					<input type="password" name="secret" class="input" autocomplete="new-password" data-1p-ignore/>
 				</label>
-				<span class="hint">{ i18n.T(ctx, "alerts.channels.edit.secret_hint") }</span>
+				if c.SecretBroken {
+					<span class="hint hint--warn">{ i18n.T(ctx, "alerts.channels.edit.secret_broken_hint") }</span>
+				} else {
+					<span class="hint">{ i18n.T(ctx, "alerts.channels.edit.secret_hint") }</span>
+				}
 			</div>
 			<label class="checkbox-inline">
 				if channelEnabledChecked(form, open, c.Enabled) {

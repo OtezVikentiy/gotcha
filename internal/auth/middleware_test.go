@@ -34,11 +34,22 @@ func TestRequireUser(t *testing.T) {
 	})
 	h := svc.RequireUser(inner)
 
-	// Без cookie → редирект на /login.
+	// Без cookie → редирект на /login, СОХРАНЯЯ адресата: иначе глубокая
+	// ссылка (приглашение, ссылка на проблему из письма) теряется, и человек
+	// после входа оказывается на главной.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/issues", nil))
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login?next=%2Fissues" {
 		t.Fatalf("anonymous: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// POST адресата не сохраняет: тело запроса после входа не восстановить, а
+	// повторять его молча означало бы выполнить действие, которого человек в
+	// этот раз не просил.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/issues/bulk", nil))
+	if got := rec.Header().Get("Location"); got != "/login" {
+		t.Fatalf("anonymous POST: location=%q, want голый /login", got)
 	}
 
 	// С валидной cookie → внутренний хендлер видит userID.

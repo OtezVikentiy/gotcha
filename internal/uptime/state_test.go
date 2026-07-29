@@ -109,7 +109,20 @@ func TestApplyResultPerRegionIndependent(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitor(t, svc, pid, 2, 2)
+	// Регионы монитора — те же, по которым дальше применяются результаты.
+	// Раньше монитор заводился с единственным регионом «local», а результаты
+	// шли в «eu» и «us»: состояние регионов, которых у монитора нет, — это и
+	// есть та сирота, из-за которой снятый регион держал монитор в down
+	// навсегда (см. TestRemovedRegionStopsHoldingMonitorDown). Проверять на ней
+	// независимость регионов значило проверять на дефекте.
+	m := baseHTTPMonitor(pid)
+	m.FailThreshold = 2
+	m.RecoveryThreshold = 2
+	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
+	mon, err := svc.Create(ctx, m, []string{"eu", "us"}, nil)
+	if err != nil {
+		t.Fatalf("create monitor: %v", err)
+	}
 	now := time.Now().UTC()
 
 	if _, err := svc.ApplyResult(ctx, mon.ID, "eu", false, "x", now); err != nil {

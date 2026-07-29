@@ -2,10 +2,13 @@ package profile_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/jackc/pgx/v5"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -23,28 +26,56 @@ func seedProfSample(t *testing.T, ch driver.Conn, projectID int64, leaf string, 
 	}
 }
 
-// TestRegressionEvaluatorRun покрывает жизненный цикл тикера Run: с реальным
-// (но пустым) списком проектов тикер срабатывает несколько раз за короткий
-// интервал (ветка tick.C→Tick), а отмена контекста корректно завершает цикл
-// (ветка ctx.Done). Отдельный прогон с Interval=0 закрывает подстановку
-// значения по умолчанию (evaluatorDefaultInterval).
+// countingProjects считает обращения цикла к списку проектов — позитивный
+// контроль, которого тесту не хватало.
+type countingProjects struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingProjects) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return nil, errNoProjects
+}
+
+func (c *countingProjects) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+var errNoProjects = errors.New("no projects")
+
+// TestRegressionEvaluatorRun: цикл обязан РЕАЛЬНО тикать и завершаться по
+// отмене контекста.
+//
+// Раньше единственным утверждением было «горутина вышла после cancel» — тест
+// оставался зелёным и с вырезанным вызовом Tick, потому что проверял
+// завершение цикла, а не его работу.
 func TestRegressionEvaluatorRun(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires postgres container")
-	}
-	pool := testenv.MigratedPG(t)
-	ch := testenv.MigratedCH(t)
+	projects := &countingProjects{}
 	eval := &profile.RegressionEvaluator{
-		Pool: pool, Query: profile.NewQuery(ch),
-		Regressions: profile.NewRegressionService(pool),
-		Interval:    2 * time.Millisecond,
-		Config:      profile.DefaultProfileRegressionConfig(),
+		Pool:     projects,
+		Interval: 2 * time.Millisecond,
+		Config:   profile.DefaultProfileRegressionConfig(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { eval.Run(ctx); close(done) }()
-	time.Sleep(30 * time.Millisecond) // дать тикеру сработать несколько раз
+
+	deadline := time.After(5 * time.Second)
+	for projects.count() == 0 {
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("цикл не обратился к списку проектов ни разу — Tick не выполняется")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+
 	cancel()
 	select {
 	case <-done:
@@ -62,7 +93,7 @@ func TestRegressionEvaluatorRun(t *testing.T) {
 	select {
 	case <-done2:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run(Interval=0) не завершился после отмены")
+		t.Fatal("Run с дефолтным интервалом не завершился после отмены контекста")
 	}
 }
 

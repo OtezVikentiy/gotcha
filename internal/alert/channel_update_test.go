@@ -236,3 +236,73 @@ func TestChannelEmailTargetNormalized(t *testing.T) {
 		t.Fatalf("Target после правки = %+v err=%v, want duty@corp.example", chs, err)
 	}
 }
+
+// TestChannelWithBrokenSecretStaysVisible — канал с нечитаемым секретом
+// остаётся в списке, помеченным, но не доставляет.
+//
+// Раньше он молча выпадал из выдачи Channels, и это делало его невидимым
+// дважды: уведомления по нему переставали ставиться в очередь (ни следа в
+// журнале доставок, ни отметки в интерфейсе — «тишина в Telegram»
+// неотличима от «инцидентов не было»), а починить или удалить его из
+// интерфейса было нельзя: проверка принадлежности строится поверх того же
+// списка и отвечала 404.
+func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newEvalProject(t, pool, "brokensecret")
+
+	// Канал заведён под одним мастер-ключом...
+	svc := alert.NewService(pool)
+	svc.SetSecretKey("original-master-key-for-channel-secrets")
+	id, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true,
+		Target: "-100500", Secret: "bot-token",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// ...а читается под другим — ровно то, что происходит при смене
+	// GOTCHA_SECRET_KEY.
+	rotated := alert.NewService(pool)
+	rotated.SetSecretKey("a-completely-different-master-key-value")
+
+	chs, err := rotated.Channels(ctx, pid)
+	if err != nil {
+		t.Fatalf("Channels: %v", err)
+	}
+	if len(chs) != 1 {
+		t.Fatalf("каналов %d, want 1 — канал с нечитаемым секретом пропал из списка", len(chs))
+	}
+	c := chs[0]
+	if !c.SecretBroken {
+		t.Error("канал не помечен как сломанный — интерфейс покажет его исправным")
+	}
+	if c.Secret != "" {
+		t.Errorf("секрет = %q, want пустой: расшифровать его нечем", c.Secret)
+	}
+	if c.Deliverable() {
+		t.Error("канал считается пригодным к доставке — уйдёт вебхук без подписи")
+	}
+
+	// Починить его можно: правка секрета работает, потому что канал виден.
+	if err := rotated.UpdateChannel(ctx, alert.Channel{
+		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true,
+		Target: "-100500", Secret: "new-bot-token",
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	chs, err = rotated.Channels(ctx, pid)
+	if err != nil || len(chs) != 1 {
+		t.Fatalf("Channels после правки = %+v err=%v", chs, err)
+	}
+	if chs[0].SecretBroken {
+		t.Error("после перевыпуска секрета канал всё ещё помечен сломанным")
+	}
+	if !chs[0].Deliverable() {
+		t.Error("после перевыпуска секрета канал не годится к доставке")
+	}
+}

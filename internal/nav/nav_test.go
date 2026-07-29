@@ -160,7 +160,7 @@ func TestSubsectionsPerformance(t *testing.T) {
 
 func TestSubsectionsMetricsVsMetricAlertsActive(t *testing.T) {
 	// Plain metrics path activates Metrics, not Metric Alerts.
-	s := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics"}
+	s := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics", CanManage: true}
 	items := Subsections(s)
 	if len(items) != 2 {
 		t.Fatalf("Subsections(metrics) len = %d, want 2", len(items))
@@ -170,7 +170,7 @@ func TestSubsectionsMetricsVsMetricAlertsActive(t *testing.T) {
 	}
 
 	// Metric alerts sub-path activates Metric Alerts, not Metrics.
-	s2 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics/alerts"}
+	s2 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics/alerts", CanManage: true}
 	items2 := Subsections(s2)
 	if items2[0].Active || !items2[1].Active {
 		t.Errorf("metrics/alerts path: items = %+v, want [Metrics inactive, MetricAlerts active]", items2)
@@ -310,6 +310,7 @@ func TestAreas(t *testing.T) {
 		OrgID:     5,
 		Area:      "metrics",
 		Path:      "/projects/7/metrics",
+		CanManage: true,
 	}
 	areas := Areas(s)
 	if len(areas) != 7 {
@@ -429,5 +430,84 @@ func TestAreasOrgHrefWithOrgID(t *testing.T) {
 				t.Errorf("org area href empty")
 			}
 		}
+	}
+}
+
+// TestSubsectionsHideManagementPagesFromMembers — обычный участник не должен
+// видеть в навигации страницы, которые ему отдадут 404.
+//
+// Правила по метрикам, окна обслуживания, статус-страницы и обе страницы
+// оповещений требуют owner/admin (requireProjectRole). Показывали их всем:
+// человек тыкал в пункт, нарисованный самим продуктом, и попадал на «страницы
+// нет» — без намёка, что дело в роли. Область «Организация» этот принцип
+// соблюдала с самого начала, остальные — нет.
+func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
+	member := func(area string) []NavItem {
+		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area})
+	}
+	admin := func(area string) []NavItem {
+		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area, CanManage: true})
+	}
+
+	hiddenFromMember := map[string][]string{
+		"metrics": {"nav.metric_alerts"},
+		"uptime":  {"nav.maintenance", "nav.status_pages"},
+		"alerts":  {"nav.alerts", "nav.alert_deliveries"},
+	}
+	for area, hidden := range hiddenFromMember {
+		got := member(area)
+		for _, it := range got {
+			for _, key := range hidden {
+				if it.LabelKey == key {
+					t.Errorf("область %q: участник видит %q — эта страница отдаёт ему 404", area, key)
+				}
+			}
+		}
+		// Администратор их видит — иначе фильтр забрал бы лишнее.
+		adminKeys := map[string]bool{}
+		for _, it := range admin(area) {
+			adminKeys[it.LabelKey] = true
+		}
+		for _, key := range hidden {
+			if !adminKeys[key] {
+				t.Errorf("область %q: администратор НЕ видит %q", area, key)
+			}
+		}
+	}
+
+	// Читаемые страницы остаются: мониторы и инциденты доступны участнику.
+	var monitors, incidents bool
+	for _, it := range member("uptime") {
+		switch it.LabelKey {
+		case "nav.monitors":
+			monitors = true
+		case "nav.incidents":
+			incidents = true
+		}
+	}
+	if !monitors || !incidents {
+		t.Error("участник потерял доступные ему мониторы или инциденты")
+	}
+}
+
+// TestAreasHideAreaWithNothingVisible — область рейла, у которой для этого
+// человека нет ни одного доступного подраздела, не показывается: иначе иконка
+// вела бы прямиком на 404. Сейчас это «Оповещения» для участника.
+func TestAreasHideAreaWithNothingVisible(t *testing.T) {
+	memberAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues"})
+	for _, a := range memberAreas {
+		if a.ID == "alerts" {
+			t.Error("участник видит область «Оповещения», все страницы которой отдают ему 404")
+		}
+	}
+	adminAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues", CanManage: true})
+	var found bool
+	for _, a := range adminAreas {
+		if a.ID == "alerts" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("администратор потерял область «Оповещения»")
 	}
 }

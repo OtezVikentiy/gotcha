@@ -18,7 +18,10 @@ templ oauthButtons(providers []OAuthButton) {
 	}
 }
 
-templ Login(errMsg string, providers []OAuthButton) {
+// next — куда вернуть человека после входа (уже провалидированный
+// относительный путь этого сайта, см. safeNextPath). Пустая строка — на
+// главную. Едет скрытым полем, чтобы пережить POST формы.
+templ Login(errMsg, next string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.login.title"), "") {
 		<div class="auth-brand">
 			@brandMark()
@@ -27,6 +30,9 @@ templ Login(errMsg string, providers []OAuthButton) {
 		</div>
 		<form method="post" action="/login" class="auth-form">
 			<h1>{ i18n.T(ctx, "auth.login.title") }</h1>
+			if next != "" {
+				<input type="hidden" name="next" value={ next }/>
+			}
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			}

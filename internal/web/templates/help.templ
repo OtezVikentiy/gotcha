@@ -34,6 +34,11 @@ type GettingStartedVM struct {
 	ProjectID, OrgID                int64
 	Step2Done, Step3Done, Step4Done bool
 	Done                            int
+	// CanManage — owner/admin ли смотрящий. Все три шага с действиями ведут на
+	// страницы, которые требуют этой роли (подключение SDK, оповещения,
+	// настройки организации): участнику чек-лист предлагал бы пойти туда, где
+	// его встретит 404.
+	CanManage bool
 }
 
 // gettingStartedChecklist — карточка над списком issues, пока не закрыты
@@ -42,7 +47,7 @@ type GettingStartedVM struct {
 // без отдельного действия «скрыть», т.к. состояние выводится из реальных
 // данных, а не из флага в БД.
 templ gettingStartedChecklist(gs GettingStartedVM) {
-	if gs.Done < 4 {
+	if gs.Done < 4 && gs.CanManage {
 		<section class="card getting-started">
 			<h2 class="card-header">{ i18n.T(ctx, "getting_started.title") } · { i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "4") }</h2>
 			<ul class="gs-steps">

@@ -57,6 +57,37 @@ func TestRegisterInviteModeAllowsInvitedEmail(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("invited register status = %d, want 303: %s", resp.StatusCode, body)
 	}
+
+	// И он оказывается В ОРГАНИЗАЦИИ, а не в пустоте.
+	//
+	// Раньше приглашение только проверялось: человек заводил аккаунт и попадал
+	// на «создайте организацию и первый проект», хотя пришёл по ссылке в чужую
+	// организацию. Приглашение принимала одна лишь OAuth-ветка.
+	members, err := orgSvc.MembersOf(context.Background(), o.ID)
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	var joined bool
+	for _, m := range members {
+		if m.Email == invited {
+			joined = true
+			if m.Role != org.RoleMember {
+				t.Errorf("роль приглашённого = %q, want member (роль из приглашения)", m.Role)
+			}
+		}
+	}
+	if !joined {
+		t.Fatalf("приглашённый не попал в организацию: %+v", members)
+	}
+
+	// Приглашение погашено — повторно им воспользоваться нельзя.
+	has, err := orgSvc.HasPendingInvite(context.Background(), invited)
+	if err != nil {
+		t.Fatalf("HasPendingInvite: %v", err)
+	}
+	if has {
+		t.Error("приглашение осталось действующим после регистрации")
+	}
 }
 
 // TestRegisterInviteModeRejectsUninvited — тот же режим, адрес без приглашения:

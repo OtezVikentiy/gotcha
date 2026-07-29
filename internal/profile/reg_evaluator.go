@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 )
 
 const evaluatorDefaultInterval = 5 * time.Minute
@@ -13,8 +13,16 @@ const evaluatorDefaultInterval = 5 * time.Minute
 // RegressionEvaluator периодически детектит рост self-CPU доли функций над
 // скользящей базой и открывает/закрывает инциденты (калька trace.Evaluator).
 // Тикер живёт в режимах uptime|all.
+// projectLister — источник списка проектов для обхода. Интерфейс, а не
+// *pgxpool.Pool, по той же причине, что ruleLister в пакете metric: без него у
+// цикла Run нет наблюдаемого следа, и тест «поспал и убедился, что горутина
+// вышла» оставался зелёным с вырезанным телом тика.
+type projectLister interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 type RegressionEvaluator struct {
-	Pool        *pgxpool.Pool
+	Pool        projectLister
 	Query       *Query
 	Regressions *RegressionService
 	Notifier    *RegressionNotifier

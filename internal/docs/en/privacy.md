@@ -19,7 +19,7 @@ Two consequences worth knowing:
   encrypted. If an instance ever ran on the dev key with real credentials,
   re-enter those credentials after setting a proper key.
 - On a non-local `GOTCHA_BASE_URL` the app refuses to start with the default key
-  in `web`/`all` mode, so this normally only affects local instances — unless
+  in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`), so this normally only affects local instances — unless
   the refusal was explicitly overridden.
 
 ## What personal data is processed

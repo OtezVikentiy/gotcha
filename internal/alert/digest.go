@@ -96,7 +96,7 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 		b.Suppressed, b.Since.UTC().Format(time.RFC3339), url)
 
 	for _, ch := range channels {
-		if !ch.Enabled {
+		if !ch.Deliverable() {
 			continue
 		}
 		if ch.Kind == ChannelEmail && !d.EmailEnabled {

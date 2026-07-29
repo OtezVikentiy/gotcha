@@ -26,7 +26,7 @@ func (h *Handler) oauthButtons(ctx context.Context) []templates.OAuthButton {
 }
 
 func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
-	_ = templates.Login("", h.oauthButtons(r.Context())).Render(r.Context(), w)
+	_ = templates.Login("", safeNextPath(r.URL.Query().Get("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
 		!h.emailLimiter.Allow(emailKey) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -138,14 +138,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login(i18n.T(r.Context(), "err.auth.sso_required"), h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.sso_required"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Authenticate(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login(i18n.T(r.Context(), "err.auth.bad_credentials"), h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.bad_credentials"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -155,7 +155,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// Возврат туда, куда человек шёл до формы входа (см. safeNextPath и
+	// auth.loginWithNext): иначе глубокая ссылка — приглашение, ссылка на
+	// проблему из письма алерта — теряется, и он оказывается на главной.
+	dest := safeNextPath(r.FormValue("next"))
+	if dest == "" {
+		dest = "/"
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +243,28 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = templates.Register(registerErrorMessage(r.Context(), err), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
+	}
+
+	// Приглашение гасится сразу после регистрации — так же, как это делает
+	// OAuth-ветка (oauthProvisionByInvite).
+	//
+	// Без этого приглашённый заводил аккаунт и оказывался НИ В ОДНОЙ
+	// организации: главная отправляла его в онбординг «создайте организацию и
+	// первый проект», хотя он пришёл по ссылке в чужую. Выбраться можно было
+	// только вернувшись в почту и открыв ссылку заново — и то лишь потому, что
+	// к тому моменту он уже залогинен.
+	//
+	// Ошибка принятия не отменяет регистрацию: аккаунт уже создан и им можно
+	// пользоваться, а приглашение остаётся действующим — человек примет его по
+	// ссылке из письма. Откатывать пользователя, как это делает OAuth-ветка,
+	// здесь нельзя: там аккаунт заводится ТОЛЬКО ради приглашения, а тут
+	// регистрация самостоятельна.
+	if h.Org != nil {
+		if _, ok, err := h.Org.AcceptPendingInviteByEmail(r.Context(), normalizeEmail(email), uid); err != nil {
+			slog.Error("register: accepting pending invite failed", "user_id", uid, "error", err)
+		} else if !ok {
+			slog.Info("register: no pending invite to accept", "user_id", uid)
+		}
 	}
 
 	token, err := h.Auth.CreateSession(r.Context(), uid)

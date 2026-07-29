@@ -239,20 +239,76 @@ func TestDigesterSendsSummary(t *testing.T) {
 	}
 }
 
-// TestDigesterRunStops — цикл рассыльщика завершается по отмене контекста и не
-// падает на пустой работе.
+// TestDigesterRunStops — цикл рассыльщика РЕАЛЬНО рассылает сводки и
+// завершается по отмене контекста.
+//
+// Раньше тест только запускал цикл, спал и проверял, что горутина вышла: он
+// оставался бы зелёным и с вырезанным вызовом Tick, потому что проверял
+// завершение цикла, а не его работу. Теперь в бюджете лежат подавленные
+// уведомления, и тест ждёт появления сводки в очереди — то есть результата
+// тика.
 func TestDigesterRunStops(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
 	}
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
-	d := &alert.Digester{Svc: svc, Outbox: notify.NewOutbox(pool), Interval: 10 * time.Millisecond}
+	svc.SetBudget(time.Second, 1)
+	ctx := context.Background()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	pid := newEvalProject(t, pool, "digester-run")
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, err := svc.UpsertRule(ctx, alert.Rule{ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+
+	ob := notify.NewOutbox(pool)
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
+	for i := 0; i < 3; i++ {
+		issueID := newEvalIssue(t, pool, pid, fmt.Sprintf("fp-dgrun-%d", i))
+		e.OnIssue(ctx, alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom"})
+	}
+	if _, err := ob.Claim(ctx, 100); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	time.Sleep(1200 * time.Millisecond) // окно бюджета должно закрыться
+
+	d := &alert.Digester{
+		Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example",
+		Details:  alert.NewDetailPolicy("", nil, true),
+		Interval: 10 * time.Millisecond,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go func() { d.Run(ctx); close(done) }()
-	time.Sleep(50 * time.Millisecond)
+	go func() { d.Run(runCtx); close(done) }()
+
+	deadline := time.After(5 * time.Second)
+	var sent bool
+	for !sent {
+		jobs, err := ob.Claim(ctx, 100)
+		if err != nil {
+			t.Fatalf("Claim digest: %v", err)
+		}
+		for _, j := range jobs {
+			if j.Payload["kind"] == "suppressed_digest" {
+				sent = true
+			}
+		}
+		if sent {
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("сводка не отправлена — цикл не делает работу")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
 	cancel()
 	select {
 	case <-done:

@@ -101,7 +101,7 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		ev.Title, ev.Culprit, ev.Level, ev.TimesSeen, url)
 
 	for _, ch := range channels {
-		if !ch.Enabled {
+		if !ch.Deliverable() {
 			continue
 		}
 		if ch.Kind == ChannelEmail && !e.EmailEnabled {

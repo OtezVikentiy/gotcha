@@ -23,9 +23,24 @@ type State struct {
 // States возвращает состояния монитора по всем регионам, отсортированные
 // по region.
 func (s *Service) States(ctx context.Context, monitorID int64) ([]State, error) {
+	// JOIN по monitor_regions отсекает состояния регионов, которых у монитора
+	// больше нет. Update перезаписывает список регионов, но строку состояния
+	// снятого региона ничто не трогало — и она оставалась навсегда: её никто
+	// уже не перезапишет, потому что задание для этого региона больше не
+	// ставится. Один снятый регион, зафиксированный в состоянии «down», делал
+	// монитор красным НАВСЕГДА: при consensus=any хватает одного down, при
+	// majority сирота ещё и завышала знаменатель. Ветка «всё поднялось»
+	// становилась недостижимой, инцидент не закрывался, а напоминания шли
+	// бесконечно — и то же самое видел посетитель публичной статус-страницы.
+	//
+	// JOIN лечит и уже накопленные сироты в работающих установках, без
+	// миграции данных; сама чистка при снятии региона живёт в Service.Update.
 	rows, err := s.pool.Query(ctx, `
-		SELECT monitor_id, region, status, consecutive_fails, consecutive_oks, last_checked_at, last_error
-		FROM monitor_state WHERE monitor_id = $1 ORDER BY region`, monitorID)
+		SELECT s.monitor_id, s.region, s.status, s.consecutive_fails, s.consecutive_oks,
+		       s.last_checked_at, s.last_error
+		FROM monitor_state s
+		JOIN monitor_regions r ON r.monitor_id = s.monitor_id AND r.region = s.region
+		WHERE s.monitor_id = $1 ORDER BY s.region`, monitorID)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: states: %w", err)
 	}
@@ -55,9 +70,14 @@ func (s *Service) StatesBatch(ctx context.Context, monitorIDs []int64) (map[int6
 	for _, id := range monitorIDs {
 		out[id] = nil
 	}
+	// JOIN — тот же, что и в States: состояния снятых регионов не должны
+	// участвовать ни в агрегате статуса, ни в списке мониторов.
 	rows, err := s.pool.Query(ctx, `
-		SELECT monitor_id, region, status, consecutive_fails, consecutive_oks, last_checked_at, last_error
-		FROM monitor_state WHERE monitor_id = ANY($1) ORDER BY monitor_id, region`, monitorIDs)
+		SELECT s.monitor_id, s.region, s.status, s.consecutive_fails, s.consecutive_oks,
+		       s.last_checked_at, s.last_error
+		FROM monitor_state s
+		JOIN monitor_regions r ON r.monitor_id = s.monitor_id AND r.region = s.region
+		WHERE s.monitor_id = ANY($1) ORDER BY s.monitor_id, s.region`, monitorIDs)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: states batch: %w", err)
 	}

@@ -81,9 +81,10 @@ tokens and webhook signing keys. It lives only in your `.env` (or the compose
 ClickHouse alone is **not** a complete backup.
 
 Restore the databases with a different key and those secrets can no longer be
-decrypted: the affected alert channels are skipped (with an error in the log)
-and SSO for the organization stops working. Nothing warns you at restore time,
-because the rows are intact — only unreadable.
+decrypted. The affected alert channels stop delivering, but stay listed on the
+alerts page marked "Secret unreadable": enter the secret again right there and
+delivery resumes. SSO for the organization stops working in that case and its
+settings have to be entered again.
 
 ```bash
 cp .env "$BACKUP_DIR/env-$(date +%F)"
@@ -96,14 +97,41 @@ secrets have to be entered again by hand.
 
 ## Restore: PostgreSQL
 
-Restoring a `pg_dump` archive into an **empty** database (for a non-empty one, recreate the database first, or use `docker compose down -v`, which wipes all data — be careful):
+Restore into an **empty** database and **before** the application starts. On
+startup the application applies migrations itself (`GOTCHA_AUTO_MIGRATE=true` by
+default) — that is, it creates every table before opening its port — so a dump
+loaded afterwards meets a schema that already exists.
+
+The order:
 
 ```bash
+# 1. Bring up ONLY the database, without the application, or it creates the schema.
+docker compose up -d postgres
+
+# 2. Recreate the database from scratch.
+docker compose exec -T postgres psql -U gotcha -d postgres \
+  -c 'DROP DATABASE IF EXISTS gotcha' -c 'CREATE DATABASE gotcha'
+
+# 3. Load the dump, stopping at the first error.
 gunzip -c backup/postgres-2026-07-01.sql.gz \
-  | docker compose exec -T postgres psql -U gotcha -d gotcha
+  | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 --single-transaction -U gotcha -d gotcha
+
+# 4. Only now start the application.
+docker compose up -d
 ```
 
-If restoring onto a new instance, first bring up the containers (`docker compose up -d`), wait for migrations to apply (see [Installation](/docs/installation)), make sure the schema is empty (freshly created), and only then load the dump. Restoring a dump onto a database where migrations have already run and it's non-empty causes primary key conflicts.
+`ON_ERROR_STOP=1` and `--single-transaction` are load-bearing, not decoration.
+Without them `psql` prints a stream of `relation ... already exists` and
+`duplicate key`, **exits with status 0**, and looks like a successful restore —
+while a `COPY` into a table that gained columns in the newer schema does not
+land at all, and no one can tell the expected noise from a real failure. With
+both flags the first error stops the restore and the transaction rolls back
+whole: either everything is restored, or the database is left empty and that is
+visible.
+
+If the application is already running against this database, stop it
+(`docker compose stop gotcha`) before step 2 — restoring underneath a running
+application means it keeps writing to the same database at the same time.
 
 ## Restore: ClickHouse
 
@@ -163,16 +191,28 @@ where `backup.sh` is a small script with all the dump commands above plus cleanu
 set -euo pipefail
 cd /path/to/gotcha
 mkdir -p backup/clickhouse
+day=$(date +%F)
+
+# Write to a temporary file and rename only on success. Without this the
+# redirection creates the file BEFORE pg_dump gets to run: it fails, and the
+# directory holds an empty .sql.gz indistinguishable from a real backup until
+# the day you need one.
 docker compose exec -T postgres pg_dump -U gotcha -d gotcha \
-  | gzip > backup/postgres-$(date +%F).sql.gz
+  | gzip > backup/postgres-$day.sql.gz.tmp
+mv backup/postgres-$day.sql.gz.tmp backup/postgres-$day.sql.gz
+
 for t in events transactions spans metric_points profile_samples check_results; do
   docker compose exec -T clickhouse clickhouse-client \
     --user gotcha --password gotcha --database gotcha \
     --query "SELECT * FROM $t FORMAT Native" \
-    > backup/clickhouse/$t-$(date +%F).native
+    > backup/clickhouse/$t-$day.native.tmp
+  mv backup/clickhouse/$t-$day.native.tmp backup/clickhouse/$t-$day.native
 done
-# keep 14 days
-find backup -type f -mtime +14 -delete
+
+# Pruning runs from a trap so it happens even when the dump failed: under set -e
+# the script would never reach this line, and disk would fill up exactly when
+# backups are not being taken anyway.
+trap 'find backup -type f -name "*.tmp" -delete; find backup -type f -mtime +14 -delete' EXIT
 ```
 
 Remember to make the script executable (`chmod +x backup.sh`), and — importantly — copy the `backup/` directory's contents **off this same server** (a different disk, S3-compatible storage, another server). A local-only copy won't help if the server itself fails.

@@ -56,7 +56,7 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 | Variable | Default | Description |
 |---|---|---|
 | `GOTCHA_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_PORT` instead (see [Installation](/docs/installation)), not via this variable. |
-| `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default `GOTCHA_SECRET_KEY` in `web`/`all` mode — see the Security section below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
+| `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default `GOTCHA_SECRET_KEY` in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) — see the Security section below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
 
 ## Database
 
@@ -106,6 +106,8 @@ Retention changes apply on the next application start (the value is used to set 
 | `GOTCHA_DEFAULT_METRIC_QUOTA` | `0` in oss | Same, for metric points. |
 | `GOTCHA_DEFAULT_PROFILE_QUOTA` | `0` in oss | Same, for profiles. |
 | `GOTCHA_MAX_EVENT_BYTES` | `1048576` (1 MiB) | Maximum size, in bytes, of a single ingested event. Larger events are rejected. |
+| `GOTCHA_MAX_BUFFER_BYTES` | `268435456` (256 MiB) | Byte ceiling for EACH ClickHouse writer buffer (events, spans, metrics, profiles, check results). Buffers grow while ClickHouse is unavailable so a short outage does not lose telemetry; this bounds the price of that. Five writers at the default add up to 1.25 GiB, so on a 2 GB server lower it — see `docker-compose.small.yml`. |
+| `GOTCHA_MAX_QUEUE_BYTES` | `67108864` (64 MiB) | Byte ceiling for the ingest queue, on top of its capacity of 1000 tasks. A single event carries up to four raw JSON blocks of 256 KiB each — up to a megabyte — so without this the queue could hold roughly a gigabyte. On exhaustion the event is dropped and counted in `gotcha_pipeline_dropped_tasks_total`; the current size is `gotcha_pipeline_queued_bytes`. |
 | `GOTCHA_METRIC_EVAL_INTERVAL` | `60` | How often (seconds) metric threshold alert rules are evaluated. |
 | `GOTCHA_PROFILE_EVAL_INTERVAL` | `300` | How often (seconds) the profiling regression detector runs. |
 
@@ -136,7 +138,7 @@ Server-side removal of personal data before storage — on by default.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs session and OAuth state cookies. **The default is public** (it's in the source code) — leaving it on a real server allows account takeover via OAuth login. On a non-localhost `GOTCHA_BASE_URL`, the app refuses to start in `web`/`all` mode until a real key is set, and requires it to be **at least 32 bytes** (a shorter key is a weak signature). Generate one with `openssl rand -hex 32`. Both checks can be waived for an unusual dev setup with `GOTCHA_ALLOW_INSECURE_SECRET=1`. See [Installation](/docs/installation), step 6, for the full walkthrough. |
+| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs session and OAuth state cookies. **The default is public** (it's in the source code) — leaving it on a real server allows account takeover via OAuth login. On a non-localhost `GOTCHA_BASE_URL`, the app refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) until a real key is set, and requires it to be **at least 32 bytes** (a shorter key is a weak signature). Generate one with `openssl rand -hex 32`. Both checks can be waived for an unusual dev setup with `GOTCHA_ALLOW_INSECURE_SECRET=1`. See [Installation](/docs/installation), step 6, for the full walkthrough. |
 | `GOTCHA_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs (`10.0.0.0/8`) and/or bare IPs (`192.168.1.5`, treated as `/32` or `/128`) of reverse proxies you trust. Behind a proxy (the recommended [install](/docs/installation) topology), set this to the proxy's address so the per-IP login rate limiter keys on the real client IP from `X-Forwarded-For` instead of the proxy's — otherwise every login attempt looks like it comes from the proxy and the limiter can't tell clients apart. Invalid entries are a startup error, not a silent skip. |
 | `GOTCHA_ALLOW_INSECURE_SECRET` | `false` | Escape hatch that bypasses the check above — lets the app start with the default key even on a non-localhost address. **Development-only**; never set this on a real deployment. |
 | `GOTCHA_REGISTRATION` | `invite` | Self-registration mode: `open` — anyone can register; `invite` — self-registration is closed, new users can only join via an invite link; `closed` — self-registration is disabled entirely. The very first user on a fresh instance can always register regardless of this setting (instance-admin bootstrap). |
@@ -147,6 +149,8 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_AUTO_MIGRATE` | `true` | Apply database schema migrations automatically on startup. `false` means migrations must be applied as a separate step beforehand — otherwise the app refuses to start against a schema that's out of date. See [Upgrade](/docs/upgrade) for details and when this is needed. |
 | `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `false` | Whether to send error text (title/culprit/body) to external alert channels (Telegram/webhook). `false` sends only an anonymized link back to the instance, without the error text (which may contain personal data you don't want leaving the instance). |
 | `GOTCHA_TRUSTED_RECIPIENTS` | empty | Comma-separated domains and hosts of your own perimeter: mail on these domains and webhooks on these hosts receive event details even with `GOTCHA_EXTERNAL_CHANNEL_DETAILS` off. Matching is on label boundaries (`corp.example` covers `mail.corp.example`, not `evilcorp.example`). The instance host from `GOTCHA_BASE_URL` and internal-network addresses are always trusted, with no configuration. See [Privacy and 152-FZ](/docs/privacy). |
+
+> The `--migrate-only` command-line flag applies the schema and exits without starting any component: an init job for deployments with `GOTCHA_AUTO_MIGRATE=false`. See [Upgrade](/docs/upgrade).
 
 ## Uptime & probe
 

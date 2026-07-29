@@ -2,6 +2,12 @@
 
 The "Uptime" section watches the availability of external addresses and services through periodic checks — **monitors**. Open it from the activity icon in the left rail, or at `/projects/{id}/monitors`.
 
+## Who runs the checks
+
+Checks are queued by any process that has a database, and executed either by the built-in runner (`--mode=uptime` and `--mode=all`) or by a [remote probe](/docs/probes) in another region.
+
+If the instance is split and neither role is present — say only `--mode=web` and `--mode=ingest` — monitors will show as enabled and nothing will check them. Such a process says so at startup: `uptime checks are scheduled here but NOT executed in this mode`.
+
 ## Creating a monitor
 
 The monitor list lives at `/projects/{id}/monitors`. The "New monitor" button (visible only to an org owner/admin) opens the form at `/projects/{id}/monitors/new`.

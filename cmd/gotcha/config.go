@@ -47,6 +47,14 @@ type Config struct {
 	// docker-compose.small.yml ставит контейнеру mem_limit 256m — там потолок
 	// физически не может сработать раньше OOM-killer'а.
 	MaxBufferBytes int64
+	// MaxQueueBytes — байтовый потолок очереди приёма (в дополнение к её
+	// ёмкости в задачах). 0 = значение по умолчанию (64 МиБ).
+	//
+	// Счётный потолок сам по себе ничего не гарантировал: событие несёт до
+	// четырёх сырых JSON-блоков по 256 КиБ, то есть до мегабайта на задачу, а
+	// очередь держит тысячу задач. Гигабайт резидентной памяти на пути, куда
+	// пишет кто угодно с публичным ключом приёма.
+	MaxQueueBytes int64
 	// AlertBudgetWindowSeconds/AlertBudgetLimit — пер-проектный потолок
 	// уведомлений. Троттлинг alert_throttle ключуется парой (issue_id, rule_id),
 	// и у НОВОГО issue строки там нет по определению — он проходит всегда, а
@@ -82,6 +90,16 @@ type Config struct {
 	// open (открыта всем), invite (по приглашению, кроме bootstrap первого
 	// админа), closed (только bootstrap первого админа). Дефолт — invite.
 	RegistrationMode string
+	// MigrateOnly — применить миграции и выйти, не поднимая ни одного
+	// компонента (флаг --migrate-only).
+	//
+	// Нужен для развёртываний с GOTCHA_AUTO_MIGRATE=false, где миграции
+	// выносят в отдельный init-job. Документация предлагала для этого
+	// `docker compose run ... gotcha /bin/sh -c "true"`, но ENTRYPOINT — сам
+	// бинарь, а flag.Parse останавливается на первом не-флаге и ошибки не
+	// возвращает: команда молча поднимала ПОЛНОЦЕННЫЙ инстанс в режиме all и
+	// не завершалась никогда.
+	MigrateOnly bool
 
 	// ScrubIP/ScrubEmail/ScrubKeys — серверный PII-scrubbing (PRIV-H1),
 	// включён по умолчанию. ScrubIP/ScrubEmail зануляют ip/email субъекта;
@@ -236,11 +254,19 @@ func secretKeyMattersFor(mode string) bool {
 func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	fs := flag.NewFlagSet("gotcha", flag.ContinueOnError)
 	mode := fs.String("mode", "all", "process role: ingest | web | uptime | probe | all")
+	migrateOnly := fs.Bool("migrate-only", false,
+		"apply schema migrations and exit (init-job for deployments with GOTCHA_AUTO_MIGRATE=false)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
 	if !validModes[*mode] {
 		return Config{}, fmt.Errorf("invalid --mode %q: want ingest, web, uptime, probe or all", *mode)
+	}
+	// probe вообще не открывает соединения с базой (см. main), поэтому
+	// мигрировать ему нечего — молча выйти нулём было бы обманом: оператор
+	// решил бы, что схема применена.
+	if *migrateOnly && *mode == "probe" {
+		return Config{}, fmt.Errorf("--migrate-only is not valid with --mode=probe: a probe never opens the database")
 	}
 
 	str := func(key, def string) string {
@@ -324,6 +350,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	cfg := Config{
 		Mode:                     *mode,
+		MigrateOnly:              *migrateOnly,
 		Addr:                     str("GOTCHA_ADDR", ":8080"),
 		BaseURL:                  str("GOTCHA_BASE_URL", "http://localhost:8080"),
 		PostgresDSN:              str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
@@ -344,6 +371,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultProfileQuota:      num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
+		MaxQueueBytes:            num("GOTCHA_MAX_QUEUE_BYTES", 0),
 		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
 		AlertBudgetLimit:         intNum("GOTCHA_ALERT_BUDGET_LIMIT", 50),
 		CardinalityLimit:         intNum("GOTCHA_CARDINALITY_LIMIT", 10000),
@@ -382,6 +410,13 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.SSRFAllowPrivateWebhook = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK", ssrfAll)
 	cfg.SSRFAllowPrivateOIDC = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_OIDC", ssrfAll)
 	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE", true)
+	// --migrate-only подразумевает применение миграций: этот запуск ради них и
+	// существует. Иначе флаг вместе с GOTCHA_AUTO_MIGRATE=false — а это ровно
+	// та конфигурация, для которой он и нужен, — только проверил бы схему и
+	// вышел, ничего не применив.
+	if cfg.MigrateOnly {
+		cfg.AutoMigrate = true
+	}
 	// Privacy-by-default: полный текст ошибок/стектрейсов/имён транзакций может
 	// нести ПДн, а внешние каналы (Telegram — серверы за пределами РФ, webhook)
 	// уводят его наружу, потенциально трансгранично (152-ФЗ ст.12). По умолчанию

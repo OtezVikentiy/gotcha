@@ -139,7 +139,7 @@ After logging in: create an organization, then a project inside it. The project'
 
 By default Gotcha uses `GOTCHA_SECRET_KEY=insecure-dev-secret`. That value is **public** — it's sitting right there in the source code on GitFlic, anyone can read it. It signs session cookies and OAuth state cookies; leaving the default on a server reachable over the internet lets an attacker who knows this key forge cookies and take over accounts through OAuth login (account takeover).
 
-Because of this: if your `GOTCHA_BASE_URL` isn't `localhost`/`127.0.0.1` (i.e. you're running a real server, not local development), the app **refuses to start** in `web`/`all` mode until you set your own key.
+Because of this: if your `GOTCHA_BASE_URL` isn't `localhost`/`127.0.0.1` (i.e. you're running a real server, not local development), the app **refuses to start** in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) until you set your own key.
 
 Generate a random key:
 

@@ -279,7 +279,7 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		{Kind: i18n.T(r.Context(), "org.quota.kind.metrics"), Field: "metric_quota", Usage: metricUsage, Limit: o.MetricQuota},
 		{Kind: i18n.T(r.Context(), "org.quota.kind.profiles"), Field: "profile_quota", Usage: profileUsage, Limit: o.ProfileQuota},
 	}
-	banner := h.quotaBanner(r.Context(), orgID)
+	banner := h.quotaBanner(r.Context(), orgID, true)
 	w.WriteHeader(status)
 	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID)).Render(r.Context(), w)
 }
@@ -318,7 +318,16 @@ func (h *Handler) subjectPurgeVM(ctx context.Context, orgID int64) templates.Sub
 // при заданном лимите событий использование достигло 90%. Ссылка ведёт на
 // настройки орга (rate-guard). Баннер вспомогательный: любая ошибка чтения
 // usage/дропов не должна ронять страницу — тогда просто возвращаем nil.
-func (h *Handler) quotaBanner(ctx context.Context, orgID int64) *templates.QuotaBanner {
+// canManage — можно ли давать ссылку на настройки организации. Для обычного
+// участника ссылки нет: страница настроек требует owner/admin и отдала бы ему
+// 404, а баннер при этом сам предлагает туда пойти. Текст ему всё равно
+// показываем — знать, что приём ограничен, полезно всем, кто смотрит на
+// пустеющий список проблем.
+func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) *templates.QuotaBanner {
+	href := orgSettingsPath(orgID)
+	if !canManage {
+		href = ""
+	}
 	now := time.Now()
 	dropped, err := h.Org.DroppedUsage(ctx, orgID, now)
 	if err != nil {
@@ -329,7 +338,7 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64) *templates.Quota
 	if total > 0 {
 		return &templates.QuotaBanner{
 			Text: i18n.Tn(ctx, "org.quota.dropped_banner", int(total)),
-			Href: orgSettingsPath(orgID),
+			Href: href,
 		}
 	}
 	// Дропов нет — проверяем приближение к лимиту событий (0 = безлимит).
@@ -351,7 +360,7 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64) *templates.Quota
 		return &templates.QuotaBanner{
 			Text: i18n.Tf(ctx, "org.quota.near_limit",
 				"used", strconv.FormatInt(usage, 10), "limit", strconv.FormatInt(o.EventQuota, 10)),
-			Href: orgSettingsPath(orgID),
+			Href: href,
 		}
 	}
 	return nil

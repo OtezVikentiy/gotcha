@@ -2798,11 +2798,30 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	padding: 0;
 	font-size: var(--fs-sm);
 }
+/* Таблица прокручивается внутри себя, а не распирает карточку.
+   Справочные таблицы доков (переменные окружения — самая широкая) требуют до
+   1740px при карточке в 818: таблица вылезала за правую границу почти на
+   тысячу пикселей, рамка карточки обрывалась, а колонка «Описание»
+   оказывалась снаружи. Горизонтально при этом ехал весь shell вместе с
+   навигацией — ближайшим прокручиваемым предком оказывался .app-content.
+   Соседний .doc-content pre такую защиту уже имел; таблицам её не дали.
+
+   display:block нужен, чтобы overflow вообще работал: у table-элемента он
+   игнорируется. width:max-content вместо 100% — иначе блочная таблица
+   схлопнется по содержимому и потеряет растяжение на всю ширину. */
 .doc-content table {
-	width: 100%;
+	display: block;
+	width: max-content;
+	max-width: 100%;
+	overflow-x: auto;
 	margin: 0 0 14px;
 	border-collapse: collapse;
 	font-size: var(--fs-base);
+}
+/* Первая колонка справочных таблиц — имена переменных: не даём длинному
+   GOTCHA_EXTERNAL_CHANNEL_DETAILS растягивать таблицу вдвое. */
+.doc-content td:first-child {
+	white-space: nowrap;
 }
 .doc-content th {
 	text-align: left;

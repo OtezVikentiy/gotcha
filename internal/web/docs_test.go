@@ -68,8 +68,9 @@ func TestDocs(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("GET /docs (no cookie) status = %d, want 303", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/login" {
-		t.Fatalf("GET /docs (no cookie) Location = %q, want /login", loc)
+	// Адресат сохраняется в next — см. auth.loginWithNext.
+	if loc := resp.Header.Get("Location"); loc != "/login?next=%2Fdocs" {
+		t.Fatalf("GET /docs (no cookie) Location = %q, want /login?next=%%2Fdocs", loc)
 	}
 
 	resp = getWithCookie(t, s.srv, "/docs/glossary", nil)

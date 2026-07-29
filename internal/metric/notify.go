@@ -54,7 +54,7 @@ func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 
 	var errs error
 	for _, ch := range channels {
-		if !ch.Enabled {
+		if !ch.Deliverable() {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {

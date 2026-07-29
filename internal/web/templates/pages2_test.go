@@ -18,7 +18,7 @@ import (
 // регистрация в закрытом режиме прячет форму.
 func TestAuthPages(t *testing.T) {
 	providers := []OAuthButton{{Name: "yandex", Label: "Войти через Яндекс"}, {Name: "github", Label: "GitHub"}}
-	login := renderTo(t, Login("неверный пароль", providers))
+	login := renderTo(t, Login("неверный пароль", "", providers))
 	if !strings.Contains(login, "неверный пароль") || !strings.Contains(login, "Яндекс") {
 		t.Error("логин должен показать ошибку и OAuth-кнопки")
 	}

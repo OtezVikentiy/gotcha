@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
@@ -87,6 +88,19 @@ type Pipeline struct {
 	workers int
 	wg      sync.WaitGroup
 
+	// queueBytes/maxQueueBytes — байтовый потолок очереди в дополнение к
+	// счётному (её ёмкости).
+	//
+	// Счётный потолок сам по себе ничего не гарантирует: событие несёт до
+	// четырёх сырых JSON-блоков по 256 КиБ каждый (contexts, breadcrumbs,
+	// request, stacktrace), то есть до мегабайта на задачу, а очередь держит
+	// тысячу задач. Гигабайт резидентной памяти, и это на пути приёма, куда
+	// пишет кто угодно с публичным ключом. Все пять писателей получили
+	// байтовый бюджет ровно по этой причине; очередь была единственным
+	// буфером без него.
+	queueBytes    atomic.Int64
+	maxQueueBytes atomic.Int64
+
 	// Alerts — опциональный колбэк для new_issue/regression (план 6).
 	// nil (значение по умолчанию) означает, что алертинг выключен —
 	// process() просто пропускает вызов.
@@ -152,6 +166,10 @@ type task struct {
 	projectID int64
 	ev        *ParsedEvent
 	tx        *trace.Transaction
+	// bytes — вес задачи, посчитанный при постановке. Хранится в самой
+	// задаче, чтобы возврат бюджета не зависел от того, что с полями сделала
+	// обработка (скрубер, например, укорачивает строки).
+	bytes int64
 }
 
 func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
@@ -162,6 +180,86 @@ func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
 		workers: 4,
 	}
 }
+
+// defaultMaxQueueBytes — байтовый потолок очереди по умолчанию.
+//
+// 64 МиБ подобраны так, чтобы для нормального трафика первым срабатывал
+// счётный лимит (событие в среднем единицы килобайт — тысяча таких далеко не
+// добирает до потолка), а байтовый ловил патологию: поток событий, набитых
+// предельными JSON-блоками.
+const defaultMaxQueueBytes = 64 << 20
+
+// SetMaxQueueBytes задаёт байтовый потолок очереди; 0 или меньше —
+// defaultMaxQueueBytes.
+func (p *Pipeline) SetMaxQueueBytes(n int64) {
+	if n <= 0 {
+		n = defaultMaxQueueBytes
+	}
+	p.maxQueueBytes.Store(n)
+}
+
+// queueLimit — действующий потолок; нулевое значение поля означает, что
+// SetMaxQueueBytes не звали, и берётся дефолт. Так Pipeline остаётся
+// собираемым литералом, как и раньше.
+func (p *Pipeline) queueLimit() int64 {
+	if n := p.maxQueueBytes.Load(); n > 0 {
+		return n
+	}
+	return defaultMaxQueueBytes
+}
+
+// taskBytes — вес задачи в очереди. Считает только крупные поля (сырые
+// JSON-блоки и текст) плюс постоянную цену задачи: как и rowOverheadBytes у
+// батчера, она не даёт обойти учёт потоком пустых событий.
+func taskBytes(t task) int64 {
+	const taskOverheadBytes = 256
+	n := 0
+	if ev := t.ev; ev != nil {
+		n += len(ev.ContextsJSON) + len(ev.BreadcrumbsJSON) + len(ev.RequestJSON) +
+			len(ev.StacktraceJSON) + len(ev.Message) + len(ev.Culprit) + len(ev.Title)
+		for _, exc := range ev.Exceptions {
+			n += len(exc.Type) + len(exc.Value)
+			for _, fr := range exc.Frames {
+				n += len(fr.Function) + len(fr.Module)
+			}
+		}
+		for k, v := range ev.Tags {
+			n += len(k) + len(v)
+		}
+	}
+	if tx := t.tx; tx != nil {
+		n += len(tx.Name) + len(tx.TraceID) + len(tx.Environment)
+		for _, sp := range tx.Spans {
+			n += len(sp.Description) + len(sp.Op) + len(sp.SpanID) + len(sp.Status)
+		}
+	}
+	return int64(n) + taskOverheadBytes
+}
+
+// admit резервирует место под задачу. false — очередь уже держит столько,
+// сколько позволено: вызывающий дропает задачу, как и при переполнении по
+// счёту.
+func (p *Pipeline) admit(size int64) bool {
+	limit := p.queueLimit()
+	for {
+		cur := p.queueBytes.Load()
+		if cur+size > limit {
+			return false
+		}
+		if p.queueBytes.CompareAndSwap(cur, cur+size) {
+			return true
+		}
+	}
+}
+
+// QueuedBytes — сколько байтов сейчас держат задачи в очереди. Для
+// самотелеметрии: без неё исчерпание байтового бюджета видно только по
+// счётчику дропов, а он не отличает переполнение по объёму от переполнения по
+// количеству.
+func (p *Pipeline) QueuedBytes() int64 { return p.queueBytes.Load() }
+
+// release возвращает бюджет после обработки задачи.
+func (p *Pipeline) release(size int64) { p.queueBytes.Add(-size) }
 
 func (p *Pipeline) Start() {
 	for i := 0; i < p.workers; i++ {
@@ -181,6 +279,9 @@ func (p *Pipeline) Start() {
 // процесс приёма. Точно как recover вокруг detectPerfIssues, но на ОСНОВНОМ
 // пути: без него паника на горячем пути роняла бы go-процесс целиком.
 func (p *Pipeline) processGuarded(t task) {
+	// Бюджет возвращается и при панике: иначе очередь, пережившая несколько
+	// битых событий, навсегда считала бы себя заполненной.
+	defer p.release(t.bytes)
 	defer func() {
 		if r := recover(); r != nil {
 			var eventID, traceID string
@@ -211,9 +312,18 @@ func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
 			"project_id", projectID, "event_id", ev.EventID)
 		return
 	}
+	t := task{projectID: projectID, ev: ev}
+	t.bytes = taskBytes(t)
+	if !p.admit(t.bytes) {
+		p.countDropped()
+		slog.Warn("ingest queue byte budget exhausted, dropping event",
+			"project_id", projectID, "event_id", ev.EventID, "task_bytes", t.bytes)
+		return
+	}
 	select {
-	case p.queue <- task{projectID: projectID, ev: ev}:
+	case p.queue <- t:
 	default:
+		p.release(t.bytes)
 		p.countDropped()
 		slog.Warn("ingest queue full, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
@@ -237,9 +347,18 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 			"project_id", projectID, "trace_id", tx.TraceID)
 		return
 	}
+	t := task{projectID: projectID, tx: &tx}
+	t.bytes = taskBytes(t)
+	if !p.admit(t.bytes) {
+		p.countDropped()
+		slog.Warn("ingest queue byte budget exhausted, dropping transaction",
+			"project_id", projectID, "trace_id", tx.TraceID, "task_bytes", t.bytes)
+		return
+	}
 	select {
-	case p.queue <- task{projectID: projectID, tx: &tx}:
+	case p.queue <- t:
 	default:
+		p.release(t.bytes)
 		p.countDropped()
 		slog.Warn("ingest queue full, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)

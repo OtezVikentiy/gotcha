@@ -245,6 +245,14 @@ func run() error {
 		return err
 	}
 
+	// --migrate-only: схема применена, больше делать нечего. Отдельный
+	// init-job для развёртываний с GOTCHA_AUTO_MIGRATE=false, где миграции
+	// прогоняют один раз перед стартом реплик.
+	if cfg.MigrateOnly {
+		slog.Info("migrations applied, exiting (--migrate-only)")
+		return nil
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(pg, ch))
 	mux.HandleFunc("GET /version", versionHandler())
@@ -361,6 +369,34 @@ func run() error {
 			Svc:      uptimeSvc,
 			Writer:   uptimeWriter,
 			OnResult: uptimeDetector.OnResult,
+		}
+	}
+
+	// Планировщик — в любом процессе, у которого есть uptimeSvc, а не только
+	// там, где крутится Runner.
+	//
+	// Постановка заданий раньше жила вторым тикером внутри Runner, а Runner
+	// собирается только в uptime и all. В документированном раздельном
+	// развёртывании web+ingest это значило, что очередь проверок не
+	// наполнялась никогда: монитор показан включённым, состояние остаётся
+	// unknown, пропуски heartbeat и истечение сертификатов не считаются, и ни
+	// одной строки в логе. Выносные пробы там же простаивали — они честно
+	// опрашивали пустую очередь.
+	//
+	// Постановка идемпотентна (ON CONFLICT DO NOTHING по (monitor_id, region))
+	// и двигает last_scheduled_at только у мониторов, чьё задание реально
+	// вставилось, поэтому несколько реплик с планировщиком расписание не
+	// растягивают.
+	if uptimeSvc != nil {
+		go (&uptime.Scheduler{Svc: uptimeSvc}).Run(ctx)
+		if cfg.Mode == "web" {
+			// Симметрично предупреждению про оценщики: в этом процессе проверки
+			// только ставятся в очередь, а исполнять их некому, кроме реплики
+			// --mode=uptime или выносной пробы. Молчание тут читалось бы как
+			// «аптайм работает».
+			slog.Warn("uptime checks are scheduled here but NOT executed in this mode; "+
+				"run a --mode=uptime (or --mode=all) replica, or register a remote probe",
+				"mode", cfg.Mode)
 		}
 	}
 
@@ -534,8 +570,11 @@ func run() error {
 		}
 
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
+		pipeline.SetMaxQueueBytes(cfg.MaxQueueBytes)
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queued_tasks",
 			"Tasks waiting in the ingest pipeline queue.", nil, pipeline.Queued)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queued_bytes",
+			"Bytes held by tasks waiting in the ingest pipeline queue.", nil, pipeline.QueuedBytes)
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queue_capacity",
 			"Ingest pipeline queue capacity.", nil, pipeline.QueueCap)
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_pipeline_dropped_tasks_total",

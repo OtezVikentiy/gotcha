@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 )
 
 // CookieName — имя сессионной cookie на plain-http.
@@ -51,20 +52,29 @@ func UserID(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
-// RequireUser пропускает только запросы с живой сессией; остальных
-// отправляет на /login. UserID кладётся в context запроса.
+// RequireUser пропускает только запросы с живой сессией; остальных отправляет
+// на /login, сохраняя, куда человек шёл, в параметре next.
+//
+// Без next любая глубокая ссылка теряла адресата: пришедший по ссылке-
+// приглашению попадал на форму входа, входил — и оказывался на главной, а
+// приглашение так и висело непринятым в почте. То же с любой ссылкой на issue
+// из письма алерта.
+//
+// Сохраняется только путь безопасных методов: перенаправлять POST после входа
+// нельзя — тело запроса потеряно, а повторить его молча означало бы выполнить
+// действие, которого человек в этот раз не просил.
 func (s *Service) RequireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := ReadSessionToken(r, s.Secure)
 		if !ok {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			http.Redirect(w, r, loginWithNext(r), http.StatusSeeOther)
 			return
 		}
 		uid, err := s.SessionUser(r.Context(), token)
 		switch {
 		case errors.Is(err, ErrNoSession):
 			ClearSessionCookie(w)
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			http.Redirect(w, r, loginWithNext(r), http.StatusSeeOther)
 			return
 		case err != nil:
 			// Инфраструктурная ошибка — не трогаем cookie юзера.
@@ -105,4 +115,19 @@ func ClearSessionCookie(w http.ResponseWriter) {
 			MaxAge:   -1,
 		})
 	}
+}
+
+// loginWithNext — адрес формы входа с сохранённым адресатом. Путь берётся из
+// самого запроса, то есть заведомо локальный; валидировать его придётся всё
+// равно на другой стороне (значение доедет туда через форму и может быть
+// подменено) — см. safeNextPath в пакете web.
+func loginWithNext(r *http.Request) string {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return "/login"
+	}
+	next := r.URL.RequestURI()
+	if next == "" || next == "/" {
+		return "/login"
+	}
+	return "/login?next=" + url.QueryEscape(next)
 }

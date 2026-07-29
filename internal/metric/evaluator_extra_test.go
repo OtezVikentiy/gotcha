@@ -3,6 +3,7 @@ package metric_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,16 +11,37 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestEvaluatorRunLifecycle: с крошечным Interval цикл Run должен хотя бы раз
-// тикнуть (Tick → ListEnabled на реальном, пустом пуле) и завершиться по
-// отмене ctx — покрывает обе ветки select (tick.C и ctx.Done).
+// countingRules считает обращения цикла к источнику правил — тот самый
+// позитивный контроль, которого тесту не хватало.
+type countingRules struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingRules) ListEnabled(context.Context) ([]metric.Rule, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return nil, nil
+}
+
+func (c *countingRules) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// TestEvaluatorRunLifecycle: цикл Run обязан РЕАЛЬНО тикать и завершаться по
+// отмене ctx.
+//
+// Раньше единственным утверждением было «горутина вышла после cancel»: тест
+// оставался зелёным, даже если вырезать вызов Tick целиком, — он проверял
+// завершение цикла, а не его работу. Теперь ждём подтверждённого обращения к
+// правилам и только после этого гасим.
 func TestEvaluatorRunLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires postgres container")
-	}
-	pool := testenv.MigratedPG(t)
+	rules := &countingRules{}
 	eval := &metric.Evaluator{
-		Rules:    metric.NewRuleService(pool),
+		Rules:    rules,
 		Interval: 2 * time.Millisecond,
 	}
 
@@ -29,7 +51,17 @@ func TestEvaluatorRunLifecycle(t *testing.T) {
 		eval.Run(ctx)
 		close(done)
 	}()
-	time.Sleep(30 * time.Millisecond)
+
+	deadline := time.After(5 * time.Second)
+	for rules.count() == 0 {
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("цикл не обратился к правилам ни разу — Tick не выполняется")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+
 	cancel()
 	select {
 	case <-done:
@@ -38,14 +70,15 @@ func TestEvaluatorRunLifecycle(t *testing.T) {
 	}
 }
 
-// TestEvaluatorRunDefaultInterval: Interval<=0 → берётся дефолт (60s), тика мы
-// не дождёмся, но ветка выбора дефолта и выход по ctx.Done покрываются.
+// TestEvaluatorRunDefaultInterval: при Interval<=0 берётся ОСМЫСЛЕННЫЙ дефолт.
+//
+// Раньше тест только отменял контекст сразу после запуска и проверял, что
+// горутина вышла: дефолт можно было поменять с минуты на наносекунду —
+// постоянный обстрел собственной базы — и тест бы этого не заметил. Теперь он
+// требует, чтобы за заметное время тика НЕ случилось.
 func TestEvaluatorRunDefaultInterval(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires postgres container")
-	}
-	pool := testenv.MigratedPG(t)
-	eval := &metric.Evaluator{Rules: metric.NewRuleService(pool), Interval: 0}
+	rules := &countingRules{}
+	eval := &metric.Evaluator{Rules: rules, Interval: 0}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -53,6 +86,13 @@ func TestEvaluatorRunDefaultInterval(t *testing.T) {
 		eval.Run(ctx)
 		close(done)
 	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if n := rules.count(); n != 0 {
+		cancel()
+		t.Fatalf("при Interval=0 цикл тикнул %d раз за 50 мс — дефолтный интервал слишком мал", n)
+	}
+
 	cancel()
 	select {
 	case <-done:

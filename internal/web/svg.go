@@ -639,9 +639,17 @@ func sparklinePolyline(ctx context.Context, buckets []uint64, w, h int, format f
 // flatlineSVG — горизонтальная линия посередине: issue без событий в окне
 // спарклайна (или без данных вовсе).
 func flatlineSVG(ctx context.Context, w, h int) string {
-	y := formatCoord(float64(h) / 2)
+	// Линия по БАЗОВОЙ, а не по середине холста.
+	//
+	// Середина читается как реальное среднее значение, причём ВЫШЕ, чем
+	// настоящие нули: у ряда с данными пустые корзины лежат на самом низу
+	// (y = h), а «данных нет» рисовалось на y = h/2. Для продукта мониторинга
+	// это инверсия смысла — тишина выглядела активнее нуля. Так же поступает
+	// chartEmptyAxis у больших графиков, и заглушки перестают противоречить
+	// друг другу.
+	y := formatCoord(float64(h) - 0.5)
 	var sb strings.Builder
-	sb.WriteString(svgRoot("sparkline", w, h, i18n.T(ctx, "a11y.chart.sparkline")))
+	sb.WriteString(svgRoot("sparkline", w, h, i18n.T(ctx, "a11y.chart.sparkline_empty")))
 	sb.WriteString(`<polyline points="0,`)
 	sb.WriteString(y)
 	sb.WriteByte(' ')
@@ -776,8 +784,12 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, w, h
 			max = p.Count
 		}
 	}
+	// Подпись — про пропускную способность, а не про задержку и не про частоту
+	// событий: скринридер объявляет её вместо картинки, и назвать чужим именем
+	// значит соврать вспомогательной технологии. Пустая и заполненная версии
+	// одного графика обязаны называться одинаково — раньше они расходились.
 	if len(points) == 0 || max == 0 {
-		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.latency"))
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.throughput"))
 	}
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
@@ -787,7 +799,7 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, w, h
 	gap := barW * 0.15
 
 	var sb strings.Builder
-	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.frequency")))
+	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.throughput")))
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
@@ -834,8 +846,11 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 			max = b.Count
 		}
 	}
+	// Гистограмма распределения — не временной ряд: ключ a11y.chart.histogram
+	// для этого и заведён, но не использовался нигде, а график назывался то
+	// пропускной способностью, то частотой событий.
 	if len(buckets) == 0 || max == 0 {
-		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.throughput"))
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.histogram"))
 	}
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
@@ -845,7 +860,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 	gap := barW * 0.15
 
 	var sb strings.Builder
-	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.frequency")))
+	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.histogram")))
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
@@ -1535,8 +1550,10 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, 
 			maxPhase = sum
 		}
 	}
+	// Пустая ветка называлась «График Web Vital» — копипаста из соседней
+	// функции: это стек фаз задержки, и обе версии должны называться одинаково.
 	if len(points) == 0 || maxPhase == 0 {
-		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.vital"))
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.latency"))
 	}
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)

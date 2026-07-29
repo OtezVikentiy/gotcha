@@ -125,8 +125,8 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		Environment: filter.Environment,
 		Period:      filter.Period,
 	}
-	banner := h.quotaBanner(r.Context(), orgID)
-	gs := h.gettingStarted(r.Context(), projectID, orgID)
+	banner := h.quotaBanner(r.Context(), orgID, canManage)
+	gs := h.gettingStarted(r.Context(), projectID, orgID, canManage)
 	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, canManage, h.currentEmail(r), environments, banner, gs).Render(r.Context(), w)
 }
 
@@ -144,8 +144,8 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 // тестовых стендов), а сами запросы — упасть с ошибкой сети/БД. Ни то, ни
 // другое не должно ронять страницу issues 500-й — недостающий сигнал просто
 // трактуется как «шаг ещё не закрыт», а причина логируется на Warn.
-func (h *Handler) gettingStarted(ctx context.Context, projectID, orgID int64) templates.GettingStartedVM {
-	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID}
+func (h *Handler) gettingStarted(ctx context.Context, projectID, orgID int64, canManage bool) templates.GettingStartedVM {
+	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID, CanManage: canManage}
 
 	if exists, err := h.Issues.Exists(ctx, projectID); err != nil {
 		slog.Warn("gettingStarted: issues exists check failed", "project_id", projectID, "err", err)

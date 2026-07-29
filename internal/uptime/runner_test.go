@@ -30,12 +30,11 @@ func waitForRunner(t *testing.T, cond func() bool) {
 // by real PG+CH.
 func newFastRunner(svc *uptime.Service, writer *uptime.ResultWriter) *uptime.Runner {
 	return &uptime.Runner{
-		Svc:           svc,
-		Writer:        writer,
-		Region:        "local",
-		Concurrency:   5,
-		ScheduleEvery: 20 * time.Millisecond,
-		LeaseEvery:    20 * time.Millisecond,
+		Svc:         svc,
+		Writer:      writer,
+		Region:      "local",
+		Concurrency: 5,
+		LeaseEvery:  20 * time.Millisecond,
 		// Тесты мониторят loopback-серверы httptest — отключаем SSRF-фильтр
 		// приватных целей, иначе проверки резались бы до соединения.
 		AllowPrivateTargets: true,
@@ -70,6 +69,9 @@ func TestRunnerChecksSchedulesLeasesAndCompletesJob(t *testing.T) {
 	runner := newFastRunner(svc, writer)
 	ctx, cancel := context.WithCancel(context.Background())
 	go runner.Run(ctx)
+	// Постановка заданий вынесена из Runner в Scheduler — запускаем его рядом,
+	// иначе очередь останется пустой и лизить будет нечего.
+	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(ctx)
 	t.Cleanup(func() {
 		cancel()
 		runner.Close()
@@ -162,6 +164,9 @@ func TestRunnerRecordsFailureAndStillCompletesJob(t *testing.T) {
 	runner := newFastRunner(svc, writer)
 	ctx, cancel := context.WithCancel(context.Background())
 	go runner.Run(ctx)
+	// Постановка заданий вынесена из Runner в Scheduler — запускаем его рядом,
+	// иначе очередь останется пустой и лизить будет нечего.
+	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(ctx)
 	t.Cleanup(func() {
 		cancel()
 		runner.Close()
@@ -226,6 +231,9 @@ func TestRunnerInvokesOnResultCallback(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go runner.Run(ctx)
+	// Постановка заданий вынесена из Runner в Scheduler — запускаем его рядом,
+	// иначе очередь останется пустой и лизить будет нечего.
+	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(ctx)
 	t.Cleanup(func() {
 		cancel()
 		runner.Close()
@@ -250,20 +258,20 @@ func TestRunnerInvokesOnResultCallback(t *testing.T) {
 }
 
 // TestRunnerCloseWaitsForInFlightCheck verifies that Close() blocks until a
-// check already in flight when it's called has finished and completed its
-// job — not just until the ticker loop stops — AND that the result of that
-// check actually gets persisted. This mirrors the REAL production ordering
+// check already in flight when it's called has finished — not just until the
+// ticker loop stops — and that the check aborted by that shutdown is NOT
+// recorded as an outage. This mirrors the REAL production ordering
 // (cmd/gotcha/main.go's drain()): the run ctx is cancelled first
 // (signal.NotifyContext firing / shutdown), and only THEN is Close() called.
 //
-// Cancelling ctx aborts the in-flight HTTP round-trip immediately (the
-// checker uses ctx via http.NewRequestWithContext) — that's intentional, a
-// shutdown should abort a slow check quickly rather than wait it out. But
-// the resulting Result{OK:false} must still make it to ApplyResult and
-// CompleteJob: if runOne's post-check DB writes used that same
-// already-cancelled ctx, they'd ALSO fail with "context canceled" and the
-// result would be silently dropped (PendingCount stuck at 1, monitor_state
-// never updated) even though Close() dutifully blocked for it.
+// Cancelling ctx aborts the in-flight HTTP round-trip immediately (the checker
+// uses ctx via http.NewRequestWithContext) — intentional, a shutdown should
+// abort a slow check rather than wait it out. The failure it produces belongs
+// to us, not to the monitored service: this test used to assert the opposite,
+// that the Result{OK:false} gets persisted, and that is exactly what made every
+// deploy shave the uptime figure and, at fail_threshold=1, send "service
+// unavailable". The job stays queued instead and is redone once the lease
+// expires.
 func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -298,6 +306,9 @@ func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 	runner := newFastRunner(svc, writer)
 	ctx, cancel := context.WithCancel(context.Background())
 	go runner.Run(ctx)
+	// Постановка заданий вынесена из Runner в Scheduler — запускаем его рядом,
+	// иначе очередь останется пустой и лизить будет нечего.
+	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(ctx)
 
 	select {
 	case <-started:
@@ -312,25 +323,26 @@ func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 	// whether the POST-check DB writes for that aborted check still survive
 	// the cancellation.
 	cancel()
-	runner.Close() // must block until the in-flight check (and its CompleteJob) finishes
+	runner.Close() // must block until the in-flight check finishes
 
+	// Задание остаётся в очереди: результат отброшен, значит проверку надо
+	// перевыполнить — это делает следующая реплика или этот же процесс после
+	// рестарта, когда истечёт лиза.
 	pending, err := svc.PendingCount(context.Background())
 	if err != nil {
 		t.Fatalf("PendingCount: %v", err)
 	}
-	if pending != 0 {
-		t.Fatalf("PendingCount() = %d after Close, want 0 (in-flight check must have completed)", pending)
+	if pending != 1 {
+		t.Fatalf("PendingCount() = %d after Close, want 1 (aborted check must be redone, not lost)", pending)
 	}
 
+	// И никакого «сервис лежит» из-за нашей же остановки.
 	states, err := svc.States(context.Background(), created.ID)
 	if err != nil {
 		t.Fatalf("States: %v", err)
 	}
-	if len(states) != 1 || states[0].Status != "down" {
-		t.Fatalf("states = %+v, want single down state (result must have been persisted despite ctx cancellation)", states)
-	}
-	if states[0].LastError == "" {
-		t.Fatalf("LastError is empty, want the canceled-context error message")
+	if len(states) != 0 {
+		t.Fatalf("states = %+v, want none: shutdown must not look like an outage", states)
 	}
 }
 
@@ -374,6 +386,9 @@ func TestRunnerRecoversFromCheckerPanic(t *testing.T) {
 		runner.Close()
 	})
 	go runner.Run(ctx)
+	// Постановка заданий вынесена из Runner в Scheduler — запускаем его рядом,
+	// иначе очередь останется пустой и лизить будет нечего.
+	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(ctx)
 
 	// The runner (this goroutine, in particular) must survive the panic:
 	// polling PendingCount / States below would just hang/timeout if the

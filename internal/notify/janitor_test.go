@@ -10,13 +10,29 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestOutboxJanitorRunLifecycle: с крошечным Interval цикл должен хотя бы раз
-// тикнуть (вызвав PurgeOld на реальном, пусть и пустом, пуле), а затем
-// корректно завершиться по отмене ctx — покрывает обе ветки select
-// (ticker.C → работа и ctx.Done → return).
+// TestOutboxJanitorRunLifecycle: цикл должен РЕАЛЬНО чистить очередь и
+// корректно завершаться по отмене ctx.
+//
+// Раньше единственным утверждением было «горутина вышла после cancel», и тест
+// оставался зелёным, даже если вырезать тело ветки ticker.C целиком: он
+// проверял, что цикл завершается, а не что он работает. Теперь в очередь
+// кладётся протухшая строка, и тест ждёт её исчезновения — то есть факта
+// выполненной работы, а не факта выхода.
 func TestOutboxJanitorRunLifecycle(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
+	ctx0 := context.Background()
+
+	channelID := newChannel(t, pool)
+	if err := ob.Enqueue(ctx0, channelID, map[string]any{"kind": "test"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	// Строка чистится, только если она уже доставлена (или провалена) и старше
+	// срока хранения — состариваем её прямо в базе.
+	if _, err := pool.Exec(ctx0,
+		"UPDATE notification_outbox SET status='sent', created_at = now() - interval '2 hours'"); err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
 
 	j := &notify.OutboxJanitor{
 		Outbox:    ob,
@@ -24,15 +40,30 @@ func TestOutboxJanitorRunLifecycle(t *testing.T) {
 		Interval:  2 * time.Millisecond,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx0)
 	done := make(chan struct{})
 	go func() {
 		j.Run(ctx)
 		close(done)
 	}()
 
-	// Даём циклу несколько тиков, затем гасим и ждём выхода.
-	time.Sleep(30 * time.Millisecond)
+	// Ждём именно результата работы, а не истечения сна.
+	deadline := time.After(5 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(ctx0, "SELECT count(*) FROM notification_outbox").Scan(&n); err != nil {
+			t.Fatalf("count outbox: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("протухшая строка не вычищена — цикл не делает работу")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
 	cancel()
 	select {
 	case <-done:
@@ -41,21 +72,46 @@ func TestOutboxJanitorRunLifecycle(t *testing.T) {
 	}
 }
 
-// TestOutboxJanitorRunDefaultInterval: при Interval<=0 берётся дефолт (1 час),
-// то есть тика мы не дождёмся — но ветка выбора дефолта и выход по ctx.Done
-// всё равно покрываются. Отменяем ctx сразу, чтобы не ждать час.
+// TestOutboxJanitorRunDefaultInterval: при Interval<=0 берётся ОСМЫСЛЕННЫЙ
+// дефолт.
+//
+// Раньше тест отменял контекст сразу после запуска и проверял только выход
+// горутины: дефолт можно было поменять с часа на наносекунду — постоянный
+// обстрел собственной базы — и тест бы этого не заметил. Теперь он требует,
+// чтобы за заметное время чистка НЕ случилась.
 func TestOutboxJanitorRunDefaultInterval(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
+	ctx0 := context.Background()
+
+	channelID := newChannel(t, pool)
+	if err := ob.Enqueue(ctx0, channelID, map[string]any{"kind": "test"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := pool.Exec(ctx0,
+		"UPDATE notification_outbox SET status='sent', created_at = now() - interval '2 hours'"); err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
 
 	j := &notify.OutboxJanitor{Outbox: ob, Retention: time.Hour, Interval: 0}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx0)
 	done := make(chan struct{})
 	go func() {
 		j.Run(ctx)
 		close(done)
 	}()
+
+	time.Sleep(50 * time.Millisecond)
+	var n int
+	if err := pool.QueryRow(ctx0, "SELECT count(*) FROM notification_outbox").Scan(&n); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if n == 0 {
+		cancel()
+		t.Fatal("при Interval=0 чистка сработала за 50 мс — дефолтный интервал слишком мал")
+	}
+
 	cancel()
 	select {
 	case <-done:

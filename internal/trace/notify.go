@@ -127,7 +127,7 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 	var errs error
 	enqueued := 0
 	for _, ch := range channels {
-		if !ch.Enabled {
+		if !ch.Deliverable() {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {

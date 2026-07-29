@@ -263,16 +263,34 @@ func Subsections(s Shell) []NavItem {
 	case "metrics":
 		items = []NavItem{
 			{LabelKey: "nav.metrics", Href: "/projects/" + effID + "/metrics"},
-			{LabelKey: "nav.metric_alerts", Href: "/projects/" + effID + "/metrics/alerts"},
+		}
+		// Правила по метрикам, окна обслуживания, статус-страницы и обе
+		// страницы оповещений требуют owner/admin (requireProjectRole). Для
+		// участника они отдают 404, а показывали их всем: человек тыкал в
+		// пункт, который ему нарисовал сам продукт, и попадал на «страницы
+		// нет» — без единого намёка, что дело в роли. Тот же приём, что уже
+		// применён к области «Организация» ниже.
+		if s.CanManage {
+			items = append(items,
+				NavItem{LabelKey: "nav.metric_alerts", Href: "/projects/" + effID + "/metrics/alerts"},
+			)
 		}
 	case "uptime":
 		items = []NavItem{
 			{LabelKey: "nav.monitors", Href: "/projects/" + effID + "/monitors"},
 			{LabelKey: "nav.incidents", Href: "/projects/" + effID + "/incidents"},
-			{LabelKey: "nav.maintenance", Href: "/projects/" + effID + "/maintenance"},
-			{LabelKey: "nav.status_pages", Href: "/projects/" + effID + "/statuspages"},
+		}
+		if s.CanManage {
+			items = append(items,
+				NavItem{LabelKey: "nav.maintenance", Href: "/projects/" + effID + "/maintenance"},
+				NavItem{LabelKey: "nav.status_pages", Href: "/projects/" + effID + "/statuspages"},
+			)
 		}
 	case "alerts":
+		// Обе страницы оповещений — owner/admin; участнику показывать нечего.
+		if !s.CanManage {
+			return nil
+		}
 		items = []NavItem{
 			{LabelKey: "nav.alerts", Href: "/projects/" + effID + "/alerts"},
 			{LabelKey: "nav.alert_deliveries", Href: "/projects/" + effID + "/alerts/deliveries"},
@@ -395,6 +413,12 @@ func Areas(s Shell) []NavArea {
 	result := make([]NavArea, 0, len(railAreas)+1)
 	for _, a := range railAreas {
 		href := firstSubsectionHref(s, a.id)
+		// Область без единого доступного подраздела не показывается вовсе:
+		// иначе иконка рейла вела бы участника на страницу, которая отдаёт ему
+		// 404. Сейчас это «Оповещения» — обе её страницы требуют owner/admin.
+		if href == "" {
+			continue
+		}
 		result = append(result, NavArea{
 			ID:       a.id,
 			IconName: a.icon,
@@ -436,6 +460,10 @@ func firstSubsectionHref(s Shell, area string) string {
 		OrgID:     s.OrgID,
 		Area:      area,
 		Locale:    s.Locale,
+		// CanManage обязателен: подразделы теперь фильтруются по роли, и без
+		// него область получала бы ссылку на страницу, закрытую для этого
+		// человека — то есть ровно тот 404, от которого фильтр и заводится.
+		CanManage: s.CanManage,
 	}
 	subs := Subsections(probe)
 	if len(subs) == 0 {

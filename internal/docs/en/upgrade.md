@@ -63,15 +63,13 @@ By default (`GOTCHA_AUTO_MIGRATE=true`), on every start the app checks the schem
 If you're running **multiple** `gotcha` processes at once (e.g. separate `--mode=ingest` and `--mode=web` processes, or several replicas behind a load balancer — an advanced deployment scenario beyond the stock `docker-compose.yml`), letting every replica auto-migrate on startup is risky: multiple processes could try to apply migrations at the same time. For that case:
 
 1. Set `GOTCHA_AUTO_MIGRATE=false` for all replicas.
-2. Before starting the replicas, run migrations **once**, as a separate one-off invocation of the binary with `GOTCHA_AUTO_MIGRATE=true` (or simply not overriding it — that's the default), e.g.:
+2. Before starting the replicas, run migrations **once** with `--migrate-only`:
 
    ```bash
-   docker compose run --rm \
-     -e GOTCHA_AUTO_MIGRATE=true \
-     gotcha /bin/sh -c "true"
+   docker compose run --rm --no-deps gotcha --migrate-only
    ```
 
-   In practice, starting a normal `gotcha` container once with `GOTCHA_AUTO_MIGRATE=true` is enough — migrations are applied at the start of startup, before the HTTP port opens. This holds for `ingest`, `web`, `uptime` and `all`; `--mode=probe` is the exception, as a probe never opens a database connection at all.
+   That invocation applies the schema and exits 0 without opening the HTTP port or starting ingest or uptime — an init job in the proper sense. The flag turns migration on by itself, so `GOTCHA_AUTO_MIGRATE=false` in the replicas' environment does not get in its way. It is rejected together with `--mode=probe`, and says so: a probe never opens a database connection, and exiting 0 quietly would claim a schema was applied when it was not.
 3. After that, start (or restart) all replicas with `GOTCHA_AUTO_MIGRATE=false` — they'll verify the database schema matches the version built into the binary and refuse to start if it doesn't (this is a safeguard against silently accepting data into a stale schema — an explicit refusal at startup beats silent errors on every insert).
 
 For the stock `docker-compose.yml` in this repository (a single `gotcha` service in `all` mode), separate migrations aren't needed — use the standard upgrade flow above.
