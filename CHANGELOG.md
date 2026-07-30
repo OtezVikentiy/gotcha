@@ -13,9 +13,11 @@ once tagged releases begin.
 ### Security
 - OTLP span attributes are capped before the maps are built, not after. A 10 MiB body (about 30 KB gzipped) carries roughly 1.2 million attributes, and parsing them cost about 100 MB on top of the body — measured at 184 MB for a million attributes. The cap is 256 attributes per span; `maxDataKeys` still applies among those.
 - `hostOfURL` requires an absolute http(s) URL, so a webhook target like `ftp://…` or `//evil.example/x` no longer resolves to a trusted host when deciding whether event details may be sent.
+- The post-login redirect is validated where the `Location` header is set, not only where the form field is parsed: `next` was sanitised on the way in and handed to `http.Redirect` unchecked twenty lines later. Both checks now share `isLocalPath`.
 
 ### Fixed
 - Reminder notifications carry the full monitor, `retries` included; the query built it from its own column list and silently left the field at zero.
+- Migration versions are parsed with an explicit ceiling (2³¹−1), and a name without a parsable version among the embedded migrations is an error rather than a silent skip: the number lives in a platform-sized `uint` and ends up in a `bigint` column, and a silently skipped file would carry no compatibility marker — which the schema gate reads as "start forbidden".
 
 ### Documentation
 - OTLP trace ingest (`POST /v1/traces`) is documented: it was fully implemented while the SDK page listed protocols exhaustively without naming it, so a team on OpenTelemetry would read that traces require a Sentry SDK.

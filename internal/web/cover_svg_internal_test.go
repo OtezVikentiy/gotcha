@@ -141,7 +141,6 @@ func TestWriteLineWithAreaDrawsIsolatedPoint(t *testing.T) {
 	}
 }
 
-
 // renderIsolatedForTest повторяет тот же вызов, что и тест выше, чтобы сравнить
 // идентификаторы двух соседних графиков.
 func renderIsolatedForTest(t *testing.T) string {

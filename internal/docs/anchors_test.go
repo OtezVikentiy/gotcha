@@ -50,11 +50,11 @@ func TestAnchorsAreMeaningfulAndStable(t *testing.T) {
 // и «что это за раздел» должно читаться по нему.
 func TestSlugifyTransliterates(t *testing.T) {
 	cases := map[string]string{
-		"Security (безопасность)":   "security-bezopasnost",
-		"Хранение данных":           "hranenie-dannyh",
-		"OAuth / SSO":               "oauth-sso",
-		"Ёлки, объём и всё прочее":  "elki-obem-i-vse-prochee",
-		"   ":                       "",
+		"Security (безопасность)":  "security-bezopasnost",
+		"Хранение данных":          "hranenie-dannyh",
+		"OAuth / SSO":              "oauth-sso",
+		"Ёлки, объём и всё прочее": "elki-obem-i-vse-prochee",
+		"   ": "",
 	}
 	for in, want := range cases {
 		if got := docs.SlugifyForTest(in); got != want {

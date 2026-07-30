@@ -157,10 +157,9 @@ func backOrigin(r *http.Request, baseURL, curPath string) string {
 	// (safeNextPath, safeRedirect, BulkRedirectTarget) режут его давно — здесь
 	// он был пропущен.
 	//
-	// Обратный слэш проверяется на ДЕКОДИРОВАННОМ пути: EscapedPath() превращает
-	// его в «%5C», и проверка по escaped-форме пропустила бы его целиком.
-	if !strings.HasPrefix(esc, "/") || strings.HasPrefix(esc, "//") ||
-		strings.HasPrefix(dec, "//") || strings.HasPrefix(dec, "/\\") {
+	// Проверяются ОБЕ формы: EscapedPath() превращает обратный слэш в «%5C», и
+	// проверка только по ней пропустила бы его целиком.
+	if !isLocalPath(esc) || !isLocalPath(dec) {
 		return ""
 	}
 	// Сравниваем ДЕКОДИРОВАННЫЙ путь: curPath приходит из r.URL.Path (decoded),

@@ -95,22 +95,40 @@ func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
 }
 
-// safeRedirect возвращает Referer, если он same-origin и его путь безопасен,
-// иначе "/". Тот же паттерн, что BulkRedirectTarget: отвергает пути,
-// начинающиеся с "//" (protocol-relative) или "/\" (браузер нормализует "\"
-// в "/", т.е. "/\evil.com" → "//evil.com"), чтобы предотвратить открытый
-// редирект.
+// isLocalPath — адрес ведёт на этот же сайт: одиночная ведущая косая и ничего
+// похожего на чужой хост.
+//
+// «//evil.example» браузер читает как протокол-относительный адрес, а «\»
+// нормализует в «/», поэтому «/\evil.example» — тот же чужой хост, записанный
+// иначе. Обе формы отвергаются.
+func isLocalPath(p string) bool {
+	return strings.HasPrefix(p, "/") &&
+		!strings.HasPrefix(p, "//") && !strings.HasPrefix(p, "/\\")
+}
+
+// redirectLocal перенаправляет на путь этого же сайта; пустой или чужой адрес
+// заменяется на главную.
+//
+// Проверка повторяет ту, что уже сделал safeNextPath, и это намеренно: адрес
+// приходит из формы, а решение «этот адрес свой» принимается там, где ставится
+// заголовок Location, а не остаётся обещанием функции, разобравшей строку
+// двадцатью строками выше. Тот же принцип, что у hostOfURL: проверка стоит у
+// места, где принимается решение.
+func redirectLocal(w http.ResponseWriter, r *http.Request, dest string) {
+	if !isLocalPath(dest) {
+		dest = "/"
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
 // safeNextPath — куда вернуть человека после входа. Пустая строка означает
 // «некуда, веди на главную».
 //
 // Значение приходит из формы, то есть от клиента, поэтому проверяется теми же
 // правилами, что и Referer в safeRedirect: только относительный путь этого же
-// сайта. Отдельно отбрасывается «/\»: браузер нормализует обратную косую в
-// прямую, и «/\evil.example» превратилось бы в протокол-относительный адрес,
-// то есть в переход на чужой сайт.
+// сайта, без схемы и хоста.
 func safeNextPath(raw string) string {
-	if raw == "" || !strings.HasPrefix(raw, "/") ||
-		strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
+	if raw == "" || !isLocalPath(raw) {
 		return ""
 	}
 	u, err := url.Parse(raw)
@@ -120,11 +138,13 @@ func safeNextPath(raw string) string {
 	return u.RequestURI()
 }
 
+// safeRedirect возвращает Referer, если он same-origin и его путь безопасен,
+// иначе "/". Тот же паттерн, что BulkRedirectTarget.
 func safeRedirect(r *http.Request, baseURL string) string {
 	ref := r.Referer()
 	if ref != "" && isSameOriginURL(ref, baseURL) {
 		if u, err := url.Parse(ref); err == nil {
-			if strings.HasPrefix(u.Path, "/") && !strings.HasPrefix(u.Path, "//") && !strings.HasPrefix(u.Path, "/\\") {
+			if isLocalPath(u.Path) {
 				return u.RequestURI()
 			}
 		}

@@ -52,10 +52,10 @@ type Filter struct {
 	// произвольного диапазона — при том что на соседних страницах общий контрол
 	// умел и то, и другое. Границы приходят параметрами запроса, поэтому любое
 	// окно, которое умеет разобрать веб-слой, работает и здесь.
-	Since time.Time
-	Until time.Time
-	Page        int
-	PerPage     int
+	Since   time.Time
+	Until   time.Time
+	Page    int
+	PerPage int
 }
 
 const issueColumns = `id, project_id, fingerprint, title, culprit, level, status, first_seen, last_seen, times_seen, assignee_id`

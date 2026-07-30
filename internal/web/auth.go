@@ -158,11 +158,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// Возврат туда, куда человек шёл до формы входа (см. safeNextPath и
 	// auth.loginWithNext): иначе глубокая ссылка — приглашение, ссылка на
 	// проблему из письма алерта — теряется, и он оказывается на главной.
-	dest := safeNextPath(r.FormValue("next"))
-	if dest == "" {
-		dest = "/"
-	}
-	http.Redirect(w, r, dest, http.StatusSeeOther)
+	redirectLocal(w, r, safeNextPath(r.FormValue("next")))
 }
 
 func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {

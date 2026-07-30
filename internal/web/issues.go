@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
@@ -323,7 +322,7 @@ func BulkRedirectTarget(r *http.Request, baseURL string, projectID int64) string
 	ref := r.Header.Get("Referer")
 	if ref != "" && isSameOriginURL(ref, baseURL) {
 		if u, err := url.Parse(ref); err == nil {
-			if !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") || strings.HasPrefix(u.Path, "/\\") {
+			if !isLocalPath(u.Path) {
 				return projectIssuesPath(projectID)
 			}
 			return u.RequestURI()

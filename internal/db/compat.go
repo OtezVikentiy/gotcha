@@ -48,9 +48,14 @@ func embeddedCompat(fsys embed.FS, dir string) (map[uint]bool, error) {
 		if !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
-		version := maxMigrationVersion([]string{name})
-		if version == 0 {
-			continue
+		// Номер обязателен и обязан помещаться в потолок: файл без него — это
+		// миграция, о совместимости которой нельзя ничего записать, а гейт
+		// схемы трактует отсутствие записи как «старт запрещён». Тихо
+		// пропустить такой файл значит отложить отказ до чужого запуска.
+		version, ok := parseMigrationVersion(name)
+		if !ok {
+			return nil, fmt.Errorf("schema compat: имя миграции %s без номера версии "+
+				"(ожидается <номер>_<имя>.up.sql, номер не больше %d)", name, maxSchemaVersion)
 		}
 		content, err := fsys.ReadFile(dir + "/" + name)
 		if err != nil {

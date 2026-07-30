@@ -190,31 +190,47 @@ func maxEmbeddedCHVersion() (uint, error) {
 	return max, nil
 }
 
-// maxMigrationVersion парсит список имён файлов миграций (golang-migrate:
-// <version>_<name>.up.sql / .down.sql) и возвращает максимальный номер версии.
-// Учитываются только .up.sql, чтобы не считать версию дважды. Файлы без ведущих
-// цифр игнорируются.
+// maxSchemaVersion — потолок номера миграции.
+//
+// Номер разбирается из имени файла, живёт в uint (его разрядность зависит от
+// платформы) и уезжает в bigint-колонку schema_compat. 2^31-1 — самая узкая из
+// этих трёх границ, поэтому ни одно превращение номера не усекает значение ни
+// на одной платформе; сквозной нумерации golang-migrate (0001, 0002, …),
+// которой пользуется проект, потолка хватает с большим запасом.
+const maxSchemaVersion = 1<<31 - 1
+
+// parseMigrationVersion разбирает ведущие цифры имени файла миграции
+// (golang-migrate: <version>_<name>.up.sql / .down.sql).
+//
+// ok=false — цифр нет вовсе либо номер больше maxSchemaVersion.
+func parseMigrationVersion(name string) (uint, bool) {
+	i := 0
+	for i < len(name) && name[i] >= '0' && name[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, false
+	}
+	// bitSize = 31: номер заведомо помещается и в uint, и в int64 на любой
+	// платформе, поэтому дальнейшие превращения безопасны по построению
+	// (закрывает CodeQL go/incorrect-integer-conversion).
+	n, err := strconv.ParseUint(name[:i], 10, 31)
+	if err != nil {
+		return 0, false
+	}
+	return uint(n), true
+}
+
+// maxMigrationVersion возвращает максимальный номер версии в списке имён файлов
+// миграций. Учитываются только .up.sql, чтобы не считать версию дважды. Файлы
+// без разбираемого номера игнорируются.
 func maxMigrationVersion(names []string) uint {
 	var max uint
 	for _, name := range names {
 		if !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
-		i := 0
-		for i < len(name) && name[i] >= '0' && name[i] <= '9' {
-			i++
-		}
-		if i == 0 {
-			continue
-		}
-		// bitSize = разрядность uint (strconv.IntSize): n гарантированно
-		// помещается в uint, поэтому uint(n) без усечения на любой платформе
-		// (закрывает CodeQL go/incorrect-integer-conversion).
-		n, err := strconv.ParseUint(name[:i], 10, strconv.IntSize)
-		if err != nil {
-			continue
-		}
-		if v := uint(n); v > max {
+		if v, ok := parseMigrationVersion(name); ok && v > max {
 			max = v
 		}
 	}

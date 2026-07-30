@@ -116,6 +116,15 @@ func TestMaxMigrationVersion(t *testing.T) {
 			names: nil,
 			want:  0,
 		},
+		{
+			// Номер уезжает в bigint-колонку schema_compat и живёт в uint,
+			// разрядность которого зависит от платформы. Число за потолком —
+			// не версия, а мусор в имени файла, и считать его максимумом
+			// значит сравнивать гейт схемы с выдуманным числом.
+			name:  "номер за потолком не считается версией",
+			names: []string{"99999999999999_timestamp.up.sql", "0004_ok.up.sql"},
+			want:  4,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

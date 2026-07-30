@@ -51,7 +51,7 @@ func TestCountsSinceGroupsAllIssuesInOneQuery(t *testing.T) {
 		t.Errorf("группа 1: %d, want 5", got)
 	}
 	if _, ok := counts[2]; ok {
-		t.Errorf("группа 2 попала в ответ, хотя не дотянула до порога — порог должен "+
+		t.Errorf("группа 2 попала в ответ, хотя не дотянула до порога — порог должен " +
 			"применяться в запросе, а не после того, как данные проехали по сети")
 	}
 	if _, ok := counts[3]; ok {
