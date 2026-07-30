@@ -3,7 +3,6 @@ package uptime
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/url"
 )
 
@@ -73,35 +72,35 @@ func strictUnmarshal(raw json.RawMessage, v any) error {
 // не содержит полей чужого типа конфига.
 func validateConfig(kind Kind, raw json.RawMessage) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return fmt.Errorf("%w: config is required", ErrInvalidMonitor)
+		return invalid("", "config_required")
 	}
 	switch kind {
 	case KindHTTP:
 		var c HTTPConfig
 		if err := strictUnmarshal(raw, &c); err != nil {
-			return fmt.Errorf("%w: invalid http config: %v", ErrInvalidMonitor, err)
+			return invalid("url", "config_http")
 		}
 		return validateHTTPConfig(c)
 	case KindTCP:
 		var c TCPConfig
 		if err := strictUnmarshal(raw, &c); err != nil {
-			return fmt.Errorf("%w: invalid tcp config: %v", ErrInvalidMonitor, err)
+			return invalid("host", "config_tcp")
 		}
 		return validateTCPConfig(c)
 	case KindDNS:
 		var c DNSConfig
 		if err := strictUnmarshal(raw, &c); err != nil {
-			return fmt.Errorf("%w: invalid dns config: %v", ErrInvalidMonitor, err)
+			return invalid("hostname", "config_dns")
 		}
 		return validateDNSConfig(c)
 	case KindHeartbeat:
 		var c HeartbeatConfig
 		if err := strictUnmarshal(raw, &c); err != nil {
-			return fmt.Errorf("%w: invalid heartbeat config: %v", ErrInvalidMonitor, err)
+			return invalid("grace_seconds", "config_heartbeat")
 		}
 		return validateHeartbeatConfig(c)
 	default:
-		return fmt.Errorf("%w: unknown kind %q", ErrInvalidMonitor, kind)
+		return invalid("kind", "unknown_kind", "kind", string(kind))
 	}
 }
 
@@ -109,18 +108,18 @@ func validateHTTPConfig(c HTTPConfig) error {
 	switch c.Method {
 	case "GET", "POST", "HEAD":
 	default:
-		return fmt.Errorf("%w: http method must be GET, POST or HEAD", ErrInvalidMonitor)
+		return invalid("method", "http_method")
 	}
 	u, err := url.Parse(c.URL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("%w: http url must be a valid http(s) URL", ErrInvalidMonitor)
+		return invalid("url", "http_url")
 	}
 	if len(c.Headers) > 20 {
-		return fmt.Errorf("%w: at most 20 http headers", ErrInvalidMonitor)
+		return invalid("headers", "http_headers_max", "max", "20")
 	}
 	for _, code := range c.ExpectedStatus {
 		if code < 100 || code > 599 {
-			return fmt.Errorf("%w: expected_status codes must be 100..599", ErrInvalidMonitor)
+			return invalid("expected_status", "http_status_range")
 		}
 	}
 	return nil
@@ -128,29 +127,29 @@ func validateHTTPConfig(c HTTPConfig) error {
 
 func validateTCPConfig(c TCPConfig) error {
 	if c.Host == "" {
-		return fmt.Errorf("%w: tcp host must not be empty", ErrInvalidMonitor)
+		return invalid("host", "tcp_host_required")
 	}
 	if c.Port < 1 || c.Port > 65535 {
-		return fmt.Errorf("%w: tcp port must be 1..65535", ErrInvalidMonitor)
+		return invalid("port", "tcp_port_range")
 	}
 	return nil
 }
 
 func validateDNSConfig(c DNSConfig) error {
 	if c.Hostname == "" {
-		return fmt.Errorf("%w: dns hostname must not be empty", ErrInvalidMonitor)
+		return invalid("hostname", "dns_hostname_required")
 	}
 	switch c.RecordType {
 	case "A", "AAAA", "CNAME", "MX", "TXT":
 	default:
-		return fmt.Errorf("%w: dns record_type must be A, AAAA, CNAME, MX or TXT", ErrInvalidMonitor)
+		return invalid("record_type", "dns_record_type")
 	}
 	return nil
 }
 
 func validateHeartbeatConfig(c HeartbeatConfig) error {
 	if c.GraceSeconds < 60 {
-		return fmt.Errorf("%w: heartbeat grace_seconds must be >= 60", ErrInvalidMonitor)
+		return invalid("grace_seconds", "heartbeat_grace_min", "min", "60")
 	}
 	return nil
 }

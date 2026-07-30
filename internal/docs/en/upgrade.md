@@ -76,27 +76,39 @@ For the stock `docker-compose.yml` in this repository (a single `gotcha` service
 
 ## Rolling back
 
-Gotcha's schema migrations are written forward-only — don't count on an automatic, safe rollback of the schema. If something goes wrong after an upgrade:
+Gotcha's schema migrations are forward-only: the product cannot roll the schema itself back. Rolling back the **binary** while leaving the schema in place is possible, though — provided the migrations the new version applied were additive.
 
-1. **Rolling back the application** is simple — switch to the previous commit/tag and rebuild:
+Every migration carries a backward-compatibility marker, and applying it records that marker in the database (the `schema_compat` table). The older version reads it at startup and decides for itself:
+
+| What the new version applied | What the old binary does at startup |
+|---|---|
+| Additive migrations only (new tables, columns with defaults, indexes) | starts and runs; logs a warning listing the versions |
+| At least one breaking migration (dropped or renamed column, type change) | refuses to start and names the version in the way |
+| No record for a version in `schema_compat` | refuses to start: the marker is unknown, and data is not worth the risk |
+
+What to do:
+
+1. **Roll the application back** — switch to the previous commit/tag and rebuild:
    ```bash
    git checkout <previous-tag-or-commit>
    docker compose build
    docker compose up -d
    ```
-   This only rolls back the application's code. If the new version already applied new schema migrations to the database, the old binary might not work against the new schema (backward incompatibility) — or, if compatibility was preserved, it'll work fine.
-2. **If rolling back the code without rolling back the schema doesn't work** (the old version explicitly requires the old schema — on startup you'll see an error like "schema version is ahead of the built-in version") — the reliable path is to **restore the backup** taken before the upgrade (see [Backup & Restore](/docs/backup-restore)) and bring up the previous application version against it.
+2. **Read the startup log.** A line like "schema version N is ahead of the built-in M; version … is marked backward-compatible, running against it" means the rollback worked and the instance is running against a newer schema. That is a supported state, but a temporary one: finish the job — either go back to the new version, or restore the backup taken before the upgrade.
+3. **If startup is refused** with an incompatible-schema message, rolling the binary back is not possible: **restore the backup** taken before the upgrade (see [Backup & Restore](/docs/backup-restore)) and bring up the previous version against it.
 
-This is exactly why "take a backup before upgrading" at the top of this page isn't a formality — it's the only reliable way back.
+Compatibility markers did not exist from the first release — `CHANGELOG.md` in the repository names the one that introduced them. You cannot roll back **through** that upgrade: schema versions applied by earlier releases carry no marker, so starting against them is refused.
+
+This is why "take a backup before upgrading" at the top of this page stays mandatory: some rollbacks work without it, but not all.
 
 ## Verify after upgrading
 
 ```bash
 docker compose ps
-curl -sf http://localhost:59080/healthz
+curl -sf http://localhost:59080/readyz
 ```
 
-`docker compose ps` — all containers should show `Up` (`postgres`/`clickhouse` show `Up (healthy)`). `/healthz` should return `{"clickhouse":"ok","postgres":"ok"}` with HTTP 200. Also check the logs for any startup errors:
+`docker compose ps` — all containers should show `Up (healthy)`, `gotcha` included. `/readyz` should return `{"status":"ready",…}` with HTTP 200. Also check the logs for any startup errors:
 
 ```bash
 docker compose logs --tail=100 gotcha

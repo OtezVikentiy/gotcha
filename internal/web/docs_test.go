@@ -45,8 +45,13 @@ func TestDocs(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /docs/glossary status = %d, want 200: %s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "<h1>Термины</h1>") {
+	// Заголовки несут id (якоря разделов), поэтому сверяем содержимое, а не
+	// точную разметку тега.
+	if !strings.Contains(string(body), ">Термины</h1>") {
 		t.Fatalf("GET /docs/glossary body missing rendered H1: %s", body)
+	}
+	if !strings.Contains(string(body), "<h1 id=") {
+		t.Fatalf("у заголовка нет якоря — ссылка на раздел не работает: %s", body)
 	}
 	if !strings.Contains(string(body), `class="doc-content"`) {
 		t.Fatalf("GET /docs/glossary body missing .doc-content article: %s", body)

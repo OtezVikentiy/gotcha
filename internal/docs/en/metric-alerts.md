@@ -41,7 +41,9 @@ Recovery deliberately requires the value to move 5% past the threshold on the sa
 
 ## How it's evaluated
 
-A background evaluator sweeps every enabled rule **once a minute**. On each pass, it computes the metric's aggregate over the window `[now − window, now)` — the same query that draws the chart on the metric detail page. If there's no data at all for the window, no decision is made (the incident is neither opened nor closed; it waits for the next pass).
+A background evaluator sweeps every enabled rule **once a minute** — that is the default, changed via `GOTCHA_METRIC_EVAL_INTERVAL` (seconds).
+
+Note: in `web` and `ingest` modes the evaluators do **not** run by default — a rule would be enabled and never fire. Enable them explicitly with `GOTCHA_RUN_EVALUATORS=true`, or run the instance in `all` or `uptime` mode. On each pass, it computes the metric's aggregate over the window `[now − window, now)` — the same query that draws the chart on the metric detail page. If there's no data at all for the window, no decision is made (the incident is neither opened nor closed; it waits for the next pass).
 
 Then:
 - no open incident and the value breaches the threshold → an **incident opens**, a "firing" notification is sent;

@@ -16,13 +16,27 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// statusPageWindow/Buckets — окно и разрешение публичной статус-страницы: 90
-// дней, 90 корзин (одна на сутки) — та же полоска доступности, что и в списке
-// мониторов, только суточная.
-const (
-	statusPageWindow  = 90 * 24 * time.Hour
-	statusPageBuckets = 90
-)
+// statusPageBuckets — предельная глубина публичной статус-страницы: 90 суток,
+// по корзине на сутки — та же полоска доступности, что и в списке мониторов,
+// только суточная. Фактическая глубина не превышает срок хранения результатов
+// проверок, см. statusPageDays.
+const statusPageBuckets = 90
+
+// statusPageDays — сколько суток показывает публичная статус-страница.
+//
+// Окно урезается фактическим сроком хранения результатов проверок: он едет на
+// той же ручке, что и события (GOTCHA_RETENTION_DAYS). Уменьшив её до 14, до
+// этой правки оператор молча укорачивал публичную историю до 14 дней — а
+// страница по-прежнему рисовала 90 клеток, из которых 76 были пустыми и
+// выглядели как «данных нет», то есть как проблема с мониторингом.
+//
+// 0 в RetentionDays означает «срок не задан» и окно не урезает.
+func (h *Handler) statusPageDays() int {
+	if h.RetentionDays > 0 && h.RetentionDays < statusPageBuckets {
+		return h.RetentionDays
+	}
+	return statusPageBuckets
+}
 
 // statusPageUpcomingWindow — насколько вперёд статус-страница показывает
 // окна обслуживания.
@@ -229,7 +243,8 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 		return templates.StatusPageView{}, err
 	}
 
-	from := now.Add(-statusPageWindow)
+	days := h.statusPageDays()
+	from := now.AddDate(0, 0, -days)
 	exclude := uptime.WindowIntervals(windows, from, now)
 
 	view := templates.StatusPageView{
@@ -258,7 +273,9 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 	if err != nil {
 		return templates.StatusPageView{}, err
 	}
-	barsByMon, err := h.UptimeQuery.BarsBatch(ctx, spIDs, from, now, statusPageBuckets)
+	// Корзин ровно столько, сколько суток в окне: иначе страница рисует
+	// клетки за пределами срока хранения и выдаёт их за «данных нет».
+	barsByMon, err := h.UptimeQuery.BarsBatch(ctx, spIDs, from, now, days)
 	if err != nil {
 		return templates.StatusPageView{}, err
 	}

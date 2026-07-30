@@ -1,3 +1,4 @@
+-- backward-compatible: no  (секрет канала вычищен из notification_outbox.payload — старый бинарь берёт его оттуда и доставка встанет)
 -- Вычищаем расшифрованные секреты каналов из уже накопленных задач очереди.
 -- Раньше alert.Evaluator и uptime.OutboxNotifier клали bot-токен Telegram и
 -- HMAC-ключ вебхука прямо в notification_outbox.payload — обычный jsonb, — и

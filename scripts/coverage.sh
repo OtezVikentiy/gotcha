@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # coverage.sh — интегрированный замер покрытия с раздельными порогами для
 # фронтенда (SSR: internal/web + internal/web/templates) и бэкенда (остальные
-# internal/*, кроме cmd/gotcha — точка входа не тестируется юнитами).
+# internal/* плюс cmd/gotcha).
 #
 # Зачем один прогон с -coverpkg на весь набор, а не пер-пакетный -cover:
 # большая часть строк шаблонов и веб-хендлеров исполняется ТОЛЬКО через
@@ -32,8 +32,15 @@ cd "$(dirname "$0")/.."
 # (80.9%) с небольшим допуском: интегральное покрытие слегка плавает от прогона
 # к прогону, потому что часть строк исполняется только при определённом порядке
 # интеграционных тестов. Дальше поднимать, как и прежде, — вниз не двигать.
-FRONT_MIN=${FRONT_MIN:-80.5}
-BACK_MIN=${BACK_MIN:-85.0}
+# Значения ниже — договорённость, зафиксированная В КОДЕ. Переопределить их
+# окружением можно только ВВЕРХ: иначе «понизить порог» и «уронить покрытие»
+# делаются одним коммитом, и храповик перестаёт быть храповиком (его защита
+# держалась на том, что никто так не сделает).
+FRONT_FLOOR=80.5
+BACK_FLOOR=85.0
+TEMPL_FLOOR=85.0
+FRONT_MIN=${FRONT_MIN:-$FRONT_FLOOR}
+BACK_MIN=${BACK_MIN:-$BACK_FLOOR}
 # TEMPL_MIN — отдельный храповик для сгенерированных *_templ.go.
 #
 # Их вывели из знаменателя FRONTEND (они размывали метрику вчетверо), но совсем
@@ -51,19 +58,46 @@ BACK_MIN=${BACK_MIN:-85.0}
 # до 76% — при том что авторский код шаблонов как был покрыт на 85%, так и
 # остался. Гейт мерил стоимость теста, а не качество кода. Распространение
 # ошибки записи проверяет сам тест — процент по glue для этого не нужен.
-TEMPL_MIN=${TEMPL_MIN:-85.0}
+TEMPL_MIN=${TEMPL_MIN:-$TEMPL_FLOOR}
+# CMD_MIN — пол точки входа. Тесты там живые (health-ручки, разбор конфига,
+# healthcheck-подкоманда), но раньше не мерялись вовсе: пакет не входил в
+# профиль, и его покрытие могло уехать в ноль незаметно. Значение — фактический
+# замеренный уровень (39.5%) с небольшим допуском; двигать вверх, как и остальные.
+CMD_FLOOR=38.0
+CMD_MIN=${CMD_MIN:-$CMD_FLOOR}
+
+# Понижение порога окружением — отказ, а не тихое согласие.
+for pair in "FRONT_MIN:$FRONT_MIN:$FRONT_FLOOR" "BACK_MIN:$BACK_MIN:$BACK_FLOOR" "TEMPL_MIN:$TEMPL_MIN:$TEMPL_FLOOR" "CMD_MIN:$CMD_MIN:$CMD_FLOOR"; do
+	name=${pair%%:*}
+	rest=${pair#*:}
+	given=${rest%%:*}
+	floor=${rest#*:}
+	if awk -v g="$given" -v f="$floor" 'BEGIN { exit !(g < f) }'; then
+		echo "FAIL: $name=$given ниже зафиксированного пола $floor." >&2
+		echo "      Пороги двигаются только вверх и только правкой scripts/coverage.sh," >&2
+		echo "      иначе понижение порога и падение покрытия проходят одним коммитом." >&2
+		exit 1
+	fi
+done
 # Пер-пакетный пол для security-критичных пакетов. Общий BACKEND — одно число на
 # 24 пакета, и мелкие среди них структурно беззащитны: secretbox это 16
 # стейтментов, netguard — 29, обнуление обоих стоит долей процента и порог этого
 # не заметит. Здесь у каждого свой минимум.
-PKG_MIN_DEFAULT="internal/secretbox=90 internal/netguard=90 internal/alert=80 internal/ingest=80 internal/oauth=80"
+# internal/auth и internal/org добавлены после аудита: вместе это ~5400 строк —
+# хеширование паролей, сессии, RBAC, тенантность, приглашения, SSO, квоты, — и
+# их просадка размывалась по агрегату из 24 пакетов, не двигая общий порог.
+PKG_MIN_DEFAULT="internal/secretbox=90 internal/netguard=90 internal/alert=80 internal/ingest=80 internal/oauth=80 internal/auth=83 internal/org=84"
 PKG_MIN=${PKG_MIN:-$PKG_MIN_DEFAULT}
 
 PROFILE=$(mktemp /tmp/gotcha-cover.XXXXXX.out)
 trap 'rm -f "$PROFILE"' EXIT
 
-PKGS_CSV=$(go list ./internal/... | paste -sd,)
-PKGS=$(go list ./internal/... | tr '\n' ' ')
+# cmd/gotcha входит в замер: тесты там живые и содержательные (health-ручки,
+# конфиг, healthcheck-подкоманда), но не мерялись и пола не имели — а
+# обоснование в шапке этого файла утверждало, что точка входа не тестируется
+# юнитами, и разошлось с реальностью.
+PKGS_CSV=$(go list ./internal/... ./cmd/... | paste -sd,)
+PKGS=$(go list ./internal/... ./cmd/... | tr '\n' ' ')
 
 echo "Замер покрытия (-p 1, testcontainers, несколько минут)…" >&2
 # -count=1 обязателен: без него повторный запуск отдаёт закешированный результат,
@@ -73,7 +107,7 @@ nice -n 19 go test -p 1 -count=1 -coverpkg="$PKGS_CSV" -coverprofile="$PROFILE" 
 # Дедуп-aware разбор: с -coverpkg один и тот же блок появляется в профиле по
 # разу на тест-бинарь; берём максимум count по уникальному ключу блока (как
 # это делает `go tool cover`), затем суммируем строки по двум группам.
-awk -v front_min="$FRONT_MIN" -v back_min="$BACK_MIN" -v templ_min="$TEMPL_MIN" -v pkg_min="$PKG_MIN" '
+awk -v front_min="$FRONT_MIN" -v back_min="$BACK_MIN" -v templ_min="$TEMPL_MIN" -v cmd_min="$CMD_MIN" -v pkg_min="$PKG_MIN" '
 NR==1 { next }                       # строка "mode:"
 {
   key=$1; stmts[key]=$2; if ($3+0 > cnt[key]) cnt[key]=$3
@@ -131,25 +165,34 @@ END {
       if (is_err_glue(key, file)) continue
       grp = "templ"
     }
+    # cmd/* — отдельная группа, а не часть бэкенда: точка входа состоит из
+    # проводки (создать пул, зарегистрировать маршрут, запустить горутину),
+    # которая тестируется интеграционно, и вливать её в общий знаменатель
+    # значит размывать метрику бэкенда так же, как *_templ.go размывали фронт.
+    else if (file ~ /\/cmd\//) grp = "cmd"
     else grp = (file ~ /\/internal\/web\//) ? "front" : "back"
     tot[grp]+=stmts[key]; if (cnt[key]>0) cov[grp]+=stmts[key]
 
-    # Пакет = путь до последнего слэша, обрезанный до internal/...
+    # Пакет = путь до последнего слэша, обрезанный до internal/... или cmd/...
     pkg = file
     sub(/\/[^\/]*$/, "", pkg)
     sub(/^.*\/(internal\/)/, "internal/", pkg)
+    sub(/^.*\/(cmd\/)/, "cmd/", pkg)
     ptot[pkg]+=stmts[key]; if (cnt[key]>0) pcov[pkg]+=stmts[key]
   }
   fp = tot["front"] ? 100*cov["front"]/tot["front"] : 0
   bp = tot["back"]  ? 100*cov["back"]/tot["back"]   : 0
   tp = tot["templ"] ? 100*cov["templ"]/tot["templ"] : 0
+  cp = tot["cmd"]   ? 100*cov["cmd"]/tot["cmd"]     : 0
   printf "FRONTEND (рукописный web+templates): %.1f%% (%d/%d)  порог %.1f%%\n", fp, cov["front"], tot["front"], front_min
   printf "BACKEND  (internal/*):               %.1f%% (%d/%d)  порог %.1f%%\n", bp, cov["back"],  tot["back"],  back_min
   printf "TEMPL    (*_templ.go, без err-glue):  %.1f%% (%d/%d)  порог %.1f%%\n", tp, cov["templ"], tot["templ"], templ_min
+  printf "CMD      (cmd/*):                    %.1f%% (%d/%d)  порог %.1f%%\n", cp, cov["cmd"], tot["cmd"], cmd_min
   fail=0
   if (fp+0.05 < front_min) { printf "FAIL: фронтенд %.1f%% < %.1f%%\n", fp, front_min; fail=1 }
   if (bp+0.05 < back_min)  { printf "FAIL: бэкенд %.1f%% < %.1f%%\n",  bp, back_min;  fail=1 }
   if (tp+0.05 < templ_min) { printf "FAIL: шаблоны %.1f%% < %.1f%%\n", tp, templ_min; fail=1 }
+  if (cp+0.05 < cmd_min)   { printf "FAIL: cmd %.1f%% < %.1f%%\n", cp, cmd_min; fail=1 }
   for (pkg in floor_of) {
     if (!(pkg in ptot)) { printf "FAIL: пакет %s не найден в профиле (переименован?)\n", pkg; fail=1; continue }
     pp = 100*pcov[pkg]/ptot[pkg]

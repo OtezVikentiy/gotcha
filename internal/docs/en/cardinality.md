@@ -69,6 +69,8 @@ GOTCHA_CARDINALITY_WINDOW_SECONDS=3600
 
 Mind the price when you raise it: every distinct value means separate pre-aggregate rows for every five-minute bucket — disk space and merge time in ClickHouse.
 
+The guard itself has a bound too: it remembers values in process memory, and no more than a million of them across all projects. When that budget runs out, sets belonging to projects whose window has expired are dropped first; after that new values stop being remembered — the guard keeps working but stops growing. `gotcha_cardinality_tracked_values` in `/metrics` shows how many it holds right now. The number of distinct field NAMES per project is capped as well (200): a field name comes from the sender exactly like a value does.
+
 ## What's next
 
 - [Performance](/docs/performance) — how to read the endpoints page.

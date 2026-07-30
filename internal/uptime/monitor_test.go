@@ -46,6 +46,18 @@ func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 
 // newProjectInOrg заводит проект в УЖЕ существующей организации (см. newOrgID):
 // нужно там, где проба и монитор обязаны жить в одном тенанте.
+// orgOfProject возвращает организацию проекта — нужна, чтобы завести пробу в
+// том же скоупе, что и монитор.
+func orgOfProject(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
+	t.Helper()
+	var orgID int64
+	if err := pool.QueryRow(context.Background(),
+		"SELECT org_id FROM projects WHERE id = $1", projectID).Scan(&orgID); err != nil {
+		t.Fatalf("org of project %d: %v", projectID, err)
+	}
+	return orgID
+}
+
 func newProjectInOrg(t *testing.T, pool *pgxpool.Pool, orgID int64) int64 {
 	t.Helper()
 	n := projectSeq.Add(1)
@@ -133,6 +145,7 @@ func TestCreateHTTPMonitorWithRegionsAndChannels(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 
+	allowRegions(t, pool, svc, ctx, pid, []string{"eu"})
 	created, err := svc.Create(ctx, m, []string{"local", "eu"}, []int64{chID})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -300,6 +313,7 @@ func TestUpdateReplacesFieldsRegionsAndChannels(t *testing.T) {
 	updated.IntervalSeconds = 120
 	updated.TimeoutSeconds = 20
 	updated.Config = httpConfig(t, uptime.HTTPConfig{Method: "POST", URL: "https://example.com/v2"})
+	allowRegions(t, pool, svc, ctx, created.ProjectID, []string{"eu", "us"})
 	if err := svc.Update(ctx, updated, []string{"eu", "us"}, []int64{ch2}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -613,6 +627,7 @@ func TestUnicodeNameAndRegionLimits(t *testing.T) {
 	m3 := baseHTTPMonitor(pid)
 	m3.Name = "Test 40 chars region"
 	m3.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
+	allowRegions(t, pool, svc, ctx, pid, []string{strings.Repeat("я", 40)})
 	created3, err := svc.Create(ctx, m3, []string{strings.Repeat("я", 40)}, nil)
 	if err != nil {
 		t.Fatalf("Create with 40 Cyrillic chars in region: %v", err)

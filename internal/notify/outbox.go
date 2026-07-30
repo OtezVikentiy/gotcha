@@ -77,6 +77,12 @@ const claimLease = 5 * time.Minute
 // SKIP LOCKED внутри CTE делает выборку безопасной под конкуренцией: две
 // горутины (или процесса), вызывающие Claim одновременно, никогда не
 // получат одну и ту же задачу.
+// Лиза отсчитывается часами БАЗЫ, теми же, что решают видимость задачи в WHERE
+// этого же запроса. Раньше здесь стояло time.Now().Add(claimLease) — часы
+// процесса, — и при отставании контейнера лиза выдавалась уже просроченной:
+// задача оставалась видимой и доставлялась повторно каждым воркером на каждом
+// тике, а идемпотентности ни у Telegram, ни у вебхуков нет. Контейнер без NTP —
+// обычное дело, и расхождение в минуты никто не считает аварией.
 func (o *Outbox) Claim(ctx context.Context, limit int) ([]Job, error) {
 	rows, err := o.pool.Query(ctx, `
 		WITH c AS (
@@ -87,10 +93,10 @@ func (o *Outbox) Claim(ctx context.Context, limit int) ([]Job, error) {
 			LIMIT $1
 		)
 		UPDATE notification_outbox o
-		SET attempts = attempts + 1, next_retry_at = $2
+		SET attempts = attempts + 1, next_retry_at = now() + $2::interval
 		FROM c
 		WHERE o.id = c.id
-		RETURNING o.id, o.channel_id, o.payload, o.attempts`, limit, time.Now().Add(claimLease))
+		RETURNING o.id, o.channel_id, o.payload, o.attempts`, limit, claimLease.String())
 	if err != nil {
 		return nil, fmt.Errorf("notify: claim: %w", err)
 	}
@@ -121,11 +127,15 @@ func (o *Outbox) MarkSent(ctx context.Context, jobID int64) error {
 
 // MarkRetry возвращает задачу в pending с записанной ошибкой и временем
 // следующей попытки.
-func (o *Outbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, next time.Time) error {
+func (o *Outbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
+	// Отметку, с которой сравнивает база при следующем Claim, ставит база: часы
+	// процесса могут спешить или отставать, и тогда повтор случается раньше или
+	// позже назначенного — по той же причине, по которой claim-лиза считается
+	// в SQL (см. Claim).
 	tag, err := o.pool.Exec(ctx, `
 		UPDATE notification_outbox
-		SET status = 'pending', last_error = $2, next_retry_at = $3
-		WHERE id = $1`, jobID, errString(sendErr), next)
+		SET status = 'pending', last_error = $2, next_retry_at = now() + $3::interval
+		WHERE id = $1`, jobID, errString(sendErr), retryIn.String())
 	if err != nil {
 		return fmt.Errorf("notify: mark retry: %w", err)
 	}
@@ -191,6 +201,33 @@ func (o *Outbox) FailedForProject(ctx context.Context, projectID int64, limit in
 		out = append(out, f)
 	}
 	return out, rows.Err()
+}
+
+// QueueSnapshot читает состояние очереди одним запросом.
+//
+// Один запрос, а не три: снимок должен быть согласованным, иначе «ждёт 0 задач,
+// возраст старейшей 4 часа» выглядит как ошибка продукта, а не как гонка между
+// тремя запросами.
+//
+// Возраст считается от created_at, а не от next_retry_at: интересует, сколько
+// уведомление ждёт с момента, когда о нём стало известно, а не сколько осталось
+// до следующей попытки.
+func (o *Outbox) QueueSnapshot(ctx context.Context) (QueueSnapshot, error) {
+	var snap QueueSnapshot
+	var oldestSecs float64
+	err := o.pool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'pending'),
+			count(*) FILTER (WHERE status = 'failed'),
+			coalesce(extract(epoch FROM now() - min(created_at) FILTER (WHERE status = 'pending')), 0)
+		FROM notification_outbox`).Scan(&snap.Pending, &snap.Failed, &oldestSecs)
+	if err != nil {
+		return QueueSnapshot{}, fmt.Errorf("notify: queue snapshot: %w", err)
+	}
+	if oldestSecs > 0 {
+		snap.OldestPendingAge = time.Duration(oldestSecs * float64(time.Second))
+	}
+	return snap, nil
 }
 
 // PurgeOld удаляет доставленные (sent) и окончательно проваленные (failed)

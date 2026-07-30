@@ -4,8 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 const evaluatorDefaultInterval = 5 * time.Minute
@@ -13,17 +11,21 @@ const evaluatorDefaultInterval = 5 * time.Minute
 // RegressionEvaluator периодически детектит рост self-CPU доли функций над
 // скользящей базой и открывает/закрывает инциденты (калька trace.Evaluator).
 // Тикер живёт в режимах uptime|all.
-// projectLister — источник списка проектов для обхода. Интерфейс, а не
-// *pgxpool.Pool, по той же причине, что ruleLister в пакете metric: без него у
-// цикла Run нет наблюдаемого следа, и тест «поспал и убедился, что горутина
-// вышла» оставался зелёным с вырезанным телом тика.
-type projectLister interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+// profileQuery — то, что оценщику нужно от ClickHouse. Интерфейс, а не *Query,
+// по той же причине, что ruleLister в пакете metric: без него у цикла Run нет
+// наблюдаемого следа, и тест «поспал и убедился, что горутина вышла» оставался
+// бы зелёным с вырезанным телом тика.
+//
+// Списка проектов из PostgreSQL здесь больше нет намеренно: обходить надо то,
+// по чему есть данные, а не всё, что заведено в инсталляции.
+type profileQuery interface {
+	ActiveServices(ctx context.Context, from, to time.Time) ([]ProjectService, error)
+	TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error)
+	BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]float64, error)
 }
 
 type RegressionEvaluator struct {
-	Pool        projectLister
-	Query       *Query
+	Query       profileQuery
 	Regressions *RegressionService
 	Notifier    *RegressionNotifier
 	Interval    time.Duration
@@ -49,65 +51,59 @@ func (e *RegressionEvaluator) Run(ctx context.Context) {
 
 // Tick — один проход по всем проектам. Ошибка по проекту не роняет остальные.
 func (e *RegressionEvaluator) Tick(ctx context.Context) {
-	rows, err := e.Pool.Query(ctx, "SELECT id FROM projects")
-	if err != nil {
-		slog.Error("profile evaluator: list projects failed", "error", err)
-		return
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			slog.Error("profile evaluator: scan project failed", "error", err)
-			rows.Close()
-			return
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		slog.Error("profile evaluator: iterate projects failed", "error", err)
-		return
-	}
-
 	now := time.Now().UTC()
-	for _, pid := range ids {
-		e.evalProject(ctx, pid, now)
+	recentFrom := now.Add(-time.Duration(e.Config.WindowMinutes) * time.Minute)
+
+	// Работу определяют данные, а не список проектов. Раньше тик читал все
+	// проекты из PostgreSQL и спрашивал ClickHouse про каждый: проект без
+	// единого профиля стоил столько же, сколько нагруженный, и обход шёл по
+	// всей инсталляции независимо от трафика.
+	services, err := e.Query.ActiveServices(ctx, recentFrom, now)
+	if err != nil {
+		slog.Error("profile evaluator: active services failed", "error", err)
+		return
+	}
+	for _, ps := range services {
+		e.evalService(ctx, ps, recentFrom, now)
 	}
 }
 
-func (e *RegressionEvaluator) evalProject(ctx context.Context, projectID int64, now time.Time) {
+// evalService проверяет один сервис одного проекта: два запроса к
+// profile_samples вместо 1 + 2K.
+func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService, recentFrom, now time.Time) {
 	cfg := e.Config
-	recentFrom := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
-	services, err := e.Query.ServicesWithProfiles(ctx, projectID, recentFrom, now)
+	shares, err := e.Query.TopFunctionShares(ctx, ps.ProjectID, ps.Service, ps.Type, recentFrom, now, cfg.TopK)
 	if err != nil {
-		slog.Error("profile evaluator: services failed", "project_id", projectID, "error", err)
+		slog.Error("profile evaluator: top function shares failed",
+			"project_id", ps.ProjectID, "service", ps.Service, "error", err)
 		return
 	}
-	for _, st := range services {
-		funcs, err := e.Query.TopFunctionsBySelfShare(ctx, projectID, st.Service, st.Type, recentFrom, now, cfg.TopK)
-		if err != nil {
-			slog.Error("profile evaluator: top functions failed", "project_id", projectID, "service", st.Service, "error", err)
-			continue
-		}
-		for _, fn := range funcs {
-			e.evalFunction(ctx, projectID, st.Service, st.Type, fn, recentFrom, now)
-		}
+	if len(shares) == 0 {
+		return
+	}
+
+	names := make([]string, 0, len(shares))
+	for _, sh := range shares {
+		names = append(names, sh.Function)
+	}
+	baselines, err := e.Query.BaselineFunctionShares(ctx, ps.ProjectID, ps.Service, ps.Type, names, cfg.BaselineDays, now)
+	if err != nil {
+		slog.Error("profile evaluator: baseline shares failed",
+			"project_id", ps.ProjectID, "service", ps.Service, "error", err)
+		return
+	}
+
+	for _, sh := range shares {
+		// Функции без базовой линии сравниваются с нулём — так же, как раньше
+		// при пустом результате поштучного запроса.
+		e.evalFunction(ctx, ps, sh, baselines[sh.Function])
 	}
 }
 
-func (e *RegressionEvaluator) evalFunction(ctx context.Context, projectID int64, service, profileType, function string, recentFrom, now time.Time) {
+func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectService, sh FunctionShare, base float64) {
 	cfg := e.Config
-	recent, samples, err := e.Query.RecentFunctionShare(ctx, projectID, service, profileType, function, recentFrom, now)
-	if err != nil {
-		slog.Error("profile evaluator: recent share failed", "project_id", projectID, "function", function, "error", err)
-		return
-	}
-	base, err := e.Query.BaselineFunctionShare(ctx, projectID, service, profileType, function, cfg.BaselineDays, now)
-	if err != nil {
-		slog.Error("profile evaluator: baseline failed", "project_id", projectID, "function", function, "error", err)
-		return
-	}
+	projectID, service, profileType, function := ps.ProjectID, ps.Service, ps.Type, sh.Function
+	recent, samples := sh.Share, sh.Samples
 
 	open, hasOpen, err := e.Regressions.OpenFor(ctx, projectID, service, profileType, function)
 	if err != nil {

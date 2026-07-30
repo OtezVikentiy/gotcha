@@ -422,7 +422,7 @@ templ assignControl(it issue.Issue, members []org.Member) {
 			{ i18n.T(ctx, "issues.action.change_assignee") }
 		</summary>
 		<form method="post" action={ templ.URL(issueAssignPath(it.ID)) } class="assign-form">
-			<select name="assignee" class="select">
+			<select name="assignee" class="select" aria-label={ i18n.T(ctx, "issues.action.change_assignee") }>
 				if it.AssigneeID == nil {
 					<option value="" selected>{ i18n.T(ctx, "issues.detail.unassigned") }</option>
 				} else {

@@ -30,9 +30,24 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 	}
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/heartbeat/regenerate"
 
-	// owner: 200, показан новый URL пинга и cron-сниппет.
+	// Перевыпуск необратим и ломает работающий cron, поэтому первый POST
+	// показывает вопрос, а не выполняет действие.
 	resp := postForm(t, s.srv, path, url.Values{}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("owner regenerate (confirm): status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), s.srv.URL+"/uptime/hb/") {
+		t.Fatalf("токен перевыпущен без подтверждения — рабочий cron ломается одним кликом")
+	}
+	if !strings.Contains(string(body), `name="confirmed"`) {
+		t.Fatalf("страница подтверждения без поля confirmed: %s", body)
+	}
+
+	// owner с подтверждением: 200, показан новый URL пинга и cron-сниппет.
+	resp = postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("owner regenerate: status = %d, want 200: %s", resp.StatusCode, body)
@@ -42,7 +57,7 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 	}
 
 	// member (без прав управления): 404.
-	resp = postForm(t, s.srv, path, url.Values{}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

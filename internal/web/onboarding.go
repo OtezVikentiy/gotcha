@@ -77,6 +77,19 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	// То же условие, что и у GET: онбординг — поток для того, у кого ещё нет
+	// ни одного проекта. Раньше проверял только GET, поэтому приглашённый
+	// участник мог в цикле заводить себе организации, проекты и ключи приёма —
+	// форма ему не показывалась, но принимался POST.
+	hasOrg, err := h.userHasProjects(r, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if hasOrg {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return

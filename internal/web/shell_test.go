@@ -82,6 +82,12 @@ func TestBackOrigin(t *testing.T) {
 		{"login page ignored", base + "/login", ""},
 		{"same-origin page kept", base + "/projects/7/incidents", "/projects/7/incidents"},
 		{"query string preserved", base + "/projects/7/issues?status=resolved&page=2", "/projects/7/issues?status=resolved&page=2"},
+		// Протокол-относительные формы: браузер прочтёт их как чужой адрес, а
+		// ссылка «назад» ведёт туда одним кликом. Тот же инвариант, что у
+		// safeNextPath и BulkRedirectTarget.
+		{"protocol-relative rejected", base + "//evil.example/x", ""},
+		{"backslash form rejected", base + "/\\evil.example/x", ""},
+		{"encoded backslash form rejected", base + "/%5Cevil.example/x", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -110,7 +110,7 @@ func incidentDurationText(ctx context.Context, inc uptime.Incident) string {
 	if inc.ResolvedAt == nil {
 		return i18n.T(ctx, "uptime.incident.ongoing")
 	}
-	return inc.ResolvedAt.Sub(inc.StartedAt).String()
+	return FormatDuration(ctx, inc.ResolvedAt.Sub(inc.StartedAt))
 }
 
 func yesNo(ctx context.Context, b bool) string {

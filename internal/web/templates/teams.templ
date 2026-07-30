@@ -249,6 +249,7 @@ templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []
 		<div class="teams">
 			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "teams.title") } { o.Name }</h1>
+			@helpPanel("teams", "teams")
 			// Ошибка показывается ЗДЕСЬ только если она не от формы создания
 			// команды: на странице есть ещё формы (добавить участника, привязать
 			// проект), и их ошибки относятся к самой странице. Ошибка формы

@@ -355,27 +355,41 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 		t.Fatalf("backdate staging last_seen: %v", err)
 	}
 
-	// Filter{Period:"24h"} отсекает staging (last_seen 48h назад), оставляет prod и no-env.
-	items, total, err = svc.List(ctx, pid, issue.Filter{Period: "24h"})
+	// Граница Since отсекает staging (last_seen 48h назад), оставляет prod и no-env.
+	items, total, err = svc.List(ctx, pid, issue.Filter{Since: t0.Add(-24 * time.Hour)})
 	if err != nil {
-		t.Fatalf("list period 24h: %v", err)
+		t.Fatalf("list since 24h: %v", err)
 	}
 	if total != 2 {
-		t.Fatalf("list period 24h: total=%d want 2", total)
+		t.Fatalf("list since 24h: total=%d want 2", total)
 	}
 	for _, it := range items {
 		if it.ID == rStaging.IssueID {
-			t.Fatalf("list period 24h: leaked backdated staging issue: %+v", items)
+			t.Fatalf("list since 24h: leaked backdated staging issue: %+v", items)
 		}
 	}
 
-	// Невалидный Period игнорируется — как будто фильтра нет вовсе (все 3 issue).
-	items, total, err = svc.List(ctx, pid, issue.Filter{Period: "bogus"})
+	// Произвольное окно: только то, что попало между границами. Раньше такой
+	// фильтр в списке проблем был недоступен вовсе — период задавался строкой
+	// из белого списка (24h|7d|30d).
+	items, total, err = svc.List(ctx, pid, issue.Filter{
+		Since: t0.Add(-72 * time.Hour),
+		Until: t0.Add(-36 * time.Hour),
+	})
 	if err != nil {
-		t.Fatalf("list period bogus: %v", err)
+		t.Fatalf("list custom window: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != rStaging.IssueID {
+		t.Fatalf("list custom window: total=%d items=%+v, want только backdated staging", total, items)
+	}
+
+	// Без границ — все три.
+	items, total, err = svc.List(ctx, pid, issue.Filter{})
+	if err != nil {
+		t.Fatalf("list unbounded: %v", err)
 	}
 	if total != 3 || len(items) != 3 {
-		t.Fatalf("list period bogus (should be ignored): total=%d len=%d", total, len(items))
+		t.Fatalf("list unbounded: total=%d len=%d, want 3", total, len(items))
 	}
 	_ = rNoEnv
 }

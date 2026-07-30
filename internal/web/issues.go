@@ -75,13 +75,19 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	if !q.Has("status") {
 		status = "unresolved"
 	}
+	// Тот же контрол окна времени, что и на остальных страницах, с
+	// дополнительным пунктом «за всё время» — он же по умолчанию: большинство
+	// групп старше суток, и окно на 24 часа показывало бы пустой список на
+	// здоровом проекте.
+	rng := parseTimeRange(q, RangeAll)
 	filter := issue.Filter{
 		Status:      status,
 		Level:       q.Get("level"),
 		Query:       q.Get("q"),
 		Sort:        q.Get("sort"),
 		Environment: q.Get("env"),
-		Period:      q.Get("period"),
+		Since:       rng.From,
+		Until:       rng.To,
 		Page:        parsePage(q.Get("page")),
 	}
 
@@ -117,13 +123,15 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	if page < 1 {
 		page = 1
 	}
+	rangeVM := timeRangeVM(rng)
+	rangeVM.AllowAll = true
 	tplFilter := templates.IssuesFilter{
 		Status:      filter.Status,
 		Level:       filter.Level,
 		Query:       filter.Query,
 		Sort:        filter.Sort,
 		Environment: filter.Environment,
-		Period:      filter.Period,
+		Range:       rangeVM,
 	}
 	banner := h.quotaBanner(r.Context(), orgID, canManage)
 	gs := h.gettingStarted(r.Context(), projectID, orgID, canManage)

@@ -1,3 +1,4 @@
+-- backward-compatible: no  (heartbeat_token удалён из monitors — старый бинарь ищет heartbeat-мониторы по этой колонке)
 -- Heartbeat-токены мониторов теперь хранятся как sha256(token) в bytea — так
 -- же, как probe-токены (probes.token_hash) и session-токены. Сырой
 -- heartbeat_token из таблицы удаляется, чтобы токен не лежал в БД в открытом

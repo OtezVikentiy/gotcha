@@ -31,7 +31,7 @@ You'll find that link right under the edit form on `/projects/{id}/statuspages` 
 The public page (`/status/{slug}`) requires no login and has no dashboard navigation — just:
 
 - overall status ("All systems operational" / "Partial outage" / "Major outage");
-- service tiles with their public name, current status (up/down/paused/maintenance/unknown), an availability bar, and 90-day uptime %;
+- service tiles with their public name, current status (up/down/paused/maintenance/unknown), an availability bar, and 90-day uptime % (or the `GOTCHA_RETENTION_DAYS` window, whichever is shorter — the page never shows cells beyond what is actually stored);
 - an incident feed for the last 90 days (service, start time, duration — no cause text or region detail);
 - a list of upcoming scheduled [maintenance windows](/docs/maintenance).
 

@@ -4,7 +4,7 @@ package uptime
 
 import (
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"time"
 	"unicode/utf8"
 )
@@ -82,44 +82,44 @@ func validConsensus(c Consensus) bool {
 // это требует похода в БД внутри транзакции.
 func validateMonitor(m Monitor, regions []string) error {
 	if !validKind(m.Kind) {
-		return fmt.Errorf("%w: unknown kind %q", ErrInvalidMonitor, m.Kind)
+		return invalid("kind", "unknown_kind", "kind", string(m.Kind))
 	}
 	if m.Name == "" || utf8.RuneCountInString(m.Name) > maxNameLen {
-		return fmt.Errorf("%w: name must be 1..%d characters", ErrInvalidMonitor, maxNameLen)
+		return invalid("name", "name_length", "max", strconv.Itoa(maxNameLen))
 	}
 	if m.IntervalSeconds < 30 {
-		return fmt.Errorf("%w: interval_seconds must be >= 30", ErrInvalidMonitor)
+		return invalid("interval_seconds", "interval_min", "min", "30")
 	}
 	if m.TimeoutSeconds < 1 || m.TimeoutSeconds > 120 {
-		return fmt.Errorf("%w: timeout_seconds must be 1..120", ErrInvalidMonitor)
+		return invalid("timeout_seconds", "timeout_range")
 	}
 	if m.TimeoutSeconds >= m.IntervalSeconds {
-		return fmt.Errorf("%w: timeout_seconds must be less than interval_seconds", ErrInvalidMonitor)
+		return invalid("timeout_seconds", "timeout_vs_interval")
 	}
 	if m.FailThreshold < 1 {
-		return fmt.Errorf("%w: fail_threshold must be >= 1", ErrInvalidMonitor)
+		return invalid("fail_threshold", "fail_threshold_min")
 	}
 	if m.RecoveryThreshold < 1 {
-		return fmt.Errorf("%w: recovery_threshold must be >= 1", ErrInvalidMonitor)
+		return invalid("recovery_threshold", "recovery_threshold_min")
 	}
 	if m.Retries < 0 || m.Retries > 10 {
-		return fmt.Errorf("%w: retries must be 0..10", ErrInvalidMonitor)
+		return invalid("retries", "retries_range")
 	}
 	if !validConsensus(m.Consensus) {
-		return fmt.Errorf("%w: consensus must be any, majority or all", ErrInvalidMonitor)
+		return invalid("consensus", "consensus_invalid")
 	}
 	if m.RemindEveryMinutes < 0 {
-		return fmt.Errorf("%w: remind_every_minutes must be >= 0", ErrInvalidMonitor)
+		return invalid("remind_every_minutes", "remind_min")
 	}
 	if m.SSLAlertDays < 0 {
-		return fmt.Errorf("%w: ssl_alert_days must be >= 0", ErrInvalidMonitor)
+		return invalid("ssl_alert_days", "ssl_days_min")
 	}
 	if len(regions) > maxRegions {
-		return fmt.Errorf("%w: at most %d regions", ErrInvalidMonitor, maxRegions)
+		return invalid("regions", "regions_max", "max", strconv.Itoa(maxRegions))
 	}
 	for _, r := range regions {
 		if r == "" || utf8.RuneCountInString(r) > maxRegionLen {
-			return fmt.Errorf("%w: region names must be 1..%d characters", ErrInvalidMonitor, maxRegionLen)
+			return invalid("regions", "region_length", "max", strconv.Itoa(maxRegionLen))
 		}
 	}
 	return validateConfig(m.Kind, m.Config)

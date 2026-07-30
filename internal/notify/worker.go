@@ -4,18 +4,36 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
 // defaultInterval — период тика воркера, если Worker.Interval не задан.
 const defaultInterval = 10 * time.Second
 
-// claimBatch — сколько задач Claim'ит воркер за один тик. Держим в паре с
-// Outbox.claimLease (outbox.go): claimLease должна покрывать время обработки
-// всего батча (claimBatch * defaultSendTimeout + запас), иначе задачи в
-// хвосте батча станут "просроченными" и повторно заклеймлены другой репликой
-// worker'а, пока первая ещё их отправляет — правьте обе константы вместе.
-const claimBatch = 5
+// defaultConcurrency — сколько задач воркер отправляет одновременно.
+//
+// Раньше отправка была последовательной, и один мёртвый вебхук с
+// 30-секундным таймаутом съедал тик целиком: инцидент, задевший десяток
+// мониторов, растягивал оповещения на минуты. Пропускная способность была
+// 5 задач за 10 секунд в лучшем случае и 1 задача за 30 секунд в худшем.
+const defaultConcurrency = 4
+
+// claimBatchPerWorker — во сколько раз батч больше числа параллельных
+// отправок. Запас нужен, чтобы быстрые каналы не простаивали, пока медленные
+// доигрывают свой таймаут.
+//
+// Держим в паре с Outbox.claimLease (outbox.go): лиза должна покрывать время
+// обработки всего батча. При 4 параллельных отправках, батче 8 и таймауте 30 с
+// это минута против пятиминутной лизы — правьте константы вместе.
+const claimBatchPerWorker = 2
+
+// maxTicklessRounds — сколько батчей подряд воркер берёт, не дожидаясь тика.
+//
+// Пока очередь полна, ждать тик незачем: тик — это пауза на пустой очереди, а
+// не квант работы. Предел нужен, чтобы отказ канала (батч всегда полон,
+// доставка всегда падает) не превратил воркер в непрерывный цикл по базе.
+const maxTicklessRounds = 10
 
 // defaultSendTimeout — таймаут одной попытки доставки, если
 // Worker.SendTimeout не задан. Без него зависший таргет (мёртвый пир,
@@ -31,7 +49,7 @@ const defaultSendTimeout = 30 * time.Second
 type outboxStore interface {
 	Claim(ctx context.Context, limit int) ([]Job, error)
 	MarkSent(ctx context.Context, jobID int64) error
-	MarkRetry(ctx context.Context, jobID int64, sendErr error, next time.Time) error
+	MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error
 	MarkFailed(ctx context.Context, jobID int64, sendErr error) error
 }
 
@@ -73,7 +91,26 @@ type Worker struct {
 	// (dead peer, no timeout on its own client) can't stall the whole
 	// worker loop. Defaults to defaultSendTimeout if <= 0.
 	SendTimeout time.Duration
+
+	// Concurrency — сколько задач отправляется одновременно. 0 означает
+	// defaultConcurrency.
+	Concurrency int
+
+	// Stats — счётчики доставки для самотелеметрии. nil допустим: продукт
+	// работает и без наблюдения за собой, просто хуже диагностируется.
+	Stats *Stats
 }
+
+// concurrency — сколько отправок идёт одновременно.
+func (w *Worker) concurrency() int {
+	if w.Concurrency > 0 {
+		return w.Concurrency
+	}
+	return defaultConcurrency
+}
+
+// batchSize — сколько задач забирается за один Claim.
+func (w *Worker) batchSize() int { return w.concurrency() * claimBatchPerWorker }
 
 // Run тикает с Worker.Interval (по умолчанию defaultInterval), на каждом
 // тике забирает пачку задач и доставляет их. Возвращается, когда ctx
@@ -91,20 +128,54 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.tick(ctx)
+			w.Tick(ctx)
 		}
 	}
 }
 
-func (w *Worker) tick(ctx context.Context) {
-	jobs, err := w.Outbox.Claim(ctx, claimBatch)
-	if err != nil {
-		slog.Error("notify worker: claim failed", "error", err)
-		return
+// Tick — один проход доставки: забирает батчи и отправляет их, пока очередь не
+// опустеет (или пока не исчерпан maxTicklessRounds). Экспортирован по той же
+// причине, что telemetry.EntityJanitor.Tick: проход должен проверяться целиком,
+// а не через ожидание тикера.
+func (w *Worker) Tick(ctx context.Context) {
+	for round := 0; round < maxTicklessRounds; round++ {
+		batch := w.batchSize()
+		jobs, err := w.Outbox.Claim(ctx, batch)
+		if err != nil {
+			slog.Error("notify worker: claim failed", "error", err)
+			return
+		}
+		if len(jobs) == 0 {
+			return
+		}
+		w.deliver(ctx, jobs)
+		if len(jobs) < batch {
+			// Очередь разобрана — до следующего тика делать нечего.
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
 	}
+}
+
+// deliver отправляет батч, держа не более concurrency отправок одновременно.
+//
+// Параллельно, потому что медленный канал не должен задерживать быстрые: они
+// друг о друге ничего не знают, и очерёдность между ними ничего не значит.
+func (w *Worker) deliver(ctx context.Context, jobs []Job) {
+	sem := make(chan struct{}, w.concurrency())
+	var wg sync.WaitGroup
 	for _, job := range jobs {
-		w.process(ctx, job)
+		wg.Add(1)
+		go func(job Job) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			w.process(ctx, job)
+		}(job)
 	}
+	wg.Wait()
 }
 
 func (w *Worker) process(ctx context.Context, job Job) {
@@ -147,6 +218,21 @@ func (w *Worker) process(ctx context.Context, job Job) {
 	w.markSent(ctx, job)
 }
 
+// finalizeTimeout — бюджет на запись результата уже выполненной отправки.
+const finalizeTimeout = 5 * time.Second
+
+// finalizeCtx — контекст для записи результата отправки.
+//
+// Не наследует отмену: отмена означает «не начинай новое», а не «брось начатое
+// незаписанным». Раньше при остановке процесса MarkRetry/MarkFailed падали по
+// тому же отменённому контексту, и до пяти задач оставались со сдвинутым
+// next_retry_at — то есть выключение процесса задерживало доставку на длину
+// claim-лизы. Тот же приём применён в db.WithMigrationLock для снятия
+// advisory-лока.
+func finalizeCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
+}
+
 // markSent подтверждает доставку в outbox с коротким циклом ретраев.
 //
 // Доставка построена по модели at-least-once: между успешным Send и
@@ -165,19 +251,17 @@ func (w *Worker) process(ctx context.Context, job Job) {
 func (w *Worker) markSent(ctx context.Context, job Job) {
 	var err error
 	for attempt := 1; attempt <= markSentRetries; attempt++ {
-		if err = w.Outbox.MarkSent(ctx, job.ID); err == nil {
+		markCtx, cancel := finalizeCtx(ctx)
+		err = w.Outbox.MarkSent(markCtx, job.ID)
+		cancel()
+		if err == nil {
+			w.count(func(s *Stats) { s.countSent() })
 			return
 		}
 		if attempt == markSentRetries {
 			break
 		}
-		select {
-		case <-ctx.Done():
-			slog.Error("notify worker: mark sent aborted",
-				"job_id", job.ID, "channel_id", job.ChannelID, "error", err)
-			return
-		case <-time.After(markSentBackoff):
-		}
+		time.Sleep(markSentBackoff)
 	}
 	slog.Error("notify worker: mark sent failed after retries",
 		"job_id", job.ID, "channel_id", job.ChannelID, "attempts", markSentRetries, "error", err)
@@ -201,23 +285,36 @@ func backoff(attempts int) time.Duration {
 }
 
 func (w *Worker) retryOrFail(ctx context.Context, job Job, sendErr error) {
+	// Результат уже состоявшейся попытки записывается независимо от отмены:
+	// иначе остановка процесса оставляет задачу с уже сдвинутым next_retry_at.
+	markCtx, cancel := finalizeCtx(ctx)
+	defer cancel()
+
 	delay := backoff(job.Attempts)
 	if delay == 0 {
-		if err := w.Outbox.MarkFailed(ctx, job.ID, sendErr); err != nil {
+		if err := w.Outbox.MarkFailed(markCtx, job.ID, sendErr); err != nil {
 			slog.Error("notify worker: mark failed error", "job_id", job.ID, "channel_id", job.ChannelID, "error", err)
 		}
+		w.count(func(s *Stats) { s.countFailed() })
 		slog.Error("notify worker: job delivery failed permanently",
 			"job_id", job.ID, "channel_id", job.ChannelID, "attempts", job.Attempts, "error", sendErr)
 		return
 	}
 
-	next := time.Now().Add(delay)
-	if err := w.Outbox.MarkRetry(ctx, job.ID, sendErr, next); err != nil {
+	if err := w.Outbox.MarkRetry(markCtx, job.ID, sendErr, delay); err != nil {
 		slog.Error("notify worker: mark retry error", "job_id", job.ID, "channel_id", job.ChannelID, "error", err)
 	}
+	w.count(func(s *Stats) { s.countRetried() })
 	slog.Warn("notify worker: job delivery failed, will retry",
 		"job_id", job.ID, "channel_id", job.ChannelID, "attempts", job.Attempts,
-		"next_retry_at", next, "error", sendErr)
+		"retry_in", delay, "error", sendErr)
+}
+
+// count применяет изменение к счётчикам, если наблюдение включено.
+func (w *Worker) count(fn func(*Stats)) {
+	if w.Stats != nil {
+		fn(w.Stats)
+	}
 }
 
 func stringField(payload map[string]any, key string) string {

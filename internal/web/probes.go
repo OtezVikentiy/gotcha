@@ -51,8 +51,14 @@ func probeStatus(p uptime.Probe, now time.Time) string {
 
 // probeRunCommand — готовая строка запуска пробы, которую показываем рядом с
 // сырым токеном (единственный момент, когда он вообще существует вне БД).
+//
+// Образ назван плейсхолдером, а не «gotcha»: публикуемого образа с таким именем
+// нет, compose собирает его локально и называет по имени папки
+// («gotcha-gotcha»). Прежняя строка копировалась целиком и падала с «Unable to
+// find image 'gotcha:latest'» — то есть готовая команда была неготовой.
 func probeRunCommand(baseURL, token string) string {
-	return "docker run -e GOTCHA_SERVER_URL=" + baseURL + " -e GOTCHA_PROBE_TOKEN=" + token + " gotcha --mode=probe"
+	return "docker run -e GOTCHA_SERVER_URL=" + baseURL +
+		" -e GOTCHA_PROBE_TOKEN=" + token + " <gotcha-image> --mode=probe"
 }
 
 // probeBelongsToOrg проверяет принадлежность пробы организации по уже

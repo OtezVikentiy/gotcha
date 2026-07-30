@@ -44,6 +44,27 @@ const (
 	// maxCardinalityProjects — сколько проектов отслеживать одновременно.
 	// Как у KeyCache и рейт-лимитера: без потолка карта растёт неограниченно.
 	maxCardinalityProjects = 2000
+	// maxCardinalityFields — сколько РАЗЛИЧНЫХ полей отслеживать в проекте.
+	//
+	// Имена полей приходят из тегов события, то есть их задаёт отправитель —
+	// ровно так же, как значения. Потолок стоял только на значениях внутри поля,
+	// поэтому «поле на событие» обходило защиту целиком: карта полей росла без
+	// границы, а защита от взрыва кардинальности сама становилась вектором
+	// исчерпания памяти.
+	//
+	// Поле сверх потолка не отслеживается: его значения схлопываются сразу.
+	// Это строже, чем нужно для честного отправителя (200 различных тегов на
+	// проект — уже необычно много), и безопасно для нечестного.
+	maxCardinalityFields = 200
+	// defaultMaxTrackedValues — общий потолок запомненных значений во всех
+	// проектах вместе.
+	//
+	// Существует потому, что произведение потолков не даёт полезной границы:
+	// 2000 проектов × 200 полей × 10 000 значений — это четыре миллиарда строк,
+	// то есть «граница» размером с несколько сотен гигабайт. Общий счётчик
+	// делает границу тем, чем она должна быть, — числом, которое видно и в
+	// которое можно упереться.
+	defaultMaxTrackedValues = 1 << 20
 )
 
 // fieldState — состояние одного поля одного проекта.
@@ -60,8 +81,13 @@ type fieldState struct {
 // приемлемо — потолок нестрогий по построению, его задача срезать взрыв, а не
 // посчитать до единицы.
 type CardinalityGuard struct {
-	mu       sync.Mutex
-	limit    int
+	mu sync.Mutex
+	// limit — потолок различных значений одного поля проекта.
+	limit int
+	// maxTracked — общий потолок запомненных значений; 0 означает дефолт.
+	maxTracked int
+	// tracked — сколько значений запомнено прямо сейчас во всех проектах.
+	tracked  int
 	window   time.Duration
 	now      func() time.Time
 	projects map[int64]*projectCardinality
@@ -79,10 +105,11 @@ func NewCardinalityGuard(limit int, window time.Duration) *CardinalityGuard {
 		window = defaultCardinalityWindow
 	}
 	return &CardinalityGuard{
-		limit:    limit,
-		window:   window,
-		now:      time.Now,
-		projects: make(map[int64]*projectCardinality),
+		limit:      limit,
+		maxTracked: defaultMaxTrackedValues,
+		window:     window,
+		now:        time.Now,
+		projects:   make(map[int64]*projectCardinality),
 	}
 }
 
@@ -110,20 +137,27 @@ func (g *CardinalityGuard) Value(projectID int64, field, value string) string {
 	// Окно истекло — начинаем набор заново: проект, починивший имена, обязан
 	// вернуться к нормальной работе без перезапуска инстанса.
 	if now.Sub(p.windowStart) >= g.window {
+		g.tracked -= p.trackedValues()
 		p.windowStart = now
 		p.fields = map[string]*fieldState{}
 	}
 
 	f, ok := p.fields[field]
 	if !ok {
+		// Новых полей больше, чем потолок: имя поля задаёт отправитель, и без
+		// этой ветки «поле на событие» обходило ограничитель целиком.
+		if len(p.fields) >= maxCardinalityFields {
+			return CardinalityOverflow
+		}
 		f = &fieldState{seen: make(map[string]struct{}, 64)}
 		p.fields[field] = f
 	}
 	if _, known := f.seen[value]; known {
 		return value
 	}
-	if len(f.seen) < g.limit {
+	if len(f.seen) < g.limit && g.hasBudgetLocked(now) {
 		f.seen[value] = struct{}{}
+		g.tracked++
 		return value
 	}
 
@@ -141,6 +175,7 @@ func (g *CardinalityGuard) Value(projectID int64, field, value string) string {
 func (g *CardinalityGuard) evictLocked(now time.Time) {
 	for id, p := range g.projects {
 		if now.Sub(p.windowStart) >= g.window {
+			g.tracked -= p.trackedValues()
 			delete(g.projects, id)
 		}
 	}
@@ -151,13 +186,58 @@ func (g *CardinalityGuard) evictLocked(now time.Time) {
 	if drop == 0 {
 		drop = 1
 	}
-	for id := range g.projects {
+	for id, p := range g.projects {
 		if drop == 0 {
 			break
 		}
+		g.tracked -= p.trackedValues()
 		delete(g.projects, id)
 		drop--
 	}
+}
+
+// hasBudgetLocked — есть ли место под ещё одно запомненное значение.
+//
+// При исчерпании бюджета сначала выбрасываются проекты с истёкшим окном: их
+// набор всё равно подлежит сбросу, просто до них не дошла очередь. Если и это
+// не помогло, новые значения перестают запоминаться и схлопываются — защита
+// продолжает работать, но не растёт. Обнулять весь набор нельзя: это сняло бы
+// ограничение ровно с тех проектов, которые в него упёрлись.
+func (g *CardinalityGuard) hasBudgetLocked(now time.Time) bool {
+	max := g.maxTracked
+	if max <= 0 {
+		max = defaultMaxTrackedValues
+	}
+	if g.tracked < max {
+		return true
+	}
+	for id, p := range g.projects {
+		if now.Sub(p.windowStart) >= g.window {
+			g.tracked -= p.trackedValues()
+			delete(g.projects, id)
+		}
+	}
+	return g.tracked < max
+}
+
+// TrackedValues — сколько значений ограничитель помнит прямо сейчас. Для
+// самотелеметрии: граница, о которой нельзя узнать, — не граница.
+func (g *CardinalityGuard) TrackedValues() int64 {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return int64(g.tracked)
+}
+
+// trackedValues — сколько значений запомнено по проекту.
+func (p *projectCardinality) trackedValues() int {
+	var n int
+	for _, f := range p.fields {
+		n += len(f.seen)
+	}
+	return n
 }
 
 // FieldReport — состояние одного поля проекта для диагностики.

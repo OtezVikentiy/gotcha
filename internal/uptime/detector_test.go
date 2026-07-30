@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
@@ -49,8 +51,9 @@ func (f *fakeNotifier) kindEvents(kind string) []uptime.Event {
 // consensus policy — shared by detector tests that need multi-region setups
 // (createMonitor in state_test.go always creates a single "local" region
 // with the default majority consensus).
-func createMonitorWith(t *testing.T, svc *uptime.Service, projectID int64, regions []string, consensus uptime.Consensus, failThreshold, recoveryThreshold int) uptime.Monitor {
+func createMonitorWith(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, projectID int64, regions []string, consensus uptime.Consensus, failThreshold, recoveryThreshold int) uptime.Monitor {
 	t.Helper()
+	allowRegions(t, pool, svc, context.Background(), projectID, regions)
 	m := baseHTTPMonitor(projectID)
 	m.FailThreshold = failThreshold
 	m.RecoveryThreshold = recoveryThreshold
@@ -197,7 +200,7 @@ func TestConsensusMajority(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitorWith(t, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
+	mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier}
 	now := time.Now().UTC()
@@ -224,7 +227,7 @@ func TestConsensusAny(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitorWith(t, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
+	mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier}
 	now := time.Now().UTC()
@@ -246,7 +249,7 @@ func TestConsensusAll(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitorWith(t, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAll, 1, 1)
+	mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAll, 1, 1)
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier}
 	now := time.Now().UTC()
@@ -279,7 +282,7 @@ func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 	pid := newProject(t, pool)
 
 	t.Run("any", func(t *testing.T) {
-		mon := createMonitorWith(t, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
+		mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
 		notifier := &fakeNotifier{}
 		d := &uptime.Detector{Svc: svc, Notifier: notifier}
 		// Only r1 is ever checked; r2/r3 remain "unknown".
@@ -288,7 +291,7 @@ func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 	})
 
 	t.Run("majority", func(t *testing.T) {
-		mon := createMonitorWith(t, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
+		mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
 		notifier := &fakeNotifier{}
 		d := &uptime.Detector{Svc: svc, Notifier: notifier}
 		now := time.Now().UTC()

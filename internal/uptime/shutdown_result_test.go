@@ -40,7 +40,7 @@ func TestShutdownDoesNotRecordFalseOutage(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.FailThreshold = 1
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	checker := &blockingChecker{started: make(chan struct{}, 1)}
 	runner := &uptime.Runner{

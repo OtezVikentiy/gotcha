@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица)
 CREATE TABLE metric_points (
     project_id      UInt64,
     name            String,

@@ -1378,15 +1378,15 @@ func MonitorForm(d MonitorFormData, userEmail string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = selectOption(string(uptime.ConsensusAny), "any", d.Consensus).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = selectOption(string(uptime.ConsensusAny), i18n.T(ctx, "uptime.consensus.any"), d.Consensus).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = selectOption(string(uptime.ConsensusMajority), "majority", d.Consensus).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = selectOption(string(uptime.ConsensusMajority), i18n.T(ctx, "uptime.consensus.majority"), d.Consensus).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = selectOption(string(uptime.ConsensusAll), "all", d.Consensus).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = selectOption(string(uptime.ConsensusAll), i18n.T(ctx, "uptime.consensus.all"), d.Consensus).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

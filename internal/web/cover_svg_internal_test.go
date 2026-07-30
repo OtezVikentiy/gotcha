@@ -107,9 +107,17 @@ func TestWriteLineWithAreaDrawsIsolatedPoint(t *testing.T) {
 	if !strings.Contains(out, "7.0,20.0 13.0,20.0") {
 		t.Errorf("ширина отметки не соответствует шагу корзины:\n%s", out)
 	}
-	// Заливка под отметкой — как у обычного сегмента.
-	if !strings.Contains(out, `fill="url(#gradTest)"`) {
+	// Заливка под отметкой — как у обычного сегмента. Идентификатор градиента
+	// уникален в пределах документа (спарклайн рисуется по одному на строку
+	// таблицы), поэтому сверяем префикс, а не точное имя.
+	if !strings.Contains(out, `fill="url(#gradTest-`) {
 		t.Errorf("нет заливки под одиночной корзиной:\n%s", out)
+	}
+	// Уникальность: два вызова подряд не должны дать одинаковый id.
+	second := renderIsolatedForTest(t)
+	if gradIDOf(out) == gradIDOf(second) {
+		t.Errorf("идентификатор градиента повторился (%s) — на странице с несколькими "+
+			"графиками документ невалиден, а url(#id) находит чужой градиент", gradIDOf(out))
 	}
 
 	// Две изолированные корзины дают две отметки, а не одну линию между ними:
@@ -131,4 +139,29 @@ func TestWriteLineWithAreaDrawsIsolatedPoint(t *testing.T) {
 	if strings.Contains(sb3.String(), "<polyline") {
 		t.Errorf("ряд без данных не должен давать линий: %s", sb3.String())
 	}
+}
+
+
+// renderIsolatedForTest повторяет тот же вызов, что и тест выше, чтобы сравнить
+// идентификаторы двух соседних графиков.
+func renderIsolatedForTest(t *testing.T) string {
+	t.Helper()
+	var sb strings.Builder
+	writeLineWithArea(&sb, []seriesPoint{{x: 10, y: 20, has: true}}, 100, "#3d7bff", "gradTest", `stroke="#3d7bff"`)
+	return sb.String()
+}
+
+// gradIDOf вытаскивает идентификатор градиента из разметки.
+func gradIDOf(svg string) string {
+	const marker = `<linearGradient id="`
+	i := strings.Index(svg, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := svg[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
 }

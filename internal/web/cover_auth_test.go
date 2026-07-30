@@ -399,14 +399,38 @@ func TestCoverOnboarding(t *testing.T) {
 		t.Fatalf("GET /onboarding (has project) status = %d, want 303", resp.StatusCode)
 	}
 
-	// Дубликат org_slug → 422 (ErrSlugTaken).
+	// Дубликат org_slug → 422 (ErrSlugTaken). От второго пользователя: у
+	// первого проект уже есть, а онбординг — поток для того, у кого его нет.
+	// Раньше это условие проверял только GET, и POST оставался открыт: любой
+	// приглашённый участник мог в цикле заводить себе организации и ключи
+	// приёма.
+	resp = postForm(t, s.srv, "/register", url.Values{
+		"email": {"ob-second@example.com"}, "password": {"correct-horse-battery"}, "password2": {"correct-horse-battery"},
+	}, s.srv.URL, nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	secondCookie := sessionCookie(resp)
+	if secondCookie == nil {
+		t.Fatalf("register (second user) did not set session cookie")
+	}
 	resp = postForm(t, s.srv, "/onboarding", url.Values{
 		"org_slug": {"ob-co"}, "org_name": {"OB2"}, "project_slug": {"ob-proj2"}, "project_name": {"P2"}, "platform": {"php"},
-	}, s.srv.URL, cookie)
+	}, s.srv.URL, secondCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("POST /onboarding (dup slug) status = %d, want 422", resp.StatusCode)
+	}
+
+	// А пользователь, у которого проект уже есть, на POST получает тот же
+	// редирект, что и на GET, — второй организации ему не завести.
+	resp = postForm(t, s.srv, "/onboarding", url.Values{
+		"org_slug": {"ob-co-3"}, "org_name": {"OB3"}, "project_slug": {"ob-proj3"}, "project_name": {"P3"}, "platform": {"php"},
+	}, s.srv.URL, cookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /onboarding (has project) status = %d, want 303", resp.StatusCode)
 	}
 
 	// GET /projects/{id}/setup: успех (DSN + сниппеты) и доступы.

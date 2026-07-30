@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новый skip-индекс)
 -- Skip-индекс bloom_filter на transactions.trace_id. ProjectForTrace и страница
 -- /traces/{id} ищут транзакцию по trace_id, которого нет в первичном ключе
 -- (ORDER BY project_id, transaction, timestamp) — без индекса это полный скан по

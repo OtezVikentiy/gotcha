@@ -28,8 +28,19 @@ Example run with Docker (this exact command, with your values filled in, is what
 ```bash
 docker run -e GOTCHA_SERVER_URL=https://gotcha.example.com \
   -e GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
-  gotcha --mode=probe
+  <gotcha-image> --mode=probe
 ```
+
+The image is the one your instance runs. There is no published `gotcha` image:
+`docker compose` builds it locally and names it after the directory, so the name
+usually looks like `gotcha-gotcha`. The exact name is shown by:
+
+```bash
+docker compose images gotcha
+```
+
+The probe machine does not have that image yet — copy it over (`docker save` /
+`docker load`), build it there from source, or run the binary as shown below.
 
 The same process can run without Docker, from a built `gotcha` binary:
 

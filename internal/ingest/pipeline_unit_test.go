@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -346,5 +348,65 @@ func TestPipelineDropCounters(t *testing.T) {
 	}
 	if dropped != 50 {
 		t.Errorf("Dropped = %d, want 50 (ровно столько не поместилось)", dropped)
+	}
+}
+
+// failingUpserter изображает деградировавший PostgreSQL: апсерт issue
+// отваливается по таймауту.
+type failingUpserter struct{ calls atomic.Int64 }
+
+func (f *failingUpserter) Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level, environment string, seenAt time.Time) (issue.UpsertResult, error) {
+	f.calls.Add(1)
+	return issue.UpsertResult{}, errors.New("timeout: context deadline exceeded")
+}
+
+func (f *failingUpserter) Get(ctx context.Context, issueID int64) (issue.Issue, error) {
+	return issue.Issue{}, errors.New("timeout: context deadline exceeded")
+}
+
+// TestStorageFailureCountsAsDrop: событие, выброшенное из-за отказа PostgreSQL,
+// обязано попадать в счётчик потерь. Раньше оно только логировалось, а
+// документация учила читать нулевой счётчик как «события не приходили» — и
+// оператор при деградации базы уходил проверять SDK.
+func TestStorageFailureCountsAsDrop(t *testing.T) {
+	up := &failingUpserter{}
+	p := NewPipeline(nil, nil)
+	p.issues = up
+	p.Start()
+	p.Enqueue(1, &ParsedEvent{EventID: "e1", Fingerprint: []string{"fp"}})
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if up.calls.Load() == 0 {
+		t.Fatal("апсерт не вызывался — тест проверял бы не то")
+	}
+	if got := p.Dropped(); got != 1 {
+		t.Errorf("Dropped = %d, want 1: событие потеряно из-за отказа хранилища", got)
+	}
+	if got := p.DroppedBy(DropStorageError); got != 1 {
+		t.Errorf("DroppedBy(storage_error) = %d, want 1", got)
+	}
+	if got := p.DroppedBy(DropQueueFull); got != 0 {
+		t.Errorf("DroppedBy(queue_full) = %d, want 0: причина потери определена неверно, "+
+			"и оператор пойдёт увеличивать очередь вместо того, чтобы чинить базу", got)
+	}
+}
+
+// TestDropReasonsAreDistinguishable: переполнение очереди и отказ хранилища
+// лечатся по-разному, поэтому обязаны различаться в метрике.
+func TestDropReasonsAreDistinguishable(t *testing.T) {
+	p := NewPipeline(nil, nil)
+	for i := 0; i < int(p.QueueCap())+7; i++ {
+		p.Enqueue(1, &ParsedEvent{EventID: "e"})
+	}
+	if got := p.DroppedBy(DropQueueFull); got != 7 {
+		t.Errorf("DroppedBy(queue_full) = %d, want 7", got)
+	}
+	if got := p.DroppedBy(DropStorageError); got != 0 {
+		t.Errorf("DroppedBy(storage_error) = %d, want 0", got)
+	}
+	if got := p.Dropped(); got != 7 {
+		t.Errorf("Dropped = %d, want 7: сумма по причинам должна совпадать с общим счётчиком", got)
 	}
 }

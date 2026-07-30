@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица)
 CREATE TABLE IF NOT EXISTS check_results (
     monitor_id  UInt64,
     project_id  UInt64,

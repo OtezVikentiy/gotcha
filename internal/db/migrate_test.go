@@ -1077,7 +1077,8 @@ func TestSchemaVersionAndCheck(t *testing.T) {
 	}
 
 	// После полной миграции схема не отстаёт — гейт пропускает старт.
-	if err := db.CheckSchemaCurrent(dsn); err != nil {
+	pool := testenv.MigratedPG(t)
+	if err := db.CheckSchemaCurrent(context.Background(), pool, dsn); err != nil {
 		t.Errorf("CheckSchemaCurrent после полной миграции: %v", err)
 	}
 }
@@ -1096,7 +1097,8 @@ func TestSchemaVersionAndCheckCH(t *testing.T) {
 	}
 
 	// После полной миграции CH-схема не отстаёт и не впереди — гейт пропускает старт.
-	if err := db.CheckSchemaCurrentCH(dsn); err != nil {
+	pool := testenv.MigratedPG(t)
+	if err := db.CheckSchemaCurrentCH(context.Background(), pool, dsn); err != nil {
 		t.Errorf("CheckSchemaCurrentCH после полной миграции: %v", err)
 	}
 }

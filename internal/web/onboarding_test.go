@@ -196,6 +196,23 @@ func TestWebOnboardingFlow(t *testing.T) {
 	// POST /onboarding с валидным org slug, но невалидным project slug →
 	// 422, БЕЗ сиротской организации (баг: раньше CreateOrg успевал
 	// закоммититься до провала CreateProject), форма сохраняет org_slug.
+	//
+	// Проверка идёт от ВТОРОГО пользователя: онбординг доступен только тому, у
+	// кого ещё нет ни одного проекта, и POST теперь проверяет это так же, как
+	// GET. У первого пользователя проект уже создан выше по тесту.
+	secondReg := url.Values{
+		"email":     {"onboard-second@example.com"},
+		"password":  {"correct-horse-battery"},
+		"password2": {"correct-horse-battery"},
+	}
+	resp = postForm(t, s.srv, "/register", secondReg, s.srv.URL, nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	secondCookie := sessionCookie(resp)
+	if secondCookie == nil {
+		t.Fatalf("register (second user) did not set session cookie")
+	}
+
 	orphanForm := url.Values{
 		"org_slug":     {"orphan-check"},
 		"org_name":     {"Orphan Check"},
@@ -203,7 +220,7 @@ func TestWebOnboardingFlow(t *testing.T) {
 		"project_name": {"Bad Project"},
 		"platform":     {"go"},
 	}
-	resp = postForm(t, s.srv, "/onboarding", orphanForm, s.srv.URL, cookie)
+	resp = postForm(t, s.srv, "/onboarding", orphanForm, s.srv.URL, secondCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
@@ -230,7 +247,9 @@ func TestWebOnboardingFlow(t *testing.T) {
 		"project_name": {"Hax0r Proj"},
 		"platform":     {"hax0r"},
 	}
-	resp = postForm(t, s.srv, "/onboarding", hax0rForm, s.srv.URL, cookie)
+	// Тоже от второго пользователя: его предыдущая попытка провалилась на
+	// невалидном slug, поэтому проекта у него по-прежнему нет.
+	resp = postForm(t, s.srv, "/onboarding", hax0rForm, s.srv.URL, secondCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

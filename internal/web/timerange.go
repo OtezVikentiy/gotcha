@@ -25,10 +25,20 @@ type TimeRange struct {
 // Window — длительность окна (To-From), из неё autoStep выбирает шаг корзины.
 func (tr TimeRange) Window() time.Duration { return tr.To.Sub(tr.From) }
 
+// Unbounded — окно «за всё время»: границы не заданы.
+func (tr TimeRange) Unbounded() bool { return tr.Key == RangeAll }
+
 // timeRangeRetention — максимальный размах произвольного диапазона: совпадает с
 // окном хранения событий/трейсов (90 дней). Запрос за его пределами всё равно
 // вернул бы пусто, поэтому from подтягивается вперёд, а не отдаётся как есть.
 const timeRangeRetention = 90 * 24 * time.Hour
+
+// RangeAll — окно «за всё время»: границ нет.
+//
+// Осмысленно не везде: у графика без границ нет оси, а у списка проблем это
+// естественный вид по умолчанию — большинство групп старше суток, и прятать их
+// за фильтр значит показывать пустой список на здоровом проекте.
+const RangeAll = "all"
 
 // timeRangePresets — пресет → длительность окна назад от «сейчас».
 var timeRangePresets = map[string]time.Duration{
@@ -66,6 +76,12 @@ func parseTimeRange(q url.Values, def string) TimeRange {
 	}
 
 	key := q.Get("period")
+	// «За всё время» — отдельный ключ, а не пустая строка: список проблем
+	// показывает историю целиком по умолчанию, и этот выбор должен переживать
+	// смену сортировки и окружения так же, как пресеты. Границы пустые.
+	if key == RangeAll {
+		return TimeRange{Key: RangeAll}
+	}
 	if w, ok := timeRangePresets[key]; ok {
 		return TimeRange{From: now.Add(-w), To: now, Key: key}
 	}
@@ -76,6 +92,9 @@ func parseTimeRange(q url.Values, def string) TimeRange {
 		}
 	}
 
+	if def == RangeAll {
+		return TimeRange{Key: RangeAll}
+	}
 	w := timeRangePresets[def]
 	return TimeRange{From: now.Add(-w), To: now, Key: def}
 }

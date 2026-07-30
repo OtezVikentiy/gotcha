@@ -81,7 +81,11 @@ type Config struct {
 	MetricEvalInterval  int
 	ProfileEvalInterval int
 	OutboxRetentionDays int
-	SecretKey           string
+	// NotifyConcurrency — сколько уведомлений доставляется одновременно
+	// (GOTCHA_NOTIFY_CONCURRENCY). Последовательная доставка означала, что один
+	// мёртвый вебхук с 30-секундным таймаутом задерживает все остальные.
+	NotifyConcurrency int
+	SecretKey         string
 	// TrustedProxies — CIDR/IP доверенных reverse-proxy (GOTCHA_TRUSTED_PROXIES).
 	// Пусто — X-Forwarded-For не доверяется, per-IP лимитер ключуется по
 	// RemoteAddr (см. web.clientIP, SEC-L2).
@@ -380,6 +384,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MetricEvalInterval:       intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
 		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
+		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
@@ -531,6 +536,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.OutboxRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
+	}
+	if cfg.NotifyConcurrency < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_NOTIFY_CONCURRENCY must be >= 1, got %d", cfg.NotifyConcurrency)
 	}
 	if cfg.ProfileEvalInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL must be >= 1, got %d", cfg.ProfileEvalInterval)

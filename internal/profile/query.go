@@ -180,6 +180,137 @@ func (q *Query) ServicesWithProfiles(ctx context.Context, projectID int64, from,
 	return out, rows.Err()
 }
 
+// ProjectService — сервис с профилями и проект, которому он принадлежит.
+type ProjectService struct {
+	ProjectID int64
+	Service   string
+	Type      string
+}
+
+// ActiveServices — все пары (проект, сервис, тип) с профилями за окно, одним
+// запросом по всем проектам.
+//
+// Раньше оценщик регрессий брал список проектов из PostgreSQL и спрашивал
+// ClickHouse про каждый: проект без единого профиля стоил ровно столько же,
+// сколько нагруженный. Здесь работа определяется данными — если профилей нет,
+// нет и запросов.
+func (q *Query) ActiveServices(ctx context.Context, from, to time.Time) ([]ProjectService, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT DISTINCT project_id, service, profile_type FROM profile_samples
+		WHERE ts >= ? AND ts < ?`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("profile: active services: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectService
+	for rows.Next() {
+		var ps ProjectService
+		var projectID uint64
+		if err := rows.Scan(&projectID, &ps.Service, &ps.Type); err != nil {
+			return nil, fmt.Errorf("profile: active services scan: %w", err)
+		}
+		ps.ProjectID = int64(projectID)
+		out = append(out, ps)
+	}
+	return out, rows.Err()
+}
+
+// FunctionShare — доля функции в self-CPU сервиса за окно.
+type FunctionShare struct {
+	Function string
+	// Share — self-CPU функции, делённое на весь self-CPU окна.
+	Share float64
+	// Samples — суммарный вес окна; по нему проверяется MinSamples.
+	Samples uint64
+}
+
+// TopFunctionShares — топ-K функций окна сразу с их долями.
+//
+// Один запрос вместо «топ-K, а потом доля каждой по отдельности». Прежний путь
+// стоил 1 + 2K запросов на сервис, причём каждый второй — скан за весь период
+// базовой линии; при K=20 это 41 обращение к самой тяжёлой таблице продукта за
+// один тик одного сервиса.
+//
+// Итог окна считается оконной функцией по тем же группам: сумма self по всем
+// функциям равна сумме value по строкам окна, потому что arrayElement(stack, -1)
+// на пустом стеке даёт пустую строку — такая строка попадает в группу «», а не
+// исчезает.
+func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT fn, self, total FROM (
+			SELECT arrayElement(stack, -1) AS fn,
+			       sum(value) AS self,
+			       sum(sum(value)) OVER () AS total
+			FROM profile_samples
+			WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
+			GROUP BY fn
+		)
+		WHERE fn != '' AND total > 0
+		ORDER BY self DESC
+		LIMIT ?`,
+		projectID, service, profileType, from, to, k)
+	if err != nil {
+		return nil, fmt.Errorf("profile: top function shares: %w", err)
+	}
+	defer rows.Close()
+	var out []FunctionShare
+	for rows.Next() {
+		var fn string
+		var self, total uint64
+		if err := rows.Scan(&fn, &self, &total); err != nil {
+			return nil, fmt.Errorf("profile: top function shares scan: %w", err)
+		}
+		if total == 0 {
+			continue
+		}
+		out = append(out, FunctionShare{Function: fn, Share: float64(self) / float64(total), Samples: total})
+	}
+	return out, rows.Err()
+}
+
+// BaselineFunctionShares — медианы дневной доли для перечисленных функций,
+// одним запросом.
+//
+// Дневной итог считается по всем функциям дня (оконная функция с PARTITION BY
+// по дню), а отбор нужных функций идёт снаружи: иначе доля считалась бы от
+// самой себя.
+func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]float64, error) {
+	if len(functions) == 0 {
+		return map[string]float64{}, nil
+	}
+	from := now.AddDate(0, 0, -baselineDays)
+	rows, err := q.conn.Query(ctx, `
+		SELECT fn, quantileExact(0.5)(share) AS median FROM (
+			SELECT d, fn, self / day_total AS share FROM (
+				SELECT toDate(ts) AS d,
+				       arrayElement(stack, -1) AS fn,
+				       sum(value) AS self,
+				       sum(sum(value)) OVER (PARTITION BY toDate(ts)) AS day_total
+				FROM profile_samples
+				WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
+				GROUP BY d, fn
+			)
+			WHERE day_total > 0
+		)
+		WHERE fn IN ?
+		GROUP BY fn`,
+		projectID, service, profileType, from, now, functions)
+	if err != nil {
+		return nil, fmt.Errorf("profile: baseline function shares: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]float64, len(functions))
+	for rows.Next() {
+		var fn string
+		var median float64
+		if err := rows.Scan(&fn, &median); err != nil {
+			return nil, fmt.Errorf("profile: baseline function shares scan: %w", err)
+		}
+		out[fn] = median
+	}
+	return out, rows.Err()
+}
+
 // TopFunctionsBySelfShare — топ-K функций по свежему self-CPU (лист стека) за
 // окно; кандидаты на проверку регрессии.
 func (q *Query) TopFunctionsBySelfShare(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]string, error) {

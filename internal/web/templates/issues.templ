@@ -32,7 +32,12 @@ type IssuesFilter struct {
 	Query       string
 	Sort        string
 	Environment string
-	Period      string
+	// Range — то же окно времени, что и на остальных страницах.
+	//
+	// Раньше здесь была строка периода и свой селект на четыре пункта: ни часа,
+	// ни произвольного диапазона. Окно, выбранное на «Производительности», при
+	// переходе в «Проблемы» молча сбрасывалось — на главной поверхности разбора.
+	Range TimeRangeVM
 }
 
 func issuesPath(projectID int64) string {
@@ -166,9 +171,7 @@ func issuesPageURL(projectID int64, f IssuesFilter, page int) string {
 	if f.Environment != "" {
 		q.Set("env", f.Environment)
 	}
-	if f.Period != "" {
-		q.Set("period", f.Period)
-	}
+	f.Range.apply(q)
 	if page > 1 {
 		q.Set("page", strconv.Itoa(page))
 	}
@@ -204,14 +207,6 @@ templ sortOption(value, label string, selected string) {
 }
 
 templ environmentOption(value, label string, selected string) {
-	if value == selected {
-		<option value={ value } selected>{ label }</option>
-	} else {
-		<option value={ value }>{ label }</option>
-	}
-}
-
-templ periodOption(value, label string, selected string) {
 	if value == selected {
 		<option value={ value } selected>{ label }</option>
 	} else {
@@ -259,12 +254,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 						@environmentOption(env, env, filter.Environment)
 					}
 				</select>
-				<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
-					@periodOption("", i18n.T(ctx, "issues.filter.period_all"), filter.Period)
-					@periodOption("24h", i18n.T(ctx, "issues.filter.period_24h"), filter.Period)
-					@periodOption("7d", i18n.T(ctx, "issues.filter.period_7d"), filter.Period)
-					@periodOption("30d", i18n.T(ctx, "issues.filter.period_30d"), filter.Period)
-				</select>
+				@timeRangeFields(filter.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
 			<div id="issues-table">

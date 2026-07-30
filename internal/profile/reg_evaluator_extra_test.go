@@ -20,7 +20,7 @@ func TestRegressionEvaluatorTickCancelledCtx(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
 	eval := &profile.RegressionEvaluator{
-		Pool: pool, Query: profile.NewQuery(ch),
+		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pool),
 		Config:      profile.DefaultProfileRegressionConfig(),
 	}
@@ -46,7 +46,7 @@ func TestRegressionEvaluatorNilNotifier(t *testing.T) {
 	pid := seedProject(t, pool)
 	cfg := profile.DefaultProfileRegressionConfig()
 	eval := &profile.RegressionEvaluator{
-		Pool: pool, Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
+		Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
 		Notifier: nil, // notify() должна рано выйти
 		Interval: time.Hour, Config: cfg,
 	}

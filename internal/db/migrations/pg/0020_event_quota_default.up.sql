@@ -1,3 +1,4 @@
+-- backward-compatible: yes (смена значения по умолчанию)
 -- RA-6: миграция 0018 (PROD-B2) сбросила legacy-дефолты transaction/metric/profile
 -- квот на 0 (OSS-безлимит), но event_quota пропустила. Здесь доводим до конца:
 -- меняем DEFAULT колонки на 0 и сбрасываем строки, всё ещё держащие legacy-дефолт

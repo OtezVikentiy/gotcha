@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -21,6 +22,10 @@ func orgSettingsRemovePath(orgID int64) string {
 
 func orgSettingsLeavePath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/leave"
+}
+
+func orgSettingsInviteRevokePath(orgID int64) string {
+	return orgSettingsInvitePath(orgID) + "/revoke"
 }
 
 func orgSettingsInvitePath(orgID int64) string {
@@ -114,7 +119,7 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 			if !self && (viewerIsOwner || m.Role != org.RoleOwner) {
 				<form method="post" action={ templ.URL(orgSettingsRolePath(orgID)) } class="member-role-form">
 					<input type="hidden" name="user_id" value={ strconv.FormatInt(m.UserID, 10) }/>
-					<select name="role" class="select">
+					<select name="role" class="select" aria-label={ i18n.T(ctx, "org.members.role_label") }>
 						if viewerIsOwner {
 							@roleOption("owner", "org.role.owner", m.Role)
 						}
@@ -194,7 +199,7 @@ templ rateGuardRow(q QuotaVM) {
 	</tr>
 }
 
-templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner, purge SubjectPurgeVM) {
+templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner, purge SubjectPurgeVM, invites []org.PendingInvite) {
 	@layout(i18n.T(ctx, "org.settings.title")+" "+o.Name, userEmail) {
 		<div class="org-settings">
 			@quotaBannerView(banner)
@@ -268,7 +273,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "org.invite.role_label") }
-							<select name="role" class="select">
+							<select name="role" class="select" aria-label={ i18n.T(ctx, "org.members.role_label") }>
 								<option value="member">{ i18n.T(ctx, "org.role.member") }</option>
 								<option value="admin">{ i18n.T(ctx, "org.role.admin") }</option>
 							</select>
@@ -276,6 +281,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.invite.submit") }</button>
 				</form>
+				@pendingInvites(o.ID, invites)
 			</section>
 			if viewerIsOwner(members, uid) {
 				<section class="card card--wide">
@@ -325,9 +331,9 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.user_id") }
-					<input type="text" name="user_id" class="input" aria-describedby="gdpr-user-id-help"/>
+					<input type="text" name="user_id" class="input" aria-describedby="gdpr-export-user-id-help"/>
 				</label>
-				<p class="hint" id="gdpr-user-id-help">{ i18n.T(ctx, "org.gdpr.field.user_id.help") }</p>
+				<p class="hint" id="gdpr-export-user-id-help">{ i18n.T(ctx, "org.gdpr.field.user_id.help") }</p>
 			</div>
 			<div class="field">
 				<label>
@@ -376,9 +382,9 @@ templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.user_id") }
-					<input type="text" name="user_id" class="input" aria-describedby="gdpr-user-id-help"/>
+					<input type="text" name="user_id" class="input" aria-describedby="gdpr-purge-user-id-help"/>
 				</label>
-				<p class="hint" id="gdpr-user-id-help">{ i18n.T(ctx, "org.gdpr.field.user_id.help") }</p>
+				<p class="hint" id="gdpr-purge-user-id-help">{ i18n.T(ctx, "org.gdpr.field.user_id.help") }</p>
 			</div>
 			<div class="field">
 				<label>
@@ -527,4 +533,49 @@ templ InviteAccept(token, errMsg, userEmail string) {
 			</form>
 		</div>
 	}
+}
+
+// pendingInvites — выписанные, но ещё не принятые приглашения.
+//
+// Существует потому, что выписанное приглашение было невидимо: ошибся в
+// адресе — ссылка ушла постороннему, и ни увидеть это, ни отменить из
+// интерфейса было нельзя. Самой ссылки здесь нет и быть не может: в базе
+// лежит только её хеш.
+templ pendingInvites(orgID int64, invites []org.PendingInvite) {
+	<div class="pending-invites">
+		<h3>{ i18n.T(ctx, "org.invite.pending_title") }</h3>
+		if len(invites) == 0 {
+			<p class="muted">{ i18n.T(ctx, "org.invite.pending_empty") }</p>
+		} else {
+			<p class="muted">{ i18n.T(ctx, "org.invite.pending_hint") }</p>
+			<div class="table-scroll">
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th scope="col">{ i18n.T(ctx, "org.invite.col_email") }</th>
+							<th scope="col">{ i18n.T(ctx, "org.invite.col_role") }</th>
+							<th scope="col">{ i18n.T(ctx, "org.invite.col_expires") }</th>
+							<th scope="col"><span class="visually-hidden">{ i18n.T(ctx, "org.invite.revoke") }</span></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, inv := range invites {
+							<tr>
+								<td>{ inv.Email }</td>
+								<td>{ i18n.T(ctx, memberRoleLabelKey(inv.Role)) }</td>
+								<td>{ FormatTime(inv.ExpiresAt, time.UTC) }</td>
+								<td>
+									<form method="post" action={ templ.URL(orgSettingsInviteRevokePath(orgID)) }>
+										<input type="hidden" name="invite_id" value={ strconv.FormatInt(inv.ID, 10) }/>
+										<input type="hidden" name="email" value={ inv.Email }/>
+										<button type="submit" class="btn btn-danger btn-sm">{ i18n.T(ctx, "org.invite.revoke") }</button>
+									</form>
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	</div>
 }

@@ -152,7 +152,15 @@ func backOrigin(r *http.Request, baseURL, curPath string) string {
 	}
 	esc := u.EscapedPath() // форма для построения ссылки (сохраняет %-кодировку)
 	dec := u.Path          // декодированная — для сравнения с curPath (тоже decoded)
-	if !strings.HasPrefix(esc, "/") || strings.HasPrefix(esc, "//") {
+	// «/\» отвергается наравне с «//»: браузеры трактуют его как
+	// протокол-относительный адрес. Соседние функции с тем же инвариантом
+	// (safeNextPath, safeRedirect, BulkRedirectTarget) режут его давно — здесь
+	// он был пропущен.
+	//
+	// Обратный слэш проверяется на ДЕКОДИРОВАННОМ пути: EscapedPath() превращает
+	// его в «%5C», и проверка по escaped-форме пропустила бы его целиком.
+	if !strings.HasPrefix(esc, "/") || strings.HasPrefix(esc, "//") ||
+		strings.HasPrefix(dec, "//") || strings.HasPrefix(dec, "/\\") {
 		return ""
 	}
 	// Сравниваем ДЕКОДИРОВАННЫЙ путь: curPath приходит из r.URL.Path (decoded),

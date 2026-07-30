@@ -235,7 +235,7 @@ func TestOrgSettings(t *testing.T) {
 		{Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0},
 	}
 	sso := SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "cid", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://gotcha/sso"}
-	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil, SubjectPurgeVM{}))
+	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil, SubjectPurgeVM{}, nil))
 	if !strings.Contains(out, "owner@x.io") || !strings.Contains(out, "admin@x.io") {
 		t.Error("участники должны отрендериться")
 	}
@@ -243,7 +243,7 @@ func TestOrgSettings(t *testing.T) {
 		t.Error("пригласительная ссылка должна отрендериться")
 	}
 	// Не-владелец (uid=2): часть управления скрыта, но рендер валиден.
-	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}))
+	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil))
 	if !strings.Contains(out2, "боом") {
 		t.Error("ошибка орга должна отрендериться")
 	}

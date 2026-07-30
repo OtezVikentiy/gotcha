@@ -483,7 +483,6 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			id = pe.EventID
 		}
 		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
-		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
 		h.pipeline.Enqueue(projectID, pe)
 	}
 	if txGranted > 0 {

@@ -992,6 +992,182 @@ func (q *Query) BaselineVitalP75(ctx context.Context, projectID int64, transacti
 	return valueSample(med, total), nil
 }
 
+// RecentEndpointP95s — свежие p95 сразу по списку эндпойнтов.
+//
+// Один запрос вместо запроса на эндпойнт. Прежний путь стоил оценщику по два
+// обращения к ClickHouse на каждую цель — при топ-20 эндпойнтов и трёх
+// web-vital'ах это больше двух сотен последовательных запросов на проект за
+// тик, и обходились так все проекты подряд, независимо от трафика.
+func (q *Query) RecentEndpointP95s(ctx context.Context, projectID int64, transactions []string, from, to time.Time) (map[string]RegressionSample, error) {
+	out := make(map[string]RegressionSample, len(transactions))
+	if len(transactions) == 0 {
+		return out, nil
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, quantilesMerge(0.95)(dur)[1] AS p95, countMerge(cnt) AS c
+		FROM transactions_5m
+		WHERE project_id = ? AND transaction IN ? AND bucket >= ? AND bucket < ?
+		GROUP BY transaction`,
+		uint64(projectID), transactions, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("trace: recent endpoint p95s: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var p95 float64
+		var cnt uint64
+		if err := rows.Scan(&name, &p95, &cnt); err != nil {
+			return nil, fmt.Errorf("trace: recent endpoint p95s scan: %w", err)
+		}
+		out[name] = valueSample(p95, cnt)
+	}
+	return out, rows.Err()
+}
+
+// BaselineEndpointP95s — скользящие базы сразу по списку эндпойнтов: медиана
+// дневных p95 за days дней.
+func (q *Query) BaselineEndpointP95s(ctx context.Context, projectID int64, transactions []string, days int, now time.Time) (map[string]RegressionSample, error) {
+	out := make(map[string]RegressionSample, len(transactions))
+	if len(transactions) == 0 {
+		return out, nil
+	}
+	from := now.Add(-time.Duration(days) * 24 * time.Hour)
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, quantileExact(0.5)(daily) AS base, sum(cnt) AS total
+		FROM (
+			SELECT transaction, toStartOfDay(bucket) AS d,
+				quantilesMerge(0.95)(dur)[1] AS daily,
+				countMerge(cnt) AS cnt
+			FROM transactions_5m
+			WHERE project_id = ? AND transaction IN ? AND bucket >= ? AND bucket < ?
+			GROUP BY transaction, d
+		)
+		GROUP BY transaction`,
+		uint64(projectID), transactions, from, now)
+	if err != nil {
+		return nil, fmt.Errorf("trace: baseline endpoint p95s: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var med float64
+		var total uint64
+		if err := rows.Scan(&name, &med, &total); err != nil {
+			return nil, fmt.Errorf("trace: baseline endpoint p95s scan: %w", err)
+		}
+		out[name] = valueSample(med, total)
+	}
+	return out, rows.Err()
+}
+
+// VitalKey — страница и метрика: ключ карт, возвращаемых vital-запросами.
+type VitalKey struct {
+	Transaction string
+	Metric      string
+}
+
+// RecentVitalP75s — свежие p75 по списку страниц сразу по всем метрикам.
+//
+// Все метрики забираются одним запросом потому, что они лежат отдельными
+// колонками одной таблицы: спрашивать их по одной значит перечитывать те же
+// строки трижды.
+func (q *Query) RecentVitalP75s(ctx context.Context, projectID int64, transactions, metrics []string, from, to time.Time) (map[VitalKey]RegressionSample, error) {
+	out := make(map[VitalKey]RegressionSample, len(transactions)*len(metrics))
+	if len(transactions) == 0 || len(metrics) == 0 {
+		return out, nil
+	}
+	var parts []string
+	for _, m := range metrics {
+		if !vitalKnown(m) {
+			return nil, fmt.Errorf("trace: recent vital p75s: unknown vital %q", m)
+		}
+		parts = append(parts,
+			fmt.Sprintf("quantilesMerge(0.75)(%s)[1]", m),
+			fmt.Sprintf("countMerge(%s_count)", m))
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, `+strings.Join(parts, ", ")+`
+		FROM web_vitals_5m
+		WHERE project_id = ? AND transaction IN ? AND bucket >= ? AND bucket < ?
+		GROUP BY transaction`,
+		uint64(projectID), transactions, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("trace: recent vital p75s: %w", err)
+	}
+	defer rows.Close()
+	if err := scanVitalRows(rows, metrics, out); err != nil {
+		return nil, fmt.Errorf("trace: recent vital p75s: %w", err)
+	}
+	return out, rows.Err()
+}
+
+// BaselineVitalP75s — скользящие базы по списку страниц сразу по всем метрикам:
+// медиана дневных p75 за days дней.
+//
+// Дни без замеров конкретной метрики поштучный запрос отбрасывал через HAVING;
+// здесь строка дня общая для всех метрик, поэтому пустые дни отбрасываются
+// условием внутри quantileExactIf — по счётчику этой же метрики.
+func (q *Query) BaselineVitalP75s(ctx context.Context, projectID int64, transactions, metrics []string, days int, now time.Time) (map[VitalKey]RegressionSample, error) {
+	out := make(map[VitalKey]RegressionSample, len(transactions)*len(metrics))
+	if len(transactions) == 0 || len(metrics) == 0 {
+		return out, nil
+	}
+	var inner, outer []string
+	for _, m := range metrics {
+		if !vitalKnown(m) {
+			return nil, fmt.Errorf("trace: baseline vital p75s: unknown vital %q", m)
+		}
+		inner = append(inner,
+			fmt.Sprintf("quantilesMerge(0.75)(%s)[1] AS %s_daily", m, m),
+			fmt.Sprintf("countMerge(%s_count) AS %s_cnt", m, m))
+		outer = append(outer,
+			fmt.Sprintf("quantileExactIf(0.5)(%s_daily, %s_cnt > 0) AS %s_base", m, m, m),
+			fmt.Sprintf("sum(%s_cnt) AS %s_total", m, m))
+	}
+	from := now.Add(-time.Duration(days) * 24 * time.Hour)
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, `+strings.Join(outer, ", ")+`
+		FROM (
+			SELECT transaction, toStartOfDay(bucket) AS d, `+strings.Join(inner, ", ")+`
+			FROM web_vitals_5m
+			WHERE project_id = ? AND transaction IN ? AND bucket >= ? AND bucket < ?
+			GROUP BY transaction, d
+		)
+		GROUP BY transaction`,
+		uint64(projectID), transactions, from, now)
+	if err != nil {
+		return nil, fmt.Errorf("trace: baseline vital p75s: %w", err)
+	}
+	defer rows.Close()
+	if err := scanVitalRows(rows, metrics, out); err != nil {
+		return nil, fmt.Errorf("trace: baseline vital p75s: %w", err)
+	}
+	return out, rows.Err()
+}
+
+// scanVitalRows раскладывает строку «страница + пары (значение, счётчик)» по
+// ключам (страница, метрика).
+func scanVitalRows(rows driver.Rows, metrics []string, out map[VitalKey]RegressionSample) error {
+	for rows.Next() {
+		var name string
+		values := make([]float64, len(metrics))
+		counts := make([]uint64, len(metrics))
+		dest := make([]any, 0, 1+2*len(metrics))
+		dest = append(dest, &name)
+		for i := range metrics {
+			dest = append(dest, &values[i], &counts[i])
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return fmt.Errorf("scan: %w", err)
+		}
+		for i, m := range metrics {
+			out[VitalKey{Transaction: name, Metric: m}] = valueSample(values[i], counts[i])
+		}
+	}
+	return nil
+}
+
 // TopEndpointsByTraffic — топ-K имён эндпойнтов проекта по трафику за [from, to)
 // (число транзакций, countMerge из transactions_5m), по убыванию. Для оценщика
 // (план 4): регрессия на цели без нагрузки — шум, оцениваем только верхушку.

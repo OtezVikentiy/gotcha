@@ -29,7 +29,7 @@ templ failedRow(f notify.FailedJob) {
 		<td><span class="badge badge-danger">{ i18n.T(ctx, "alerts.failed.status") }</span></td>
 		<td class="num">{ strconv.Itoa(f.Attempts) }</td>
 		<td>{ truncateFailedError(f.LastError) }</td>
-		<td>{ f.CreatedAt.Format(time.RFC3339) }</td>
+		<td>{ FormatTime(f.CreatedAt, time.UTC) }</td>
 	</tr>
 }
 

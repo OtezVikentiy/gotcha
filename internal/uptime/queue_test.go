@@ -6,17 +6,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-func mustCreateMonitor(t *testing.T, svc *uptime.Service, ctx context.Context, m uptime.Monitor, regions []string) uptime.Monitor {
+func mustCreateMonitor(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, ctx context.Context, m uptime.Monitor, regions []string) uptime.Monitor {
 	t.Helper()
+	allowRegions(t, pool, svc, ctx, m.ProjectID, regions)
 	created, err := svc.Create(ctx, m, regions, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return created
+}
+
+// allowRegions заводит пробу под каждый не встроенный регион, чтобы монитор
+// можно было в него назначить.
+//
+// Раньше монитор принимал любую строку региона, и тесты этим пользовались.
+// Теперь регион обязан существовать: монитор в несуществующем регионе не
+// забирает никто, а выглядит это как «проверок нет, значит всё хорошо».
+func allowRegions(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, ctx context.Context, projectID int64, regions []string) {
+	t.Helper()
+	orgID := orgOfProject(t, pool, projectID)
+	for _, r := range regions {
+		if r == "local" || r == "" {
+			continue
+		}
+		if _, _, err := svc.CreateProbe(ctx, orgID, r, "probe-"+r); err != nil {
+			t.Fatalf("CreateProbe(%s): %v", r, err)
+		}
+	}
 }
 
 func TestScheduleQueuesDueMonitorAndSkipsWhilePending(t *testing.T) {
@@ -30,7 +52,7 @@ func TestScheduleQueuesDueMonitorAndSkipsWhilePending(t *testing.T) {
 	m.IntervalSeconds = 30
 	m.TimeoutSeconds = 5
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	n, err := svc.Schedule(ctx)
 	if err != nil {
@@ -107,7 +129,7 @@ func TestScheduleUpdatesLastScheduledAt(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	before := time.Now().UTC()
 	if _, err := svc.Schedule(ctx); err != nil {
@@ -138,13 +160,13 @@ func TestScheduleSkipsDisabledAndHeartbeat(t *testing.T) {
 	disabled.Name = "Disabled"
 	disabled.Enabled = false
 	disabled.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, disabled, []string{"local"})
+	mustCreateMonitor(t, pool, svc, ctx, disabled, []string{"local"})
 
 	hb := baseHTTPMonitor(pid)
 	hb.Name = "Heartbeat"
 	hb.Kind = uptime.KindHeartbeat
 	hb.Config = heartbeatConfig(t, uptime.HeartbeatConfig{GraceSeconds: 60})
-	mustCreateMonitor(t, svc, ctx, hb, []string{"local"})
+	mustCreateMonitor(t, pool, svc, ctx, hb, []string{"local"})
 
 	n, err := svc.Schedule(ctx)
 	if err != nil {
@@ -172,7 +194,7 @@ func TestScheduleTwoRegionsProducesTwoJobs(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, m, []string{"local", "eu"})
+	mustCreateMonitor(t, pool, svc, ctx, m, []string{"local", "eu"})
 
 	n, err := svc.Schedule(ctx)
 	if err != nil {
@@ -200,7 +222,7 @@ func TestLeaseLocalOnlyOwnRegionAndRespectsLease(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local", "eu"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local", "eu"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)
@@ -262,7 +284,7 @@ func TestLeaseForProbeSetsLeasedBy(t *testing.T) {
 	pid := newProjectInOrg(t, pool, orgID)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, m, []string{"eu-west"})
+	mustCreateMonitor(t, pool, svc, ctx, m, []string{"eu-west"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)
@@ -307,12 +329,12 @@ func TestLeaseForProbeIsScopedToProbeOrg(t *testing.T) {
 	mA := baseHTTPMonitor(newProjectInOrg(t, pool, orgA))
 	mA.Name = "A health"
 	mA.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://a.example.com/health"})
-	createdA := mustCreateMonitor(t, svc, ctx, mA, []string{"eu-west"})
+	createdA := mustCreateMonitor(t, pool, svc, ctx, mA, []string{"eu-west"})
 
 	mB := baseHTTPMonitor(newProjectInOrg(t, pool, orgB))
 	mB.Name = "B health"
 	mB.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://b.example.com/health"})
-	createdB := mustCreateMonitor(t, svc, ctx, mB, []string{"eu-west"})
+	createdB := mustCreateMonitor(t, pool, svc, ctx, mB, []string{"eu-west"})
 
 	if n, err := svc.Schedule(ctx); err != nil || n != 2 {
 		t.Fatalf("Schedule() = %d, %v; want 2, nil", n, err)
@@ -369,7 +391,7 @@ func TestLeasedJobRejectsJobOfAnotherOrg(t *testing.T) {
 
 	mB := baseHTTPMonitor(newProjectInOrg(t, pool, orgB))
 	mB.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://b.example.com/health"})
-	createdB := mustCreateMonitor(t, svc, ctx, mB, []string{"eu-west"})
+	createdB := mustCreateMonitor(t, pool, svc, ctx, mB, []string{"eu-west"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)
@@ -400,7 +422,7 @@ func TestLeaseLocalIsNotOrgScoped(t *testing.T) {
 	for _, url := range []string{"https://a.example.com/health", "https://b.example.com/health"} {
 		m := baseHTTPMonitor(newProject(t, pool)) // newProject заводит свою организацию
 		m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: url})
-		mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+		mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 	}
 
 	if n, err := svc.Schedule(ctx); err != nil || n != 2 {
@@ -429,7 +451,7 @@ func TestClaimJobIsExactlyOnce(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)
@@ -484,7 +506,7 @@ func TestClaimJobRejectsStaleLease(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)
@@ -553,7 +575,7 @@ func TestLeasedJobRejectsRevokedProbe(t *testing.T) {
 	pid := newProjectInOrg(t, pool, orgID)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, m, []string{"eu-west"})
+	mustCreateMonitor(t, pool, svc, ctx, m, []string{"eu-west"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)

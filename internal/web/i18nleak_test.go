@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-var cyrillicLiteral = regexp.MustCompile(`"[^"]*[а-яА-Я][^"]*"`)
+// Диапазон [а-яА-Я] не включает «ё» и «Ё»: они стоят в Unicode отдельно, вне
+// диапазона а-я. Литерал «Не найдено» ловился, а «Ключ ещё не создан» — нет.
+var cyrillicLiteral = regexp.MustCompile(`"[^"]*[а-яА-ЯёЁ][^"]*"`)
 
 // TestNoCyrillicUserFacingLiterals — user-facing текст должен жить в каталоге
 // i18n, а не в Go-коде. Русская строка в хендлере не ломает ни сборку, ни
@@ -39,7 +41,7 @@ func TestNoCyrillicUserFacingLiterals(t *testing.T) {
 			switch {
 			case strings.HasPrefix(trimmed, "//"):
 				continue
-			case strings.Contains(line, "log."), strings.Contains(line, "slog."):
+			case isLogCall(line):
 				continue
 			case !cyrillicLiteral.MatchString(line):
 				continue
@@ -48,3 +50,15 @@ func TestNoCyrillicUserFacingLiterals(t *testing.T) {
 		}
 	}
 }
+
+// isLogCall — строка ли это вызова журналирования.
+//
+// Проверка по подстроке «log.» совпадала и с «catalog.», и с «dialog.», и с
+// любым идентификатором, заканчивающимся на log: страж молча пропускал бы
+// русский литерал в такой строке. Совпадение должно начинаться на границе
+// идентификатора.
+func isLogCall(line string) bool {
+	return logCallRe.MatchString(line)
+}
+
+var logCallRe = regexp.MustCompile(`(^|[^\w.])s?log\.`)

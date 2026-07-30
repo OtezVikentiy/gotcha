@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица и ADD COLUMN с дефолтом)
 -- Регрессии производительности: рост p95 эндпойнта или p75 web-vital'а над
 -- скользящей базой моделируется как инцидент open/close — механика та же, что у
 -- uptime-инцидентов (см. 0006_uptime, incidents_one_open_idx). target_kind:

@@ -127,6 +127,52 @@ func (q *Query) CountSince(ctx context.Context, projectID, issueID int64, since 
 	return n, nil
 }
 
+// spikeCandidateLimit — потолок числа групп, возвращаемых CountsSince.
+//
+// Групп столько же, сколько issue превысили порог; в норме это единицы. Потолок
+// нужен на случай общего отказа приложения, когда порог перешагнули тысячи
+// групп: тогда лучше оповестить о самых громких, чем тащить в память список,
+// длина которого управляется отправителем событий.
+const spikeCandidateLimit = 500
+
+// CountsSince возвращает число событий с момента since по всем группам проекта,
+// у которых оно не меньше minCount.
+//
+// Один запрос вместо запроса на группу. Раньше spike-детектор звал CountSince в
+// цикле по всем активным группам: 10 тысяч активных групп давали 10 тысяч
+// round-trip'ов в ClickHouse каждую минуту с одной реплики — а число групп
+// задаёт отправитель событий, через уникальный fingerprint.
+//
+// Порог применяется в HAVING, а не в Go: не превысившие его группы не нужны
+// вовсе, и тащить их через сеть незачем.
+func (q *Query) CountsSince(ctx context.Context, projectID int64, since time.Time, minCount uint64) (map[int64]uint64, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT issue_id, count() AS c FROM events
+		WHERE project_id = ? AND timestamp >= ?
+		GROUP BY issue_id
+		HAVING c >= ?
+		ORDER BY c DESC
+		LIMIT ?`,
+		uint64(projectID), since, minCount, spikeCandidateLimit)
+	if err != nil {
+		return nil, fmt.Errorf("counts since: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]uint64)
+	for rows.Next() {
+		var issueID, count uint64
+		if err := rows.Scan(&issueID, &count); err != nil {
+			return nil, fmt.Errorf("counts since scan: %w", err)
+		}
+		out[int64(issueID)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("counts since: %w", err)
+	}
+	return out, nil
+}
+
 // EventByID ищет одно событие по project_id и event_id (UUID). Возвращает
 // found=false, если события с таким id нет в проекте (включая случай, когда
 // id существует, но принадлежит другому project_id).

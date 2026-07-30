@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новый skip-индекс)
 -- Skip-индекс на profile_samples.trace_id (HasProfileForTrace/FlameForTrace —
 -- запускаются на рендере waterfall). trace_id добавлен колонкой (0011) и в
 -- первичный ключ (ORDER BY project_id, profile_type, service, ts) не входит.

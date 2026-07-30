@@ -39,6 +39,10 @@ func orgSettingsInvitePath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/invite"
 }
 
+func orgSettingsInviteRevokePath(orgID int64) string {
+	return orgSettingsPath(orgID) + "/invite/revoke"
+}
+
 func orgSettingsQuotaPath(orgID int64) string {
 	return orgSettingsPath(orgID) + "/quota"
 }
@@ -280,8 +284,16 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		{Kind: i18n.T(r.Context(), "org.quota.kind.profiles"), Field: "profile_quota", Usage: profileUsage, Limit: o.ProfileQuota},
 	}
 	banner := h.quotaBanner(r.Context(), orgID, true)
+	// Выписанные приглашения. Ошибка чтения не должна ронять всю страницу
+	// настроек: список приглашений полезен, но не важнее возможности управлять
+	// участниками и квотами.
+	invites, err := h.Org.PendingInvites(r.Context(), orgID)
+	if err != nil {
+		slog.Error("web: pending invites lookup failed", "org_id", orgID, "error", err)
+		invites = nil
+	}
 	w.WriteHeader(status)
-	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID)).Render(r.Context(), w)
+	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID), invites).Render(r.Context(), w)
 }
 
 // subjectPurgeVM собирает состояние блока удаления ПДн: предупреждение о
@@ -323,6 +335,32 @@ func (h *Handler) subjectPurgeVM(ctx context.Context, orgID int64) templates.Sub
 // 404, а баннер при этом сам предлагает туда пойти. Текст ему всё равно
 // показываем — знать, что приём ограничен, полезно всем, кто смотрит на
 // пустеющий список проблем.
+// droppedBreakdown — «события 1 200, профили 300»: только непустые виды.
+//
+// Порядок фиксированный, а не по величине: одинаковый порядок между заходами
+// читается быстрее, чем перетасованный по значению.
+func droppedBreakdown(ctx context.Context, d org.Dropped) string {
+	parts := make([]string, 0, 4)
+	for _, kind := range []struct {
+		key string
+		n   int64
+	}{
+		{"events", d.Events},
+		{"transactions", d.Transactions},
+		{"metrics", d.Metrics},
+		{"profiles", d.Profiles},
+	} {
+		if kind.n <= 0 {
+			continue
+		}
+		parts = append(parts, i18n.T(ctx, "org.quota.kind."+kind.key+".short")+" "+strconv.FormatInt(kind.n, 10))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return i18n.Tf(ctx, "org.quota.dropped_breakdown", "parts", strings.Join(parts, ", "))
+}
+
 func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) *templates.QuotaBanner {
 	href := orgSettingsPath(orgID)
 	if !canManage {
@@ -338,7 +376,11 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 	if total > 0 {
 		return &templates.QuotaBanner{
 			Text: i18n.Tn(ctx, "org.quota.dropped_banner", int(total)),
-			Href: href,
+			// Разбивка по видам: общее число не говорит, какую квоту поднимать.
+			// «Отклонено 12 400» одинаково выглядит и при исчерпанной квоте
+			// профилей, и при исчерпанной квоте событий — а это разные решения.
+			Detail: droppedBreakdown(ctx, dropped),
+			Href:   href,
 		}
 	}
 	// Дропов нет — проверяем приближение к лимиту событий (0 = безлимит).
@@ -586,6 +628,62 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink)
+}
+
+// orgSettingsInviteRevoke — POST /orgs/{id}/settings/invite/revoke: отзыв
+// выписанного приглашения.
+//
+// Раньше выписанное приглашение было невидимо и неотменяемо: ошибся в адресе —
+// ссылка ушла постороннему, и сделать с этим из интерфейса было нельзя, хотя
+// в сервисе способ существовал.
+//
+// Подтверждение двухшаговое, как у остальных необратимых действий: CSP без
+// unsafe-inline не исполняет inline confirm(), поэтому первый POST рендерит
+// страницу вопроса. В вопросе назван адрес — иначе он защищает от опечатки,
+// которую на экране не видно.
+func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	orgID, ok := h.parsePathOrgID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	inviteID, err := strconv.ParseInt(r.FormValue("invite_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad invite_id", http.StatusBadRequest)
+		return
+	}
+	email := r.FormValue("email")
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "org.invite.revoke_confirm", "org.invite.revoke",
+			orgSettingsPath(orgID), orgSettingsInviteRevokePath(orgID),
+			[]templates.HiddenField{
+				{Name: "invite_id", Value: strconv.FormatInt(inviteID, 10)},
+				{Name: "email", Value: email},
+			}, "email", email)
+		return
+	}
+	if err := h.Org.RevokeInvite(r.Context(), orgID, inviteID); err != nil {
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid,
+			i18n.T(r.Context(), "error.org.invite_not_found"), "")
+		return
+	}
+	h.flashOK(w, "flash.invite.revoked", 0)
+	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
 // orgSettingsQuota — POST /orgs/{id}/settings/quota: единый защитный лимит

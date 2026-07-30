@@ -64,7 +64,7 @@ func TestRunnerChecksSchedulesLeasesAndCompletesJob(t *testing.T) {
 	m.TimeoutSeconds = 5
 	m.RecoveryThreshold = 1 // одного успеха достаточно, чтобы увидеть status=up
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: srv.URL})
-	created := mustCreateMonitor(t, svc, context.Background(), m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, context.Background(), m, []string{"local"})
 
 	runner := newFastRunner(svc, writer)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -159,7 +159,7 @@ func TestRunnerRecordsFailureAndStillCompletesJob(t *testing.T) {
 	m.TimeoutSeconds = 5
 	m.FailThreshold = 1 // одной ошибки достаточно, чтобы увидеть status=down
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: srv.URL})
-	created := mustCreateMonitor(t, svc, context.Background(), m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, context.Background(), m, []string{"local"})
 
 	runner := newFastRunner(svc, writer)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -216,7 +216,7 @@ func TestRunnerInvokesOnResultCallback(t *testing.T) {
 	m.IntervalSeconds = 30
 	m.TimeoutSeconds = 5
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: srv.URL})
-	created := mustCreateMonitor(t, svc, context.Background(), m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, context.Background(), m, []string{"local"})
 
 	type call struct {
 		monitorID int64
@@ -301,7 +301,7 @@ func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 	m.TimeoutSeconds = 5
 	m.FailThreshold = 1 // one failed (canceled) check is enough to see status=down
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: srv.URL})
-	created := mustCreateMonitor(t, svc, context.Background(), m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, context.Background(), m, []string{"local"})
 
 	runner := newFastRunner(svc, writer)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -376,7 +376,7 @@ func TestRunnerRecoversFromCheckerPanic(t *testing.T) {
 	m.TimeoutSeconds = 5
 	m.FailThreshold = 1
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "http://127.0.0.1:1"})
-	created := mustCreateMonitor(t, svc, context.Background(), m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, context.Background(), m, []string{"local"})
 
 	runner := newFastRunner(svc, writer)
 	runner.Checkers = map[uptime.Kind]uptime.Checker{uptime.KindHTTP: panicChecker{}}

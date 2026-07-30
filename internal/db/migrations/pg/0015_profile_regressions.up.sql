@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица и индексы)
 -- Этап 9 (регрессии профилей): рост self-CPU доли функции над скользящей базой
 -- моделируется инцидентом open/close — та же механика, что perf_regressions
 -- этапа 4. Ключ цели — (project_id, service, profile_type, function).

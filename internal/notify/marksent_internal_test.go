@@ -23,7 +23,7 @@ func (a *alwaysFailMarkSent) MarkSent(ctx context.Context, jobID int64) error {
 	return errors.New("persistent mark sent failure")
 }
 
-func (a *alwaysFailMarkSent) MarkRetry(ctx context.Context, jobID int64, sendErr error, next time.Time) error {
+func (a *alwaysFailMarkSent) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
 	return nil
 }
 
@@ -31,10 +31,14 @@ func (a *alwaysFailMarkSent) MarkFailed(ctx context.Context, jobID int64, sendEr
 	return nil
 }
 
-// TestMarkSentAbortsOnCtxDone: MarkSent падает на первой попытке, а ctx уже
-// отменён — backoff-select должен уйти в ветку <-ctx.Done() и прервать ретраи
-// немедленно (одна попытка), не подвешивая остановку воркера.
-func TestMarkSentAbortsOnCtxDone(t *testing.T) {
+// TestMarkSentFinishesDespiteCancel: сообщение уже отправлено получателю, и
+// подтвердить это в очереди нужно независимо от того, что процесс выключают.
+//
+// Прежнее поведение — прервать попытки на отменённом контексте — экономило доли
+// секунды на остановке ценой того, что задача оставалась pending и уходила
+// получателю повторно после рестарта. Идемпотентности у Telegram и вебхуков
+// нет, поэтому дубль виден человеку; задержка выключения на 200 мс — нет.
+func TestMarkSentFinishesDespiteCancel(t *testing.T) {
 	store := &alwaysFailMarkSent{}
 	w := &Worker{Outbox: store}
 
@@ -43,9 +47,49 @@ func TestMarkSentAbortsOnCtxDone(t *testing.T) {
 
 	w.markSent(ctx, Job{ID: 1, ChannelID: 1})
 
-	if store.markSentCalls != 1 {
-		t.Errorf("markSentCalls = %d, want 1 (aborted on ctx.Done after first failure)", store.markSentCalls)
+	if store.markSentCalls != markSentRetries {
+		t.Errorf("markSentCalls = %d, want %d: отмена контекста не должна отменять "+
+			"запись результата уже состоявшейся отправки", store.markSentCalls, markSentRetries)
 	}
+}
+
+// TestRetryOrFailWritesDespiteCancel: то же для неудачной отправки. Раньше при
+// остановке процесса MarkRetry падал по отменённому контексту, и задача
+// оставалась со сдвинутым next_retry_at — выключение задерживало доставку на
+// длину claim-лизы.
+func TestRetryOrFailWritesDespiteCancel(t *testing.T) {
+	store := &recordingStore{}
+	w := &Worker{Outbox: store}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	w.retryOrFail(ctx, Job{ID: 1, ChannelID: 1, Attempts: 1}, errors.New("smtp timeout"))
+
+	if store.retryCalls != 1 {
+		t.Errorf("MarkRetry вызван %d раз, want 1", store.retryCalls)
+	}
+	if store.lastRetryErr != nil {
+		t.Errorf("MarkRetry получил отменённый контекст: %v", store.lastRetryErr)
+	}
+}
+
+// recordingStore записывает, что дошло до хранилища, и проверяет, что контекст
+// живой.
+type recordingStore struct {
+	retryCalls   int
+	lastRetryErr error
+}
+
+func (r *recordingStore) Claim(ctx context.Context, limit int) ([]Job, error) { return nil, nil }
+func (r *recordingStore) MarkSent(ctx context.Context, jobID int64) error     { return nil }
+func (r *recordingStore) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
+	r.retryCalls++
+	r.lastRetryErr = ctx.Err()
+	return nil
+}
+func (r *recordingStore) MarkFailed(ctx context.Context, jobID int64, sendErr error) error {
+	return nil
 }
 
 // TestMarkSentExhaustsRetries: с живым ctx и всегда падающим MarkSent воркер

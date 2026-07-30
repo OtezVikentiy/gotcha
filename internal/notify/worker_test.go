@@ -234,7 +234,7 @@ func (f *flakyMarkSentOutbox) MarkSent(ctx context.Context, jobID int64) error {
 	return nil
 }
 
-func (f *flakyMarkSentOutbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, next time.Time) error {
+func (f *flakyMarkSentOutbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retryCalls++
@@ -404,5 +404,112 @@ func TestWorkerFailsAfterFiveAttempts(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&bad.calls); got != 5 {
 		t.Errorf("bad.calls = %d, want 5", got)
+	}
+}
+
+// slowSender держит каждую отправку delay и запоминает пиковое число
+// одновременных вызовов.
+type slowSender struct {
+	delay   time.Duration
+	inFlt   atomic.Int32
+	maxInFl atomic.Int32
+	calls   atomic.Int32
+}
+
+func (s *slowSender) Send(ctx context.Context, t notify.Target, payload map[string]any) error {
+	s.calls.Add(1)
+	cur := s.inFlt.Add(1)
+	for {
+		peak := s.maxInFl.Load()
+		if cur <= peak || s.maxInFl.CompareAndSwap(peak, cur) {
+			break
+		}
+	}
+	defer s.inFlt.Add(-1)
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// TestDeliveryIsConcurrent: медленный канал не должен задерживать остальные.
+//
+// Раньше отправка была последовательной, и один мёртвый вебхук с 30-секундным
+// таймаутом съедал тик целиком: инцидент, задевший десяток мониторов,
+// растягивал оповещения на минуты.
+func TestDeliveryIsConcurrent(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ob := notify.NewOutbox(pool)
+	channelID := newChannel(t, pool)
+
+	const jobs = 8
+	for i := 0; i < jobs; i++ {
+		if err := ob.Enqueue(ctx, channelID, map[string]any{
+			"channel_kind": "email", "target": "ops@example.com",
+		}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+	}
+
+	sender := &slowSender{delay: 200 * time.Millisecond}
+	w := &notify.Worker{
+		Outbox:      ob,
+		Senders:     map[string]notify.Sender{"email": sender},
+		Concurrency: 4,
+	}
+
+	start := time.Now()
+	w.Tick(ctx)
+	elapsed := time.Since(start)
+
+	if got := sender.calls.Load(); got != jobs {
+		t.Fatalf("отправок = %d, want %d", got, jobs)
+	}
+	if peak := sender.maxInFl.Load(); peak < 2 {
+		t.Errorf("пик одновременных отправок = %d: доставка последовательная, "+
+			"один медленный канал задержит все остальные", peak)
+	}
+	if peak := sender.maxInFl.Load(); peak > 4 {
+		t.Errorf("пик одновременных отправок = %d, want <= 4: параллелизм не ограничен", peak)
+	}
+	// 8 задач по 200 мс: последовательно — 1.6 с, при четырёх параллельных — ~0.4 с.
+	if elapsed > time.Second {
+		t.Errorf("батч из %d задач занял %v — параллелизм не работает", jobs, elapsed)
+	}
+}
+
+// TestTickDrainsQueueWithoutWaitingForNextTick: пока очередь полна, воркер
+// берёт следующий батч сразу. Тик — это пауза на пустой очереди, а не квант
+// работы; иначе пропускная способность упирается в размер батча за интервал.
+func TestTickDrainsQueueWithoutWaitingForNextTick(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ob := notify.NewOutbox(pool)
+	channelID := newChannel(t, pool)
+
+	// Батч при Concurrency=2 равен 4; ставим больше одного батча.
+	const jobs = 9
+	for i := 0; i < jobs; i++ {
+		if err := ob.Enqueue(ctx, channelID, map[string]any{
+			"channel_kind": "email", "target": "ops@example.com",
+		}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+	}
+
+	sender := &fakeSender{}
+	w := &notify.Worker{
+		Outbox:      ob,
+		Senders:     map[string]notify.Sender{"email": sender},
+		Concurrency: 2,
+	}
+	w.Tick(ctx)
+
+	if got := atomic.LoadInt32(&sender.calls); got != jobs {
+		t.Errorf("отправлено %d из %d за один тик — остальное ждёт следующего", got, jobs)
 	}
 }

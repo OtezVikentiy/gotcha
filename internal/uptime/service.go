@@ -89,7 +89,40 @@ func checkChannelsBelongToProject(ctx context.Context, tx pgx.Tx, projectID int6
 	}
 	for _, id := range channelIDs {
 		if !found[id] {
-			return fmt.Errorf("%w: channel %d does not belong to project %d", ErrInvalidMonitor, id, projectID)
+			return invalid("channels", "channel_foreign")
+		}
+	}
+	return nil
+}
+
+// checkRegionsAvailable проверяет, что все выбранные регионы доступны
+// организации проекта: встроенный регион этой инсталляции плюс регионы её
+// неотозванных проб.
+//
+// Форма предлагает только свои регионы, но POST принимал любую строку. Монитор
+// с несуществующим регионом попадал в очередь, и его не забирал никто — тихий
+// отказ мониторинга, который выглядит как «проверок нет, значит всё хорошо».
+// Кросс-тенантной утечки тут не было (лизы скоупятся по организации), но именно
+// поэтому дефект и был незаметен.
+func (s *Service) checkRegionsAvailable(ctx context.Context, tx pgx.Tx, projectID int64, regions []string) error {
+	if len(regions) == 0 {
+		return nil
+	}
+	var orgID int64
+	if err := tx.QueryRow(ctx, "SELECT org_id FROM projects WHERE id = $1", projectID).Scan(&orgID); err != nil {
+		return fmt.Errorf("uptime: check regions: %w", err)
+	}
+	available, err := s.Regions(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	allowed := make(map[string]bool, len(available))
+	for _, r := range available {
+		allowed[r] = true
+	}
+	for _, r := range regions {
+		if !allowed[r] {
+			return invalid("regions", "region_unavailable", "region", r)
 		}
 	}
 	return nil
@@ -135,6 +168,9 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := checkChannelsBelongToProject(ctx, tx, m.ProjectID, channelIDs); err != nil {
+		return Monitor{}, err
+	}
+	if err := s.checkRegionsAvailable(ctx, tx, m.ProjectID, regions); err != nil {
 		return Monitor{}, err
 	}
 
@@ -214,6 +250,9 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 	}
 
 	if err := checkChannelsBelongToProject(ctx, tx, m.ProjectID, channelIDs); err != nil {
+		return err
+	}
+	if err := s.checkRegionsAvailable(ctx, tx, m.ProjectID, regions); err != nil {
 		return err
 	}
 

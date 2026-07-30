@@ -2,7 +2,9 @@
 
 Besides passwords, Gotcha can sign users in through external providers: a generic **OIDC** provider (any compatible IdP — Keycloak, Authentik, Auth0, etc.), **Yandex ID**, and **VK ID**. Each provider is enabled independently through server environment variables — this is an instance-level setting; there's no UI for it.
 
-Secrets live only in the process's memory (env), never in the database.
+Secrets for providers configured through instance environment variables live only in the process's memory — they are never in the database.
+
+Separately, there is **per-org SSO**: an instance admin configures OIDC for one organization through the UI, and there the `client_secret` is stored in the database (`org_sso`), encrypted with the `GOTCHA_SECRET_KEY` master key. These are two different mechanisms, and "secrets are never in the database" applies only to the first.
 
 ## How it works
 

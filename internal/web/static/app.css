@@ -13,7 +13,10 @@
 	--border: #263041;
 	--text: #e6ebf3;
 	--text-dim: #8a93a6;
-	--text-mute: #5c6473;
+	/* Измерено: прежний #5c6473 давал 2.70-3.12:1 — «Не назначено» и заголовки
+	   дней недели в пикере читались хуже порога 4.5:1 (WCAG 1.4.3). #828b9c
+	   даёт 4.68 на surface-2, 4.96 на surface и 5.42 на полотне. */
+	--text-mute: #828b9c;
 	/* --accent служит ФОНОМ первичной кнопки под белой подписью (--accent-fg),
 	   поэтому обязан давать >= 4.5:1 по WCAG 1.4.3. Прежний бренд-синий #3d7bff
 	   давал 3.84:1 — главная кнопка действия не проходила на каждом экране.
@@ -36,6 +39,11 @@
 	--danger: #f0574a;
 	--info: #3d7bff;
 	--link: #79aaff;
+	/* --accent-ink — текст поверх БЛЕДНЫХ подложек (--accent-soft, заливка
+	   баннера квоты). На них --link светлой темы давал 4.05:1 у инициалов и
+	   4.45:1 у ссылки баннера — ниже порога 4.5:1. В тёмной теме запас есть,
+	   поэтому значение совпадает с --link. */
+	--accent-ink: #79aaff;
 	/* --*-ink — цвет ТЕКСТА на собственном 16%-тинте (бейджи, плашки статуса).
 	   Допущение «в тёмной теме тинт ложится на тёмную подложку, поэтому ink
 	   можно оставить равным токену» оказалось НЕВЕРНЫМ: тинт подложку
@@ -81,7 +89,8 @@
 	--border: #dde3ec;
 	--text: #1a2130;
 	--text-dim: #5a6472;
-	--text-mute: #6b7484;
+	/* 3.87:1 на рейле — ниже порога; #5f6878 даёт 4.61 там и 5.0+ на остальных. */
+	--text-mute: #5f6878;
 	--accent: #2f6bff;
 	--accent-hover: #1f5aff;
 	--accent-fg: #ffffff;
@@ -103,6 +112,7 @@
 	--danger: #c3202b;
 	--info: #295ee0;
 	--link: #295ee0;
+	--accent-ink: #1a4fc4;
 	/* Текст на собственном 16%-тинте — темнее самого токена: тинт
 	   осветляет фон, а текст прежде не осветлялся вместе с ним.
 	   Значения проверены расчётом: >= 4.5:1 и на белой карточке,
@@ -123,7 +133,8 @@
 		--border: #dde3ec;
 		--text: #1a2130;
 		--text-dim: #5a6472;
-		--text-mute: #6b7484;
+		/* 3.87:1 на рейле — ниже порога; #5f6878 даёт 4.61 там и 5.0+ на остальных. */
+	--text-mute: #5f6878;
 		--accent: #2f6bff;
 		--accent-hover: #1f5aff;
 		--accent-fg: #ffffff;
@@ -141,6 +152,7 @@
 		--danger: #c3202b;
 		--info: #295ee0;
 		--link: #295ee0;
+	--accent-ink: #1a4fc4;
 		/* Текст на собственном 16%-тинте — темнее самого токена: тинт
 		   осветляет фон, а текст прежде не осветлялся вместе с ним.
 		   Значения проверены расчётом: >= 4.5:1 и на белой карточке,
@@ -284,14 +296,19 @@ a:hover {
 	line-height: 1.1;
 	letter-spacing: .2px;
 	text-align: center;
-	/* Перенос длинных ярлыков задаётся мягким переносом (U+00AD) прямо в
-	   каталоге локалей: hyphens:auto работает только там, где у браузера есть
-	   словарь переносов для языка страницы, а без него слово рвалось в
-	   произвольном месте («Документаци/я»). Мягкий перенос не зависит от
-	   словаря и не виден, пока перенос не понадобился. */
+	/* Мягкие переносы (U+00AD) из каталога локалей убраны: они ломали поиск по
+	   странице — Ctrl+F по «Производительность» не находил ярлык, потому что
+	   внутри слова стоял невидимый символ. Ярлык теперь переносится целыми
+	   словами, а если не влезает — усекается многоточием: обрезанная подпись
+	   читается, а ненаходимая — нет.
+
+	   Полное название доступно всегда: оно же стоит в title ссылки. */
 	hyphens: manual;
-	overflow-wrap: break-word;
+	overflow-wrap: normal;
 	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .rail-spacer {
 	flex: 1;
@@ -321,9 +338,10 @@ a:hover {
 	height: 28px;
 	border-radius: 50%;
 	background: var(--accent-soft);
-	/* --link, а не --accent: последний рассчитан как ФОН под белой подписью и на
-	   бледной подложке давал 3.28-3.44:1 на инициалах пользователя. */
-	color: var(--link);
+	/* --accent-ink, а не --link и тем более не --accent: первый рассчитан как
+	   ФОН под белой подписью (3.28-3.44:1 на инициалах), второй — как текст на
+	   обычных подложках и на бледной --accent-soft давал 4.05:1. */
+	color: var(--accent-ink);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -479,8 +497,15 @@ a:hover {
 	justify-content: center;
 	background: transparent;
 	border: none;
-	border-left: 1px solid var(--border);
+	/* --border-control, а не --border: разделитель здесь ЕДИНСТВЕННОЕ, что
+	   показывает границы кнопки, то есть он несёт смысл, а не декорацию
+	   (WCAG 1.4.11). На --border измерено 1.40:1 в тёмной теме. */
+	border-left: 1px solid var(--border-control);
 	color: var(--text-dim);
+	/* Цель нажатия не меньше 24×24 (WCAG 2.5.8): было 33×22 и 30×22, причём
+	   кнопки стоят вплотную, поэтому исключение по расстоянию не применяется. */
+	min-width: 24px;
+	min-height: 24px;
 	padding: 4px 8px;
 	font-size: var(--fs-xs);
 	font-weight: 600;
@@ -530,7 +555,16 @@ a:hover {
 .skip-link:focus {
 	left: 0;
 }
+/* Фокус на области содержимого виден. Раньше здесь стоял outline:none, и
+   переход по skip-link уводил фокус в никуда: клавиатурный пользователь
+   нажимал «Перейти к содержимому» и терял место на странице (WCAG 2.4.7).
+   :focus-visible, а не :focus: программный фокус после перехода по якорю
+   браузер считает видимым, а щелчок мышью — нет. */
 .app-content:focus { outline: none; }
+.app-content:focus-visible {
+	outline: 2px solid var(--link);
+	outline-offset: -2px;
+}
 
 .app-content {
 	flex: 1;
@@ -929,10 +963,13 @@ button:hover {
 	background: var(--accent-hover);
 }
 
+/* Текст берёт --danger-ink, а не сырой --danger: последний рассчитан как ФОН
+   бейджа, и на бледной подложке плашки давал 4.15:1 — ниже 4.5:1 (WCAG 1.4.3).
+   Тот же --danger-ink в бейджах даёт 5.8:1. */
 .error {
 	background: color-mix(in srgb, var(--danger) 16%, transparent);
 	border: 1px solid var(--danger);
-	color: var(--danger);
+	color: var(--danger-ink);
 	border-radius: var(--radius);
 	padding: 6px 10px;
 	font-size: var(--fs-base);
@@ -950,14 +987,21 @@ button:hover {
 	font-size: var(--fs-base);
 	margin: 0 0 12px;
 }
+/* Разбивка по видам приёма: общее число не говорит, какую квоту поднимать. */
+.quota-banner-detail {
+	color: var(--text-dim);
+}
 .quota-banner a {
 	white-space: nowrap;
+	/* Заливка баннера бледно-жёлтая: обычный --link давал на ней 4.45:1. */
+	color: var(--accent-ink);
 }
 
+/* То же, что у .error: сырой --info на своей подложке давал 3.65:1. */
 .notice {
 	background: color-mix(in srgb, var(--info) 16%, transparent);
 	border: 1px solid var(--info);
-	color: var(--info);
+	color: var(--info-ink);
 	border-radius: var(--radius);
 	padding: 6px 10px;
 	font-size: var(--fs-base);
@@ -1583,6 +1627,9 @@ th {
 	width: 100%;
 	height: auto;
 	margin-bottom: 16px;
+	/* Цвет линии и заливки графика: SVG рисует их currentColor, поэтому
+	   бренд-акцент задаётся здесь токеном, а не зашитым хексом в Go. */
+	color: var(--accent);
 }
 
 /* Оси/сетка и подписи графиков: приглушённый цвет, моноширинный мелкий шрифт.
@@ -2432,7 +2479,9 @@ form.inline {
 .tabs {
 	display: flex;
 	gap: 4px;
-	border-bottom: 1px solid var(--border);
+	/* Линия под вкладками отделяет активную вкладку от содержимого — это
+	   граница контрола, а не разделитель карточек. */
+	border-bottom: 1px solid var(--border-control);
 }
 .tab {
 	padding: 8px 10px;
@@ -2457,7 +2506,8 @@ form.inline {
 	align-items: center;
 	gap: 4px;
 	background: var(--surface-2);
-	border: 1px solid var(--border);
+	/* Чип — интерактивный элемент, его граница обязана добирать 3:1. */
+	border: 1px solid var(--border-control);
 	border-radius: 999px;
 	padding: 3px 10px;
 	color: var(--text-dim);
@@ -2855,7 +2905,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    Раньше эти значения были впечатаны в SVG hex-литералами из тёмной палитры
    и не менялись в светлой теме. */
 .availability-bars .bar-up      { fill: var(--good); }
-/* Жёлтый «частично» — через токен --partial (dark #f5b70a / light #b47600),
+/* Жёлтый «частично» — через токен --partial (dark #f5b70a / light #8e5d00),
    отдельный от --warn. Как заливка сегмента читается ярко на тёмной карточке
    и достаточно контрастно (темнее) на светлой. */
 .availability-bars .bar-partial { fill: var(--partial); }
@@ -3324,6 +3374,9 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 
 /* Смена ответственного свёрнута: в шапке показан факт назначения, здесь —
    только действие. */
+/* Приглушённый цвет здесь читался как «кнопка выключена»: контрол доступен
+   всегда, а выглядел неактивным. Обычный цвет текста плюс явный маркер
+   раскрытия — теперь видно, что это раскрывающийся блок, а не disabled. */
 .assign-control > summary {
 	display: inline-flex;
 	align-items: center;
@@ -3333,18 +3386,28 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	padding: 6px 10px;
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	color: var(--text-dim);
+	color: var(--text);
 	font-weight: 500;
+}
+.assign-control > summary::after {
+	content: "";
+	width: 0;
+	height: 0;
+	margin-left: 2px;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	border-top: 5px solid currentColor;
+	transition: transform 0.15s ease;
+}
+.assign-control[open] > summary::after {
+	transform: rotate(180deg);
 }
 .assign-control > summary::-webkit-details-marker {
 	display: none;
 }
 .assign-control > summary:hover {
-	color: var(--text);
 	border-color: var(--text-dim);
-}
-.assign-control[open] > summary {
-	color: var(--text);
+	background: var(--surface-2);
 }
 .assign-control .assign-form {
 	display: flex;
@@ -3536,6 +3599,13 @@ input[type="radio"] {
 	outline: 1px solid var(--border-control);
 	outline-offset: -1px;
 	border-radius: 2px;
+	/* Браузерный размер по умолчанию — 13×13: цель нажатия вдвое меньше
+	   минимума WCAG 2.5.8, и на телефоне в таблице по ней промахиваются. */
+	width: 18px;
+	height: 18px;
+	/* Добираем до 24×24 полем вокруг: увеличивать сам квадрат сильнее значит
+	   ломать плотность таблицы. */
+	margin: 3px;
 }
 input[type="radio"] {
 	border-radius: 50%;
@@ -3613,9 +3683,21 @@ input[type="radio"]:focus-visible {
 	   содержимое страницы не дёргалось рывком. */
 	animation: flash-dismiss 0.4s ease-in 6s forwards;
 }
+/* Таймер останавливается, пока указатель над плашкой или фокус внутри неё:
+   6 секунд на чтение хватает не всем, а WCAG 2.2.1 требует способа продлить
+   ограничение по времени. Отвести мышь или увести фокус — способ, доступный и
+   с клавиатуры. */
+.flash:hover,
+.flash:focus-within {
+	animation-play-state: paused;
+}
 @keyframes flash-dismiss {
 	to {
 		opacity: 0;
+		/* visibility обязательна: opacity:0 убирает плашку с ГЛАЗ, но
+		   оставляет её в дереве доступности и в порядке табуляции — Tab
+		   попадал в невидимую кнопку закрытия. */
+		visibility: hidden;
 		margin-bottom: 0;
 		padding-top: 0;
 		padding-bottom: 0;

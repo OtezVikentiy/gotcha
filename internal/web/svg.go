@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/a-h/templ"
@@ -303,7 +304,10 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		}
 		linePts[i] = seriesPoint{x: x, y: yFor(p.V), has: true}
 	}
-	writeLineWithArea(&sb, linePts, y1, "#3d7bff", "gradMetric", `stroke="#3d7bff"`)
+	// Цвет линии и заливки берётся из CSS (color у .metric-chart), а не
+	// зашивается хексом: бренд-градиент живёт в токенах, и зашитая копия
+	// расходится с ними молча.
+	writeLineWithArea(&sb, linePts, y1, "currentColor", "gradMetric", `stroke="currentColor"`)
 
 	// Полосы наведения: линия тонкая, наводиться на неё нечем, поэтому
 	// подсказку ловит прозрачная полоса над своим интервалом. Значение
@@ -407,7 +411,22 @@ func bridgeSparseGaps(pts []seriesPoint) []seriesPoint {
 // для мониторинга недопустимо. gradID должен быть уникален на странице; при
 // fillHex=="" заливка не рисуется (только линия). lineAttr — атрибуты штриха
 // (class="…" или stroke="#…"). baseline — низ области заливки (обычно g.y1).
+// gradSeq делает идентификаторы градиентов уникальными в пределах документа.
+//
+// Спарклайн рисуется по одному на строку таблицы, и все они несли id
+// «gradSpark»: до пяти одинаковых id на странице. Сегодня это безвредно (каждый
+// url(#gradSpark) находит ПЕРВЫЙ градиент, а они одинаковые), но документ
+// невалиден, и первое же расхождение в цвете покрасит все графики цветом
+// первого.
+var gradSeq atomic.Uint64
+
+// uniqueGradID превращает базовое имя в уникальное для этого документа.
+func uniqueGradID(base string) string {
+	return base + "-" + strconv.FormatUint(gradSeq.Add(1), 36)
+}
+
 func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64, fillHex, gradID, lineAttr string) {
+	gradID = uniqueGradID(gradID)
 	if fillHex != "" {
 		sb.WriteString(`<defs><linearGradient id="`)
 		sb.WriteString(gradID)
@@ -631,7 +650,7 @@ func sparklinePolyline(ctx context.Context, buckets []uint64, w, h int, format f
 			" · " + format(buckets[len(buckets)-1])))
 		sb.WriteString(`</title>`)
 	}
-	writeLineWithArea(&sb, linePts, float64(h), "#3d7bff", "gradSpark", `stroke="currentColor"`)
+	writeLineWithArea(&sb, linePts, float64(h), "currentColor", "gradSpark", `stroke="currentColor"`)
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
@@ -756,7 +775,7 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, w, h i
 		p50pts[i] = seriesPoint{x: x, y: scale.yFor(g, float64(p.P50)), has: has}
 		p95pts[i] = seriesPoint{x: x, y: scale.yFor(g, float64(p.P95)), has: has}
 	}
-	writeLineWithArea(&sb, p50pts, g.y1, "#3d7bff", "gradLatP50", `class="`+perfLatencyLineClasses[0]+`"`)
+	writeLineWithArea(&sb, p50pts, g.y1, "currentColor", "gradLatP50", `class="`+perfLatencyLineClasses[0]+`"`)
 	writeLineWithArea(&sb, p95pts, g.y1, "", "", `class="`+perfLatencyLineClasses[1]+`"`)
 
 	// Полосы наведения: по одной на точку, с обоими перцентилями в подсказке.
@@ -1494,7 +1513,7 @@ func vitalSeriesMarkup(ctx context.Context, points []trace.VitalPoint, w, h int,
 				" · min " + format(lo) + " · max " + format(hi) + " · " + format(last.P75)))
 		sb.WriteString(`</title>`)
 	}
-	writeLineWithArea(&sb, linePts, float64(h), "#3d7bff", "gradVital", `stroke="currentColor"`)
+	writeLineWithArea(&sb, linePts, float64(h), "currentColor", "gradVital", `stroke="currentColor"`)
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }

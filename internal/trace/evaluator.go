@@ -136,41 +136,64 @@ func (e *Evaluator) listProjects(ctx context.Context) ([]projectConfig, error) {
 func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg RegressionConfig, topK, baselineDays int, now time.Time) {
 	recentFrom := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 
+	// По два запроса на вид целей вместо двух на КАЖДУЮ цель. При топ-20
+	// эндпойнтов и трёх web-vital'ах прежний тик стоил больше двух сотен
+	// последовательных обращений к ClickHouse на один проект — и так по всем
+	// проектам подряд.
 	endpoints, err := e.Query.TopEndpointsByTraffic(ctx, projectID, recentFrom, now, topK)
 	if err != nil {
 		slog.Error("trace: evaluator: top endpoints failed", "project_id", projectID, "error", err)
 	}
-	for _, target := range endpoints {
-		recent, err := e.Query.RecentEndpointP95(ctx, projectID, target, recentFrom, now)
+	if len(endpoints) > 0 {
+		recents, err := e.Query.RecentEndpointP95s(ctx, projectID, endpoints, recentFrom, now)
 		if err != nil {
-			slog.Error("trace: evaluator: recent endpoint p95 failed", "project_id", projectID, "target", target, "error", err)
-			continue
+			slog.Error("trace: evaluator: recent endpoint p95s failed", "project_id", projectID, "error", err)
+			recents = nil
 		}
-		base, err := e.Query.BaselineEndpointP95(ctx, projectID, target, baselineDays, now)
+		bases, err := e.Query.BaselineEndpointP95s(ctx, projectID, endpoints, baselineDays, now)
 		if err != nil {
-			slog.Error("trace: evaluator: baseline endpoint p95 failed", "project_id", projectID, "target", target, "error", err)
-			continue
+			slog.Error("trace: evaluator: baseline endpoint p95s failed", "project_id", projectID, "error", err)
+			bases = nil
 		}
-		e.evalTarget(ctx, projectID, "endpoint_p95", target, metricDuration, base, recent, cfg, now)
+		if recents != nil && bases != nil {
+			for _, target := range endpoints {
+				// Цель без свежих данных пропускается: так же вело себя и
+				// поштучное чтение, только там пустой результат приезжал
+				// отдельным запросом.
+				recent, ok := recents[target]
+				if !ok {
+					continue
+				}
+				e.evalTarget(ctx, projectID, "endpoint_p95", target, metricDuration, bases[target], recent, cfg, now)
+			}
+		}
 	}
 
 	pages, err := e.Query.TopVitalPages(ctx, projectID, recentFrom, now, topK)
 	if err != nil {
 		slog.Error("trace: evaluator: top vital pages failed", "project_id", projectID, "error", err)
 	}
+	if len(pages) == 0 {
+		return
+	}
+	vitalRecents, err := e.Query.RecentVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, recentFrom, now)
+	if err != nil {
+		slog.Error("trace: evaluator: recent vital p75s failed", "project_id", projectID, "error", err)
+		return
+	}
+	vitalBases, err := e.Query.BaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, baselineDays, now)
+	if err != nil {
+		slog.Error("trace: evaluator: baseline vital p75s failed", "project_id", projectID, "error", err)
+		return
+	}
 	for _, target := range pages {
 		for _, metric := range evaluatorVitalMetrics {
-			recent, err := e.Query.RecentVitalP75(ctx, projectID, target, metric, recentFrom, now)
-			if err != nil {
-				slog.Error("trace: evaluator: recent vital p75 failed", "project_id", projectID, "target", target, "metric", metric, "error", err)
+			key := VitalKey{Transaction: target, Metric: metric}
+			recent, ok := vitalRecents[key]
+			if !ok {
 				continue
 			}
-			base, err := e.Query.BaselineVitalP75(ctx, projectID, target, metric, baselineDays, now)
-			if err != nil {
-				slog.Error("trace: evaluator: baseline vital p75 failed", "project_id", projectID, "target", target, "metric", metric, "error", err)
-				continue
-			}
-			e.evalTarget(ctx, projectID, "webvital_p75", target, metric, base, recent, cfg, now)
+			e.evalTarget(ctx, projectID, "webvital_p75", target, metric, vitalBases[key], recent, cfg, now)
 		}
 	}
 }

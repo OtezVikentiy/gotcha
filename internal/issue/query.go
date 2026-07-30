@@ -33,16 +33,6 @@ var sortColumns = map[string]string{
 
 const defaultSort = "last_seen"
 
-// periodIntervals — whitelist Filter.Period: в SQL-текст попадает только
-// это заранее заданное выражение интервала, никогда пользовательская строка.
-// Невалидное значение Period игнорируется (как будто фильтра нет), тот же
-// принцип, что и у sortColumns.
-var periodIntervals = map[string]string{
-	"24h": "24 hours",
-	"7d":  "7 days",
-	"30d": "30 days",
-}
-
 const (
 	defaultPerPage = 25
 	maxPerPage     = 100
@@ -55,7 +45,15 @@ type Filter struct {
 	Query       string // подстрока в title/culprit (ILIKE)
 	Sort        string // last_seen (default) | first_seen | times_seen
 	Environment string // "" = все окружения; иначе EXISTS по issue_environments
-	Period      string // "" = за всё время; 24h | 7d | 30d (whitelist periodIntervals)
+	// Since/Until — границы окна по last_seen; нулевое значение = без границы.
+	//
+	// Раньше здесь была строка периода из белого списка (24h|7d|30d), и список
+	// проблем поэтому имел свой, более бедный фильтр времени: ни часа, ни
+	// произвольного диапазона — при том что на соседних страницах общий контрол
+	// умел и то, и другое. Границы приходят параметрами запроса, поэтому любое
+	// окно, которое умеет разобрать веб-слой, работает и здесь.
+	Since time.Time
+	Until time.Time
 	Page        int
 	PerPage     int
 }
@@ -124,8 +122,13 @@ func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue,
 		args = append(args, f.Environment)
 		fmt.Fprintf(&sb, " AND EXISTS (SELECT 1 FROM issue_environments ie WHERE ie.issue_id = issues.id AND ie.environment = $%d)", len(args))
 	}
-	if interval, ok := periodIntervals[f.Period]; ok {
-		fmt.Fprintf(&sb, " AND issues.last_seen >= now() - interval '%s'", interval)
+	if !f.Since.IsZero() {
+		args = append(args, f.Since)
+		fmt.Fprintf(&sb, " AND issues.last_seen >= $%d", len(args))
+	}
+	if !f.Until.IsZero() {
+		args = append(args, f.Until)
+		fmt.Fprintf(&sb, " AND issues.last_seen <= $%d", len(args))
 	}
 
 	sb.WriteString(" ORDER BY ")
@@ -185,6 +188,40 @@ func (s *Service) ActiveSince(ctx context.Context, projectID int64, since time.T
 }
 
 // Get возвращает issue по id (с AssigneeEmail) или ErrNotFound.
+// ByIDs возвращает группы проекта по списку идентификаторов.
+//
+// Существует ради spike-детектора: ему нужны заголовки только тех групп, что
+// перешагнули порог, а не всех активных. Раньше он забирал из PostgreSQL все
+// активные группы проекта, чтобы затем отбросить почти все.
+//
+// Фильтр по project_id обязателен и здесь: идентификаторы приходят из ответа
+// ClickHouse, и доверять им как «уже проверенным» нельзя.
+func (s *Service) ByIDs(ctx context.Context, projectID int64, ids []int64) ([]Issue, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+issueColumns+" FROM issues WHERE project_id = $1 AND id = ANY($2) ORDER BY last_seen DESC",
+		projectID, ids)
+	if err != nil {
+		return nil, fmt.Errorf("issue: by ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Issue
+	for rows.Next() {
+		var i Issue
+		if err := scanIssue(rows, &i); err != nil {
+			return nil, fmt.Errorf("issue: by ids scan: %w", err)
+		}
+		out = append(out, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("issue: by ids: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Service) Get(ctx context.Context, issueID int64) (Issue, error) {
 	var i Issue
 	row := s.pool.QueryRow(ctx, "SELECT "+issueColumnsJoined+" FROM "+issueFromJoined+" WHERE issues.id = $1", issueID)

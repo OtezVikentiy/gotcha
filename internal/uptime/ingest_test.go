@@ -43,7 +43,7 @@ func TestIngestorAcceptWritesResultUpdatesStateAndCompletesJob(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.FailThreshold = 1
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	job := leaseOneJob(t, ctx, svc)
 
@@ -121,7 +121,7 @@ func TestIngestorAcceptWithoutWriter(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.RecoveryThreshold = 1
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	job := leaseOneJob(t, ctx, svc)
 
@@ -170,7 +170,7 @@ func TestIngestorAcceptAppliesAJobExactlyOnce(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.FailThreshold = 2 // ровно тот порог, при котором двойной учёт кладёт монитор
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	job := leaseOneJob(t, ctx, svc)
 
@@ -269,7 +269,7 @@ func TestLeasedJobOnlyForOwningProbeAndLiveLease(t *testing.T) {
 	pid := newProjectInOrg(t, pool, orgID)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"eu-west"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"eu-west"})
 
 	if _, err := svc.Schedule(ctx); err != nil {
 		t.Fatalf("Schedule: %v", err)

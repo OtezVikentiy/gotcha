@@ -69,25 +69,30 @@ func (s *Service) claimBudget(ctx context.Context, projectID int64) (BudgetDecis
 	if limit <= 0 {
 		return BudgetDecision{Allowed: true}, nil // ограничение выключено
 	}
-	cutoff := time.Now().Add(-window)
+	// Отсечка окна вычисляется часами БАЗЫ: window_start пишется её now(), и
+	// сравнение с моментом от часов процесса зависело бы от их расхождения —
+	// отстающие часы растягивали окно бюджета, опережающие сокращали.
+	// Длительность передаётся секундами, потому что интервал приходит из
+	// конфига именно как длительность, а не как момент.
+	windowSecs := int(window / time.Second)
 
 	var d BudgetDecision
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO alert_project_budget AS b (project_id, window_start, sent, suppressed, allowed)
 		VALUES ($1, now(), 1, 0, true)
 		ON CONFLICT (project_id) DO UPDATE SET
-			window_start = CASE WHEN b.window_start <= $2 THEN now() ELSE b.window_start END,
+			window_start = CASE WHEN b.window_start <= now() - make_interval(secs => $2) THEN now() ELSE b.window_start END,
 			sent = CASE
-				WHEN b.window_start <= $2 THEN 1
+				WHEN b.window_start <= now() - make_interval(secs => $2) THEN 1
 				WHEN b.sent < $3 THEN b.sent + 1
 				ELSE b.sent END,
 			suppressed = CASE
-				WHEN b.window_start <= $2 THEN b.suppressed
+				WHEN b.window_start <= now() - make_interval(secs => $2) THEN b.suppressed
 				WHEN b.sent < $3 THEN b.suppressed
 				ELSE b.suppressed + 1 END,
-			allowed = (b.window_start <= $2 OR b.sent < $3)
+			allowed = (b.window_start <= now() - make_interval(secs => $2) OR b.sent < $3)
 		RETURNING allowed, suppressed`,
-		projectID, cutoff, limit).Scan(&d.Allowed, &d.Suppressed)
+		projectID, windowSecs, limit).Scan(&d.Allowed, &d.Suppressed)
 	if err != nil {
 		return BudgetDecision{}, fmt.Errorf("alert: claim budget: %w", err)
 	}
@@ -112,7 +117,8 @@ type SuppressedBatch struct {
 // сообщила бы неполное число, а следом пришла бы вторая с остатком.
 func (s *Service) ClaimSuppressed(ctx context.Context, limit int) ([]SuppressedBatch, error) {
 	window, _ := s.budgetParams()
-	cutoff := time.Now().Add(-window)
+	// Отсечка — часами базы, как и в claimBudget: window_start пишется её now().
+	windowSecs := int(window / time.Second)
 
 	// Значение забирается ДО обнуления, поэтому через CTE, а не RETURNING у
 	// UPDATE: RETURNING отдаёт НОВУЮ строку, то есть уже обнулённый счётчик, и
@@ -126,7 +132,7 @@ func (s *Service) ClaimSuppressed(ctx context.Context, limit int) ([]SuppressedB
 		WITH claimed AS (
 			SELECT project_id, suppressed, window_start
 			FROM alert_project_budget
-			WHERE suppressed > 0 AND window_start <= $1
+			WHERE suppressed > 0 AND window_start <= now() - make_interval(secs => $1)
 			ORDER BY project_id
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
@@ -140,7 +146,7 @@ func (s *Service) ClaimSuppressed(ctx context.Context, limit int) ([]SuppressedB
 		SELECT c.project_id, c.suppressed, c.window_start
 		FROM claimed c
 		JOIN cleared d ON d.project_id = c.project_id
-		ORDER BY c.project_id`, cutoff, limit)
+		ORDER BY c.project_id`, windowSecs, limit)
 	if err != nil {
 		return nil, fmt.Errorf("alert: claim suppressed: %w", err)
 	}

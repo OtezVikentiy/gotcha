@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -324,9 +325,27 @@ func parseMonitorForm(r *http.Request, projectID int64, kind uptime.Kind, enable
 	return m, regions, channelIDs
 }
 
+// monitorFormErrorMessage переводит отказ проверки монитора на язык интерфейса.
+//
+// Раньше сюда подставлялся err.Error(), и над формой висело «монитор: uptime:
+// invalid monitor: http url must be a valid http(s) URL»: слово «монитор»
+// дважды на двух языках, имя Go-пакета и английская фраза посреди русской
+// страницы. Переводить было нечего — причина существовала только строкой,
+// собранной для лога.
 func monitorFormErrorMessage(ctx context.Context, err error) string {
+	var ve *uptime.ValidationError
+	if errors.As(err, &ve) {
+		kv := make([]string, 0, 2*len(ve.Args))
+		for k, v := range ve.Args {
+			kv = append(kv, k, v)
+		}
+		return i18n.Tf(ctx, "error.monitor."+ve.Code, kv...)
+	}
 	if errors.Is(err, uptime.ErrInvalidMonitor) {
-		return i18n.Tf(ctx, "error.monitor.invalid", "detail", err.Error())
+		// Отказ без кода: остаётся общая формулировка, но уже без внутренностей
+		// ошибки в тексте для пользователя — они уходят в лог.
+		slog.Warn("web: monitor validation error without code", "error", err)
+		return i18n.T(ctx, "error.monitor.generic")
 	}
 	return i18n.T(ctx, "error.monitor.save_failed")
 }
@@ -496,6 +515,16 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 	}
 	if !canManage || m.Kind != uptime.KindHeartbeat {
 		h.notFound(w, r)
+		return
+	}
+	// Перевыпуск необратим и ломает работающий cron: старый URL перестаёт
+	// отвечать сразу, а восстановить его нельзя — в базе только хеш. Это было
+	// единственное необратимое действие продукта без подтверждения, при том что
+	// у четырнадцати менее болезненных оно есть.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.heartbeat_rotate.message",
+			"confirm.heartbeat_rotate.action",
+			monitorDetailPath(m.ID), monitorDetailPath(m.ID)+"/heartbeat/regenerate", nil)
 		return
 	}
 	token, err := h.Uptime.RotateHeartbeatToken(r.Context(), m.ID)

@@ -64,6 +64,7 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 		<div class="incidents">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
+			@helpPanel("incidents", "uptime")
 			if len(rows) == 0 {
 				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "")
 			} else {

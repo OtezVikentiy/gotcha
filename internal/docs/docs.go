@@ -10,6 +10,7 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 )
 
 //go:embed ru/*.md en/*.md
@@ -54,7 +55,17 @@ var registry = []struct{ Slug, Group string }{
 	{"sdk", "docs.group.integrations"},
 }
 
-var md = goldmark.New(goldmark.WithExtensions(extension.GFM)) // GFM: таблицы/автоссылки; без WithUnsafe → raw HTML экранируется
+// md — рендерер документации.
+//
+// GFM даёт таблицы и автоссылки; WithUnsafe НЕ включён, поэтому raw HTML
+// экранируется. WithAutoHeadingID проставляет заголовкам id: без него якорных
+// ссылок не существовало вовсе, при том что тексты уже ссылаются на разделы
+// прозой («см. раздел о внешних получателях ниже»), а браузерная кнопка
+// «поделиться ссылкой на этот абзац» не работала ни на одной странице.
+var md = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+)
 
 type rendered struct {
 	html  string
@@ -107,7 +118,11 @@ func Render(locale, slug string) (string, string, bool) {
 	}
 	title := firstH1(data)
 	var buf bytes.Buffer
-	if err := md.Convert(data, &buf); err != nil {
+	// Генератор якорей — на КАЖДУЮ страницу свой: он ведёт список уже занятых
+	// идентификаторов, и общий на все страницы начал бы приписывать суффиксы
+	// «-1», «-2» заголовкам разных документов.
+	ctx := parser.NewContext(parser.WithIDs(newTranslitIDs()))
+	if err := md.Convert(data, &buf, parser.WithContext(ctx)); err != nil {
 		return "", "", false
 	}
 	r := rendered{html: buf.String(), title: title}

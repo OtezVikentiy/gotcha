@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -72,7 +73,7 @@ func schemaVersion(fsys embed.FS, dir, url string) (version uint, dirty bool, er
 // отстаёт, впереди встроенной или помечена dirty. Предназначена для fail-fast
 // при AUTO_MIGRATE=false (RA-8): без гейта отсутствие свежей колонки роняет
 // каждый insert телеметрии.
-func CheckSchemaCurrent(dsn string) error {
+func CheckSchemaCurrent(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
 	want, err := maxEmbeddedPGVersion()
 	if err != nil {
 		return err
@@ -81,7 +82,7 @@ func CheckSchemaCurrent(dsn string) error {
 	if err != nil {
 		return err
 	}
-	return schemaGateErr("PG", got, dirty, want)
+	return checkSchema(ctx, pool, "PG", "pg", got, dirty, want)
 }
 
 // CheckSchemaCurrentCH — CH-аналог CheckSchemaCurrent (audit3): при
@@ -89,7 +90,7 @@ func CheckSchemaCurrent(dsn string) error {
 // schema_migrations и в ClickHouse) со встроенным максимумом. RA-8 закрыл только
 // PG — но отставшая CH-схема так же роняет каждый insert телеметрии. Вызывается
 // из main.go при AutoMigrate=false рядом с CheckSchemaCurrent.
-func CheckSchemaCurrentCH(dsn string) error {
+func CheckSchemaCurrentCH(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
 	want, err := maxEmbeddedCHVersion()
 	if err != nil {
 		return err
@@ -98,28 +99,59 @@ func CheckSchemaCurrentCH(dsn string) error {
 	if err != nil {
 		return err
 	}
-	return schemaGateErr("ClickHouse", got, dirty, want)
+	return checkSchema(ctx, pool, "ClickHouse", "ch", got, dirty, want)
+}
+
+// checkSchema — гейт схемы с чтением окна совместимости. label
+// («PG»/«ClickHouse») идёт в текст ошибки, target («pg»/«ch») — в запрос к
+// schema_compat. Признаки читаются, только когда база впереди бинаря: в
+// остальных случаях они ни на что не влияют.
+//
+// Предупреждение о работе на более новой схеме пишется в лог, а не молчит:
+// администратор должен видеть, что инстанс работает не на своей версии схемы.
+func checkSchema(ctx context.Context, pool *pgxpool.Pool, label, target string, got uint, dirty bool, want uint) error {
+	var compat map[uint]bool
+	if got > want && !dirty {
+		var err error
+		compat, err = loadSchemaCompat(ctx, pool, target)
+		if err != nil {
+			return err
+		}
+	}
+	warning, err := schemaGateErr(label, got, dirty, want, compat)
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		slog.Warn(warning)
+	}
+	return nil
 }
 
 // schemaGateErr — чистая логика version-гейта схемы (общая для PG и CH). label
 // («PG»/«ClickHouse») подставляется в текст. Порядок проверок: dirty → отставание
-// → впереди встроенной. Ветка got>want (audit3) ловит запуск старого бинаря на
-// новой БД: без неё даунгрейд проходит молча, а потом падает на первой вставке в
-// новую колонку. Возвращает nil, когда версия ровно совпадает.
-func schemaGateErr(label string, got uint, dirty bool, want uint) error {
+// → впереди встроенной. Возвращает пустое предупреждение и nil, когда версия
+// ровно совпадает.
+//
+// Ветка got>want ловит запуск старого бинаря на новой БД: без неё даунгрейд
+// проходит молча, а потом падает на первой вставке в новую колонку. Раньше она
+// отказывала всегда, и следствием был невозможный откат релиза — вернуть можно
+// было только из бэкапа. Теперь отказ зависит от того, что миграции сделали со
+// схемой: аддитивные пропускаются с предупреждением, ломающие и неизвестные —
+// нет (см. schemaAheadDecision).
+func schemaGateErr(label string, got uint, dirty bool, want uint, compat map[uint]bool) (warning string, err error) {
 	if dirty {
-		return fmt.Errorf("schema check: %s-база в состоянии dirty на версии %d — "+
+		return "", fmt.Errorf("schema check: %s-база в состоянии dirty на версии %d — "+
 			"требуется ручной force перед стартом", label, got)
 	}
 	if got < want {
-		return fmt.Errorf("schema check: версия %s-схемы %d отстаёт от встроенной %d — "+
+		return "", fmt.Errorf("schema check: версия %s-схемы %d отстаёт от встроенной %d — "+
 			"примените миграции (AUTO_MIGRATE=true или migrate up) перед стартом", label, got, want)
 	}
 	if got > want {
-		return fmt.Errorf("schema check: несовместимая %s-схема: база версии %d впереди "+
-			"встроенной %d — обновите бинарь gotcha перед стартом", label, got, want)
+		return schemaAheadDecision(label, got, want, compat)
 	}
-	return nil
+	return "", nil
 }
 
 // maxEmbeddedPGVersion возвращает максимальный номер встроенной PG-миграции,

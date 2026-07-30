@@ -27,7 +27,7 @@ func TestSchedulerFillsQueueWithoutRunner(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	sctx, scancel := context.WithCancel(ctx)
 	defer scancel()
@@ -53,7 +53,7 @@ func TestSchedulerIsIdempotentAcrossReplicas(t *testing.T) {
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	sctx, scancel := context.WithCancel(ctx)
 	go (&uptime.Scheduler{Svc: svc, Every: 10 * time.Millisecond}).Run(sctx)

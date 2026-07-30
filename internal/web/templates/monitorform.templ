@@ -340,9 +340,9 @@ templ MonitorForm(d MonitorFormData, userEmail string) {
 						<label>
 							{ i18n.T(ctx, "uptime.form.common.consensus") }
 							<select name="consensus" class="select">
-								@selectOption(string(uptime.ConsensusAny), "any", d.Consensus)
-								@selectOption(string(uptime.ConsensusMajority), "majority", d.Consensus)
-								@selectOption(string(uptime.ConsensusAll), "all", d.Consensus)
+								@selectOption(string(uptime.ConsensusAny), i18n.T(ctx, "uptime.consensus.any"), d.Consensus)
+								@selectOption(string(uptime.ConsensusMajority), i18n.T(ctx, "uptime.consensus.majority"), d.Consensus)
+								@selectOption(string(uptime.ConsensusAll), i18n.T(ctx, "uptime.consensus.all"), d.Consensus)
 							</select>
 						</label>
 					</div>

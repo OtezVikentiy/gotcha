@@ -21,6 +21,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/memlimit"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
@@ -47,6 +48,11 @@ import (
 )
 
 func main() {
+	// Проверка состояния — до всего остального: она не поднимает ни соединений,
+	// ни сервера, только спрашивает уже работающий процесс.
+	if url, ok := healthcheckRequested(os.Args[1:]); ok {
+		os.Exit(runHealthcheck(url))
+	}
 	if err := run(); err != nil {
 		slog.Error("gotcha failed", "error", err)
 		os.Exit(1)
@@ -126,6 +132,40 @@ func registerWriterMetrics(r *selfmetrics.Registry, name string, w writerStats) 
 		"Failed batch inserts. The batch is retried, so this is not data loss by itself.", lbl, w.InsertFailures)
 }
 
+// applyMemoryLimit приводит потолок кучи к лимиту контейнера и сообщает
+// результат. Отсутствие лимита — не ошибка: продукт не выдумывает потолок за
+// оператора, но и не молчит об этом.
+func applyMemoryLimit() int64 {
+	limit, err := memlimit.Apply()
+	switch {
+	case errors.Is(err, memlimit.ErrNoLimit):
+		slog.Info("no container memory limit found; heap ceiling not set " +
+			"(buffers grow until the host runs out — set mem_limit or GOMEMLIMIT)")
+		return 0
+	case err != nil:
+		slog.Warn("cannot derive heap ceiling from container limit", "error", err)
+		return 0
+	}
+	slog.Info("heap ceiling set", "bytes", limit)
+	return limit
+}
+
+// baseSecurityHeaders ставит заголовки, верные для ЛЮБОГО ответа сервера:
+// запрет MIME-sniffing и запрет встраивания в iframe.
+//
+// Полный набор (CSP, Referrer-Policy, HSTS, Cache-Control) остаётся на
+// web.securityHeaders: он знает про TLS-режим инстанса и про то, что страницы
+// несут ПДн. Здесь — только то, что не зависит ни от чего и должно быть даже
+// на /metrics.
+func baseSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hdr := w.Header()
+		hdr.Set("X-Content-Type-Options", "nosniff")
+		hdr.Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func run() error {
 	if versionRequested(os.Args[1:]) {
 		fmt.Println("gotcha", version.String())
@@ -136,6 +176,12 @@ func run() error {
 		return err
 	}
 	setupLogging(cfg.LogLevel, cfg.LogFormat)
+	// Потолок кучи по лимиту контейнера. Go-рантайм лимит cgroup не читает, а у
+	// gotcha буферы растут по замыслу, дожидаясь возвращения хранилища: без
+	// потолка первым срабатывает OOM-killer ядра, и теряется всё буферизованное,
+	// а не избыток. До этой правки защита существовала только как GOMEMLIMIT в
+	// small-оверлее compose.
+	memLimitBytes := applyMemoryLimit()
 	if cfg.SecretKey == devSecretKey {
 		slog.Warn("GOTCHA_SECRET_KEY is not set — using insecure dev default (fine for localhost only)")
 	}
@@ -197,6 +243,13 @@ func run() error {
 			if err := db.MigrateCH(cfg.ClickHouseDSN); err != nil {
 				return err
 			}
+			// Признаки обратной совместимости применённых миграций. Пишет тот,
+			// кто их применял: только он содержит эти файлы и знает их маркеры.
+			// Читает любой бинарь, включая откатившийся назад, — без этой
+			// записи откат релиза требует восстановления базы из бэкапа.
+			if err := db.RecordSchemaCompat(ctx, pg); err != nil {
+				return err
+			}
 			// Проверка схемы нужна И ЗДЕСЬ, после успешной миграции. Гейт ловит
 			// не только отставание, но и ОПЕРЕЖЕНИЕ: схема новее встроенной —
 			// значит бинарь откатили после неудачного релиза. Для m.Up() такая
@@ -205,21 +258,40 @@ func run() error {
 			// ровно обратное — внятную ошибку при старте. AUTO_MIGRATE включён
 			// по умолчанию, так что до этой правки обещание не выполнялось в
 			// самой частой конфигурации.
-			if err := db.CheckSchemaCurrent(cfg.PostgresDSN); err != nil {
+			if err := db.CheckSchemaCurrent(ctx, pg, cfg.PostgresDSN); err != nil {
 				return err
 			}
-			if err := db.CheckSchemaCurrentCH(cfg.ClickHouseDSN); err != nil {
+			if err := db.CheckSchemaCurrentCH(ctx, pg, cfg.ClickHouseDSN); err != nil {
 				return err
 			}
 		} else {
 			// RA-8: без авто-миграции app не должен стартовать на отставшей схеме
 			// (иначе insert падает на каждой вставке → тихий дроп телеметрии).
 			// Проверяем и PG, и CH (audit-3: CH-схема тоже нуждается в гейте).
-			if err := db.CheckSchemaCurrent(cfg.PostgresDSN); err != nil {
+			if err := db.CheckSchemaCurrent(ctx, pg, cfg.PostgresDSN); err != nil {
 				return err
 			}
-			if err := db.CheckSchemaCurrentCH(cfg.ClickHouseDSN); err != nil {
+			if err := db.CheckSchemaCurrentCH(ctx, pg, cfg.ClickHouseDSN); err != nil {
 				return err
+			}
+		}
+		// Расхождение сроков хранения между репликами перестаёт быть невидимым:
+		// TTL — свойство инсталляции, а задаётся окружением каждой реплики, и
+		// каждый переброс запускает пересчёт по всем кускам таблицы.
+		if changes, err := db.RecordRetention(ctx, pg, map[string]int{
+			"events":   cfg.RetentionDays,
+			"spans":    cfg.SpanRetentionDays,
+			"metrics":  cfg.MetricRetentionDays,
+			"profiles": cfg.ProfileRetentionDays,
+		}); err != nil {
+			return err
+		} else {
+			for _, c := range changes {
+				if c.Changed() {
+					slog.Warn("retention changed for the whole instance; ALTER TABLE MODIFY TTL "+
+						"rewrites every part. If replicas disagree, they will flip it back and forth",
+						"retention", c.Key, "previous_days", c.Previous, "new_days", c.Current)
+				}
 			}
 		}
 		if err := db.ApplyRetention(ctx, ch, cfg.RetentionDays); err != nil {
@@ -254,7 +326,12 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthHandler(pg, ch))
+	// Живость и готовность — разные вопросы, поэтому и разные ручки. /healthz
+	// на liveness-пробе больше не перезапускает живой процесс из-за упавшего
+	// хранилища, а /readyz честно говорит балансировщику и healthcheck'у
+	// контейнера, что писать пока некуда.
+	mux.HandleFunc("GET /healthz", livenessHandler(pg, ch))
+	mux.HandleFunc("GET /readyz", readinessHandler(pg, ch))
 	mux.HandleFunc("GET /version", versionHandler())
 
 	// Самотелеметрия. Роут регистрируется здесь, а метрики добавляются ниже по
@@ -265,6 +342,12 @@ func run() error {
 	// только счётчики буферов и потерь. И, в отличие от /healthz, ни одного
 	// обращения к БД: /metrics обязан отвечать именно тогда, когда БД лежит.
 	var selfMetrics selfmetrics.Registry
+	// Граница, о которой нельзя узнать, — не граница: потолок кучи виден в
+	// метриках рядом с буферами, которые в него упираются. 0 означает «потолка
+	// нет» (контейнер без лимита или запуск не в контейнере).
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_memory_limit_bytes",
+		"Heap ceiling in effect (GOMEMLIMIT), derived from the container limit; 0 when unlimited.",
+		nil, func() int64 { return memLimitBytes })
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_build_info",
 		"Build metadata; the value is always 1, the version lives in the label.",
 		map[string]string{"version": version.String(), "mode": cfg.Mode},
@@ -484,7 +567,30 @@ func run() error {
 		} else {
 			slog.Warn("GOTCHA_SMTP_HOST is not set, email alert channels are disabled")
 		}
-		notifyWorker := &notify.Worker{Outbox: outbox, Senders: senders}
+		// Наблюдение за доставкой. До него «алерт не пришёл» диагностировался
+		// грепом логов, причём janitor через семь дней удалял улику.
+		notifyStats := &notify.Stats{}
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_notify_sent_total",
+			"Notifications delivered successfully.", nil, notifyStats.Sent)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_notify_failed_total",
+			"Notifications given up on after exhausting retries.", nil, notifyStats.Failed)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_notify_retried_total",
+			"Delivery attempts that failed and were rescheduled.", nil, notifyStats.Retried)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_pending_jobs",
+			"Notifications waiting to be delivered.", nil, notifyStats.Pending)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_failed_jobs",
+			"Notifications in the queue that will not be retried again.", nil, notifyStats.FailedJobs)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_oldest_pending_age_seconds",
+			"Age of the oldest notification still waiting; the number that tells a quiet queue from a stuck one.",
+			nil, notifyStats.OldestPendingAgeSeconds)
+		go notifyStats.RunSnapshots(ctx, outbox)
+
+		notifyWorker := &notify.Worker{
+			Outbox:      outbox,
+			Senders:     senders,
+			Concurrency: cfg.NotifyConcurrency,
+			Stats:       notifyStats,
+		}
 		// Секрет канала воркер достаёт по channel_id в момент отправки: в
 		// payload задачи его больше нет (см. notify.SecretResolver). Проверка
 		// на nil обязательна — присваивание nil-указателя *alert.Service в
@@ -515,6 +621,25 @@ func run() error {
 			Retention: time.Duration(cfg.OutboxRetentionDays) * 24 * time.Hour,
 		}
 		go outboxJanitor.Run(ctx)
+	}
+
+	// Ретенция сущностей PostgreSQL. GOTCHA_RETENTION_DAYS вытеснял только
+	// телеметрию из ClickHouse: группы, инциденты и регрессии в PostgreSQL
+	// жили вечно, и список проблем показывал группы, событий которых уже нет.
+	//
+	// Гейт по наличию ресурса, а не по режиму: сущности переживают срок
+	// хранения независимо от того, какие роли развёрнуты. Одновременный запуск
+	// на нескольких репликах безопасен — проход берёт advisory-лок и на
+	// занятом молча уступает.
+	if pg != nil && cfg.RetentionDays > 0 {
+		entityJanitor := &telemetry.EntityJanitor{
+			Pool:      pg,
+			Retention: time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+		}
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_entities_purged_total",
+			"Rows deleted from PostgreSQL because they outlived GOTCHA_RETENTION_DAYS.",
+			nil, entityJanitor.Purged)
+		go entityJanitor.Run(ctx)
 	}
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
@@ -577,9 +702,15 @@ func run() error {
 			"Bytes held by tasks waiting in the ingest pipeline queue.", nil, pipeline.QueuedBytes)
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queue_capacity",
 			"Ingest pipeline queue capacity.", nil, pipeline.QueueCap)
-		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_pipeline_dropped_tasks_total",
-			"Tasks dropped by the ingest pipeline: queue full, or the handler panicked.",
-			nil, pipeline.Dropped)
+		// По метрике на причину. Общий счётчик не различал переполнение
+		// очереди (лечится размером очереди и числом воркеров) и отказ
+		// хранилища (не лечится ничем из этого) — а видел оператор одно число.
+		for _, reason := range ingest.DropReasons() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_pipeline_dropped_tasks_total",
+				"Tasks dropped by the ingest pipeline. These are lost for good; the reason label says why.",
+				map[string]string{"reason": string(reason)},
+				func() int64 { return pipeline.DroppedBy(reason) })
+		}
 		pipeline.Alerts = evaluator
 		pipeline.Spans = spanWriter
 		pipeline.Perf = trace.NewIssueService(pg)
@@ -616,6 +747,12 @@ func run() error {
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_cardinality_collapsed_total",
 			"Field values collapsed into the overflow bucket because a project hit its cardinality limit.",
 			nil, cardinality.CollapsedTotal)
+		// Сколько памяти держит сама защита. Без этого числа её собственная
+		// граница существовала только в виде произведения потолков — четырёх
+		// миллиардов строк, то есть сотен гигабайт.
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_cardinality_tracked_values",
+			"Distinct field values the cardinality guard is remembering right now.",
+			nil, cardinality.TrackedValues)
 		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
@@ -690,8 +827,15 @@ func run() error {
 	// режет slow-header, ReadTimeout — slow-body, WriteTimeout — медленного
 	// читателя, IdleTimeout закрывает простаивающие keep-alive.
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           mux,
+		Addr: cfg.Addr,
+		// Базовые заголовки — свойство СЕРВЕРА, а не одного поддерева роутов.
+		// web.securityHeaders оборачивает только «/», а приём, /healthz,
+		// /readyz, /version и /metrics регистрируются на корневом mux и по
+		// правилам Go 1.22 перекрывают его — то есть отвечали без nosniff, и
+		// это при Access-Control-Allow-Origin: * на приёме. Защита держалась на
+		// том, что json.Encoder экранирует HTML, то есть на поведении
+		// библиотеки, а не на заголовке.
+		Handler:           baseSecurityHeaders(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -819,7 +963,6 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	// скользящей базой → инцидент + алерт через общий outbox. Та же ниша,
 	// что regression/metric-оценщики; alertSvc/outbox/emailSender/pg/ch в scope.
 	profileRegEval := &profile.RegressionEvaluator{
-		Pool:        pg,
 		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pg),
 		Notifier: &profile.RegressionNotifier{

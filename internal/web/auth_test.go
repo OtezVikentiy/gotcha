@@ -25,6 +25,10 @@ type stack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
 	h    *web.Handler
+	// mux — тот же роутер, что обслуживает srv. Нужен тестам, которые
+	// проверяют РЕГИСТРАЦИЮ маршрута, а не только код ответа: 404 одинаково
+	// возвращают и «обработчик отверг битый id», и «такого маршрута нет».
+	mux *http.ServeMux
 }
 
 func newStack(t *testing.T) *stack {
@@ -56,7 +60,7 @@ func newStack(t *testing.T) *stack {
 	h.Outbox = notify.NewOutbox(pool)
 	h.Register(mux)
 
-	return &stack{pool: pool, srv: srv, h: h}
+	return &stack{pool: pool, srv: srv, h: h, mux: mux}
 }
 
 // noRedirectClient не следует за редиректами, чтобы можно было проверить

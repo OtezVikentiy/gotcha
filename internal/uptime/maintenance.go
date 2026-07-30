@@ -266,16 +266,6 @@ func windowIntervalsOne(w Window, from, to time.Time) []Interval {
 	if err != nil {
 		return nil
 	}
-	startH, startM, err := parseHHMM(w.StartTime)
-	if err != nil {
-		return nil
-	}
-	endH, endM, err := parseHHMM(w.EndTime)
-	if err != nil {
-		return nil
-	}
-	crossesMidnight := endH*60+endM <= startH*60+startM
-
 	// Walk every calendar day (in the window's own timezone) that could
 	// possibly produce an occurrence overlapping [from, to): a day before
 	// from's local date can still bleed in via a midnight-crossing window,
@@ -287,13 +277,14 @@ func windowIntervalsOne(w Window, from, to time.Time) []Interval {
 	var out []Interval
 	for !cur.After(end) {
 		if int(cur.Weekday()) == w.Weekday {
-			start := time.Date(cur.Year(), cur.Month(), cur.Day(), startH, startM, 0, 0, loc)
-			occEnd := time.Date(cur.Year(), cur.Month(), cur.Day(), endH, endM, 0, 0, loc)
-			if crossesMidnight {
-				occEnd = occEnd.AddDate(0, 0, 1)
-			}
-			if iv, ok := clipInterval(start, occEnd, from, to); ok {
-				out = append(out, iv)
+			// Границы вхождения — из windowOccurrence, того же источника, что у
+			// windowActive: два независимых вычисления одного правила
+			// разъезжались в ночь перевода часов.
+			start, occEnd := windowOccurrence(w, cur, loc)
+			if !start.IsZero() {
+				if iv, ok := clipInterval(start, occEnd, from, to); ok {
+					out = append(out, iv)
+				}
 			}
 		}
 		cur = cur.AddDate(0, 0, 1)
@@ -320,6 +311,65 @@ func clipInterval(start, end, from, to time.Time) (Interval, bool) {
 	return Interval{From: start, To: end}, true
 }
 
+// windowDuration — сколько окно длится по НАСТЕННЫМ часам. Плюс сутки, если
+// конец не позже начала: окно переходит через полночь.
+//
+// Длительность существует как отдельная величина потому, что в ночь перевода
+// часов пара «начало–конец» перестаёт задавать её однозначно: несуществующие
+// 02:00 нормализуются в 03:00, и окно 02:00–04:00 схлопывалось до часа.
+func windowDuration(w Window) time.Duration {
+	sh, sm, err := parseHHMM(w.StartTime)
+	if err != nil {
+		return 0
+	}
+	eh, em, err := parseHHMM(w.EndTime)
+	if err != nil {
+		return 0
+	}
+	d := time.Duration(eh-sh)*time.Hour + time.Duration(em-sm)*time.Minute
+	if d <= 0 {
+		d += 24 * time.Hour
+	}
+	return d
+}
+
+// earliestOccurrence — первое вхождение настенного времени в этот календарный
+// день.
+//
+// time.Date для удвоенного часа осеннего перевода возвращает вхождение ПОСЛЕ
+// перевода стрелок, и окно начиналось на час позже, чем назначил оператор.
+// Совпадение настенного времени двух моментов, разнесённых на час, и означает
+// удвоенный час — отступаем на него назад. Одного шага довольно: переводы часов
+// в базе tzdata кратны часу.
+func earliestOccurrence(day time.Time, hour, minute int, loc *time.Location) time.Time {
+	y, m, d := day.In(loc).Date()
+	t := time.Date(y, m, d, hour, minute, 0, 0, loc)
+	if prev := t.Add(-time.Hour); prev.Hour() == t.Hour() && prev.Minute() == t.Minute() {
+		return prev
+	}
+	return t
+}
+
+// windowOccurrence — границы вхождения окна в указанный календарный день его
+// пояса. Единственный источник этих границ: раньше правило перехода через
+// полночь было записано отдельно в windowActive и в windowIntervalsOne, а такие
+// пары разъезжаются — эта и разъехалась в ночь перевода часов.
+//
+// Нулевое начало означает «окно не разбирается» (битое время в конфиге);
+// вызывающий такое вхождение пропускает.
+func windowOccurrence(w Window, day time.Time, loc *time.Location) (time.Time, time.Time) {
+	sh, sm, err := parseHHMM(w.StartTime)
+	if err != nil {
+		return time.Time{}, time.Time{}
+	}
+	d := windowDuration(w)
+	if d <= 0 {
+		return time.Time{}, time.Time{}
+	}
+	start := earliestOccurrence(day, sh, sm, loc)
+	return start, start.Add(d)
+}
+
 func windowActive(w Window, at time.Time) (bool, error) {
 	if !w.Weekly {
 		if w.StartsAt == nil || w.EndsAt == nil {
@@ -332,29 +382,27 @@ func windowActive(w Window, at time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Проверяем вхождения сегодняшнего и вчерашнего дня: окно могло начаться
+	// вчера и тянуться через полночь. Двух дней довольно — длительность окна
+	// меньше суток по построению windowDuration.
+	//
+	// Арифметики по минутам здесь больше нет. Она и была вторым, независимым
+	// изложением правила о переходе через полночь (включая prevWeekday, чьё имя
+	// вычисляло СЛЕДУЮЩИЙ день), и расходилась с windowIntervalsOne в ночь
+	// перевода часов.
 	local := at.In(loc)
-	startH, startM, err := parseHHMM(w.StartTime)
-	if err != nil {
-		return false, err
-	}
-	endH, endM, err := parseHHMM(w.EndTime)
-	if err != nil {
-		return false, err
-	}
-	startMinutes := startH*60 + startM
-	endMinutes := endH*60 + endM
-	nowMinutes := local.Hour()*60 + local.Minute()
-	weekday := int(local.Weekday()) // Sunday=0..Saturday=6, matches the DB convention
-
-	if endMinutes <= startMinutes {
-		// Window spans midnight (e.g. 23:00-01:00): active either from
-		// start_time to midnight on the configured weekday, or from
-		// midnight to end_time on the following day.
-		if weekday == w.Weekday && nowMinutes >= startMinutes {
+	for _, dayOffset := range []int{0, -1} {
+		day := local.AddDate(0, 0, dayOffset)
+		if int(day.Weekday()) != w.Weekday {
+			continue
+		}
+		start, end := windowOccurrence(w, day, loc)
+		if start.IsZero() {
+			return false, fmt.Errorf("uptime: window %d: cannot resolve occurrence", w.ID)
+		}
+		if !at.Before(start) && at.Before(end) {
 			return true, nil
 		}
-		prevWeekday := (w.Weekday + 1) % 7
-		return weekday == prevWeekday && nowMinutes < endMinutes, nil
 	}
-	return weekday == w.Weekday && nowMinutes >= startMinutes && nowMinutes < endMinutes, nil
+	return false, nil
 }

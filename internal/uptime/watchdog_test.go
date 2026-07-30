@@ -51,7 +51,7 @@ func TestWatchdogHeartbeatOpensIncidentOnStaleBeat(t *testing.T) {
 	// fail_threshold=1 — a single missed-beat tick is enough to reach "down"
 	// (see task brief: "один тик = одна неудача").
 	m := baseHeartbeatMonitor(t, pid, 1, 60)
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", created.ID); err != nil {
@@ -97,7 +97,7 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	fresh := mustCreateMonitor(t, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
+	fresh := mustCreateMonitor(t, pool, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() WHERE id = $1", fresh.ID); err != nil {
 		t.Fatalf("set last_beat_at: %v", err)
@@ -109,7 +109,7 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	// упавший Run, изменившийся запрос выборки). «Ничего не произошло» — это
 	// утверждение о бездействии, и оно чего-то стоит только рядом с
 	// доказательством, что действовать было кому.
-	stale := mustCreateMonitor(t, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
+	stale := mustCreateMonitor(t, pool, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", stale.ID); err != nil {
 		t.Fatalf("backdate last_beat_at: %v", err)
@@ -155,7 +155,7 @@ func TestWatchdogSSLExpiringNotifiesLargestUnalertedThresholdOnce(t *testing.T) 
 	m := baseHTTPMonitor(pid)
 	m.SSLAlertDays = 14
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	// Pin daysLeft deterministically to 5: ceil((expires-now)/24h) == 5 for
 	// anything in (4d, 5d] from now.
@@ -245,7 +245,7 @@ func TestWatchdogReminderNotifiesAndTouchesOnce(t *testing.T) {
 	m.FailThreshold = 1
 	m.RemindEveryMinutes = 10
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier}
@@ -308,7 +308,7 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 	sslMon := baseHTTPMonitor(pid)
 	sslMon.SSLAlertDays = 14
 	sslMon.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	createdSSL := mustCreateMonitor(t, svc, ctx, sslMon, []string{"local"})
+	createdSSL := mustCreateMonitor(t, pool, svc, ctx, sslMon, []string{"local"})
 	expires := time.Now().UTC().Add(4*24*time.Hour + 12*time.Hour) // daysLeft == 5
 	if err := svc.SetSSLExpiry(ctx, createdSSL.ID, expires); err != nil {
 		t.Fatalf("SetSSLExpiry: %v", err)
@@ -319,7 +319,7 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 	remMon.FailThreshold = 1
 	remMon.RemindEveryMinutes = 10
 	remMon.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	createdRem := mustCreateMonitor(t, svc, ctx, remMon, []string{"local"})
+	createdRem := mustCreateMonitor(t, pool, svc, ctx, remMon, []string{"local"})
 	d := &uptime.Detector{Svc: svc, Notifier: nil}
 	applyAndDetect(t, ctx, svc, d, createdRem, "local", false, "boom", time.Now().UTC(), nil)
 	assertOpenIncident(t, ctx, svc, createdRem.ID)
@@ -334,7 +334,7 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 	// состоялся» именно в этом тесте. Без него утверждения ниже («ничего не
 	// помечено доставленным») остались бы зелёными и в случае, когда watchdog не
 	// тикнул ни разу.
-	beatMon := mustCreateMonitor(t, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
+	beatMon := mustCreateMonitor(t, pool, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", beatMon.ID); err != nil {
 		t.Fatalf("backdate last_beat_at: %v", err)
@@ -380,7 +380,7 @@ func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
 
 	pid := newProject(t, pool)
 	m := baseHeartbeatMonitor(t, pid, 1, 60)
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"local"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", created.ID); err != nil {

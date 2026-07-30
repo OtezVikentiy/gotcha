@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новый skip-индекс)
 -- Skip-индексы на events.trace_id (ByTraceID — waterfall) и events.event_id
 -- (EventByID — глубокие ?event=-ссылки). Оба вне первичного ключа (ORDER BY
 -- project_id, issue_id, timestamp), поэтому поиск сканирует все события проекта.

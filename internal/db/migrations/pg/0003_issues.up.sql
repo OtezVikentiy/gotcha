@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новые таблицы и индексы)
 CREATE TABLE issues (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id  bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

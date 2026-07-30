@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новые таблицы плюс ADD COLUMN с дефолтами)
 -- kind: 'n_plus_one' | 'slow_db_query' | 'http_flood' (детекторы, спека §5)
 CREATE TABLE perf_issues (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

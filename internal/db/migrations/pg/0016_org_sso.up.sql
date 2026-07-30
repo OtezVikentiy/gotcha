@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица)
 -- Этап 10 (enterprise-SSO): организация привязывает свой OIDC-IdP (конфиг в БД,
 -- не env). domain — email-домен организации (identifier-first вход + принуждение);
 -- один домен за одной организацией. enforced=true → юзеры домена обязаны входить

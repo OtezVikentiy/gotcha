@@ -114,14 +114,19 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	if w.Weekly {
 		return i18n.T(ctx, weekdayLabelKey(w.Weekday)) + " " + w.StartTime + "–" + w.EndTime + " (" + w.Timezone + ")"
 	}
+	// Время показывается В ПОЯСЕ ОКНА. Раньше здесь стоял RFC3339 от значения
+	// в UTC, а рядом подписывался пояс окна: «2026-07-31T00:00:00Z
+	// (Europe/Moscow)» — число одного пояса под именем другого. Соседняя
+	// функция этого же файла переводила время честно.
+	loc := LocationOrUTC(w.Timezone)
 	starts, ends := "?", "?"
 	if w.StartsAt != nil {
-		starts = w.StartsAt.Format(time.RFC3339)
+		starts = FormatTime(*w.StartsAt, loc)
 	}
 	if w.EndsAt != nil {
-		ends = w.EndsAt.Format(time.RFC3339)
+		ends = FormatTime(*w.EndsAt, loc)
 	}
-	return starts + " → " + ends + " (" + w.Timezone + ")"
+	return starts + " → " + ends
 }
 
 templ maintenanceTimezoneOption(tz string, selected bool) {

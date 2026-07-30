@@ -18,6 +18,12 @@ type TimeRangeVM struct {
 	// Start/End — value= для полей произвольного диапазона; пусты на пресетах.
 	Start string
 	End   string
+	// AllowAll — показывать пункт «за всё время».
+	//
+	// Осмыслен не везде: у графика без границ нет оси. Список проблем, наоборот,
+	// без него бесполезен — большинство групп старше суток, и окно по умолчанию
+	// прятало бы их за фильтр.
+	AllowAll bool
 }
 
 // apply переносит текущее окно в query-параметры ссылки, чтобы соседние
@@ -25,10 +31,19 @@ type TimeRangeVM struct {
 // выбранный диапазон, а не сбрасывали его на дефолт. Для произвольного
 // диапазона несёт period=custom + start/end, для пресета — только period.
 func (r TimeRangeVM) apply(q url.Values) {
+	if r.Key == "all" {
+		q.Set("period", "all")
+		return
+	}
 	if r.Custom {
 		q.Set("period", "custom")
 		q.Set("start", r.Start)
 		q.Set("end", r.End)
+		return
+	}
+	if r.Key == "" {
+		// Пустой ключ — это «состояние не задано», а не окно: писать
+		// «period=» в ссылку значит превращать чистый адрес в мусорный.
 		return
 	}
 	q.Set("period", r.Key)
@@ -87,6 +102,9 @@ templ timeRangeFields(r TimeRangeVM) {
 		data-l-next={ i18n.T(ctx, "range.picker.next_month") }
 	>
 		<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
+			if r.AllowAll {
+				@timeRangePresetOpt("all", r)
+			}
 			for _, p := range []string{"1h", "24h", "7d", "30d"} {
 				@timeRangePresetOpt(p, r)
 			}

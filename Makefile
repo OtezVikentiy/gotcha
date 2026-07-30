@@ -67,8 +67,8 @@ db-connect: ## psql into PostgreSQL
 ch-connect: ## clickhouse-client into ClickHouse
 	docker compose exec -i -t clickhouse clickhouse-client --user gotcha --password gotcha --database gotcha
 
-health: ## Check /healthz of the running app
-	@curl -sf http://localhost:$(GOTCHA_PORT)/healthz && echo || (echo "app is down"; exit 1)
+health: ## Check /readyz of the running app
+	@curl -sf http://localhost:$(GOTCHA_PORT)/readyz && echo || (echo "app is down"; exit 1)
 
 open: ## Print the app URL
 	@echo "http://localhost:$(GOTCHA_PORT)"

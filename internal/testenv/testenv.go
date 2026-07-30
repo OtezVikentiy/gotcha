@@ -30,10 +30,37 @@ import (
 const (
 	postgresImage   = "postgres:17-alpine"
 	clickhouseImage = "clickhouse/clickhouse-server:25.3-alpine"
-
-	postgresReuseName   = "gotcha-test-postgres"
-	clickhouseReuseName = "gotcha-test-clickhouse"
 )
+
+// Имена переиспользуемых контейнеров несут версию образа.
+//
+// Раньше имя было постоянным («gotcha-test-postgres»), и после бампа версии
+// образа тесты молча переиспользовали СТАРЫЙ контейнер: весь набор проверял не
+// тот движок, который поедет в прод, и узнать об этом было неоткуда. Версия в
+// имени делает контейнер другим объектом — старый остаётся, новый создаётся.
+var (
+	postgresReuseName   = reuseName("postgres", postgresImage)
+	clickhouseReuseName = reuseName("clickhouse", clickhouseImage)
+)
+
+// reuseName собирает имя вида gotcha-test-postgres-17-alpine.
+func reuseName(role, image string) string {
+	tag := image
+	if i := strings.LastIndex(image, ":"); i >= 0 {
+		tag = image[i+1:]
+	}
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, tag)
+	return "gotcha-test-" + role + "-" + safe
+}
 
 var (
 	pgOnce sync.Once

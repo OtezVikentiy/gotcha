@@ -16,7 +16,7 @@ The form starts with a **check type** picker — HTTP, TCP, DNS, or Heartbeat. E
 
 | Type | What it checks | Fields |
 |---|---|---|
-| **HTTP** | An HTTP(S) request to a URL; success is the response code and, optionally, body content | Method (GET/POST/HEAD), URL, Headers, Body, Expected status (comma-separated codes; empty = any 200–299), Body contains / Body not contains, Follow redirects, SSL alert days |
+| **HTTP** | An HTTP(S) request to a URL; success is the response code and, optionally, body content | Method (GET/POST/HEAD), URL, Headers, Body, Expected status (comma-separated codes; empty = any 200–299), Body contains / Body not contains, Follow redirects, SSL alert (days before certificate expiry to warn) |
 | **TCP** | Whether a TCP connection to host:port succeeds | Host, Port (1–65535) |
 | **DNS** | Whether a name resolves and, optionally, matches an expected value | Hostname, Record type (A/AAAA/CNAME/MX/TXT), Expected value (optional) |
 | **Heartbeat** | The reverse of the others: instead of Gotcha reaching out, your own application "checks in" periodically by pinging a dedicated URL. If it hasn't checked in within the *grace* period, the monitor is considered down | Grace seconds (60 or more) |

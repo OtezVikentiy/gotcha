@@ -83,16 +83,11 @@ How many days ClickHouse keeps each kind of data before deleting old rows. Lower
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_RETENTION_DAYS` | `90` | Retention for events (errors), transactions, and Web Vitals. |
+| `GOTCHA_RETENTION_DAYS` | `90` | Retention for events (errors), transactions, and Web Vitals, and for summary records in PostgreSQL: issues, closed incidents, and regressions (see [Privacy](/docs/privacy)). `0` disables deletion. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans (the detail inside transactions). |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points (ingested via OTLP). |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profiling samples (the heaviest data by volume, hence the shorter default). |
 | `GOTCHA_OUTBOX_RETENTION_DAYS` | `7` | Retention for records of already-delivered/failed notifications (email/webhook/Telegram) in PostgreSQL. Deliberately short: this is a working queue rather than an archive: it lives in PostgreSQL and grows with notification volume. |
-| `GOTCHA_ALERT_BUDGET_WINDOW_SECONDS` | `3600` | Window of the per-project notification ceiling. |
-| `GOTCHA_ALERT_BUDGET_LIMIT` | `50` | How many notifications a project may send within that window. Rule throttling keys on (issue, rule), and a brand-new issue has no throttle row — so a sender using a unique `fingerprint` per event got one notification per event. Suppressed alerts are not lost: once the window closes a digest reports "N alerts suppressed". `0` disables the ceiling entirely. |
-| `GOTCHA_CARDINALITY_LIMIT` | `10000` | Cap on DISTINCT values of open-ended fields (transaction name, environment, metric name, service, span operation) per project per window. Values beyond the cap are grouped under `<cardinality-limit>` rather than dropped; the affected page shows which field hit the cap and examples of the grouped values. The cause is almost always an identifier inside a name — see [Cardinality](/docs/cardinality). `0` removes the limit. |
-| `GOTCHA_CARDINALITY_WINDOW_SECONDS` | `3600` | Window after which the set of distinct values starts fresh, so a project that fixed its names recovers on its own. |
-| `GOTCHA_RUN_EVALUATORS` | by mode | Whether to run the periodic evaluators: performance regressions, metric alert rules, profile regressions. They ship with `uptime` and `all` by default, although they have nothing to do with uptime. In a `web`+`ingest` split (no uptime in use) a metric alert rule looks enabled and **never fires** — set this on exactly one replica. A warning is logged at startup in modes without evaluators. |
 
 Retention changes apply on the next application start (the value is used to set a TTL on the ClickHouse tables) — data already deleted doesn't come back retroactively.
 
@@ -108,8 +103,6 @@ Retention changes apply on the next application start (the value is used to set 
 | `GOTCHA_MAX_EVENT_BYTES` | `1048576` (1 MiB) | Maximum size, in bytes, of a single ingested event. Larger events are rejected. |
 | `GOTCHA_MAX_BUFFER_BYTES` | `268435456` (256 MiB) | Byte ceiling for EACH ClickHouse writer buffer (events, spans, metrics, profiles, check results). Buffers grow while ClickHouse is unavailable so a short outage does not lose telemetry; this bounds the price of that. Five writers at the default add up to 1.25 GiB, so on a 2 GB server lower it — see `docker-compose.small.yml`. |
 | `GOTCHA_MAX_QUEUE_BYTES` | `67108864` (64 MiB) | Byte ceiling for the ingest queue, on top of its capacity of 1000 tasks. A single event carries up to four raw JSON blocks of 256 KiB each — up to a megabyte — so without this the queue could hold roughly a gigabyte. On exhaustion the event is dropped and counted in `gotcha_pipeline_dropped_tasks_total`; the current size is `gotcha_pipeline_queued_bytes`. |
-| `GOTCHA_METRIC_EVAL_INTERVAL` | `60` | How often (seconds) metric threshold alert rules are evaluated. |
-| `GOTCHA_PROFILE_EVAL_INTERVAL` | `300` | How often (seconds) the profiling regression detector runs. |
 
 **When you must change the quotas:** `0` (unlimited) in the oss edition is a **deliberate choice for a private self-hosted instance** where the DSN never leaks. If a project's DSN ends up in publicly reachable code (e.g. your website's frontend JS), anyone can send it an unbounded volume of events — both an abuse vector and a risk of filling up ClickHouse's disk. In that case, set real numbers, e.g.:
 
@@ -130,9 +123,32 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_SCRUB_EMAIL` | `true` | Zeroes the reporting user's email before storage. |
 | `GOTCHA_SCRUB_KEYS` | built-in list (`password,passwd,token,secret,authorization,auth,cookie,api_key,apikey,access_token,refresh_token,session,credit_card,card_number,cvv`) | Comma-separated, case-insensitive key names whose values get redacted in tags/contexts/stack traces/span data. This variable **extends** the built-in list rather than replacing it, so adding your own key (e.g. `internal_user_id`) takes one value and does not require re-listing the standard ones. To drop a specific built-in key, name it exactly in `GOTCHA_SCRUB_ALLOW_KEYS`. |
 | `GOTCHA_SCRUB_ALLOW_KEYS` | empty | Comma-separated exact names to exempt from the denylist. Matching is deliberately fail-closed — a name is redacted when it *contains* a denylist word, so `author` (contains `auth`) and `tokenizer` (contains `token`) are redacted by default. Under-redacting leaks personal data; over-redacting only costs a debugging field, and this setting brings it back: `GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer`. |
+| `GOTCHA_SCRUB_FREETEXT` | `false` | Additionally masks email addresses found in free text (error message, exception value, span description). Off by default on purpose: naive masking can corrupt SQL or URLs embedded in error text. Only emails are masked, not phone numbers or other kinds of personal data. |
+
+
+## Limits and evaluators
+
+Ceilings that protect the instance from a flood, plus how often the background evaluators run. These bound WORK, not storage — which is why they no longer sit under Retention and Quotas.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_NOTIFY_CONCURRENCY` | `4` | How many notifications are delivered at once. One slow channel (a dead webhook waits up to 30 seconds) no longer holds up the rest. |
+| `GOTCHA_ALERT_BUDGET_WINDOW_SECONDS` | `3600` | Window of the per-project notification ceiling. |
+| `GOTCHA_ALERT_BUDGET_LIMIT` | `50` | How many notifications a project may send within that window. Rule throttling keys on (issue, rule), and a brand-new issue has no throttle row — so a sender using a unique `fingerprint` per event got one notification per event. Suppressed alerts are not lost: once the window closes a digest reports "N alerts suppressed". `0` disables the ceiling entirely. |
+| `GOTCHA_CARDINALITY_LIMIT` | `10000` | Cap on DISTINCT values of open-ended fields (transaction name, environment, metric name, service, span operation) per project per window. Values beyond the cap are grouped under `<cardinality-limit>` rather than dropped; the affected page shows which field hit the cap and examples of the grouped values. The cause is almost always an identifier inside a name — see [Cardinality](/docs/cardinality). `0` removes the limit. |
+| `GOTCHA_CARDINALITY_WINDOW_SECONDS` | `3600` | Window after which the set of distinct values starts fresh, so a project that fixed its names recovers on its own. |
+| `GOTCHA_RUN_EVALUATORS` | by mode | Whether to run the periodic evaluators: performance regressions, metric alert rules, profile regressions. They ship with `uptime` and `all` by default, although they have nothing to do with uptime. In a `web`+`ingest` split (no uptime in use) a metric alert rule looks enabled and **never fires** — set this on exactly one replica. A warning is logged at startup in modes without evaluators. |
+| `GOTCHA_METRIC_EVAL_INTERVAL` | `60` | How often (seconds) metric threshold alert rules are evaluated. |
+| `GOTCHA_PROFILE_EVAL_INTERVAL` | `300` | How often (seconds) the profiling regression detector runs. |
+
+## Observability and logs
+
+Detail level and format of the instance's own logs.
+
+| Variable | Default | Description |
+|---|---|---|
 | `GOTCHA_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn` or `error`. Raise it to `debug` to get more detail during an incident without rebuilding. |
 | `GOTCHA_LOG_FORMAT` | `text` | Log format: `text` or `json`. Use `json` when shipping logs to Loki/ELK. |
-| `GOTCHA_SCRUB_FREETEXT` | `false` | Additionally masks email addresses found in free text (error message, exception value, span description). Off by default on purpose: naive masking can corrupt SQL or URLs embedded in error text. Only emails are masked, not phone numbers or other kinds of personal data. |
 
 ## Security
 
@@ -141,7 +157,7 @@ Server-side removal of personal data before storage — on by default.
 | `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs session and OAuth state cookies. **The default is public** (it's in the source code) — leaving it on a real server allows account takeover via OAuth login. On a non-localhost `GOTCHA_BASE_URL`, the app refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) until a real key is set, and requires it to be **at least 32 bytes** (a shorter key is a weak signature). Generate one with `openssl rand -hex 32`. Both checks can be waived for an unusual dev setup with `GOTCHA_ALLOW_INSECURE_SECRET=1`. See [Installation](/docs/installation), step 6, for the full walkthrough. |
 | `GOTCHA_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs (`10.0.0.0/8`) and/or bare IPs (`192.168.1.5`, treated as `/32` or `/128`) of reverse proxies you trust. Behind a proxy (the recommended [install](/docs/installation) topology), set this to the proxy's address so the per-IP login rate limiter keys on the real client IP from `X-Forwarded-For` instead of the proxy's — otherwise every login attempt looks like it comes from the proxy and the limiter can't tell clients apart. Invalid entries are a startup error, not a silent skip. |
 | `GOTCHA_ALLOW_INSECURE_SECRET` | `false` | Escape hatch that bypasses the check above — lets the app start with the default key even on a non-localhost address. **Development-only**; never set this on a real deployment. |
-| `GOTCHA_REGISTRATION` | `invite` | Self-registration mode: `open` — anyone can register; `invite` — self-registration is closed, new users can only join via an invite link; `closed` — self-registration is disabled entirely. The very first user on a fresh instance can always register regardless of this setting (instance-admin bootstrap). |
+| `GOTCHA_REGISTRATION` | `invite` | Self-registration mode: `open` — anyone can register; `invite` — an account is created only against a valid invitation (by password or through a provider); `closed` — **no new accounts appear at all, not even with a valid invitation**. That is the difference: under `closed` an invited person hits "registration is closed", and inviting anyone from outside becomes impossible — invitations only work for people who already have an account. The very first user on a fresh instance can always register regardless of this setting (instance-admin bootstrap). |
 | `GOTCHA_SSRF_ALLOW_PRIVATE` | `false` | Allow uptime checks and outbound webhook alert deliveries to target private/loopback/link-local addresses (e.g. `192.168.x.x`, `127.0.0.1`, `169.254.x.x`). Keep this `false` on any instance shared across multiple users/organizations — otherwise one user could set up an "uptime check" or webhook that actually probes your internal network (SSRF). |
 | `GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME` | inherits `GOTCHA_SSRF_ALLOW_PRIVATE` | Allow uptime checks to reach private/loopback addresses. Usually the only one you need: monitoring an internal service is routine, and the target is set by an organization admin. |
 | `GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK` | inherits `GOTCHA_SSRF_ALLOW_PRIVATE` | Allow alert webhooks to reach private addresses. Riskier: up to 1 KB of the target's response is shown on the deliveries page, which turns a webhook into a reader of internal services. |

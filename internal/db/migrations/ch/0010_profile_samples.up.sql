@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица)
 CREATE TABLE profile_samples (
     project_id   UInt64,
     profile_type LowCardinality(String),

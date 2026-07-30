@@ -270,6 +270,31 @@ Authorization: Bearer <PUBLIC_KEY>
 
 `<PUBLIC_KEY>` is the public key part of your project's DSN (the segment between `https://` and `@`), not the full DSN. Most OTel exporters have a built-in way to set headers (`headers:` in a Collector config, `OTEL_EXPORTER_OTLP_METRICS_HEADERS` as an env var). More on metric types, aggregations, and threshold alerts: [Metrics](/docs/metrics).
 
+## Traces (OTLP)
+
+Gotcha accepts transactions and spans over OpenTelemetry as well as over the
+Sentry protocol — the same way it accepts metrics:
+
+```
+POST https://<gotcha_address>/v1/traces
+Authorization: Bearer <PUBLIC_KEY>
+```
+
+This is the path for teams whose tracing already runs on OpenTelemetry: there is
+no need to swap instrumentation for a Sentry SDK, just point the existing
+exporter (or collector) at this address. The spans land in the same
+Transactions and Endpoints views as the ones sent by a Sentry SDK.
+
+Worth knowing:
+
+- the transaction name comes from the root span's name — the usual cardinality
+  rules apply (an identifier in the name turns one endpoint into millions, see
+  [Cardinality](/docs/cardinality));
+- span nesting is preserved, and the waterfall shows the same structure as your
+  trace;
+- profiles are not linked to OTLP traces automatically: the link is built on
+  `trace_id`, so pprof must be sent with the same value.
+
 ## Profiling (pprof)
 
 Besides the profiles a Sentry SDK sends alongside traces (`profiles_sample_rate` in the Python/PHP/JS/Go SDKs), Gotcha also accepts raw pprof profiles directly:
@@ -290,7 +315,7 @@ If an error you sent hasn't shown up under "Issues" after a reasonable wait, che
 |---|---|
 | **Wrong or revoked DSN** | Compare it against what's shown under "Project Settings → DSN keys"; ingest returns `401`/`403` for an unknown or revoked public key. Reissuing a key immediately invalidates the old DSN. |
 | **DSN from a different project** | The `project_id` in the DSN must match the project the key actually belongs to — otherwise ingest returns `403 sentry_key does not match project`. |
-| **Network/firewall** | Your application needs HTTPS/HTTP reachability to your Gotcha instance's address (`GOTCHA_BASE_URL`) — try `curl -i <your-gotcha-host>/healthz` from the same machine/container the app runs on. A corporate proxy or egress firewall can silently drop outbound requests. |
+| **Network/firewall** | Your application needs HTTPS/HTTP reachability to your Gotcha instance's address (`GOTCHA_BASE_URL`) — try `curl -i <your-gotcha-host>/readyz` from the same machine/container the app runs on. A corporate proxy or egress firewall can silently drop outbound requests. |
 | **Event/body too large** | By default ingest caps request bodies at 1 MB (`GOTCHA_MAX_EVENT_BYTES` on the instance); exceeding it returns `413`. This can bite events with very long stack traces or large breadcrumb trails. |
 | **Organization quota exhausted** | Ingest returns `429` with `Retry-After` once the monthly quota is used up; check "Organization settings → Usage & rate limits". The `oss` edition defaults to unlimited (`0`), but the instance admin may have set a cap. |
 | **SDK didn't flush in time** | In short-lived processes (CLI scripts, serverless functions, workers that exit immediately), call `Flush`/`close` before exiting — see the Go and Node examples above; without it, the event buffer may never actually be sent. |

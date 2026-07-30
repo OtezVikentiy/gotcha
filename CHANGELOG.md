@@ -10,6 +10,79 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+### Documentation
+- OTLP trace ingest (`POST /v1/traces`) is documented: it was fully implemented while the SDK page listed protocols exhaustively without naming it, so a team on OpenTelemetry would read that traces require a Sentry SDK.
+- Headings carry anchors, and the anchors are transliterated rather than numbered — a link to a section no longer breaks when a paragraph is inserted above it.
+- The difference between `invite` and `closed` registration is stated: under `closed` no account is created even against a valid invitation.
+- The probe run command no longer references a non-existent `gotcha` image, in the UI as well as in the docs.
+- Corrected: what `GOTCHA_SCRUB_ALLOW_KEYS=email` actually does, the full list of IP field names, the note that allow-keys is checked before the email/IP rules, the backup instructions (materialized views must not be restored), the `/healthz` and `/readyz` split, the evaluator interval being a default rather than a constant, and a field name in the uptime docs.
+- `.env.example` is monolingual again and the scrubbing comment sits with its variables; `configuration.md` gained "Limits and evaluators" and "Observability and logs" sections so variables live where they belong.
+
+### Testing
+- Route tests check that the route is actually registered: 43 of them asserted a 404 that an unregistered path returns just as well, so deleting any registration kept them green.
+- A guard now fails when a key used in code is missing from both catalogs — a page rendering raw keys instead of column headers used to pass the whole suite. Dynamically built keys (issue levels, probe statuses, range presets, help sections, monitor error codes) are pinned by tests that read their value sets from the code.
+- `internal/auth`, `internal/org`, and `cmd/gotcha` have coverage floors; `cmd/*` is measured as its own group rather than diluting the backend number. Thresholds can no longer be lowered by an environment variable — the ratchet is enforced, not agreed upon.
+- Reusable test containers carry the image tag in their name: bumping the PostgreSQL version silently reused the old container, so the whole suite validated a different engine.
+- Template tests assert column order, not just that a substituted value appears somewhere.
+- The Cyrillic-literal guard matches «ё» and no longer treats `catalog.` or `dialog.` as a logging call.
+
+### Accessibility
+- Interactive controls use the contrast-checked border token again. Issue filters, monitor-type tabs, chips, and the language/theme switches had it overridden back to the decorative one — measured 1.40:1 in the dark theme against the 3:1 required by WCAG 1.4.11.
+- Muted text meets 4.5:1 in both themes: "Unassigned" and the weekday headers in the date picker were at 2.70–3.12:1.
+- Error and notice banners take the ink tokens (4.15:1 and 3.65:1 before), user initials and the quota-banner link take a new `--accent-ink` (4.05:1 and 4.45:1 on their pale backgrounds).
+- The auto-dismissing flash leaves the accessibility tree instead of only fading out — keyboard focus used to land on an invisible close button — and its timer pauses while hovered or focused (WCAG 2.2.1).
+- Language and theme switches, and row checkboxes, meet the 24×24 target size (WCAG 2.5.8); they were 33×22, 30×22, and 13×13.
+- The assignee select and the four role selects have accessible names; focus is visible after the skip link; duplicate element ids are gone.
+- Chart colours come from theme tokens rather than a hard-coded brand hex, and gradient ids are unique per document.
+
+### Interface
+- Pending invitations are listed on the organization settings page and can be revoked. Mistype an address and the link went to a stranger — with no way to see it or take it back, though the service could already do it.
+- The issue list uses the same time-range control as every other page, including the hour preset and custom ranges, plus an "all time" option. A window picked on Performance no longer resets when you open Issues.
+- Monitor validation errors are shown in the interface's language and next to the reason, instead of "монитор: uptime: invalid monitor: http url must be a valid http(s) URL".
+- One-off maintenance windows are shown in their own timezone; incident durations and delivery timestamps are shown in words instead of "23m0s" and "2026-07-29T08:22:27Z".
+- Reissuing a heartbeat token now asks for confirmation: it breaks a working cron job and cannot be undone.
+- Consensus options, the search placeholder, the empty-issues title, the heartbeat grace period, and the alert throttle field are no longer English fragments in the Russian interface. Uptime columns no longer carry two names for the same thing.
+- Web Vitals columns state their units in the header rather than only in a hover tooltip.
+- The "Change assignee" control no longer looks disabled; modals close with Escape; soft hyphens no longer break Ctrl+F in the navigation rail; the quota banner breaks the rejected count down by kind; the incidents and teams pages gained the "What is this section?" panel.
+
+### Security
+- `POST /onboarding` now applies the same rule as `GET`: onboarding is for someone who has no project yet. Only the form was gated, so an invited member could create organizations, projects, and ingest keys in a loop.
+- Ingest and service routes (`/healthz`, `/readyz`, `/version`, `/metrics`) answer with `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. They are registered on the root mux and by Go 1.22 routing precedence they shadow `/`, so they bypassed the security-header middleware entirely — while ingest also sends `Access-Control-Allow-Origin: *`.
+- A monitor can only be assigned to a region the organization actually has. The form offered only valid regions, but the POST accepted any string, and a monitor in a region nobody leases is never checked — which looks like "no failures" rather than "no monitoring".
+- The "back" breadcrumb rejects protocol-relative referers in the `/\` form, matching the three sibling functions that already did.
+
+### Performance
+- The spike detector now asks ClickHouse once per rule instead of once per active issue. A project with 10,000 active issues cost 10,000 round trips every minute — and the number of issues is set by whoever sends events, through unique fingerprints.
+- Regression evaluators batch their queries: profiles go from 1 + 2K queries per service to two, and traces from over two hundred per project to six. The profile evaluator also stopped walking every project in the installation — it now works from the services that actually have data.
+- The cardinality guard caps the number of distinct field NAMES per project (200) and the total number of remembered values (about a million, `gotcha_cardinality_tracked_values`). Field names come from the sender just like values do, so "one field per event" bypassed the guard entirely.
+
+### Fixed
+- A public status page never shows more history than is actually retained: the window is capped by `GOTCHA_RETENTION_DAYS`. Shortening retention used to leave the page drawing 90 cells, most of them empty, which reads as a monitoring failure rather than a retention setting.
+- Changing retention now logs a warning naming the old and new values. TTL is a property of the installation but is configured per replica, so replicas that disagree flip it back and forth — and every flip rewrites every part of the table.
+
+### Changed
+- `/healthz` now answers 200 whenever the process serves HTTP, and no longer returns 503 when a database is unreachable. Readiness moved to the new `/readyz`. Pointing a liveness probe at the old behaviour restarted a healthy container on every storage outage, and each restart threw away the buffers that were waiting for storage to come back. Update anything that watches `/healthz` for readiness.
+- Notifications are delivered concurrently (`GOTCHA_NOTIFY_CONCURRENCY`, default 4) and the worker keeps claiming batches while the queue is not empty. One dead webhook holding a 30-second timeout no longer delays every other notification.
+- `gotcha_pipeline_dropped_tasks_total` gained a `reason` label: `queue_full`, `queue_bytes`, `storage_error`, `panic`, `closed`.
+
+### Added
+- Events dropped because PostgreSQL was unavailable are now counted (`reason="storage_error"`). They were only logged, so the documented rule "no drops means events never arrived" sent operators to check their SDK during a database outage.
+- The heap ceiling is derived from the container's memory limit at startup, in any deployment that sets one — compose, Kubernetes, systemd. Go does not read cgroup limits, so buffers used to grow past the limit until the kernel's OOM killer discarded all of them. An explicit `GOMEMLIMIT` still wins. Reported as `gotcha_memory_limit_bytes`.
+- `docker-compose.yml` sets `mem_limit` (1 GB by default, `GOTCHA_MEM_LIMIT` to change) and a container healthcheck; the image gained `HEALTHCHECK`. A hung process used to sit `Up` forever, and there was no readiness signal during first-boot migrations.
+- Delivery metrics: `gotcha_notify_sent_total`, `_failed_total`, `_retried_total`, `gotcha_notify_pending_jobs`, `_failed_jobs`, and `gotcha_notify_oldest_pending_age_seconds` — the last one is what tells an idle queue from a stuck one.
+
+### Fixed
+- Shutting the process down no longer leaves up to five notifications waiting for the claim lease: the result of an attempt that already happened is written regardless of cancellation.
+- The next retry time for a notification is computed by the database clock rather than the process clock.
+
+### Fixed
+- Claim windows for the notification outbox, alert throttling, and the alert budget are now computed by the database clock. A process whose clock ran fast could take another worker's lease and send an alert twice.
+- Weekly maintenance windows keep the duration you configured across daylight-saving transitions. A 02:00–04:00 window collapsed to one hour on the spring transition and started an hour late on the autumn one, missing the first check.
+
+### Added
+- Retention now covers summary records in PostgreSQL: issues and performance issues whose last event is older than `GOTCHA_RETENTION_DAYS`, and closed incidents and regressions. Open incidents are never deleted. Deletions are counted by `gotcha_entities_purged_total`.
+- Schema versions carry a backward-compatibility marker, recorded in the database as migrations are applied. An older binary can now start against a newer schema when every migration it is missing is additive — rolling a release back no longer requires restoring from a backup. See Upgrading.
+
 ## [0.4.1] - 2026-07-27
 
 ### Documentation

@@ -111,17 +111,26 @@ All three rows should show `Up` (`postgres` and `clickhouse` show `Up (healthy)`
 The app listens on host port **59080** by default (see `docker-compose.yml`: `"${GOTCHA_PORT:-59080}:8080"` — the host port is on the left, the container port on the right; a non-standard `59080` was chosen so it doesn't clash with other services on the server). Check the health endpoint:
 
 ```bash
-curl -sf http://localhost:59080/healthz
+curl -sf http://localhost:59080/readyz
 ```
 
-A response like `{"clickhouse":"ok","postgres":"ok"}` with HTTP 200 means the app is alive and both databases are answering it. If curl hangs or errors out, see "Troubleshooting" below.
+A response like `{"status":"ready","clickhouse":"ok","postgres":"ok"}` with HTTP 200 means the app came up and both databases are answering it. If curl hangs or errors out, see "Troubleshooting" below.
+
+There are two endpoints, and they answer different questions:
+
+| Endpoint | Question | When it returns 503 |
+|---|---|---|
+| `/healthz` | is the process alive? | never, as long as it serves HTTP |
+| `/readyz` | is it ready to work? | while PostgreSQL or ClickHouse is unreachable |
+
+The difference matters when configuring an orchestrator: `/healthz` belongs on the liveness probe (restart a hung process), `/readyz` on readiness (stop sending traffic). Point liveness at `/readyz` and a storage outage turns into a restart of a healthy container — and every restart throws away whatever the buffers were holding while they waited for storage to come back.
 
 Ready-made shortcuts exist in the `Makefile` if you prefer `make`:
 
 ```bash
 make up       # docker compose up -d
 make ps       # docker compose ps
-make health   # curl /healthz
+make health   # curl /readyz
 make logs     # docker compose logs -f gotcha (Ctrl+C to exit)
 ```
 
@@ -222,8 +231,8 @@ then `docker compose up -d`. The app inside the container still listens on 8080 
 **Forms, registration or login return `forbidden` (403).**
 Gotcha protects POST requests with an origin check: the request's `Origin`/`Referer` must match `GOTCHA_BASE_URL` by scheme and host. If you open the UI at an address other than `GOTCHA_BASE_URL` (e.g. via `http://localhost` while `BASE_URL` is a public HTTPS domain, or through a tunnel/proxy with a different host), any POST is rejected with `403`. Open the UI strictly at the `GOTCHA_BASE_URL` address.
 
-**`/healthz` returns `503` with `unavailable` for postgres/clickhouse.**
-The app is alive but can't reach one of the databases. This usually means the database hasn't finished starting yet (ClickHouse's first boot can take up to a minute) — wait and retry. If it persists, check `docker compose logs postgres` / `docker compose logs clickhouse`.
+**`/readyz` returns `503` with `unavailable` for postgres/clickhouse.**
+The app is alive (`/healthz` returns 200) but can't reach one of the databases. This usually means the database hasn't finished starting yet (ClickHouse's first boot can take up to a minute) — wait and retry. If it persists, check `docker compose logs postgres` / `docker compose logs clickhouse`.
 
 ## What's next
 

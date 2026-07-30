@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица и ADD COLUMN с дефолтом)
 -- Троттлинг алертов о производительности: у них нет ни alert_rules, ни
 -- throttle_minutes (в отличие от алертов об ошибках), а КАЖДАЯ новая пара
 -- (project_id, fingerprint) шлёт задачу в outbox на каждый канал. Один проект,

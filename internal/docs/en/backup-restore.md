@@ -43,7 +43,9 @@ docker compose exec -T clickhouse clickhouse-client \
   --query "SHOW TABLES"
 ```
 
-Then dump each table from that list (repeat for every row `SHOW TABLES` returned — e.g. `events`, `transactions`, `spans`, `metric_points`, `profile_samples`, `check_results`):
+Note that `SHOW TABLES` also returns **materialized views** (`transactions_5m`, `web_vitals_5m`). Do NOT dump or restore those: they are filled automatically when rows are inserted into the source tables, and restoring their contents alongside `transactions` doubles the aggregates — Performance would report twice the real throughput. The list of tables to dump is fixed and shown below.
+
+Dump each of them:
 
 ```bash
 mkdir -p backup/clickhouse
@@ -165,7 +167,7 @@ docker compose up -d
 ## After restoring — verify
 
 ```bash
-curl -sf http://localhost:59080/healthz
+curl -sf http://localhost:59080/readyz
 ```
 
 Then open the UI, log in with your user, open a project, and confirm you can see both the configuration (alerts, members) and the data (events under Issues).

@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица)
 CREATE TABLE IF NOT EXISTS spans (
     project_id       UInt64,
     trace_id         String,

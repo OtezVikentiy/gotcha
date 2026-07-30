@@ -119,6 +119,7 @@ func TestApplyResultPerRegionIndependent(t *testing.T) {
 	m.FailThreshold = 2
 	m.RecoveryThreshold = 2
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
+	allowRegions(t, pool, svc, ctx, pid, []string{"eu", "us"})
 	mon, err := svc.Create(ctx, m, []string{"eu", "us"}, nil)
 	if err != nil {
 		t.Fatalf("create monitor: %v", err)

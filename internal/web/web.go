@@ -72,6 +72,10 @@ type Handler struct {
 	// задан, подпись не рендерится.
 	RetentionDays int
 
+	// pages — роутер страниц (внутренний mux). Заполняется в Register;
+	// читается только RoutePattern.
+	pages *http.ServeMux
+
 	// Alerts — CRUD правил/каналов алертинга (план 6, задача 5):
 	// /projects/{id}/alerts и EnsureDefaultRules при создании проекта. Не
 	// принимается конструктором New (как Auth/Org/Issues/Events), а
@@ -340,6 +344,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /orgs/{id}/settings/remove", h.requireUser(http.HandlerFunc(h.orgSettingsRemove)))
 	inner.Handle("POST /orgs/{id}/settings/leave", h.requireUser(http.HandlerFunc(h.orgSettingsLeave)))
 	inner.Handle("POST /orgs/{id}/settings/invite", h.requireUser(http.HandlerFunc(h.orgSettingsInvite)))
+	inner.Handle("POST /orgs/{id}/settings/invite/revoke", h.requireUser(http.HandlerFunc(h.orgSettingsInviteRevoke)))
 	inner.Handle("POST /orgs/{id}/settings/sso", h.requireUser(http.HandlerFunc(h.orgSettingsSSO)))
 	inner.Handle("POST /orgs/{id}/settings/sso/delete", h.requireUser(http.HandlerFunc(h.orgSettingsSSODelete)))
 	// Удаление организации и удаление ПДн субъекта (PRIV-H2) — owner-only.
@@ -506,6 +511,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 	})
 
+	// Роутер страниц запоминается: снаружи виден только catch-all «/», и по
+	// коду ответа нельзя отличить «обработчик отверг битый id» от «маршрута
+	// нет». Проверки регистрации спрашивают RoutePattern.
+	h.pages = inner
 	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(inner))))))
 }
 
@@ -595,6 +604,25 @@ func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RoutePattern возвращает шаблон, по которому роутер страниц выберет
+// обработчик для метода и пути; пустая строка означает, что своей регистрации у
+// пути нет.
+//
+// Существует ради проверок маршрутизации: 404 одинаково возвращают и
+// обработчик, отвергнувший битый идентификатор, и отсутствующий маршрут — а
+// тест, не различающий эти случаи, остаётся зелёным после удаления регистрации.
+func (h *Handler) RoutePattern(method, path string) string {
+	if h.pages == nil {
+		return ""
+	}
+	req, err := http.NewRequest(method, path, nil)
+	if err != nil {
+		return ""
+	}
+	_, pattern := h.pages.Handler(req)
+	return pattern
 }
 
 // renderError отдаёт стилизованную страницу ошибки (layout + сообщение) с

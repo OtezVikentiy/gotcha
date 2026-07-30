@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/jackc/pgx/v5"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -26,27 +25,35 @@ func seedProfSample(t *testing.T, ch driver.Conn, projectID int64, leaf string, 
 	}
 }
 
-// countingProjects считает обращения цикла к списку проектов — позитивный
-// контроль, которого тесту не хватало.
-type countingProjects struct {
+// countingQuery считает обращения цикла к ClickHouse — позитивный контроль,
+// которого тесту не хватало.
+type countingQuery struct {
 	mu    sync.Mutex
 	calls int
 }
 
-func (c *countingProjects) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (c *countingQuery) ActiveServices(context.Context, time.Time, time.Time) ([]profile.ProjectService, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
-	return nil, errNoProjects
+	return nil, errNoServices
 }
 
-func (c *countingProjects) count() int {
+func (c *countingQuery) TopFunctionShares(context.Context, int64, string, string, time.Time, time.Time, int) ([]profile.FunctionShare, error) {
+	return nil, nil
+}
+
+func (c *countingQuery) BaselineFunctionShares(context.Context, int64, string, string, []string, int, time.Time) (map[string]float64, error) {
+	return nil, nil
+}
+
+func (c *countingQuery) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
 }
 
-var errNoProjects = errors.New("no projects")
+var errNoServices = errors.New("no services")
 
 // TestRegressionEvaluatorRun: цикл обязан РЕАЛЬНО тикать и завершаться по
 // отмене контекста.
@@ -55,9 +62,9 @@ var errNoProjects = errors.New("no projects")
 // оставался зелёным и с вырезанным вызовом Tick, потому что проверял
 // завершение цикла, а не его работу.
 func TestRegressionEvaluatorRun(t *testing.T) {
-	projects := &countingProjects{}
+	queries := &countingQuery{}
 	eval := &profile.RegressionEvaluator{
-		Pool:     projects,
+		Query:    queries,
 		Interval: 2 * time.Millisecond,
 		Config:   profile.DefaultProfileRegressionConfig(),
 	}
@@ -67,11 +74,11 @@ func TestRegressionEvaluatorRun(t *testing.T) {
 	go func() { eval.Run(ctx); close(done) }()
 
 	deadline := time.After(5 * time.Second)
-	for projects.count() == 0 {
+	for queries.count() == 0 {
 		select {
 		case <-deadline:
 			cancel()
-			t.Fatal("цикл не обратился к списку проектов ни разу — Tick не выполняется")
+			t.Fatal("цикл не обратился к списку сервисов ни разу — Tick не выполняется")
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
@@ -116,7 +123,7 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 
 	cfg := profile.DefaultProfileRegressionConfig() // Threshold 0.5, MinSamples 100, ShareFloor 0.05, BaselineDays 7
 	eval := &profile.RegressionEvaluator{
-		Pool: pool, Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
+		Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
 		Notifier: &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
 		Interval: time.Hour, Config: cfg,
 	}

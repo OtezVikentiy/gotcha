@@ -141,8 +141,9 @@ func TestMaxEmbeddedPGVersion(t *testing.T) {
 }
 
 // TestSchemaGateErr закрепляет чистую логику version-гейта схемы: got==want —
-// ок (nil); got<want — отставание; got>want — база впереди встроенной версии
-// (даунгрейд бинаря, audit3); dirty перекрывает всё. label подставляется в текст.
+// ок; got<want — отставание; dirty перекрывает всё; got>want разбирается по
+// окну совместимости — аддитивные миграции пропускаются с предупреждением,
+// ломающие и неизвестные отказывают.
 func TestSchemaGateErr(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -150,7 +151,9 @@ func TestSchemaGateErr(t *testing.T) {
 		got        uint
 		dirty      bool
 		want       uint
+		compat     map[uint]bool
 		wantErr    bool
+		wantWarn   bool
 		wantSubstr []string
 	}{
 		{
@@ -163,9 +166,31 @@ func TestSchemaGateErr(t *testing.T) {
 			wantSubstr: []string{"PG", "18", "20", "отстаёт"},
 		},
 		{
-			name: "база впереди встроенной — обновите бинарь", label: "PG",
-			got: 22, want: 20, wantErr: true,
-			wantSubstr: []string{"PG", "22", "20", "впереди", "бинарь"},
+			// Откат релиза через аддитивные миграции: старый бинарь работает,
+			// администратор видит предупреждение с перечнем версий.
+			name: "база впереди, все версии совместимы — пуск с предупреждением", label: "PG",
+			got: 22, want: 20, compat: map[uint]bool{21: true, 22: true},
+			wantErr: false, wantWarn: true,
+			wantSubstr: []string{"PG", "22", "20", "21, 22", "совместим"},
+		},
+		{
+			name: "база впереди, среди версий есть ломающая — отказ", label: "PG",
+			got: 22, want: 20, compat: map[uint]bool{21: true, 22: false},
+			wantErr:    true,
+			wantSubstr: []string{"PG", "22", "20", "несовместим"},
+		},
+		{
+			// Fail-closed: схему применял бинарь, не знавший о признаке.
+			name: "база впереди, о версии нет записи — отказ", label: "PG",
+			got: 22, want: 20, compat: map[uint]bool{21: true},
+			wantErr:    true,
+			wantSubstr: []string{"PG", "22", "20", "нет записи"},
+		},
+		{
+			name: "база впереди, признаков нет вовсе — отказ", label: "ClickHouse",
+			got: 12, want: 11, compat: nil,
+			wantErr:    true,
+			wantSubstr: []string{"ClickHouse", "12", "11", "нет записи"},
 		},
 		{
 			name: "dirty перекрывает совпадение версий", label: "ClickHouse",
@@ -175,17 +200,27 @@ func TestSchemaGateErr(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := schemaGateErr(tc.label, tc.got, tc.dirty, tc.want)
+			warning, err := schemaGateErr(tc.label, tc.got, tc.dirty, tc.want, tc.compat)
 			if tc.wantErr && err == nil {
 				t.Fatalf("schemaGateErr(%q,%d,%v,%d) = nil, want error", tc.label, tc.got, tc.dirty, tc.want)
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("schemaGateErr(%q,%d,%v,%d) = %v, want nil", tc.label, tc.got, tc.dirty, tc.want, err)
 			}
-			if err == nil {
+			if tc.wantWarn && warning == "" {
+				t.Errorf("работа на более новой схеме прошла молча — администратор не узнает, "+
+					"что инстанс работает не на своей версии схемы (got=%d want=%d)", tc.got, tc.want)
+			}
+			if !tc.wantWarn && warning != "" {
+				t.Errorf("неожиданное предупреждение %q", warning)
+			}
+			if err == nil && warning == "" {
 				return
 			}
-			msg := err.Error()
+			msg := warning
+			if err != nil {
+				msg = err.Error()
+			}
 			for _, sub := range tc.wantSubstr {
 				if !strings.Contains(msg, sub) {
 					t.Errorf("сообщение %q не содержит %q", msg, sub)

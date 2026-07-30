@@ -67,12 +67,31 @@ func TestCoverBadPathIDs(t *testing.T) {
 		"/projects/not-a-number/incidents",
 	}
 	for _, p := range getPaths {
+		// Сначала — что маршрут ВООБЩЕ зарегистрирован: 404 одинаково вернут и
+		// обработчик, отвергнувший битый id, и отсутствие маршрута. Без этой
+		// проверки удаление любой регистрации оставляло тест зелёным.
+		assertRouteRegistered(t, s, http.MethodGet, p)
+
 		resp := getWithCookie(t, s.srv, p, cookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("GET %s (bad id) status = %d, want 404", p, resp.StatusCode)
 		}
+	}
+}
+
+// assertRouteRegistered проверяет, что путь обслуживает НЕ catch-all.
+//
+// http.ServeMux отдаёт шаблон, по которому выбран обработчик: пустая строка или
+// "/" означают, что своей регистрации у пути нет и 404 приходит от заглушки.
+func assertRouteRegistered(t *testing.T, s *stack, method, path string) {
+	t.Helper()
+	pattern := s.h.RoutePattern(method, path)
+	if pattern == "" || pattern == "/" {
+		t.Fatalf("%s %s: маршрут не зарегистрирован (шаблон %q) — 404 приходит "+
+			"от catch-all, и тест проверял бы отсутствие маршрута, а не работу обработчика",
+			method, path, pattern)
 	}
 }
 
@@ -112,6 +131,7 @@ func TestCoverNilServiceGuards(t *testing.T) {
 		"/orgs/999999/probes",
 	}
 	for _, p := range getPaths {
+		assertRouteRegistered(t, s, http.MethodGet, p)
 		resp := getWithCookie(t, s.srv, p, cookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -146,6 +166,7 @@ func TestCoverNilServiceGuardsPOST(t *testing.T) {
 		"/orgs/999999/probes/revoke",
 	}
 	for _, p := range postPaths {
+		assertRouteRegistered(t, s, http.MethodPost, p)
 		resp := postForm(t, s.srv, p, url.Values{}, s.srv.URL, cookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()

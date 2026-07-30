@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новые таблицы и индексы)
 CREATE TABLE users (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     email         citext NOT NULL UNIQUE,

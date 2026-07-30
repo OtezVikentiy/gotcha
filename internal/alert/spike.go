@@ -60,22 +60,34 @@ func (s *Spike) tick(ctx context.Context) {
 	for _, rule := range rules {
 		since := now.Add(-time.Duration(rule.WindowMinutes) * time.Minute)
 
-		issues, err := s.Issues.ActiveSince(ctx, rule.ProjectID, since)
+		// Два запроса на правило вместо двух плюс по одному на активную группу.
+		// Раньше тик стоил столько round-trip'ов в ClickHouse, сколько в проекте
+		// активных групп: 10 тысяч групп — 10 тысяч запросов каждую минуту с
+		// одной реплики. Число групп при этом задаёт отправитель событий,
+		// уникальным fingerprint на событие.
+		counts, err := s.Events.CountsSince(ctx, rule.ProjectID, since, uint64(rule.Threshold))
 		if err != nil {
-			slog.Error("alert spike: active issues lookup failed", "project_id", rule.ProjectID, "error", err)
+			slog.Error("alert spike: counts since failed", "project_id", rule.ProjectID, "error", err)
+			continue
+		}
+		if len(counts) == 0 {
+			continue
+		}
+
+		ids := make([]int64, 0, len(counts))
+		for id := range counts {
+			ids = append(ids, id)
+		}
+		// Заголовки нужны только у групп, перешагнувших порог: раньше из
+		// PostgreSQL забирались все активные группы проекта, чтобы почти все
+		// тут же отбросить.
+		issues, err := s.Issues.ByIDs(ctx, rule.ProjectID, ids)
+		if err != nil {
+			slog.Error("alert spike: issues lookup failed", "project_id", rule.ProjectID, "error", err)
 			continue
 		}
 
 		for _, iss := range issues {
-			count, err := s.Events.CountSince(ctx, rule.ProjectID, iss.ID, since)
-			if err != nil {
-				slog.Error("alert spike: count since failed",
-					"project_id", rule.ProjectID, "issue_id", iss.ID, "error", err)
-				continue
-			}
-			if count < uint64(rule.Threshold) {
-				continue
-			}
 			s.Evaluator.OnIssue(ctx, Event{
 				ProjectID: rule.ProjectID,
 				IssueID:   iss.ID,

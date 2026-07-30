@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица и индекс)
 CREATE TABLE issue_environments (
     issue_id    bigint NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
     project_id  bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

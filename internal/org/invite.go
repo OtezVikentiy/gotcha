@@ -49,6 +49,71 @@ func (s *Service) Invite(ctx context.Context, orgID int64, email string, role Ro
 	return token, nil
 }
 
+// PendingInvite — выписанное, но ещё не принятое приглашение.
+//
+// Токена здесь нет и быть не может: в базе лежит только его sha256. Список
+// нужен не чтобы переслать ссылку заново, а чтобы увидеть, кому приглашение
+// уже выписано, и отозвать ошибочное.
+type PendingInvite struct {
+	ID        int64
+	Email     string
+	Role      Role
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+// PendingInvites — приглашения организации, которые ещё можно принять.
+//
+// Существует потому, что выписанное приглашение было невидимо: ошибся в
+// адресе — письмо со ссылкой ушло постороннему, и ни увидеть это, ни отменить
+// из интерфейса было нельзя.
+//
+// Просроченные не показываются: принять их уже нельзя, а держать в списке
+// значит требовать от администратора решения там, где решать нечего. Их
+// вычищает PurgeExpiredInvites.
+func (s *Service) PendingInvites(ctx context.Context, orgID int64) ([]PendingInvite, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email, role, created_at, expires_at
+		FROM org_invites
+		WHERE org_id = $1 AND accepted_at IS NULL AND expires_at > now()
+		ORDER BY created_at DESC`, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("org: pending invites: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingInvite
+	for rows.Next() {
+		var inv PendingInvite
+		if err := rows.Scan(&inv.ID, &inv.Email, &inv.Role, &inv.CreatedAt, &inv.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("org: pending invites scan: %w", err)
+		}
+		out = append(out, inv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("org: pending invites: %w", err)
+	}
+	return out, nil
+}
+
+// RevokeInvite отзывает приглашение организации.
+//
+// orgID в условии обязателен: идентификатор приходит из формы, и без него
+// администратор одной организации отзывал бы приглашения чужой. Уже принятое
+// приглашение не отзывается — членство отменяется удалением участника, и
+// молчаливо подменять одно другим нельзя.
+func (s *Service) RevokeInvite(ctx context.Context, orgID, inviteID int64) error {
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM org_invites WHERE id = $1 AND org_id = $2 AND accepted_at IS NULL",
+		inviteID, orgID)
+	if err != nil {
+		return fmt.Errorf("org: revoke invite: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInviteInvalid
+	}
+	return nil
+}
+
 // AcceptInvite принимает приглашение токен-носителем: приглашение
 // одноразовое, вход по токену (email — адрес доставки письма).
 // Уже участнику роль не меняем — только гасим приглашение.

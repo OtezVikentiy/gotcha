@@ -21,4 +21,13 @@ RUN adduser -D -u 10001 gotcha
 USER gotcha
 COPY --from=build /out/gotcha /usr/local/bin/gotcha
 EXPOSE 8080
+# Проверка состояния — подкомандой самого бинаря, а не curl/wget: тогда она
+# зависит только от того, что в образе точно есть. Спрашивает /readyz, то есть
+# «готов ли работать», а не «жив ли процесс».
+#
+# start-period покрывает первый старт: миграции держат порт закрытым до минуты,
+# и без него контейнер успевал бы стать unhealthy ещё до того, как начал
+# отвечать.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["gotcha", "--healthcheck"]
 ENTRYPOINT ["gotcha"]

@@ -423,7 +423,7 @@ func TestIssuesPageURL(t *testing.T) {
 	if got := issuesPageURL(7, IssuesFilter{}, 1); strings.Contains(got, "?") {
 		t.Errorf("пустой фильтр не должен давать query: %q", got)
 	}
-	f := IssuesFilter{Status: "resolved", Level: "error", Query: "boom", Sort: "freq", Environment: "prod", Period: "7d"}
+	f := IssuesFilter{Status: "resolved", Level: "error", Query: "boom", Sort: "freq", Environment: "prod", Range: TimeRangeVM{Key: "7d"}}
 	got := issuesPageURL(7, f, 2)
 	for _, want := range []string{"status=resolved", "level=error", "q=boom", "sort=freq", "env=prod", "period=7d", "page=2"} {
 		if !strings.Contains(got, want) {

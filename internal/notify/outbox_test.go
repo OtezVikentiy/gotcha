@@ -117,8 +117,7 @@ func TestOutboxRetryAndFailed(t *testing.T) {
 	}
 	job := jobs[0]
 
-	future := time.Now().Add(time.Hour).UTC()
-	if err := ob.MarkRetry(ctx, job.ID, errors.New("smtp timeout"), future); err != nil {
+	if err := ob.MarkRetry(ctx, job.ID, errors.New("smtp timeout"), time.Hour); err != nil {
 		t.Fatalf("MarkRetry: %v", err)
 	}
 	// next_retry_at в будущем — не должна быть заклеймлена снова.

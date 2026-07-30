@@ -1,3 +1,4 @@
+-- backward-compatible: yes (новая таблица)
 CREATE TABLE IF NOT EXISTS events (
     event_id        UUID,
     project_id      UInt64,

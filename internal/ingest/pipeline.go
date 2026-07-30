@@ -132,28 +132,78 @@ type Pipeline struct {
 	closeMu sync.RWMutex
 	closed  bool
 
-	// dropped — сколько задач потеряно из-за переполнения очереди или паники
-	// обработчика. Раньше эти потери ТОЛЬКО логировались и никуда не считались:
-	// org_usage.dropped_* их не видел, поэтому в отчёте о потерях они не
-	// появлялись вовсе — оператор не мог узнать, что часть событий не доехала.
-	droppedMu sync.Mutex
-	dropped   int64
+	// dropped — потери по причинам. Раньше эти потери ТОЛЬКО логировались и
+	// никуда не считались: org_usage.dropped_* их не видел, поэтому в отчёте о
+	// потерях они не появлялись вовсе — оператор не мог узнать, что часть
+	// событий не доехала.
+	dropped map[DropReason]*atomic.Int64
 }
 
-// countDropped увеличивает счётчик потерянных задач.
-func (p *Pipeline) countDropped() {
-	p.droppedMu.Lock()
-	p.dropped++
-	p.droppedMu.Unlock()
+// DropReason — почему задача потеряна. Причина отделена от факта потери
+// намеренно: рост потерь от переполнения очереди лечится размером очереди и
+// числом воркеров, а рост от отказа хранилища — не лечится ничем из этого.
+// Общий счётчик заставлял оператора гадать, какую из двух проблем он видит.
+type DropReason string
+
+const (
+	// DropQueueFull — очередь заполнена: обработка не успевает за приёмом.
+	DropQueueFull DropReason = "queue_full"
+	// DropQueueBytes — исчерпан байтовый бюджет очереди: задачи крупнее
+	// обычного (большие стектрейсы, много атрибутов).
+	DropQueueBytes DropReason = "queue_bytes"
+	// DropStorageError — не удалось записать в хранилище. Обычно деградация
+	// PostgreSQL: апсерт issue отвалился по таймауту.
+	DropStorageError DropReason = "storage_error"
+	// DropPanic — обработчик упал на конкретном элементе.
+	DropPanic DropReason = "panic"
+	// DropClosed — приём уже остановлен, а задача пришла из in-flight
+	// HTTP-запроса.
+	DropClosed DropReason = "closed"
+)
+
+// dropReasons — полный набор причин. Существует, чтобы счётчики создавались
+// один раз при инициализации: тогда countDropped на горячем пути обходится
+// атомарным инкрементом без блокировки и без записи в map.
+var dropReasons = []DropReason{
+	DropQueueFull, DropQueueBytes, DropStorageError, DropPanic, DropClosed,
 }
 
-// Dropped — сколько задач потеряно за время жизни процесса (переполнение
-// очереди + паники обработчика). Для самотелеметрии.
+func newDropCounters() map[DropReason]*atomic.Int64 {
+	m := make(map[DropReason]*atomic.Int64, len(dropReasons))
+	for _, r := range dropReasons {
+		m[r] = new(atomic.Int64)
+	}
+	return m
+}
+
+// countDropped увеличивает счётчик потерянных задач по причине.
+func (p *Pipeline) countDropped(reason DropReason) {
+	if c, ok := p.dropped[reason]; ok {
+		c.Add(1)
+	}
+}
+
+// Dropped — сколько задач потеряно за время жизни процесса, всего.
 func (p *Pipeline) Dropped() int64 {
-	p.droppedMu.Lock()
-	defer p.droppedMu.Unlock()
-	return p.dropped
+	var total int64
+	for _, c := range p.dropped {
+		total += c.Load()
+	}
+	return total
 }
+
+// DroppedBy — сколько задач потеряно по конкретной причине. Для
+// самотелеметрии: метка reason у gotcha_pipeline_dropped_tasks_total.
+func (p *Pipeline) DroppedBy(reason DropReason) int64 {
+	if c, ok := p.dropped[reason]; ok {
+		return c.Load()
+	}
+	return 0
+}
+
+// DropReasons — все причины, по которым продукт умеет терять задачи. main
+// регистрирует по метрике на причину.
+func DropReasons() []DropReason { return append([]DropReason(nil), dropReasons...) }
 
 // Queued — сколько задач ждёт обработки прямо сейчас.
 func (p *Pipeline) Queued() int64 { return int64(len(p.queue)) }
@@ -178,6 +228,7 @@ func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
 		batcher: batcher,
 		queue:   make(chan task, 1000),
 		workers: 4,
+		dropped: newDropCounters(),
 	}
 }
 
@@ -291,7 +342,7 @@ func (p *Pipeline) processGuarded(t task) {
 			if t.tx != nil {
 				traceID = t.tx.TraceID
 			}
-			p.countDropped()
+			p.countDropped(DropPanic)
 			slog.Error("ingest task panicked, item dropped",
 				"project_id", t.projectID, "event_id", eventID,
 				"trace_id", traceID, "panic", r)
@@ -308,6 +359,7 @@ func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
 	if p.closed {
+		p.countDropped(DropClosed)
 		slog.Warn("ingest pipeline closed, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
 		return
@@ -315,7 +367,7 @@ func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
 	t := task{projectID: projectID, ev: ev}
 	t.bytes = taskBytes(t)
 	if !p.admit(t.bytes) {
-		p.countDropped()
+		p.countDropped(DropQueueBytes)
 		slog.Warn("ingest queue byte budget exhausted, dropping event",
 			"project_id", projectID, "event_id", ev.EventID, "task_bytes", t.bytes)
 		return
@@ -324,7 +376,7 @@ func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
 	case p.queue <- t:
 	default:
 		p.release(t.bytes)
-		p.countDropped()
+		p.countDropped(DropQueueFull)
 		slog.Warn("ingest queue full, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
 	}
@@ -343,6 +395,7 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
 	if p.closed {
+		p.countDropped(DropClosed)
 		slog.Warn("ingest pipeline closed, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
 		return
@@ -350,7 +403,7 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 	t := task{projectID: projectID, tx: &tx}
 	t.bytes = taskBytes(t)
 	if !p.admit(t.bytes) {
-		p.countDropped()
+		p.countDropped(DropQueueBytes)
 		slog.Warn("ingest queue byte budget exhausted, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID, "task_bytes", t.bytes)
 		return
@@ -359,7 +412,7 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 	case p.queue <- t:
 	default:
 		p.release(t.bytes)
-		p.countDropped()
+		p.countDropped(DropQueueFull)
 		slog.Warn("ingest queue full, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
 	}
@@ -423,6 +476,10 @@ func (p *Pipeline) process(t task) {
 	res, err := p.issues.Upsert(ctx,
 		t.projectID, fp, ev.Title, ev.Culprit, ev.Level, ev.Environment, ev.Timestamp)
 	if err != nil {
+		// Потеря по отказу хранилища. Считается наравне с переполнением
+		// очереди: событие не доехало, и молчащий счётчик отправлял оператора
+		// проверять SDK вместо базы.
+		p.countDropped(DropStorageError)
 		slog.Error("issue upsert failed, event dropped",
 			"project_id", t.projectID, "event_id", ev.EventID, "error", err)
 		return

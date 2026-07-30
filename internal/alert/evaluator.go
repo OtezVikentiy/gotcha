@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -172,15 +171,18 @@ func (s *Service) ruleByKind(ctx context.Context, projectID int64, kind string) 
 // always <= the moment it was written, so a prior send never blocks the next
 // one (no throttling), matching the documented "0 means no throttle" rule.
 func (e *Evaluator) claimThrottle(ctx context.Context, issueID, ruleID int64, throttleMinutes int) (bool, error) {
-	cutoff := time.Now().Add(-time.Duration(throttleMinutes) * time.Minute)
+	// Отсечка считается часами БАЗЫ: last_sent_at пишется её now(), и сравнивать
+	// его с моментом, посчитанным часами процесса, значит зависеть от их
+	// расхождения. Отстающие часы растягивали окно троттлинга, опережающие —
+	// сокращали, и то и другое молча.
 	var claimed int
 	err := e.Svc.pool.QueryRow(ctx, `
 		INSERT INTO alert_throttle (issue_id, rule_id, last_sent_at)
 		VALUES ($1, $2, now())
 		ON CONFLICT (issue_id, rule_id) DO UPDATE SET last_sent_at = now()
-		WHERE alert_throttle.last_sent_at <= $3
+		WHERE alert_throttle.last_sent_at <= now() - make_interval(mins => $3)
 		RETURNING 1`,
-		issueID, ruleID, cutoff).Scan(&claimed)
+		issueID, ruleID, throttleMinutes).Scan(&claimed)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil

@@ -29,7 +29,7 @@ func TestRemovedRegionStopsHoldingMonitorDown(t *testing.T) {
 	m.FailThreshold = 1
 	m.RecoveryThreshold = 1
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
-	created := mustCreateMonitor(t, svc, ctx, m, []string{"eu", "us"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"eu", "us"})
 
 	// us лёг, eu поднялся.
 	now := time.Now().UTC()

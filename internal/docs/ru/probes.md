@@ -28,8 +28,20 @@
 ```bash
 docker run -e GOTCHA_SERVER_URL=https://gotcha.example.com \
   -e GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
-  gotcha --mode=probe
+  <gotcha-image> --mode=probe
 ```
+
+Подставьте вместо `<gotcha-image>` образ, которым запущен ваш инстанс. Публикуемого образа `gotcha`
+не существует: `docker compose` собирает его локально и называет по имени
+папки, поэтому имя обычно выглядит как `gotcha-gotcha`. Точное имя покажет:
+
+```bash
+docker compose images gotcha
+```
+
+На машине пробы этого образа ещё нет — перенесите его (`docker save` /
+`docker load`), либо соберите там из исходников, либо запускайте бинарником,
+как показано ниже.
 
 Тот же процесс можно запустить и без Docker — собранным бинарником `gotcha`:
 
