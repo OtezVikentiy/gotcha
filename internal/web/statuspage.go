@@ -250,6 +250,9 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 	view := templates.StatusPageView{
 		Title:       sp.Title,
 		Description: sp.Description,
+		// Глубина едет в модель: подписи страницы должны называть то окно,
+		// которое реально показано, а оно ограничено сроком хранения.
+		Days: days,
 	}
 
 	// incidents собираются вместе с исходным временем начала: сортировка идёт

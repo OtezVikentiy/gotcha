@@ -32,13 +32,27 @@ func regressionMetricLabel(ctx context.Context, metric string) string {
 	return vitalLabel(metric) + " p75"
 }
 
-// formatRegressionValue — значение метрики человекочитаемо: CLS безразмерный (два
-// знака), остальные (duration/vitals в мс) — мс/с, как formatVitalValue.
+// formatRegressionValue — значение метрики человекочитаемо.
+//
+// Единица зависит от метрики, и это не косметика: p95 длительности приходит из
+// transactions_5m в МИКРОсекундах (та же величина, что в списке эндпойнтов), а
+// web-vital'ы — в миллисекундах. Общий формат «как у vitals» показывал
+// «640.00s → 1180.00s» там, где на самом деле 640 мс → 1.18 с, то есть завышал
+// значения ровно в тысячу раз.
+//
+// CLS безразмерный: два знака после запятой и никакой единицы.
 func formatRegressionValue(metric string, v float64) string {
-	if metric == "cls" {
+	switch metric {
+	case "cls":
 		return strconv.FormatFloat(v, 'f', 2, 64)
+	case "duration":
+		if v < 0 {
+			v = 0
+		}
+		return formatDurationUS(uint32(min(v, float64(^uint32(0)))))
+	default:
+		return formatVitalMS(v)
 	}
-	return formatVitalMS(v)
 }
 
 // regressionValueRange — «база → пик».

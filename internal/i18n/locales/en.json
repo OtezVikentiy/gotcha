@@ -226,8 +226,8 @@
     "perf.vital.help.fcp": "First Contentful Paint — time until the first piece of content (text or image) appears on screen.",
     "perf.vital.help.ttfb": "Time to First Byte — time until the server sends the first byte of the response; backend and network latency.",
     "perf.webvitals.table.page": "Page",
-    "perf.webvitals.table.lcp": "LCP, ms",
-    "perf.webvitals.table.inp": "INP, ms",
+    "perf.webvitals.table.lcp": "LCP",
+    "perf.webvitals.table.inp": "INP",
     "perf.webvitals.table.cls": "CLS (unitless)",
     "perf.webvitals.table.samples": "Samples",
     "perf.webvitals.empty.title": "No Web Vitals in this period",
@@ -1026,7 +1026,9 @@
     "org.quota.kind.transactions.short": "transactions",
     "org.quota.kind.metrics.short": "metrics",
     "org.quota.kind.profiles.short": "profiles",
-    "org.members.role_label": "Member role"
+    "org.members.role_label": "Member role",
+    "status.uptime_period": "Uptime ({period}): {value}",
+    "status.incidents.title_period": "Incidents over the last {period}"
   },
   "plurals": {
     "chart.bar.transactions": {

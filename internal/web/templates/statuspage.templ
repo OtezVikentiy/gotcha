@@ -18,6 +18,11 @@ type StatusPageView struct {
 	Title       string
 	Description string
 	Overall     string // operational | partial | major
+	// Days — фактическая глубина страницы в сутках. Раньше «90» стояло в
+	// текстах подписей, а глубина уже ограничивалась сроком хранения: при
+	// GOTCHA_RETENTION_DAYS=30 страница рисовала 30 корзин и подписывала их
+	// «за 90 дней».
+	Days        int
 	Monitors    []StatusMonitorView
 	Incidents   []StatusIncidentView
 	Maintenance []StatusWindowView
@@ -136,14 +141,18 @@ templ statusLayoutBody(title string) {
 	</body>
 }
 
-templ statusMonitorTile(m StatusMonitorView) {
+templ statusMonitorTile(m StatusMonitorView, days int) {
 	<li class="status-tile card">
 		<div class="status-tile-head">
 			<span class="status-tile-name">{ m.Name }</span>
 			<span class={ monitorStatusBadgeClass(m.Status) }>{ statusMonitorText(ctx, m.Status) }</span>
 		</div>
 		<div class="status-tile-bars">@m.Bars</div>
-		<div class="status-tile-uptime">{ i18n.Tf(ctx, "status.uptime_90d", "value", uptimeStatText(m.Uptime90d)) }</div>
+		<div class="status-tile-uptime">
+			{ i18n.Tf(ctx, "status.uptime_period",
+				"period", i18n.Tn(ctx, "unit.days", days),
+				"value", uptimeStatText(m.Uptime90d)) }
+		</div>
 	</li>
 }
 
@@ -161,12 +170,15 @@ templ PublicStatusPage(v StatusPageView) {
 		} else {
 			<ul class="status-tiles">
 				for _, m := range v.Monitors {
-					@statusMonitorTile(m)
+					@statusMonitorTile(m, v.Days)
 				}
 			</ul>
 		}
 
-		<h2>{ i18n.T(ctx, "status.incidents.title") }</h2>
+		<h2>
+			{ i18n.Tf(ctx, "status.incidents.title_period",
+				"period", i18n.Tn(ctx, "unit.days", v.Days)) }
+		</h2>
 		if len(v.Incidents) == 0 {
 			<p>{ i18n.T(ctx, "status.incidents.empty") }</p>
 		} else {

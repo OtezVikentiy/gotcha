@@ -226,8 +226,8 @@
     "perf.vital.help.fcp": "First Contentful Paint — время до появления первого содержимого (текста или картинки) на экране.",
     "perf.vital.help.ttfb": "Time to First Byte — время до первого байта ответа сервера; задержка бэкенда и сети.",
     "perf.webvitals.table.page": "Страница",
-    "perf.webvitals.table.lcp": "LCP, мс",
-    "perf.webvitals.table.inp": "INP, мс",
+    "perf.webvitals.table.lcp": "LCP",
+    "perf.webvitals.table.inp": "INP",
     "perf.webvitals.table.cls": "CLS (без единиц)",
     "perf.webvitals.table.samples": "Замеры",
     "perf.webvitals.empty.title": "Нет Web Vitals за период",
@@ -1026,7 +1026,9 @@
     "org.quota.kind.transactions.short": "транзакции",
     "org.quota.kind.metrics.short": "метрики",
     "org.quota.kind.profiles.short": "профили",
-    "org.members.role_label": "Роль участника"
+    "org.members.role_label": "Роль участника",
+    "status.uptime_period": "Доступность ({period}): {value}",
+    "status.incidents.title_period": "Инциденты за {period}"
   },
   "plurals": {
     "chart.bar.transactions": {
