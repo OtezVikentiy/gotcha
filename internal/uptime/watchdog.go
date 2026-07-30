@@ -405,7 +405,7 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at,
 			m.id, m.project_id, m.name, m.kind, m.enabled, m.interval_seconds, m.timeout_seconds,
 			m.config, m.fail_threshold, m.recovery_threshold, m.consensus, m.remind_every_minutes,
-			m.ssl_alert_days, m.ssl_expires_at, m.last_beat_at, m.created_at
+			m.ssl_alert_days, m.ssl_expires_at, m.last_beat_at, m.created_at, m.retries
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
 		WHERE i.resolved_at IS NULL
@@ -427,7 +427,7 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 			&inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
 			&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 			&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
-			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt); err != nil {
+			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt, &m.Retries); err != nil {
 			return nil, fmt.Errorf("uptime: incidents due for reminder: %w", err)
 		}
 		out = append(out, ReminderItem{Incident: inc, Monitor: m})

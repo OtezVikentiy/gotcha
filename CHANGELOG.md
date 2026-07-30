@@ -10,6 +10,13 @@ once tagged releases begin.
 
 ## [Unreleased]
 
+### Security
+- OTLP span attributes are capped before the maps are built, not after. A 10 MiB body (about 30 KB gzipped) carries roughly 1.2 million attributes, and parsing them cost about 100 MB on top of the body — measured at 184 MB for a million attributes. The cap is 256 attributes per span; `maxDataKeys` still applies among those.
+- `hostOfURL` requires an absolute http(s) URL, so a webhook target like `ftp://…` or `//evil.example/x` no longer resolves to a trusted host when deciding whether event details may be sent.
+
+### Fixed
+- Reminder notifications carry the full monitor, `retries` included; the query built it from its own column list and silently left the field at zero.
+
 ### Documentation
 - OTLP trace ingest (`POST /v1/traces`) is documented: it was fully implemented while the SDK page listed protocols exhaustively without naming it, so a team on OpenTelemetry would read that traces require a Sentry SDK.
 - Headings carry anchors, and the anchors are transliterated rather than numbered — a link to a section no longer breaks when a paragraph is inserted above it.

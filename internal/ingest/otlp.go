@@ -63,6 +63,19 @@ const maxDataValue = maxSpanDescription
 // детерминирован — первые maxDataKeys в отсортированном порядке.
 const maxDataKeys = 64
 
+// maxSpanAttrs — сколько атрибутов спана вообще читается.
+//
+// Потолок стоит НА ВХОДЕ, до построения карт и строк, и в этом весь смысл.
+// Раньше карта строилась из ВСЕХ атрибутов, ключи сортировались, и только потом
+// оставались первые maxDataKeys: тело в 10 МиБ (около 30 КБ в gzip) несёт
+// примерно 1.2 млн атрибутов, и на них уходило около 100 МБ сверх самого тела —
+// то есть десятикратное усиление, управляемое отправителем.
+//
+// 256 — заведомо больше, чем бывает у настоящего спана (спецификация OTel
+// рекомендует 128), и заведомо меньше, чем нужно для усиления. Отбор
+// maxDataKeys идёт среди прочитанных, порядок — как прислал отправитель.
+const maxSpanAttrs = 256
+
 // maxOTLPSpans — потолок числа спанов, разбираемых из одного OTLP-запроса
 // /v1/traces. Без него недоверенный экспорт с сотнями тысяч спанов раздул бы
 // плоский список flat и карту parents (амплификация CPU/памяти) в обход
@@ -988,9 +1001,21 @@ func otlpNumber(v *commonpb.AnyValue) (float64, bool) {
 	return 0, false
 }
 
+// capAttrs отсекает хвост списка атрибутов до maxSpanAttrs.
+//
+// Возвращает исходный слайс, когда он и так короче: копии не делается, это
+// горячий путь приёма.
+func capAttrs(attrs []*commonpb.KeyValue) []*commonpb.KeyValue {
+	if len(attrs) <= maxSpanAttrs {
+		return attrs
+	}
+	return attrs[:maxSpanAttrs]
+}
+
 // otlpTags — теги транзакции: атрибуты корневого спана. Числа/булевы приводим к
 // строке — колонка тегов строковая.
 func otlpTags(attrs []*commonpb.KeyValue) map[string]string {
+	attrs = capAttrs(attrs)
 	tags := make(map[string]string, len(attrs))
 	for _, kv := range attrs {
 		if kv.GetKey() == "" {
@@ -1044,6 +1069,7 @@ func otlpAttrMap(attrs []*commonpb.KeyValue) map[string]any {
 	if len(attrs) == 0 {
 		return nil
 	}
+	attrs = capAttrs(attrs)
 	vals := make(map[string]string, len(attrs))
 	for _, kv := range attrs {
 		if kv.GetKey() == "" {
@@ -1134,7 +1160,10 @@ func otlpAttrStringDepth(v *commonpb.AnyValue, depth int) string {
 		if depth >= maxAttrDepth {
 			return ""
 		}
-		kvs := x.KvlistValue.GetValues()
+		// Ёмкость по числу прочитанных, а не по длине списка: склейка и так
+		// обрывается по maxAttrLen, но слайс на миллион элементов выделялся до
+		// первой проверки.
+		kvs := capAttrs(x.KvlistValue.GetValues())
 		parts := make([]string, 0, len(kvs))
 		total := 0
 		for _, kv := range kvs {

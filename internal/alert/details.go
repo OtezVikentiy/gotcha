@@ -133,6 +133,13 @@ func hostOfURL(raw string) string {
 	if err != nil || u.Host == "" {
 		return ""
 	}
+	// Схема проверяется, а не подразумевается: докблок обещает абсолютный
+	// http(s), но url.Parse отдаёт хост и для «//evil.example/x», и для
+	// «ftp://…». Здесь решается, доверенный ли получатель, и «хост непонятно
+	// какого протокола» доверенным считаться не должен — fail-closed.
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
 	host := u.Hostname() // без порта, IPv6 без скобок
 	return normalizeHost(host)
 }
