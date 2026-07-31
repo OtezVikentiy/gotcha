@@ -35,6 +35,21 @@ The migration only cleans the **live database**, though. If the instance ran an 
 
 You can skip this only if you had no delivery channels at all.
 
+## What changes when upgrading from versions before 0.4.2: excluded members lose team access they had kept
+
+Removing someone from an organization used to leave their team memberships untouched, so they kept access to the projects of any team they belonged to — even after they were no longer a member of the organization itself. Migration `0029` fixes this in the schema: a team membership can no longer exist without the matching organization membership.
+
+Applying the migration does two things:
+
+- it deletes any team memberships that had already gone stale this way (someone no longer in the organization but still listed on one of its teams) — the migration log reports how many rows it removed;
+- from then on the database enforces the rule itself: removing an organization member cascades to their team memberships automatically, so the same drift can't build up again.
+
+If anyone in your organization was removed in the past but kept reaching a project through a team, that access goes away after this upgrade. That's the fix working as intended, but it can look like a regression if nobody saw it coming — worth checking who currently has team access before you upgrade, or being ready to explain the change afterwards.
+
+This migration is marked `backward-compatible: no`. Once it has run, the schema gate refuses to start the previous version's binary against the database (see "Rolling back" below) — for this one, the usual rollback path isn't available, only restoring a backup taken beforehand.
+
+Invitation links issued before the upgrade are unaffected; their tokens keep working exactly as before.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

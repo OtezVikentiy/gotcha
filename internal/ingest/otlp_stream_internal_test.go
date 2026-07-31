@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -34,7 +35,10 @@ func TestOTLPJSONHexIDsDoesNotAmplifyMemory(t *testing.T) {
 	var m0, m1 runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&m0)
-	out := otlpJSONHexIDs(raw)
+	out, err := otlpJSONHexIDs(raw)
+	if err != nil {
+		t.Fatalf("otlpJSONHexIDs: %v", err)
+	}
 	runtime.ReadMemStats(&m1)
 	runtime.KeepAlive(out)
 
@@ -59,7 +63,10 @@ func TestOTLPJSONHexIDsPreservesDocument(t *testing.T) {
 		`{"key":"тег","value":{"stringValue":"значение"}}],` +
 		`"ok":true,"nothing":null,"ratio":0.125}]}]}]}`
 
-	out := otlpJSONHexIDs([]byte(body))
+	out, err := otlpJSONHexIDs([]byte(body))
+	if err != nil {
+		t.Fatalf("otlpJSONHexIDs: %v", err)
+	}
 	got := string(out)
 
 	// Идентификаторы переведены.
@@ -98,9 +105,41 @@ func TestOTLPJSONHexIDsLeavesNonHexAlone(t *testing.T) {
 		`[]`,
 		`{"a":  1,   "b" : "c"}`, // форматирование сохраняется, потому что тело не трогали
 	} {
-		if got := string(otlpJSONHexIDs([]byte(body))); got != body {
+		out, err := otlpJSONHexIDs([]byte(body))
+		if err != nil {
+			t.Fatalf("otlpJSONHexIDs(%q): %v", body, err)
+		}
+		if got := string(out); got != body {
 			t.Errorf("тело без hex-идентификаторов изменено:\nбыло:  %s\nстало: %s", body, got)
 		}
+	}
+}
+
+// TestOTLPJSONHexIDsDepthBoundary — граница maxJSONWalkDepth ровная: значение
+// глубины maxJSONWalkDepth проходит, maxJSONWalkDepth+1 — уже нет.
+//
+// Отсчёт глубины начинается с 0 у САМОГО ВЕРХНЕГО значения (см. вызов w.value(0)
+// в otlpJSONHexIDs), а проверка в object/array — "depth > maxJSONWalkDepth". Тело
+// из maxJSONWalkDepth+1 вложенных массивов ([[[...]]] с таким числом скобок)
+// доходит максимум до глубины maxJSONWalkDepth (не больше) и проходит; на один
+// уровень глубже — падает. Числа подобраны и проверены запуском, а не
+// теоретически: голые счётные примеры вроде «глубина 100 / 101» здесь дали бы
+// неверную границу ровно на единицу.
+//
+// Тело — голые скобки, а не валидный OTLP: этот тест проверяет только предел
+// ОБХОДА (otlpJSONHexIDs), а не итоговый код ответа HTTP-эндпойнта — на голых
+// скобках protojson всё равно отказал бы (это не объект), так что для сквозной
+// проверки кода ответа используется валидное тело (см.
+// TestOTLPJSONRejectsDeepBody / TestOTLPJSONAcceptsNormalDepth в otlp_depth_test.go).
+func TestOTLPJSONHexIDsDepthBoundary(t *testing.T) {
+	atLimit := strings.Repeat("[", maxJSONWalkDepth+1) + strings.Repeat("]", maxJSONWalkDepth+1)
+	if _, err := otlpJSONHexIDs([]byte(atLimit)); err != nil {
+		t.Errorf("глубина %d (на пределе): err = %v, want nil", maxJSONWalkDepth+1, err)
+	}
+
+	overLimit := strings.Repeat("[", maxJSONWalkDepth+2) + strings.Repeat("]", maxJSONWalkDepth+2)
+	if _, err := otlpJSONHexIDs([]byte(overLimit)); !errors.Is(err, errJSONTooDeep) {
+		t.Errorf("глубина %d (за пределом): err = %v, want errJSONTooDeep", maxJSONWalkDepth+2, err)
 	}
 }
 
@@ -113,7 +152,11 @@ func TestOTLPJSONHexIDsRejectsGarbage(t *testing.T) {
 		`not json at all`,
 		``,
 	} {
-		if got := string(otlpJSONHexIDs([]byte(body))); got != body {
+		out, err := otlpJSONHexIDs([]byte(body))
+		if err != nil {
+			t.Fatalf("otlpJSONHexIDs(%q): %v", body, err)
+		}
+		if got := string(out); got != body {
 			t.Errorf("испорченное тело изменено:\nбыло:  %q\nстало: %q", body, got)
 		}
 	}

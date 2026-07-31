@@ -146,6 +146,14 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	}
 	var req tracepb.TracesData
 	if err := otlpUnmarshal(enc, raw, &req); err != nil {
+		// errJSONTooDeep — не обычная ошибка разбора: тело НЕ уходит в protojson
+		// (см. её докблок), поэтому отделяем от "malformed" и своя строка в логе.
+		if errors.Is(err, errJSONTooDeep) {
+			slog.Warn("otlp: body rejected", "reason", "json_too_deep",
+				"project_id", key.ProjectID)
+			writeJSONError(w, http.StatusBadRequest, "json nesting too deep")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "malformed otlp payload")
 		return
 	}
@@ -305,6 +313,30 @@ func otlpEncodingOf(contentType string) (otlpEncoding, bool) {
 	return 0, false
 }
 
+// maxJSONWalkDepth — предел глубины ОБХОДА тела в otlpJSONHexIDs. Отличать от
+// maxJSONIDDepth, который ограничивает только подмену идентификаторов: тот
+// отключает замену и продолжает копировать, этот прекращает разбор целиком.
+//
+// Обход рекурсивен (value → valueFrom → object|array → value), а стек
+// горутины в Go растёт до 1 ГБ и упирается в fatal error, которую recover не
+// ловит: переполнение убивает процесс целиком, а не только запрос. Раньше
+// защиту давала сама encoding/json — тело разбиралось через Unmarshal в
+// map[string]any, и предел вложенности стоял в библиотеке. Потоковый разбор
+// (коммит fe37c99) снял амплификацию кучи и вместе с ней эту защиту.
+//
+// Практическая глубина OTLP/JSON — около десяти: resourceSpans → scopeSpans →
+// spans → attributes → value → kvlist. Сотня заведомо выше любого настоящего
+// тела и заведомо ниже опасного.
+const maxJSONWalkDepth = 100
+
+// errJSONTooDeep — тело глубже предела обхода. В отличие от прочих ошибок
+// разбора НЕ приводит к терпимому откату «вернуть тело как есть»: такое тело
+// ушло бы в protojson без подмены идентификаторов и, если предел вложенности
+// там выше нашего, было бы принято с hex-строками вместо байтов — то есть
+// тихо испорчено. Поэтому глубина даёт отдельную ошибку, которую приём
+// отличает от прочих и отвечает 400 со строкой в логе (см. otlpTraces).
+var errJSONTooDeep = errors.New("ingest: json nesting too deep")
+
 // otlpUnmarshal разбирает тело в соответствии с кодировкой. OTLP/JSON — это
 // protojson поверх ТЕХ ЖЕ сообщений, а не «просто JSON»: encoding/json тут
 // молча выдал бы мусор (другие имена полей, base64-кодирование байтовых id).
@@ -329,7 +361,11 @@ func otlpEncodingOf(contentType string) (otlpEncoding, bool) {
 // коллектора в Go свой анмаршалер, а не protojson.
 func otlpUnmarshal(enc otlpEncoding, raw []byte, req *tracepb.TracesData) error {
 	if enc == otlpJSON {
-		return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(otlpJSONHexIDs(raw), req)
+		rewritten, err := otlpJSONHexIDs(raw)
+		if err != nil {
+			return err // errJSONTooDeep — единственная ошибка, otlpJSONHexIDs больше не отдаёт
+		}
+		return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(rewritten, req)
 	}
 	return proto.Unmarshal(raw, req)
 }
@@ -355,10 +391,15 @@ func otlpUnmarshal(enc otlpEncoding, raw []byte, req *tracepb.TracesData) error 
 //
 // Числа переносятся как json.Number — иначе большие наносекундные таймстемпы
 // уехали бы через float64 и вернулись в экспоненциальной записи, которую
-// protojson не примет. Глубина ограничена maxJSONIDDepth. Любая ошибка
-// разбора — не наша забота: возвращаем тело нетронутым и даём protojson
-// отчитаться об ошибке самому.
-func otlpJSONHexIDs(raw []byte) []byte {
+// protojson не примет. Глубина ПОДМЕНЫ идентификаторов ограничена
+// maxJSONIDDepth, а глубина самого ОБХОДА — отдельным, более широким пределом
+// maxJSONWalkDepth (см. его докблок): без него рекурсия по недоверенному телу
+// валит процесс переполнением стека, которое recover не ловит.
+//
+// Любая ОБЫЧНАЯ ошибка разбора — не наша забота: возвращаем тело нетронутым и
+// даём protojson отчитаться об ошибке самому. errJSONTooDeep — исключение из
+// этого правила (см. её докблок): она отдаётся наружу, а не проглатывается.
+func otlpJSONHexIDs(raw []byte) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 
@@ -369,17 +410,20 @@ func otlpJSONHexIDs(raw []byte) []byte {
 
 	w := &otlpIDRewriter{dec: dec, out: &out}
 	if err := w.value(0); err != nil {
-		return raw
+		if errors.Is(err, errJSONTooDeep) {
+			return nil, errJSONTooDeep
+		}
+		return raw, nil
 	}
 	// В теле обязан быть ровно один документ; хвост означает мусор, и разбирать
 	// его — забота protojson, а не наша.
 	if _, err := dec.Token(); err != io.EOF {
-		return raw
+		return raw, nil
 	}
 	if !w.changed {
-		return raw // hex-идентификаторов не было: тело уже в base64
+		return raw, nil // hex-идентификаторов не было: тело уже в base64
 	}
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 // otlpIDRewriter переписывает поток JSON-токенов в выходной буфер, подменяя
@@ -396,8 +440,9 @@ type otlpIDRewriter struct {
 
 // value переписывает одно значение (скаляр, объект или массив) с его позиции в
 // потоке. Глубже maxJSONIDDepth идентификаторов не бывает, но копировать
-// содержимое всё равно надо — иначе тело потеряло бы данные, поэтому глубина
-// только отключает подмену, а не обход.
+// содержимое всё равно надо — иначе тело потеряло бы данные, поэтому ЭТОТ
+// предел только отключает подмену, а не обход. Сам обход ограничен отдельно,
+// в object/array, — см. maxJSONWalkDepth.
 func (w *otlpIDRewriter) value(depth int) error {
 	tok, err := w.dec.Token()
 	if err != nil {
@@ -448,6 +493,9 @@ func (w *otlpIDRewriter) valueFrom(tok json.Token, depth int, key string) error 
 }
 
 func (w *otlpIDRewriter) object(depth int) error {
+	if depth > maxJSONWalkDepth {
+		return errJSONTooDeep
+	}
 	w.out.WriteByte('{')
 	first := true
 	for w.dec.More() {
@@ -484,6 +532,9 @@ func (w *otlpIDRewriter) object(depth int) error {
 }
 
 func (w *otlpIDRewriter) array(depth int) error {
+	if depth > maxJSONWalkDepth {
+		return errJSONTooDeep
+	}
 	w.out.WriteByte('[')
 	first := true
 	for w.dec.More() {
@@ -521,10 +572,16 @@ var (
 	errUnexpectedJSONDelim = errors.New("ingest: unexpected json delimiter")
 )
 
-// maxJSONIDDepth — предел глубины обхода в otlpJSONHexIDs. Идентификаторы живут
-// на глубине ~6 (resourceSpans → scopeSpans → spans → links); всё, что глубже, —
-// вложенные атрибуты, и переписывать там нечего. Обход глубже просто
-// прекращается, данные при этом не теряются.
+// maxJSONIDDepth — предел глубины ПОДМЕНЫ идентификаторов в otlpJSONHexIDs.
+// Идентификаторы живут на глубине ~6 (resourceSpans → scopeSpans → spans →
+// links); всё, что глубже, — вложенные атрибуты, и переписывать там нечего.
+//
+// ВАЖНО: это НЕ предел обхода. Глубже maxJSONIDDepth подмена просто
+// отключается, но копирование продолжается как обычно — иначе тело потеряло
+// бы данные. Сам обход ограничен отдельно и намного шире — maxJSONWalkDepth;
+// раньше здесь было написано, что «обход глубже просто прекращается», и это
+// было неправдой — она и усыпила прошлое ревью, пропустившее рекурсию без
+// предела (см. errJSONTooDeep).
 const maxJSONIDDepth = 64
 
 // otlpJSONIDLen — длины hex-идентификаторов OTLP/JSON по именам полей (оба
