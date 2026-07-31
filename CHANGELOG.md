@@ -37,6 +37,7 @@ once tagged releases begin.
 - Reusable test containers carry the image tag in their name: bumping the PostgreSQL version silently reused the old container, so the whole suite validated a different engine.
 - Template tests assert column order, not just that a substituted value appears somewhere.
 - The Cyrillic-literal guard matches «ё» and no longer treats `catalog.` or `dialog.` as a logging call.
+- Guards that used to check a hand-picked list of known cases now walk the whole tree and check everything, with an explicit, capped exception list for anything not fixed yet. This catches, wherever it occurs rather than only where the old guard happened to look: a raw i18n key reaching a page in either language, an interactive control left on the decorative border instead of the contrast-checked one, a class referenced in markup but never defined in CSS, light- and dark-theme rule pairs drifting out of sync, a destructive SQL form the migration-safety check doesn't recognize, a mutating route with no `Origin` check, and a coverage floor lowered through an environment variable.
 
 ### Accessibility
 - Interactive controls use the contrast-checked border token again. Issue filters, monitor-type tabs, chips, and the language/theme switches had it overridden back to the decorative one — measured 1.40:1 in the dark theme against the 3:1 required by WCAG 1.4.11.

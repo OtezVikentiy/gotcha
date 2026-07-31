@@ -66,12 +66,29 @@ TEMPL_MIN=${TEMPL_MIN:-$TEMPL_FLOOR}
 CMD_FLOOR=38.0
 CMD_MIN=${CMD_MIN:-$CMD_FLOOR}
 
+# Формат порога: число (с необязательной дробной частью). Проверяется ДО
+# сравнения с полом — awk '{ g < f }' сравнивает численно только если ОБА
+# операнда выглядят числами; если given нечисловой ("disabled", "NaN"),
+# сравнение молча становится строковым, а буквы лексически больше цифр, так
+# что "disabled" < "85.0" — ложь, и отказ не срабатывает. Дальше по конвейеру,
+# в финальном awk-разборе, нечисловая строка тем же способом превращается в
+# 0 через `+0` ("abc"+0 == 0 в awk) — то есть нечисловое значение не просто
+# обходит храповик, а обнуляет реальный пол. Проверяем формат заранее и здесь
+# же отказываем, а не полагаемся на арифметику ниже по цепочке.
+NUM_RE='^[0-9]+(\.[0-9]+)?$'
+
 # Понижение порога окружением — отказ, а не тихое согласие.
 for pair in "FRONT_MIN:$FRONT_MIN:$FRONT_FLOOR" "BACK_MIN:$BACK_MIN:$BACK_FLOOR" "TEMPL_MIN:$TEMPL_MIN:$TEMPL_FLOOR" "CMD_MIN:$CMD_MIN:$CMD_FLOOR"; do
 	name=${pair%%:*}
 	rest=${pair#*:}
 	given=${rest%%:*}
 	floor=${rest#*:}
+	if ! [[ $given =~ $NUM_RE ]]; then
+		echo "FAIL: $name=$given — не число." >&2
+		echo "      Пороги двигаются только вверх и только правкой scripts/coverage.sh," >&2
+		echo "      иначе понижение порога и падение покрытия проходят одним коммитом." >&2
+		exit 1
+	fi
 	if awk -v g="$given" -v f="$floor" 'BEGIN { exit !(g < f) }'; then
 		echo "FAIL: $name=$given ниже зафиксированного пола $floor." >&2
 		echo "      Пороги двигаются только вверх и только правкой scripts/coverage.sh," >&2
@@ -88,6 +105,49 @@ done
 # их просадка размывалась по агрегату из 24 пакетов, не двигая общий порог.
 PKG_MIN_DEFAULT="internal/secretbox=90 internal/netguard=90 internal/alert=80 internal/ingest=80 internal/oauth=80 internal/auth=83 internal/org=84"
 PKG_MIN=${PKG_MIN:-$PKG_MIN_DEFAULT}
+
+# PKG_MIN — тоже храповик, но это не одно число, а набор "пакет=пол", поэтому
+# понижение окружением может выглядеть двумя разными способами: занизить
+# значение ИЛИ просто не упомянуть пакет (split в awk-разборе ниже даёт ноль
+# пар на пустой строке, и без этой проверки исчезновение пакета из PKG_MIN
+# тихо снимает с него пол вместо того, чтобы явно отказать). Проверяем обе
+# формы здесь, в bash, а не в awk-блоке ниже — тот получает $PKG_MIN уже после
+# запуска тестов, а падать нужно ДО дорогого прогона, как и для остальных
+# четырёх порогов выше.
+declare -A pkg_floor_default
+for pair in $PKG_MIN_DEFAULT; do
+	pkg_floor_default[${pair%%=*}]=${pair#*=}
+done
+declare -A pkg_floor_given
+for pair in $PKG_MIN; do
+	pkg_floor_given[${pair%%=*}]=${pair#*=}
+done
+for pkg in "${!pkg_floor_default[@]}"; do
+	floor=${pkg_floor_default[$pkg]}
+	given=${pkg_floor_given[$pkg]:-}
+	if [[ -z "$given" ]]; then
+		echo "FAIL: PKG_MIN не содержит пакет $pkg (зафиксированный пол $floor%)." >&2
+		echo "      Пороги двигаются только вверх и только правкой scripts/coverage.sh," >&2
+		echo "      иначе понижение порога и падение покрытия проходят одним коммитом." >&2
+		exit 1
+	fi
+	# Тот же формат-чек, что и у остальных четырёх порогов выше: без него
+	# "internal/secretbox=disabled" пройдёт мимо этого цикла (строковое
+	# сравнение с полом лживо), а в финальном awk-разборе "disabled"+0 даст 0 —
+	# то есть пол для пакета не занизится, а обнулится целиком.
+	if ! [[ $given =~ $NUM_RE ]]; then
+		echo "FAIL: PKG_MIN $pkg=$given — не число." >&2
+		echo "      Пороги двигаются только вверх и только правкой scripts/coverage.sh," >&2
+		echo "      иначе понижение порога и падение покрытия проходят одним коммитом." >&2
+		exit 1
+	fi
+	if awk -v g="$given" -v f="$floor" 'BEGIN { exit !(g < f) }'; then
+		echo "FAIL: PKG_MIN $pkg=$given ниже зафиксированного пола $floor." >&2
+		echo "      Пороги двигаются только вверх и только правкой scripts/coverage.sh," >&2
+		echo "      иначе понижение порога и падение покрытия проходят одним коммитом." >&2
+		exit 1
+	fi
+done
 
 PROFILE=$(mktemp /tmp/gotcha-cover.XXXXXX.out)
 trap 'rm -f "$PROFILE"' EXIT
