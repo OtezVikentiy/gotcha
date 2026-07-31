@@ -533,6 +533,17 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 // от orgSettingsRemove) выходит из организации сам. Единственный owner получает
 // 422 (ErrLastOwner) — сначала нужно передать владение. Не участник → 404 (не
 // палим существование чужой организации, как requireOrgRole). Успех → 303 на /.
+//
+// Членства в командах этой организации снимает база: team_members_member_fk
+// объявлен ON DELETE CASCADE (миграция 0029). Делать это здесь вручную не
+// нужно и вредно — появится вторая копия инварианта, которая разойдётся с
+// первой.
+//
+// Сессии удалённого участника намеренно не инвалидируются: пользователь
+// бывает членом нескольких организаций, и удаление из одной не должно
+// выкидывать его из остальных. Доступ проверяется на каждом запросе
+// (CanAccessProject ходит в базу), поэтому живая cookie перестаёт открывать
+// проекты этой организации сразу после удаления.
 func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -1026,11 +1037,35 @@ func subjectCriteria(sub telemetry.Subject) []string {
 }
 
 // inviteAcceptPage — GET /invite/{token}: страница «принять приглашение».
-// GET не трогает БД — токен одноразовый, тратить его на простой просмотр
-// страницы нельзя; валидность проверяется только на POST.
+// Читает приглашение через InviteByToken (это ЧТЕНИЕ, не AcceptInvite —
+// одноразовый токен нельзя тратить на простой просмотр страницы) и
+// показывает, куда зовут: организацию, роль и адрес. Без этого человек
+// подтверждал бы приглашение вслепую.
+//
+// Невалидный, просроченный и уже принятый токен дают ту же ошибку и тот же
+// код ответа, что и неудачный POST (err.org.invite_invalid, 422) — иначе по
+// разнице ответов GET и POST можно было бы перебором узнавать, какие токены
+// вообще существуют.
 func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	_ = templates.InviteAccept(token, "", h.currentEmail(r)).Render(r.Context(), w)
+	// Маршрут публичный (см. web.go) — h.currentEmail здесь всегда вернула бы
+	// "": auth.UserID кладёт в контекст только requireUser, а эта страница им
+	// не обёрнута нарочно. currentEmailPublic резолвит сессию напрямую.
+	email := h.currentEmailPublic(r)
+	inv, err := h.Org.InviteByToken(r.Context(), token)
+	if errors.Is(err, org.ErrInviteInvalid) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = templates.InviteAccept(token, i18n.T(r.Context(), "err.org.invite_invalid"), email, org.InviteInfo{}).Render(r.Context(), w)
+		return
+	}
+	if err != nil {
+		// Fail closed: не знаем, действительно ли приглашение — не показываем
+		// его содержимое.
+		slog.Error("inviteAcceptPage: invite lookup failed", "err", err)
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	_ = templates.InviteAccept(token, "", email, inv).Render(r.Context(), w)
 }
 
 // inviteAcceptSubmit — POST /invite/{token}: org.AcceptInvite; успех → 303 /,
@@ -1054,7 +1089,9 @@ func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 			msg = i18n.T(r.Context(), "err.org.invite_other_email")
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.InviteAccept(token, msg, email).Render(r.Context(), w)
+		// inv — нулевое значение: errMsg != "" и шаблон его не использует (см.
+		// комментарий у InviteAccept).
+		_ = templates.InviteAccept(token, msg, email, org.InviteInfo{}).Render(r.Context(), w)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)

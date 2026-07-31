@@ -1,6 +1,10 @@
 package templates
 
-import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+import (
+	"net/url"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
 
 type OAuthButton struct {
 	Name  string // ключ провайдера для URL (/auth/oauth/{name}/start)
@@ -75,22 +79,54 @@ templ SSOLogin(errMsg string) {
 	}
 }
 
+// loginLinkWithNext — ссылка на /login, несущая адресата, если он есть. Тот
+// же приём экранирования, что и у loginWithNext в
+// internal/auth/middleware.go (RequireUser): url.QueryEscape без url.Values,
+// потому что параметр всего один. next приходит уже провалидированным через
+// safeNextPath у вызывающего — здесь только строится ссылка.
+func loginLinkWithNext(next string) string {
+	if next == "" {
+		return "/login"
+	}
+	return "/login?next=" + url.QueryEscape(next)
+}
+
+// registerLinkWithNext — тот же приём для /register: ссылка «создать аккаунт»
+// со страницы приглашения обязана нести токен так же, как и ссылка «войти»
+// (см. loginLinkWithNext), иначе registerSubmit получит next="" и откажет
+// законному приглашённому как незнакомцу без токена (inviteTokenFromNext в
+// internal/web/auth.go).
+func registerLinkWithNext(next string) string {
+	if next == "" {
+		return "/register"
+	}
+	return "/register?next=" + url.QueryEscape(next)
+}
+
 // Register — экран регистрации. При closed=true (режим invite/closed и первый
 // пользователь уже есть, PROD-B1) парольная форма скрыта: показываем экран
 // «регистрация по приглашению» с OAuth-кнопками (инвайт-flow) и ссылками.
-templ Register(errMsg string, closed bool, providers []OAuthButton) {
+//
+// next — куда вернуть человека после регистрации (см. Login выше): тот же
+// приём, скрытое поле, переживающее POST формы. В closed-ветке скрытого поля
+// нет (формы нет вовсе), поэтому next переживает переход дальше — на /login —
+// через query-параметр ссылки.
+templ Register(errMsg string, closed bool, next string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
 		if closed {
 			<div class="auth-form">
 				<h1>{ i18n.T(ctx, "auth.register.invite_title") }</h1>
 				<p class="error">{ errMsg }</p>
 				<p>{ i18n.T(ctx, "auth.register.closed_body") }</p>
-				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
+				<p class="auth-switch"><a href={ templ.URL(loginLinkWithNext(next)) }>{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
 			</div>
 			@oauthButtons(providers)
 		} else {
 			<form method="post" action="/register" class="auth-form">
 				<h1>{ i18n.T(ctx, "auth.register.title") }</h1>
+				if next != "" {
+					<input type="hidden" name="next" value={ next }/>
+				}
 				if errMsg != "" {
 					<p class="error">{ errMsg }</p>
 				}

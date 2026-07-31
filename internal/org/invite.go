@@ -158,6 +158,39 @@ func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64, 
 	return orgID, nil
 }
 
+// InviteInfo — приглашение, показанное держателю токена ДО принятия.
+//
+// Название организации здесь раскрывается намеренно: токен и есть секрет, а
+// без названия человек подтверждает вслепую — «принять приглашение куда-то».
+type InviteInfo struct {
+	OrgID   int64
+	OrgName string
+	Email   string
+	Role    Role
+}
+
+// InviteByToken читает приглашение по сырому токену, не гася его.
+//
+// Просроченное, уже принятое и несуществующее дают одну и ту же ошибку:
+// различие между ними было бы оракулом — по нему перебором проверяют, какие
+// приглашения выписаны.
+func (s *Service) InviteByToken(ctx context.Context, token string) (InviteInfo, error) {
+	var inv InviteInfo
+	err := s.pool.QueryRow(ctx, `
+		SELECT i.org_id, o.name, i.email, i.role
+		FROM org_invites i
+		JOIN organizations o ON o.id = i.org_id
+		WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.expires_at > now()`,
+		inviteTokenHash(token)).Scan(&inv.OrgID, &inv.OrgName, &inv.Email, &inv.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InviteInfo{}, ErrInviteInvalid
+	}
+	if err != nil {
+		return InviteInfo{}, fmt.Errorf("org: invite by token: %w", err)
+	}
+	return inv, nil
+}
+
 // HasPendingInvite сообщает, есть ли действующий (не принятый, не протухший)
 // инвайт на email. Лёгкая предпроверка перед провижинингом OAuth-юзера, чтобы
 // не заводить аккаунт без приглашения.

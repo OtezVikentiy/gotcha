@@ -514,23 +514,54 @@ templ ssoSection(orgID int64, sso SSOSettings) {
 }
 
 // InviteAccept — GET/POST /invite/{token}: страница «принять приглашение».
-// GET не проверяет токен (просмотр не должен тратить одноразовый токен) —
-// валидность проверяется только на POST; errMsg заполняется при
-// ErrInviteInvalid (недействительный/истёкший/уже использованный токен).
+// GET резолвит приглашение через InviteByToken, но НЕ гасит его (одноразовый
+// токен нельзя тратить на просмотр) — accepted_at выставляет только POST.
+// errMsg заполняется тем же err.org.invite_invalid, что и при отправке формы:
+// недействительный, просроченный и уже принятый токен не должны различаться
+// по ответу (иначе существование приглашения можно перебирать по токену).
+//
+// inv — то, что показывается ДО принятия: организация и роль — без этого
+// человек подтверждает вслепую. При errMsg != "" inv — нулевое значение и на
+// странице не используется.
+//
+// Адрес приглашения (inv.Email) на странице НЕ показывается — ни анониму, ни
+// вошедшему. Страница публична (см. web.go: GET не за requireUser), значит
+// доступна любому держателю токена, а ссылка утекает реальными способами
+// (переслали в чат, осталась в истории браузера, ушла через Referer). Гейт
+// регистрации по приглашению (invitedByToken) требует токен И совпадение
+// адреса именно затем, чтобы одного утёкшего токена было недостаточно для
+// регистрации под чужим адресом — показ адреса здесь свёл бы это требование
+// на нет. inv.Email как ПОЛЕ не убираем: он нужен серверу для того же
+// сравнения и для AcceptInvite, уходит только отображение.
+//
+// userEmail == "" — зритель анонимен: вместо формы принятия (которая для
+// неавторизованного молча уводила на /login, теряя токен) — две ссылки,
+// «войти» и «создать аккаунт», обе несут next=/invite/{token}, чтобы токен
+// пережил переход. Непустой userEmail — обычная форма принятия, без изменений.
+//
 // @chromeless — минимальный layout (анонимная страница вне app-shell);
 // сам layout не трогаем, только внутреннюю разметку формы.
-templ InviteAccept(token, errMsg, userEmail string) {
+templ InviteAccept(token, errMsg, userEmail string, inv org.InviteInfo) {
 	@chromeless(i18n.T(ctx, "org.invite_accept.title"), userEmail) {
 		<div class="invite-accept card">
 			<h1>{ i18n.T(ctx, "org.invite_accept.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
 			} else {
-				<p>{ i18n.T(ctx, "org.invite_accept.hint") }</p>
+				<p>{ i18n.Tf(ctx, "org.invite.you_are_invited", "org", inv.OrgName) }</p>
+				<p>{ i18n.Tf(ctx, "org.invite.role", "role", i18n.T(ctx, memberRoleLabelKey(inv.Role))) }</p>
+				if userEmail == "" {
+					<p class="auth-switch">
+						<a href={ templ.URL(loginLinkWithNext(inviteAcceptPath(token))) }>{ i18n.T(ctx, "org.invite.sign_in") }</a> ·
+						<a href={ templ.URL(registerLinkWithNext(inviteAcceptPath(token))) }>{ i18n.T(ctx, "org.invite.create_account") }</a>
+					</p>
+				} else {
+					<p>{ i18n.T(ctx, "org.invite_accept.hint") }</p>
+					<form method="post" action={ templ.URL(inviteAcceptPath(token)) }>
+						<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.invite_accept.submit") }</button>
+					</form>
+				}
 			}
-			<form method="post" action={ templ.URL(inviteAcceptPath(token)) }>
-				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.invite_accept.submit") }</button>
-			</form>
 		</div>
 	}
 }

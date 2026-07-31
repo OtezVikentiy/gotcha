@@ -22,11 +22,11 @@ func TestAuthPages(t *testing.T) {
 	if !strings.Contains(login, "неверный пароль") || !strings.Contains(login, "Яндекс") {
 		t.Error("логин должен показать ошибку и OAuth-кнопки")
 	}
-	reg := renderTo(t, Register("", false, providers))
+	reg := renderTo(t, Register("", false, "", providers))
 	if !strings.Contains(reg, "GitHub") {
 		t.Error("регистрация должна показать OAuth-кнопки")
 	}
-	regClosed := renderTo(t, Register("", true, nil))
+	regClosed := renderTo(t, Register("", true, "", nil))
 	if len(regClosed) == 0 {
 		t.Error("закрытая регистрация всё равно рендерится")
 	}
@@ -116,11 +116,12 @@ func TestProjectSetup(t *testing.T) {
 
 // TestInviteAccept — экран принятия приглашения с токеном и ошибкой.
 func TestInviteAccept(t *testing.T) {
-	out := renderTo(t, InviteAccept("invtok", "", "u@e.com"))
+	inv := org.InviteInfo{OrgID: 1, OrgName: "Acme Inc", Email: "u@e.com", Role: org.RoleMember}
+	out := renderTo(t, InviteAccept("invtok", "", "u@e.com", inv))
 	if !strings.Contains(out, "invtok") {
 		t.Error("экран приглашения должен нести токен")
 	}
-	outErr := renderTo(t, InviteAccept("invtok", "просрочено", "u@e.com"))
+	outErr := renderTo(t, InviteAccept("invtok", "просрочено", "u@e.com", org.InviteInfo{}))
 	if !strings.Contains(outErr, "просрочено") {
 		t.Error("ошибка приглашения должна отрендериться")
 	}

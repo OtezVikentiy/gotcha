@@ -10,6 +10,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -30,13 +31,14 @@ func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
+	next := safeNextPath(r.URL.Query().Get("next"))
 	// PROD-B1: если режим не open и первый пользователь уже есть — показываем
 	// экран «регистрация по приглашению» вместо формы (bootstrap уже пройден).
 	if h.registrationClosed(r) {
-		_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
-	_ = templates.Register("", false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+	_ = templates.Register("", false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 // registrationClosed сообщает, надо ли вместо формы регистрации показать
@@ -68,39 +70,87 @@ func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// invitedByEmail — пускать ли этот адрес на регистрацию по приглашению. Сам
-// отвечает отказом (403 со страницей регистрации), если нет: решение и ответ
-// живут рядом, чтобы вызывающий не мог забыть один из двух исходов.
+// inviteTokenFromNext — токен приглашения из адреса, куда человек вернётся
+// после регистрации.
 //
-// Приглашение здесь только проверяется, но не гасится: гасит его AcceptInvite
-// по токену из ссылки, уже после входа. Регистрация — это лишь пропуск к форме
-// приглашения, и потратить приглашение раньше, чем человек им воспользуется,
-// означало бы оставить его с аккаунтом, но без организации.
-func (h *Handler) invitedByEmail(w http.ResponseWriter, r *http.Request, email string) bool {
+// Это единственное доказательство права на регистрацию в режиме invite.
+// Знание приглашённого адреса им не является: раньше являлось, и по нему
+// аноним заводил аккаунт в чужой организации с ролью приглашения.
+//
+// Разбор строгий: ровно /invite/{token}, без лишних сегментов и без query —
+// адрес пришёл из формы, и вольность в его разборе стала бы новой поверхностью.
+func inviteTokenFromNext(next string) (string, bool) {
+	const prefix = "/invite/"
+	if !strings.HasPrefix(next, prefix) {
+		return "", false
+	}
+	token := strings.TrimPrefix(next, prefix)
+	if token == "" || strings.ContainsAny(token, "/?#") {
+		return "", false
+	}
+	return token, true
+}
+
+// invitedByToken — пускать ли эту регистрацию. Сам отвечает отказом, если нет:
+// решение и ответ живут рядом, чтобы вызывающий не мог забыть один из исходов.
+//
+// Требуется И живой токен, И совпадение адреса с адресом приглашения. Одного
+// токена мало: утёкшая ссылка иначе позволила бы завести аккаунт на закрытом
+// инстансе под произвольным адресом — членства он бы не дал, но squatter в
+// базе появился бы, а к моменту AcceptInvite аккаунт уже создан.
+//
+// Приглашение здесь только читается, но не гасится: гасит его AcceptInvite по
+// тому же токену, уже после входа. Потратить приглашение раньше, чем человек
+// им воспользуется, значило бы оставить его с аккаунтом, но без организации.
+//
+// Все причины отказа выглядят для клиента одинаково: различие между ними и
+// было оракулом, по которому перебором проверяли, кто приглашён.
+func (h *Handler) invitedByToken(w http.ResponseWriter, r *http.Request, next, email string) bool {
 	// closed — новых аккаунтов не появляется вообще, даже по действующему
 	// приглашению; ровно этим он и отличается от invite (та же граница, что и в
 	// oauthProvisionByInvite).
 	if h.RegistrationMode != "invite" || h.Org == nil {
-		h.denyRegistration(w, r)
+		h.denyRegistration(w, r, next, "mode_closed")
 		return false
 	}
-	has, err := h.Org.HasPendingInvite(r.Context(), email)
+	token, ok := inviteTokenFromNext(next)
+	if !ok {
+		h.denyRegistration(w, r, next, "no_token")
+		return false
+	}
+	inv, err := h.Org.InviteByToken(r.Context(), token)
+	if errors.Is(err, org.ErrInviteInvalid) {
+		h.denyRegistration(w, r, next, "bad_token")
+		return false
+	}
 	if err != nil {
-		// Fail closed: не знаем, приглашён ли — не заводим аккаунт.
-		slog.Error("register: pending invite lookup failed", "error", err)
+		// Fail closed: не знаем, действительно ли приглашение — не заводим аккаунт.
+		slog.Error("register: invite lookup failed", "error", err)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return false
 	}
-	if !has {
-		h.denyRegistration(w, r)
+	// Регистр адреса закрывает сама колонка (org_invites.email — citext), но
+	// сравнение здесь своё: значение пришло из формы, а решение принимается тут.
+	if !strings.EqualFold(inv.Email, email) {
+		h.denyRegistration(w, r, next, "email_mismatch")
 		return false
 	}
 	return true
 }
 
-func (h *Handler) denyRegistration(w http.ResponseWriter, r *http.Request) {
+// denyRegistration отказывает в регистрации и рисует ту же заглушку, что и
+// закрытый режим (registrationClosed). next передаётся в шаблон, чтобы
+// адресат не терялся при отказе — человек всё ещё может уйти на /login по
+// той же ссылке-приглашению.
+//
+// reason уходит только в лог: клиенту все причины отказа обязаны выглядеть
+// одинаково, иначе различие снова становится оракулом. Адрес в лог не пишется
+// — это ПДн, а для разбора хватает причины и IP.
+func (h *Handler) denyRegistration(w http.ResponseWriter, r *http.Request, next, reason string) {
+	slog.Warn("register: denied", "reason", reason, "ip", h.clientIP(r))
 	w.WriteHeader(http.StatusForbidden)
-	_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, h.oauthButtons(r.Context())).Render(r.Context(), w)
+	_ = templates.Register(i18n.T(r.Context(), "auth.register.invite_required"), true, next,
+		h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -173,11 +223,16 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 	password2 := r.FormValue("password2")
+	next := safeNextPath(r.FormValue("next"))
 
-	// SEC-L2: per-account (ip|email) + глобальный per-IP лимит, см. loginSubmit.
-	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) {
+	// SEC-L2: per-account (ip|email), глобальный per-IP и per-email (без IP) —
+	// тот же набор и тот же порядок, что в loginSubmit. Per-email нужен и здесь:
+	// без него распределённый перебор одного приглашённого адреса с пула IP не
+	// ограничивался ничем.
+	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
+		!h.emailLimiter.Allow(normalizeEmail(email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Register(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -186,36 +241,33 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	// режиму.
 	//
 	//   open   — всегда открыто;
-	//   invite — только если на этот адрес есть действующее приглашение;
+	//   invite — только по токену из ссылки-приглашения, выписанной на этот адрес;
 	//   closed — только bootstrap первого.
 	//
-	// Проверка приглашения раньше жила ТОЛЬКО в OAuth-ветке
-	// (oauthProvisionByInvite), а парольная регистрация при любом не-open
-	// режиме отдавала 403. То есть в режиме invite — а он по умолчанию —
-	// приглашённый мог войти лишь через OAuth-провайдера, и на типовой
-	// self-hosted-инсталляции без такого провайдера ссылка-приглашение не
-	// работала вовсе: человек шёл по ней, его отправляло на регистрацию, и там
-	// он получал «регистрация закрыта». Документация при этом обещала ровно
-	// обратное.
+	// Раньше в режиме invite хватало совпадения введённого адреса с адресом
+	// действующего приглашения (P0 №2 аудита 2026-07-30): подтверждения
+	// владения адресом не было нигде, и аноним, знающий приглашённый адрес,
+	// получал аккаунт и — сразу же, ниже по этой функции — членство в чужой
+	// организации с ролью приглашения. Теперь правом служит только токен, см.
+	// invitedByToken.
 	if h.RegistrationMode != "open" {
 		n, err := h.Auth.UserCount(r.Context())
 		if err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
-		// Адрес нормализуем так же, как Auth.Register и форма приглашения.
-		// Регистр закрывает сама колонка (org_invites.email — citext), а вот
-		// обрамляющие пробелы — нет: Register их отрежет и заведёт аккаунт, а
-		// поиск приглашения по строке с пробелами ничего не найдёт, и человек
-		// получит «регистрация закрыта» при живом приглашении.
-		if n > 0 && !h.invitedByEmail(w, r, normalizeEmail(email)) {
+		// Адрес нормализуем так же, как Auth.Register и форма приглашения:
+		// обрамляющие пробелы Register отрежет и заведёт аккаунт, а сравнение с
+		// адресом приглашения по строке с пробелами не совпало бы, и человек
+		// получил бы отказ при живом приглашении.
+		if n > 0 && !h.invitedByToken(w, r, next, normalizeEmail(email)) {
 			return
 		}
 	}
 
 	if password != password2 {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(i18n.T(r.Context(), "err.auth.passwords_differ"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "err.auth.passwords_differ"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -230,46 +282,33 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(i18n.T(r.Context(), "err.auth.sso_required"), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(i18n.T(r.Context(), "err.auth.sso_required"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Register(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(registerErrorMessage(r.Context(), err), false, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Register(registerErrorMessage(r.Context(), err), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
-	// Приглашение гасится сразу после регистрации — так же, как это делает
-	// OAuth-ветка (oauthProvisionByInvite).
-	//
-	// Без этого приглашённый заводил аккаунт и оказывался НИ В ОДНОЙ
-	// организации: главная отправляла его в онбординг «создайте организацию и
-	// первый проект», хотя он пришёл по ссылке в чужую. Выбраться можно было
-	// только вернувшись в почту и открыв ссылку заново — и то лишь потому, что
-	// к тому моменту он уже залогинен.
-	//
-	// Ошибка принятия не отменяет регистрацию: аккаунт уже создан и им можно
-	// пользоваться, а приглашение остаётся действующим — человек примет его по
-	// ссылке из письма. Откатывать пользователя, как это делает OAuth-ветка,
-	// здесь нельзя: там аккаунт заводится ТОЛЬКО ради приглашения, а тут
-	// регистрация самостоятельна.
-	if h.Org != nil {
-		if _, ok, err := h.Org.AcceptPendingInviteByEmail(r.Context(), normalizeEmail(email), uid); err != nil {
-			slog.Error("register: accepting pending invite failed", "user_id", uid, "error", err)
-		} else if !ok {
-			slog.Info("register: no pending invite to accept", "user_id", uid)
-		}
-	}
-
+	// Членство здесь НЕ выдаётся. Раньше выдавалось — по совпадению введённого
+	// адреса с адресом приглашения, то есть любому, кто этот адрес знал.
+	// Приглашение гасит только AcceptInvite, по токену и уже после входа: там
+	// человек видит, в какую организацию его зовут, и соглашается явно.
+	// Регистрация же — лишь пропуск к этой форме, и адресат ведёт ровно туда
+	// (redirectLocal ниже), так что приглашённый попадает на неё сразу.
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// Возврат туда, куда человек шёл до формы регистрации — та же логика, что
+	// и в loginSubmit (см. комментарий там): без этого ссылка-приглашение
+	// теряется после регистрации, а не только после входа.
+	redirectLocal(w, r, next)
 }
 
 func registerErrorMessage(ctx context.Context, err error) string {

@@ -288,6 +288,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("GET /sso", h.ssoPage)
 	inner.HandleFunc("POST /sso", h.ssoSubmit)
 
+	// GET /invite/{token} — публичный: аноним по ссылке-приглашению должен
+	// увидеть, куда его зовут, и получить пути входа/регистрации, не теряя
+	// токен. Под requireUser он раньше молча улетал на /login, теряя смысл
+	// страницы для того самого адресата, у которого ещё нет аккаунта. Само
+	// чтение приглашения (InviteByToken) токен не гасит — accepted_at
+	// выставляет только POST ниже, за requireUser.
+	inner.HandleFunc("GET /invite/{token}", h.inviteAcceptPage)
+
 	// OAuth/social login (этап 5): открыты для анонимов (вход), сессию для
 	// потока привязки проверяем внутри хендлера.
 	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.publicRateLimited(h.oauthStart))
@@ -352,7 +360,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /orgs/{id}/settings/purge-subject", h.requireUser(http.HandlerFunc(h.orgSettingsPurgeSubject)))
 	// Выгрузка ПДн субъекта (право на доступ, 152-ФЗ ст. 14, RA-L11) — owner-only.
 	inner.Handle("POST /orgs/{id}/settings/export-subject", h.requireUser(http.HandlerFunc(h.orgSettingsExportSubject)))
-	inner.Handle("GET /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptPage)))
+	// POST (принятие) остаётся за requireUser — принять приглашение может
+	// только вошедший.
 	inner.Handle("POST /invite/{token}", h.requireUser(http.HandlerFunc(h.inviteAcceptSubmit)))
 
 	// Выносные пробы организации (этап 2, план 5, задача 3): owner/admin
@@ -720,6 +729,30 @@ func projectIssuesPath(projectID int64) string {
 func (h *Handler) currentEmail(r *http.Request) string {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
+		return ""
+	}
+	email, err := h.Auth.UserEmail(r.Context(), uid)
+	if err != nil {
+		return ""
+	}
+	return email
+}
+
+// currentEmailPublic — email текущего пользователя на маршрутах БЕЗ
+// requireUser (GET /invite/{token}: страница обязана быть видна и анониму,
+// поэтому requireUser её не оборачивает и auth.UserID в контекст не кладёт —
+// currentEmail на такой странице всегда вернула бы "", даже вошедшему).
+//
+// Ищет сессию напрямую, тем же приёмом, что withShell/localeSwitch/themeSwitch
+// для best-effort резолвинга анонимных маршрутов: любая ошибка или отсутствие
+// cookie — "" (аноним), запрос не падает.
+func (h *Handler) currentEmailPublic(r *http.Request) string {
+	tok, ok := auth.ReadSessionToken(r, h.Secure)
+	if !ok {
+		return ""
+	}
+	uid, err := h.Auth.SessionUser(r.Context(), tok)
+	if err != nil {
 		return ""
 	}
 	email, err := h.Auth.UserEmail(r.Context(), uid)

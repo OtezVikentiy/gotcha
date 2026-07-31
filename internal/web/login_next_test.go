@@ -13,9 +13,12 @@ import (
 // TestLoginReturnsToRequestedPage — глубокая ссылка переживает форму входа.
 //
 // Раньше требование авторизации отправляло на голый /login, и адресат
-// терялся: пришедший по ссылке-приглашению входил и оказывался на главной, а
-// приглашение так и висело непринятым. То же с любой ссылкой на проблему из
-// письма алерта.
+// терялся: пришедший по глубокой ссылке (например, на профиль или на
+// проблему из письма алерта) входил и оказывался на главной.
+//
+// Пример — GET /profile, а не /invite/{token}: последний с задачи 8 сам
+// сделан публичным (аноним должен УВИДЕТЬ приглашение, а не улететь на
+// /login, потеряв токен), requireUser его больше не оборачивает — см. web.go.
 func TestLoginReturnsToRequestedPage(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -23,17 +26,17 @@ func TestLoginReturnsToRequestedPage(t *testing.T) {
 
 	// Неавторизованный запрос глубокой ссылки уводит на форму входа, сохраняя,
 	// куда человек шёл.
-	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/invite/tok123", nil)
+	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/profile", nil)
 	resp, err := noRedirectClient().Do(req)
 	if err != nil {
-		t.Fatalf("GET /invite: %v", err)
+		t.Fatalf("GET /profile: %v", err)
 	}
 	resp.Body.Close()
 	loc := resp.Header.Get("Location")
 	if !strings.HasPrefix(loc, "/login?next=") {
 		t.Fatalf("Location = %q, want /login?next=...", loc)
 	}
-	if !strings.Contains(loc, url.QueryEscape("/invite/tok123")) {
+	if !strings.Contains(loc, url.QueryEscape("/profile")) {
 		t.Fatalf("Location = %q, адресат не сохранён", loc)
 	}
 
@@ -44,18 +47,18 @@ func TestLoginReturnsToRequestedPage(t *testing.T) {
 	}
 	body, _ := io.ReadAll(page.Body)
 	page.Body.Close()
-	if !strings.Contains(string(body), `name="next" value="/invite/tok123"`) {
+	if !strings.Contains(string(body), `name="next" value="/profile"`) {
 		t.Fatalf("форма входа не сохранила адресата:\n%s", body)
 	}
 
 	// И вход возвращает именно туда.
 	resp = postForm(t, s.srv, "/login", url.Values{
 		"email": {"loginnext@example.com"}, "password": {"correct-horse-battery"},
-		"next": {"/invite/tok123"},
+		"next": {"/profile"},
 	}, s.srv.URL, nil)
 	resp.Body.Close()
-	if got := resp.Header.Get("Location"); got != "/invite/tok123" {
-		t.Fatalf("после входа Location = %q, want /invite/tok123", got)
+	if got := resp.Header.Get("Location"); got != "/profile" {
+		t.Fatalf("после входа Location = %q, want /profile", got)
 	}
 }
 
