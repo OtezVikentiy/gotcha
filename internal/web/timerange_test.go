@@ -21,7 +21,7 @@ func TestParseTimeRangePresets(t *testing.T) {
 		if tr.Key != key || tr.Custom {
 			t.Fatalf("period=%s → Key=%q Custom=%v", key, tr.Key, tr.Custom)
 		}
-		wantWin := timeRangePresets[key]
+		wantWin := TimeRangePresets[key]
 		if d := tr.Window(); absDur(d-wantWin) > time.Second {
 			t.Errorf("period=%s window=%s want=%s", key, d, wantWin)
 		}

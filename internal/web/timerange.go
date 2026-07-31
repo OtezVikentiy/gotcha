@@ -40,8 +40,11 @@ const timeRangeRetention = 90 * 24 * time.Hour
 // за фильтр значит показывать пустой список на здоровом проекте.
 const RangeAll = "all"
 
-// timeRangePresets — пресет → длительность окна назад от «сейчас».
-var timeRangePresets = map[string]time.Duration{
+// TimeRangePresets — пресет → длительность окна назад от «сейчас».
+// Экспортирован: это источник истины для множества пресетов — правило
+// guards, проверяющее наличие переводов "range.<пресет>", читает его ключи
+// напрямую вместо повторения списка (см. internal/guards/i18n_dynamic_test.go).
+var TimeRangePresets = map[string]time.Duration{
 	"1h":  time.Hour,
 	"24h": 24 * time.Hour,
 	"7d":  7 * 24 * time.Hour,
@@ -82,7 +85,7 @@ func parseTimeRange(q url.Values, def string) TimeRange {
 	if key == RangeAll {
 		return TimeRange{Key: RangeAll}
 	}
-	if w, ok := timeRangePresets[key]; ok {
+	if w, ok := TimeRangePresets[key]; ok {
 		return TimeRange{From: now.Add(-w), To: now, Key: key}
 	}
 
@@ -95,7 +98,7 @@ func parseTimeRange(q url.Values, def string) TimeRange {
 	if def == RangeAll {
 		return TimeRange{Key: RangeAll}
 	}
-	w := timeRangePresets[def]
+	w := TimeRangePresets[def]
 	return TimeRange{From: now.Add(-w), To: now, Key: def}
 }
 

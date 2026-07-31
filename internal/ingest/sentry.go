@@ -11,16 +11,19 @@ import (
 	"github.com/google/uuid"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/fingerprint"
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
 // validLevels — единственные уровни, которым мы доверяем как есть; всё
-// остальное (в т.ч. пустая строка отдельно обрабатывается ниже) каппится до error.
+// остальное (в т.ч. пустая строка отдельно обрабатывается ниже) каппится до
+// error. Ключи — issue.Levels: issue владеет множеством, приём только
+// сверяется с ним.
 var validLevels = map[string]bool{
-	"debug":   true,
-	"info":    true,
-	"warning": true,
-	"error":   true,
-	"fatal":   true,
+	issue.LevelDebug:   true,
+	issue.LevelInfo:    true,
+	issue.LevelWarning: true,
+	issue.LevelError:   true,
+	issue.LevelFatal:   true,
 }
 
 // maxJSONBlock — потолок сырого JSON-блока события (contexts/breadcrumbs/

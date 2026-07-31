@@ -13,6 +13,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Статус пробы для таблицы веб-слоя. Колонки status в таблице probes нет —
+// схема хранит только revoked_at/last_seen_at, а online/offline/revoked
+// вычисляется web-слоем (см. web.probeStatus) из порога молчания и признака
+// отзыва. Раз столбца нет, CHECK-ограничения тоже нет — эти константы и есть
+// источник истины для множества значений (владелец — uptime, домен проб).
+const (
+	ProbeStatusOnline  = "online"
+	ProbeStatusOffline = "offline"
+	ProbeStatusRevoked = "revoked"
+)
+
+// ProbeStatuses — все допустимые статусы пробы.
+var ProbeStatuses = []string{ProbeStatusOnline, ProbeStatusOffline, ProbeStatusRevoked}
+
 // Probe — региональный агент проверок; аутентифицируется токеном (sha256 в
 // БД, сырой токен возвращается вызывающему только один раз при создании).
 type Probe struct {

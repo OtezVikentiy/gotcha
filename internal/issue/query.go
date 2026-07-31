@@ -23,6 +23,24 @@ var validStatuses = map[string]bool{
 	"ignored":    true,
 }
 
+// Уровни issue. В отличие от status, колонка issues.level не ограничена
+// CHECK в схеме (см. миграцию 0003) — единственный источник истины для
+// множества значений раньше был разбросан: приём (internal/ingest) держал
+// свою копию списка для валидации, веб-слой — свою для рендера бейджа и
+// дропдауна фильтра. Экспортированные константы делают issue владельцем
+// набора: приём и веб теперь ссылаются на них вместо повторения строк.
+const (
+	LevelDebug   = "debug"
+	LevelInfo    = "info"
+	LevelWarning = "warning"
+	LevelError   = "error"
+	LevelFatal   = "fatal"
+)
+
+// Levels — все допустимые уровни issue, по возрастанию серьёзности. Порядок
+// важен: это же он используется в дропдауне фильтра.
+var Levels = []string{LevelDebug, LevelInfo, LevelWarning, LevelError, LevelFatal}
+
 // sortColumns — whitelist сортировки: в SQL-текст попадает только
 // это заранее заданное выражение, никогда пользовательская строка.
 var sortColumns = map[string]string{

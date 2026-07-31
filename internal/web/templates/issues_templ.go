@@ -64,11 +64,11 @@ func issueDetailPath(issueID int64) string {
 
 func levelBadgeClass(level string) string {
 	switch level {
-	case "error", "fatal":
+	case issue.LevelError, issue.LevelFatal:
 		return "badge badge-danger"
-	case "warning":
+	case issue.LevelWarning:
 		return "badge badge-warn"
-	case "info":
+	case issue.LevelInfo:
 		return "badge badge-info"
 	default:
 		return "badge badge-neutral"
@@ -94,7 +94,7 @@ func statusBadgeClass(status string) string {
 // показывала бы "warning", а фильтр рядом — «Предупреждение».
 func issueLevelLabel(ctx context.Context, level string) string {
 	switch level {
-	case "debug", "info", "warning", "error", "fatal":
+	case issue.LevelDebug, issue.LevelInfo, issue.LevelWarning, issue.LevelError, issue.LevelFatal:
 		return i18n.T(ctx, "issues.level."+level)
 	}
 	return level
@@ -681,23 +681,23 @@ func IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int,
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = levelOption("debug", i18n.T(ctx, "issues.level.debug"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = levelOption(issue.LevelDebug, i18n.T(ctx, "issues.level.debug"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = levelOption("info", i18n.T(ctx, "issues.level.info"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = levelOption(issue.LevelInfo, i18n.T(ctx, "issues.level.info"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = levelOption("warning", i18n.T(ctx, "issues.level.warning"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = levelOption(issue.LevelWarning, i18n.T(ctx, "issues.level.warning"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = levelOption("error", i18n.T(ctx, "issues.level.error"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = levelOption(issue.LevelError, i18n.T(ctx, "issues.level.error"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = levelOption("fatal", i18n.T(ctx, "issues.level.fatal"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = levelOption(issue.LevelFatal, i18n.T(ctx, "issues.level.fatal"), filter.Level).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

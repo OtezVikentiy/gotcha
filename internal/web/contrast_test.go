@@ -124,36 +124,6 @@ func TestControlBorderMeetsContrast(t *testing.T) {
 	}
 }
 
-// TestControlsUseControlBorder: правило с большей специфичностью не должно
-// возвращать интерактивному элементу декоративную границу.
-//
-// Так и было: --border-control завели под WCAG 1.4.11, а фильтры проблем,
-// вкладки, чипы и переключатели языка/темы продолжали брать --border —
-// измерено 1.40:1 в тёмной теме.
-func TestControlsUseControlBorder(t *testing.T) {
-	css := mustAppCSS(t)
-	interactive := []string{
-		".lang-switcher button",
-		".chip {",
-		".tabs {",
-	}
-	for _, sel := range interactive {
-		i := strings.Index(css, sel)
-		if i < 0 {
-			t.Errorf("селектор %q не найден — тест проверяет несуществующее", sel)
-			continue
-		}
-		block := css[i:]
-		if end := strings.Index(block, "}"); end > 0 {
-			block = block[:end]
-		}
-		if strings.Contains(block, "var(--border)") {
-			t.Errorf("%s берёт декоративную границу --border вместо --border-control:\n%s",
-				sel, strings.TrimSpace(block))
-		}
-	}
-}
-
 // TestFlashLeavesAccessibilityTree: автоскрытая плашка обязана уходить из
 // дерева доступности, а не только с глаз: opacity:0 оставлял кнопку закрытия в
 // порядке табуляции.

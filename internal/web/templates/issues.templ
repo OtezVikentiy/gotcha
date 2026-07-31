@@ -56,11 +56,11 @@ func issueDetailPath(issueID int64) string {
 
 func levelBadgeClass(level string) string {
 	switch level {
-	case "error", "fatal":
+	case issue.LevelError, issue.LevelFatal:
 		return "badge badge-danger"
-	case "warning":
+	case issue.LevelWarning:
 		return "badge badge-warn"
-	case "info":
+	case issue.LevelInfo:
 		return "badge badge-info"
 	default:
 		return "badge badge-neutral"
@@ -86,7 +86,7 @@ func statusBadgeClass(status string) string {
 // показывала бы "warning", а фильтр рядом — «Предупреждение».
 func issueLevelLabel(ctx context.Context, level string) string {
 	switch level {
-	case "debug", "info", "warning", "error", "fatal":
+	case issue.LevelDebug, issue.LevelInfo, issue.LevelWarning, issue.LevelError, issue.LevelFatal:
 		return i18n.T(ctx, "issues.level."+level)
 	}
 	return level
@@ -236,11 +236,11 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				</select>
 				<select name="level" class="select" aria-label={ i18n.T(ctx, "filter.level") }>
 					@levelOption("", i18n.T(ctx, "issues.filter.level_all"), filter.Level)
-					@levelOption("debug", i18n.T(ctx, "issues.level.debug"), filter.Level)
-					@levelOption("info", i18n.T(ctx, "issues.level.info"), filter.Level)
-					@levelOption("warning", i18n.T(ctx, "issues.level.warning"), filter.Level)
-					@levelOption("error", i18n.T(ctx, "issues.level.error"), filter.Level)
-					@levelOption("fatal", i18n.T(ctx, "issues.level.fatal"), filter.Level)
+					@levelOption(issue.LevelDebug, i18n.T(ctx, "issues.level.debug"), filter.Level)
+					@levelOption(issue.LevelInfo, i18n.T(ctx, "issues.level.info"), filter.Level)
+					@levelOption(issue.LevelWarning, i18n.T(ctx, "issues.level.warning"), filter.Level)
+					@levelOption(issue.LevelError, i18n.T(ctx, "issues.level.error"), filter.Level)
+					@levelOption(issue.LevelFatal, i18n.T(ctx, "issues.level.fatal"), filter.Level)
 				</select>
 				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "issues.filter.query_placeholder") } value={ filter.Query } aria-label={ i18n.T(ctx, "filter.search") }/>
 				<select name="sort" class="select" aria-label={ i18n.T(ctx, "filter.sort") }>

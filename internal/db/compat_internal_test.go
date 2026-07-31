@@ -1,7 +1,6 @@
 package db
 
 import (
-	"embed"
 	"strings"
 	"testing"
 )
@@ -79,66 +78,8 @@ func TestParseCompatMarker(t *testing.T) {
 	}
 }
 
-// TestBreakingMigrationsAreMarkedBreaking — миграции, удаляющие или
-// переименовывающие уже существующее, обязаны быть помечены несовместимыми.
-//
-// Проверка автоматическая, а не «мы внимательно прочитали»: классификация
-// делается глазами один раз, ошибиться в ней можно молча, а цена ошибки —
-// разрешённый откат на схему, где нужной бинарю колонки уже нет.
-func TestBreakingMigrationsAreMarkedBreaking(t *testing.T) {
-	for _, tc := range []struct {
-		dir   string
-		fsys  embed.FS
-		load  func() (map[uint]bool, error)
-		label string
-	}{
-		{"migrations/pg", pgMigrations, EmbeddedCompatPG, "pg"},
-		{"migrations/ch", chMigrations, EmbeddedCompatCH, "ch"},
-	} {
-		t.Run(tc.label, func(t *testing.T) {
-			compat, err := tc.load()
-			if err != nil {
-				t.Fatalf("compat: %v", err)
-			}
-			entries, err := tc.fsys.ReadDir(tc.dir)
-			if err != nil {
-				t.Fatalf("read %s: %v", tc.dir, err)
-			}
-			for _, e := range entries {
-				name := e.Name()
-				if !strings.HasSuffix(name, ".up.sql") {
-					continue
-				}
-				body, err := tc.fsys.ReadFile(tc.dir + "/" + name)
-				if err != nil {
-					t.Fatalf("read %s: %v", name, err)
-				}
-				if !destructiveSQL(string(body)) {
-					continue
-				}
-				if compat[maxMigrationVersion([]string{name})] {
-					t.Errorf("%s удаляет или переименовывает существующее, но помечена совместимой", name)
-				}
-			}
-		})
-	}
-}
-
-// destructiveSQL — есть ли в миграции разрушительный оператор. Строки
-// комментариев отбрасываются: слово DROP в объяснении миграцию разрушительной
-// не делает.
-func destructiveSQL(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-		upper := strings.ToUpper(trimmed)
-		for _, op := range []string{"DROP COLUMN", "DROP TABLE", "RENAME COLUMN", "RENAME TO"} {
-			if strings.Contains(upper, op) {
-				return true
-			}
-		}
-	}
-	return false
-}
+// TestBreakingMigrationsAreMarkedBreaking и destructiveSQL, на которой она
+// стояла, переехали в internal/guards/migrations_test.go (задача 8, находка
+// №54 / QA-11): страж расширил список распознаваемых разрушительных форм
+// SQL и стал частью общего пакета сторожей, а не отдельным internal-тестом
+// пакета db.

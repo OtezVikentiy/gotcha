@@ -345,10 +345,10 @@ func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 		key string
 		n   int64
 	}{
-		{"events", d.Events},
-		{"transactions", d.Transactions},
-		{"metrics", d.Metrics},
-		{"profiles", d.Profiles},
+		{org.QuotaKindEvents, d.Events},
+		{org.QuotaKindTransactions, d.Transactions},
+		{org.QuotaKindMetrics, d.Metrics},
+		{org.QuotaKindProfiles, d.Profiles},
 	} {
 		if kind.n <= 0 {
 			continue

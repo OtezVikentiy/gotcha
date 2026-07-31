@@ -41,11 +41,11 @@ func validProbeField(s string) bool {
 func probeStatus(p uptime.Probe, now time.Time) string {
 	switch {
 	case p.Revoked:
-		return "revoked"
+		return uptime.ProbeStatusRevoked
 	case p.LastSeenAt == nil || now.Sub(*p.LastSeenAt) > probeOfflineAfter:
-		return "offline"
+		return uptime.ProbeStatusOffline
 	default:
-		return "online"
+		return uptime.ProbeStatusOnline
 	}
 }
 

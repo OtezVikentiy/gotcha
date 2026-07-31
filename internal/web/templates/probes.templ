@@ -32,9 +32,9 @@ type ProbeRow struct {
 // не тревога, а осознанное действие админа).
 func probeStatusBadgeClass(status string) string {
 	switch status {
-	case "online":
+	case uptime.ProbeStatusOnline:
 		return "badge badge-good"
-	case "offline":
+	case uptime.ProbeStatusOffline:
 		return "badge badge-danger"
 	default:
 		return "badge badge-neutral"
@@ -45,7 +45,7 @@ func probeStatusBadgeClass(status string) string {
 // Неизвестный статус возвращается как есть.
 func probeStatusLabel(ctx context.Context, status string) string {
 	switch status {
-	case "online", "offline", "revoked":
+	case uptime.ProbeStatusOnline, uptime.ProbeStatusOffline, uptime.ProbeStatusRevoked:
 		return i18n.T(ctx, "probe.status."+status)
 	}
 	return status

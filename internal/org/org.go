@@ -38,6 +38,21 @@ func ValidSlug(slug string) bool {
 	return validSlug(slug)
 }
 
+// Классы квоты организации. Не заданы CHECK-ограничением: событий,
+// транзакций, метрик и профилей — четыре ОТДЕЛЬНЫХ столбца (event_quota,
+// transaction_quota, ...), а не одна колонка с enum, так что CHECK тут нет по
+// построению — эти константы и есть источник истины для множества классов.
+const (
+	QuotaKindEvents       = "events"
+	QuotaKindTransactions = "transactions"
+	QuotaKindMetrics      = "metrics"
+	QuotaKindProfiles     = "profiles"
+)
+
+// QuotaKinds — все классы квоты, в порядке, в котором организация их видит
+// (события — самый базовый и старый класс, дальше в порядке появления).
+var QuotaKinds = []string{QuotaKindEvents, QuotaKindTransactions, QuotaKindMetrics, QuotaKindProfiles}
+
 type Org struct {
 	ID         int64
 	Slug       string
