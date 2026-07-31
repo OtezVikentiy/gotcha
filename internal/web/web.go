@@ -76,6 +76,13 @@ type Handler struct {
 	// читается только RoutePattern.
 	pages *http.ServeMux
 
+	// routes — шаблоны всех маршрутов, зарегистрированных в Register (находка
+	// №18 аудита, задача 10 плана сторожей): собирает recordingMux при
+	// регистрации, наружу отдаётся RegisteredRoutes(). Нужен сторожу на
+	// Origin — стандартный ServeMux свои шаблоны не отдаёт, а ручной список
+	// маршрутов отстаёт от факта регистрации (см. RegisteredRoutes).
+	routes []string
+
 	// Alerts — CRUD правил/каналов алертинга (план 6, задача 5):
 	// /projects/{id}/alerts и EnsureDefaultRules при создании проекта. Не
 	// принимается конструктором New (как Auth/Org/Issues/Events), а
@@ -270,6 +277,29 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 	}
 }
 
+// recordingMux — ServeMux, запоминающий зарегистрированные шаблоны.
+//
+// Нужен сторожу маршрутов на Origin (находка №18): стандартный ServeMux свои
+// шаблоны наружу не отдаёт, а список, который вели руками в cover_cheap_test.go,
+// отставал от регистрации — ровно это и оставило восемь мутирующих маршрутов
+// без проверки Origin незамеченными. Перехватывает и HandleFunc, и Handle:
+// маршруты за requireUser регистрируются вторым, и без перехвата именно они —
+// самые интересные для CSRF — выпали бы из перебора.
+type recordingMux struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func (m *recordingMux) HandleFunc(pattern string, fn http.HandlerFunc) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.HandleFunc(pattern, fn)
+}
+
+func (m *recordingMux) Handle(pattern string, handler http.Handler) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.Handle(pattern, handler)
+}
+
 // Register навешивает маршруты задачи 4 на mux. Все они собираются на
 // внутреннем ServeMux и монтируются на переданный mux одним catch-all "/" —
 // это даёт единую точку для securityHeaders (весь ответ Handler'а несёт
@@ -277,7 +307,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 // незарегистрированных путях (иначе достался бы голый "404 page not found"
 // от stdlib ServeMux).
 func (h *Handler) Register(mux *http.ServeMux) {
-	inner := http.NewServeMux()
+	inner := &recordingMux{ServeMux: http.NewServeMux()}
 
 	inner.HandleFunc("GET /login", h.loginPage)
 	inner.HandleFunc("POST /login", h.loginSubmit)
@@ -522,8 +552,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Роутер страниц запоминается: снаружи виден только catch-all «/», и по
 	// коду ответа нельзя отличить «обработчик отверг битый id» от «маршрута
-	// нет». Проверки регистрации спрашивают RoutePattern.
-	h.pages = inner
+	// нет». Проверки регистрации спрашивают RoutePattern. Поле pages остаётся
+	// *http.ServeMux (не recordingMux) — RoutePattern работает через
+	// h.pages.Handler(req) и не должен меняться из-за обёртки.
+	h.pages = inner.ServeMux
+	h.routes = inner.patterns
 	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(inner))))))
 }
 
@@ -632,6 +665,17 @@ func (h *Handler) RoutePattern(method, path string) string {
 	}
 	_, pattern := h.pages.Handler(req)
 	return pattern
+}
+
+// RegisteredRoutes возвращает шаблоны всех маршрутов, зарегистрированных в
+// Register (метод и путь в одной строке, как в http.ServeMux, например
+// "POST /teams/{id}/rename") — в порядке регистрации, дубликаты возможны, если
+// Register вызвать дважды на одном Handler.
+//
+// Существует ради сторожа на Origin (находка №18): перебор ВСЕХ мутирующих
+// маршрутов вместо литерального списка, который отстаёт от регистрации.
+func (h *Handler) RegisteredRoutes() []string {
+	return h.routes
 }
 
 // renderError отдаёт стилизованную страницу ошибки (layout + сообщение) с

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
@@ -190,5 +191,39 @@ func TestHealthzCarriesVersion(t *testing.T) {
 	}
 	if body["version"] != version.Version() {
 		t.Fatalf("healthz.version = %q, ждали %q", body["version"], version.Version())
+	}
+}
+
+// TestRootMuxLivenessStaysUpWhileReadinessFails — тесты выше вызывают
+// livenessHandler/readinessHandler напрямую конструкторами, а не через
+// /healthz и /readyz корневого mux, поэтому не ловят перестановку самих
+// регистраций (см. newRootMux в server.go): переставь местами строки
+// mux.HandleFunc("GET /healthz", ...) и mux.HandleFunc("GET /readyz", ...) —
+// и весь набор выше останется зелёным, а либочная проба начнёт отдавать 503
+// при недоступном ClickHouse. Оркестратор перезапускает живой процесс, и
+// каждый перезапуск выбрасывает накопленные буферы.
+//
+// Этот тест поднимает корневой mux с подставным ClickHouse, отвечающим
+// ошибкой, и бьёт именно по путям /healthz и /readyz — так он проверяет,
+// какой хендлер РЕАЛЬНО забронирован за каким путём, а не какой хендлер
+// умеет отвечать 200 или 503 в отрыве от маршрутизации.
+func TestRootMuxLivenessStaysUpWhileReadinessFails(t *testing.T) {
+	var metrics selfmetrics.Registry
+	mux := newRootMux(rootDeps{
+		pg:          fakePinger{},
+		ch:          fakePinger{err: errors.New("dial tcp 10.0.0.5:9000: refused")},
+		selfMetrics: &metrics,
+	})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/healthz при недоступном ClickHouse: код %d, ждали 200 (живость не зависит от хранилища)", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz при недоступном ClickHouse: код %d, ждали 503 (писать некуда)", rec.Code)
 	}
 }

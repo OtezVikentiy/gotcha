@@ -150,22 +150,6 @@ func applyMemoryLimit() int64 {
 	return limit
 }
 
-// baseSecurityHeaders ставит заголовки, верные для ЛЮБОГО ответа сервера:
-// запрет MIME-sniffing и запрет встраивания в iframe.
-//
-// Полный набор (CSP, Referrer-Policy, HSTS, Cache-Control) остаётся на
-// web.securityHeaders: он знает про TLS-режим инстанса и про то, что страницы
-// несут ПДн. Здесь — только то, что не зависит ни от чего и должно быть даже
-// на /metrics.
-func baseSecurityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hdr := w.Header()
-		hdr.Set("X-Content-Type-Options", "nosniff")
-		hdr.Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(w, r)
-	})
-}
-
 func run() error {
 	if versionRequested(os.Args[1:]) {
 		fmt.Println("gotcha", version.String())
@@ -325,22 +309,10 @@ func run() error {
 		return nil
 	}
 
-	mux := http.NewServeMux()
-	// Живость и готовность — разные вопросы, поэтому и разные ручки. /healthz
-	// на liveness-пробе больше не перезапускает живой процесс из-за упавшего
-	// хранилища, а /readyz честно говорит балансировщику и healthcheck'у
-	// контейнера, что писать пока некуда.
-	mux.HandleFunc("GET /healthz", livenessHandler(pg, ch))
-	mux.HandleFunc("GET /readyz", readinessHandler(pg, ch))
-	mux.HandleFunc("GET /version", versionHandler())
-
-	// Самотелеметрия. Роут регистрируется здесь, а метрики добавляются ниже по
-	// мере создания писателей: реестр ленив — он хранит функции и опрашивает их
-	// на каждом скрапе, поэтому порядок регистрации значения не имеет.
-	//
-	// Без аутентификации, как /healthz и /version: тут нет ни ПДн, ни секретов —
-	// только счётчики буферов и потерь. И, в отличие от /healthz, ни одного
-	// обращения к БД: /metrics обязан отвечать именно тогда, когда БД лежит.
+	// Самотелеметрия. Метрики регистрируются здесь, а роут — на корневом mux в
+	// newRootMux, куда deps.selfMetrics передаётся уже заполненным: реестр
+	// ленив — он хранит функции и опрашивает их на каждом скрапе, поэтому
+	// порядок регистрации значения не имеет.
 	var selfMetrics selfmetrics.Registry
 	// Граница, о которой нельзя узнать, — не граница: потолок кучи виден в
 	// метриках рядом с буферами, которые в него упираются. 0 означает «потолка
@@ -352,7 +324,6 @@ func run() error {
 		"Build metadata; the value is always 1, the version lives in the label.",
 		map[string]string{"version": version.String(), "mode": cfg.Mode},
 		func() float64 { return 1 })
-	mux.HandleFunc("GET /metrics", selfMetrics.Handler())
 
 	// Общие сервисы нужны и ingest-у, и web-у — строим один раз на любой
 	// активный режим, а не дублируем на каждый. alertSvc/emailSender/outbox
@@ -547,6 +518,12 @@ func run() error {
 	var spanWriter *trace.SpanWriter
 	var metricWriter *metric.Writer
 	var profileWriter *profile.Writer
+	// ingestHandler/webHandler объявлены здесь, а не через := в своих
+	// if-блоках ниже: newRootMux собирается один раз, после того как оба
+	// хендлера построены (или остались nil, если режим их не поднимает), а не
+	// по кускам мимо каждого блока.
+	var ingestHandler *ingest.Handler
+	var webHandler *web.Handler
 	// cardinality — ограничитель кардинальности; нужен и приёму (схлопывание),
 	// и веб-слою (диагностика: что схлопнуто и примеры значений).
 	var cardinality *ingest.CardinalityGuard
@@ -721,7 +698,7 @@ func run() error {
 		scrubber.SetAllowKeys(cfg.ScrubAllowKeys)  // явные исключения из fail-closed denylist
 		pipeline.Scrub = scrubber
 		pipeline.Start()
-		ingestHandler := ingest.NewHandler(
+		ingestHandler = ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)
 		// Квота транзакций — отдельный счётчик (organizations.transaction_quota
 		// против org_usage.transactions_count): исчерпанный бюджет транзакций
@@ -753,14 +730,13 @@ func run() error {
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_cardinality_tracked_values",
 			"Distinct field values the cardinality guard is remembering right now.",
 			nil, cardinality.TrackedValues)
-		ingestHandler.Register(mux)
 		slog.Info("ingest enabled")
 	}
 	if cfg.Mode == "web" || cfg.Mode == "all" {
 		authSvc := auth.NewService(pg)
 		authSvc.Secure = strings.HasPrefix(cfg.BaseURL, "https://") // RA-L1: на HTTPS читать только __Host- cookie
 		eventQuery := event.NewQuery(ch)
-		webHandler := web.New(authSvc, orgSvc, issueSvc, eventQuery, cfg.BaseURL)
+		webHandler = web.New(authSvc, orgSvc, issueSvc, eventQuery, cfg.BaseURL)
 		webHandler.Alerts = alertSvc
 		webHandler.Email = emailSender
 		webHandler.EmailEnabled = emailSender.Configured()
@@ -805,7 +781,6 @@ func run() error {
 		webHandler.RetentionDays = cfg.RetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Purger = telemetry.NewPurger(ch)
-		webHandler.Register(mux)
 		janitor := &auth.Janitor{Svc: authSvc}
 		if orgSvc != nil {
 			// Просроченные/принятые инвайты копят email приглашённых бессрочно —
@@ -818,30 +793,18 @@ func run() error {
 		slog.Info("web enabled")
 	}
 
-	// Таймауты обязательны: Go по умолчанию их НЕ ставит, а на этом же mux
-	// висят публичные приёмные эндпойнты (DSN публичен по замыслу). Без них
-	// Slowloris — медленная посылка заголовков/тела по байту — держит горутину
-	// и файловый дескриптор на каждое соединение бесконечно, и тысячи таких
-	// коннектов кладут приём для всех тенантов. MaxBytesReader от этого не
-	// спасает (тело просто не дочитывается, соединение живёт). ReadHeaderTimeout
-	// режет slow-header, ReadTimeout — slow-body, WriteTimeout — медленного
-	// читателя, IdleTimeout закрывает простаивающие keep-alive.
-	srv := &http.Server{
-		Addr: cfg.Addr,
-		// Базовые заголовки — свойство СЕРВЕРА, а не одного поддерева роутов.
-		// web.securityHeaders оборачивает только «/», а приём, /healthz,
-		// /readyz, /version и /metrics регистрируются на корневом mux и по
-		// правилам Go 1.22 перекрывают его — то есть отвечали без nosniff, и
-		// это при Access-Control-Allow-Origin: * на приёме. Защита держалась на
-		// том, что json.Encoder экранирует HTML, то есть на поведении
-		// библиотеки, а не на заголовке.
-		Handler:           baseSecurityHeaders(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MiB заголовков — с запасом, но не безлимит
-	}
+	// Корневой mux и сервер — вынесены в server.go (newRootMux/newServer):
+	// сборка проводки сама по себе не содержит логики run(), а тест заголовков
+	// и тест проб должны собирать ровно то, что слушает порт в проде, а не
+	// свою копию.
+	mux := newRootMux(rootDeps{
+		pg:            pg,
+		ch:            ch,
+		selfMetrics:   &selfMetrics,
+		ingestHandler: ingestHandler,
+		webHandler:    webHandler,
+	})
+	srv := newServer(&cfg, mux)
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("listening", "addr", cfg.Addr, "mode", cfg.Mode)
