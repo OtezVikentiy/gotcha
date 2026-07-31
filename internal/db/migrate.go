@@ -30,6 +30,16 @@ func MigratePG(dsn string) error {
 	return up("migrations/pg", pgMigrations, pgx5URL(dsn))
 }
 
+// MigratePGTo применяет миграции PostgreSQL до указанной версии включительно.
+//
+// Нужна тестам, проверяющим миграцию на НЕПУСТОЙ базе: мигрируем до N-1,
+// засеваем строки, применяем N. Продовый путь этой функцией не пользуется —
+// там всегда «до конца» (MigratePG), потому что гейт схемы требует актуальной
+// версии.
+func MigratePGTo(dsn string, version uint) error {
+	return upTo("migrations/pg", pgMigrations, pgx5URL(dsn), version)
+}
+
 // SchemaVersion возвращает текущую версию PG-схемы и флаг dirty (обёртка над
 // golang-migrate m.Version()). Если миграции ещё ни разу не применялись
 // (ErrNilVersion), возвращает (0, false, nil): версия 0 корректно означает
@@ -261,16 +271,38 @@ func MigrateCH(dsn string) error {
 }
 
 func up(dir string, fsys embed.FS, url string) error {
-	src, err := iofs.New(fsys, dir)
+	m, err := newMigrateInstance(dir, fsys, url)
 	if err != nil {
-		return fmt.Errorf("migrations source %s: %w", dir, err)
-	}
-	m, err := migrate.NewWithSourceInstance("iofs", src, url)
-	if err != nil {
-		return fmt.Errorf("migrate init %s: %w", dir, err)
+		return err
 	}
 	defer m.Close()
 	return explainMigrateErr(dir, m.Up())
+}
+
+// upTo — как up, но останавливается на конкретной версии вместо «до конца»
+// (m.Migrate(version) вместо m.Up()). Используется MigratePGTo.
+func upTo(dir string, fsys embed.FS, url string, version uint) error {
+	m, err := newMigrateInstance(dir, fsys, url)
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+	return explainMigrateErr(dir, m.Migrate(version))
+}
+
+// newMigrateInstance открывает источник миграций и строит *migrate.Migrate —
+// общая часть up и upTo, чтобы явно не заводить вторую копию обработки ошибок
+// инициализации (она разошлась бы с первой при следующей правке).
+func newMigrateInstance(dir string, fsys embed.FS, url string) (*migrate.Migrate, error) {
+	src, err := iofs.New(fsys, dir)
+	if err != nil {
+		return nil, fmt.Errorf("migrations source %s: %w", dir, err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", src, url)
+	if err != nil {
+		return nil, fmt.Errorf("migrate init %s: %w", dir, err)
+	}
+	return m, nil
 }
 
 // explainMigrateErr классифицирует ошибку m.Up(): nil и ErrNoChange значат

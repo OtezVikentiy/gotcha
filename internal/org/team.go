@@ -174,11 +174,16 @@ func (s *Service) RemoveTeamMember(ctx context.Context, teamID, userID int64) er
 
 // AddTeamMember добавляет в команду участника её организации.
 func (s *Service) AddTeamMember(ctx context.Context, teamID, userID int64) error {
-	// Один запрос: вставка проходит только если userID — участник
-	// организации, которой принадлежит команда.
+	// org_id пишется явно: он часть составного внешнего ключа на org_members,
+	// которым инвариант «членство в команде только для участника организации»
+	// закреплён в схеме (миграция 0029).
+	//
+	// JOIN с org_members остаётся не как защита — её теперь держит
+	// team_members_member_fk, — а ради внятного ErrNotMember вместо нарушения
+	// ограничения в лицо пользователю.
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO team_members (team_id, user_id)
-		SELECT t.id, $2 FROM teams t
+		INSERT INTO team_members (team_id, org_id, user_id)
+		SELECT t.id, t.org_id, $2 FROM teams t
 		JOIN org_members m ON m.org_id = t.org_id AND m.user_id = $2
 		WHERE t.id = $1`,
 		teamID, userID)

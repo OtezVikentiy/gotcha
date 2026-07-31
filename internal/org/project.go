@@ -159,6 +159,11 @@ func (s *Service) DeleteProject(ctx context.Context, projectID int64) error {
 
 // accessCondition: owner/admin видят все проекты организации,
 // member — проекты команд, в которых состоит.
+//
+// Проверка членства в организации во второй ветви избыточна при целой схеме
+// (team_members_member_fk делает висячее членство невозможным) и стоит здесь
+// намеренно, вторым рубежом: правило доступа не должно зависеть от того, не
+// сняли ли ограничение будущей миграцией.
 const accessCondition = `
 	EXISTS (
 		SELECT 1 FROM org_members m
@@ -166,6 +171,7 @@ const accessCondition = `
 	) OR EXISTS (
 		SELECT 1 FROM project_teams pt
 		JOIN team_members tm ON tm.team_id = pt.team_id
+		JOIN org_members m2 ON m2.org_id = p.org_id AND m2.user_id = tm.user_id
 		WHERE pt.project_id = p.id AND tm.user_id = $1
 	)`
 
