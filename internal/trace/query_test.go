@@ -849,41 +849,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
-	t.Run("RecentEndpointP95", func(t *testing.T) {
-		// Свежее окно: 50 транзакций по 1000 мс → p95 = 1000 мс (в мс, не µs).
-		s, err := q.RecentEndpointP95(ctx, projectID4, "GET /reg", regRecentFrom, regRecentTo)
-		if err != nil {
-			t.Fatalf("RecentEndpointP95: %v", err)
-		}
-		if s.Samples != 50 {
-			t.Fatalf("recent samples = %d, want 50", s.Samples)
-		}
-		assertNearF(t, "recent p95 ms", s.Value, 1000, 1)
-	})
-
-	t.Run("BaselineEndpointP95", func(t *testing.T) {
-		// Дневные p95 = [1000, 200, 300] → медиана 300 мс; всего замеров 130.
-		s, err := q.BaselineEndpointP95(ctx, projectID4, "GET /reg", 7, regNow)
-		if err != nil {
-			t.Fatalf("BaselineEndpointP95: %v", err)
-		}
-		if s.Samples != 130 {
-			t.Fatalf("baseline samples = %d, want 130", s.Samples)
-		}
-		assertNearF(t, "baseline median p95 ms", s.Value, 300, 1)
-	})
-
-	t.Run("RecentEndpointP95Empty", func(t *testing.T) {
-		// Нет данных → Samples 0 и Value 0 (не NaN пустого quantilesMerge).
-		s, err := q.RecentEndpointP95(ctx, projectID4, "GET /nope", regRecentFrom, regRecentTo)
-		if err != nil {
-			t.Fatalf("RecentEndpointP95 empty: %v", err)
-		}
-		if s.Samples != 0 || s.Value != 0 {
-			t.Fatalf("empty recent = %+v, want {0 0}", s)
-		}
-	})
-
 	t.Run("RecentVitalP75", func(t *testing.T) {
 		// Свежее окно: 30 замеров lcp 2000 → p75 = 2000 (уже в мс).
 		s, err := q.RecentVitalP75(ctx, projectID4, "GET /vpage", "lcp", regRecentFrom, regRecentTo)
@@ -915,6 +880,42 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if _, err := q.BaselineVitalP75(ctx, projectID4, "GET /vpage", "bogus", 7, regNow); err == nil {
 			t.Fatalf("BaselineVitalP75 unknown name: want error, got nil")
 		}
+	})
+
+	t.Run("RecentEndpointP95sConvertsToMs", func(t *testing.T) {
+		// Та же сеянная «GET /reg» партия, что и выше: 50 транзакций по 1000 мс
+		// в свежем окне (dur хранится в MV в µs = 1000·1000). Если
+		// RecentEndpointP95s подменят на valueSample (без /1000), Value придёт
+		// 1_000_000 вместо 1000 — assertNearF с tol=1 это отловит.
+		out, err := q.RecentEndpointP95s(ctx, projectID4, []string{"GET /reg"}, regRecentFrom, regRecentTo)
+		if err != nil {
+			t.Fatalf("RecentEndpointP95s: %v", err)
+		}
+		s, ok := out["GET /reg"]
+		if !ok {
+			t.Fatalf("RecentEndpointP95s: нет ключа %q в %v", "GET /reg", out)
+		}
+		if s.Samples != 50 {
+			t.Fatalf("recent samples = %d, want 50", s.Samples)
+		}
+		assertNearF(t, "recent p95 ms (must be 1000, not 1_000_000 µs)", s.Value, 1000, 1)
+	})
+
+	t.Run("BaselineEndpointP95sConvertsToMs", func(t *testing.T) {
+		// Дневные p95 «GET /reg» = [1000, 200, 300] мс → медиана 300 мс. Как и
+		// выше: microsecond-регрессия дала бы 300_000, а не 300.
+		out, err := q.BaselineEndpointP95s(ctx, projectID4, []string{"GET /reg"}, 7, regNow)
+		if err != nil {
+			t.Fatalf("BaselineEndpointP95s: %v", err)
+		}
+		s, ok := out["GET /reg"]
+		if !ok {
+			t.Fatalf("BaselineEndpointP95s: нет ключа %q в %v", "GET /reg", out)
+		}
+		if s.Samples != 130 {
+			t.Fatalf("baseline samples = %d, want 130", s.Samples)
+		}
+		assertNearF(t, "baseline median p95 ms (must be 300, not 300_000 µs)", s.Value, 300, 1)
 	})
 
 	t.Run("TopEndpointsByTraffic", func(t *testing.T) {

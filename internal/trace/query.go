@@ -898,52 +898,6 @@ func (q *Query) PageVitalsOne(ctx context.Context, projectID int64, transaction 
 		makeVital("ttfb", ttfbP, ttfbC), nil
 }
 
-// RecentEndpointP95 читает p95 длительности эндпойнта за окно [from, to) из MV
-// transactions_5m и число замеров. Value — в МИЛЛИСЕКУНДАХ (dur в MV хранится в
-// микросекундах, детектор регрессий и его полы работают в мс): us/1000. Пусто
-// (Samples 0) → Value 0, чтобы не подсунуть NaN пустого quantilesMerge в Decide.
-func (q *Query) RecentEndpointP95(ctx context.Context, projectID int64, transaction string, from, to time.Time) (RegressionSample, error) {
-	var p95us float64
-	var cnt uint64
-	// Агрегат без GROUP BY всегда возвращает ровно одну строку.
-	if err := q.conn.QueryRow(ctx, `
-		SELECT quantilesMerge(0.95)(dur)[1] AS p95, countMerge(cnt) AS c
-		FROM transactions_5m
-		WHERE project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?`,
-		uint64(projectID), transaction, from, to).Scan(&p95us, &cnt); err != nil {
-		return RegressionSample{}, fmt.Errorf("trace: recent endpoint p95: %w", err)
-	}
-	return msSample(p95us, cnt), nil
-}
-
-// BaselineEndpointP95 — скользящая база эндпойнта: МЕДИАНА дневных p95 за
-// последние days дней (окно [now-days, now)), из MV transactions_5m. Дневной
-// p95 считается quantilesMerge по 5м-корзинам одного дня, медиана — quantileExact
-// по дневным значениям. Samples — суммарное число замеров за всё окно (чтобы
-// min_samples был осмысленным). Value — в миллисекундах (us/1000).
-func (q *Query) BaselineEndpointP95(ctx context.Context, projectID int64, transaction string, days int, now time.Time) (RegressionSample, error) {
-	from := now.Add(-time.Duration(days) * 24 * time.Hour)
-	var medUs float64
-	var total uint64
-	// HAVING cnt > 0 не нужен для эндпойнтов (в transactions_5m у каждой корзины
-	// cnt > 0), но безвреден и симметричен вайтал-базе.
-	if err := q.conn.QueryRow(ctx, `
-		SELECT quantileExact(0.5)(daily) AS base, sum(cnt) AS total
-		FROM (
-			SELECT toStartOfDay(bucket) AS d,
-				quantilesMerge(0.95)(dur)[1] AS daily,
-				countMerge(cnt) AS cnt
-			FROM transactions_5m
-			WHERE project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?
-			GROUP BY d
-			HAVING cnt > 0
-		)`,
-		uint64(projectID), transaction, from, now).Scan(&medUs, &total); err != nil {
-		return RegressionSample{}, fmt.Errorf("trace: baseline endpoint p95: %w", err)
-	}
-	return msSample(medUs, total), nil
-}
-
 // RecentVitalP75 читает p75 web-vital'а name (lcp|inp|cls|fcp|ttfb) страницы за
 // окно [from, to) из MV web_vitals_5m и число замеров. Value уже в мс (для CLS —
 // безразмерный), конвертация не нужна. name проверяется белым списком vitalKnown
@@ -1020,7 +974,7 @@ func (q *Query) RecentEndpointP95s(ctx context.Context, projectID int64, transac
 		if err := rows.Scan(&name, &p95, &cnt); err != nil {
 			return nil, fmt.Errorf("trace: recent endpoint p95s scan: %w", err)
 		}
-		out[name] = valueSample(p95, cnt)
+		out[name] = msSample(p95, cnt)
 	}
 	return out, rows.Err()
 }
@@ -1056,7 +1010,7 @@ func (q *Query) BaselineEndpointP95s(ctx context.Context, projectID int64, trans
 		if err := rows.Scan(&name, &med, &total); err != nil {
 			return nil, fmt.Errorf("trace: baseline endpoint p95s scan: %w", err)
 		}
-		out[name] = valueSample(med, total)
+		out[name] = msSample(med, total)
 	}
 	return out, rows.Err()
 }
@@ -1244,7 +1198,14 @@ func msSample(us float64, cnt uint64) RegressionSample {
 }
 
 // valueSample — как msSample, но без конвертации единиц (web-vital'ы уже в мс,
-// CLS безразмерный).
+// CLS безразмерный). Только для вайтал-запросов (Recent/BaselineVitalP75[s]) —
+// путь duration идёт исключительно через msSample. Раньше пакетные запросы
+// эндпойнтов (RecentEndpointP95s, BaselineEndpointP95s) тоже звали valueSample
+// и отдавали в Decide микросекунды дур, которые сравнивались с миллисекундными
+// порогами регрессии — отсюда завышение длительности в тысячу раз и
+// фактически выключенный абсолютный пол (см. Decide в regression.go). Два
+// варианта одного запроса с разными единицами были корнем; теперь единица
+// duration держится единственной точкой конвертации — msSample.
 func valueSample(v float64, cnt uint64) RegressionSample {
 	if cnt == 0 {
 		return RegressionSample{Value: 0, Samples: 0}

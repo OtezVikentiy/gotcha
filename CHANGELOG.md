@@ -21,6 +21,8 @@ once tagged releases begin.
 ### Fixed
 - Reminder notifications carry the full monitor, `retries` included; the query built it from its own column list and silently left the field at zero.
 - Migration versions are parsed with an explicit ceiling (2³¹−1), and a name without a parsable version among the embedded migrations is an error rather than a silent skip: the number lives in a platform-sized `uint` and ends up in a `bigint` column, and a silently skipped file would carry no compatibility marker — which the schema gate reads as "start forbidden".
+- Regression durations were shown a thousand times too high in the regression cards, alert emails, webhooks, and Telegram: the batched endpoint p95 query returned the raw microsecond value while every reader treated it as milliseconds. The same mix-up meant the absolute floor that suppresses false alarms on small values never engaged. Migration `0030` recomputes the affected rows; web-vital metrics were already in milliseconds and are untouched.
+- The notification-budget summary email printed a raw timestamp (e.g. `2026-07-31T18:00:00Z`) instead of a human one.
 
 ### Documentation
 - OTLP trace ingest (`POST /v1/traces`) is documented: it was fully implemented while the SDK page listed protocols exhaustively without naming it, so a team on OpenTelemetry would read that traces require a Sentry SDK.
@@ -38,6 +40,7 @@ once tagged releases begin.
 - Template tests assert column order, not just that a substituted value appears somewhere.
 - The Cyrillic-literal guard matches «ё» and no longer treats `catalog.` or `dialog.` as a logging call.
 - Guards that used to check a hand-picked list of known cases now walk the whole tree and check everything, with an explicit, capped exception list for anything not fixed yet. This catches, wherever it occurs rather than only where the old guard happened to look: a raw i18n key reaching a page in either language, an interactive control left on the decorative border instead of the contrast-checked one, a class referenced in markup but never defined in CSS, light- and dark-theme rule pairs drifting out of sync, a destructive SQL form the migration-safety check doesn't recognize, a mutating route with no `Origin` check, and a coverage floor lowered through an environment variable.
+- A guard now fails on time or duration formatted outside `internal/humanize` — a literal or variable-held `.Format(...)`, `.Sub(...).String()`, or a literal `Duration.String()` — walking the whole tree with a capped, per-line exception list rather than a hand-picked set of known cases. It caught a place no past audit had: the notification-budget summary email.
 
 ### Accessibility
 - Interactive controls use the contrast-checked border token again. Issue filters, monitor-type tabs, chips, and the language/theme switches had it overridden back to the decorative one — measured 1.40:1 in the dark theme against the 3:1 required by WCAG 1.4.11.
@@ -53,6 +56,11 @@ once tagged releases begin.
 - The issue list uses the same time-range control as every other page, including the hour preset and custom ranges, plus an "all time" option. A window picked on Performance no longer resets when you open Issues.
 - Monitor validation errors are shown in the interface's language and next to the reason, instead of "монитор: uptime: invalid monitor: http url must be a valid http(s) URL".
 - One-off maintenance windows are shown in their own timezone; incident durations and delivery timestamps are shown in words instead of "23m0s" and "2026-07-29T08:22:27Z".
+- A relative timestamp ("5 hours ago") now shows the exact moment too, in all nineteen places it appears: hover it for the precise time, or read the `datetime` attribute for tooling.
+- A custom date range typed by hand ("01.02") used to render as `DD.MM`, indistinguishable in either language from January the 2nd; it now renders as `YYYY-MM-DD HH:MM ZONE`, unambiguous and consistent with every other absolute timestamp in the interface.
+- A metric alert rule's window showed raw seconds ("3600s", "86400s"); it now reads as a duration ("1 hour", "1 day").
+- Monitor type, project platform, metric type, and rule aggregation are shown as human labels instead of their raw programmatic names, in both languages.
+- A closed incident's duration on the public status page — visible to the instance owner's own customers, not just staff — is shown in words in the visitor's language, instead of the raw duration baked into the cached page.
 - Reissuing a heartbeat token now asks for confirmation: it breaks a working cron job and cannot be undone.
 - Consensus options, the search placeholder, the empty-issues title, the heartbeat grace period, and the alert throttle field are no longer English fragments in the Russian interface. Uptime columns no longer carry two names for the same thing.
 - Web Vitals columns state their units in the header rather than only in a hover tooltip.

@@ -50,6 +50,12 @@ This migration is marked `backward-compatible: no`. Once it has run, the schema 
 
 Invitation links issued before the upgrade are unaffected; their tokens keep working exactly as before.
 
+## What changes when upgrading from versions before 0.4.2: regression card durations were shown a thousand times too high
+
+Duration values written to a performance regression before this version were stored in microseconds while every reader — the regression cards, the alert emails, webhooks, and Telegram — treated the number as milliseconds, so a real 200 ms endpoint showed up as 200 seconds. Web-vital metrics (`lcp`, `fcp`, `ttfb`, `inp`) were unaffected; only `duration` rows carried the wrong unit. The same confusion also meant the absolute floor that suppresses false alarms on small values never engaged, since a genuinely small regression still looked huge.
+
+Migration `0030` divides every stored `duration` value by 1000 to bring existing rows in line with the unit the rest of the system now uses. No manual action is needed — the recompute runs automatically as part of the upgrade, exactly like any other migration. Rolling back re-multiplies the same rows, returning them to their previous numbers to the precision floating-point arithmetic allows (values that were an exact multiple of 1000 round-trip exactly; others may differ in a distant decimal digit) — there is nothing to reconcile by hand either way.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

@@ -56,3 +56,33 @@ func TestDecide(t *testing.T) {
 		})
 	}
 }
+
+// TestDecideFloorRejectsSmallAbsoluteGrowth: пол существует ради сценария из
+// комментария regression_config.go:36-37 — «+100% на 20→40 мс без него поднял
+// бы ложную тревогу». Пока значения приезжали микросекундными, пол в 100
+// «миллисекунд» сравнивался с микросекундами и работал как 0.1 мс, то есть не
+// работал вовсе.
+func TestDecideFloorRejectsSmallAbsoluteGrowth(t *testing.T) {
+	cfg := trace.DefaultRegressionConfig()
+	base := trace.RegressionSample{Value: 20, Samples: 1000}   // 20 мс
+	recent := trace.RegressionSample{Value: 40, Samples: 1000} // 40 мс, +100%
+
+	got := trace.Decide(base, recent, cfg, "duration", false)
+	if got.Kind == trace.DecisionOpen {
+		t.Fatalf("рост 20→40 мс открыл регрессию: абсолютный пол %v мс не сработал",
+			cfg.DurationFloorMs)
+	}
+}
+
+// TestDecideFloorAllowsRealGrowth — обратная сторона: пол не должен глушить
+// настоящую регрессию.
+func TestDecideFloorAllowsRealGrowth(t *testing.T) {
+	cfg := trace.DefaultRegressionConfig()
+	base := trace.RegressionSample{Value: 400, Samples: 1000}
+	recent := trace.RegressionSample{Value: 900, Samples: 1000}
+
+	got := trace.Decide(base, recent, cfg, "duration", false)
+	if got.Kind != trace.DecisionOpen {
+		t.Fatalf("рост 400→900 мс не открыл регрессию: Kind = %v", got.Kind)
+	}
+}
