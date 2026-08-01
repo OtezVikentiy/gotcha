@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -470,10 +473,154 @@ func TestTCPCheckerFailsOnClosedPort(t *testing.T) {
 
 // --- DNS ---
 
-func TestDNSCheckerLocalhostAEmptyExpectedOK(t *testing.T) {
+// fakeDNSHostname — заведомо несуществующее имя для fakeIPResolver.
+//
+// PreferGo=true форсирует чистый Go-резолвер, но для ЛЮБОГО имени (включая
+// "localhost", которое здесь использовалось раньше) он сперва пробует
+// путь "files", т.е. читает /etc/hosts, и только при промахе идёт в DNS.
+// Запись "127.0.0.1 localhost" есть практически везде, так что с реальным
+// "localhost" резолвер находил ответ в /etc/hosts и ни разу не обращался к
+// нашему Dial — весь протокольный разбор ниже был мёртвым кодом, а тест был
+// зелёным не по той причине (заглушка не проверяла ничего). Синтетическое
+// имя с TLD .invalid не может встретиться в /etc/hosts (там нет и не может
+// появиться такой записи), поэтому "files" гарантированно промахивается и
+// путь идёт в DNS — то есть в наш Dial. TLD .invalid к тому же зарезервирован
+// RFC 2606/6761 и никогда не делегируется в реальном DNS, так что даже если
+// тест по ошибке всё-таки попадёт на системный резолвер (а не на fakeIPResolver),
+// имя не разрешится случайно в чей-то настоящий адрес — тест просто упадёт
+// явно, а не тихо проверит не то.
+const fakeDNSHostname = "gotcha-fake-dns-test.invalid"
+
+// fakeIPResolver возвращает *net.Resolver, отвечающий на A-запрос hostname
+// заданным ip без обращения к системному резолверу и сети. Приём с подставным
+// Dial уже применяется в check_dns_extra_test.go (там Dial сразу возвращает
+// ошибку, чтобы детерминированно проверить путь отказа) — здесь тот же Dial
+// отвечает по протоколу, чтобы детерминированно проверить путь успеха.
+//
+// Возвращаемый net.Pipe-конец не реализует net.PacketConn, так что резолвер
+// сам выбирает потоковый framing (2-байтовая длина + сообщение) независимо
+// от значения network — это и упрощает fake-сервер до одной ветки кадрирования
+// (см. net.(*Resolver).exchange в стандартной библиотеке: выбор framing идёт
+// по факту реализации интерфейса у Conn, а не по строке "udp"/"tcp").
+//
+// t.Cleanup проверяет, что Dial вообще был вызван: иначе резолвер мог найти
+// ответ в обход заглушки (см. fakeDNSHostname выше), и тест зелёный не по
+// той причине — тихая регрессия такого рода уже случалась с "localhost".
+func fakeIPResolver(t *testing.T, hostname string, ip net.IP) *net.Resolver {
+	t.Helper()
+	var dials atomic.Int32
+	t.Cleanup(func() {
+		if dials.Load() == 0 {
+			t.Error("Dial ни разу не вызван: резолюция ушла в обход fake-резолвера " +
+				"(например, через /etc/hosts) — тест зелёный не по той причине")
+		}
+	})
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dials.Add(1)
+			client, server := net.Pipe()
+			go serveFakeDNSAnswer(server, hostname, ip)
+			return client, nil
+		},
+	}
+}
+
+// serveFakeDNSAnswer обслуживает ровно один DNS-запрос на conn: резолвер
+// стандартной библиотеки закрывает соединение сразу после одного обмена
+// запрос-ответ (см. net.(*Resolver).exchange), так что цикла на incoming
+// не нужно. Ошибки чтения/записи (закрытый pipe, отменённый контекст)
+// игнорируются — это фоновая горутина, а не тест.
+func serveFakeDNSAnswer(conn net.Conn, hostname string, ip net.IP) {
+	defer conn.Close()
+
+	lenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
+		return
+	}
+	msg := make([]byte, binary.BigEndian.Uint16(lenBuf))
+	if _, err := io.ReadFull(conn, msg); err != nil {
+		return
+	}
+	if len(msg) < 12 {
+		return
+	}
+
+	id := binary.BigEndian.Uint16(msg[0:2])
+	name, question, qtype := parseDNSQuestion(msg)
+	resp := buildDNSAnswer(id, question, qtype, name, hostname, ip)
+
+	out := make([]byte, 2+len(resp))
+	binary.BigEndian.PutUint16(out[0:2], uint16(len(resp)))
+	copy(out[2:], resp)
+	_, _ = conn.Write(out)
+}
+
+// parseDNSQuestion декодирует QNAME (для сверки с ожидаемым hostname), а
+// также возвращает сырые байты вопроса (QNAME+QTYPE+QCLASS) для дословного
+// эха в ответе и сам QTYPE.
+// Границы буфера проверяются на каждом шаге, а не только len(msg) < 12 у
+// вызывающего кода: этот разбор бежит в фоновой горутине сервера теста, и
+// паника там валит весь тестовый бинарник пакета стеком, не указывающим на
+// причину, — вместо неё на любой нехватке байт (обрезанная метка, метки без
+// завершающего нуля, недостаточно байт под QTYPE/QCLASS) возвращается пустой
+// результат: buildDNSAnswer тогда сам соберёт ответ с нулём записей, как на
+// обычный неопознанный запрос.
+func parseDNSQuestion(msg []byte) (name string, question []byte, qtype uint16) {
+	var labels []string
+	i := 12
+	for i < len(msg) && msg[i] != 0 {
+		l := int(msg[i])
+		if i+1+l > len(msg) {
+			return "", nil, 0
+		}
+		labels = append(labels, string(msg[i+1:i+1+l]))
+		i += 1 + l
+	}
+	if i >= len(msg) {
+		return "", nil, 0
+	}
+	i++ // завершающий нулевой байт QNAME
+	if i+4 > len(msg) {
+		return "", nil, 0
+	}
+	qtype = binary.BigEndian.Uint16(msg[i : i+2])
+	return strings.Join(labels, "."), msg[12 : i+4], qtype
+}
+
+// buildDNSAnswer собирает DNS-ответ: заголовок (QR/RD/RA, тот же ID),
+// вопрос эхом и, при совпадении имени и qtype=A(1), одну A-запись с ip.
+// Для остальных типов (в частности AAAA) отвечает NOERROR с ancount=0 —
+// это обычный ответ "нет записи такого типа", а не ошибка.
+func buildDNSAnswer(id uint16, question []byte, qtype uint16, gotName, wantName string, ip net.IP) []byte {
+	const qtypeA = 1
+	var ancount uint16
+	var answer []byte
+	if v4 := ip.To4(); qtype == qtypeA && v4 != nil && strings.EqualFold(strings.TrimSuffix(gotName, "."), wantName) {
+		ancount = 1
+		answer = append(answer, 0xC0, 0x0C) // имя — указатель на офсет 12 (начало QNAME)
+		answer = binary.BigEndian.AppendUint16(answer, qtypeA)
+		answer = binary.BigEndian.AppendUint16(answer, 1)   // CLASS IN
+		answer = binary.BigEndian.AppendUint32(answer, 300) // TTL
+		answer = binary.BigEndian.AppendUint16(answer, 4)   // RDLENGTH
+		answer = append(answer, v4...)
+	}
+
+	hdr := make([]byte, 12)
+	binary.BigEndian.PutUint16(hdr[0:2], id)
+	binary.BigEndian.PutUint16(hdr[2:4], 0x8180) // response=1, rd=1, ra=1, rcode=0
+	binary.BigEndian.PutUint16(hdr[4:6], 1)      // qdcount
+	binary.BigEndian.PutUint16(hdr[6:8], ancount)
+
+	msg := append(hdr, question...)
+	return append(msg, answer...)
+}
+
+func TestDNSCheckerAEmptyExpectedOK(t *testing.T) {
 	c := uptime.NewDNSChecker()
+	c.Resolver = fakeIPResolver(t, fakeDNSHostname, net.ParseIP("127.0.0.1"))
 	m := checkerMonitor(uptime.KindDNS, 5, dnsConfig(t, uptime.DNSConfig{
-		Hostname:   "localhost",
+		Hostname:   fakeDNSHostname,
 		RecordType: "A",
 	}))
 
@@ -483,10 +630,11 @@ func TestDNSCheckerLocalhostAEmptyExpectedOK(t *testing.T) {
 	}
 }
 
-func TestDNSCheckerLocalhostAExpectedMatchOK(t *testing.T) {
+func TestDNSCheckerAExpectedMatchOK(t *testing.T) {
 	c := uptime.NewDNSChecker()
+	c.Resolver = fakeIPResolver(t, fakeDNSHostname, net.ParseIP("127.0.0.1"))
 	m := checkerMonitor(uptime.KindDNS, 5, dnsConfig(t, uptime.DNSConfig{
-		Hostname:      "localhost",
+		Hostname:      fakeDNSHostname,
 		RecordType:    "A",
 		ExpectedValue: "127.0.0.1",
 	}))

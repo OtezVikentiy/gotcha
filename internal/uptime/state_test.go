@@ -102,6 +102,144 @@ func TestApplyResultTransitionTable(t *testing.T) {
 	}
 }
 
+// TestApplyResultDoesNotRollBackLastChecked: два задания одного региона
+// подряд после истечения лизы приходят не по порядку. Запоздавший результат
+// перезаписывал last_checked_at и last_error более старым значением, и
+// монитор показывал «проверено 2 минуты назад» при работающей проверке.
+func TestApplyResultDoesNotRollBackLastChecked(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 3, 2)
+	fresh := time.Now().UTC().Truncate(time.Second)
+	late := fresh.Add(-5 * time.Minute)
+
+	if _, err := svc.ApplyResult(ctx, mon.ID, "local", true, "", fresh); err != nil {
+		t.Fatalf("свежий результат: %v", err)
+	}
+	got, err := svc.ApplyResult(ctx, mon.ID, "local", false, "dial timeout", late)
+	if err != nil {
+		t.Fatalf("запоздавший результат: %v", err)
+	}
+
+	if got.LastCheckedAt == nil || got.LastCheckedAt.Before(fresh) {
+		t.Fatalf("LastCheckedAt = %v, откатился назад к запоздавшему %v при свежем %v",
+			got.LastCheckedAt, late, fresh)
+	}
+	if got.LastError == "dial timeout" {
+		t.Fatal("LastError взят из запоздавшего результата: текст ошибки " +
+			"разошёлся со временем, к которому относится")
+	}
+}
+
+// TestApplyResultDoesNotRollBackLastChecked защищает last_checked_at/last_error,
+// но не защищает consecutive_fails/consecutive_oks/status — их можно случайно
+// вернуть к безусловному инкременту, и этот тест ничего не заметит. Этот тест
+// целится ровно в тот гейт: строит серию так, что запоздавший провал, будучи
+// учтён (т.е. если бы гейт со счётчиков сняли), сам по себе дотягивает
+// consecutive_fails до fail_threshold и уводит монитор в down — а с рабочим
+// гейтом ничего не меняется, потому что результат старше уже учтённого.
+//
+// last_checked_at и last_error у обоих результатов защищены независимым
+// GREATEST/CASE (см. TestApplyResultDoesNotRollBackLastChecked) и потому не
+// двигаются в обоих случаях — тест ловит именно снятие гейта со счётчиков и
+// status, а не со отметки времени.
+func TestApplyResultDoesNotContaminateSeriesWithStaleResult(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 2, 2) // fail_threshold=2, recovery_threshold=2
+	recent := time.Now().UTC().Truncate(time.Second)
+	stale := recent.Add(-5 * time.Minute)
+
+	// Первый (и единственный уже учтённый) провал: consecutive_fails=1 —
+	// на единицу меньше порога, статус ещё не down.
+	first, err := svc.ApplyResult(ctx, mon.ID, "local", false, "первый провал", recent)
+	if err != nil {
+		t.Fatalf("первый провал: %v", err)
+	}
+	if first.ConsecutiveFails != 1 || first.Status == "down" {
+		t.Fatalf("после первого провала: %+v, хотел fails=1 и status != down", first)
+	}
+
+	// Запоздавший провал доставлен позже, но относится к более раннему
+	// моменту (stale < recent, уже учтённого как last_checked_at). Без гейта
+	// на счётчиках он ровно дотянул бы серию до fail_threshold=2 и увёл бы
+	// монитор в down — хотя по факту это не второй провал ПОСЛЕ первого, а
+	// провал, случившийся ДО него и разминувшийся в пути.
+	got, err := svc.ApplyResult(ctx, mon.ID, "local", false, "запоздавший провал", stale)
+	if err != nil {
+		t.Fatalf("запоздавший провал: %v", err)
+	}
+
+	if got.ConsecutiveFails != 1 {
+		t.Fatalf("ConsecutiveFails = %d, хотел 1 (запоздавший провал не должен "+
+			"дотягивать серию до fail_threshold=2)", got.ConsecutiveFails)
+	}
+	if got.Status == "down" {
+		t.Fatalf("Status = %q, монитор ушёл в down из-за запоздавшего провала, "+
+			"который по счёту не должен был идти вторым в серии", got.Status)
+	}
+	if got.LastError == "запоздавший провал" {
+		t.Fatal("LastError взят из запоздавшего результата")
+	}
+}
+
+// TestApplyResultDoesNotContaminateSeriesWithStaleOK — зеркало
+// TestApplyResultDoesNotContaminateSeriesWithStaleResult на стороне успехов.
+// Гейт в запросе один CASE на fail/ok обе стороны, но записан двумя
+// самостоятельными ветками (consecutive_fails и consecutive_oks) — опечатка
+// или неосторожный рефакторинг именно ветки успехов прошли бы незамеченными,
+// если проверять заражение серии только провалами. Монитор нарочно заведён в
+// состояние, из которого переход в "up" виден (status="unknown", ещё не
+// "up"), иначе тест был бы зелёным по причине, не связанной с гейтом.
+func TestApplyResultDoesNotContaminateSeriesWithStaleOK(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 2, 2) // fail_threshold=2, recovery_threshold=2
+	recent := time.Now().UTC().Truncate(time.Second)
+	stale := recent.Add(-5 * time.Minute)
+
+	// Первый (и единственный уже учтённый) успех: consecutive_oks=1 — на
+	// единицу меньше порога восстановления, статус ещё не up.
+	first, err := svc.ApplyResult(ctx, mon.ID, "local", true, "", recent)
+	if err != nil {
+		t.Fatalf("первый успех: %v", err)
+	}
+	if first.ConsecutiveOKs != 1 || first.Status == "up" {
+		t.Fatalf("после первого успеха: %+v, хотел oks=1 и status != up", first)
+	}
+
+	// Запоздавший успех доставлен позже, но относится к более раннему моменту
+	// (stale < recent, уже учтённого как last_checked_at). Без гейта на
+	// счётчиках он ровно дотянул бы серию до recovery_threshold=2 и увёл бы
+	// монитор в up — хотя по факту это не второй успех ПОСЛЕ первого, а
+	// успех, случившийся ДО него и разминувшийся в пути.
+	got, err := svc.ApplyResult(ctx, mon.ID, "local", true, "", stale)
+	if err != nil {
+		t.Fatalf("запоздавший успех: %v", err)
+	}
+
+	if got.ConsecutiveOKs != 1 {
+		t.Fatalf("ConsecutiveOKs = %d, хотел 1 (запоздавший успех не должен "+
+			"дотягивать серию до recovery_threshold=2)", got.ConsecutiveOKs)
+	}
+	if got.Status == "up" {
+		t.Fatalf("Status = %q, монитор ушёл в up из-за запоздавшего успеха, "+
+			"который по счёту не должен был идти вторым в серии", got.Status)
+	}
+}
+
 func TestApplyResultPerRegionIndependent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

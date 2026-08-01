@@ -16,6 +16,11 @@ const (
 	KindHeartbeat Kind = "heartbeat"
 )
 
+// Kinds — все типы монитора. Набор нужен не коду, а сторожу динамических
+// ключей: он проверяет, что для каждого значения есть подпись в каталоге, и
+// потому обязан читать значения из кода, а не из литерального списка в тесте.
+var Kinds = []string{string(KindHTTP), string(KindTCP), string(KindDNS), string(KindHeartbeat)}
+
 // Consensus — правило согласования результатов проверки по регионам;
 // совпадает с CHECK-ограничением monitors.consensus.
 type Consensus string

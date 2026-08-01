@@ -5,6 +5,12 @@ import (
 	"testing"
 	"time"
 
+	// Часовые пояса вкомпилированы в тест: пакет читает time.LoadLocation, но
+	// (в отличие от internal/web) не подключает internal/testenv, где обычно
+	// живёт этот импорт — так что подключаем сами, иначе в slim-контейнере без
+	// /usr/share/zoneinfo тест падает не по вине проверяемого кода.
+	_ "time/tzdata"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )

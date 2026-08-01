@@ -151,7 +151,15 @@ func TestHealthzSlowPostgresDoesNotStarveClickHouse(t *testing.T) {
 	rec := httptest.NewRecorder()
 	start := time.Now()
 	h(rec, httptest.NewRequest("GET", "/healthz", nil))
-	if elapsed := time.Since(start); elapsed > 2900*time.Millisecond {
+	// Нижняя граница (пинги параллельны, как и задумано): у каждого пинга
+	// свой таймаут 2с (см. probeComponents), PG в него упирается, CH
+	// укладывается в 1.5с раньше — итог около 2с.
+	// Верхняя граница (если параллелизм сломается и пинги пойдут по
+	// очереди): 2с (таймаут PG) + 1.5с (CH) = 3.5с.
+	// Порог 3200мс выбран между ними: запас 1.2с (60%) над нижней границей,
+	// чтобы не мигать на нагруженном общем раннере под nice — и 300мс до
+	// верхней, чтобы тест всё ещё ловил регресс на последовательные пинги.
+	if elapsed := time.Since(start); elapsed > 3200*time.Millisecond {
 		t.Fatalf("handler took %v, pings are not concurrent", elapsed)
 	}
 	if rec.Code != 503 {

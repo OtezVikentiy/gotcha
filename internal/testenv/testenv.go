@@ -25,6 +25,11 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
+
+	// Часовые пояса вкомпилированы в тесты: зоны читают семь тестовых файлов, а
+	// time/tzdata до сих пор подключался только в cmd/gotcha. В slim-контейнере
+	// без /usr/share/zoneinfo эти тесты падали не по вине продукта.
+	_ "time/tzdata"
 )
 
 const (

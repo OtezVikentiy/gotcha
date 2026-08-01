@@ -135,11 +135,44 @@ func (s *Service) ApplyResult(ctx context.Context, monitorID int64, region strin
 			$5, $4
 		FROM thresholds
 		ON CONFLICT (monitor_id, region) DO UPDATE SET
-			consecutive_fails = CASE WHEN $3 THEN 0 ELSE monitor_state.consecutive_fails + 1 END,
-			consecutive_oks   = CASE WHEN $3 THEN monitor_state.consecutive_oks + 1 ELSE 0 END,
-			last_checked_at   = $5,
-			last_error        = $4,
+			-- Задания одного региона после истечения лизы могут прийти не по
+			-- порядку: worker считается пропавшим, регион переставляется в
+			-- очередь и проверяется заново, а старый worker всё же дозванивает
+			-- и доставляет свой результат позже. $5 < last_checked_at отличает
+			-- такой запоздавший результат от настоящего свежего.
+			--
+			-- last_checked_at не откатывается назад тем же приёмом, что уже
+			-- применён для issues.last_seen (internal/issue/issue.go:68).
+			-- last_error обязан следовать той же отметке: обновляется, только
+			-- когда результат действительно свежее — иначе текст ошибки
+			-- относился бы к более раннему моменту, чем показанное время
+			-- последней проверки.
+			--
+			-- consecutive_fails/oks и status тоже не должны реагировать на
+			-- запоздавший результат: это не отдельный полноценный «ещё один
+			-- провал/успех» в текущей серии, а сведения о проверке, которая по
+			-- времени была РАНЬШЕ уже учтённой. Если бы её всё равно
+			-- прибавляли к серии, один настоящий свежий провал мог бы
+			-- «дозаполнить» fail_threshold за счёт чужого устаревшего провала
+			-- и преждевременно увести монитор в down (или наоборот, вверх) —
+			-- то есть заразить текущую серию данными не в счёт неё. Поэтому
+			-- запоздавший результат просто не трогает эти колонки, как будто
+			-- его никогда не было (last_checked_at/last_error) применительно
+			-- к состоянию.
+			consecutive_fails = CASE
+				WHEN $5 < monitor_state.last_checked_at THEN monitor_state.consecutive_fails
+				WHEN $3 THEN 0
+				ELSE monitor_state.consecutive_fails + 1
+			END,
+			consecutive_oks   = CASE
+				WHEN $5 < monitor_state.last_checked_at THEN monitor_state.consecutive_oks
+				WHEN $3 THEN monitor_state.consecutive_oks + 1
+				ELSE 0
+			END,
+			last_checked_at   = GREATEST(monitor_state.last_checked_at, $5),
+			last_error        = CASE WHEN $5 >= monitor_state.last_checked_at THEN $4 ELSE monitor_state.last_error END,
 			status = CASE
+				WHEN $5 < monitor_state.last_checked_at THEN monitor_state.status
 				WHEN NOT $3 AND (monitor_state.consecutive_fails + 1) >= (SELECT fail_threshold FROM thresholds) THEN 'down'
 				WHEN $3 AND (monitor_state.consecutive_oks + 1) >= (SELECT recovery_threshold FROM thresholds) THEN 'up'
 				ELSE monitor_state.status
