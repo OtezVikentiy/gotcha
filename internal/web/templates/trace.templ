@@ -83,7 +83,7 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 				</div>
 				<div class="stat-tile">
 					<div class="stat-label">{ i18n.T(ctx, "trace.field.when") }</div>
-					<div class="stat-value">{ ago(ctx, d.Timestamp) }</div>
+					<div class="stat-value">@relativeTime(d.Timestamp)</div>
 				</div>
 			</div>
 			if d.HasProfile {

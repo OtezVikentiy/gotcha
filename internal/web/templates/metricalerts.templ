@@ -3,7 +3,9 @@ package templates
 import (
 	"context"
 	"strconv"
+	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
@@ -98,8 +100,12 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 									for _, rule := range rules {
 										<tr>
 											<td>{ rule.MetricName }</td>
-											<td>{ rule.Aggregation } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
-											<td class="num">{ strconv.Itoa(rule.WindowSeconds) }s</td>
+											<td>{ i18n.T(ctx, "metrics.aggregation."+rule.Aggregation) } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
+											// Раньше окно печаталось как сырые "3600s" — дежурному
+											// приходилось делить в уме, чтобы понять, час это или нет.
+											// humanize.Duration даёт ту же единицу словами ("1 час"),
+											// что и остальные длительности в интерфейсе.
+											<td class="num">{ humanize.Duration(ctx, time.Duration(rule.WindowSeconds)*time.Second) }</td>
 											<td>{ ruleScope(ctx, rule) }</td>
 											<td>@ruleEnabledBadge(rule.Enabled)</td>
 											<td>
@@ -136,7 +142,7 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 											<td>@incidentStatusBadge(in.Status)</td>
 											<td class="num">{ fmtFloat(in.PeakValue) }</td>
 											<td class="num">{ fmtFloat(in.CurrentValue) }</td>
-											<td>{ ago(ctx, in.StartedAt) }</td>
+											<td>@relativeTime(in.StartedAt)</td>
 										</tr>
 									}
 								</tbody>
@@ -168,11 +174,11 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.aggregation") }
 							<select name="aggregation" class="select">
-								for _, a := range []string{"avg", "max", "min", "sum", "p50", "p95", "p99"} {
+								for _, a := range metric.Aggregations {
 									if form.Selected("aggregation", a, "avg") {
-										<option value={ a } selected>{ a }</option>
+										<option value={ a } selected>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
 									} else {
-										<option value={ a }>{ a }</option>
+										<option value={ a }>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
 									}
 								}
 							</select>

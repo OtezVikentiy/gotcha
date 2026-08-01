@@ -272,7 +272,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.rename.submit") }</button>
 				</form>
-				<p><strong>{ i18n.T(ctx, "project.settings.field.platform") }:</strong> { project.Platform }</p>
+				<p><strong>{ i18n.T(ctx, "project.settings.field.platform") }:</strong> { i18n.T(ctx, "platform."+project.Platform) }</p>
 				<p><a class="btn btn-ghost" href={ templ.URL(alertsPath(project.ID)) }>{ i18n.T(ctx, "nav.alerts") }</a></p>
 			</section>
 			<section class="card">

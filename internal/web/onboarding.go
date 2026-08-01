@@ -17,20 +17,22 @@ import (
 
 // allowedPlatforms — серверный whitelist платформ онбординга; всё, что не
 // входит в список (в т.ч. произвольный ввод через подменённый <select>),
-// нормализуется на "other".
-var allowedPlatforms = map[string]bool{
-	"go":         true,
-	"php":        true,
-	"javascript": true,
-	"python":     true,
-	"other":      true,
-}
+// нормализуется на PlatformOther. Строится из org.Platforms, а не
+// независимым литералом — иначе whitelist и список для формы/сторожа
+// динамических ключей могли бы разойтись незамеченно.
+var allowedPlatforms = func() map[string]bool {
+	m := make(map[string]bool, len(org.Platforms))
+	for _, p := range org.Platforms {
+		m[p] = true
+	}
+	return m
+}()
 
 func normalizePlatform(platform string) string {
 	if allowedPlatforms[platform] {
 		return platform
 	}
-	return "other"
+	return org.PlatformOther
 }
 
 // onboardingPage — GET /onboarding: у юзера без организаций форма

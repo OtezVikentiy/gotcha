@@ -88,7 +88,7 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			if !ok {
 				continue
 			}
-			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "gauge")
+			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), TypeGauge)
 			if !ok {
 				continue
 			}
@@ -106,7 +106,7 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			if !ok {
 				continue
 			}
-			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "sum")
+			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), TypeSum)
 			if !ok {
 				continue
 			}
@@ -125,7 +125,7 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			if math.IsNaN(sum) || math.IsInf(sum, 0) {
 				continue
 			}
-			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), "histogram")
+			p, ok := base(dp.GetTimeUnixNano(), dp.GetAttributes(), TypeHistogram)
 			if !ok {
 				continue
 			}

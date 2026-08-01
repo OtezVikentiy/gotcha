@@ -45,7 +45,7 @@ templ incidentListRow(row IncidentRow) {
 	<tr>
 		<td><span class={ incidentStatusBadgeClass(row.Incident) }>{ i18n.T(ctx, incidentStatusTextKey(row.Incident)) }</span></td>
 		<td><a href={ templ.URL(monitorDetailPath(row.Incident.MonitorID)) }>{ row.MonitorName }</a></td>
-		<td>{ ago(ctx, row.Incident.StartedAt) }</td>
+		<td>@relativeTime(row.Incident.StartedAt)</td>
 		<td>{ incidentDurationText(ctx, row.Incident) }</td>
 		<td>{ row.Incident.Cause }</td>
 		<td>{ strings.Join(row.Incident.Regions, ", ") }</td>

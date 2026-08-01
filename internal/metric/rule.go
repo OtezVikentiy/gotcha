@@ -13,9 +13,20 @@ import (
 
 var ErrInvalidRule = errors.New("metric: invalid alert rule")
 
-var validAggregations = map[string]bool{
-	"avg": true, "max": true, "min": true, "sum": true, "p50": true, "p95": true, "p99": true,
-}
+// Aggregations — все агрегации, допустимые для правила алерта на метрику, в
+// порядке показа в форме. Источник истины для сторожа динамических ключей
+// (группа i18n "metrics.aggregation.", internal/guards/i18n_dynamic_test.go);
+// validAggregations строится из него же, а не независимым литералом, чтобы
+// два набора не могли разъехаться.
+var Aggregations = []string{"avg", "max", "min", "sum", "p50", "p95", "p99"}
+
+var validAggregations = func() map[string]bool {
+	m := make(map[string]bool, len(Aggregations))
+	for _, a := range Aggregations {
+		m[a] = true
+	}
+	return m
+}()
 
 // Rule — правило порогового алерта на метрику.
 type Rule struct {

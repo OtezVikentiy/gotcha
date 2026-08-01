@@ -3,6 +3,24 @@ package metric
 
 import "time"
 
+// Типы метрики, которые реально долетают до metric_points через MapOTLP
+// (internal/metric/parse.go, mapMetric): OTLP знает больше форм
+// (ExponentialHistogram, Summary), но mapMetric их тихо пропускает как «вне
+// объёма этапа» — то есть TypeGauge/TypeSum/TypeHistogram не просто
+// распространённые значения, а ПОЛНЫЙ список того, что может оказаться в
+// MetricPoint.Type/MetricInfo.Type. Закрытое множество, в отличие от
+// агрегации правил (metric.Aggregations) — то тоже закрытое, но по другой
+// причине (перечисление switch в metricAggFor/metricAggOptions).
+const (
+	TypeGauge     = "gauge"
+	TypeSum       = "sum"
+	TypeHistogram = "histogram"
+)
+
+// MetricTypes — все типы метрики. Источник истины для сторожа динамических
+// ключей (группа i18n "metrics.type.", internal/guards/i18n_dynamic_test.go).
+var MetricTypes = []string{TypeGauge, TypeSum, TypeHistogram}
+
 // MetricPoint — одна datapoint метрики, готовая к записи в metric_points.
 type MetricPoint struct {
 	Name, Type, Unit, Service, Environment string

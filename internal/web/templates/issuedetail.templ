@@ -587,7 +587,7 @@ templ contextTable(rows []ctxRow) {
 
 templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 	<tr class={ eventRowClass(selected) }>
-		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID, rng)) }>{ ago(ctx, ev.Timestamp) }</a></td>
+		<td><a href={ templ.URL(issueEventPath(issueID, ev.ID, rng)) }>@relativeTime(ev.Timestamp)</a></td>
 		<td>{ eventSummary(ev) }</td>
 		<td>{ ev.Environment }</td>
 		<td>{ ev.Release }</td>
@@ -613,8 +613,8 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				@assigneeChip(it.AssigneeEmail)
 			</div>
 			<div class="issue-meta">
-				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: { ago(ctx, it.FirstSeen) }</span>
-				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: { ago(ctx, it.LastSeen) }</span>
+				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: @relativeTime(it.FirstSeen)</span>
+				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: @relativeTime(it.LastSeen)</span>
 				<span>{ i18n.T(ctx, "issues.detail.times_seen") }: { strconv.FormatInt(it.TimesSeen, 10) }</span>
 			</div>
 
@@ -646,7 +646,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 
 			if selected != nil {
 				<div class="event-detail">
-					<h2>{ i18n.T(ctx, "issues.detail.event") } · { ago(ctx, selected.Timestamp) }</h2>
+					<h2>{ i18n.T(ctx, "issues.detail.event") } · @relativeTime(selected.Timestamp)</h2>
 					<div class="culprit event-id">{ selected.ID }</div>
 
 					if hasTrace {

@@ -60,11 +60,9 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 				<label>
 					{ i18n.T(ctx, "onboarding.field.platform") }
 					<select name="platform" required class="select">
-						@platformOption("go", "Go", platform)
-						@platformOption("php", "PHP", platform)
-						@platformOption("javascript", "JavaScript", platform)
-						@platformOption("python", "Python", platform)
-						@platformOption("other", i18n.T(ctx, "onboarding.platform.other"), platform)
+						for _, p := range org.Platforms {
+							@platformOption(p, i18n.T(ctx, "platform."+p), platform)
+						}
 					</select>
 				</label>
 			</div>
@@ -130,7 +128,7 @@ type ProjectListItem struct {
 templ projectRow(it ProjectListItem) {
 	<tr>
 		<td><a href={ templ.URL(projectSettingsPath(it.Project.ID)) }>{ it.Project.Name }</a></td>
-		<td><span class="chip">{ it.Project.Platform }</span></td>
+		<td><span class="chip">{ i18n.T(ctx, "platform."+it.Project.Platform) }</span></td>
 		<td><a class="btn btn-ghost" href={ templ.URL(projectSetupPath(it.Project.ID)) }>{ i18n.T(ctx, "project.list.setup_link") }</a></td>
 		<td>
 			if it.CanManage {
@@ -221,11 +219,9 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 							<label>
 								{ i18n.T(ctx, "project.create.platform") }
 								<select name="platform" required class="select">
-									@platformOption("go", "Go", form.Get("platform", "go"))
-									@platformOption("php", "PHP", form.Get("platform", "go"))
-									@platformOption("javascript", "JavaScript", form.Get("platform", "go"))
-									@platformOption("python", "Python", form.Get("platform", "go"))
-									@platformOption("other", i18n.T(ctx, "onboarding.platform.other"), form.Get("platform", "go"))
+									for _, p := range org.Platforms {
+										@platformOption(p, i18n.T(ctx, "platform."+p), form.Get("platform", "go"))
+									}
 								</select>
 							</label>
 						</div>

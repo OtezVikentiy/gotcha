@@ -38,8 +38,10 @@ func TestTimeRangeLabelCustom(t *testing.T) {
 	if err := timeRangeLabel(customRange).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	// Подпись — в читаемом формате ДД.ММ.ГГГГ ЧЧ:ММ, а не сырой ISO.
-	if out := sb.String(); !strings.Contains(out, "01.07.2026 00:00") || !strings.Contains(out, "10.07.2026 00:00") {
+	// Подпись — в читаемом числовом формате ГГГГ-ММ-ДД ЧЧ:ММ (не ДД.ММ.ГГГГ:
+	// тот неоднозначен в английском интерфейсе, см. TestRangeBoundIsUnambiguous),
+	// с зоной UTC на каждой границе — её пишет humanize.Time.
+	if out := sb.String(); !strings.Contains(out, "2026-07-01 00:00 UTC") || !strings.Contains(out, "2026-07-10 00:00 UTC") {
 		t.Errorf("timeRangeLabel(custom) = %q", out)
 	}
 
@@ -59,6 +61,24 @@ func TestTimeRangeLabelCustom(t *testing.T) {
 	}
 	if out := sb.String(); !strings.Contains(out, "raw-x") {
 		t.Errorf("prettyBound fallback lost the raw value: %q", out)
+	}
+}
+
+// TestRangeBoundIsUnambiguous: prettyBound форматировал 02.01.2006 безусловно.
+// В английском интерфейсе «02.01.2026» читается и как второе января, и как
+// первое февраля — то есть подпись диапазона неоднозначна ровно там, где
+// точность важнее всего.
+//
+// Формат числовой и одинаковый в обеих локалях намеренно: то же обоснование,
+// что записано в докблоке humanize.Time.
+func TestRangeBoundIsUnambiguous(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	got := prettyBound(ctx, "2026-01-02T15:04")
+	if strings.HasPrefix(got, "02.01") {
+		t.Fatalf("граница = %q: русский формат в интерфейсе обеих локалей", got)
+	}
+	if !strings.HasPrefix(got, "2026-01-02") {
+		t.Fatalf("граница = %q, ждали 2026-01-02 15:04", got)
 	}
 }
 

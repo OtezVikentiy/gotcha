@@ -51,13 +51,23 @@ func probeStatusLabel(ctx context.Context, status string) string {
 	return status
 }
 
-// probeLastSeenText — «никогда» для только что созданной пробы, которая ещё ни
-// разу не постучалась в центр (тот же принцип, что и lastCheckedText).
-func probeLastSeenText(ctx context.Context, row ProbeRow) string {
+// probeLastSeenCell — «никогда» для только что созданной пробы, которая ещё
+// ни разу не постучалась в центр, либо точный момент последнего визита рядом
+// с относительной подписью (тот же приём, что и lastCheckedCell в
+// monitors.templ). Возвращает templ.Component вместо string — только так
+// строка «никогда» и <time> с относительным временем внутри могут делить
+// одну ячейку без ветвления разметки в вызывающем шаблоне.
+func probeLastSeenCell(row ProbeRow) templ.Component {
 	if row.Probe.LastSeenAt == nil {
-		return i18n.T(ctx, "uptime.probes.never")
+		return neverSeenLabel()
 	}
-	return ago(ctx, *row.Probe.LastSeenAt)
+	return relativeTime(*row.Probe.LastSeenAt)
+}
+
+// neverSeenLabel — «никогда» текстом, обёрнутая в templ.Component ради
+// единой сигнатуры с relativeTime в probeLastSeenCell выше.
+templ neverSeenLabel() {
+	{ i18n.T(ctx, "uptime.probes.never") }
 }
 
 templ probeTableRow(orgID int64, row ProbeRow) {
@@ -65,8 +75,8 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 		<td>{ row.Probe.Name }</td>
 		<td>{ row.Probe.Region }</td>
 		<td><span class={ probeStatusBadgeClass(row.Status) }>{ probeStatusLabel(ctx, row.Status) }</span></td>
-		<td>{ probeLastSeenText(ctx, row) }</td>
-		<td>{ ago(ctx, row.Probe.CreatedAt) }</td>
+		<td>@probeLastSeenCell(row)</td>
+		<td>@relativeTime(row.Probe.CreatedAt)</td>
 		<td>
 			if !row.Probe.Revoked {
 				<form method="post" action={ templ.URL(orgProbesRevokePath(orgID)) } class="probe-revoke-form">

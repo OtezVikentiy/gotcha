@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
@@ -102,7 +103,7 @@ func incidentDurationText(ctx context.Context, inc uptime.Incident) string {
 	if inc.ResolvedAt == nil {
 		return i18n.T(ctx, "uptime.incident.ongoing")
 	}
-	return FormatDuration(ctx, inc.ResolvedAt.Sub(inc.StartedAt))
+	return humanize.Duration(ctx, inc.ResolvedAt.Sub(inc.StartedAt))
 }
 
 func yesNo(ctx context.Context, b bool) string {
@@ -130,7 +131,7 @@ func heartbeatCronSnippet(baseURL, token string, intervalSeconds int) string {
 
 templ checkRow(c uptime.CheckRow) {
 	<tr>
-		<td>{ ago(ctx, c.Timestamp) }</td>
+		<td>@relativeTime(c.Timestamp)</td>
 		<td>{ c.Region }</td>
 		<td><span class={ checkStatusBadgeClass(c.OK) }>{ checkStatusText(ctx, c.OK) }</span></td>
 		<td class="num">{ strconv.Itoa(int(c.StatusCode)) }</td>
@@ -142,7 +143,7 @@ templ checkRow(c uptime.CheckRow) {
 templ incidentRow(inc uptime.Incident) {
 	<tr>
 		<td><span class={ incidentStatusBadgeClass(inc) }>{ i18n.T(ctx, incidentStatusTextKey(inc)) }</span></td>
-		<td>{ ago(ctx, inc.StartedAt) }</td>
+		<td>@relativeTime(inc.StartedAt)</td>
 		<td>{ incidentDurationText(ctx, inc) }</td>
 		<td>{ inc.Cause }</td>
 		<td>{ strings.Join(inc.Regions, ", ") }</td>
@@ -186,7 +187,7 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 			@breadcrumbBackTo(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ m.Name }</h1>
 			<span class={ monitorStatusBadgeClass(status) }>{ i18n.T(ctx, monitorStatusTextKey(status)) }</span>
-			<span class="chip">{ string(m.Kind) }</span>
+			<span class="chip">{ i18n.T(ctx, "uptime.kind."+string(m.Kind)) }</span>
 
 			<div class="monitor-meta">
 				<div class="stat-tile">

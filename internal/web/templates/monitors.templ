@@ -90,15 +90,29 @@ func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
 	return strconv.Itoa(int(avgMs)) + "ms"
 }
 
-// lastCheckedText — "нет данных" для свежесозданного монитора, который ещё
-// ни разу не проверялся ни в одном регионе. Используется только
-// авторизованными страницами (MonitorsList) — своей копии для
+// lastCheckedCell — "нет данных" для свежесозданного монитора, который ещё
+// ни разу не проверялся ни в одном регионе, либо точный момент последней
+// проверки рядом с относительной подписью (см. relativeTime). Используется
+// только авторизованными страницами (MonitorsList) — своей копии для
 // статус-страницы нет, у неё нет колонки "последняя проверка".
-func lastCheckedText(ctx context.Context, t *time.Time) string {
+//
+// Возвращает templ.Component вместо string — только так строка "нет данных"
+// и <time> с относительным временем внутри могут делить одну ячейку без
+// ветвления разметки в вызывающем шаблоне (тот же приём, что и
+// probeLastSeenCell в probes.templ).
+func lastCheckedCell(t *time.Time) templ.Component {
 	if t == nil {
-		return i18n.T(ctx, "uptime.no_data")
+		return noDataLabel()
 	}
-	return ago(ctx, *t)
+	return relativeTime(*t)
+}
+
+// noDataLabel — "нет данных" текстом, обёрнутая в templ.Component ради
+// единой сигнатуры с relativeTime в lastCheckedCell выше. ctx берётся из
+// контекста рендера неявно (как и везде в этом пакете), отдельным
+// параметром не нужен.
+templ noDataLabel() {
+	{ i18n.T(ctx, "uptime.no_data") }
 }
 
 // MonitorRow — монитор вместе с уже посчитанными для списка данными
@@ -153,13 +167,13 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 								for _, row := range rows {
 									<tr>
 										<td><a href={ templ.URL(monitorDetailPath(row.Monitor.ID)) }>{ row.Monitor.Name }</a></td>
-										<td><span class="chip">{ string(row.Monitor.Kind) }</span></td>
+										<td><span class="chip">{ i18n.T(ctx, "uptime.kind."+string(row.Monitor.Kind)) }</span></td>
 										<td><span class={ monitorStatusBadgeClass(row.Status) }>{ i18n.T(ctx, monitorStatusTextKey(row.Status)) }</span></td>
 										<td class="num">{ uptimeStatTextCtx(ctx, row.Uptime24h) }</td>
 										<td class="num">{ avgLatencyText(row.Uptime24h, row.AvgLatencyMs) }</td>
 										<td>@row.Bars
 						</td>
-										<td>{ lastCheckedText(ctx, row.LastChecked) }</td>
+										<td>@lastCheckedCell(row.LastChecked)</td>
 									</tr>
 								}
 							</tbody>

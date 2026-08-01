@@ -9,6 +9,27 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Платформы онбординга — просто строки (project.Platform в БД без
+// CHECK-ограничения), а не отдельный тип Kind/Consensus по образцу
+// internal/uptime: значение из формы, не входящее в Platforms, молча
+// нормализуется на PlatformOther (internal/web/onboarding.go,
+// normalizePlatform) — типизация тут ничего не защитила бы, whitelist уже
+// защищает.
+const (
+	PlatformGo         = "go"
+	PlatformPHP        = "php"
+	PlatformJavaScript = "javascript"
+	PlatformPython     = "python"
+	PlatformOther      = "other"
+)
+
+// Platforms — все платформы онбординга, в порядке показа в форме. Источник
+// истины для сторожа динамических ключей (группа i18n "platform.",
+// internal/guards/i18n_dynamic_test.go) и для whitelist-нормализации
+// (internal/web/onboarding.go, allowedPlatforms) — раньше оба списка были
+// независимыми литералами и могли разъехаться незамеченно.
+var Platforms = []string{PlatformGo, PlatformPHP, PlatformJavaScript, PlatformPython, PlatformOther}
+
 type Project struct {
 	ID       int64
 	OrgID    int64

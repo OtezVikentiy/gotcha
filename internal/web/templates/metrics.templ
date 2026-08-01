@@ -39,7 +39,7 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 								for _, m := range metrics {
 									<tr>
 										<td><a href={ templ.URL(metricLink(projectID, m.Name)) }>{ m.Name }</a></td>
-										<td>{ m.Type }</td>
+										<td>{ i18n.T(ctx, "metrics.type."+m.Type) }</td>
 										<td class="num">{ metricUnitText(m.Unit) }</td>
 									</tr>
 								}
@@ -78,6 +78,16 @@ func metricUnitText(unit string) string {
 	return unit
 }
 
+// metricAggOptions — оба возвращаемых среза — литеральные подмножества
+// metric.Aggregations (не отражение того, что реально пришло по метрике), и
+// vm.Agg (сравнение ниже в select) нормализован через metricAggFor
+// (internal/web/metrics.go) тем же закрытым перечислением — значит опция
+// select'а никогда не выходит за пределы известных агрегаций, и
+// "metrics.aggregation."+a в шаблоне ниже можно переводить напрямую тем же
+// ключом, что и в metricalerts.templ, без отдельной группы в стороже
+// динамических ключей: она уже покрыта существующей группой
+// "metrics.aggregation." (internal/guards/i18n_dynamic_test.go), проверяющей
+// ВЕСЬ metric.Aggregations, надмножество того, что здесь может появиться.
 func metricAggOptions(percentiles bool) []string {
 	if percentiles {
 		return []string{"p50", "p95", "p99", "avg"}
@@ -94,7 +104,7 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 			<div class="monitor-meta">
 				<div class="stat-tile">
 					<div class="stat-label">{ i18n.T(ctx, "metrics.table.type") }</div>
-					<div class="stat-value">{ vm.Info.Type }</div>
+					<div class="stat-value">{ i18n.T(ctx, "metrics.type."+vm.Info.Type) }</div>
 				</div>
 				<div class="stat-tile">
 					<div class="stat-label">{ i18n.T(ctx, "metrics.table.unit") }</div>
@@ -111,9 +121,9 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 					<select name="agg" class="select">
 						for _, a := range metricAggOptions(vm.Percentiles) {
 							if a == vm.Agg {
-								<option value={ a } selected>{ a }</option>
+								<option value={ a } selected>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
 							} else {
-								<option value={ a }>{ a }</option>
+								<option value={ a }>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
 							}
 						}
 					</select>

@@ -8,6 +8,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
@@ -21,7 +22,9 @@ import (
 //
 // Правило вместо этого читает каждое множество из ЕГО источника истины —
 // строго в таком порядке приоритета (см. task-3-report.md, раздел «Выбор
-// источника истины по группам», для обоснования по каждой из шести групп):
+// источника истины по группам», для обоснования по каждой из шести групп,
+// на момент её написания; задача C9 добавила ещё три по тому же приоритету
+// №3):
 //
 //  1. CHECK-ограничение в схеме — самый авторитетный источник: он же не даёт
 //     множеству разъехаться с базой. Единственная группа, у которой такое
@@ -33,7 +36,35 @@ import (
 //  3. Новая константа в пакете-владельце — заведена для трёх множеств,
 //     которые не описаны ни схемой, ни существующим экспортом: уровни issue
 //     (issue.Levels), статусы пробы (uptime.ProbeStatuses), классы квоты
-//     (org.QuotaKinds).
+//     (org.QuotaKinds). Задача C9 добавила по той же схеме ещё четыре: типы
+//     монитора (uptime.Kinds — константы KindHTTP и т.д. уже существовали,
+//     не хватало только экспортированного среза), платформы онбординга
+//     (org.Platforms — раньше был только приватный литеральный whitelist
+//     internal/web/onboarding.go, allowedPlatforms, теперь он сам строится из
+//     org.Platforms), агрегации правил по метрикам (metric.Aggregations —
+//     раньше приватная validAggregations в internal/metric/rule.go) и типы
+//     метрики (metric.MetricTypes — раунд правок 1, см. ниже).
+//
+// Раунд правок 1 (metrics.templ): та же задача нашла ЕЩЁ два места сырого
+// значения в соседнем файле, не входившем в исходный список брифа — тип
+// метрики (metrics.templ:97, :42) и селект агрегации на странице метрики
+// (metrics.templ:112-117). Тип метрики — четвёртая группа here по приоритету
+// №3 (metric.MetricTypes, см. докблок в internal/metric/metric.go: закрытый
+// список, MapOTLP тихо пропускает всё, что не gauge/sum/histogram).
+//
+// Агрегация в metrics.templ — ОТДЕЛЬНОЙ группы не заводит, хотя выглядит
+// похоже: metricAggOptions (internal/web/templates/metrics.templ) на первый
+// взгляд собирает опции из вызова функции, а не из литерального перечисления,
+// как в metricalerts.templ, — та же форма, что у настоящих открытых множеств
+// в этом файле (rangePresetKeys, quotaKindShortKeys). Разница в том, ЧТО она
+// возвращает: обе ветки metricAggOptions — жёстко зашитые литеральные
+// подмножества metric.Aggregations, а сравниваемый vm.Agg до попадания в
+// шаблон уже нормализован через metricAggFor (internal/web/metrics.go) тем же
+// закрытым перечислением. Открытого хвоста тут в принципе нет: любое значение,
+// которое реально может оказаться в <option>, гарантированно входит в
+// metric.Aggregations — то есть уже проверено группой "metrics.aggregation."
+// ниже, надмножеством. Второй, отдельной группы это не требует — заводить её
+// значило бы дважды проверять то же самое множество разными путями.
 //
 // Проверяются ОБА языка: ключ, забытый только в одном каталоге, ловится
 // паритетом (internal/i18n/catalog_test.go), но ключ, забытый в обоих, —
@@ -42,12 +73,16 @@ func TestDynamicKeysResolve(t *testing.T) {
 	tree := Load(t)
 
 	groups := map[string][]string{
-		"issues.status.":    issuesStatusValues(t, tree),
-		"issues.level.":     issue.Levels,
-		"probe.status.":     uptime.ProbeStatuses,
-		"range.":            rangePresetKeys(),
-		"org.quota.kind.":   quotaKindShortKeys(),
-		"uptime.consensus.": {string(uptime.ConsensusAny), string(uptime.ConsensusMajority), string(uptime.ConsensusAll)},
+		"issues.status.":       issuesStatusValues(t, tree),
+		"issues.level.":        issue.Levels,
+		"probe.status.":        uptime.ProbeStatuses,
+		"range.":               rangePresetKeys(),
+		"org.quota.kind.":      quotaKindShortKeys(),
+		"uptime.consensus.":    {string(uptime.ConsensusAny), string(uptime.ConsensusMajority), string(uptime.ConsensusAll)},
+		"platform.":            org.Platforms,
+		"uptime.kind.":         uptime.Kinds,
+		"metrics.aggregation.": metric.Aggregations,
+		"metrics.type.":        metric.MetricTypes,
 	}
 	// Пустая группа — не "нечего проверять", а сигнал, что сборка САМОЙ группы
 	// сломана (баг в quotaKindShortKeys/rangePresetKeys или опустевший

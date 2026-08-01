@@ -235,8 +235,8 @@ type localeFile struct {
 //
 // Раньше формы plurals разворачивались в тот же плоский набор ключами вида
 // "<ключ>.<форма>" — это ломается на совпадении: в каталоге уже есть обычный
-// message-ключ onboarding.platform.other, неотличимый по такой схеме от
-// гипотетической формы "other" плюрального ключа onboarding.platform.
+// message-ключ platform.other, неотличимый по такой схеме от гипотетической
+// формы "other" плюрального ключа platform.
 // Раздельные поля дают правилам однозначный ответ «этот ключ обычный или
 // плюральный», не полагаясь на угадывание по суффиксу.
 func loadLocale(path string) (messages map[string]string, plurals map[string]map[string]string, err error) {

@@ -291,7 +291,7 @@ templ MonitorForm(d MonitorFormData, userEmail string) {
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "uptime.form.field.type") }
-							<input type="text" value={ string(d.Kind) } disabled class="input"/>
+							<input type="text" value={ i18n.T(ctx, "uptime.kind."+string(d.Kind)) } disabled class="input"/>
 						</label>
 					</div>
 				}

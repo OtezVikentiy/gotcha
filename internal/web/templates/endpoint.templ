@@ -166,7 +166,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 								<tbody>
 									for _, tr := range d.Slowest {
 										<tr>
-											<td>{ ago(ctx, tr.Timestamp) }</td>
+											<td>@relativeTime(tr.Timestamp)</td>
 											<td class="num">{ formatDurationUS(tr.DurationUS) }</td>
 											<td>{ tr.Status }</td>
 											<td><a href={ templ.URL(tracePathFrom(tr.TraceID, "endpoint", d.Transaction)) }>{ tr.TraceID }</a></td>
