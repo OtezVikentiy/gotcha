@@ -182,13 +182,62 @@ func TestPublicStatusPage(t *testing.T) {
 				{Name: "api", Status: "down", Uptime90d: uptime.UptimeStat{Total: 1000, OK: 800}, Bars: stub()},
 				{Name: "cdn", Status: "maintenance", Bars: stub()},
 			},
-			Incidents:   []StatusIncidentView{{Name: "Сбой API", StartedAt: "2026-07-20 10:00", Ongoing: true}, {Name: "Прошлый сбой", StartedAt: "2026-07-19 08:00", Duration: "2h", Ongoing: false}},
+			Incidents:   []StatusIncidentView{{Name: "Сбой API", StartedAt: "2026-07-20 10:00", Ongoing: true}, {Name: "Прошлый сбой", StartedAt: "2026-07-19 08:00", Duration: 2 * time.Hour, Ongoing: false}},
 			Maintenance: []StatusWindowView{{Name: "Плановые работы", From: "2026-07-22 02:00", To: "2026-07-22 04:00"}},
 		}
 		out := renderTo(t, PublicStatusPage(v))
 		if !strings.Contains(out, "Acme Status") || !strings.Contains(out, "web") {
 			t.Errorf("публичная статус-страница (overall=%s) должна содержать заголовок и мониторы", overall)
 		}
+	}
+}
+
+// TestStatusPageIncidentDurationLocalised: длительность инцидента на публичной
+// статус-странице собиралась строками «h »/«m» без каталога — у функции не
+// было даже ctx. Это внешняя поверхность: её видят клиенты владельца
+// инстанса, и она оставалась английской в русском интерфейсе, тогда как
+// остальная страница локализуется более чем в двадцати местах.
+//
+// Кеш вьюхи общий на всех посетителей независимо от языка — поэтому вьюха
+// несёт time.Duration, а язык применяется при рендере, а не при сборке.
+//
+// Ассерт целится именно в длительность, а не в страницу целиком: на странице
+// больше двадцати других мест уже локализуются (заголовки, статусы,
+// подписи), поэтому «ru-рендер != en-рендер» был бы зелёным и до правки —
+// когда длительность ещё собиралась строками "h "/"m" без каталога вообще.
+// Ищем конкретно форму, которую для 2*time.Hour отдаёт humanize.Duration:
+// «2 часа» по-русски (unit.hours, форма few) и «2 hours» по-английски
+// (unit.hours, форма other) — и проверяем, что в каждой локали нет формы
+// чужого языка.
+func TestStatusPageIncidentDurationLocalised(t *testing.T) {
+	v := StatusPageView{
+		Title: "Acme Status", Description: "d", Overall: "operational",
+		Incidents: []StatusIncidentView{{Name: "API", StartedAt: "2026-07-20 10:00", Duration: 2 * time.Hour}},
+	}
+	ruCtx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	enCtx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+
+	var ruBuf, enBuf strings.Builder
+	if err := PublicStatusPage(v).Render(ruCtx, &ruBuf); err != nil {
+		t.Fatalf("render ru: %v", err)
+	}
+	if err := PublicStatusPage(v).Render(enCtx, &enBuf); err != nil {
+		t.Fatalf("render en: %v", err)
+	}
+	ru, en := ruBuf.String(), enBuf.String()
+
+	const ruWant, enWant = "2 часа", "2 hours"
+	if !strings.Contains(ru, ruWant) {
+		t.Errorf("ru-рендер не содержит %q (длительность не локализована): %s", ruWant, ru)
+	}
+	if strings.Contains(ru, enWant) {
+		t.Errorf("ru-рендер содержит английскую форму %q", enWant)
+	}
+	if !strings.Contains(en, enWant) {
+		t.Errorf("en-рендер не содержит %q (длительность не локализована): %s", enWant, en)
+	}
+	if strings.Contains(en, ruWant) {
+		t.Errorf("en-рендер содержит русскую форму %q", ruWant)
 	}
 }
 

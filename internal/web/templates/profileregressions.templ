@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
@@ -45,11 +46,16 @@ func profileRegIncreasePct(r profile.Regression) string {
 	return sign + strconv.FormatInt(rounded, 10) + "%"
 }
 
+// profileRegDuration — «ongoing» для открытой регрессии, иначе
+// человекочитаемая длительность между started_at и resolved_at.
+//
+// Раньше здесь стоял time.Duration.String() — та же находка №62, что и в
+// regressionDurationText (regressions.templ): «23m0s» вместо «23 минуты».
 func profileRegDuration(ctx context.Context, r profile.Regression) string {
 	if r.ResolvedAt == nil {
 		return i18n.T(ctx, "perf.regressions.ongoing")
 	}
-	return r.ResolvedAt.Sub(r.StartedAt).String()
+	return humanize.Duration(ctx, r.ResolvedAt.Sub(r.StartedAt))
 }
 
 func profileRegServiceType(r profile.Regression) string {
@@ -98,7 +104,7 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 									<td class="num">{ profileRegIncreasePct(reg) }</td>
 									<td class="num">{ profileRegRange(reg) }</td>
 									<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
-									<td>{ ago(ctx, reg.StartedAt) }</td>
+									<td>@relativeTime(reg.StartedAt)</td>
 									<td class="num">{ profileRegDuration(ctx, reg) }</td>
 								</tr>
 							}

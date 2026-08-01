@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
@@ -594,7 +595,7 @@ templ pendingInvites(orgID int64, invites []org.PendingInvite) {
 							<tr>
 								<td>{ inv.Email }</td>
 								<td>{ i18n.T(ctx, memberRoleLabelKey(inv.Role)) }</td>
-								<td>{ FormatTime(inv.ExpiresAt, time.UTC) }</td>
+								<td>{ humanize.Time(ctx, inv.ExpiresAt, time.UTC) }</td>
 								<td>
 									<form method="post" action={ templ.URL(orgSettingsInviteRevokePath(orgID)) }>
 										<input type="hidden" name="invite_id" value={ strconv.FormatInt(inv.ID, 10) }/>

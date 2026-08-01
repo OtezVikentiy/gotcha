@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -59,8 +60,8 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 	}
 
 	url := fmt.Sprintf("%s/projects/%d/regressions", n.BaseURL, ev.ProjectID)
-	subject := regressionSubject(ev)
-	body := regressionBody(ev, url)
+	subject := regressionSubject(ctx, ev)
+	body := regressionBody(ctx, ev, url)
 
 	var errs error
 	for _, ch := range channels {
@@ -107,7 +108,12 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 }
 
 // regressionSubject строит тему уведомления по виду события.
-func regressionSubject(ev RegressionEvent) string {
+//
+// ctx нужен только для humanize.MetricValue (единая точка форматирования
+// значений метрик, см. internal/humanize) — сам текст темы не переведён по
+// ctx и остаётся на русском: перевод сообщений уведомлений ведёт другой
+// подпроект, эта задача переносит только форматирование величины.
+func regressionSubject(ctx context.Context, ev RegressionEvent) string {
 	switch ev.Kind {
 	case "regression_close":
 		return fmt.Sprintf("[Gotcha] Регрессия устранена: %s %s (%s)",
@@ -115,15 +121,15 @@ func regressionSubject(ev RegressionEvent) string {
 	default: // regression_open
 		return fmt.Sprintf("[Gotcha] Регрессия: %s %s +%s%% (%s → %s)",
 			ev.Target, ev.Metric, formatPct(ev.PctIncrease),
-			formatMetric(ev.Metric, ev.BaselineValue), formatMetric(ev.Metric, ev.CurrentValue))
+			humanize.MetricValue(ctx, ev.Metric, ev.BaselineValue), humanize.MetricValue(ctx, ev.Metric, ev.CurrentValue))
 	}
 }
 
 // regressionBody строит человекочитаемый текст уведомления: цель, метрика,
 // база/текущее — плюс ссылка на список регрессий.
-func regressionBody(ev RegressionEvent, url string) string {
-	base := formatMetric(ev.Metric, ev.BaselineValue)
-	cur := formatMetric(ev.Metric, ev.CurrentValue)
+func regressionBody(ctx context.Context, ev RegressionEvent, url string) string {
+	base := humanize.MetricValue(ctx, ev.Metric, ev.BaselineValue)
+	cur := humanize.MetricValue(ctx, ev.Metric, ev.CurrentValue)
 	switch ev.Kind {
 	case "regression_close":
 		return fmt.Sprintf("Регрессия устранена: %s %s.\n\nБыло: %s\nСтало: %s\nДлительность: %s\n\n%s",
@@ -138,19 +144,6 @@ func regressionBody(ev RegressionEvent, url string) string {
 // 0.5 → "50", 1.5 → "150".
 func formatPct(ratio float64) string {
 	return fmt.Sprintf("%.0f", ratio*100)
-}
-
-// formatMetric отображает значение метрики человекочитаемо: cls — безразмерное
-// отношение (0.25), остальные (duration/lcp/inp/fcp/ttfb) — время в мс, а от
-// секунды и выше — в секундах (1200ms → "1.2s").
-func formatMetric(metric string, v float64) string {
-	if metric == "cls" {
-		return fmt.Sprintf("%.2f", v)
-	}
-	if v >= 1000 {
-		return fmt.Sprintf("%.1fs", v/1000)
-	}
-	return fmt.Sprintf("%.0fms", v)
 }
 
 // formatDuration отображает секунды в компактном человекочитаемом виде:

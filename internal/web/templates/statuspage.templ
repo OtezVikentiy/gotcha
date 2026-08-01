@@ -2,7 +2,9 @@ package templates
 
 import (
 	"context"
+	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -47,10 +49,15 @@ type StatusMonitorView struct {
 type StatusIncidentView struct {
 	Name      string
 	StartedAt string
-	// Duration — длительность закрытого инцидента; для незакрытого пусто, и
-	// шаблон подставляет локализованное «идёт» по Ongoing. Слово не кладётся
-	// в модель, потому что модель кеширована и общая для всех языков.
-	Duration string
+	// Duration — длительность закрытого инцидента (нулевая для незакрытого:
+	// шаблон подставляет локализованное «идёт» по Ongoing, само слово в
+	// модель не кладётся). Это time.Duration, а не готовая строка: вьюха
+	// кешируется одна на всех посетителей независимо от языка, а перевод
+	// числа в «2ч 30м»/«2h 30m» — дело рендера конкретного запроса, где
+	// локаль уже известна из контекста (humanize.Duration в шаблоне). Так
+	// кеш и локализация перестают быть размытыми — они просто про разные
+	// стадии: число собирается один раз, слова — при каждом показе.
+	Duration time.Duration
 	Ongoing  bool
 }
 
@@ -198,7 +205,7 @@ templ PublicStatusPage(v StatusPageView) {
 							if inc.Ongoing {
 								<td>{ i18n.T(ctx, "status.incident.ongoing") }</td>
 							} else {
-								<td>{ inc.Duration }</td>
+								<td>{ humanize.Duration(ctx, inc.Duration) }</td>
 							}
 						</tr>
 					}

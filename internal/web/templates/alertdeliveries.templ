@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -29,7 +30,7 @@ templ failedRow(f notify.FailedJob) {
 		<td><span class="badge badge-danger">{ i18n.T(ctx, "alerts.failed.status") }</span></td>
 		<td class="num">{ strconv.Itoa(f.Attempts) }</td>
 		<td>{ truncateFailedError(f.LastError) }</td>
-		<td>{ FormatTime(f.CreatedAt, time.UTC) }</td>
+		<td>{ humanize.Time(ctx, f.CreatedAt, time.UTC) }</td>
 	</tr>
 }
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -88,12 +89,18 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 
 	url := fmt.Sprintf("%s/projects/%d/issues", d.BaseURL, b.ProjectID)
 	subject := fmt.Sprintf("[gotcha] %d alerts suppressed", b.Suppressed)
+	// humanize.Time вместо голого .Format(time.RFC3339): получателю письма
+	// нужен человекочитаемый момент ("2026-07-31 18:00 UTC"), а не машинный
+	// "2026-07-31T18:00:00Z" — та же природа находки, что и остальной долг
+	// подпроекта единиц, просто в теле письма, а не на веб-странице. ctx уже
+	// доступен параметром send (используется ниже для Channels/Outbox), новый
+	// прокидывать не пришлось.
 	body := fmt.Sprintf(
 		"%d alerts were suppressed for this project because it hit its notification budget.\n\n"+
 			"Window started at %s.\n\n"+
 			"This usually means a flood of new issues — check whether something is generating\n"+
 			"a unique fingerprint per event.\n\n%s",
-		b.Suppressed, b.Since.UTC().Format(time.RFC3339), url)
+		b.Suppressed, humanize.Time(ctx, b.Since, time.UTC), url)
 
 	for _, ch := range channels {
 		if !ch.Deliverable() {

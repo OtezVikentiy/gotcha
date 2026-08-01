@@ -338,11 +338,18 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 			if inc.StartedAt.Before(from) {
 				continue
 			}
+			var dur time.Duration
+			if inc.ResolvedAt != nil {
+				dur = inc.ResolvedAt.Sub(inc.StartedAt)
+				if dur < 0 {
+					dur = 0 // resolved до started не бывает в норме, но не показываем отрицательное
+				}
+			}
 			incidents = append(incidents, datedIncident{
 				view: templates.StatusIncidentView{
 					Name:      spm.DisplayName,
 					StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout),
-					Duration:  incidentDurationText(inc),
+					Duration:  dur,
 					Ongoing:   inc.ResolvedAt == nil,
 				},
 				at: inc.StartedAt,
@@ -383,29 +390,6 @@ func overallStatus(down, counted int) string {
 	default:
 		return "partial"
 	}
-}
-
-// incidentDurationText — длительность закрытого инцидента. Для незакрытого
-// возвращает пустую строку: слово «идёт» локализовано и подставляется
-// шаблоном по флагу StatusIncidentView.Ongoing, потому что вьюха кешируется
-// одна на всех посетителей независимо от их языка. Причина и регионы
-// инцидента наружу не отдаются (в них хосты/IP), только имя сервиса, начало
-// и длительность.
-func incidentDurationText(inc uptime.Incident) string {
-	if inc.ResolvedAt == nil {
-		return "" // незакрытый инцидент: «идёт» подставляет шаблон, длительности нет
-	}
-	d := inc.ResolvedAt.Sub(inc.StartedAt)
-	if d < 0 {
-		d = 0
-	}
-	d = d.Round(time.Minute)
-	h := int(d / time.Hour)
-	m := int((d % time.Hour) / time.Minute)
-	if h > 0 {
-		return strconv.Itoa(h) + "h " + strconv.Itoa(m) + "m"
-	}
-	return strconv.Itoa(m) + "m"
 }
 
 // upcomingWindows — окна обслуживания, пересекающие [from,to): каждое окно

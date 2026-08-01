@@ -443,22 +443,24 @@ func TestRegressionIncreasePct(t *testing.T) {
 	}
 }
 
-// TestRegressionValueRange — диапазон «база → пик» с учётом метрики (cls особый).
+// TestRegressionValueRange — диапазон «база → пик» с учётом метрики (cls
+// особый). Форматирование самих значений делегировано humanize.MetricValue
+// (покрыт отдельно, на 100%, в internal/humanize) — здесь проверяется только
+// то, что regressionValueRange верно его вызывает и собирает диапазон.
 func TestRegressionValueRange(t *testing.T) {
+	ctx := context.Background()
 	r := trace.Regression{Metric: "cls", BaselineValue: 0.05, PeakValue: 0.30}
-	if got := regressionValueRange(r); got != "0.05 → 0.30" {
+	if got := regressionValueRange(ctx, r); got != "0.05 → 0.30" {
 		t.Errorf("cls range = %q", got)
 	}
-	// Значения длительности приходят из transactions_5m в МИКРОсекундах
-	// (dur строится из duration_us), поэтому 100 000 мкс — это 100 мс.
-	//
-	// Прежнее ожидание закрепляло дефект: оно требовало от 100 читаться как
-	// «100ms», то есть трактовало микросекунды как миллисекунды. На стенде это
-	// давало «640.00s → 1180.00s» вместо «640.0ms → 1.18s» — регрессия p95 до
-	// девятнадцати минут, правдоподобная ровно настолько, чтобы никто не
-	// проверил.
-	rd := trace.Regression{Metric: "duration", BaselineValue: 100_000, PeakValue: 2_500_000}
-	if got := regressionValueRange(rd); got != "100.0ms → 2.50s" {
+	// Значения длительности — уже в МИЛЛИСЕКУНДАХ: единственная точка
+	// конвертации из микросекунд, transactions_5m.msSample, отработала раньше
+	// (см. internal/trace, "задача 1" подпроекта единиц). Прежнее ожидание
+	// здесь трактовало baseline/peak как микросекунды и делило их ещё раз —
+	// такая двойная конвертация после задачи 1 занижала бы значения в тысячу
+	// раз.
+	rd := trace.Regression{Metric: "duration", BaselineValue: 100, PeakValue: 2500}
+	if got := regressionValueRange(ctx, rd); got != "100ms → 2.5s" {
 		t.Errorf("duration range = %q", got)
 	}
 }

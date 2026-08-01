@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
@@ -118,13 +119,13 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	// в UTC, а рядом подписывался пояс окна: «2026-07-31T00:00:00Z
 	// (Europe/Moscow)» — число одного пояса под именем другого. Соседняя
 	// функция этого же файла переводила время честно.
-	loc := LocationOrUTC(w.Timezone)
+	loc := humanize.LocationOrUTC(w.Timezone)
 	starts, ends := "?", "?"
 	if w.StartsAt != nil {
-		starts = FormatTime(*w.StartsAt, loc)
+		starts = humanize.Time(ctx, *w.StartsAt, loc)
 	}
 	if w.EndsAt != nil {
-		ends = FormatTime(*w.EndsAt, loc)
+		ends = humanize.Time(ctx, *w.EndsAt, loc)
 	}
 	return starts + " → " + ends
 }
