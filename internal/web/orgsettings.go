@@ -693,7 +693,7 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 			i18n.T(r.Context(), "error.org.invite_not_found"), "")
 		return
 	}
-	h.flashOK(w, "flash.invite.revoked", 0)
+	h.flashOK(w, "flash.invite_revoked", 0)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 

@@ -242,6 +242,26 @@ var bulkActionFlashKey = map[string]string{
 	"unresolve": "flash.issues_reopened",
 }
 
+// BulkActionFlashKeys — экспортированный набор значений bulkActionFlashKey,
+// для internal/guards: ключ здесь собирается не литералом в вызове flashOK
+// (issuesBulk передаёт bulkActionFlashKey[r.FormValue("action")]), поэтому
+// сканер по местам вызова (internal/guards/flash_test.go) его не видит.
+// Экспорт значений — тот же приём, каким TestDynamicKeysResolve
+// (internal/guards/i18n_dynamic_test.go) читает uptime.Kinds/org.Platforms:
+// множество значений знает только код-владелец, и правило обязано читать
+// его оттуда, а не копировать литералом в тест, где копия неизбежно
+// разойдётся с картой при следующей правке issuesBulk.
+//
+// Строится из bulkActionFlashKey, а не дублирует её литералы — единственный
+// источник истины остаётся один.
+var BulkActionFlashKeys = func() []string {
+	out := make([]string, 0, len(bulkActionFlashKey))
+	for _, key := range bulkActionFlashKey {
+		out = append(out, key)
+	}
+	return out
+}()
+
 // issuesBulk — POST /projects/{id}/issues/bulk: action=resolve|ignore|unresolve
 // + ids[] → SetStatusBulk → 303. Редирект идёт на Referer (сохраняет текущие
 // фильтры/страницу), если Referer same-origin, иначе на список issues без

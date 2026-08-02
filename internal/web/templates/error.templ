@@ -38,13 +38,29 @@ func errorBodyKey(status int) string {
 // ([код]), под ним заголовок и направляющий текст по статусу; для прочих
 // статусов заголовком служит переданный msg. status/msg приходят от
 // web.Handler.renderError / notFound.
+//
+// msg — это конкретная причина отказа («для этого email нет приглашения»,
+// «email не из домена организации», ...), а не короткий заголовок: для
+// известных статусов (403/404/500) заголовком остаётся шаблонный
+// errorTitleKey (категория — "нет доступа"), а msg, если он есть, заменяет
+// собой шаблонный errorBodyKey в пояснении под заголовком — так причина не
+// задваивает заголовок и не теряется. Раньше msg отбрасывался целиком, когда
+// у статуса был свой заголовок: восемь разных тупиков первого входа через
+// OAuth-провайдера (нет приглашения / чужой домен / email не подтверждён и
+// т.д.) печатали одинаковый общий текст по статусу 403, и было не понять, что
+// делать дальше. Без причины поведение не меняется — печатается шаблонный
+// errorBodyKey, страница остаётся осмысленной.
 templ ErrorPage(status int, msg string, userEmail string) {
 	@chromeless(strconv.Itoa(status), userEmail) {
 		<div class="error-page">
 			<div class="error-code">{ strconv.Itoa(status) }</div>
 			if errorTitleKey(status) != "" {
 				<h1 class="error-title">{ i18n.T(ctx, errorTitleKey(status)) }</h1>
-				<p class="error-body">{ i18n.T(ctx, errorBodyKey(status)) }</p>
+				if msg != "" {
+					<p class="error-body">{ msg }</p>
+				} else {
+					<p class="error-body">{ i18n.T(ctx, errorBodyKey(status)) }</p>
+				}
 			} else {
 				<h1 class="error-title">{ msg }</h1>
 			}

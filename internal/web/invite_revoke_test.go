@@ -71,6 +71,23 @@ func TestPendingInvitesVisibleAndRevocable(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("отзыв приглашения: статус %d, want 303", resp.StatusCode)
 	}
+	// Ключ flash-сообщения раньше жил как "flash.invite.revoked" — с точкой,
+	// в белом списке flashKeys не значился, и setFlash молча ничего не
+	// клал в cookie. Администратор не мог отличить «отозвано» от
+	// «форма не сработала». Теперь ключ "flash.invite_revoked" в списке
+	// есть, и cookie обязана появиться.
+	var flashCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "flash" {
+			flashCookie = c
+		}
+	}
+	if flashCookie == nil {
+		t.Fatal("отзыв приглашения не поставил flash-cookie — сообщение об успехе потеряно")
+	}
+	if v, err := url.QueryUnescape(flashCookie.Value); err != nil || !strings.Contains(v, "flash.invite_revoked") {
+		t.Errorf("flash-cookie не несёт ключ flash.invite_revoked: %q (err=%v)", flashCookie.Value, err)
+	}
 	left, err := orgSvc.PendingInvites(context.Background(), o.ID)
 	if err != nil {
 		t.Fatalf("PendingInvites: %v", err)

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,7 +24,6 @@ const flashCookie = "flash"
 // нет, отбрасывается: значение cookie полностью подконтрольно клиенту.
 var flashKeys = map[string]bool{
 	"flash.saved":            true,
-	"flash.created":          true,
 	"flash.deleted":          true,
 	"flash.invite_sent":      true,
 	"flash.issues_resolved":  true,
@@ -33,16 +33,23 @@ var flashKeys = map[string]bool{
 	"flash.channel_created":  true,
 	"flash.channel_updated":  true,
 	"flash.rules_saved":      true,
-	"flash.member_removed":   true,
-	"flash.probe_revoked":    true,
 	"flash.subject_purged":   true,
+	"flash.invite_revoked":   true,
 }
 
 // setFlash кладёт сообщение в cookie перед редиректом. Path=/ — сообщение может
 // показаться на любой странице, куда ведёт редирект. MaxAge короткий: если
 // показать не удалось (пользователь закрыл вкладку), оно не всплывёт через час.
+//
+// Ключ сюда приходит из кода, литералом — в отличие от parseFlash (строка 93),
+// которая разбирает значение, целиком подконтрольное клиенту, и потому обязана
+// отбрасывать подделку молча. Здесь молчание означало бы прятать опечатку или
+// забытый в списке ключ: сообщение просто не появится, и отличить это от
+// несработавшей формы будет нечем — ровно так годами жила находка про отзыв
+// приглашения (flash.invite.revoked не было в списке).
 func setFlash(w http.ResponseWriter, secure bool, kind, key string, n int) {
 	if !flashKeys[key] {
+		slog.Error("setFlash: ключ не найден в белом списке", "key", key)
 		return
 	}
 	v := kind + "|" + key

@@ -1,6 +1,8 @@
 package web
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,6 +135,16 @@ func TestFlashSkipsStatic(t *testing.T) {
 // TestFlashUnknownKeyNotSet — обработчик не может поставить сообщение, которого
 // нет в белом списке: опечатка в ключе не должна давать пустую плашку.
 func TestFlashUnknownKeyNotSet(t *testing.T) {
+	// Неизвестный ключ пишет error-лог (см. setFlash, задача 1) — это здесь не
+	// предмет проверки (её ведёт TestSetFlashUnknownKeyIsLoud), поэтому лог
+	// перехватывается, а не летит в реальный вывод прогона: без перехвата
+	// строка ERROR попадала бы в вывод go test и выглядела бы как настоящий
+	// сбой, хотя тест и так зелёный.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	rec := httptest.NewRecorder()
 	(&Handler{}).flashOK(rec, "flash.typo", 0)
 	if n := len(rec.Result().Cookies()); n != 0 {
@@ -140,5 +152,29 @@ func TestFlashUnknownKeyNotSet(t *testing.T) {
 	}
 	if strings.Contains(rec.Header().Get("Set-Cookie"), flashCookie) {
 		t.Error("неизвестный ключ не должен ставить cookie")
+	}
+}
+
+// TestSetFlashUnknownKeyIsLoud: ключ приходит в setFlash из кода, литералом.
+// Тихий возврат при отсутствии в списке защищает не от клиента (для этого есть
+// проверка в parseFlash на пути чтения cookie), а прячет ошибку программиста:
+// забытый ключ даёт молчание вместо сообщения, и администратор не отличает
+// «отозвано» от «форма не сработала» — ровно так и жила находка про отзыв
+// приглашения.
+func TestSetFlashUnknownKeyIsLoud(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	rec := httptest.NewRecorder()
+	(&Handler{}).flashOK(rec, "flash.definitely_not_in_the_list", 0)
+
+	if buf.Len() == 0 {
+		t.Fatal("неизвестный ключ прошёл молча: забытый в списке ключ никак " +
+			"не отличить от несработавшей формы")
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatal("неизвестный ключ всё-таки уехал в cookie")
 	}
 }
