@@ -283,6 +283,39 @@ func userTableNames(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []str
 	return out
 }
 
+// tableExistsIn/columnExistsIn — единая точка правды «есть ли таблица/колонка
+// с таким именем в ЭТОЙ схеме», схема — параметр, а не литерал. Раунд правок
+// 2 (находка ревью на задачу №115): тринадцать мест этого файла держали
+// фильтр по table_schema каждое своей собственной копией запроса — исчезни
+// фильтр из одной копии при будущей правке, ни доказательный тест (у него
+// своя изолированная база без конфликта имён), ни сам пострадавший тест
+// этого бы не заметил, потому что оба видят только СВОЙ экземпляр запроса.
+// Хелпер даёт всем тринадцати местам ОДНУ реализацию — а значит и одну точку,
+// которую способен проверить мутацией доказательный тест
+// (TestInformationSchemaTableCheckIgnoresOtherSchemas ниже).
+//
+// Возвращают (bool, error), а не паникуют/фатализируют сами: вызывающие тесты
+// расходятся в строгости — часть падает Fatalf-ом на первой пропавшей
+// таблице, часть копит Errorf по всем сразу в цикле, — и это решение теста,
+// не хелпера; учитывая любую степень строгости здесь означало бы либо менять
+// поведение мест, которые ничего не просили менять, либо тащить в хелпер
+// параметр «насколько падать», что хуже простого возврата ошибки.
+func tableExistsIn(ctx context.Context, pool *pgxpool.Pool, schema, table string) (bool, error) {
+	var n int
+	err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
+		schema, table).Scan(&n)
+	return n == 1, err
+}
+
+func columnExistsIn(ctx context.Context, pool *pgxpool.Pool, schema, table, column string) (bool, error) {
+	var n int
+	err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+		schema, table, column).Scan(&n)
+	return n == 1, err
+}
+
 func TestMigrateCHUpDownUp(t *testing.T) {
 	dsn := testenv.ClickHouseDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -464,11 +497,9 @@ func TestPerformanceSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var n int
-	err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM information_schema.tables WHERE table_name = 'perf_issues'").Scan(&n)
-	if err != nil || n != 1 {
-		t.Fatalf("table perf_issues: n=%d err=%v", n, err)
+	ok, err := tableExistsIn(ctx, pool, "public", "perf_issues")
+	if err != nil || !ok {
+		t.Fatalf("table perf_issues: exists=%v err=%v", ok, err)
 	}
 
 	cols := map[string][]string{
@@ -484,12 +515,9 @@ func TestPerformanceSchema(t *testing.T) {
 	}
 	for table, names := range cols {
 		for _, col := range names {
-			var c int
-			err := pool.QueryRow(ctx,
-				`SELECT count(*) FROM information_schema.columns
-				 WHERE table_name = $1 AND column_name = $2`, table, col).Scan(&c)
-			if err != nil || c != 1 {
-				t.Errorf("column %s.%s: n=%d err=%v", table, col, c, err)
+			ok, err := columnExistsIn(ctx, pool, "public", table, col)
+			if err != nil || !ok {
+				t.Errorf("column %s.%s: exists=%v err=%v", table, col, ok, err)
 			}
 		}
 	}
@@ -545,6 +573,7 @@ func TestPerformanceSchema(t *testing.T) {
 	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
+	var n int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM perf_issues WHERE project_id = $1", projID).Scan(&n); err != nil {
 		t.Fatalf("count perf_issues: %v", err)
@@ -576,11 +605,9 @@ func TestRegressionSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var n int
-	err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM information_schema.tables WHERE table_name = 'perf_regressions'").Scan(&n)
-	if err != nil || n != 1 {
-		t.Fatalf("table perf_regressions: n=%d err=%v", n, err)
+	ok, err := tableExistsIn(ctx, pool, "public", "perf_regressions")
+	if err != nil || !ok {
+		t.Fatalf("table perf_regressions: exists=%v err=%v", ok, err)
 	}
 
 	cols := map[string][]string{
@@ -593,12 +620,9 @@ func TestRegressionSchema(t *testing.T) {
 	}
 	for table, names := range cols {
 		for _, col := range names {
-			var c int
-			err := pool.QueryRow(ctx,
-				`SELECT count(*) FROM information_schema.columns
-				 WHERE table_name = $1 AND column_name = $2`, table, col).Scan(&c)
-			if err != nil || c != 1 {
-				t.Errorf("column %s.%s: n=%d err=%v", table, col, c, err)
+			ok, err := columnExistsIn(ctx, pool, "public", table, col)
+			if err != nil || !ok {
+				t.Errorf("column %s.%s: exists=%v err=%v", table, col, ok, err)
 			}
 		}
 	}
@@ -666,6 +690,7 @@ func TestRegressionSchema(t *testing.T) {
 	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
+	var n int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM perf_regressions WHERE project_id = $1", projID).Scan(&n); err != nil {
 		t.Fatalf("count perf_regressions: %v", err)
@@ -684,11 +709,9 @@ func TestTenancySchema(t *testing.T) {
 		"users", "sessions", "organizations", "org_members", "org_invites",
 		"teams", "team_members", "projects", "project_teams", "project_keys",
 	} {
-		var n int
-		err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM information_schema.tables WHERE table_name = $1", table).Scan(&n)
-		if err != nil || n != 1 {
-			t.Errorf("table %s: n=%d err=%v", table, n, err)
+		ok, err := tableExistsIn(ctx, pool, "public", table)
+		if err != nil || !ok {
+			t.Errorf("table %s: exists=%v err=%v", table, ok, err)
 		}
 	}
 	// citext-уникальность email регистронезависима.
@@ -709,11 +732,9 @@ func TestUptimeSchema(t *testing.T) {
 		"probes", "check_queue", "incidents", "maintenance_windows",
 		"status_pages", "status_page_monitors",
 	} {
-		var n int
-		err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM information_schema.tables WHERE table_name = $1", table).Scan(&n)
-		if err != nil || n != 1 {
-			t.Errorf("table %s: n=%d err=%v", table, n, err)
+		ok, err := tableExistsIn(ctx, pool, "public", table)
+		if err != nil || !ok {
+			t.Errorf("table %s: exists=%v err=%v", table, ok, err)
 		}
 	}
 	// kind CHECK на monitors отвергает произвольные значения.
@@ -733,11 +754,9 @@ func TestAlertsSchema(t *testing.T) {
 		"alert_rules", "alert_channels", "notification_outbox",
 		"alert_throttle", "org_usage",
 	} {
-		var n int
-		err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM information_schema.tables WHERE table_name = $1", table).Scan(&n)
-		if err != nil || n != 1 {
-			t.Errorf("table %s: n=%d err=%v", table, n, err)
+		ok, err := tableExistsIn(ctx, pool, "public", table)
+		if err != nil || !ok {
+			t.Errorf("table %s: exists=%v err=%v", table, ok, err)
 		}
 	}
 	// kind CHECK на alert_rules отвергает произвольные значения.
@@ -759,7 +778,7 @@ func TestMigrate0012OAuthIdentities(t *testing.T) {
 	var isNullable string
 	if err := pool.QueryRow(ctx, `
 		SELECT is_nullable FROM information_schema.columns
-		WHERE table_name = 'users' AND column_name = 'password_hash'`).Scan(&isNullable); err != nil {
+		WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'password_hash'`).Scan(&isNullable); err != nil {
 		t.Fatalf("query column: %v", err)
 	}
 	if isNullable != "YES" {
@@ -789,16 +808,12 @@ func TestMigrateMetricSchemaPG(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
-	var col string
-	if err := pool.QueryRow(ctx, `SELECT column_name FROM information_schema.columns
-		WHERE table_name='org_usage' AND column_name='metrics_count'`).Scan(&col); err != nil {
-		t.Fatalf("metrics_count column: %v", err)
+	if ok, err := columnExistsIn(ctx, pool, "public", "org_usage", "metrics_count"); err != nil || !ok {
+		t.Fatalf("metrics_count column: exists=%v err=%v", ok, err)
 	}
 	for _, tbl := range []string{"metric_alert_rules", "metric_incidents"} {
-		var n int
-		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM information_schema.tables WHERE table_name=$1", tbl).Scan(&n); err != nil || n != 1 {
-			t.Fatalf("table %s: n=%d err=%v", tbl, n, err)
+		if ok, err := tableExistsIn(ctx, pool, "public", tbl); err != nil || !ok {
+			t.Fatalf("table %s: exists=%v err=%v", tbl, ok, err)
 		}
 	}
 	// CHECK на aggregation отвергает мусор.
@@ -837,10 +852,8 @@ func TestMigrateProfileSamples(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
-	var col string
-	if err := pool.QueryRow(ctx, `SELECT column_name FROM information_schema.columns
-		WHERE table_name='org_usage' AND column_name='profiles_count'`).Scan(&col); err != nil {
-		t.Fatalf("profiles_count column: %v", err)
+	if ok, err := columnExistsIn(ctx, pool, "public", "org_usage", "profiles_count"); err != nil || !ok {
+		t.Fatalf("profiles_count column: exists=%v err=%v", ok, err)
 	}
 	conn := testenv.MigratedCH(t)
 	if err := conn.Exec(ctx,
@@ -881,10 +894,8 @@ func TestMigrateProfileRegressions(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
-	var n int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM information_schema.tables WHERE table_name='profile_regressions'").Scan(&n); err != nil || n != 1 {
-		t.Fatalf("table missing: n=%d err=%v", n, err)
+	if ok, err := tableExistsIn(ctx, pool, "public", "profile_regressions"); err != nil || !ok {
+		t.Fatalf("table missing: exists=%v err=%v", ok, err)
 	}
 	// Нужен проект для FK.
 	var uid, orgID, projID int64
@@ -937,10 +948,8 @@ func TestMigrateOrgSSO(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
-	var n int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM information_schema.tables WHERE table_name='org_sso'").Scan(&n); err != nil || n != 1 {
-		t.Fatalf("org_sso missing: n=%d err=%v", n, err)
+	if ok, err := tableExistsIn(ctx, pool, "public", "org_sso"); err != nil || !ok {
+		t.Fatalf("org_sso missing: exists=%v err=%v", ok, err)
 	}
 	mkOrg := func(slug string) int64 {
 		var uid, orgID int64
@@ -961,6 +970,82 @@ func TestMigrateOrgSSO(t *testing.T) {
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO org_sso (org_id,issuer,client_id,client_secret,domain,default_role) VALUES ($1,'https://i','c','s','x.com','owner')", o2); err == nil {
 		t.Fatal("want default_role CHECK violation")
+	}
+}
+
+// TestInformationSchemaTableCheckIgnoresOtherSchemas — находка №115: все
+// "таблица создана"/"колонка есть"-проверки в этом файле шли через
+// information_schema.tables и information_schema.columns БЕЗ фильтра по
+// table_schema, поэтому одноимённая таблица (и её колонки) в чужой схеме
+// считались бы наравне с настоящей, и проверка могла пройти по подделке, а
+// не по продуктовой таблице.
+//
+// Раунд правок 2 (см. task-10-report.md): все тринадцать мест переведены на
+// общие tableExistsIn/columnExistsIn (см. их докблок выше), и этот тест
+// теперь бьёт НЕ по копии запроса внутри себя, а по самим хелперам — иначе
+// он доказывал бы, что приём в принципе работает, но не охранял бы ни одно
+// из тринадцати мест, которые от него зависят.
+//
+// Запрос с фильтром и без него на ЧИСТОЙ базе дают ОДИНАКОВЫЙ результат —
+// обычный прогон остальных тестов файла правку не проверяет вообще, нужен
+// сценарий с реальным конфликтом имён. Схема decoy заводит ДВЕ асимметричные
+// подсадные цели:
+//   - ghost_table — имени с таким названием в public нет вовсе, только в
+//     decoy. Если бы tableExistsIn не фильтровал по схеме, запрос про
+//     public.ghost_table всё равно нашёл бы decoy.ghost_table и ошибочно
+//     подтвердил бы её существование в public.
+//   - org_sso с колонкой decoy_marker — совпадает по ИМЕНИ ТАБЛИЦЫ с
+//     настоящей public.org_sso (ровно тот сценарий, который находка №115
+//     называет реальным риском), но decoy_marker у настоящей таблицы
+//     заведомо нет (сверено по 0016_org_sso.up.sql:
+//     org_id/issuer/client_id/client_secret/domain/default_role/enforced/
+//     created_at) — так разница между «нашли у настоящей» и «нашли у чужой»
+//     видна однозначно, а не по случайному совпадению имён колонок.
+func TestInformationSchemaTableCheckIgnoresOtherSchemas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "CREATE SCHEMA decoy"); err != nil {
+		t.Fatalf("create schema decoy: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "CREATE TABLE decoy.ghost_table (id int)"); err != nil {
+		t.Fatalf("create decoy.ghost_table: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "CREATE TABLE decoy.org_sso (id int, decoy_marker text)"); err != nil {
+		t.Fatalf("create decoy.org_sso: %v", err)
+	}
+
+	// (1) tableExistsIn: подготовка сценария — ghost_table действительно
+	// существует, просто не в public.
+	if ok, err := tableExistsIn(ctx, pool, "decoy", "ghost_table"); err != nil || !ok {
+		t.Fatalf("подготовка сценария сломана: decoy.ghost_table не найден хелпером (exists=%v err=%v) — сценарий не воспроизводит находку №115", ok, err)
+	}
+	// Сама проверка: запрос про public.ghost_table обязан вернуть false —
+	// таблица есть в базе, но не в этой схеме. Если бы фильтр не работал,
+	// хелпер нашёл бы её через decoy и ошибочно ответил true.
+	if ok, err := tableExistsIn(ctx, pool, "public", "ghost_table"); err != nil || ok {
+		t.Fatalf("tableExistsIn не фильтрует по схеме: public.ghost_table сообщена найденной (exists=%v err=%v), хотя такая таблица есть только в decoy", ok, err)
+	}
+	// И настоящая public.org_sso по-прежнему находится, несмотря на
+	// одноимённую decoy.org_sso рядом.
+	if ok, err := tableExistsIn(ctx, pool, "public", "org_sso"); err != nil || !ok {
+		t.Fatalf("tableExistsIn потерял настоящую public.org_sso: exists=%v err=%v", ok, err)
+	}
+
+	// (2) columnExistsIn: подготовка сценария — decoy_marker есть у
+	// decoy.org_sso.
+	if ok, err := columnExistsIn(ctx, pool, "decoy", "org_sso", "decoy_marker"); err != nil || !ok {
+		t.Fatalf("подготовка сценария сломана: decoy.org_sso.decoy_marker не найдена хелпером (exists=%v err=%v)", ok, err)
+	}
+	// Сама проверка: у настоящей public.org_sso decoy_marker быть не должно.
+	// Если бы фильтр не работал, хелпер нашёл бы её через decoy.org_sso и
+	// ошибочно подтвердил бы существование поля, которого в реальной
+	// таблице нет.
+	if ok, err := columnExistsIn(ctx, pool, "public", "org_sso", "decoy_marker"); err != nil || ok {
+		t.Fatalf("columnExistsIn не фильтрует по схеме: public.org_sso.decoy_marker сообщена найденной (exists=%v err=%v), хотя у настоящей таблицы такой колонки нет", ok, err)
 	}
 }
 
