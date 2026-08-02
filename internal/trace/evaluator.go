@@ -24,6 +24,21 @@ const (
 // «плохо пользователю», и они добавили бы шумных целей без ценности алерта.
 var evaluatorVitalMetrics = []string{"lcp", "inp", "cls"}
 
+// RegressionStore — минимум интерфейса RegressionService, нужный Evaluator.
+// Не *RegressionService напрямую (как раньше): находка №43 потребовала теста,
+// считающего запросы к PostgreSQL за тик — то же, зачем SpanWriter зависит от
+// CHConn, а не от конкретного клиента ClickHouse (см. writer.go). Тест
+// подставляет считающую обёртку (countingRegressions, evaluator_test.go) —
+// поднимать ради подсчёта настоящую PostgreSQL с трассировкой запросов было
+// бы тяжелее и хрупче.
+type RegressionStore interface {
+	OpenForProject(ctx context.Context, projectID int64) (map[RegressionKey]Regression, error)
+	Open(ctx context.Context, projectID int64, targetKind, target, metric string, base, current float64) (Regression, bool, error)
+	Bump(ctx context.Context, id int64, current float64) error
+	Resolve(ctx context.Context, id int64, current float64) (bool, error)
+	MarkNotified(ctx context.Context, id int64, open bool) error
+}
+
 // Evaluator — периодический оценщик регрессий производительности (план 4, §8).
 // Каждый тик обходит топ-K нагруженных целей каждого проекта, сравнивает свежее
 // окно со скользящей базой через чистую Decide и открывает/закрывает инциденты
@@ -39,7 +54,7 @@ var evaluatorVitalMetrics = []string{"lcp", "inp", "cls"}
 type Evaluator struct {
 	Pool        *pgxpool.Pool       // конфиг и список проектов
 	Query       *Query              // агрегаты производительности из CH
-	Regressions *RegressionService  // инциденты в perf_regressions (PG)
+	Regressions RegressionStore     // инциденты в perf_regressions (PG); *RegressionService в проде
 	Notifier    *RegressionNotifier // nil → только инциденты, без алертов
 
 	Interval     time.Duration // период тика, дефолт 5 минут
@@ -136,6 +151,19 @@ func (e *Evaluator) listProjects(ctx context.Context) ([]projectConfig, error) {
 func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg RegressionConfig, topK, baselineDays int, now time.Time) {
 	recentFrom := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 
+	// Снимок открытых регрессий проекта — один запрос в PG на весь проход по
+	// проекту вместо одного на каждую цель (находка №43, см. докблок
+	// RegressionStore.OpenForProject). Идемпотентность снимка в пределах
+	// этого тика объяснена в докблоке evalTarget — коротко: цели этого прохода
+	// не пересекаются, поэтому ничто из обработанного НИЖЕ по этому же снимку
+	// не может сделать его устаревшим ДО того, как до этой же цели дойдёт
+	// очередь (а до неё дойдёт ровно один раз).
+	openRegs, err := e.Regressions.OpenForProject(ctx, projectID)
+	if err != nil {
+		slog.Error("trace: evaluator: open regressions for project failed", "project_id", projectID, "error", err)
+		return
+	}
+
 	// По два запроса на вид целей вместо двух на КАЖДУЮ цель. При топ-20
 	// эндпойнтов и трёх web-vital'ах прежний тик стоил больше двух сотен
 	// последовательных обращений к ClickHouse на один проект — и так по всем
@@ -164,7 +192,8 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 				if !ok {
 					continue
 				}
-				e.evalTarget(ctx, projectID, "endpoint_p95", target, metricDuration, bases[target], recent, cfg, now)
+				open, hasOpen := openRegs[RegressionKey{Target: target, Metric: metricDuration}]
+				e.evalTarget(ctx, projectID, "endpoint_p95", target, metricDuration, bases[target], recent, cfg, now, open, hasOpen)
 			}
 		}
 	}
@@ -193,7 +222,8 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 			if !ok {
 				continue
 			}
-			e.evalTarget(ctx, projectID, "webvital_p75", target, metric, vitalBases[key], recent, cfg, now)
+			open, hasOpen := openRegs[RegressionKey{Target: target, Metric: metric}]
+			e.evalTarget(ctx, projectID, "webvital_p75", target, metric, vitalBases[key], recent, cfg, now, open, hasOpen)
 		}
 	}
 }
@@ -203,13 +233,26 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 // закрытие. Идемпотентность открытия держится на частичном уникальном индексе
 // perf_regressions (created=true отдаёт ровно один процесс — он один и шлёт
 // алерт), закрытия — на атомарном Resolve (closed=true отдаёт ровно один).
-func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind, target, metric string, base, recent RegressionSample, cfg RegressionConfig, now time.Time) {
-	open, hasOpen, err := e.Regressions.OpenFor(ctx, projectID, target, metric)
-	if err != nil {
-		slog.Error("trace: evaluator: open-for failed", "project_id", projectID, "target", target, "metric", metric, "error", err)
-		return
-	}
-
+//
+// open/hasOpen приходят СНАРУЖИ (evalProject читает их одним пакетным
+// OpenForProject до цикла по целям, находка №43), а не запрашиваются здесь.
+// Снимок берётся один раз на проект и не устаревает в пределах одного тика:
+// evalProject вызывает evalTarget не больше одного раза на каждую пару
+// (target, metric) за проход (endpoints и pages — списки без повторов,
+// evaluatorVitalMetrics обходится один раз на страницу), а пишет каждый вызов
+// только в СВОЮ строку (Bump/Resolve всегда по open.ID именно ЭТОЙ пары) —
+// поэтому ни один вызов evalTarget в рамках одного evalProject не может
+// сделать снимок ДРУГОЙ, ещё не обработанной пары устаревшим. Событие,
+// которое сделало бы снимок устаревшим по-настоящему (конкурентная реплика
+// оценщика или ручное действие в UI между чтением снимка и записью решения),
+// не опаснее, чем было при поштучном чтении: Open по-прежнему бьётся в
+// ON CONFLICT DO NOTHING (проигравший просто не создаёт дубль и не шлёт
+// второй алерт), а Resolve — в WHERE status='open' (закрыть уже закрытое
+// само по себе безопасный no-op, closed=false). Расширение окна гонки с
+// «непосредственно перед решением» до «на весь проход по проекту» не меняет
+// того, что в итоге пишется в базу — обе операции сами проверяют актуальность
+// при записи, а не полагаются на свежесть прочитанного.
+func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind, target, metric string, base, recent RegressionSample, cfg RegressionConfig, now time.Time, open Regression, hasOpen bool) {
 	switch Decide(base, recent, cfg, metric, hasOpen).Kind {
 	case DecisionOpen:
 		rec, created, err := e.Regressions.Open(ctx, projectID, targetKind, target, metric, base.Value, recent.Value)

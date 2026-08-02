@@ -236,6 +236,64 @@ func (q *Query) UptimeBatch(ctx context.Context, monitorIDs []int64, from, to ti
 	return out, nil
 }
 
+// UptimeExcludingBatch — то же, что Uptime, но для набора monitorIDs одним
+// запросом, с теми же исключающими интервалами exclude для ВСЕХ мониторов
+// набора сразу (публичная статус-страница строит exclude один раз из окон
+// обслуживания проекта страницы — оно общее для всех её мониторов, в
+// отличие от per-монитора разных окон). Это самый тяжёлый из трёх поштучных
+// запросов, которые страница ещё делала в цикле по мониторам (агрегат по
+// всем проверкам за окно, а не по корзинам, как в BarsBatch) — на сорока
+// мониторах и девяностодневном окне он один упирался в таймаут сборки
+// страницы чаще остальных.
+//
+// В отличие от UptimeBatch (см. её комментарий) — та НЕ учитывает окна
+// обслуживания намеренно, для «сырого» аптайма списка мониторов за короткое
+// окно. Здесь ровно наоборот: без exclude 90-дневный аптайм на публичной
+// странице занижался бы плановым обслуживанием, которое не должно считаться
+// downtime.
+//
+// Мониторы без единой проверки в окне присутствуют в результате с
+// UptimeStat{0, 0}, как и в UptimeBatch.
+func (q *Query) UptimeExcludingBatch(ctx context.Context, monitorIDs []int64, from, to time.Time, exclude []Interval) (map[int64]UptimeStat, error) {
+	out := make(map[int64]UptimeStat, len(monitorIDs))
+	if len(monitorIDs) == 0 {
+		return out, nil
+	}
+	for _, id := range monitorIDs {
+		out[id] = UptimeStat{}
+	}
+	ids := make([]uint64, len(monitorIDs))
+	for i, id := range monitorIDs {
+		ids[i] = uint64(id)
+	}
+
+	query := `SELECT monitor_id, count(), sum(ok) FROM check_results WHERE monitor_id IN (?) AND timestamp >= ? AND timestamp < ?`
+	args := []any{ids, from, to}
+	for _, iv := range exclude {
+		query += ` AND NOT (timestamp >= ? AND timestamp < ?)`
+		args = append(args, iv.From, iv.To)
+	}
+	query += ` GROUP BY monitor_id`
+
+	rows, err := q.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: uptime excluding batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uint64
+		var total, ok uint64
+		if err := rows.Scan(&id, &total, &ok); err != nil {
+			return nil, fmt.Errorf("uptime: uptime excluding batch: scan: %w", err)
+		}
+		out[int64(id)] = UptimeStat{Total: total, OK: ok}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: uptime excluding batch: %w", err)
+	}
+	return out, nil
+}
+
 // LatencyBatch — то же, что Latency, но сразу для набора мониторов одним
 // запросом (GROUP BY monitor_id, bucket), с той же сеткой заливки на монитор.
 // Списочная страница мониторов иначе звала Latency() в цикле. Каждый монитор в

@@ -291,6 +291,87 @@ func TestListByProjectOrderedByName(t *testing.T) {
 	}
 }
 
+// TestGetBatchMatchesGetAndFillsMissing: GetBatch обязан отдавать те же
+// данные, что и Get по одному (кроме ChannelIDs — она умышленно не
+// заполняется, см. докблок GetBatch, как и у List), и заполнять карту для
+// ВСЕХ запрошенных id, включая несуществующий — нулевым Monitor{ID: id}, а
+// не отсутствием ключа.
+func TestGetBatchMatchesGetAndFillsMissing(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	chID := newChannel(t, pool, pid)
+
+	m1 := baseHTTPMonitor(pid)
+	m1.Name = "One"
+	m1.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/1"})
+	c1, err := svc.Create(ctx, m1, []string{"local"}, []int64{chID})
+	if err != nil {
+		t.Fatalf("create m1: %v", err)
+	}
+
+	m2 := baseHTTPMonitor(pid)
+	m2.Name = "Two"
+	m2.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/2"})
+	c2, err := svc.Create(ctx, m2, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create m2: %v", err)
+	}
+
+	const missingID = int64(999999)
+	got, err := svc.GetBatch(ctx, []int64{c1.ID, c2.ID, missingID})
+	if err != nil {
+		t.Fatalf("GetBatch: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3 (карта заполнена для всех запрошенных id)", len(got))
+	}
+
+	for _, id := range []int64{c1.ID, c2.ID} {
+		single, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%d): %v", id, err)
+		}
+		batch := got[id]
+		// ChannelIDs — единственное сознательное расхождение с Get (см.
+		// докблок GetBatch), поэтому сравниваем поля отдельно, а не всю
+		// структуру reflect.DeepEqual.
+		if batch.ID != single.ID || batch.ProjectID != single.ProjectID || batch.Name != single.Name ||
+			batch.Kind != single.Kind || batch.Enabled != single.Enabled || batch.Consensus != single.Consensus {
+			t.Errorf("GetBatch[%d] расходится с Get(%d): batch=%+v single=%+v", id, id, batch, single)
+		}
+		sort.Strings(batch.Regions)
+		sort.Strings(single.Regions)
+		if len(batch.Regions) != len(single.Regions) {
+			t.Errorf("GetBatch[%d].Regions = %v, Get(%d).Regions = %v", id, batch.Regions, id, single.Regions)
+		} else {
+			for i := range batch.Regions {
+				if batch.Regions[i] != single.Regions[i] {
+					t.Errorf("GetBatch[%d].Regions = %v, Get(%d).Regions = %v", id, batch.Regions, id, single.Regions)
+					break
+				}
+			}
+		}
+		if batch.RegionCount != single.RegionCount {
+			t.Errorf("GetBatch[%d].RegionCount = %d, want %d", id, batch.RegionCount, single.RegionCount)
+		}
+		if batch.ChannelIDs != nil {
+			t.Errorf("GetBatch[%d].ChannelIDs = %v, want nil (не заполняется, как у List)", id, batch.ChannelIDs)
+		}
+	}
+
+	// Несуществующий id: нулевой Monitor с проставленным ID, ProjectID == 0
+	// — вызывающий отличает "не найден" от любого настоящего проекта, ID
+	// которого всегда положителен.
+	miss := got[missingID]
+	if miss.ID != missingID || miss.ProjectID != 0 {
+		t.Errorf("GetBatch[missing] = %+v, want {ID: %d, ProjectID: 0}", miss, missingID)
+	}
+}
+
 func TestUpdateReplacesFieldsRegionsAndChannels(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

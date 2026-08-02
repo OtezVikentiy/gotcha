@@ -335,6 +335,33 @@ func regionsOf(ctx context.Context, pool *pgxpool.Pool, monitorID int64) ([]stri
 	return out, rows.Err()
 }
 
+// regionsOfBatch — то же, что regionsOf, но для набора monitorIDs одним
+// запросом (ORDER BY monitor_id, region — порядок регионов внутри каждого
+// монитора тот же, что даёт regionsOf). Мониторы без регионов отсутствуют в
+// карте; GetBatch читает через неё с обычным zero-value для nil-слайса.
+func regionsOfBatch(ctx context.Context, pool *pgxpool.Pool, monitorIDs []int64) (map[int64][]string, error) {
+	out := make(map[int64][]string, len(monitorIDs))
+	if len(monitorIDs) == 0 {
+		return out, nil
+	}
+	rows, err := pool.Query(ctx,
+		"SELECT monitor_id, region FROM monitor_regions WHERE monitor_id = ANY($1) ORDER BY monitor_id, region",
+		monitorIDs)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: regions batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var r string
+		if err := rows.Scan(&id, &r); err != nil {
+			return nil, fmt.Errorf("uptime: regions batch: scan: %w", err)
+		}
+		out[id] = append(out[id], r)
+	}
+	return out, rows.Err()
+}
+
 func channelIDsOf(ctx context.Context, pool *pgxpool.Pool, monitorID int64) ([]int64, error) {
 	rows, err := pool.Query(ctx,
 		"SELECT channel_id FROM monitor_channels WHERE monitor_id = $1 ORDER BY channel_id", monitorID)
@@ -392,6 +419,69 @@ func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 	m.ChannelIDs = channelIDs
 
 	return m, nil
+}
+
+// GetBatch возвращает мониторы набора monitorIDs одним обходом таблицы
+// monitors плюс один пакетный запрос regions (два запроса вместо Get()'овских
+// трёх на монитор, умноженных на N) — публичная статус-страница иначе звала
+// Get() в цикле и на сорока мониторах упиралась в таймаут сборки.
+//
+// ChannelIDs не заполняются, как и у List() (см. её комментарий): странице
+// они не нужны, а тянуть их батчем ради неиспользуемого поля — лишняя работа.
+// Если появится потребитель, которому ChannelIDs нужны в пакетном виде —
+// заводить тем же приёмом, что ниже для Regions, а не звать channelIDsOf в
+// цикле.
+//
+// Карта заполняется для ВСЕХ monitorIDs, а не только найденных (тот же
+// приём, что StatesBatch, см. её комментарий): монитор, которого уже нет в
+// БД (удалён между чтением списка страницы и сборкой самой страницы),
+// получает нулевой Monitor{ID: id} — у настоящего монитора ProjectID
+// никогда не бывает 0 (bigint GENERATED ALWAYS AS IDENTITY стартует с 1),
+// поэтому проверка "m.ProjectID != sp.ProjectID" на стороне вызывающего
+// одинаково отсекает и «монитора больше нет», и «монитор чужого проекта» —
+// то же самое единственное решение (не показывать монитор на странице), что
+// принимал раньше отдельный errors.Is(err, ErrNotFound) до объединения.
+func (s *Service) GetBatch(ctx context.Context, monitorIDs []int64) (map[int64]Monitor, error) {
+	out := make(map[int64]Monitor, len(monitorIDs))
+	if len(monitorIDs) == 0 {
+		return out, nil
+	}
+	for _, id := range monitorIDs {
+		out[id] = Monitor{ID: id}
+	}
+
+	rows, err := s.pool.Query(ctx,
+		"SELECT id, "+monitorColumns+" FROM monitors WHERE id = ANY($1)", monitorIDs)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: get batch: %w", err)
+	}
+	for rows.Next() {
+		var m Monitor
+		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
+			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
+			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
+			&m.LastBeatAt, &m.CreatedAt, &m.Retries); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("uptime: get batch: scan: %w", err)
+		}
+		out[m.ID] = m
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: get batch: %w", err)
+	}
+
+	regionsByMon, err := regionsOfBatch(ctx, s.pool, monitorIDs)
+	if err != nil {
+		return nil, err
+	}
+	for id, m := range out {
+		regions := regionsByMon[id]
+		m.Regions = regions
+		m.RegionCount = len(regions)
+		out[id] = m
+	}
+	return out, nil
 }
 
 // List возвращает мониторы проекта, отсортированные по name, вместе с их

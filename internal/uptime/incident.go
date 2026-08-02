@@ -143,6 +143,52 @@ func (s *Service) IncidentsForMonitor(ctx context.Context, monitorID int64, limi
 		LIMIT $2`, monitorID, limit)
 }
 
+// IncidentsForMonitorsBatch — то же, что IncidentsForMonitor, но для набора
+// monitorIDs одним запросом: до limit самых свежих инцидентов НА КАЖДЫЙ
+// монитор (не limit суммарно на весь набор), тем же способом, каким
+// IncidentsForMonitor режет по одному монитору. Публичная статус-страница
+// иначе звала IncidentsForMonitor в цикле — третий и последний из трёх
+// поштучных запросов на монитор, который ещё оставался в её сборке.
+//
+// row_number() OVER (PARTITION BY monitor_id ...) — оконная функция, а не
+// LIMIT: обычный общий LIMIT после ORDER BY started_at DESC срезал бы топ-N
+// по всему набору сразу, и монитор с активной историей инцидентов вытеснил
+// бы из выдачи более тихие мониторы вместо того, чтобы у каждого был свой
+// потолок в limit записей — именно так себя вёл бы цикл, который заменяем.
+//
+// Карта заполняется для ВСЕХ monitorIDs (тот же приём, что и в GetBatch/
+// StatesBatch): монитор без единого инцидента присутствует с nil-слайсом, а
+// не отсутствует вовсе — вызывающему не нужно отдельно проверять comma-ok.
+func (s *Service) IncidentsForMonitorsBatch(ctx context.Context, monitorIDs []int64, limit int) (map[int64][]Incident, error) {
+	out := make(map[int64][]Incident, len(monitorIDs))
+	if len(monitorIDs) == 0 {
+		return out, nil
+	}
+	for _, id := range monitorIDs {
+		out[id] = nil
+	}
+	if limit <= 0 {
+		return out, nil
+	}
+	rows, err := queryIncidents(ctx, s.pool, `
+		SELECT `+incidentColumns+`
+		FROM (
+			SELECT `+incidentColumns+`,
+			       row_number() OVER (PARTITION BY monitor_id ORDER BY started_at DESC) AS rn
+			FROM incidents
+			WHERE monitor_id = ANY($1)
+		) ranked
+		WHERE rn <= $2
+		ORDER BY monitor_id, started_at DESC`, monitorIDs, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, inc := range rows {
+		out[inc.MonitorID] = append(out[inc.MonitorID], inc)
+	}
+	return out, nil
+}
+
 // queryIncidentsPaged runs an incident query whose LAST selected column is
 // count(*) OVER() AS total, returning the page rows together with the
 // unpaginated total (0 for an empty page — no row carries the window count).

@@ -166,6 +166,57 @@ func (s *RegressionService) OpenFor(ctx context.Context, projectID int64, target
 	return r, true, nil
 }
 
+// RegressionKey — цель и метрика, ключ карты OpenForProject. Поля названы как
+// Regression.Target/Regression.Metric — не переиспользует query.VitalKey
+// (Transaction/Metric): тот ключ живёт на стороне ClickHouse-агрегатов и
+// назван их терминологией, этот — на стороне хранилища регрессий в PG.
+type RegressionKey struct {
+	Target string
+	Metric string
+}
+
+// OpenForProject возвращает ВСЕ открытые инциденты проекта одним запросом,
+// картой по (target, metric) — находка №43: evalTarget звал OpenFor на
+// КАЖДУЮ цель по отдельности, и сто проектов при тике в 5 минут давали
+// двадцать тысяч последовательных запросов в PostgreSQL за проход, в одной
+// горутине.
+//
+// Фильтр только по project_id и status='open' — без цели/метрики: у проекта
+// открыто немного инцидентов одновременно (не больше одного на цель — держит
+// perf_regressions_one_open_idx), поэтому дешевле забрать их все один раз,
+// чем передавать список целей в IN/ANY. Запрос ложится на
+// perf_regressions_one_open_idx (project_id, target, metric) WHERE
+// status = 'open' (0011_perf_regressions.up.sql:23): WHERE-условие совпадает
+// дословно, project_id — ведущая колонка индекса.
+//
+// В отличие от StatesBatch (internal/uptime/state.go) карта НЕ предзаполняется
+// нулевыми записями на заранее известный список ключей: здесь нет входного
+// списка целей (тик ещё не решил, какие цели будет оценивать — тот список
+// приходит из CH позже, TopEndpointsByTraffic/TopVitalPages), поэтому
+// единица чтения — «весь проект», а не «эти конкретные пары». Отсутствие
+// ключа в карте и есть ответ «не открыт» — тем же способом, каким
+// OpenFor раньше отдавал found=false, только через comma-ok на карте, а не
+// через отдельный булев результат.
+func (s *RegressionService) OpenForProject(ctx context.Context, projectID int64) (map[RegressionKey]Regression, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+regressionColumns+`
+		FROM perf_regressions WHERE project_id = $1 AND status = 'open'`,
+		projectID)
+	if err != nil {
+		return nil, fmt.Errorf("trace: open regressions for project: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[RegressionKey]Regression)
+	for rows.Next() {
+		r, err := scanRegression(rows)
+		if err != nil {
+			return nil, fmt.Errorf("trace: open regressions for project: %w", err)
+		}
+		out[RegressionKey{Target: r.Target, Metric: r.Metric}] = r
+	}
+	return out, rows.Err()
+}
+
 // Bump обновляет метрику открытого инцидента: current_value=$2,
 // peak_value=max(peak_value,$2). По закрытому/несуществующему id → ErrNotFound.
 func (s *RegressionService) Bump(ctx context.Context, id int64, current float64) error {

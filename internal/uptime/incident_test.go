@@ -215,3 +215,91 @@ func TestOpenIncidentForAndListings(t *testing.T) {
 		t.Fatalf("MarkNotified unknown id: err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation:
+// IncidentsForMonitorsBatch обязан отдавать limit инцидентов НА КАЖДЫЙ
+// монитор набора, а не limit суммарно на весь набор (см. докблок метода про
+// row_number() PARTITION BY monitor_id вместо общего LIMIT), и не путать
+// инциденты разных мониторов — тот же риск мис-ключевания, ради которого в
+// query_test.go завёден BatchParity с разными данными на двух мониторах.
+func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	monMany := createMonitor(t, svc, pid, 3, 2)
+	monFew := createMonitor(t, svc, pid, 3, 2)
+	monNone := createMonitor(t, svc, pid, 3, 2)
+
+	// monMany получает три инцидента подряд (открыт-закрыт трижды) —
+	// больше, чем limit=2 в самом запросе ниже.
+	var manyIDs []int64
+	for i := 0; i < 3; i++ {
+		inc, _, err := svc.OpenIncident(ctx, monMany.ID, "boom", nil, false)
+		if err != nil {
+			t.Fatalf("OpenIncident monMany #%d: %v", i, err)
+		}
+		manyIDs = append(manyIDs, inc.ID)
+		if _, _, err := svc.ResolveIncident(ctx, monMany.ID, time.Now()); err != nil {
+			t.Fatalf("ResolveIncident monMany #%d: %v", i, err)
+		}
+		time.Sleep(5 * time.Millisecond) // разводим started_at по времени
+	}
+	// monFew получает ровно один — меньше limit, не должен дотягиваться до
+	// чужих (monMany) инцидентов.
+	incFew, _, err := svc.OpenIncident(ctx, monFew.ID, "boom", nil, false)
+	if err != nil {
+		t.Fatalf("OpenIncident monFew: %v", err)
+	}
+
+	const limit = 2
+	got, err := svc.IncidentsForMonitorsBatch(ctx, []int64{monMany.ID, monFew.ID, monNone.ID}, limit)
+	if err != nil {
+		t.Fatalf("IncidentsForMonitorsBatch: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3 (карта заполнена для всех запрошенных id)", len(got))
+	}
+
+	// monMany: limit=2 из трёх, freshest first — два последних по времени
+	// открытия (последний свежее, чем первый).
+	if len(got[monMany.ID]) != limit {
+		t.Fatalf("got[monMany] = %d incidents, want %d (свой лимит, не общий на набор)", len(got[monMany.ID]), limit)
+	}
+	if got[monMany.ID][0].ID != manyIDs[2] || got[monMany.ID][1].ID != manyIDs[1] {
+		t.Fatalf("got[monMany] = %+v, want freshest-first [%d %d]", got[monMany.ID], manyIDs[2], manyIDs[1])
+	}
+	for _, inc := range got[monMany.ID] {
+		if inc.MonitorID != monMany.ID {
+			t.Fatalf("got[monMany] содержит инцидент чужого монитора: %+v", inc)
+		}
+	}
+
+	// monFew: один инцидент, свой лимит его не срезал и соседний monMany не
+	// вытеснил его из выдачи (что случилось бы с общим LIMIT после ORDER BY
+	// без PARTITION BY).
+	if len(got[monFew.ID]) != 1 || got[monFew.ID][0].ID != incFew.ID {
+		t.Fatalf("got[monFew] = %+v, want [%d]", got[monFew.ID], incFew.ID)
+	}
+
+	// monNone: запрошен, инцидентов нет — присутствует в карте с nil-слайсом.
+	if got[monNone.ID] != nil {
+		t.Fatalf("got[monNone] = %v, want nil", got[monNone.ID])
+	}
+
+	// Паритет с IncidentsForMonitor по каждому монитору отдельно.
+	single, err := svc.IncidentsForMonitor(ctx, monMany.ID, limit)
+	if err != nil {
+		t.Fatalf("IncidentsForMonitor(monMany): %v", err)
+	}
+	if len(single) != len(got[monMany.ID]) {
+		t.Fatalf("IncidentsForMonitor(monMany) = %d, IncidentsForMonitorsBatch = %d", len(single), len(got[monMany.ID]))
+	}
+	for i := range single {
+		if single[i].ID != got[monMany.ID][i].ID {
+			t.Errorf("IncidentsForMonitorsBatch[monMany][%d] = %+v, IncidentsForMonitor = %+v", i, got[monMany.ID][i], single[i])
+		}
+	}
+}

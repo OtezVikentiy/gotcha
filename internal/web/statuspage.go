@@ -263,11 +263,14 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 		at   time.Time
 	}
 
-	// Состояния (PG) и полоски доступности (CH, 90 дней × 90 корзин — самый
-	// тяжёлый запрос страницы) берём пакетно на все мониторы разом, а не в цикле:
-	// публичная страница с десятками мониторов иначе делала 2N запросов сверх
-	// остальных и упиралась в statusPageBuildTimeout. Uptime (с exclude-окнами),
-	// Get и IncidentsForMonitor пока остаются по-мониторно.
+	// Всё, что раньше шло в цикле по мониторам (2N+3N запросов на публичной
+	// странице с N мониторами — Get и IncidentsForMonitor по три и один
+	// запрос каждый, плюс сам Uptime), теперь читается пакетно, до цикла.
+	// Цикл ниже только раскладывает уже прочитанные карты по мониторам и не
+	// обращается к БД вообще — именно это и убирает рост, пропорциональный
+	// числу мониторов: сорок мониторов и пять окон обслуживания упирались в
+	// statusPageBuildTimeout, а посетитель неаутентифицированной страницы
+	// получал ошибку.
 	spIDs := make([]int64, len(spMonitors))
 	for i, spm := range spMonitors {
 		spIDs[i] = spm.MonitorID
@@ -282,19 +285,33 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 	if err != nil {
 		return templates.StatusPageView{}, err
 	}
+	monitorsByID, err := h.Uptime.GetBatch(ctx, spIDs)
+	if err != nil {
+		return templates.StatusPageView{}, err
+	}
+	// exclude — общие окна обслуживания ПРОЕКТА страницы (уже посчитаны выше,
+	// до цикла), поэтому один и тот же список годится для всех её мониторов
+	// разом, в отличие от per-монитора разных полосок/состояний.
+	uptimeByMon, err := h.UptimeQuery.UptimeExcludingBatch(ctx, spIDs, from, now, exclude)
+	if err != nil {
+		return templates.StatusPageView{}, err
+	}
+	incidentsByMon, err := h.Uptime.IncidentsForMonitorsBatch(ctx, spIDs, statusPageIncidentsPerMonitor)
+	if err != nil {
+		return templates.StatusPageView{}, err
+	}
 
 	var down, counted int
 	var incidents []datedIncident
 	for _, spm := range spMonitors {
-		m, err := h.Uptime.Get(ctx, spm.MonitorID)
-		if err != nil {
-			if errors.Is(err, uptime.ErrNotFound) {
-				continue
-			}
-			return templates.StatusPageView{}, err
-		}
+		m := monitorsByID[spm.MonitorID]
 		// Монитор чужого проекта на странице не показывается — форма настроек
-		// такого не создаст, но подстраховка дешевле утечки.
+		// такого не создаст, но подстраховка дешевле утечки. GetBatch
+		// заполняет карту для ВСЕХ запрошенных id (см. её докблок): монитора,
+		// которого уже нет в БД, здесь не отличить от монитора чужого
+		// проекта — ProjectID нулевого Monitor{} никогда не совпадёт с
+		// sp.ProjectID, и оба случая одинаково пропускаются, как и раньше
+		// делал отдельный errors.Is(err, uptime.ErrNotFound).
 		if m.ProjectID != sp.ProjectID {
 			continue
 		}
@@ -304,10 +321,7 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 		// consensus-агрегат uptime.Aggregate) — consensus не дублируем.
 		status := monitorStatus(m, states, inMaintenance)
 
-		stat, err := h.UptimeQuery.Uptime(ctx, m.ID, from, now, exclude)
-		if err != nil {
-			return templates.StatusPageView{}, err
-		}
+		stat := uptimeByMon[m.ID]
 		bars := barsByMon[m.ID]
 
 		// BarStats, а не готовый SVG: вьюха кешируется на statusPageTTL и
@@ -330,11 +344,7 @@ func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Tim
 			}
 		}
 
-		monIncidents, err := h.Uptime.IncidentsForMonitor(ctx, m.ID, statusPageIncidentsPerMonitor)
-		if err != nil {
-			return templates.StatusPageView{}, err
-		}
-		for _, inc := range monIncidents {
+		for _, inc := range incidentsByMon[m.ID] {
 			if inc.StartedAt.Before(from) {
 				continue
 			}

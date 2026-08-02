@@ -254,4 +254,58 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("UptimeBatch(nil) = %v, want empty", got)
 		}
 	})
+
+	// UptimeExcludingBatch должен побайтно совпадать с одиночным Uptime (тем
+	// же exclude-интервалом) для каждого монитора набора — иначе это была бы
+	// не проверка, что перевод статус-страницы на батч ничего не изменил, а
+	// проверка, что батч-метод вообще что-то возвращает.
+	t.Run("UptimeExcludingBatch", func(t *testing.T) {
+		excl := []uptime.Interval{{From: windowFrom, To: windowFrom.Add(10 * time.Minute)}}
+		ids := []int64{monitorID, otherMonitorID}
+		got, err := q.UptimeExcludingBatch(ctx, ids, windowFrom, windowTo, excl)
+		if err != nil {
+			t.Fatalf("UptimeExcludingBatch: %v", err)
+		}
+		if len(got) != len(ids) {
+			t.Fatalf("len(got) = %d, want %d", len(got), len(ids))
+		}
+		for _, id := range ids {
+			single, err := q.Uptime(ctx, id, windowFrom, windowTo, excl)
+			if err != nil {
+				t.Fatalf("Uptime(%d): %v", id, err)
+			}
+			if got[id] != single {
+				t.Errorf("UptimeExcludingBatch[%d] = %+v, Uptime(%d) = %+v", id, got[id], id, single)
+			}
+		}
+		// Тот же exclude покрывает оба failed-чека monitorID целиком (см.
+		// подтест "Uptime" выше) — 8/8, а не 10/8.
+		if got[monitorID].Total != 8 || got[monitorID].OK != 8 {
+			t.Fatalf("got[monitorID] = %+v, want Total=8 OK=8 (exclude покрывает оба failed-чека)", got[monitorID])
+		}
+	})
+
+	t.Run("UptimeExcludingBatchEmpty", func(t *testing.T) {
+		got, err := q.UptimeExcludingBatch(ctx, nil, windowFrom, windowTo, nil)
+		if err != nil {
+			t.Fatalf("UptimeExcludingBatch(nil): %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("UptimeExcludingBatch(nil) = %v, want empty", got)
+		}
+	})
+
+	// Монитор без единой проверки в окне присутствует в карте с нулевым
+	// UptimeStat, а не отсутствует — тот же приём, что у UptimeBatch/
+	// StatesBatch: вызывающий не обязан отдельно проверять comma-ok.
+	t.Run("UptimeExcludingBatchZeroForUnknownMonitor", func(t *testing.T) {
+		const noSuchMonitor = int64(999999)
+		got, err := q.UptimeExcludingBatch(ctx, []int64{noSuchMonitor}, windowFrom, windowTo, nil)
+		if err != nil {
+			t.Fatalf("UptimeExcludingBatch: %v", err)
+		}
+		if got[noSuchMonitor] != (uptime.UptimeStat{}) {
+			t.Fatalf("got[%d] = %+v, want zero value", noSuchMonitor, got[noSuchMonitor])
+		}
+	})
 }

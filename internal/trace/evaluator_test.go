@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,4 +270,84 @@ func outboxCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 		t.Fatalf("outbox count: %v", err)
 	}
 	return c
+}
+
+// countingRegressions оборачивает настоящий RegressionService, считая заходы
+// в PostgreSQL за снимком открытых регрессий — то единственное, что интересует
+// находку №43. Обёртка, а не полностью in-memory подделка: это позволяет
+// прогнать реальный evalProject через настоящую БД (тот же стенд, что и у
+// TestEvaluatorLifecycle) и при этом точно, не по логам, посчитать число
+// обращений — способ посчитать запросы взят из соседнего fakeCHConn
+// (writer_unit_test.go): там тоже считающая обёртка над интерфейсом, а не
+// разбор журнала.
+type countingRegressions struct {
+	*RegressionService
+	reads atomic.Int64
+}
+
+func (c *countingRegressions) OpenForProject(ctx context.Context, projectID int64) (map[RegressionKey]Regression, error) {
+	c.reads.Add(1)
+	return c.RegressionService.OpenForProject(ctx, projectID)
+}
+
+// TestEvaluatorReadsOpenRegressionsOnce: решение по каждой цели начиналось с
+// отдельного запроса в PostgreSQL. При полусотне целей на проект это двести
+// round-trip'ов на проект за тик, последовательно, в одной горутине (находка
+// №43). Три цели здесь — не полусотня, но принцип виден: число обращений не
+// должно расти вместе с числом целей.
+//
+// Раунд правок 1 (ревью): чтение снимка стоит ДО циклов по целям и
+// безусловно — «один запрос» было бы верно даже при НУЛЕ обработанных целей
+// (например, если правка сломает подбор целей и тик перестанет их видеть
+// вовсе). Поэтому одного `reads == 1` недостаточно: тест обязан НЕЗАВИСИМО
+// от этого счётчика доказать, что целей было заведомо больше одной. Для
+// этого все три цели дают настоящий скачок (как в TestEvaluatorLifecycle) —
+// после тика в perf_regressions обязано появиться РОВНО len(targets) строк,
+// и это проверяется прямым запросом к базе (countIncidents), а не через
+// countingRegressions: два разных источника истины для двух разных
+// утверждений, ни один не выводится из другого.
+func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	counting := &countingRegressions{RegressionService: NewRegressionService(pool)}
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(conn), Regressions: counting,
+		TopK: 10, BaselineDays: 7,
+	}
+
+	pid := createEvalProject(t, pool, "eval-batch-count")
+	now := time.Now().UTC()
+	w := NewSpanWriter(conn)
+	go w.Run()
+	targets := []string{"GET /batch-a", "GET /batch-b", "GET /batch-c"}
+	for _, target := range targets {
+		for d := 1; d <= 6; d++ {
+			addEndpointTx(w, pid, target, now.Add(-time.Duration(d)*24*time.Hour), 800, 20, fmt.Sprintf("%s-base-%d", target, d))
+		}
+		// Настоящий скачок в свежем окне — не стабильная нагрузка: нужен
+		// независимый от countingRegressions сигнал, что цель дошла до
+		// конца обработки, а не просто была прочитана из CH и отброшена.
+		addEndpointTx(w, pid, target, now.Add(-2*time.Minute), 1200, 120, target+"-spike")
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	ev.tick(ctx)
+
+	// Независимая проверка: целей было действительно len(targets), а не
+	// ноль и не одна — прямым запросом к perf_regressions, в обход
+	// countingRegressions. Если бы чтение снимка "случайно" проходило один
+	// раз просто потому, что целей не было вовсе, эта проверка упала бы
+	// первой и не позволила бы утверждению ниже создать ложное чувство
+	// доказанности (см. мутацию в task-5-report.md, раунд правок 1).
+	if got := countIncidents(t, ctx, pool, pid); got != len(targets) {
+		t.Fatalf("подготовка сценария сломана: %d целей дошли до открытия инцидента, ожидалось %d — тест не доказывает то, что заявляет его докблок", got, len(targets))
+	}
+	if got := counting.reads.Load(); got != 1 {
+		t.Fatalf("запросов открытых регрессий за тик = %d, хотим 1 (независимо от числа целей — их %d)", got, len(targets))
+	}
 }

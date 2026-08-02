@@ -141,9 +141,9 @@ var permanentFormatExemptions = []Exemption{
 	// раунд правок 1 заставил переклассифицировать из "машинный" в "разумное
 	// постоянное решение" — причина исключения та же (не долг), а
 	// формулировка точнее.
-	{Value: exemptLoc("internal/web/statuspage.go", 351), Why: `StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout) — публичная статус-страница всегда в UTC без JS-локализации, самостоятельный формат по документированному дизайн-решению (см. const statusPageTimeLayout)`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/statuspage.go", 415), Why: `From: ni.iv.From.UTC().Format(statusPageTimeLayout) — то же дизайн-решение, окно обслуживания`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/statuspage.go", 416), Why: `To: ni.iv.To.UTC().Format(statusPageTimeLayout) — то же дизайн-решение`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/statuspage.go", 361), Why: `StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout) — публичная статус-страница всегда в UTC без JS-локализации, самостоятельный формат по документированному дизайн-решению (см. const statusPageTimeLayout)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/statuspage.go", 425), Why: `From: ni.iv.From.UTC().Format(statusPageTimeLayout) — то же дизайн-решение, окно обслуживания`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/statuspage.go", 426), Why: `To: ni.iv.To.UTC().Format(statusPageTimeLayout) — то же дизайн-решение`, Finding: "по замыслу"},
 
 	// relativetime.templ: компонент relativeTime, задача C7 подпроекта единиц
 	// ("точное время рядом с относительным"). datetime={ t.UTC().Format(time.RFC3339) }
