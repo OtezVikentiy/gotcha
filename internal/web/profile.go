@@ -46,6 +46,17 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 			"profile.danger.delete_account.button", "/profile", "/profile/delete", nil)
 		return
 	}
+	// Адрес читаем ДО удаления пользователя, а не после: currentEmail делает
+	// SELECT email FROM users WHERE id=$1, и после DeleteUser строки уже нет —
+	// запрос вернул бы пустую строку, а очистка приглашений ниже молча не
+	// выполнялась бы вовсе (баг был именно таким: строку переставили под
+	// DeleteUser, и ветка не срабатывала ни разу). Если следующий читатель
+	// снова передвинет чтение вниз «для симметрии» — тест
+	// TestProfileDeletePurgesPendingInvites это поймает.
+	var email string
+	if h.Org != nil {
+		email = h.currentEmail(r)
+	}
 	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
 		_ = h.Auth.DestroySession(r.Context(), token)
 	}
@@ -59,11 +70,20 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	// Субъектная телеметрия в ClickHouse (данные КОНЕЧНЫХ пользователей
 	// наблюдаемых приложений) при этом не затрагивается — это не ПДн владельца
 	// аккаунта; см. privacy-доку.
+	//
+	// email == "" здесь — не «нечего чистить»: личность юзера проверена выше
+	// (auth.UserID), строка в users на момент чтения ещё была на месте, и
+	// currentEmail превращает в "" ЛЮБУЮ ошибку чтения (см. её докблок в
+	// web.go), а не только «юзера нет». Молча пропустить эту ветку —
+	// получить тот же тихий отказ, ради устранения которого писалась вся
+	// задача: аккаунт удалён, приглашение осталось, в логе ничего.
 	if h.Org != nil {
-		if email := h.currentEmail(r); email != "" {
+		if email != "" {
 			if _, err := h.Org.DeleteInvitesByEmail(r.Context(), email); err != nil {
 				slog.Error("profileDelete: purge pending invites", "error", err)
 			}
+		} else {
+			slog.Error("profileDelete: could not read user email, pending invites not purged", "user_id", uid)
 		}
 	}
 	auth.ClearSessionCookie(w)

@@ -105,3 +105,56 @@ func TestMarkSentExhaustsRetries(t *testing.T) {
 		t.Errorf("markSentCalls = %d, want %d (all retries exhausted)", store.markSentCalls, markSentRetries)
 	}
 }
+
+// TestMarkSentWaitStopsWithContext: комментарий над markSent обещал паузу
+// между попытками, прерываемую по ctx; в коде стоял безусловный time.Sleep,
+// который ничем не прерывался. Проверяется сама вынесенная функция
+// markSentWait, а не markSent целиком — markSentBackoff продуктовая
+// константа, подменять её ради теста не хотим, а прерывание попыток markSent
+// при отмене уже закрыто TestMarkSentFinishesDespiteCancel и здесь не
+// дублируется.
+//
+// Ассерт не завязан на настенное время — ни в одном из двух случаев не
+// сравниваются миллисекунды, только "вернулась / зависла":
+//   - отменённый ctx + заведомо огромная длительность (час) — функция обязана
+//     вернуться за разумные секунды, а не досидеть до конца;
+//   - живой ctx + микроскопическая длительность — функция обязана вернуться
+//     (не зависнуть навсегда), подтверждая, что ветка time.After рабочая, а не
+//     что select всегда мгновенно возвращается независимо от происходящего.
+//
+// Запас между "секунды" и "час" — три порядка, ложных падений на загруженном
+// раннере не даёт.
+func TestMarkSentWaitStopsWithContext(t *testing.T) {
+	t.Run("отменённый ctx прерывает огромную паузу", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		done := make(chan struct{})
+		go func() {
+			markSentWait(ctx, time.Hour)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("markSentWait не вернулась при отменённом ctx — с часовой паузой " +
+				"досидела бы час вместо того, чтобы прерваться по ctx.Done()")
+		}
+	})
+
+	t.Run("живой ctx досиживает микроскопическую паузу", func(t *testing.T) {
+		done := make(chan struct{})
+		go func() {
+			markSentWait(context.Background(), time.Millisecond)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("markSentWait зависла на живом ctx с миллисекундной паузой — " +
+				"ветка time.After должна была сработать")
+		}
+	})
+}

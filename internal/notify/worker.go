@@ -244,10 +244,14 @@ func finalizeCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 //
 // Ретраи ниже сужают окно: транзиентный сбой БД (кратковременная потеря
 // соединения, дедлок) переживается на месте за миллисекунды, не дожидаясь
-// полного цикла повторной доставки уже отправленного сообщения. Backoff
-// прерывается по ctx, чтобы остановка воркера не подвисала. Если MarkSent не
-// удаётся и после всех попыток — оставляем job pending (дубль возможен) и
-// логируем Error.
+// полного цикла повторной доставки уже отправленного сообщения. Сами попытки
+// не прерываются отменой ctx — см. TestMarkSentFinishesDespiteCancel: письмо
+// уже ушло получателю, и подтвердить это в очереди нужно независимо от того,
+// что процесс выключают (идемпотентности у Telegram/webhook нет, дубль виден
+// человеку — задержка выключения на 200мс нет). Прерывается по ctx только
+// пауза МЕЖДУ попытками: досиживать её вслепую при уже мёртвом ctx незачем,
+// раз следующая попытка всё равно случится. Если MarkSent не удаётся и после
+// всех попыток — оставляем job pending (дубль возможен) и логируем Error.
 func (w *Worker) markSent(ctx context.Context, job Job) {
 	var err error
 	for attempt := 1; attempt <= markSentRetries; attempt++ {
@@ -261,10 +265,34 @@ func (w *Worker) markSent(ctx context.Context, job Job) {
 		if attempt == markSentRetries {
 			break
 		}
-		time.Sleep(markSentBackoff)
+		// ctx — ВНЕШНИЙ, не markCtx/finalizeCtx выше: тот снят через
+		// context.WithoutCancel специально, чтобы не видеть отмену, и если бы
+		// ожидание слушало его, пауза снова перестала бы прерываться — но
+		// незаметно, потому что markCtx.Done() почти никогда не сработает
+		// раньше пятисекундного дедлайна finalizeTimeout.
+		markSentWait(ctx, markSentBackoff)
 	}
 	slog.Error("notify worker: mark sent failed after retries",
 		"job_id", job.ID, "channel_id", job.ChannelID, "attempts", markSentRetries, "error", err)
+}
+
+// markSentWait — пауза между попытками MarkSent внутри markSent, вынесенная
+// отдельной функцией ради тестируемости (см. TestMarkSentWaitStopsWithContext):
+// подменять markSentBackoff ради теста не хотим — это продуктовая константа,
+// не тестовый рычаг.
+//
+// Прерывается только ожидание, а не сама попытка: попытки MarkSent должны
+// пройти все до конца даже при отменённом ctx (см. TestMarkSentFinishesDespiteCancel
+// — сообщение уже отправлено получателю, и подтвердить это в очереди нужно
+// независимо от остановки процесса; у Telegram/webhook нет idempotency-ключа,
+// дубль виден человеку, задержка выключения на 200мс — нет). Но досиживать
+// паузу вслепую при уже мёртвом ctx незачем, раз следующая попытка всё равно
+// случится — отсюда select с ctx.Done() как выходом.
+func markSentWait(ctx context.Context, d time.Duration) {
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
 }
 
 // backoff — задержка перед следующей попыткой по номеру попытки (attempts,
