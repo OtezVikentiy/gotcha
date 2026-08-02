@@ -21,7 +21,7 @@ Gotcha runs three processes on a single server: the app itself (Go), PostgreSQL,
 
 - **OS:** Ubuntu 22.04/24.04 or Debian 12, x86-64 (amd64) architecture.
 - **RAM.** 2 GB is a workable minimum for getting started and light load (personal projects, staging). For production with a real stream of events, budget 4 GB and up: under load ClickHouse is more stable the more memory it has.
-- **Disk.** Grows with the volume of telemetry and how long you retain it. 20 GB is enough to start; with noticeable traffic or long retention, plan for more and keep an eye on free space. Use an SSD — both ClickHouse and PostgreSQL are sensitive to disk latency.
+- **Disk.** Grows with the volume of telemetry and how long you retain it. 20 GB is enough to start; with noticeable traffic or long retention, plan for more and keep an eye on free space — for how, see [Monitoring gotcha itself](/docs/self-monitoring). Use an SSD — both ClickHouse and PostgreSQL are sensitive to disk latency.
 - **CPU.** Two cores are enough; extra cores speed up ingesting bursts of events and ClickHouse queries.
 - **Network.** Only a single application port needs to be exposed (59080 by default). PostgreSQL and ClickHouse are not exposed externally — they're reachable only inside the docker network.
 

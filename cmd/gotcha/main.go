@@ -214,90 +214,11 @@ func run() error {
 	}
 	defer ch.Close()
 
-	// Сигнал во время миграций не прерывает их (golang-migrate не берёт
-	// context) — процесс завершится после текущего шага.
-	slog.Info("applying migrations")
-	err = db.WithMigrationLock(ctx, pg, func() error {
-		// ARCH-M3: авто-миграцию можно отключить (GOTCHA_AUTO_MIGRATE=false) и
-		// выносить в отдельный init-job, чтобы app-реплики не клинили все разом.
-		if cfg.AutoMigrate {
-			if err := db.MigratePG(cfg.PostgresDSN); err != nil {
-				return err
-			}
-			if err := db.MigrateCH(cfg.ClickHouseDSN); err != nil {
-				return err
-			}
-			// Признаки обратной совместимости применённых миграций. Пишет тот,
-			// кто их применял: только он содержит эти файлы и знает их маркеры.
-			// Читает любой бинарь, включая откатившийся назад, — без этой
-			// записи откат релиза требует восстановления базы из бэкапа.
-			if err := db.RecordSchemaCompat(ctx, pg); err != nil {
-				return err
-			}
-			// Проверка схемы нужна И ЗДЕСЬ, после успешной миграции. Гейт ловит
-			// не только отставание, но и ОПЕРЕЖЕНИЕ: схема новее встроенной —
-			// значит бинарь откатили после неудачного релиза. Для m.Up() такая
-			// схема выглядит как ErrNoChange, то есть старый бинарь стартовал
-			// молча и падал уже на вставках. А upgrade.md обещает оператору
-			// ровно обратное — внятную ошибку при старте. AUTO_MIGRATE включён
-			// по умолчанию, так что до этой правки обещание не выполнялось в
-			// самой частой конфигурации.
-			if err := db.CheckSchemaCurrent(ctx, pg, cfg.PostgresDSN); err != nil {
-				return err
-			}
-			if err := db.CheckSchemaCurrentCH(ctx, pg, cfg.ClickHouseDSN); err != nil {
-				return err
-			}
-		} else {
-			// RA-8: без авто-миграции app не должен стартовать на отставшей схеме
-			// (иначе insert падает на каждой вставке → тихий дроп телеметрии).
-			// Проверяем и PG, и CH (audit-3: CH-схема тоже нуждается в гейте).
-			if err := db.CheckSchemaCurrent(ctx, pg, cfg.PostgresDSN); err != nil {
-				return err
-			}
-			if err := db.CheckSchemaCurrentCH(ctx, pg, cfg.ClickHouseDSN); err != nil {
-				return err
-			}
-		}
-		// Расхождение сроков хранения между репликами перестаёт быть невидимым:
-		// TTL — свойство инсталляции, а задаётся окружением каждой реплики, и
-		// каждый переброс запускает пересчёт по всем кускам таблицы.
-		if changes, err := db.RecordRetention(ctx, pg, map[string]int{
-			"events":   cfg.RetentionDays,
-			"spans":    cfg.SpanRetentionDays,
-			"metrics":  cfg.MetricRetentionDays,
-			"profiles": cfg.ProfileRetentionDays,
-		}); err != nil {
-			return err
-		} else {
-			for _, c := range changes {
-				if c.Changed() {
-					slog.Warn("retention changed for the whole instance; ALTER TABLE MODIFY TTL "+
-						"rewrites every part. If replicas disagree, they will flip it back and forth",
-						"retention", c.Key, "previous_days", c.Previous, "new_days", c.Current)
-				}
-			}
-		}
-		if err := db.ApplyRetention(ctx, ch, cfg.RetentionDays); err != nil {
-			return err
-		}
-		if err := db.ApplySpanRetention(ctx, ch, cfg.SpanRetentionDays); err != nil {
-			return err
-		}
-		if err := db.ApplyMetricRetention(ctx, ch, cfg.MetricRetentionDays); err != nil {
-			return err
-		}
-		if err := db.ApplyProfileRetention(ctx, ch, cfg.ProfileRetentionDays); err != nil {
-			return err
-		}
-		if err := db.ApplyTransactionRetention(ctx, ch, cfg.RetentionDays); err != nil {
-			return err
-		}
-		// RA-L3 (audit-3): web_vitals_5m тоже должен получать TTL, иначе inner-таблица
-		// MV растёт вечно (имя транзакции может нести URL — 152-ФЗ).
-		return db.ApplyWebVitalsRetention(ctx, ch, cfg.RetentionDays)
-	})
-	if err != nil {
+	// Применение миграций — в migrate.go (applyMigrations): вынесено отдельной
+	// функцией по той же причине, что и newRootMux/newServer в server.go —
+	// TestMigrationStagesAreLogged должен вызывать ровно тот код, что
+	// выполняется здесь при старте, а не собственную копию.
+	if err := applyMigrations(ctx, cfg, pg, ch); err != nil {
 		return err
 	}
 
@@ -324,6 +245,18 @@ func run() error {
 		"Build metadata; the value is always 1, the version lives in the label.",
 		map[string]string{"version": version.String(), "mode": cfg.Mode},
 		func() float64 { return 1 })
+	// Заполнение диска (находка №40): полный список самометрик молчал про
+	// место — 95% и 100% заполнения выглядели одинаково, сигнала не было
+	// вовсе, только рост отброшенных вставок и провал /readyz постфактум.
+	// ClickHouse отдаёт настоящее свободное/общее место на томе
+	// (system.disks); PostgreSQL честно этого не может — см. docstring
+	// pgUsedBytesSource в storagemetrics.go про то, почему это отдельная,
+	// иначе названная метрика, а не free_bytes/total_bytes с чужим смыслом.
+	// Опрос — фоновый и по таймауту (storagemetrics.go), не на каждый скрап.
+	storagePollers := registerStorageMetrics(&selfMetrics, chDiskSource{conn: ch})
+	go storagePollers.Run(ctx)
+	pgUsedBytes := registerUsedBytesMetric(&selfMetrics, "postgres", pgUsedBytesSource{pool: pg})
+	go pgUsedBytes.Run(ctx)
 
 	// Общие сервисы нужны и ingest-у, и web-у — строим один раз на любой
 	// активный режим, а не дублируем на каждый. alertSvc/emailSender/outbox
@@ -941,9 +874,6 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	go profileRegEval.Run(ctx)
 }
 
-// runEvaluators — запускать ли оценщики в режиме uptime|all. Явное значение
-// переменной перекрывает дефолт (например, чтобы выключить их на реплике,
-// которая крутит только проверки аптайма).
 // detailPolicy — политика раскрытия деталей события получателю уведомления.
 // Одна на процесс и собирается из конфига: раньше каждый нотифаер получал
 // голый bool и сам решал по типу канала, и правило разъезжалось от нотифаера к
@@ -972,6 +902,13 @@ func logDetailPolicy(cfg Config) {
 	}
 }
 
+// runEvaluators — запускать ли оценщики (регрессии производительности,
+// правила по метрикам, регрессии профилей) в реплике, где уже поднят режим
+// аптайма. Дефолт — true: аптайм-реплика исторически единственное место, где
+// они крутятся, и GOTCHA_RUN_EVALUATORS нужен здесь только чтобы явно
+// выключить (false), не включить. В отличие от runEvaluatorsExplicit — та
+// используется в режимах без аптайма, где дефолт был бы двойной оценкой при
+// совместном web+uptime развёртывании, поэтому там нужно явное true.
 func runEvaluators(cfg Config) bool {
 	if cfg.RunEvaluators != nil {
 		return *cfg.RunEvaluators

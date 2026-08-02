@@ -99,6 +99,32 @@ of data should have a number you can look at. A flat zero while retention is
 configured means the purge is not running — and the issue list is showing groups
 whose events are already gone.
 
+**`gotcha_storage_free_bytes{store="…"}`** / **`gotcha_storage_total_bytes{store="…"}`**
+— free and total bytes on the volume where a store physically keeps its data.
+Today only `store="clickhouse"` reports them (ClickHouse's disk system table):
+PostgreSQL has no way to learn the size of the underlying VOLUME over an
+ordinary connection — it knows the size of its own data, not the size of the
+disk under it — so these two never appear under `store="postgres"`; see
+`gotcha_storage_used_bytes` below instead. The value is `NaN`, not `0`, while
+the poll has never succeeded even once. **This is not "give it a couple of
+minutes after startup":** the first poll is synchronous and happens right at
+metric registration, before the port even opens — by the time `/metrics` is
+readable at all, that first poll has already happened. So `NaN` in the output
+means exactly one thing: the poll is failing — for example, the service user
+lacks access to ClickHouse's disk system table, or the query to PostgreSQL is
+missing its timeout. The log carries a matching entry, `storage metrics: poll
+failed`, with `store` and `error` fields that say why. It retries every 5
+minutes; zero wouldn't have worked here instead — it would read as "disk is
+full", not as "the poll is broken".
+
+**`gotcha_storage_used_bytes{store="postgres"}`** — how much disk space
+PostgreSQL's own data currently occupies (the database size). This is **not**
+free space and not the volume's total size — see the previous entry for why
+PostgreSQL can't report those. To gauge how much headroom is left, compare
+this number against the volume size you already know PostgreSQL runs on
+(usually one volume per instance) — by hand: gotcha has no way to learn your
+disk size on its own.
+
 **`gotcha_build_info`** — always 1; the version and mode are in the labels. Use
 it to confirm what is actually deployed.
 
@@ -117,6 +143,33 @@ gotcha_pipeline_queued_tasks / gotcha_pipeline_queue_capacity > 0.5
 The first two are the ones to page on: they mean telemetry has already been
 lost, and no retry will bring it back.
 
+Disk space needs a separate pair of rules per store, not one for both:
+ClickHouse reports a real fraction, PostgreSQL doesn't (see
+`gotcha_storage_used_bytes` above), so its threshold has to be built on a
+growth forecast instead of a percentage.
+
+```
+# ClickHouse: the free fraction is known directly — free and total come from
+# the same system.disks row, so the ratio is honest.
+gotcha_storage_free_bytes{store="clickhouse"} / gotcha_storage_total_bytes{store="clickhouse"} < 0.1
+
+# PostgreSQL: gotcha doesn't know the volume size, so instead of a fraction
+# this forecasts the trend: predict_linear extrapolates used_bytes a day
+# ahead from the last 6 hours of growth. The threshold below is an example
+# for a 20 GB volume (the minimum from the disk requirement), 90% of it —
+# substitute 90% of YOUR known volume size in bytes.
+predict_linear(gotcha_storage_used_bytes{store="postgres"}[6h], 24*3600) > 1.8e10
+```
+
+A comparison against `NaN` never passes, so while the poll has no value both
+rules above stay quiet — they don't fire. That has a consequence worth
+spelling out: **the rule itself won't tell you the poll is broken.** It's
+built for the case where a number exists and crosses the threshold, not for
+the case where there's no number at all. So a failing poll needs its own,
+separate signal — not a threshold on the value, but watching for `NaN` itself
+in the `/metrics` output, or more reliably, for the log entry (`storage
+metrics: poll failed`, with a `store` field).
+
 ## When "some events are missing"
 
 1. **`gotcha_writer_dropped_rows_total` and `gotcha_pipeline_dropped_tasks_total`.**
@@ -128,6 +181,38 @@ lost, and no retry will bring it back.
    answers but events never reach storage.
 3. **Watch the buffer while you investigate.** A flat buffer with no drops means
    ingest is healthy and the problem is upstream of gotcha.
+
+## When disk space is running low
+
+1. **Gauge how full it is.** For ClickHouse, the ratio
+   `gotcha_storage_free_bytes{store="clickhouse"} / gotcha_storage_total_bytes{store="clickhouse"}`:
+   below 10% means you're close to trouble. PostgreSQL has no ready-made
+   fraction — compare `gotcha_storage_used_bytes{store="postgres"}` against the
+   volume size you already know by hand; the growth trend matters more than the
+   raw number, since it tells you how much time is left, not just how much is
+   used right now.
+2. **Check that purging is actually running.** `gotcha_entities_purged_total`
+   should climb whenever `GOTCHA_RETENTION_DAYS` is set; a flat zero means
+   PostgreSQL's purge isn't working even though it should be (see above).
+   ClickHouse's TTL runs automatically, but each kind of data has its own
+   retention period — see [Configuration](/docs/configuration).
+3. **Find what's growing fastest.** By default profiles are the heaviest per
+   byte (`GOTCHA_PROFILE_RETENTION_DAYS`, which is why its default is shorter
+   than the rest — 7 days). If you're sending continuous profiling but not
+   regularly looking at the flamegraphs, that's the first candidate for a
+   shorter retention or turning it off on the SDK side.
+4. **Free space now, rather than waiting on TTL.** Deleting a project
+   ("Project settings" → "Danger zone" → "Delete project") wipes its telemetry
+   from ClickHouse immediately, not gradually — useful for test or abandoned
+   projects that piled up data for nothing.
+5. **If space is consistently tight, shorten retention.** Retention is set
+   separately per kind of data (`GOTCHA_RETENTION_DAYS`,
+   `GOTCHA_SPAN_RETENTION_DAYS`, `GOTCHA_METRIC_RETENTION_DAYS`,
+   `GOTCHA_PROFILE_RETENTION_DAYS` — see [Configuration](/docs/configuration)).
+   The change takes effect on the next start and doesn't retroactively restore
+   anything already deleted; and the freed space doesn't appear instantly
+   either — ClickHouse removes expired data through its normal background
+   merges, not the moment you edit the config.
 
 ## What's next
 
