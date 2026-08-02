@@ -56,6 +56,30 @@ Duration values written to a performance regression before this version were sto
 
 Migration `0030` divides every stored `duration` value by 1000 to bring existing rows in line with the unit the rest of the system now uses. No manual action is needed — the recompute runs automatically as part of the upgrade, exactly like any other migration. Rolling back re-multiplies the same rows, returning them to their previous numbers to the precision floating-point arithmetic allows (values that were an exact multiple of 1000 round-trip exactly; others may differ in a distant decimal digit) — there is nothing to reconcile by hand either way.
 
+## What changes when upgrading from versions before 0.4.2: this upgrade's new indexes build without locking — but check them after upgrading
+
+This upgrade adds twenty-four new indexes across several tables, in three batches: six for the hourly entity cleanup (the janitor, `internal/telemetry/entity_janitor.go`, purges `issues`, `perf_issues`, `incidents`, `perf_regressions`, `profile_regressions`, and `metric_incidents` by last-seen or closed time — none of these tables had an index that matched such a filter, so every pass was a full table scan); sixteen for foreign keys that previously had no index on the referencing side (slows down cascading deletes and joins through them); and two for substring search in the issue list (GIN trigram indexes on `issues.title`/`issues.culprit`).
+
+That many new indexes on disk isn't free — expect a noticeable increase in disk usage, especially from the two GIN trigram indexes: indexes of this kind on text columns typically take up a sizeable fraction of the column's own size. How much your volume actually grows depends on your data volume; we haven't measured a specific figure — after upgrading, keep an eye on the free-space metrics (`gotcha_storage_free_bytes`/`gotcha_storage_total_bytes`/`gotcha_storage_used_bytes`, see [Monitoring gotcha itself](/docs/self-monitoring)).
+
+All twenty-four indexes are built with `CREATE INDEX CONCURRENTLY` — a deliberate choice: a plain `CREATE INDEX` holds the table locked against writes for the entire build, and on a busy table that would have stalled event ingestion for a noticeable stretch. `CONCURRENTLY` avoids that lock, at the cost of one operational quirk.
+
+**If the build is interrupted** (a dropped database connection, an out-of-memory kill, a manual cancel, the process restarting mid-migration) — PostgreSQL does not remove the unfinished index; it leaves it in the catalog marked invalid. On the next run of the same migration, `CREATE INDEX CONCURRENTLY IF NOT EXISTS` sees an object with that name already there and **silently skips creating it** — it does not repair an invalid index. The migration reports success, the schema gate stays green, and the working index is simply not there: the planner ignores invalid indexes, and whatever problem that particular index exists to fix stays unfixed with nothing pointing at it.
+
+So after upgrading — regardless of how uneventful it looked — check:
+
+```sql
+SELECT indexrelid::regclass, indisvalid FROM pg_index WHERE NOT indisvalid;
+```
+
+If the list isn't empty — **any of this upgrade's twenty-four indexes** showing up there had its build interrupted (not just the six janitor indexes — the same goes for the foreign-key and search indexes added by this same upgrade; the list is deliberately not spelled out by name here so it doesn't go stale on the next migration). Fix it:
+
+```sql
+DROP INDEX CONCURRENTLY <index-name>;
+```
+
+then re-apply migrations (restart with `GOTCHA_AUTO_MIGRATE=true`, or run `--migrate-only` again) — this time `IF NOT EXISTS` won't find an object under that name and will build the index from scratch.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:
