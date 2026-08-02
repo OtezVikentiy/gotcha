@@ -1,0 +1,20 @@
+-- backward-compatible: yes (CREATE EXTENSION, тот же приём, что citext в 0001_init)
+--
+-- Находка №46 (вторая половина, подпроект «цена запросов»): поиск в списке
+-- проблем (internal/issue/query.go, buildIssueFilter) идёт через
+-- `issues.title ILIKE $N OR issues.culprit ILIKE $N` — подстрока в
+-- произвольном месте строки, индекс на равенство/префикс (обычный btree) тут
+-- не помогает вовсе. pg_trgm даёт GIN-опкласс (gin_trgm_ops, см. 0054/0055),
+-- который умеет отвечать именно на такой ILIKE-поиск по подстроке.
+--
+-- Расширение — отдельным файлом от индексов: CREATE EXTENSION хоть сам по
+-- себе и не требует CONCURRENTLY, но golang-migrate шлёт содержимое файла
+-- ОДНИМ вызовом ExecContext, а PostgreSQL исполняет строку с несколькими
+-- операторами как одну неявную транзакцию — CREATE INDEX CONCURRENTLY внутри
+-- ЛЮБОГО транзакционного блока запрещён (SQLSTATE 25001), даже если блок
+-- открыт предшествующим, не связанным с CONCURRENTLY оператором. Это то же
+-- самое ограничение, что уже задокументировано в 0031 и закреплено
+-- постоянным тестом (internal/db/experiment_concurrent_index_test.go,
+-- TestConcurrentIndexOnePerExecContext) — здесь оно определяет число файлов
+-- не только между индексами, но и между расширением и первым индексом.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;

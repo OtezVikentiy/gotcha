@@ -1,0 +1,58 @@
+-- backward-compatible: yes (новый индекс)
+--
+-- Находка №46, вторая половина: issues.title участвует в поиске списка
+-- проблем (internal/issue/query.go, buildIssueFilter) через
+-- `issues.title ILIKE $N OR issues.culprit ILIKE $N` — до этой миграции без
+-- единого индекса, подходящего под поиск подстроки. gin_trgm_ops (расширение
+-- pg_trgm, 0053) — GIN-опкласс, который умеет обслуживать ILIKE/LIKE по
+-- подстроке через триграммы, в отличие от обычного btree, годного только на
+-- равенство и префикс.
+--
+-- CONCURRENTLY и один индекс на файл — см. докблок 0031: обычный CREATE INDEX
+-- держит ACCESS EXCLUSIVE на всё время построения; CONCURRENTLY этого не
+-- делает ценой того, что не может идти внутри транзакционного блока (отсюда
+-- и отдельный файл на расширение 0053, и отдельный на второй индекс, 0055).
+--
+-- ЛОВУШКА НЕДОСТРОЕННОГО ИНДЕКСА — та же, что в 0031: сорвавшееся построение
+-- оставляет в каталоге недействительный индекс, IF NOT EXISTS при повторном
+-- накате его молча не чинит. Проверка после наката — та же, что в upgrade.md:
+--   SELECT indexrelid::regclass, indisvalid FROM pg_index WHERE NOT indisvalid;
+--
+-- ЗАМЕР (2026-08-02, полный вывод EXPLAIN в task-8-report.md): 100000 строк
+-- issues в одном проекте (тот же порядок величины, что и замер 0031), из них
+-- 50 (0.05%) содержат искомую подстроку "zzqneedle" В СЕРЕДИНЕ title/culprit,
+-- не в начале — ровно тот случай, для которого существующий btree
+-- (project_id, last_seen) бесполезен, а ILIKE '%...%' не может использовать
+-- префиксную часть обычного индекса. Форма условия в коде (issue/query.go,
+-- buildIssueFilter) НЕ менялась — тот же `title ILIKE $N OR culprit ILIKE $N`
+-- (один параметр на обе стороны OR) оказался совместим с gin_trgm_ops без
+-- единой правки кода.
+--
+-- ДО (ни один trgm-индекс не накачен, только project_id/last_seen btree):
+--   Seq Scan on issues (cost=0.00..3878.00 rows=20 width=0)
+--     Filter: (project_id = 1) AND (title ~~* '%zzqneedle%' OR culprit ~~* '%zzqneedle%')
+--     Rows Removed by Filter: 99950
+--   Execution Time: 141.6 ms (count), 147.6 ms (выборка строк)
+--
+-- ТОЛЬКО ЭТОТ индекс (0054 накачена, 0055 ещё нет) — план НЕ меняется,
+-- по-прежнему Seq Scan, execution time 135.5 ms: одностороннего индекса на OR
+-- из двух колонок недостаточно, планировщик не может построить BitmapOr, пока
+-- не проиндексирована и вторая сторона условия (culprit, см. 0055) — это
+-- проверено эмпирически, а не только выведено логически.
+--
+-- ПОСЛЕ (оба индекса 0054+0055 на месте):
+--   Bitmap Heap Scan on issues (cost=146.41..220.95 rows=20 width=0)
+--     Recheck Cond: (title ~~* '%zzqneedle%' OR culprit ~~* '%zzqneedle%')
+--     ->  BitmapOr
+--           ->  Bitmap Index Scan on issues_title_trgm_idx (cost=0.00..73.20)
+--           ->  Bitmap Index Scan on issues_culprit_trgm_idx (cost=0.00..73.20)
+--   Execution Time: 0.31 ms (count), 0.48 ms (выборка строк)
+--
+-- cost упал в ~17.6 раза (3878.00 → 220.95), execution time — в ~460 раз
+-- (141.6 → 0.31 мс на count). Числа времени выполнения — из финального,
+-- сохранённого прогона (тот же, что дословно приведён в task-8-report.md);
+-- cost детерминирован планировщиком и не зависит от прогона, поэтому
+-- совпадает с любым из них. Полный, дословный вывод EXPLAIN (ANALYZE,
+-- BUFFERS) для обоих запросов (count и выборка страницы) — в task-8-report.md.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS issues_title_trgm_idx
+    ON issues USING gin (title gin_trgm_ops);

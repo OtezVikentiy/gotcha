@@ -95,31 +95,13 @@ func scanIssueWithAssignee(row interface{ Scan(dest ...any) error }, i *Issue) e
 		&i.FirstSeen, &i.LastSeen, &i.TimesSeen, &i.AssigneeID, &i.AssigneeEmail)
 }
 
-// List возвращает страницу issue проекта с фильтрами и total (без учёта пагинации).
-func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue, int64, error) {
-	page := f.Page
-	if page < 1 {
-		page = 1
-	}
-	perPage := f.PerPage
-	if perPage <= 0 {
-		perPage = defaultPerPage
-	}
-	if perPage > maxPerPage {
-		perPage = maxPerPage
-	}
-
-	order, ok := sortColumns[f.Sort]
-	if !ok {
-		order = sortColumns[defaultSort]
-	}
-
+// buildIssueFilter собирает WHERE-условие и позиционные аргументы фильтра —
+// общую часть для запроса строк и отдельного запроса total (см. List): один
+// и тот же набор предикатов должен ограничивать оба запроса одинаково,
+// иначе total и фактически показанный список могли бы разойтись.
+func buildIssueFilter(projectID int64, f Filter) (string, []any) {
 	var sb strings.Builder
-	sb.WriteString("SELECT ")
-	sb.WriteString(issueColumnsJoined)
-	sb.WriteString(", count(*) OVER() AS total FROM ")
-	sb.WriteString(issueFromJoined)
-	sb.WriteString(" WHERE issues.project_id = $1")
+	sb.WriteString("issues.project_id = $1")
 	args := []any{projectID}
 
 	if f.Status != "" {
@@ -148,27 +130,94 @@ func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue,
 		args = append(args, f.Until)
 		fmt.Fprintf(&sb, " AND issues.last_seen <= $%d", len(args))
 	}
+	return sb.String(), args
+}
 
+// List возвращает страницу issue проекта с фильтрами и total (без учёта пагинации).
+//
+// total считается отдельным запросом без JOIN/ORDER BY, а не count(*) OVER()
+// в основном запросе. OVER() без PARTITION BY заставляет планировщик
+// материализовать, отсортировать и обсчитать ВСЕ подходящие строки прежде
+// чем применить LIMIT/OFFSET — при большом числе issue страница 1 стоила бы
+// как чтение всего набора, а не 25 строк. Веб-слой показывает total как
+// точное число страниц пагинатора («{page} / {totalPages}»,
+// internal/web/templates/issues.templ) — то есть точное значение действительно
+// нужно, а не просто признак «есть ли ещё одна страница», и убрать его
+// вовсе нельзя без изменения интерфейса. Отдельный лёгкий count(*) даёт то
+// же число для пагинатора, но не мешает планировщику использовать индекс по
+// колонке сортировки и остановиться после LIMIT строк при выборке самих issue.
+//
+// Счётчик и строки — теперь два отдельных обращения к БД, а не один снимок:
+// между ними приём может записать новую issue, и total разойдётся со
+// списком на единицу-две на границе страницы. Раньше такого расхождения не
+// было вовсе (один запрос — один снимок). Это осознанный размен: цена —
+// временная неточность счётчика страниц, самоисправляющаяся при следующем
+// открытии списка; цена бездействия — полный скан на каждое открытие.
+func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue, int64, error) {
+	page := f.Page
+	if page < 1 {
+		page = 1
+	}
+	perPage := f.PerPage
+	if perPage <= 0 {
+		perPage = defaultPerPage
+	}
+	if perPage > maxPerPage {
+		perPage = maxPerPage
+	}
+
+	order, ok := sortColumns[f.Sort]
+	if !ok {
+		order = sortColumns[defaultSort]
+	}
+
+	where, args := buildIssueFilter(projectID, f)
+	offset := (page - 1) * perPage
+
+	var total int64
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM issues WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("issue: list count: %w", err)
+	}
+	if int64(offset) >= total {
+		// Покрывает и total==0 (offset>=0 всегда), и страницу за пределами
+		// данных (?page=<огромное> или фильтр применён между запросами) —
+		// отдельной проверки на total==0 не нужно, offset неотрицателен.
+		//
+		// Раньше count(*) OVER() сидел в ТОМ ЖЕ запросе, что и LIMIT/OFFSET —
+		// на пустой странице клиент не получал ни одной строки и,
+		// соответственно, ни одного значения total, поэтому total оставался
+		// нулём (zero value). Шаблон (issues.templ, pagerPrev) на это
+		// опирается буквально: total<=0 читается как «страницы нет, веди на
+		// первую», а не как «страница X из total». Раз total теперь считается
+		// отдельным запросом ДО пагинации, он был бы больше нуля и на
+		// out-of-range странице — это изменило бы поведение пагинатора,
+		// поэтому здесь тот же нулевой total воспроизведён явно.
+		return nil, 0, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("SELECT ")
+	sb.WriteString(issueColumnsJoined)
+	sb.WriteString(" FROM ")
+	sb.WriteString(issueFromJoined)
+	sb.WriteString(" WHERE ")
+	sb.WriteString(where)
 	sb.WriteString(" ORDER BY ")
 	sb.WriteString(order)
 
-	args = append(args, perPage)
-	fmt.Fprintf(&sb, " LIMIT $%d", len(args))
-	args = append(args, (page-1)*perPage)
-	fmt.Fprintf(&sb, " OFFSET $%d", len(args))
+	rowArgs := append(append([]any{}, args...), perPage, offset)
+	fmt.Fprintf(&sb, " LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 
-	rows, err := s.pool.Query(ctx, sb.String(), args...)
+	rows, err := s.pool.Query(ctx, sb.String(), rowArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("issue: list: %w", err)
 	}
 	defer rows.Close()
 
 	var items []Issue
-	var total int64
 	for rows.Next() {
 		var i Issue
-		if err := rows.Scan(&i.ID, &i.ProjectID, &i.Fingerprint, &i.Title, &i.Culprit, &i.Level, &i.Status,
-			&i.FirstSeen, &i.LastSeen, &i.TimesSeen, &i.AssigneeID, &i.AssigneeEmail, &total); err != nil {
+		if err := scanIssueWithAssignee(rows, &i); err != nil {
 			return nil, 0, fmt.Errorf("issue: list scan: %w", err)
 		}
 		items = append(items, i)

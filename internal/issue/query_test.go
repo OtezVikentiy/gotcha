@@ -3,6 +3,7 @@ package issue_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -466,5 +467,94 @@ func TestEnvironmentsListAndAssigneeEmail(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("prod issue not found in list result")
+	}
+}
+
+// TestIssueListSameResultWithoutWindowCount: total ушёл из основного запроса
+// (count(*) OVER() → отдельный count(*) без JOIN/ORDER BY, см. List), поэтому
+// нужно доказать, что список, его порядок и total не изменились — оптимизация,
+// поменявшая выдачу, это дефект, а не оптимизация.
+//
+// n кратно perPage (30 issue при perPage=10 → ровно три полные страницы) —
+// специально, а не 25: так следующая, четвёртая страница даёт offset,
+// РОВНО совпадающий с total (30 == 30), а не просто больший — граница
+// `offset >= total` в List иначе проверялась бы только строгим неравенством,
+// а именно на равенстве такие правки чаще всего и ломаются при переработке.
+func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+
+	const n = 30
+	ids := make([]int64, n)
+	for i := 0; i < n; i++ {
+		fp := fmt.Sprintf("fp-window-%02d", i)
+		r, err := svc.Upsert(ctx, pid, fp, fp, "", "error", "", t0.Add(time.Duration(i)*time.Second))
+		if err != nil {
+			t.Fatalf("upsert %s: %v", fp, err)
+		}
+		ids[i] = r.IssueID
+	}
+	// last_seen DESC: последний засеянный (i=n-1, самый поздний t0+29s) первый.
+	wantOrder := make([]int64, n)
+	for i := 0; i < n; i++ {
+		wantOrder[i] = ids[n-1-i]
+	}
+
+	const perPage = 10
+	const lastPage = n / perPage // 3 полные страницы, без остатка
+	var gotOrder []int64
+	var totals []int64
+	for page := 1; page <= lastPage; page++ {
+		items, total, err := svc.List(ctx, pid, issue.Filter{PerPage: perPage, Page: page})
+		if err != nil {
+			t.Fatalf("list page %d: %v", page, err)
+		}
+		totals = append(totals, total)
+		for _, it := range items {
+			gotOrder = append(gotOrder, it.ID)
+		}
+		if len(items) != perPage {
+			t.Fatalf("page %d: len=%d, want %d", page, len(items), perPage)
+		}
+	}
+
+	if !reflect.DeepEqual(gotOrder, wantOrder) {
+		t.Fatalf("порядок по %d страницам не совпал с ожидаемым:\ngot:  %v\nwant: %v", lastPage, gotOrder, wantOrder)
+	}
+	for i, total := range totals {
+		if total != n {
+			t.Fatalf("страница %d: total=%d, want %d (total должен быть одинаковым на каждой странице)", i+1, total, n)
+		}
+	}
+
+	// Точная граница: страница lastPage+1 даёт offset = lastPage*perPage = n —
+	// РОВНО равно total, не больше. Ожидаем тот же total=0/items=nil, что и
+	// строго за пределами данных: сравнение в List — `offset >= total`, и
+	// именно случай равенства здесь и проверяется, а не только «больше».
+	exactBoundary, total, err := svc.List(ctx, pid, issue.Filter{PerPage: perPage, Page: lastPage + 1})
+	if err != nil {
+		t.Fatalf("list exact boundary: %v", err)
+	}
+	if total != 0 || len(exactBoundary) != 0 {
+		t.Fatalf("страница на точной границе (offset==total==%d): total=%d len=%d, want 0 и 0", n, total, len(exactBoundary))
+	}
+
+	// Страница за пределами данных: total=0, items=nil — тот же результат, что
+	// раньше давал count(*) OVER() в одном запросе с LIMIT/OFFSET (если
+	// смещение выходит за пределы набора, строк не возвращается вовсе, а
+	// значит total, который заполнялся сканированием строки, оставался нулём).
+	// Шаблон пагинации (issues.templ, pagerPrev) читает total<=0 как «страницы
+	// нет — веди на первую», поэтому это поведение обязано быть сохранено
+	// буквально, а не только «в целом эквивалентно».
+	outOfRange, total, err := svc.List(ctx, pid, issue.Filter{PerPage: perPage, Page: 100})
+	if err != nil {
+		t.Fatalf("list out of range: %v", err)
+	}
+	if total != 0 || len(outOfRange) != 0 {
+		t.Fatalf("страница за пределами данных: total=%d len=%d, want 0 и 0", total, len(outOfRange))
 	}
 }
