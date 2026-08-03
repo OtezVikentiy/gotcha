@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"math"
 	"regexp"
 	"strconv"
@@ -120,6 +121,136 @@ func TestControlBorderMeetsContrast(t *testing.T) {
 				t.Errorf("[%s] --border-control на --%s = %.2f:1, нужно %.1f:1",
 					theme, bgName, got, want)
 			}
+		}
+	}
+}
+
+// TestAvailabilityBarFillTokens: заливки полоски доступности — не текст, их
+// светлоту можно и нужно разводить (№28): попарно ≥3:1, чтобы состояния
+// различались и без цветового зрения, и ≥1.5:1 к карточке, чтобы корзина не
+// сливалась с фоном. Глобальные --good/--partial/--danger прижаты к текстовому
+// 4.5:1 и разводке не подлежат — поэтому у полоски свои токены.
+func TestAvailabilityBarFillTokens(t *testing.T) {
+	for _, theme := range []string{"dark", "light"} {
+		tokens := themeTokens(t, theme)
+		up, pa, dn := tokens["bar-up"], tokens["bar-partial"], tokens["bar-down"]
+		if up == "" || pa == "" || dn == "" {
+			t.Fatalf("[%s] нет токенов --bar-up/--bar-partial/--bar-down", theme)
+		}
+		pairs := []struct{ a, b, name string }{
+			{up, pa, "up~partial"}, {pa, dn, "partial~down"}, {up, dn, "up~down"},
+		}
+		for _, p := range pairs {
+			if got := contrast(p.a, p.b); got < 3.0 {
+				t.Errorf("[%s] %s = %.2f:1, нужно ≥3:1", theme, p.name, got)
+			}
+		}
+		for name, hex := range map[string]string{"bar-up": up, "bar-partial": pa, "bar-down": dn} {
+			if got := contrast(hex, tokens["surface"]); got < 1.5 {
+				t.Errorf("[%s] --%s на --surface = %.2f:1, нужно ≥1.5:1", theme, name, got)
+			}
+		}
+	}
+}
+
+// rgbaTokenRe — полупрозрачные токены вида rgba(96, 132, 255, .12).
+var rgbaTokenRe = regexp.MustCompile(`--([a-z0-9-]+):\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([0-9.]+)\)\s*;`)
+
+// compositeToken накладывает полупрозрачный токен на подложку и возвращает
+// итоговый непрозрачный hex — то, что реально видит глаз.
+func compositeToken(t *testing.T, theme, name, bgHex string) string {
+	t.Helper()
+	css := mustAppCSS(t)
+	var block string
+	switch theme {
+	case "dark":
+		start := strings.Index(css, ":root {")
+		block = css[start : start+strings.Index(css[start:], "\n}")]
+	case "light":
+		start := strings.Index(css, `:root[data-theme="light"] {`)
+		block = css[start : start+strings.Index(css[start:], "\n}")]
+	}
+	for _, m := range rgbaTokenRe.FindAllStringSubmatch(block, -1) {
+		if m[1] != name {
+			continue
+		}
+		r, _ := strconv.Atoi(m[2])
+		g, _ := strconv.Atoi(m[3])
+		b, _ := strconv.Atoi(m[4])
+		a, _ := strconv.ParseFloat(m[5], 64)
+		br, _ := strconv.ParseInt(strings.TrimPrefix(bgHex, "#")[0:2], 16, 32)
+		bg, _ := strconv.ParseInt(strings.TrimPrefix(bgHex, "#")[2:4], 16, 32)
+		bb, _ := strconv.ParseInt(strings.TrimPrefix(bgHex, "#")[4:6], 16, 32)
+		mix := func(c int, b int64) int64 { return int64(float64(c)*a + float64(b)*(1-a) + 0.5) }
+		return fmt.Sprintf("#%02x%02x%02x", mix(r, br), mix(g, bg), mix(b, bb))
+	}
+	t.Fatalf("[%s] rgba-токен --%s не найден", theme, name)
+	return ""
+}
+
+// cssRuleBody — тело первого блока по литеральному селектору (для точечных
+// проверок «этот селектор больше не делает X»).
+func cssRuleBody(css, sel string) string {
+	i := strings.Index(css, sel)
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(css[i:], "}")
+	return css[i : i+j]
+}
+
+// TestSegmentedActiveTextContrast: подпись активного сегмента — текст на
+// подложке --accent-soft, ей нужен 4.5:1 (№30). --accent на этой подложке
+// давал 2.98:1 в тёмной теме; --link рассчитан как текст и проходит.
+func TestSegmentedActiveTextContrast(t *testing.T) {
+	css := mustAppCSS(t)
+	if !strings.Contains(css, ".segmented label:has(input:checked)") ||
+		strings.Contains(cssRuleBody(css, ".segmented label:has(input:checked)"), "var(--accent);") {
+		t.Errorf(".segmented активный сегмент всё ещё красит текст в --accent")
+	}
+	for _, theme := range []string{"dark", "light"} {
+		tokens := themeTokens(t, theme)
+		soft := compositeToken(t, theme, "accent-soft", tokens["surface"])
+		if got := contrast(tokens["link"], soft); got < 4.5 {
+			t.Errorf("[%s] --link на --accent-soft⊕--surface = %.2f:1, нужно ≥4.5:1", theme, got)
+		}
+	}
+}
+
+// TestLatencyPhaseTokens: фазы запроса (DNS→TCP→TLS→TTFB) — заливки на
+// карточке: каждая ≥3:1 к --surface, соседние различимы (≥1.3:1), светлота
+// растёт монотонно — «бренд-градиент кодирует последовательность фаз»
+// остаётся правдой в обеих темах (№74: TTFB #c3b8fc давал 1.81:1 на светлой).
+func TestLatencyPhaseTokens(t *testing.T) {
+	order := []string{"phase-dns", "phase-tcp", "phase-tls", "phase-ttfb"}
+	for _, theme := range []string{"dark", "light"} {
+		tokens := themeTokens(t, theme)
+		for _, name := range order {
+			if tokens[name] == "" {
+				t.Fatalf("[%s] нет токена --%s", theme, name)
+			}
+			if got := contrast(tokens[name], tokens["surface"]); got < 3.0 {
+				t.Errorf("[%s] --%s на --surface = %.2f:1, нужно ≥3:1", theme, name, got)
+			}
+		}
+		for i := 0; i+1 < len(order); i++ {
+			a, b := tokens[order[i]], tokens[order[i+1]]
+			if got := contrast(a, b); got < 1.3 {
+				t.Errorf("[%s] соседние %s~%s = %.2f:1, нужно ≥1.3:1", theme, order[i], order[i+1], got)
+			}
+			if luminance(b) <= luminance(a) {
+				t.Errorf("[%s] светлота не монотонна: %s ≤ %s", theme, order[i+1], order[i])
+			}
+		}
+	}
+	// Оба места отрисовки читают токены, а не литералы — рассинхрон графика
+	// с легендой (№74) невозможен по построению.
+	css := mustAppCSS(t)
+	for _, want := range []string{
+		".latency-chart .seg-dns", ".legend-dns::before",
+	} {
+		if !strings.Contains(cssRuleBody(css, want), "var(--phase-dns)") {
+			t.Errorf("%s не использует var(--phase-dns)", want)
 		}
 	}
 }

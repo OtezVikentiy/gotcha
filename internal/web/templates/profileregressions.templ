@@ -74,16 +74,16 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 			@breadcrumbBackTo(templ.URL(profilesBasePath(projectID)), i18n.T(ctx, "nav.profiles"))
 			<h1>{ i18n.T(ctx, "profiles.regressions.title") }</h1>
 			@helpPanel("profileregressions", "profiling")
-			<nav class="tabs">
+			<nav class="tabs" aria-label={ i18n.T(ctx, "filter.status") }>
 				@profileRegStatusTab(projectID, "open", i18n.T(ctx, "perf.tab.open"), filter)
 				@profileRegStatusTab(projectID, "resolved", i18n.T(ctx, "issues.status.resolved"), filter)
 				@profileRegStatusTab(projectID, "all", i18n.T(ctx, "perf.tab.all"), filter)
 			</nav>
 			if len(regressions) == 0 {
-				@emptyState("zap", "profiles.regressions.empty.title", "profiles.regressions.empty.body", "", "")
+				@emptyState("zap", "profiles.regressions.empty.title", "profiles.regressions.empty.body", "", "", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "profiles.regressions.title") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -110,7 +110,7 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				</div>
 			}
 		</div>

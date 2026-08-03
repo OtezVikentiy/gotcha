@@ -7,10 +7,20 @@ import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 // Пустой ctaKey → без кнопки (информационное пустое состояние — «пусто и это
 // норма»). ctaHref может быть внешним путём внутри приложения (напр. на
 // документацию или форму создания).
-templ emptyState(iconName, titleKey, bodyKey, ctaKey, ctaHref string) {
+//
+// level — уровень заголовка пустого состояния: он продолжает структуру
+// страницы вокруг (после <h1> списка — 2, внутри секции/карточки с <h2>/<h3>
+// — 3), а не фиксированный <h3>, из-за которого структура прыгала h1→h3
+// (№78, WCAG 1.3.1). templ не умеет динамическое имя тега — поэтому switch.
+templ emptyState(iconName, titleKey, bodyKey, ctaKey, ctaHref string, level int) {
 	<div class="empty-state">
 		@icon(iconName)
-		<h3 class="empty-title">{ i18n.T(ctx, titleKey) }</h3>
+		switch level {
+			case 2:
+				<h2 class="empty-title">{ i18n.T(ctx, titleKey) }</h2>
+			default:
+				<h3 class="empty-title">{ i18n.T(ctx, titleKey) }</h3>
+		}
 		<p>{ i18n.T(ctx, bodyKey) }</p>
 		if ctaKey != "" {
 			<a class="btn btn-primary empty-cta" href={ templ.SafeURL(ctaHref) }>{ i18n.T(ctx, ctaKey) }</a>

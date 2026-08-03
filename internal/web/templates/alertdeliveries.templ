@@ -46,10 +46,10 @@ templ AlertDeliveries(projectID int64, failed []notify.FailedJob, userEmail stri
 			<h1>{ i18n.T(ctx, "alerts.deliveries.title") }</h1>
 			@helpPanel("alertdeliveries", "alerts")
 			if len(failed) == 0 {
-				@emptyState("bell", "alerts.deliveries.empty.title", "alerts.deliveries.empty.body", "", "")
+				@emptyState("bell", "alerts.deliveries.empty.title", "alerts.deliveries.empty.body", "", "", 2)
 			} else {
 				<div class="card">
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "alerts.deliveries.title") {
 							<table class="data-table">
 								<thead>
 									<tr>
@@ -67,7 +67,7 @@ templ AlertDeliveries(projectID int64, failed []notify.FailedJob, userEmail stri
 									}
 								</tbody>
 							</table>
-					</div>
+					}
 				</div>
 			}
 		</div>

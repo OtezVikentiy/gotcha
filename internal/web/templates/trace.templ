@@ -92,9 +92,9 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 			if d.TotalRows > d.ShownRows {
 				<p class="trace-cap-note">{ i18n.Tf(ctx, "trace.truncated", "shown", strconv.Itoa(d.ShownRows), "total", strconv.Itoa(d.TotalRows)) }</p>
 			}
-			<div class="card trace-waterfall">
+			@scrollRegion("card trace-waterfall", "region.trace.waterfall") {
 				@d.Waterfall
-			</div>
+			}
 		</div>
 	}
 }
@@ -109,7 +109,7 @@ type TraceFlameData struct {
 // время трейса, со ссылкой назад на waterfall.
 templ TraceFlame(d TraceFlameData, userEmail string) {
 	@layout(i18n.T(ctx, "trace.flame.title"), userEmail) {
-		<div class="trace-flame">
+		@scrollRegion("trace-flame", "region.trace.flame") {
 			@breadcrumbBack(templ.URL("/traces/" + d.TraceID), i18n.T(ctx, "trace.waterfall_link"))
 			<h1>{ i18n.T(ctx, "trace.flame.title") }</h1>
 			<div class="monitor-meta">
@@ -118,9 +118,9 @@ templ TraceFlame(d TraceFlameData, userEmail string) {
 					<div class="stat-value">{ d.TraceID }</div>
 				</div>
 			</div>
-			<div class="card flamegraph-wrap">
+			@scrollRegion("card flamegraph-wrap", "trace.flame.title") {
 				@d.Chart
-			</div>
-		</div>
+			}
+		}
 	}
 }

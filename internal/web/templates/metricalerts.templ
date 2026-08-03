@@ -81,10 +81,10 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 			@createTrigger("new-metric-rule", "metrics.alerts.new_rule")
 			<h2>{ i18n.T(ctx, "metrics.alerts.rules") }</h2>
 			if len(rules) == 0 {
-				@emptyState("bell", "metrics.alerts.rules.empty.title", "metrics.alerts.rules.empty.body", "", "")
+				@emptyState("bell", "metrics.alerts.rules.empty.title", "metrics.alerts.rules.empty.body", "", "", 3)
 			} else {
 				<div class="card">
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "metrics.alerts.rules") {
 							<table class="data-table">
 								<thead>
 									<tr>
@@ -118,15 +118,15 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 									}
 								</tbody>
 							</table>
-					</div>
+					}
 				</div>
 			}
 			<h2>{ i18n.T(ctx, "metrics.alerts.incidents") }</h2>
 			if len(incidents) == 0 {
-				@emptyState("activity", "metrics.alerts.incidents.empty.title", "metrics.alerts.incidents.empty.body", "", "")
+				@emptyState("activity", "metrics.alerts.incidents.empty.title", "metrics.alerts.incidents.empty.body", "", "", 3)
 			} else {
 				<div class="card">
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "metrics.alerts.incidents") {
 							<table class="data-table">
 								<thead>
 									<tr>
@@ -147,19 +147,33 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 									}
 								</tbody>
 							</table>
-					</div>
+					}
 				</div>
 			}
 			@createModalOpen("new-metric-rule", "metrics.alerts.new_rule", false, form.Has()) {
 				<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
+					// Без role="alert": фокус в модалку переносит modal.js (№80),
+					// ошибка привязана к полю метрики через aria-describedby.
 					if errMsg != "" {
-						<p class="error" role="alert">{ errMsg }</p>
+						<p class="error" id="new-metric-rule-error">{ errMsg }</p>
 					}
 					<div class="form-grid">
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.metric") }
-							<input type="text" name="metric_name" required placeholder="http.server.duration" class="input" list="known-metrics" value={ form.Get("metric_name", "") }/>
+							<input
+								type="text"
+								name="metric_name"
+								required
+								placeholder="http.server.duration"
+								class="input"
+								list="known-metrics"
+								value={ form.Get("metric_name", "") }
+								if errMsg != "" {
+									aria-invalid="true"
+									aria-describedby="new-metric-rule-error"
+								}
+							/>
 							// datalist, а не select: правило можно завести и на метрику,
 							// которая ещё не приходила (новый сервис только выкатывают),
 							// но опечатка в уже известном имени больше не проходит молча.

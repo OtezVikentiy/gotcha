@@ -211,27 +211,29 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 			<div class="settings-grid">
 			<section class="card card--wide">
 				<h2 class="card-header">{ i18n.T(ctx, "org.members.title") }</h2>
-				<div class="scroll-list"><table class="data-table">
-					<thead>
-						<tr>
-							<th scope="col">{ i18n.T(ctx, "org.members.table.email") }</th>
-							<th scope="col">{ i18n.T(ctx, "org.members.table.role") }</th>
-							<th scope="col"></th>
-							<th scope="col"></th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, m := range members {
-							@memberRow(o.ID, m, m.UserID == uid, viewerIsOwner(members, uid))
-						}
-					</tbody>
-				</table></div>
+				@scrollRegion("scroll-list", "org.members.title") {
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th scope="col">{ i18n.T(ctx, "org.members.table.email") }</th>
+								<th scope="col">{ i18n.T(ctx, "org.members.table.role") }</th>
+								<th scope="col"></th>
+								<th scope="col"></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, m := range members {
+								@memberRow(o.ID, m, m.UserID == uid, viewerIsOwner(members, uid))
+							}
+						</tbody>
+					</table>
+				}
 			</section>
 			<section class="card card--wide rate-guard-card">
 				<h2 class="card-header">{ i18n.T(ctx, "org.quota.title") }</h2>
 				<p class="hint">{ i18n.T(ctx, "org.quota.hint") }</p>
 				<form method="post" action={ templ.URL(orgSettingsQuotaPath(o.ID)) } class="org-quota-form">
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "org.quota.title") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -246,7 +248,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 								}
 							</tbody>
 						</table>
-					</div>
+					}
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "org.quota.submit") }</button>
 				</form>
 			</section>
@@ -577,10 +579,10 @@ templ pendingInvites(orgID int64, invites []org.PendingInvite) {
 	<div class="pending-invites">
 		<h3>{ i18n.T(ctx, "org.invite.pending_title") }</h3>
 		if len(invites) == 0 {
-			<p class="muted">{ i18n.T(ctx, "org.invite.pending_empty") }</p>
+			<p class="hint">{ i18n.T(ctx, "org.invite.pending_empty") }</p>
 		} else {
-			<p class="muted">{ i18n.T(ctx, "org.invite.pending_hint") }</p>
-			<div class="table-scroll">
+			<p class="hint">{ i18n.T(ctx, "org.invite.pending_hint") }</p>
+			@scrollRegion("table-scroll", "org.invite.pending_title") {
 				<table class="data-table">
 					<thead>
 						<tr>
@@ -600,14 +602,14 @@ templ pendingInvites(orgID int64, invites []org.PendingInvite) {
 									<form method="post" action={ templ.URL(orgSettingsInviteRevokePath(orgID)) }>
 										<input type="hidden" name="invite_id" value={ strconv.FormatInt(inv.ID, 10) }/>
 										<input type="hidden" name="email" value={ inv.Email }/>
-										<button type="submit" class="btn btn-danger btn-sm">{ i18n.T(ctx, "org.invite.revoke") }</button>
+										<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "org.invite.revoke") }</button>
 									</form>
 								</td>
 							</tr>
 						}
 					</tbody>
 				</table>
-			</div>
+			}
 		}
 	</div>
 }

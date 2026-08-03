@@ -78,9 +78,9 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 			<section class="card">
 				<h2 class="card-header">{ i18n.T(ctx, "profile.linked.title") }</h2>
 				if len(linked) == 0 {
-					@emptyState("user", "profile.linked.empty.title", "profile.linked.empty.body", "", "")
+					@emptyState("user", "profile.linked.empty.title", "profile.linked.empty.body", "", "", 3)
 				} else {
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "profile.linked.title") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -112,7 +112,7 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 								}
 							</tbody>
 						</table>
-					</div>
+					}
 				}
 				if len(linkable) > 0 {
 					<div class="oauth-buttons">

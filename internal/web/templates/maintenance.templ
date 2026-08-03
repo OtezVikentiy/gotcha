@@ -167,13 +167,19 @@ templ windowRow(projectID int64, w uptime.Window, form FormState, errMsg string)
 // windowEditModal — правка окна обслуживания теми же полями, что и создание.
 templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg string) {
 	{{ open := form.Opens(EditWindowModalID(w.ID)) }}
+	{{ errID := "" }}
+	if errMsg != "" && open {
+		{{ errID = EditWindowModalID(w.ID) + "-error" }}
+	}
 	@createModalOpen(EditWindowModalID(w.ID), "uptime.maintenance.edit.title", false, open) {
 		<form method="post" action={ templ.URL(maintenanceUpdatePath(projectID)) } class="maintenance-form">
-			if errMsg != "" && open {
-				<p class="error" role="alert">{ errMsg }</p>
+			// Без role="alert": фокус в модалку переносит modal.js (№80),
+			// ошибка привязана к полю имени (maintenanceFields) через errID.
+			if errID != "" {
+				<p class="error" id={ errID }>{ errMsg }</p>
 			}
 			<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
-			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit")
+			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit", errID)
 		</form>
 	}
 }
@@ -186,15 +192,32 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 //
 // values — что показывать в полях: введённое человеком после ошибки либо
 // значения самого окна; см. windowFormValues.
-templ maintenanceFields(values FormState, submitKey string) {
+//
+// errID — id блока ошибки валидации в вызывающей модалке (пустой, если
+// ошибки нет): первое текстовое поле получает aria-invalid/aria-describedby,
+// чтобы скринридер связал сообщение с полем (№80).
+templ maintenanceFields(values FormState, submitKey string, errID string) {
 	<div class="field">
 		<label>
 			{ i18n.T(ctx, "uptime.maintenance.field.name") }
-			<input type="text" name="name" required class="input" value={ values.Get("name", "") }/>
+			<input
+				type="text"
+				name="name"
+				required
+				class="input"
+				value={ values.Get("name", "") }
+				if errID != "" {
+					aria-invalid="true"
+					aria-describedby={ errID }
+				}
+			/>
 		</label>
 	</div>
-	<div class="field">
-		<span class="field-label">{ i18n.T(ctx, "uptime.maintenance.field.kind") }</span>
+	<fieldset class="field">
+		// fieldset/legend, а не span: без группы скринридер читает «Разовое» и
+		// «Еженедельное» как одиночные radio без общего вопроса (№79,
+		// WCAG 1.3.1). Визуально ничего не меняется — рамка снята в app.css.
+		<legend class="field-label">{ i18n.T(ctx, "uptime.maintenance.field.kind") }</legend>
 		<div class="segmented">
 			<label>
 				if values.Selected("kind", "oneoff", "oneoff") {
@@ -213,7 +236,7 @@ templ maintenanceFields(values FormState, submitKey string) {
 				{ i18n.T(ctx, "uptime.maintenance.kind.weekly_label") }
 			</label>
 		</div>
-	</div>
+	</fieldset>
 	// Показывается только выбранный блок: тип окна — «либо-либо», хендлер
 	// берёт поля только выбранной ветки (см. maintenance.go), поэтому второй
 	// блок при активном первом только сбивал бы с толку. Скрытие — чистый CSS
@@ -305,9 +328,9 @@ templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errM
 			<section class="card">
 				<h2 class="card-header">{ i18n.T(ctx, "uptime.maintenance.list_title") }</h2>
 				if len(windows) == 0 {
-					@emptyState("clock", "uptime.maintenance.empty.title", "uptime.maintenance.empty.body", "", "")
+					@emptyState("clock", "uptime.maintenance.empty.title", "uptime.maintenance.empty.body", "", "", 3)
 				} else {
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "uptime.maintenance.list_title") {
 							<table class="data-table">
 								<thead>
 									<tr>
@@ -323,16 +346,22 @@ templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errM
 									}
 								</tbody>
 							</table>
-					</div>
+					}
 				}
 			</section>
 
+			{{ createErrID := "" }}
+			if errMsg != "" && form.Opens("new-maintenance-window") {
+				{{ createErrID = "new-maintenance-window-error" }}
+			}
 			@createModalOpen("new-maintenance-window", "uptime.maintenance.new_title", false, form.Opens("new-maintenance-window")) {
 			<form method="post" action={ templ.URL(maintenancePath(projectID)) } class="maintenance-form">
-				if errMsg != "" && form.Opens("new-maintenance-window") {
-					<p class="error" role="alert">{ errMsg }</p>
+				// Без role="alert": фокус в модалку переносит modal.js (№80),
+				// ошибка привязана к полю имени (maintenanceFields) через errID.
+				if createErrID != "" {
+					<p class="error" id={ createErrID }>{ errMsg }</p>
 				}
-				@maintenanceFields(form, "uptime.maintenance.submit")
+				@maintenanceFields(form, "uptime.maintenance.submit", createErrID)
 			</form>
 			}
 		</div>

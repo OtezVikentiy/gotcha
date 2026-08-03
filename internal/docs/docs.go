@@ -4,13 +4,21 @@ package docs
 
 import (
 	"bytes"
+	"context"
 	"embed"
+	"html"
 	"strings"
 	"sync"
 
 	"github.com/yuin/goldmark"
+	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/util"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
 //go:embed ru/*.md en/*.md
@@ -55,17 +63,55 @@ var registry = []struct{ Slug, Group string }{
 	{"sdk", "docs.group.integrations"},
 }
 
-// md — рендерер документации.
+// docsTableRenderer оборачивает каждую таблицу в тот же скролл-контейнер, что
+// scrollRegion в шаблонах (№31/№75): role=table возвращается в дерево
+// доступности (display:block с таблицы снят в app.css), а прокрутка и
+// клавиатурный доступ живут на обёртке.
+type docsTableRenderer struct{ label string }
+
+func (r *docsTableRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(extast.KindTable, r.renderTable)
+}
+
+func (r *docsTableRenderer) renderTable(w util.BufWriter, _ []byte, _ gast.Node, entering bool) (gast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString(`<div class="table-scroll" tabindex="0" role="region" aria-label="` + html.EscapeString(r.label) + `"><table>`)
+	} else {
+		_, _ = w.WriteString(`</table></div>`)
+	}
+	return gast.WalkContinue, nil
+}
+
+// mdFor — рендерер документации для локали: подпись региона таблицы берётся
+// из каталога, сам goldmark собирается один раз на локаль.
 //
 // GFM даёт таблицы и автоссылки; WithUnsafe НЕ включён, поэтому raw HTML
 // экранируется. WithAutoHeadingID проставляет заголовкам id: без него якорных
 // ссылок не существовало вовсе, при том что тексты уже ссылаются на разделы
 // прозой («см. раздел о внешних получателях ниже»), а браузерная кнопка
 // «поделиться ссылкой на этот абзац» не работала ни на одной странице.
-var md = goldmark.New(
-	goldmark.WithExtensions(extension.GFM),
-	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+var (
+	mdMu    sync.Mutex
+	mdByLoc = map[string]goldmark.Markdown{}
 )
+
+func mdFor(loc string) goldmark.Markdown {
+	mdMu.Lock()
+	defer mdMu.Unlock()
+	if m, ok := mdByLoc[loc]; ok {
+		return m
+	}
+	label := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: loc}), "docs.table_region")
+	m := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+		goldmark.WithRendererOptions(renderer.WithNodeRenderers(
+			util.Prioritized(&docsTableRenderer{label: label}, 100),
+		)),
+	)
+	mdByLoc[loc] = m
+	return m
+}
 
 type rendered struct {
 	html  string
@@ -122,7 +168,7 @@ func Render(locale, slug string) (string, string, bool) {
 	// идентификаторов, и общий на все страницы начал бы приписывать суффиксы
 	// «-1», «-2» заголовкам разных документов.
 	ctx := parser.NewContext(parser.WithIDs(newTranslitIDs()))
-	if err := md.Convert(data, &buf, parser.WithContext(ctx)); err != nil {
+	if err := mdFor(loc).Convert(data, &buf, parser.WithContext(ctx)); err != nil {
 		return "", "", false
 	}
 	r := rendered{html: buf.String(), title: title}

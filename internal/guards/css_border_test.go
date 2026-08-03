@@ -263,46 +263,13 @@ func lastBorderColorValue(body string) (value string, ok bool) {
 }
 
 // debtControlBorderExemptions — интерактивные селекторы, у которых
-// последнее объявление цвета границы всё ещё ссылается на декоративный
-// --border вместо --border-control (№32 (FE-5) по аудиту — сам сторож,
-// вскрывший эти находки, чинит №53/QA-10 и №33/FE-6). Находка, а не
-// постоянное решение: чинит подпроект G, снижая потолок по мере правок.
-//
-// Аудит перечислял ~13-15 строк-ориентиров; из них у этого прогона
-// подтвердились все, КРОМЕ ".time-range" (в известном списке аудита была
-// строка ~1187, но сам селектор ".time-range" — обёртка вокруг пресета и
-// дат, ни один из interactiveSelectors её не упоминает: она не элемент
-// управления сама по себе, интерактивны вложенные .select/.time-range-input,
-// которые в списке ниже есть отдельно). Сверх аудита нашлись ТРИ новых места
-// той же природы — вся оставшаяся семья .dr-* (див попапа выбора дат и его
-// внутренние разделители), которую аудит упомянул только частично
-// (.dr-trigger, .dr-nav): .dr-popup, .dr-presets, .dr-foot. Подробности и
-// итог прогона — в task-6-report.md.
-var debtControlBorderExemptions = []Exemption{
-	{Value: ".proj-switch summary", Why: "рамка переключателя проектов в сайдбаре — на --border вместо --border-control", Finding: "№32 (FE-5)"},
-	{Value: ".lang-switcher, .theme-toggle", Why: "внешняя рамка переключателей языка и темы — та самая пара, ради которой --border-control и вводили", Finding: "№32 (FE-5)"},
-	{Value: "input", Why: "глобальный <input> — базовая рамка текстовых полей на --border", Finding: "№32 (FE-5)"},
-	{Value: ".time-range-input", Why: "поля произвольного диапазона дат в обойме .time-range", Finding: "№32 (FE-5)"},
-	{Value: ".dr-trigger", Why: "кнопка-триггер попапа выбора дат", Finding: "№32 (FE-5)"},
-	{Value: ".dr-popup", Why: "рамка самого попапа выбора дат (найдено сверх аудита — та же семья .dr-*, что и .dr-trigger/.dr-nav)", Finding: "№32 (FE-5)"},
-	{Value: ".dr-presets", Why: "разделитель колонки пресетов внутри попапа выбора дат (border-right; найдено сверх аудита)", Finding: "№32 (FE-5)"},
-	{Value: ".dr-nav", Why: "стрелки навигации по месяцам в попапе выбора дат", Finding: "№32 (FE-5)"},
-	{Value: ".dr-foot", Why: "разделитель подвала попапа выбора дат (border-top; найдено сверх аудита)", Finding: "№32 (FE-5)"},
-	{Value: ".issues-filters select, .issues-filters input", Why: "контролы фильтров на странице issues", Finding: "№32 (FE-5)"},
-	{Value: ".bulk-actions button:not(.btn)", Why: "кнопки массовых действий над issues", Finding: "№32 (FE-5)"},
-	{Value: ".assign-form select", Why: "выпадающий список назначения ответственного", Finding: "№32 (FE-5)"},
-	{Value: ".kind-tab", Why: "переключатель вида монитора (HTTP/TCP/DNS/Heartbeat) — визуально таб, реализован через скрытый radio + label", Finding: "№32 (FE-5)"},
-	{Value: ".monitor-actions button:not(.btn)", Why: "кнопки действий над монитором", Finding: "№32 (FE-5)"},
-	{Value: ".assign-control > summary", Why: "раскрывающийся контрол назначения ответственного (<details><summary>)", Finding: "№32 (FE-5)"},
-	{Value: ".segmented", Why: "внешняя рамка сегмент-контрола «Разовое / Еженедельное»", Finding: "№32 (FE-5)"},
-	{Value: ".segmented label", Why: "разделитель между пунктами того же сегмент-контрола (border-left)", Finding: "№32 (FE-5)"},
-}
+// декоративная граница оставлена осознанно. Долг №32 выжжен подпроектом G;
+// список пуст и должен оставаться пустым — новая запись требует явного
+// решения с обоснованием.
+var debtControlBorderExemptions = []Exemption{}
 
-// maxDebtControlBorderExemptions — потолок долга: 17 (14 из аудита минус
-// .time-range, который правилу не подходит по списку интерактивных
-// селекторов, плюс 3 найденных сверх аудита в семье .dr-*). Опускает только
-// подпроект G, по мере починки конкретных селекторов.
-const maxDebtControlBorderExemptions = 17
+// maxDebtControlBorderExemptions — потолок долга: 0 после подпроекта G.
+const maxDebtControlBorderExemptions = 0
 
 // blocksInsideMedia — сколько блоков parseCSSBlocks нашёл ВНУТРИ какого-либо
 // "@media (...)" (не "@keyframes" — у ключевых кадров анимации нет border,

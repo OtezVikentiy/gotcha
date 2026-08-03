@@ -96,7 +96,9 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 
 			if len(d.Vitals) > 0 {
 				<h2>{ i18n.T(ctx, "perf.webvitals") }</h2>
-				<div class="card">
+				// Таблица виталов — в собственном скролл-регионе, как остальные
+				// таблицы (№31): на 375px она распирала страницу целиком.
+				@scrollRegion("card table-scroll", "perf.webvitals") {
 					<table id="web-vitals" class="data-table web-vitals-panel">
 						<thead>
 							<tr>
@@ -117,7 +119,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 			}
 
 			<h2>{ i18n.T(ctx, "perf.chart.latency") }</h2>
@@ -128,32 +130,32 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				<span class="legend-item legend-p50">@metricHead("perf.p50", "perf.help.p50")</span>
 				<span class="legend-item legend-p95">@metricHead("perf.p95", "perf.help.p95")</span>
 			</p>
-			<div class="endpoint-chart card">
+			@scrollRegion("endpoint-chart card", "perf.chart.latency") {
 				@d.LatencyChart
-			</div>
+			}
 
 			<h2>{ i18n.T(ctx, "perf.throughput") }</h2>
 			<p class="chart-caption">
 				{ i18n.Tf(ctx, "perf.chart.throughput.caption", "step", d.StepLabel) }
 			</p>
-			<div class="endpoint-chart card">
+			@scrollRegion("endpoint-chart card", "perf.throughput") {
 				@d.Throughput
-			</div>
+			}
 
 			<h2>{ i18n.T(ctx, "perf.chart.histogram") }</h2>
 			<p class="chart-caption">
 				{ i18n.T(ctx, "perf.chart.histogram.caption") }
 			</p>
-			<div class="endpoint-chart card">
+			@scrollRegion("endpoint-chart card", "perf.chart.histogram") {
 				@d.Histogram
-			</div>
+			}
 
 			<h2>{ i18n.T(ctx, "perf.slowest") }</h2>
 			if len(d.Slowest) == 0 {
-				@emptyState("activity", "perf.slowest.empty.title", "perf.slowest.empty.body", "", "")
+				@emptyState("activity", "perf.slowest.empty.title", "perf.slowest.empty.body", "", "", 3)
 			} else {
 				<div class="card">
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "perf.slowest") {
 							<table class="data-table">
 								<thead>
 									<tr>
@@ -174,16 +176,16 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 									}
 								</tbody>
 							</table>
-					</div>
+					}
 				</div>
 			}
 
 			<h2>{ i18n.T(ctx, "perf.related_issues") }</h2>
 			if len(d.PerfIssues) == 0 {
-				@emptyState("zap", "perf.related_issues.empty.title", "perf.related_issues.empty.body", "", "")
+				@emptyState("zap", "perf.related_issues.empty.title", "perf.related_issues.empty.body", "", "", 3)
 			} else {
 				<div class="card">
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "perf.related_issues") {
 							<table class="data-table">
 								<thead>
 									<tr>
@@ -204,7 +206,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 									}
 								</tbody>
 							</table>
-					</div>
+					}
 				</div>
 			}
 		</div>

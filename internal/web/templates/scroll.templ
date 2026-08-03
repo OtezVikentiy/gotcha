@@ -1,0 +1,16 @@
+package templates
+
+import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+
+// scrollRegion — прокручиваемый контейнер, достижимый с клавиатуры (№31):
+// скроллер без tabindex клавиатурой не прокрутить вовсе (WCAG 2.1.1), а
+// role="region" + aria-label объясняют скринридеру, ЧТО именно прокручивается.
+// class — существующий скролл-класс (table-scroll и семья), labelKey — ключ
+// подписи по смыслу содержимого (обычно ключ заголовка той же секции).
+// Литеральная вёрстка этих классов запрещена сторожем
+// TestScrollContainersUseScrollRegion.
+templ scrollRegion(class, labelKey string) {
+	<div class={ class } tabindex="0" role="region" aria-label={ i18n.T(ctx, labelKey) }>
+		{ children... }
+	</div>
+}

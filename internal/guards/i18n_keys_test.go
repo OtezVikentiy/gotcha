@@ -64,7 +64,17 @@ var literalKeyRe = regexp.MustCompile(`i18n\.(T|Tf|Tn)\(\s*[^,]+?\s*,\s*"([^"]+)
 // (i18n_dynamic_test.go), не этот тест. Ключ переименован в "platform.other" и
 // остался в каталогах (используется через ту же конкатенацию), поэтому это не
 // потеря перевода — только потеря ОДНОГО литерального вызова из подсчёта.
-const minKeysFound = 732
+//
+// 732→730 — подпроект G (№29): availabilityBarLabel в internal/web/svg.go
+// перестал звать i18n.T тремя литеральными ветками ("chart.no_data",
+// "chart.bar.up", "chart.bar.down") и читает ключ из таблицы
+// availabilityBarLabelKey — класс корзины и подпись теперь выводятся из
+// одного места и разъехаться не могут. Ключи ушли из литеральных вызовов
+// (chart.no_data остался виден сканеру в других местах, chart.bar.* — нет);
+// резолв ВСЕХ ключей таблицы в обоих каталогах проверяет
+// TestAvailabilityBarClassThresholds в internal/web/svg_theme_test.go — тем
+// же приёмом, каким TestDynamicKeysResolve страхует конкатенации.
+const minKeysFound = 730
 
 // TestEveryKeyInCodeExistsInCatalog — ключ, которого нет ни в одном каталоге,
 // не ловило НИЧТО: рендер-тесты шаблонов проверяют только те значения,

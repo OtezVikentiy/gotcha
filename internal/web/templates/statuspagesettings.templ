@@ -152,7 +152,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 			if len(f.Monitors) == 0 {
 				<p class="hint">{ i18n.T(ctx, "uptime.statuspages.monitors_empty") }</p>
 			} else {
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "uptime.statuspages.card.services") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -167,7 +167,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm) {
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 			}
 		</div>
 
@@ -213,7 +213,7 @@ templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageFor
 			}
 			@createTrigger("new-statuspage", "uptime.statuspages.new_title")
 			if len(forms) == 0 {
-				@emptyState("globe", "uptime.statuspages.empty.title", "uptime.statuspages.empty.body", "", "")
+				@emptyState("globe", "uptime.statuspages.empty.title", "uptime.statuspages.empty.body", "", "", 2)
 			} else {
 				<div class="settings-grid">
 					for _, f := range forms {

@@ -283,7 +283,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 				} else {
 					<p class="error">{ i18n.T(ctx, "project.settings.keys.no_dsn") }</p>
 				}
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "project.settings.keys.title") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -298,7 +298,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				<form method="post" action={ templ.URL(projectSettingsKeysPath(project.ID)) } class="key-create-form">
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.keys.create") }</button>
 				</form>

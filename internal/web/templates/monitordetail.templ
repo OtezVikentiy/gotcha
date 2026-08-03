@@ -254,41 +254,43 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 
 			<h2>{ i18n.T(ctx, "uptime.detail.checks_title") }</h2>
 			if len(checks) == 0 {
-				@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "")
+				@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "", 3)
 			} else {
 				// Прокручиваемый контейнер: последних проверок до 50
 				// (monitorDetailChecksLimit), и без ограничения высоты они
 				// вытягивали страницу так, что инциденты под ними уходили
 				// далеко за экран.
-				<div class="card scroll-list">
-				<div class="table-scroll">
-						<table class="data-table">
-							<thead>
-								<tr>
-									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
-									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
-									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
-									<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
-									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
-									<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
-								</tr>
-							</thead>
-							<tbody>
-								for _, c := range checks {
-									@checkRow(c)
-								}
-							</tbody>
-						</table>
-				</div>
-				</div>
+				// Один scrollRegion вместо прежней двойной обёртки
+				// (card scroll-list > table-scroll): scroll-list сам скроллит
+				// обе оси (см. app.css), внутренний table-scroll дублировал
+				// скроллер и дал бы два табстопа на одну таблицу.
+				@scrollRegion("card scroll-list", "uptime.detail.checks_title") {
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
+								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
+								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
+								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, c := range checks {
+								@checkRow(c)
+							}
+						</tbody>
+					</table>
+				}
 			}
 
 			<h2>{ i18n.T(ctx, "nav.incidents") }</h2>
 			if len(incidents) == 0 {
-				@emptyState("activity", "uptime.detail.incidents_empty.title", "uptime.detail.incidents_empty.body", "", "")
+				@emptyState("activity", "uptime.detail.incidents_empty.title", "uptime.detail.incidents_empty.body", "", "", 3)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "nav.incidents") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -306,7 +308,7 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 								}
 							</tbody>
 						</table>
-				</div>
+				}
 				</div>
 			}
 			// Пагинатор — ВНЕ ветки len(incidents)==0 (S1): на out-of-range

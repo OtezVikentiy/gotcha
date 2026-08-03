@@ -45,10 +45,10 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
 			if len(services) == 0 {
-				@emptyState("activity", "profiles.empty.title", "profiles.empty.body", "profiles.empty.cta", "/docs/profiling")
+				@emptyState("activity", "profiles.empty.title", "profiles.empty.body", "profiles.empty.cta", "/docs/profiling", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "nav.profiles") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -73,7 +73,7 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				</div>
 			}
 		</div>
@@ -196,9 +196,9 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 				@timeRangeFields(vm.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
-			<div class="card flamegraph-wrap">
+			@scrollRegion("card flamegraph-wrap", "profiles.flame.title") {
 				@vm.Chart
-			</div>
+			}
 		</div>
 	}
 }

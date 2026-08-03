@@ -66,10 +66,10 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
 			@helpPanel("incidents", "uptime")
 			if len(rows) == 0 {
-				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "")
+				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "nav.incidents") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -88,7 +88,7 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 								}
 							</tbody>
 						</table>
-				</div>
+				}
 				</div>
 			}
 			// Пагинатор — ВНЕ ветки len(rows)==0: на out-of-range странице строк нет,

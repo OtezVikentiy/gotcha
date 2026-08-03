@@ -114,9 +114,9 @@ templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail str
 			<section class="card">
 				<h2 class="card-header">{ i18n.T(ctx, "uptime.probes.list_title") }</h2>
 				if len(rows) == 0 {
-					@emptyState("globe", "uptime.probes.empty.title", "uptime.probes.empty.body", "", "")
+					@emptyState("globe", "uptime.probes.empty.title", "uptime.probes.empty.body", "", "", 3)
 				} else {
-					<div class="table-scroll">
+					@scrollRegion("table-scroll", "uptime.probes.list_title") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -134,7 +134,7 @@ templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail str
 								}
 							</tbody>
 						</table>
-					</div>
+					}
 				}
 			</section>
 			<h2>{ i18n.T(ctx, "uptime.probes.new_title") }</h2>

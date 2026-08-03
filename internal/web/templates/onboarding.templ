@@ -111,7 +111,7 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, use
 templ NoProjects(userEmail string) {
 	@chromeless(i18n.T(ctx, "project.none.title"), userEmail) {
 		<div class="no-projects">
-			@emptyState("building", "project.none.title", "project.none.body", "", "")
+			@emptyState("building", "project.none.title", "project.none.body", "", "", 3)
 		</div>
 	}
 }
@@ -160,10 +160,10 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 				@createTrigger("new-project", "project.create.title")
 			}
 			if len(items) == 0 {
-				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding")
+				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "project.list.title") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -179,14 +179,16 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 								}
 							</tbody>
 						</table>
-				</div>
+				}
 				</div>
 			}
 			if len(canCreate) > 0 {
 				@createModalOpen("new-project", "project.create.title", false, form.Opens("new-project")) {
 					<form method="post" action="/projects/new" class="project-create-form">
+						// Без role="alert": фокус в модалку переносит modal.js (№80),
+						// ошибка привязана к полю slug через aria-describedby.
 						if errMsg != "" && form.Opens("new-project") {
-							<p class="error" role="alert">{ errMsg }</p>
+							<p class="error" id="new-project-error">{ errMsg }</p>
 						}
 						<div class="field">
 							<label>
@@ -205,7 +207,18 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 						<div class="field">
 							<label>
 								{ i18n.T(ctx, "project.create.slug") }
-								<input type="text" name="slug" required class="input" placeholder="backend-api" value={ form.Get("slug", "") }/>
+								<input
+									type="text"
+									name="slug"
+									required
+									class="input"
+									placeholder="backend-api"
+									value={ form.Get("slug", "") }
+									if errMsg != "" && form.Opens("new-project") {
+										aria-invalid="true"
+										aria-describedby="new-project-error"
+									}
+								/>
 							</label>
 							<span class="hint">{ i18n.T(ctx, "project.create.slug_hint") }</span>
 						</div>

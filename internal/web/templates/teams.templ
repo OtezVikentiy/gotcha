@@ -132,13 +132,25 @@ templ teamRenameModal(tm TeamView, form FormState, errMsg string) {
 	{{ open := form.Opens(EditTeamModalID(tm.Team.ID)) }}
 	@createModalOpen(EditTeamModalID(tm.Team.ID), "teams.rename.title", false, open) {
 		<form method="post" action={ templ.URL(teamRenamePath(tm.Team.ID)) } class="team-rename-form">
+			// Без role="alert": фокус в модалку переносит modal.js (№80),
+			// ошибка привязана к полю имени через aria-describedby.
 			if errMsg != "" && open {
-				<p class="error" role="alert">{ errMsg }</p>
+				<p class="error" id={ EditTeamModalID(tm.Team.ID) + "-error" }>{ errMsg }</p>
 			}
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "teams.create.name_label") }
-					<input type="text" name="name" required class="input" value={ formValueFor(form, open, "name", tm.Team.Name) }/>
+					<input
+						type="text"
+						name="name"
+						required
+						class="input"
+						value={ formValueFor(form, open, "name", tm.Team.Name) }
+						if errMsg != "" && open {
+							aria-invalid="true"
+							aria-describedby={ EditTeamModalID(tm.Team.ID) + "-error" }
+						}
+					/>
 				</label>
 				<span class="hint">{ i18n.Tf(ctx, "teams.rename.slug_note", "slug", tm.Team.Slug) }</span>
 			</div>
@@ -157,9 +169,9 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 		<h3>{ i18n.T(ctx, "teams.members.title") }</h3>
 		<div class="team-scroll">
 			if len(tm.Members) == 0 {
-				@emptyState("user", "teams.members.empty.title", "teams.members.empty.body", "", "")
+				@emptyState("user", "teams.members.empty.title", "teams.members.empty.body", "", "", 3)
 			} else {
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "teams.members.title") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -173,7 +185,7 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 			}
 		</div>
 		if hasAvailableMembers(orgMembers, tm.Members) {
@@ -198,9 +210,9 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 		<h3>{ i18n.T(ctx, "teams.projects.title") }</h3>
 		<div class="team-scroll">
 			if len(tm.Projects) == 0 {
-				@emptyState("building", "teams.projects.empty.title", "teams.projects.empty.body", "", "")
+				@emptyState("building", "teams.projects.empty.title", "teams.projects.empty.body", "", "", 3)
 			} else {
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "teams.projects.title") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -214,7 +226,7 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 			}
 		</div>
 		if hasAvailableProjects(orgProjects, tm.Projects) {
@@ -260,7 +272,7 @@ templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []
 			@createTrigger("new-team", "teams.create.title")
 			<div class="settings-grid">
 			if len(teams) == 0 {
-				@emptyState("building", "teams.empty.title", "teams.empty.body", "", "")
+				@emptyState("building", "teams.empty.title", "teams.empty.body", "", "", 2)
 			} else {
 				for _, tm := range teams {
 					@teamSection(tm, orgMembers, orgProjects, form, errMsg)
@@ -269,13 +281,27 @@ templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []
 			</div>
 			@createModalOpen("new-team", "teams.create.title", false, form.Opens("new-team")) {
 				<form method="post" action={ templ.URL(orgTeamsPath(o.ID)) } class="team-create-form">
+					// Без role="alert": фокус в модалку переносит modal.js (№80),
+					// ошибка привязана к полю slug через aria-describedby.
 					if errMsg != "" && form.Opens("new-team") {
-						<p class="error" role="alert">{ errMsg }</p>
+						<p class="error" id="new-team-error">{ errMsg }</p>
 					}
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "teams.create.slug_label") }
-							<input type="text" name="slug" placeholder="backend" autocomplete="off" required class="input" value={ form.Get("slug", "") }/>
+							<input
+								type="text"
+								name="slug"
+								placeholder="backend"
+								autocomplete="off"
+								required
+								class="input"
+								value={ form.Get("slug", "") }
+								if errMsg != "" && form.Opens("new-team") {
+									aria-invalid="true"
+									aria-describedby="new-team-error"
+								}
+							/>
 						</label>
 					</div>
 					<div class="field">

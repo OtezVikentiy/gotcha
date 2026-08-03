@@ -36,6 +36,21 @@
 	   доступности, плашка «Частичный сбой» на статус-странице. Светлый вариант
 	   темнее для читаемости как текст на белом (--warn-golden, не олива). */
 	--partial: #f5b70a;
+	/* Заливки полоски доступности (№28): НЕ текстовые статус-токены. Те прижаты
+	   к 4.5:1 на подложке и потому неразличимы по светлоте между собой; заливке
+	   текстовый контраст не нужен, и светлота разведена: попарно ≥3:1, к
+	   карточке ≥1.5:1 (пришпилено TestAvailabilityBarFillTokens). */
+	--bar-up: #e1f2e4;
+	--bar-partial: #ab7f07;
+	--bar-down: #692621;
+	--bar-empty: var(--border);
+	/* Фазы запроса DNS→TCP→TLS→TTFB: секвенция по бренд-градиенту, тёмный →
+	   светлый = порядок во времени. Значения разведены под
+	   TestLatencyPhaseTokens: ≥3:1 к карточке, соседи ≥1.3:1, монотонность. */
+	--phase-dns: #2b61e8;
+	--phase-tcp: #6770f7;
+	--phase-tls: #9d81ff;
+	--phase-ttfb: #b1a7d9;
 	--danger: #f0574a;
 	--info: #3d7bff;
 	--link: #79aaff;
@@ -109,6 +124,14 @@
 	--good: #187633;
 	--warn: #8c5e00;
 	--partial: #8e5d00;
+	--bar-up: #a4d5ad;
+	--bar-partial: #926209;
+	--bar-down: #34090c;
+	--bar-empty: var(--border);
+	--phase-dns: #193887;
+	--phase-tcp: #4b52b4;
+	--phase-tls: #7e65d0;
+	--phase-ttfb: #9282c9;
 	--danger: #c3202b;
 	--info: #295ee0;
 	--link: #295ee0;
@@ -149,6 +172,14 @@
 		--good: #187633;
 		--warn: #8c5e00;
 		--partial: #8e5d00;
+		--bar-up: #a4d5ad;
+		--bar-partial: #926209;
+		--bar-down: #34090c;
+		--bar-empty: var(--border);
+		--phase-dns: #193887;
+		--phase-tcp: #4b52b4;
+		--phase-tls: #7e65d0;
+		--phase-ttfb: #9282c9;
 		--danger: #c3202b;
 		--info: #295ee0;
 		--link: #295ee0;
@@ -204,6 +235,13 @@ h3 {
 
 code, pre {
 	font-family: var(--font-mono);
+}
+/* Инлайновый <code> (redirect URI в настройках SSO, токены) на узком экране
+   рвётся в любом месте: у него, в отличие от <pre>, нет своего скролла, и
+   длинное значение распирало страницу (маскировалось скроллером
+   .app-content, №82). */
+code {
+	overflow-wrap: anywhere;
 }
 pre {
 	overflow-x: auto;
@@ -369,7 +407,7 @@ a:hover {
 	cursor: pointer;
 	padding: 7px 9px;
 	background: var(--surface-2);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	font-weight: 600;
 	color: var(--text);
@@ -477,7 +515,7 @@ a:hover {
 	display: inline-flex;
 	align-items: center;
 	vertical-align: middle;
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	overflow: hidden;
 	/* flex: none обязателен вместе с overflow: hidden. Без него переключатели
@@ -570,7 +608,11 @@ a:hover {
 	flex: 1;
 	padding: 16px 24px;
 	min-width: 0;
-	overflow-x: auto;
+	/* overflow-x здесь больше нет: единственной причины (широкие таблицы
+	   распирали колонку) не стало — вся широкая вёрстка сидит в собственных
+	   скролл-регионах (.table-scroll и семья). Скроллер на контентной колонке
+	   превращал overflow-y в auto и обрезал попап пикера дат на коротких
+	   страницах (№82). */
 	/* Контент прижат влево, а не центрирован: оболочка выстроена слева
 	   направо (рейл → сайдбар → контент), и центрирование разрывало эту
 	   цепочку — левый край контента переставал совпадать с краем сайдбара,
@@ -645,6 +687,19 @@ a:hover {
 .table-scroll {
 	overflow-x: auto;
 	max-width: 100%;
+}
+/* Скролл-регионы фокусируемы (tabindex=0 из scrollRegion): без видимого
+   кольца клавиатурный фокус на контейнере неотличим от его отсутствия
+   (WCAG 2.4.7). :focus-visible, а не :focus — щелчок мышью кольца не рисует. */
+.table-scroll:focus, .scroll-list:focus, .endpoint-chart:focus,
+.metric-chart-wrap:focus, .flamegraph-wrap:focus, .trace-waterfall:focus,
+.trace-flame:focus, .issue-chart:focus { outline: none; }
+.table-scroll:focus-visible, .scroll-list:focus-visible,
+.endpoint-chart:focus-visible, .metric-chart-wrap:focus-visible,
+.flamegraph-wrap:focus-visible, .trace-waterfall:focus-visible,
+.trace-flame:focus-visible, .issue-chart:focus-visible {
+	outline: 2px solid var(--link);
+	outline-offset: -2px;
 }
 .table-scroll > .data-table {
 	width: 100%;
@@ -938,7 +993,7 @@ label {
 
 input {
 	background: var(--bg);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	color: var(--text);
 	padding: 6px 10px;
@@ -978,6 +1033,10 @@ button:hover {
 
 .quota-banner {
 	display: flex;
+	/* Перенос обязателен: на 375px текст + ссылка «Настройки приёма» в одну
+	   строку распирали страницу (раньше это маскировал скроллер .app-content,
+	   №82). */
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 10px;
 	background: color-mix(in srgb, var(--warn) 16%, transparent);
@@ -1208,7 +1267,7 @@ th {
 	font-size: var(--fs-sm);
 	color: var(--text-dim);
 	background: var(--surface);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: calc(var(--radius) - 2px);
 	padding: 5px 7px;
 }
@@ -1288,7 +1347,7 @@ th {
 	font-variant-numeric: tabular-nums;
 	color: var(--text);
 	background: var(--surface);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: calc(var(--radius) - 2px);
 	padding: 5px 10px;
 	cursor: pointer;
@@ -1311,7 +1370,7 @@ th {
 	gap: 12px;
 	padding: 12px;
 	background: var(--surface);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius-lg);
 	box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
 }
@@ -1331,7 +1390,7 @@ th {
 	flex-direction: column;
 	gap: 4px;
 	padding-right: 12px;
-	border-right: 1px solid var(--border);
+	border-right: 1px solid var(--border-control);
 }
 .dr-preset {
 	font: inherit;
@@ -1355,7 +1414,7 @@ th {
 	justify-content: center;
 	color: var(--text);
 	background: var(--surface-2);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	width: 28px; height: 28px;
 	/* Сброс padding обязателен: глобальное `button` даёт 6px 12px, и внутри
@@ -1435,7 +1494,7 @@ th {
 	align-items: center;
 	gap: 8px;
 	padding-top: 8px;
-	border-top: 1px solid var(--border);
+	border-top: 1px solid var(--border-control);
 }
 .dr-range-text {
 	flex: 1;
@@ -1446,7 +1505,7 @@ th {
 
 @media (max-width: 720px) {
 	.dr-popup { flex-direction: column; }
-	.dr-presets { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 8px; }
+	.dr-presets { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border-control); padding-right: 0; padding-bottom: 8px; }
 	.dr-months { flex-direction: column; }
 }
 /* Metric-фильтр: подпись над контролом (label-обёртка) — пары стоят в ряд. */
@@ -1455,15 +1514,9 @@ th {
 	gap: 4px;
 	font-size: var(--fs-sm);
 }
-.issues-filters select,
-.issues-filters input {
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	color: var(--text);
-	padding: 6px 8px;
-	font-size: var(--fs-base);
-}
+/* Собственного правила для контролов фильтров issues больше нет: разметка
+   несёт class="select"/"input", база .input/.select уже даёт рамку на
+   --border-control, а ширину по содержимому — .issues-filters .select выше. */
 
 /* Metric-фильтр по лейблам (страница метрики). */
 .metric-labels {
@@ -1501,7 +1554,7 @@ th {
 .bulk-actions button:not(.btn) {
 	background: var(--surface);
 	color: var(--text);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	font-weight: 600;
 }
 .bulk-actions button:not(.btn):hover {
@@ -1521,6 +1574,9 @@ th {
 
 .issue-meta {
 	display: flex;
+	/* Перенос обязателен: на 375px три пункта меты в одну строку распирали
+	   страницу (раньше это маскировал скроллер .app-content, №82). */
+	flex-wrap: wrap;
 	gap: 12px;
 	margin: 6px 0 12px;
 	color: var(--text-dim);
@@ -1539,13 +1595,12 @@ th {
 	gap: 8px;
 	margin: 0;
 }
-.assign-form select {
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	color: var(--text);
-	padding: 6px 8px;
-	font-size: var(--fs-base);
+/* Рамку и фон селекту назначения даёт база .select (разметка несёт
+   class="select"). Базовое .select даёт width:100% для вертикальных форм;
+   в строке действий assign-form контрол живёт по содержимому. */
+.assign-form .select {
+	width: auto;
+	min-width: 140px;
 }
 
 .chart {
@@ -1582,7 +1637,7 @@ th {
 }
 .kind-tab {
 	padding: 6px 16px;
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	cursor: pointer;
 	font-size: 14px;
@@ -2033,7 +2088,7 @@ th {
 .monitor-actions button:not(.btn) {
 	background: var(--surface);
 	color: var(--text);
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	font-weight: 600;
 }
 .monitor-actions button:not(.btn):hover {
@@ -2486,6 +2541,10 @@ form.inline {
 	/* Линия под вкладками отделяет активную вкладку от содержимого — это
 	   граница контрола, а не разделитель карточек. */
 	border-bottom: 1px solid var(--border-control);
+	/* На узком экране ряд вкладок шире вьюпорта — прокручивается сам, а не
+	   распирает страницу (раньше это маскировал скроллер .app-content, №82).
+	   tabindex не нужен: вкладки-ссылки фокусируемы, Tab докручивает ряд. */
+	overflow-x: auto;
 }
 .tab {
 	padding: 8px 10px;
@@ -2837,6 +2896,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	border: 1px solid var(--border);
 	border-radius: 4px;
 	padding: 1px 5px;
+	/* Инлайновый код в абзаце (имена переменных, пути) длиннее узкого экрана
+	   рвётся в любом месте, а не распирает страницу — у него, в отличие от
+	   <pre>, нет своего скролла. */
+	overflow-wrap: anywhere;
 }
 .doc-content pre {
 	margin: 0 0 14px;
@@ -2852,25 +2915,19 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	padding: 0;
 	font-size: var(--fs-sm);
 }
-/* Таблица прокручивается внутри себя, а не распирает карточку.
-   Справочные таблицы доков (переменные окружения — самая широкая) требуют до
-   1740px при карточке в 818: таблица вылезала за правую границу почти на
-   тысячу пикселей, рамка карточки обрывалась, а колонка «Описание»
-   оказывалась снаружи. Горизонтально при этом ехал весь shell вместе с
-   навигацией — ближайшим прокручиваемым предком оказывался .app-content.
-   Соседний .doc-content pre такую защиту уже имел; таблицам её не дали.
-
-   display:block нужен, чтобы overflow вообще работал: у table-элемента он
-   игнорируется. width:max-content вместо 100% — иначе блочная таблица
-   схлопнется по содержимому и потеряет растяжение на всю ширину. */
+/* Прокрутка широких справочных таблиц (переменные окружения — самая широкая,
+   до 1740px при карточке в 818) живёт на обёртке .table-scroll, которую
+   рендерит docsTableRenderer (internal/docs) — та же обёртка, что у таблиц
+   продукта (scrollRegion). Прежний display:block на самой таблице ломал её
+   семантику: таблица с display:block теряет role=table в дереве доступности,
+   и скринридер читал справочник как поток строк (№75). */
 .doc-content table {
-	display: block;
-	width: max-content;
-	max-width: 100%;
-	overflow-x: auto;
-	margin: 0 0 14px;
+	margin: 0;
 	border-collapse: collapse;
 	font-size: var(--fs-base);
+}
+.doc-content .table-scroll {
+	margin: 0 0 14px;
 }
 /* Первая колонка справочных таблиц — имена переменных: не даём длинному
    GOTCHA_EXTERNAL_CHANNEL_DETAILS растягивать таблицу вдвое. */
@@ -2908,13 +2965,17 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    перцентили, стек задержек), цвет назначается здесь по классу элемента.
    Раньше эти значения были впечатаны в SVG hex-литералами из тёмной палитры
    и не менялись в светлой теме. */
-.availability-bars .bar-up      { fill: var(--good); }
-/* Жёлтый «частично» — через токен --partial (dark #f5b70a / light #8e5d00),
-   отдельный от --warn. Как заливка сегмента читается ярко на тёмной карточке
-   и достаточно контрастно (темнее) на светлой. */
-.availability-bars .bar-partial { fill: var(--partial); }
-.availability-bars .bar-down    { fill: var(--danger); }
-.availability-bars .bar-empty   { fill: var(--border); }
+.availability-bars .bar-up      { fill: var(--bar-up); }
+/* «Частично» — через --bar-partial, отдельный и от текстового --partial, и от
+   --warn: заливкам полоски нужна разводка по светлоте между собой (№28,
+   TestAvailabilityBarFillTokens), а текстовые статус-токены прижаты к 4.5:1
+   на подложке и разводке не подлежат. */
+.availability-bars .bar-partial { fill: var(--bar-partial); }
+.availability-bars .bar-down    { fill: var(--bar-down); }
+.availability-bars .bar-empty   { fill: var(--bar-empty); }
+/* Штрих паттерна «частично» — цветом карточки: полосы «прорезают» заливку и
+   читаются одинаково в обеих темах (второй канал состояния, №28). */
+.availability-bars .bar-hatch   { fill: var(--surface); }
 
 .waterfall .wf-ok  { fill: var(--accent); }
 .waterfall .wf-err { fill: var(--danger); }
@@ -2931,10 +2992,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    порядок во времени (DNS→TCP→TLS→TTFB), тёмный низ → светлый верх: цвет сам
    кодирует последовательность фаз, а не набор произвольных категорий. Каждый
    столбик — миниатюра «путешествия» запроса. */
-.latency-chart .seg-dns     { fill: #2f6bff; }
-.latency-chart .seg-connect { fill: #6a74ff; }
-.latency-chart .seg-tls     { fill: #9a7cff; }
-.latency-chart .seg-ttfb    { fill: #c3b8fc; }
+.latency-chart .seg-dns     { fill: var(--phase-dns); }
+.latency-chart .seg-connect { fill: var(--phase-tcp); }
+.latency-chart .seg-tls     { fill: var(--phase-tls); }
+.latency-chart .seg-ttfb    { fill: var(--phase-ttfb); }
 /* Метка выброса (час выше шкалы: медленно/таймаут). Цветом события, не фазы. */
 .latency-chart .seg-cap     { fill: var(--danger); }
 /* Кегль подписей осей задаётся В ЕДИНИЦАХ viewBox, а на экране равен
@@ -3119,6 +3180,12 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    «сделано»/«не сделано» пункты чек-листа звучат одинаково. */
 .visually-hidden {
 	position: absolute;
+	/* Приколот к левому краю containing block: без left абсолютный спан
+	   остаётся в своей статической позиции — внутри широкой таблицы это
+	   точка за правым краем вьюпорта, и невидимый однопиксельный элемент
+	   расширял scrollWidth документа (горизонтальный скролл на 375px).
+	   Порядок чтения скринридером задаёт DOM, а не позиция — ему всё равно. */
+	left: 0;
 	width: 1px;
 	height: 1px;
 	padding: 0;
@@ -3388,7 +3455,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	list-style: none;
 	cursor: pointer;
 	padding: 6px 10px;
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	color: var(--text);
 	font-weight: 500;
@@ -3494,14 +3561,14 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    currentColor перебивал бы цвет (одинаковая специфичность → побеждает
    поздний — из-за этого свотчи были серыми). Фаза — заливка, а не линия,
    поэтому свотч квадратный, а не 2px-штрих. */
+.legend-dns::before  { background: var(--phase-dns); }
+.legend-tcp::before  { background: var(--phase-tcp); }
+.legend-tls::before  { background: var(--phase-tls); }
+.legend-ttfb::before { background: var(--phase-ttfb); }
 .legend-dns::before,
 .legend-tcp::before,
 .legend-tls::before,
 .legend-ttfb::before { width: 11px; height: 11px; border-radius: 3px; }
-.legend-dns::before  { background: #2f6bff; }
-.legend-tcp::before  { background: #6a74ff; }
-.legend-tls::before  { background: #9a7cff; }
-.legend-ttfb::before { background: #c3b8fc; }
 
 /* ===== Форма окна обслуживания ===== */
 
@@ -3521,12 +3588,26 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	display: none;
 }
 
+/* Fieldset здесь — только семантика группировки radio «Тип окна» (№79): поле
+   выглядит как остальные .field, поэтому дефолтные рамка/отступы браузера
+   снимаются (семантику сохранять — тот же принцип, что у .monitor-form
+   fieldset). */
+.maintenance-form fieldset.field {
+	border: 0;
+	padding: 0;
+	margin: 0;
+	min-width: 0;
+}
+.maintenance-form legend.field-label {
+	padding: 0;
+}
+
 /* Сегмент-контрол «Разовое / Еженедельное» — две склеенные кнопки, как у
    переключателя языка/темы: сразу читается как выбор одного из двух, а не
    как флажок-опция. Радио скрыты, подсвечивается активная подпись. */
 .segmented {
 	display: inline-flex;
-	border: 1px solid var(--border);
+	border: 1px solid var(--border-control);
 	border-radius: var(--radius);
 	overflow: hidden;
 	width: fit-content;
@@ -3538,7 +3619,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	cursor: pointer;
 	color: var(--text-dim);
 	font-size: var(--fs-sm);
-	border-left: 1px solid var(--border);
+	border-left: 1px solid var(--border-control);
 }
 .segmented label:first-child {
 	border-left: none;
@@ -3552,7 +3633,13 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 }
 .segmented label:has(input:checked) {
 	background: var(--accent-soft);
-	color: var(--accent);
+	/* --link, не --accent: тот рассчитан как ФОН под белой подписью и на
+	   --accent-soft давал 2.98:1 (тёмная) / 3.95:1 (светлая) — см. тот же
+	   выбор у .lang-btn.is-active. Полупрозрачная граница цвета ссылки —
+	   второй признак выбора помимо заливки: у самой заливки к соседям всего
+	   1.17:1. Дословно тот же приём, что у переключателей языка/темы. */
+	color: var(--link);
+	border-color: color-mix(in srgb, var(--link) 45%, transparent);
 }
 .segmented label:has(input:focus-visible) {
 	outline: 2px solid var(--accent);

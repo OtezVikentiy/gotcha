@@ -23,10 +23,10 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 			<h1>{ i18n.T(ctx, "metrics.title") }</h1>
 			@helpPanel("metrics", "metrics")
 			if len(metrics) == 0 {
-				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics")
+				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "metrics.title") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -45,7 +45,7 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 								}
 							</tbody>
 						</table>
-				</div>
+				}
 				</div>
 			}
 		</div>
@@ -147,9 +147,9 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 				}
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "metrics.filter.apply") }</button>
 			</form>
-			<div class="metric-chart-wrap card">
+			@scrollRegion("metric-chart-wrap card", "region.metric.chart") {
 				@vm.Chart
-			</div>
+			}
 			if len(vm.Labels) > 0 {
 				<h2>{ i18n.T(ctx, "metrics.detail.labels") }</h2>
 				<div class="metric-labels">

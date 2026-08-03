@@ -169,10 +169,10 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
 			if len(pages) == 0 {
-				@emptyState("activity", "perf.webvitals.empty.title", "perf.webvitals.empty.body", "perf.webvitals.empty.cta", "/docs/sdk")
+				@emptyState("activity", "perf.webvitals.empty.title", "perf.webvitals.empty.body", "perf.webvitals.empty.cta", "/docs/sdk", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "perf.webvitals") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -197,7 +197,7 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				</div>
 			}
 		</div>

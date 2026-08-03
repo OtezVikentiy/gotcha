@@ -158,14 +158,14 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
 			if len(rows) == 0 {
-				@emptyState("zap", "perf.empty.title", "perf.empty.body", "perf.empty.cta", "/docs/performance")
+				@emptyState("zap", "perf.empty.title", "perf.empty.body", "perf.empty.cta", "/docs/performance", 2)
 			} else {
 				<p class="apdex-note">{ i18n.Tf(ctx, "perf.apdex_note", "t", strconv.Itoa(apdexT)) }</p>
 				if total > len(rows) {
 					<p class="perf-cap-note">{ i18n.Tf(ctx, "perf.truncated", "shown", strconv.Itoa(len(rows)), "total", strconv.Itoa(total)) }</p>
 				}
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "perf.endpoints") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -200,7 +200,7 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				</div>
 			}
 		</div>

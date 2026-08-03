@@ -157,15 +157,28 @@ templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg 
 	{{ open := form.Opens(EditChannelModalID(c.ID)) }}
 	@createModalOpen(EditChannelModalID(c.ID), "alerts.channels.edit.title", true, open) {
 		<form method="post" action={ templ.URL(alertsChannelsUpdatePath(projectID)) } class="channel-edit-form">
+			// Без role="alert": живой регион в статической разметке молчит, а
+			// фокус в модалку уже переносит modal.js (№80). Ошибка привязана к
+			// полю через aria-describedby ниже.
 			if errMsg != "" && open {
-				<p class="error" role="alert">{ errMsg }</p>
+				<p class="error" id={ EditChannelModalID(c.ID) + "-error" }>{ errMsg }</p>
 			}
 			<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
 			<p class="hint">{ i18n.Tf(ctx, "alerts.channels.edit.kind", "kind", channelKindLabel(ctx, c.Kind)) }</p>
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "alerts.channels.new.target") }
-					<input type="text" name="target" required class="input" value={ formValueFor(form, open, "target", c.Target) }/>
+					<input
+						type="text"
+						name="target"
+						required
+						class="input"
+						value={ formValueFor(form, open, "target", c.Target) }
+						if errMsg != "" && open {
+							aria-invalid="true"
+							aria-describedby={ EditChannelModalID(c.ID) + "-error" }
+						}
+					/>
 				</label>
 				<span class="hint">{ i18n.T(ctx, "alerts.channels.new.target_hint") }</span>
 			</div>
@@ -248,10 +261,10 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 			<section class="alerts-section">
 				<h2>{ i18n.T(ctx, "alerts.channels.title") }</h2>
 				if len(channels) == 0 {
-					@emptyState("bell", "alerts.channels.empty.title", "alerts.channels.empty.body", "", "")
+					@emptyState("bell", "alerts.channels.empty.title", "alerts.channels.empty.body", "", "", 3)
 				} else {
 					<div class="card">
-						<div class="table-scroll">
+						@scrollRegion("table-scroll", "alerts.channels.title") {
 								<table class="data-table">
 									<thead>
 										<tr>
@@ -267,15 +280,17 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 										}
 									</tbody>
 								</table>
-						</div>
+						}
 					</div>
 				}
 			</section>
 
 			@createModalOpen("new-channel", "alerts.channels.new.title", true, form.Opens("new-channel")) {
 				<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
+					// Без role="alert": фокус в модалку переносит modal.js (№80),
+					// ошибка привязана к полю адреса через aria-describedby.
 					if errMsg != "" && form.Opens("new-channel") {
-						<p class="error" role="alert">{ errMsg }</p>
+						<p class="error" id="new-channel-error">{ errMsg }</p>
 					}
 					<div class="field">
 						<label>
@@ -302,7 +317,17 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "alerts.channels.new.target") }
-							<input type="text" name="target" required class="input" value={ form.Get("target", "") }/>
+							<input
+								type="text"
+								name="target"
+								required
+								class="input"
+								value={ form.Get("target", "") }
+								if errMsg != "" && form.Opens("new-channel") {
+									aria-invalid="true"
+									aria-describedby="new-channel-error"
+								}
+							/>
 						</label>
 						<span class="hint">{ i18n.T(ctx, "alerts.channels.new.target_hint") }</span>
 					</div>

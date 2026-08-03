@@ -72,17 +72,17 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 		<div class="perf-issues">
 			<h1>{ i18n.T(ctx, "nav.perf_issues") }</h1>
 			@helpPanel("perfissues", "performance")
-			<nav class="tabs">
+			<nav class="tabs" aria-label={ i18n.T(ctx, "filter.status") }>
 				@perfStatusTab(projectID, "unresolved", i18n.T(ctx, "issues.status.unresolved"), filter)
 				@perfStatusTab(projectID, "resolved", i18n.T(ctx, "issues.status.resolved"), filter)
 				@perfStatusTab(projectID, "ignored", i18n.T(ctx, "issues.status.ignored"), filter)
 				@perfStatusTab(projectID, "all", i18n.T(ctx, "perf.tab.all"), filter)
 			</nav>
 			if len(issues) == 0 {
-				@emptyState("zap", "perf.issues.empty.title", "perf.issues.empty.body", "", "")
+				@emptyState("zap", "perf.issues.empty.title", "perf.issues.empty.body", "", "", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "nav.perf_issues") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -107,7 +107,7 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				</div>
 			}
 		</div>

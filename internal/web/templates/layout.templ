@@ -264,8 +264,8 @@ func effectiveProjectID(s nav.Shell) int64 {
 // язык помечен классом is-active.
 templ langSwitcher() {
 	<form method="post" action="/settings/locale" class="lang-switcher">
-		<button type="submit" name="lang" value="ru" class={ langBtnClass(ctx, "ru") }>{ i18n.T(ctx, "lang.ru") }</button>
-		<button type="submit" name="lang" value="en" class={ langBtnClass(ctx, "en") }>{ i18n.T(ctx, "lang.en") }</button>
+		<button type="submit" name="lang" value="ru" class={ langBtnClass(ctx, "ru") } aria-pressed={ langPressed(ctx, "ru") }>{ i18n.T(ctx, "lang.ru") }</button>
+		<button type="submit" name="lang" value="en" class={ langBtnClass(ctx, "en") } aria-pressed={ langPressed(ctx, "en") }>{ i18n.T(ctx, "lang.en") }</button>
 	</form>
 }
 
@@ -274,6 +274,16 @@ func langBtnClass(ctx context.Context, code string) string {
 		return "lang-btn is-active"
 	}
 	return "lang-btn"
+}
+
+// langPressed — aria-pressed для кнопки языка: визуально выбранный язык
+// отличает только цвет, скринридеру нужно состояние (№84) — тот же принцип,
+// что themePressed ниже.
+func langPressed(ctx context.Context, code string) string {
+	if i18n.FromContext(ctx).Code == code {
+		return "true"
+	}
+	return "false"
 }
 
 // themeToggle — переключатель темы оформления (форма POST, работает без JS).

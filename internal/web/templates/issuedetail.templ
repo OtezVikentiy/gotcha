@@ -613,8 +613,17 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				@assigneeChip(it.AssigneeEmail)
 			</div>
 			<div class="issue-meta">
-				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: @relativeTime(it.FirstSeen)</span>
-				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: @relativeTime(it.LastSeen)</span>
+				// @relativeTime — отдельным узлом: после текста в той же строке
+				// templ не разбирает @-вызов и печатает его буквально
+				// («…: @relativeTime(it.FirstSeen)» прямо на странице).
+				<span>
+					{ i18n.T(ctx, "issues.detail.first_seen") + ": " }
+					@relativeTime(it.FirstSeen)
+				</span>
+				<span>
+					{ i18n.T(ctx, "issues.detail.last_seen") + ": " }
+					@relativeTime(it.LastSeen)
+				</span>
 				<span>{ i18n.T(ctx, "issues.detail.times_seen") }: { strconv.FormatInt(it.TimesSeen, 10) }</span>
 			</div>
 
@@ -640,13 +649,17 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				@timeRangeFields(rng)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
-			<div class="issue-chart card">
+			@scrollRegion("issue-chart card", "region.issue.chart") {
 				@chart
-			</div>
+			}
 
 			if selected != nil {
 				<div class="event-detail">
-					<h2>{ i18n.T(ctx, "issues.detail.event") } · @relativeTime(selected.Timestamp)</h2>
+					// Тот же случай inline-@, что у .issue-meta выше.
+					<h2>
+						{ i18n.T(ctx, "issues.detail.event") + " · " }
+						@relativeTime(selected.Timestamp)
+					</h2>
 					<div class="culprit event-id">{ selected.ID }</div>
 
 					if hasTrace {
@@ -735,21 +748,25 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 			}
 
 			<h2 class="issue-events-heading">{ i18n.T(ctx, "issues.detail.recent_events") }</h2>
-			<table class="issue-events data-table">
-				<thead>
-					<tr>
-						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
-						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
-						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
-						<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, ev := range events {
-						@eventRow(it.ID, ev, ev.ID == selectedID, rng)
-					}
-				</tbody>
-			</table>
+			// Таблица событий — в собственном скролл-регионе, как остальные
+			// таблицы (№31): на 375px она распирала страницу целиком.
+			@scrollRegion("table-scroll", "issues.detail.recent_events") {
+				<table class="issue-events data-table">
+					<thead>
+						<tr>
+							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
+							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
+							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
+							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, ev := range events {
+							@eventRow(it.ID, ev, ev.ID == selectedID, rng)
+						}
+					</tbody>
+				</table>
+			}
 		</div>
 	}
 }

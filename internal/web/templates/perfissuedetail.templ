@@ -120,8 +120,16 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 			<span class={ perfStatusBadgeClass(d.Issue.Status) }>{ issueStatusLabel(ctx, d.Issue.Status) }</span>
 			<div class="issue-meta">
 				<span>{ i18n.T(ctx, "issues.detail.times_seen") }: { strconv.FormatInt(d.Issue.Count, 10) }</span>
-				<span>{ i18n.T(ctx, "issues.detail.first_seen") }: @relativeTime(d.Issue.FirstSeen)</span>
-				<span>{ i18n.T(ctx, "issues.detail.last_seen") }: @relativeTime(d.Issue.LastSeen)</span>
+				// @relativeTime — отдельным узлом: после текста в той же строке
+				// templ не разбирает @-вызов и печатает его буквально.
+				<span>
+					{ i18n.T(ctx, "issues.detail.first_seen") + ": " }
+					@relativeTime(d.Issue.FirstSeen)
+				</span>
+				<span>
+					{ i18n.T(ctx, "issues.detail.last_seen") + ": " }
+					@relativeTime(d.Issue.LastSeen)
+				</span>
 			</div>
 
 			if d.CanManage {

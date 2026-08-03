@@ -119,16 +119,16 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 		<div class="regressions">
 			<h1>{ i18n.T(ctx, "nav.regressions") }</h1>
 			@helpPanel("regressions", "performance")
-			<nav class="tabs">
+			<nav class="tabs" aria-label={ i18n.T(ctx, "filter.status") }>
 				@regressionStatusTab(projectID, "open", i18n.T(ctx, "perf.tab.open"), filter)
 				@regressionStatusTab(projectID, "resolved", i18n.T(ctx, "issues.status.resolved"), filter)
 				@regressionStatusTab(projectID, "all", i18n.T(ctx, "perf.tab.all"), filter)
 			</nav>
 			if len(regressions) == 0 {
-				@emptyState("zap", "perf.regressions.empty.title", "perf.regressions.empty.body", "", "")
+				@emptyState("zap", "perf.regressions.empty.title", "perf.regressions.empty.body", "", "", 2)
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "nav.regressions") {
 					<table class="data-table">
 						<thead>
 							<tr>
@@ -155,7 +155,7 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 							}
 						</tbody>
 					</table>
-				</div>
+				}
 				</div>
 			}
 		</div>

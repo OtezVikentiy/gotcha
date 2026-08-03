@@ -184,8 +184,8 @@ var debtFormatExemptions = []Exemption{
 	{Value: exemptLoc("internal/web/svg.go", 846), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика в HTML-экранированном тултипе`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 	{Value: exemptLoc("internal/web/svg.go", 1091), Why: `points[idx].T.UTC().Format("02.01") — подпись оси X во flame/vitals-графике`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 	{Value: exemptLoc("internal/web/svg.go", 1113), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки в другом графике того же файла`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1512), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1648), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1546), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1682), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 
 	// internal/web/templates/timerange.templ: prettyBound больше не находится
 	// здесь — задача C8 починила его, переведя на humanize.Time (см. докблок
@@ -239,7 +239,7 @@ const maxDebtFormatExemptions = 11
 // именно 10, а не 9: макеты, вынесенные в константы (time.RFC3339Nano,
 // statusPageTimeLayout), — нелитералы, их легко просчитать как литералы, глядя
 // на строку глазами. Совпадений
-// на одно больше, чем мест: internal/web/svg.go:1512 несёт два вызова
+// на одно больше, чем мест: internal/web/svg.go:1546 несёт два вызова
 // .Format("02.01") на одной строке (граница диапазона в заголовке <title>) —
 // exemptLoc считает по строке, а не по вызову, поэтому это ОДНО место с
 // ДВУМЯ находками. .Sub(...).String()/буквальное Duration.String() — 0 (см.

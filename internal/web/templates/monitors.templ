@@ -144,13 +144,13 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 			}
 			if len(rows) == 0 {
 				if canManage {
-					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "uptime.monitors.empty.cta", monitorNewPath(projectID))
+					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "uptime.monitors.empty.cta", monitorNewPath(projectID), 2)
 				} else {
-					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "", "")
+					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "", "", 2)
 				}
 			} else {
 				<div class="card">
-				<div class="table-scroll">
+				@scrollRegion("table-scroll", "nav.monitors") {
 						<table class="data-table">
 							<thead>
 								<tr>
@@ -178,7 +178,7 @@ templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail
 								}
 							</tbody>
 						</table>
-				</div>
+				}
 				</div>
 			}
 		</div>

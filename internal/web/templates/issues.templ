@@ -235,11 +235,11 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 			</form>
 			<div id="issues-table">
 				if len(rows) == 0 {
-					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID))
+					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
 				} else {
 					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
 						<div class="card">
-						<div class="table-scroll">
+						@scrollRegion("table-scroll", "issues.title") {
 								<table class="data-table">
 									<thead>
 										<tr>
@@ -284,7 +284,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 										}
 									</tbody>
 								</table>
-						</div>
+						}
 						</div>
 						<div class="bulk-actions">
 							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve_bulk") }</button>
