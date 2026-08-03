@@ -12,7 +12,12 @@ templ About(info version.Info, userEmail string) {
 			<h1>{ i18n.T(ctx, "about.title") }</h1>
 			<dl class="about-list card">
 				<dt>{ i18n.T(ctx, "about.version") }</dt>
-				<dd>{ info.Version }</dd>
+				<dd>
+					{ info.Version }
+					if !info.Stamped {
+						<div class="hint">{ i18n.T(ctx, "about.unstamped") }</div>
+					}
+				</dd>
 				<dt>{ i18n.T(ctx, "about.commit") }</dt>
 				<dd>{ info.Commit }</dd>
 				<dt>{ i18n.T(ctx, "about.date") }</dt>

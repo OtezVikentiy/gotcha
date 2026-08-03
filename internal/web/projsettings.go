@@ -231,7 +231,7 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 // ErrInvalidName (пустое имя) → 422.
 func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -263,7 +263,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 // новый DSN-ключ проекта.
 func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -290,7 +290,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 // KeysForProject), иначе 404 — иначе можно было бы по id отозвать чужой ключ.
 func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -348,7 +348,7 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 // невозможна (иначе дефолт молча перекрыл бы ввод).
 func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -442,7 +442,7 @@ func parsePerfThreshold(raw string) (int, bool) {
 // дефолт молча перекрыл бы ввод). Проценты хранятся долей (25 → 0.25).
 func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -549,7 +549,7 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 // /projects (страница проекта больше не существует).
 func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

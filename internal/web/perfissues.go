@@ -243,7 +243,7 @@ func codeLocFromData(data map[string]string) *templates.PerfCodeLoc {
 // чужой проект и несуществующая проблема → 404, неизвестный статус → 422.
 func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

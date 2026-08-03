@@ -80,7 +80,7 @@ func setLangCookie(w http.ResponseWriter, code string, secure bool) {
 // это меняющий состояние POST.
 func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.request_denied"))
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	loc, ok := i18n.Parse(r.FormValue("lang"))

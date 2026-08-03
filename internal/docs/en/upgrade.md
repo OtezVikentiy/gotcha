@@ -87,17 +87,17 @@ If you're using the stock `docker-compose.yml` as-is (a single app replica runni
 ```bash
 cd gotcha   # the directory with docker-compose.yml
 git pull
-docker compose build
-docker compose up -d
+make up-rebuild
 ```
 
 Breaking this down:
 
 1. `git pull` — pulls the new code from the repository.
-2. `docker compose build` — rebuilds the `gotcha` application image with the updated code (Postgres/ClickHouse use pre-built official images; you don't need to rebuild those — Compose pulls the version pinned in `docker-compose.yml` automatically if it changed).
-3. `docker compose up -d` — recreates the `gotcha` container from the new image. On startup (this is the default behavior, `GOTCHA_AUTO_MIGRATE=true` by default), the app **automatically** applies any missing schema migrations to PostgreSQL and ClickHouse before it starts accepting requests — nothing else to do.
+2. `make up-rebuild` — rebuilds the `gotcha` application image with the updated code and recreates the container (Postgres/ClickHouse use pre-built official images; you don't need to rebuild those — Compose pulls the version pinned in `docker-compose.yml` automatically if it changed). On startup (this is the default behavior, `GOTCHA_AUTO_MIGRATE=true` by default), the app **automatically** applies any missing schema migrations to PostgreSQL and ClickHouse before it starts accepting requests — nothing else to do.
 
-If you only want to update the image without rebuilding from source (e.g. you're pulling a pre-built image from a registry rather than building from `git`), use `docker compose pull` instead of `docker compose build`.
+Build through `make`, not through a bare `docker compose build`: only `make` computes the git version and stamps it into the binary. An image built with bare compose commands works, but reports itself as "no build metadata" in `/version`, on the About page and in the `gotcha_build_info` metric — you lose the ability to verify that what is deployed is what you think it is.
+
+If you only want to update the image without rebuilding from source (e.g. you're pulling a pre-built image from a registry rather than building from `git`), use `docker compose pull` + `docker compose up -d` instead.
 
 ## What automatic migrations mean
 
@@ -119,6 +119,29 @@ If you're running **multiple** `gotcha` processes at once (e.g. separate `--mode
 
 For the stock `docker-compose.yml` in this repository (a single `gotcha` service in `all` mode), separate migrations aren't needed — use the standard upgrade flow above.
 
+## If a migration was interrupted (dirty)
+
+If the process is killed **while** a migration is running (power loss, `docker kill`, an OOM), the migration tool leaves the schema marked **dirty**: "migration N started and never confirmed finishing". From then on the app refuses to start — deliberately, because it cannot know whether migration N half-applied or fully applied — and the startup error names the stuck version:
+
+```bash
+docker compose logs gotcha
+# ... база в состоянии dirty на версии N ...
+```
+
+First look at what migration N actually did to the schema (the migration files live in `internal/db/migrations/` in the repository, numbered). Then clear the flag with the version that matches reality:
+
+```bash
+# Migration N did complete (or you finished it by hand) — stay on N:
+docker compose run --rm gotcha --migrate-force=N
+
+# You rolled migration N back by hand — step back to N-1:
+docker compose run --rm gotcha --migrate-force=N-1
+```
+
+For the ClickHouse schema the flag is `--migrate-force-ch=N`; the startup error says which database is stuck. Only these two targets are accepted — anything else is treated as a typo, because it would silently shift the starting point of every future migration.
+
+**`--migrate-force` does not finish the migration** — it only clears the "unfinished" marker. If migration N half-applied and you clear the flag at N without checking, the next start will happily run against a schema missing half of migration N, and every insert into the missing part will fail. Verify the schema first, then clear the flag, then `docker compose up -d` — the app will apply the remaining migrations (N+1 and up) itself.
+
 ## Rolling back
 
 Gotcha's schema migrations are forward-only: the product cannot roll the schema itself back. Rolling back the **binary** while leaving the schema in place is possible, though — provided the migrations the new version applied were additive.
@@ -136,8 +159,7 @@ What to do:
 1. **Roll the application back** — switch to the previous commit/tag and rebuild:
    ```bash
    git checkout <previous-tag-or-commit>
-   docker compose build
-   docker compose up -d
+   make up-rebuild
    ```
 2. **Read the startup log.** A line like "schema version N is ahead of the built-in M; version … is marked backward-compatible, running against it" means the rollback worked and the instance is running against a newer schema. That is a supported state, but a temporary one: finish the job — either go back to the new version, or restore the backup taken before the upgrade.
 3. **If startup is refused** with an incompatible-schema message, rolling the binary back is not possible: **restore the backup** taken before the upgrade (see [Backup & Restore](/docs/backup-restore)) and bring up the previous version against it.

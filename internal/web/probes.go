@@ -133,7 +133,7 @@ func (h *Handler) renderProbes(w http.ResponseWriter, r *http.Request, status in
 // слишком длинное имя/регион — 422 с перерисовкой формы.
 func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -189,7 +189,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 // пробы (uptime.ErrNotFound) — 422 на месте, а не 500.
 func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

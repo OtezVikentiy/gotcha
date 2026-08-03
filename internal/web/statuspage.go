@@ -598,7 +598,7 @@ func statusPageErrorMessage(ctx context.Context, err error) string {
 // перерисовкой формы и сохранением введённых значений.
 func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -671,7 +671,7 @@ func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, 
 // самой страницы. 422 перерисовывает именно её форму с введёнными значениями.
 func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -720,7 +720,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 // statusPagesDelete — POST /statuspages/{id}/delete.
 func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

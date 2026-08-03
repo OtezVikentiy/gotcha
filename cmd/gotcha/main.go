@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,7 +51,7 @@ import (
 func main() {
 	// Проверка состояния — до всего остального: она не поднимает ни соединений,
 	// ни сервера, только спрашивает уже работающий процесс.
-	if url, ok := healthcheckRequested(os.Args[1:]); ok {
+	if url, ok := healthcheckRequested(os.Args[1:], os.Getenv); ok {
 		os.Exit(runHealthcheck(url))
 	}
 	if err := run(); err != nil {
@@ -160,6 +161,23 @@ func run() error {
 		return err
 	}
 	setupLogging(cfg.LogLevel, cfg.LogFormat)
+	// --migrate-force: снять dirty-флаг и выйти, не поднимая ни одного
+	// компонента. Раньше текст ошибки советовал `migrate force` — бинарь,
+	// которого в образе нет (находка №41).
+	if cfg.MigrateForcePG >= 0 || cfg.MigrateForceCH >= 0 {
+		if cfg.MigrateForcePG >= 0 {
+			err = db.ForcePG(cfg.PostgresDSN, uint(cfg.MigrateForcePG))
+		} else {
+			err = db.ForceCH(cfg.ClickHouseDSN, uint(cfg.MigrateForceCH))
+		}
+		if err != nil {
+			return err
+		}
+		slog.Info("dirty flag cleared; force does not finish the migration — "+
+			"verify the schema before restarting (see /docs/upgrade)",
+			"pg_version", cfg.MigrateForcePG, "ch_version", cfg.MigrateForceCH)
+		return nil
+	}
 	// Потолок кучи по лимиту контейнера. Go-рантайм лимит cgroup не читает, а у
 	// gotcha буферы растут по замыслу, дожидаясь возвращения хранилища: без
 	// потолка первым срабатывает OOM-killer ядра, и теряется всё буферизованное,
@@ -243,7 +261,14 @@ func run() error {
 		nil, func() int64 { return memLimitBytes })
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_build_info",
 		"Build metadata; the value is always 1, the version lives in the label.",
-		map[string]string{"version": version.String(), "mode": cfg.Mode},
+		map[string]string{
+			"version": version.String(),
+			"mode":    cfg.Mode,
+			// stamped=false — сборка мимо make: версия взята из исходников,
+			// а не из git-тега, и сверка «задеплоено то, что думаем»
+			// невозможна (находка №102).
+			"stamped": strconv.FormatBool(version.Stamped()),
+		},
 		func() float64 { return 1 })
 	// Заполнение диска (находка №40): полный список самометрик молчал про
 	// место — 95% и 100% заполнения выглядели одинаково, сигнала не было
@@ -754,6 +779,9 @@ func run() error {
 		webHandler.RetentionDays = cfg.RetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Purger = telemetry.NewPurger(ch)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_web_cross_origin_rejected_total",
+			"POST requests rejected because Origin/Referer did not match GOTCHA_BASE_URL.",
+			nil, webHandler.CrossOriginRejected)
 		janitor := &auth.Janitor{Svc: authSvc}
 		if orgSvc != nil {
 			// Просроченные/принятые инвайты копят email приглашённых бессрочно —

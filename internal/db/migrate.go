@@ -78,6 +78,54 @@ func schemaVersion(fsys embed.FS, dir, url string) (version uint, dirty bool, er
 	return version, dirty, nil
 }
 
+// ForcePG снимает флаг dirty с PG-схемы (аналог migrate force). Разрешены
+// только два целевых номера: текущая версия (миграция доделана руками) и
+// текущая−1 (миграция откачена руками) — это единственные состояния, в
+// которых может застрять оборвавшаяся миграция; всё остальное — опечатка,
+// которая молча сдвинула бы точку отсчёта всех будущих миграций.
+// Force НЕ доделывает миграцию: он снимает признак незавершённости.
+func ForcePG(dsn string, target uint) error {
+	return force(pgMigrations, "migrations/pg", pgx5URL(dsn), target)
+}
+
+// ForceCH — CH-аналог ForcePG: снимает флаг dirty со схемы ClickHouse.
+func ForceCH(dsn string, target uint) error {
+	return force(chMigrations, "migrations/ch", dsn, target)
+}
+
+// force — общая реализация ForcePG/ForceCH. Нижняя граница target ≥ 1:
+// номера миграций начинаются с 1, а dirty на версии 1 с ручным откатом —
+// это пустая база, там честнее пересоздать том.
+func force(fsys embed.FS, dir, url string, target uint) error {
+	if target < 1 {
+		return fmt.Errorf("migrate force %s: target version must be >= 1, got %d", dir, target)
+	}
+	m, err := newMigrateInstance(dir, fsys, url)
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+	version, dirty, err := m.Version()
+	if errors.Is(err, migrate.ErrNilVersion) {
+		return fmt.Errorf("migrate force %s: миграции ещё не применялись — снимать нечего", dir)
+	}
+	if err != nil {
+		return fmt.Errorf("migrate force %s: read version: %w", dir, err)
+	}
+	if !dirty {
+		return fmt.Errorf("migrate force %s: схема на версии %d not dirty — снимать нечего", dir, version)
+	}
+	if target != version && target != version-1 {
+		return fmt.Errorf("migrate force %s: запрошена версия %d, а dirty-схема стоит на %d — "+
+			"разрешены только %d (миграция доделана руками) и %d (миграция откачена руками)",
+			dir, target, version, version, version-1)
+	}
+	if err := m.Force(int(target)); err != nil {
+		return fmt.Errorf("migrate force %s: %w", dir, err)
+	}
+	return nil
+}
+
 // CheckSchemaCurrent сверяет применённую версию PG-схемы со встроенным
 // максимумом (по именам файлов в embed FS). Возвращает ошибку, если схема
 // отстаёт, впереди встроенной или помечена dirty. Предназначена для fail-fast
@@ -138,6 +186,15 @@ func checkSchema(ctx context.Context, pool *pgxpool.Pool, label, target string, 
 	return nil
 }
 
+// forceFlagSuffix подбирает суффикс флага --migrate-force по метке базы в
+// тексте ошибки гейта: у ClickHouse свой флаг --migrate-force-ch.
+func forceFlagSuffix(label string) string {
+	if label == "ClickHouse" {
+		return "-ch"
+	}
+	return ""
+}
+
 // schemaGateErr — чистая логика version-гейта схемы (общая для PG и CH). label
 // («PG»/«ClickHouse») подставляется в текст. Порядок проверок: dirty → отставание
 // → впереди встроенной. Возвращает пустое предупреждение и nil, когда версия
@@ -152,7 +209,9 @@ func checkSchema(ctx context.Context, pool *pgxpool.Pool, label, target string, 
 func schemaGateErr(label string, got uint, dirty bool, want uint, compat map[uint]bool) (warning string, err error) {
 	if dirty {
 		return "", fmt.Errorf("schema check: %s-база в состоянии dirty на версии %d — "+
-			"требуется ручной force перед стартом", label, got)
+			"снимите флаг перед стартом: docker compose run --rm gotcha --migrate-force%s=%d "+
+			"(подробности: /docs/upgrade, раздел про dirty)",
+			label, got, forceFlagSuffix(label), got)
 	}
 	if got < want {
 		return "", fmt.Errorf("schema check: версия %s-схемы %d отстаёт от встроенной %d — "+
@@ -317,9 +376,14 @@ func explainMigrateErr(dir string, err error) error {
 	}
 	var derr migrate.ErrDirty
 	if errors.As(err, &derr) {
+		flag := "--migrate-force"
+		if strings.HasSuffix(dir, "/ch") {
+			flag = "--migrate-force-ch"
+		}
 		return fmt.Errorf("migrate up %s: база в состоянии dirty на версии %d — "+
-			"предыдущая миграция оборвалась; проверьте схему и выполните ручной force "+
-			"(migrate force %d) перед перезапуском: %w", dir, derr.Version, derr.Version, err)
+			"предыдущая миграция оборвалась; проверьте схему и снимите флаг: "+
+			"docker compose run --rm gotcha %s=%d (подробности: /docs/upgrade, "+
+			"раздел про dirty): %w", dir, derr.Version, flag, derr.Version, err)
 	}
 	return fmt.Errorf("migrate up %s: %w", dir, err)
 }

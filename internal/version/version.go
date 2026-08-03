@@ -37,7 +37,21 @@ func resolved() string {
 // Version — сырая строка версии: "v0.2.0" | "v0.2.0-5-gabcdef-dirty" | "0.2.0".
 func Version() string { return resolved() }
 
-// String — человекочитаемо: "0.2.0" либо "v0.2.0 (abcdef, 2026-07-22)".
+// Stamped — были ли в сборку вшиты git-метаданные. Сентинелы ""/dev/base-dev
+// резолвятся в base (см. resolved) — это осознанно: релизный образ должен
+// называть версию релиза. Но происхождение значения — другой вопрос: сборка
+// мимо make (docker compose build руками) выдаёт ровно ту же строку, и
+// «развёрнуто именно то, что вы думаете» перестаёт быть проверяемым.
+func Stamped() bool {
+	switch version {
+	case "", "dev", base + "-dev":
+		return false
+	}
+	return true
+}
+
+// String — человекочитаемо: "v0.2.0 (abcdef, 2026-07-22)" либо честное
+// "0.2.0 (no build metadata)" для сборки без вшитой git-версии.
 func String() string {
 	var b strings.Builder
 	b.WriteString(resolved())
@@ -49,6 +63,9 @@ func String() string {
 	case date != "":
 		b.WriteString(" (" + date + ")")
 	}
+	if !Stamped() {
+		b.WriteString(" (no build metadata)")
+	}
 	return b.String()
 }
 
@@ -58,9 +75,10 @@ type Info struct {
 	Commit  string `json:"commit"`
 	Date    string `json:"date"`
 	Go      string `json:"go"`
+	Stamped bool   `json:"stamped"`
 }
 
 // Get — снимок сведений о версии.
 func Get() Info {
-	return Info{Version: resolved(), Commit: commit, Date: date, Go: runtime.Version()}
+	return Info{Version: resolved(), Commit: commit, Date: date, Go: runtime.Version(), Stamped: Stamped()}
 }

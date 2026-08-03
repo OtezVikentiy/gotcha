@@ -431,7 +431,7 @@ func (h *Handler) monitorEditPage(w http.ResponseWriter, r *http.Request) {
 // пинга с токеном именно там, см. monitordetail.templ).
 func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -490,7 +490,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 // URL нельзя — только перевыпустить.
 func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -541,7 +541,7 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 // присылает/не может менять).
 func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

@@ -113,7 +113,7 @@ func TestHealthcheckRequested(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			url, ok := healthcheckRequested(tc.args)
+			url, ok := healthcheckRequested(tc.args, func(string) string { return "" })
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -186,6 +186,12 @@ func TestVersionHandler(t *testing.T) {
 	}
 	if info.Version != version.Version() {
 		t.Fatalf("version = %q, ждали %q", info.Version, version.Version())
+	}
+	if info.Stamped != version.Stamped() {
+		t.Fatalf("stamped = %v, ждали %v", info.Stamped, version.Stamped())
+	}
+	if !strings.Contains(rec.Body.String(), `"stamped"`) {
+		t.Fatalf("в JSON /version нет поля stamped: %s", rec.Body.String())
 	}
 }
 

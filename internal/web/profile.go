@@ -20,7 +20,7 @@ import (
 // единственный владелец каких-то организаций: иначе они остались бы без владельца.
 func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -162,7 +162,7 @@ func (h *Handler) providerDisplayName(name string) string {
 // это его единственная привязка — отказ (409), иначе юзер лишился бы доступа.
 func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -207,7 +207,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 // (в отличие от смены пароля) — юзер продолжает работать.
 func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -249,7 +249,7 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 // /login посреди собственной смены пароля.
 func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -311,7 +311,7 @@ func profilePasswordErrorMessage(ctx context.Context, err error) string {
 // живой. Рендерит страницу профиля с числом завершённых сессий.
 func (h *Handler) profileSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

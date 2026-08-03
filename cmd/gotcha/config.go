@@ -115,6 +115,12 @@ type Config struct {
 	// возвращает: команда молча поднимала ПОЛНОЦЕННЫЙ инстанс в режиме all и
 	// не завершалась никогда.
 	MigrateOnly bool
+	// MigrateForcePG/MigrateForceCH — снять флаг dirty со схемы на версии N
+	// и выйти (флаги --migrate-force / --migrate-force-ch). −1 — не
+	// запрошено. Force не доделывает миграцию — он снимает признак
+	// незавершённости; допустимые N проверяет db.ForcePG/ForceCH.
+	MigrateForcePG int
+	MigrateForceCH int
 
 	// ScrubIP/ScrubEmail/ScrubKeys — серверный PII-scrubbing (PRIV-H1),
 	// включён по умолчанию. ScrubIP/ScrubEmail зануляют ip/email субъекта;
@@ -271,6 +277,10 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	mode := fs.String("mode", "all", "process role: ingest | web | uptime | probe | all")
 	migrateOnly := fs.Bool("migrate-only", false,
 		"apply schema migrations and exit (init-job for deployments with GOTCHA_AUTO_MIGRATE=false)")
+	migrateForce := fs.Int("migrate-force", -1,
+		"clear the dirty flag on the PostgreSQL schema at version N and exit (see upgrade docs)")
+	migrateForceCH := fs.Int("migrate-force-ch", -1,
+		"clear the dirty flag on the ClickHouse schema at version N and exit (see upgrade docs)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -282,6 +292,18 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// решил бы, что схема применена.
 	if *migrateOnly && *mode == "probe" {
 		return Config{}, fmt.Errorf("--migrate-only is not valid with --mode=probe: a probe never opens the database")
+	}
+	// Те же соображения для force: probe базу не открывает; с --migrate-only
+	// это разные намерения (применить ↔ снять флаг); друг с другом — миграции
+	// идут последовательно, застрять могла только одна база.
+	if (*migrateForce >= 0 || *migrateForceCH >= 0) && *mode == "probe" {
+		return Config{}, fmt.Errorf("--migrate-force is not valid with --mode=probe: a probe never opens the database")
+	}
+	if (*migrateForce >= 0 || *migrateForceCH >= 0) && *migrateOnly {
+		return Config{}, fmt.Errorf("--migrate-force and --migrate-only are different intents (clear the dirty flag vs apply migrations): pass one")
+	}
+	if *migrateForce >= 0 && *migrateForceCH >= 0 {
+		return Config{}, fmt.Errorf("--migrate-force and --migrate-force-ch cannot be combined: migrations run sequentially, only one database can be stuck dirty")
 	}
 
 	str := func(key, def string) string {
@@ -366,6 +388,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg := Config{
 		Mode:                     *mode,
 		MigrateOnly:              *migrateOnly,
+		MigrateForcePG:           *migrateForce,
+		MigrateForceCH:           *migrateForceCH,
 		Addr:                     str("GOTCHA_ADDR", ":8080"),
 		BaseURL:                  str("GOTCHA_BASE_URL", "http://localhost:8080"),
 		PostgresDSN:              str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),

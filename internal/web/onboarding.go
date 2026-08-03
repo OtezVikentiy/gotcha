@@ -71,7 +71,7 @@ func (h *Handler) userHasProjects(r *http.Request, uid int64) (bool, error) {
 // CreateProject → CreateKey → 303 на страницу подключения SDK.
 func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -172,7 +172,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 // owner/admin — тех же, кто и так управляет проектами организации.
 func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

@@ -160,7 +160,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 // → 303 обратно на страницу issue.
 func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -197,7 +197,7 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 // (иначе 422) — та же организация, что отдаёт assign-select на странице.
 func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

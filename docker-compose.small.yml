@@ -58,6 +58,10 @@ services:
 
   clickhouse:
     mem_limit: 1024m
+    # merge-работа ClickHouse — главный потребитель CPU на 2-ядерной машине;
+    # 1.5 оставляет полъядра приложению и PostgreSQL даже в пике фоновых
+    # слияний.
+    cpus: 1.5
     volumes:
       # 00-common.xml приезжает из базового compose; 10-small.xml накладывается
       # поверх — ClickHouse читает config.d по алфавиту, поэтому побеждает он.

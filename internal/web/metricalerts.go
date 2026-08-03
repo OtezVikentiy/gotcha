@@ -91,7 +91,7 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 // metricAlertCreate — POST /projects/{id}/metrics/alerts: создать правило.
 func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -152,7 +152,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 // metricAlertDelete — POST /projects/{id}/metrics/alerts/delete: удалить правило.
 func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

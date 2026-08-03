@@ -631,3 +631,48 @@ func TestMigrateOnlyDefaultsOff(t *testing.T) {
 		t.Error("MigrateOnly = true без флага")
 	}
 }
+
+// TestMigrateForceFlags — разбор --migrate-force/--migrate-force-ch: три
+// несовместимости отклоняются на разборе конфигурации, одиночный флаг
+// разбирается, дефолт — «не запрошено» (−1).
+func TestMigrateForceFlags(t *testing.T) {
+	probeEnv := map[string]string{
+		"GOTCHA_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_TOKEN": "t",
+	}
+	rejected := []struct {
+		name string
+		env  map[string]string
+		args []string
+	}{
+		{"с probe: база не открывается", probeEnv, []string{"--migrate-force=57", "--mode=probe"}},
+		{"с migrate-only: разные намерения", nil, []string{"--migrate-force=57", "--migrate-only"}},
+		{"оба разом: застрять могла одна база", nil, []string{"--migrate-force=57", "--migrate-force-ch=3"}},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConfig(getenvFrom(tc.env), tc.args)
+			if err == nil {
+				t.Fatalf("loadConfig принял %v", tc.args)
+			}
+			if !strings.Contains(err.Error(), "migrate-force") {
+				t.Errorf("ошибка = %v, want упоминание --migrate-force", err)
+			}
+		})
+	}
+
+	cfg, err := loadConfig(getenvFrom(nil), []string{"--migrate-force-ch=12"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.MigrateForceCH != 12 || cfg.MigrateForcePG != -1 {
+		t.Errorf("MigrateForceCH=%d MigrateForcePG=%d, want 12 и -1", cfg.MigrateForceCH, cfg.MigrateForcePG)
+	}
+
+	cfg, err = loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.MigrateForcePG != -1 || cfg.MigrateForceCH != -1 {
+		t.Errorf("дефолт: MigrateForcePG=%d MigrateForceCH=%d, want -1 и -1", cfg.MigrateForcePG, cfg.MigrateForceCH)
+	}
+}

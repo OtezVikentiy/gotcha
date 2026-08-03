@@ -180,7 +180,7 @@ func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, stat
 // не переносятся, это не требуется спекой задачи).
 func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -226,7 +226,7 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 // разовое окно, которое затянулось, нельзя было продлить вовсе.
 func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -290,7 +290,7 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 // и у alertsChannelDelete/projectSettingsKeyRevoke.
 func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

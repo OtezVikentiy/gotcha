@@ -84,8 +84,10 @@ This directory contains `docker-compose.yml` — a recipe file describing which 
 ## Step 3. Start the containers
 
 ```bash
-docker compose up -d
+make up-rebuild
 ```
+
+(`make` computes the git version and stamps it into the build — `/version` and the About page will name the exact release. If `make` isn't installed, `docker compose up -d` works too, but the instance will report "no build metadata" instead of a verifiable version.)
 
 What this does:
 
@@ -136,15 +138,9 @@ make logs     # docker compose logs -f gotcha (Ctrl+C to exit)
 
 Open `http://<your-server-IP>:59080` in a browser (or `http://localhost:59080` if you're browsing from the server itself / through an SSH tunnel) — the Gotcha login page should load.
 
-## Step 5. Create the first user
+## Step 5. Set a secret key (required for a real server)
 
-Open `http://<your-server-address>:59080/register` and register.
-
-**Important:** the very first user on a fresh instance is always allowed to register, regardless of the self-registration mode (`GOTCHA_REGISTRATION`), and is automatically granted **instance-admin** rights. This is the "bootstrap" step — it's how you get your first admin on a brand-new install without touching the database by hand. Every later signup is governed by `GOTCHA_REGISTRATION` (details in [Configuration](/docs/configuration)).
-
-After logging in: create an organization, then a project inside it. The project's **"Setup"** page (a URL like `/projects/<id>/setup`, also reachable via the **"Setup"** button in the projects list) shows its DSN — the address your app's SDK sends data to (any language's official Sentry SDK works with Gotcha unmodified, since it speaks the same ingestion protocol). See [Getting Started](/docs/getting-started) and [SDK & Integrations](/docs/sdk) for the full walkthrough.
-
-## Step 6. Set a secret key (required for a real server)
+These two configuration steps come **before** creating the first user on purpose: registration is a POST request, and with a wrong `GOTCHA_BASE_URL` that very first POST is rejected with `403` (see step 6).
 
 By default Gotcha uses `GOTCHA_SECRET_KEY=insecure-dev-secret`. That value is **public** — it's sitting right there in the source code on GitFlic, anyone can read it. It signs session cookies and OAuth state cookies; leaving the default on a server reachable over the internet lets an attacker who knows this key forge cookies and take over accounts through OAuth login (account takeover).
 
@@ -156,13 +152,14 @@ Generate a random key:
 openssl rand -base64 32
 ```
 
-Create (or edit) an `.env` file **next to `docker-compose.yml`** — Docker Compose reads it automatically:
+Create an `.env` file **next to `docker-compose.yml`** — Docker Compose reads it automatically. Restrict its permissions in the same command: this file will hold the master key that encrypts alert channel and SSO secrets, and possibly an SMTP password ([Backup & Restore](/docs/backup-restore) already requires `600` for a copy of this file — the original must not be weaker):
 
 ```bash
+cp .env.example .env && chmod 600 .env
 nano .env
 ```
 
-and add (replace the value with the output of the command above):
+Uncomment `GOTCHA_SECRET_KEY` and replace its value with the output of the command above:
 
 ```env
 GOTCHA_SECRET_KEY=paste-your-random-string-from-openssl-here
@@ -174,11 +171,11 @@ Apply the change (this recreates the `gotcha` container with the new environment
 docker compose up -d
 ```
 
-## Step 7. Set your public address (`GOTCHA_BASE_URL`)
+## Step 6. Set your public address (`GOTCHA_BASE_URL`)
 
-`GOTCHA_BASE_URL` is the address users and SDKs actually reach your instance at. It's used to build: project DSNs (what you paste into your apps' code), links in invite emails, and incident links in alerts (Telegram/webhook/email). If it doesn't match the real address, those links will point to the wrong place.
+`GOTCHA_BASE_URL` is the address users and SDKs actually reach your instance at. It's used to build: project DSNs (what you paste into your apps' code), links in invite emails, and incident links in alerts (Telegram/webhook/email). It is also the reference for the origin check protecting every form: a POST coming from an address other than `GOTCHA_BASE_URL` is rejected with `403` — including the registration form on the next step.
 
-Add to the same `.env`:
+Uncomment in the same `.env`:
 
 ```env
 GOTCHA_BASE_URL=https://gotcha.example.com
@@ -190,11 +187,19 @@ GOTCHA_BASE_URL=https://gotcha.example.com
 docker compose up -d
 ```
 
+## Step 7. Create the first user
+
+Open `http://<your-server-address>:59080/register` and register.
+
+**Important:** the very first user on a fresh instance is always allowed to register, regardless of the self-registration mode (`GOTCHA_REGISTRATION`), and is automatically granted **instance-admin** rights. This is the "bootstrap" step — it's how you get your first admin on a brand-new install without touching the database by hand. Every later signup is governed by `GOTCHA_REGISTRATION` (details in [Configuration](/docs/configuration)).
+
+After logging in: create an organization, then a project inside it. The project's **"Setup"** page (a URL like `/projects/<id>/setup`, also reachable via the **"Setup"** button in the projects list) shows its DSN — the address your app's SDK sends data to (any language's official Sentry SDK works with Gotcha unmodified, since it speaks the same ingestion protocol). See [Getting Started](/docs/getting-started) and [SDK & Integrations](/docs/sdk) for the full walkthrough.
+
 ## Minimal production checklist
 
 Before pointing real users or real application traffic at this instance, make sure:
 
-- [ ] **`GOTCHA_SECRET_KEY`** — set to your own random value (step 6), not the default.
+- [ ] **`GOTCHA_SECRET_KEY`** — set to your own random value (step 5), not the default.
 - [ ] **`GOTCHA_BASE_URL`** — points at the real public address.
 - [ ] **HTTPS** — Gotcha doesn't terminate TLS itself; put a reverse proxy in front of it:
   - **nginx**: a config with `proxy_pass http://127.0.0.1:59080;` and a Let's Encrypt certificate (`certbot --nginx`).
@@ -214,7 +219,7 @@ docker compose logs -f gotcha
 docker compose logs -f postgres
 docker compose logs -f clickhouse
 ```
-A common cause is a configuration error message (e.g. the requirement to set `GOTCHA_SECRET_KEY`, see step 6) right there in the `gotcha` log.
+A common cause is a configuration error message (e.g. the requirement to set `GOTCHA_SECRET_KEY`, see step 5) right there in the `gotcha` log.
 
 **Port already in use** (`bind: address already in use`).
 Something on the server is already listening on 59080. Pick a different host port via `.env`:

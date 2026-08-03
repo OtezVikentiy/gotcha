@@ -268,7 +268,7 @@ var BulkActionFlashKeys = func() []string {
 // query — тот же принцип sameOrigin, что и у остальных POST в этом пакете.
 func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

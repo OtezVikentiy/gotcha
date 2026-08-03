@@ -48,6 +48,22 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Версия пинуется тем же принципом, что и базовые образы (digest):
+      # @latest в CI — это неповторяемая сборка. Обновлять руками.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          govulncheck ./...
+
+      - name: go mod tidy — нет расхождений
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "go.mod/go.sum расходятся с деревом — выполните go mod tidy и закоммитьте:"
+            git --no-pager diff go.mod go.sum
+            exit 1
+          fi
+
       # Сгенерированные шаблоны обязаны совпадать с исходниками: иначе правка
       # .templ уезжает в main, а рендерится старый *_templ.go — расхождение,
       # которое не ловится ни компилятором, ни тестами.
@@ -83,6 +99,43 @@ jobs:
       # шага с `go test ./...` не нужно.
       - name: покрытие + пороги
         run: bash scripts/coverage.sh
+
+  image:
+    name: docker-образ + compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # fetch-depth: 0 — make build вычисляет версию через git describe --tags;
+      # с усечённой историей тег не найдётся и образ соберётся «no build
+      # metadata» — то есть CI перестал бы проверять ровно тот путь, который
+      # документация называет штатным.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: make build — путь оператора
+        run: make build
+
+      - name: compose config — оба файла валидны
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.small.yml config -q
+
+      # --wait опирается на healthcheck'и всех трёх сервисов — то есть
+      # заодно проверяет их самих (start_period, команду, порт).
+      - name: подъём стека
+        run: docker compose up -d --wait --wait-timeout 180
+
+      - name: /readyz
+        run: curl -fsS http://localhost:59080/readyz
+
+      - name: логи при отказе
+        if: failure()
+        run: docker compose logs
+
+      - name: снос стека
+        if: always()
+        run: docker compose down -v
 
   race-integration:
     name: гонки на интеграционных

@@ -11,7 +11,7 @@ data.
 | `/metrics` | Prometheus-format counters about buffers, drops and insert failures. Never touches the database, so it answers even when PostgreSQL or ClickHouse is down — which is exactly when you need it. |
 | `/healthz` | Liveness: answers 200 while the process serves HTTP. The body still carries component state (`postgres`, `clickhouse`, `version`), but it no longer affects the status code — put your liveness probe here. |
 | `/readyz` | Readiness: the same fields plus `status`, but 503 while PostgreSQL or ClickHouse is unreachable. Put readiness probes and the container healthcheck here. |
-| `/version` | Build version, commit and date. |
+| `/version` | Build metadata: `version`, `commit`, `date`, `go` (the Go runtime the binary was built with) and `stamped` — whether git metadata was baked into the build. `stamped: false` means the image was built outside `make` and the version is the source default, not a verified release. |
 
 The split matters: a liveness probe on an endpoint that fails during a storage
 outage restarts a healthy process, and every restart throws away the buffers —
@@ -21,6 +21,29 @@ None of them require authentication and none expose personal data: `/metrics`
 carries counts only, never event contents. If your instance is on the public
 internet, restrict `/metrics` at the reverse proxy — the numbers reveal your
 traffic volume, which you may not want to publish.
+
+## When the container goes unhealthy
+
+The stock compose file gives the `gotcha` container a healthcheck on `/readyz`,
+but be clear about what that buys: **`docker compose` does not restart an
+unhealthy container.** A failed healthcheck only changes the label in
+`docker ps` (reacting to unhealthy is a Swarm/Kubernetes feature); the
+`restart` policy catches a crashed process, not a hung one. Check the state
+and the last probe outputs with:
+
+```bash
+docker ps                                                # STATUS column: (healthy) / (unhealthy)
+docker inspect --format '{{json .State.Health}}' gotcha-gotcha-1
+```
+
+To make that state visible from the outside, don't watch the label — watch the
+service: point an uptime monitor at `/readyz` from another gotcha instance
+(uptime monitoring of an HTTP endpoint is exactly what the product does), or
+alert on the `gotcha_up` metric of your scraper.
+
+There is deliberately no auto-healer watching the Docker socket in the stock
+setup: access to the socket is root on the host, and shipping that would trade
+the security of the whole install for a scenario a supervisor solves better.
 
 ## Scraping
 
@@ -140,7 +163,10 @@ this number against the volume size you already know PostgreSQL runs on
 disk size on its own.
 
 **`gotcha_build_info`** — always 1; the version and mode are in the labels. Use
-it to confirm what is actually deployed.
+it to confirm what is actually deployed. The `stamped` label says whether the
+build carries git metadata: `stamped="false"` means the image was built outside
+`make`, its version string is the source default, and "deployed exactly what
+you think" cannot be verified from it.
 
 ## Alerts worth setting
 

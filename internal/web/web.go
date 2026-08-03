@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/a-h/templ"
@@ -243,6 +244,11 @@ type Handler struct {
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
 	// требует инициализации в New.
 	statusCache statusCache
+
+	// crossOriginRejected/coThrottle — счётчик и троттлинг лога отказов
+	// same-origin (см. crossorigin.go). Нулевые значения готовы к работе.
+	crossOriginRejected atomic.Int64
+	coThrottle          coThrottle
 }
 
 // localRegion возвращает h.LocalRegion, а если оно не задано —
@@ -682,6 +688,10 @@ func (h *Handler) RegisteredRoutes() []string {
 // заданным HTTP-статусом — замена голому http.Error, которое ломает вид
 // сайта на ошибках.
 func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	// WriteHeader отправляет заголовки до первой записи тела, поэтому
+	// автоопределение Content-Type не срабатывает — без явной установки
+	// страница ошибки уходит вовсе без Content-Type.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_ = templates.ErrorPage(status, msg, h.currentEmail(r)).Render(r.Context(), w)
 }

@@ -65,6 +65,27 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 | `GOTCHA_PG_DSN` | `postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable` | PostgreSQL connection string — stores organizations, projects, users, alert rules, incidents. The stock `docker-compose.yml` already sets `postgres://gotcha:gotcha@postgres:5432/gotcha?sslmode=disable` (hostname `postgres` is the service name inside the Docker network). Only change this if you're using an external/your own database instead of the compose container. |
 | `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | ClickHouse connection string — stores events, trace spans, metrics, profiles, uptime check results. The stock compose file sets `clickhouse://gotcha:gotcha@clickhouse:9000/gotcha`. Change it for the same reasons as `GOTCHA_PG_DSN`. |
 
+### Compose-only variables (database containers)
+
+These four are **Docker Compose substitution variables**, not configuration of the gotcha process: the app never reads them. Compose substitutes them into the database containers' settings and into the DSNs above.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_PG_PASSWORD` | `gotcha` | Password of the `gotcha` PostgreSQL user. Substituted into both the `postgres` container (`POSTGRES_PASSWORD`) and the app's `GOTCHA_PG_DSN`. URL-unsafe characters (`@` `/` `:` `#` `%`) must not be used — the value goes into a DSN URL as-is. |
+| `GOTCHA_CH_PASSWORD` | `gotcha` | Password of the `gotcha` ClickHouse user. Same mechanics and same character restriction as `GOTCHA_PG_PASSWORD`. |
+| `GOTCHA_PG_MEM_LIMIT` | `512m` | Memory ceiling of the `postgres` container. Raise on a server with headroom. |
+| `GOTCHA_CH_MEM_LIMIT` | `2g` | Memory ceiling of the `clickhouse` container. Without a cgroup limit ClickHouse assumes 90% of the **host's** memory is its own — the ceiling is what makes its memory budget real. |
+
+**Changing a database password on an existing install.** `POSTGRES_PASSWORD`/`CLICKHOUSE_PASSWORD` only take effect when the data volume is first initialized — on a live install, changing the variable alone locks the app out of a database that still expects the old password. The order matters:
+
+1. Change the password in the database itself:
+   ```bash
+   docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
+   docker compose exec clickhouse clickhouse-client --user gotcha --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
+   ```
+2. Set `GOTCHA_PG_PASSWORD`/`GOTCHA_CH_PASSWORD` in `.env`.
+3. `docker compose up -d` — the app container is recreated with the new DSN.
+
 ## Email / SMTP
 
 Used for invite emails and the email alert channel. As long as `GOTCHA_SMTP_HOST` is empty, email sending is disabled entirely (the log shows `GOTCHA_SMTP_HOST is not set, email alert channels are disabled`), while everything else keeps working normally.
@@ -156,7 +177,7 @@ Detail level and format of the instance's own logs.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs session and OAuth state cookies. **The default is public** (it's in the source code) — leaving it on a real server allows account takeover via OAuth login. On a non-localhost `GOTCHA_BASE_URL`, the app refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) until a real key is set, and requires it to be **at least 32 bytes** (a shorter key is a weak signature). Generate one with `openssl rand -hex 32`. Both checks can be waived for an unusual dev setup with `GOTCHA_ALLOW_INSECURE_SECRET=1`. See [Installation](/docs/installation), step 6, for the full walkthrough. |
+| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs session and OAuth state cookies. **The default is public** (it's in the source code) — leaving it on a real server allows account takeover via OAuth login. On a non-localhost `GOTCHA_BASE_URL`, the app refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) until a real key is set, and requires it to be **at least 32 bytes** (a shorter key is a weak signature). Generate one with `openssl rand -hex 32`. Both checks can be waived for an unusual dev setup with `GOTCHA_ALLOW_INSECURE_SECRET=1`. See [Installation](/docs/installation), step 5, for the full walkthrough. |
 | `GOTCHA_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs (`10.0.0.0/8`) and/or bare IPs (`192.168.1.5`, treated as `/32` or `/128`) of reverse proxies you trust. Behind a proxy (the recommended [install](/docs/installation) topology), set this to the proxy's address so the per-IP login rate limiter keys on the real client IP from `X-Forwarded-For` instead of the proxy's — otherwise every login attempt looks like it comes from the proxy and the limiter can't tell clients apart. Invalid entries are a startup error, not a silent skip. |
 | `GOTCHA_ALLOW_INSECURE_SECRET` | `false` | Escape hatch that bypasses the check above — lets the app start with the default key even on a non-localhost address. **Development-only**; never set this on a real deployment. |
 | `GOTCHA_REGISTRATION` | `invite` | Self-registration mode: `open` — anyone can register; `invite` — an account is created only against a valid invitation (by password or through a provider); `closed` — **no new accounts appear at all, not even with a valid invitation**. That is the difference: under `closed` an invited person hits "registration is closed", and inviting anyone from outside becomes impossible — invitations only work for people who already have an account. The very first user on a fresh instance can always register regardless of this setting (instance-admin bootstrap). |

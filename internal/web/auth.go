@@ -155,7 +155,7 @@ func (h *Handler) denyRegistration(w http.ResponseWriter, r *http.Request, next,
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -213,7 +213,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -328,7 +328,7 @@ func registerErrorMessage(ctx context.Context, err error) string {
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
@@ -348,7 +348,7 @@ func (h *Handler) ssoPage(w http.ResponseWriter, r *http.Request) {
 // организации. Неизвестный домен → нейтральное сообщение (не палим список доменов).
 func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {

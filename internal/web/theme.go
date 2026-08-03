@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
 )
 
@@ -81,7 +80,7 @@ func setThemeCookie(w http.ResponseWriter, code string, secure bool) {
 // меняющий состояние POST.
 func (h *Handler) themeSwitch(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.request_denied"))
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	t, ok := theme.Parse(r.FormValue("theme"))

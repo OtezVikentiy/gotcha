@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -17,13 +18,33 @@ const healthcheckTimeout = 3 * time.Second
 // портом внутри контейнера (GOTCHA_ADDR по умолчанию :8080).
 const defaultHealthcheckURL = "http://127.0.0.1:8080/readyz"
 
+// defaultHealthcheckURLFor строит дефолтный URL из GOTCHA_ADDR: оператор,
+// сменивший порт, не должен получать второй независимый симптом от той же
+// правки (проверка ходила бы в мёртвый :8080 — «unhealthy» при живом
+// приложении). Хост всегда 127.0.0.1: проверка ходит к себе, а GOTCHA_ADDR
+// вида 0.0.0.0:9000 или [::]:9000 — адрес ПРОСЛУШИВАНИЯ, адресом назначения
+// он быть не может. Непарсибельное значение → дефолтный порт: об опечатке в
+// GOTCHA_ADDR скажет сам сервер при старте, работа проверки — не маскировать
+// это своей ошибкой.
+func defaultHealthcheckURLFor(getenv func(string) string) string {
+	addr := getenv("GOTCHA_ADDR")
+	if addr == "" {
+		return defaultHealthcheckURL
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return defaultHealthcheckURL
+	}
+	return "http://127.0.0.1:" + port + "/readyz"
+}
+
 // healthcheckRequested разбирает аргументы проверки состояния и возвращает URL.
 //
 // Проверка сделана подкомандой самого бинаря, а не вызовом curl/wget из
 // HEALTHCHECK, намеренно: тогда она зависит только от того, что в образе точно
 // есть — от самого gotcha. Переход на distroless-базу не сломает её молча.
-func healthcheckRequested(args []string) (url string, ok bool) {
-	url = defaultHealthcheckURL
+func healthcheckRequested(args []string, getenv func(string) string) (url string, ok bool) {
+	url = defaultHealthcheckURLFor(getenv)
 	for i, a := range args {
 		switch {
 		case a == "--healthcheck" || a == "healthcheck":

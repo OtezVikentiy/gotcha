@@ -148,7 +148,7 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 // → 422.
 func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -188,7 +188,7 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 // адресах и в выдаче прав.
 func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -229,7 +229,7 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 // участник организации команды) → 422.
 func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -264,7 +264,7 @@ func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 // teamMembersRemove — POST /teams/{id}/members/remove: user_id.
 func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -311,7 +311,7 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 // доступ к issues чужой.
 func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -361,7 +361,7 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 // только сужает то, к чему у команды и так есть доступ.
 func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

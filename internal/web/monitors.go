@@ -371,7 +371,7 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 // на страницу монитора.
 func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -410,7 +410,7 @@ func (h *Handler) monitorResume(w http.ResponseWriter, r *http.Request) {
 // проекта.
 func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

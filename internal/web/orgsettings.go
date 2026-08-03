@@ -157,7 +157,7 @@ func (h *Handler) requireInstanceAdminForSSO(w http.ResponseWriter, r *http.Requ
 // orgSettingsSSO — POST /orgs/{id}/settings/sso: инстанс-админ настраивает per-org OIDC.
 func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -201,7 +201,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 // orgSettingsSSODelete — POST /orgs/{id}/settings/sso/delete: owner убирает SSO.
 func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -439,7 +439,7 @@ func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSO
 // привилегию эскалации (ErrOwnerOnly → 422).
 func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -487,7 +487,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 // Отдельный, не требующий owner/admin выход участника — orgSettingsLeave.
 func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -546,7 +546,7 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 // проекты этой организации сразу после удаления.
 func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -588,7 +588,7 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 // редиректа (см. renderOrgSettings).
 func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -654,7 +654,7 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 // которую на экране не видно.
 func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -708,7 +708,7 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 // поле пропускается (эту квоту не трогаем); 0 = безлимит (org.Set*Quota).
 func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -779,7 +779,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 // Успех → 303 на / (роута /orgs нет — RA-7; как orgSettingsLeave).
 func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -820,7 +820,7 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 // h.Purger.PurgeSubject. Успех → 303 обратно на страницу настроек орга.
 func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -939,7 +939,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 // нельзя проглотить, отдаём 500. Успех → JSON-выгрузка как attachment.
 func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -1070,7 +1070,7 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 // styled-страница.
 func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())

@@ -166,7 +166,7 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 // каждое правило само по себе валидно на момент своего UpsertRule).
 func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -229,7 +229,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 // http(s)-URL; telegram — пустые chat_id/bot token) → 422.
 func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -295,7 +295,7 @@ func channelBelongsToProject(channels []alert.Channel, channelID int64) bool {
 // адреса и секрета, и «сменить тип» — это другой канал, а не правка этого.
 func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
@@ -375,7 +375,7 @@ func channelKind(channels []alert.Channel, channelID int64) (string, bool) {
 // channel_id. Канал должен принадлежать проекту из пути, иначе 404.
 func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		h.denyCrossOrigin(w, r)
 		return
 	}
 	uid, ok := auth.UserID(r.Context())
