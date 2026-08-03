@@ -123,7 +123,7 @@ var permanentFormatExemptions = []Exemption{
 	// строят тестовые payload'ы в формате, который реально шлют SDK Sentry
 	// (sentry-python/sentry-php) — тем же машинным форматом, не дублируя
 	// человекочитаемое форматирование.
-	{Value: exemptLoc("internal/ingest/otlp.go", 1107), Why: `e["timestamp"] = ts.Format(time.RFC3339Nano) — поле экспортируемого OTLP JSON-события, машинный формат для API`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/ingest/otlp.go", 1115), Why: `e["timestamp"] = ts.Format(time.RFC3339Nano) — поле экспортируемого OTLP JSON-события, машинный формат для API`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/ingest/sentry_test.go", 137), Why: `want.Format(time.RFC3339Nano) — тестовый payload в формате Sentry API (TestParseEventMessageOnly)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/ingest/sentry_test.go", 173), Why: `now.Add(-200*24*time.Hour).Format(time.RFC3339Nano) — тестовый payload в формате Sentry API (TestParseEventClampsTimestampToWindow)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/ingest/sentry_test.go", 191), Why: `inWindow.Format(time.RFC3339Nano) — тестовый payload в формате Sentry API`, Finding: "по замыслу"},

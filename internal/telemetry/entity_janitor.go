@@ -47,15 +47,81 @@ type entityRule struct {
 	// невидимой. Для issues условия нет намеренно — unresolved без событий за
 	// весь срок хранения это не активная проблема, а мусор в списке.
 	closedOnly string
+	// retention — класс данных, чьим сроком живёт правило. Задаётся ЯВНО у
+	// каждого правила; без него срок равен нулю и правило не выполняется вовсе
+	// (см. retentionUnset и TestEntityRulesDeclareRetention).
+	retention retentionKind
 }
 
+// retentionKind — к какому классу данных привязан срок жизни правила.
+//
+// Нулевое значение — retentionUnset, и это существенно: будь нулём какой-то
+// настоящий класс, правило, добавленное без указания срока, молча унаследовало
+// бы его — ровно тот дефект, из-за которого находка и возникла. Сторож
+// TestEntityRulesDeclareRetention опирается именно на это.
+type retentionKind int
+
+const (
+	retentionUnset retentionKind = iota
+	retentionEvents
+	retentionMetrics
+	retentionProfiles
+	retentionIncidents
+)
+
+// Retentions — сроки хранения по классам данных: GOTCHA_RETENTION_DAYS,
+// GOTCHA_METRIC_RETENTION_DAYS, GOTCHA_PROFILE_RETENTION_DAYS,
+// GOTCHA_INCIDENT_RETENTION_DAYS. Нулевой срок класса выключает удаление в его
+// правилах.
+type Retentions struct {
+	Events    time.Duration
+	Metrics   time.Duration
+	Profiles  time.Duration
+	Incidents time.Duration
+}
+
+// Any — задан ли хоть один срок. Ни одного — чистильщика запускать незачем.
+func (r Retentions) Any() bool {
+	return r.Events > 0 || r.Metrics > 0 || r.Profiles > 0 || r.Incidents > 0
+}
+
+func (r Retentions) forKind(k retentionKind) time.Duration {
+	switch k {
+	case retentionEvents:
+		return r.Events
+	case retentionMetrics:
+		return r.Metrics
+	case retentionProfiles:
+		return r.Profiles
+	case retentionIncidents:
+		return r.Incidents
+	default:
+		return 0
+	}
+}
+
+// entityRules — что и по какому сроку удаляется.
+//
+// Раньше все шесть правил жили одним GOTCHA_RETENTION_DAYS, хотя сроков в
+// продукте четыре. Следствие несимметрично в обе стороны: регрессия профиля
+// переживала свои сэмплы на восемьдесят три дня (карточка открывалась, а
+// флеймграфа за ней уже не было), инцидент метрики переживал точки метрик на
+// шестьдесят, а инциденты аптайма, наоборот, уменьшались вместе со сроком
+// событий — при том что публичная статус-страница обещает историю за
+// девяносто дней.
 var entityRules = []entityRule{
-	{table: "issues", ageColumn: "last_seen"},
-	{table: "perf_issues", ageColumn: "last_seen"},
-	{table: "incidents", ageColumn: "resolved_at", closedOnly: "resolved_at IS NOT NULL"},
-	{table: "perf_regressions", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL"},
-	{table: "profile_regressions", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL"},
-	{table: "metric_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL"},
+	// issues и perf_issues описывают события и транзакции — тот же срок.
+	{table: "issues", ageColumn: "last_seen", retention: retentionEvents},
+	{table: "perf_issues", ageColumn: "last_seen", retention: retentionEvents},
+	// Инцидент аптайма — единственная сущность без своей телеметрии в
+	// ClickHouse: результаты проверок живут общим сроком, а сам инцидент
+	// показывает публичная статус-страница. Поэтому срок свой, а не заимствованный.
+	{table: "incidents", ageColumn: "resolved_at", closedOnly: "resolved_at IS NOT NULL", retention: retentionIncidents},
+	{table: "perf_regressions", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionEvents},
+	// Регрессия профиля без своих сэмплов — пустая карточка: срок профилей.
+	{table: "profile_regressions", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionProfiles},
+	// Инцидент метрики без своих точек — то же самое: срок метрик.
+	{table: "metric_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionMetrics},
 }
 
 // EntityJanitor удаляет из PostgreSQL сущности, переживших срок хранения
@@ -70,8 +136,10 @@ var entityRules = []entityRule{
 // неограничен, причём управлялся публичным ключом приёма: уникальный
 // fingerprint на событие даёт строку issues на событие.
 type EntityJanitor struct {
-	Pool      *pgxpool.Pool
-	Retention time.Duration
+	Pool *pgxpool.Pool
+	// Retention — сроки по классам данных: каждое правило живёт сроком своей
+	// сущности, а не одним общим (см. entityRules).
+	Retention Retentions
 
 	// Interval — период прохода; 0 означает defaultEntityJanitorInterval.
 	Interval time.Duration
@@ -123,7 +191,7 @@ func (j *EntityJanitor) tickLogged(ctx context.Context) {
 // Возвращает 0 без ошибки, если проход пропущен: либо срок хранения не задан,
 // либо advisory-лок держит другая реплика.
 func (j *EntityJanitor) Tick(ctx context.Context) (int64, error) {
-	if j.Retention <= 0 {
+	if !j.Retention.Any() {
 		return 0, nil
 	}
 
@@ -150,10 +218,14 @@ func (j *EntityJanitor) Tick(ctx context.Context) (int64, error) {
 		}
 	}()
 
-	cutoffSecs := int(j.Retention / time.Second)
 	var total int64
 	for _, rule := range entityRules {
-		n, err := j.purgeTable(ctx, conn, rule, cutoffSecs)
+		retention := j.Retention.forKind(rule.retention)
+		if retention <= 0 {
+			// Срок класса не задан или выключен нулём — правило пропускается.
+			continue
+		}
+		n, err := j.purgeTable(ctx, conn, rule, int(retention/time.Second))
 		total += n
 		if err != nil {
 			// Одна таблица не должна отменять остальные: причина отказа обычно

@@ -164,16 +164,38 @@ func (s *Service) UpdateRegressionConfig(ctx context.Context, projectID int64, c
 // DeleteProject удаляет проект. FK на projects (project_keys, monitors,
 // status_pages, maintenance_windows, issues, alert_rules и т.д.) объявлены
 // ON DELETE CASCADE в PG, поэтому зависимые записи снимаются автоматически и
-// осиротевших мониторов не остаётся. Телеметрию в ClickHouse каскад НЕ трогает —
-// её чистит вызывающий (см. telemetry.Purger в web-слое). Несуществующий
-// projectID → ErrNotFound.
+// осиротевших мониторов не остаётся. Телеметрию в ClickHouse каскад НЕ трогает:
+// её удаляет фоновый исполнитель (telemetry.PurgeWorker) по заявке, которую
+// ставит эта же транзакция.
+//
+// Транзакция здесь не ради скорости, а ради единственного инварианта: либо
+// проект удалён и заявка есть, либо не удалено ничего. Раньше очистка
+// ClickHouse шла синхронно в HTTP-запросе после удаления, и обрыв по таймауту
+// оставлял телеметрию в ClickHouse навсегда — идентификатора удалённого
+// проекта после каскада взять уже негде.
+//
+// Несуществующий projectID → ErrNotFound; откат снимает и заявку.
 func (s *Service) DeleteProject(ctx context.Context, projectID int64) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projectID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("org: delete project: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO project_purge_queue (project_id) VALUES ($1)
+		 ON CONFLICT (project_id) DO NOTHING`, projectID); err != nil {
+		return fmt.Errorf("org: delete project: enqueue purge: %w", err)
+	}
+	tag, err := tx.Exec(ctx, "DELETE FROM projects WHERE id = $1", projectID)
 	if err != nil {
 		return fmt.Errorf("org: delete project: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("org: delete project: %w", err)
 	}
 	return nil
 }

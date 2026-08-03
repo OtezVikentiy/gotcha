@@ -35,6 +35,12 @@ var flashKeys = map[string]bool{
 	"flash.rules_saved":      true,
 	"flash.subject_purged":   true,
 	"flash.invite_revoked":   true,
+	// Удаление проекта и организации сообщает про ОЧЕРЕДЬ, а не про
+	// выполненную очистку: телеметрия в ClickHouse на момент ответа ещё жива,
+	// её удаляет фоновый исполнитель. Сказать «удалено» здесь означало бы
+	// повторить исходный дефект — страница успеха при невыполненной работе.
+	"flash.project_delete_queued": true,
+	"flash.org_delete_queued":     true,
 }
 
 // setFlash кладёт сообщение в cookie перед редиректом. Path=/ — сообщение может

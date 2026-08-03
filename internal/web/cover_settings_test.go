@@ -323,8 +323,8 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 
 // TestCoverProjSettingsValidation — projsettings: невалидный {id} → 404; keys/
 // performance/regressions без Origin → 403; keyRevoke нечисловой key_id → 400;
-// perf/regressions/rename не-owner → 404; удаление проекта без Purger (nil-ветка
-// purgeProject) → 303.
+// perf/regressions/rename не-owner → 404; удаление проекта → 303 и заявка на
+// очистку телеметрии в очереди.
 func TestCoverProjSettingsValidation(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -402,12 +402,22 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("POST keys/revoke (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Удаление проекта без Purger (Purger==nil на этом стенде): confirmed=yes →
-	// 303, срабатывает nil-ветка purgeProject (warn, без CH).
+	// Удаление проекта: confirmed=yes → 303. Телеметрия из ClickHouse здесь
+	// больше не чистится — та же транзакция ставит заявку, и она обязана
+	// остаться в очереди (стенд без ClickHouse исполнителя не запускает).
 	resp = postForm(t, s.srv, base+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("POST delete (no purger) status = %d, want 303", resp.StatusCode)
+		t.Fatalf("POST delete status = %d, want 303", resp.StatusCode)
+	}
+	var queued bool
+	if err := s.pool.QueryRow(context.Background(),
+		"SELECT EXISTS (SELECT 1 FROM project_purge_queue WHERE project_id = $1)",
+		proj.ID).Scan(&queued); err != nil {
+		t.Fatalf("чтение очереди: %v", err)
+	}
+	if !queued {
+		t.Fatalf("проект удалён, а заявки на очистку телеметрии нет")
 	}
 }

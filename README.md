@@ -108,6 +108,8 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans. |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points. |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profile samples. |
+| `GOTCHA_INCIDENT_RETENTION_DAYS` | `90` | Retention for resolved uptime incidents in PostgreSQL. Separate from the others because an incident has no telemetry of its own and the public status page shows 90 days of history. |
+| `GOTCHA_PURGE_RECONCILE_HOURS` | `24` | How often to look for ClickHouse telemetry of projects that no longer exist and queue it for deletion. Deleting a project queues that work in the same transaction; this check covers the case where no request was ever queued. `0` turns it off. |
 | `GOTCHA_EDITION` | `oss` | `oss` or `saas`. Controls the default for the quota variables below (`oss` → 0/unlimited, `saas` → 1,000,000/month). |
 | `GOTCHA_DEFAULT_EVENT_QUOTA` / `_TRANSACTION_QUOTA` / `_METRIC_QUOTA` / `_PROFILE_QUOTA` | `0` in `oss` (unlimited) | Default monthly ingest quota assigned to new organizations. **If you expose a project DSN publicly, set these to a real cap** — `oss` defaults to unlimited. |
 | `GOTCHA_REGISTRATION` | `invite` | `open` (anyone can self-register), `invite` (self-registration closed except invite links), or `closed` (no self-registration at all). The very first user always succeeds regardless of this setting (instance-admin bootstrap). |

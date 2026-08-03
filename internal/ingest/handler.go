@@ -428,16 +428,24 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	// 429 отдаём, только если по ВСЕМ присутствующим типам организация вышла
 	// за квоту — иначе приняли бы 200 и молча выбросили половину envelope'а.
 	hasEvents := len(env.Events) > 0
-	hasTx := len(env.Transactions) > 0 && h.pipeline.TracingEnabled()
+	// Транзакции ОТБИРАЮТСЯ ДО СПИСАНИЯ: разбор отсеивает битые item'ы,
+	// семплирование — те трейсы, которые проект намеренно не хранит. Квота
+	// списывается за то, что действительно будет записано. При выключенном
+	// трейсинге отбор не выполняется вовсе, и квота транзакций не тратится:
+	// раньше grant вызывался до проверки TracingEnabled, и счётчик организации
+	// рос за транзакции, которые не записывались никуда.
+	var txSelected []trace.Transaction
+	if len(env.Transactions) > 0 && h.pipeline.TracingEnabled() {
+		txSelected = h.sampleTransactions(r.Context(),
+			projectID, h.parseTransactions(projectID, env.Transactions))
+	}
+	hasTx := len(txSelected) > 0
 	// Квота списывается ЗА ЭЛЕМЕНТ. Списание частичное: если до квоты осталось
 	// меньше, чем в конверте, принимаем сколько влезло, остаток идёт в дропы —
 	// организация получает ровно свою квоту, а не «последний конверт целиком
 	// мимо», и org_usage остаётся точным.
 	eventsGranted := h.grant(r.Context(), h.quota, key.OrgID, "event", len(env.Events))
-	txGranted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(env.Transactions))
-	if !hasTx {
-		txGranted = 0
-	}
+	txGranted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txSelected))
 	eventsAllowed := eventsGranted > 0
 	txAllowed := txGranted > 0
 	// Учёт дропов до развилки ответа: отклонённое считаем и когда 429 по ВСЕМ
@@ -446,7 +454,11 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	if dropped := len(env.Events) - eventsGranted; hasEvents && dropped > 0 {
 		h.countDrop(r.Context(), dropEvent, key.OrgID, dropped)
 	}
-	if dropped := len(env.Transactions) - txGranted; hasTx && dropped > 0 {
+	// Уменьшаемое — число ОТОБРАННЫХ, а не пришедших. С len(env.Transactions) в
+	// потери по квоте попадало бы отсеянное семплированием, то есть исправление
+	// одной лжи породило бы другую: несемплированное отброшено по настройке
+	// проекта намеренно и потерей не является.
+	if dropped := len(txSelected) - txGranted; dropped > 0 {
 		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
 	}
 	if (hasEvents || hasTx) && !eventsAllowed && !txAllowed {
@@ -465,7 +477,7 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			"class", "event", "dropped", dropped, "accepted", eventsGranted,
 			"project_id", projectID, "org_id", key.OrgID)
 	}
-	if dropped := len(env.Transactions) - txGranted; hasTx && dropped > 0 {
+	if dropped := len(txSelected) - txGranted; dropped > 0 {
 		slog.Warn("ingest: quota exceeded, dropping items from envelope",
 			"class", "transaction", "dropped", dropped, "accepted", txGranted,
 			"project_id", projectID, "org_id", key.OrgID)
@@ -486,7 +498,7 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		h.pipeline.Enqueue(projectID, pe)
 	}
 	if txGranted > 0 {
-		h.ingestTransactions(r.Context(), projectID, env.Transactions[:txGranted])
+		h.enqueueTransactions(projectID, txSelected[:txGranted])
 	}
 	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
 	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
@@ -543,10 +555,11 @@ func (h *Handler) limitProfileCardinality(projectID int64, p *profile.Profile) {
 	p.Environment = h.Cardinality.Value(projectID, FieldEnvironment, p.Environment)
 }
 
-// ingestTransactions разбирает transaction-item'ы, отбрасывает несемплированные
-// трейсы и отдаёт остальное в пайплайн. Битый item не валит весь envelope.
-func (h *Handler) ingestTransactions(ctx context.Context, projectID int64, items [][]byte) {
-	rate := h.sampleRate(ctx, projectID)
+// parseTransactions разбирает transaction-item'ы конверта. Битый item не валит
+// весь конверт и не расходует квоту: списание идёт за отобранное, а до отбора
+// он не доживает.
+func (h *Handler) parseTransactions(projectID int64, items [][]byte) []trace.Transaction {
+	out := make([]trace.Transaction, 0, len(items))
 	for _, raw := range items {
 		tx, err := ParseTransaction(raw)
 		if err != nil {
@@ -554,20 +567,43 @@ func (h *Handler) ingestTransactions(ctx context.Context, projectID int64, items
 				"project_id", projectID, "error", err)
 			continue
 		}
-		h.enqueueSampled(projectID, rate, tx)
+		out = append(out, tx)
 	}
+	return out
 }
 
-// enqueueSampled — общая для ВСЕХ входов (Sentry-envelope и OTLP) точка отдачи
-// транзакции в пайплайн: семплирование ДЕТЕРМИНИРОВАННОЕ по trace_id, так что
-// все спаны одного трейса (в т.ч. приехавшие на другую реплику и из другого
-// SDK) принимают одно и то же решение.
-func (h *Handler) enqueueSampled(projectID int64, rate float64, tx trace.Transaction) {
-	if !trace.Keep(tx.TraceID, rate) {
-		return
+// sampleTransactions оставляет те транзакции, которые проект действительно
+// сохранит. Общая для ВСЕХ входов (Sentry-envelope и OTLP) точка отбора:
+// семплирование ДЕТЕРМИНИРОВАННОЕ по trace_id, так что все спаны одного трейса
+// (в т.ч. приехавшие на другую реплику и из другого SDK) принимают одно и то же
+// решение.
+//
+// Отбор стоит ВЫШЕ списания квоты намеренно, и на консистентность трасс это не
+// влияет: решение по trace_id от момента вызова не зависит. Раньше квота
+// списывалась за все разобранные транзакции, и при transaction_sample_rate =
+// 0.1 организация платила вдесятеро против сохранённого, а org_usage —
+// источник правды по потреблению — врал на тот же порядок.
+func (h *Handler) sampleTransactions(ctx context.Context, projectID int64, txs []trace.Transaction) []trace.Transaction {
+	if len(txs) == 0 {
+		return nil
 	}
-	h.limitCardinality(projectID, &tx)
-	h.pipeline.EnqueueTransaction(projectID, tx)
+	rate := h.sampleRate(ctx, projectID)
+	kept := make([]trace.Transaction, 0, len(txs))
+	for _, tx := range txs {
+		if trace.Keep(tx.TraceID, rate) {
+			kept = append(kept, tx)
+		}
+	}
+	return kept
+}
+
+// enqueueTransactions отдаёт отобранное и оплаченное в пайплайн.
+func (h *Handler) enqueueTransactions(projectID int64, txs []trace.Transaction) {
+	for i := range txs {
+		tx := txs[i]
+		h.limitCardinality(projectID, &tx)
+		h.pipeline.EnqueueTransaction(projectID, tx)
+	}
 }
 
 // limitCardinality схлопывает значения, которыми проект уже исчерпал потолок

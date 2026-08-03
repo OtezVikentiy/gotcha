@@ -977,6 +977,8 @@
     "org.invite.revoke": "Revoke",
     "org.invite.revoke_confirm": "Revoke the invitation for {email}? The link will stop working.",
     "flash.invite_revoked": "Invitation revoked.",
+    "flash.project_delete_queued": "Project deleted. Removal of its telemetry is queued.",
+    "flash.org_delete_queued": "Organization deleted. Removal of its projects' telemetry is queued.",
     "error.org.invite_not_found": "Invitation not found, or it has already been accepted.",
     "time.now": "less than a minute",
     "range.all": "All time",

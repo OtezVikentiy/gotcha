@@ -537,19 +537,59 @@ func run() error {
 	// телеметрию из ClickHouse: группы, инциденты и регрессии в PostgreSQL
 	// жили вечно, и список проблем показывал группы, событий которых уже нет.
 	//
+	// Сроков четыре, и каждое правило живёт сроком СВОЕЙ сущности (см.
+	// telemetry.entityRules): регрессия профиля — сроком профилей, инцидент
+	// метрики — сроком метрик, инцидент аптайма — своим собственным. Раньше все
+	// шесть правил жили одним GOTCHA_RETENTION_DAYS.
+	//
 	// Гейт по наличию ресурса, а не по режиму: сущности переживают срок
 	// хранения независимо от того, какие роли развёрнуты. Одновременный запуск
 	// на нескольких репликах безопасен — проход берёт advisory-лок и на
 	// занятом молча уступает.
-	if pg != nil && cfg.RetentionDays > 0 {
+	entityRetention := telemetry.Retentions{
+		Events:    time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+		Metrics:   time.Duration(cfg.MetricRetentionDays) * 24 * time.Hour,
+		Profiles:  time.Duration(cfg.ProfileRetentionDays) * 24 * time.Hour,
+		Incidents: time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+	}
+	if pg != nil && entityRetention.Any() {
 		entityJanitor := &telemetry.EntityJanitor{
 			Pool:      pg,
-			Retention: time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+			Retention: entityRetention,
 		}
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_entities_purged_total",
-			"Rows deleted from PostgreSQL because they outlived GOTCHA_RETENTION_DAYS.",
+			"Rows deleted from PostgreSQL because they outlived the retention of the data they describe.",
 			nil, entityJanitor.Purged)
 		go entityJanitor.Run(ctx)
+	}
+
+	// Очистка телеметрии удалённых проектов. Заявку ставит та же транзакция,
+	// что удаляет проект (org.DeleteProject/DeleteOrg); здесь — исполнитель,
+	// который её разгребает, и суточная сверка сирот на случай, когда заявки не
+	// появилось вообще. Гейт по обоим ресурсам: без PostgreSQL нет очереди, без
+	// ClickHouse нечего удалять.
+	//
+	// Наблюдаемость обязательна, а не желательна: оператор, на котором лежит
+	// обязанность удалить данные, должен видеть, что она не исполнена. Глубина
+	// очереди и возраст самой старой заявки — две разные величины: одна заявка,
+	// висящая третьи сутки, по глубине неотличима от только что поставленной.
+	if pg != nil && ch != nil {
+		purgeWorker := &telemetry.PurgeWorker{
+			Queue:             telemetry.NewPurgeQueue(pg),
+			Purger:            telemetry.NewPurger(ch),
+			Conn:              ch,
+			ReconcileInterval: time.Duration(cfg.PurgeReconcileHours) * time.Hour,
+		}
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_purge_queue_depth",
+			"Projects whose ClickHouse telemetry is still waiting to be deleted.",
+			nil, purgeWorker.Depth)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_purge_queue_oldest_seconds",
+			"Age of the oldest pending project purge request, in seconds.",
+			nil, purgeWorker.OldestSeconds)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_projects_purged_total",
+			"Projects whose ClickHouse telemetry has been deleted after the project was removed.",
+			nil, purgeWorker.Purged)
+		go purgeWorker.Run(ctx)
 	}
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {

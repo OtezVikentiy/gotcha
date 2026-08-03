@@ -99,6 +99,20 @@ of data should have a number you can look at. A flat zero while retention is
 configured means the purge is not running — and the issue list is showing groups
 whose events are already gone.
 
+**`gotcha_purge_queue_depth`** / **`gotcha_purge_queue_oldest_seconds`** — how
+many projects are still waiting for their ClickHouse telemetry to be deleted
+after the project itself was removed, and how long the oldest request has been
+waiting. Deleting a project queues that work in the same transaction that
+removes the row, and a background worker carries it out, so the request no
+longer holds eight heavy mutations open. There are two numbers because depth
+alone says nothing: one request stuck for three days looks exactly like one
+queued a minute ago. A growing age means an unfulfilled obligation to delete
+data — the reason for the last attempt is in `project_purge_queue.last_error`.
+
+**`gotcha_projects_purged_total`** — projects whose telemetry has been deleted.
+Like `gotcha_entities_purged_total`, it exists because every disappearance of
+data should have a number.
+
 **`gotcha_storage_free_bytes{store="…"}`** / **`gotcha_storage_total_bytes{store="…"}`**
 — free and total bytes on the volume where a store physically keeps its data.
 Today only `store="clickhouse"` reports them (ClickHouse's disk system table):

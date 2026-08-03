@@ -30,6 +30,11 @@ type Config struct {
 	SpanRetentionDays    int
 	MetricRetentionDays  int
 	ProfileRetentionDays int
+	// IncidentRetentionDays — срок хранения ЗАКРЫТЫХ инцидентов аптайма
+	// (GOTCHA_INCIDENT_RETENTION_DAYS). Свой, а не общий с событиями: у
+	// инцидента нет собственной телеметрии в ClickHouse, зато его показывает
+	// публичная статус-страница, обещающая историю за девяносто дней.
+	IncidentRetentionDays int
 	// Edition — редакция сборки (oss | saas). Влияет на дефолты квот:
 	// в oss все дефолты = 0 (безлимит), в saas = 1_000_000. См. loadConfig.
 	Edition string
@@ -81,6 +86,12 @@ type Config struct {
 	MetricEvalInterval  int
 	ProfileEvalInterval int
 	OutboxRetentionDays int
+	// PurgeReconcileHours — период сверки телеметрии удалённых проектов
+	// (GOTCHA_PURGE_RECONCILE_HOURS); 0 выключает сверку. Ноль здесь не
+	// ошибка, а выключатель: установка, где в ClickHouse пишет что-то помимо
+	// продукта, обязана иметь возможность отключить сверку, не отключая
+	// очередь удаления.
+	PurgeReconcileHours int
 	// NotifyConcurrency — сколько уведомлений доставляется одновременно
 	// (GOTCHA_NOTIFY_CONCURRENCY). Последовательная доставка означала, что один
 	// мёртвый вебхук с 30-секундным таймаутом задерживает все остальные.
@@ -368,6 +379,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
 		MetricRetentionDays:      intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
 		ProfileRetentionDays:     intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
+		IncidentRetentionDays:    intNum("GOTCHA_INCIDENT_RETENTION_DAYS", 90),
 		Edition:                  edition,
 		DefaultEventQuota:        num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
 		DefaultTransactionQuota:  num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
@@ -384,6 +396,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MetricEvalInterval:       intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
 		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
+		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
@@ -534,8 +547,14 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.ProfileRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 1, got %d", cfg.ProfileRetentionDays)
 	}
+	if cfg.IncidentRetentionDays < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 1, got %d", cfg.IncidentRetentionDays)
+	}
 	if cfg.OutboxRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
+	}
+	if cfg.PurgeReconcileHours < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_PURGE_RECONCILE_HOURS must be >= 0, got %d", cfg.PurgeReconcileHours)
 	}
 	if cfg.NotifyConcurrency < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_NOTIFY_CONCURRENCY must be >= 1, got %d", cfg.NotifyConcurrency)

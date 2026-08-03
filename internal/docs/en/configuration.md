@@ -83,10 +83,12 @@ How many days ClickHouse keeps each kind of data before deleting old rows. Lower
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_RETENTION_DAYS` | `90` | Retention for events (errors), transactions, and Web Vitals, and for summary records in PostgreSQL: issues, closed incidents, and regressions (see [Privacy](/docs/privacy)). `0` disables deletion. |
+| `GOTCHA_RETENTION_DAYS` | `90` | Retention for events (errors), transactions, and Web Vitals, and for the summary records in PostgreSQL that describe them: error issues, performance issues, and performance regressions (see [Privacy](/docs/privacy)). Other summary records follow the retention of THEIR own telemetry: metric incidents `GOTCHA_METRIC_RETENTION_DAYS`, profile regressions `GOTCHA_PROFILE_RETENTION_DAYS`, resolved uptime incidents `GOTCHA_INCIDENT_RETENTION_DAYS`. `0` disables deletion. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans (the detail inside transactions). |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points (ingested via OTLP). |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profiling samples (the heaviest data by volume, hence the shorter default). |
+| `GOTCHA_INCIDENT_RETENTION_DAYS` | `90` | Retention for RESOLVED uptime incidents in PostgreSQL. Its own setting rather than one shared with events: an uptime incident has no telemetry of its own in ClickHouse (check results have their own retention), while the public status page promises ninety days of history. Open incidents are never deleted. |
+| `GOTCHA_PURGE_RECONCILE_HOURS` | `24` | How often to look for ClickHouse telemetry of projects that no longer exist and queue it for deletion. Deleting a project queues that work itself, in the same transaction that removes the row; this check covers the case where no request was ever queued — a crash before commit, a manual row edit, data left over from earlier versions. `0` turns the check off, which an installation needs when something other than gotcha writes into the same ClickHouse. |
 | `GOTCHA_OUTBOX_RETENTION_DAYS` | `7` | Retention for records of already-delivered/failed notifications (email/webhook/Telegram) in PostgreSQL. Deliberately short: this is a working queue rather than an archive: it lives in PostgreSQL and grows with notification volume. |
 
 Retention changes apply on the next application start (the value is used to set a TTL on the ClickHouse tables) — data already deleted doesn't come back retroactively.

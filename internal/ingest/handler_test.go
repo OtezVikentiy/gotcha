@@ -80,6 +80,19 @@ func (f *fakeMetricSink) count() int {
 
 func newStack(t *testing.T) *stack {
 	t.Helper()
+	return newStackTracing(t, true)
+}
+
+// newStackWithoutTracing — тот же стенд с ВЫКЛЮЧЕННЫМ трейсингом
+// (Pipeline.Spans == nil, как при незаданном писателе спанов в проде). Нужен
+// для проверки того, что квота транзакций в этом случае не расходуется вовсе.
+func newStackWithoutTracing(t *testing.T) *stack {
+	t.Helper()
+	return newStackTracing(t, false)
+}
+
+func newStackTracing(t *testing.T, tracing bool) *stack {
+	t.Helper()
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
 	ctx := context.Background()
@@ -109,7 +122,9 @@ func newStack(t *testing.T) *stack {
 	go spans.Run()
 	projects := ingest.NewProjectCache(orgSvc)
 	pipeline := ingest.NewPipeline(issue.NewService(pool), batcher)
-	pipeline.Spans = spans
+	if tracing {
+		pipeline.Spans = spans
+	}
 	pipeline.Perf = trace.NewIssueService(pool)
 	pipeline.Projects = projects
 	pipeline.Start()

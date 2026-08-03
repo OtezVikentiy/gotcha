@@ -239,11 +239,27 @@ func (s *Service) IncDroppedProfiles(ctx context.Context, orgID int64, month tim
 // столько же, сколько одно событие, то есть квоту можно было обойти на четыре
 // порядка, а usage — источник правды по потреблению — врал на столько же.
 //
-// Одним оператором это не выражается: чтобы вернуть СКОЛЬКО списано, нужно
-// знать значение до инкремента, а RETURNING в PostgreSQL 17 отдаёт только новую
-// строку (RETURNING OLD появился в 18). Поэтому короткая транзакция с
-// SELECT ... FOR UPDATE — блокировка строки закрывает гонку двух приёмов той же
-// организации, ровно как это делал условный WHERE раньше.
+// ОДНО ОБРАЩЕНИЕ, А НЕ ПЯТЬ. Раньше здесь была короткая транзакция: BEGIN,
+// INSERT … DO NOTHING, SELECT … FOR UPDATE, UPDATE, COMMIT — то есть три
+// обращения под исключительной блокировкой строки, через которую идёт весь
+// приём организации, плюс две сетевые паузы на границах транзакции.
+// Блокировка нужна и осталась (без неё два конкурентных приёма разойдутся в
+// счётчике), но теперь она берётся и снимается внутри одного оператора, а не
+// поперёк трёх сетевых пауз.
+//
+// Препятствием было то, что для ответа «сколько списано» нужно значение ДО
+// инкремента, а RETURNING в PostgreSQL 17 отдаёт только новую строку.
+// Обходится колонкой предобраза: тем же SET, где счётчик растёт, прежнее его
+// значение кладётся в <колонка>_before, и списанное считается вычитанием. Все
+// правые части SET вычисляются по СТАРОЙ строке одновременно, поэтому
+// org_usage.<col> справа — значение до обновления, а не после. На ветке
+// вставки (первый приём месяца) предобраз равен нулю и задаётся в VALUES явно,
+// так что разность даёт ровно вставленное.
+//
+// СРОК ЖИЗНИ РЕШЕНИЯ ОГРАНИЧЕН: с переходом на PostgreSQL 18 всё это
+// схлопывается в RETURNING OLD, и колонки предобраза уходят миграцией
+// (см. 0057_org_usage_preimage). Через год это не должно приниматься за
+// архитектуру.
 //
 // quota==0 — безлимит: списывается всё запрошенное. col — доверенное имя
 // колонки из фиксированного набора (не из пользовательского ввода).
@@ -251,49 +267,34 @@ func (s *Service) checkAndCount(ctx context.Context, col string, orgID int64, mo
 	if want <= 0 {
 		return 0, nil
 	}
-	m := monthStart(month)
-
-	tx, err := s.pool.Begin(ctx)
+	before := col + "_before"
+	sql := `
+		INSERT INTO org_usage (org_id, period_month, ` + col + `, ` + before + `)
+		VALUES ($1, $2, CASE WHEN $4 <= 0 THEN $3 ELSE LEAST($3, $4) END, 0)
+		ON CONFLICT (org_id, period_month) DO UPDATE SET
+			` + col + ` = org_usage.` + col + ` + CASE
+				WHEN $4 <= 0 THEN $3
+				ELSE GREATEST(LEAST($3, $4 - org_usage.` + col + `), 0)
+			END,
+			` + before + ` = org_usage.` + col + `
+		WHERE $4 <= 0 OR org_usage.` + col + ` < $4
+		RETURNING ` + col + `, ` + before
+	var after, pre int64
+	err := s.pool.QueryRow(ctx, sql, orgID, monthStart(month), want, quota).Scan(&after, &pre)
+	// Строк не вернулось — сработало условие WHERE, то есть квота уже выбрана.
+	// Условие стоит здесь не для корректности (без него выдача и так вышла бы
+	// нулевой), а чтобы исчерпавшая квоту организация не порождала запись в
+	// строку на каждый отклонённый запрос: приём при исчерпанной квоте — это
+	// поток, и писать в одну и ту же строку на каждый его запрос значит греть
+	// журнал предзаписи ради нулевого результата. Прежняя транзакция в этом
+	// случае тоже завершалась без UPDATE.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("org: check %s: %w", col, err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Строка месяца может отсутствовать — создаём пустую, чтобы дальше её можно
-	// было заблокировать. DO NOTHING: конкурент мог успеть первым.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO org_usage (org_id, period_month) VALUES ($1, $2)
-		 ON CONFLICT (org_id, period_month) DO NOTHING`, orgID, m); err != nil {
-		return 0, fmt.Errorf("org: check %s: %w", col, err)
-	}
-
-	var used int64
-	if err := tx.QueryRow(ctx,
-		`SELECT `+col+` FROM org_usage WHERE org_id = $1 AND period_month = $2 FOR UPDATE`,
-		orgID, m).Scan(&used); err != nil {
-		return 0, fmt.Errorf("org: check %s: %w", col, err)
-	}
-
-	granted := want
-	if quota > 0 {
-		room := quota - used
-		if room <= 0 {
-			return 0, tx.Commit(ctx) // квота исчерпана, счётчик не тронут
-		}
-		if room < granted {
-			granted = room
-		}
-	}
-
-	if _, err := tx.Exec(ctx,
-		`UPDATE org_usage SET `+col+` = `+col+` + $3 WHERE org_id = $1 AND period_month = $2`,
-		orgID, m, granted); err != nil {
-		return 0, fmt.Errorf("org: check %s: %w", col, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("org: check %s: %w", col, err)
-	}
-	return granted, nil
+	return after - pre, nil
 }
 
 // CheckAndCountEvents условно инкрементит счётчик событий за месяц (квота 0 —

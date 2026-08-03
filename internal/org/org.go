@@ -159,15 +159,36 @@ func (s *Service) CreateOrg(ctx context.Context, slug, name string, ownerID int6
 
 // DeleteOrg удаляет организацию (FK-и на неё — org_members, projects и т.д. —
 // каскадные). Используется онбордингом для компенсации, когда организация
-// успела создаться, а последующий шаг (проект, ключ) провалился, и в будущем —
-// настройками организации (ручное удаление).
+// успела создаться, а последующий шаг (проект, ключ) провалился, и настройками
+// организации (ручное удаление).
+//
+// Заявки на очистку телеметрии ставятся выборкой по проектам организации ДО
+// удаления: каскад снимает строки projects, и после него идентификаторы
+// проектов недоступны. Раньше их перечислял web-слой отдельным запросом вне
+// всякой транзакции, а комментарий там признавал, что осиротевшую телеметрию
+// «можно будет добить позже» — механизма для этого не существовало.
 func (s *Service) DeleteOrg(ctx context.Context, orgID int64) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM organizations WHERE id = $1", orgID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("org: delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO project_purge_queue (project_id)
+		 SELECT id FROM projects WHERE org_id = $1
+		 ON CONFLICT (project_id) DO NOTHING`, orgID); err != nil {
+		return fmt.Errorf("org: delete: enqueue purge: %w", err)
+	}
+	tag, err := tx.Exec(ctx, "DELETE FROM organizations WHERE id = $1", orgID)
 	if err != nil {
 		return fmt.Errorf("org: delete: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("org: delete: %w", err)
 	}
 	return nil
 }

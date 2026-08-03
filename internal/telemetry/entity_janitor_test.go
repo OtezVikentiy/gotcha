@@ -15,6 +15,14 @@ import (
 
 var entitySeq atomic.Int64
 
+// uniformRetention — один и тот же срок для всех классов данных. Тесты ниже
+// проверяют не разделение сроков (для этого есть
+// TestEntityJanitorUsesPerEntityRetention), а сам механизм удаления, и им
+// нужен ровно прежний, общий срок.
+func uniformRetention(d time.Duration) telemetry.Retentions {
+	return telemetry.Retentions{Events: d, Metrics: d, Profiles: d, Incidents: d}
+}
+
 // newEntityProject создаёт организацию с проектом. Каждый тест работает в своём
 // проекте: контейнер PostgreSQL переиспользуется между запусками, и общие
 // project_id связали бы тесты друг с другом.
@@ -109,7 +117,7 @@ func TestEntityJanitorPurgesExpiredKeepsFresh(t *testing.T) {
 	old := insertIssue(t, pool, pid, "old", now.Add(-40*24*time.Hour), "unresolved")
 	fresh := insertIssue(t, pool, pid, "fresh", now.Add(-2*24*time.Hour), "unresolved")
 
-	j := &telemetry.EntityJanitor{Pool: pool, Retention: 30 * 24 * time.Hour}
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: uniformRetention(30 * 24 * time.Hour)}
 	if _, err := j.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
@@ -141,7 +149,7 @@ func TestEntityJanitorKeepsOpenIncident(t *testing.T) {
 	open := insertMonitorIncident(t, pool, pid, longAgo, nil)
 	closed := insertMonitorIncident(t, pool, pid, longAgo, &resolved)
 
-	j := &telemetry.EntityJanitor{Pool: pool, Retention: 30 * 24 * time.Hour}
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: uniformRetention(30 * 24 * time.Hour)}
 	if _, err := j.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
@@ -172,7 +180,7 @@ func TestEntityJanitorPurgesBeyondOneBatch(t *testing.T) {
 		t.Fatalf("seed issues: %v", err)
 	}
 
-	j := &telemetry.EntityJanitor{Pool: pool, Retention: 30 * 24 * time.Hour}
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: uniformRetention(30 * 24 * time.Hour)}
 	if _, err := j.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
@@ -202,7 +210,7 @@ func TestEntityJanitorCascadesToChildRows(t *testing.T) {
 		t.Fatalf("insert issue_environments: %v", err)
 	}
 
-	j := &telemetry.EntityJanitor{Pool: pool, Retention: 30 * 24 * time.Hour}
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: uniformRetention(30 * 24 * time.Hour)}
 	if _, err := j.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
@@ -228,7 +236,7 @@ func TestEntityJanitorNoRetentionKeepsEverything(t *testing.T) {
 
 	ancient := insertIssue(t, pool, pid, "ancient", time.Now().UTC().Add(-5*365*24*time.Hour), "unresolved")
 
-	j := &telemetry.EntityJanitor{Pool: pool, Retention: 0}
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{}}
 	n, err := j.Tick(ctx)
 	if err != nil {
 		t.Fatalf("Tick: %v", err)
@@ -238,5 +246,144 @@ func TestEntityJanitorNoRetentionKeepsEverything(t *testing.T) {
 	}
 	if !issueExists(t, pool, ancient) {
 		t.Errorf("группа пятилетней давности удалена при незаданном сроке хранения")
+	}
+}
+
+// insertProfileRegression добавляет ЗАКРЫТУЮ регрессию профиля с заданным
+// моментом закрытия.
+func insertProfileRegression(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt time.Time) int64 {
+	t.Helper()
+	n := entitySeq.Add(1)
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO profile_regressions
+		 (project_id, service, profile_type, function, status,
+		  baseline_share, peak_share, current_share, started_at, resolved_at)
+		 VALUES ($1, 'api', 'cpu', $2, 'resolved', 0.1, 0.5, 0.2, $3, $3) RETURNING id`,
+		projectID, fmt.Sprintf("fn-%d", n), resolvedAt).Scan(&id); err != nil {
+		t.Fatalf("insert profile regression: %v", err)
+	}
+	return id
+}
+
+// insertPerfRegression добавляет ЗАКРЫТУЮ регрессию производительности.
+func insertPerfRegression(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt time.Time) int64 {
+	t.Helper()
+	n := entitySeq.Add(1)
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO perf_regressions
+		 (project_id, target_kind, target, metric, status,
+		  baseline_value, peak_value, current_value, started_at, resolved_at)
+		 VALUES ($1, 'endpoint_p95', $2, 'duration', 'resolved', 100, 500, 120, $3, $3) RETURNING id`,
+		projectID, fmt.Sprintf("/api/%d", n), resolvedAt).Scan(&id); err != nil {
+		t.Fatalf("insert perf regression: %v", err)
+	}
+	return id
+}
+
+// insertMetricIncident добавляет ЗАКРЫТЫЙ инцидент по метрике вместе с
+// правилом, на которое он ссылается.
+func insertMetricIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt time.Time) int64 {
+	t.Helper()
+	ctx := context.Background()
+	n := entitySeq.Add(1)
+	var ruleID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold, window_seconds)
+		 VALUES ($1, $2, 'avg', 'gt', 100, 300) RETURNING id`,
+		projectID, fmt.Sprintf("http.server.duration.%d", n)).Scan(&ruleID); err != nil {
+		t.Fatalf("insert metric rule: %v", err)
+	}
+	var id int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO metric_incidents (rule_id, project_id, status, peak_value, current_value, started_at, resolved_at)
+		 VALUES ($1, $2, 'resolved', 500, 120, $3, $3) RETURNING id`,
+		ruleID, projectID, resolvedAt).Scan(&id); err != nil {
+		t.Fatalf("insert metric incident: %v", err)
+	}
+	return id
+}
+
+// rowExists — жива ли строка таблицы. Имя таблицы приходит из литералов теста.
+func rowExists(t *testing.T, pool *pgxpool.Pool, table string, id int64) bool {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT EXISTS (SELECT 1 FROM "+table+" WHERE id = $1)", id).Scan(&exists); err != nil {
+		t.Fatalf("%s exists %d: %v", table, id, err)
+	}
+	return exists
+}
+
+// TestEntityJanitorUsesPerEntityRetention — находка №108: все шесть правил жили
+// одним GOTCHA_RETENTION_DAYS, хотя сроков в продукте четыре.
+//
+// Регрессия профиля переживала свои сэмплы на восемьдесят три дня — карточка
+// открывалась, а флеймграфа за ней уже не было; инцидент метрики переживал
+// точки метрик на шестьдесят. Проверяем на одном и том же возрасте закрытия,
+// что каждое правило смотрит на СВОЙ срок: удаляется то, что пережило свою
+// телеметрию, и остаётся то, что нет.
+func TestEntityJanitorUsesPerEntityRetention(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	resolved := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	profileReg := insertProfileRegression(t, pool, pid, resolved)
+	perfReg := insertPerfRegression(t, pool, pid, resolved)
+	metricInc := insertMetricIncident(t, pool, pid, resolved)
+	uptimeInc := insertMonitorIncident(t, pool, pid, resolved.Add(-time.Hour), &resolved)
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{
+		Events:    90 * 24 * time.Hour,
+		Metrics:   30 * 24 * time.Hour,
+		Profiles:  7 * 24 * time.Hour,
+		Incidents: 90 * 24 * time.Hour,
+	}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if rowExists(t, pool, "profile_regressions", profileReg) {
+		t.Errorf("регрессия профиля, закрытая 10 дней назад, жива при сроке профилей 7 дней — карточка без сэмплов")
+	}
+	if !rowExists(t, pool, "perf_regressions", perfReg) {
+		t.Errorf("регрессия производительности, закрытая 10 дней назад, удалена при сроке событий 90 дней")
+	}
+	if !rowExists(t, pool, "metric_incidents", metricInc) {
+		t.Errorf("инцидент метрики, закрытый 10 дней назад, удалён при сроке метрик 30 дней")
+	}
+	if !incidentExists(t, pool, uptimeInc) {
+		t.Errorf("инцидент аптайма, закрытый 10 дней назад, удалён при своём сроке 90 дней")
+	}
+}
+
+// TestEntityJanitorZeroClassKeepsItsEntities — нулевой срок класса выключает
+// удаление только в его правилах, не задевая остальные.
+func TestEntityJanitorZeroClassKeepsItsEntities(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	old := time.Now().UTC().Add(-400 * 24 * time.Hour)
+	profileReg := insertProfileRegression(t, pool, pid, old)
+	issueID := insertIssue(t, pool, pid, "zero-class", old, "unresolved")
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{
+		Events:   30 * 24 * time.Hour,
+		Profiles: 0, // удаление регрессий профилей выключено
+	}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if !rowExists(t, pool, "profile_regressions", profileReg) {
+		t.Errorf("регрессия профиля удалена при нулевом сроке профилей")
+	}
+	if issueExists(t, pool, issueID) {
+		t.Errorf("группа не удалена при заданном сроке событий — нулевой срок соседнего класса погасил весь проход")
 	}
 }

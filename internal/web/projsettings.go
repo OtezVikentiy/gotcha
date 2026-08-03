@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -141,20 +140,6 @@ func (h *Handler) requireProjectOwner(w http.ResponseWriter, r *http.Request, pr
 		return false
 	}
 	return h.requireOrgOwner(w, r, orgID, userID)
-}
-
-// purgeProject досылает удаление телеметрии проекта в ClickHouse после
-// PG-удаления. Best-effort: PG-каскад уже отработал, поэтому ошибка (или
-// незаданный Purger) не роняет операцию — только логируется, чтобы осиротевшую
-// телеметрию можно было добить повторно.
-func (h *Handler) purgeProject(ctx context.Context, projectID int64) {
-	if h.Purger == nil {
-		slog.Warn("purgeProject: Purger not configured, ClickHouse telemetry left in place", "project_id", projectID)
-		return
-	}
-	if err := h.Purger.PurgeProject(ctx, projectID); err != nil {
-		slog.Error("purgeProject: failed to purge ClickHouse telemetry", "project_id", projectID, "err", err)
-	}
 }
 
 func projectSettingsErrorMessage(ctx context.Context, err error) string {
@@ -553,10 +538,15 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 }
 
 // projectSettingsDelete — POST /projects/{id}/settings/delete: owner-only
-// удаление проекта. Сначала PG-удаление (org.DeleteProject, FK ON DELETE
-// CASCADE снимает ключи/мониторы/issues и т.д.), затем best-effort очистка
-// телеметрии проекта из ClickHouse (h.purgeProject). Успех → 303 на /projects
-// (страница проекта больше не существует).
+// удаление проекта. PG-удаление (org.DeleteProject, FK ON DELETE CASCADE
+// снимает ключи/мониторы/issues и т.д.) той же транзакцией ставит заявку на
+// очистку телеметрии в ClickHouse; выполняет её фоновый исполнитель
+// (telemetry.PurgeWorker). Поэтому запрос отвечает сразу, а сообщение говорит
+// про очередь, а не про выполненное удаление.
+//
+// Раньше очистка шла здесь же, синхронно: восемь мутаций ClickHouse с
+// mutations_sync = 2 и снятым потолком времени в HTTP-запросе. Успех → 303 на
+// /projects (страница проекта больше не существует).
 func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -590,7 +580,7 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	h.purgeProject(r.Context(), projectID)
+	h.flashOK(w, "flash.project_delete_queued", 0)
 	http.Redirect(w, r, "/projects", http.StatusSeeOther)
 }
 

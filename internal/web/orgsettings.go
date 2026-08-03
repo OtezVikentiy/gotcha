@@ -765,11 +765,18 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 // orgSettingsDelete — POST /orgs/{id}/settings/delete: owner-only удаление
-// организации. Порядок: сначала перечисляем проекты орга (после PG-удаления
-// каскад снимет их из projects, и id мы уже не узнаем), затем PG-удаление
-// (org.DeleteOrg, FK ON DELETE CASCADE снимает членов/проекты/ключи и т.д.),
-// затем best-effort очистка телеметрии каждого проекта из ClickHouse
-// (h.purgeProject). Успех → 303 на / (роута /orgs нет — RA-7; как orgSettingsLeave).
+// организации. PG-удаление (org.DeleteOrg, FK ON DELETE CASCADE снимает
+// членов/проекты/ключи и т.д.) той же транзакцией ставит заявки на очистку
+// телеметрии всех проектов организации — выборкой по org_id ДО удаления,
+// потому что каскад уничтожает идентификаторы. Выполняет заявки фоновый
+// исполнитель (telemetry.PurgeWorker).
+//
+// Раньше проекты перечислялись здесь отдельным запросом вне всякой транзакции,
+// а телеметрия чистилась синхронно, по восемь мутаций на проект в одном
+// HTTP-запросе: организация с двадцатью проектами упиралась в WriteTimeout, и
+// данные непройденных проектов оставались в ClickHouse навсегда.
+//
+// Успех → 303 на / (роута /orgs нет — RA-7; как orgSettingsLeave).
 func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -794,14 +801,6 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 			orgSettingsPath(orgID), orgSettingsDeletePath(orgID), nil)
 		return
 	}
-	// Перечисляем проекты ДО удаления — PG-каскад удалит строки projects, и
-	// id проектов станут недоступны для CH-очистки. Ошибка перечисления не
-	// должна блокировать удаление орга: логируем и продолжаем (телеметрию
-	// можно будет добить точечным PurgeProject позже).
-	projects, err := h.Org.ProjectsOf(r.Context(), orgID)
-	if err != nil {
-		slog.Error("orgSettingsDelete: list projects for CH purge", "org_id", orgID, "err", err)
-	}
 	if err := h.Org.DeleteOrg(r.Context(), orgID); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
@@ -810,9 +809,7 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	for _, p := range projects {
-		h.purgeProject(r.Context(), p.ID)
-	}
+	h.flashOK(w, "flash.org_delete_queued", 0)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

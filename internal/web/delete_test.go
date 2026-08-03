@@ -59,9 +59,13 @@ func (f *fakePurger) ExportSubject(_ context.Context, projectID int64, sub telem
 }
 
 // TestWebDeleteProject — POST /projects/{id}/settings/delete: owner удаляет
-// проект (303, проекта нет в PG, Purger.PurgeProject вызван с projectID);
+// проект (303, проекта нет в PG, заявка на очистку телеметрии в очереди);
 // member — 404 (owner-only, единый 404 как прочие owner-only действия);
 // без Origin — 403.
+//
+// Purger в web-слое БОЛЬШЕ НЕ ВЫЗЫВАЕТСЯ: восемь синхронных мутаций ClickHouse
+// в HTTP-запросе и были находкой №7. Очистку выполняет фоновый исполнитель по
+// заявке, которую ставит та же транзакция, что удаляет проект.
 func TestWebDeleteProject(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -134,7 +138,8 @@ func TestWebDeleteProject(t *testing.T) {
 		t.Fatalf("PurgeProject called on unconfirmed request: %v", fp.projects)
 	}
 
-	// POST owner с confirmed=yes → 303, проект удалён из PG, Purger.PurgeProject вызван с projectID.
+	// POST owner с confirmed=yes → 303, проект удалён из PG, заявка в очереди,
+	// Purger НЕ вызван (очистка ушла в фон).
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -153,8 +158,17 @@ func TestWebDeleteProject(t *testing.T) {
 			t.Fatalf("project %d still present in PG after delete", proj.ID)
 		}
 	}
-	if len(fp.projects) != 1 || fp.projects[0] != proj.ID {
-		t.Fatalf("PurgeProject calls = %v, want [%d]", fp.projects, proj.ID)
+	if len(fp.projects) != 0 {
+		t.Fatalf("PurgeProject вызван из HTTP-запроса: %v — очистка обязана идти фоновым исполнителем", fp.projects)
+	}
+	var queued bool
+	if err := s.pool.QueryRow(context.Background(),
+		"SELECT EXISTS (SELECT 1 FROM project_purge_queue WHERE project_id = $1)",
+		proj.ID).Scan(&queued); err != nil {
+		t.Fatalf("чтение очереди: %v", err)
+	}
+	if !queued {
+		t.Fatalf("проект %d удалён, а заявки на очистку телеметрии нет", proj.ID)
 	}
 }
 

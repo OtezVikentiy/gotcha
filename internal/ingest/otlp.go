@@ -117,8 +117,9 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Трейсинг выключен — писать некуда. Отвечаем успехом (иначе коллектор
-	// будет ретраить вечно) и не тратим квоту: как и envelope-путь, который до
-	// квоты транзакций смотрит на TracingEnabled.
+	// будет ретраить вечно) и не тратим квоту. Envelope-путь приходит к тому же
+	// результату иначе: там при выключенном трейсинге не выполняется отбор
+	// транзакций, а квота списывается за отобранное.
 	if !h.pipeline.TracingEnabled() {
 		writeOTLPResponse(w, enc)
 		return
@@ -165,21 +166,28 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	// сколько один. Разбор до списания безопасен: и rate-лимитер, и потолок
 	// размера тела отрабатывают выше.
 	txs := MapOTLP(req.GetResourceSpans(), time.Now().UTC())
-	granted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txs))
-	if dropped := len(txs) - granted; dropped > 0 {
+	// Отбор ДО списания — тот же порядок, что на envelope-пути: платим за то,
+	// что будет записано. Раньше квота списывалась за все разобранные
+	// транзакции, и лишь потом семплирование отбрасывало несохраняемые.
+	kept := h.sampleTransactions(r.Context(), projectID, txs)
+	granted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(kept))
+	// Уменьшаемое — число отобранных: отсеянное семплированием отброшено по
+	// настройке проекта намеренно и потерей по квоте не является.
+	if dropped := len(kept) - granted; dropped > 0 {
 		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
 		slog.Warn("ingest: transaction quota exceeded, dropping items from OTLP export",
 			"dropped", dropped, "accepted", granted, "project_id", projectID, "org_id", key.OrgID)
 	}
-	if granted == 0 && len(txs) > 0 {
+	// Условие опирается на отобранное: экспорт, целиком отсеянный
+	// семплированием, — это успешный приём по настройке проекта, а не
+	// исчерпанная квота, и отвечать на него 429 значило бы просить коллектор
+	// прислать то же самое ещё раз.
+	if granted == 0 && len(kept) > 0 {
 		writeQuotaExceeded(w, "transaction quota exceeded")
 		return
 	}
 
-	rate := h.sampleRate(r.Context(), projectID)
-	for _, tx := range txs[:granted] {
-		h.enqueueSampled(projectID, rate, tx)
-	}
+	h.enqueueTransactions(projectID, kept[:granted])
 	writeOTLPResponse(w, enc)
 }
 

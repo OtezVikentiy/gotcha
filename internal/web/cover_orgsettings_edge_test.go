@@ -144,20 +144,26 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 		t.Fatalf("POST export-subject (user_id+ip) = %d, want 200", resp.StatusCode)
 	}
 
-	// Удаление орга С проектом → 303, цикл CH-очистки проектов вызвал PurgeProject.
+	// Удаление орга С проектом → 303, заявка на очистку телеметрии проекта
+	// поставлена той же транзакцией; синхронного вызова Purger больше нет.
 	resp = postForm(t, s.srv, base+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST org delete (with project) = %d, want 303", resp.StatusCode)
 	}
-	found := false
 	for _, id := range fp.projects {
 		if id == proj.ID {
-			found = true
+			t.Fatalf("PurgeProject вызван из HTTP-запроса для проекта %d — очистка обязана идти фоновым исполнителем", id)
 		}
 	}
-	if !found {
-		t.Fatalf("PurgeProject not called for project %d during org delete: %v", proj.ID, fp.projects)
+	var queued bool
+	if err := s.pool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM project_purge_queue WHERE project_id = $1)",
+		proj.ID).Scan(&queued); err != nil {
+		t.Fatalf("чтение очереди: %v", err)
+	}
+	if !queued {
+		t.Fatalf("организация удалена, а заявки на очистку телеметрии проекта %d нет", proj.ID)
 	}
 }
