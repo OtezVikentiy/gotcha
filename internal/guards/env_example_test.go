@@ -75,7 +75,11 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	for v := range vars {
-		if !strings.Contains(string(example), v) {
+		// Ищем «NAME=» (значением или закомментированным примером), а не голое
+		// вхождение имени: короткое имя — префикс длинного
+		// (GOTCHA_SSRF_ALLOW_PRIVATE ⊂ GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME), и
+		// упоминание длинного давало бы ложный зелёный короткому.
+		if !strings.Contains(string(example), v+"=") {
 			t.Errorf("%s is read by config.go but missing from .env.example", v)
 		}
 	}
