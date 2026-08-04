@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-04
+
 ### Added
 - `--migrate-force=N` and `--migrate-force-ch=N` clear the dirty flag an interrupted migration leaves behind. The error used to advise `migrate force N` — a binary the image does not ship. Only two targets are accepted, the current version and the previous one, because anything else is a typo that would silently shift the starting point of every future migration; the flag does not finish the migration, and says so. The startup errors now name the real command, and the upgrade docs walk through the whole situation.
 - The compose stack is tunable through four substitution variables: `GOTCHA_PG_PASSWORD` and `GOTCHA_CH_PASSWORD` reach both the database container and the app DSN from one place (changing them on an existing install requires `ALTER USER` first — the procedure is in the configuration docs), `GOTCHA_PG_MEM_LIMIT` and `GOTCHA_CH_MEM_LIMIT` raise the database memory ceilings without editing the file.
