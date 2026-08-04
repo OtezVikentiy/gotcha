@@ -60,8 +60,8 @@ func TestWebAlertsRules(t *testing.T) {
 	resp = getWithCookie(t, s.srv, alertsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", alertsPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", alertsPath, resp.StatusCode)
 	}
 
 	validForm := url.Values{
@@ -83,12 +83,12 @@ func TestWebAlertsRules(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", rulesPath, resp.StatusCode)
 	}
 
-	// POST rules member -> 404.
+	// POST rules member -> 403 (№72).
 	resp = postForm(t, s.srv, rulesPath, validForm, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", rulesPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", rulesPath, resp.StatusCode)
 	}
 
 	// POST rules валидный -> 303, все три правила сохранены.
@@ -149,7 +149,7 @@ func TestWebAlertsRules(t *testing.T) {
 }
 
 // TestWebAlertsChannels — каналы доставки: создание (email/webhook/telegram),
-// невалидный канал → 422, удаление, чужой channel_id → 404, member → 404.
+// невалидный канал → 422, удаление, чужой channel_id → 404, member → 403 (№72).
 func TestWebAlertsChannels(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -175,12 +175,12 @@ func TestWebAlertsChannels(t *testing.T) {
 	channelsPath := alertsPath + "/channels"
 	channelsDeletePath := channelsPath + "/delete"
 
-	// POST channels member -> 404.
+	// POST channels member -> 403 (№72).
 	resp := postForm(t, s.srv, channelsPath, url.Values{"kind": {"email"}, "target": {"ops@example.com"}, "enabled": {"on"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", channelsPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", channelsPath, resp.StatusCode)
 	}
 
 	// POST channels невалидный email -> 422.
@@ -241,12 +241,12 @@ func TestWebAlertsChannels(t *testing.T) {
 		t.Fatalf("other project's channel affected unexpectedly: %+v err=%v", c2, err)
 	}
 
-	// Удаление member -> 404.
+	// Удаление member -> 403 (№72).
 	resp = postForm(t, s.srv, channelsDeletePath, url.Values{"channel_id": {strconv.FormatInt(channels[0].ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", channelsDeletePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", channelsDeletePath, resp.StatusCode)
 	}
 
 	// Удаление своего канала -> 303, канал исчез.
@@ -347,8 +347,8 @@ func TestWebAlertDeliveriesPageShowsFailedDeliveries(t *testing.T) {
 	}
 	resp = getWithCookie(t, s.srv, deliveriesPath, memberCookie)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", deliveriesPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", deliveriesPath, resp.StatusCode)
 	}
 }
 
@@ -483,5 +483,104 @@ func TestOnboardingCreatesDefaultAlertRules(t *testing.T) {
 		if !r.Enabled || r.ThrottleMinutes != 30 {
 			t.Errorf("default rule %+v, want enabled throttle=30", r)
 		}
+	}
+}
+
+type fakeTestSender struct {
+	payloads []map[string]any
+	err      error
+}
+
+func (f *fakeTestSender) Send(_ context.Context, _ notify.Target, payload map[string]any) error {
+	f.payloads = append(f.payloads, payload)
+	return f.err
+}
+
+// TestWebAlertsChannelTest — тестовая отправка в канал (№69): синхронно, мимо
+// outbox; успех — flash и 303, ошибка доставки — 422 с классом причины на
+// странице алертов; чужой канал — 404, member — 403.
+func TestWebAlertsChannelTest(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	alertSvc := alert.NewService(s.pool)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "chantest-owner@example.com")
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "chantest-member@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "chantest-co", "ChanTest Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "chantest-proj", "ChanTest Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	chID, err := alertSvc.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelTelegram, Enabled: true, Target: "123", Secret: "tok",
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	sender := &fakeTestSender{}
+	s.h.NotifyDirect = &notify.Direct{Senders: map[string]notify.Sender{alert.ChannelTelegram: sender}}
+
+	testPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alerts/channels/test"
+	form := url.Values{"channel_id": {strconv.FormatInt(chID, 10)}}
+
+	// Успех → 303 + отправитель получил subject/body.
+	resp := postForm(t, s.srv, testPath, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST test status = %d, want 303", resp.StatusCode)
+	}
+	if len(sender.payloads) != 1 {
+		t.Fatalf("payloads = %d, want 1", len(sender.payloads))
+	}
+	subj, _ := sender.payloads[0]["subject"].(string)
+	if !strings.Contains(subj, "[Gotcha]") {
+		t.Errorf("subject = %q", subj)
+	}
+
+	// Ошибка доставки → 422 со страницей алертов и причиной.
+	sender.err = errors.New("telegram: 403 forbidden")
+	resp = postForm(t, s.srv, testPath, form, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST test (fail) status = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "telegram: 403 forbidden") {
+		t.Errorf("страница без причины отказа: %s", body)
+	}
+
+	// Member → 403 (№72), отправки нет.
+	before := len(sender.payloads)
+	resp = postForm(t, s.srv, testPath, form, s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST test (member) status = %d, want 403", resp.StatusCode)
+	}
+
+	// Чужой канал (другой проект) → 404.
+	proj2, err := orgSvc.CreateProject(context.Background(), o.ID, "chantest-proj2", "ChanTest Proj2", "go")
+	if err != nil {
+		t.Fatalf("create project2: %v", err)
+	}
+	resp = postForm(t, s.srv, "/projects/"+strconv.FormatInt(proj2.ID, 10)+"/alerts/channels/test",
+		form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST test (чужой канал) status = %d, want 404", resp.StatusCode)
+	}
+	// Ни member, ни чужой канал до отправителя не дошли.
+	if len(sender.payloads) != before {
+		t.Errorf("лишние отправки: %d, want %d", len(sender.payloads), before)
 	}
 }

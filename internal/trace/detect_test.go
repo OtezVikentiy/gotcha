@@ -283,9 +283,6 @@ func TestDetectNPlusOneFinding(t *testing.T) {
 	if want := "SELECT * FROM users WHERE id = ?"; f.Description != want {
 		t.Errorf("Description = %q, want %q", f.Description, want)
 	}
-	if want := "N+1 запросов: SELECT * FROM users WHERE id = ?"; f.Title != want {
-		t.Errorf("Title = %q, want %q", f.Title, want)
-	}
 	if f.Culprit != "GET /orders" {
 		t.Errorf("Culprit = %q, want %q", f.Culprit, "GET /orders")
 	}
@@ -347,9 +344,6 @@ func TestDetectSlowDBQueryDeduplicated(t *testing.T) {
 	}
 	if want := "SELECT * FROM reports WHERE year = ?"; f.Description != want {
 		t.Errorf("Description = %q, want %q", f.Description, want)
-	}
-	if want := "Медленный запрос: SELECT * FROM reports WHERE year = ?"; f.Title != want {
-		t.Errorf("Title = %q, want %q", f.Title, want)
 	}
 	if got, want := f.Evidence["count"], 2; got != want {
 		t.Errorf("evidence count = %v, want %v", got, want)

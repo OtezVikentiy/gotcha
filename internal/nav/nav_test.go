@@ -511,3 +511,31 @@ func TestAreasHideAreaWithNothingVisible(t *testing.T) {
 		t.Error("администратор потерял область «Оповещения»")
 	}
 }
+
+// TestProjectSwitchHref — смена проекта из переключателя держит текущий
+// раздел (№60): из «Транзакций» проекта 1 — в «Транзакции» проекта 2; из
+// областей вне проекта (org/docs/пусто) — на issues целевого проекта.
+func TestProjectSwitchHref(t *testing.T) {
+	shell := Shell{
+		Projects:  []Project{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}},
+		ProjectID: 1,
+		OrgID:     7,
+		Area:      "performance",
+		CanManage: true,
+	}
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/performance" {
+		t.Errorf("performance → %q, want /projects/2/performance", got)
+	}
+	shell.Area = "uptime"
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/monitors" {
+		t.Errorf("uptime → %q, want /projects/2/monitors", got)
+	}
+	shell.Area = "org"
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
+		t.Errorf("org → %q, want issues-фолбэк", got)
+	}
+	shell.Area = ""
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
+		t.Errorf("пустая область → %q, want issues-фолбэк", got)
+	}
+}

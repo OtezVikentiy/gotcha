@@ -417,6 +417,32 @@ func TestLoadConfig_Registration(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_Locale(t *testing.T) {
+	// Дефолт — ru: сохраняет сегодняшний язык регрессионных уведомлений
+	// для действующих инсталляций.
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Locale != "ru" {
+		t.Errorf("Locale default = %q, want %q", cfg.Locale, "ru")
+	}
+	// Явные допустимые значения.
+	for _, loc := range []string{"ru", "en"} {
+		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_LOCALE": loc}), nil)
+		if err != nil {
+			t.Fatalf("loadConfig %q: %v", loc, err)
+		}
+		if cfg.Locale != loc {
+			t.Errorf("Locale = %q, want %q", cfg.Locale, loc)
+		}
+	}
+	// Мусорное значение — ошибка.
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_LOCALE": "de"}), nil); err == nil {
+		t.Error("bogus locale must fail")
+	}
+}
+
 func TestLoadConfig_Edition(t *testing.T) {
 	// Без env: OSS-редакция, все дефолты квот = 0 (безлимит), и это разрешено.
 	cfg, err := loadConfig(getenvFrom(nil), nil)

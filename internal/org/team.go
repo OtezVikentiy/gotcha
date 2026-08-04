@@ -59,6 +59,23 @@ func (s *Service) RenameTeam(ctx context.Context, orgID, teamID int64, name stri
 	return nil
 }
 
+// DeleteTeam удаляет команду вместе с членствами и привязками к проектам
+// (№26): team_members и project_teams каскадируют по FK — участники теряют
+// доступ к проектам команды сразу, как и при DetachTeam. org_id в условии —
+// тот же скоуп, что у RenameTeam: без него администратор одной организации
+// удалял бы команды соседней.
+func (s *Service) DeleteTeam(ctx context.Context, orgID, teamID int64) error {
+	tag, err := s.pool.Exec(ctx,
+		"DELETE FROM teams WHERE id = $2 AND org_id = $1", orgID, teamID)
+	if err != nil {
+		return fmt.Errorf("org: delete team: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // TeamsOf возвращает команды организации, отсортированные по name —
 // стабильный порядок для страницы настроек.
 func (s *Service) TeamsOf(ctx context.Context, orgID int64) ([]Team, error) {

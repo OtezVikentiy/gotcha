@@ -404,3 +404,33 @@ func TestAddTeamMemberIdempotent(t *testing.T) {
 		t.Fatalf("AddTeamMember (duplicate): got %v, want nil (idempotent)", err)
 	}
 }
+
+// TestCreateProjectNormalizesPlatform — нормализация платформы живёт в домене
+// (№73): оба веб-пути создания (онбординг и модалка) получают её автоматом,
+// незнакомое значение схлопывается в PlatformOther, знакомое — как есть.
+func TestCreateProjectNormalizesPlatform(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "platnorm-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "platnorm-org", "Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	p, err := svc.CreateProject(ctx, o.ID, "platnorm-a", "A", "bogus-platform")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if p.Platform != org.PlatformOther {
+		t.Errorf("Platform = %q, want %q", p.Platform, org.PlatformOther)
+	}
+	p2, err := svc.CreateProject(ctx, o.ID, "platnorm-b", "B", org.PlatformGo)
+	if err != nil {
+		t.Fatalf("CreateProject go: %v", err)
+	}
+	if p2.Platform != org.PlatformGo {
+		t.Errorf("Platform = %q, want go", p2.Platform)
+	}
+}

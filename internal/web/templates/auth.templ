@@ -116,7 +116,12 @@ templ Register(errMsg string, closed bool, next string, providers []OAuthButton)
 		if closed {
 			<div class="auth-form">
 				<h1>{ i18n.T(ctx, "auth.register.invite_title") }</h1>
-				<p class="error">{ errMsg }</p>
+				// Красная плашка — только реальной ошибке POST (№68): на GET
+				// закрытая регистрация — штатное состояние, о нём говорит
+				// информационный абзац ниже, и дублировать его ошибкой незачем.
+				if errMsg != "" {
+					<p class="error">{ errMsg }</p>
+				}
 				<p>{ i18n.T(ctx, "auth.register.closed_body") }</p>
 				<p class="auth-switch"><a href={ templ.URL(loginLinkWithNext(next)) }>{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
 			</div>

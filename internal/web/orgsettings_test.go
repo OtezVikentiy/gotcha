@@ -45,7 +45,8 @@ func extractInviteLink(t *testing.T, body string) string {
 }
 
 // TestWebOrgSettings — сквозной сценарий задачи 5/2: owner видит настройки,
-// member — 404, смена роли работает, last-owner защищён, self-действия
+// member — честный 403 (№72: членство уже известно, «не найдено» читалось бы
+// как поломка), смена роли работает, last-owner защищён, self-действия
 // запрещены, invite выдаёт ссылку один раз и принимается один раз.
 func TestWebOrgSettings(t *testing.T) {
 	s := newStack(t)
@@ -76,12 +77,13 @@ func TestWebOrgSettings(t *testing.T) {
 		t.Fatalf("GET %s (owner) missing member emails: %s", settingsPath, body)
 	}
 
-	// GET настроек member'ом (не owner/admin) → 404.
+	// GET настроек member'ом (не owner/admin) → честный 403 (№72); не-члену
+	// чужой организации по-прежнему отвечает 404 (crossorg_idor_test).
 	resp = getWithCookie(t, s.srv, settingsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", settingsPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", settingsPath, resp.StatusCode)
 	}
 
 	rolePath := settingsPath + "/role"
@@ -494,12 +496,12 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", quotaPath, resp.StatusCode)
 	}
 
-	// POST quota member -> 404.
+	// POST quota member -> 403 (№72).
 	resp = postForm(t, s.srv, quotaPath, url.Values{"event_quota": {"500"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", quotaPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", quotaPath, resp.StatusCode)
 	}
 
 	// POST quota отрицательная -> 422, лимит не изменился.

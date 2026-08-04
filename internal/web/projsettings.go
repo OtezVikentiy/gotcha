@@ -108,7 +108,8 @@ func (h *Handler) parsePathProjectID(w http.ResponseWriter, r *http.Request) (in
 
 // requireProjectRole резолвит projectID -> orgID (org.ProjectOrg) и проверяет
 // роль вызывающего в этой организации (requireOrgRole): несуществующий
-// проект и недостаточная роль дают одну и ту же стилизованную 404.
+// проект и не-член — стилизованная 404, член с недостаточной ролью —
+// честный 403 (№72).
 func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, projectID, userID int64) (int64, bool) {
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {

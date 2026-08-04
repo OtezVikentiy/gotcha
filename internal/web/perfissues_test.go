@@ -319,12 +319,12 @@ func TestWebPerfIssueMemberCannotManage(t *testing.T) {
 		t.Fatalf("member must not see status buttons: %s", body)
 	}
 
-	// Member POST статус → 404 (requireProjectRole).
+	// Member POST статус → 403 (requireProjectRole, №72).
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("member POST status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member POST status = %d, want 403", resp.StatusCode)
 	}
 	if got := s.statusOf(t, id); got != "unresolved" {
 		t.Fatalf("member POST changed status to %q, want unresolved", got)

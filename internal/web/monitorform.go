@@ -513,7 +513,14 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	if !canManage || m.Kind != uptime.KindHeartbeat {
+	// Монитор зрителю уже доступен (loadAccessibleMonitor) — существование не
+	// секрет, поэтому нехватка роли — честный 403 (№72), а 404 остаётся
+	// содержательной ошибке «этот монитор не heartbeat».
+	if !canManage {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
+		return
+	}
+	if m.Kind != uptime.KindHeartbeat {
 		h.notFound(w, r)
 		return
 	}

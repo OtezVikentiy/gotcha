@@ -471,3 +471,25 @@ func firstSubsectionHref(s Shell, area string) string {
 	}
 	return subs[0].Href
 }
+
+// ProjectSwitchHref computes where the project switcher takes the user when
+// they pick projectID: the SAME area they are currently in (№60 — switching
+// projects is not a reason to lose context), falling back to the project's
+// issues list when the current area is not a per-project one (org, docs,
+// settings) or has no accessible subsection for that project. The probe
+// keeps the shell's CanManage: roles are per-organization, and for the rare
+// cross-organization switch the fallback below stays the safe door.
+func ProjectSwitchHref(s Shell, projectID int64) string {
+	perProject := map[string]bool{
+		"issues": true, "performance": true, "metrics": true,
+		"uptime": true, "alerts": true,
+	}
+	if perProject[s.Area] {
+		target := s
+		target.ProjectID = projectID
+		if href := firstSubsectionHref(target, s.Area); href != "" {
+			return href
+		}
+	}
+	return "/projects/" + itoa(projectID) + "/issues"
+}

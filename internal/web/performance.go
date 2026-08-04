@@ -91,7 +91,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tr := parseTimeRange(r.URL.Query(), perfDefaultPeriod)
+	tr := h.resolveTimeRange(w, r, perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
 	sortKey := r.URL.Query().Get("sort")
 
@@ -212,7 +212,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tr := parseTimeRange(r.URL.Query(), perfDefaultPeriod)
+	tr := h.resolveTimeRange(w, r, perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
 
 	from, now := tr.From, tr.To

@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/memlimit"
@@ -371,6 +372,7 @@ func run() error {
 			BaseURL:      cfg.BaseURL,
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
+			Locale:       i18n.Locale{Code: cfg.Locale},
 		}
 		uptimeDetector = &uptime.Detector{Svc: uptimeSvc, Notifier: uptimeNotifier}
 		// Ingestor нужен и режиму web (через него /probe/results проводит
@@ -492,6 +494,10 @@ func run() error {
 	// инциденты, складывала задания в notification_outbox и НЕ ДОСТАВЛЯЛА ИХ
 	// НИКОГДА — без единой строки в логе. Заодно не работал и janitor, поэтому
 	// таблица с секретами каналов в payload росла безгранично.
+	// notifyDirect — синхронная тест-отправка в канал из настроек (№69): те же
+	// Senders/Secrets, что у воркера доставки. Остаётся nil на стендах без
+	// outbox — кнопка теста там отвечает 404.
+	var notifyDirect *notify.Direct
 	if outbox != nil {
 		senders := map[string]notify.Sender{
 			alert.ChannelWebhook:  &notify.WebhookSender{AllowPrivate: cfg.SSRFAllowPrivateWebhook},
@@ -501,6 +507,10 @@ func run() error {
 			senders[alert.ChannelEmail] = emailSender
 		} else {
 			slog.Warn("GOTCHA_SMTP_HOST is not set, email alert channels are disabled")
+		}
+		notifyDirect = &notify.Direct{Senders: senders}
+		if alertSvc != nil {
+			notifyDirect.Secrets = alertSvc
 		}
 		// Наблюдение за доставкой. До него «алерт не пришёл» диагностировался
 		// грепом логов, причём janitor через семь дней удалял улику.
@@ -545,6 +555,7 @@ func run() error {
 				BaseURL:      cfg.BaseURL,
 				EmailEnabled: emailSender != nil && emailSender.Configured(),
 				Details:      detailPolicy(cfg),
+				Locale:       i18n.Locale{Code: cfg.Locale},
 			}
 			go digester.Run(ctx)
 		}
@@ -648,6 +659,7 @@ func run() error {
 		evaluator := &alert.Evaluator{
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
 			Details: detailPolicy(cfg),
+			Locale:  i18n.Locale{Code: cfg.Locale},
 		}
 		spikeWorker := &alert.Spike{
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
@@ -667,6 +679,7 @@ func run() error {
 			BaseURL:      cfg.BaseURL,
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
+			Locale:       i18n.Locale{Code: cfg.Locale},
 		}
 
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
@@ -747,6 +760,8 @@ func run() error {
 		// предупреждения доступны через /metrics и логи ingest-узла.
 		webHandler.Cardinality = cardinality
 		webHandler.Outbox = outbox
+		webHandler.NotifyDirect = notifyDirect
+		webHandler.NotifyLocale = i18n.Locale{Code: cfg.Locale}
 		webHandler.Uptime = uptimeSvc
 		webHandler.UptimeWriter = uptimeWriter
 		// uptimeSvc is always built above whenever cfg.Mode is "web" or
@@ -900,6 +915,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			BaseURL:      cfg.BaseURL,
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
+			Locale:       i18n.Locale{Code: cfg.Locale},
 		},
 	}
 	go evaluator.Run(ctx)
@@ -918,6 +934,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			BaseURL:      cfg.BaseURL,
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
+			Locale:       i18n.Locale{Code: cfg.Locale},
 		},
 		Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
 	}
@@ -935,6 +952,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			BaseURL:      cfg.BaseURL,
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
+			Locale:       i18n.Locale{Code: cfg.Locale},
 		},
 		Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
 		Config:   profile.DefaultProfileRegressionConfig(),

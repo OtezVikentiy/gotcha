@@ -93,7 +93,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tr := parseTimeRange(r.URL.Query(), "7d")
+	tr := h.resolveTimeRange(w, r, "7d")
 	step := autoStep(tr.Window(), 5*time.Minute, 0, issueChartBuckets)
 	points, err := h.Events.Series(r.Context(), it.ProjectID, it.ID, tr.From, tr.To, step)
 	if err != nil {

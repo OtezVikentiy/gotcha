@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -46,6 +48,22 @@ type Evaluator struct {
 	// (см. DetailPolicy). Нулевое значение не доверяет никому: детали уходят
 	// только тем, кого оператор подтвердил как свой контур.
 	Details DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	Locale i18n.Locale
+}
+
+// issueAlertKindLabel — человекочитаемое имя вида алерта для темы письма.
+// Enum закрыт (см. Event.Kind); незнакомый вид уходит как есть — это
+// честнее, чем прятать его за пустой строкой.
+func issueAlertKindLabel(ctx context.Context, kind string) string {
+	switch kind {
+	case "new_issue", "regression", "spike":
+		return i18n.T(ctx, "notify.issue.kind."+kind)
+	default:
+		return kind
+	}
 }
 
 // OnIssue — точка входа для ingest.Pipeline (new_issue/regression) и
@@ -94,10 +112,15 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		return
 	}
 
+	// Тексты — на языке инстанса (GOTCHA_LOCALE), а не запроса: уведомление
+	// читает внешний получатель, у которого нет своей локали (№133–136).
+	lctx := i18n.WithLocale(ctx, e.Locale)
 	url := fmt.Sprintf("%s/issues/%d", e.BaseURL, ev.IssueID)
-	subject := fmt.Sprintf("[gotcha] %s: %s", ev.Kind, ev.Title)
-	body := fmt.Sprintf("%s\n\nCulprit: %s\nLevel: %s\nSeen: %d times\n\n%s",
-		ev.Title, ev.Culprit, ev.Level, ev.TimesSeen, url)
+	subject := i18n.Tf(lctx, "notify.issue.subject",
+		"kind", issueAlertKindLabel(lctx, ev.Kind), "title", ev.Title)
+	body := i18n.Tf(lctx, "notify.issue.body",
+		"title", ev.Title, "culprit", ev.Culprit, "level", ev.Level,
+		"count", strconv.FormatInt(ev.TimesSeen, 10), "url", url)
 
 	for _, ch := range channels {
 		if !ch.Deliverable() {

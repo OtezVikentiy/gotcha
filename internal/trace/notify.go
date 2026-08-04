@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -61,6 +63,31 @@ type OutboxNotifier struct {
 	// Details — политика раскрытия деталей события получателю уведомления
 	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
 	Details alert.DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык уведомления выбирает оператор (№133–136).
+	Locale i18n.Locale
+}
+
+// perfIssueNotifyTitle — заголовок perf-находки для уведомления: перевод вида
+// + параметр (description; у http_flood параметром служит culprit). Пустой
+// параметр при непустом сохранённом title — строка, созданная до миграции
+// 0058 и не подошедшая под префиксы backfill: для неё честнее сохранённый
+// текст. Та же логика на рендере страниц — perfIssueTitle в
+// internal/web/templates/perfissues.templ (web не импортируем: зависимость
+// шла бы в обратную сторону).
+func perfIssueNotifyTitle(ctx context.Context, iss PerfIssue) string {
+	param := iss.Description
+	if iss.Kind == KindHTTPFlood {
+		param = iss.Culprit
+	}
+	if param == "" {
+		if iss.Title != "" {
+			return iss.Title
+		}
+		return i18n.T(ctx, "perf.title."+iss.Kind)
+	}
+	return i18n.T(ctx, "perf.title."+iss.Kind) + ": " + param
 }
 
 // NotifyNew ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -112,17 +139,23 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 		// Не молчим: проблема ЗАПИСАНА (perf_issues), просто не разослана — иначе
 		// дежурный, увидев тишину, решил бы, что новых проблем нет.
 		slog.Warn("perf alert throttled, issue recorded but not delivered",
-			"project_id", projectID, "perf_issue_id", iss.ID, "title", iss.Title,
-			"regression", regression, "limit_per_hour", MaxPerfAlertsPerHour)
+			"project_id", projectID, "perf_issue_id", iss.ID, "kind", iss.Kind,
+			"culprit", iss.Culprit, "regression", regression, "limit_per_hour", MaxPerfAlertsPerHour)
 		return nil
 	}
 
+	// Тексты — на языке инстанса (GOTCHA_LOCALE), а не запроса: уведомление
+	// читает внешний получатель, у которого нет своей локали (№138–139: раньше
+	// здесь склеивался английский каркас с русским title детектора).
+	lctx := i18n.WithLocale(ctx, n.Locale)
+	title := perfIssueNotifyTitle(lctx, iss)
 	url := fmt.Sprintf("%s/perf-issues/%d", n.BaseURL, iss.ID)
-	subject := fmt.Sprintf("[Gotcha] Performance: %s", iss.Title)
+	subject := i18n.Tf(lctx, "notify.perf.subject", "title", title)
 	if regression {
-		subject = fmt.Sprintf("[Gotcha] Performance regression: %s", iss.Title)
+		subject = i18n.Tf(lctx, "notify.perf.subject.regression", "title", title)
 	}
-	body := fmt.Sprintf("%s\n\nCulprit: %s\nSeen: %d times\n\n%s", iss.Title, iss.Culprit, iss.Count, url)
+	body := i18n.Tf(lctx, "notify.perf.body", "title", title,
+		"culprit", iss.Culprit, "count", strconv.FormatInt(iss.Count, 10), "url", url)
 
 	var errs error
 	enqueued := 0
@@ -141,7 +174,7 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 			"regression":    regression,
 			"project_id":    projectID,
 			"perf_issue_id": iss.ID,
-			"title":         iss.Title,
+			"title":         title,
 			"culprit":       iss.Culprit,
 			"count":         iss.Count,
 			"url":           url,

@@ -56,6 +56,28 @@ The probe reports in to the center as soon as it starts — the "Probes" page wi
 
 Once a probe has checked in at least once, its `Region` appears in the list of available regions in the monitor form (`/projects/{id}/monitors/new` and Edit), alongside the built-in local region. Check the regions you want and set a consensus rule (see [Uptime](/docs/uptime)) — the monitor will start being checked from all selected points in parallel.
 
+## FAQ
+
+### What does a probe need to run?
+
+Only outbound HTTP(S) to the central Gotcha server and two environment variables — `GOTCHA_SERVER_URL` and `GOTCHA_PROBE_TOKEN`. No PostgreSQL or ClickHouse access, no inbound ports: the probe calls the server, never the other way around. That makes the cheapest VPS in the target region a perfectly good home for it.
+
+### I lost the probe token. How do I recover it?
+
+You can't — the token is shown once at creation, and only its hash is stored in the database. Revoke the old probe with the "Revoke" button and register a new one: it takes a minute, and you can reuse the same name and region.
+
+### Can several probes share one region?
+
+Yes. Several probes with the same region identifier are the standard way to scale: monitors see them as a single region, while load and fault tolerance are spread across the instances.
+
+### How do I know a probe is alive?
+
+The "Organization" → "Probes" page shows each probe's status: **online** with the time of its last check-in, **offline** if it stopped reporting, or **revoked**. A probe reports in immediately on start, so there's no long wait.
+
+### The probe is running, but its region doesn't show up in the monitor form. Why?
+
+A region appears in the list only after the probe has checked in at least once. Check the probe's status on the "Probes" page: if it's **offline**, verify `GOTCHA_SERVER_URL` (it must match the server's `GOTCHA_BASE_URL` and be reachable from the probe machine) and the token.
+
 ## What's next
 
 - [Uptime and monitors](/docs/uptime) — how status is computed across multiple regions.

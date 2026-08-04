@@ -199,7 +199,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 									for _, iss := range d.PerfIssues {
 										<tr>
 											<td>{ perfKindLabel(ctx, iss.Kind) }</td>
-											<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ iss.Title }</a></td>
+											<td><a href={ templ.URL(perfIssuePath(iss.ID)) }>{ perfIssueTitle(ctx, iss) }</a></td>
 											<td>{ issueStatusLabel(ctx, iss.Status) }</td>
 											<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
 										</tr>

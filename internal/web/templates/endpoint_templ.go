@@ -891,9 +891,9 @@ func EndpointDetail(d EndpointDetailData, userEmail string) templ.Component {
 							return templ_7745c5c3_Err
 						}
 						var templ_7745c5c3_Var45 string
-						templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(iss.Title)
+						templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(perfIssueTitle(ctx, iss))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/endpoint.templ`, Line: 202, Col: 71}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/endpoint.templ`, Line: 202, Col: 86}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 						if templ_7745c5c3_Err != nil {

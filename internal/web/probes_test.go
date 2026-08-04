@@ -222,28 +222,28 @@ func TestWebProbesAccess(t *testing.T) {
 	probesPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/probes"
 	revokePath := probesPath + "/revoke"
 
-	// member: GET → 404.
+	// member: GET → 403 (№72: член с малой ролью).
 	resp := getWithCookie(t, s.srv, probesPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", probesPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", probesPath, resp.StatusCode)
 	}
 
-	// member: POST создания → 404.
+	// member: POST создания → 403 (№72).
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {"p"}, "region": {"ru-msk"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", probesPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", probesPath, resp.StatusCode)
 	}
 
-	// member: POST revoke → 404.
+	// member: POST revoke → 403 (№72).
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", revokePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", revokePath, resp.StatusCode)
 	}
 
 	// owner своей организации пытается отозвать пробу ЧУЖОЙ организации → 404,

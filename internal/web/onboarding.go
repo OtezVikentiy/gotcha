@@ -15,26 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// allowedPlatforms — серверный whitelist платформ онбординга; всё, что не
-// входит в список (в т.ч. произвольный ввод через подменённый <select>),
-// нормализуется на PlatformOther. Строится из org.Platforms, а не
-// независимым литералом — иначе whitelist и список для формы/сторожа
-// динамических ключей могли бы разойтись незамеченно.
-var allowedPlatforms = func() map[string]bool {
-	m := make(map[string]bool, len(org.Platforms))
-	for _, p := range org.Platforms {
-		m[p] = true
-	}
-	return m
-}()
-
-func normalizePlatform(platform string) string {
-	if allowedPlatforms[platform] {
-		return platform
-	}
-	return org.PlatformOther
-}
-
 // onboardingPage — GET /onboarding: у юзера без организаций форма
 // «создайте организацию и первый проект», у остальных — 303 на /.
 func (h *Handler) onboardingPage(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +80,9 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	orgName := r.FormValue("org_name")
 	projectSlug := r.FormValue("project_slug")
 	projectName := r.FormValue("project_name")
-	platform := normalizePlatform(r.FormValue("platform"))
+	// Нормализация принадлежит домену (org.CreateProject, №73); здесь она
+	// нужна только чтобы перерисовка формы при 422 не получила сырое значение.
+	platform := org.NormalizePlatform(r.FormValue("platform"))
 
 	renderInvalid := func(errMsg string) {
 		w.WriteHeader(http.StatusUnprocessableEntity)

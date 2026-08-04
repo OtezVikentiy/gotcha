@@ -174,6 +174,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "alert-rules-form", Why: "семантический маркер формы, стиля нет по замыслу — оформление от .field/.select/.btn* внутри", Finding: "по замыслу"},
 	{Value: "channel-create-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "channel-delete-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "channel-test-form", Why: "семантический маркер формы (тест-отправка в канал, №69), стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "channel-edit-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "confirm-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "invite-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
@@ -193,7 +194,10 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "status-page-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "subject-export-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "subject-purge-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "gs-hide-form", Why: "семантический маркер формы (скрыть чек-лист, №71), стиля нет по замыслу — кнопка стилизована .btn, позиция — .card-header-action", Finding: "по замыслу"},
+	{Value: "chromeless-logout", Why: "семантический маркер формы выхода в chromeless-шапке (№21), стиля нет по замыслу — кнопка стилизована .btn", Finding: "по замыслу"},
 	{Value: "team-create-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "team-delete-form", Why: "семантический маркер формы (удаление команды, №26), стиля нет по замыслу — раскладку даёт обёртка .row-actions", Finding: "по замыслу"},
 	{Value: "team-member-remove-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "team-project-detach-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "team-rename-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
@@ -259,13 +263,13 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "team", Why: "семантический маркер, стоит в паре с .card (class=\"team card\")", Finding: "по замыслу"},
 }
 
-// maxPermanentCSSClassExemptions — потолок постоянного списка: 68 записей —
+// maxPermanentCSSClassExemptions — потолок постоянного списка: 72 записи —
 // 27 на семью *-form, 23 на маркеры страниц/разделов на корневом узле, 18 на
 // маркеры секций в паре со стилизованным соседом (68 = 27+23+18; было 19 до
 // раунда правок 1 — probe-token оттуда переехал в debtCSSClassExemptions).
 // Список постоянный, а не долг — расти он должен только если появится ещё
 // один законный по замыслу случай той же природы, осознанной правкой числа.
-const maxPermanentCSSClassExemptions = 68
+const maxPermanentCSSClassExemptions = 72
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

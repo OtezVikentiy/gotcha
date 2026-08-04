@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
@@ -426,5 +427,91 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.flashOK(w, "flash.deleted", 0)
+	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
+}
+
+// alertsChannelTest — POST /projects/{id}/alerts/channels/test: channel_id.
+// Тестовая отправка в канал (№69): без неё проверить Telegram/webhook/email
+// можно было, только дождавшись реального алерта. Доставка СИНХРОННАЯ, мимо
+// outbox (см. notify.Direct): результат нужен немедленно — успех уходит во
+// flash, ошибка доставки показывается на странице алертов классом ошибки.
+// Доступ — та же роль, что правит каналы; rate-limit не нужен: действие
+// ручное, за формой CSRF-гейт sameOrigin и owner/admin.
+func (h *Handler) alertsChannelTest(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.Alerts == nil || h.NotifyDirect == nil {
+		h.notFound(w, r)
+		return
+	}
+	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad channel_id", http.StatusBadRequest)
+		return
+	}
+	channels, err := h.Alerts.Channels(r.Context(), projectID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	// Тот же скоуп, что у правки/удаления: id канала приходит из формы, и без
+	// проверки принадлежности владелец одного проекта дёргал бы чужой канал.
+	var ch alert.Channel
+	found := false
+	for _, c := range channels {
+		if c.ID == channelID {
+			ch, found = c, true
+			break
+		}
+	}
+	if !found {
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		return
+	}
+
+	// Тексты — на языке инстанса: получатель канала тот же, что у настоящих
+	// алертов (№133–136), а не тот, кто нажал кнопку.
+	lctx := i18n.WithLocale(context.Background(), h.NotifyLocale)
+	url := h.BaseURL + alertsPath(projectID)
+	subject := i18n.T(lctx, "notify.test.subject")
+	body := i18n.Tf(lctx, "notify.test.body", "name", ch.Target, "url", url)
+	payload := map[string]any{
+		"kind":         "channel_test",
+		"project_id":   projectID,
+		"url":          url,
+		"subject":      subject,
+		"body":         body,
+		"channel_kind": ch.Kind,
+		"target":       ch.Target,
+	}
+	if err := h.NotifyDirect.Send(r.Context(), ch.ID, ch.Kind, ch.Target, payload); err != nil {
+		// Класс ошибки, не сырой дамп: первая строка, с разумным потолком.
+		reason := strings.SplitN(err.Error(), "\n", 2)[0]
+		if len(reason) > 200 {
+			reason = reason[:200] + "…"
+		}
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, nil,
+			i18n.Tf(r.Context(), "err.channel_test_failed", "reason", reason))
+		return
+	}
+	h.flashOK(w, "flash.channel_test_sent", 0)
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
 }

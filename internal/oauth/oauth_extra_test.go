@@ -32,8 +32,10 @@ func TestProviderNamesAndDisplay(t *testing.T) {
 		t.Fatalf("vk name/display = %q/%q", vk.Name(), vk.DisplayName())
 	}
 
+	// №137: DisplayName — латинский fallback; локализованную подпись
+	// («Яндекс»/"Yandex") даёт каталог i18n через web.providerLabel.
 	ya := NewYandex(YandexConfig{})
-	if ya.Name() != "yandex" || ya.DisplayName() != "Яндекс" {
+	if ya.Name() != "yandex" || ya.DisplayName() != "Yandex" {
 		t.Fatalf("yandex name/display = %q/%q", ya.Name(), ya.DisplayName())
 	}
 }

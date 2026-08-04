@@ -353,7 +353,7 @@ func TestWebMonitorDetailNoChecksShowsNoDataAndDoesNotCrash(t *testing.T) {
 }
 
 // TestWebMonitorPauseResumeDelete — sameOrigin + requireProjectRole gate all
-// three POST mutations: no Origin -> 403, member (not owner/admin) -> 404,
+// three POST mutations: no Origin -> 403, member without project access -> 404,
 // owner can pause (enabled=false persisted), resume (enabled=true again),
 // and delete (monitor gone).
 func TestWebMonitorPauseResumeDelete(t *testing.T) {
@@ -397,7 +397,7 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", pausePath, resp.StatusCode)
+		t.Fatalf("POST %s (member без доступа к проекту) status = %d, want 404", pausePath, resp.StatusCode)
 	}
 
 	// Owner pauses -> 303, enabled=false persisted.
@@ -430,7 +430,8 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("Enabled = false after resume, want true")
 	}
 
-	// Member delete -> 404, monitor still there.
+	// Member без доступа к проекту -> 404 (существование монитора скрыто),
+	// монитор на месте. Член С доступом, но малой ролью получил бы 403 (№72).
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

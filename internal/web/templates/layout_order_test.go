@@ -79,7 +79,7 @@ func TestPerformanceTableColumnOrder(t *testing.T) {
 // поверхность разбора, и «уровень» под заголовком «статус» меняет смысл
 // каждой строки.
 func TestIssuesTableColumnOrder(t *testing.T) {
-	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "all", AllowAll: true}}, 1, 0, true, "u@e.com", nil, nil, GettingStartedVM{}))
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "all", AllowAll: true}}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}))
 	if !strings.Contains(out, "<thead>") {
 		t.Skip("пустой список рендерится без таблицы — порядок проверяется на непустом наборе")
 	}

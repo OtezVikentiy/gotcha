@@ -120,7 +120,6 @@ func ConfigFromJSON(raw []byte) (DetectorConfig, error) {
 // подхватывает upsert в perf_issues (см. perfissue.go).
 type Finding struct {
 	Kind        string         // KindNPlusOne | KindSlowDBQuery | KindHTTPFlood
-	Title       string         // человекочитаемый заголовок
 	Culprit     string         // имя транзакции
 	Fingerprint string         // hash(kind, НОРМАЛИЗОВАННЫЙ culprit, нормализованное описание) — БЕЗ project_id, его добавит upsert
 	Description string         // нормализованное описание
@@ -350,7 +349,7 @@ func detectNPlusOne(t Transaction, cfg DetectorConfig) []Finding {
 		}
 		ev := baseEvidence(g)
 		ev["parent_op"] = g.parentOp
-		out = append(out, newFinding(KindNPlusOne, "N+1 запросов: "+g.desc, t.Name, g.desc, ev))
+		out = append(out, newFinding(KindNPlusOne, t.Name, g.desc, ev))
 	})
 	return out
 }
@@ -393,7 +392,7 @@ func detectSlowDBQueries(t Transaction, cfg DetectorConfig) []Finding {
 	gi.each(func(g *spanGroup) {
 		ev := baseEvidence(g)
 		ev["max_us"] = int64(g.maxUS)
-		out = append(out, newFinding(KindSlowDBQuery, "Медленный запрос: "+g.desc, t.Name, g.desc, ev))
+		out = append(out, newFinding(KindSlowDBQuery, t.Name, g.desc, ev))
 	})
 	return out
 }
@@ -467,8 +466,7 @@ func detectHTTPFlood(t Transaction, cfg DetectorConfig) []Finding {
 	ev["transaction_op"] = t.Op
 	ev["urls"] = urls
 
-	title := fmt.Sprintf("Лавина HTTP-вызовов: %s", t.Name)
-	return []Finding{newFinding(KindHTTPFlood, title, t.Name, "", ev)}
+	return []Finding{newFinding(KindHTTPFlood, t.Name, "", ev)}
 }
 
 // isSequential: вызовы шли друг за другом, если их суммарная длительность почти
@@ -603,17 +601,18 @@ func baseEvidence(g *spanGroup) map[string]any {
 	}
 }
 
-// newFinding. В СТРОКЕ проблемы (Culprit, Title) остаётся сырое имя транзакции —
-// его читает человек. В ФИНГЕРПРИНТ идёт нормализованное (см.
-// fingerprintCulprit): иначе приложение, не шаблонизирующее маршруты, плодит по
-// проблеме на КАЖДЫЙ запрос.
-func newFinding(kind, title, culprit, desc string, ev map[string]any) Finding {
+// newFinding. В СТРОКЕ проблемы (Culprit) остаётся сырое имя транзакции — его
+// читает человек. В ФИНГЕРПРИНТ идёт нормализованное (см. fingerprintCulprit):
+// иначе приложение, не шаблонизирующее маршруты, плодит по проблеме на КАЖДЫЙ
+// запрос. Заголовка здесь больше нет: он строится на рендере из kind +
+// description по локали смотрящего (№132). Кап на Description — прежний кап
+// заголовка: description та же строка, что раньше уходила в title.
+func newFinding(kind, culprit, desc string, ev map[string]any) Finding {
 	return Finding{
 		Kind:        kind,
-		Title:       capRunes(title, maxNormalizedDescription+64),
 		Culprit:     culprit,
 		Fingerprint: fingerprintOf(kind, fingerprintCulprit(culprit), desc),
-		Description: desc,
+		Description: capRunes(desc, maxNormalizedDescription+64),
 		Evidence:    ev,
 	}
 }

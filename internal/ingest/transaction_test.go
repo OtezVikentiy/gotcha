@@ -529,13 +529,13 @@ func TestTransactionDetectionEndToEnd(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	var kind, title, culprit, status, sampleTraceID string
+	var kind, description, culprit, status, sampleTraceID string
 	var count int64
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		err := s.pool.QueryRow(ctx,
-			"SELECT kind, title, culprit, status, count, sample_trace_id FROM perf_issues WHERE project_id = $1",
-			s.project.ID).Scan(&kind, &title, &culprit, &status, &count, &sampleTraceID)
+			"SELECT kind, description, culprit, status, count, sample_trace_id FROM perf_issues WHERE project_id = $1",
+			s.project.ID).Scan(&kind, &description, &culprit, &status, &count, &sampleTraceID)
 		if err == nil {
 			break
 		}
@@ -543,11 +543,13 @@ func TestTransactionDetectionEndToEnd(t *testing.T) {
 	}
 	if kind != trace.KindNPlusOne || count != 1 || status != "unresolved" ||
 		culprit != "GET /api/users" || sampleTraceID != "cccccccccccccccccccccccccccccccc" {
-		t.Fatalf("perf_issue: kind=%q title=%q culprit=%q status=%q count=%d trace=%q",
-			kind, title, culprit, status, count, sampleTraceID)
+		t.Fatalf("perf_issue: kind=%q description=%q culprit=%q status=%q count=%d trace=%q",
+			kind, description, culprit, status, count, sampleTraceID)
 	}
-	if !strings.Contains(title, "N+1") {
-		t.Errorf("title = %q, want N+1 prefix", title)
+	// №132: в строке хранится параметр находки, а не готовый заголовок —
+	// заголовок строится на рендере из kind+description.
+	if !strings.Contains(description, "SELECT") {
+		t.Errorf("description = %q, want нормализованный запрос", description)
 	}
 
 	// Корневой спан + 6 дочерних: детекция не мешает записи в CH.

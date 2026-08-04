@@ -30,6 +30,29 @@ const (
 // независимыми литералами и могли разъехаться незамеченно.
 var Platforms = []string{PlatformGo, PlatformPHP, PlatformJavaScript, PlatformPython, PlatformOther}
 
+// allowedPlatforms — whitelist для NormalizePlatform, строится из Platforms:
+// независимый литерал разъехался бы со списком формы незамеченно.
+var allowedPlatforms = func() map[string]bool {
+	m := make(map[string]bool, len(Platforms))
+	for _, p := range Platforms {
+		m[p] = true
+	}
+	return m
+}()
+
+// NormalizePlatform приводит присланную платформу к каталогу Platforms;
+// незнакомое значение (в т.ч. произвольный ввод через подменённый <select>)
+// — PlatformOther. Живёт в домене и вызывается из CreateProject (№73):
+// нормализация принадлежит созданию проекта, а не одному из двух веб-путей
+// (онбординг и модалка «Создать проект») — второй путь передавал сырое
+// значение, и «platform.<мусор>» утекал в UI ключом без перевода.
+func NormalizePlatform(platform string) string {
+	if allowedPlatforms[platform] {
+		return platform
+	}
+	return PlatformOther
+}
+
 type Project struct {
 	ID       int64
 	OrgID    int64
@@ -71,6 +94,7 @@ func (s *Service) CreateProject(ctx context.Context, orgID int64, slug, name, pl
 	if !validSlug(slug) {
 		return Project{}, ErrInvalidSlug
 	}
+	platform = NormalizePlatform(platform)
 	// RETURNING всех колонок: у проекта есть поля со значениями по умолчанию из
 	// БД (transaction_sample_rate и т.д.), и созданный Project обязан приехать
 	// с ними, а не с нулями.

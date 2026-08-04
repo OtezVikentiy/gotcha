@@ -28,13 +28,16 @@ templ helpPanel(area, guideSlug string) {
 // (задача 5, docs-onboarding). Собирается в web/issues.go по реальным
 // данным проекта/организации: Step1 (создать проект) всегда true — раз
 // страница открылась, проект уже есть, поэтому отдельного поля под него
-// нет. Total шагов всегда 4; Done = 1 (шаг 1) + число закрытых из
-// Step2/3/4Done.
+// нет. Total шагов всегда 5; Done = 1 (шаг 1) + число закрытых из
+// Step2/3/4a/4bDone. Шаги 4a (позвать команду) и 4b (добавить монитор) —
+// две отдельные строки с раздельными ссылками (№71): раньше они были
+// склеены в один шаг с одной ссылкой на настройки организации, и путь к
+// мониторам приходилось угадывать.
 type GettingStartedVM struct {
-	ProjectID, OrgID                int64
-	Step2Done, Step3Done, Step4Done bool
-	Done                            int
-	// CanManage — owner/admin ли смотрящий. Все три шага с действиями ведут на
+	ProjectID, OrgID                                 int64
+	Step2Done, Step3Done, Step4aDone, Step4bDone bool
+	Done                                             int
+	// CanManage — owner/admin ли смотрящий. Все шаги с действиями ведут на
 	// страницы, которые требуют этой роли (подключение SDK, оповещения,
 	// настройки организации): участнику чек-лист предлагал бы пойти туда, где
 	// его встретит 404.
@@ -42,19 +45,25 @@ type GettingStartedVM struct {
 }
 
 // gettingStartedChecklist — карточка над списком issues, пока не закрыты
-// все 4 шага онбординга (Done < 4). Пропадает сама, когда пользователь
-// подключил SDK, настроил оповещение и позвал команду/добавил монитор —
-// без отдельного действия «скрыть», т.к. состояние выводится из реальных
-// данных, а не из флага в БД.
+// все 5 шагов онбординга (Done < 5). Пропадает сама, когда пользователь
+// подключил SDK, настроил оповещение, позвал команду и добавил монитор —
+// либо по кнопке «Скрыть» (№71): у действующей команды чек-лист может жить
+// месяцами только из-за незакрытого шага, и это его законный конец.
 templ gettingStartedChecklist(gs GettingStartedVM) {
-	if gs.Done < 4 && gs.CanManage {
+	if gs.Done < 5 && gs.CanManage {
 		<section class="card getting-started">
-			<h2 class="card-header">{ i18n.T(ctx, "getting_started.title") } · { i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "4") }</h2>
+			<h2 class="card-header">
+				{ i18n.T(ctx, "getting_started.title") } · { i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "5") }
+				<form method="post" action="/profile/getting-started/hide" class="gs-hide-form card-header-action">
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "getting_started.hide") }</button>
+				</form>
+			</h2>
 			<ul class="gs-steps">
 				@gsStepDone("getting_started.step.1")
 				@gsStep(gs.Step2Done, "getting_started.step.2", projectSetupPath(gs.ProjectID), "getting_started.step.2.cta")
 				@gsStep(gs.Step3Done, "getting_started.step.3", alertsPath(gs.ProjectID), "getting_started.step.3.cta")
-				@gsStep(gs.Step4Done, "getting_started.step.4", orgSettingsPath(gs.OrgID), "getting_started.step.4.cta")
+				@gsStep(gs.Step4aDone, "getting_started.step.4a", orgSettingsPath(gs.OrgID), "getting_started.step.4a.cta")
+				@gsStep(gs.Step4bDone, "getting_started.step.4b", monitorsPath(gs.ProjectID), "getting_started.step.4b.cta")
 			</ul>
 		</section>
 	}

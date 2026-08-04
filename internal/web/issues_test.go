@@ -317,8 +317,8 @@ func TestWebIssuesGettingStartedChecklistFreshProject(t *testing.T) {
 	if !strings.Contains(string(body), `class="card getting-started"`) {
 		t.Fatalf("GET %s missing getting-started checklist: %s", issuesPath, body)
 	}
-	if !strings.Contains(string(body), "1/4") {
-		t.Fatalf("GET %s checklist missing 1/4 progress: %s", issuesPath, body)
+	if !strings.Contains(string(body), "1/5") {
+		t.Fatalf("GET %s checklist missing 1/5 progress: %s", issuesPath, body)
 	}
 	// CTA-ссылки на оставшиеся шаги (SDK/alerts/org settings).
 	for _, href := range []string{
@@ -331,9 +331,10 @@ func TestWebIssuesGettingStartedChecklistFreshProject(t *testing.T) {
 	}
 }
 
-// TestWebIssuesGettingStartedChecklistAllDone — когда все 4 шага онбординга
-// закрыты (есть issue, есть канал алертов, в орге больше одного участника),
-// карточка «Первые шаги» больше не рендерится.
+// TestWebIssuesGettingStartedChecklistAllDone — когда все 5 шагов онбординга
+// закрыты (есть issue, есть канал алертов, в орге больше одного участника,
+// добавлен монитор — шаги 4a/4b раздельные, №71), карточка «Первые шаги»
+// больше не рендерится.
 func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -363,6 +364,16 @@ func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 	}
 	if err := s.org.AddMember(context.Background(), orgID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
+	}
+
+	// Шаг 4b: добавлен монитор доступности.
+	if _, err := s.uptime.Create(context.Background(), uptime.Monitor{
+		ProjectID: project.ID, Name: "gs-done-mon", Kind: uptime.KindHTTP, Enabled: true,
+		IntervalSeconds: 60, TimeoutSeconds: 10, FailThreshold: 1, RecoveryThreshold: 1,
+		Consensus: uptime.ConsensusMajority,
+		Config:    monHTTPConfig(t, "https://example.com/health"),
+	}, []string{"local"}, nil); err != nil {
+		t.Fatalf("create monitor: %v", err)
 	}
 
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
@@ -551,5 +562,80 @@ func TestBulkRedirectTargetRejectsProtocolRelativePaths(t *testing.T) {
 	expected2 := "/projects/42/issues?status=resolved&page=2"
 	if got2 != expected2 {
 		t.Errorf("valid referer: got %q, want %q", got2, expected2)
+	}
+}
+
+// TestWebIssuesFilteredEmptyState — пустой список различает «событий ещё не
+// было» и «пусто из-за фильтров» (№23): при активном фильтре — свой текст и
+// CTA «Сбросить фильтры» (ссылка на чистый список), без фильтра — прежний
+// онбординговый текст с подключением DSN.
+func TestWebIssuesFilteredEmptyState(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-filtered-empty@example.com")
+	project := createProject(t, s, ownerID, "issues-fempty-org", "issues-fempty-proj")
+
+	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-fe", "Prod NPE",
+		"pkg/a.go:1", "error", "prod", time.Now().UTC()); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	// Фильтр, под который ничего не подходит → «ничего не подошло» + сброс.
+	resp := getWithCookie(t, s.srv, issuesPath+"?env=staging", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "Ничего не подошло под фильтры") {
+		t.Fatalf("активный фильтр без совпадений не показал filtered-текст: %s", body)
+	}
+	if !strings.Contains(string(body), "Сбросить фильтры") {
+		t.Fatalf("нет CTA сброса фильтров: %s", body)
+	}
+	if strings.Contains(string(body), "Подключите DSN") {
+		t.Fatalf("filtered-пустота показывает онбординговый текст: %s", body)
+	}
+
+	// Проект без единого события и без фильтров → прежний онбординговый текст.
+	fresh := createProject(t, s, ownerID, "issues-fempty-org2", "issues-fempty-proj2")
+	resp = getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(fresh.ID, 10)+"/issues", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "Проблем пока нет") {
+		t.Fatalf("чистый проект без фильтров не показал онбординговую пустоту: %s", body)
+	}
+}
+
+// TestWebGettingStartedHide — «Скрыть» убирает чек-лист навсегда (№71): флаг
+// живёт в профиле, а не в cookie, поэтому исчезает и после нового логина.
+func TestWebGettingStartedHide(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "gs-hide-owner@example.com")
+	project := createProject(t, s, ownerID, "gs-hide-org", "gs-hide-proj")
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "getting-started") {
+		t.Fatalf("свежий проект без чек-листа: %s", body)
+	}
+	if !strings.Contains(string(body), "/profile/getting-started/hide") {
+		t.Fatalf("на чек-листе нет кнопки «Скрыть»: %s", body)
+	}
+
+	resp = postForm(t, s.srv, "/profile/getting-started/hide", url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST hide status = %d, want 303", resp.StatusCode)
+	}
+
+	resp = getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), "getting-started") {
+		t.Fatalf("чек-лист виден после скрытия: %s", body)
 	}
 }

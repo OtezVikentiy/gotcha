@@ -129,7 +129,7 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 		canUnlink := hasPassword || len(ids) > 1
 		linked = append(linked, templates.LinkedIdentity{
 			Provider:    id.Provider,
-			DisplayName: h.providerDisplayName(id.Provider),
+			DisplayName: h.providerDisplayName(r.Context(), id.Provider),
 			Email:       id.Email,
 			CanUnlink:   canUnlink,
 		})
@@ -138,7 +138,7 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 	if h.OAuth != nil {
 		for _, p := range h.OAuth.List() {
 			if !linkedNames[p.Name()] {
-				linkable = append(linkable, templates.LinkableProvider{Name: p.Name(), DisplayName: p.DisplayName()})
+				linkable = append(linkable, templates.LinkableProvider{Name: p.Name(), DisplayName: providerLabel(r.Context(), p.Name(), p.DisplayName())})
 			}
 		}
 	}
@@ -146,12 +146,13 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 	_ = templates.Profile(email, errMsg, message, hasPassword, linked, linkable, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// providerDisplayName — человекочитаемое имя провайдера из Registry; fallback —
-// сам ключ (провайдер мог быть выключен после привязки).
-func (h *Handler) providerDisplayName(name string) string {
+// providerDisplayName — человекочитаемое имя провайдера по локали зрителя
+// (см. providerLabel, №137); fallback — сам ключ (провайдер мог быть
+// выключен после привязки).
+func (h *Handler) providerDisplayName(ctx context.Context, name string) string {
 	if h.OAuth != nil {
 		if p, ok := h.OAuth.Get(name); ok {
-			return p.DisplayName()
+			return providerLabel(ctx, name, p.DisplayName())
 		}
 	}
 	return name

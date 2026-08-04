@@ -48,9 +48,15 @@ type PerfIssue struct {
 
 	Fingerprint string
 	Kind        string // KindNPlusOne | KindSlowDBQuery | KindHTTPFlood
-	Title       string
-	Culprit     string
-	Status      string // unresolved | resolved | ignored
+	// Description — параметр находки (нормализованный запрос у n_plus_one и
+	// slow_db_query; у http_flood пусто — параметром служит Culprit).
+	// Заголовок из kind+description строит рендер по локали смотрящего (№132).
+	Description string
+	// Title — только fallback чтения для строк, созданных до миграции 0058 и
+	// не подошедших под префиксы backfill. Новые строки пишутся с пустым title.
+	Title   string
+	Culprit string
+	Status  string // unresolved | resolved | ignored
 
 	Count     int64
 	FirstSeen time.Time
@@ -69,11 +75,11 @@ func NewIssueService(pool *pgxpool.Pool) *IssueService {
 	return &IssueService{pool: pool}
 }
 
-const perfIssueColumns = `id, project_id, fingerprint, kind, title, culprit, status,
+const perfIssueColumns = `id, project_id, fingerprint, kind, description, title, culprit, status,
 	count, first_seen, last_seen, sample_trace_id, evidence`
 
 func scanPerfIssue(row interface{ Scan(dest ...any) error }, i *PerfIssue) error {
-	return row.Scan(&i.ID, &i.ProjectID, &i.Fingerprint, &i.Kind, &i.Title, &i.Culprit, &i.Status,
+	return row.Scan(&i.ID, &i.ProjectID, &i.Fingerprint, &i.Kind, &i.Description, &i.Title, &i.Culprit, &i.Status,
 		&i.Count, &i.FirstSeen, &i.LastSeen, &i.SampleTraceID, &i.Evidence)
 }
 
@@ -190,7 +196,7 @@ WITH old AS (
 ), up AS (
     UPDATE perf_issues SET
         kind            = $3,
-        title           = $4,
+        description     = $4,
         culprit         = $5,
         count           = perf_issues.count + 1,
         last_seen       = CASE WHEN status = 'ignored' THEN last_seen ELSE now() END,
@@ -201,16 +207,16 @@ WITH old AS (
     WHERE project_id = $1 AND fingerprint = $2
     RETURNING ` + perfIssueColumns + `
 )
-SELECT up.id, up.project_id, up.fingerprint, up.kind, up.title, up.culprit, up.status,
+SELECT up.id, up.project_id, up.fingerprint, up.kind, up.description, up.title, up.culprit, up.status,
        up.count, up.first_seen, up.last_seen, up.sample_trace_id, up.evidence,
        coalesce(old.status = 'resolved', false) AS regression
 FROM up LEFT JOIN old ON true`
 
 	var r RecordResult
 	row := s.pool.QueryRow(ctx, q,
-		projectID, f.Fingerprint, f.Kind, f.Title, f.Culprit, traceID, evidence, sampleCutoff)
-	if err := row.Scan(&r.Issue.ID, &r.Issue.ProjectID, &r.Issue.Fingerprint, &r.Issue.Kind, &r.Issue.Title,
-		&r.Issue.Culprit, &r.Issue.Status, &r.Issue.Count, &r.Issue.FirstSeen, &r.Issue.LastSeen,
+		projectID, f.Fingerprint, f.Kind, f.Description, f.Culprit, traceID, evidence, sampleCutoff)
+	if err := row.Scan(&r.Issue.ID, &r.Issue.ProjectID, &r.Issue.Fingerprint, &r.Issue.Kind, &r.Issue.Description,
+		&r.Issue.Title, &r.Issue.Culprit, &r.Issue.Status, &r.Issue.Count, &r.Issue.FirstSeen, &r.Issue.LastSeen,
 		&r.Issue.SampleTraceID, &r.Issue.Evidence, &r.Regression); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return RecordResult{}, false, nil // проблемы ещё нет
@@ -231,19 +237,19 @@ func (s *IssueService) create(ctx context.Context, projectID int64, f Finding,
 WITH old AS (
     SELECT status FROM perf_issues WHERE project_id = $1 AND fingerprint = $2
 ), up AS (
-    INSERT INTO perf_issues (project_id, fingerprint, kind, title, culprit, count, sample_trace_id, evidence)
+    INSERT INTO perf_issues (project_id, fingerprint, kind, description, culprit, count, sample_trace_id, evidence)
     VALUES ($1, $2, $3, $4, $5, 1, $6, $7)
     ON CONFLICT (project_id, fingerprint) DO UPDATE SET
-        kind      = EXCLUDED.kind,
-        title     = EXCLUDED.title,
-        culprit   = EXCLUDED.culprit,
+        kind        = EXCLUDED.kind,
+        description = EXCLUDED.description,
+        culprit     = EXCLUDED.culprit,
         count     = perf_issues.count + 1,
         last_seen = CASE WHEN perf_issues.status = 'ignored'
                          THEN perf_issues.last_seen ELSE now() END,
         status    = CASE WHEN perf_issues.status = 'resolved' THEN 'unresolved' ELSE perf_issues.status END
     RETURNING ` + perfIssueColumns + `, (xmax = 0) AS created
 )
-SELECT up.id, up.project_id, up.fingerprint, up.kind, up.title, up.culprit, up.status,
+SELECT up.id, up.project_id, up.fingerprint, up.kind, up.description, up.title, up.culprit, up.status,
        up.count, up.first_seen, up.last_seen, up.sample_trace_id, up.evidence,
        up.created,
        (NOT up.created AND coalesce(old.status = 'resolved', false)) AS regression
@@ -251,9 +257,9 @@ FROM up LEFT JOIN old ON true`
 
 	var r RecordResult
 	row := s.pool.QueryRow(ctx, q,
-		projectID, f.Fingerprint, f.Kind, f.Title, f.Culprit, traceID, evidence)
-	if err := row.Scan(&r.Issue.ID, &r.Issue.ProjectID, &r.Issue.Fingerprint, &r.Issue.Kind, &r.Issue.Title,
-		&r.Issue.Culprit, &r.Issue.Status, &r.Issue.Count, &r.Issue.FirstSeen, &r.Issue.LastSeen,
+		projectID, f.Fingerprint, f.Kind, f.Description, f.Culprit, traceID, evidence)
+	if err := row.Scan(&r.Issue.ID, &r.Issue.ProjectID, &r.Issue.Fingerprint, &r.Issue.Kind, &r.Issue.Description,
+		&r.Issue.Title, &r.Issue.Culprit, &r.Issue.Status, &r.Issue.Count, &r.Issue.FirstSeen, &r.Issue.LastSeen,
 		&r.Issue.SampleTraceID, &r.Issue.Evidence, &r.Created, &r.Regression); err != nil {
 		return RecordResult{}, fmt.Errorf("trace: record perf issue: %w", err)
 	}

@@ -318,22 +318,22 @@ func TestWebMaintenanceMemberForbidden(t *testing.T) {
 	resp := getWithCookie(t, s.srv, path, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", path, resp.StatusCode)
 	}
 
 	resp = postForm(t, s.srv, path, url.Values{"name": {"x"}, "starts_at": {"2026-08-01T02:00"}, "ends_at": {"2026-08-01T03:00"}, "timezone": {"UTC"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", path, resp.StatusCode)
 	}
 
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", deletePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", deletePath, resp.StatusCode)
 	}
 
 	// Sanity: owner still works.

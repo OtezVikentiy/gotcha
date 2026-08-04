@@ -14,7 +14,7 @@ import (
 )
 
 // TestCoverTeamsSameOriginAndMember — remove/attach/detach без Origin → 403 и
-// под member → 404 (requireTeamRole).
+// под member → 403 (requireTeamRole, №72).
 func TestCoverTeamsSameOriginAndMember(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -44,12 +44,12 @@ func TestCoverTeamsSameOriginAndMember(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("POST %s (no origin) = %d, want 403", sub, resp.StatusCode)
 		}
-		// member (не owner/admin) → 404.
+		// member (не owner/admin) → 403 (№72).
 		resp = postForm(t, s.srv, tb+sub, url.Values{"user_id": {"1"}, "project_id": {"1"}}, s.srv.URL, memberCookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("POST %s (member) = %d, want 404", sub, resp.StatusCode)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("POST %s (member) = %d, want 403", sub, resp.StatusCode)
 		}
 	}
 }

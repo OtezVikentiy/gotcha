@@ -109,10 +109,10 @@ func perfCodeLine(c *PerfCodeLoc) string {
 // человекочитаемый evidence по виду, ссылка на пример трейса и (для owner/admin)
 // кнопки смены статуса. Визуально повторяет страницу issue этапа 1.
 templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
-	@layout(d.Issue.Title, userEmail) {
+	@layout(perfIssueTitle(ctx, d.Issue), userEmail) {
 		<div class="perf-issue-detail issue-detail">
 			@breadcrumbBackTo(templ.URL(perfIssuesPath(d.Issue.ProjectID)), i18n.T(ctx, "nav.perf_issues"))
-			<h1>{ d.Issue.Title }</h1>
+			<h1>{ perfIssueTitle(ctx, d.Issue) }</h1>
 			if d.Issue.Culprit != "" {
 				<div class="culprit">{ d.Issue.Culprit }</div>
 			}

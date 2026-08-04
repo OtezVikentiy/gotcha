@@ -294,12 +294,13 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST projects (nonexistent project) status = %d, want 422", resp.StatusCode)
 	}
 
-	// Detach проекта, не привязанного к команде → 303 (идемпотентно).
+	// Detach проекта, не привязанного к команде → 303 (идемпотентно;
+	// confirmed=yes — подтверждение теперь двухшаговое, №61).
 	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "cover-team-proj", "Cover Team Proj", "go")
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	resp = postForm(t, s.srv, teamBase+"/projects/detach", url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, teamBase+"/projects/detach", url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -361,12 +362,12 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("POST keys (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// keys не-owner (member) → 404.
+	// keys не-owner (member) → 403 (№72: член с малой ролью).
 	resp = postForm(t, s.srv, base+"/keys", url.Values{}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST keys (member) status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST keys (member) status = %d, want 403", resp.StatusCode)
 	}
 
 	// keyRevoke нечисловой key_id → 400.
@@ -385,12 +386,12 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("POST %s (no origin) status = %d, want 403", sub, resp.StatusCode)
 		}
-		// не-owner → 404.
+		// член с малой ролью → 403 (№72).
 		resp = postForm(t, s.srv, base+sub, url.Values{}, s.srv.URL, memberCookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("POST %s (member) status = %d, want 404", sub, resp.StatusCode)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("POST %s (member) status = %d, want 403", sub, resp.StatusCode)
 		}
 	}
 

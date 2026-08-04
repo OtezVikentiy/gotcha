@@ -55,20 +55,20 @@ func TestWebProjectSettings(t *testing.T) {
 	resp = getWithCookie(t, s.srv, settingsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", settingsPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403 (№72)", settingsPath, resp.StatusCode)
 	}
 
 	renamePath := settingsPath + "/rename"
 	keysPath := settingsPath + "/keys"
 	revokePath := keysPath + "/revoke"
 
-	// POST rename под member -> 404
+	// POST rename под member -> 403 (№72)
 	resp = postForm(t, s.srv, renamePath, url.Values{"name": {"Hacked"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", renamePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", renamePath, resp.StatusCode)
 	}
 
 	// POST rename без Origin -> 403
@@ -237,8 +237,8 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 	}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", perfPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403 (№72)", perfPath, resp.StatusCode)
 	}
 
 	// Валидное сохранение → 303, значения в БД, пороги читаются обратно.
@@ -366,8 +366,8 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", regPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403 (№72)", regPath, resp.StatusCode)
 	}
 
 	// Валидное сохранение → 303, пороги читаются обратно через RegressionConfigFromJSON.

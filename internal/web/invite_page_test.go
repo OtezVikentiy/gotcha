@@ -1,11 +1,16 @@
 package web_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
 // TestInvitePageGuidesAnonymous — аноним по ссылке видит, КУДА его зовут, и
@@ -63,7 +68,7 @@ func TestInvitePageHidesDeadToken(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("мёртвый токен = %d, want 422", resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "приглашение недействительно") {
+	if !strings.Contains(string(body), "риглашение недействительно") {
 		t.Error("мёртвый токен должен показать err.org.invite_invalid, тот же текст, что и у POST")
 	}
 }
@@ -102,5 +107,39 @@ func TestInvitePageAuthenticatedShowsAcceptForm(t *testing.T) {
 	}
 	if strings.Contains(page, "/register?next=") {
 		t.Error("авторизованному не нужна ссылка на регистрацию")
+	}
+}
+
+// TestWebInviteFormKeepsInputOn422 — 422 формы приглашения сохраняет ввод
+// (№27): email и выбранная роль возвращаются в форму, ошибка рендерится у
+// самой формы (invite-error), а не абзацем под h1.
+func TestWebInviteFormKeepsInputOn422(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "invite422-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "invite422-co", "Invite422 Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	invitePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/invite"
+
+	resp := postForm(t, s.srv, invitePath,
+		url.Values{"email": {"not-an-email"}, "role": {"admin"}}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST invite (bad email) status = %d, want 422", resp.StatusCode)
+	}
+	page := string(body)
+	if !strings.Contains(page, `value="not-an-email"`) {
+		t.Errorf("введённый email потерян: %s", page)
+	}
+	if !strings.Contains(page, `<option value="admin" selected`) {
+		t.Errorf("выбранная роль потеряна: %s", page)
+	}
+	if !strings.Contains(page, `id="invite-error"`) {
+		t.Errorf("ошибка не привязана к форме приглашения: %s", page)
 	}
 }

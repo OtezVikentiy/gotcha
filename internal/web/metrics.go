@@ -93,7 +93,7 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tr := parseTimeRange(r.URL.Query(), "24h")
+	tr := h.resolveTimeRange(w, r, "24h")
 	environment := r.URL.Query().Get("environment")
 	agg := metricAggFor(info.Type, r.URL.Query().Get("agg"))
 	matcher := metric.LabelMatcher{Key: r.URL.Query().Get("label_key"), Value: r.URL.Query().Get("label_value")}

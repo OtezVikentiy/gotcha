@@ -23,18 +23,20 @@ const flashCookie = "flash"
 // flashKeys — белый список ключей, которые разрешено показывать. Всё, чего тут
 // нет, отбрасывается: значение cookie полностью подконтрольно клиенту.
 var flashKeys = map[string]bool{
-	"flash.saved":            true,
-	"flash.deleted":          true,
-	"flash.invite_sent":      true,
-	"flash.issues_resolved":  true,
-	"flash.issues_ignored":   true,
-	"flash.issues_reopened":  true,
-	"flash.nothing_selected": true,
-	"flash.channel_created":  true,
-	"flash.channel_updated":  true,
-	"flash.rules_saved":      true,
-	"flash.subject_purged":   true,
-	"flash.invite_revoked":   true,
+	"flash.saved":             true,
+	"flash.deleted":           true,
+	"flash.invite_sent":       true,
+	"flash.issues_resolved":   true,
+	"flash.issues_ignored":    true,
+	"flash.issues_reopened":   true,
+	"flash.nothing_selected":  true,
+	"flash.channel_created":   true,
+	"flash.channel_updated":   true,
+	"flash.channel_test_sent": true,
+	"flash.team_deleted":      true,
+	"flash.rules_saved":       true,
+	"flash.subject_purged":    true,
+	"flash.invite_revoked":    true,
 	// Удаление проекта и организации сообщает про ОЧЕРЕДЬ, а не про
 	// выполненную очистку: телеметрия в ClickHouse на момент ответа ещё жива,
 	// её удаляет фоновый исполнитель. Сказать «удалено» здесь означало бы

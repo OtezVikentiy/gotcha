@@ -199,7 +199,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		case err == nil:
 			http.Redirect(w, r, "/profile", http.StatusSeeOther)
 		case errors.Is(err, auth.ErrIdentityTaken):
-			h.renderError(w, r, http.StatusConflict, i18n.Tf(r.Context(), "error.oauth.already_linked", "provider", p.DisplayName()))
+			h.renderError(w, r, http.StatusConflict, i18n.Tf(r.Context(), "error.oauth.already_linked", "provider", providerLabel(r.Context(), name, p.DisplayName())))
 		case errors.Is(err, auth.ErrAlreadyLinked):
 			http.Redirect(w, r, "/profile", http.StatusSeeOther)
 		default:
@@ -296,7 +296,7 @@ func (h *Handler) oauthLogin(w http.ResponseWriter, r *http.Request, uid int64, 
 func (h *Handler) oauthFail(w http.ResponseWriter, r *http.Request, provider string) {
 	name := provider
 	if p, ok := h.OAuth.Get(provider); ok {
-		name = p.DisplayName()
+		name = providerLabel(r.Context(), provider, p.DisplayName())
 	}
 	h.renderError(w, r, http.StatusBadGateway, i18n.Tf(r.Context(), "error.oauth.login_failed", "provider", name))
 }

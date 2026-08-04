@@ -37,6 +37,11 @@ type IssuesFilter struct {
 	// ни произвольного диапазона. Окно, выбранное на «Производительности», при
 	// переходе в «Проблемы» молча сбрасывалось — на главной поверхности разбора.
 	Range TimeRangeVM
+	// Active — хоть один фильтр сужен относительно умолчаний (вычисляет
+	// хендлер): пустой список при этом значит «ничего не подошло», а не
+	// «событий ещё не было» (№23) — и лечится сбросом фильтров, а не
+	// подключением SDK.
+	Active bool
 }
 
 func issuesPath(projectID int64) string {
@@ -196,7 +201,7 @@ templ environmentOption(value, label string, selected string) {
 // оставила бы счётчики/пагинацию рассинхронизированными с выборкой, а полная
 // перерисовка страницы браузером и проще, и всегда согласована. htmx из
 // продукта удалён (не использовался ни на одной странице).
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, canManage bool, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM) {
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM) {
 	@layout(i18n.T(ctx, "issues.title"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
@@ -234,7 +239,9 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
 			<div id="issues-table">
-				if len(rows) == 0 {
+				if len(rows) == 0 && filter.Active {
+					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
+				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
 				} else {
 					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
@@ -243,7 +250,8 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 								<table class="data-table">
 									<thead>
 										<tr>
-											<th scope="col"></th>
+											// №125: колонка чекбоксов не безымянная для скринридера.
+											<th scope="col"><span class="visually-hidden">{ i18n.T(ctx, "issues.table.select") }</span></th>
 											<th scope="col">{ i18n.T(ctx, "issues.table.level") }</th>
 											<th scope="col">{ i18n.T(ctx, "issues.table.issue") }</th>
 											<th scope="col">{ i18n.T(ctx, "issues.table.trend") }</th>

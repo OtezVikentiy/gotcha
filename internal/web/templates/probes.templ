@@ -97,7 +97,9 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "uptime.probes.title")+" "+o.Name, userEmail) {
 		<div class="org-probes">
-			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
+			// №118: крошка ведёт в настройки организации — и называться обязана
+			// ими же, а не «Участниками» (участники — лишь одна из карточек там).
+			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "org.settings.title"))
 			<h1>{ i18n.T(ctx, "uptime.probes.title") } { o.Name }</h1>
 			@helpPanel("probes", "probes")
 			if errMsg != "" {
@@ -109,6 +111,10 @@ templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail str
 					<p><code class="probe-token">{ rawToken }</code></p>
 					<p>{ i18n.T(ctx, "uptime.probes.run_hint") }</p>
 					<p><code class="probe-run">{ runCmd }</code></p>
+					// №70: команда содержит плейсхолдер <gotcha-image> — без
+					// пояснения он читается как опечатка, а не как «подставьте
+					// свой образ».
+					<p class="hint">{ i18n.T(ctx, "uptime.probes.cmd_hint") } <a href="/docs/probes">{ i18n.T(ctx, "uptime.probes.cmd_docs_link") }</a></p>
 				</div>
 			}
 			<section class="card">

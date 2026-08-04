@@ -41,7 +41,6 @@ func newPerfProject(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 func nPlusOneFinding() trace.Finding {
 	return trace.Finding{
 		Kind:        trace.KindNPlusOne,
-		Title:       "N+1 запросов: SELECT * FROM users WHERE id = ?",
 		Culprit:     "GET /api/users",
 		Fingerprint: "fp-n1",
 		Description: "SELECT * FROM users WHERE id = ?",
@@ -173,7 +172,6 @@ func TestIssueServiceRecordSeparatesFindingsAndProjects(t *testing.T) {
 
 	slow := trace.Finding{
 		Kind:        trace.KindSlowDBQuery,
-		Title:       "Медленный запрос: SELECT * FROM orders",
 		Culprit:     "GET /api/users",
 		Fingerprint: "fp-slow",
 		Description: "SELECT * FROM orders",
@@ -283,9 +281,9 @@ func TestIssueServiceRecordConcurrentFirstDetection(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `INSERT INTO perf_issues
-		(project_id, fingerprint, kind, title, culprit, count, sample_trace_id, evidence)
+		(project_id, fingerprint, kind, description, culprit, count, sample_trace_id, evidence)
 		VALUES ($1,$2,$3,$4,$5,1,$6,'{}')`,
-		pid, f.Fingerprint, f.Kind, f.Title, f.Culprit, "trace-racer"); err != nil {
+		pid, f.Fingerprint, f.Kind, f.Description, f.Culprit, "trace-racer"); err != nil {
 		t.Fatalf("racer insert: %v", err)
 	}
 

@@ -14,6 +14,18 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
+// providerLabel — подпись OAuth-провайдера по локали зрителя (№137): у
+// известных провайдеров ключ oauth.provider.<name> в каталоге, у generic
+// OIDC с произвольным именем из конфига ключа нет (T возвращает сам ключ) —
+// тогда DisplayName как есть.
+func providerLabel(ctx context.Context, name, displayName string) string {
+	key := "oauth.provider." + name
+	if s := i18n.T(ctx, key); s != key {
+		return s
+	}
+	return displayName
+}
+
 // oauthButtons собирает кнопки включённых провайдеров для страниц входа.
 func (h *Handler) oauthButtons(ctx context.Context) []templates.OAuthButton {
 	if h.OAuth == nil {
@@ -21,7 +33,7 @@ func (h *Handler) oauthButtons(ctx context.Context) []templates.OAuthButton {
 	}
 	var out []templates.OAuthButton
 	for _, p := range h.OAuth.List() {
-		out = append(out, templates.OAuthButton{Name: p.Name(), Label: i18n.Tf(ctx, "auth.oauth.login_with", "provider", p.DisplayName())})
+		out = append(out, templates.OAuthButton{Name: p.Name(), Label: i18n.Tf(ctx, "auth.oauth.login_with", "provider", providerLabel(ctx, p.Name(), p.DisplayName()))})
 	}
 	return out
 }
@@ -35,7 +47,10 @@ func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
 	// PROD-B1: если режим не open и первый пользователь уже есть — показываем
 	// экран «регистрация по приглашению» вместо формы (bootstrap уже пройден).
 	if h.registrationClosed(r) {
-		_ = templates.Register(i18n.T(r.Context(), "error.register.closed"), true, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		// Без errMsg (№68): на GET закрытая регистрация — штатное состояние,
+		// о нём рассказывает информационный абзац шаблона; красная плашка
+		// остаётся реальным отказам POST (см. denyRegistration).
+		_ = templates.Register("", true, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 	_ = templates.Register("", false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)

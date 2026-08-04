@@ -2,7 +2,6 @@ package notify
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -179,39 +178,12 @@ func (w *Worker) deliver(ctx context.Context, jobs []Job) {
 }
 
 func (w *Worker) process(ctx context.Context, job Job) {
+	// Сама доставка (выбор отправителя, секрет, таймаут) — общая с
+	// синхронной тест-отправкой из настроек канала, см. Direct (№69).
+	d := Direct{Senders: w.Senders, Secrets: w.Secrets, SendTimeout: w.SendTimeout}
 	kind := stringField(job.Payload, "channel_kind")
-	target := Target{
-		Kind:   kind,
-		Target: stringField(job.Payload, "target"),
-	}
-
-	sender, ok := w.Senders[kind]
-	if !ok {
-		w.retryOrFail(ctx, job, fmt.Errorf("notify: no sender registered for channel kind %q", kind))
-		return
-	}
-
-	// Секрет достаём здесь, а не из payload, и только для тех видов каналов,
-	// которым он нужен: у email его нет и быть не должно. Вид сравниваем с
-	// литералом, а не с alert.ChannelEmail: зависимость идёт alert → notify,
-	// и импорт в обратную сторону замкнул бы цикл.
-	if w.Secrets != nil && kind != "email" {
-		secret, err := w.Secrets.ChannelSecret(ctx, job.ChannelID)
-		if err != nil {
-			w.retryOrFail(ctx, job, fmt.Errorf("notify: resolve channel %d secret: %w", job.ChannelID, err))
-			return
-		}
-		target.Secret = secret
-	}
-
-	timeout := w.SendTimeout
-	if timeout <= 0 {
-		timeout = defaultSendTimeout
-	}
-	sendCtx, cancel := context.WithTimeout(ctx, timeout)
-	err := sender.Send(sendCtx, target, job.Payload)
-	cancel()
-	if err != nil {
+	target := stringField(job.Payload, "target")
+	if err := d.Send(ctx, job.ChannelID, kind, target, job.Payload); err != nil {
 		w.retryOrFail(ctx, job, err)
 		return
 	}

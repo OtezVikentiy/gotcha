@@ -29,6 +29,11 @@ func alertsChannelsDeletePath(projectID int64) string {
 	return alertsChannelsPath(projectID) + "/delete"
 }
 
+// alertsChannelsTestPath — POST-приёмник тестовой отправки в канал (№69).
+func alertsChannelsTestPath(projectID int64) string {
+	return alertsChannelsPath(projectID) + "/test"
+}
+
 // ruleByKind ищет правило нужного kind среди уже сохранённых; для ещё не
 // заведённого правила возвращает дефолт для полей формы. spike — особый
 // случай: alert.Service.validateRule требует Threshold>0 и WindowMinutes>0
@@ -140,6 +145,12 @@ templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string
 		<td>
 			<div class="row-actions">
 				<a class="btn btn-ghost" href={ templ.SafeURL("#" + EditChannelModalID(c.ID)) }>{ i18n.T(ctx, "alerts.channels.edit") }</a>
+				// №69: синхронная тест-отправка — канал проверяется сразу,
+				// не дожидаясь реального алерта.
+				<form method="post" action={ templ.URL(alertsChannelsTestPath(projectID)) } class="channel-test-form">
+					<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "alerts.channel.test") }</button>
+				</form>
 				<form method="post" action={ templ.URL(alertsChannelsDeletePath(projectID)) } class="channel-delete-form">
 					<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
 					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "alerts.channels.delete") }</button>

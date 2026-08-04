@@ -12,8 +12,8 @@ import (
 )
 
 // TestCoverMetricAlertValidation — недокрытые ветки metricAlertCreate/Delete:
-// нефинитный порог, неположительное окно, невалидное правило → 422; member →
-// 404; delete нечисловой rule_id → 400.
+// нефинитный порог, неположительное окно, невалидное правило → 422; чужой
+// (не член) → 404; delete нечисловой rule_id → 400.
 func TestCoverMetricAlertValidation(t *testing.T) {
 	s := newMetricAlertsStack(t, true)
 	ctx := context.Background()
@@ -41,12 +41,14 @@ func TestCoverMetricAlertValidation(t *testing.T) {
 		}
 	}
 
-	// member → 404 (requireProjectRole).
+	// memberCookie — ЧУЖОЙ пользователь (в организацию не добавлен) → 404:
+	// существование проекта не раскрывается. Член с малой ролью получил бы
+	// честный 403 (№72).
 	resp := postForm(t, s.srv, base, valid(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST metric alert (member) status = %d, want 404", resp.StatusCode)
+		t.Fatalf("POST metric alert (не член) status = %d, want 404", resp.StatusCode)
 	}
 
 	// Нефинитный порог (NaN) → 422.
@@ -95,11 +97,11 @@ func TestCoverMetricAlertValidation(t *testing.T) {
 		t.Fatalf("POST metric alert delete (bad rule_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// Delete member → 404.
+	// Delete чужим (не членом) → 404.
 	resp = postForm(t, s.srv, base+"/delete", url.Values{"rule_id": {"1"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST metric alert delete (member) status = %d, want 404", resp.StatusCode)
+		t.Fatalf("POST metric alert delete (не член) status = %d, want 404", resp.StatusCode)
 	}
 }

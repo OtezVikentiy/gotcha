@@ -28,6 +28,32 @@ On the monitor detail page and in the incident list, such incidents are marked w
 
 On a [public status page](/docs/status-pages), upcoming maintenance windows are shown to visitors as a separate list — a way to warn users about planned downtime ahead of time.
 
+## FAQ
+
+### Do checks stop while a maintenance window is active?
+
+No. Monitoring keeps running as usual: checks execute, incidents open and land in the history. The window only affects notifications — incidents that open inside the window are flagged "in maintenance" and are not delivered to alert channels.
+
+### Does planned work hurt uptime numbers?
+
+No. Maintenance-window intervals are excluded from the availability computation — both on the monitor detail page and on the public status page. Downtime inside an announced window does not lower the uptime %.
+
+### What happens to an incident that started before the window?
+
+The "in maintenance" flag is set when the incident opens. An incident opened before the window is a regular one: the open notification has already gone out, and the close notification will be delivered too, even if the service recovers inside the window. That's why it pays to create the window ahead of the actual work.
+
+### Can a window apply to a single monitor instead of the whole project?
+
+No, a window covers the whole project. If the work affects one service while the project's other monitors must keep alerting, pause that monitor for the duration, or move the service into a separate project with its own windows.
+
+### Will users learn about planned work in advance?
+
+Yes, if the project has a [public status page](/docs/status-pages): upcoming maintenance windows are shown there as a separate list before the work starts.
+
+### How does a window survive daylight-saving changes?
+
+The schedule is stored together with the window's time zone (an IANA name, e.g. `Europe/Berlin`), and interval matching is computed in that zone. A weekly window at "every Saturday 03:00" keeps firing at local 03:00 after the clocks change in that zone.
+
 ## What's next
 
 - [Uptime and monitors](/docs/uptime) — thresholds, consensus, incidents.

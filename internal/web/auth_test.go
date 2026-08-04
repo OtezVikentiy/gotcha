@@ -240,7 +240,7 @@ func TestWebAuthFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("POST /login (wrong password) status = %d, want 422", resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "неверный") {
+	if !strings.Contains(string(body), "еверный email или пароль") {
 		t.Fatalf("POST /login (wrong password) body missing error text: %s", body)
 	}
 

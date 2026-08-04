@@ -333,7 +333,7 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	// Три плитки аптайма выше — намеренно фиксированные окна (24ч/7д/30д —
 	// сводка SLA). Селектор диапазона управляет только графиком задержек:
 	// это исследуемый ряд, а не сводка.
-	tr := parseTimeRange(r.URL.Query(), "24h")
+	tr := h.resolveTimeRange(w, r, "24h")
 	latencyStep := autoStep(tr.Window(), 5*time.Minute, 0, monitorLatencyBuckets)
 	latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, tr.From, tr.To, latencyStep)
 	if err != nil {

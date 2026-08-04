@@ -123,6 +123,16 @@ type Handler struct {
 	// принимается конструктором New.
 	Outbox *notify.Outbox
 
+	// NotifyDirect — синхронная отправка тестового сообщения в канал (№69),
+	// мимо outbox: результат нужен немедленно, а не «когда-нибудь доставим».
+	// Те же Senders/Secrets, что у notify.Worker. nil — кнопка теста отвечает
+	// 404 (стенды без доставки).
+	NotifyDirect *notify.Direct
+
+	// NotifyLocale — локаль ИНСТАНСА (GOTCHA_LOCALE) для текстов тестового
+	// сообщения: получатель канала тот же, что у настоящих алертов.
+	NotifyLocale i18n.Locale
+
 	// Uptime — CRUD и состояние мониторов (этап 2, план 2, задача 3):
 	// heartbeat-эндпойнт (/uptime/hb/{token}) ищет монитор по токену и
 	// обновляет last_beat_at/monitor_state. Как и Alerts/Outbox,
@@ -416,6 +426,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /teams/{id}/members/remove", h.requireUser(http.HandlerFunc(h.teamMembersRemove)))
 	inner.Handle("POST /teams/{id}/projects", h.requireUser(http.HandlerFunc(h.teamProjectsAttach)))
 	inner.Handle("POST /teams/{id}/projects/detach", h.requireUser(http.HandlerFunc(h.teamProjectsDetach)))
+	inner.Handle("POST /teams/{id}/delete", h.requireUser(http.HandlerFunc(h.teamDelete)))
+	inner.Handle("POST /profile/getting-started/hide", h.requireUser(http.HandlerFunc(h.gettingStartedHide)))
 
 	inner.Handle("GET /projects/{id}/metrics", h.requireUser(http.HandlerFunc(h.metricsList)))
 	inner.Handle("GET /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertsPage)))
@@ -443,6 +455,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/alerts/channels", h.requireUser(http.HandlerFunc(h.alertsChannelCreate)))
 	inner.Handle("POST /projects/{id}/alerts/channels/update", h.requireUser(http.HandlerFunc(h.alertsChannelUpdate)))
 	inner.Handle("POST /projects/{id}/alerts/channels/delete", h.requireUser(http.HandlerFunc(h.alertsChannelDelete)))
+	inner.Handle("POST /projects/{id}/alerts/channels/test", h.requireUser(http.HandlerFunc(h.alertsChannelTest)))
 
 	inner.Handle("POST /orgs/{id}/settings/quota", h.requireUser(http.HandlerFunc(h.orgSettingsQuota)))
 
@@ -762,7 +775,18 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(orgs) > 0 {
-			_ = templates.NoProjects(h.currentEmail(r)).Render(r.Context(), w)
+			// №21: владельцу/админу любой из его организаций «попросите
+			// администратора» — тупик: он сам администратор. Ему — дверь в
+			// создание проекта (/projects, модалка там).
+			canCreate := false
+			for _, o := range orgs {
+				role, err := h.Org.Role(r.Context(), o.ID, uid)
+				if err == nil && (role == org.RoleOwner || role == org.RoleAdmin) {
+					canCreate = true
+					break
+				}
+			}
+			_ = templates.NoProjects(canCreate, h.currentEmail(r)).Render(r.Context(), w)
 			return
 		}
 		http.Redirect(w, r, "/onboarding", http.StatusSeeOther)
@@ -865,8 +889,12 @@ func (h *Handler) requireOrgRole(w http.ResponseWriter, r *http.Request, orgID, 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return "", false
 	}
+	// Членство есть, роли не хватает — честный 403 (№72): участник и так
+	// знает, что организация существует, а «не найдено» на знакомой странице
+	// читается как поломка. Не-члену выше отвечает 404 — существование чужой
+	// организации не раскрывается.
 	if role != org.RoleOwner && role != org.RoleAdmin {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
 		return "", false
 	}
 	return role, true

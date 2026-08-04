@@ -43,8 +43,8 @@ func TestCoverOrgSettingsMemberPostsAndSameOrigin(t *testing.T) {
 		resp := postForm(t, s.srv, tc.path, tc.form, s.srv.URL, memberCookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("POST %s (member) = %d, want 404", tc.path, resp.StatusCode)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("POST %s (member) = %d, want 403", tc.path, resp.StatusCode)
 		}
 	}
 

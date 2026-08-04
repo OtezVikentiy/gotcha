@@ -69,7 +69,7 @@ func (f *fakePerfSink) Record(ctx context.Context, projectID int64, fi trace.Fin
 		return trace.RecordResult{}, f.err
 	}
 	return trace.RecordResult{
-		Issue:      trace.PerfIssue{ID: int64(i + 1), ProjectID: projectID, Kind: fi.Kind, Title: fi.Title},
+		Issue:      trace.PerfIssue{ID: int64(i + 1), ProjectID: projectID, Kind: fi.Kind, Description: fi.Description},
 		Created:    i < len(f.created) && f.created[i],
 		Regression: i < len(f.regression) && f.regression[i],
 	}, nil

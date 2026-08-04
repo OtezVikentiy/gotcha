@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -42,6 +44,10 @@ type Digester struct {
 	// (см. DetailPolicy). Нулевое значение не доверяет никому: детали уходят
 	// только тем, кого оператор подтвердил как свой контур.
 	Details DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык сводки выбирает оператор (класс №133–136).
+	Locale i18n.Locale
 
 	// Interval — период тика; 0 → digestInterval.
 	Interval time.Duration
@@ -87,20 +93,20 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 		return fmt.Errorf("alert: digest channels: %w", err)
 	}
 
+	// Тексты — на языке инстанса (GOTCHA_LOCALE), а не запроса: сводку
+	// читает внешний получатель, у которого нет своей локали (№133–136).
+	ctx = i18n.WithLocale(ctx, d.Locale)
 	url := fmt.Sprintf("%s/projects/%d/issues", d.BaseURL, b.ProjectID)
-	subject := fmt.Sprintf("[gotcha] %d alerts suppressed", b.Suppressed)
+	count := strconv.Itoa(b.Suppressed)
+	subject := i18n.Tf(ctx, "notify.digest.subject", "count", count)
 	// humanize.Time вместо голого .Format(time.RFC3339): получателю письма
 	// нужен человекочитаемый момент ("2026-07-31 18:00 UTC"), а не машинный
 	// "2026-07-31T18:00:00Z" — та же природа находки, что и остальной долг
 	// подпроекта единиц, просто в теле письма, а не на веб-странице. ctx уже
 	// доступен параметром send (используется ниже для Channels/Outbox), новый
 	// прокидывать не пришлось.
-	body := fmt.Sprintf(
-		"%d alerts were suppressed for this project because it hit its notification budget.\n\n"+
-			"Window started at %s.\n\n"+
-			"This usually means a flood of new issues — check whether something is generating\n"+
-			"a unique fingerprint per event.\n\n%s",
-		b.Suppressed, humanize.Time(ctx, b.Since, time.UTC), url)
+	body := i18n.Tf(ctx, "notify.digest.body",
+		"count", count, "since", humanize.Time(ctx, b.Since, time.UTC), "url", url)
 
 	for _, ch := range channels {
 		if !ch.Deliverable() {

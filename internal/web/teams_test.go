@@ -54,12 +54,12 @@ func TestWebTeams(t *testing.T) {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", teamsPath, resp.StatusCode, body)
 	}
 
-	// GET member (не owner/admin) -> 404
+	// GET member (не owner/admin) -> 403 (№72)
 	resp = getWithCookie(t, s.srv, teamsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", teamsPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", teamsPath, resp.StatusCode)
 	}
 
 	// POST create team без Origin -> 403
@@ -109,8 +109,8 @@ func TestWebTeams(t *testing.T) {
 	resp = postForm(t, s.srv, membersPath, url.Values{"user_id": {strconv.FormatInt(memberID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", membersPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", membersPath, resp.StatusCode)
 	}
 
 	// POST members add: чужак (не член организации) -> 422 (ErrNotMember)
@@ -161,8 +161,8 @@ func TestWebTeams(t *testing.T) {
 		t.Fatalf("TeamProjects after cross-org attempt = %+v err=%v, want still just [proj]", tprojects, err)
 	}
 
-	// Отвязка проекта -> 303
-	resp = postForm(t, s.srv, projectsDetachPath, url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
+	// Отвязка проекта (с подтверждением, №61) -> 303
+	resp = postForm(t, s.srv, projectsDetachPath, url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -202,5 +202,86 @@ func TestWebTeams(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(body), projSettingsPath) {
 		t.Fatalf("GET %s missing project settings link %q: %s", issuesPath, projSettingsPath, body)
+	}
+}
+
+// TestWebTeamDeleteAndDetachConfirm — удаление команды (№26) и отвязка
+// проекта (№61) двухшаговые: POST без confirmed=yes показывает страницу
+// подтверждения с именами, с confirmed=yes — выполняет. После удаления
+// команда и её привязки исчезают.
+func TestWebTeamDeleteAndDetachConfirm(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "teamdel-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "teamdel-co", "TeamDel Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	team, err := orgSvc.CreateTeam(context.Background(), o.ID, "doomed", "Doomed Team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "teamdel-proj", "TeamDel Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := orgSvc.AttachTeam(context.Background(), proj.ID, team.ID); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	teamBase := "/teams/" + strconv.FormatInt(team.ID, 10)
+
+	// №61: detach без confirmed — страница подтверждения с именами обеих сторон.
+	resp := postForm(t, s.srv, teamBase+"/projects/detach",
+		url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK ||
+		!strings.Contains(string(body), "TeamDel Proj") || !strings.Contains(string(body), "Doomed Team") {
+		t.Fatalf("detach без confirmed: status=%d, страница подтверждения без имён: %s", resp.StatusCode, body)
+	}
+
+	// С confirmed — привязка снята.
+	resp = postForm(t, s.srv, teamBase+"/projects/detach",
+		url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("detach confirmed: status = %d, want 303", resp.StatusCode)
+	}
+	var n int
+	if err := s.pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM project_teams WHERE team_id = $1", team.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("project_teams после detach = %d err=%v, want 0", n, err)
+	}
+
+	// №26: delete без confirmed — подтверждение с именем команды.
+	resp = postForm(t, s.srv, teamBase+"/delete", url.Values{}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Doomed Team") {
+		t.Fatalf("delete без confirmed: status=%d, подтверждение без имени: %s", resp.StatusCode, body)
+	}
+
+	// С confirmed — команда удалена, 303 на страницу команд.
+	resp = postForm(t, s.srv, teamBase+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete confirmed: status = %d, want 303", resp.StatusCode)
+	}
+	if err := s.pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM teams WHERE id = $1", team.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("teams после delete = %d err=%v, want 0", n, err)
+	}
+
+	// Повторный delete confirmed → 404 (команды больше нет).
+	resp = postForm(t, s.srv, teamBase+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("повторный delete: status = %d, want 404", resp.StatusCode)
 	}
 }

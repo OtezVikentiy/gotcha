@@ -58,17 +58,21 @@ func TestMemberSeesNoLinksToPagesThatRejectHim(t *testing.T) {
 	}
 	for _, href := range forbidden {
 		if strings.Contains(page, `href="`+href+`"`) {
-			t.Errorf("участнику показана ссылка %q, которая отдаёт ему 404", href)
+			t.Errorf("участнику показана ссылка %q, которая отдаёт ему отказ", href)
 		}
 	}
 
 	// И контрольная проверка, что эти страницы действительно закрыты — иначе
-	// тест защищал бы от несуществующей проблемы.
+	// тест защищал бы от несуществующей проблемы. Члену организации с
+	// недостаточной ролью отвечает честный 403 (№72), не 404: членство ему
+	// и так известно. В ЭТОМ стенде не подняты Uptime/MetricRules, поэтому
+	// maintenance и metrics/alerts упираются в nil-guard (404) раньше
+	// проверки роли — оба кода означают «закрыто».
 	for _, path := range forbidden {
 		r := getWithCookie(t, s.srv, path, memberCookie)
 		r.Body.Close()
-		if r.StatusCode != http.StatusNotFound {
-			t.Errorf("GET %s как участник = %d, want 404 (иначе прятать ссылку незачем)", path, r.StatusCode)
+		if r.StatusCode != http.StatusForbidden && r.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s как участник = %d, want 403/404 (иначе прятать ссылку незачем)", path, r.StatusCode)
 		}
 	}
 

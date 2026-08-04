@@ -128,8 +128,8 @@ func TestWebMetricAlerts(t *testing.T) {
 	resp = getWithCookie(t, s.srv, base, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("member status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member status = %d, want 403", resp.StatusCode)
 	}
 }
 

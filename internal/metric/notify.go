@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -38,6 +39,10 @@ type MetricNotifier struct {
 	// Details — политика раскрытия деталей события получателю уведомления
 	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
 	Details alert.DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	Locale i18n.Locale
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -48,9 +53,12 @@ func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 	if err != nil {
 		return fmt.Errorf("metric: notify: project channels: %w", err)
 	}
+	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
+	// получатель, у которого нет своей локали.
+	ctx = i18n.WithLocale(ctx, n.Locale)
 	url := fmt.Sprintf("%s/projects/%d/metrics/alerts", n.BaseURL, ev.ProjectID)
-	subject := metricSubject(ev)
-	body := metricBody(ev, url)
+	subject := metricSubject(ctx, ev)
+	body := metricBody(ctx, ev, url)
 
 	var errs error
 	for _, ch := range channels {
@@ -103,31 +111,36 @@ func metricEventKind(ev MetricEvent) string {
 	return "metric_alert_resolved"
 }
 
-func metricSubject(ev MetricEvent) string {
-	state := "resolved"
+// metricSubject / metricBody строят тексты из каталога i18n — по локали,
+// положенной в ctx (класс №133–136: язык внешнего канала задаёт
+// GOTCHA_LOCALE, см. MetricNotifier.Locale).
+func metricSubject(ctx context.Context, ev MetricEvent) string {
+	state := i18n.T(ctx, "notify.metric.state.resolved")
 	if ev.Opened {
-		state = "firing"
+		state = i18n.T(ctx, "notify.metric.state.firing")
 	}
-	return fmt.Sprintf("[gotcha] metric %s %s %s %s (%s)",
-		ev.MetricName, ev.Aggregation, cmpSymbol(ev.Comparator), formatNum(ev.Threshold), state)
+	return i18n.Tf(ctx, "notify.metric.subject",
+		"metric", ev.MetricName, "agg", ev.Aggregation,
+		"cmp", cmpSymbol(ev.Comparator), "threshold", formatNum(ev.Threshold), "state", state)
 }
 
-func metricBody(ev MetricEvent, url string) string {
+func metricBody(ctx context.Context, ev MetricEvent, url string) string {
 	scope := ev.Environment
 	if scope == "" {
-		scope = "all environments"
+		scope = i18n.T(ctx, "notify.metric.scope.all_env")
 	}
 	if ev.LabelKey != "" {
 		scope += fmt.Sprintf(", %s=%s", ev.LabelKey, ev.LabelValue)
 	}
-	head := "Metric threshold resolved."
+	key := "notify.metric.body.close"
 	if ev.Opened {
-		head = "Metric threshold breached."
+		key = "notify.metric.body.open"
 	}
-	return fmt.Sprintf("%s\nMetric: %s (%s)\nCondition: %s %s %s\nCurrent: %s (peak %s)\nScope: %s\n%s",
-		head, ev.MetricName, ev.Aggregation,
-		ev.Aggregation, cmpSymbol(ev.Comparator), formatNum(ev.Threshold),
-		formatNum(ev.Current), formatNum(ev.Peak), scope, url)
+	return i18n.Tf(ctx, key,
+		"metric", ev.MetricName, "agg", ev.Aggregation,
+		"cmp", cmpSymbol(ev.Comparator), "threshold", formatNum(ev.Threshold),
+		"current", formatNum(ev.Current), "peak", formatNum(ev.Peak),
+		"scope", scope, "url", url)
 }
 
 func cmpSymbol(comparator string) string {

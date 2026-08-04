@@ -126,7 +126,7 @@ func TestRegisterClosed(t *testing.T) {
 func TestEmptyStates(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
 	empties := map[string]string{
-		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, true, "u@e.com", nil, nil, GettingStartedVM{})),
+		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{})),
 		"monitors":     renderTo(t, MonitorsList(7, nil, true, "u@e.com")),
 		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com")),
 		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com")),

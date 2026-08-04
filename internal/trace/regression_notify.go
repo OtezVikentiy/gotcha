@@ -9,6 +9,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -47,6 +48,10 @@ type RegressionNotifier struct {
 	// Details — политика раскрытия деталей события получателю уведомления
 	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
 	Details alert.DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык уведомления выбирает оператор (№133–136).
+	Locale i18n.Locale
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -58,6 +63,9 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 	if err != nil {
 		return fmt.Errorf("trace: regression notify: project channels: %w", err)
 	}
+	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
+	// получатель, у которого нет своей локали.
+	ctx = i18n.WithLocale(ctx, n.Locale)
 
 	url := fmt.Sprintf("%s/projects/%d/regressions", n.BaseURL, ev.ProjectID)
 	subject := regressionSubject(ctx, ev)
@@ -107,36 +115,40 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 	return errs
 }
 
-// regressionSubject строит тему уведомления по виду события.
-//
-// ctx нужен только для humanize.MetricValue (единая точка форматирования
-// значений метрик, см. internal/humanize) — сам текст темы не переведён по
-// ctx и остаётся на русском: перевод сообщений уведомлений ведёт другой
-// подпроект, эта задача переносит только форматирование величины.
+// regressionSubject строит тему уведомления по виду события из каталога i18n
+// — по локали, положенной в ctx (№133–136: язык внешнего канала задаёт
+// GOTCHA_LOCALE, см. RegressionNotifier.Locale). Тот же ctx питает
+// humanize.MetricValue — единую точку форматирования значений метрик.
 func regressionSubject(ctx context.Context, ev RegressionEvent) string {
 	switch ev.Kind {
 	case "regression_close":
-		return fmt.Sprintf("[Gotcha] Регрессия устранена: %s %s (%s)",
-			ev.Target, ev.Metric, formatDuration(ev.DurationSeconds))
+		return i18n.Tf(ctx, "notify.regression.subject.close",
+			"target", ev.Target, "metric", ev.Metric,
+			"duration", formatDuration(ev.DurationSeconds))
 	default: // regression_open
-		return fmt.Sprintf("[Gotcha] Регрессия: %s %s +%s%% (%s → %s)",
-			ev.Target, ev.Metric, formatPct(ev.PctIncrease),
-			humanize.MetricValue(ctx, ev.Metric, ev.BaselineValue), humanize.MetricValue(ctx, ev.Metric, ev.CurrentValue))
+		return i18n.Tf(ctx, "notify.regression.subject.open",
+			"target", ev.Target, "metric", ev.Metric,
+			"percent", formatPct(ev.PctIncrease),
+			"base", humanize.MetricValue(ctx, ev.Metric, ev.BaselineValue),
+			"current", humanize.MetricValue(ctx, ev.Metric, ev.CurrentValue))
 	}
 }
 
 // regressionBody строит человекочитаемый текст уведомления: цель, метрика,
-// база/текущее — плюс ссылка на список регрессий.
+// база/текущее — плюс ссылка на список регрессий. Каталог и локаль — как у
+// regressionSubject.
 func regressionBody(ctx context.Context, ev RegressionEvent, url string) string {
 	base := humanize.MetricValue(ctx, ev.Metric, ev.BaselineValue)
 	cur := humanize.MetricValue(ctx, ev.Metric, ev.CurrentValue)
 	switch ev.Kind {
 	case "regression_close":
-		return fmt.Sprintf("Регрессия устранена: %s %s.\n\nБыло: %s\nСтало: %s\nДлительность: %s\n\n%s",
-			ev.Target, ev.Metric, base, cur, formatDuration(ev.DurationSeconds), url)
+		return i18n.Tf(ctx, "notify.regression.body.close",
+			"target", ev.Target, "metric", ev.Metric, "base", base, "current", cur,
+			"duration", formatDuration(ev.DurationSeconds), "url", url)
 	default: // regression_open
-		return fmt.Sprintf("Обнаружена регрессия: %s %s вырос на %s%%.\n\nБаза: %s\nСейчас: %s\n\n%s",
-			ev.Target, ev.Metric, formatPct(ev.PctIncrease), base, cur, url)
+		return i18n.Tf(ctx, "notify.regression.body.open",
+			"target", ev.Target, "metric", ev.Metric,
+			"percent", formatPct(ev.PctIncrease), "base", base, "current", cur, "url", url)
 	}
 }
 

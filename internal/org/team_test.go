@@ -294,3 +294,71 @@ func TestRenameTeamRejectsEmptyName(t *testing.T) {
 		t.Fatalf("RenameTeam with blank name = %v, want ErrInvalidName", err)
 	}
 }
+
+// TestDeleteTeam — команду можно удалить (№26): членства и привязки к
+// проектам уходят вместе с ней (FK ON DELETE CASCADE — но контракт
+// проверяем содержательно), чужой orgID её не видит (ErrNotFound), соседняя
+// команда не задета.
+func TestDeleteTeam(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "delteam-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "delteam-org", "Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	team, err := svc.CreateTeam(ctx, o.ID, "doomed", "Doomed")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	other, err := svc.CreateTeam(ctx, o.ID, "keeper", "Keeper")
+	if err != nil {
+		t.Fatalf("CreateTeam (other): %v", err)
+	}
+	if err := svc.AddTeamMember(ctx, team.ID, owner); err != nil {
+		t.Fatalf("AddTeamMember: %v", err)
+	}
+	proj, err := svc.CreateProject(ctx, o.ID, "delteam-proj", "P", "go")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := svc.AttachTeam(ctx, proj.ID, team.ID); err != nil {
+		t.Fatalf("AttachTeam: %v", err)
+	}
+
+	// Чужой orgID команду не удаляет и не палит её существование.
+	strangerOwner := newUser(t, pool, "delteam-stranger@example.com")
+	strangerOrg, err := svc.CreateOrg(ctx, "delteam-stranger-org", "S", strangerOwner)
+	if err != nil {
+		t.Fatalf("CreateOrg (stranger): %v", err)
+	}
+	if err := svc.DeleteTeam(ctx, strangerOrg.ID, team.ID); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("DeleteTeam чужим orgID: err = %v, want ErrNotFound", err)
+	}
+
+	if err := svc.DeleteTeam(ctx, o.ID, team.ID); err != nil {
+		t.Fatalf("DeleteTeam: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM teams WHERE id = $1", team.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("team rows = %d err=%v, want 0", n, err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM team_members WHERE team_id = $1", team.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("team_members rows = %d err=%v, want 0", n, err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM project_teams WHERE team_id = $1", team.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("project_teams rows = %d err=%v, want 0", n, err)
+	}
+	// Соседняя команда жива.
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM teams WHERE id = $1", other.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("keeper rows = %d err=%v, want 1", n, err)
+	}
+	// Повторное удаление — уже ErrNotFound.
+	if err := svc.DeleteTeam(ctx, o.ID, team.ID); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("повторный DeleteTeam: err = %v, want ErrNotFound", err)
+	}
+}

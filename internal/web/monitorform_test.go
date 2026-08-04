@@ -383,7 +383,8 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 }
 
 // TestWebMonitorFormMemberForbidden — member (view access, not owner/admin)
-// gets 404 on every monitor-form route: both GETs and both POSTs.
+// gets an honest 403 on every monitor-form route (№72: membership is already
+// known to them): both GETs and both POSTs.
 func TestWebMonitorFormMemberForbidden(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monforbid")
@@ -403,29 +404,29 @@ func TestWebMonitorFormMemberForbidden(t *testing.T) {
 	resp := getWithCookie(t, s.srv, newPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", newPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", newPath, resp.StatusCode)
 	}
 
 	resp = getWithCookie(t, s.srv, editPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) status = %d, want 404", editPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) status = %d, want 403", editPath, resp.StatusCode)
 	}
 
 	resp = postForm(t, s.srv, createPath, url.Values{"name": {"x"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", createPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", createPath, resp.StatusCode)
 	}
 
 	resp = postForm(t, s.srv, updatePath, url.Values{"name": {"x"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) status = %d, want 404", updatePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) status = %d, want 403", updatePath, resp.StatusCode)
 	}
 
 	// Sanity: owner still works (rules out an over-broad requireProjectRole check).

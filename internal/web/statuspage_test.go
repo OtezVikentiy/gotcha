@@ -619,23 +619,23 @@ func TestWebStatusPagesSettingsMemberForbidden(t *testing.T) {
 	resp := getWithCookie(t, s.srv, path, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s (member) = %d, want 404", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s (member) = %d, want 403", path, resp.StatusCode)
 	}
 
 	resp = postForm(t, s.srv, path, url.Values{"slug": {"x"}, "title": {"x"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) = %d, want 404", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) = %d, want 403", path, resp.StatusCode)
 	}
 
 	updatePath := "/statuspages/" + strconv.FormatInt(sp.ID, 10)
 	resp = postForm(t, s.srv, updatePath, url.Values{"slug": {"spforbid-status"}, "title": {"Hacked"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST %s (member) = %d, want 404", updatePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (member) = %d, want 403", updatePath, resp.StatusCode)
 	}
 
 	// Owner другой организации не должен трогать чужую страницу по её id.

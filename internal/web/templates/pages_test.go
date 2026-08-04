@@ -48,7 +48,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		{Issue: issue.Issue{ID: 2, Title: "minor warn", Level: "warning", Status: "resolved", TimesSeen: 3, LastSeen: time.Now().Add(-24 * time.Hour), AssigneeEmail: "dev@x.io"}, Sparkline: stub()},
 	}
 	gs := GettingStartedVM{ProjectID: 7, OrgID: 1, Done: 3, Step2Done: true}
-	out := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 2, true, "u@e.com", []string{"production", "staging"}, &QuotaBanner{Text: "почти лимит", Href: "/x"}, gs))
+	out := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 2, "u@e.com", []string{"production", "staging"}, &QuotaBanner{Text: "почти лимит", Href: "/x"}, gs))
 	if !strings.Contains(out, "boom error") || !strings.Contains(out, "badge-danger") {
 		t.Error("список issue должен содержать заголовок и бейдж уровня")
 	}
@@ -56,7 +56,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		t.Error("баннер квоты должен отрендериться")
 	}
 
-	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, false, "u@e.com", nil, nil, GettingStartedVM{}))
+	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}))
 	if strings.Contains(empty, "boom error") {
 		t.Error("пустой список не должен содержать строк")
 	}
@@ -235,7 +235,7 @@ func TestOrgSettings(t *testing.T) {
 		{Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0},
 	}
 	sso := SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "cid", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://gotcha/sso"}
-	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil, SubjectPurgeVM{}, nil))
+	out := renderTo(t, OrgSettings(o, members, 1, quotas, true, "", "https://gotcha/invite/tok", sso, "owner@x.io", nil, SubjectPurgeVM{}, nil, nil))
 	if !strings.Contains(out, "owner@x.io") || !strings.Contains(out, "admin@x.io") {
 		t.Error("участники должны отрендериться")
 	}
@@ -243,7 +243,7 @@ func TestOrgSettings(t *testing.T) {
 		t.Error("пригласительная ссылка должна отрендериться")
 	}
 	// Не-владелец (uid=2): часть управления скрыта, но рендер валиден.
-	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil))
+	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil, nil))
 	if !strings.Contains(out2, "боом") {
 		t.Error("ошибка орга должна отрендериться")
 	}
@@ -443,9 +443,18 @@ func TestProjectsListAndNoProjects(t *testing.T) {
 	if !strings.Contains(out, "web") || !strings.Contains(out, "api") {
 		t.Error("список проектов должен содержать имена")
 	}
-	np := renderTo(t, NoProjects("u@e.com"))
-	if len(np) == 0 {
-		t.Error("экран без проектов должен что-то рендерить")
+	// №21: владельцу/админу — CTA в создание проекта, участнику — прежний
+	// текст без CTA; выход доступен обоим (chromeless-шапка).
+	np := renderTo(t, NoProjects(true, "u@e.com"))
+	if !strings.Contains(np, `href="/projects"`) || !strings.Contains(np, `action="/logout"`) {
+		t.Error("админский экран без проектов должен вести в /projects и давать выход")
+	}
+	npMember := renderTo(t, NoProjects(false, "u@e.com"))
+	if strings.Contains(npMember, `href="/projects"`) {
+		t.Error("участник без прав не должен видеть CTA создания проекта")
+	}
+	if !strings.Contains(npMember, `action="/logout"`) {
+		t.Error("экран участника должен давать выход")
 	}
 }
 

@@ -127,8 +127,8 @@ func TestWebProjectCreateForbiddenForMember(t *testing.T) {
 		"org_id": {strconv.FormatInt(o.ID, 10)}, "slug": {"sneaky"}, "name": {"Sneaky"}, "platform": {"go"},
 	}, s.srv.URL, memberCookie)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("POST от участника = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST от участника = %d, want 403 (№72)", resp.StatusCode)
 	}
 	projects, err := orgSvc.ProjectsOf(context.Background(), o.ID)
 	if err != nil || len(projects) != 0 {

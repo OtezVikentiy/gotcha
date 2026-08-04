@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -34,6 +35,10 @@ type RegressionNotifier struct {
 	// Details — политика раскрытия деталей события получателю уведомления
 	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
 	Details alert.DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	Locale i18n.Locale
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -43,9 +48,12 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev ProfileRegressionEve
 	if err != nil {
 		return fmt.Errorf("profile: regression notify: project channels: %w", err)
 	}
+	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
+	// получатель, у которого нет своей локали.
+	ctx = i18n.WithLocale(ctx, n.Locale)
 	url := fmt.Sprintf("%s/projects/%d/profile-regressions", n.BaseURL, ev.ProjectID)
-	subject := regressionSubject(ev)
-	body := regressionBody(ev, url)
+	subject := regressionSubject(ctx, ev)
+	body := regressionBody(ctx, ev, url)
 
 	var errs error
 	for _, ch := range channels {
@@ -96,21 +104,26 @@ func regressionKind(ev ProfileRegressionEvent) string {
 	return "profile_regression_resolved"
 }
 
-func regressionSubject(ev ProfileRegressionEvent) string {
+// regressionSubject / regressionBody строят тексты из каталога i18n — по
+// локали, положенной в ctx (класс №133–136: язык внешнего канала задаёт
+// GOTCHA_LOCALE, см. RegressionNotifier.Locale).
+func regressionSubject(ctx context.Context, ev ProfileRegressionEvent) string {
 	if ev.Opened {
-		return fmt.Sprintf("[gotcha] profile regression: %s +%s%%", ev.Function, formatPct(ev.PctIncrease))
+		return i18n.Tf(ctx, "notify.profile.subject.open",
+			"function", ev.Function, "percent", formatPct(ev.PctIncrease))
 	}
-	return fmt.Sprintf("[gotcha] profile regression resolved: %s", ev.Function)
+	return i18n.Tf(ctx, "notify.profile.subject.close", "function", ev.Function)
 }
 
-func regressionBody(ev ProfileRegressionEvent, url string) string {
-	head := "Profile regression resolved."
+func regressionBody(ctx context.Context, ev ProfileRegressionEvent, url string) string {
+	key := "notify.profile.body.close"
 	if ev.Opened {
-		head = "A function's self-CPU share regressed."
+		key = "notify.profile.body.open"
 	}
-	return fmt.Sprintf("%s\nFunction: %s\nService: %s (%s)\nSelf-CPU share: %s%% → %s%% (+%s%%)\n%s",
-		head, ev.Function, ev.Service, ev.ProfileType,
-		formatShare(ev.BaselineShare), formatShare(ev.CurrentShare), formatPct(ev.PctIncrease), url)
+	return i18n.Tf(ctx, key,
+		"function", ev.Function, "service", ev.Service, "type", ev.ProfileType,
+		"base", formatShare(ev.BaselineShare), "current", formatShare(ev.CurrentShare),
+		"percent", formatPct(ev.PctIncrease), "url", url)
 }
 
 // formatPct — доля роста в процентах (0.5 → "50").

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -43,7 +44,7 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 	iss := rec.Issue
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
 	if err := n.NotifyNew(ctx, pid, iss); err != nil {
 		t.Fatalf("NotifyNew: %v", err)
 	}
@@ -61,7 +62,8 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 
 	wantURL := "https://gotcha.example/perf-issues/" + strconv.FormatInt(iss.ID, 10)
-	wantSubject := "[Gotcha] Performance: " + iss.Title
+	wantTitle := "N+1 queries: " + iss.Description
+	wantSubject := "[Gotcha] Performance: " + wantTitle
 
 	j1, ok := byChannel[webhookCh]
 	if !ok {
@@ -70,7 +72,7 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	if j1.Payload["kind"] != trace.KindNPlusOne ||
 		j1.Payload["project_id"] != float64(pid) ||
 		j1.Payload["perf_issue_id"] != float64(iss.ID) ||
-		j1.Payload["title"] != iss.Title ||
+		j1.Payload["title"] != wantTitle ||
 		j1.Payload["culprit"] != "GET /api/users" ||
 		j1.Payload["count"] != float64(1) ||
 		j1.Payload["url"] != wantURL ||
@@ -171,7 +173,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Record: %v", err)
 		}
-		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
+		n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
 		if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
 			t.Fatalf("NotifyNew: %v", err)
 		}
@@ -179,7 +181,7 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 		if err != nil || len(jobs) != 1 {
 			t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
 		}
-		if jobs[0].Payload["title"] != rec.Issue.Title || jobs[0].Payload["culprit"] != "GET /api/users" {
+		if jobs[0].Payload["title"] != "N+1 queries: "+rec.Issue.Description || jobs[0].Payload["culprit"] != "GET /api/users" {
 			t.Errorf("external details missing with an allowing policy: %+v", jobs[0].Payload)
 		}
 	})
@@ -207,7 +209,7 @@ func TestOutboxNotifierNotifyRegression(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
 	if err := n.NotifyRegression(ctx, pid, rec.Issue); err != nil {
 		t.Fatalf("NotifyRegression: %v", err)
 	}
@@ -216,7 +218,7 @@ func TestOutboxNotifierNotifyRegression(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("jobs = %+v err=%v, want 1", jobs, err)
 	}
-	if want := "[Gotcha] Performance regression: " + rec.Issue.Title; jobs[0].Payload["subject"] != want {
+	if want := "[Gotcha] Performance regression: N+1 queries: " + rec.Issue.Description; jobs[0].Payload["subject"] != want {
 		t.Errorf("subject = %v, want %q", jobs[0].Payload["subject"], want)
 	}
 	if jobs[0].Payload["regression"] != true {
@@ -336,7 +338,7 @@ func TestOutboxNotifierThrottlesPerProject(t *testing.T) {
 		}
 	}
 
-	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
 
 	// 30 РАЗНЫХ проблем одного проекта: рассылается ровно лимит.
 	const attempts = 30

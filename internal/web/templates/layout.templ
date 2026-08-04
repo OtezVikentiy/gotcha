@@ -150,7 +150,9 @@ templ ctxNav(shell nav.Shell) {
 			</summary>
 			<ul>
 				for _, p := range shell.Projects {
-					<li><a href={ templ.SafeURL("/projects/" + itoa(p.ID) + "/issues") }>{ p.Name }</a></li>
+					// №60: смена проекта держит текущий раздел (nav.ProjectSwitchHref);
+					// раздел, недоступный у целевого проекта, откатывается на issues.
+					<li><a href={ templ.SafeURL(nav.ProjectSwitchHref(shell, p.ID)) }>{ p.Name }</a></li>
 				}
 			</ul>
 		</details>
@@ -187,6 +189,17 @@ templ chromelessBody(title string, userEmail string) {
 			<div class="topbar-spacer"></div>
 			@langSwitcher()
 			@themeToggle()
+			// Выход и без рейла (№21): залогиненный без проектов/организаций
+			// иначе не мог даже разлогиниться. Анонимные chromeless-страницы
+			// (логин/регистрация) передают пустой userEmail — кнопки нет.
+			if userEmail != "" {
+				<form method="post" action="/logout" class="chromeless-logout">
+					<button type="submit" class="btn btn-ghost">
+						@icon("log-out")
+						{ i18n.T(ctx, "action.logout") }
+					</button>
+				</form>
+			}
 		</header>
 		<main class="chromeless-main">
 			@flashView()

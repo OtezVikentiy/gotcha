@@ -200,12 +200,14 @@ templ rateGuardRow(q QuotaVM) {
 	</tr>
 }
 
-templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner, purge SubjectPurgeVM, invites []org.PendingInvite) {
+templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, emailEnabled bool, errMsg, inviteLink string, sso SSOSettings, userEmail string, banner *QuotaBanner, purge SubjectPurgeVM, invites []org.PendingInvite, inviteForm FormState) {
 	@layout(i18n.T(ctx, "org.settings.title")+" "+o.Name, userEmail) {
 		<div class="org-settings">
 			@quotaBannerView(banner)
 			<h1>{ i18n.T(ctx, "org.settings.title") } { o.Name }</h1>
-			if errMsg != "" {
+			// №27: ошибка приглашения показывается у самой формы (ниже), а не
+			// абзацем под h1 — здесь остаются ошибки остальных POST-ов.
+			if errMsg != "" && !inviteForm.Has() {
 				<p class="error">{ errMsg }</p>
 			}
 			<div class="settings-grid">
@@ -267,18 +269,23 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 					</div>
 				}
 				<form method="post" action={ templ.URL(orgSettingsInvitePath(o.ID)) } class="invite-form">
+					// №27: 422 не съедает ввод — email и роль возвращаются в форму,
+					// ошибка стоит рядом с ней.
+					if errMsg != "" && inviteForm.Has() {
+						<p class="error" id="invite-error">{ errMsg }</p>
+					}
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "org.invite.email_label") }
-							<input type="email" name="email" required placeholder="teammate@example.com" class="input"/>
+							<input type="email" name="email" required placeholder="teammate@example.com" class="input" value={ inviteForm.Get("email", "") } aria-describedby="invite-error"/>
 						</label>
 					</div>
 					<div class="field">
 						<label>
 							{ i18n.T(ctx, "org.invite.role_label") }
 							<select name="role" class="select" aria-label={ i18n.T(ctx, "org.members.role_label") }>
-								<option value="member">{ i18n.T(ctx, "org.role.member") }</option>
-								<option value="admin">{ i18n.T(ctx, "org.role.admin") }</option>
+								<option value="member" selected?={ inviteForm.Get("role", "member") != "admin" }>{ i18n.T(ctx, "org.role.member") }</option>
+								<option value="admin" selected?={ inviteForm.Get("role", "member") == "admin" }>{ i18n.T(ctx, "org.role.admin") }</option>
 							</select>
 						</label>
 					</div>

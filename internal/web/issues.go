@@ -78,7 +78,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// дополнительным пунктом «за всё время» — он же по умолчанию: большинство
 	// групп старше суток, и окно на 24 часа показывало бы пустой список на
 	// здоровом проекте.
-	rng := parseTimeRange(q, RangeAll)
+	rng := h.resolveTimeRange(w, r, RangeAll)
 	filter := issue.Filter{
 		Status:      status,
 		Level:       q.Get("level"),
@@ -131,10 +131,19 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		Sort:        filter.Sort,
 		Environment: filter.Environment,
 		Range:       rangeVM,
+		// №23: фильтр «активен», если сужает список относительно умолчаний
+		// (unresolved + всё время). Явный ?status= («Все») и явный
+		// ?status=unresolved список не сужают — это не повод показывать
+		// «ничего не подошло» вместо «событий ещё не было».
+		Active: filter.Level != "" || filter.Query != "" || filter.Environment != "" ||
+			(q.Has("status") && status != "" && status != "unresolved") ||
+			rng.Key != RangeAll,
 	}
 	banner := h.quotaBanner(r.Context(), orgID, canManage)
-	gs := h.gettingStarted(r.Context(), projectID, orgID, canManage)
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, canManage, h.currentEmail(r), environments, banner, gs).Render(r.Context(), w)
+	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage)
+	// canManage больше не передаётся (№117): шаблон его не использовал —
+	// роль питает QuotaBanner и GettingStartedVM выше.
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs).Render(r.Context(), w)
 }
 
 // gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,
@@ -151,8 +160,16 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 // тестовых стендов), а сами запросы — упасть с ошибкой сети/БД. Ни то, ни
 // другое не должно ронять страницу issues 500-й — недостающий сигнал просто
 // трактуется как «шаг ещё не закрыт», а причина логируется на Warn.
-func (h *Handler) gettingStarted(ctx context.Context, projectID, orgID int64, canManage bool) templates.GettingStartedVM {
+func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int64, canManage bool) templates.GettingStartedVM {
 	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID, CanManage: canManage}
+
+	// №71: скрытый пользователем чек-лист не считается и не рендерится —
+	// пустая VM с CanManage=false никогда не пройдёт условие показа.
+	if hidden, err := h.Auth.HideGettingStarted(ctx, uid); err != nil {
+		slog.Warn("gettingStarted: hide flag lookup failed", "user_id", uid, "err", err)
+	} else if hidden {
+		return templates.GettingStartedVM{}
+	}
 
 	if exists, err := h.Issues.Exists(ctx, projectID); err != nil {
 		slog.Warn("gettingStarted: issues exists check failed", "project_id", projectID, "err", err)
@@ -168,32 +185,48 @@ func (h *Handler) gettingStarted(ctx context.Context, projectID, orgID int64, ca
 		gs.Step3Done = len(channels) > 0
 	}
 
-	var membersDone, monitorsDone bool
+	// №71: команда и монитор — два отдельных шага с раздельными ссылками,
+	// а не один «или/или» с единственной дверью в настройки организации.
 	if members, err := h.Org.MembersOf(ctx, orgID); err != nil {
 		slog.Warn("gettingStarted: org members failed", "org_id", orgID, "err", err)
 	} else {
-		membersDone = len(members) > 1
+		gs.Step4aDone = len(members) > 1
 	}
 	if h.Uptime == nil {
 		slog.Warn("gettingStarted: Uptime service not configured", "project_id", projectID)
 	} else if monitors, err := h.Uptime.List(ctx, projectID); err != nil {
 		slog.Warn("gettingStarted: uptime monitors failed", "project_id", projectID, "err", err)
 	} else {
-		monitorsDone = len(monitors) > 0
+		gs.Step4bDone = len(monitors) > 0
 	}
-	gs.Step4Done = membersDone || monitorsDone
 
 	gs.Done = 1
-	if gs.Step2Done {
-		gs.Done++
-	}
-	if gs.Step3Done {
-		gs.Done++
-	}
-	if gs.Step4Done {
-		gs.Done++
+	for _, done := range []bool{gs.Step2Done, gs.Step3Done, gs.Step4aDone, gs.Step4bDone} {
+		if done {
+			gs.Done++
+		}
 	}
 	return gs
+}
+
+// gettingStartedHide — POST /profile/getting-started/hide (№71): скрывает
+// чек-лист «Первые шаги» навсегда для текущего пользователя. Flash не нужен
+// — карточка просто исчезает со страницы, на которую ведёт редирект.
+func (h *Handler) gettingStartedHide(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if err := h.Auth.SetHideGettingStarted(r.Context(), uid); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
 }
 
 // sparklinesFor — один запрос Events.Sparklines на все issues страницы

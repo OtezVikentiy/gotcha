@@ -108,10 +108,17 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, use
 // одной команде с доступом к проекту). В отличие от юзера вовсе без
 // организаций (тот уходит на /onboarding), таким юзерам организацию создавать
 // не нужно — им нужен админ, который добавит их в команду.
-templ NoProjects(userEmail string) {
+//
+// canCreate различает роли (№21): владельцу/админу «попросите администратора»
+// — тупик, он сам администратор; ему — дверь в создание проекта.
+templ NoProjects(canCreate bool, userEmail string) {
 	@chromeless(i18n.T(ctx, "project.none.title"), userEmail) {
 		<div class="no-projects">
-			@emptyState("building", "project.none.title", "project.none.body", "", "", 3)
+			if canCreate {
+				@emptyState("building", "project.none.title", "project.none.admin.body", "project.none.admin.cta", "/projects", 3)
+			} else {
+				@emptyState("building", "project.none.title", "project.none.body", "", "", 3)
+			}
 		</div>
 	}
 }
@@ -160,7 +167,15 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 				@createTrigger("new-project", "project.create.title")
 			}
 			if len(items) == 0 {
-				@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "/onboarding", 2)
+				// №59: пустой список у ДЕЙСТВУЮЩЕЙ организации ведёт в модалку
+				// создания на этой же странице, а не в /onboarding — мастер
+				// первого запуска чужой этому сценарию. Без права создавать
+				// (member) CTA нет: якорь модалки не существует.
+				if len(canCreate) > 0 {
+					@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "#new-project", 2)
+				} else {
+					@emptyState("building", "project.list.empty.title", "project.list.empty", "", "", 2)
+				}
 			} else {
 				<div class="card">
 				@scrollRegion("table-scroll", "project.list.title") {

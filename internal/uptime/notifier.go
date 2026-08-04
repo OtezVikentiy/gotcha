@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -33,6 +35,10 @@ type OutboxNotifier struct {
 	// Details — политика раскрытия деталей события получателю уведомления
 	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
 	Details alert.DetailPolicy
+
+	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
+	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	Locale i18n.Locale
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал
@@ -71,9 +77,13 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 		channels = filtered
 	}
 
+	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
+	// получатель, у которого нет своей локали.
+	ctx = i18n.WithLocale(ctx, n.Locale)
+
 	url := fmt.Sprintf("%s/monitors/%d", n.BaseURL, ev.Monitor.ID)
-	subject := subjectFor(ev)
-	body := bodyFor(ev, url)
+	subject := subjectFor(ctx, ev)
+	body := bodyFor(ctx, ev, url)
 
 	var errs error
 	for _, ch := range channels {
@@ -114,40 +124,49 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 	return errs
 }
 
-// subjectFor строит тему письма/сообщения по виду события.
-func subjectFor(ev Event) string {
+// subjectFor строит тему письма/сообщения по виду события из каталога i18n —
+// по локали, положенной в ctx (класс №133–136: язык внешнего канала задаёт
+// GOTCHA_LOCALE, см. OutboxNotifier.Locale).
+func subjectFor(ctx context.Context, ev Event) string {
 	name := ev.Monitor.Name
 	switch ev.Kind {
 	case "down":
-		return fmt.Sprintf("[Gotcha] %s is DOWN", name)
+		return i18n.Tf(ctx, "notify.uptime.subject.down", "name", name)
 	case "up":
-		return fmt.Sprintf("[Gotcha] %s is back UP (%s)", name, formatDuration(ev.DurationSeconds))
+		return i18n.Tf(ctx, "notify.uptime.subject.up",
+			"name", name, "duration", formatDuration(ev.DurationSeconds))
 	case "ssl_expiring":
-		return fmt.Sprintf("[Gotcha] SSL for %s expires in %d days", name, ev.DaysLeft)
+		return i18n.Tf(ctx, "notify.uptime.subject.ssl",
+			"name", name, "days", strconv.Itoa(ev.DaysLeft))
 	case "reminder":
-		return fmt.Sprintf("[Gotcha] %s still DOWN (%s)", name, formatDuration(ev.DurationSeconds))
+		return i18n.Tf(ctx, "notify.uptime.subject.reminder",
+			"name", name, "duration", formatDuration(ev.DurationSeconds))
 	default:
-		return fmt.Sprintf("[Gotcha] %s: %s", name, ev.Kind)
+		return i18n.Tf(ctx, "notify.uptime.subject.generic", "name", name, "kind", ev.Kind)
 	}
 }
 
 // bodyFor строит человекочитаемый текст уведомления: причина, регионы,
-// время — плюс ссылка на монитор.
-func bodyFor(ev Event, url string) string {
+// время — плюс ссылка на монитор. Каталог и локаль — как у subjectFor.
+func bodyFor(ctx context.Context, ev Event, url string) string {
 	name := ev.Monitor.Name
 	regions := strings.Join(ev.Regions, ", ")
 	switch ev.Kind {
 	case "down":
-		return fmt.Sprintf("%s is DOWN.\n\nCause: %s\nRegions: %s\n\n%s", name, ev.Cause, regions, url)
+		return i18n.Tf(ctx, "notify.uptime.body.down",
+			"name", name, "cause", ev.Cause, "regions", regions, "url", url)
 	case "up":
-		return fmt.Sprintf("%s is back UP after %s of downtime.\n\n%s", name, formatDuration(ev.DurationSeconds), url)
+		return i18n.Tf(ctx, "notify.uptime.body.up",
+			"name", name, "duration", formatDuration(ev.DurationSeconds), "url", url)
 	case "ssl_expiring":
-		return fmt.Sprintf("SSL certificate for %s expires in %d days.\n\n%s", name, ev.DaysLeft, url)
+		return i18n.Tf(ctx, "notify.uptime.body.ssl",
+			"name", name, "days", strconv.Itoa(ev.DaysLeft), "url", url)
 	case "reminder":
-		return fmt.Sprintf("%s is still DOWN (%s so far).\n\nCause: %s\nRegions: %s\n\n%s",
-			name, formatDuration(ev.DurationSeconds), ev.Cause, regions, url)
+		return i18n.Tf(ctx, "notify.uptime.body.reminder",
+			"name", name, "duration", formatDuration(ev.DurationSeconds),
+			"cause", ev.Cause, "regions", regions, "url", url)
 	default:
-		return fmt.Sprintf("%s\n\n%s", name, url)
+		return i18n.Tf(ctx, "notify.uptime.body.generic", "name", name, "url", url)
 	}
 }
 

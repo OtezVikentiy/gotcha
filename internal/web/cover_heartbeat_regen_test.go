@@ -60,7 +60,7 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 	resp = postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("member regenerate: status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member regenerate: status = %d, want 403", resp.StatusCode)
 	}
 }

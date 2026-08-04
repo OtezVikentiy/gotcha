@@ -32,6 +32,26 @@ func teamProjectsDetachPath(teamID int64) string {
 	return teamProjectsPath(teamID) + "/detach"
 }
 
+func teamDeletePath(teamID int64) string {
+	return "/teams/" + strconv.FormatInt(teamID, 10) + "/delete"
+}
+
+// teamName — имя команды для текста подтверждения; пустая строка, если
+// команда не нашлась (тогда подтверждение показывает вопрос без имени, а
+// само действие всё равно упрётся в ErrNotFound).
+func (h *Handler) teamName(ctx context.Context, orgID, teamID int64) string {
+	teams, err := h.Org.TeamsOf(ctx, orgID)
+	if err != nil {
+		return ""
+	}
+	for _, t := range teams {
+		if t.ID == teamID {
+			return t.Name
+		}
+	}
+	return ""
+}
+
 // errCrossOrgProject — попытка привязать к команде проект, не принадлежащий
 // организации этой команды.
 var errCrossOrgProject = errors.New("web: project belongs to a different organization")
@@ -386,9 +406,63 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad project_id", http.StatusBadRequest)
 		return
 	}
+	// Двухшаговое подтверждение (№61): отвязка мгновенно отбирает у всей
+	// команды доступ к проекту — с именами обеих сторон, иначе вопрос без
+	// деталей не страхует от промаха по соседней строке.
+	if r.FormValue("confirmed") != "yes" {
+		projectName := ""
+		if p, err := h.Org.GetProject(r.Context(), projectID); err == nil {
+			projectName = p.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.team_project_detach.message",
+			"confirm.remove", orgTeamsPath(orgID), teamProjectsDetachPath(teamID),
+			[]templates.HiddenField{{Name: "project_id", Value: strconv.FormatInt(projectID, 10)}},
+			"project", projectName, "team", h.teamName(r.Context(), orgID, teamID))
+		return
+	}
 	if err := h.Org.DetachTeam(r.Context(), projectID, teamID); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
+}
+
+// teamDelete — POST /teams/{id}/delete: удаление команды (№26). Членства и
+// привязки к проектам уходят вместе с ней (org.DeleteTeam) — участники
+// теряют доступ к её проектам сразу, поэтому действие двухшаговое, как
+// прочие необратимые.
+func (h *Handler) teamDelete(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	teamID, ok := h.parsePathTeamID(w, r)
+	if !ok {
+		return
+	}
+	orgID, ok := h.requireTeamRole(w, r, teamID, uid)
+	if !ok {
+		return
+	}
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.team_delete.message",
+			"confirm.delete", orgTeamsPath(orgID), teamDeletePath(teamID), nil,
+			"name", h.teamName(r.Context(), orgID, teamID))
+		return
+	}
+	if err := h.Org.DeleteTeam(r.Context(), orgID, teamID); err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	h.flashOK(w, "flash.team_deleted", 0)
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }

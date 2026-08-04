@@ -31,6 +31,26 @@ func perfKindLabel(ctx context.Context, kind string) string {
 	}
 }
 
+// perfIssueTitle — заголовок perf-находки по локали смотрящего (№132):
+// перевод вида + параметр (description; у http_flood параметром служит
+// culprit). Пустой параметр при непустом сохранённом title — строка,
+// созданная до миграции 0058 и не подошедшая под префиксы backfill: для неё
+// честнее показать сохранённый текст, чем «Медленный запрос: » без
+// параметра. Та же логика в уведомлениях — trace.perfIssueNotifyTitle.
+func perfIssueTitle(ctx context.Context, iss trace.PerfIssue) string {
+	param := iss.Description
+	if iss.Kind == trace.KindHTTPFlood {
+		param = iss.Culprit
+	}
+	if param == "" {
+		if iss.Title != "" {
+			return iss.Title
+		}
+		return i18n.T(ctx, "perf.title."+iss.Kind)
+	}
+	return i18n.T(ctx, "perf.title."+iss.Kind) + ": " + param
+}
+
 // perfKindBadgeClass — цвет бейджа вида проблемы: N+1 (много повторов) — warn,
 // медленный запрос — info, HTTP flood — neutral (не хуже/лучше остальных, просто
 // другой характер проблемы).
@@ -98,7 +118,7 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 							for _, iss := range issues {
 								<tr>
 									<td><span class={ perfKindBadgeClass(iss.Kind) }>{ perfKindLabel(ctx, iss.Kind) }</span></td>
-									<td><a href={ templ.URL(perfIssueDetailPath(iss.ID)) }>{ iss.Title }</a></td>
+									<td><a href={ templ.URL(perfIssueDetailPath(iss.ID)) }>{ perfIssueTitle(ctx, iss) }</a></td>
 									<td>{ iss.Culprit }</td>
 									<td class="num">{ strconv.FormatInt(iss.Count, 10) }</td>
 									<td>@relativeTime(iss.LastSeen)</td>

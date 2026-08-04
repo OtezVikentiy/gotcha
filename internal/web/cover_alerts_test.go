@@ -49,12 +49,13 @@ func TestCoverAlertsBranches(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET deliveries status = %d, want 200", resp.StatusCode)
 	}
-	// deliveries member → 404.
+	// deliveries чужим (НЕ членом организации) → 404: существование проекта
+	// не раскрывается; честный 403 (№72) — только членам с малой ролью.
 	resp = getWithCookie(t, s.srv, base+"/deliveries", memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET deliveries (member) status = %d, want 404", resp.StatusCode)
+		t.Fatalf("GET deliveries (не член) status = %d, want 404", resp.StatusCode)
 	}
 
 	// rules без Origin → 403.

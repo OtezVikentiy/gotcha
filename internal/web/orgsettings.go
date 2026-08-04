@@ -119,7 +119,7 @@ func (h *Handler) orgSettingsPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", "")
+	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", "", nil)
 }
 
 // requireOrgOwner — SSO-настройки доступны только владельцу орга (более узкая
@@ -190,9 +190,9 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 		h.ssoProviders.invalidate(orgID) // иначе новая конфигурация применится только через ssoCacheTTL
 		http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 	case errors.Is(err, org.ErrDomainTaken):
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.domain_taken"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.domain_taken"), "", nil)
 	case errors.Is(err, org.ErrInvalidSSO) || errors.Is(err, org.ErrInvalidRole):
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.sso_fields_required"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.sso_fields_required"), "", nil)
 	default:
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
@@ -240,7 +240,7 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 // тоже рендерит эту же страницу напрямую (без редиректа): одноразовый токен
 // приглашения нельзя протащить через query string или Location, поэтому
 // ссылка-приглашение показывается один раз, сразу в теле ответа POST.
-func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, status int, orgID, uid int64, errMsg, inviteLink string) {
+func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, status int, orgID, uid int64, errMsg, inviteLink string, inviteForm templates.FormState) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -293,7 +293,7 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		invites = nil
 	}
 	w.WriteHeader(status)
-	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID), invites).Render(r.Context(), w)
+	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID), invites, inviteForm).Render(r.Context(), w)
 }
 
 // subjectPurgeVM собирает состояние блока удаления ПДн: предупреждение о
@@ -464,7 +464,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if targetID == uid {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.own_role"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.own_role"), "", nil)
 		return
 	}
 	role := org.Role(r.FormValue("role"))
@@ -473,7 +473,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 	// мутацией (см. её комментарий в internal/org/member.go), закрывая TOCTOU
 	// между requireOrgRole и мутацией.
 	if err := h.Org.SetRoleAs(r.Context(), orgID, uid, targetID, role); err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
@@ -522,7 +522,7 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Org.RemoveMemberAs(r.Context(), orgID, uid, targetID); err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
@@ -576,7 +576,7 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 		// ErrLastOwner (единственный owner пытается уйти) и прочее → 422 с
 		// сообщением на месте; такую страницу видит только owner (member на
 		// last-owner не наткнётся), значит renderOrgSettings безопасен.
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -608,14 +608,17 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	// №27: 422 сохраняет введённое (email, роль) и показывает ошибку у самой
+	// формы приглашения, а не абзацем под h1 — см. inviteForm в шаблоне.
+	inviteForm := templates.FormState{"email": email, "role": r.FormValue("role")}
 	if !validInviteEmail(email) {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.invalid_email"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.invalid_email"), "", inviteForm)
 		return
 	}
 	role := org.Role(r.FormValue("role"))
 	token, err := h.Org.Invite(r.Context(), orgID, email, role)
 	if err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", inviteForm)
 		return
 	}
 	inviteLink := h.BaseURL + inviteAcceptPath(token)
@@ -638,7 +641,7 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink)
+	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink, nil)
 }
 
 // orgSettingsInviteRevoke — POST /orgs/{id}/settings/invite/revoke: отзыв
@@ -690,7 +693,7 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 	}
 	if err := h.Org.RevokeInvite(r.Context(), orgID, inviteID); err != nil {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid,
-			i18n.T(r.Context(), "error.org.invite_not_found"), "")
+			i18n.T(r.Context(), "error.org.invite_not_found"), "", nil)
 		return
 	}
 	h.flashOK(w, "flash.invite_revoked", 0)
@@ -750,14 +753,14 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 		}
 		v, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || v < 0 {
-			h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), org.ErrInvalidQuota), "")
+			h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), org.ErrInvalidQuota), "", nil)
 			return
 		}
 		toApply = append(toApply, pending{set: f.set, value: v})
 	}
 	for _, p := range toApply {
 		if err := p.set(r.Context(), orgID, p.value); err != nil {
-			h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "")
+			h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 			return
 		}
 	}
@@ -841,7 +844,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.project_required"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.project_required"), "", nil)
 		return
 	}
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы чистить
@@ -856,7 +859,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		IP:     strings.TrimSpace(r.FormValue("ip")),
 	}
 	if sub.Email == "" && sub.UserID == "" && sub.IP == "" {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "", nil)
 		return
 	}
 	// Право на удаление ПДн (152-ФЗ ст.14): не выдаём успех, если удаление не
@@ -960,7 +963,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.project_required"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.project_required"), "", nil)
 		return
 	}
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы выгрузить
@@ -975,7 +978,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 		IP:     strings.TrimSpace(r.FormValue("ip")),
 	}
 	if sub.Email == "" && sub.UserID == "" && sub.IP == "" {
-		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "")
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "", nil)
 		return
 	}
 	if h.Purger == nil {

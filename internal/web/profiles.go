@@ -37,7 +37,7 @@ func (h *Handler) profilesList(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	tr := parseTimeRange(r.URL.Query(), "24h")
+	tr := h.resolveTimeRange(w, r, "24h")
 	environment := r.URL.Query().Get("environment")
 	services, err := h.Profiles.ListServices(r.Context(), projectID, environment, tr.From, tr.To)
 	if err != nil {
@@ -72,7 +72,7 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	tr := parseTimeRange(q, "24h")
+	tr := h.resolveTimeRange(w, r, "24h")
 	service := q.Get("service")
 	profileType := q.Get("type")
 	environment := q.Get("environment")

@@ -16,6 +16,11 @@ func teamRenamePath(teamID int64) string {
 	return "/teams/" + strconv.FormatInt(teamID, 10) + "/rename"
 }
 
+// teamDeletePath — POST-приёмник удаления команды (№26).
+func teamDeletePath(teamID int64) string {
+	return "/teams/" + strconv.FormatInt(teamID, 10) + "/delete"
+}
+
 func teamMembersPath(teamID int64) string {
 	return "/teams/" + strconv.FormatInt(teamID, 10) + "/members"
 }
@@ -163,7 +168,16 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 	<section class="team card">
 		<h2 class="card-header">
 			{ tm.Team.Name } <span class="chip">{ tm.Team.Slug }</span>
-			<a class="btn btn-ghost card-header-action" href={ templ.SafeURL("#" + EditTeamModalID(tm.Team.ID)) }>{ i18n.T(ctx, "teams.rename.action") }</a>
+			// Оба действия — одним flex-контейнером, прижатым вправо
+			// (card-header-action): порознь block-форма уезжала на вторую
+			// строку. №26: удаление двухшаговое (страница подтверждения на
+			// POST без confirmed=yes), поэтому обычная форма.
+			<span class="card-header-action row-actions">
+				<a class="btn btn-ghost" href={ templ.SafeURL("#" + EditTeamModalID(tm.Team.ID)) }>{ i18n.T(ctx, "teams.rename.action") }</a>
+				<form method="post" action={ templ.URL(teamDeletePath(tm.Team.ID)) } class="team-delete-form">
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "teams.delete") }</button>
+				</form>
+			</span>
 		</h2>
 		@teamRenameModal(tm, form, errMsg)
 		<h3>{ i18n.T(ctx, "teams.members.title") }</h3>

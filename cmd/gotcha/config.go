@@ -105,6 +105,11 @@ type Config struct {
 	// open (открыта всем), invite (по приглашению, кроме bootstrap первого
 	// админа), closed (только bootstrap первого админа). Дефолт — invite.
 	RegistrationMode string
+	// Locale — язык инстанса для ВНЕШНИХ уведомлений (email/Telegram/webhook):
+	// у получателя вне HTTP-запроса нет своей локали, поэтому язык выбирает
+	// оператор инстанса (№133–136). UI это не трогает — там локаль зрителя.
+	// ru|en, дефолт ru.
+	Locale string
 	// MigrateOnly — применить миграции и выйти, не поднимая ни одного
 	// компонента (флаг --migrate-only).
 	//
@@ -424,6 +429,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
+		Locale:                   str("GOTCHA_LOCALE", "ru"),
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
 		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
 		ProbeToken:               str("GOTCHA_PROBE_TOKEN", ""),
@@ -536,6 +542,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	case "open", "invite", "closed":
 	default:
 		return Config{}, fmt.Errorf("GOTCHA_REGISTRATION must be open, invite or closed, got %q", cfg.RegistrationMode)
+	}
+
+	switch cfg.Locale {
+	case "ru", "en":
+	default:
+		return Config{}, fmt.Errorf("GOTCHA_LOCALE must be ru or en, got %q", cfg.Locale)
 	}
 
 	switch cfg.Edition {

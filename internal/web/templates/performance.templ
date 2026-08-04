@@ -136,9 +136,12 @@ templ perfEnvOption(value, label, selected string) {
 // total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
 // если total больше, показывается пометка об усечении (как у waterfall).
 templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string) {
-	@layout(i18n.T(ctx, "perf.endpoints"), userEmail) {
+	// Канон имени раздела — «Транзакции» (№24): рейл, сайдбар, h1, <title> и
+	// крошки зовут его одинаково. «Эндпойнты» (perf.endpoints) остаётся
+	// термином ДАННЫХ — заголовком таблицы ниже, но не именем раздела.
+	@layout(i18n.T(ctx, "nav.transactions"), userEmail) {
 		<div class="performance">
-			<h1>{ i18n.T(ctx, "perf.endpoints") }</h1>
+			<h1>{ i18n.T(ctx, "nav.transactions") }</h1>
 			@helpPanel("performance", "performance")
 			// Предупреждение о схлопнутом хвосте — ЗДЕСЬ, а не в логах: человек
 			// смотрит на список эндпойнтов, и именно тут он замечает, что часть

@@ -33,8 +33,12 @@ func NewYandex(cfg YandexConfig) *Yandex {
 	}
 }
 
-func (y *Yandex) Name() string        { return "yandex" }
-func (y *Yandex) DisplayName() string { return "Яндекс" }
+func (y *Yandex) Name() string { return "yandex" }
+
+// DisplayName — латинский fallback (№137): его видят generic-путь резолва и
+// операторские логи; локализованную подпись («Яндекс»/"Yandex") даёт каталог
+// i18n по ключу oauth.provider.yandex (см. web.providerLabel).
+func (y *Yandex) DisplayName() string { return "Yandex" }
 
 // AuthURL — Яндекс не требует PKCE; challenge игнорируем. nonce не применим.
 func (y *Yandex) AuthURL(state, _, _, redirectURI string) string {
