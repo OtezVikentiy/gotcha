@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-08-04
+
 ### Security
 - The redirect guard at the `Location` header rejects control characters, closing a third form of the open-redirect bypass it already blocked in two others. Browsers strip tabs and newlines from a URL before parsing it (WHATWG URL), so `/<TAB>/evil.example` reaches the parser as `//evil.example` — a protocol-relative address pointing at another host — while passing the checks for `//` and `/\`. Go leaves such a byte in the header: only non-ASCII is escaped, and the `\r\n`-to-space replacement happens in the header serializer. No reachable exploit existed, because both callers pass the value through `url.Parse` first (it rejects control bytes), but that made the guard depend on its caller — exactly what it exists not to do. Reported by CodeQL as `go/unvalidated-url-redirection`.
 
