@@ -101,9 +101,22 @@ func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 // «//evil.example» браузер читает как протокол-относительный адрес, а «\»
 // нормализует в «/», поэтому «/\evil.example» — тот же чужой хост, записанный
 // иначе. Обе формы отвергаются.
+//
+// Управляющие символы отвергаются целиком, и это третья форма того же обхода,
+// а не перестраховка: по WHATWG URL браузер ВЫБРАСЫВАЕТ из адреса табы и
+// переводы строк ещё до разбора, поэтому «/<TAB>/evil.example» доезжает до
+// разборщика как «//evil.example» — протокол-относительный адрес чужого
+// хоста, пройдя обе проверки выше. Go оставляет такой байт в заголовке
+// Location: hexEscapeNonASCII экранирует только non-ASCII, а замену \r\n на
+// пробел делает уже сериализатор заголовков — табу и прочим CTL она не
+// мешает. Раньше от этой формы спасал только url.Parse в safeNextPath (он
+// отвергает CTL-байты), то есть проверка вызывающего — ровно то, на что
+// redirectLocal обещает не полагаться.
 func isLocalPath(p string) bool {
-	return strings.HasPrefix(p, "/") &&
-		!strings.HasPrefix(p, "//") && !strings.HasPrefix(p, "/\\")
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") {
+		return false
+	}
+	return strings.IndexFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0
 }
 
 // redirectLocal перенаправляет на путь этого же сайта; пустой или чужой адрес

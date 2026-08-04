@@ -24,6 +24,16 @@ func TestRedirectLocalKeepsRedirectOnSite(t *testing.T) {
 		{"протокол-относительный отвергается", "//evil.example/x", "/"},
 		{"обратная косая отвергается", "/\\evil.example/x", "/"},
 		{"адрес без ведущей косой отвергается", "evil.example/x", "/"},
+		// Браузер выбрасывает из адреса табы и переводы строк ДО разбора
+		// (WHATWG URL, «tab or newline» removal), поэтому «/<TAB>/evil»
+		// доезжает до разборщика как «//evil» — протокол-относительный адрес
+		// чужого хоста, хотя проверки на «//» и «/\» он проходит.
+		{"таб внутри пути отвергается", "/\t/evil.example/x", "/"},
+		{"перевод строки внутри пути отвергается", "/\n/evil.example/x", "/"},
+		{"возврат каретки внутри пути отвергается", "/\r/evil.example/x", "/"},
+		{"таб перед обратной косой отвергается", "/\t\\evil.example/x", "/"},
+		{"NUL внутри пути отвергается", "/\x00/evil.example/x", "/"},
+		{"DEL внутри пути отвергается", "/\x7f/evil.example/x", "/"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -46,6 +56,8 @@ func TestSafeNextPathAgreesWithRedirectLocal(t *testing.T) {
 	raws := []string{
 		"", "/", "/projects/7", "//evil.example", "/\\evil.example",
 		"https://evil.example", "evil.example", "javascript:alert(1)",
+		"/\t/evil.example", "/\n/evil.example", "/\r/evil.example",
+		"/\x00/evil.example", "/\x7f/evil.example", "/ /evil.example",
 	}
 	for _, raw := range raws {
 		next := safeNextPath(raw)
