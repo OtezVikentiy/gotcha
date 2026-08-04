@@ -15,6 +15,7 @@ import (
 	"github.com/a-h/templ"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
@@ -552,22 +553,12 @@ func comparatorSymbol(cmp string) string {
 	return ">"
 }
 
-// formatAxisValue форматирует значение для подписи оси: до 3 значащих цифр, с
-// суффиксом k/M для крупных чисел и опциональным юнитом.
+// formatAxisValue форматирует значение для подписи оси: компактная запись до
+// 3 значащих цифр с суффиксом k/M/G/T (humanize.CompactNumber — тот же
+// формат, что в таблицах правил метрик; раньше значения от миллиарда снова
+// сваливались в научную нотацию «1e+03M») и опциональный юнит.
 func formatAxisValue(v float64, unit string) string {
-	abs := v
-	if abs < 0 {
-		abs = -abs
-	}
-	var s string
-	switch {
-	case abs >= 1e6:
-		s = strconv.FormatFloat(v/1e6, 'g', 3, 64) + "M"
-	case abs >= 1e3:
-		s = strconv.FormatFloat(v/1e3, 'g', 3, 64) + "k"
-	default:
-		s = strconv.FormatFloat(v, 'g', 3, 64)
-	}
+	s := humanize.CompactNumber(v)
 	// "1" — юнит безразмерной метрики по соглашению OTLP (счётчики,
 	// количества). На оси его печатать нельзя: «17 1» читается как одно
 	// число, а не как «17 штук».

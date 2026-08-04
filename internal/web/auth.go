@@ -44,16 +44,38 @@ func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
 	next := safeNextPath(r.URL.Query().Get("next"))
-	// PROD-B1: если режим не open и первый пользователь уже есть — показываем
-	// экран «регистрация по приглашению» вместо формы (bootstrap уже пройден).
+	// PROD-B1: если режим closed и первый пользователь уже есть — показываем
+	// экран «регистрация закрыта» вместо формы (bootstrap уже пройден).
 	if h.registrationClosed(r) {
 		// Без errMsg (№68): на GET закрытая регистрация — штатное состояние,
 		// о нём рассказывает информационный абзац шаблона; красная плашка
 		// остаётся реальным отказам POST (см. denyRegistration).
-		_ = templates.Register("", true, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterStub("", h.RegistrationMode, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
-	_ = templates.Register("", false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+	_ = templates.RegisterForm("", h.inviteOnlyNotice(r, next), next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+}
+
+// inviteOnlyNotice — показывать ли на форме регистрации предупреждение «только
+// по приглашению» (QA MINOR-UX-2): режим invite, bootstrap уже пройден, а
+// токена приглашения в next нет. Сабмит такой формы упрётся в 403, и честнее
+// сказать об этом до ввода пароля, а не после. С токеном (человек пришёл по
+// ссылке-приглашению) предупреждение не показывается — его путь штатный.
+func (h *Handler) inviteOnlyNotice(r *http.Request, next string) bool {
+	if h.RegistrationMode != "invite" {
+		return false
+	}
+	if _, ok := inviteTokenFromNext(next); ok {
+		return false
+	}
+	n, err := h.Auth.UserCount(r.Context())
+	if err != nil {
+		// Ошибка подсчёта — предупреждение показываем: оно информационное, и в
+		// устоявшемся invite-инстансе правдиво почти всегда; гейтинг сабмита
+		// от него не зависит (registerSubmit решает сам).
+		return true
+	}
+	return n > 0
 }
 
 // registrationClosed сообщает, надо ли вместо формы регистрации показать
@@ -153,18 +175,26 @@ func (h *Handler) invitedByToken(w http.ResponseWriter, r *http.Request, next, e
 	return true
 }
 
-// denyRegistration отказывает в регистрации и рисует ту же заглушку, что и
-// закрытый режим (registrationClosed). next передаётся в шаблон, чтобы
-// адресат не терялся при отказе — человек всё ещё может уйти на /login по
-// той же ссылке-приглашению.
+// denyRegistration отказывает в регистрации и рисует заглушку без формы
+// (RegisterStub). next передаётся в шаблон, чтобы адресат не терялся при
+// отказе — человек всё ещё может уйти на /login по той же
+// ссылке-приглашению.
 //
-// reason уходит только в лог: клиенту все причины отказа обязаны выглядеть
-// одинаково, иначе различие снова становится оракулом. Адрес в лог не пишется
-// — это ПДн, а для разбора хватает причины и IP.
+// reason уходит только в лог: ВНУТРИ режима invite все причины отказа
+// (нет токена/битый токен/чужой адрес) обязаны выглядеть одинаково, иначе
+// различие снова становится оракулом. Между режимами копия честно разная
+// (QA MINOR-UX-2): сам режим — не секрет, его показывает уже GET, а совет
+// «получите приглашение» в closed-режиме вводил в заблуждение — там оно не
+// помогает. Адрес в лог не пишется — это ПДн, для разбора хватает причины
+// и IP.
 func (h *Handler) denyRegistration(w http.ResponseWriter, r *http.Request, next, reason string) {
 	slog.Warn("register: denied", "reason", reason, "ip", h.clientIP(r))
+	msg := i18n.T(r.Context(), "auth.register.invite_required")
+	if h.RegistrationMode == "closed" {
+		msg = i18n.T(r.Context(), "auth.register.closed_denied")
+	}
 	w.WriteHeader(http.StatusForbidden)
-	_ = templates.Register(i18n.T(r.Context(), "auth.register.invite_required"), true, next,
+	_ = templates.RegisterStub(msg, h.RegistrationMode, next,
 		h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
@@ -247,7 +277,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
 		!h.emailLimiter.Allow(normalizeEmail(email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Register(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -282,7 +312,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if password != password2 {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(i18n.T(r.Context(), "err.auth.passwords_differ"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.passwords_differ"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -297,14 +327,14 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(i18n.T(r.Context(), "err.auth.sso_required"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.sso_required"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Register(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Register(registerErrorMessage(r.Context(), err), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(registerErrorMessage(r.Context(), err), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 

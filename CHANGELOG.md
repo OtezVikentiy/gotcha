@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Anonymized notification subjects are human-readable. A recipient outside the trusted perimeter used to get the raw event enum with a lowercase prefix — `[gotcha] new_issue` — instead of the `[Gotcha]` prefix and human captions every other subject carries. Redacted subjects and bodies now say what happened («[Gotcha] Новая проблема», "[Gotcha] Monitor is down") in the instance language, still without any details; a completeness test holds the label dictionary to every alert kind of every notifier.
+- The sign-up page copy matches the registration mode. In `invite` mode the form warned about nothing and the dead end surfaced only after submitting; it now says up front that sign-up is invite-only and to use the link from the invitation email — the warning disappears when the visitor arrives by such a link. In `closed` mode the info page borrowed the invite-mode text and advised getting an invitation, which does not help there — it now honestly says new accounts are not created. A rejected submission shows one message instead of two nearly identical paragraphs.
+- The invitation email names the organization and the inviter. The subject read "Invitation to a Gotcha organization" — on the Russian locale it read as an organization literally named «Gotcha» — and the body did not say who invites or where; on a multi-organization instance the recipient could not tell what they were joining.
+- Large metric values are written compactly — `910M`, `1.25G` — instead of scientific notation: thresholds and incident values on the metric alerts page showed `avg > 8e+08`, unreadable for bytes. Chart axes shared the defect one step later (a value from a billion rendered as `1e+03M`) and use the same compact format now.
+- The transactions table indicates its default sort. The list arrives sorted by throughput, but no column carried `aria-sort` or the arrow until an explicit click on a header.
+
 ## [0.4.2] - 2026-08-04
 
 ### Added

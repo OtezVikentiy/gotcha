@@ -1,9 +1,11 @@
 package notify_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
@@ -32,7 +34,8 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 		"secret":        "tok",
 	}
 
-	out := notify.RedactExternalPayload(full)
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	out := notify.RedactExternalPayload(ctx, full)
 
 	// Чувствительные поля должны исчезнуть.
 	for _, k := range []string{"title", "culprit", "level", "target_name", "monitor_name", "function", "cause"} {
@@ -62,11 +65,37 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	if _, ok := out["secret"]; ok {
 		t.Errorf("secret не должен переживать редакцию: %+v", out)
 	}
-	if out["subject"] != "[gotcha] new_issue" {
-		t.Errorf("subject = %v, want route-only", out["subject"])
+	// Тема/тело — человекочитаемая подпись вида на языке инстанса и ссылка,
+	// в стиле остальных тем («[Gotcha] …»), а не сырой enum (QA MINOR-4).
+	if out["subject"] != "[Gotcha] New issue" {
+		t.Errorf("subject = %v, want humanized route-only", out["subject"])
 	}
-	if out["body"] != "new_issue\n\nhttps://gotcha.example/issues/42" {
-		t.Errorf("body = %v, want route-only", out["body"])
+	if out["body"] != "New issue\n\nhttps://gotcha.example/issues/42" {
+		t.Errorf("body = %v, want humanized route-only", out["body"])
+	}
+}
+
+// TestRedactExternalPayloadLocalizedLabel: подпись вида берётся из каталога
+// локали инстанса (GOTCHA_LOCALE), как и остальные тексты уведомлений.
+func TestRedactExternalPayloadLocalizedLabel(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	out := notify.RedactExternalPayload(ctx, map[string]any{
+		"kind": "down", "url": "https://gotcha.example/monitors/1",
+	})
+	if out["subject"] != "[Gotcha] Монитор недоступен" {
+		t.Errorf("subject = %v, want russian label", out["subject"])
+	}
+}
+
+// TestRedactExternalPayloadUnknownKind: незнакомый вид уходит сырым enum'ом,
+// а не пустой строкой — та же честность, что у issueAlertKindLabel.
+func TestRedactExternalPayloadUnknownKind(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	out := notify.RedactExternalPayload(ctx, map[string]any{
+		"kind": "mystery_kind", "url": "u",
+	})
+	if out["subject"] != "[Gotcha] mystery_kind" {
+		t.Errorf("subject = %v, want raw kind fallback", out["subject"])
 	}
 }
 
@@ -77,7 +106,7 @@ func TestRedactExternalPayloadDoesNotMutateInput(t *testing.T) {
 		"kind": "down", "title": "boom", "url": "u",
 		"channel_kind": "telegram", "target": "t", "secret": "s",
 	}
-	_ = notify.RedactExternalPayload(full)
+	_ = notify.RedactExternalPayload(context.Background(), full)
 	if full["title"] != "boom" {
 		t.Fatalf("input mutated: %+v", full)
 	}

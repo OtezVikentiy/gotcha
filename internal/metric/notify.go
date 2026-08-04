@@ -94,7 +94,7 @@ func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 		// Гейт трансграничной передачи: получателю вне контура оператора
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).
 		if !n.Details.AllowsDetails(ch) {
-			payload = notify.RedactExternalPayload(payload)
+			payload = notify.RedactExternalPayload(ctx, payload)
 		}
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("metric: notify enqueue failed", "channel_id", ch.ID, "error", err)

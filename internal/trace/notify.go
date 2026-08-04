@@ -190,7 +190,7 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 		// Гейт трансграничной передачи: получателю вне контура оператора
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).
 		if !n.Details.AllowsDetails(ch) {
-			payload = notify.RedactExternalPayload(payload)
+			payload = notify.RedactExternalPayload(lctx, payload)
 		}
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("trace: notify: enqueue failed", "channel_id", ch.ID, "error", err)

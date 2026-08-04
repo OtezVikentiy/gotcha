@@ -32,12 +32,67 @@ package humanize
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
+
+// CompactNumber — компактная человекочитаемая запись произвольного числа
+// (значения и пороги OTLP-метрик): до трёх значащих цифр с суффиксом
+// k/M/G/T вместо научной нотации («9.1e+08» → «910M» — QA-находка о
+// нечитаемых порогах на странице правил метрик). Значения ниже тысячи
+// печатаются без суффикса; совсем мелкие (<0.001) — научной нотацией:
+// для них она честнее каши из нулей.
+//
+// Не локализуется намеренно: суффиксы СИ-подобные и едины для обеих локалей,
+// как единицы на осях графиков (см. formatAxisValue в internal/web —
+// делегирует сюда).
+func CompactNumber(v float64) string {
+	abs := math.Abs(v)
+	switch {
+	case abs >= 1e12:
+		return compactMantissa(v/1e12) + "T"
+	case abs >= 1e9:
+		return compactMantissa(v/1e9) + "G"
+	case abs >= 1e6:
+		return compactMantissa(v/1e6) + "M"
+	case abs >= 1e3:
+		return compactMantissa(v/1e3) + "k"
+	case abs > 0 && abs < 0.001:
+		return strconv.FormatFloat(v, 'g', 3, 64)
+	default:
+		return compactMantissa(v)
+	}
+}
+
+// compactMantissa печатает число с точностью до трёх значащих цифр в
+// десятичной записи, срезая хвостовые нули («1.50» → «1.5», «17.0» → «17»).
+// Для мантисс суффиксов диапазон [1, 1000); для значений без суффикса
+// добавляются разряды после точки вплоть до 0.001.
+func compactMantissa(v float64) string {
+	prec := 2
+	switch abs := math.Abs(v); {
+	case abs >= 100:
+		prec = 0
+	case abs >= 10:
+		prec = 1
+	case abs < 0.01:
+		prec = 5
+	case abs < 0.1:
+		prec = 4
+	case abs < 1:
+		prec = 3
+	}
+	s := strconv.FormatFloat(v, 'f', prec, 64)
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
+	return s
+}
 
 // Ago — локализованное относительное время вида «3 секунды назад»/«5 минут
 // назад»/«2 часа назад»/«4 дня назад» (см. plurals time.ago.* в каталогах

@@ -151,7 +151,7 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 			// level и без текста ошибки в теле/subject — только маршрутные
 			// поля, ссылка на issue и вид алерта (см. Evaluator.Details
 			// и notify.RedactExternalPayload — тот же гейт во всех нотифаерах).
-			payload = notify.RedactExternalPayload(payload)
+			payload = notify.RedactExternalPayload(lctx, payload)
 		}
 		if err := e.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("alert: enqueue failed", "channel_id", ch.ID, "error", err)

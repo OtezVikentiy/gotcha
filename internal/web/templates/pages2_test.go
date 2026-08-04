@@ -22,11 +22,11 @@ func TestAuthPages(t *testing.T) {
 	if !strings.Contains(login, "неверный пароль") || !strings.Contains(login, "Яндекс") {
 		t.Error("логин должен показать ошибку и OAuth-кнопки")
 	}
-	reg := renderTo(t, Register("", false, "", providers))
+	reg := renderTo(t, RegisterForm("", false, "", providers))
 	if !strings.Contains(reg, "GitHub") {
 		t.Error("регистрация должна показать OAuth-кнопки")
 	}
-	regClosed := renderTo(t, Register("", true, "", nil))
+	regClosed := renderTo(t, RegisterStub("", "closed", "", nil))
 	if len(regClosed) == 0 {
 		t.Error("закрытая регистрация всё равно рендерится")
 	}

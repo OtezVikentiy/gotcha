@@ -245,3 +245,32 @@ func TestLocationOrUTC(t *testing.T) {
 		t.Errorf("LocationOrUTC(Europe/Moscow) = %v, want сам пояс", got)
 	}
 }
+
+// TestCompactNumber — компактная запись чисел метрик: суффиксы k/M/G/T,
+// три значащие цифры, никакой научной нотации для крупных значений
+// (QA-находка «avg > 8e+08» на странице правил метрик).
+func TestCompactNumber(t *testing.T) {
+	cases := []struct {
+		v    float64
+		want string
+	}{
+		{0, "0"},
+		{17, "17"},
+		{10.5, "10.5"},
+		{0.25, "0.25"},
+		{999, "999"},
+		{1500, "1.5k"},
+		{8e8, "800M"},
+		{9.1e8, "910M"},
+		{1.25e9, "1.25G"},
+		{5e12, "5T"},
+		{-1500, "-1.5k"},
+		{123.456, "123"},
+		{0.000005, "5e-06"},
+	}
+	for _, c := range cases {
+		if got := humanize.CompactNumber(c.v); got != c.want {
+			t.Errorf("CompactNumber(%v) = %q, want %q", c.v, got, c.want)
+		}
+	}
+}

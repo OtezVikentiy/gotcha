@@ -103,60 +103,84 @@ func registerLinkWithNext(next string) string {
 	return "/register?next=" + url.QueryEscape(next)
 }
 
-// Register — экран регистрации. При closed=true (режим invite/closed и первый
-// пользователь уже есть, PROD-B1) парольная форма скрыта: показываем экран
-// «регистрация по приглашению» с OAuth-кнопками (инвайт-flow) и ссылками.
+// RegisterForm — рабочая форма регистрации (open, invite и bootstrap первого
+// пользователя).
+//
+// inviteNote=true — режим invite без токена приглашения в next (QA
+// MINOR-UX-2): форма остаётся (по ней же проходит bootstrap и приглашённые,
+// потерявшие query), но человек ДО ввода пароля видит, что без
+// ссылки-приглашения отправка упрётся в отказ — раньше тупик выяснялся
+// только после сабмита.
 //
 // next — куда вернуть человека после регистрации (см. Login выше): тот же
-// приём, скрытое поле, переживающее POST формы. В closed-ветке скрытого поля
-// нет (формы нет вовсе), поэтому next переживает переход дальше — на /login —
-// через query-параметр ссылки.
-templ Register(errMsg string, closed bool, next string, providers []OAuthButton) {
+// приём, скрытое поле, переживающее POST формы.
+templ RegisterForm(errMsg string, inviteNote bool, next string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
-		if closed {
-			<div class="auth-form">
-				<h1>{ i18n.T(ctx, "auth.register.invite_title") }</h1>
-				// Красная плашка — только реальной ошибке POST (№68): на GET
-				// закрытая регистрация — штатное состояние, о нём говорит
-				// информационный абзац ниже, и дублировать его ошибкой незачем.
-				if errMsg != "" {
-					<p class="error">{ errMsg }</p>
-				}
-				<p>{ i18n.T(ctx, "auth.register.closed_body") }</p>
-				<p class="auth-switch"><a href={ templ.URL(loginLinkWithNext(next)) }>{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
+		<form method="post" action="/register" class="auth-form">
+			<h1>{ i18n.T(ctx, "auth.register.title") }</h1>
+			if next != "" {
+				<input type="hidden" name="next" value={ next }/>
+			}
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			if inviteNote {
+				<p class="warning">{ i18n.T(ctx, "auth.register.invite_note") }</p>
+			}
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "auth.email") }
+					<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
+				</label>
 			</div>
-			@oauthButtons(providers)
-		} else {
-			<form method="post" action="/register" class="auth-form">
-				<h1>{ i18n.T(ctx, "auth.register.title") }</h1>
-				if next != "" {
-					<input type="hidden" name="next" value={ next }/>
-				}
-				if errMsg != "" {
-					<p class="error">{ errMsg }</p>
-				}
-				<div class="field">
-					<label>
-						{ i18n.T(ctx, "auth.email") }
-						<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
-					</label>
-				</div>
-				<div class="field">
-					<label>
-						{ i18n.T(ctx, "auth.password") }
-						<input type="password" name="password" autocomplete="new-password" required class="input"/>
-					</label>
-				</div>
-				<div class="field">
-					<label>
-						{ i18n.T(ctx, "auth.password2") }
-						<input type="password" name="password2" autocomplete="new-password" required class="input"/>
-					</label>
-				</div>
-				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.register.submit") }</button>
-				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.register.have_account") }</a></p>
-			</form>
-			@oauthButtons(providers)
-		}
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "auth.password") }
+					<input type="password" name="password" autocomplete="new-password" required class="input"/>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "auth.password2") }
+					<input type="password" name="password2" autocomplete="new-password" required class="input"/>
+				</label>
+			</div>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.register.submit") }</button>
+			<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.register.have_account") }</a></p>
+		</form>
+		@oauthButtons(providers)
+	}
+}
+
+// RegisterStub — экран регистрации без формы: GET в режиме closed (PROD-B1,
+// bootstrap пройден) и 403-отказы POST (denyRegistration). Копия — по режиму
+// (QA MINOR-UX-2): в closed не предлагаем «получить приглашение» — оно там
+// не поможет.
+//
+// Красная плашка — только реальной ошибке POST (№68): на GET закрытая
+// регистрация — штатное состояние, о нём говорит информационный абзац. При
+// ошибке абзац не дублируется: плашка и абзац рассказывали одно и то же
+// двумя почти одинаковыми текстами.
+//
+// next переживает переход дальше — на /login — через query-параметр ссылки
+// (формы со скрытым полем здесь нет).
+templ RegisterStub(errMsg string, mode string, next string, providers []OAuthButton) {
+	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
+		<div class="auth-form">
+			if mode == "closed" {
+				<h1>{ i18n.T(ctx, "auth.register.closed_title") }</h1>
+			} else {
+				<h1>{ i18n.T(ctx, "auth.register.invite_title") }</h1>
+			}
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			} else if mode == "closed" {
+				<p>{ i18n.T(ctx, "auth.register.closed_body") }</p>
+			} else {
+				<p>{ i18n.T(ctx, "auth.register.invite_required") }</p>
+			}
+			<p class="auth-switch"><a href={ templ.URL(loginLinkWithNext(next)) }>{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
+		</div>
+		@oauthButtons(providers)
 	}
 }

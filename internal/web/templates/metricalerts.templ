@@ -14,8 +14,11 @@ func metricAlertsBasePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics/alerts"
 }
 
+// fmtFloat — значение/порог метрики для таблиц правил и инцидентов.
+// Компактная запись вместо strconv 'g' (QA: «avg > 8e+08» нечитаемо для
+// байтов) — тот же формат, что на осях графиков метрик (formatAxisValue).
 func fmtFloat(v float64) string {
-	return strconv.FormatFloat(v, 'g', 6, 64)
+	return humanize.CompactNumber(v)
 }
 
 func comparatorSymbol(c string) string {

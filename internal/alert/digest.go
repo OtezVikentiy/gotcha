@@ -127,7 +127,7 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 		}
 		// Тот же гейт трансграничной передачи, что у остальных нотифаеров.
 		if !d.Details.AllowsDetails(ch) {
-			payload = notify.RedactExternalPayload(payload)
+			payload = notify.RedactExternalPayload(ctx, payload)
 		}
 		if err := d.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			return fmt.Errorf("alert: digest enqueue channel %d: %w", ch.ID, err)

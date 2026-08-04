@@ -484,3 +484,88 @@ func TestRegisterFormVisibleInInviteMode(t *testing.T) {
 		t.Fatalf("closed mode must not render the form:\n%s", body)
 	}
 }
+
+// TestRegisterModeCopy — копия /register различает режимы (QA MINOR-UX-2):
+// invite-форма без токена предупреждает о тупике ДО сабмита, с токеном — нет;
+// closed-заглушка не советует «получить приглашение» (оно там не поможет);
+// 403-отказ не дублирует один и тот же текст плашкой и абзацем.
+func TestRegisterModeCopy(t *testing.T) {
+	get := func(t *testing.T, srvURL, path string) string {
+		t.Helper()
+		resp, err := http.Get(srvURL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return string(body)
+	}
+
+	t.Run("invite form warns without token", func(t *testing.T) {
+		s := newInviteModeStack(t)
+		_, token := seedOrgWithInvite(t, s, "copycheck@example.com", org.RoleMember)
+
+		// Без токена: форма на месте, предупреждение видно.
+		body := get(t, s.srv.URL, "/register")
+		if !strings.Contains(body, `name="password2"`) {
+			t.Fatalf("invite mode must render the form:\n%s", body)
+		}
+		if !strings.Contains(body, `class="warning"`) {
+			t.Fatalf("invite mode without token must warn about invite-only sign-up:\n%s", body)
+		}
+
+		// С токеном приглашения путь штатный — предупреждения нет.
+		body = get(t, s.srv.URL, "/register?next="+url.QueryEscape("/invite/"+token))
+		if strings.Contains(body, `class="warning"`) {
+			t.Fatalf("invite link flow must not warn:\n%s", body)
+		}
+	})
+
+	t.Run("closed stub copy has no invite advice", func(t *testing.T) {
+		s := newInviteModeStack(t)
+		seedOrgWithInvite(t, s, "closedcopy@example.com", org.RoleMember)
+		s.h.RegistrationMode = "closed"
+
+		body := get(t, s.srv.URL, "/register")
+		if !strings.Contains(body, "Регистрация закрыта") {
+			t.Fatalf("closed stub must carry the closed title:\n%s", body)
+		}
+		if strings.Contains(body, "приглашен") {
+			t.Fatalf("closed stub must not suggest invites:\n%s", body)
+		}
+	})
+
+	t.Run("denials carry a single mode-true message", func(t *testing.T) {
+		s := newInviteModeStack(t)
+		seedOrgWithInvite(t, s, "denycopy@example.com", org.RoleMember)
+
+		// invite: отказ без токена — плашка есть, дублирующего абзаца нет.
+		resp := postForm(t, s.srv, "/register", registerForm("denycopy@example.com", ""), s.srv.URL, nil)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("invite denial status = %d, want 403", resp.StatusCode)
+		}
+		if !strings.Contains(string(body), `class="error"`) {
+			t.Fatalf("invite denial must show the error banner:\n%s", body)
+		}
+		if strings.Contains(string(body), "администратору инстанса") {
+			t.Fatalf("invite denial must not duplicate the info paragraph:\n%s", body)
+		}
+
+		// closed: отказ говорит «регистрация отключена», а не «получите приглашение».
+		s.h.RegistrationMode = "closed"
+		resp = postForm(t, s.srv, "/register", registerForm("denycopy2@example.com", ""), s.srv.URL, nil)
+		body, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("closed denial status = %d, want 403", resp.StatusCode)
+		}
+		if !strings.Contains(string(body), "новые аккаунты не заводятся") {
+			t.Fatalf("closed denial must state registration is disabled:\n%s", body)
+		}
+		if strings.Contains(string(body), "приглашен") {
+			t.Fatalf("closed denial must not suggest invites:\n%s", body)
+		}
+	})
+}

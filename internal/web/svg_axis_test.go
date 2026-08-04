@@ -16,6 +16,11 @@ func TestFormatAxisValueSkipsDimensionlessUnit(t *testing.T) {
 		{17, "", "17"},
 		{17, "ms", "17 ms"},
 		{1500, "ms", "1.5k ms"},
+		// Значения от миллиарда: суффиксы G/T, а не научная нотация
+		// («1e+03M») — тот же дефект-класс, что QA-находка «avg > 8e+08».
+		{9.1e8, "By", "910M By"},
+		{1.25e9, "", "1.25G"},
+		{5e12, "", "5T"},
 	}
 	for _, c := range cases {
 		if got := formatAxisValue(c.v, c.unit); got != c.want {

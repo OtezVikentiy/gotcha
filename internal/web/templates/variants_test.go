@@ -115,7 +115,7 @@ func TestMonitorDetailPausedDisabled(t *testing.T) {
 // TestRegisterClosed — регистрация в закрытом режиме прячет форму (ветка
 // closed=true).
 func TestRegisterClosed(t *testing.T) {
-	out := renderTo(t, Register("", true, "", nil))
+	out := renderTo(t, RegisterStub("", "closed", "", nil))
 	if len(out) == 0 {
 		t.Error("закрытая регистрация должна что-то рендерить")
 	}

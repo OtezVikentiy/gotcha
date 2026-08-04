@@ -630,11 +630,28 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	// best-effort: ошибка SMTP не должна ронять сам POST — ссылка-приглашение
 	// всё равно показывается в UI ниже и её можно передать вручную.
 	if h.Email != nil && h.Email.Configured() {
+		// Имя организации и адрес приглашающего — в тексте письма (QA
+		// MINOR-3): «Приглашение в организацию Gotcha» читалось как
+		// организация с именем «Gotcha», а на мульти-org инсталляции
+		// получатель вовсе не понимал, куда и кто его зовёт. Ошибки
+		// подстановок не роняют отправку (письмо и так best-effort):
+		// приглашение уже выписано, ссылка показана в UI.
+		orgName := ""
+		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
+			orgName = o.Name
+		} else {
+			slog.Warn("orgSettingsInvite: org lookup for email failed", "org_id", orgID, "err", err)
+		}
+		inviter, err := h.Auth.UserEmail(r.Context(), uid)
+		if err != nil {
+			slog.Warn("orgSettingsInvite: inviter lookup for email failed", "org_id", orgID, "err", err)
+		}
 		payload := map[string]any{
 			// Письмо уходит на языке приглашающего: локаль адресата ещё
 			// неизвестна — он в системе не зарегистрирован.
-			"subject": i18n.T(r.Context(), "org.invite.email_subject"),
-			"body":    i18n.Tf(r.Context(), "org.invite.email_body", "link", inviteLink),
+			"subject": i18n.Tf(r.Context(), "org.invite.email_subject", "org", orgName),
+			"body": i18n.Tf(r.Context(), "org.invite.email_body",
+				"org", orgName, "inviter", inviter, "link", inviteLink),
 		}
 		if err := h.Email.Send(r.Context(), notify.Target{Kind: "email", Target: email}, payload); err != nil {
 			slog.Warn("orgSettingsInvite: failed to send invite email", "org_id", orgID, "err", err)

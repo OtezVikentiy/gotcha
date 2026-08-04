@@ -93,7 +93,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	tr := h.resolveTimeRange(w, r, perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
-	sortKey := r.URL.Query().Get("sort")
+	sortKey := canonicalEndpointSort(r.URL.Query().Get("sort"))
 
 	from, now := tr.From, tr.To
 
@@ -137,6 +137,18 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 	_ = templates.PerformanceList(projectID, rows, total, filter, environments, int(project.ApdexThresholdMS),
 		h.cardinalityNotices(projectID), h.currentEmail(r)).
 		Render(r.Context(), w)
+}
+
+// canonicalEndpointSort приводит query-параметр sort к фактически применяемой
+// колонке: пустой/незнакомый ключ означает сортировку по throughput (см.
+// sortEndpointStats), и заголовок таблицы обязан показывать её aria-sort'ом и
+// стрелкой уже с первого захода, а не только после явного клика (QA MINOR-5).
+func canonicalEndpointSort(sortKey string) string {
+	switch sortKey {
+	case "name", "p50", "p75", "p95", "p99", "failure", "apdex":
+		return sortKey
+	}
+	return "throughput"
 }
 
 // sortEndpointStats сортирует список эндпойнтов по query-параметру sort. Дефолт
