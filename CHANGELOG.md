@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claim windows for the notification outbox, alert throttling, and the alert budget are now computed by the database clock. A process whose clock ran fast could take another worker's lease and send an alert twice.
 - Weekly maintenance windows keep the duration you configured across daylight-saving transitions. A 02:00–04:00 window collapsed to one hour on the spring transition and started an hour late on the autumn one, missing the first check.
 - Open registration mode now provisions an account on the first OAuth sign-in without an invitation, as the docs promised — OAuth used to demand a pending invitation even under `open`. A pending invitation for the address, if any, is accepted along the way; `invite` and `closed` are unchanged.
+- An event carrying a NUL byte (0x00) in any string field is stored instead of being lost. JSON allows NUL, PostgreSQL text columns do not: ingest accepted such an event with `200 OK` and then dropped it on the issue write — the sender believed it was delivered. NUL bytes are now stripped from every untrusted string on all ingest surfaces (events, transactions, OTLP, profiles).
 
 ### Security
 - OTLP span attributes are capped before the maps are built, not after. A 10 MiB body (about 30 KB gzipped) carries roughly 1.2 million attributes, and parsing them cost about 100 MB on top of the body — measured at 184 MB for a million attributes. The cap is 256 attributes per span; `maxDataKeys` still applies among those.

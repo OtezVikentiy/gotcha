@@ -516,3 +516,65 @@ func TestCapRunesFastPath(t *testing.T) {
 		}
 	}
 }
+
+// PG отвергает NUL (0x00) в text-колонках (SQLSTATE 22021): событие с NUL в
+// любом строковом поле принималось приёмом с 200 и погибало на issue-upsert —
+// клиент считал событие доставленным, данные терялись. Все недоверенные
+// строки проходят через capRunes, поэтому вычистка закреплена на ней.
+func TestCapRunesStripsNUL(t *testing.T) {
+	if got := capRunes("a\x00b\x00", 100); got != "ab" {
+		t.Fatalf("capRunes = %q, want %q", got, "ab")
+	}
+	// Быстрый путь (len(s) <= n) не должен пропускать NUL без вычистки.
+	if got := capRunes("\x00", 100); got != "" {
+		t.Fatalf("capRunes short = %q, want empty", got)
+	}
+	// Обрезка длины по-прежнему работает (после вычистки).
+	if got := capRunes("\x00abcdef", 3); got != "abc" {
+		t.Fatalf("capRunes cap = %q, want %q", got, "abc")
+	}
+}
+
+func TestParseEventStripsNUL(t *testing.T) {
+	raw := []byte(`{
+		"event_id": "cccccccccccccccccccccccccccccccc",
+		"level": "error",
+		"environment": "prod\u0000uction",
+		"exception": {"values": [{
+			"type": "Unicode\u0000Error",
+			"value": "nul=\u0000 inside",
+			"stacktrace": {"frames": [{"function": "fn\u0000name", "filename": "f.py"}]}
+		}]},
+		"tags": {"k\u0000ey": "va\u0000lue"},
+		"message": "msg\u0000tail"
+	}`)
+	pe, err := ParseEvent(raw)
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	checks := map[string]string{
+		"Title":       pe.Title,
+		"Culprit":     pe.Culprit,
+		"Message":     pe.Message,
+		"Environment": pe.Environment,
+	}
+	for _, ex := range pe.Exceptions {
+		checks["Exception.Type"] = ex.Type
+		checks["Exception.Value"] = ex.Value
+		for _, fr := range ex.Frames {
+			checks["Frame.Function"] = fr.Function
+		}
+	}
+	for k, v := range pe.Tags {
+		checks["Tag key "+k] = k
+		checks["Tag value "+k] = v
+	}
+	for name, v := range checks {
+		if strings.ContainsRune(v, 0) {
+			t.Errorf("%s = %q still carries NUL", name, v)
+		}
+	}
+	if pe.Environment != "production" {
+		t.Errorf("Environment = %q, want %q", pe.Environment, "production")
+	}
+}
