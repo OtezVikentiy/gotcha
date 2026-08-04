@@ -24,9 +24,9 @@ the issue before any public disclosure.
 
 ## Supported versions
 
-Gotcha does not yet have numbered releases; security fixes are applied to
-the `main` branch. Once tagged releases exist, this section will be updated
-to state which release lines receive security fixes.
+Security fixes land in the `main` branch and ship with the next tagged
+release. The latest release line is supported; older releases do not
+receive backported fixes — upgrade to the current release to get them.
 
 ## Security posture
 
@@ -43,7 +43,7 @@ A few defaults are worth knowing about when running Gotcha:
   `GOTCHA_SSRF_ALLOW_PRIVATE=true`. Leave this off on any multi-tenant or
   internet-facing instance.
 - **The default `GOTCHA_SECRET_KEY` is public** (it ships in source) and the
-  process refuses to start in `web`/`all` mode against a non-local
+  process refuses to start in every mode except `probe` against a non-local
   `GOTCHA_BASE_URL` unless a real secret is configured — see the README's
   Configuration section.
 

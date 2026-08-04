@@ -16,16 +16,19 @@ const devSecretKey = "insecure-dev-secret"
 
 // Config собирается из env (префикс GOTCHA_) и флагов командной строки.
 type Config struct {
-	Mode                 string // ingest | web | uptime | probe | all
-	Addr                 string
-	BaseURL              string
-	PostgresDSN          string
-	ClickHouseDSN        string
-	SMTPHost             string
-	SMTPPort             int
-	SMTPUser             string
-	SMTPPassword         string
-	SMTPFrom             string
+	Mode          string // ingest | web | uptime | probe | all
+	Addr          string
+	BaseURL       string
+	PostgresDSN   string
+	ClickHouseDSN string
+	SMTPHost      string
+	SMTPPort      int
+	SMTPUser      string
+	SMTPPassword  string
+	SMTPFrom      string
+	// RetentionDays и родственные *RetentionDays ниже: 0 = хранить вечно
+	// (№34, TTL в ClickHouse снимается). Исключение — OutboxRetentionDays,
+	// у которой пол >= 1 сохранён: outbox — рабочая очередь, не архив.
 	RetentionDays        int
 	SpanRetentionDays    int
 	MetricRetentionDays  int
@@ -52,6 +55,10 @@ type Config struct {
 	// docker-compose.small.yml ставит контейнеру mem_limit 256m — там потолок
 	// физически не может сработать раньше OOM-killer'а.
 	MaxBufferBytes int64
+	// IngestRateLimit — per-DSN токен-бакет приёма, запросов/с на project id
+	// (GOTCHA_INGEST_RATE_LIMIT). Burst = 2×лимит. 0 выключает лимит.
+	// Срабатывает после аутентификации ключа и ДО квоты; ответ 429.
+	IngestRateLimit int
 	// MaxQueueBytes — байтовый потолок очереди приёма (в дополнение к её
 	// ёмкости в задачах). 0 = значение по умолчанию (64 МиБ).
 	//
@@ -415,6 +422,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultMetricQuota:       num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
 		DefaultProfileQuota:      num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
+		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_LIMIT", 500),
 		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
 		MaxQueueBytes:            num("GOTCHA_MAX_QUEUE_BYTES", 0),
 		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
@@ -556,20 +564,23 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, fmt.Errorf("GOTCHA_EDITION must be oss or saas, got %q", cfg.Edition)
 	}
 
-	if cfg.RetentionDays < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_RETENTION_DAYS must be >= 1, got %d", cfg.RetentionDays)
+	if cfg.RetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.RetentionDays)
 	}
-	if cfg.SpanRetentionDays < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_SPAN_RETENTION_DAYS must be >= 1, got %d", cfg.SpanRetentionDays)
+	if cfg.SpanRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_SPAN_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.SpanRetentionDays)
 	}
-	if cfg.MetricRetentionDays < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_METRIC_RETENTION_DAYS must be >= 1, got %d", cfg.MetricRetentionDays)
+	if cfg.MetricRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_METRIC_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.MetricRetentionDays)
 	}
 	if cfg.AlertBudgetWindowSeconds < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS must be >= 1, got %d", cfg.AlertBudgetWindowSeconds)
 	}
 	if cfg.AlertBudgetLimit < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_LIMIT must be >= 0 (0 disables the ceiling), got %d", cfg.AlertBudgetLimit)
+	}
+	if cfg.IngestRateLimit < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_INGEST_RATE_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit)
 	}
 	if cfg.CardinalityLimit < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit)
@@ -580,11 +591,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.MetricEvalInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL must be >= 1, got %d", cfg.MetricEvalInterval)
 	}
-	if cfg.ProfileRetentionDays < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 1, got %d", cfg.ProfileRetentionDays)
+	if cfg.ProfileRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.ProfileRetentionDays)
 	}
-	if cfg.IncidentRetentionDays < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 1, got %d", cfg.IncidentRetentionDays)
+	if cfg.IncidentRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.IncidentRetentionDays)
 	}
 	if cfg.OutboxRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)

@@ -54,6 +54,19 @@ func TestRateLimiterDisabled(t *testing.T) {
 	}
 }
 
+// TestSetRateLimitZeroDisablesLimit: SetRateLimit(_, 0, 0) — «лимит выключен»
+// (ветка rate <= 0 в rateLimiter.Allow). На это поведение опирается
+// GOTCHA_INGEST_RATE_LIMIT=0 (№35).
+func TestSetRateLimitZeroDisablesLimit(t *testing.T) {
+	h := NewHandler(nil, nil, nil, 0)
+	h.SetRateLimit(nil, 0, 0)
+	for i := 0; i < 2000; i++ {
+		if !h.rate.Allow(42) {
+			t.Fatalf("request %d rejected with disabled limit", i)
+		}
+	}
+}
+
 // TestHandlerRateLimited: h.rateLimited пишет 429 с Retry-After при исчерпании
 // бакета и не трогает ответ, пока токены есть.
 func TestHandlerRateLimited(t *testing.T) {

@@ -172,20 +172,40 @@ func TestLoadConfigInvalidInt(t *testing.T) {
 	}
 }
 
-func TestLoadConfigNonPositiveRetention(t *testing.T) {
-	for _, v := range []string{"0", "-5"} {
-		env := map[string]string{"GOTCHA_RETENTION_DAYS": v}
-		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
-			t.Fatalf("GOTCHA_RETENTION_DAYS=%q: want error, got nil", v)
-		}
+// №34: 0 = хранить вечно. Пол >= 1 снят у пяти переменных ретенции;
+// документация (configuration.md) обещала это раньше, чем смог код.
+func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_RETENTION_DAYS":          "0",
+		"GOTCHA_SPAN_RETENTION_DAYS":     "0",
+		"GOTCHA_METRIC_RETENTION_DAYS":   "0",
+		"GOTCHA_PROFILE_RETENTION_DAYS":  "0",
+		"GOTCHA_INCIDENT_RETENTION_DAYS": "0",
+	}
+	cfg, err := loadConfig(getenvFrom(env), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.RetentionDays != 0 || cfg.SpanRetentionDays != 0 ||
+		cfg.MetricRetentionDays != 0 || cfg.ProfileRetentionDays != 0 ||
+		cfg.IncidentRetentionDays != 0 {
+		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d",
+			cfg.RetentionDays, cfg.SpanRetentionDays, cfg.MetricRetentionDays,
+			cfg.ProfileRetentionDays, cfg.IncidentRetentionDays)
 	}
 }
 
-func TestLoadConfigNonPositiveSpanRetention(t *testing.T) {
-	for _, v := range []string{"0", "-5"} {
-		env := map[string]string{"GOTCHA_SPAN_RETENTION_DAYS": v}
+func TestLoadConfigNegativeRetentionRejected(t *testing.T) {
+	for _, key := range []string{
+		"GOTCHA_RETENTION_DAYS",
+		"GOTCHA_SPAN_RETENTION_DAYS",
+		"GOTCHA_METRIC_RETENTION_DAYS",
+		"GOTCHA_PROFILE_RETENTION_DAYS",
+		"GOTCHA_INCIDENT_RETENTION_DAYS",
+	} {
+		env := map[string]string{key: "-1"}
 		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
-			t.Fatalf("GOTCHA_SPAN_RETENTION_DAYS=%q: want error, got nil", v)
+			t.Errorf("%s=-1: want error, got nil", key)
 		}
 	}
 }
@@ -298,8 +318,27 @@ func TestLoadConfigProfileDefaults(t *testing.T) {
 	if cfg.DefaultProfileQuota != 0 {
 		t.Errorf("DefaultProfileQuota = %d, want 0 (oss unlimited)", cfg.DefaultProfileQuota)
 	}
-	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_RETENTION_DAYS": "0"}), nil); err == nil {
-		t.Error("zero profile retention must fail")
+}
+
+// №35: per-DSN лимит приёма настраивается; 0 выключает, дефолт 500 совпадает
+// с прежним захардкоженным defaultIngestRatePerSec.
+func TestLoadConfigIngestRateLimit(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.IngestRateLimit != 500 {
+		t.Fatalf("default IngestRateLimit = %d, want 500", cfg.IngestRateLimit)
+	}
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_LIMIT": "0"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig with 0: %v", err)
+	}
+	if cfg.IngestRateLimit != 0 {
+		t.Fatalf("IngestRateLimit = %d, want 0", cfg.IngestRateLimit)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_LIMIT": "-1"}), nil); err == nil {
+		t.Fatal("GOTCHA_INGEST_RATE_LIMIT=-1: want error, got nil")
 	}
 }
 
@@ -311,8 +350,13 @@ func TestLoadConfigOutboxRetention(t *testing.T) {
 	if cfg.OutboxRetentionDays != 7 {
 		t.Errorf("OutboxRetentionDays = %d, want 7", cfg.OutboxRetentionDays)
 	}
-	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_OUTBOX_RETENTION_DAYS": "0"}), nil); err == nil {
-		t.Error("zero outbox retention must fail")
+	// Outbox — рабочая очередь, не архив: «хранить вечно» = неограниченный
+	// рост таблицы, поэтому пол >= 1 сохранён и после №34 (0 = бессрочно
+	// у переменных ретенции телеметрии).
+	for _, v := range []string{"0", "-1"} {
+		if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_OUTBOX_RETENTION_DAYS": v}), nil); err == nil {
+			t.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS=%q: want error, got nil", v)
+		}
 	}
 }
 

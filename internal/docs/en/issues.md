@@ -17,7 +17,7 @@ The section opens from the **"Issues"** entry in the left rail (bug icon) — a 
 | Search | over title or culprit (code location) |
 | Sort | by last seen / by first seen / by frequency |
 | Environment | environments actually seen in the project |
-| Period | all time / 24h / 7 days / 30 days |
+| Period | the shared [time-range control](/docs/time-range): presets from an hour to 30 days, a custom range, and "all time" (the default). A preset picked here — or on any other page — sticks via a cookie |
 
 By default the list opens filtered to status **"unresolved"** — you see what needs attention rather than the whole history; to look at closed ones, switch the status to "resolved", "ignored", or "all".
 

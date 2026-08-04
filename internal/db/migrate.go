@@ -407,48 +407,20 @@ func ApplySpanRetention(ctx context.Context, conn driver.Conn, days int) error {
 	return applyTableTTL(ctx, conn, []string{"spans"}, days)
 }
 
-// ApplyMetricRetention выставляет TTL таблицы metric_points на days дней. Как
-// ApplySpanRetention, но по колонке ts (а не timestamp): metric_points своей
-// колонкой времени отличается от events/spans, поэтому применяем TTL напрямую,
-// а не через applyTableTTL (тот захардкожен на timestamp). Идемпотентна через
-// needsRetention.
+// ApplyMetricRetention выставляет TTL таблицы metric_points на days дней —
+// по колонке ts (а не timestamp): metric_points своей колонкой времени
+// отличается от events/spans. 0 снимает TTL (№34). Идемпотентна (см.
+// applyTableTTLColumn).
 func ApplyMetricRetention(ctx context.Context, conn driver.Conn, days int) error {
-	if days < 1 {
-		return fmt.Errorf("apply metric retention: days must be >= 1, got %d", days)
-	}
-	var ddl string
-	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE metric_points").Scan(&ddl); err != nil {
-		return fmt.Errorf("apply metric retention: read ddl: %w", err)
-	}
-	if !needsRetention(ddl, days) {
-		return nil
-	}
-	q := fmt.Sprintf("ALTER TABLE metric_points MODIFY TTL toDateTime(ts) + INTERVAL %d DAY", days)
-	if err := conn.Exec(ctx, q); err != nil {
-		return fmt.Errorf("apply metric retention: %w", err)
-	}
-	return nil
+	return applyTableTTLColumn(ctx, conn, "metric_points", "toDateTime(ts)", days)
 }
 
 // ApplyProfileRetention выставляет TTL таблицы profile_samples на days дней
-// (ALTER MODIFY TTL по колонке ts, как ApplyMetricRetention). Профили тяжёлые,
-// поэтому ретенция по умолчанию короче (7 дней). Идемпотентна через needsRetention.
+// (по колонке ts, как ApplyMetricRetention). Профили тяжёлые, поэтому ретенция
+// по умолчанию короче (7 дней). 0 снимает TTL (№34). Идемпотентна (см.
+// applyTableTTLColumn).
 func ApplyProfileRetention(ctx context.Context, conn driver.Conn, days int) error {
-	if days < 1 {
-		return fmt.Errorf("apply profile retention: days must be >= 1, got %d", days)
-	}
-	var ddl string
-	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE profile_samples").Scan(&ddl); err != nil {
-		return fmt.Errorf("apply profile retention: read ddl: %w", err)
-	}
-	if !needsRetention(ddl, days) {
-		return nil
-	}
-	q := fmt.Sprintf("ALTER TABLE profile_samples MODIFY TTL toDateTime(ts) + INTERVAL %d DAY", days)
-	if err := conn.Exec(ctx, q); err != nil {
-		return fmt.Errorf("apply profile retention: %w", err)
-	}
-	return nil
+	return applyTableTTLColumn(ctx, conn, "profile_samples", "toDateTime(ts)", days)
 }
 
 // ApplyTransactionRetention приводит TTL таблицы transactions и MV
@@ -458,8 +430,8 @@ func ApplyProfileRetention(ctx context.Context, conn driver.Conn, days int) erro
 // был захардкожен миграцией на 90 днях, а у transactions_5m TTL не было вовсе.
 // Вызывается на старте, как ApplyRetention. Идемпотентна через needsRetention.
 func ApplyTransactionRetention(ctx context.Context, conn driver.Conn, days int) error {
-	if days < 1 {
-		return fmt.Errorf("apply transaction retention: days must be >= 1, got %d", days)
+	if days < 0 {
+		return fmt.Errorf("apply transaction retention: days must be >= 0, got %d", days)
 	}
 	// transactions: колонка времени timestamp — переиспользуем общий applyTableTTL.
 	if err := applyTableTTL(ctx, conn, []string{"transactions"}, days); err != nil {
@@ -478,8 +450,8 @@ func ApplyTransactionRetention(ctx context.Context, conn driver.Conn, days int) 
 // Вызывается на старте, как ApplyTransactionRetention. Идемпотентна через
 // needsRetention.
 func ApplyWebVitalsRetention(ctx context.Context, conn driver.Conn, days int) error {
-	if days < 1 {
-		return fmt.Errorf("apply web vitals retention: days must be >= 1, got %d", days)
+	if days < 0 {
+		return fmt.Errorf("apply web vitals retention: days must be >= 0, got %d", days)
 	}
 	return applyMVTTL(ctx, conn, "web_vitals_5m", "bucket", days)
 }
@@ -490,6 +462,9 @@ func ApplyWebVitalsRetention(ctx context.Context, conn driver.Conn, days int) er
 // не показывает — поэтому и guard-идемпотентность, и ALTER работают по скрытой
 // storage-таблице .inner_id.<uuid вьюхи> (Atomic-БД).
 func applyMVTTL(ctx context.Context, conn driver.Conn, mv, timeExpr string, days int) error {
+	if days < 0 {
+		return fmt.Errorf("apply retention %s: days must be >= 0, got %d", mv, days)
+	}
 	inner, err := mvInnerTable(ctx, conn, mv)
 	if err != nil {
 		return err
@@ -497,6 +472,17 @@ func applyMVTTL(ctx context.Context, conn driver.Conn, mv, timeExpr string, days
 	var ddl string
 	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE `"+inner+"`").Scan(&ddl); err != nil {
 		return fmt.Errorf("apply retention: read ddl %s: %w", mv, err)
+	}
+	// days == 0 — «хранить вечно»: TTL снимается (№34). Ни в коем случае не
+	// MODIFY TTL + INTERVAL 0 DAY — это немедленное удаление всех данных.
+	if days == 0 {
+		if !hasTTL(ddl) {
+			return nil
+		}
+		if err := conn.Exec(ctx, "ALTER TABLE `"+inner+"` REMOVE TTL"); err != nil {
+			return fmt.Errorf("remove ttl %s (mv %s): %w", inner, mv, err)
+		}
+		return nil
 	}
 	if !needsRetention(ddl, days) {
 		return nil
@@ -543,18 +529,34 @@ func applyTableTTL(ctx context.Context, conn driver.Conn, tables []string, days 
 
 // applyTableTTLColumn приводит TTL одной таблицы к days дням, считая срок от
 // произвольного DateTime-выражения timeExpr (например toDateTime(timestamp) для
-// events или bucket для transactions_5m). Идемпотентна: ALTER ... MODIFY TTL
-// запускает мутацию таблицы — не дёргаем её на каждом старте, если TTL уже
-// совпадает (needsRetention по нормализованному toIntervalDay(days)).
+// events или bucket для transactions_5m). days == 0 снимает TTL — «хранить
+// вечно» (№34). Идемпотентна в обе стороны: ALTER ... MODIFY TTL запускает
+// мутацию таблицы — не дёргаем её на каждом старте, если TTL уже совпадает
+// (needsRetention по нормализованному toIntervalDay(days)); REMOVE TTL
+// выполняется только когда TTL в DDL есть (hasTTL).
 func applyTableTTLColumn(ctx context.Context, conn driver.Conn, table, timeExpr string, days int) error {
+	if days < 0 {
+		return fmt.Errorf("apply retention %s: days must be >= 0, got %d", table, days)
+	}
 	var ddl string
-	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE "+table).Scan(&ddl); err != nil {
+	if err := conn.QueryRow(ctx, "SHOW CREATE TABLE `"+table+"`").Scan(&ddl); err != nil {
 		return fmt.Errorf("apply retention: read ddl %s: %w", table, err)
+	}
+	// days == 0 — «хранить вечно»: TTL снимается. Ни в коем случае не
+	// MODIFY TTL + INTERVAL 0 DAY — это немедленное удаление всех данных.
+	if days == 0 {
+		if !hasTTL(ddl) {
+			return nil
+		}
+		if err := conn.Exec(ctx, "ALTER TABLE `"+table+"` REMOVE TTL"); err != nil {
+			return fmt.Errorf("remove ttl %s: %w", table, err)
+		}
+		return nil
 	}
 	if !needsRetention(ddl, days) {
 		return nil
 	}
-	q := fmt.Sprintf("ALTER TABLE %s MODIFY TTL %s + INTERVAL %d DAY", table, timeExpr, days)
+	q := fmt.Sprintf("ALTER TABLE `%s` MODIFY TTL %s + INTERVAL %d DAY", table, timeExpr, days)
 	if err := conn.Exec(ctx, q); err != nil {
 		return fmt.Errorf("apply retention %s: %w", table, err)
 	}
@@ -623,4 +625,11 @@ func MigrateDownCH(dsn string) error {
 // в toIntervalDay(N) — сравниваем с желаемым значением.
 func needsRetention(ddl string, days int) bool {
 	return !strings.Contains(ddl, fmt.Sprintf("toIntervalDay(%d)", days))
+}
+
+// hasTTL: есть ли у таблицы TTL-клауза верхнего уровня. SHOW CREATE TABLE
+// может переносить TTL на отдельную строку, поэтому DDL сначала
+// нормализуется по пробельным символам.
+func hasTTL(ddl string) bool {
+	return strings.Contains(" "+strings.Join(strings.Fields(ddl), " ")+" ", " TTL ")
 }

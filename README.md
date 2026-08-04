@@ -59,10 +59,11 @@ host port with `GOTCHA_PORT`, e.g. `GOTCHA_PORT=8080 docker compose up -d`.
 Equivalent `make` targets exist: `make up`, `make logs`, `make down`, `make
 health` (see the Makefile for the full list).
 
-Wait for the app to come up:
+Wait for the app to come up (readiness: PostgreSQL and ClickHouse are
+reachable; `/healthz` only reports the process is alive):
 
 ```bash
-curl -sf http://localhost:59080/healthz
+curl -sf http://localhost:59080/readyz
 ```
 
 ### First run

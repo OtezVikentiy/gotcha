@@ -1,6 +1,8 @@
 # Time range
 
-Every page with a chart — Performance and the endpoint page, Web Vitals, Metrics, Profiles, a monitor's latency chart, and an issue's frequency chart — shares one control for the time window the chart and its numbers cover. It sits in the filter row, usually labeled **"Period"**. (The issues *list* has a simpler period filter — all-time / 24h / 7d / 30d, no custom range; see [Issues](/docs/issues).)
+Every page with a chart — Performance and the endpoint page, Web Vitals, Metrics, Profiles, a monitor's latency chart, and an issue's frequency chart — shares one control for the time window the chart and its numbers cover. It sits in the filter row, usually labeled **"Period"**. The issues *list* uses the same control, including custom ranges, plus an "all time" option (see [Issues](/docs/issues)).
+
+The window sticks as you navigate: picking a **preset** stores it in a cookie and it becomes the default on the other pages with this control, so switching sections no longer silently resets the window. An explicit query in the URL always wins. Custom date ranges and "all time" are deliberately not remembered — a custom range is too specific to impose on other pages, and "all time" has no axis to draw a chart over.
 
 ## All times are UTC
 

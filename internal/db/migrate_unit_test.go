@@ -251,10 +251,12 @@ func TestMaxEmbeddedCHVersion(t *testing.T) {
 	}
 }
 
-// TestRetentionValidatesDays закрепляет guard `days < 1`: функции с явной
+// TestRetentionValidatesDays закрепляет guard `days < 0`: функции с явной
 // валидацией возвращают ошибку ДО обращения к conn, поэтому здесь безопасно
 // передать nil — если бы guard пропал, тест упал бы паникой на nil conn, а не
 // молча. Покрывает ранние return-ветки без ClickHouse-контейнера.
+// 0 теперь валиден — снимает TTL (№34), покрыт интеграционным тестом
+// TestRetentionZeroRemovesTTL.
 func TestRetentionValidatesDays(t *testing.T) {
 	ctx := context.Background()
 	funcs := map[string]func(context.Context, driver.Conn, int) error{
@@ -264,11 +266,22 @@ func TestRetentionValidatesDays(t *testing.T) {
 		"webvitals":   ApplyWebVitalsRetention,
 	}
 	for name, fn := range funcs {
-		for _, days := range []int{0, -1} {
-			if err := fn(ctx, nil, days); err == nil {
-				t.Errorf("%s(days=%d) = nil, want error (days must be >= 1)", name, days)
-			}
+		if err := fn(ctx, nil, -1); err == nil {
+			t.Errorf("%s(days=-1) = nil, want error (days must be >= 0)", name)
 		}
+	}
+}
+
+func TestHasTTL(t *testing.T) {
+	// SHOW CREATE TABLE переносит TTL на отдельную строку — hasTTL обязан
+	// пережить перенос строки перед клаузой.
+	withTTL := "CREATE TABLE events (`id` String) ENGINE = MergeTree ORDER BY id\nTTL toDateTime(timestamp) + toIntervalDay(90)\nSETTINGS index_granularity = 8192"
+	if !hasTTL(withTTL) {
+		t.Error("DDL with TTL clause: want true")
+	}
+	noTTL := "CREATE TABLE events (`id` String) ENGINE = MergeTree ORDER BY id SETTINGS index_granularity = 8192"
+	if hasTTL(noTTL) {
+		t.Error("DDL without TTL: want false")
 	}
 }
 

@@ -229,15 +229,18 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		h.oauthLogin(w, r, uid, "/")
 	case errors.Is(err, auth.ErrUserNotFound):
-		h.oauthProvisionByInvite(w, r, name, id)
+		h.oauthProvision(w, r, name, id)
 	default:
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 	}
 }
 
-// oauthProvisionByInvite заводит аккаунт по действующему инвайту на verified
-// email и логинит. Нет инвайта → отказ, аккаунт не создаётся.
-func (h *Handler) oauthProvisionByInvite(w http.ResponseWriter, r *http.Request, provider string, id oauth.Identity) {
+// oauthProvision заводит аккаунт по OAuth-входу согласно режиму регистрации и
+// логинит (№96). closed — отказ всегда; invite — только по действующему
+// приглашению на verified email; open — аккаунт создаётся без приглашения
+// (симметрично парольной open-регистрации), действующее приглашение
+// принимается best-effort.
+func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provider string, id oauth.Identity) {
 	// closed — «регистрация выключена полностью»: новых аккаунтов не появляется
 	// ВООБЩЕ, даже по действующему приглашению. Именно этим closed отличается от
 	// invite: раньше оба режима проверялись как `!= "open"`, приглашения работали
@@ -250,6 +253,28 @@ func (h *Handler) oauthProvisionByInvite(w http.ResponseWriter, r *http.Request,
 	}
 	if !id.EmailVerified {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
+		return
+	}
+	// open — регистрация открыта всем: аккаунт заводится без проверки
+	// приглашения, как и в парольном флоу (auth.go: open пропускает без
+	// токена). Действующее приглашение при этом принимается сразу — адрес
+	// подтверждён провайдером, как и в invite-ветке ниже. Неудача принятия
+	// (приглашения нет, гонка, ошибка БД) аккаунт НЕ откатывает: парольная
+	// open-регистрация членство тоже не выдаёт, вход важнее членства.
+	if h.RegistrationMode == "open" {
+		uid, err := h.Auth.CreateOAuthUser(r.Context(), id.Email)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		if _, _, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil {
+			slog.Warn("oauth open provisioning: accept pending invite", "err", err)
+		}
+		if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.oauthLogin(w, r, uid, "/")
 		return
 	}
 	has, err := h.Org.HasPendingInvite(r.Context(), id.Email)

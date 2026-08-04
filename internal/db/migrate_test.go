@@ -1187,3 +1187,75 @@ func TestSchemaVersionAndCheckCH(t *testing.T) {
 		t.Errorf("CheckSchemaCurrentCH после полной миграции: %v", err)
 	}
 }
+
+// №34: days=0 снимает TTL (REMOVE TTL) вместо MODIFY TTL + INTERVAL 0 DAY,
+// который удалил бы все данные немедленно. Идемпотентно в обе стороны:
+// повторное снятие с таблицы без TTL — no-op, после снятия TTL ставится
+// заново. В конце тест возвращает TTL к значениям миграций (90/30), чтобы
+// не влиять на соседние тесты, работающие с той же базой.
+func TestRetentionZeroRemovesTTL(t *testing.T) {
+	dsn := testenv.ClickHouseDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := db.MigrateCH(dsn); err != nil {
+		t.Fatalf("MigrateCH: %v", err)
+	}
+	conn, err := db.NewClickHouse(ctx, dsn)
+	if err != nil {
+		t.Fatalf("NewClickHouse: %v", err)
+	}
+	defer conn.Close()
+	showCreate := func(table string) string {
+		var ddl string
+		if err := conn.QueryRow(ctx, "SHOW CREATE TABLE `"+table+"`").Scan(&ddl); err != nil {
+			t.Fatalf("SHOW CREATE TABLE %s: %v", table, err)
+		}
+		return ddl
+	}
+
+	if err := db.ApplyRetention(ctx, conn, 30); err != nil {
+		t.Fatalf("ApplyRetention(30): %v", err)
+	}
+	if err := db.ApplyRetention(ctx, conn, 0); err != nil {
+		t.Fatalf("ApplyRetention(0): %v", err)
+	}
+	for _, table := range []string{"events", "check_results"} {
+		if ddl := showCreate(table); strings.Contains(ddl, "TTL ") {
+			t.Errorf("%s: TTL survived removal:\n%s", table, ddl)
+		}
+	}
+	// Идемпотентность: снятие TTL с таблицы без TTL — no-op без ошибки.
+	if err := db.ApplyRetention(ctx, conn, 0); err != nil {
+		t.Fatalf("ApplyRetention(0) second run: %v", err)
+	}
+	// Обратный путь: TTL ставится заново после снятия.
+	if err := db.ApplyRetention(ctx, conn, 90); err != nil {
+		t.Fatalf("ApplyRetention(90) restore: %v", err)
+	}
+	if ddl := showCreate("events"); !strings.Contains(ddl, "toIntervalDay(90)") {
+		t.Errorf("events: TTL not restored:\n%s", ddl)
+	}
+
+	// MV: ноль снимает TTL и с transactions, и с inner-таблицы transactions_5m.
+	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
+		t.Fatalf("ApplyTransactionRetention(30): %v", err)
+	}
+	if err := db.ApplyTransactionRetention(ctx, conn, 0); err != nil {
+		t.Fatalf("ApplyTransactionRetention(0): %v", err)
+	}
+	if ddl := showCreate("transactions"); strings.Contains(ddl, "TTL ") {
+		t.Errorf("transactions: TTL survived removal:\n%s", ddl)
+	}
+	var uuid string
+	if err := conn.QueryRow(ctx,
+		"SELECT toString(uuid) FROM system.tables WHERE database = currentDatabase() AND name = 'transactions_5m'").
+		Scan(&uuid); err != nil {
+		t.Fatalf("resolve transactions_5m uuid: %v", err)
+	}
+	if ddl := showCreate(".inner_id." + uuid); strings.Contains(ddl, "TTL ") {
+		t.Errorf("transactions_5m inner: TTL survived removal:\n%s", ddl)
+	}
+	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
+		t.Fatalf("ApplyTransactionRetention(30) restore: %v", err)
+	}
+}

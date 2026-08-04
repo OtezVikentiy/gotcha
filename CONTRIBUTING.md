@@ -34,7 +34,7 @@ Useful `make` targets (run `make help` for the full, current list):
 | `make up` / `make down` | Start/stop the compose stack. |
 | `make up-rebuild` | Rebuild the image and force-recreate containers. |
 | `make logs` / `make logs-all` | Follow app logs / all container logs. |
-| `make health` | Curl `/healthz` on the running app. |
+| `make health` | Curl `/readyz` on the running app. |
 | `make app-connect` | Shell into the running app container. |
 | `make db-connect` | `psql` into PostgreSQL. |
 | `make ch-connect` | `clickhouse-client` into ClickHouse. |

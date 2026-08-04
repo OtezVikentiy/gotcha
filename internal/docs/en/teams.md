@@ -28,6 +28,8 @@ The "Organization" → "Members" page (`/orgs/{id}/settings`, owner/admin only) 
 
 If the server has no SMTP configured, the invite is still created but no email is sent — instead, the page shows a direct invite link once, which you forward to the person manually (it's not shown again).
 
+Until it is accepted, an invitation is listed under "Awaiting acceptance" on the same page and can be revoked there — mistype an address, and revoking kills the link before a stranger can use it. Accepting removes the invitation from the list and adds the member.
+
 What happens next depends on the instance's **registration mode** (`GOTCHA_REGISTRATION`, see [Configuration](/docs/configuration)):
 
 - **open** — self-registration is always open; an invite is just a way to add someone with a specific role right away;

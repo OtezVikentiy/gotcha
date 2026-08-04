@@ -19,7 +19,7 @@ The form starts with a **check type** picker — HTTP, TCP, DNS, or Heartbeat. E
 | **HTTP** | An HTTP(S) request to a URL; success is the response code and, optionally, body content | Method (GET/POST/HEAD), URL, Headers, Body, Expected status (comma-separated codes; empty = any 200–299), Body contains / Body not contains, Follow redirects, SSL alert (days before certificate expiry to warn) |
 | **TCP** | Whether a TCP connection to host:port succeeds | Host, Port (1–65535) |
 | **DNS** | Whether a name resolves and, optionally, matches an expected value | Hostname, Record type (A/AAAA/CNAME/MX/TXT), Expected value (optional) |
-| **Heartbeat** | The reverse of the others: instead of Gotcha reaching out, your own application "checks in" periodically by pinging a dedicated URL. If it hasn't checked in within the *grace* period, the monitor is considered down | Grace seconds (60 or more) |
+| **Heartbeat** | The reverse of the others: instead of Gotcha reaching out, your own application "checks in" periodically by pinging a dedicated URL. If it hasn't checked in within the grace period, the monitor is considered down | Grace period (seconds, minimum 60) |
 
 The type is fixed once a monitor is created — editing lets you change its settings, not its type.
 
@@ -50,11 +50,11 @@ When a monitor has more than one region, its overall status is computed with a *
 
 | Consensus | Rule | When to use it |
 |---|---|---|
-| **any** | Down if at least one region is down | Strict: any single point of unavailability is already a problem |
-| **majority** | Down if half or more of the decided regions are down | A compromise: tolerates a single regional blip |
-| **all** | Down only if every region is down | Lenient: alert only on a total outage |
+| **"Any region"** | Down if at least one region is down | Strict: any single point of unavailability is already a problem |
+| **"Majority of regions"** | Down if half or more of the decided regions are down | A compromise: tolerates a single regional blip |
+| **"All regions"** | Down only if every region is down | Lenient: alert only on a total outage |
 
-**Important note about majority with an even number of regions**: if exactly half the regions are down (e.g. 2 of 4), that also counts as **down**, not up — a deliberate fail-safe so the monitor is never shown green when half the fleet is reporting an outage.
+**Important note about "Majority of regions" with an even number of regions**: if exactly half the regions are down (e.g. 2 of 4), that also counts as **down**, not up — a deliberate fail-safe so the monitor is never shown green when half the fleet is reporting an outage.
 
 A region only counts toward consensus once it has crossed its own fail or recovery threshold — before that it's excluded from the tally.
 

@@ -146,7 +146,7 @@ func TestCoverOAuthCallbackLinkAlreadyLinked(t *testing.T) {
 }
 
 // TestCoverOAuthProvisionUnverifiedEmail — неизвестный email c EmailVerified=false
-// уходит в oauthProvisionByInvite, где отвергается с 403 (provider_no_email).
+// уходит в oauthProvision, где отвергается с 403 (provider_no_email).
 func TestCoverOAuthProvisionUnverifiedEmail(t *testing.T) {
 	s := newCallbackStack(t)
 	s.mp.id = oauth.Identity{Subject: "sub-unverified-new", Email: "unknown@corp.com", EmailVerified: false}

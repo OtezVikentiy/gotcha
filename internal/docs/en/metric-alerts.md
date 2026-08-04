@@ -58,7 +58,7 @@ Below the rules table, on the same page, is the project's incident list (the las
 
 ## Notifications and channels
 
-Open/close notifications are queued to **every enabled delivery channel in the project** — the same channels configured under [Alerts](/docs/alerts) (email/webhook/Telegram); there's no separate channel setup for metrics. Email is skipped with a warning in the log if SMTP isn't configured (see [Configuration](/docs/configuration)). External channels (webhook/Telegram) respect the same `GOTCHA_EXTERNAL_CHANNEL_DETAILS` privacy setting used for issue alerts: when it's off, only a link to the rules page and the event kind go out — no metric name or values.
+Open/close notifications are queued to **every enabled delivery channel in the project** — the same channels configured under [Alerts](/docs/alerts) (email/webhook/Telegram); there's no separate channel setup for metrics. Email is skipped with a warning in the log if SMTP isn't configured (see [Configuration](/docs/configuration)). Whether the metric name, values, and threshold appear in a notification follows the same per-recipient trust policy as issue alerts: details reach trusted recipients only (your own infrastructure; how trust is decided is described in [Alerts](/docs/alerts)), everyone else gets a link to the rules page and the event kind, and `GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` lifts the restriction for every recipient.
 
 ## The threshold on the chart
 

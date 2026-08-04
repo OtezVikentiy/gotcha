@@ -24,8 +24,15 @@ traffic volume, which you may not want to publish.
 
 ## When the container goes unhealthy
 
-The stock compose file gives the `gotcha` container a healthcheck on `/readyz`,
-but be clear about what that buys: **`docker compose` does not restart an
+The stock compose file gives the `gotcha` container a healthcheck on `/readyz`.
+The probe is a subcommand of the binary itself — `gotcha --healthcheck` — so it
+survives a move to a distroless base where no curl exists. Its target URL is
+built from `GOTCHA_ADDR` (host always `127.0.0.1`: the probe talks to itself),
+so changing the listen port does not leave the probe knocking on a dead
+`:8080`; for non-standard setups — TLS termination inside the container, a
+different path — override it with `--healthcheck-url=<url>`.
+
+But be clear about what the healthcheck buys: **`docker compose` does not restart an
 unhealthy container.** A failed healthcheck only changes the label in
 `docker ps` (reacting to unhealthy is a Swarm/Kubernetes feature); the
 `restart` policy catches a crashed process, not a hung one. Check the state
@@ -82,6 +89,12 @@ and size of the ingest queue that sits between the HTTP handler and the workers.
 Sustained depth near capacity means the workers cannot keep up, usually because
 PostgreSQL is slow (every task upserts an issue).
 
+**`gotcha_pipeline_queued_bytes`** — bytes held by tasks waiting in that queue.
+The queue has a byte budget as well as a task count (`GOTCHA_MAX_QUEUE_BYTES`):
+a thousand small events and a thousand megabyte-sized ones are very different
+loads at the same depth. When drops show `reason="queue_bytes"`, this is the
+budget that ran out.
+
 **`gotcha_pipeline_dropped_tasks_total{reason="…"}`** — events and transactions
 the pipeline threw away. Also unrecoverable. The `reason` label tells you what to
 fix:
@@ -96,6 +109,15 @@ fix:
 
 The split matters because the first two are cured by queue size and the third is
 not: no queue is large enough to make an unavailable database available.
+
+**`gotcha_cardinality_collapsed_total`** / **`gotcha_cardinality_tracked_values`**
+— the cardinality guard at work: how many open-field values (transaction names,
+environments, metric names, services, operations) were collapsed into the
+overflow bucket because a project hit `GOTCHA_CARDINALITY_LIMIT`, and how many
+distinct values the guard is remembering right now. A growing collapsed counter
+means part of the names have disappeared from lists — the affected screens show
+a notice; the usual cause is an identifier that leaked into a name. The tracked
+gauge is the guard's own memory footprint.
 
 **`gotcha_notify_pending_jobs`** / **`gotcha_notify_oldest_pending_age_seconds`** —
 delivery queue depth and the age of the oldest waiting notification. The age
@@ -161,6 +183,12 @@ PostgreSQL can't report those. To gauge how much headroom is left, compare
 this number against the volume size you already know PostgreSQL runs on
 (usually one volume per instance) — by hand: gotcha has no way to learn your
 disk size on its own.
+
+**`gotcha_web_cross_origin_rejected_total`** — POST requests rejected because
+their `Origin`/`Referer` did not match `GOTCHA_BASE_URL` (cross-origin
+protection for the UI). Occasional ticks are scanner noise; steady growth from
+real users usually means `GOTCHA_BASE_URL` differs from the address the UI is
+actually served on — for example, behind a proxy that rewrites the scheme.
 
 **`gotcha_build_info`** — always 1; the version and mode are in the labels. Use
 it to confirm what is actually deployed. The `stamped` label says whether the

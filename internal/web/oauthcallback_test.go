@@ -172,6 +172,10 @@ func TestCallbackInviteProvisioning(t *testing.T) {
 
 func TestCallbackNoInviteRefused(t *testing.T) {
 	s := newCallbackStack(t)
+	// В open-режиме (дефолт стека) аккаунт с №96 заводится и без приглашения —
+	// это документированное поведение (см. TestOAuthOpenModeProvisionsWithoutInvite).
+	// Отказ незнакомцу — семантика режима invite, его и закрепляем.
+	s.h.RegistrationMode = "invite"
 	s.mp.id = oauth.Identity{Subject: "sub-4", Email: "stranger@corp.com", EmailVerified: true}
 	resp := s.doCallback(t, oauthFlow{})
 	defer resp.Body.Close()

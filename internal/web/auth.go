@@ -123,7 +123,7 @@ func inviteTokenFromNext(next string) (string, bool) {
 func (h *Handler) invitedByToken(w http.ResponseWriter, r *http.Request, next, email string) bool {
 	// closed — новых аккаунтов не появляется вообще, даже по действующему
 	// приглашению; ровно этим он и отличается от invite (та же граница, что и в
-	// oauthProvisionByInvite).
+	// oauthProvision).
 	if h.RegistrationMode != "invite" || h.Org == nil {
 		h.denyRegistration(w, r, next, "mode_closed")
 		return false

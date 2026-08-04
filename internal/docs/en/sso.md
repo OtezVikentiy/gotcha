@@ -71,7 +71,7 @@ The `/login` button reads "Sign in with VK".
 ## What happens at sign-in
 
 - If the provider's email is already linked to an existing account (or matches an existing user's verified email), sign-in issues a session right away.
-- If no account exists for that email yet, the provider provisions a new user only if there's a pending invite for that email (see [Inviting members](/docs/teams)); without an invite, sign-in with an email unknown to the system is rejected.
+- If no account exists for that email yet, what happens depends on `GOTCHA_REGISTRATION`: under `open`, an account is created on the first sign-in through a provider (a pending invite for that email, if any, is accepted along the way); under `invite`, a new user is provisioned only if there's a pending invite for that email (see [Inviting members](/docs/teams)) — otherwise sign-in is rejected; under `closed`, no new accounts appear at all.
 - From `/profile`, a signed-in user can additionally link a provider to their existing account through the same flow (`?link=1`).
 
 ## How this differs from per-org enterprise SSO
