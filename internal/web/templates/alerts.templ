@@ -220,7 +220,7 @@ templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg 
 				}
 				{ i18n.T(ctx, "alerts.channels.new.enabled") }
 			</label>
-			<div class="field">
+			<div class="checkbox-field">
 				<label class="checkbox-inline">
 					if channelBoxChecked(form, open, "trusted", c.Trusted) {
 						<input type="checkbox" name="trusted" checked/>
@@ -372,7 +372,7 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 						<input type="checkbox" name="enabled" checked/>
 						{ i18n.T(ctx, "alerts.channels.new.enabled") }
 					</label>
-					<div class="field">
+					<div class="checkbox-field">
 						<label class="checkbox-inline">
 							if form.Get("trusted", "") != "" {
 								<input type="checkbox" name="trusted" checked/>
