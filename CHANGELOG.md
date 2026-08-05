@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-08-05
+
 ### Documentation
 - The `GOTCHA_NET_MTU` section called the MTU mismatch almost always harmless because the kernel reports the narrow link and the connection adapts. That holds for the outbound direction only. Inbound packets are sized by the remote end from the MSS the container advertised, and it shrinks them only on an ICMP "fragmentation needed" from a router on the path — which is neither your side nor your control. The section now derives the symptoms from that: some destinations work while others hang, the failure can vanish for ten minutes and return with the route cache, and the host always works because its own interface is already narrow. That last point is the trap, so the check is now the one that discriminates — a TLS request from inside the container, not from the host.
 
