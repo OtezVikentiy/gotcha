@@ -14,8 +14,10 @@ import (
 
 const defaultTelegramBaseURL = "https://api.telegram.org"
 
-// TelegramSender шлёт уведомление через Telegram Bot API. BaseURL
-// переопределяем в тестах (httptest); в проде остаётся дефолтным.
+// TelegramSender шлёт уведомление через Telegram Bot API. Пустой BaseURL —
+// api.telegram.org; непустой задаёт оператор инстанса
+// (GOTCHA_TELEGRAM_API_BASE) — свой telegram-bot-api или прокси, когда до
+// api.telegram.org не достучаться. Тесты подставляют сюда httptest.
 type TelegramSender struct {
 	Client  *http.Client
 	BaseURL string

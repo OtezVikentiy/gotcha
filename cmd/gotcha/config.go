@@ -26,6 +26,15 @@ type Config struct {
 	SMTPUser      string
 	SMTPPassword  string
 	SMTPFrom      string
+	// TelegramAPIBase — базовый адрес Bot API (GOTCHA_TELEGRAM_API_BASE).
+	// Пусто — https://api.telegram.org, дефолт живёт в пакете notify.
+	//
+	// Нужен там, где до api.telegram.org не достучаться: фильтрация трафика
+	// у оператора связи, закрытый исход из периметра, собственный
+	// telegram-bot-api рядом с инстансом. Альтернатива — пиннинг имени на
+	// живой IP через extra_hosts — держится ровно до следующей смены адреса
+	// или настроек фильтра, то есть чинит экземпляр, а не класс.
+	TelegramAPIBase string
 	// RetentionDays и родственные *RetentionDays ниже: 0 = хранить вечно
 	// (№34, TTL в ClickHouse снимается). Исключение — OutboxRetentionDays,
 	// у которой пол >= 1 сохранён: outbox — рабочая очередь, не архив.
@@ -411,6 +420,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SMTPUser:                 str("GOTCHA_SMTP_USER", ""),
 		SMTPPassword:             str("GOTCHA_SMTP_PASSWORD", ""),
 		SMTPFrom:                 str("GOTCHA_SMTP_FROM", ""),
+		TelegramAPIBase:          str("GOTCHA_TELEGRAM_API_BASE", ""),
 		RetentionDays:            intNum("GOTCHA_RETENTION_DAYS", 90),
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
 		MetricRetentionDays:      intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
@@ -628,6 +638,27 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.UptimeConcurrency < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_UPTIME_CONCURRENCY must be >= 1, got %d", cfg.UptimeConcurrency)
 	}
+	// GOTCHA_TELEGRAM_API_BASE — свой Bot API вместо api.telegram.org.
+	// Отправитель дописывает к адресу «/bot{token}/sendMessage», поэтому
+	// проверяем на старте: без схемы и хоста каждая доставка падала бы с
+	// "unsupported protocol scheme", а запрос или фрагмент оказались бы
+	// посреди пути — адрес, по которому никто не отвечает, вместо внятного
+	// отказа при запуске. Хвостовые косые снимаем сами: «…org/» дало бы
+	// «…org//bot…», и Bot API ответил бы 404 на каждое уведомление.
+	if cfg.TelegramAPIBase != "" {
+		u, err := url.Parse(cfg.TelegramAPIBase)
+		if err != nil {
+			return Config{}, fmt.Errorf("GOTCHA_TELEGRAM_API_BASE: %w", err)
+		}
+		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Config{}, fmt.Errorf("GOTCHA_TELEGRAM_API_BASE must be an absolute http(s) url, got %q", cfg.TelegramAPIBase)
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return Config{}, fmt.Errorf("GOTCHA_TELEGRAM_API_BASE must not carry a query or fragment, got %q", cfg.TelegramAPIBase)
+		}
+		cfg.TelegramAPIBase = strings.TrimRight(cfg.TelegramAPIBase, "/")
+	}
+
 	if cfg.Mode == "probe" {
 		if cfg.ServerURL == "" {
 			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL is required with --mode=probe")

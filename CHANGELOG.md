@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GOTCHA_TELEGRAM_API_BASE` points Telegram delivery at a Bot API address of your choosing — your own `telegram-bot-api` server, or a reverse proxy on a network from which Telegram is reachable. Instances behind traffic filtering or a closed egress had one remedy, pinning `api.telegram.org` to whichever IP still answered through `extra_hosts`, which holds only until the addresses or the filtering rules change. An invalid value stops the instance at startup instead of turning into a timeout on every delivery.
+
+- `GOTCHA_NET_MTU` sets the MTU of the container network, which Docker fixes at 1500 without looking at the host's uplink. A VPS behind a tunnel commonly has 1450, and then the container advertises an MSS the path cannot carry: small exchanges work, the first large one — a TLS handshake — is dropped silently, and the failure reads as a timeout on a connection that plainly exists. It affects everything outbound at once, so a monitored site can be reported unreachable because of the MTU of the container watching it.
+
+### Documentation
+- The app container's compose-only variables are documented: `GOTCHA_NET_MTU` with the symptom, the check (`ip -o link show`) and the fix, and `GOTCHA_MEM_LIMIT`, which existed since the ceilings were introduced but appeared in no reference file.
+- The Telegram troubleshooting section explained the symptom through a single cause — IPv6 resolution without global IPv6 — and presented the IP pin as the cure. It now separates name resolution from reachability, gives the check for each, and orders the three remedies by how long they last, saying plainly that the pin is a stopgap. Outbound proxies (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`) are documented for the first time, including where they deliberately do not apply: webhook channels and uptime checks dial their targets directly so the SSRF filter keeps deciding on the address actually connected to.
+
 ## [0.4.4] - 2026-08-04
 
 ### Security

@@ -86,6 +86,25 @@ These four are **Docker Compose substitution variables**, not configuration of t
 2. Set `GOTCHA_PG_PASSWORD`/`GOTCHA_CH_PASSWORD` in `.env`.
 3. `docker compose up -d` — the app container is recreated with the new DSN.
 
+### Compose-only variables (the app container)
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_MEM_LIMIT` | `1g` | Memory ceiling of the `gotcha` container. The app reads this limit from its cgroup and sets its own heap ceiling to 80% of it, so raising the ceiling is enough — `GOMEMLIMIT` doesn't need setting by hand. |
+| `GOTCHA_NET_MTU` | `1500` | MTU of the container network. Set it to the host's external interface MTU whenever that is below 1500. |
+
+**When the MTU matters.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. The container then advertises an MSS the path cannot carry: the server replies with segments that don't fit, and they are dropped without notice. Small exchanges keep working, so the instance looks healthy — until the first large one. A TLS handshake is exactly that, which is why the symptom is a timeout on a connection that clearly exists: TCP established, the SMTP greeting received, then silence.
+
+Everything the instance sends outward shares the path — email, webhook channels, OAuth, and uptime checks — so a monitored site can be reported unreachable because of the MTU of the container watching it.
+
+Check the host:
+
+```bash
+ip -o link show
+```
+
+If the external interface (`ens3`, `eth0`) shows an MTU below 1500 while `docker0` shows 1500, set `GOTCHA_NET_MTU` to the interface's value and run `docker compose up -d`. Compose recreates the network and restarts the containers itself; no manual `down` is needed.
+
 ## Email / SMTP
 
 Used for invite emails and the email alert channel. As long as `GOTCHA_SMTP_HOST` is empty, email sending is disabled entirely (the log shows `GOTCHA_SMTP_HOST is not set, email alert channels are disabled`), while everything else keeps working normally.
@@ -97,6 +116,14 @@ Used for invite emails and the email alert channel. As long as `GOTCHA_SMTP_HOST
 | `GOTCHA_SMTP_USER` | *(empty)* | Login used to authenticate to the SMTP server. |
 | `GOTCHA_SMTP_PASSWORD` | *(empty)* | Password. Providers like Gmail/Yandex typically require a separate "app password" rather than your account password. |
 | `GOTCHA_SMTP_FROM` | *(empty)* | Sender address used in the `From:` header of emails. |
+
+## Telegram
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_TELEGRAM_API_BASE` | *(empty — `https://api.telegram.org`)* | Base address of the Bot API. Set it when the instance can't reach `api.telegram.org`: traffic filtering on the way out, a closed egress, or your own [`telegram-bot-api`](https://github.com/tdlib/telegram-bot-api) server. Must be an absolute `http(s)` URL with no query or fragment — the sender appends `/bot{token}/sendMessage`; an invalid value is a startup error, not a per-delivery timeout. |
+
+Outbound HTTP proxies are honoured for Telegram through the standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` environment variables. They do **not** apply to webhook channels, OAuth or uptime checks: those dial their targets directly on purpose, because the SSRF filter decides on the address actually connected to, and a proxy would move that decision off the instance. See [Alerts](/docs/alerts) for the Telegram troubleshooting path.
 
 ## Retention (ClickHouse data)
 

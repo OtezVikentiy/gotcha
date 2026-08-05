@@ -66,22 +66,42 @@ While there are no failed deliveries, the page shows an empty state: "No failed 
 
 ### Telegram: events don't reach the bot
 
-If Telegram delivery consistently fails (the delivery log shows a timeout/network error) while webhook/email work, check **how the instance resolves `api.telegram.org`**:
+The symptom: Telegram delivery consistently fails — the delivery log shows a timeout or a network error — while webhook and email work. The cause is almost always on the way to `api.telegram.org`, not in the bot or the token.
+
+**Step 1 — how the instance resolves the name.**
 
 ```bash
 docker compose exec gotcha getent hosts api.telegram.org
 ```
 
-If the name resolves to an **IPv6** address while the server has no global IPv6 (common on a VPS), the connection to the Bot API will time out — even though Telegram's IPv4 is reachable. It looks like "blocking", but the fix is to pin `api.telegram.org` to a working IPv4 in the gotcha container — add to `docker-compose.override.yml`:
+If the name resolves to an **IPv6** address while the server has no global IPv6 (common on a VPS), the connection will time out even though Telegram's IPv4 is perfectly reachable.
 
-```yaml
-services:
-  gotcha:
-    extra_hosts:
-      - "api.telegram.org:149.154.167.220"
+**Step 2 — whether traffic reaches the address at all.** From the server:
+
+```bash
+curl -sS -m 5 -o /dev/null -w '%{http_code}\n' https://api.telegram.org/
 ```
 
-After `docker compose up -d gotcha` delivery recovers. Telegram's IP is stable, but update the pin if it fails again.
+Silence until the timeout expires means traffic isn't reaching the Bot API: filtering by a carrier along the path, a closed egress, a missing route. You can tell it apart by the pattern — some addresses behind that name answer and others don't, and which ones depends on the location and the direction. Telegram is healthy; it's unreachable *from here*.
+
+**What to do about it** — three remedies, from the most durable to the most temporary.
+
+1. **Your own Bot API address.** `GOTCHA_TELEGRAM_API_BASE` points delivery at your own [`telegram-bot-api`](https://github.com/tdlib/telegram-bot-api) server or at a plain reverse proxy on a network where Telegram is reachable. The only option that doesn't depend on which Telegram addresses happen to pass today.
+2. **An outbound proxy.** The standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables in the container's environment apply to Telegram delivery. They don't apply to webhook channels or uptime checks: those dial their targets directly on purpose, otherwise the SSRF filter would stop deciding on the address actually connected to.
+3. **Pinning the name to a working IP** — a quick measure while you investigate. In `docker-compose.override.yml`:
+
+   ```yaml
+   services:
+     gotcha:
+       extra_hosts:
+         - "api.telegram.org:149.154.167.220"
+   ```
+
+   Delivery recovers after `docker compose up -d gotcha`. Treat it as a stopgap: the address holds only until Telegram's addresses or the filtering rules change, and when it stops working the symptom returns with nothing changed on your side. Drop the pin once option 1 or 2 works.
+
+### A TLS timeout on a connection that exists
+
+When the timeouts hit not one channel but everything outbound at once — email, webhooks, OAuth sign-in, uptime checks — and the connection is clearly established (the email error shows the `220` greeting arrived and the failure came at STARTTLS), the cause is usually not the recipients but the MTU of the container network: large packets vanish while small ones pass. The explanation and the check are in [Configuration](/docs/configuration), under `GOTCHA_NET_MTU`.
 
 ## Privacy: what external channels see
 

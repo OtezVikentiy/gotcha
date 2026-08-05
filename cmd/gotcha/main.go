@@ -501,7 +501,7 @@ func run() error {
 	if outbox != nil {
 		senders := map[string]notify.Sender{
 			alert.ChannelWebhook:  &notify.WebhookSender{AllowPrivate: cfg.SSRFAllowPrivateWebhook},
-			alert.ChannelTelegram: &notify.TelegramSender{},
+			alert.ChannelTelegram: &notify.TelegramSender{BaseURL: cfg.TelegramAPIBase},
 		}
 		if emailSender != nil && emailSender.Configured() {
 			senders[alert.ChannelEmail] = emailSender

@@ -117,6 +117,55 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 }
 
+// GOTCHA_TELEGRAM_API_BASE: пусто — дефолт пакета notify (api.telegram.org),
+// непустое значение нормализуется. Хвостовая косая снимается, потому что
+// отправитель дописывает «/bot{token}/sendMessage»: «…org/» дало бы «…org//bot…»
+// и 404 на каждое уведомление.
+func TestLoadConfigTelegramAPIBase(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.TelegramAPIBase != "" {
+		t.Errorf("default TelegramAPIBase = %q, want empty", cfg.TelegramAPIBase)
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"https://tg.example.com", "https://tg.example.com"},
+		{"https://tg.example.com/", "https://tg.example.com"},
+		{"https://tg.example.com///", "https://tg.example.com"},
+		{"http://127.0.0.1:8081", "http://127.0.0.1:8081"},
+		{"https://gw.example.com/telegram", "https://gw.example.com/telegram"},
+	} {
+		env := map[string]string{"GOTCHA_TELEGRAM_API_BASE": tc.in}
+		cfg, err := loadConfig(getenvFrom(env), nil)
+		if err != nil {
+			t.Fatalf("GOTCHA_TELEGRAM_API_BASE=%q: loadConfig: %v", tc.in, err)
+		}
+		if cfg.TelegramAPIBase != tc.want {
+			t.Errorf("GOTCHA_TELEGRAM_API_BASE=%q: got %q, want %q", tc.in, cfg.TelegramAPIBase, tc.want)
+		}
+	}
+}
+
+// Невалидный адрес Bot API — отказ при запуске, а не таймаут на каждой
+// доставке: без схемы и хоста отправка падает с "unsupported protocol scheme",
+// а запрос/фрагмент оказались бы посреди пути к /bot{token}/sendMessage.
+func TestLoadConfigTelegramAPIBaseRejectsInvalid(t *testing.T) {
+	for _, v := range []string{
+		"tg.example.com",
+		"/telegram",
+		"ftp://tg.example.com",
+		"https://tg.example.com?token=1",
+		"https://tg.example.com#frag",
+		"https://",
+	} {
+		env := map[string]string{"GOTCHA_TELEGRAM_API_BASE": v}
+		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
+			t.Errorf("GOTCHA_TELEGRAM_API_BASE=%q: want error, got nil", v)
+		}
+	}
+}
+
 func TestLoadConfigInvalidMode(t *testing.T) {
 	if _, err := loadConfig(getenvFrom(nil), []string{"--mode", "banana"}); err == nil {
 		t.Fatal("want error for invalid mode, got nil")
