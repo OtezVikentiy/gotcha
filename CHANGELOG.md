@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-08-05
+
 ### Fixed
 - Checked checkboxes and radio buttons no longer carry a grey frame around them. The resting border exists so that an *empty* control stays visible — the browser's own is far below the contrast floor (WCAG 1.4.11) — but it was drawn in every state, and on a checked control the browser paints its fill inset from the element's edge, so the line landed around the fill with a gap rather than along it. It now applies only while the control is unchecked; the focus ring is unaffected.
 
