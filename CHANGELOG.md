@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-08-05
+
 ### Interface
 - Checkboxes and radio buttons are drawn by the product instead of the browser. The native control's own border measures about 1.06:1 against the surface — a third of the contrast WCAG 1.4.11 asks of a control boundary — so an empty checkbox was barely visible, and the previous remedy drew a border around the native square. That never sat right: the browser paints its fill inset from the element's edge, so the extra line ran around the control with a gap instead of along it, and read as a stray frame. With the control drawn from scratch the border *is* its edge, the checkmark is a shape rather than a font glyph, and both states look deliberate in either theme. The 18×18 target size now also survives inside labelled checkboxes, where an override had been quietly restoring the browser's 13×13.
 - A checkbox with an explanatory hint gets a layout of its own. Reusing the text-field wrapper put the box above its own caption in dimmed small type, because that wrapper stacks a label over its input — correct for a text field, wrong for a checkbox.
