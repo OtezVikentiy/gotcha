@@ -93,11 +93,24 @@ These four are **Docker Compose substitution variables**, not configuration of t
 | `GOTCHA_MEM_LIMIT` | `1g` | Memory ceiling of the `gotcha` container. The app reads this limit from its cgroup and sets its own heap ceiling to 80% of it, so raising the ceiling is enough — `GOMEMLIMIT` doesn't need setting by hand. |
 | `GOTCHA_NET_MTU` | `1500` | MTU of the container network. A last resort for one specific failure — see below; a mismatch on its own is not a reason to touch it. |
 
-**Start with the symptom, not the numbers.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. **This mismatch is normal and almost always harmless.** When the narrow link is the host's own interface, the kernel tells the container to lower its path MTU and the connection adapts by itself — which is why countless installations run on 1450 uplinks with 1500 containers and never notice.
+**Start with the symptom, not the numbers.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. The mismatch itself is everywhere, and most installations live with it and never notice.
 
-It becomes a problem only when the narrow link is somewhere out on the path *and* the ICMP messages that would report it are filtered. The connection then has no way to learn, and large packets vanish. Small exchanges keep working, so the instance looks healthy — until the first large one. A TLS handshake is exactly that, which is why the symptom is a timeout on a connection that clearly exists: TCP established, the SMTP greeting received, then silence.
+It is only harmless in one direction, though. Outbound packets are fixed by your own kernel: the narrow link is the host's own interface, the kernel says so, and the container lowers the route's MTU. Inbound packets depend on the **remote end**: it sends segments of the size the container advertised when the connection was set up (MSS = MTU − 40, so 1460 instead of 1410), and it only shrinks them if it receives an ICMP "fragmentation needed" from a router on the path. Whether that ICMP arrives is neither your side nor your control. Where it is filtered, the sender keeps pushing 1460-byte segments and they vanish.
 
-So the signal is the **pair**: outbound TLS times out while small exchanges over the same connection succeed, *and* the host's external interface is below 1500. Either one alone means nothing.
+Every sign of this failure follows from that:
+
+- small exchanges work, large ones disappear: TCP connects, the SMTP `220` greeting arrives, and the TLS handshake — the first large exchange — hangs until it times out;
+- **different destinations behave differently**: TLS completes to one host and hangs on another, because the ICMP is not filtered everywhere;
+- **it can work and then stop**: the kernel keeps a learned path MTU in the route cache for about ten minutes (`net.ipv4.route.mtu_expires`), and while that entry lives everything is fine — once it expires the symptom returns on its own;
+- from the host the very same thing always works: that interface is 1450, so the MSS is 1410 from the start and no ICMP is needed.
+
+That last point is the trap when diagnosing this. Test from **inside the container**, not from the host:
+
+```bash
+docker compose exec gotcha wget -q -O /dev/null https://api.github.com/ && echo ok || echo fail
+```
+
+If TLS hangs there while `openssl s_client -starttls smtp -connect <your-smtp>:587` completes on the host, the MTU is your answer.
 
 Everything the instance sends outward shares the path — email, webhook channels, OAuth, and uptime checks — so when this does happen, a monitored site can be reported unreachable because of the MTU of the container watching it.
 
@@ -107,7 +120,7 @@ Check the host:
 ip -o link show
 ```
 
-If the external interface (`ens3`, `eth0`) is below 1500 while `docker0` shows 1500 **and** you have the timeout above, set `GOTCHA_NET_MTU` to the interface's value and bring the stack back up:
+If the external interface (`ens3`, `eth0`) is below 1500 while `docker0` shows 1500 **and** you have the timeout above, set `GOTCHA_NET_MTU` to the interface's value and bring the stack back up. The container then advertises an MSS the path can certainly carry, and delivery stops depending on somebody else's ICMP:
 
 ```bash
 docker compose down && docker compose up -d

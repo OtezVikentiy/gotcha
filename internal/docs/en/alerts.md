@@ -101,7 +101,13 @@ Silence until the timeout expires means traffic isn't reaching the Bot API: filt
 
 ### A TLS timeout on a connection that exists
 
-When the timeouts hit not one channel but everything outbound at once — email, webhooks, OAuth sign-in, uptime checks — and the connection is clearly established (the email error shows the `220` greeting arrived and the failure came at STARTTLS), then small packets are passing while large ones vanish. Traffic filtering does that, and — less often — the MTU of the container network. Work through the steps above first; if they turn up nothing, read `GOTCHA_NET_MTU` in [Configuration](/docs/configuration), which describes the combination of signs that means the MTU really is the cause, and the one that means it isn't.
+When the connection is clearly established and the first large exchange is what fails — the email error shows the `220` greeting arrived and the failure came at STARTTLS — then small packets are passing while large ones vanish. Traffic filtering does that, and so does the MTU of the container network. Telling them apart is easy: **test from inside the container**, not from the host.
+
+```bash
+docker compose exec gotcha wget -q -O /dev/null https://api.github.com/ && echo ok || echo fail
+```
+
+If it hangs there too, go to `GOTCHA_NET_MTU` in [Configuration](/docs/configuration), which explains why the host works while the container doesn't, why some destinations are fine and others aren't, and why the failure can disappear for ten minutes and come back.
 
 ## Privacy: what external channels see
 
