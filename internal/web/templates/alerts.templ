@@ -127,6 +127,14 @@ templ channelStatusBadge(c alert.Channel) {
 	} else {
 		<span class="badge badge-neutral">{ i18n.T(ctx, "alerts.channels.status.disabled") }</span>
 	}
+	if c.Trusted {
+		// Второй бейдж рядом с состоянием: по этому каналу уезжают детали
+		// события, включая то, что может оказаться персональными данными.
+		// Решение принято однажды в форме, а видеть его нужно постоянно —
+		// иначе состав получателей ПДн приходится выяснять, открывая каждый
+		// канал по очереди.
+		<span class="badge badge-warn">{ i18n.T(ctx, "alerts.channels.status.trusted") }</span>
+	}
 }
 
 // EditChannelModalID — якорь модалки правки канала. Модалка на строку таблицы:
@@ -205,13 +213,24 @@ templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg 
 				}
 			</div>
 			<label class="checkbox-inline">
-				if channelEnabledChecked(form, open, c.Enabled) {
+				if channelBoxChecked(form, open, "enabled", c.Enabled) {
 					<input type="checkbox" name="enabled" checked/>
 				} else {
 					<input type="checkbox" name="enabled"/>
 				}
 				{ i18n.T(ctx, "alerts.channels.new.enabled") }
 			</label>
+			<div class="field">
+				<label class="checkbox-inline">
+					if channelBoxChecked(form, open, "trusted", c.Trusted) {
+						<input type="checkbox" name="trusted" checked/>
+					} else {
+						<input type="checkbox" name="trusted"/>
+					}
+					{ i18n.T(ctx, "alerts.channels.new.trusted") }
+				</label>
+				<span class="hint">{ i18n.T(ctx, "alerts.channels.new.trusted_hint") }</span>
+			</div>
 			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alerts.channels.edit.submit") }</button>
 		</form>
 	}
@@ -228,13 +247,13 @@ func formValueFor(form FormState, open bool, name, fallback string) string {
 	return form.Get(name, fallback)
 }
 
-// channelEnabledChecked — та же логика для чекбокса; снятый флажок приходит
+// channelBoxChecked — та же логика для чекбокса; снятый флажок приходит
 // пустой строкой, поэтому сравниваем именно с ней, а не с наличием ключа.
-func channelEnabledChecked(form FormState, open bool, fallback bool) bool {
+func channelBoxChecked(form FormState, open bool, name string, fallback bool) bool {
 	if !open {
 		return fallback
 	}
-	return form.Get("enabled", "") != ""
+	return form.Get(name, "") != ""
 }
 
 // Alerts — GET/POST /projects/{id}/alerts: правила алертинга (new_issue,
@@ -353,6 +372,17 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 						<input type="checkbox" name="enabled" checked/>
 						{ i18n.T(ctx, "alerts.channels.new.enabled") }
 					</label>
+					<div class="field">
+						<label class="checkbox-inline">
+							if form.Get("trusted", "") != "" {
+								<input type="checkbox" name="trusted" checked/>
+							} else {
+								<input type="checkbox" name="trusted"/>
+							}
+							{ i18n.T(ctx, "alerts.channels.new.trusted") }
+						</label>
+						<span class="hint">{ i18n.T(ctx, "alerts.channels.new.trusted_hint") }</span>
+					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alerts.channels.new.submit") }</button>
 				</form>
 			}

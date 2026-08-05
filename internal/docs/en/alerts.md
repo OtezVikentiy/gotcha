@@ -101,7 +101,7 @@ Silence until the timeout expires means traffic isn't reaching the Bot API: filt
 
 ### A TLS timeout on a connection that exists
 
-When the timeouts hit not one channel but everything outbound at once — email, webhooks, OAuth sign-in, uptime checks — and the connection is clearly established (the email error shows the `220` greeting arrived and the failure came at STARTTLS), the cause is usually not the recipients but the MTU of the container network: large packets vanish while small ones pass. The explanation and the check are in [Configuration](/docs/configuration), under `GOTCHA_NET_MTU`.
+When the timeouts hit not one channel but everything outbound at once — email, webhooks, OAuth sign-in, uptime checks — and the connection is clearly established (the email error shows the `220` greeting arrived and the failure came at STARTTLS), then small packets are passing while large ones vanish. Traffic filtering does that, and — less often — the MTU of the container network. Work through the steps above first; if they turn up nothing, read `GOTCHA_NET_MTU` in [Configuration](/docs/configuration), which describes the combination of signs that means the MTU really is the cause, and the one that means it isn't.
 
 ## Privacy: what external channels see
 
@@ -113,7 +113,10 @@ The decision is made **per recipient, not per channel type**:
 |---|---|
 | Email | the address domain is the instance host (or a subdomain of it), or is listed in `GOTCHA_TRUSTED_RECIPIENTS` |
 | Webhook | the URL host is the same, or any internal address (`localhost`, private ranges, the `.local`, `.internal`, `.lan`, `.home.arpa` zones) |
-| Telegram | never: the recipient is a `chat_id` with no domain, and the service is outside your perimeter by definition |
+| Telegram | never by address: the recipient is a `chat_id` and has no domain |
+| Any channel | the **"This recipient is inside my perimeter"** box on the channel |
+
+The box is for the cases where the address proves nothing: a Telegram chat that belongs to you cannot be recognized as yours from a `chat_id`. It is ticked by hand, one channel at a time, off by default, and such channels carry a "With details" badge in the table. See [Privacy](/docs/privacy) for the reasoning.
 
 A mailbox on a public mail service (`@gmail.com`, `@yandex.ru`) is someone else's infrastructure exactly as Telegram is — details do not go there. A webhook pointed at your own server on an internal network, conversely, always receives them.
 

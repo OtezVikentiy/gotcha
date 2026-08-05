@@ -50,6 +50,66 @@ func TestUpdateChannelKeepsSecret(t *testing.T) {
 	}
 }
 
+// TestChannelTrustedRoundTrip — отметка «получатель мой» переживает запись,
+// чтение и правку. Дефолт при создании — false: политика деталей строится на
+// умолчании «не доверяем», и новый канал не должен получать детали оттого, что
+// поле забыли передать. Отдельно проверяется путь правки с ПУСТЫМ секретом —
+// он идёт другим UPDATE, и отметка обязана доехать по обоим.
+func TestChannelTrustedRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ctx := context.Background()
+	pid := newEvalProject(t, pool, "chantrust")
+
+	id, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "12345", Secret: "tok",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chs, err := svc.Channels(ctx, pid)
+	if err != nil || len(chs) != 1 {
+		t.Fatalf("Channels = %+v err=%v, want one channel", chs, err)
+	}
+	if chs[0].Trusted {
+		t.Fatal("новый канал доверенный по умолчанию — политика деталей обязана начинать с недоверия")
+	}
+
+	// Правка без секрета: тот же UPDATE, что и при исправлении опечатки.
+	if err := svc.UpdateChannel(ctx, alert.Channel{
+		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "12345", Trusted: true,
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	if chs, err = svc.Channels(ctx, pid); err != nil || len(chs) != 1 || !chs[0].Trusted {
+		t.Fatalf("после установки отметки = %+v err=%v, want Trusted", chs, err)
+	}
+
+	// И обратно, уже вместе со сменой секрета — второй UPDATE.
+	if err := svc.UpdateChannel(ctx, alert.Channel{
+		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "12345", Secret: "new-tok",
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	if chs, err = svc.Channels(ctx, pid); err != nil || len(chs) != 1 || chs[0].Trusted {
+		t.Fatalf("после снятия отметки = %+v err=%v, want !Trusted", chs, err)
+	}
+
+	// Создание с явной отметкой — тот же путь, что и форма с галочкой.
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelEmail, Enabled: true, Target: "me@corp.example", Trusted: true,
+	}); err != nil {
+		t.Fatalf("CreateChannel trusted: %v", err)
+	}
+	chs, err = svc.Channels(ctx, pid)
+	if err != nil || len(chs) != 2 || !chs[1].Trusted {
+		t.Fatalf("созданный с отметкой = %+v err=%v, want Trusted", chs, err)
+	}
+}
+
 // TestUpdateChannelReplacesSecret — непустой секрет заменяет прежний и, как при
 // создании, ложится в базу зашифрованным, а не открытым текстом.
 func TestUpdateChannelReplacesSecret(t *testing.T) {

@@ -88,6 +88,37 @@ func TestDetailPolicyAllowAll(t *testing.T) {
 	}
 }
 
+// TestDetailPolicyChannelTrustedFlag — отметка на самом канале разрешает
+// детали там, где получателя опознать нечем. Ради Telegram она и заведена:
+// chat_id не домен, никакой список доверенных хостов его не покроет, и без
+// этой отметки у оператора оставался только GOTCHA_EXTERNAL_CHANNEL_DETAILS,
+// открывающий детали всем каналам всех проектов разом.
+func TestDetailPolicyChannelTrustedFlag(t *testing.T) {
+	p := alert.NewDetailPolicy("https://gotcha.corp.example", nil, false)
+	for _, ch := range []alert.Channel{
+		{Kind: alert.ChannelTelegram, Target: "418885689", Trusted: true},
+		{Kind: alert.ChannelEmail, Target: "me@gmail.com", Trusted: true},
+		{Kind: alert.ChannelWebhook, Target: "https://hooks.slack.com/x", Trusted: true},
+		// Даже неразбираемый получатель: отметка означает именно «я знаю, кто
+		// это, разобрать нечем» — иначе она не решала бы задачу, ради которой
+		// заведена.
+		{Kind: "sms", Target: "+70000000000", Trusted: true},
+	} {
+		if !p.AllowsDetails(ch) {
+			t.Errorf("AllowsDetails(%s %q) = false при Trusted", ch.Kind, ch.Target)
+		}
+	}
+	// Без отметки — прежнее поведение, включая fail-closed у Telegram.
+	for _, ch := range []alert.Channel{
+		{Kind: alert.ChannelTelegram, Target: "418885689"},
+		{Kind: alert.ChannelEmail, Target: "me@gmail.com"},
+	} {
+		if p.AllowsDetails(ch) {
+			t.Errorf("AllowsDetails(%s %q) = true без Trusted", ch.Kind, ch.Target)
+		}
+	}
+}
+
 // TestDetailPolicyFailsClosed — что не разобралось или не опознано, деталей не
 // получает. Нулевая политика не доверяет никому: забытое поле у нового
 // нотифаера не должно означать «шлём всё».

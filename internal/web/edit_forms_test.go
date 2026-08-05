@@ -181,6 +181,82 @@ func TestWebAlertsChannelUpdate(t *testing.T) {
 	}
 }
 
+// TestWebAlertsChannelTrustedCheckbox — галочка «получатель внутри моего
+// контура» доезжает из формы до канала и обратно в разметку. Она решает, уйдут
+// ли наружу детали события, поэтому проверяется весь путь целиком: создание без
+// галочки, установка при правке, бейдж в таблице и снятие.
+func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "chantrust-web@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "chantrust-co", "Trust Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "chantrust-proj", "Trust Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	alertsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alerts"
+
+	// Создание без галочки: канал не доверенный, деталей не получает.
+	resp := postForm(t, s.srv, alertsPath+"/channels", url.Values{
+		"kind": {"telegram"}, "target": {"418885689"}, "secret": {"bot-token"}, "enabled": {"on"},
+	}, s.srv.URL, ownerCookie)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create channel status = %d, want 303", resp.StatusCode)
+	}
+	channels, err := s.h.Alerts.Channels(context.Background(), proj.ID)
+	if err != nil || len(channels) != 1 {
+		t.Fatalf("Channels = %+v err=%v, want one", channels, err)
+	}
+	if channels[0].Trusted {
+		t.Fatal("канал создан доверенным без галочки в форме")
+	}
+	chID := channels[0].ID
+
+	// Правка с галочкой — Telegram-канал становится доверенным, хотя по адресу
+	// (chat_id) этого установить нельзя: в том и смысл отметки.
+	resp = postForm(t, s.srv, alertsPath+"/channels/update", url.Values{
+		"channel_id": {strconv.FormatInt(chID, 10)},
+		"target":     {"418885689"},
+		"enabled":    {"on"},
+		"trusted":    {"on"},
+	}, s.srv.URL, ownerCookie)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("update channel status = %d, want 303", resp.StatusCode)
+	}
+	channels, _ = s.h.Alerts.Channels(context.Background(), proj.ID)
+	if len(channels) != 1 || !channels[0].Trusted {
+		t.Fatalf("channel after update = %+v, want trusted", channels)
+	}
+
+	// Страница показывает это в строке канала — состав получателей деталей
+	// должен быть виден, не открывая каждый канал по очереди.
+	resp = getWithCookie(t, s.srv, alertsPath, ownerCookie)
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(page), "badge-warn") {
+		t.Fatalf("нет бейджа доверенного канала в таблице:\n%s", page)
+	}
+
+	// Снятие галочки: отсутствие поля в форме означает «снято», как и у enabled.
+	resp = postForm(t, s.srv, alertsPath+"/channels/update", url.Values{
+		"channel_id": {strconv.FormatInt(chID, 10)},
+		"target":     {"418885689"},
+		"enabled":    {"on"},
+	}, s.srv.URL, ownerCookie)
+	resp.Body.Close()
+	channels, _ = s.h.Alerts.Channels(context.Background(), proj.ID)
+	if len(channels) != 1 || channels[0].Trusted {
+		t.Fatalf("channel after unchecking = %+v, want not trusted", channels)
+	}
+}
+
 // TestWebAlertsChannelUpdateForeign — канал чужого проекта не правится по
 // подобранному id: 404, как и у удаления.
 func TestWebAlertsChannelUpdateForeign(t *testing.T) {

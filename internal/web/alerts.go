@@ -259,13 +259,15 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 		Enabled:   formBool(r, "enabled"),
 		Target:    r.FormValue("target"),
 		Secret:    r.FormValue("secret"),
+		Trusted:   formBool(r, "trusted"),
 	}
 	if _, err := h.Alerts.CreateChannel(r.Context(), c); err != nil {
 		// Секрет намеренно НЕ возвращаем в форму: он и так вводится вслепую
 		// (type=password), а класть bot-токен обратно в HTML на странице с
 		// ошибкой — лишний повод ему оказаться в кеше или в скриншоте.
 		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID,
-			templates.FormState{"kind": c.Kind, "target": c.Target}.Open("new-channel"),
+			templates.FormState{"kind": c.Kind, "target": c.Target,
+				"trusted": formBoolValue(r, "trusted")}.Open("new-channel"),
 			alertsErrorMessage(r.Context(), err))
 		return
 	}
@@ -343,6 +345,13 @@ func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
 		Enabled:   formBool(r, "enabled"),
 		Target:    r.FormValue("target"),
 		Secret:    r.FormValue("secret"),
+		// Отметка доверия берётся из формы, как и Enabled: она стоит в той же
+		// форме рядом с адресом, поэтому смена получателя при сохранённой
+		// галочке — видимое действие оператора, а не тихий перенос доверия.
+		// Обратное — сбрасывать её при любой правке — так же тихо ЛОМАЛО бы
+		// доставку деталей, и оператор узнавал бы об этом по обеднённому
+		// уведомлению.
+		Trusted: formBool(r, "trusted"),
 	}
 	if err := h.Alerts.UpdateChannel(r.Context(), c); err != nil {
 		if errors.Is(err, alert.ErrNotFound) {
@@ -351,7 +360,8 @@ func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		// Секрет в форму не возвращаем по той же причине, что и при создании.
 		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID,
-			templates.FormState{"target": c.Target, "enabled": formBoolValue(r, "enabled")}.
+			templates.FormState{"target": c.Target, "enabled": formBoolValue(r, "enabled"),
+				"trusted": formBoolValue(r, "trusted")}.
 				Open(templates.EditChannelModalID(channelID)),
 			alertsErrorMessage(r.Context(), err))
 		return

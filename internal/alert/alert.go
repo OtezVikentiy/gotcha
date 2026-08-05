@@ -70,6 +70,20 @@ type Channel struct {
 	//
 	// Секрет у такого канала пустой — расшифровать его нечем.
 	SecretBroken bool
+	// Trusted — оператор заявил, что получатель этого канала внутри его
+	// контура, и разрешил слать туда полные детали события.
+	//
+	// Нужен там, где получателя не опознать по адресу: у Telegram это
+	// chat_id, домена у него нет, и политика оставляет такой канал внешним
+	// всегда (см. DetailPolicy.AllowsDetails). На селфхосте, где оператор и
+	// получатель — один человек, это оставляло единственный рычаг —
+	// GOTCHA_EXTERNAL_CHANNEL_DETAILS, открывающий детали ВСЕМ каналам всех
+	// проектов сразу. Выбор «нигде или везде» и есть причина этого поля:
+	// то же решение, но поштучно.
+	//
+	// Дефолт — false, как и у всей политики: доверие возникает только явным
+	// действием оператора в форме канала.
+	Trusted bool
 }
 
 // Deliverable — можно ли слать в этот канал. Одно место на все семь
@@ -288,7 +302,7 @@ func (s *Service) DeleteRule(ctx context.Context, projectID, ruleID int64) error
 // Channels возвращает каналы доставки проекта, отсортированные по id.
 func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, project_id, kind, enabled, target, secret
+		SELECT id, project_id, kind, enabled, target, secret, trusted
 		FROM alert_channels WHERE project_id = $1 ORDER BY id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("alert: channels: %w", err)
@@ -297,7 +311,7 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 	var out []Channel
 	for rows.Next() {
 		var c Channel
-		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Kind, &c.Enabled, &c.Target, &c.Secret); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Kind, &c.Enabled, &c.Target, &c.Secret, &c.Trusted); err != nil {
 			return nil, fmt.Errorf("alert: channels: %w", err)
 		}
 		// Расшифровываем секрет, если задан мастер-ключ (legacy plaintext без
@@ -349,9 +363,9 @@ func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 	}
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO alert_channels (project_id, kind, enabled, target, secret)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		c.ProjectID, c.Kind, c.Enabled, c.Target, storedSecret).Scan(&id)
+		INSERT INTO alert_channels (project_id, kind, enabled, target, secret, trusted)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		c.ProjectID, c.Kind, c.Enabled, c.Target, storedSecret, c.Trusted).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("alert: create channel: %w", err)
 	}
@@ -407,8 +421,8 @@ func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 	c = normalizeChannelTarget(c)
 	if c.Secret == "" {
 		tag, err := s.pool.Exec(ctx, `
-			UPDATE alert_channels SET target = $2, enabled = $3
-			WHERE id = $1 AND project_id = $4`, c.ID, c.Target, c.Enabled, c.ProjectID)
+			UPDATE alert_channels SET target = $2, enabled = $3, trusted = $4
+			WHERE id = $1 AND project_id = $5`, c.ID, c.Target, c.Enabled, c.Trusted, c.ProjectID)
 		if err != nil {
 			return fmt.Errorf("alert: update channel: %w", err)
 		}
@@ -429,8 +443,8 @@ func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 	// project_id в условии — скоуп: id канала приходит из формы, и без него
 	// владелец одного проекта мог бы править канал соседнего.
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE alert_channels SET target = $2, enabled = $3, secret = $4
-		WHERE id = $1 AND project_id = $5`, c.ID, c.Target, c.Enabled, stored, c.ProjectID)
+		UPDATE alert_channels SET target = $2, enabled = $3, secret = $4, trusted = $5
+		WHERE id = $1 AND project_id = $6`, c.ID, c.Target, c.Enabled, stored, c.Trusted, c.ProjectID)
 	if err != nil {
 		return fmt.Errorf("alert: update channel: %w", err)
 	}

@@ -77,7 +77,7 @@ When you connect an alert channel or SSO, personal data can leave your perimeter
 
 | Recipient | What is sent | Jurisdiction |
 |---|---|---|
-| Telegram | alert link and the recipient `chat_id`; the text only with `GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` | servers outside Russia |
+| Telegram | alert link and the recipient `chat_id`; the text only if the channel is marked as your own (or with `GOTCHA_EXTERNAL_CHANNEL_DETAILS=true`) | servers outside Russia |
 | Email (SMTP) | the recipient address and the alert link; the text only for trusted recipients (below) | your SMTP server and the recipient's mail server |
 | Webhook | the alert payload; details only for trusted hosts (below) | the address you configured |
 | OAuth/SSO (Yandex ID, VK ID, generic OIDC) | email/subject at sign-in | the provider (Yandex/VK — Russia) |
@@ -90,9 +90,14 @@ A recipient is trusted when its address belongs to your infrastructure:
 |---|---|
 | Email | the address domain is the instance host (or a subdomain of it), or is listed in `GOTCHA_TRUSTED_RECIPIENTS` |
 | Webhook | the URL host is the same, or any internal address: `localhost`, private ranges (`10.0.0.0/8`, `192.168.0.0/16`, …), the `.local`, `.internal`, `.lan`, `.home.arpa` zones |
-| Telegram | never: the recipient is a `chat_id` with no domain, and the service is outside your perimeter by definition |
+| Telegram | never by address: the recipient is a `chat_id` with no domain, and nothing about it can confirm it belongs to your perimeter |
+| Any channel | the **"This recipient is inside my perimeter"** box on the channel — the operator states what the address cannot show |
 
 The decision is made per **recipient**, not per channel type. A mailbox on a public mail service is someone else's infrastructure exactly as Telegram is; a webhook pointed at your own server on an internal network never leaves your perimeter at all.
+
+The box exists for the cases where the address proves nothing. Telegram is the usual one: the instance is self-hosted, the chat belongs to the operator, and no amount of parsing a `chat_id` will ever show that. Before it, the choice was between "nowhere" and `GOTCHA_EXTERNAL_CHANNEL_DETAILS=true`, meaning "everywhere, to everyone". The box is ticked one channel at a time, by hand, and is off by default; channels carrying it are marked in the table with a **"With details"** badge, so who receives personal data is visible at a glance instead of by opening every channel in turn.
+
+The statement is the operator's responsibility: the product cannot verify it — which is precisely why the box is ticked by hand.
 
 If your organization's domain differs from the instance host, list it explicitly:
 
@@ -102,7 +107,7 @@ GOTCHA_TRUSTED_RECIPIENTS=corp.example,ops.corp.example
 
 Matching happens on label boundaries: `corp.example` covers `mail.corp.example` but not `evilcorp.example`. The instance's parent domain is **not** trusted automatically — walking one level up from `gotcha.github.io` would extend trust to all of `github.io`, meaning every unrelated project on that host.
 
-`GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` lifts the restriction entirely: details then go to every recipient, Telegram included. Enable it only if you have a lawful basis for cross-border transfer. (Overriding the Telegram API endpoint is not exposed as a setting: it exists only as a field in the code.)
+`GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` lifts the restriction entirely: details then go to every recipient of every project, Telegram included. When the goal is to open up one or two channels of your own, ticking the box on those channels is the better instrument — same result, and every other recipient stays protected.
 
 The active policy is printed at startup: the line `alert details: sent only to trusted recipients` lists the instance host and the configured list.
 

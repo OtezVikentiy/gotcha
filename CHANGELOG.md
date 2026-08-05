@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A channel can be marked as **"This recipient is inside my perimeter"**, and details then reach it regardless of what its address looks like. The detail policy decides per recipient, and a Telegram `chat_id` carries nothing to decide on, so such a channel stayed external forever — on a self-hosted instance, where the operator and the recipient are the same person, the only lever left was `GOTCHA_EXTERNAL_CHANNEL_DETAILS`, which opens details to every channel of every project at once. The box is ticked by hand, one channel at a time, and is off by default, like the rest of the policy; channels carrying it show a "With details" badge in the table, so who receives personal data is visible without opening each channel in turn.
+
+### Documentation
+- The privacy page claimed the Telegram API endpoint could only be changed by editing the code. It has been a setting since 0.4.5 — the sentence outlived the release that made it false.
+- `GOTCHA_NET_MTU` presented the MTU mismatch between the host uplink and the container network as the diagnosis. The mismatch is ordinary and almost always harmless: when the narrow link is the host's own interface, the kernel reports it and the connection adapts. The page now says so, and names the pair of signs that means the MTU really is at fault — large exchanges timing out while small ones pass, *and* an uplink below 1500 — plus what to do when the change doesn't help.
+
 ## [0.4.5] - 2026-08-05
 
 ### Added

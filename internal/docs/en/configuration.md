@@ -91,11 +91,15 @@ These four are **Docker Compose substitution variables**, not configuration of t
 | Variable | Default | Description |
 |---|---|---|
 | `GOTCHA_MEM_LIMIT` | `1g` | Memory ceiling of the `gotcha` container. The app reads this limit from its cgroup and sets its own heap ceiling to 80% of it, so raising the ceiling is enough — `GOMEMLIMIT` doesn't need setting by hand. |
-| `GOTCHA_NET_MTU` | `1500` | MTU of the container network. Set it to the host's external interface MTU whenever that is below 1500. |
+| `GOTCHA_NET_MTU` | `1500` | MTU of the container network. A last resort for one specific failure — see below; a mismatch on its own is not a reason to touch it. |
 
-**When the MTU matters.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. The container then advertises an MSS the path cannot carry: the server replies with segments that don't fit, and they are dropped without notice. Small exchanges keep working, so the instance looks healthy — until the first large one. A TLS handshake is exactly that, which is why the symptom is a timeout on a connection that clearly exists: TCP established, the SMTP greeting received, then silence.
+**Start with the symptom, not the numbers.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. **This mismatch is normal and almost always harmless.** When the narrow link is the host's own interface, the kernel tells the container to lower its path MTU and the connection adapts by itself — which is why countless installations run on 1450 uplinks with 1500 containers and never notice.
 
-Everything the instance sends outward shares the path — email, webhook channels, OAuth, and uptime checks — so a monitored site can be reported unreachable because of the MTU of the container watching it.
+It becomes a problem only when the narrow link is somewhere out on the path *and* the ICMP messages that would report it are filtered. The connection then has no way to learn, and large packets vanish. Small exchanges keep working, so the instance looks healthy — until the first large one. A TLS handshake is exactly that, which is why the symptom is a timeout on a connection that clearly exists: TCP established, the SMTP greeting received, then silence.
+
+So the signal is the **pair**: outbound TLS times out while small exchanges over the same connection succeed, *and* the host's external interface is below 1500. Either one alone means nothing.
+
+Everything the instance sends outward shares the path — email, webhook channels, OAuth, and uptime checks — so when this does happen, a monitored site can be reported unreachable because of the MTU of the container watching it.
 
 Check the host:
 
@@ -103,7 +107,15 @@ Check the host:
 ip -o link show
 ```
 
-If the external interface (`ens3`, `eth0`) shows an MTU below 1500 while `docker0` shows 1500, set `GOTCHA_NET_MTU` to the interface's value and run `docker compose up -d`. Compose recreates the network and restarts the containers itself; no manual `down` is needed.
+If the external interface (`ens3`, `eth0`) is below 1500 while `docker0` shows 1500 **and** you have the timeout above, set `GOTCHA_NET_MTU` to the interface's value and bring the stack back up:
+
+```bash
+docker compose down && docker compose up -d
+```
+
+`down` matters here — `up -d` alone is not enough. Changing the value requires recreating the network, and doing that under running containers leaves Docker's embedded DNS holding the old records: services stop finding each other by name (`lookup postgres on 127.0.0.11:53: server misbehaving`) until the whole stack is brought up again.
+
+If delivery doesn't recover, the MTU wasn't the cause — put the value back and look at reachability instead ([Alerts](/docs/alerts) walks through it).
 
 ## Email / SMTP
 
