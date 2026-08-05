@@ -73,6 +73,21 @@ go test ./... -short -count=1
 1800s` without the `nice -p 2` guard — prefer the `nice -n 19 go test -p 2
 ./...` form above when running the full suite yourself.
 
+The suite's PostgreSQL and ClickHouse run in two shared containers, reused by
+name across every package and across runs; each test gets its own database
+inside them. They outlive the run on purpose — the automatic reaper owns
+containers per `go test` invocation and used to remove them while a later
+package was still using them — so seeing `gotcha-test-postgres-17-alpine`
+running after a finished run is expected, and the next run reuses it. Remove
+them when you want the disk and memory back:
+
+```bash
+make test-env-down
+```
+
+Run that between runs, never during one: a suite in flight would lose its
+databases.
+
 ## Working with templ templates
 
 The web UI is server-rendered with [templ](https://templ.guide). `.templ`

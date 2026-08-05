@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Testing
+- The shared PostgreSQL and ClickHouse containers are no longer swept out from under a running suite. The container reaper owns containers per session — one `go test` invocation — and removes them ten seconds after that session's last process disconnects. Ours are shared and reused by name, both across the packages of one run and across runs, so neither boundary fits that ownership: between two package binaries nobody is connected to the reaper, and with `-p 1` (mandatory, since starting containers in parallel brings the machine down) that gap is the compilation of the next binary — tens of seconds under `-race`. It swept two CI runs on 2026-08-05 mid-flight, in packages nothing had touched. The reaper is now off for these containers and `make test-env-down` removes them, so their lifetime is stated rather than raced for.
+
 ## [0.4.9] - 2026-08-05
 
 ### Interface

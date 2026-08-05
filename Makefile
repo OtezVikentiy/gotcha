@@ -110,6 +110,14 @@ test-race: ## Run unit tests with race detector (без docker)
 test-race-integration: ## Run integration tests with race detector (нужен docker, долго)
 	go test ./... -race -count=1 -p 1 -timeout 2400s
 
+# Общие PostgreSQL и ClickHouse для тестов живут дольше прогона намеренно:
+# автоматический сборщик контейнеров владеет ими посессионно и сносил их
+# посреди работы (см. internal/testenv). Эта цель — их единственная уборка.
+# Запускать между прогонами, не во время: работающий прогон останется без баз.
+test-env-down: ## Remove the shared test containers (postgres+clickhouse)
+	@ids=$$(docker ps -aq --filter "name=^gotcha-test-"); \
+	  if [ -n "$$ids" ]; then docker rm -f $$ids; else echo "тестовых контейнеров нет"; fi
+
 check: fmt vet test-short ## fmt + vet + быстрые тесты (перед коммитом)
 
 # Версию можно передать позиционно (`make release 0.1.0`) или как VERSION=0.1.0.
