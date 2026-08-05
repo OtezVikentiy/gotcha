@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-08-05
+
 ### Added
 - `GOTCHA_TELEGRAM_API_BASE` points Telegram delivery at a Bot API address of your choosing — your own `telegram-bot-api` server, or a reverse proxy on a network from which Telegram is reachable. Instances behind traffic filtering or a closed egress had one remedy, pinning `api.telegram.org` to whichever IP still answered through `extra_hosts`, which holds only until the addresses or the filtering rules change. An invalid value stops the instance at startup instead of turning into a timeout on every delivery.
 
