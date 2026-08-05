@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-08-05
+
 ### Added
 - A channel can be marked as **"This recipient is inside my perimeter"**, and details then reach it regardless of what its address looks like. The detail policy decides per recipient, and a Telegram `chat_id` carries nothing to decide on, so such a channel stayed external forever — on a self-hosted instance, where the operator and the recipient are the same person, the only lever left was `GOTCHA_EXTERNAL_CHANNEL_DETAILS`, which opens details to every channel of every project at once. The box is ticked by hand, one channel at a time, and is off by default, like the rest of the policy; channels carrying it show a "With details" badge in the table, so who receives personal data is visible without opening each channel in turn.
 
