@@ -125,10 +125,11 @@ SENTRY_TRACES_SAMPLE_RATE=0.2
 | **1С-Битрикс** (Управление сайтом) | [gotcha.monitoring](https://getgotcha.ru/downloads/gotcha.monitoring-1.0.0.zip) | ошибки PHP (через штатный `ExceptionHandlerLog` ядра), транзакции по скриптам (`/catalog/index.php`), ошибки JS и Web Vitals |
 | **Drupal** 10, 11 | [gotcha_monitoring](https://getgotcha.ru/downloads/gotcha_monitoring-1.0.0.zip) | ошибки PHP (через штатный logger-канал), транзакции по именам роутов (`entity.node.canonical`), ошибки JS и Web Vitals |
 | **OpenCart** 4.x | [gotcha (ocmod)](https://getgotcha.ru/downloads/opencart-gotcha-1.0.0.ocmod.zip) | ошибки PHP (цепочка обработчиков), транзакции по маршрутам (`product/product`), ошибки JS и Web Vitals |
+| **MODX Revolution** 3 | [gotcha (transport)](https://getgotcha.ru/downloads/gotcha-1.0.0-pl.transport.zip) | ошибки PHP (цепочка обработчиков), транзакции по шаблонам (`web:BaseTemplate`), ошибки JS и Web Vitals |
 
 Установка одинаковая: поставить архив через менеджер расширений, включить, вставить DSN со страницы **«Подключение»**. Пока DSN пуст, расширение не делает ничего — ни одного запроса наружу.
 
-Разбор устройства расширений, включая выбор имён транзакций и изоляцию composer-зависимостей: [WordPress](https://getgotcha.ru/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/blog/joomla-monitoring/), [1С-Битрикс](https://getgotcha.ru/blog/bitrix-monitoring/), [Drupal](https://getgotcha.ru/blog/drupal-monitoring/), [OpenCart](https://getgotcha.ru/blog/opencart-monitoring/).
+Разбор устройства расширений, включая выбор имён транзакций и изоляцию composer-зависимостей: [WordPress](https://getgotcha.ru/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/blog/joomla-monitoring/), [1С-Битрикс](https://getgotcha.ru/blog/bitrix-monitoring/), [Drupal](https://getgotcha.ru/blog/drupal-monitoring/), [OpenCart](https://getgotcha.ru/blog/opencart-monitoring/), [MODX](https://getgotcha.ru/blog/modx-monitoring/).
 
 ## JavaScript / Node.js (сервер)
 
