@@ -50,30 +50,77 @@ docker compose version
 
 Если обе команды напечатали номер версии — Docker уже есть, переходите к шагу 2.
 
-Если вы видите `command not found`, установите Docker официальным скриптом (работает и на Ubuntu/Debian, и на RedHat-семействе — AlmaLinux/Rocky/RHEL):
+Если вы видите `command not found`, ставьте Docker. Команды зависят от того, какое у сервера семейство дистрибутивов, — выберите свой раздел.
+
+### Ubuntu, Debian и другие deb-дистрибутивы
+
+Официальный скрипт Docker делает всё сам:
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
 ```
 
-На RedHat-семействе Docker не запускается автоматически после установки — включите и запустите сервис:
+Docker Compose (команда `docker compose`, с пробелом) ставится вместе с Docker, отдельно не нужен. Сервис после установки запускается сам.
+
+### AlmaLinux, Rocky Linux, RHEL и другие rpm-дистрибутивы
+
+Здесь есть две ловушки, из-за которых установка «по привычке» заканчивается неработающим сервером.
+
+**Ловушка первая: `dnf install docker` ставит не Docker.** В штатных репозиториях RedHat-семейства пакета Docker нет, а есть `podman-docker` — обёртка, которая эмулирует команду `docker` поверх Podman. Выглядит это так:
+
+```
+# dnf install docker
+...
+Installed: podman-docker-5.8.2-5.el9_8.noarch
+
+# docker --version
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+podman version 5.8.2
+
+# sudo usermod -aG docker $USER
+usermod: group 'docker' does not exist
+
+# sudo systemctl enable --now docker
+Failed to enable unit: Unit file docker.service does not exist.
+```
+
+Группы `docker` нет, сервиса `docker` нет — потому что и Docker никакого нет.
+
+**Ловушка вторая: официальный скрипт установки не поддерживает AlmaLinux.** `curl -fsSL https://get.docker.com | sudo sh` на ней отвечает `ERROR: Unsupported distribution 'almalinux'`.
+
+Правильный путь — официальный репозиторий Docker CE. Если ранее ставили `podman-docker`, его придётся удалить: он занимает то же имя команды `/usr/bin/docker`, и установка Docker CE поверх него падает с конфликтом пакетов.
 
 ```bash
+# 1. Убрать обёртку Podman, если она была установлена
+sudo dnf remove -y podman-docker
+
+# 2. Подключить официальный репозиторий Docker
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+# 3. Установить Docker и плагин Compose
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# 4. Запустить сервис и включить автозапуск (сам он не стартует)
 sudo systemctl enable --now docker
 ```
 
-После установки добавьте своего пользователя в группу `docker`, чтобы не набирать `sudo` перед каждой командой, и перезайдите по SSH, чтобы это применилось:
+Репозиторий именно `centos` — Docker не собирает отдельные пакеты для AlmaLinux и Rocky, а собранные для CentOS Stream на них работают. Проверено на AlmaLinux 9 и 10.
+
+### После установки (любой дистрибутив)
+
+Добавьте своего пользователя в группу `docker`, чтобы не набирать `sudo` перед каждой командой, и перезайдите по SSH, чтобы это применилось:
 
 ```bash
 sudo usermod -aG docker $USER
 exit
 ```
 
-Зайдите на сервер заново и повторите `docker --version` — должно сработать. Docker Compose (команда `docker compose`, с пробелом) устанавливается вместе с Docker этим скриптом, отдельно ставить не нужно.
+Зайдите на сервер заново и повторите `docker --version` и `docker compose version` — обе команды должны напечатать номер версии.
 
 ## Шаг 2. Скачайте код Gotcha
 
-Если на сервере нет `git` — поставьте его: `sudo apt update && sudo apt install -y git` для Ubuntu/Debian, `sudo dnf install -y git` для AlmaLinux/Rocky/RHEL. Дальше:
+### Если на сервере есть git
 
 ```bash
 # gitflic (основной, анонимный HTTPS)
@@ -85,7 +132,19 @@ git clone https://github.com/OtezVikentiy/gotcha.git
 cd gotcha
 ```
 
-В этой папке лежит `docker-compose.yml` — файл-рецепт, который описывает, какие три контейнера нужно поднять и как их связать между собой. Все дальнейшие команды выполняются из этой папки (`gotcha/`).
+### Если git не установлен
+
+Ставить его необязательно — можно скачать архив с зеркала на GitHub и распаковать. `curl` и `tar` есть в любом дистрибутиве из коробки:
+
+```bash
+curl -fsSL https://github.com/OtezVikentiy/gotcha/archive/refs/heads/main.tar.gz -o gotcha.tar.gz
+tar xzf gotcha.tar.gz
+cd gotcha-main
+```
+
+Разница с `git clone` только одна: обновляться потом придётся тем же способом — скачивать свежий архив, а не делать `git pull`. Если планируете обновлять инстанс регулярно, git всё же удобнее: `sudo apt install -y git` для Ubuntu/Debian, `sudo dnf install -y git` для AlmaLinux/Rocky/RHEL.
+
+В распакованной папке лежит `docker-compose.yml` — файл-рецепт, который описывает, какие три контейнера нужно поднять и как их связать между собой. Все дальнейшие команды выполняются из неё.
 
 ## Шаг 3. Запустите контейнеры
 

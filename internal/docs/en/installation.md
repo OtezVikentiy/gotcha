@@ -50,30 +50,77 @@ docker compose version
 
 If both commands print a version number, Docker is already there — skip to step 2.
 
-If you see `command not found`, install Docker with the official convenience script (works on Ubuntu/Debian as well as on the RedHat family — AlmaLinux/Rocky/RHEL):
+If you see `command not found`, install Docker. The commands depend on which distribution family the server runs — pick your section.
+
+### Ubuntu, Debian and other deb-based distributions
+
+The official Docker script does everything for you:
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
 ```
 
-On the RedHat family Docker does not start automatically after installation — enable and start the service:
+Docker Compose (the `docker compose` command, with a space) comes with Docker; no separate install is needed. The service starts on its own.
+
+### AlmaLinux, Rocky Linux, RHEL and other rpm-based distributions
+
+There are two traps here that leave you with a server that looks installed but isn't.
+
+**Trap one: `dnf install docker` does not install Docker.** The stock RedHat-family repositories carry no Docker package; what they have is `podman-docker`, a shim that emulates the `docker` command on top of Podman. It looks like this:
+
+```
+# dnf install docker
+...
+Installed: podman-docker-5.8.2-5.el9_8.noarch
+
+# docker --version
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+podman version 5.8.2
+
+# sudo usermod -aG docker $USER
+usermod: group 'docker' does not exist
+
+# sudo systemctl enable --now docker
+Failed to enable unit: Unit file docker.service does not exist.
+```
+
+There is no `docker` group and no `docker` service — because there is no Docker.
+
+**Trap two: the official install script does not support AlmaLinux.** `curl -fsSL https://get.docker.com | sudo sh` answers `ERROR: Unsupported distribution 'almalinux'`.
+
+The right path is Docker's own repository. If you installed `podman-docker` earlier you have to remove it: it owns the same `/usr/bin/docker` path, and installing Docker CE on top of it fails with a package conflict.
 
 ```bash
+# 1. Remove the Podman shim if it was installed
+sudo dnf remove -y podman-docker
+
+# 2. Add Docker's official repository
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+# 3. Install Docker and the Compose plugin
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# 4. Start the service and enable it at boot (it does not start on its own)
 sudo systemctl enable --now docker
 ```
 
-After installing, add your user to the `docker` group so you don't need `sudo` for every command, then log back in for it to take effect:
+The repository is the `centos` one on purpose: Docker doesn't build separate packages for AlmaLinux and Rocky, and the CentOS Stream builds work on them. Verified on AlmaLinux 9 and 10.
+
+### After installing (any distribution)
+
+Add your user to the `docker` group so you don't need `sudo` for every command, then log back in for it to take effect:
 
 ```bash
 sudo usermod -aG docker $USER
 exit
 ```
 
-SSH back in and run `docker --version` again — it should work now. Docker Compose (the `docker compose` command, with a space) is installed together with Docker by this script; no separate install is needed.
+SSH back in and run `docker --version` and `docker compose version` — both should print a version number.
 
 ## Step 2. Get the Gotcha source
 
-If `git` isn't installed, install it first: `sudo apt update && sudo apt install -y git` on Ubuntu/Debian, `sudo dnf install -y git` on AlmaLinux/Rocky/RHEL. Then:
+### If the server has git
 
 ```bash
 # gitflic (main, anonymous HTTPS)
@@ -85,7 +132,19 @@ git clone https://github.com/OtezVikentiy/gotcha.git
 cd gotcha
 ```
 
-This directory contains `docker-compose.yml` — a recipe file describing which three containers to start and how they're wired together. Run every command below from this directory (`gotcha/`).
+### If git is not installed
+
+You don't have to install it — download an archive from the GitHub mirror and unpack it instead. Both `curl` and `tar` ship with every distribution:
+
+```bash
+curl -fsSL https://github.com/OtezVikentiy/gotcha/archive/refs/heads/main.tar.gz -o gotcha.tar.gz
+tar xzf gotcha.tar.gz
+cd gotcha-main
+```
+
+The only difference from `git clone` is how you update later: you download a fresh archive rather than running `git pull`. If you plan to update the instance regularly, git is still more convenient: `sudo apt install -y git` on Ubuntu/Debian, `sudo dnf install -y git` on AlmaLinux/Rocky/RHEL.
+
+The unpacked directory contains `docker-compose.yml` — a recipe file describing which three containers to start and how they're wired together. Run every command below from that directory.
 
 ## Step 3. Start the containers
 

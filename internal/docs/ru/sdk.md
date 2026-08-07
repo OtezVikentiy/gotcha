@@ -121,7 +121,7 @@ SENTRY_TRACES_SAMPLE_RATE=0.2
 | CMS | Расширение | Что собирает |
 |---|---|---|
 | **WordPress** 5.9+ | [gotcha-monitoring](https://getgotcha.ru/downloads/gotcha-monitoring-1.0.0.zip) | ошибки PHP (включая фатальные), транзакции по типам страниц (`single.post`, `archive.category`, `rest:/wp/v2/posts`, `wp-cron`), ошибки JS и Web Vitals |
-| **Joomla** 4.2+, 5, 6 | [plg_system_gotcha](https://getgotcha.ru/downloads/plg_system_gotcha-1.1.0.zip) | ошибки PHP, транзакции по компонентам (`com_content.article`), ошибки JS и Web Vitals |
+| **Joomla** 4.2+, 5, 6 | [pkg_gotcha](https://getgotcha.ru/downloads/pkg_gotcha-1.2.0.zip) | ошибки PHP, транзакции по компонентам (`com_content.article`), ошибки JS и Web Vitals |
 | **1С-Битрикс** (Управление сайтом) | [gotcha.monitoring](https://getgotcha.ru/downloads/gotcha.monitoring-1.0.0.zip) | ошибки PHP (через штатный `ExceptionHandlerLog` ядра), транзакции по скриптам (`/catalog/index.php`), ошибки JS и Web Vitals |
 
 Установка одинаковая: поставить архив через менеджер расширений, включить, вставить DSN со страницы **«Подключение»**. Пока DSN пуст, расширение не делает ничего — ни одного запроса наружу.

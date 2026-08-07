@@ -121,7 +121,7 @@ Sites running on a CMS need no code at all — there are ready-made extensions t
 | CMS | Extension | What it collects |
 |---|---|---|
 | **WordPress** 5.9+ | [gotcha-monitoring](https://getgotcha.ru/downloads/gotcha-monitoring-1.0.0.zip) | PHP errors (fatals included), transactions per page type (`single.post`, `archive.category`, `rest:/wp/v2/posts`, `wp-cron`), JS errors and Web Vitals |
-| **Joomla** 4.2+, 5, 6 | [plg_system_gotcha](https://getgotcha.ru/downloads/plg_system_gotcha-1.1.0.zip) | PHP errors, transactions per component (`com_content.article`), JS errors and Web Vitals |
+| **Joomla** 4.2+, 5, 6 | [pkg_gotcha](https://getgotcha.ru/downloads/pkg_gotcha-1.2.0.zip) | PHP errors, transactions per component (`com_content.article`), JS errors and Web Vitals |
 | **1C-Bitrix** (Site Management) | [gotcha.monitoring](https://getgotcha.ru/downloads/gotcha.monitoring-1.0.0.zip) | PHP errors (via the core's own `ExceptionHandlerLog`), transactions per script (`/catalog/index.php`), JS errors and Web Vitals |
 
 Installation is the same either way: install the archive through the extension manager, enable it, paste the DSN from the project **"Setup"** page. While the DSN is empty the extension does nothing — not a single outbound request.
