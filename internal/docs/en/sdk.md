@@ -122,10 +122,11 @@ Sites running on a CMS need no code at all — there are ready-made extensions t
 |---|---|---|
 | **WordPress** 5.9+ | [gotcha-monitoring](https://getgotcha.ru/downloads/gotcha-monitoring-1.0.0.zip) | PHP errors (fatals included), transactions per page type (`single.post`, `archive.category`, `rest:/wp/v2/posts`, `wp-cron`), JS errors and Web Vitals |
 | **Joomla** 4.2+, 5, 6 | [plg_system_gotcha](https://getgotcha.ru/downloads/plg_system_gotcha-1.1.0.zip) | PHP errors, transactions per component (`com_content.article`), JS errors and Web Vitals |
+| **1C-Bitrix** (Site Management) | [gotcha.monitoring](https://getgotcha.ru/downloads/gotcha.monitoring-1.0.0.zip) | PHP errors (via the core's own `ExceptionHandlerLog`), transactions per script (`/catalog/index.php`), JS errors and Web Vitals |
 
 Installation is the same either way: install the archive through the extension manager, enable it, paste the DSN from the project **"Setup"** page. While the DSN is empty the extension does nothing — not a single outbound request.
 
-A walk-through of how the extensions are built, including transaction naming and scoping composer dependencies: [WordPress](https://getgotcha.ru/en/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/en/blog/joomla-monitoring/).
+A walk-through of how the extensions are built, including transaction naming and scoping composer dependencies: [WordPress](https://getgotcha.ru/en/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/en/blog/joomla-monitoring/), [1C-Bitrix](https://getgotcha.ru/en/blog/bitrix-monitoring/).
 
 ## JavaScript / Node.js (server)
 
