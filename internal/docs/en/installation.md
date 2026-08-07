@@ -4,7 +4,7 @@ This guide assumes you've never deployed a Docker application or administered a 
 
 ## What you need
 
-- **A Linux server** (VPS/dedicated) — Ubuntu 22.04/24.04 or Debian 12 both work. CPU/RAM/disk requirements are in the table below.
+- **A Linux server** (VPS/dedicated) — Ubuntu 22.04/24.04, Debian 12, or a RedHat-family distribution (AlmaLinux 9/10, Rocky Linux 9/10, RHEL 9/10) all work. CPU/RAM/disk requirements are in the table below.
 - **Docker and Docker Compose** — the only dependency. You don't need to install PHP, nginx, or a database by hand — all of that is already packaged into containers.
 - SSH access to the server.
 - (Optional, but recommended for a real deployment) a domain name pointing at the server's IP.
@@ -19,7 +19,7 @@ Gotcha runs three processes on a single server: the app itself (Go), PostgreSQL,
 | RAM  | 2 GB    | 4 GB or more |
 | Disk | 20 GB SSD | 40 GB SSD or more |
 
-- **OS:** Ubuntu 22.04/24.04 or Debian 12, x86-64 (amd64) architecture.
+- **OS:** Ubuntu 22.04/24.04, Debian 12, or a RedHat-family distribution (AlmaLinux 9/10, Rocky Linux 9/10, RHEL 9/10), x86-64 (amd64) architecture. Gotcha runs in Docker, so the distribution barely matters — the differences are only in how you install Docker/git and in the firewall, and they are called out along the way.
 - **RAM.** 2 GB is a workable minimum for getting started and light load (personal projects, staging). For production with a real stream of events, budget 4 GB and up: under load ClickHouse is more stable the more memory it has.
 - **Disk.** Grows with the volume of telemetry and how long you retain it. 20 GB is enough to start; with noticeable traffic or long retention, plan for more and keep an eye on free space — for how, see [Monitoring gotcha itself](/docs/self-monitoring). Use an SSD — both ClickHouse and PostgreSQL are sensitive to disk latency.
 - **CPU.** Two cores are enough; extra cores speed up ingesting bursts of events and ClickHouse queries.
@@ -50,10 +50,16 @@ docker compose version
 
 If both commands print a version number, Docker is already there — skip to step 2.
 
-If you see `command not found`, install Docker with the official convenience script (works on Ubuntu/Debian):
+If you see `command not found`, install Docker with the official convenience script (works on Ubuntu/Debian as well as on the RedHat family — AlmaLinux/Rocky/RHEL):
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
+```
+
+On the RedHat family Docker does not start automatically after installation — enable and start the service:
+
+```bash
+sudo systemctl enable --now docker
 ```
 
 After installing, add your user to the `docker` group so you don't need `sudo` for every command, then log back in for it to take effect:
@@ -67,7 +73,7 @@ SSH back in and run `docker --version` again — it should work now. Docker Comp
 
 ## Step 2. Get the Gotcha source
 
-If `git` isn't installed, install it first (`sudo apt update && sudo apt install -y git` on Ubuntu/Debian). Then:
+If `git` isn't installed, install it first: `sudo apt update && sudo apt install -y git` on Ubuntu/Debian, `sudo dnf install -y git` on AlmaLinux/Rocky/RHEL. Then:
 
 ```bash
 # gitflic (main, anonymous HTTPS)
@@ -229,7 +235,7 @@ GOTCHA_PORT=8081
 then `docker compose up -d`. The app inside the container still listens on 8080 — only which host port it's mapped to changes.
 
 **The web UI doesn't load, even though containers show `Up`.**
-- Check the server's firewall: `sudo ufw status` — if ufw is enabled, allow the port: `sudo ufw allow 59080/tcp`.
+- Check the server's firewall. Ubuntu/Debian: `sudo ufw status` — if ufw is enabled, allow the port: `sudo ufw allow 59080/tcp`. AlmaLinux/Rocky/RHEL: firewalld is enabled by default — allow the port: `sudo firewall-cmd --permanent --add-port=59080/tcp && sudo firewall-cmd --reload`.
 - If your server is with a cloud provider/hosting panel, check its Security Group / firewall separately from `ufw` — traffic is often blocked there instead.
 - Run `curl -sf http://localhost:59080/healthz` **from the server itself** — if that works but access from outside doesn't, the problem is networking (firewall/provider), not Gotcha.
 
