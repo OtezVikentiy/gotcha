@@ -124,10 +124,11 @@ Sites running on a CMS need no code at all — there are ready-made extensions t
 | **Joomla** 4.2+, 5, 6 | [pkg_gotcha](https://getgotcha.ru/downloads/pkg_gotcha-1.2.1.zip) | PHP errors, transactions per component (`com_content.article`), JS errors and Web Vitals |
 | **1C-Bitrix** (Site Management) | [gotcha.monitoring](https://getgotcha.ru/downloads/gotcha.monitoring-1.0.0.zip) | PHP errors (via the core's own `ExceptionHandlerLog`), transactions per script (`/catalog/index.php`), JS errors and Web Vitals |
 | **Drupal** 10, 11 | [gotcha_monitoring](https://getgotcha.ru/downloads/gotcha_monitoring-1.0.0.zip) | PHP errors (via the stock logger channel), transactions by route name (`entity.node.canonical`), JS errors and Web Vitals |
+| **OpenCart** 4.x | [gotcha (ocmod)](https://getgotcha.ru/downloads/opencart-gotcha-1.0.0.ocmod.zip) | PHP errors (handler chain), transactions by route (`product/product`), JS errors and Web Vitals |
 
 Installation is the same either way: install the archive through the extension manager, enable it, paste the DSN from the project **"Setup"** page. While the DSN is empty the extension does nothing — not a single outbound request.
 
-A walk-through of how the extensions are built, including transaction naming and scoping composer dependencies: [WordPress](https://getgotcha.ru/en/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/en/blog/joomla-monitoring/), [1C-Bitrix](https://getgotcha.ru/en/blog/bitrix-monitoring/), [Drupal](https://getgotcha.ru/en/blog/drupal-monitoring/).
+A walk-through of how the extensions are built, including transaction naming and scoping composer dependencies: [WordPress](https://getgotcha.ru/en/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/en/blog/joomla-monitoring/), [1C-Bitrix](https://getgotcha.ru/en/blog/bitrix-monitoring/), [Drupal](https://getgotcha.ru/en/blog/drupal-monitoring/), [OpenCart](https://getgotcha.ru/en/blog/opencart-monitoring/).
 
 ## JavaScript / Node.js (server)
 
