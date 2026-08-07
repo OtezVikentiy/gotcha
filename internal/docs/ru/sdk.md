@@ -131,6 +131,8 @@ SENTRY_TRACES_SAMPLE_RATE=0.2
 
 Разбор устройства расширений, включая выбор имён транзакций и изоляцию composer-зависимостей: [WordPress](https://getgotcha.ru/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/blog/joomla-monitoring/), [1С-Битрикс](https://getgotcha.ru/blog/bitrix-monitoring/), [Drupal](https://getgotcha.ru/blog/drupal-monitoring/), [OpenCart](https://getgotcha.ru/blog/opencart-monitoring/), [MODX](https://getgotcha.ru/blog/modx-monitoring/).
 
+На SaaS-конструкторах (Tilda и подобных) расширение поставить некуда — сервер чужой. Там доступна браузерная половина: ошибки JavaScript и Web Vitals вставляются блоком в `<head>`, аптайм и SSL проверяются снаружи и вовсе не требуют кода. Подробнее: [мониторинг сайта на Tilda](https://getgotcha.ru/blog/tilda-monitoring/).
+
 ## JavaScript / Node.js (сервер)
 
 ```bash

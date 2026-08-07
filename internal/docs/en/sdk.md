@@ -131,6 +131,8 @@ Installation is the same either way: install the archive through the extension m
 
 A walk-through of how the extensions are built, including transaction naming and scoping composer dependencies: [WordPress](https://getgotcha.ru/en/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/en/blog/joomla-monitoring/), [1C-Bitrix](https://getgotcha.ru/en/blog/bitrix-monitoring/), [Drupal](https://getgotcha.ru/en/blog/drupal-monitoring/), [OpenCart](https://getgotcha.ru/en/blog/opencart-monitoring/), [MODX](https://getgotcha.ru/en/blog/modx-monitoring/).
 
+On SaaS site builders (Tilda and the like) there is nowhere to install an extension — the server is not yours. The browser half is still available: JavaScript errors and Web Vitals go in as a block in `<head>`, while uptime and SSL are checked from the outside and need no code at all. More: [monitoring a Tilda site](https://getgotcha.ru/en/blog/tilda-monitoring/).
+
 ## JavaScript / Node.js (server)
 
 ```bash
