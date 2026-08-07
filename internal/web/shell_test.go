@@ -1,11 +1,16 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
 func TestWithShellSkipsStaticAndAnonymous(t *testing.T) {
@@ -33,6 +38,114 @@ func TestWithShellSkipsStaticAndAnonymous(t *testing.T) {
 	if seen.Area != "" {
 		t.Fatalf("anonymous request should skip resolve, got area = %q", seen.Area)
 	}
+}
+
+// projCookieHeader — значение Set-Cookie "proj" из ответа; "" — не ставилась.
+func projCookieHeader(w *httptest.ResponseRecorder) string {
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "proj" {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// TestWithShellStickyProject — «липкость» выбранного проекта: страница с
+// /projects/{id} в пути запоминает проект в cookie, а страницы без проекта в
+// пути (детали issue, /docs, /profile, организация) берут его из cookie
+// вместо отката на первый проект списка.
+func TestWithShellStickyProject(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+	h := &Handler{Auth: authSvc, Org: orgSvc, BaseURL: "http://localhost"}
+	ctx := context.Background()
+
+	uid, err := authSvc.Register(ctx, "sticky@example.com", "hunter2hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := orgSvc.CreateOrg(ctx, "sticky", "Sticky Org", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, err := orgSvc.CreateProject(ctx, o.ID, "first", "First", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := orgSvc.CreateProject(ctx, o.ID, "second", "Second", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := authSvc.CreateSession(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen nav.Shell
+	mw := h.withShell(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = nav.FromContext(r.Context())
+	}))
+	get := func(path string, projCookie string) *httptest.ResponseRecorder {
+		t.Helper()
+		seen = nav.Shell{}
+		r := httptest.NewRequest("GET", path, nil)
+		r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		if projCookie != "" {
+			r.AddCookie(&http.Cookie{Name: "proj", Value: projCookie})
+		}
+		w := httptest.NewRecorder()
+		mw.ServeHTTP(w, r)
+		return w
+	}
+
+	p2str := strconv.FormatInt(p2.ID, 10)
+
+	// Явный проект в пути → выбор запоминается в cookie.
+	w := get("/projects/"+p2str+"/issues", "")
+	if seen.ProjectID != p2.ID {
+		t.Fatalf("ProjectID = %d, want %d (from path)", seen.ProjectID, p2.ID)
+	}
+	if got := projCookieHeader(w); got != p2str {
+		t.Fatalf("proj cookie after project page = %q, want %q", got, p2str)
+	}
+
+	// Cookie уже актуальна → повторно не переустанавливается.
+	w = get("/projects/"+p2str+"/issues", p2str)
+	if got := projCookieHeader(w); got != "" {
+		t.Fatalf("proj cookie rewritten to %q, want no Set-Cookie", got)
+	}
+
+	// Страница без проекта в пути → проект из cookie, а не первый из списка.
+	w = get("/issues/9", p2str)
+	if seen.ProjectID != p2.ID {
+		t.Fatalf("ProjectID on detail page = %d, want %d (sticky)", seen.ProjectID, p2.ID)
+	}
+	if got := projCookieHeader(w); got != "" {
+		t.Fatalf("detail page must not touch proj cookie, got %q", got)
+	}
+
+	// Битое значение cookie → игнорируется, откат на прежнее поведение.
+	get("/issues/9", "garbage")
+	if seen.ProjectID != 0 {
+		t.Fatalf("ProjectID with garbage cookie = %d, want 0", seen.ProjectID)
+	}
+
+	// Проект, к которому нет доступа (или несуществующий) → игнорируется.
+	foreign := strconv.FormatInt(p2.ID+12345, 10)
+	get("/issues/9", foreign)
+	if seen.ProjectID != 0 {
+		t.Fatalf("ProjectID with foreign cookie = %d, want 0", seen.ProjectID)
+	}
+
+	// Чужой/несуществующий проект в ПУТИ не должен портить cookie: хендлер
+	// ответит 404, но запомненный выбор обязан пережить такой заход.
+	w = get("/projects/"+foreign+"/issues", p2str)
+	if got := projCookieHeader(w); got != "" {
+		t.Fatalf("foreign project in path wrote proj cookie %q, want none", got)
+	}
+
+	_ = p1 // первый проект нужен только как «дефолт», к которому не должно откатывать
 }
 
 func TestProjectIDFromPath(t *testing.T) {

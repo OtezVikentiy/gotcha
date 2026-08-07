@@ -792,7 +792,18 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/onboarding", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, projectIssuesPath(projects[0].ID), http.StatusSeeOther)
+	// Запомненный в cookie проект важнее первого из списка (см.
+	// projcookie.go); недоступный или битый id молча откатывает на первый.
+	target := projects[0].ID
+	if id := projCookieID(r); id != 0 {
+		for _, p := range projects {
+			if p.ID == id {
+				target = id
+				break
+			}
+		}
+	}
+	http.Redirect(w, r, projectIssuesPath(target), http.StatusSeeOther)
 }
 
 // projectIssuesPath — предварительный путь до issue-листинга проекта;

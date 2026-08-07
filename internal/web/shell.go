@@ -57,6 +57,18 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 		}
 
 		projID := projectIDFromPath(path)
+		if projID != 0 {
+			// Явный проект в пути — запоминаем выбор (см. projcookie.go).
+			// Только свой: чужой id в адресе отдаст 404 в хендлере и не
+			// должен затирать запомненный выбор.
+			if projectInList(projs, projID) && projCookieID(r) != projID {
+				setProjCookie(w, projID, h.Secure)
+			}
+		} else if id := projCookieID(r); id != 0 && projectInList(projs, id) {
+			// Страница без проекта в пути — текущим остаётся запомненный
+			// проект, а не первый из списка (fallback effectiveProjectID).
+			projID = id
+		}
 
 		var orgID int64
 		if oid := orgIDFromPath(path); oid != 0 {
@@ -104,6 +116,18 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(nav.WithShell(ctx, sh)))
 	})
+}
+
+// projectInList — есть ли проект id в списке доступных пользователю. Сверка
+// обязательна и при чтении cookie (общий браузер, отозванный доступ), и при
+// записи (чужой id в пути не должен затирать запомненный выбор).
+func projectInList(projs []nav.Project, id int64) bool {
+	for _, p := range projs {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // projectIDFromPath парсит {id} из "/projects/{id}/..." — единственный
