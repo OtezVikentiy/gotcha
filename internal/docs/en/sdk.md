@@ -114,6 +114,19 @@ The bundle captures unhandled exceptions on its own. To test — `\Sentry\captur
 
 > **`ignore_exceptions` matters:** without it, `NotFoundHttpException` flows into Gotcha as an error, and every scan or dead link clutters your issues. Ignoring client 404/405 leaves only real application errors.
 
+## CMS: WordPress and Joomla
+
+Sites running on a CMS need no code at all — there are ready-made extensions that install through the regular extension manager and take a single DSN field. Inside they use the same official Sentry SDK as the examples above, plus the browser SDK for Web Vitals.
+
+| CMS | Extension | What it collects |
+|---|---|---|
+| **WordPress** 5.9+ | [gotcha-monitoring](https://getgotcha.ru/downloads/gotcha-monitoring-1.0.0.zip) | PHP errors (fatals included), transactions per page type (`single.post`, `archive.category`, `rest:/wp/v2/posts`, `wp-cron`), JS errors and Web Vitals |
+| **Joomla** 4.2+, 5, 6 | [plg_system_gotcha](https://getgotcha.ru/downloads/plg_system_gotcha-1.1.0.zip) | PHP errors, transactions per component (`com_content.article`), JS errors and Web Vitals |
+
+Installation is the same either way: install the archive through the extension manager, enable it, paste the DSN from the project **"Setup"** page. While the DSN is empty the extension does nothing — not a single outbound request.
+
+A walk-through of how the extensions are built, including transaction naming and scoping composer dependencies: [WordPress](https://getgotcha.ru/en/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/en/blog/joomla-monitoring/).
+
 ## JavaScript / Node.js (server)
 
 ```bash

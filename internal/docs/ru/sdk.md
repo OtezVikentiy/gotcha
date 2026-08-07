@@ -114,6 +114,19 @@ SENTRY_TRACES_SAMPLE_RATE=0.2
 
 > **`ignore_exceptions` важен:** без него `NotFoundHttpException` летит в Gotcha как ошибка, и каждый скан/битая ссылка засоряет issues. Игнор клиентских 404/405 оставляет только реальные ошибки приложения.
 
+## CMS: WordPress и Joomla
+
+Для сайтов на CMS писать код не нужно — есть готовые расширения, которые ставятся штатным установщиком и настраиваются одним полем DSN. Внутри у них тот же официальный Sentry SDK, что и в примерах выше, плюс браузерный SDK для Web Vitals.
+
+| CMS | Расширение | Что собирает |
+|---|---|---|
+| **WordPress** 5.9+ | [gotcha-monitoring](https://getgotcha.ru/downloads/gotcha-monitoring-1.0.0.zip) | ошибки PHP (включая фатальные), транзакции по типам страниц (`single.post`, `archive.category`, `rest:/wp/v2/posts`, `wp-cron`), ошибки JS и Web Vitals |
+| **Joomla** 4.2+, 5, 6 | [plg_system_gotcha](https://getgotcha.ru/downloads/plg_system_gotcha-1.1.0.zip) | ошибки PHP, транзакции по компонентам (`com_content.article`), ошибки JS и Web Vitals |
+
+Установка одинаковая: поставить архив через менеджер расширений, включить, вставить DSN со страницы **«Подключение»**. Пока DSN пуст, расширение не делает ничего — ни одного запроса наружу.
+
+Разбор устройства расширений, включая выбор имён транзакций и изоляцию composer-зависимостей: [WordPress](https://getgotcha.ru/blog/wordpress-monitoring/), [Joomla](https://getgotcha.ru/blog/joomla-monitoring/).
+
 ## JavaScript / Node.js (сервер)
 
 ```bash
