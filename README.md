@@ -2,6 +2,8 @@
 
 # Gotcha
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13985/badge)](https://www.bestpractices.dev/projects/13985)
+
 Gotcha is a self-hosted observability platform: error tracking, performance
 tracing, metrics, uptime monitoring, and profiling in one Go binary backed by
 PostgreSQL and ClickHouse. It accepts data via the Sentry SDK ingestion

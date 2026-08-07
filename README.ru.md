@@ -2,6 +2,8 @@
 
 # Gotcha
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13985/badge)](https://www.bestpractices.dev/projects/13985)
+
 Gotcha — self-hosted платформа наблюдаемости (observability): трекинг ошибок,
 трейсинг производительности, метрики, мониторинг аптайма и профилирование в
 одном Go-бинарнике поверх PostgreSQL и ClickHouse. Она принимает данные по
