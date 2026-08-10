@@ -12,7 +12,7 @@ Roles are assigned at the organization level and apply across all its projects:
 
 | Role | Can do |
 |---|---|
-| **owner** | Everything admin can, plus: grant/revoke the owner role for others, remove owners, configure the organization's [SSO](/docs/sso), export/delete subjects' personal data, delete the organization entirely |
+| **owner** | Everything admin can, plus: grant/revoke the owner role for others, remove owners, see the organization's [SSO](/docs/sso) section (configuring it also requires being marked an instance administrator — being org owner alone isn't enough), export/delete subjects' personal data, delete the organization entirely |
 | **admin** | Invite and remove members, change admin/member roles (not owner), manage ingest quotas, create/delete teams, manage probes and project settings (monitors, status pages, maintenance windows) |
 | **member** | Works inside the projects they have access to (issues, performance, metrics, uptime, etc.), with no access to the organization's admin pages |
 
@@ -54,6 +54,32 @@ Inside the card:
 - **Projects** — a table of attached projects, an attach form with a dropdown (listing only organization projects not yet attached), and a detach button on each row.
 
 Only someone already in the organization can be added to a team; attaching a project to a team doesn't change what organization owners/admins can see — they already see every project.
+
+## Roles and access
+
+Being on a team attached to a project — an **operator**, in the table below — is what lets a `member` actually run the monitoring day to day, without promoting them to `admin` and handing them every other project in the organization along with it. Org owners and admins automatically qualify as operators on every project too, since they already have full access.
+
+| Action | Viewer (access) | Operator (team member) | Admin | Owner |
+|---|:---:|:---:|:---:|:---:|
+| View issues, performance, uptime, alerts, etc. | ✓ | ✓ | ✓ | ✓ |
+| Change an issue's or a performance issue's status | ✓ | ✓ | ✓ | ✓ |
+| Monitors: create, edit, pause/resume, delete | — | ✓ | ✓ | ✓ |
+| Heartbeat monitor: regenerate the ping token | — | ✓ | ✓ | ✓ |
+| Maintenance windows: create, edit, delete | — | ✓ | ✓ | ✓ |
+| Status page content: create/edit/delete a page, pick monitors and titles | — | ✓ (a page an operator creates starts unpublished) | ✓ | ✓ |
+| Status page publication: the "Published" toggle, the slug | — | — | ✓ | ✓ |
+| Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
+| Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, to pick one in a rule) | ✓ | ✓ |
+| Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
+| Metric alerts: create, delete | — | ✓ | ✓ | ✓ |
+| Project settings (rename, DSN keys, quotas, sample rate) | — | — | ✓ | ✓ |
+| Create a new project | — | — | ✓ | ✓ |
+| Organization management (members, roles, invites, teams, probes) | — | — | ✓ | ✓ |
+| Delete a project or the organization | — | — | — | ✓ |
+
+"Viewer" here isn't a role of its own — it's what `CanAccessProject` grants to anyone who can already see the project (an org owner/admin, or a plain `member` on an attached team), before touching the operator predicate at all. In other words, every operator is also a viewer, and every admin and owner is also an operator: the columns are cumulative, not exclusive tiers.
+
+What team membership buys a `member`, in short: everything about running monitoring day to day on that project's monitors, maintenance windows, status pages, alert rules, and metric alerts — the operational surface, without an organization-wide role. What still requires `admin` (or `owner`): alert channels, because their recipient and secret (a bot token, an SMTP address, a webhook URL) are credentials and personal data, not operational settings; whether a status page is actually public and at what slug, because that's a decision about what the organization shows the world, not how monitoring is run; and project settings and everything at the organization level, unchanged from before.
 
 ## What's next
 

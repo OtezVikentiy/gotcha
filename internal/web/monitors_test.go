@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
@@ -27,7 +28,10 @@ import (
 // monitorsStack — own stand (like uptimeStack in heartbeat_test.go), but
 // also wires h.UptimeQuery (ClickHouse reads) since the monitor list/detail
 // pages need uptime%/latency/recent-checks from Query, not just
-// Uptime/UptimeWriter which heartbeat needs.
+// Uptime/UptimeWriter which heartbeat needs. h.Alerts (задача 2) — monitorCreate
+// dereferences it in its nil-guard even though this file's tests don't touch
+// alert channels themselves; without it, the operator-create test below 404s
+// on the guard instead of exercising the actual gate.
 type monitorsStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -48,6 +52,7 @@ func newMonitorsStack(t *testing.T) *monitorsStack {
 	var events *event.Query // страницы мониторов его не используют
 
 	uptimeSvc := uptime.NewService(pool)
+	alertSvc := alert.NewService(pool)
 	writer := uptime.NewResultWriter(ch)
 	go writer.Run()
 	t.Cleanup(func() {
@@ -66,6 +71,7 @@ func newMonitorsStack(t *testing.T) *monitorsStack {
 	h.Uptime = uptimeSvc
 	h.UptimeWriter = writer
 	h.UptimeQuery = uptime.NewQuery(ch)
+	h.Alerts = alertSvc
 	h.Register(mux)
 
 	return &monitorsStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, writer: writer}
@@ -191,16 +197,28 @@ func TestWebMonitorsList(t *testing.T) {
 		}
 	}
 
-	// Member (view access, not owner/admin) GET -> 200, but no "Новый
-	// монитор" (New monitor) link.
+	// Member (view access via team, not owner/admin) GET -> 200, and DOES see
+	// the "Новый монитор" (New monitor) link — с задачи 2 (спека
+	// 2026-08-08) кнопки монитора операторские, участник команды тоже
+	// оператор.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (member) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), "Новый монитор") {
-		t.Fatalf("GET %s (member) must not show New monitor link: %s", path, body)
+	if !strings.Contains(string(body), "Новый монитор") {
+		t.Fatalf("GET %s (member) must show New monitor link: %s", path, body)
+	}
+
+	// Участник команды действительно может создать монитор через форму, а не
+	// просто видит рабочую на вид ссылку.
+	createPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors"
+	resp = postForm(t, s.srv, createPath, validMonitorForm(), s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("member create monitor = %d, want 303", resp.StatusCode)
 	}
 
 	// Outsider (no org membership at all) -> 404.
@@ -213,9 +231,10 @@ func TestWebMonitorsList(t *testing.T) {
 }
 
 // TestWebMonitorDetail — the detail page shows the monitor's incidents and
-// recent checks (with a real error/status code), SSL expiry, and hides the
-// Pause/Edit/Delete controls from a member without owner/admin role; an
-// outsider gets 404.
+// recent checks (with a real error/status code), SSL expiry, and — since
+// Task 2 (спека 2026-08-08) — shows the Pause/Edit/Delete controls to a
+// member with team (operator) access too, not just owner/admin; an outsider
+// still gets 404.
 func TestWebMonitorDetail(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "mondetail-owner@example.com")
@@ -289,16 +308,17 @@ func TestWebMonitorDetail(t *testing.T) {
 		}
 	}
 
-	// Member (view access, not owner/admin) -> 200, no management buttons.
+	// Member (view access via team — с задачи 2 тоже оператор) -> 200, теперь
+	// ВИДИТ те же кнопки управления, что и owner.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (member) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	for _, unwanted := range []string{"Приостановить", "Удалить", "Редактировать"} {
-		if strings.Contains(string(body), unwanted) {
-			t.Fatalf("GET %s (member) must not show %q: %s", path, unwanted, body)
+	for _, want := range []string{"Приостановить", "Удалить", "Редактировать"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("GET %s (member) must show %q (Task 2: operator-gated): %s", path, want, body)
 		}
 	}
 
@@ -445,6 +465,74 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s (owner) status = %d, want 303", deletePath, resp.StatusCode)
+	}
+	if _, err := s.uptime.Get(context.Background(), created.ID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("Get after delete: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestWebMonitorOperatorMutations — участник команды проекта (НЕ org
+// owner/admin) управляет мониторами: пауза, резюм, удаление. Спека
+// cld/plans/2026-08-08-access-model-rework.md: «весь мониторинг —
+// участникам команд, кроме секретов». Участник ЧУЖОЙ организации
+// по-прежнему получает 404 — граница «чужак» не сдвинулась, сдвинулась
+// только граница «участник своей команды».
+func TestWebMonitorOperatorMutations(t *testing.T) {
+	s := newMonitorsStack(t)
+	ownerID, _ := orgSettingsRegister(t, s.auth, "op-mut-owner@example.com")
+	memberID, memberCookie := orgSettingsRegister(t, s.auth, "op-mut-member@example.com")
+
+	o, err := s.org.CreateOrg(context.Background(), "op-mut-co", "Op Mut Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := s.org.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), o.ID, "op-mut-proj", "Op Mut Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	addTeamAccess(t, s.org, o.ID, proj.ID, memberID, "op-mut-team")
+
+	m := baseMonitor(proj.ID, "Op Mut Monitor")
+	m.Config = monHTTPConfig(t, "https://op-mut.example.com")
+	created, err := s.uptime.Create(context.Background(), m, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create monitor: %v", err)
+	}
+
+	pausePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/pause"
+	resumePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/resume"
+	deletePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/delete"
+
+	// Участник команды паузит -> 303, состояние сохранено.
+	if code := statusOf(t, postForm(t, s.srv, pausePath, url.Values{}, s.srv.URL, memberCookie)); code != http.StatusSeeOther {
+		t.Fatalf("POST %s (team member) status = %d, want 303", pausePath, code)
+	}
+	got, err := s.uptime.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("get after pause: %v", err)
+	}
+	if got.Enabled {
+		t.Fatalf("Enabled = true after pause, want false")
+	}
+
+	// Участник команды резюмит -> 303.
+	if code := statusOf(t, postForm(t, s.srv, resumePath, url.Values{}, s.srv.URL, memberCookie)); code != http.StatusSeeOther {
+		t.Fatalf("POST %s (team member) status = %d, want 303", resumePath, code)
+	}
+
+	// Участник ЧУЖОЙ организации -> 404 (тот же принцип, что и в
+	// crossorg_idor_test.go: существование монитора не раскрывается).
+	_, strangerCookie := orgSettingsRegister(t, s.auth, "op-mut-stranger@example.com")
+	if code := statusOf(t, postForm(t, s.srv, pausePath, url.Values{}, s.srv.URL, strangerCookie)); code != http.StatusNotFound {
+		t.Fatalf("POST %s (stranger) status = %d, want 404", pausePath, code)
+	}
+
+	// Участник команды удаляет -> 303, монитор удалён.
+	if code := statusOf(t, postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)); code != http.StatusSeeOther {
+		t.Fatalf("POST %s (team member) status = %d, want 303", deletePath, code)
 	}
 	if _, err := s.uptime.Get(context.Background(), created.ID); !errors.Is(err, uptime.ErrNotFound) {
 		t.Fatalf("Get after delete: err = %v, want ErrNotFound", err)

@@ -137,13 +137,13 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, true, "https://gotcha.example", "u@e.com"))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
 
 	// Без прав управления — рендер не должен падать и остаётся валидным.
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, "https://x", "u@e.com"))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com"))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
 	}
@@ -210,12 +210,12 @@ func TestAlerts(t *testing.T) {
 		{ID: 1, Kind: "email", Enabled: true, Target: "team@x.io"},
 		{ID: 2, Kind: "webhook", Enabled: false, Target: "https://hook"},
 	}
-	out := renderTo(t, Alerts(7, rules, channels, true, nil, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, rules, channels, true, true, nil, "", "u@e.com"))
 	if !strings.Contains(out, "team@x.io") || !strings.Contains(out, "https://hook") {
 		t.Error("каналы должны отрендериться")
 	}
 	// С ошибкой.
-	outErr := renderTo(t, Alerts(7, nil, nil, false, nil, "ошибка сохранения", "u@e.com"))
+	outErr := renderTo(t, Alerts(7, nil, nil, false, true, nil, "ошибка сохранения", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка сохранения") {
 		t.Error("ошибка должна отрендериться")
 	}

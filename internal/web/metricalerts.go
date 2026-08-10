@@ -18,7 +18,10 @@ func metricAlertsPath(projectID int64) string {
 }
 
 // metricAlertsPage — GET /projects/{id}/metrics/alerts: форма создания правила,
-// список правил и инцидентов. Доступ owner/admin (requireProjectRole).
+// список правил и инцидентов. Доступ — оператор проекта (requireProjectOperator):
+// владелец/админ организации ИЛИ участник команды, прикреплённой к проекту
+// (спека cld/plans/2026-08-08-access-model-rework.md) — та же граница, что у
+// мутаций монитора, не owner/admin (requireProjectRole).
 func (h *Handler) metricAlertsPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -33,7 +36,7 @@ func (h *Handler) metricAlertsPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	h.renderMetricAlerts(w, r, http.StatusOK, projectID, nil, "")
@@ -89,6 +92,7 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 }
 
 // metricAlertCreate — POST /projects/{id}/metrics/alerts: создать правило.
+// Доступ — оператор проекта (requireProjectOperator), не только owner/admin.
 func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -107,7 +111,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -149,7 +153,9 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)
 }
 
-// metricAlertDelete — POST /projects/{id}/metrics/alerts/delete: удалить правило.
+// metricAlertDelete — POST /projects/{id}/metrics/alerts/delete: удалить
+// правило. Доступ — оператор проекта (requireProjectOperator), не только
+// owner/admin.
 func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -168,7 +174,7 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {

@@ -501,9 +501,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Perf-проблемы (этап 3, план 5, задача 1): список проблем проекта и страница
 	// проблемы — просмотр открыт любому участнику проекта (CanAccessProject → 404,
-	// как performanceList), смена статуса — только owner/admin (requireProjectRole
-	// + sameOrigin, как issueSetStatus). Страница проблемы несёт в пути только
-	// {id}, проект резолвится из самой проблемы (PerfIssues.ProjectOf). Роуты
+	// как performanceList), смена статуса — та же граница CanAccessProject
+	// + sameOrigin (спека 2026-08-08: выровнено с issueSetStatus, доступ, не роль).
+	// Страница проблемы несёт в пути только {id}, проект резолвится из самой
+	// проблемы (PerfIssues.ProjectOf). Роуты
 	// регистрируются безусловно, как /projects/{id}/performance: в режимах
 	// "web"/"all" h.PerfIssues всегда собран, а стенды прочих web-тестов эти
 	// страницы не запрашивают.

@@ -114,9 +114,12 @@ func windowBelongsToProject(windows []uptime.Window, windowID int64) bool {
 }
 
 // maintenancePage — GET /projects/{id}/maintenance: список окон + форма
-// создания. Доступ только owner/admin организации проекта
-// (requireProjectRole) — управление окнами обслуживания меняет то, что
-// детектор считает даунтаймом, это не read-only страница вроде инцидентов.
+// создания. Доступ — оператор проекта (requireProjectOperator): владелец/
+// админ организации ИЛИ участник команды, прикреплённой к проекту (спека
+// cld/plans/2026-08-08-access-model-rework.md) — управление окнами
+// обслуживания меняет то, что детектор считает даунтаймом, но это операционная
+// настройка мониторинга, та же граница, что у мутаций монитора, не
+// организационные настройки (requireProjectRole).
 func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -134,7 +137,7 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	h.renderMaintenance(w, r, http.StatusOK, projectID, nil, "")
@@ -174,7 +177,7 @@ func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, stat
 }
 
 // maintenanceCreate — POST /projects/{id}/maintenance: sameOrigin +
-// requireProjectRole, разовое либо еженедельное окно, ErrInvalidWindow ->
+// requireProjectOperator, разовое либо еженедельное окно, ErrInvalidWindow ->
 // 422 с сообщением (список уже сохранённых окон + форма создания
 // перерисовываются, как у renderAlerts — конкретные введённые значения формы
 // не переносятся, это не требуется спекой задачи).
@@ -196,7 +199,7 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -242,7 +245,7 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -306,7 +309,7 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {

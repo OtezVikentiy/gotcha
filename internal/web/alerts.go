@@ -80,8 +80,10 @@ func formInt(r *http.Request, name string) int {
 
 // alertsPage — GET /projects/{id}/alerts: правила (new_issue/regression:
 // enabled+throttle; spike: enabled+threshold+window+throttle) одной формой и
-// таблица каналов доставки с формой добавления. Доступ только owner/admin
-// организации проекта (requireProjectRole).
+// таблица каналов доставки с формой добавления. Доступ — оператор проекта
+// (requireProjectOperator, спека 2026-08-08): работа с алертами —
+// операционная задача, не настройка организации; канальный CRUD внутри
+// страницы остаётся admin-only и скрыт/санирован для не-admin в renderAlerts.
 func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -99,7 +101,7 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	h.renderAlerts(w, r, http.StatusOK, projectID, nil, "")
@@ -107,7 +109,9 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 
 // renderAlerts — общий рендер: GET-обработчик и все POST в этом файле на 422
 // (то же сообщение на месте, без редиректа — тот же принцип, что и у
-// renderProjectSettings/renderOrgSettings).
+// renderProjectSettings/renderOrgSettings). Каналы для не-admin санируются
+// ДО передачи в шаблон (Target маскируется, Secret обнуляется) — секрет не
+// должен попасть в HTML оператора даже неотрендеренным.
 func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	rules, err := h.Alerts.Rules(r.Context(), projectID)
 	if err != nil {
@@ -119,14 +123,28 @@ func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status in
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	uid, _ := auth.UserID(r.Context())
+	canManage, err := h.canManageProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canManage {
+		for i := range channels {
+			channels[i].Target = maskChannelTarget(channels[i].Kind, channels[i].Target)
+			channels[i].Secret = ""
+		}
+	}
 	w.WriteHeader(status)
-	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, canManage, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // alertDeliveriesPage — GET /projects/{id}/alerts/deliveries: лог последних
 // неудачных доставок уведомлений (spec §7), вынесен из основной страницы
 // алертов на отдельную страницу (UI-фидбек: секция делала страницу алертов
-// слишком длинной). Доступ — тот же guard, что и у alertsPage.
+// слишком длинной). Доступ — тот же guard, что и у alertsPage (оператор);
+// цель доставки для не-admin маскируется тем же приёмом, что и в
+// renderAlerts.
 func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -137,7 +155,7 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	// Outbox может быть не проставлен (например, в узких тестовых стендах,
@@ -150,6 +168,16 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
+		}
+	}
+	canManage, err := h.canManageProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canManage {
+		for i := range failed {
+			failed[i].Target = maskChannelTarget(failed[i].ChannelKind, failed[i].Target)
 		}
 	}
 	_ = templates.AlertDeliveries(projectID, failed, h.currentEmail(r)).Render(r.Context(), w)
@@ -183,7 +211,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {

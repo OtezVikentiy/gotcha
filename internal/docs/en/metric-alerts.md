@@ -4,7 +4,7 @@ A metric alert rule watches a metric's aggregate (avg/max/p95, etc.) over a roll
 
 ## Where to find it
 
-The chart icon in the left icon rail → "Metrics" → the "Metric Alerts" sub-item (or go directly to `/projects/{id}/metrics/alerts`). Only the project's owner and admins can manage rules.
+The chart icon in the left icon rail → "Metrics" → the "Metric Alerts" sub-item (or go directly to `/projects/{id}/metrics/alerts`). Managing rules is available to a project team member (an operator) as well as to the organization's owner and admins — see [Roles and access](/docs/teams).
 
 ## Creating a rule
 

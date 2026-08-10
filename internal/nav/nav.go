@@ -68,6 +68,13 @@ type Shell struct {
 	// Probes in the org subsections, and the project-settings link in the
 	// layout) so plain members never see links to pages that 404 for them.
 	CanManage bool
+	// CanOperate indicates whether the current user is an operator of the
+	// CURRENT project (OrgID+ProjectID scope): a team member with access to
+	// the project, or org owner/admin. В отличие от CanManage — скоуп
+	// проектный, не организационный: гейтит пункты мониторинга
+	// (metric_alerts, maintenance, status_pages, область alerts), которые
+	// требуют requireProjectOperator, а не requireProjectRole.
+	CanOperate bool
 	// Back — валидированный same-origin относительный путь «откуда пришёл»
 	// (из заголовка Referer, посчитан в web-слое). Пустой, если Referer
 	// отсутствует, ведёт на текущую же страницу (перезагрузка) или на чужой
@@ -265,12 +272,15 @@ func Subsections(s Shell) []NavItem {
 			{LabelKey: "nav.metrics", Href: "/projects/" + effID + "/metrics"},
 		}
 		// Правила по метрикам, окна обслуживания, статус-страницы и обе
-		// страницы оповещений требуют owner/admin (requireProjectRole). Для
-		// участника они отдают 404, а показывали их всем: человек тыкал в
-		// пункт, который ему нарисовал сам продукт, и попадал на «страницы
-		// нет» — без единого намёка, что дело в роли. Тот же приём, что уже
-		// применён к области «Организация» ниже.
-		if s.CanManage {
+		// страницы оповещений требуют оператора проекта
+		// (requireProjectOperator: участник команды проекта или owner/
+		// admin). Для зрителя без доступа они отдают 404, а показывали их
+		// всем: человек тыкал в пункт, который ему нарисовал сам продукт, и
+		// попадал на «страницы нет» — без единого намёка, что дело в роли.
+		// Тот же приём, что уже применён к области «Организация» ниже, но
+		// там скоуп организационный (CanManage), здесь — проектный
+		// (CanOperate).
+		if s.CanOperate {
 			items = append(items,
 				NavItem{LabelKey: "nav.metric_alerts", Href: "/projects/" + effID + "/metrics/alerts"},
 			)
@@ -280,15 +290,16 @@ func Subsections(s Shell) []NavItem {
 			{LabelKey: "nav.monitors", Href: "/projects/" + effID + "/monitors"},
 			{LabelKey: "nav.incidents", Href: "/projects/" + effID + "/incidents"},
 		}
-		if s.CanManage {
+		if s.CanOperate {
 			items = append(items,
 				NavItem{LabelKey: "nav.maintenance", Href: "/projects/" + effID + "/maintenance"},
 				NavItem{LabelKey: "nav.status_pages", Href: "/projects/" + effID + "/statuspages"},
 			)
 		}
 	case "alerts":
-		// Обе страницы оповещений — owner/admin; участнику показывать нечего.
-		if !s.CanManage {
+		// Обе страницы оповещений — оператор проекта (requireProjectOperator);
+		// зрителю без доступа к проекту показывать нечего.
+		if !s.CanOperate {
 			return nil
 		}
 		items = []NavItem{
@@ -460,10 +471,12 @@ func firstSubsectionHref(s Shell, area string) string {
 		OrgID:     s.OrgID,
 		Area:      area,
 		Locale:    s.Locale,
-		// CanManage обязателен: подразделы теперь фильтруются по роли, и без
-		// него область получала бы ссылку на страницу, закрытую для этого
+		// CanManage и CanOperate обязательны: подразделы фильтруются по
+		// роли на обоих скоупах (организационном и проектном), и без них
+		// область получала бы ссылку на страницу, закрытую для этого
 		// человека — то есть ровно тот 404, от которого фильтр и заводится.
-		CanManage: s.CanManage,
+		CanManage:  s.CanManage,
+		CanOperate: s.CanOperate,
 	}
 	subs := Subsections(probe)
 	if len(subs) == 0 {
@@ -477,8 +490,11 @@ func firstSubsectionHref(s Shell, area string) string {
 // projects is not a reason to lose context), falling back to the project's
 // issues list when the current area is not a per-project one (org, docs,
 // settings) or has no accessible subsection for that project. The probe
-// keeps the shell's CanManage: roles are per-organization, and for the rare
-// cross-organization switch the fallback below stays the safe door.
+// keeps the shell's CanManage and CanOperate as-is (not re-resolved for the
+// target project): CanManage is per-organization so this is mostly right,
+// and for the rare cross-organization switch — or a CanOperate that does not
+// hold on the target project (team membership is per-project) — the
+// fallback below stays the safe door.
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,

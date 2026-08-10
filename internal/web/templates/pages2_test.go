@@ -160,14 +160,24 @@ func TestStatusPagesSettings(t *testing.T) {
 		}},
 	}
 	newForm := StatusPageForm{Monitors: []StatusPageFormMonitor{{ID: 10, MonitorName: "web"}}}
-	out := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", forms, newForm, "", "u@e.com"))
+	out := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", forms, newForm, true, "", "u@e.com"))
 	if !strings.Contains(out, "Статус Acme") || !strings.Contains(out, "public") {
 		t.Error("настройки статус-страниц должны содержать форму")
 	}
 	// С ошибкой.
-	outErr := renderTo(t, StatusPagesSettings(7, "https://x", nil, newForm, "занятый slug", "u@e.com"))
+	outErr := renderTo(t, StatusPagesSettings(7, "https://x", nil, newForm, true, "занятый slug", "u@e.com"))
 	if !strings.Contains(outErr, "занятый slug") {
 		t.Error("ошибка статус-страницы должна отрендериться")
+	}
+	// canManage=false: у существующей страницы поле slug и чекбокс enabled
+	// скрыты (публикация — admin-only), а форма создания всё равно даёт
+	// задать slug.
+	outOperator := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", forms, newForm, false, "", "u@e.com"))
+	if strings.Contains(outOperator, `name="enabled"`) {
+		t.Error("оператор без прав управления не должен видеть чекбокс enabled")
+	}
+	if strings.Count(outOperator, `name="slug"`) != 1 {
+		t.Errorf("оператор должен видеть slug только в форме создания, got %d occurrences", strings.Count(outOperator, `name="slug"`))
 	}
 }
 
@@ -246,7 +256,7 @@ func TestStatusPageIncidentDurationLocalised(t *testing.T) {
 func TestHeartbeatMonitorDetail(t *testing.T) {
 	m := uptime.Monitor{ID: 4, Name: "cron", Kind: uptime.KindHeartbeat, Enabled: false, IntervalSeconds: 3600, HeartbeatToken: "hbtok"}
 	stat := uptime.UptimeStat{Total: 10, OK: 10}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://gotcha.example", "u@e.com"))
 	if !strings.Contains(out, "hbtok") {
 		t.Error("деталь heartbeat должна содержать токен пинга")
 	}

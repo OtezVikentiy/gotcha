@@ -433,9 +433,11 @@ func upcomingWindows(windows []uptime.Window, from, to time.Time) []templates.St
 
 // statusPagesPage — GET /projects/{id}/statuspages: список статус-страниц
 // проекта со ссылками на публичный URL, форма создания и форма редактирования
-// у каждой существующей. Доступ — owner/admin организации проекта
-// (requireProjectRole), как у окон обслуживания: страница меняет то, что
-// видит мир.
+// у каждой существующей. Доступ — оператор проекта (requireProjectOperator):
+// контент страницы (title/description/набор мониторов) — операционная
+// настройка мониторинга, как окна обслуживания; публикация (slug/enabled)
+// остаётся owner/admin-only и защищается ниже, в самих POST-обработчиках
+// (спека cld/plans/2026-08-08-access-model-rework.md).
 func (h *Handler) statusPagesPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -446,7 +448,7 @@ func (h *Handler) statusPagesPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	h.renderStatusPages(w, r, http.StatusOK, projectID, "", nil)
@@ -504,8 +506,15 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 		}
 	}
 
+	uid, _ := auth.UserID(r.Context())
+	canManage, err := h.canManageProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
 	w.WriteHeader(status)
-	_ = templates.StatusPagesSettings(projectID, h.BaseURL, forms, newForm, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.StatusPagesSettings(projectID, h.BaseURL, forms, newForm, canManage, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // statusPageFormMonitors — чекбоксы всех мониторов проекта: отмеченные (и с
@@ -594,8 +603,11 @@ func statusPageErrorMessage(ctx context.Context, err error) string {
 }
 
 // statusPagesCreate — POST /projects/{id}/statuspages: sameOrigin +
-// requireProjectRole. ErrInvalidStatusPage/ErrSlugTaken → 422 с
-// перерисовкой формы и сохранением введённых значений.
+// requireProjectOperator. ErrInvalidStatusPage/ErrSlugTaken → 422 с
+// перерисовкой формы и сохранением введённых значений. Публикация
+// (Enabled) — admin-only: оператор без прав управления получает страницу,
+// рождённую выключенной, что бы ни прислала форма (защита на сервере, не на
+// видимости чекбокса — спека cld/plans/2026-08-08-access-model-rework.md).
 func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -610,7 +622,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -629,6 +641,17 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sp, monitors := parseStatusPageForm(r, projectID, projectMonitors)
 
+	canManage, err := h.canManageProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canManage {
+		// Публикация — уровнем выше (спека 2026-08-08): страница, созданная
+		// оператором, рождается выключенной, что бы ни прислала форма.
+		sp.Enabled = false
+	}
+
 	if _, err := h.Uptime.CreateStatusPage(r.Context(), sp, monitors); err != nil {
 		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
 			form := statusPageFormView(0, sp, monitors, projectMonitors)
@@ -643,9 +666,12 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 
 // loadManagedStatusPage — общая часть POST /statuspages/{id} и
 // /statuspages/{id}/delete: страница ищется по id, проект берётся из неё
-// самой, роль проверяется в этом проекте. Несуществующая страница и страница
-// чужого проекта дают одну и ту же 404 — не палим существование чужих
-// числовых id (тот же принцип, что и в loadAccessibleMonitor).
+// самой, доступ проверяется в этом проекте по предикату оператора. Несуществующая
+// страница и страница чужого проекта дают одну и ту же 404 — не палим
+// существование чужих числовых id (тот же принцип, что и в
+// loadAccessibleMonitor). Удаление остаётся доступно оператору наравне с
+// остальным контентом (это снятие контента, не публикация) — отдельного
+// гейта в statusPagesDelete не нужно.
 func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, uid int64) (uptime.StatusPage, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -661,14 +687,17 @@ func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return uptime.StatusPage{}, false
 	}
-	if _, ok := h.requireProjectRole(w, r, sp.ProjectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, sp.ProjectID, uid); !ok {
 		return uptime.StatusPage{}, false
 	}
 	return sp, true
 }
 
-// statusPagesUpdate — POST /statuspages/{id}: sameOrigin + роль в проекте
-// самой страницы. 422 перерисовывает именно её форму с введёнными значениями.
+// statusPagesUpdate — POST /statuspages/{id}: sameOrigin + оператор проекта
+// самой страницы. 422 перерисовывает именно её форму с введёнными
+// значениями. Slug и Enabled — admin-only: оператор без прав управления не
+// может их сменить, даже прислав другие значения в форме (сервер тихо
+// заменяет их на текущие из БД).
 func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -699,6 +728,16 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	sp, monitors := parseStatusPageForm(r, existing.ProjectID, projectMonitors)
 	sp.ID = existing.ID
+
+	canManage, err := h.canManageProject(r.Context(), existing.ProjectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canManage {
+		sp.Slug = existing.Slug
+		sp.Enabled = existing.Enabled
+	}
 
 	if err := h.Uptime.UpdateStatusPage(r.Context(), sp, monitors); err != nil {
 		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {

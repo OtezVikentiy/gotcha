@@ -8,7 +8,6 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
-	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -126,8 +125,9 @@ func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request
 
 // perfIssueDetail — GET /perf-issues/{id}: заголовок, kind, culprit, счётчик,
 // first/last seen, статус, распарсенный evidence и ссылка на пример трейса.
-// Кнопки resolve/ignore/unresolve видны только owner/admin (canManage), как и
-// POST их принимает только от них (см. perfIssueSetStatus).
+// Кнопки resolve/ignore/unresolve видны любому, кто дошёл до страницы: POST
+// их тоже принимает от любого с доступом к проекту (см. perfIssueSetStatus,
+// спека 2026-08-08 — одинаковые по смыслу действия равны в правах).
 func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -139,26 +139,13 @@ func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// canManage — видны ли кнопки смены статуса: они ведут на POST, который сам
-	// требует owner/admin, поэтому member их видеть не должен вовсе. ErrNotMember
-	// не должен ронять страницу — доступ к проекту у члена мог быть только через
-	// команду (тот же приём, что и в issuesList).
-	orgID, err := h.Org.ProjectOrg(r.Context(), iss.ProjectID)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	role, err := h.Org.Role(r.Context(), orgID, uid)
-	if err != nil && !errors.Is(err, org.ErrNotMember) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	canManage := role == org.RoleOwner || role == org.RoleAdmin
-
+	// CanManage — доступ к странице уже подтверждён loadAccessiblePerfIssue
+	// (CanAccessProject), а POST-обработчик проверяет ту же границу, так что
+	// отдельная роль-проверка тут не нужна: кнопки статуса видит любой смотрящий.
 	data := templates.PerfIssueDetailData{
 		Issue:     iss,
 		Evidence:  parsePerfEvidence(iss.Evidence),
-		CanManage: canManage,
+		CanManage: true,
 	}
 	// Показательный спан из примера-трейса: полный текст запроса (в отличие от
 	// нормализованного/обрезанного Title) и, если SDK прислал, привязка к коду.
@@ -239,8 +226,10 @@ func codeLocFromData(data map[string]string) *templates.PerfCodeLoc {
 
 // perfIssueSetStatus — POST /perf-issues/{id}/status: status из формы
 // (unresolved|resolved|ignored) → SetStatus → 303 назад на страницу проблемы.
-// Смена статуса — только owner/admin (requireProjectRole по проекту проблемы);
-// чужой проект и несуществующая проблема → 404, неизвестный статус → 422.
+// Смену статуса видит и совершает любой с доступом к проекту (CanAccessProject)
+// — та же граница, что у issueSetStatus (спека 2026-08-08): одинаковые по
+// смыслу действия — одинаковые права. Чужой проект и несуществующая проблема
+// → 404 (один и тот же existence-oracle), неизвестный статус → 422.
 func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -260,10 +249,10 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	// Проект резолвим ДО проверки роли: requireProjectRole проверяет роль в
+	// Проект резолвим ДО проверки доступа: CanAccessProject проверяет доступ к
 	// организации проекта проблемы. Несуществующая проблема (found=false) даёт
-	// тот же стилизованный 404, что и member на чужой POST (requireProjectRole),
-	// — иначе разные тела ответа выдавали бы существование id (enumeration).
+	// тот же стилизованный 404, что и не имеющий доступа пользователь на чужой
+	// POST — иначе разные тела ответа выдавали бы существование id (enumeration).
 	projectID, found, err := h.PerfIssues.ProjectOf(r.Context(), id)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -273,7 +262,17 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	// Статус perf-issue меняет любой с доступом к проекту — та же
+	// граница, что у issueSetStatus (одинаковые по смыслу действия —
+	// одинаковые права, спека 2026-08-08). Нет доступа → 404, тот же
+	// existence-oracle, что и был.
+	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canAccess {
+		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	if err := r.ParseForm(); err != nil {

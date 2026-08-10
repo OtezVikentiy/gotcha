@@ -383,6 +383,36 @@ func TestTelegramSenderTransportErrorDoesNotLeakToken(t *testing.T) {
 	}
 }
 
+// TestWebhookSenderTransportErrorDoesNotLeakURL guards against the same
+// *url.Error leak that TestTelegramSenderTransportErrorDoesNotLeakToken
+// covers for the telegram sender: on a transport-level failure, Go's
+// net/http wraps the error in *url.Error, whose Error() string embeds the
+// full request URL. For a webhook that URL routinely carries a bearer
+// token/secret path (Slack-style /T000/B000/secret, or a query-string
+// token), and that error text lands in notification_outbox.last_error,
+// which the deliveries page renders — so the URL must not survive into the
+// error Send returns.
+func TestWebhookSenderTransportErrorDoesNotLeakURL(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	const secretPath = "/T000/B000/SECRET-PATH-123"
+	sender := &notify.WebhookSender{Client: http.DefaultClient}
+	target := notify.Target{Kind: "webhook", Target: "http://" + addr + secretPath}
+
+	err = sender.Send(context.Background(), target, map[string]any{"a": "b"})
+	if err == nil {
+		t.Fatal("Send: want error against closed port, got nil")
+	}
+	if strings.Contains(err.Error(), secretPath) {
+		t.Errorf("Send error leaks webhook URL path: %q", err.Error())
+	}
+}
+
 // TestBuildEmailRejectsHeaderInjection guards against CRLF injection via a
 // user-controlled subject (derived from issue titles). Without
 // sanitization, "\r\n" in the subject terminates the Subject header early

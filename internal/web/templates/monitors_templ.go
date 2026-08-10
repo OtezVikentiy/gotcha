@@ -168,8 +168,8 @@ type MonitorRow struct {
 }
 
 // MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
-// canManage управляет видимостью ссылки «New monitor» (owner/admin, тот же
-// принцип, что и «Project settings» на странице issues). Ссылки на
+// canManage управляет видимостью ссылки «New monitor» (с задачи 2 — оператор
+// проекта, не только owner/admin; спека 2026-08-08). Ссылки на
 // Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
 // боковой панели app-shell (nav.Subsections для area "uptime").
 func MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail string) templ.Component {

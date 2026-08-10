@@ -16,6 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -24,13 +25,17 @@ import (
 
 // maintenanceStack — own stand, PG-only: maintenance-window routes never
 // touch ClickHouse (no UptimeQuery involved), so unlike monitorFormStack this
-// one skips the CH container entirely for a faster test run.
+// one skips the CH container entirely for a faster test run. h.MetricRules/
+// h.MetricIncidents тоже подняты (задача 3, спека 2026-08-08): совместный
+// тест на операторскую границу окон И metric-алертов живёт в этом файле, ему
+// нужны оба.
 type maintenanceStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
 	org    *org.Service
 	auth   *auth.Service
 	uptime *uptime.Service
+	rules  *metric.RuleService
 }
 
 func newMaintenanceStack(t *testing.T) *maintenanceStack {
@@ -42,6 +47,7 @@ func newMaintenanceStack(t *testing.T) *maintenanceStack {
 	issueSvc := issue.NewService(pool)
 	var events *event.Query
 	uptimeSvc := uptime.NewService(pool)
+	rulesSvc := metric.NewRuleService(pool)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,9 +57,11 @@ func newMaintenanceStack(t *testing.T) *maintenanceStack {
 
 	h := web.New(authSvc, orgSvc, issueSvc, events, srv.URL)
 	h.Uptime = uptimeSvc
+	h.MetricRules = rulesSvc
+	h.MetricIncidents = metric.NewIncidentService(pool)
 	h.Register(mux)
 
-	return &maintenanceStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc}
+	return &maintenanceStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, rules: rulesSvc}
 }
 
 func maintenanceOwnerAndMember(t *testing.T, s *maintenanceStack, namePrefix string) (org.Project, *http.Cookie, *http.Cookie) {
@@ -74,6 +82,51 @@ func maintenanceOwnerAndMember(t *testing.T, s *maintenanceStack, namePrefix str
 	}
 	addTeamAccess(t, s.org, o.ID, proj.ID, memberID, namePrefix+"-team")
 	return proj, ownerCookie, memberCookie
+}
+
+// TestWebOperatorMaintenanceAndMetricAlerts — участник команды, привязанной к
+// проекту (не owner/admin организации), создаёт окно обслуживания и правило
+// алерта по метрике: та же операторская граница, что и у мутаций монитора
+// (requireProjectOperator, спека cld/plans/2026-08-08-access-model-rework.md),
+// не owner/admin (requireProjectRole).
+func TestWebOperatorMaintenanceAndMetricAlerts(t *testing.T) {
+	s := newMaintenanceStack(t)
+	proj, _, memberCookie := maintenanceOwnerAndMember(t, s, "opmaintma")
+
+	maintPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	maintForm := url.Values{
+		"name":      {"Team window"},
+		"kind":      {"oneoff"},
+		"starts_at": {"2026-08-01T02:00"},
+		"ends_at":   {"2026-08-01T04:00"},
+		"timezone":  {"UTC"},
+	}
+	resp := postForm(t, s.srv, maintPath, maintForm, s.srv.URL, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (team member) status = %d, want 303: %s", maintPath, resp.StatusCode, body)
+	}
+	windows, err := s.uptime.Windows(context.Background(), proj.ID)
+	if err != nil || len(windows) != 1 {
+		t.Fatalf("windows = %+v err=%v, want 1", windows, err)
+	}
+
+	alertPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/metrics/alerts"
+	alertForm := url.Values{
+		"metric_name": {"http.errors"}, "aggregation": {"avg"}, "comparator": {"gt"},
+		"threshold": {"100"}, "window_seconds": {"300"},
+	}
+	resp = postForm(t, s.srv, alertPath, alertForm, s.srv.URL, memberCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (team member) status = %d, want 303: %s", alertPath, resp.StatusCode, body)
+	}
+	rules, err := s.rules.List(context.Background(), proj.ID)
+	if err != nil || len(rules) != 1 {
+		t.Fatalf("rules = %+v err=%v, want 1", rules, err)
+	}
 }
 
 // TestWebMaintenanceCreateOneOff — форма разового окна: datetime-local +
@@ -298,11 +351,16 @@ func TestWebMaintenanceDeleteForeignProject404(t *testing.T) {
 	_ = ownerCookieA
 }
 
-// TestWebMaintenanceMemberForbidden — member (view access, not owner/admin)
-// gets 404 on GET and both POST routes.
-func TestWebMaintenanceMemberForbidden(t *testing.T) {
+// TestWebMaintenanceOperatorAccess — участник команды проекта (НЕ org
+// owner/admin) читает и правит окна обслуживания: GET/create/delete —
+// requireProjectOperator (задача 3, спека 2026-08-08-access-model-rework.md),
+// та же граница, что у мутаций монитора. Раньше это требовало owner/admin
+// (requireProjectRole) и участник получал 403 — граница сдвинулась.
+// Участник ЧУЖОЙ организации по-прежнему получает 404 — она не сдвинулась.
+func TestWebMaintenanceOperatorAccess(t *testing.T) {
 	s := newMaintenanceStack(t)
-	proj, ownerCookie, memberCookie := maintenanceOwnerAndMember(t, s, "maintforbid")
+	proj, ownerCookie, memberCookie := maintenanceOwnerAndMember(t, s, "maintopaccess")
+	_, outsiderCookie := orgSettingsRegister(t, s.auth, "maintopaccess-outsider@example.com")
 
 	win, err := s.uptime.CreateWindow(context.Background(), uptime.Window{
 		ProjectID: proj.ID, Name: "Existing", Weekly: true, Weekday: 1,
@@ -311,29 +369,100 @@ func TestWebMaintenanceMemberForbidden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create window: %v", err)
 	}
+	winForUpdate, err := s.uptime.CreateWindow(context.Background(), uptime.Window{
+		ProjectID: proj.ID, Name: "For update", Weekly: true, Weekday: 2,
+		StartTime: "00:00", EndTime: "01:00", Timezone: "UTC",
+	})
+	if err != nil {
+		t.Fatalf("create window (for update): %v", err)
+	}
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	updatePath := path + "/update"
 	deletePath := path + "/delete"
 
+	// Участник команды: GET -> 200.
 	resp := getWithCookie(t, s.srv, path, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET %s (member) status = %d, want 403", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (member) status = %d, want 200", path, resp.StatusCode)
 	}
 
+	// Участник команды: POST create -> 303.
 	resp = postForm(t, s.srv, path, url.Values{"name": {"x"}, "starts_at": {"2026-08-01T02:00"}, "ends_at": {"2026-08-01T03:00"}, "timezone": {"UTC"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) status = %d, want 403", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (member) status = %d, want 303", path, resp.StatusCode)
 	}
 
+	// Участник команды: POST update -> 303.
+	resp = postForm(t, s.srv, updatePath, url.Values{
+		"window_id": {strconv.FormatInt(winForUpdate.ID, 10)}, "name": {"Renamed by member"},
+		"kind": {"weekly"}, "weekday": {"2"}, "start_time": {"00:00"}, "end_time": {"01:30"}, "timezone": {"UTC"},
+	}, s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (member) status = %d, want 303", updatePath, resp.StatusCode)
+	}
+	windows, err := s.uptime.Windows(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("windows: %v", err)
+	}
+	found := false
+	for _, w := range windows {
+		if w.ID == winForUpdate.ID {
+			found = true
+			if w.Name != "Renamed by member" {
+				t.Errorf("window %d Name = %q, want %q (member update did not persist)", w.ID, w.Name, "Renamed by member")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("window %d not found after member update", winForUpdate.ID)
+	}
+
+	// Участник команды: POST delete -> 303.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) status = %d, want 403", deletePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (member) status = %d, want 303", deletePath, resp.StatusCode)
+	}
+
+	// Участник ЧУЖОЙ организации: 404 на всех четырёх маршрутах — existence-oracle
+	// не сдвинулся.
+	resp = getWithCookie(t, s.srv, path, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (outsider) status = %d, want 404", path, resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, path, url.Values{"name": {"x"}, "starts_at": {"2026-08-01T02:00"}, "ends_at": {"2026-08-01T03:00"}, "timezone": {"UTC"}}, s.srv.URL, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (outsider) status = %d, want 404", path, resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, updatePath, url.Values{
+		"window_id": {strconv.FormatInt(winForUpdate.ID, 10)}, "name": {"Hijacked"},
+		"kind": {"weekly"}, "weekday": {"2"}, "start_time": {"00:00"}, "end_time": {"01:30"}, "timezone": {"UTC"},
+	}, s.srv.URL, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (outsider) status = %d, want 404", updatePath, resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (outsider) status = %d, want 404", deletePath, resp.StatusCode)
 	}
 
 	// Sanity: owner still works.

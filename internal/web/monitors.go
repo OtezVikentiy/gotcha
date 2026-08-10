@@ -149,7 +149,10 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canManage, err := h.canManageProject(r.Context(), projectID, uid)
+	// С задачи 2 (спека 2026-08-08) кнопка «New monitor» — операторская, не
+	// owner/admin-only: canManage наполняется canOperateProject, а не
+	// canManageProject.
+	canManage, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -261,7 +264,8 @@ func (h *Handler) monitorUptimeStat(ctx context.Context, monitorID int64, window
 // monitorDetail — GET /monitors/{id}: крупный статус, uptime% за
 // 24ч/7д/30д (без окон обслуживания), stacked-график задержек за 24ч,
 // последние 50 проверок, таймлайн инцидентов, SSL, кнопки
-// Pause/Resume/Edit/Delete (только owner/admin).
+// Pause/Resume/Edit/Delete (с задачи 2 — оператору проекта, не только
+// owner/admin).
 func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -280,20 +284,29 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canManage, err := h.canManageProject(r.Context(), m.ProjectID, uid)
+	// С задачи 2 обе группы флагов на странице детали — операторские: и
+	// Pause/Resume/Edit/Delete (canManage), и карточка heartbeat-токена
+	// (canOperate). Один и тот же canOperateProject наполняет оба параметра —
+	// разошлись бы они только если предикаты «управлять» и «оперировать»
+	// когда-нибудь разъедутся (см. canOperateProject в operate.go).
+	canOperate, err := h.canOperateProject(r.Context(), m.ProjectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-
-	h.renderMonitorDetail(w, r, m, canManage)
+	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
 }
 
 // renderMonitorDetail собирает и рендерит страницу детали монитора. Для показа
 // heartbeat-URL один раз сразу после создания/ротации токена вызывающий выставляет
 // сырой токен в m.HeartbeatToken (в БД хранится только его sha256): при обычном
 // GET поле пустое и URL пинга не рендерится — нужно перегенерировать токен.
-func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canManage bool) {
+// canManage гейтит кнопки Pause/Resume/Edit/Delete; canOperate отдельно
+// гейтит карточку heartbeat-токена. С задачи 2 оба параметра у всех вызывающих
+// наполняются одним и тем же canOperateProject (весь набор кнопок монитора —
+// операторский, спека 2026-08-08); флаги остаются раздельными в сигнатуре на
+// случай, если предикаты «управлять» и «оперировать» разойдутся в будущем.
+func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canManage, canOperate bool) {
 	states, err := h.Uptime.States(r.Context(), m.ID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -363,12 +376,12 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, canOperate, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // monitorSetEnabled — общая часть POST /monitors/{id}/pause и /resume:
-// sameOrigin + requireProjectRole (owner/admin) → SetEnabled → 303 обратно
-// на страницу монитора.
+// sameOrigin + requireProjectOperator (оператор, спека 2026-08-08) →
+// SetEnabled → 303 обратно на страницу монитора.
 func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -387,7 +400,7 @@ func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enab
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, m.ProjectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, m.ProjectID, uid); !ok {
 		return
 	}
 	if err := h.Uptime.SetEnabled(r.Context(), m.ID, enabled); err != nil {
@@ -406,8 +419,8 @@ func (h *Handler) monitorResume(w http.ResponseWriter, r *http.Request) {
 }
 
 // monitorDelete — POST /monitors/{id}/delete: sameOrigin +
-// requireProjectRole (owner/admin) → Delete → 303 на список мониторов
-// проекта.
+// requireProjectOperator (оператор, спека 2026-08-08) → Delete → 303 на
+// список мониторов проекта.
 func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -426,7 +439,7 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, m.ProjectID, uid); !ok {
+	if _, ok := h.requireProjectOperator(w, r, m.ProjectID, uid); !ok {
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не

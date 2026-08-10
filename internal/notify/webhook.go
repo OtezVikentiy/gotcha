@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
@@ -75,6 +77,15 @@ func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]a
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.Target, bytes.NewReader(body))
 	if err != nil {
+		// *url.Error embeds the full target URL (Target.Target — the webhook
+		// endpoint, which routinely carries a bearer token/secret in its path
+		// or query, e.g. Slack's /T000/B000/secret). Unwrap it the same way
+		// telegram.go does, so the URL never reaches callers that log or
+		// persist Send's error (slog, notification_outbox.last_error).
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("notify: webhook request: %w", urlErr.Err)
+		}
 		return fmt.Errorf("notify: webhook request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -86,6 +97,11 @@ func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]a
 
 	resp, err := s.client().Do(req)
 	if err != nil {
+		// Same *url.Error leak as above, on the actual send this time.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("notify: webhook send: %w", urlErr.Err)
+		}
 		return fmt.Errorf("notify: webhook send: %w", err)
 	}
 	defer resp.Body.Close()

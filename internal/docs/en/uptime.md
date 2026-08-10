@@ -10,7 +10,7 @@ If the instance is split and neither role is present — say only `--mode=web` a
 
 ## Creating a monitor
 
-The monitor list lives at `/projects/{id}/monitors`. The "New monitor" button (visible only to an org owner/admin) opens the form at `/projects/{id}/monitors/new`.
+The monitor list lives at `/projects/{id}/monitors`. The "New monitor" button (visible to a project team member — an operator — as well as an org owner/admin; see [Roles and access](/docs/teams)) opens the form at `/projects/{id}/monitors/new`.
 
 The form starts with a **check type** picker — HTTP, TCP, DNS, or Heartbeat. Each type has its own fields:
 
@@ -68,7 +68,7 @@ A monitor's incident list appears both at `/projects/{id}/incidents` and as a ti
 
 ## Monitor detail page
 
-Clicking a monitor's name opens `/monitors/{id}`: current status, uptime% over 24h/7d/30d, a latency chart, a table of recent checks per region, an incident timeline, and — for HTTPS monitors — the SSL certificate's expiry. Owners/admins also get Pause/Resume, Edit, and Delete actions here.
+Clicking a monitor's name opens `/monitors/{id}`: current status, uptime% over 24h/7d/30d, a latency chart, a table of recent checks per region, an incident timeline, and — for HTTPS monitors — the SSL certificate's expiry. A project's operators (team members), admins, and owner also get Pause/Resume, Edit, and Delete actions here.
 
 ## What's next
 

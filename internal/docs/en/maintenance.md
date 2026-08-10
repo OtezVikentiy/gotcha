@@ -2,7 +2,7 @@
 
 A maintenance window is a pre-announced interval of planned work for a project. While it's active, incidents opened by that project's [monitors](/docs/uptime) are marked "in maintenance" and **do not send notifications** through [alerts](/docs/alerts) — so a planned reboot or deploy doesn't flood your channel with false alarms. The incident itself is still recorded (visible in the history), just without a delivery.
 
-The page lives at `/projects/{id}/maintenance`, available to an org owner/admin of the project.
+The page lives at `/projects/{id}/maintenance`, available to a member of a team attached to the project (an operator — see [Roles and access](/docs/teams)), as well as to the organization's owner and admins.
 
 ## Creating a window
 

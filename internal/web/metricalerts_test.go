@@ -120,7 +120,11 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("rule not deleted")
 	}
 
-	// Member (не admin) → 404.
+	// Член организации БЕЗ команды на проекте (не owner/admin, не оператор) →
+	// 404: requireProjectOperator (задача 3, спека 2026-08-08) не смотрит на
+	// организационную роль, только на canOperateProject — членства
+	// недостаточно, а раскрывать существование проекта чужой команде незачем
+	// (тот же existence-oracle, что и для полного постороннего).
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "ma-member@example.com")
 	if err := s.org.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
@@ -128,8 +132,8 @@ func TestWebMetricAlerts(t *testing.T) {
 	resp = getWithCookie(t, s.srv, base, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("member status = %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("member (no team) status = %d, want 404", resp.StatusCode)
 	}
 }
 

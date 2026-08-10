@@ -353,7 +353,11 @@ func monitorFormErrorMessage(ctx context.Context, err error) string {
 // renderMonitorForm — общий рендер формы создания/редактирования: тянет
 // свежий список регионов организации и каналов проекта (нужны на каждый
 // рендер, включая 422 после неудачного POST — форма без них не сможет
-// отрисовать чекбоксы).
+// отрисовать чекбоксы). Форма доступна оператору проекта (requireProjectOperator,
+// задача 2), а channelCheckbox рендерит цель канала буквально — тот же принцип,
+// что и renderAlerts (alerts.go): для не-admin (canManageProject=false) цель
+// маскируется, а Secret обнуляется ДО передачи в шаблон, секрет не должен
+// попасть в HTML оператора даже неотрендеренным.
 func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, status int, orgID int64, data templates.MonitorFormData, userEmail string) {
 	regions, err := h.Uptime.Regions(r.Context(), orgID)
 	if err != nil {
@@ -365,6 +369,18 @@ func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, stat
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	uid, _ := auth.UserID(r.Context())
+	canManage, err := h.canManageProject(r.Context(), data.ProjectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !canManage {
+		for i := range channels {
+			channels[i].Target = maskChannelTarget(channels[i].Kind, channels[i].Target)
+			channels[i].Secret = ""
+		}
+	}
 	data.AllRegions = regions
 	data.AllChannels = channels
 	w.WriteHeader(status)
@@ -372,7 +388,9 @@ func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, stat
 }
 
 // monitorNewPage — GET /projects/{id}/monitors/new: форма создания монитора,
-// доступна только owner/admin организации проекта (requireProjectRole).
+// доступна оператору проекта (requireProjectOperator, задача 2, спека
+// 2026-08-08) — то есть тому же кругу, кто теперь видит кнопку «New monitor»
+// в списке.
 func (h *Handler) monitorNewPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -390,7 +408,7 @@ func (h *Handler) monitorNewPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
+	orgID, ok := h.requireProjectOperator(w, r, projectID, uid)
 	if !ok {
 		return
 	}
@@ -417,7 +435,7 @@ func (h *Handler) monitorEditPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orgID, ok := h.requireProjectRole(w, r, m.ProjectID, uid)
+	orgID, ok := h.requireProjectOperator(w, r, m.ProjectID, uid)
 	if !ok {
 		return
 	}
@@ -425,7 +443,7 @@ func (h *Handler) monitorEditPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // monitorCreate — POST /projects/{id}/monitors: sameOrigin +
-// requireProjectRole, парсинг формы в типизированный конфиг,
+// requireProjectOperator, парсинг формы в типизированный конфиг,
 // ErrInvalidMonitor -> 422 с перерисованной формой (значения сохранены),
 // успех -> 303 на страницу нового монитора (heartbeat-монитор показывает URL
 // пинга с токеном именно там, см. monitordetail.templ).
@@ -450,7 +468,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
+	orgID, ok := h.requireProjectOperator(w, r, projectID, uid)
 	if !ok {
 		return
 	}
@@ -476,9 +494,10 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 	if created.Kind == uptime.KindHeartbeat && created.HeartbeatToken != "" {
 		// Сырой heartbeat-токен доступен только сейчас (в БД — sha256). Рендерим
 		// деталь с URL пинга один раз, а не редиректим: redirect потерял бы токен
-		// и пользователь не получил бы URL для настройки пинга. requireProjectRole
-		// выше уже подтвердил owner/admin, поэтому canManage=true.
-		h.renderMonitorDetail(w, r, created, true)
+		// и пользователь не получил бы URL для настройки пинга. requireProjectOperator
+		// выше уже подтвердил оператора, поэтому canManage=canOperate=true (задача 2:
+		// оба флага теперь про оператора).
+		h.renderMonitorDetail(w, r, created, true, true)
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(created.ID), http.StatusSeeOther)
@@ -508,15 +527,18 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	canManage, err := h.canManageProject(r.Context(), m.ProjectID, uid)
+	canOperate, err := h.canOperateProject(r.Context(), m.ProjectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	// Монитор зрителю уже доступен (loadAccessibleMonitor) — существование не
-	// секрет, поэтому нехватка роли — честный 403 (№72), а 404 остаётся
-	// содержательной ошибке «этот монитор не heartbeat».
-	if !canManage {
+	// секрет, поэтому нехватка прав оператора — честный 403 (№72), а 404
+	// остаётся содержательной ошибке «этот монитор не heartbeat». Сегодня
+	// ветка недостижима — оператор == доступ (canOperateProject ==
+	// CanAccessProject) — но граница объявлена явно на случай расхождения
+	// предикатов (спека 2026-08-08).
+	if !canOperate {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
 		return
 	}
@@ -540,7 +562,15 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	m.HeartbeatToken = token
-	h.renderMonitorDetail(w, r, m, canManage)
+	// С задачи 2 кнопки Pause/Resume/Edit/Delete на странице детали — тоже
+	// операторские (canManage), не только карточка heartbeat-токена
+	// (canOperate): Edit-форма теперь тоже requireProjectOperator, так что
+	// прятать Edit от оператора незачем. Оба флага наполняются одним и тем же
+	// canOperate, посчитанным выше до RotateHeartbeatToken — второй поход в БД
+	// (был canManageProject после мутации) больше не нужен, а заодно исчезает
+	// и риск потерять свежий URL, если бы этот второй лукап свалился ошибкой
+	// уже после успешной ротации (находка ревью задачи 1).
+	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
 }
 
 // monitorUpdate — POST /monitors/{id}: тот же принцип, что и monitorCreate,
@@ -566,7 +596,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orgID, ok := h.requireProjectRole(w, r, m.ProjectID, uid)
+	orgID, ok := h.requireProjectOperator(w, r, m.ProjectID, uid)
 	if !ok {
 		return
 	}

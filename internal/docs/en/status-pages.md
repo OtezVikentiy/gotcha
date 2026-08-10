@@ -1,6 +1,6 @@
 # Public status pages
 
-A public status page is a public view of the state of selected [monitors](/docs/uptime) in a project: a standalone page that requires no login, which you can link to for users and partners. Manage it at `/projects/{id}/statuspages` (available to an org owner/admin of the project).
+A public status page is a public view of the state of selected [monitors](/docs/uptime) in a project: a standalone page that requires no login, which you can link to for users and partners. Manage its content at `/projects/{id}/statuspages` — available to a project team member (an operator) as well as to the organization's owner and admins. Publishing a page (or changing its slug) is admin/owner-only, though — see [Roles and access](/docs/teams).
 
 ## Creating a status page
 
@@ -11,7 +11,7 @@ A public status page is a public view of the state of selected [monitors](/docs/
    - **Title** — the heading visitors will see.
    - **Description** — a short blurb under the title (optional).
    - **Published** — turns the page on; a disabled page still shows in the dashboard but is not publicly reachable.
-4. In the monitor list, check the ones that should appear on the page, and set a **Public name** for each — the public-facing name. It doesn't have to match the monitor's internal name: the real name is shown only to admins in this form, and only the public name is exposed publicly. Tiles are ordered alphabetically by monitor name; the order you check them in doesn't change that.
+4. In the monitor list, check the ones that should appear on the page, and set a **Public name** for each — the public-facing name. It doesn't have to match the monitor's internal name: the real name is shown only inside this management form (to whoever can manage the page — operators, admins, and owners), and only the public name is exposed publicly. Tiles are ordered alphabetically by monitor name; the order you check them in doesn't change that.
 5. Save with "Create page".
 
 You can later edit the page with the same form or remove it with "Delete". Once saved, the ready-made public link is shown right under the form.

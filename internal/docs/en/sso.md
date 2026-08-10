@@ -76,7 +76,7 @@ The `/login` button reads "Sign in with VK".
 
 ## How this differs from per-org enterprise SSO
 
-Separately from these instance-level providers, each organization has its own optional **SSO** section on `/orgs/{id}/settings` (owner only): its own OIDC provider for signing in members with a specific email domain, with an "enforced" option (mandatory SSO for that domain — passwords and the general providers above stop working for those emails). That's a separate, organization-level feature not covered in detail here — it's configured directly in the UI, not via env vars.
+Separately from these instance-level providers, each organization has its own optional **SSO** section on `/orgs/{id}/settings`: its own OIDC provider for signing in members with a specific email domain, with an "enforced" option (mandatory SSO for that domain — passwords and the general providers above stop working for those emails). Only the organization's owner even sees this section, but seeing it isn't enough to configure it: setting up or removing the federation requires the account to also be marked an **instance administrator** — a flag independent of any org role. This split exists because a self-service org owner claiming a domain they don't control would be an account-takeover vector; only someone the instance operator trusts with that domain can wire it up. That's a separate, organization-level feature not covered in detail here — it's configured directly in the UI, not via env vars.
 
 ## What's next
 
