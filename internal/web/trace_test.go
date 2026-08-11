@@ -370,3 +370,67 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("outsider flame status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// TestWebTraceCrossOrgStranger — регресс на маршрут /traces/{trace_id} для
+// актора stranger-матрицы (аудит security P2-4 / architecture P1-4): владелец
+// СВОЕГО орга, с нулевым членством в орге жертвы. Механический свип B3
+// (authz_behavior_test.go) этот маршрут не покрыл — trace_id не суррогатный
+// числовой id, его перебор не заводит данных в ClickHouse, поэтому гейт
+// (traceWaterfall → ProjectForTrace → CanAccessProject) остался без точечного
+// регресс-теста именно на чужака-владельца. TestWebTraceWaterfall выше уже
+// проверяет аутсайдера-без-орга; здесь актор строже — полноценный владелец
+// другой организации, как в crossorg_idor_test.go. И waterfall, и flame, и
+// несуществующий трейс дают одинаковую 404 (не палим существование трейса).
+func TestWebTraceCrossOrgStranger(t *testing.T) {
+	s := newTraceStack(t)
+
+	// Жертва: владелец орга B с проектом, в котором лежит трейс.
+	victimID, victimCookie := orgSettingsRegister(t, s.auth, "trace-victim@example.com")
+	victimOrg, err := s.org.CreateOrg(context.Background(), "trace-victim-co", "Trace Victim Co", victimID)
+	if err != nil {
+		t.Fatalf("create victim org: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), victimOrg.ID, "trace-victim-proj", "Trace Victim Proj", "go")
+	if err != nil {
+		t.Fatalf("create victim project: %v", err)
+	}
+
+	// Атакующий: владелец СВОЕГО орга A, в орге B — ноль членства.
+	attackerID, attackerCookie := orgSettingsRegister(t, s.auth, "trace-attacker@example.com")
+	if _, err := s.org.CreateOrg(context.Background(), "trace-attacker-co", "Trace Attacker Co", attackerID); err != nil {
+		t.Fatalf("create attacker org: %v", err)
+	}
+
+	const traceID = "xorg-trace-01"
+	start := time.Now().UTC().Add(-5 * time.Minute)
+	s.spans.Add(proj.ID, trace.Transaction{
+		TraceID:     traceID,
+		SpanID:      "xorg-span-root",
+		Name:        "GET /api/secret",
+		Op:          "http.server",
+		Status:      "ok",
+		Start:       start,
+		End:         start.Add(100 * time.Millisecond),
+		Environment: "production",
+	})
+	s.flush(t)
+
+	// Санити: трейс реально существует и виден владельцу-жертве (иначе 404
+	// ниже был бы ложноположительным — «не нашли, потому что не завели»).
+	resp := getWithCookie(t, s.srv, "/traces/"+traceID, victimCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("victim owner trace status = %d, want 200 (трейс должен существовать)", resp.StatusCode)
+	}
+
+	// Чужак-владелец: и waterfall, и flame — 404, как и несуществующий трейс.
+	for _, path := range []string{"/traces/" + traceID, "/traces/" + traceID + "/flame", "/traces/xorg-nope"} {
+		resp := getWithCookie(t, s.srv, path, attackerCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("stranger GET %s status = %d, want 404", path, resp.StatusCode)
+		}
+	}
+}
