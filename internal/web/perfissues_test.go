@@ -284,7 +284,11 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 	}
 }
 
-func TestWebPerfIssueMemberCannotManage(t *testing.T) {
+// TestWebPerfIssueMemberCanOperate — член команды с доступом к проекту меняет
+// статус perf-issue: та же граница, что у issueSetStatus (CanAccessProject,
+// не роль), спека 2026-08-08. Раньше требовался owner/admin — теперь любой
+// смотрящий, отсюда и кнопки статуса в разметке.
+func TestWebPerfIssueMemberCanOperate(t *testing.T) {
 	s := newPerfIssuesStack(t)
 	ownerID, _ := orgSettingsRegister(t, s.auth, "perf-member-owner@example.com")
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "perf-member-member@example.com")
@@ -308,26 +312,26 @@ func TestWebPerfIssueMemberCannotManage(t *testing.T) {
 	detailPath := "/perf-issues/" + strconv.FormatInt(id, 10)
 	statusPath := detailPath + "/status"
 
-	// Member видит страницу, но НЕ видит кнопок статуса.
+	// Member видит страницу и кнопки статуса — CanOperate теперь равен доступу.
 	resp := getWithCookie(t, s.srv, detailPath, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("member GET %s status = %d, want 200: %s", detailPath, resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), `name="status"`) {
-		t.Fatalf("member must not see status buttons: %s", body)
+	if !strings.Contains(string(body), `name="status"`) {
+		t.Fatalf("member must see status buttons: %s", body)
 	}
 
-	// Member POST статус → 403 (requireProjectRole, №72).
+	// Member POST статус → 303, статус в БД меняется.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("member POST status = %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("member POST status = %d, want 303", resp.StatusCode)
 	}
-	if got := s.statusOf(t, id); got != "unresolved" {
-		t.Fatalf("member POST changed status to %q, want unresolved", got)
+	if got := s.statusOf(t, id); got != "resolved" {
+		t.Fatalf("member POST status = %q, want resolved", got)
 	}
 }
 

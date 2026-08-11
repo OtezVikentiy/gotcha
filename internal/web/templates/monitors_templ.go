@@ -168,11 +168,11 @@ type MonitorRow struct {
 }
 
 // MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
-// canManage управляет видимостью ссылки «New monitor» (owner/admin, тот же
-// принцип, что и «Project settings» на странице issues). Ссылки на
+// canOperate управляет видимостью ссылки «New monitor» (с задачи 2 — оператор
+// проекта, не только owner/admin; спека 2026-08-08). Ссылки на
 // Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
 // боковой панели app-shell (nav.Subsections для area "uptime").
-func MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail string) templ.Component {
+func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -226,7 +226,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if canManage {
+			if canOperate {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<p><a class=\"btn btn-primary\" href=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
@@ -259,7 +259,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail 
 				}
 			}
 			if len(rows) == 0 {
-				if canManage {
+				if canOperate {
 					templ_7745c5c3_Err = emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "uptime.monitors.empty.cta", monitorNewPath(projectID), 2).Render(ctx, templ_7745c5c3_Buffer)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err

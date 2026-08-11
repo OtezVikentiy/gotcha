@@ -97,6 +97,16 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			canManage = err == nil && (role == org.RoleOwner || role == org.RoleAdmin)
 		}
 
+		// CanOperate — проектный скоуп: участник команды текущего
+		// проекта (или owner/admin). Без выбранного проекта поднимать
+		// нечего — пункты мониторинга живут только внутри проекта.
+		// projID уже сверен со списком доступных пользователю проектов
+		// (projs, из ProjectsForUser) выше — тем же accessCondition, что и
+		// CanAccessProject (задача C2: подтверждена буквальная
+		// эквивалентность обоих запросов), поэтому отдельный поход в БД
+		// здесь не нужен.
+		canOperate := projID != 0 && projectInList(projs, projID)
+
 		sh := nav.Shell{
 			UserEmail: email,
 			Projects:  projs,
@@ -110,9 +120,10 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			// are localized markdown H1s, resolved via internal/docs).
 			// withShell runs inside withLocale (see web.go mount line),
 			// so the locale is already resolved in ctx by this point.
-			Locale:    i18n.FromContext(ctx).Code,
-			CanManage: canManage,
-			Back:      backOrigin(r, h.BaseURL, path),
+			Locale:     i18n.FromContext(ctx).Code,
+			CanManage:  canManage,
+			CanOperate: canOperate,
+			Back:       backOrigin(r, h.BaseURL, path),
 		}
 		next.ServeHTTP(w, r.WithContext(nav.WithShell(ctx, sh)))
 	})

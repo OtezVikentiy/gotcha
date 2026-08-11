@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"testing"
@@ -380,6 +382,192 @@ func TestTelegramSenderTransportErrorDoesNotLeakToken(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Errorf("Send error leaks bot token: %q", err.Error())
+	}
+}
+
+// TestWebhookSenderTransportErrorDoesNotLeakURL guards against the same
+// *url.Error leak that TestTelegramSenderTransportErrorDoesNotLeakToken
+// covers for the telegram sender: on a transport-level failure, Go's
+// net/http wraps the error in *url.Error, whose Error() string embeds the
+// full request URL. For a webhook that URL routinely carries a bearer
+// token/secret path (Slack-style /T000/B000/secret, or a query-string
+// token), and that error text lands in notification_outbox.last_error,
+// which the deliveries page renders — so the URL must not survive into the
+// error Send returns.
+func TestWebhookSenderTransportErrorDoesNotLeakURL(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	const secretPath = "/T000/B000/SECRET-PATH-123"
+	sender := &notify.WebhookSender{Client: http.DefaultClient}
+	target := notify.Target{Kind: "webhook", Target: "http://" + addr + secretPath}
+
+	err = sender.Send(context.Background(), target, map[string]any{"a": "b"})
+	if err == nil {
+		t.Fatal("Send: want error against closed port, got nil")
+	}
+	if strings.Contains(err.Error(), secretPath) {
+		t.Errorf("Send error leaks webhook URL path: %q", err.Error())
+	}
+}
+
+// TestWebhookSenderRequestCreationErrorDoesNotLeakURL is the twin of
+// TestWebhookSenderTransportErrorDoesNotLeakURL: that test covers the
+// *url.Error unwrap on client.Do()'s failure (webhook.go's second errors.As
+// site); this one covers the FIRST site, at http.NewRequestWithContext
+// itself. url.Parse (which NewRequestWithContext calls internally) rejects a
+// raw control character in the URL and returns a *url.Error whose Error()
+// string quotes the full URL verbatim — same leak shape, different call
+// site, so it needs the same errors.As unwrap to keep the secret path out of
+// Send's returned error.
+func TestWebhookSenderRequestCreationErrorDoesNotLeakURL(t *testing.T) {
+	const secretPath = "/T000/B000/SECRET-PATH-CREATE-321"
+	// \x7f (DEL) is an ASCII control character: net/url rejects it during
+	// parsing, which is exactly where http.NewRequestWithContext's own
+	// *url.Error originates (as opposed to a transport-level failure from
+	// client.Do()).
+	target := "http://hooks.example.com" + secretPath + "\x7f"
+
+	sender := &notify.WebhookSender{Client: http.DefaultClient}
+	target2 := notify.Target{Kind: "webhook", Target: target}
+
+	err := sender.Send(context.Background(), target2, map[string]any{"a": "b"})
+	if err == nil {
+		t.Fatal("Send: want error for malformed URL, got nil")
+	}
+	if strings.Contains(err.Error(), secretPath) {
+		t.Errorf("Send error leaks webhook URL path from request-creation error: %q", err.Error())
+	}
+}
+
+// fakeRejectingSMTP speaks just enough SMTP to reach the RCPT stage and then
+// rejects the recipient with rcptReply, echoing it back to the test as the
+// error string net/smtp.Client.Rcpt returns. No EHLO extensions are
+// advertised (no STARTTLS/AUTH), so EmailSender.Send never tries TLS/auth
+// against it.
+func fakeRejectingSMTP(t *testing.T, rcptReply string) (host string, port int) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		tp := textproto.NewConn(conn)
+		_ = tp.PrintfLine("220 fake.smtp ready")
+		for {
+			line, err := tp.ReadLine()
+			if err != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "EHLO"), strings.HasPrefix(line, "HELO"):
+				_ = tp.PrintfLine("250 fake.smtp")
+			case strings.HasPrefix(line, "MAIL FROM"):
+				_ = tp.PrintfLine("250 OK")
+			case strings.HasPrefix(line, "RCPT TO"):
+				_ = tp.PrintfLine("%s", rcptReply)
+				return
+			default:
+				_ = tp.PrintfLine("500 unrecognized command")
+				return
+			}
+		}
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, err = strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	return host, port
+}
+
+// TestEmailSenderRCPTErrorDoesNotLeakAddress guards against A1 (audit
+// P1-1): a real SMTP server's RCPT rejection routinely echoes the
+// recipient address verbatim in its reply text (e.g. "550 5.1.1
+// <addr>: Recipient address rejected"). That reply becomes err.Error() from
+// net/smtp.Client.Rcpt, and Send used to wrap it as-is with %w — landing the
+// recipient's address straight in notification_outbox.last_error, which the
+// deliveries page renders. The address must not survive into the error Send
+// returns.
+func TestEmailSenderRCPTErrorDoesNotLeakAddress(t *testing.T) {
+	const addr = "victim@corp.example"
+	host, port := fakeRejectingSMTP(t, fmt.Sprintf("550 5.1.1 <%s>: Recipient address rejected: User unknown", addr))
+
+	s := notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "alerts@gotcha.dev"})
+	target := notify.Target{Kind: "email", Target: addr}
+	payload := map[string]any{"subject": "boom", "body": "boom happened"}
+
+	err := s.Send(context.Background(), target, payload)
+	if err == nil {
+		t.Fatal("Send: want error on RCPT rejection, got nil")
+	}
+	if strings.Contains(err.Error(), addr) {
+		t.Errorf("Send error leaks recipient address: %q", err.Error())
+	}
+}
+
+// TestWebhookSenderNon2xxBodyDoesNotLeakEchoedSecret guards against A1
+// (audit P2-1/ops P0): a broken or malicious receiver can echo the request
+// back in its error body — including the target URL's path, which routinely
+// carries a bearer token (Slack-style /T000/B000/secret). The non-2xx
+// respBody snippet used to be inserted into the error raw; it must not
+// carry the secret path through to notification_outbox.last_error.
+func TestWebhookSenderNon2xxBodyDoesNotLeakEchoedSecret(t *testing.T) {
+	const secretPath = "/T000/B000/SECRET-PATH-456"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		// Misbehaving receiver echoes the request path/URL back in the error body.
+		fmt.Fprintf(w, "bad request to %s%s", r.Host, r.URL.RequestURI())
+	}))
+	defer srv.Close()
+
+	sender := &notify.WebhookSender{Client: srv.Client()}
+	target := notify.Target{Kind: "webhook", Target: srv.URL + secretPath}
+
+	err := sender.Send(context.Background(), target, map[string]any{"a": "b"})
+	if err == nil {
+		t.Fatal("Send: want error on 500, got nil")
+	}
+	if strings.Contains(err.Error(), secretPath) {
+		t.Errorf("Send error leaks webhook secret path from echoed body: %q", err.Error())
+	}
+}
+
+// TestWebhookSenderNon2xxBodyDoesNotLeakFullTargetEcho covers the case where
+// the receiver echoes the whole request URL (not just the path) back into
+// the body — the primary case RedactToken(respBody, t.Target) is meant to
+// catch.
+func TestWebhookSenderNon2xxBodyDoesNotLeakFullTargetEcho(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, "upstream rejected POST to %s://%s%s", "http", r.Host, r.URL.RequestURI())
+	}))
+	defer srv.Close()
+
+	sender := &notify.WebhookSender{Client: srv.Client()}
+	target := notify.Target{Kind: "webhook", Target: srv.URL + "/hooks/SECRET-TOKEN-789"}
+
+	err := sender.Send(context.Background(), target, map[string]any{})
+	if err == nil {
+		t.Fatal("Send: want error on 502, got nil")
+	}
+	if strings.Contains(err.Error(), target.Target) || strings.Contains(err.Error(), "SECRET-TOKEN-789") {
+		t.Errorf("Send error leaks full target URL from echoed body: %q", err.Error())
 	}
 }
 

@@ -598,13 +598,18 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagesSettingsMemberForbidden — member (доступ к проекту только
-// на просмотр) получает 404 на настройках, и чужая статус-страница по прямому
-// id тоже 404.
-func TestWebStatusPagesSettingsMemberForbidden(t *testing.T) {
+// TestWebStatusPagesSettingsStrangerBoundary — с задачи 4 (спека
+// cld/plans/2026-08-08-access-model-rework.md) участник команды проекта —
+// оператор, а не «member без доступа»: позитивный сценарий (правит контент,
+// не публикацию) закреплён TestWebStatusPageOperator. Здесь остаётся граница
+// «чужак»: пользователь без ЛЮБОГО отношения к организации получает 404 на
+// настройках, и владелец ДРУГОЙ организации не может тронуть чужую страницу
+// по прямому id.
+func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 	s := newStatusPageStack(t)
-	proj, ownerCookie, memberCookie := statusPageProject(t, s, "spforbid")
+	proj, ownerCookie, _ := statusPageProject(t, s, "spforbid")
 	_, otherOwnerCookie, _ := statusPageProject(t, s, "spother")
+	_, strangerCookie := orgSettingsRegister(t, s.auth, "spforbid-stranger@example.com")
 
 	m := statusPageMonitor(t, s, proj.ID, "forbid-monitor", "https://example.com/forbid")
 	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
@@ -616,26 +621,29 @@ func TestWebStatusPagesSettingsMemberForbidden(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
 
-	resp := getWithCookie(t, s.srv, path, memberCookie)
+	// Пользователь без какого-либо отношения к организации: существование
+	// проекта не раскрывается, 404 (не 403, как у участника с недостаточной
+	// ролью — тот принцип не менялся).
+	resp := getWithCookie(t, s.srv, path, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET %s (member) = %d, want 403", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (stranger) = %d, want 404", path, resp.StatusCode)
 	}
 
-	resp = postForm(t, s.srv, path, url.Values{"slug": {"x"}, "title": {"x"}}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, path, url.Values{"slug": {"x"}, "title": {"x"}}, s.srv.URL, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) = %d, want 403", path, resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (stranger) = %d, want 404", path, resp.StatusCode)
 	}
 
 	updatePath := "/statuspages/" + strconv.FormatInt(sp.ID, 10)
-	resp = postForm(t, s.srv, updatePath, url.Values{"slug": {"spforbid-status"}, "title": {"Hacked"}}, s.srv.URL, memberCookie)
+	resp = postForm(t, s.srv, updatePath, url.Values{"slug": {"spforbid-status"}, "title": {"Hacked"}}, s.srv.URL, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) = %d, want 403", updatePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (stranger) = %d, want 404", updatePath, resp.StatusCode)
 	}
 
 	// Owner другой организации не должен трогать чужую страницу по её id.
@@ -659,6 +667,6 @@ func TestWebStatusPagesSettingsMemberForbidden(t *testing.T) {
 		t.Fatalf("status pages of: %v", err)
 	}
 	if len(pages) != 1 {
-		t.Fatalf("len(pages) = %d, want 1 (foreign/member writes must not persist)", len(pages))
+		t.Fatalf("len(pages) = %d, want 1 (stranger/foreign writes must not persist)", len(pages))
 	}
 }

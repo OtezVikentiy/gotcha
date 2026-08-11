@@ -409,7 +409,8 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 }
 
 // ssoSettingsVM собирает данные секции SSO настроек орга (этап 10). Секция
-// видна только owner'у; client_secret обратно не отдаём (показываем «настроено»).
+// видна owner'у организации либо admin'у инстанса; client_secret обратно не
+// отдаём (показываем «настроено»).
 func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSOSettings {
 	vm := templates.SSOSettings{
 		RedirectURI: h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",

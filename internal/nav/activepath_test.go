@@ -22,9 +22,10 @@ func TestSubsectionsHighlightDetailPages(t *testing.T) {
 		{"/projects/5/metrics/alerts", "metrics", "nav.metric_alerts"},
 	}
 	for _, c := range cases {
-		// CanManage: подразделы фильтруются по роли, а проверяется здесь
-		// подсветка — она должна работать для того, кто эти пункты видит.
-		items := Subsections(Shell{ProjectID: 5, Area: c.area, Path: c.path, CanManage: true})
+		// CanManage/CanOperate: подразделы фильтруются по роли (по обоим
+		// скоупам), а проверяется здесь подсветка — она должна работать для
+		// того, кто эти пункты видит.
+		items := Subsections(Shell{ProjectID: 5, Area: c.area, Path: c.path, CanManage: true, CanOperate: true})
 		var active string
 		for _, it := range items {
 			if it.Active {

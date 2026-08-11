@@ -37,10 +37,17 @@ type GettingStartedVM struct {
 	ProjectID, OrgID                                 int64
 	Step2Done, Step3Done, Step4aDone, Step4bDone bool
 	Done                                             int
-	// CanManage — owner/admin ли смотрящий. Все шаги с действиями ведут на
-	// страницы, которые требуют этой роли (подключение SDK, оповещения,
-	// настройки организации): участнику чек-лист предлагал бы пойти туда, где
-	// его встретит 404.
+	// CanOperate — виден ли чек-лист вообще (C5: раньше карточка целиком
+	// гейтилась на CanManage, и оператор — участник команды проекта без
+	// owner/admin — никогда её не видел, хотя 2 из 5 шагов (алерт, монитор)
+	// ему доступны). Шаги 2/3/4b ведут на страницы с гейтом CanAccessProject/
+	// requireProjectOperator — оператору они открыты.
+	CanOperate bool
+	// CanManage — owner/admin ли смотрящий. Только шаг 4a (позвать команду)
+	// ведёт на страницу настроек организации, которая требует именно этой
+	// роли: оператору без неё показывать рабочую ссылку нельзя — он
+	// упрётся в 403 (см. requireOrgRole), поэтому шаг рендерится
+	// неактивным текстом (gsStepReadOnly), а не мёртвой ссылкой.
 	CanManage bool
 }
 
@@ -49,8 +56,13 @@ type GettingStartedVM struct {
 // подключил SDK, настроил оповещение, позвал команду и добавил монитор —
 // либо по кнопке «Скрыть» (№71): у действующей команды чек-лист может жить
 // месяцами только из-за незакрытого шага, и это его законный конец.
+//
+// Гейт карточки — CanOperate, не CanManage (C5): все её шаги, кроме 4a,
+// доступны любому оператору проекта, и прятать её от него целиком было
+// решением ровно того класса «мёртвых контролов», который правит этот
+// аудит, только наоборот — не мёртвая ссылка, а спрятанная рабочая.
 templ gettingStartedChecklist(gs GettingStartedVM) {
-	if gs.Done < 5 && gs.CanManage {
+	if gs.Done < 5 && gs.CanOperate {
 		<section class="card getting-started">
 			<h2 class="card-header">
 				{ i18n.T(ctx, "getting_started.title") } · { i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "5") }
@@ -62,7 +74,11 @@ templ gettingStartedChecklist(gs GettingStartedVM) {
 				@gsStepDone("getting_started.step.1")
 				@gsStep(gs.Step2Done, "getting_started.step.2", projectSetupPath(gs.ProjectID), "getting_started.step.2.cta")
 				@gsStep(gs.Step3Done, "getting_started.step.3", alertsPath(gs.ProjectID), "getting_started.step.3.cta")
-				@gsStep(gs.Step4aDone, "getting_started.step.4a", orgSettingsPath(gs.OrgID), "getting_started.step.4a.cta")
+				if gs.CanManage {
+					@gsStep(gs.Step4aDone, "getting_started.step.4a", orgSettingsPath(gs.OrgID), "getting_started.step.4a.cta")
+				} else {
+					@gsStepReadOnly(gs.Step4aDone, "getting_started.step.4a")
+				}
 				@gsStep(gs.Step4bDone, "getting_started.step.4b", monitorsPath(gs.ProjectID), "getting_started.step.4b.cta")
 			</ul>
 		</section>
@@ -77,6 +93,24 @@ templ gsStep(done bool, labelKey, href, ctaKey string) {
 			@icon("circle")
 			<span class="visually-hidden">{ i18n.T(ctx, "getting_started.state.todo") }</span>
 			{ i18n.T(ctx, labelKey) } — <a href={ templ.SafeURL(href) }>{ i18n.T(ctx, ctaKey) }</a>
+		</li>
+	}
+}
+
+// gsStepReadOnly — тот же шаг, но без CTA-ссылки: для оператора без
+// CanManage на шаге 4a (позвать команду), чья цель — /orgs/{id}/settings,
+// требующая requireOrgRole (owner/admin). Ссылка увела бы его на честный
+// 403 — тот самый класс «мёртвого контрола», которого этот аудит и
+// добивается избежать, поэтому шаг остаётся видимым (прогресс не врёт), но
+// не кликабельным.
+templ gsStepReadOnly(done bool, labelKey string) {
+	if done {
+		@gsStepDone(labelKey)
+	} else {
+		<li class="gs-todo gs-todo-locked">
+			@icon("circle")
+			<span class="visually-hidden">{ i18n.T(ctx, "getting_started.state.todo") }</span>
+			{ i18n.T(ctx, labelKey) }
 		</li>
 	}
 }

@@ -72,12 +72,16 @@ func newMonitorDetailStack(t *testing.T) *monitorDetailStack {
 	return &monitorDetailStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, writer: writer, alerts: alertSvc}
 }
 
-// TestWebMonitorDetailHeartbeatTokenHiddenFromMember — a member (non-admin)
-// opening a heartbeat monitor's detail page must NOT see the heartbeat token
-// in the response body; an owner must see it. This is a critical security test:
-// the token is a bearer secret — whoever has it can fake a heartbeat and mask
-// real downtime.
-func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
+// TestWebMonitorDetailHeartbeatSectionOperatorGated — открывая деталь
+// heartbeat-монитора, НИКТО (ни owner, ни участник команды) не видит сырой
+// токен на обычном GET — он хранится только хешем (sha256) и показывается
+// один раз сразу после create/regenerate (см. TestWebMonitorHeartbeatCreateShowsPingURL,
+// TestWebMonitorHeartbeatRegenerate). Это критичный security-тест: токен —
+// bearer-секрет, у кого он есть — может подделать heartbeat и замаскировать
+// реальный даунтайм. Саму секцию «Heartbeat-пинг» (с кнопкой Regenerate) с
+// задачи 2 (спека 2026-08-08) видят и owner, и участник команды — карточка
+// гейтится canOperate (canOperateProject), не только owner/admin.
+func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hb-detail-owner@example.com")
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "hb-detail-member@example.com")
@@ -151,8 +155,9 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 		t.Fatalf("GET %s did not render custom range selected: %s", custQ, cbody)
 	}
 
-	// Member (view access, not owner/admin) GET -> 200, must NOT contain the
-	// heartbeat token or the Heartbeat-пинг section.
+	// Member (view access via team — с задачи 2 тоже оператор) GET -> 200:
+	// секцию Heartbeat-пинг теперь видит (canOperate), но сырой токен на
+	// обычном GET не видит никто, независимо от роли.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -163,8 +168,8 @@ func TestWebMonitorDetailHeartbeatTokenHiddenFromMember(t *testing.T) {
 	if strings.Contains(bodyStr, created.HeartbeatToken) {
 		t.Fatalf("GET %s (member) must NOT show heartbeat token: %s", path, bodyStr)
 	}
-	if strings.Contains(bodyStr, "Heartbeat-пинг") {
-		t.Fatalf("GET %s (member) must NOT show Heartbeat-пинг section: %s", path, bodyStr)
+	if !strings.Contains(bodyStr, "Heartbeat-пинг") {
+		t.Fatalf("GET %s (member) must show Heartbeat-пинг section (Task 2: canOperate-gated): %s", path, bodyStr)
 	}
 }
 

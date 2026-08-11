@@ -382,12 +382,39 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 	}
 }
 
-// TestWebMonitorFormMemberForbidden — member (view access, not owner/admin)
-// gets an honest 403 on every monitor-form route (№72: membership is already
-// known to them): both GETs and both POSTs.
-func TestWebMonitorFormMemberForbidden(t *testing.T) {
+// validMonitorForm — минимально валидная форма создания/обновления
+// http-монитора (проходит uptime.validateMonitor): используется тестами,
+// которым нужен именно факт успеха POST, а не конкретные значения полей (в
+// отличие от TestWebMonitorCreateHTTP, который проверяет каждое поле и
+// требует созданный alert-канал). Каналы не передаются — необязательны
+// (checkChannelsBelongToProject не проверяет пустой список).
+func validMonitorForm() url.Values {
+	return url.Values{
+		"name":               {"member monitor"},
+		"kind":               {"http"},
+		"http_method":        {"GET"},
+		"http_url":           {"https://example.com/health"},
+		"interval_seconds":   {"60"},
+		"timeout_seconds":    {"10"},
+		"fail_threshold":     {"1"},
+		"recovery_threshold": {"1"},
+		"consensus":          {"any"},
+		"regions":            {"local"},
+	}
+}
+
+// TestWebMonitorFormOperatorAccess — с задачи 2 (спека
+// cld/plans/2026-08-08-access-model-rework.md) формы монитора доступны
+// оператору проекта, а не только owner/admin: участник команды (view-доступ
+// через team, не owner/admin) видит New/Edit и успешно проводит Create/
+// Update. Честного 403 здесь больше нет — граница «доступ к проекту есть, а
+// оператор — нет» сегодня недостижима (canOperateProject == CanAccessProject,
+// см. operate.go); чужак без доступа к организации по-прежнему получает 404
+// на все четыре маршрута (единый existence-oracle, №72).
+func TestWebMonitorFormOperatorAccess(t *testing.T) {
 	s := newMonitorFormStack(t)
-	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monforbid")
+	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monopaccess")
+	_, outsiderCookie := orgSettingsRegister(t, s.auth, "monopaccess-outsider@example.com")
 
 	existing := baseMonitor(proj.ID, "Existing")
 	existing.Config = monHTTPConfig(t, "https://example.com/health")
@@ -401,40 +428,123 @@ func TestWebMonitorFormMemberForbidden(t *testing.T) {
 	editPath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/edit"
 	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
+	// Участник команды: GET New/Edit -> 200.
 	resp := getWithCookie(t, s.srv, newPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET %s (member) status = %d, want 403", newPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (member) status = %d, want 200", newPath, resp.StatusCode)
 	}
 
 	resp = getWithCookie(t, s.srv, editPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET %s (member) status = %d, want 403", editPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (member) status = %d, want 200", editPath, resp.StatusCode)
 	}
 
-	resp = postForm(t, s.srv, createPath, url.Values{"name": {"x"}}, s.srv.URL, memberCookie)
+	// Участник команды: POST Create -> 303 (валидная форма создаёт монитор).
+	resp = postForm(t, s.srv, createPath, validMonitorForm(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) status = %d, want 403", createPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (member) status = %d, want 303", createPath, resp.StatusCode)
 	}
 
-	resp = postForm(t, s.srv, updatePath, url.Values{"name": {"x"}}, s.srv.URL, memberCookie)
+	// Участник команды: POST Update -> 303 (тот же монитор, что и в GET Edit выше).
+	updateForm := validMonitorForm()
+	updateForm.Set("name", "Existing renamed")
+	resp = postForm(t, s.srv, updatePath, updateForm, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) status = %d, want 403", updatePath, resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (member) status = %d, want 303", updatePath, resp.StatusCode)
 	}
 
-	// Sanity: owner still works (rules out an over-broad requireProjectRole check).
+	// Чужак без доступа к организации: 404 на всех четырёх маршрутах — тот же
+	// existence-oracle, что и у остальных ресурсов проекта.
+	resp = getWithCookie(t, s.srv, newPath, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (outsider) status = %d, want 404", newPath, resp.StatusCode)
+	}
+
+	resp = getWithCookie(t, s.srv, editPath, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (outsider) status = %d, want 404", editPath, resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, createPath, validMonitorForm(), s.srv.URL, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (outsider) status = %d, want 404", createPath, resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, updatePath, validMonitorForm(), s.srv.URL, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (outsider) status = %d, want 404", updatePath, resp.StatusCode)
+	}
+
+	// Sanity: owner still works.
 	resp = getWithCookie(t, s.srv, newPath, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200", newPath, resp.StatusCode)
+	}
+}
+
+// TestWebMonitorFormChannelMasking — зеркало TestWebAlertsOperator
+// (alerts_test.go): оператор проекта (не owner/admin) видит форму монитора
+// (задача 2 сдвинула её на requireProjectOperator), но channelCheckbox
+// рендерит { c.Target } буквально — до этой правки оператор получал сырые
+// цели каналов (и расшифрованный Secret, хотя тот в HTML не попадает) через
+// renderMonitorForm -> h.Alerts.Channels, в обход маскировки, которую
+// renderAlerts уже применяет для той же аудитории. Владелец/admin
+// (canManageProject=true) по-прежнему видит цель как есть.
+func TestWebMonitorFormChannelMasking(t *testing.T) {
+	s := newMonitorFormStack(t)
+	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monformmask")
+
+	if _, err := s.alerts.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelEmail, Enabled: true, Target: "ops@example.com",
+	}); err != nil {
+		t.Fatalf("create email channel: %v", err)
+	}
+
+	newPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors/new"
+
+	// Оператор (участник команды, не owner/admin): маскированная цель видна,
+	// сырая — нет.
+	resp := getWithCookie(t, s.srv, newPath, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (operator) status = %d, want 200: %s", newPath, resp.StatusCode, body)
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "o***@example.com") {
+		t.Errorf("GET %s (operator) missing masked target: %s", newPath, bodyStr)
+	}
+	if strings.Contains(bodyStr, "ops@example.com") {
+		t.Errorf("GET %s (operator) leaks raw target: %s", newPath, bodyStr)
+	}
+
+	// Owner (canManageProject): видит цель как есть.
+	resp = getWithCookie(t, s.srv, newPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (owner) status = %d, want 200: %s", newPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "ops@example.com") {
+		t.Errorf("GET %s (owner) missing raw target: %s", newPath, body)
 	}
 }
 

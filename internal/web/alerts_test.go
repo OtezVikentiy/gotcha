@@ -56,12 +56,14 @@ func TestWebAlertsRules(t *testing.T) {
 		}
 	}
 
-	// GET member (не owner/admin) -> 404.
+	// GET member (org-member без командного доступа к проекту, значит и не
+	// оператор — requireProjectOperator) -> 404: тот же существование-
+	// оракул, что и у чужака (canOperateProject == CanAccessProject false).
 	resp = getWithCookie(t, s.srv, alertsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET %s (member) status = %d, want 403", alertsPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (member) status = %d, want 404", alertsPath, resp.StatusCode)
 	}
 
 	validForm := url.Values{
@@ -83,12 +85,12 @@ func TestWebAlertsRules(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", rulesPath, resp.StatusCode)
 	}
 
-	// POST rules member -> 403 (№72).
+	// POST rules member (тот же не-оператор, что и выше) -> 404.
 	resp = postForm(t, s.srv, rulesPath, validForm, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST %s (member) status = %d, want 403", rulesPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (member) status = %d, want 404", rulesPath, resp.StatusCode)
 	}
 
 	// POST rules валидный -> 303, все три правила сохранены.
@@ -340,15 +342,17 @@ func TestWebAlertDeliveriesPageShowsFailedDeliveries(t *testing.T) {
 		t.Fatalf("GET %s leaks channel secret: %s", deliveriesPath, body)
 	}
 
-	// Member (non-owner/admin) is denied, same guard as the main alerts page.
+	// Member (org-member without team access to the project, so not an
+	// operator either — requireProjectOperator) is denied with 404, same
+	// guard as the main alerts page.
 	memberID, memberCookie := orgSettingsRegister(t, authSvc, "alertsfailed-member@example.com")
 	if err := orgSvc.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
 	}
 	resp = getWithCookie(t, s.srv, deliveriesPath, memberCookie)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET %s (member) status = %d, want 403", deliveriesPath, resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (member) status = %d, want 404", deliveriesPath, resp.StatusCode)
 	}
 }
 
@@ -582,5 +586,163 @@ func TestWebAlertsChannelTest(t *testing.T) {
 	// Ни member, ни чужой канал до отправителя не дошли.
 	if len(sender.payloads) != before {
 		t.Errorf("лишние отправки: %d, want %d", len(sender.payloads), before)
+	}
+}
+
+// TestWebAlertsOperator — участник команды (оператор через
+// requireProjectOperator, не owner/admin организации): страница алертов
+// 200, маскированные цели каналов видны, сырые цели/секреты и CRUD каналов
+// (создание/правка/удаление/тест) — не показаны; сохранение правил
+// проходит (алерты — операционная задача, спека 2026-08-08); POST каналов
+// (create/update/delete/test) остаются admin-only → 403 (№72, честная
+// ветка requireOrgRole: организация оператору видна, роли не хватает);
+// страница доставок 200 с замаскированной целью.
+func TestWebAlertsOperator(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	alertSvc := alert.NewService(s.pool)
+	ob := notify.NewOutbox(s.pool)
+
+	ownerID, _ := orgSettingsRegister(t, authSvc, "alertsop-owner@example.com")
+	opID, opCookie := orgSettingsRegister(t, authSvc, "alertsop-operator@example.com")
+
+	o, err := orgSvc.CreateOrg(context.Background(), "alertsop-co", "AlertsOp Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.AddMember(context.Background(), o.ID, opID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "alertsop-proj", "AlertsOp Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	addTeamAccess(t, orgSvc, o.ID, proj.ID, opID, "alertsop-team")
+
+	emailChID, err := alertSvc.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelEmail, Enabled: true, Target: "ops@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create email channel: %v", err)
+	}
+	if _, err := alertSvc.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true,
+		Target: "https://hooks.example.com/T000/B000/secret", Secret: "sig-secret",
+	}); err != nil {
+		t.Fatalf("create webhook channel: %v", err)
+	}
+	// alertsChannelTest 404-ит раньше проверки роли, если NotifyDirect не
+	// сконфигурирован (h.NotifyDirect == nil) — тот же fake, что и у
+	// TestWebAlertsChannelTest, нужен, чтобы дойти до самой проверки роли.
+	s.h.NotifyDirect = &notify.Direct{Senders: map[string]notify.Sender{alert.ChannelEmail: &fakeTestSender{}}}
+
+	alertsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alerts"
+	rulesPath := alertsPath + "/rules"
+	channelsPath := alertsPath + "/channels"
+	channelsUpdatePath := channelsPath + "/update"
+	channelsDeletePath := channelsPath + "/delete"
+	channelsTestPath := channelsPath + "/test"
+	deliveriesPath := alertsPath + "/deliveries"
+
+	// GET alertsPath (operator) -> 200.
+	resp := getWithCookie(t, s.srv, alertsPath, opCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (operator) status = %d, want 200: %s", alertsPath, resp.StatusCode, body)
+	}
+	bodyStr := string(body)
+	for _, want := range []string{"o***@example.com", "https://hooks.example.com/…"} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("GET %s (operator) missing masked target %q: %s", alertsPath, want, bodyStr)
+		}
+	}
+	for _, bad := range []string{"ops@example.com", "https://hooks.example.com/T000/B000/secret", "sig-secret"} {
+		if strings.Contains(bodyStr, bad) {
+			t.Errorf("GET %s (operator) leaks raw %q: %s", alertsPath, bad, bodyStr)
+		}
+	}
+	for _, bad := range []string{"channel-edit-form", "channel-create-form", "channel-delete-form", "channel-test-form", `href="#new-channel"`, "edit-channel-"} {
+		if strings.Contains(bodyStr, bad) {
+			t.Errorf("GET %s (operator) still shows channel CRUD %q: %s", alertsPath, bad, bodyStr)
+		}
+	}
+
+	// Сохранение правил (оператор) -> 303, применяется.
+	validForm := url.Values{
+		"new_issue_enabled":   {"on"},
+		"new_issue_throttle":  {"15"},
+		"regression_enabled":  {"on"},
+		"regression_throttle": {"20"},
+		"spike_enabled":       {"on"},
+		"spike_threshold":     {"5"},
+		"spike_window":        {"10"},
+		"spike_throttle":      {"30"},
+	}
+	resp = postForm(t, s.srv, rulesPath, validForm, s.srv.URL, opCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (operator) status = %d, want 303", rulesPath, resp.StatusCode)
+	}
+
+	// Каналы: create/update/delete/test остаются admin-only -> 403 (№72).
+	resp = postForm(t, s.srv, channelsPath, url.Values{"kind": {"email"}, "target": {"new@example.com"}, "enabled": {"on"}}, s.srv.URL, opCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (operator create) status = %d, want 403", channelsPath, resp.StatusCode)
+	}
+	resp = postForm(t, s.srv, channelsUpdatePath, url.Values{"channel_id": {strconv.FormatInt(emailChID, 10)}, "target": {"new@example.com"}, "enabled": {"on"}}, s.srv.URL, opCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (operator update) status = %d, want 403", channelsUpdatePath, resp.StatusCode)
+	}
+	resp = postForm(t, s.srv, channelsDeletePath, url.Values{"confirmed": {"yes"}, "channel_id": {strconv.FormatInt(emailChID, 10)}}, s.srv.URL, opCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (operator delete) status = %d, want 403", channelsDeletePath, resp.StatusCode)
+	}
+	resp = postForm(t, s.srv, channelsTestPath, url.Values{"channel_id": {strconv.FormatInt(emailChID, 10)}}, s.srv.URL, opCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (operator test) status = %d, want 403", channelsTestPath, resp.StatusCode)
+	}
+	channels, err := alertSvc.Channels(context.Background(), proj.ID)
+	if err != nil || len(channels) != 2 {
+		t.Fatalf("channels after rejected operator mutations = %+v err=%v, want 2 unchanged", channels, err)
+	}
+
+	// Доставки: 200, цель замаскирована, сырая не показана.
+	if err := ob.Enqueue(context.Background(), emailChID, map[string]any{"title": "boom"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	jobs, err := ob.Claim(context.Background(), 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("claim: %+v err=%v", jobs, err)
+	}
+	// A1: last_error несёт сырой адрес получателя (как реально приходит от
+	// email.go до фикса RCPT-ошибки — server echoes the address) — второй
+	// эшелон защиты (alertDeliveriesPage) обязан замаскировать его для
+	// не-admin'а так же, как маскирует соседнее поле Target.
+	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("notify: smtp rcpt: 550 5.1.1 <ops@example.com>: Recipient address rejected")); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	resp = getWithCookie(t, s.srv, deliveriesPath, opCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (operator) status = %d, want 200: %s", deliveriesPath, resp.StatusCode, body)
+	}
+	bodyStr = string(body)
+	if !strings.Contains(bodyStr, "o***@example.com") {
+		t.Errorf("GET %s (operator) missing masked target: %s", deliveriesPath, bodyStr)
+	}
+	if strings.Contains(bodyStr, "ops@example.com") {
+		t.Errorf("GET %s (operator) leaks raw target/last_error: %s", deliveriesPath, bodyStr)
 	}
 }

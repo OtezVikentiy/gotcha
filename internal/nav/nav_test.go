@@ -160,7 +160,7 @@ func TestSubsectionsPerformance(t *testing.T) {
 
 func TestSubsectionsMetricsVsMetricAlertsActive(t *testing.T) {
 	// Plain metrics path activates Metrics, not Metric Alerts.
-	s := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics", CanManage: true}
+	s := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics", CanOperate: true}
 	items := Subsections(s)
 	if len(items) != 2 {
 		t.Fatalf("Subsections(metrics) len = %d, want 2", len(items))
@@ -170,7 +170,7 @@ func TestSubsectionsMetricsVsMetricAlertsActive(t *testing.T) {
 	}
 
 	// Metric alerts sub-path activates Metric Alerts, not Metrics.
-	s2 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics/alerts", CanManage: true}
+	s2 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics/alerts", CanOperate: true}
 	items2 := Subsections(s2)
 	if items2[0].Active || !items2[1].Active {
 		t.Errorf("metrics/alerts path: items = %+v, want [Metrics inactive, MetricAlerts active]", items2)
@@ -288,6 +288,53 @@ func TestSubsectionsOrgCanManageGatesManagementLinks(t *testing.T) {
 	}
 }
 
+// TestSubsectionsOperatorGating — пункты мониторинга (metric_alerts,
+// maintenance, status_pages, области alerts) гейтятся CanOperate, а не
+// CanManage: оператор с CanOperate=true и CanManage=false их видит,
+// зритель без CanOperate — нет. Org-пункты и ссылка настроек остаются
+// за CanManage.
+func TestSubsectionsOperatorGating(t *testing.T) {
+	operator := Shell{ProjectID: 7, OrgID: 5, CanOperate: true, CanManage: false}
+	viewer := Shell{ProjectID: 7, OrgID: 5, CanOperate: false, CanManage: false}
+
+	// metrics area: metric_alerts — доступен оператору, не зрителю.
+	operator.Area, operator.Path = "metrics", "/projects/7/metrics"
+	viewer.Area, viewer.Path = "metrics", "/projects/7/metrics"
+	if got := Subsections(operator); len(got) != 2 {
+		t.Errorf("metrics/оператор: len = %d, want 2 (metrics + metric_alerts), got %+v", len(got), got)
+	}
+	if got := Subsections(viewer); len(got) != 1 {
+		t.Errorf("metrics/зритель: len = %d, want 1 (только metrics), got %+v", len(got), got)
+	}
+
+	// uptime area: maintenance + status_pages — доступны оператору, не зрителю.
+	operator.Area, operator.Path = "uptime", "/projects/7/uptime"
+	viewer.Area, viewer.Path = "uptime", "/projects/7/uptime"
+	if got := Subsections(operator); len(got) != 4 {
+		t.Errorf("uptime/оператор: len = %d, want 4 (monitors+incidents+maintenance+status_pages), got %+v", len(got), got)
+	}
+	if got := Subsections(viewer); len(got) != 2 {
+		t.Errorf("uptime/зритель: len = %d, want 2 (только monitors+incidents), got %+v", len(got), got)
+	}
+
+	// alerts area: вся область гейтится целиком.
+	operator.Area, operator.Path = "alerts", "/projects/7/alerts"
+	viewer.Area, viewer.Path = "alerts", "/projects/7/alerts"
+	if got := Subsections(operator); len(got) != 2 {
+		t.Errorf("alerts/оператор: len = %d, want 2, got %+v", len(got), got)
+	}
+	if got := Subsections(viewer); got != nil {
+		t.Errorf("alerts/зритель: got %+v, want nil", got)
+	}
+
+	// org area: не затронута CanOperate, по-прежнему гейтится CanManage —
+	// оператор без CanManage Members/Teams/Probes не видит.
+	operator.Area, operator.Path = "org", "/orgs/5/teams"
+	if got := Subsections(operator); len(got) != 1 {
+		t.Errorf("org/оператор(CanManage=false): len = %d, want 1 (только /projects), got %+v", len(got), got)
+	}
+}
+
 func TestSubsectionsEffectiveProjectFallback(t *testing.T) {
 	// ProjectID unset, falls back to first project in list.
 	s := Shell{
@@ -306,11 +353,12 @@ func TestSubsectionsEffectiveProjectFallback(t *testing.T) {
 
 func TestAreas(t *testing.T) {
 	s := Shell{
-		ProjectID: 7,
-		OrgID:     5,
-		Area:      "metrics",
-		Path:      "/projects/7/metrics",
-		CanManage: true,
+		ProjectID:  7,
+		OrgID:      5,
+		Area:       "metrics",
+		Path:       "/projects/7/metrics",
+		CanManage:  true,
+		CanOperate: true,
 	}
 	areas := Areas(s)
 	if len(areas) != 7 {
@@ -433,51 +481,52 @@ func TestAreasOrgHrefWithOrgID(t *testing.T) {
 	}
 }
 
-// TestSubsectionsHideManagementPagesFromMembers — обычный участник не должен
-// видеть в навигации страницы, которые ему отдадут 404.
+// TestSubsectionsHideManagementPagesFromMembers — зритель без доступа к
+// проекту не должен видеть в навигации страницы, которые ему отдадут 404.
 //
 // Правила по метрикам, окна обслуживания, статус-страницы и обе страницы
-// оповещений требуют owner/admin (requireProjectRole). Показывали их всем:
-// человек тыкал в пункт, нарисованный самим продуктом, и попадал на «страницы
-// нет» — без намёка, что дело в роли. Область «Организация» этот принцип
-// соблюдала с самого начала, остальные — нет.
+// оповещений требуют оператора проекта (requireProjectOperator — участник
+// команды проекта или owner/admin, см. nav.Shell.CanOperate). Показывали их
+// всем: человек тыкал в пункт, нарисованный самим продуктом, и попадал на
+// «страницы нет» — без намёка, что дело в роли. Область «Организация» этот
+// принцип соблюдала с самого начала, остальные — нет.
 func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
-	member := func(area string) []NavItem {
+	viewer := func(area string) []NavItem {
 		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area})
 	}
-	admin := func(area string) []NavItem {
-		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area, CanManage: true})
+	operator := func(area string) []NavItem {
+		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area, CanOperate: true})
 	}
 
-	hiddenFromMember := map[string][]string{
+	hiddenFromViewer := map[string][]string{
 		"metrics": {"nav.metric_alerts"},
 		"uptime":  {"nav.maintenance", "nav.status_pages"},
 		"alerts":  {"nav.alerts", "nav.alert_deliveries"},
 	}
-	for area, hidden := range hiddenFromMember {
-		got := member(area)
+	for area, hidden := range hiddenFromViewer {
+		got := viewer(area)
 		for _, it := range got {
 			for _, key := range hidden {
 				if it.LabelKey == key {
-					t.Errorf("область %q: участник видит %q — эта страница отдаёт ему 404", area, key)
+					t.Errorf("область %q: зритель видит %q — эта страница отдаёт ему 404", area, key)
 				}
 			}
 		}
-		// Администратор их видит — иначе фильтр забрал бы лишнее.
-		adminKeys := map[string]bool{}
-		for _, it := range admin(area) {
-			adminKeys[it.LabelKey] = true
+		// Оператор их видит — иначе фильтр забрал бы лишнее.
+		operatorKeys := map[string]bool{}
+		for _, it := range operator(area) {
+			operatorKeys[it.LabelKey] = true
 		}
 		for _, key := range hidden {
-			if !adminKeys[key] {
-				t.Errorf("область %q: администратор НЕ видит %q", area, key)
+			if !operatorKeys[key] {
+				t.Errorf("область %q: оператор НЕ видит %q", area, key)
 			}
 		}
 	}
 
-	// Читаемые страницы остаются: мониторы и инциденты доступны участнику.
+	// Читаемые страницы остаются: мониторы и инциденты доступны зрителю.
 	var monitors, incidents bool
-	for _, it := range member("uptime") {
+	for _, it := range viewer("uptime") {
 		switch it.LabelKey {
 		case "nav.monitors":
 			monitors = true
@@ -486,29 +535,30 @@ func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
 		}
 	}
 	if !monitors || !incidents {
-		t.Error("участник потерял доступные ему мониторы или инциденты")
+		t.Error("зритель потерял доступные ему мониторы или инциденты")
 	}
 }
 
 // TestAreasHideAreaWithNothingVisible — область рейла, у которой для этого
 // человека нет ни одного доступного подраздела, не показывается: иначе иконка
-// вела бы прямиком на 404. Сейчас это «Оповещения» для участника.
+// вела бы прямиком на 404. Сейчас это «Оповещения» для зрителя без доступа к
+// проекту (CanOperate=false).
 func TestAreasHideAreaWithNothingVisible(t *testing.T) {
-	memberAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues"})
-	for _, a := range memberAreas {
+	viewerAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues"})
+	for _, a := range viewerAreas {
 		if a.ID == "alerts" {
-			t.Error("участник видит область «Оповещения», все страницы которой отдают ему 404")
+			t.Error("зритель видит область «Оповещения», все страницы которой отдают ему 404")
 		}
 	}
-	adminAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues", CanManage: true})
+	operatorAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues", CanOperate: true})
 	var found bool
-	for _, a := range adminAreas {
+	for _, a := range operatorAreas {
 		if a.ID == "alerts" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("администратор потерял область «Оповещения»")
+		t.Error("оператор потерял область «Оповещения»")
 	}
 }
 
@@ -537,5 +587,25 @@ func TestProjectSwitchHref(t *testing.T) {
 	shell.Area = ""
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
 		t.Errorf("пустая область → %q, want issues-фолбэк", got)
+	}
+
+	// C1: CanOperate — флаг ТЕКУЩЕГО проекта (участник команды проекта),
+	// а не целевого. Переключаясь из «Оповещений» с CanOperate=true на
+	// проекте 1, наивная реализация переносит этот флаг в пробу для
+	// проекта 2 и получает /projects/2/alerts — хотя на проекте 2
+	// пользователь может не быть оператором вовсе, и ссылка 404-ит.
+	// nav — чистый слой без доступа к БД, пересчитать CanOperate для
+	// целевого проекта не может, поэтому единственный безопасный вариант —
+	// не доверять перенесённому флагу для «Оповещений» (единственная
+	// область, чей список подразделов целиком схлопывается в nil при
+	// !CanOperate) и уводить переключатель на посадочную область, которая
+	// валидна при любом доступе.
+	shell.Area = "alerts"
+	shell.CanOperate = true
+	if got := ProjectSwitchHref(shell, 2); got == "/projects/2/alerts" || strings.Contains(got, "404") {
+		t.Errorf("alerts с CanOperate=true текущего проекта → %q, не должно вести на /alerts целевого проекта", got)
+	}
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
+		t.Errorf("alerts → %q, want issues-фолбэк (безопасная посадочная область)", got)
 	}
 }

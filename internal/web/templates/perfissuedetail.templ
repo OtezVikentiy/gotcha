@@ -33,12 +33,14 @@ type PerfCodeLoc struct {
 }
 
 // PerfIssueDetailData — всё для страницы проблемы: сама строка, распарсенный
-// evidence, признак owner/admin (видимость кнопок статуса) и обогащение из
-// показательного спана примера-трейса: полный текст запроса и привязка к коду.
+// evidence, и обогащение из показательного спана примера-трейса: полный текст
+// запроса и привязка к коду. Кнопки смены статуса рендерятся безусловно —
+// видит их любой смотрящий, не только owner/admin (спека 2026-08-08); поле
+// видимости здесь раньше было (CanOperate), но всегда приходило true, так что
+// удалено вместе с мёртвой веткой в шаблоне (D2, полировка).
 type PerfIssueDetailData struct {
-	Issue     trace.PerfIssue
-	Evidence  PerfEvidence
-	CanManage bool
+	Issue    trace.PerfIssue
+	Evidence PerfEvidence
 	// Query — ПОЛНЫЙ текст показательного запроса (сырой description спана, в
 	// отличие от нормализованного и обрезанного Title). Пусто для http-флуда
 	// и когда пример-трейс истёк по TTL.
@@ -132,18 +134,16 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 				</span>
 			</div>
 
-			if d.CanManage {
-				<div class="issue-actions">
-					<form method="post" action={ templ.URL(perfIssueStatusPath(d.Issue.ID)) }>
-						if d.Issue.Status == "unresolved" {
-							<button type="submit" name="status" value="resolved" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
-							<button type="submit" name="status" value="ignored" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
-						} else {
-							<button type="submit" name="status" value="unresolved" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
-						}
-					</form>
-				</div>
-			}
+			<div class="issue-actions">
+				<form method="post" action={ templ.URL(perfIssueStatusPath(d.Issue.ID)) }>
+					if d.Issue.Status == "unresolved" {
+						<button type="submit" name="status" value="resolved" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
+						<button type="submit" name="status" value="ignored" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
+					} else {
+						<button type="submit" name="status" value="unresolved" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
+					}
+				</form>
+			</div>
 
 			// Что происходит: разбор проблемы простым языком + как чинить —
 			// главное, чего не хватало (сами числа evidence ниже).

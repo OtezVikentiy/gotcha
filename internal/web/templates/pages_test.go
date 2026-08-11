@@ -62,6 +62,42 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 	}
 }
 
+// TestGettingStartedChecklistGatedByCanOperate — C5 (аудит-находка ux/arch/
+// frontend P2): карточка «Первые шаги» раньше гейтилась целиком на
+// CanManage (owner/admin), хотя 2 из 5 шагов (алерт, монитор) уже давно
+// открыты оператору (requireProjectOperator). Теперь гейт карточки —
+// CanOperate; CanManage остаётся только у шага 4a («Позвать команду»,
+// requireOrgRole owner/admin-only на /orgs/{id}/settings).
+func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
+	// Оператор без CanManage: карточка видна, операторские шаги 2/3/4b —
+	// рабочие ссылки, шаг 4a — без ссылки (иначе оператор упрётся в 403).
+	opGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, CanManage: false}
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, opGS))
+	if !strings.Contains(out, `class="card getting-started"`) {
+		t.Fatal("оператор (CanOperate=true) должен видеть чек-лист «Первые шаги»")
+	}
+	for _, href := range []string{`href="/projects/7/setup"`, `href="/projects/7/alerts"`, `href="/projects/7/monitors"`} {
+		if !strings.Contains(out, href) {
+			t.Errorf("оператору должна быть видна рабочая ссылка %q", href)
+		}
+	}
+	if strings.Contains(out, `href="/orgs/9/settings"`) {
+		t.Error("оператору без CanManage не должно рендериться рабочей ссылки на настройки организации (шаг 4a) — это мёртвый контрол (403)")
+	}
+	if !strings.Contains(out, "gs-todo-locked") {
+		t.Error("незакрытый шаг 4a у оператора без CanManage должен рендериться неактивным (gs-todo-locked), а не пропадать бесследно")
+	}
+
+	// CanManage без CanOperate (гипотетическая комбинация, но проверяет
+	// именно гейт карточки): чек-лист больше не показывается — раньше он
+	// показывался бы именно так, это и была находка C5.
+	adminOnlyGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, CanManage: true}
+	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, adminOnlyGS))
+	if strings.Contains(out2, `class="card getting-started"`) {
+		t.Error("CanManage без CanOperate не должен показывать чек-лист — гейт карточки теперь CanOperate, а не CanManage")
+	}
+}
+
 // TestIssueDetail — деталь issue показывает событие, стектрейс-кадры и
 // назначенного; выбранное событие раскрывается.
 func TestIssueDetail(t *testing.T) {
@@ -137,13 +173,13 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, true, "https://gotcha.example", "u@e.com"))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
 
 	// Без прав управления — рендер не должен падать и остаётся валидным.
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, "https://x", "u@e.com"))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com"))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
 	}
@@ -210,12 +246,12 @@ func TestAlerts(t *testing.T) {
 		{ID: 1, Kind: "email", Enabled: true, Target: "team@x.io"},
 		{ID: 2, Kind: "webhook", Enabled: false, Target: "https://hook"},
 	}
-	out := renderTo(t, Alerts(7, rules, channels, true, nil, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, rules, channels, true, true, nil, "", "u@e.com"))
 	if !strings.Contains(out, "team@x.io") || !strings.Contains(out, "https://hook") {
 		t.Error("каналы должны отрендериться")
 	}
 	// С ошибкой.
-	outErr := renderTo(t, Alerts(7, nil, nil, false, nil, "ошибка сохранения", "u@e.com"))
+	outErr := renderTo(t, Alerts(7, nil, nil, false, true, nil, "ошибка сохранения", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка сохранения") {
 		t.Error("ошибка должна отрендериться")
 	}
@@ -371,17 +407,13 @@ func TestPerfIssuesListAndDetail(t *testing.T) {
 	}
 
 	d := PerfIssueDetailData{
-		Issue:     trace.PerfIssue{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Culprit: "db", Status: "unresolved", Count: 12, SampleTraceID: "t1"},
-		Evidence:  PerfEvidence{Count: 12, TotalUS: 120000, MaxUS: 30000, ParentOp: "http.server", SequentialPct: 80, MaxConcurrency: 1, URLs: []string{"/a", "/b"}, HasTotal: true, HasMax: true, HasSequential: true},
-		CanManage: true,
+		Issue:    trace.PerfIssue{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Culprit: "db", Status: "unresolved", Count: 12, SampleTraceID: "t1"},
+		Evidence: PerfEvidence{Count: 12, TotalUS: 120000, MaxUS: 30000, ParentOp: "http.server", SequentialPct: 80, MaxConcurrency: 1, URLs: []string{"/a", "/b"}, HasTotal: true, HasMax: true, HasSequential: true},
 	}
 	outD := renderTo(t, PerfIssueDetail(d, "u@e.com"))
 	if !strings.Contains(outD, "N+1") {
 		t.Error("деталь perf-issue должна содержать заголовок")
 	}
-	// Без прав.
-	d.CanManage = false
-	_ = renderTo(t, PerfIssueDetail(d, "u@e.com"))
 }
 
 // TestIncidentsAndRegressionsLists — списки инцидентов uptime и регрессий perf.
@@ -471,13 +503,30 @@ func TestAlertDeliveries(t *testing.T) {
 	failed := []notify.FailedJob{
 		{ID: 1, ChannelKind: "email", Target: "a@b.c", LastError: strings.Repeat("x", 400), Attempts: 5, CreatedAt: time.Now()},
 	}
-	out := renderTo(t, AlertDeliveries(7, failed, "u@e.com"))
+	out := renderTo(t, AlertDeliveries(7, failed, true, "u@e.com"))
 	if !strings.Contains(out, "a@b.c") {
 		t.Error("упавшие доставки должны показать цель")
 	}
-	empty := renderTo(t, AlertDeliveries(7, nil, "u@e.com"))
+	empty := renderTo(t, AlertDeliveries(7, nil, true, "u@e.com"))
 	if len(empty) == 0 {
 		t.Error("пустой журнал доставок всё равно рендерится")
+	}
+}
+
+// TestAlertDeliveriesMaskedHint — C3: не-admin видит подсказку про
+// маскировку рядом с таблицей упавших доставок, admin (canManage) — нет.
+func TestAlertDeliveriesMaskedHint(t *testing.T) {
+	failed := []notify.FailedJob{
+		{ID: 1, ChannelKind: "email", Target: "a@b.c", CreatedAt: time.Now()},
+	}
+	hint := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "alerts.channels.target_masked_hint")
+	masked := renderTo(t, AlertDeliveries(7, failed, false, "u@e.com"))
+	if !strings.Contains(masked, hint) {
+		t.Error("не-admin должен увидеть подсказку про маскировку")
+	}
+	unmasked := renderTo(t, AlertDeliveries(7, failed, true, "u@e.com"))
+	if strings.Contains(unmasked, hint) {
+		t.Error("admin (canManage) не должен видеть подсказку про маскировку")
 	}
 }
 

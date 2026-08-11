@@ -38,13 +38,18 @@ templ failedRow(f notify.FailedJob) {
 // неудачных доставок уведомлений (spec §7 — не только правила/каналы, но и
 // то, что реально не долетело, должно быть видно в UI, не только в логах
 // воркера). Вынесена из основной страницы алертов (UI-фидбек: секция делала
-// страницу алертов слишком длинной/разрежённой).
-templ AlertDeliveries(projectID int64, failed []notify.FailedJob, userEmail string) {
+// страницу алертов слишком длинной/разрежённой). canManage (C3) — та же
+// маска цели канала, что и на странице алертов: не-admin видит замаскированный
+// Target (alertDeliveriesPage), и здесь же — почему.
+templ AlertDeliveries(projectID int64, failed []notify.FailedJob, canManage bool, userEmail string) {
 	@layout(i18n.T(ctx, "alerts.deliveries.title"), userEmail) {
 		<div class="alert-deliveries">
 			@breadcrumbBackTo(templ.URL(alertsPath(projectID)), i18n.T(ctx, "nav.alerts"))
 			<h1>{ i18n.T(ctx, "alerts.deliveries.title") }</h1>
 			@helpPanel("alertdeliveries", "alerts")
+			if !canManage && len(failed) > 0 {
+				<p class="hint">{ i18n.T(ctx, "alerts.channels.target_masked_hint") }</p>
+			}
 			if len(failed) == 0 {
 				@emptyState("bell", "alerts.deliveries.empty.title", "alerts.deliveries.empty.body", "", "", 2)
 			} else {

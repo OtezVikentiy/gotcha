@@ -106,11 +106,13 @@ func (h *Handler) parsePathProjectID(w http.ResponseWriter, r *http.Request) (in
 	return projectID, true
 }
 
-// requireProjectRole резолвит projectID -> orgID (org.ProjectOrg) и проверяет
-// роль вызывающего в этой организации (requireOrgRole): несуществующий
-// проект и не-член — стилизованная 404, член с недостаточной ролью —
-// честный 403 (№72).
-func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, projectID, userID int64) (int64, bool) {
+// projectOrgOr404 — общий пролог "projectID -> orgID" (org.ProjectOrg):
+// несуществующий проект (org.ErrNotFound) — стилизованная 404, любая другая
+// ошибка — 500. Вынесен из requireProjectRole/requireProjectOwner/
+// requireProjectOperator (находка B4, спека
+// cld/plans/2026-08-08-access-model-rework.md) — раньше один и тот же
+// existence-oracle был скопирован в трёх местах.
+func (h *Handler) projectOrgOr404(w http.ResponseWriter, r *http.Request, projectID int64) (int64, bool) {
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotFound) {
@@ -118,6 +120,18 @@ func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, pro
 			return 0, false
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return 0, false
+	}
+	return orgID, true
+}
+
+// requireProjectRole резолвит projectID -> orgID (projectOrgOr404) и
+// проверяет роль вызывающего в этой организации (requireOrgRole):
+// несуществующий проект и не-член — стилизованная 404, член с недостаточной
+// ролью — честный 403 (№72).
+func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, projectID, userID int64) (int64, bool) {
+	orgID, ok := h.projectOrgOr404(w, r, projectID)
+	if !ok {
 		return 0, false
 	}
 	if _, ok := h.requireOrgRole(w, r, orgID, userID); !ok {
@@ -131,13 +145,8 @@ func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, pro
 // та же граница, что requireOrgOwner у SSO/удаления орга). Несуществующий
 // проект и недостаточная роль дают одну и ту же стилизованную 404.
 func (h *Handler) requireProjectOwner(w http.ResponseWriter, r *http.Request, projectID, userID int64) bool {
-	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
-	if err != nil {
-		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
-			return false
-		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+	orgID, ok := h.projectOrgOr404(w, r, projectID)
+	if !ok {
 		return false
 	}
 	return h.requireOrgOwner(w, r, orgID, userID)

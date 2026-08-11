@@ -154,8 +154,14 @@ templ incidentRow(inc uptime.Incident) {
 // MonitorDetail — GET /monitors/{id}: крупный статус, uptime% за
 // 24ч/7д/30д (уже посчитанные web/monitors.go — без окон обслуживания
 // проекта), stacked-график задержек за 24ч, последние проверки, таймлайн
-// инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при canManage
-// (owner/admin организации проекта). Ссылка "← Monitors" в шапке — это
+// инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при canManage.
+// Карточка heartbeat-токена (URL пинга + кнопка Regenerate) — отдельный флаг
+// canOperate. С задачи 2 (cld/plans/2026-08-08-access-model-rework.md) оба
+// флага у всех вызывающих наполняются одним и тем же canOperateProject: и
+// Pause/Resume/Edit/Delete, и heartbeat-карточка — теперь одинаково
+// операторские (Edit-форма тоже requireProjectOperator, показывать её больше
+// не опасно). Сигнатура держит их раздельными на случай, если предикаты
+// «управлять» и «оперировать» разойдутся. Ссылка "← Monitors" в шапке — это
 // breadcrumb к родительскому списку (тот же паттерн, что у issuedetail.templ
 // и perfissuedetail.templ), не дублирование боковой панели app-shell.
 // monitorDetailIncidentsPerPage дублирует одноимённую константу из
@@ -181,7 +187,7 @@ func monitorIncidentsPageURL(monitorID int64, page int, rng TimeRangeVM) string 
 	return monitorDetailPath(monitorID) + "?" + q.Encode()
 }
 
-templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, rng TimeRangeVM, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, baseURL string, userEmail string) {
+templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, rng TimeRangeVM, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, canOperate bool, baseURL string, userEmail string) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
 			@breadcrumbBackTo(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
@@ -208,23 +214,23 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				</div>
 			</div>
 
-			if canManage {
-				if m.Kind == uptime.KindHeartbeat {
-					<div class="monitor-heartbeat card">
-						<h2>{ i18n.T(ctx, "uptime.detail.heartbeat_title") }</h2>
-						if m.HeartbeatToken != "" {
-							<p class="notice">{ i18n.T(ctx, "uptime.detail.heartbeat_copy_now") }</p>
-							<p>{ i18n.T(ctx, "uptime.detail.heartbeat_url") }: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
-							<p>{ i18n.T(ctx, "uptime.detail.heartbeat_cron") }: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
-						} else {
-							<p class="hint">{ i18n.T(ctx, "uptime.detail.heartbeat_hidden") }</p>
-						}
-						<form method="post" action={ templ.URL(monitorHeartbeatRegeneratePath(m.ID)) }>
-							<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "uptime.detail.heartbeat_regenerate") }</button>
-						</form>
-					</div>
-				}
+			if canOperate && m.Kind == uptime.KindHeartbeat {
+				<div class="monitor-heartbeat card">
+					<h2>{ i18n.T(ctx, "uptime.detail.heartbeat_title") }</h2>
+					if m.HeartbeatToken != "" {
+						<p class="notice">{ i18n.T(ctx, "uptime.detail.heartbeat_copy_now") }</p>
+						<p>{ i18n.T(ctx, "uptime.detail.heartbeat_url") }: <code>{ heartbeatPingURL(baseURL, m.HeartbeatToken) }</code></p>
+						<p>{ i18n.T(ctx, "uptime.detail.heartbeat_cron") }: <code>{ heartbeatCronSnippet(baseURL, m.HeartbeatToken, m.IntervalSeconds) }</code></p>
+					} else {
+						<p class="hint">{ i18n.T(ctx, "uptime.detail.heartbeat_hidden") }</p>
+					}
+					<form method="post" action={ templ.URL(monitorHeartbeatRegeneratePath(m.ID)) }>
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "uptime.detail.heartbeat_regenerate") }</button>
+					</form>
+				</div>
+			}
 
+			if canManage {
 				<div class="monitor-actions">
 					<form method="post" action={ templ.URL(monitorToggleAction(m)) }>
 						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, monitorToggleLabelKey(m)) }</button>

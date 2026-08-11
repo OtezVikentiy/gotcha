@@ -100,14 +100,14 @@ func (s *EmailSender) Send(ctx context.Context, t Target, payload map[string]any
 	}
 
 	if err := c.Mail(s.From); err != nil {
-		return fmt.Errorf("notify: smtp mail: %w", err)
+		return wrapSMTPErr("mail", err, t.Target)
 	}
 	if err := c.Rcpt(t.Target); err != nil {
-		return fmt.Errorf("notify: smtp rcpt: %w", err)
+		return wrapSMTPErr("rcpt", err, t.Target)
 	}
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("notify: smtp data: %w", err)
+		return wrapSMTPErr("data", err, t.Target)
 	}
 	if _, err := w.Write(msg); err != nil {
 		w.Close()
@@ -120,6 +120,25 @@ func (s *EmailSender) Send(ctx context.Context, t Target, payload map[string]any
 		return fmt.Errorf("notify: smtp quit: %w", err)
 	}
 	return nil
+}
+
+// wrapSMTPErr strips the literal recipient string t.Target out of an
+// SMTP-stage error before wrapping it (A1, audit P1-1): a real server's
+// MAIL/RCPT/DATA rejection routinely echoes the address verbatim in its
+// reply text (e.g. "550 5.1.1 <addr>: Recipient address rejected"), and that
+// reply becomes err.Error() straight from net/smtp — wrapping it with %w
+// would carry the address into notification_outbox.last_error, which the
+// deliveries page renders. RedactToken is a no-op if the address doesn't
+// appear in err at all (the common case for mail/data), so this is safe to
+// apply uniformly across all three stages rather than singling out rcpt.
+//
+// This is an exact-substring match on recipient as we sent it — it does not
+// catch the server echoing the address back case-normalized or otherwise
+// reformatted, nor does it touch any OTHER address a misbehaving server
+// might embed in the reply (e.g. From, or an unrelated address from its own
+// config). It guards the one address this call actually knows about.
+func wrapSMTPErr(stage string, err error, recipient string) error {
+	return fmt.Errorf("notify: smtp %s: %s", stage, RedactToken(err.Error(), recipient))
 }
 
 // BuildEmail собирает RFC 5322-подобное сообщение (заголовки + text/plain

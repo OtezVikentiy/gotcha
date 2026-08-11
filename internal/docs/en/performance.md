@@ -48,7 +48,7 @@ Opening an issue explains what's wrong, not just the numbers:
 - **Evidence** — the kind-specific counters (repeat count, total or max time, sequential share, sample URLs).
 - **Sample trace** — a link to a real trace where the issue was detected, so you can see it in the waterfall in context.
 
-An owner or admin can mark an issue **Resolved** or **Ignored**; it reopens automatically if the pattern is detected again.
+Anyone with access to the project can mark an issue **Resolved** or **Ignored** — the same rule as for regular issues (see [Roles and access](/docs/teams)); it reopens automatically if the pattern is detected again.
 
 ## Trace waterfall
 

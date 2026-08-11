@@ -3,6 +3,7 @@ package uptime
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -158,7 +159,28 @@ func (s *Service) lease(ctx context.Context, region string, limit int, probeID, 
 	if err != nil {
 		return nil, fmt.Errorf("uptime: lease: %w", err)
 	}
+	s.decryptJobs(out)
 	return out, nil
+}
+
+// decryptJobs расшифровывает значения HTTP-заголовков во всех выданных заданиях
+// на месте — чтобы проверка (локальная и удалённая проба) получила РЕАЛЬНЫЕ
+// заголовки, а не enc:-ciphertext. Ошибку расшифровки одного монитора
+// (сменившийся мастер-ключ) НЕ распространяем на всю партию: иначе один битый
+// монитор остановил бы проверку всех остальных — тихий отказ мониторинга, ровно
+// то, чего избегаем. Логируем и оставляем его config как есть; его проверка
+// упадёт видимо (например 401), а не молча. Тот же приём подеградации, что
+// alert.Service.Channels для нерасшифруемого секрета канала.
+func (s *Service) decryptJobs(jobs []Job) {
+	if !s.secretKeySet {
+		return
+	}
+	for i := range jobs {
+		if err := s.decryptMonitorConfig(&jobs[i].Monitor); err != nil {
+			slog.Error("uptime: cannot decrypt monitor headers for check",
+				"monitor_id", jobs[i].MonitorID, "error", err)
+		}
+	}
 }
 
 // LeaseLocal leases up to limit due jobs of region for the in-process local
@@ -216,6 +238,7 @@ func (s *Service) LeasedJob(ctx context.Context, queueID, probeID int64) (Job, e
 	if len(jobs) == 0 {
 		return Job{}, ErrNotFound
 	}
+	s.decryptJobs(jobs)
 	return jobs[0], nil
 }
 
