@@ -250,6 +250,16 @@ type Handler struct {
 	// Порог щедрый (600/мин ≈ 10/с на IP): один хост с десятками heartbeat-
 	// мониторов и пробой должен укладываться с запасом, а перебор — нет.
 	publicLimiter *rateLimiter
+	// statusPageLimiter — per-USER лимитер создания статус-страниц (security
+	// P2-2): slug глобально уникален на инстанс, а создание доступно любому
+	// оператору любой организации, поэтому перебором slug'ов (успех vs 422
+	// «занято») можно узнать, что slug кем-то занят на инстансе. Полное
+	// устранение — скоуп-миграция UNIQUE (project_id, slug), ломающая контракт
+	// публичных URL, отложена. Здесь — дешёвая мера: лимит на попытки создания
+	// (12/мин на пользователя) делает перебор дорогим, не мешая легитимному
+	// оператору (страницы создают штучно). Ключ — uid: создатель всегда
+	// аутентифицирован.
+	statusPageLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
 	// требует инициализации в New.
@@ -279,17 +289,18 @@ func (h *Handler) localRegion() string {
 // (GOTCHA_REGISTRATION, дефолт "invite"), переопределяя это значение.
 func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, events *event.Query, baseURL string) *Handler {
 	return &Handler{
-		Auth:             authSvc,
-		Org:              orgSvc,
-		Issues:           issueSvc,
-		Events:           events,
-		BaseURL:          baseURL,
-		Secure:           strings.HasPrefix(baseURL, "https://"),
-		RegistrationMode: "open",
-		loginLimiter:     newRateLimiter(time.Now, 5, time.Minute),
-		ipLimiter:        newRateLimiter(time.Now, 20, time.Minute),
-		emailLimiter:     newRateLimiter(time.Now, 50, 15*time.Minute),
-		publicLimiter:    newRateLimiter(time.Now, 600, time.Minute),
+		Auth:              authSvc,
+		Org:               orgSvc,
+		Issues:            issueSvc,
+		Events:            events,
+		BaseURL:           baseURL,
+		Secure:            strings.HasPrefix(baseURL, "https://"),
+		RegistrationMode:  "open",
+		loginLimiter:      newRateLimiter(time.Now, 5, time.Minute),
+		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute),
+		emailLimiter:      newRateLimiter(time.Now, 50, 15*time.Minute),
+		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute),
+		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute),
 	}
 }
 

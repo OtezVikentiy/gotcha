@@ -622,6 +622,14 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// P2-2: лимит на создание статус-страниц (per-user) — до разбора формы и
+	// походов в БД, чтобы перебор slug'ов (успех vs 422 «занято») был дорогим,
+	// а не бесплатным оракулом занятости глобального slug'а. Легитимный
+	// оператор в 12/мин укладывается с запасом.
+	if h.statusPageLimiter != nil && !h.statusPageLimiter.Allow("sp-create|"+strconv.FormatInt(uid, 10)) {
+		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "error.statuspage.rate_limited"))
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return

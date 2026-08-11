@@ -237,3 +237,36 @@ func TestCoverStatusPageMajorOutage(t *testing.T) {
 		t.Fatalf("GET major status page = %d, want 200: %s", status, body)
 	}
 }
+
+// TestWebStatusPageCreateRateLimited — P2-2: slug глобально уникален, создание
+// доступно любому оператору, поэтому перебор slug'ов — оракул занятости. Дешёвая
+// мера: per-user лимит на создание (12/мин). 12 попыток проходят лимитер, 13-я
+// получает 429 — перебор дорожает, легитимный оператор (страницы штучные) не
+// задет.
+func TestWebStatusPageCreateRateLimited(t *testing.T) {
+	s := newStatusPageStack(t)
+	proj, _, memberCookie := statusPageProject(t, s, "sprl")
+	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
+
+	// Лимитер проверяется ДО разбора формы и БД, поэтому засчитывает любую
+	// попытку — берём заведомо занятый slug (после первой все 422), лимитер
+	// всё равно тратит токен на каждую.
+	form := url.Values{"slug": {"sprl-probe"}, "title": {"Probe"}}
+	for i := 1; i <= 12; i++ {
+		resp := postForm(t, s.srv, settingsPath, form, s.srv.URL, memberCookie)
+		code := resp.StatusCode
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d got 429, want limiter to allow first 12", i)
+		}
+	}
+	// 13-я попытка за окно → 429.
+	resp := postForm(t, s.srv, settingsPath, form, s.srv.URL, memberCookie)
+	code := resp.StatusCode
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("13th create attempt = %d, want 429 (rate limited)", code)
+	}
+}
