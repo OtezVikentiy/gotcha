@@ -221,3 +221,33 @@ func TestWebMonitorUpdateAdminRepointsFreely(t *testing.T) {
 		t.Fatalf("header value = %q after owner update, want kept", got)
 	}
 }
+
+// TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed — оператор меняет
+// URL монитора, у которого НЕ было сохранённых заголовков, и печатает новую
+// строку заголовка с пустым/замаскированным значением. Раньше это ловил
+// ложный 422 (блок срабатывал на любое пустое значение при смене URL), хотя
+// уводить нечего — сохранённого секрета под этим именем нет, merge оставит
+// значение пустым. Теперь блок сужен до «пустое значение, чей прообраз реально
+// хранится», поэтому апдейт проходит (303), URL меняется.
+func TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed(t *testing.T) {
+	s := newMonitorFormStack(t)
+	s.uptime.SetSecretKey("test-master-key-A2b")
+	proj, _, memberCookie := ownerAndMember(t, s, "monhdrnosecret")
+
+	// Монитор без заголовков вовсе.
+	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health", nil)
+	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
+
+	// Смена URL + новая строка заголовка с маской-значением (нового секрета
+	// оператор не ввёл; прежнего под этим именем нет).
+	form := operatorUpdateForm("https://api2.example.com/health", "X-New: ****")
+	resp := postForm(t, s.srv, updatePath, form, s.srv.URL, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (operator, URL change + blank new header, no stored secret) status = %d, want 303: %s", updatePath, resp.StatusCode, body)
+	}
+	if got := httpURLOf(t, s, created.ID); got != "https://api2.example.com/health" {
+		t.Fatalf("URL = %q after update, want changed", got)
+	}
+}

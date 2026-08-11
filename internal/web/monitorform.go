@@ -170,13 +170,20 @@ func mergeKeptHeaders(submitted, stored map[string]string) map[string]string {
 	return out
 }
 
-// hasBlankOrMaskedHeader — есть ли среди значений заголовков хоть одно
-// пустое/замаскированное. Используется блоком эксфильтрации: при смене URL все
-// значения должны быть введены заново.
-func hasBlankOrMaskedHeader(headers map[string]string) bool {
-	for _, v := range headers {
+// keptHeaderWouldRedirect — при смене URL монитора: есть ли среди заголовков
+// формы «оставленный прежним» (пустой/маска), чьё сохранённое значение реально
+// существует. Только такой заголовок keep-on-blank подставит и уведёт чужой
+// секрет на новый адрес (эксфильтрация) — на него и нужен 422 с требованием
+// ввести значение заново. Пустой/замаскированный заголовок БЕЗ сохранённого
+// прообраза merge оставит пустым (отправлять нечего) — это не вектор, и 422 на
+// него был бы ложным (напр. оператор добавил новую пустую строку заголовка,
+// заодно сменив URL монитора, у которого секретов и не было).
+func keptHeaderWouldRedirect(submitted, stored map[string]string) bool {
+	for name, v := range submitted {
 		if isBlankOrMasked(v) {
-			return true
+			if prev, ok := stored[name]; ok && prev != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -720,17 +727,16 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	if m.Kind == uptime.KindHTTP && !authz.CanManage {
 		stored := parseHTTPConfig(m.Config)
 		submitted := parseHTTPConfig(upd.Config)
-		// Блок эксфильтрации ДО keep-on-blank: URL сменился и заголовки в игре
-		// (были у монитора или пришли в форме), но хоть одно значение пустое/
-		// замаскированное → 422. Проверяем до merge, иначе merge подставил бы
-		// прежние значения и увёл бы их на новый URL.
-		if submitted.URL != stored.URL && (len(stored.Headers) > 0 || len(submitted.Headers) > 0) {
-			if hasBlankOrMaskedHeader(submitted.Headers) {
-				data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
-				data.ErrMsg = i18n.T(r.Context(), "error.monitor.header_reentry_required")
-				h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
-				return
-			}
+		// Блок эксфильтрации ДО keep-on-blank: URL сменился, а среди заголовков
+		// формы есть «оставленный прежним» (пустой/маска), чей секрет реально
+		// хранится — merge подставил бы его и увёл на новый URL → 422. Пустой
+		// заголовок без сохранённого прообраза не вектор (merge оставит пустым),
+		// на него 422 не нужен. Проверяем ДО merge.
+		if submitted.URL != stored.URL && keptHeaderWouldRedirect(submitted.Headers, stored.Headers) {
+			data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
+			data.ErrMsg = i18n.T(r.Context(), "error.monitor.header_reentry_required")
+			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
+			return
 		}
 		// keep-on-blank: пустое/замаскированное значение → прежнее сохранённое.
 		submitted.Headers = mergeKeptHeaders(submitted.Headers, stored.Headers)
