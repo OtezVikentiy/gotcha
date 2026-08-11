@@ -4,6 +4,12 @@ The "Alerts" section links **rules** to **delivery channels**, so your team lear
 
 This page covers alerting on **issues**. Threshold alerts on numeric metrics are configured separately — see [Metric Alerts](/docs/metric-alerts); their notifications go out through the same channels described here.
 
+## Who can do what
+
+The three issue rules (new issue, regression, spike) are operational settings: any project operator — an org owner/admin, or a plain member on a team attached to the project, see [Teams and roles](/docs/teams) — can view and edit them.
+
+Delivery channels are different: their recipient and secret are credentials and personal data, not operational settings, so creating, editing, deleting, or "Test"-ing a channel is owner/admin only. A project operator who isn't owner/admin still sees the channel table — to tell channels apart when wiring up a rule — but each channel's **recipient is masked** (e.g. `t***@example.com`, `https://example.com/…`, or the last two digits of a Telegram `chat_id`) and its secret is never sent to their browser at all. Every mask carries a short `·a1b2`-style suffix — a one-way fingerprint of the full value: if a project has two webhook channels on the same host (Slack/Discord typically keep the secret in the path, not the host), the host portion of their masks matches but the suffix doesn't, so the two are still distinguishable without exposing either value. The [delivery log](#delivery-log) applies the same masking to the recipient column for the same audience.
+
 ## Delivery channels
 
 A channel is a specific address/recipient a notification is sent to. A single channel is reused across every rule in the project (including metric alert rules).
@@ -143,3 +149,4 @@ lifts the restriction entirely — details then go to every recipient, Telegram 
 - [Metric Alerts](/docs/metric-alerts) — threshold rules on numeric metrics, using the same channel set.
 - [Issues](/docs/issues) — what an issue is, what a regression is, statuses.
 - [Configuration](/docs/configuration) — the SMTP variables and `GOTCHA_EXTERNAL_CHANNEL_DETAILS`.
+- [Teams and roles](/docs/teams) — who is a project operator, and the full table of what operators vs. owner/admin can do.

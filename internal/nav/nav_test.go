@@ -588,4 +588,24 @@ func TestProjectSwitchHref(t *testing.T) {
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
 		t.Errorf("пустая область → %q, want issues-фолбэк", got)
 	}
+
+	// C1: CanOperate — флаг ТЕКУЩЕГО проекта (участник команды проекта),
+	// а не целевого. Переключаясь из «Оповещений» с CanOperate=true на
+	// проекте 1, наивная реализация переносит этот флаг в пробу для
+	// проекта 2 и получает /projects/2/alerts — хотя на проекте 2
+	// пользователь может не быть оператором вовсе, и ссылка 404-ит.
+	// nav — чистый слой без доступа к БД, пересчитать CanOperate для
+	// целевого проекта не может, поэтому единственный безопасный вариант —
+	// не доверять перенесённому флагу для «Оповещений» (единственная
+	// область, чей список подразделов целиком схлопывается в nil при
+	// !CanOperate) и уводить переключатель на посадочную область, которая
+	// валидна при любом доступе.
+	shell.Area = "alerts"
+	shell.CanOperate = true
+	if got := ProjectSwitchHref(shell, 2); got == "/projects/2/alerts" || strings.Contains(got, "404") {
+		t.Errorf("alerts с CanOperate=true текущего проекта → %q, не должно вести на /alerts целевого проекта", got)
+	}
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
+		t.Errorf("alerts → %q, want issues-фолбэк (безопасная посадочная область)", got)
+	}
 }

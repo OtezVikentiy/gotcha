@@ -12,7 +12,7 @@ Roles are assigned at the organization level and apply across all its projects:
 
 | Role | Can do |
 |---|---|
-| **owner** | Everything admin can, plus: grant/revoke the owner role for others, remove owners, see the organization's [SSO](/docs/sso) section (configuring it also requires being marked an instance administrator — being org owner alone isn't enough), export/delete subjects' personal data, delete the organization entirely |
+| **owner** | Everything admin can, plus: grant/revoke the owner role for others, remove owners, see the organization's [SSO](/docs/sso) section (configuring it isn't gated by the owner role at all, but by a separate "instance administrator" flag — the section is visible to whoever carries that flag too, even for organizations they don't own), export/delete subjects' personal data, delete the organization entirely |
 | **admin** | Invite and remove members, change admin/member roles (not owner), manage ingest quotas, create/delete teams, manage probes and project settings (monitors, status pages, maintenance windows) |
 | **member** | Works inside the projects they have access to (issues, performance, metrics, uptime, etc.), with no access to the organization's admin pages |
 
@@ -69,7 +69,7 @@ Being on a team attached to a project — an **operator**, in the table below �
 | Status page content: create/edit/delete a page, pick monitors and titles | — | ✓ (a page an operator creates starts unpublished) | ✓ | ✓ |
 | Status page publication: the "Published" toggle, the slug | — | — | ✓ | ✓ |
 | Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
-| Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, to pick one in a rule) | ✓ | ✓ |
+| Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, enough to tell channels apart when picking one in a rule) | ✓ | ✓ |
 | Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
 | Metric alerts: create, delete | — | ✓ | ✓ | ✓ |
 | Project settings (rename, DSN keys, quotas, sample rate) | — | — | ✓ | ✓ |

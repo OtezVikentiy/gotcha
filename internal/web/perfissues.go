@@ -139,13 +139,13 @@ func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CanManage — доступ к странице уже подтверждён loadAccessiblePerfIssue
-	// (CanAccessProject), а POST-обработчик проверяет ту же границу, так что
-	// отдельная роль-проверка тут не нужна: кнопки статуса видит любой смотрящий.
+	// Кнопки статуса рендерятся безусловно (см. PerfIssueDetailData): доступ к
+	// странице уже подтверждён loadAccessiblePerfIssue (CanAccessProject), а
+	// POST-обработчик проверяет ту же границу, так что отдельная роль-проверка
+	// тут не нужна — кнопки статуса видит любой смотрящий.
 	data := templates.PerfIssueDetailData{
-		Issue:     iss,
-		Evidence:  parsePerfEvidence(iss.Evidence),
-		CanManage: true,
+		Issue:    iss,
+		Evidence: parsePerfEvidence(iss.Evidence),
 	}
 	// Показательный спан из примера-трейса: полный текст запроса (в отличие от
 	// нормализованного/обрезанного Title) и, если SDK прислал, привязка к коду.

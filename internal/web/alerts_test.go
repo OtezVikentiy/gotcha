@@ -725,7 +725,11 @@ func TestWebAlertsOperator(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("smtp: connection refused")); err != nil {
+	// A1: last_error несёт сырой адрес получателя (как реально приходит от
+	// email.go до фикса RCPT-ошибки — server echoes the address) — второй
+	// эшелон защиты (alertDeliveriesPage) обязан замаскировать его для
+	// не-admin'а так же, как маскирует соседнее поле Target.
+	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("notify: smtp rcpt: 550 5.1.1 <ops@example.com>: Recipient address rejected")); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 	resp = getWithCookie(t, s.srv, deliveriesPath, opCookie)
@@ -739,6 +743,6 @@ func TestWebAlertsOperator(t *testing.T) {
 		t.Errorf("GET %s (operator) missing masked target: %s", deliveriesPath, bodyStr)
 	}
 	if strings.Contains(bodyStr, "ops@example.com") {
-		t.Errorf("GET %s (operator) leaks raw target: %s", deliveriesPath, bodyStr)
+		t.Errorf("GET %s (operator) leaks raw target/last_error: %s", deliveriesPath, bodyStr)
 	}
 }

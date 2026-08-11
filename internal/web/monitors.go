@@ -104,19 +104,26 @@ func avgLatencyMs(points []uptime.LatencyPoint) uint32 {
 	return uint32(sum / count)
 }
 
-// canManageProject — owner/admin организации проекта. org.ErrNotMember не
-// должен ронять страницу (юзер мог получить доступ к проекту только через
-// команду) — тот же приём, что и canManage в issuesList.
-func (h *Handler) canManageProject(ctx context.Context, projectID, userID int64) (bool, error) {
-	orgID, err := h.Org.ProjectOrg(ctx, projectID)
-	if err != nil {
-		return false, err
-	}
+// canManageOrg — owner/admin организации orgID. org.ErrNotMember не должен
+// ронять страницу (юзер мог получить доступ к проекту только через команду) —
+// тот же приём, что и canManage в issuesList. Вынесена из canManageProject
+// (находка B4): requireProjectOperator уже знает orgID и вызывает эту часть
+// напрямую, без повторного резолва projectID -> orgID.
+func (h *Handler) canManageOrg(ctx context.Context, orgID, userID int64) (bool, error) {
 	role, err := h.Org.Role(ctx, orgID, userID)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
 		return false, err
 	}
 	return role == org.RoleOwner || role == org.RoleAdmin, nil
+}
+
+// canManageProject — owner/admin организации проекта.
+func (h *Handler) canManageProject(ctx context.Context, projectID, userID int64) (bool, error) {
+	orgID, err := h.Org.ProjectOrg(ctx, projectID)
+	if err != nil {
+		return false, err
+	}
+	return h.canManageOrg(ctx, orgID, userID)
 }
 
 // monitorsList — GET /projects/{id}/monitors: таблица мониторов проекта
@@ -150,9 +157,9 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// С задачи 2 (спека 2026-08-08) кнопка «New monitor» — операторская, не
-	// owner/admin-only: canManage наполняется canOperateProject, а не
+	// owner/admin-only: canOperate наполняется canOperateProject, а не
 	// canManageProject.
-	canManage, err := h.canOperateProject(r.Context(), projectID, uid)
+	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -217,7 +224,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = templates.MonitorsList(projectID, rows, canManage, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MonitorsList(projectID, rows, canOperate, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // loadAccessibleMonitor — общая часть GET/POST monitor-обработчиков: находит

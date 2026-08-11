@@ -5,11 +5,16 @@ import (
 	"testing"
 )
 
-// authzLevel — задекларированный уровень прав мутирующего маршрута.
-// Сторож не проверяет реализацию гейта (это делают поведенческие тесты
-// соответствующих ручек) — он не даёт ДОБАВИТЬ маршрут, не решив явно,
-// кто имеет право его дёргать (урок живого кейса из спеки 2026-08-08:
-// права раздавались по памяти, потому что карты не существовало).
+// authzLevel — задекларированный уровень прав маршрута (и мутирующего POST,
+// и рендерящего GET). Сторож не проверяет реализацию гейта (это делают
+// поведенческие тесты соответствующих ручек) — он не даёт ДОБАВИТЬ маршрут,
+// не решив явно, кто имеет право его дёргать (урок живого кейса из спеки
+// 2026-08-08: права раздавались по памяти, потому что карты не существовало).
+//
+// GET-маршруты добавлены в карту находкой B2 (arch P1-3): весь класс утечек,
+// который правил этот аудит, живёт именно в GET-рендере страниц (не в POST),
+// а карта до этой находки видела только мутации — новая GET-страница проекта
+// без гейта добавлялась бы незамеченной.
 const (
 	lvlPublic   = "public"   // машинные/анонимные ручки (heartbeat, probe, login)
 	lvlUser     = "user"     // любой залогиненный (профиль, logout, онбординг)
@@ -19,7 +24,7 @@ const (
 	lvlOwner    = "owner"    // только owner (удаления, SSO)
 )
 
-var mutatingRouteAuthz = map[string]string{
+var routeAuthz = map[string]string{
 	// --- Аутентификация и публичные ручки: без сессии, гейта нет по
 	// построению (регистрируются в web.go ДО requireUser). ---
 	"POST /login":           lvlPublic,
@@ -111,12 +116,88 @@ var mutatingRouteAuthz = map[string]string{
 	"POST /orgs/{id}/settings/purge-subject":  lvlOwner,
 	"POST /orgs/{id}/settings/export-subject": lvlOwner,
 	"POST /projects/{id}/settings/delete":     lvlOwner,
+
+	// ============================= GET =============================
+	// (находка B2: тот же принцип, что у POST выше, но для рендера).
+
+	// --- Публичные GET: без сессии по построению — регистрируются в web.go
+	// вне requireUser (статика, вход/регистрация/SSO, OAuth-старт/колбэк,
+	// приглашение по токену — адресат ещё не член, heartbeat/status-страница —
+	// машинные/анонимные ручки, см. блок h.Uptime != nil). ---
+	"GET /login":                          lvlPublic,
+	"GET /register":                       lvlPublic,
+	"GET /sso":                            lvlPublic,
+	"GET /invite/{token}":                 lvlPublic,
+	"GET /auth/oauth/{provider}/start":    lvlPublic,
+	"GET /auth/oauth/{provider}/callback": lvlPublic,
+	"GET /static/":                        lvlPublic,
+	"GET /uptime/hb/{token}":              lvlPublic,
+	"GET /status/{slug}":                  lvlPublic,
+
+	// --- Любой залогиненный (requireUser), дальше по коду гейта нет —
+	// общие страницы аккаунта/продукта, не привязанные к конкретному
+	// проекту/организации. ---
+	"GET /{$}":         lvlUser,
+	"GET /profile":     lvlUser,
+	"GET /onboarding":  lvlUser,
+	"GET /docs":        lvlUser,
+	"GET /docs/{slug}": lvlUser,
+	"GET /about":       lvlUser,
+	"GET /projects":    lvlUser,
+
+	// --- Доступ к проекту (CanAccessProject — напрямую или через
+	// loadAccessibleIssue/loadAccessibleMonitor/loadAccessiblePerfIssue/
+	// ProjectForTrace): просмотр открыт любому участнику организации
+	// проекта, та же граница, что у issue/perf-issue статусов выше. ---
+	"GET /projects/{id}/setup":                        lvlAccess,
+	"GET /projects/{id}/issues":                       lvlAccess,
+	"GET /issues/{id}":                                lvlAccess,
+	"GET /projects/{id}/metrics":                      lvlAccess,
+	"GET /projects/{id}/metrics/{name}":               lvlAccess,
+	"GET /projects/{id}/profiles":                     lvlAccess,
+	"GET /projects/{id}/profiles/flame":               lvlAccess,
+	"GET /projects/{id}/profile-regressions":          lvlAccess,
+	"GET /projects/{id}/monitors":                     lvlAccess,
+	"GET /monitors/{id}":                              lvlAccess,
+	"GET /projects/{id}/incidents":                    lvlAccess,
+	"GET /projects/{id}/performance":                  lvlAccess,
+	"GET /projects/{id}/performance/{transaction...}": lvlAccess,
+	"GET /projects/{id}/web-vitals":                   lvlAccess,
+	"GET /projects/{id}/perf-issues":                  lvlAccess,
+	"GET /perf-issues/{id}":                           lvlAccess,
+	"GET /projects/{id}/regressions":                  lvlAccess,
+	"GET /traces/{trace_id}":                          lvlAccess,
+	"GET /traces/{trace_id}/flame":                    lvlAccess,
+
+	// --- Оператор мониторинга (requireProjectOperator): страницы алертов,
+	// метрик-алертов, форм монитора, статус-страниц и окон обслуживания —
+	// тот же гейт, что у их мутирующих POST в разделе operator выше.
+	// ВНИМАНИЕ (потенциальная находка для контроллера): комментарий в web.go
+	// у /projects/{id}/statuspages и /projects/{id}/maintenance называет их
+	// уровнем requireProjectRole (owner/admin) — это устарело, фактический
+	// гейт в коде обеих GET-ручек (statusPagesPage, maintenancePage) и всех
+	// их POST — requireProjectOperator; карта отражает код, а не комментарий.
+	"GET /projects/{id}/metrics/alerts":    lvlOperator,
+	"GET /projects/{id}/alerts":            lvlOperator,
+	"GET /projects/{id}/alerts/deliveries": lvlOperator,
+	"GET /projects/{id}/monitors/new":      lvlOperator,
+	"GET /monitors/{id}/edit":              lvlOperator,
+	"GET /projects/{id}/statuspages":       lvlOperator,
+	"GET /projects/{id}/maintenance":       lvlOperator,
+
+	// --- Org admin/owner (requireOrgRole/requireProjectRole): настройки
+	// организации/проекта и производные разделы (пробы, команды) — та же
+	// граница, что у мутирующих POST в соответствующем разделе выше. ---
+	"GET /orgs/{id}/settings":     lvlAdmin,
+	"GET /orgs/{id}/probes":       lvlAdmin,
+	"GET /orgs/{id}/teams":        lvlAdmin,
+	"GET /projects/{id}/settings": lvlAdmin,
 }
 
-func TestMutatingRoutesDeclareAuthzLevel(t *testing.T) {
+func TestRoutesDeclareAuthzLevel(t *testing.T) {
 	s := newUptimeStack(t)
-	declared := make(map[string]bool, len(mutatingRouteAuthz))
-	for route, lvl := range mutatingRouteAuthz {
+	declared := make(map[string]bool, len(routeAuthz))
+	for route, lvl := range routeAuthz {
 		declared[route] = false
 		switch lvl {
 		case lvlPublic, lvlUser, lvlAccess, lvlOperator, lvlAdmin, lvlOwner:
@@ -125,11 +206,11 @@ func TestMutatingRoutesDeclareAuthzLevel(t *testing.T) {
 		}
 	}
 	for _, route := range s.h.RegisteredRoutes() {
-		if !strings.HasPrefix(route, "POST ") {
+		if !strings.HasPrefix(route, "GET ") && !strings.HasPrefix(route, "POST ") {
 			continue
 		}
-		if _, ok := mutatingRouteAuthz[route]; !ok {
-			t.Errorf("мутирующий маршрут %q не отнесён к уровню прав — добавь его в mutatingRouteAuthz, решив, кто имеет право (см. спеку 2026-08-08)", route)
+		if _, ok := routeAuthz[route]; !ok {
+			t.Errorf("маршрут %q не отнесён к уровню прав — добавь его в routeAuthz, решив, кто имеет право (см. спеку 2026-08-08)", route)
 			continue
 		}
 		declared[route] = true

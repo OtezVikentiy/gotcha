@@ -527,8 +527,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /traces/{trace_id}", h.requireUser(http.HandlerFunc(h.traceWaterfall)))
 	inner.Handle("GET /traces/{trace_id}/flame", h.requireUser(http.HandlerFunc(h.traceFlame)))
 
-	// Настройки статус-страниц проекта (план 5, задача 4): только owner/admin
-	// организации проекта (requireProjectRole), как окна обслуживания. У
+	// Настройки статус-страниц проекта (план 5, задача 4): оператор проекта
+	// (requireProjectOperator), как окна обслуживания. У
 	// /statuspages/{id} проект берётся из самой страницы (loadManagedStatusPage),
 	// чужая страница по её id — 404.
 	inner.Handle("GET /projects/{id}/statuspages", h.requireUser(http.HandlerFunc(h.statusPagesPage)))

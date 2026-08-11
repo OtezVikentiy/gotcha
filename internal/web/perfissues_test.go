@@ -284,11 +284,11 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 	}
 }
 
-// TestWebPerfIssueMemberCanManage — член команды с доступом к проекту меняет
+// TestWebPerfIssueMemberCanOperate — член команды с доступом к проекту меняет
 // статус perf-issue: та же граница, что у issueSetStatus (CanAccessProject,
 // не роль), спека 2026-08-08. Раньше требовался owner/admin — теперь любой
 // смотрящий, отсюда и кнопки статуса в разметке.
-func TestWebPerfIssueMemberCanManage(t *testing.T) {
+func TestWebPerfIssueMemberCanOperate(t *testing.T) {
 	s := newPerfIssuesStack(t)
 	ownerID, _ := orgSettingsRegister(t, s.auth, "perf-member-owner@example.com")
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "perf-member-member@example.com")
@@ -312,7 +312,7 @@ func TestWebPerfIssueMemberCanManage(t *testing.T) {
 	detailPath := "/perf-issues/" + strconv.FormatInt(id, 10)
 	statusPath := detailPath + "/status"
 
-	// Member видит страницу и кнопки статуса — CanManage теперь равен доступу.
+	// Member видит страницу и кнопки статуса — CanOperate теперь равен доступу.
 	resp := getWithCookie(t, s.srv, detailPath, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()

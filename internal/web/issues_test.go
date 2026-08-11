@@ -388,6 +388,106 @@ func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 	}
 }
 
+// TestWebIssuesGettingStartedChecklistOperatorSees — C5: чек-лист «Первые
+// шаги» гейтится на CanOperate, не CanManage, и оператор проекта (участник
+// команды, role=member, без owner/admin) должен его видеть — с рабочими
+// CTA на операторские шаги (SDK, алерт, монитор), но БЕЗ ссылки на шаг 4a
+// «Позвать команду» (requireOrgRole — owner/admin only): рабочая ссылка
+// увела бы оператора на честный 403, поэтому шаг остаётся как неактивный
+// текст (gsStepReadOnly), не мёртвая ссылка.
+func TestWebIssuesGettingStartedChecklistOperatorSees(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, _ := registerAndLogin(t, s, "gs-op-owner@example.com")
+	project := createProject(t, s, ownerID, "gs-op-org", "gs-op-proj")
+	orgID, err := s.org.ProjectOrg(context.Background(), project.ID)
+	if err != nil {
+		t.Fatalf("project org: %v", err)
+	}
+
+	// Оператор: участник организации (role=member) на команде, привязанной
+	// к проекту (тот же приём, что addTeamAccess в monitors_test.go, и
+	// requireProjectOperator в operate_test.go) — RoleMember сам по себе
+	// доступа к проекту не даёт (org.accessCondition), нужна команда.
+	operatorID, operatorCookie := registerAndLogin(t, s, "gs-op-operator@example.com")
+	if err := s.org.AddMember(context.Background(), orgID, operatorID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	team, err := s.org.CreateTeam(context.Background(), orgID, "gs-op-team", "gs-op-team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := s.org.AddTeamMember(context.Background(), team.ID, operatorID); err != nil {
+		t.Fatalf("add team member: %v", err)
+	}
+	if err := s.org.AttachTeam(context.Background(), project.ID, team.ID); err != nil {
+		t.Fatalf("attach team: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, operatorCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (operator) status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `class="card getting-started"`) {
+		t.Fatalf("GET %s (operator) missing getting-started checklist: %s", issuesPath, body)
+	}
+	// Операторские шаги — рабочие CTA-ссылки.
+	for _, href := range []string{
+		"/projects/" + strconv.FormatInt(project.ID, 10) + "/setup",
+		"/projects/" + strconv.FormatInt(project.ID, 10) + "/alerts",
+		"/projects/" + strconv.FormatInt(project.ID, 10) + "/monitors",
+	} {
+		if !strings.Contains(string(body), `href="`+href+`"`) {
+			t.Fatalf("GET %s (operator) checklist missing operator CTA link %q: %s", issuesPath, href, body)
+		}
+	}
+	// Шаг 4a не должен вести на admin-only /orgs/{id}/settings — оператору
+	// некуда там перейти. Здесь он неизбежно уже «сделан» (Step4aDone =
+	// >1 участника в орге, а сам факт присоединения оператора уже даёт
+	// второго участника), так что настоящую неактивную (gs-todo-locked)
+	// отрисовку шага 4a при CanManage=false проверяет отдельный,
+	// белоящичный тест шаблона — TestGettingStartedChecklistGatedByCanOperate
+	// в internal/web/templates/pages_test.go: с реальным HTTP-флоу этого
+	// сочетания (оператор есть, но участников всё ещё один) не бывает.
+	orgSettingsHref := "/orgs/" + strconv.FormatInt(orgID, 10) + "/settings"
+	if strings.Contains(string(body), `href="`+orgSettingsHref+`"`) {
+		t.Fatalf("GET %s (operator) checklist should not link non-manageable step 4a to %q: %s", issuesPath, orgSettingsHref, body)
+	}
+}
+
+// TestWebIssuesGettingStartedChecklistTeamlessMember404 — C5: участник
+// организации без команды на проекте (role=member, не оператор) не должен
+// видеть чек-лист — но не потому, что он спрятан отдельным условием, а
+// потому что сама страница issues для него 404 (CanAccessProject), тот же
+// existence-oracle принцип, что и у полного постороннего (см. тест выше по
+// файлу) и у metricalerts_test.go:123.
+func TestWebIssuesGettingStartedChecklistTeamlessMember404(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, _ := registerAndLogin(t, s, "gs-tl-owner@example.com")
+	project := createProject(t, s, ownerID, "gs-tl-org", "gs-tl-proj")
+	orgID, err := s.org.ProjectOrg(context.Background(), project.ID)
+	if err != nil {
+		t.Fatalf("project org: %v", err)
+	}
+
+	memberID, memberCookie := registerAndLogin(t, s, "gs-tl-member@example.com")
+	if err := s.org.AddMember(context.Background(), orgID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (teamless member) status = %d, want 404: %s", issuesPath, resp.StatusCode, body)
+	}
+}
+
 // TestWebIssuesEnvironmentAndPeriodFilter проверяет ?env и ?period в списке
 // issues: env сужает до issues с событиями в конкретном environment (по
 // issue_environments), period отсекает issues со старым last_seen.

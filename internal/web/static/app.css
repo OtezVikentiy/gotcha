@@ -2811,6 +2811,15 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .gs-todo a:hover {
 	text-decoration: underline;
 }
+/* Шаг чек-листа без CTA-ссылки (gsStepReadOnly: шаг 4a "Позвать команду" у
+   оператора без CanManage — вести его на 403 незачем, см. комментарий
+   шаблона). Приглушаем тем же цветом, что и выполненные шаги (.gs-done), и
+   снимаем указатель кликабельности: элемент остаётся в разметке (прогресс не
+   врёт), но не выглядит интерактивным. */
+.gs-todo-locked {
+	color: var(--text-dim);
+	cursor: default;
+}
 
 /* -- Docs index (/docs) -- переиспользует .card/.settings-grid: одна
    секция (Начало/Разделы/Интеграции) на карточку. */

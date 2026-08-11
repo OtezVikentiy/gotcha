@@ -130,20 +130,20 @@ type MonitorRow struct {
 }
 
 // MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
-// canManage управляет видимостью ссылки «New monitor» (с задачи 2 — оператор
+// canOperate управляет видимостью ссылки «New monitor» (с задачи 2 — оператор
 // проекта, не только owner/admin; спека 2026-08-08). Ссылки на
 // Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
 // боковой панели app-shell (nav.Subsections для area "uptime").
-templ MonitorsList(projectID int64, rows []MonitorRow, canManage bool, userEmail string) {
+templ MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail string) {
 	@layout(i18n.T(ctx, "nav.monitors"), userEmail) {
 		<div class="monitors">
 			<h1>{ i18n.T(ctx, "nav.monitors") }</h1>
 			@helpPanel("uptime", "uptime")
-			if canManage {
+			if canOperate {
 				<p><a class="btn btn-primary" href={ templ.URL(monitorNewPath(projectID)) }>{ i18n.T(ctx, "uptime.monitors.new") }</a></p>
 			}
 			if len(rows) == 0 {
-				if canManage {
+				if canOperate {
 					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "uptime.monitors.empty.cta", monitorNewPath(projectID), 2)
 				} else {
 					@emptyState("activity", "uptime.monitors.empty.title", "uptime.monitors.empty.body", "", "", 2)

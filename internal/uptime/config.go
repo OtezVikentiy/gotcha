@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/url"
+	"strings"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
 // Kind — тип монитора; совпадает с CHECK-ограничением monitors.kind.
@@ -59,6 +62,67 @@ type DNSConfig struct {
 // HeartbeatConfig — конфиг монитора kind=heartbeat.
 type HeartbeatConfig struct {
 	GraceSeconds int `json:"grace_seconds"` // >= 60
+}
+
+// sealHTTPHeaders шифрует ЗНАЧЕНИЯ заголовков http-конфига secretbox'ом с
+// префиксом enc: — имена остаются видимыми (секрет именно в значении: bearer-
+// токен в Authorization, ключ в X-Api-Key). Тот же приём, что alert.Service для
+// секретов каналов. Пустые заголовки и невалидный (не наш) config возвращаются
+// без изменений; валидность самого config проверяет validateConfig отдельно.
+func sealHTTPHeaders(key [32]byte, raw json.RawMessage) (json.RawMessage, error) {
+	return transformHTTPHeaders(raw, func(v string) (string, error) {
+		// Идемпотентность: уже зашифрованное значение (префикс enc:) НЕ шифруем
+		// повторно — двойной Seal сделал бы его невосстановимым (Open вернул бы
+		// внутренний ciphertext-текст, а не исходное значение). Зеркалит
+		// passthrough на чтении и страхует вызывающих, которые могли передать
+		// сюда ещё не расшифрованный config (bulk-edit, импорт, фид из
+		// List/GetBatch).
+		if strings.HasPrefix(v, secretbox.EncPrefix) {
+			return v, nil
+		}
+		return secretbox.Seal(key, v)
+	})
+}
+
+// openHTTPHeaders — обратная операция: расшифровывает значения заголовков.
+// Legacy plaintext без префикса enc: secretbox.Open вернёт как есть
+// (совместимость со старыми записями, сделанными до включения шифрования).
+func openHTTPHeaders(key [32]byte, raw json.RawMessage) (json.RawMessage, error) {
+	return transformHTTPHeaders(raw, func(v string) (string, error) {
+		return secretbox.Open(key, v)
+	})
+}
+
+// transformHTTPHeaders применяет fn к каждому значению заголовков http-конфига и
+// пересобирает config. Config — непрозрачный json.RawMessage, поэтому имена
+// заголовков и прочие поля сохраняются, меняются только значения. Раскодируется
+// нестрого (в отличие от validateConfig): здесь мы обрабатываем УЖЕ прошедший
+// валидацию config, а не проверяем его.
+func transformHTTPHeaders(raw json.RawMessage, fn func(string) (string, error)) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return raw, nil
+	}
+	var cfg HTTPConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return raw, nil
+	}
+	if len(cfg.Headers) == 0 {
+		return raw, nil
+	}
+	out := make(map[string]string, len(cfg.Headers))
+	for name, val := range cfg.Headers {
+		next, err := fn(val)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = next
+	}
+	cfg.Headers = out
+	remarshaled, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return remarshaled, nil
 }
 
 // strictUnmarshal декодирует raw в v, отклоняя незнакомые поля. Это ловит

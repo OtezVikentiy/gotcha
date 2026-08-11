@@ -448,16 +448,19 @@ func (h *Handler) statusPagesPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
-	h.renderStatusPages(w, r, http.StatusOK, projectID, "", nil)
+	h.renderStatusPages(w, r, http.StatusOK, projectID, authz.CanManage, "", nil)
 }
 
 // renderStatusPages — общий рендер настроек: GET и все POST на 422. override
 // (если не nil) подменяет одну из форм на введённые пользователем значения:
 // ID == 0 — форму создания, иначе форму редактирования страницы с этим id.
-func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, status int, projectID int64, errMsg string, override *templates.StatusPageForm) {
+// canManage приходит от вызывающего (гейт уже посчитал его — находка B4), а
+// не резолвится здесь заново отдельным canManageProject.
+func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, status int, projectID int64, canManage bool, errMsg string, override *templates.StatusPageForm) {
 	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
 		h.notFound(w, r)
 		return
@@ -504,13 +507,6 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 				forms[i] = *override
 			}
 		}
-	}
-
-	uid, _ := auth.UserID(r.Context())
-	canManage, err := h.canManageProject(r.Context(), projectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
 	}
 
 	w.WriteHeader(status)
@@ -622,7 +618,8 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -641,12 +638,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sp, monitors := parseStatusPageForm(r, projectID, projectMonitors)
 
-	canManage, err := h.canManageProject(r.Context(), projectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if !canManage {
+	if !authz.CanManage {
 		// Публикация — уровнем выше (спека 2026-08-08): страница, созданная
 		// оператором, рождается выключенной, что бы ни прислала форма.
 		sp.Enabled = false
@@ -655,7 +647,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Uptime.CreateStatusPage(r.Context(), sp, monitors); err != nil {
 		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
 			form := statusPageFormView(0, sp, monitors, projectMonitors)
-			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, projectID, statusPageErrorMessage(r.Context(), err), &form)
+			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -669,28 +661,31 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 // самой, доступ проверяется в этом проекте по предикату оператора. Несуществующая
 // страница и страница чужого проекта дают одну и ту же 404 — не палим
 // существование чужих числовых id (тот же принцип, что и в
-// loadAccessibleMonitor). Удаление остаётся доступно оператору наравне с
-// остальным контентом (это снятие контента, не публикация) — отдельного
-// гейта в statusPagesDelete не нужно.
-func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, uid int64) (uptime.StatusPage, bool) {
+// loadAccessibleMonitor). Возвращаемый projectAuthz.CanManage используется
+// в statusPagesDelete как дополнительный гейт для удаления НЕвыключенной
+// страницы — публикационное решение (A3, спека
+// cld/plans/2026-08-08-access-model-rework.md); удаление выключенной
+// остаётся доступно любому оператору как обычный контент.
+func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, uid int64) (uptime.StatusPage, projectAuthz, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		h.notFound(w, r)
-		return uptime.StatusPage{}, false
+		return uptime.StatusPage{}, projectAuthz{}, false
 	}
 	sp, err := h.Uptime.StatusPageByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
-			return uptime.StatusPage{}, false
+			return uptime.StatusPage{}, projectAuthz{}, false
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return uptime.StatusPage{}, false
+		return uptime.StatusPage{}, projectAuthz{}, false
 	}
-	if _, ok := h.requireProjectOperator(w, r, sp.ProjectID, uid); !ok {
-		return uptime.StatusPage{}, false
+	authz, ok := h.requireProjectOperator(w, r, sp.ProjectID, uid)
+	if !ok {
+		return uptime.StatusPage{}, projectAuthz{}, false
 	}
-	return sp, true
+	return sp, authz, true
 }
 
 // statusPagesUpdate — POST /statuspages/{id}: sameOrigin + оператор проекта
@@ -712,7 +707,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	existing, ok := h.loadManagedStatusPage(w, r, uid)
+	existing, authz, ok := h.loadManagedStatusPage(w, r, uid)
 	if !ok {
 		return
 	}
@@ -729,12 +724,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	sp, monitors := parseStatusPageForm(r, existing.ProjectID, projectMonitors)
 	sp.ID = existing.ID
 
-	canManage, err := h.canManageProject(r.Context(), existing.ProjectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if !canManage {
+	if !authz.CanManage {
 		sp.Slug = existing.Slug
 		sp.Enabled = existing.Enabled
 	}
@@ -742,7 +732,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if err := h.Uptime.UpdateStatusPage(r.Context(), sp, monitors); err != nil {
 		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
 			form := statusPageFormView(sp.ID, sp, monitors, projectMonitors)
-			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, existing.ProjectID, statusPageErrorMessage(r.Context(), err), &form)
+			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, existing.ProjectID, authz.CanManage, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
 		if errors.Is(err, uptime.ErrNotFound) {
@@ -771,8 +761,21 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	sp, ok := h.loadManagedStatusPage(w, r, uid)
+	sp, authz, ok := h.loadManagedStatusPage(w, r, uid)
 	if !ok {
+		return
+	}
+	// Удаление опубликованной страницы освобождает её глобально уникальный
+	// slug и снимает её с публичного интернета — это публикационное
+	// решение (как Enabled в statusPagesUpdate), а не обычное снятие
+	// контента, поэтому оператору недостаточно (спека
+	// cld/plans/2026-08-08-access-model-rework.md). Невыключенную страницу
+	// оператор по-прежнему удаляет — она ещё никому не видна. Страница уже
+	// загружена loadManagedStatusPage, существование не секрет → честный
+	// 403, а не 404. CanManage — из того же гейта, что и loadManagedStatusPage
+	// (находка B4), второй поход в БД не нужен.
+	if sp.Enabled && !authz.CanManage {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не

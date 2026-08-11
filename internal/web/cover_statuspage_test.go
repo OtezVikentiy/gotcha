@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -130,6 +131,84 @@ func TestWebStatusPageOperator(t *testing.T) {
 	}
 	if created.Enabled {
 		t.Fatalf("Enabled = true, want false (operator create must not publish, form sent enabled=on)")
+	}
+}
+
+// TestWebStatusPageDeletePublicationGate — A3 (security P1-3): удаление
+// опубликованной страницы освобождает глобально уникальный slug и снимает
+// её с публичного интернета — это публикационное решение, а не обычная
+// правка контента, поэтому оператор без canManageProject не может удалить
+// Enabled=true страницу (только Enabled=false, ещё никому не видимую).
+// Admin/owner удаляет любую. Страница уже загружена loadManagedStatusPage
+// (существование не секрет) → честный 403, не 404.
+func TestWebStatusPageDeletePublicationGate(t *testing.T) {
+	s := newStatusPageStack(t)
+	proj, ownerCookie, memberCookie := statusPageProject(t, s, "spdel")
+	m := statusPageMonitor(t, s, proj.ID, "spdel-monitor", "https://example.com/spdel")
+
+	// Оператор удаляет неопубликованную страницу — обычное снятие контента.
+	unpub, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Slug: "spdel-unpub", Title: "Unpub", Enabled: false,
+	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
+	if err != nil {
+		t.Fatalf("create unpublished page: %v", err)
+	}
+	unpubPath := "/statuspages/" + strconv.FormatInt(unpub.ID, 10) + "/delete"
+	resp := postForm(t, s.srv, unpubPath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (operator, unpublished) = %d, want 303", unpubPath, resp.StatusCode)
+	}
+	if _, err := s.uptime.StatusPageByID(context.Background(), unpub.ID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("unpublished page must be gone after operator delete, err = %v", err)
+	}
+
+	// Оператор пытается удалить опубликованную страницу — 403, страница на
+	// месте (глобальный slug не освобождается по воле не-admin).
+	pub, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Slug: "spdel-pub", Title: "Pub", Enabled: true,
+	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
+	if err != nil {
+		t.Fatalf("create published page: %v", err)
+	}
+	pubPath := "/statuspages/" + strconv.FormatInt(pub.ID, 10) + "/delete"
+	resp = postForm(t, s.srv, pubPath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (operator, published) = %d, want 403: %s", pubPath, resp.StatusCode, body)
+	}
+	if got, err := s.uptime.StatusPageByID(context.Background(), pub.ID); err != nil || got.ID != pub.ID {
+		t.Fatalf("published page must survive operator delete attempt, got %+v, err = %v", got, err)
+	}
+
+	// Admin удаляет ту же опубликованную страницу — разрешено.
+	resp = postForm(t, s.srv, pubPath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (admin, published) = %d, want 303", pubPath, resp.StatusCode)
+	}
+	if _, err := s.uptime.StatusPageByID(context.Background(), pub.ID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("published page must be gone after admin delete, err = %v", err)
+	}
+
+	// Чужак (без отношения к организации) не видит даже существование
+	// страницы — 404, не 403 (тот же existence-oracle, что и раньше).
+	_, strangerCookie := orgSettingsRegister(t, s.auth, "spdel-stranger@example.com")
+	third, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Slug: "spdel-third", Title: "Third", Enabled: true,
+	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
+	if err != nil {
+		t.Fatalf("create third page: %v", err)
+	}
+	thirdPath := "/statuspages/" + strconv.FormatInt(third.ID, 10) + "/delete"
+	resp = postForm(t, s.srv, thirdPath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (stranger) = %d, want 404", thirdPath, resp.StatusCode)
 	}
 }
 

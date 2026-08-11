@@ -101,39 +101,31 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
-	h.renderAlerts(w, r, http.StatusOK, projectID, nil, "")
+	h.renderAlerts(w, r, http.StatusOK, projectID, authz.CanManage, nil, "")
 }
 
 // renderAlerts — общий рендер: GET-обработчик и все POST в этом файле на 422
 // (то же сообщение на месте, без редиректа — тот же принцип, что и у
-// renderProjectSettings/renderOrgSettings). Каналы для не-admin санируются
-// ДО передачи в шаблон (Target маскируется, Secret обнуляется) — секрет не
-// должен попасть в HTML оператора даже неотрендеренным.
-func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
+// renderProjectSettings/renderOrgSettings). Каналы тянутся через
+// channelsForView (находка B1) — единственную дверь, которая для не-admin
+// маскирует Target и зануляет Secret ДО передачи в шаблон, секрет не должен
+// попасть в HTML оператора даже неотрендеренным. canManage приходит от
+// вызывающего (гейт его уже посчитал — находка B4), а не резолвится здесь
+// заново отдельным canManageProject.
+func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, canManage bool, form templates.FormState, errMsg string) {
 	rules, err := h.Alerts.Rules(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	channels, err := h.Alerts.Channels(r.Context(), projectID)
+	channels, err := h.channelsForView(r.Context(), projectID, canManage)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
-	}
-	uid, _ := auth.UserID(r.Context())
-	canManage, err := h.canManageProject(r.Context(), projectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if !canManage {
-		for i := range channels {
-			channels[i].Target = maskChannelTarget(channels[i].Kind, channels[i].Target)
-			channels[i].Secret = ""
-		}
 	}
 	w.WriteHeader(status)
 	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, canManage, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
@@ -155,7 +147,8 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 	// Outbox может быть не проставлен (например, в узких тестовых стендах,
@@ -170,17 +163,19 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	canManage, err := h.canManageProject(r.Context(), projectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if !canManage {
+	if !authz.CanManage {
 		for i := range failed {
+			// A1: эшелон защиты сверх санации у источника (email.go/webhook.go) —
+			// last_error может нести секрет прежним отправителем/старой записью
+			// (миграция чистит только исторические строки на момент апгрейда), а
+			// сюда попадают и записи, поставленные до фикса источника. Редакция
+			// идёт по СЫРОМУ target — до его маскировки строкой ниже, иначе
+			// адрес/URL внутри last_error не с чем будет сопоставить.
+			failed[i].LastError = notify.RedactToken(failed[i].LastError, failed[i].Target)
 			failed[i].Target = maskChannelTarget(failed[i].ChannelKind, failed[i].Target)
 		}
 	}
-	_ = templates.AlertDeliveries(projectID, failed, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.AlertDeliveries(projectID, failed, authz.CanManage, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // alertsRulesSave — POST /projects/{id}/alerts/rules: одна форма сохраняет
@@ -211,7 +206,8 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -246,7 +242,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 	// оставались, а по перерисованной из БД форме понять, что сохранилось,
 	// было нельзя.
 	if err := h.Alerts.UpsertRules(r.Context(), rules); err != nil {
-		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, nil, alertsErrorMessage(r.Context(), err))
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, nil, alertsErrorMessage(r.Context(), err))
 		return
 	}
 	h.flashOK(w, "flash.rules_saved", 0)
@@ -290,10 +286,19 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 		Trusted:   formBool(r, "trusted"),
 	}
 	if _, err := h.Alerts.CreateChannel(r.Context(), c); err != nil {
+		// requireProjectRole выше уже требует owner/admin — canManage тут
+		// всегда true, но считаем явно (не хардкодим), тот же приём, что и в
+		// остальных обработчиках канала: renderAlerts больше не резолвит его
+		// сам (находка B4), значение просто переехало сюда с вызова.
+		canManage, cmErr := h.canManageProject(r.Context(), projectID, uid)
+		if cmErr != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
 		// Секрет намеренно НЕ возвращаем в форму: он и так вводится вслепую
 		// (type=password), а класть bot-токен обратно в HTML на странице с
 		// ошибкой — лишний повод ему оказаться в кеше или в скриншоте.
-		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID,
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, canManage,
 			templates.FormState{"kind": c.Kind, "target": c.Target,
 				"trusted": formBoolValue(r, "trusted")}.Open("new-channel"),
 			alertsErrorMessage(r.Context(), err))
@@ -386,8 +391,15 @@ func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
+		// requireProjectRole выше уже требует owner/admin — canManage тут
+		// всегда true, но считаем явно, тот же приём, что и в alertsChannelCreate.
+		canManage, cmErr := h.canManageProject(r.Context(), projectID, uid)
+		if cmErr != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
 		// Секрет в форму не возвращаем по той же причине, что и при создании.
-		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID,
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, canManage,
 			templates.FormState{"target": c.Target, "enabled": formBoolValue(r, "enabled"),
 				"trusted": formBoolValue(r, "trusted")}.
 				Open(templates.EditChannelModalID(channelID)),
@@ -546,7 +558,14 @@ func (h *Handler) alertsChannelTest(w http.ResponseWriter, r *http.Request) {
 		if len(reason) > 200 {
 			reason = reason[:200] + "…"
 		}
-		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, nil,
+		// requireProjectRole выше уже требует owner/admin — canManage тут
+		// всегда true, но считаем явно, тот же приём, что и в alertsChannelCreate.
+		canManage, cmErr := h.canManageProject(r.Context(), projectID, uid)
+		if cmErr != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.renderAlerts(w, r, http.StatusUnprocessableEntity, projectID, canManage, nil,
 			i18n.Tf(r.Context(), "err.channel_test_failed", "reason", reason))
 		return
 	}

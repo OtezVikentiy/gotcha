@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 )
 
 const defaultTelegramBaseURL = "https://api.telegram.org"
@@ -81,18 +80,8 @@ func (s *TelegramSender) Send(ctx context.Context, t Target, payload map[string]
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		// Defensive: scrub the token from the response snippet too, in
 		// case some proxy/error page happens to echo the request path.
-		snippet := redactToken(string(respBody), t.Secret)
+		snippet := RedactToken(string(respBody), t.Secret)
 		return fmt.Errorf("notify: telegram non-2xx status %d: %s", resp.StatusCode, snippet)
 	}
 	return nil
-}
-
-// redactToken replaces every occurrence of token in s with a placeholder.
-// No-op when token is empty (never redact against an empty needle, which
-// would otherwise match everywhere).
-func redactToken(s, token string) string {
-	if token == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, token, "<redacted>")
 }

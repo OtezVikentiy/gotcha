@@ -68,9 +68,9 @@ type Shell struct {
 	// Probes in the org subsections, and the project-settings link in the
 	// layout) so plain members never see links to pages that 404 for them.
 	CanManage bool
-	// CanOperate indicates whether the current user is an operator of the
-	// CURRENT project (OrgID+ProjectID scope): a team member with access to
-	// the project, or org owner/admin. В отличие от CanManage — скоуп
+	// CanOperate — является ли текущий пользователь оператором ТЕКУЩЕГО
+	// проекта (скоуп OrgID+ProjectID): участник команды с доступом к проекту
+	// либо owner/admin организации. В отличие от CanManage — скоуп
 	// проектный, не организационный: гейтит пункты мониторинга
 	// (metric_alerts, maintenance, status_pages, область alerts), которые
 	// требуют requireProjectOperator, а не requireProjectRole.
@@ -492,13 +492,20 @@ func firstSubsectionHref(s Shell, area string) string {
 // settings) or has no accessible subsection for that project. The probe
 // keeps the shell's CanManage and CanOperate as-is (not re-resolved for the
 // target project): CanManage is per-organization so this is mostly right,
-// and for the rare cross-organization switch — or a CanOperate that does not
-// hold on the target project (team membership is per-project) — the
-// fallback below stays the safe door.
+// and for a CanOperate that does not hold on the target project (team
+// membership is per-project) — the fallback below stays the safe door,
+// EXCEPT for "alerts": its subsection list collapses entirely to nil when
+// !CanOperate (см. Subsections), так что перенесённый CanOperate=true с
+// текущего проекта заставил бы firstSubsectionHref вернуть /alerts и для
+// целевого проекта, где пользователь оператором может не быть — а nav,
+// будучи чистым слоем без доступа к БД, пересчитать CanOperate для
+// целевого проекта не может. Поэтому «Оповещения» исключены из
+// per-project-переноса и всегда уводят на issues-фолбэк — единственную
+// посадочную область, валидную при любом уровне доступа.
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,
-		"uptime": true, "alerts": true,
+		"uptime": true,
 	}
 	if perProject[s.Area] {
 		target := s

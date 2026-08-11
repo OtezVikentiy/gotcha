@@ -2,9 +2,26 @@ package notify
 
 import (
 	"context"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
+
+// RedactToken replaces every occurrence of token in s with a placeholder.
+// No-op when token is empty (never redact against an empty needle, which
+// would otherwise match everywhere).
+//
+// Родилась в telegram.go как приём против эха bot-токена в non-2xx теле
+// ответа Telegram API; здесь вынесена в общий хелпер и экспортирована, чтобы
+// её же приёмом пользовались email.go/webhook.go (санация last_error у
+// источника) и web.alertDeliveriesPage (второй эшелон — санация уже
+// сохранённого last_error перед рендером не-admin'у).
+func RedactToken(s, token string) string {
+	if token == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, token, "<redacted>")
+}
 
 // externalSafeKeys — «белый список» полей payload, которые разрешено
 // раскрывать во внешние каналы (Telegram/webhook) при выключенном

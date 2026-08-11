@@ -335,6 +335,14 @@ func run() error {
 	var uptimeIngestor *uptime.Ingestor
 	if cfg.Mode == "web" || cfg.Mode == "uptime" || cfg.Mode == "all" {
 		uptimeSvc = uptime.NewService(pg)
+		// Значения HTTP-заголовков монитора шифруются этим мастер-ключом at-rest
+		// (той же логикой, что секреты каналов alert и SSO client_secret): роль
+		// operator не должна вычитывать из БД bearer-токены в заголовках. Dev-
+		// дефолт публично известен — шифровать им бессмысленно, оставляем
+		// plaintext, как для пустого ключа (см. orgSvc/alertSvc выше).
+		if cfg.SecretKey != devSecretKey {
+			uptimeSvc.SetSecretKey(cfg.SecretKey)
+		}
 		// Имя встроенного региона — конфигурируемое: Service.Regions предлагает
 		// его в форме монитора, и оно обязано совпадать с тем, которое лизит
 		// Runner ниже, иначе монитор попал бы в регион, который не проверяет

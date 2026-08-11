@@ -35,10 +35,18 @@ type MonitorFormData struct {
 	SelectedRegions  map[string]bool
 	AllChannels      []alert.Channel
 	SelectedChannels map[int64]bool
+	// CanManage — C3: не-admin видит замаскированный c.Target в
+	// channelCheckbox (channelsForView уже это делает); поле нужно только
+	// чтобы показать рядом объясняющую подсказку — почему это не баг.
+	CanManage bool
 
 	HTTPMethod          string
 	HTTPURL             string
 	HTTPHeaders         string
+	// HeadersMasked — значения заголовков показаны оператору маской (A2b):
+	// рисуем подсказку «пусто/**** = оставить прежнее». Ставится только на GET
+	// edit для не-admin с непустыми заголовками (web/monitorform.go).
+	HeadersMasked       bool
 	HTTPBody            string
 	HTTPExpectedStatus  string
 	HTTPBodyContains    string
@@ -116,6 +124,9 @@ templ httpFields(d MonitorFormData) {
 				{ i18n.T(ctx, "uptime.form.http.headers") }
 				<textarea name="http_headers" rows="4" class="input">{ d.HTTPHeaders }</textarea>
 			</label>
+			if d.HeadersMasked {
+				<span class="hint">{ i18n.T(ctx, "uptime.form.http.headers_masked_hint") }</span>
+			}
 		</div>
 		<div class="field">
 			<label>
@@ -367,6 +378,9 @@ templ MonitorForm(d MonitorFormData, userEmail string) {
 					if len(d.AllChannels) == 0 {
 						<p>{ i18n.T(ctx, "uptime.form.channels.empty") }</p>
 					} else {
+						if !d.CanManage {
+							<p class="hint">{ i18n.T(ctx, "alerts.channels.target_masked_hint") }</p>
+						}
 						for _, c := range d.AllChannels {
 							@channelCheckbox(c, d.SelectedChannels)
 						}

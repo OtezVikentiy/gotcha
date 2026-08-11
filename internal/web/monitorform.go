@@ -95,6 +95,93 @@ func headersToText(headers map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
+// maskedHeaderValue — плейсхолдер ЗНАЧЕНИЯ заголовка в форме монитора для
+// оператора (не canManageProject): имя заголовка остаётся видимым, значение
+// (bearer-токен, api-ключ) — нет. Тот же плейсхолдер служит сентинелом
+// «оставить прежнее»: оператор, не тронув строку, отправляет её обратно этой
+// же маской, и monitorUpdate восстанавливает сохранённое значение (A2b).
+const maskedHeaderValue = "****"
+
+// maskHeaderValues заменяет значения заголовков в тексте формы («Key: Value» по
+// строкам) на maskedHeaderValue, оставляя имена. Для оператора реальные
+// значения не должны попадать в HTML — тот же принцип, что маскировка цели
+// канала (mask.go) и обнуление секрета канала (renderAlerts). Строки без ":" и с
+// пустым ключом сохраняются как есть (их и так рисует textarea буквально).
+// Пустой текст → пустой (у монитора нет заголовков — нечего маскировать).
+func maskHeaderValues(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimRight(line, "\r")
+		idx := strings.Index(trimmed, ":")
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(trimmed[:idx])
+		if key == "" {
+			continue
+		}
+		lines[i] = key + ": " + maskedHeaderValue
+	}
+	return strings.Join(lines, "\n")
+}
+
+// isBlankOrMasked — значение заголовка, которое оператор «оставил прежним»:
+// пустое либо равное маске. parseHeaderLines уже тримит значения, но тримим и
+// здесь на случай прямого вызова.
+func isBlankOrMasked(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "" || v == maskedHeaderValue
+}
+
+// parseHTTPConfig нестрого разбирает http-конфиг монитора. Нужен там, где
+// заведомо http-config уже прошёл валидацию (merge/exfil в monitorUpdate) —
+// ошибки разбора здесь означают пустой конфиг, не отказ.
+func parseHTTPConfig(raw json.RawMessage) uptime.HTTPConfig {
+	var c uptime.HTTPConfig
+	_ = json.Unmarshal(raw, &c)
+	return c
+}
+
+// mergeKeptHeaders — keep-on-blank для оператора: значение заголовка, пришедшее
+// пустым или маской, заменяется прежним сохранённым (plaintext — stored берётся
+// из Get, который уже расшифровал). Имена, которых нет в submitted, не
+// добавляются (оператор удалил строку — заголовок удаляется); заголовок с
+// реальным новым значением остаётся как введён. stored для заголовка с маской
+// обязан существовать (маску оператор получает только для уже сохранённого
+// заголовка) — если вдруг нет, оставляем как пришло, валидность решит
+// validateMonitor.
+func mergeKeptHeaders(submitted, stored map[string]string) map[string]string {
+	if len(submitted) == 0 {
+		return submitted
+	}
+	out := make(map[string]string, len(submitted))
+	for name, val := range submitted {
+		if isBlankOrMasked(val) {
+			if prev, ok := stored[name]; ok {
+				out[name] = prev
+				continue
+			}
+		}
+		out[name] = val
+	}
+	return out
+}
+
+// hasBlankOrMaskedHeader — есть ли среди значений заголовков хоть одно
+// пустое/замаскированное. Используется блоком эксфильтрации: при смене URL все
+// значения должны быть введены заново.
+func hasBlankOrMaskedHeader(headers map[string]string) bool {
+	for _, v := range headers {
+		if isBlankOrMasked(v) {
+			return true
+		}
+	}
+	return false
+}
+
 func intsToText(vals []int) string {
 	strs := make([]string, len(vals))
 	for i, v := range vals {
@@ -354,35 +441,35 @@ func monitorFormErrorMessage(ctx context.Context, err error) string {
 // свежий список регионов организации и каналов проекта (нужны на каждый
 // рендер, включая 422 после неудачного POST — форма без них не сможет
 // отрисовать чекбоксы). Форма доступна оператору проекта (requireProjectOperator,
-// задача 2), а channelCheckbox рендерит цель канала буквально — тот же принцип,
-// что и renderAlerts (alerts.go): для не-admin (canManageProject=false) цель
-// маскируется, а Secret обнуляется ДО передачи в шаблон, секрет не должен
-// попасть в HTML оператора даже неотрендеренным.
-func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, status int, orgID int64, data templates.MonitorFormData, userEmail string) {
+// задача 2), а channelCheckbox рендерит цель канала буквально — каналы тянутся
+// через channelsForView (находка B1), ту же единственную дверь, что и у
+// renderAlerts (alerts.go): для не-admin (canManage=false) цель маскируется,
+// а Secret обнуляется ДО передачи в шаблон, секрет не должен попасть в HTML
+// оператора даже неотрендеренным. canManage приходит от вызывающего
+// (requireProjectOperator его уже посчитал — находка B4), а не резолвится
+// здесь заново отдельным canManageProject.
+func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, status int, orgID int64, canManage bool, data templates.MonitorFormData, userEmail string) {
+	// Все вызывающие уже гасят h.Uptime/h.Alerts == nil своим guard'ом выше по
+	// стеку — этот повторяет его на месте разыменования (тот же приём, что и
+	// issues.go:181/monitors.go:138), чтобы будущий вызов, забывший свой
+	// guard, получил 404, а не панику.
+	if h.Uptime == nil || h.Alerts == nil {
+		h.notFound(w, r)
+		return
+	}
 	regions, err := h.Uptime.Regions(r.Context(), orgID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	channels, err := h.Alerts.Channels(r.Context(), data.ProjectID)
+	channels, err := h.channelsForView(r.Context(), data.ProjectID, canManage)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
-	}
-	uid, _ := auth.UserID(r.Context())
-	canManage, err := h.canManageProject(r.Context(), data.ProjectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if !canManage {
-		for i := range channels {
-			channels[i].Target = maskChannelTarget(channels[i].Kind, channels[i].Target)
-			channels[i].Secret = ""
-		}
 	}
 	data.AllRegions = regions
 	data.AllChannels = channels
+	data.CanManage = canManage
 	w.WriteHeader(status)
 	_ = templates.MonitorForm(data, userEmail).Render(r.Context(), w)
 }
@@ -408,11 +495,11 @@ func (h *Handler) monitorNewPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	orgID, ok := h.requireProjectOperator(w, r, projectID, uid)
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
 	if !ok {
 		return
 	}
-	h.renderMonitorForm(w, r, http.StatusOK, orgID, monitorFormDefaults(projectID), h.currentEmail(r))
+	h.renderMonitorForm(w, r, http.StatusOK, authz.OrgID, authz.CanManage, monitorFormDefaults(projectID), h.currentEmail(r))
 }
 
 // monitorEditPage — GET /monitors/{id}/edit: та же форма, предзаполненная
@@ -435,11 +522,24 @@ func (h *Handler) monitorEditPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orgID, ok := h.requireProjectOperator(w, r, m.ProjectID, uid)
+	authz, ok := h.requireProjectOperator(w, r, m.ProjectID, uid)
 	if !ok {
 		return
 	}
-	h.renderMonitorForm(w, r, http.StatusOK, orgID, monitorFormFromMonitor(m), h.currentEmail(r))
+	data := monitorFormFromMonitor(m)
+	// A2b: значения заголовков http-монитора видит роль operator, а в них —
+	// секреты (bearer-токены, api-ключи). Оператору (не owner/admin) маскируем
+	// значения ДО шаблона — сырые в HTML не попадают (тот же принцип, что и
+	// маскировка каналов в renderMonitorForm, которая теперь использует тот же
+	// authz.CanManage — находка B4 убрала второй, независимый поход в БД,
+	// который был здесь раньше). Это ЕДИНСТВЕННЫЙ путь, где реальные
+	// сохранённые значения заголовков попали бы в форму: 422-перерисовки
+	// берут заголовки из запроса самого оператора (его же ввод), а не из БД.
+	if m.Kind == uptime.KindHTTP && !authz.CanManage {
+		data.HTTPHeaders = maskHeaderValues(data.HTTPHeaders)
+		data.HeadersMasked = data.HTTPHeaders != ""
+	}
+	h.renderMonitorForm(w, r, http.StatusOK, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
 }
 
 // monitorCreate — POST /projects/{id}/monitors: sameOrigin +
@@ -468,7 +568,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	orgID, ok := h.requireProjectOperator(w, r, projectID, uid)
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
 	if !ok {
 		return
 	}
@@ -485,7 +585,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, uptime.ErrInvalidMonitor) {
 			data := monitorFormFromRequest(r, projectID, 0, false, kind)
 			data.ErrMsg = monitorFormErrorMessage(r.Context(), err)
-			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, orgID, data, h.currentEmail(r))
+			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -596,7 +696,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orgID, ok := h.requireProjectOperator(w, r, m.ProjectID, uid)
+	authz, ok := h.requireProjectOperator(w, r, m.ProjectID, uid)
 	if !ok {
 		return
 	}
@@ -608,6 +708,40 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	upd, regions, channelIDs := parseMonitorForm(r, m.ProjectID, m.Kind, m.Enabled)
 	upd.ID = m.ID
 
+	// A2b: у оператора (не owner/admin) значения заголовков в форме были
+	// замаскированы, поэтому пустое/замаскированное значение означает «оставить
+	// прежнее», а не «стереть»; и смена URL у монитора с заголовками требует
+	// повторного ввода ВСЕХ значений — иначе оператор перецелил бы монитор на
+	// свой хост, сохранив чужой токен, и следующая же проверка отправила бы его
+	// туда (эксфильтрация). Admin видит реальные значения и не ограничен. m
+	// пришёл из Get — значения заголовков в m.Config уже расшифрованы (plaintext).
+	// canManage — из того же гейта, что и выше (находка B4), отдельный поход в
+	// БД здесь больше не нужен.
+	if m.Kind == uptime.KindHTTP && !authz.CanManage {
+		stored := parseHTTPConfig(m.Config)
+		submitted := parseHTTPConfig(upd.Config)
+		// Блок эксфильтрации ДО keep-on-blank: URL сменился и заголовки в игре
+		// (были у монитора или пришли в форме), но хоть одно значение пустое/
+		// замаскированное → 422. Проверяем до merge, иначе merge подставил бы
+		// прежние значения и увёл бы их на новый URL.
+		if submitted.URL != stored.URL && (len(stored.Headers) > 0 || len(submitted.Headers) > 0) {
+			if hasBlankOrMaskedHeader(submitted.Headers) {
+				data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
+				data.ErrMsg = i18n.T(r.Context(), "error.monitor.header_reentry_required")
+				h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
+				return
+			}
+		}
+		// keep-on-blank: пустое/замаскированное значение → прежнее сохранённое.
+		submitted.Headers = mergeKeptHeaders(submitted.Headers, stored.Headers)
+		merged, err := json.Marshal(submitted)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		upd.Config = merged
+	}
+
 	if err := h.Uptime.Update(r.Context(), upd, regions, channelIDs); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
@@ -616,7 +750,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, uptime.ErrInvalidMonitor) {
 			data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
 			data.ErrMsg = monitorFormErrorMessage(r.Context(), err)
-			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, orgID, data, h.currentEmail(r))
+			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))

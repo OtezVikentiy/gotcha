@@ -100,11 +100,12 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 		// CanOperate — проектный скоуп: участник команды текущего
 		// проекта (или owner/admin). Без выбранного проекта поднимать
 		// нечего — пункты мониторинга живут только внутри проекта.
-		var canOperate bool
-		if projID != 0 {
-			ok, err := h.Org.CanAccessProject(ctx, uid, projID)
-			canOperate = err == nil && ok
-		}
+		// projID уже сверен со списком доступных пользователю проектов
+		// (projs, из ProjectsForUser) выше — тем же accessCondition, что и
+		// CanAccessProject (задача C2: подтверждена буквальная
+		// эквивалентность обоих запросов), поэтому отдельный поход в БД
+		// здесь не нужен.
+		canOperate := projID != 0 && projectInList(projs, projID)
 
 		sh := nav.Shell{
 			UserEmail: email,

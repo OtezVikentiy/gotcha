@@ -153,7 +153,8 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 // для memberRow — см. её комментарий и security fix задачи 2). usage —
 // счётчик событий организации за текущий месяц (org.Usage), o.EventQuota —
 // её месячный лимит (0 = безлимит).
-// SSOSettings — данные секции SSO (этап 10). Видна только owner'у; секрет не
+// SSOSettings — данные секции SSO (этап 10). Видна owner'у организации либо
+// admin'у инстанса (см. CanConfigure ниже и sso.md); секрет не
 // пре-заполняется (Configured сигналит «настроено»).
 type SSOSettings struct {
 	IsOwner     bool
@@ -443,7 +444,8 @@ templ dangerZoneSection(orgID int64, isOwner bool) {
 	</section>
 }
 
-// ssoSection — секция настроек enterprise-SSO (этап 10, только owner).
+// ssoSection — секция настроек enterprise-SSO (этап 10, owner орга либо admin
+// инстанса — см. SSOSettings выше).
 templ ssoSection(orgID int64, sso SSOSettings) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "org.sso.title") }</h2>

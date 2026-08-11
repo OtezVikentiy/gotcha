@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -30,10 +31,57 @@ type Service struct {
 	// регион, который никто не лизит, не будет проверяться НИКОГДА (см.
 	// localRegion).
 	LocalRegion string
+
+	// secretKey/secretKeySet — мастер-ключ шифрования ЗНАЧЕНИЙ HTTP-заголовков
+	// монитора at-rest (тот же GOTCHA_SECRET_KEY, что у alert.Service для
+	// секретов каналов и org для SSO client_secret). Пустой ключ (dev) —
+	// заголовки хранятся plaintext, читатель распознаёт по отсутствию префикса
+	// "enc:". Ставится из main.go.
+	secretKey    [32]byte
+	secretKeySet bool
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
+}
+
+// SetSecretKey включает шифрование значений HTTP-заголовков монитора at-rest тем
+// же мастер-ключом, что и остальные секреты продукта. Пустой ключ (dev) →
+// заголовки хранятся plaintext (openHTTPHeaders распознаёт это по отсутствию
+// префикса "enc:"). Мирроринг alert.Service.SetSecretKey.
+func (s *Service) SetSecretKey(raw string) {
+	if raw == "" {
+		return
+	}
+	s.secretKey = sha256.Sum256([]byte(raw))
+	s.secretKeySet = true
+}
+
+// encryptMonitorConfig возвращает config со ЗАШИФРОВАННЫМИ значениями заголовков
+// (только kind=http и только при заданном ключе); иначе config без изменений.
+// Применяется на записи (Create/Update): в БД значения заголовков не должны
+// лежать plaintext — их видит роль operator.
+func (s *Service) encryptMonitorConfig(kind Kind, raw json.RawMessage) (json.RawMessage, error) {
+	if !s.secretKeySet || kind != KindHTTP {
+		return raw, nil
+	}
+	return sealHTTPHeaders(s.secretKey, raw)
+}
+
+// decryptMonitorConfig расшифровывает значения заголовков http-монитора на месте.
+// Для прочих типов и при отсутствии ключа — no-op. Ошибка означает неразбираемый
+// ciphertext (сменившийся GOTCHA_SECRET_KEY): вызывающий решает, ронять операцию
+// (Get) или деградировать поштучно (lease), не убивая всю партию.
+func (s *Service) decryptMonitorConfig(m *Monitor) error {
+	if !s.secretKeySet || m.Kind != KindHTTP {
+		return nil
+	}
+	opened, err := openHTTPHeaders(s.secretKey, m.Config)
+	if err != nil {
+		return err
+	}
+	m.Config = opened
+	return nil
 }
 
 // localRegion — имя встроенного региона: LocalRegion, а если не задано —
@@ -190,6 +238,13 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 		heartbeatTokenHashVal = heartbeatTokenHash(m.HeartbeatToken)
 	}
 
+	// Значения заголовков шифруем at-rest; в возвращаемом мониторе m.Config
+	// остаётся plaintext (сервис отдаёт расшифрованное — форме и живой проверке).
+	storedConfig, err := s.encryptMonitorConfig(m.Kind, m.Config)
+	if err != nil {
+		return Monitor{}, fmt.Errorf("uptime: create: %w", err)
+	}
+
 	err = tx.QueryRow(ctx, `
 		INSERT INTO monitors (project_id, name, kind, enabled, interval_seconds, timeout_seconds,
 			config, fail_threshold, recovery_threshold, consensus, remind_every_minutes,
@@ -197,7 +252,7 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, created_at`,
 		m.ProjectID, m.Name, string(m.Kind), m.Enabled, m.IntervalSeconds, m.TimeoutSeconds,
-		m.Config, m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes,
+		storedConfig, m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes,
 		m.SSLAlertDays, heartbeatTokenHashVal, m.Retries,
 	).Scan(&m.ID, &m.CreatedAt)
 	if err != nil {
@@ -256,12 +311,20 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 		return err
 	}
 
+	// Значения заголовков шифруем at-rest (kind берётся из БД выше). Это же —
+	// точка ленивой миграции старых plaintext-записей: форма грузит монитор через
+	// Get (расшифровка), пользователь сохраняет — Update кладёт обратно enc:.
+	storedConfig, err := s.encryptMonitorConfig(m.Kind, m.Config)
+	if err != nil {
+		return fmt.Errorf("uptime: update: %w", err)
+	}
+
 	tag, err := tx.Exec(ctx, `
 		UPDATE monitors SET name=$2, enabled=$3, interval_seconds=$4, timeout_seconds=$5,
 			config=$6, fail_threshold=$7, recovery_threshold=$8, consensus=$9,
 			remind_every_minutes=$10, ssl_alert_days=$11, retries=$12
 		WHERE id = $1`,
-		m.ID, m.Name, m.Enabled, m.IntervalSeconds, m.TimeoutSeconds, m.Config,
+		m.ID, m.Name, m.Enabled, m.IntervalSeconds, m.TimeoutSeconds, storedConfig,
 		m.FailThreshold, m.RecoveryThreshold, string(m.Consensus), m.RemindEveryMinutes, m.SSLAlertDays, m.Retries)
 	if err != nil {
 		return fmt.Errorf("uptime: update: %w", err)
@@ -404,6 +467,11 @@ func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 		}
 		return Monitor{}, fmt.Errorf("uptime: get: %w", err)
 	}
+	// Отдаём расшифрованные значения заголовков: этим Get кормит и форму
+	// редактирования (A2b её маскирует), и разовую живую проверку.
+	if err := s.decryptMonitorConfig(&m); err != nil {
+		return Monitor{}, fmt.Errorf("uptime: get: decrypt headers: %w", err)
+	}
 
 	regions, err := regionsOf(ctx, s.pool, monitorID)
 	if err != nil {
@@ -441,6 +509,10 @@ func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 // одинаково отсекает и «монитора больше нет», и «монитор чужого проекта» —
 // то же самое единственное решение (не показывать монитор на странице), что
 // принимал раньше отдельный errors.Is(err, ErrNotFound) до объединения.
+//
+// ВНИМАНИЕ: как и List, Config здесь НЕ расшифрован — значения заголовков
+// возвращаются в виде enc: (потребителю-статус-странице они не нужны). Не
+// скармливать обратно в Update; за реальными заголовками — в Get.
 func (s *Service) GetBatch(ctx context.Context, monitorIDs []int64) (map[int64]Monitor, error) {
 	out := make(map[int64]Monitor, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -486,6 +558,13 @@ func (s *Service) GetBatch(ctx context.Context, monitorIDs []int64) (map[int64]M
 
 // List возвращает мониторы проекта, отсортированные по name, вместе с их
 // regions (ChannelIDs не заполняются — см. Get).
+//
+// ВНИМАНИЕ: Config здесь НЕ расшифрован (в отличие от Get) — значения заголовков
+// http-мониторов возвращаются как лежат в БД (enc:). Списочной и статус-странице
+// значения заголовков не нужны, поэтому plaintext-секреты по этому пути не
+// размазываем. Нельзя скармливать этот Config обратно в Update: sealHTTPHeaders
+// идемпотентен и не перешифрует enc:, но полагаться на это как на контракт не
+// стоит — кому нужны реальные заголовки, берёт монитор через Get.
 func (s *Service) List(ctx context.Context, projectID int64) ([]Monitor, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT id, "+monitorColumns+" FROM monitors WHERE project_id = $1 ORDER BY name", projectID)

@@ -27,11 +27,14 @@ func TestTelegramBaseURL(t *testing.T) {
 }
 
 // TestRedactToken — токен вырезается из строки; пустой токен не меняет строку.
+// RedactToken живёт в redact.go (промотирован из telegram.go — общий
+// хелпер для email.go/webhook.go/web.alertDeliveriesPage, см. A1), но тест
+// остаётся здесь вместе с остальными тестами чистых функций пакета.
 func TestRedactToken(t *testing.T) {
-	if got := redactToken("url/bot123:secret/x", ""); got != "url/bot123:secret/x" {
+	if got := RedactToken("url/bot123:secret/x", ""); got != "url/bot123:secret/x" {
 		t.Errorf("пустой токен не должен ничего менять: %q", got)
 	}
-	got := redactToken("GET https://api/bot987:AAA/send", "987:AAA")
+	got := RedactToken("GET https://api/bot987:AAA/send", "987:AAA")
 	if strings.Contains(got, "987:AAA") || !strings.Contains(got, "<redacted>") {
 		t.Errorf("токен не вырезан: %q", got)
 	}

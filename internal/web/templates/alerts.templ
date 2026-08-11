@@ -296,6 +296,13 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 
 			<section class="alerts-section">
 				<h2>{ i18n.T(ctx, "alerts.channels.title") }</h2>
+				if !canManage && len(channels) > 0 {
+					// C3: без этой строки замаскированный адрес читается как баг
+					// («почему тут мусор вместо получателя?»), а не как намеренная
+					// приватность — teams.md обещал маску, но нигде в UI её не
+					// объяснял.
+					<p class="hint">{ i18n.T(ctx, "alerts.channels.target_masked_hint") }</p>
+				}
 				if len(channels) == 0 {
 					@emptyState("bell", "alerts.channels.empty.title", "alerts.channels.empty.body", "", "", 3)
 				} else {

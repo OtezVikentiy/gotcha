@@ -140,7 +140,10 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 			rng.Key != RangeAll,
 	}
 	banner := h.quotaBanner(r.Context(), orgID, canManage)
-	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage)
+	// canAccess здесь эквивалентен canOperateProject (C5): последний сегодня
+	// буквально вызывает CanAccessProject (см. operate.go), а доступ к
+	// странице issues уже подтверждён им выше — второй поход в БД не нужен.
+	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage, canAccess)
 	// canManage больше не передаётся (№117): шаблон его не использовал —
 	// роль питает QuotaBanner и GettingStartedVM выше.
 	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs).Render(r.Context(), w)
@@ -160,8 +163,8 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 // тестовых стендов), а сами запросы — упасть с ошибкой сети/БД. Ни то, ни
 // другое не должно ронять страницу issues 500-й — недостающий сигнал просто
 // трактуется как «шаг ещё не закрыт», а причина логируется на Warn.
-func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int64, canManage bool) templates.GettingStartedVM {
-	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID, CanManage: canManage}
+func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int64, canManage, canOperate bool) templates.GettingStartedVM {
+	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID, CanManage: canManage, CanOperate: canOperate}
 
 	// №71: скрытый пользователем чек-лист не считается и не рендерится —
 	// пустая VM с CanManage=false никогда не пройдёт условие показа.
@@ -177,6 +180,11 @@ func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int6
 		gs.Step2Done = exists
 	}
 
+	// B1: Channels() здесь вызывается напрямую, мимо channelsForView —
+	// намеренно (allowlist-запись "count-only" в internal/guards). Результат
+	// идёт только в len(channels) ниже, ни Target, ни Secret никогда не
+	// покидают эту функцию — маскировать нечего, а гонять через дверь ради
+	// счётчика было бы лишним чтением.
 	if h.Alerts == nil {
 		slog.Warn("gettingStarted: Alerts service not configured", "project_id", projectID)
 	} else if channels, err := h.Alerts.Channels(ctx, projectID); err != nil {

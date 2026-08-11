@@ -107,7 +107,18 @@ func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]a
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("notify: webhook non-2xx status %d: %s", resp.StatusCode, respBody)
+		// respBody приходит от чужого (возможно, сломанного или враждебного)
+		// сервера и в теории может отразить сам запрос — целиком URL цели
+		// (который несёт токен/HMAC-секрет в пути или query, как *url.Error
+		// выше) либо только его путь. Прогоняем через ту же редакцию, что и
+		// Telegram, дважды: сперва целым Target (полный URL), затем отдельно
+		// путём — путь мог быть отражён относительным, без схемы/хоста, и
+		// тогда первый проход его не поймает.
+		snippet := RedactToken(string(respBody), t.Target)
+		if u, perr := url.Parse(t.Target); perr == nil && u.Path != "" && u.Path != "/" {
+			snippet = RedactToken(snippet, u.Path)
+		}
+		return fmt.Errorf("notify: webhook non-2xx status %d: %s", resp.StatusCode, snippet)
 	}
 	return nil
 }
