@@ -199,9 +199,16 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, can
 					<button type="submit" form={ statusPageFormID(f) } class="btn btn-primary">
 						{ i18n.T(ctx, "uptime.statuspages.submit_save") }
 					</button>
-					<form method="post" action={ templ.URL(statusPageDeletePath(f.ID)) } class="status-page-delete-form">
-						<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
-					</form>
+					// Удаление ОПУБЛИКОВАННОЙ страницы — зона canManage (снятие из
+					// интернета + релиз глобального slug), сервер режет оператора 403
+					// (statuspage.go: statusPagesDelete). Кнопку, которая всё равно
+					// упрётся в 403, оператору не показываем — как со slug/enabled
+					// выше. Невыключенную (черновик) оператор удаляет свободно.
+					if canManage || !f.Enabled {
+						<form method="post" action={ templ.URL(statusPageDeletePath(f.ID)) } class="status-page-delete-form">
+							<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
+						</form>
+					}
 				}
 			</div>
 		</div>

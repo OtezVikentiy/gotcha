@@ -179,6 +179,21 @@ func TestStatusPagesSettings(t *testing.T) {
 	if strings.Count(outOperator, `name="slug"`) != 1 {
 		t.Errorf("оператор должен видеть slug только в форме создания, got %d occurrences", strings.Count(outOperator, `name="slug"`))
 	}
+	// Кнопка удаления ОПУБЛИКОВАННОЙ страницы (forms[0].Enabled == true) —
+	// зона canManage: сервер режет оператора 403 (statuspage.go), поэтому у
+	// оператора кнопки нет вовсе, а у управляющего — есть.
+	if strings.Contains(outOperator, "status-page-delete-form") {
+		t.Error("оператор не должен видеть кнопку удаления опубликованной статус-страницы")
+	}
+	if !strings.Contains(out, "status-page-delete-form") {
+		t.Error("управляющий должен видеть кнопку удаления статус-страницы")
+	}
+	// Черновик (Enabled == false) оператор удаляет свободно — кнопка есть.
+	draft := []StatusPageForm{{ID: 2, Slug: "draft", Title: "Черновик", Enabled: false}}
+	outOperatorDraft := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", draft, newForm, false, "", "u@e.com"))
+	if !strings.Contains(outOperatorDraft, "status-page-delete-form") {
+		t.Error("оператор должен видеть кнопку удаления НЕопубликованной статус-страницы")
+	}
 }
 
 // TestPublicStatusPage — публичная статус-страница со всеми сводными статусами,
