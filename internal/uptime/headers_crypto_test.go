@@ -211,6 +211,80 @@ func TestUpdateDoesNotDoubleEncryptHeaders(t *testing.T) {
 	}
 }
 
+// TestEncryptLegacyHeadersBackfill — разовый бэкфилл дошифровывает заголовки
+// монитора, сохранённого ДО включения шифрования (plaintext at-rest), не трогая
+// уже зашифрованные и не переписывая записи без plaintext-заголовков.
+// Идемпотентен: повторный вызов ничего не обновляет.
+func TestEncryptLegacyHeadersBackfill(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	// Легаси: сервис БЕЗ ключа сохраняет заголовки plaintext.
+	legacySvc := uptime.NewService(pool)
+	legacyM, err := legacySvc.Create(ctx, httpMonitorWithHeaders(t, pid, map[string]string{
+		"Authorization": "Bearer legacy-plaintext",
+	}), []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create legacy monitor: %v", err)
+	}
+	if got := rawConfigOf(t, pool, legacyM.ID).Headers["Authorization"]; got != "Bearer legacy-plaintext" {
+		t.Fatalf("precondition: legacy header must be plaintext at rest, got %q", got)
+	}
+
+	// Теперь шифрование включено. Новый монитор рождается уже enc:.
+	svc := uptime.NewService(pool)
+	svc.SetSecretKey("backfill-master-key")
+	encM, err := svc.Create(ctx, httpMonitorWithHeaders(t, pid, map[string]string{
+		"Authorization": "Bearer born-encrypted",
+	}), []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create encrypted monitor: %v", err)
+	}
+	encBefore := rawConfigOf(t, pool, encM.ID).Headers["Authorization"]
+	if !strings.HasPrefix(encBefore, secretbox.EncPrefix) {
+		t.Fatalf("precondition: new monitor header must be enc:, got %q", encBefore)
+	}
+
+	// Бэкфилл: легаси-монитор дошифрован, уже-enc: — нетронут.
+	n, err := svc.EncryptLegacyHeaders(ctx)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("backfill updated %d monitors, want 1 (только легаси)", n)
+	}
+	if got := rawConfigOf(t, pool, legacyM.ID).Headers["Authorization"]; !strings.HasPrefix(got, secretbox.EncPrefix) {
+		t.Fatalf("legacy header not encrypted after backfill: %q", got)
+	}
+	if got := rawConfigOf(t, pool, encM.ID).Headers["Authorization"]; got != encBefore {
+		t.Fatalf("already-encrypted header must be untouched, was %q now %q", encBefore, got)
+	}
+
+	// Значение расшифровывается обратно в исходное (не двойное шифрование).
+	got, err := svc.Get(ctx, legacyM.ID)
+	if err != nil {
+		t.Fatalf("get legacy: %v", err)
+	}
+	var cfg uptime.HTTPConfig
+	if err := json.Unmarshal(got.Config, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.Headers["Authorization"] != "Bearer legacy-plaintext" {
+		t.Fatalf("backfilled header decrypts to %q, want original plaintext", cfg.Headers["Authorization"])
+	}
+
+	// Идемпотентность: второй прогон ничего не переписывает.
+	n2, err := svc.EncryptLegacyHeaders(ctx)
+	if err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second backfill updated %d, want 0 (идемпотентность)", n2)
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

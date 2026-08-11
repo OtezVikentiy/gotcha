@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
 var (
@@ -82,6 +85,69 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 	}
 	m.Config = opened
 	return nil
+}
+
+// EncryptLegacyHeaders разово дошифровывает значения HTTP-заголовков мониторов,
+// сохранённых до включения шифрования (A2a): переход штатно ленивый — старое
+// значение шифруется при следующем Update монитора, — но пока оператор не
+// пересохранит монитор, его заголовки лежат в БД plaintext. Читательский вектор
+// оператора закрыт маской независимо от формата хранения, поэтому эксплуатируемой
+// дыры нет; это второй эшелон — «защита от чтения БД в обход приложения». Метод
+// достраивает его для существующих записей: вызывается один раз на старте после
+// SetSecretKey (main.go). Идемпотентен — уже-enc: значения sealHTTPHeaders не
+// трогает, а строки без plaintext-заголовков не переписываются вовсе. Возвращает
+// число обновлённых мониторов. Без ключа (dev) — no-op.
+func (s *Service) EncryptLegacyHeaders(ctx context.Context) (int, error) {
+	if !s.secretKeySet {
+		return 0, nil
+	}
+	rows, err := s.pool.Query(ctx, "SELECT id, config FROM monitors WHERE kind = $1", string(KindHTTP))
+	if err != nil {
+		return 0, err
+	}
+	// Собираем кандидатов ДО апдейтов: держать rows открытыми и параллельно
+	// слать UPDATE по тому же пулу нельзя. Кандидат — монитор с хотя бы одним
+	// plaintext-значением заголовка (без префикса enc:).
+	type candidate struct {
+		id  int64
+		cfg json.RawMessage
+	}
+	var todo []candidate
+	for rows.Next() {
+		var id int64
+		var cfg json.RawMessage
+		if err := rows.Scan(&id, &cfg); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		var hc HTTPConfig
+		if err := json.Unmarshal(cfg, &hc); err != nil {
+			continue // неразбираемый config — не наш формат, пропускаем
+		}
+		for _, v := range hc.Headers {
+			if v != "" && !strings.HasPrefix(v, secretbox.EncPrefix) {
+				todo = append(todo, candidate{id: id, cfg: cfg})
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	rows.Close()
+
+	updated := 0
+	for _, c := range todo {
+		sealed, err := sealHTTPHeaders(s.secretKey, c.cfg)
+		if err != nil {
+			return updated, err
+		}
+		if _, err := s.pool.Exec(ctx, "UPDATE monitors SET config = $2 WHERE id = $1", c.id, sealed); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
 }
 
 // localRegion — имя встроенного региона: LocalRegion, а если не задано —

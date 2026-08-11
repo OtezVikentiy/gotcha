@@ -342,6 +342,17 @@ func run() error {
 		// plaintext, как для пустого ключа (см. orgSvc/alertSvc выше).
 		if cfg.SecretKey != devSecretKey {
 			uptimeSvc.SetSecretKey(cfg.SecretKey)
+			// Второй эшелон A2a: разово дошифровать заголовки мониторов,
+			// сохранённых ДО включения шифрования (штатный переход ленивый — при
+			// следующем Update монитора). Идемпотентно (уже-enc: не трогает) и
+			// race-safe между репликами. Не фатально: ленивый путь и маска на
+			// чтении держат защиту и без бэкфилла, поэтому ошибку логируем, а не
+			// роняем старт.
+			if n, err := uptimeSvc.EncryptLegacyHeaders(ctx); err != nil {
+				slog.Warn("encrypt legacy monitor headers failed", "err", err)
+			} else if n > 0 {
+				slog.Info("encrypted legacy monitor headers", "monitors", n)
+			}
 		}
 		// Имя встроенного региона — конфигурируемое: Service.Regions предлагает
 		// его в форме монитора, и оно обязано совпадать с тем, которое лизит
