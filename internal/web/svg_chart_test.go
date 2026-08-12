@@ -66,6 +66,47 @@ func TestMetricSeriesMarkupThresholdInDomain(t *testing.T) {
 	}
 }
 
+// TestMetricSeriesMarkupIgnoresInf — P2-14: домен Y фильтрует NaN, но должен
+// так же фильтровать ±Inf. Одна Inf-точка иначе сделала бы domMax-domMin
+// бесконечным и NaN-координаты получили бы ВСЕ точки, а не только сбойная —
+// весь график сломался бы, а не одна точка на нём.
+func TestMetricSeriesMarkupIgnoresInf(t *testing.T) {
+	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	points := []metric.Point{
+		{T: base, V: 10},
+		{T: base.Add(30 * time.Minute), V: math.Inf(1)},
+		{T: base.Add(time.Hour), V: 25},
+	}
+	out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+	if strings.Contains(out, "NaN") || strings.Contains(out, "Inf") {
+		t.Errorf("Inf point must not leak into coordinates: %s", out)
+	}
+	// Домен должен остаться ограниченным конечными точками (10..25), не
+	// растянутым в бесконечность.
+	if !strings.Contains(out, "10 ms") || !strings.Contains(out, "25 ms") {
+		t.Errorf("finite domain from non-Inf points expected: %s", out)
+	}
+}
+
+// TestMetricSeriesMarkupFlatSeriesSingleYLabel — P2-15: плоский ряд
+// (dataMin == dataMax) с alert-threshold, отличным от значения ряда, рисовал
+// три Y-подписи (max/середина/min), совпадающие по значению и координате —
+// три наложенных друг на друга подписи и линии. Для плоского ряда должна
+// остаться одна подпись.
+func TestMetricSeriesMarkupFlatSeriesSingleYLabel(t *testing.T) {
+	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	points := []metric.Point{{T: base, V: 5}, {T: base.Add(time.Hour), V: 5}}
+	thresholds := []metricThreshold{{Value: 20, Comparator: "gt"}}
+	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, 720, 200)
+
+	// Только подписи оси Y используют этот атрибутный набор — в отличие от
+	// hover-band тултипов (<title>…) и порога, которые тоже могут содержать
+	// "5 ms"/"20 ms" в тексте.
+	if got := strings.Count(out, `dominant-baseline="middle" fill="currentColor">5 ms</text>`); got != 1 {
+		t.Errorf("flat series must draw a single Y-axis label, got %d: %s", got, out)
+	}
+}
+
 // TestChartBarsAxes — график частоты событий рисует оси и подписи максимума и
 // времени, столбики попадают в область графика.
 func TestChartBarsAxes(t *testing.T) {

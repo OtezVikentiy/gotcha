@@ -37,10 +37,16 @@ func TestResolveTimeRange(t *testing.T) {
 		t.Errorf("period=7d: Key=%q cookie=%q, want 7d/7d", tr.Key, setCookieValue(w))
 	}
 
-	// "all" используется, но НЕ записывается.
+	// "all" на странице, которая его не предлагает (def="24h", как в этом
+	// тесте — только issues.go зовёт resolveTimeRange с def=RangeAll),
+	// откатывается на дефолт страницы, а не тихо отдаёт TimeRange с нулевыми
+	// From/To (находка P1-6: график с нулевым окном рисовал пустую страницу
+	// без единой ошибки — см. parseTimeRange). Ведёт себя как любой другой
+	// нераспознанный на этой странице period ("bogus" и т.п.): дефолт
+	// становится действующим пресетом и, как обычный пресет, запоминается.
 	tr, w = resolve("/x?period=all", "")
-	if tr.Key != RangeAll || setCookieValue(w) != "" {
-		t.Errorf("period=all: Key=%q cookie=%q, want all/пусто", tr.Key, setCookieValue(w))
+	if tr.Key != "24h" || setCookieValue(w) != "24h" {
+		t.Errorf("period=all (def=24h): Key=%q cookie=%q, want 24h/24h", tr.Key, setCookieValue(w))
 	}
 
 	// Custom-диапазон используется, но НЕ записывается.

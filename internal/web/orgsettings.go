@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -63,13 +62,8 @@ func inviteAcceptPath(token string) string {
 	return "/invite/" + token
 }
 
-// reInviteEmail — та же намеренно простая проверка формата, что и
-// auth.reEmail (не экспортирован оттуда): один @, непустые локальная часть
-// и домен, в домене есть точка.
-var reInviteEmail = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-
 func validInviteEmail(email string) bool {
-	return email != "" && len(email) <= 254 && reInviteEmail.MatchString(email)
+	return email != "" && auth.ValidEmailFormat(email)
 }
 
 // orgSettingsErrorMessage переводит доменные ошибки org.Service в
@@ -724,9 +718,10 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 // метрик/профилей в месяц). Доступ только owner/admin (requireOrgRole — та же
 // граница, что и у остальных настроек организации). Отрицательное или
 // нечисловое значение любого поля → 422 (ErrInvalidQuota), причём ДО применения
-// каких-либо изменений (сначала полностью валидируем все поля, потом сохраняем),
-// чтобы отклонённый POST не оставил часть квот изменёнными. Пустое/отсутствующее
-// поле пропускается (эту квоту не трогаем); 0 = безлимит (org.Set*Quota).
+// каких-либо изменений (сначала полностью валидируем все поля, потом сохраняем
+// их ОДНИМ вызовом org.SetQuotas — единый UPDATE, а не цикл отдельных Set*Quota,
+// так что сбой БД на применении не может оставить квоты частично изменёнными).
+// Пустое/отсутствующее поле пропускается (эту квоту не трогаем); 0 = безлимит.
 func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -748,22 +743,18 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	// Поля rate-guard и их сеттеры. Порядок фиксирован; применяем только после
-	// того, как все присланные поля прошли валидацию.
+	// Поля rate-guard и указатели, куда положить распарсенное значение.
+	// Порядок фиксирован; nil-поле после парсинга = не прислано = не трогаем.
+	var event, transaction, metric, profile *int64
 	fields := []struct {
 		name string
-		set  func(context.Context, int64, int64) error
+		dst  **int64
 	}{
-		{"event_quota", h.Org.SetQuota},
-		{"transaction_quota", h.Org.SetTransactionQuota},
-		{"metric_quota", h.Org.SetMetricQuota},
-		{"profile_quota", h.Org.SetProfileQuota},
+		{"event_quota", &event},
+		{"transaction_quota", &transaction},
+		{"metric_quota", &metric},
+		{"profile_quota", &profile},
 	}
-	type pending struct {
-		set   func(context.Context, int64, int64) error
-		value int64
-	}
-	var toApply []pending
 	for _, f := range fields {
 		raw := strings.TrimSpace(r.FormValue(f.name))
 		if raw == "" {
@@ -774,13 +765,11 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 			h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), org.ErrInvalidQuota), "", nil)
 			return
 		}
-		toApply = append(toApply, pending{set: f.set, value: v})
+		*f.dst = &v
 	}
-	for _, p := range toApply {
-		if err := p.set(r.Context(), orgID, p.value); err != nil {
-			h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
-			return
-		}
+	if err := h.Org.SetQuotas(r.Context(), orgID, event, transaction, metric, profile); err != nil {
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
+		return
 	}
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }

@@ -136,7 +136,10 @@ func (c *statusCache) load(ctx context.Context, key string, now time.Time, build
 	c.mu.Lock()
 	delete(c.inflight, key)
 	if b.err == nil {
-		c.putLocked(key, b.view, now)
+		// TTL отсчитывается от завершения сборки, а не от захода в load: на
+		// медленной сборке (до statusPageBuildTimeout) запись, положенная
+		// от исходного now, жила бы заметно меньше заявленных 30с.
+		c.putLocked(key, b.view, time.Now())
 	}
 	c.mu.Unlock()
 

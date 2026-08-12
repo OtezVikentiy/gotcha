@@ -194,6 +194,21 @@ func TestWebTraceWaterfall(t *testing.T) {
 		t.Fatalf("GET %s (outsider) status = %d, want 404", tracePath, resp.StatusCode)
 	}
 
+	// trace_id в другом регистре (P2-5 из аудита 2026-08-12): в БД trace_id
+	// всегда лоуркейснут ingest.normalizeID, так что запрос с тем же id, но в
+	// верхнем регистре, должен резолвиться в тот же трейс, а не давать ложный
+	// 404.
+	upperPath := "/traces/" + strings.ToUpper(traceID)
+	resp = getWithCookie(t, s.srv, upperPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (uppercase trace_id) status = %d, want 200: %s", upperPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "<svg") {
+		t.Fatalf("GET %s (uppercase trace_id) missing <svg: %s", upperPath, body)
+	}
+
 	// Несуществующий trace_id → 404.
 	resp = getWithCookie(t, s.srv, "/traces/nope-nope", ownerCookie)
 	io.Copy(io.Discard, resp.Body)

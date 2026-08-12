@@ -19,9 +19,20 @@ var (
 	ErrInvalidEmail       = errors.New("auth: invalid email")
 )
 
-// reEmail — намеренно простая проверка формата (не полная RFC 5322):
-// один @, непустые локальная часть и домен, в домене есть точка.
-var reEmail = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+// reEmail — намеренно простая проверка формата (не полная RFC 5322): один @,
+// непустые локальная часть и домен, в домене есть точка. Локальная часть и
+// домен также не пускают control-байты (\x00-\x1F, \x7F) — без этого NUL в
+// email проходит формат-валидацию и падает уже на INSERT в Postgres как
+// голый 500 вместо аккуратного 422 (ErrInvalidEmail).
+var reEmail = regexp.MustCompile(`^[^@\s\x00-\x1F\x7F]+@[^@\s\x00-\x1F\x7F]+\.[^@\s\x00-\x1F\x7F]+$`)
+
+// ValidEmailFormat — тот же формат-чек, что используют Register/CreateOAuthUser
+// ниже, экспортирован для переиспользования в web-слое (email в форме
+// приглашения, смена email в настройках организации), чтобы не заводить там
+// собственную копию regex, рискующую разойтись с этой.
+func ValidEmailFormat(email string) bool {
+	return len(email) <= 254 && reEmail.MatchString(email)
+}
 
 // Service — аутентификация: пользователи и сессии.
 type Service struct {
@@ -41,7 +52,7 @@ func NewService(pool *pgxpool.Pool) *Service {
 // Register создаёт пользователя и возвращает его id.
 func (s *Service) Register(ctx context.Context, email, password string) (int64, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if len(email) > 254 || !reEmail.MatchString(email) {
+	if !ValidEmailFormat(email) {
 		return 0, ErrInvalidEmail
 	}
 	if len(password) < 8 || len(password) > 512 {

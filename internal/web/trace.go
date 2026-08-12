@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -23,7 +24,12 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	traceID := r.PathValue("trace_id")
+	// Нормализуем как ingest.normalizeID (нижний регистр, обрезка пробелов):
+	// в БД trace_id всегда канонично лоуркейснут, так что trace_id из URL в
+	// другом регистре без этого давал бы ложный 404 для существующего трейса
+	// (P2-5 из аудита 2026-08-12; OffendingSpans в этом же пакете уже так
+	// нормализует span_ids).
+	traceID := strings.ToLower(strings.TrimSpace(r.PathValue("trace_id")))
 	if traceID == "" {
 		h.notFound(w, r)
 		return
@@ -157,7 +163,8 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	traceID := r.PathValue("trace_id")
+	// Нормализуем как в traceWaterfall (см. P2-5 из аудита 2026-08-12).
+	traceID := strings.ToLower(strings.TrimSpace(r.PathValue("trace_id")))
 	if traceID == "" {
 		h.notFound(w, r)
 		return

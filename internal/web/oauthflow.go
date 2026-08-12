@@ -128,13 +128,13 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		h.oauthFail(w, r, name)
+		h.oauthFail(w, r, name, p)
 		return
 	}
 	id, err := p.Exchange(r.Context(), code, flow.Verifier, h.oauthRedirectURI(name), flow.Nonce)
 	if err != nil || id.Subject == "" || id.Email == "" {
 		slog.Warn("oauth exchange failed", "provider", name, "err", err)
-		h.oauthFail(w, r, name)
+		h.oauthFail(w, r, name, p)
 		return
 	}
 
@@ -271,6 +271,12 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 			slog.Warn("oauth open provisioning: accept pending invite", "err", err)
 		}
 		if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
+			// uid только что создан ЭТИМ вызовом (CreateOAuthUser выше) — без
+			// LinkIdentity он никому не принадлежит: занимает email, войти под
+			// ним нельзя ни паролем (OAuth-юзер его не получает), ни этим же
+			// провайдером (identity не привязана). Откатываем best-effort, как
+			// invite-ветка уже делает при сбое AcceptPendingInviteByEmail.
+			_ = h.Auth.DeleteUser(r.Context(), uid)
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
@@ -300,6 +306,10 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 		return
 	}
 	if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
+		// Тот же откат, что и открытая ветка выше, и по той же причине: uid
+		// создан этим самым вызовом, LinkIdentity — последний шаг, без него
+		// аккаунт занимает email и недоступен ни одним способом входа.
+		_ = h.Auth.DeleteUser(r.Context(), uid)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
@@ -318,9 +328,14 @@ func (h *Handler) oauthLogin(w http.ResponseWriter, r *http.Request, uid int64, 
 }
 
 // oauthFail — нейтральная страница ошибки провайдера (без утечки деталей).
-func (h *Handler) oauthFail(w http.ResponseWriter, r *http.Request, provider string) {
+// p — уже резолвленный resolveProvider провайдер (см. вызовы в oauthCallback):
+// для обычных (env) провайдеров это то же, что вернул бы h.OAuth.Get, но для
+// per-org SSO ("sso-{id}") h.OAuth.Get не найдёт ничего — раньше это оставляло
+// пользователю сырое внутреннее имя провайдера ("sso-42") вместо названия
+// организации (DisplayName у per-org OIDC — cfg.Domain, см. resolveProvider).
+func (h *Handler) oauthFail(w http.ResponseWriter, r *http.Request, provider string, p oauth.Provider) {
 	name := provider
-	if p, ok := h.OAuth.Get(provider); ok {
+	if p != nil {
 		name = providerLabel(r.Context(), provider, p.DisplayName())
 	}
 	h.renderError(w, r, http.StatusBadGateway, i18n.Tf(r.Context(), "error.oauth.login_failed", "provider", name))

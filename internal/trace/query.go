@@ -156,12 +156,33 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 	return out, nil
 }
 
+// apdexBoundsUS переводит apdex_threshold_ms (T) в границы µs для
+// countIf-запроса: satUS = T·1000, tolUS = 4·T·1000.
+//
+// duration_us в ClickHouse — UInt32 (макс ~4295с), а валидация настройки
+// (projsettings.go) требует лишь apdex_threshold_ms > 0, без верхней границы.
+// Без клампа satUS/tolUS в uint32 арифметике при apdexT выше ~4.29M мс молча
+// переполняются и дают мусорный Apdex для всего проекта вместо клампа/ошибки
+// (P2-6 из аудита 2026-08-12). Клампим до math.MaxUint32 — порога, который в
+// любом случае удовлетворяет ЛЮБОЙ duration_us из колонки, так что клампленное
+// значение не меняет смысл сравнения, только страхует от переполнения.
+func apdexBoundsUS(apdexT int) (satUS, tolUS uint32) {
+	satUS64 := uint64(apdexT) * 1000
+	if satUS64 > math.MaxUint32 {
+		satUS64 = math.MaxUint32
+	}
+	tolUS64 := satUS64 * 4
+	if tolUS64 > math.MaxUint32 {
+		tolUS64 = math.MaxUint32
+	}
+	return uint32(satUS64), uint32(tolUS64)
+}
+
 // apdexByTransaction считает Apdex каждого эндпойнта из сырых transactions.
 // satisfied = duration ≤ T·1000 µs, tolerating = T·1000 < duration ≤ 4·T·1000;
 // Apdex = (satisfied + tolerating/2) / total = (satisfied + within4T) / (2·total).
 func (q *Query) apdexByTransaction(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int) (map[string]float64, error) {
-	satUS := uint32(apdexT) * 1000
-	tolUS := satUS * 4
+	satUS, tolUS := apdexBoundsUS(apdexT)
 
 	where := "project_id = ? AND timestamp >= ? AND timestamp < ?"
 	args := []any{satUS, tolUS, uint64(projectID), from, to}

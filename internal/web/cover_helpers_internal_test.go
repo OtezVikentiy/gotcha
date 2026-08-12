@@ -247,3 +247,22 @@ func TestCoverParsePerfEvidence(t *testing.T) {
 		t.Errorf("parsePerfEvidence full = %+v", ev)
 	}
 }
+
+// TestValidInviteEmail — P2-10: validInviteEmail теперь переиспользует
+// auth.ValidEmailFormat вместо собственной копии regex (риск рассинхронизации
+// при будущей правке одного из них), которая заодно чинит пропуск
+// control-байтов (NUL и т.п.) в формат-валидации.
+func TestValidInviteEmail(t *testing.T) {
+	cases := map[string]bool{
+		"":                   false,
+		"not-an-email":       false,
+		"a@b.co":             true,
+		"a\x00b@example.com": false,
+		"a@ex\x00ample.com":  false,
+	}
+	for email, want := range cases {
+		if got := validInviteEmail(email); got != want {
+			t.Errorf("validInviteEmail(%q) = %v, want %v", email, got, want)
+		}
+	}
+}

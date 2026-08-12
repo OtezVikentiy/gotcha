@@ -189,7 +189,12 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	haveData := false
 	var dataMin, dataMax float64
 	for _, p := range points {
-		if math.IsNaN(p.V) {
+		// IsInf рядом с IsNaN: одна ±Inf-точка иначе сделала бы domMax-domMin
+		// бесконечным и NaN-координаты получили бы ВСЕ точки, не только
+		// сбойная (defense-in-depth — ingest уже отбрасывает NaN/Inf/
+		// отрицательные значения метрик, но эта функция не должна полагаться
+		// на вызывающих).
+		if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
 			continue
 		}
 		if !haveData {
@@ -234,7 +239,14 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	}
 
 	// Подписи оси Y: max, середина, min значений данных + горизонтальные линии.
-	for _, v := range []float64{dataMax, (dataMin + dataMax) / 2, dataMin} {
+	// Плоский ряд (dataMin == dataMax, например alert-threshold на графике с
+	// одним постоянным значением) даёт все три числа равными — три подписи и
+	// три линии легли бы друг на друга; рисуем в этом случае одну.
+	yValues := []float64{dataMax, (dataMin + dataMax) / 2, dataMin}
+	if dataMin == dataMax {
+		yValues = []float64{dataMax}
+	}
+	for _, v := range yValues {
 		yv := yFor(v)
 		axisLine(&sb, x0, yv, x1, yv)
 		sb.WriteString(`<text x="`)
@@ -292,14 +304,16 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 
 	// Линия данных с мягкой заливкой под ней. Пустые корзины дозаполнения окна
 	// (NaN) — разрыв линии (has=false), а не провал в ноль: так график
-	// покрывает всё выбранное окно, но не рисует данных там, где их нет.
+	// покрывает всё выбранное окно, но не рисует данных там, где их нет. ±Inf
+	// (см. фильтр домена выше) — тот же разрыв: точка вне конечного домена не
+	// имеет корректной Y-координаты.
 	linePts := make([]seriesPoint, n)
 	for i, p := range points {
 		x := x0
 		if n > 1 {
 			x = x0 + float64(i)/float64(n-1)*(x1-x0)
 		}
-		if math.IsNaN(p.V) {
+		if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
 			linePts[i] = seriesPoint{x: x, has: false}
 			continue
 		}
@@ -312,12 +326,12 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 
 	// Полосы наведения: линия тонкая, наводиться на неё нечем, поэтому
 	// подсказку ловит прозрачная полоса над своим интервалом. Значение
-	// показывается в той же записи, что и подписи оси. Пустые корзины
-	// пропускаем — подсказки «нет данных» не нужны.
+	// показывается в той же записи, что и подписи оси. Пустые корзины и ±Inf
+	// пропускаем — подсказки «нет данных»/сломанного числа не нужны.
 	g := chartGeom{w: w, h: h, x0: x0, x1: x1, y0: y0, y1: y1}
 	band := (x1 - x0) / float64(n)
 	for i, p := range points {
-		if math.IsNaN(p.V) {
+		if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
 			continue
 		}
 		x := x0
@@ -571,6 +585,7 @@ func formatAxisValue(v float64, unit string) string {
 // metricTimeLabel форматирует момент времени для оси X: на окне до двух суток —
 // часы:минуты, на более длинном — день.месяц.
 func metricTimeLabel(t time.Time, spanHours float64) string {
+	t = t.UTC()
 	if spanHours >= 48 {
 		return t.Format("02.01")
 	}

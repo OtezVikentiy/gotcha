@@ -68,6 +68,11 @@ func TestRegisterInvalidEmail(t *testing.T) {
 		"no-at-sign",
 		"",
 		strings.Repeat("a", 251) + "@b.c", // 255 байт целиком, >254
+		// P2-10: control-байты (NUL и прочие) не должны проходить
+		// формат-валидацию и падать уже на INSERT в Postgres голым 500.
+		"a\x00b@example.com",
+		"a@ex\x00ample.com",
+		"a\x7fb@example.com",
 	} {
 		if _, err := svc.Register(ctx, email, "hunter2hunter2"); !errors.Is(err, auth.ErrInvalidEmail) {
 			t.Errorf("Register(%q, ...): got %v, want ErrInvalidEmail", email, err)

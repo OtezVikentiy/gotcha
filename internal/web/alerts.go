@@ -179,15 +179,12 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // alertsRulesSave — POST /projects/{id}/alerts/rules: одна форма сохраняет
-// все три kind разом (UpsertRule по каждому). Правила применяются в
-// фиксированном порядке (new_issue, regression, spike); первая же ошибка
+// все три kind разом (new_issue, regression, spike), атомарно, одним вызовом
+// h.Alerts.UpsertRules (см. комментарий рядом с вызовом ниже). Ошибка
 // (ErrInvalidRule — в первую очередь ожидается от spike: Threshold/Window
-// должны быть > 0) прерывает сохранение остальных ещё не применённых правил
-// и рендерит форму с 422 — но alert.Service не даёт кросс-правильной
-// транзакции, поэтому уже применённые до ошибки правила в этом вызове
-// остаются сохранёнными (тот же trade-off, что и у остальных
-// multi-step-форм этого пакета — здесь неатомарность безопасна, так как
-// каждое правило само по себе валидно на момент своего UpsertRule).
+// должны быть > 0) рендерит форму с 422, и НИ одно правило не сохраняется —
+// раньше цикл писал их по очереди и обрывался на первой ошибке, оставляя уже
+// применённые правила молча сохранёнными.
 func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)

@@ -55,6 +55,11 @@ func buildGzipAssets(fsys fs.FS) gzipAssets {
 			return nil
 		}
 		if _, err := zw.Write(raw); err != nil {
+			// Реального лика нет (writer оборачивает bytes.Buffer, не
+			// файл/сокет), но закрываем на каждом пути — так же, как
+			// успешный, а не только на нём: расходится с этой дисциплиной
+			// проекта была бы единственным исключением в файле.
+			_ = zw.Close()
 			return nil
 		}
 		if err := zw.Close(); err != nil {

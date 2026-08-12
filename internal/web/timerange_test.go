@@ -31,6 +31,36 @@ func TestParseTimeRangePresets(t *testing.T) {
 	}
 }
 
+// TestParseTimeRangeAllHonoredOnlyWhenOffered (P1-6): период "all" даёт
+// TimeRange{Key: RangeAll} (нулевые From/To — «без временного фильтра») ТОЛЬКО
+// когда сама страница его предлагает, то есть def == RangeAll (issues.go —
+// единственный вызывающий с AllowAll=true в селекторе). На любой другой
+// странице (def — пресет, "24h" и т.п.) графику нужно окно всегда: autoStep
+// делит на него, ось X строится по нему, а запрос с from==to==год-1 не
+// находит в БД ни строки. Раньше period=all отдавал Key=RangeAll ВЕЗДЕ,
+// невзирая на def, — страница без данных о нём молча превращалась в пустую.
+func TestParseTimeRangeAllHonoredOnlyWhenOffered(t *testing.T) {
+	// Страница, которая предлагает "all" (issues.go): период уважается,
+	// границы пустые.
+	tr := parseTimeRange(vals(map[string]string{"period": "all"}), RangeAll)
+	if tr.Key != RangeAll || !tr.From.IsZero() || !tr.To.IsZero() {
+		t.Errorf("def=RangeAll, period=all → %+v, want Key=all с нулевыми границами", tr)
+	}
+
+	// Страница, которая его НЕ предлагает (график с пресетом по умолчанию):
+	// откат на дефолт страницы, как для любого нераспознанного period.
+	for _, def := range []string{"24h", "7d", "30d"} {
+		tr := parseTimeRange(vals(map[string]string{"period": "all"}), def)
+		if tr.Key != def || tr.Custom {
+			t.Errorf("def=%s, period=all → Key=%q Custom=%v, want откат на %s (all не предложен странице)",
+				def, tr.Key, tr.Custom, def)
+		}
+		if tr.Window() <= 0 {
+			t.Errorf("def=%s, period=all → окно %s, график не сможет построить ось", def, tr.Window())
+		}
+	}
+}
+
 func TestParseTimeRangeDefaults(t *testing.T) {
 	// пустой и неизвестный period → пресет по умолчанию.
 	for _, p := range []string{"", "bogus", "99y"} {

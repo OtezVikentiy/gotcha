@@ -67,3 +67,39 @@ func TestStatusCacheWaiterHonorsRequestContext(t *testing.T) {
 		t.Fatalf("load() after the build = %+v, %v; want the cached page", view, err)
 	}
 }
+
+// TestStatusCacheTTLFromBuildEnd — P2-11: TTL должен отсчитываться от момента,
+// когда сборка ЗАВЕРШИЛАСЬ, а не от момента входа в load. До фикса putLocked
+// брал заранее захваченный `now` (заход в load), так что запись, положенная в
+// кеш после долгой сборки, жила заметно меньше заявленных statusCacheTTL —
+// эффективный TTL = statusCacheTTL - длительность сборки.
+func TestStatusCacheTTLFromBuildEnd(t *testing.T) {
+	var c statusCache
+	enteredAt := time.Now()
+	const buildDelay = 200 * time.Millisecond
+
+	_, err := c.load(context.Background(), "slug", enteredAt, func() (templates.StatusPageView, error) {
+		time.Sleep(buildDelay)
+		return templates.StatusPageView{Title: "built"}, nil
+	})
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+
+	c.mu.Lock()
+	entry, ok := c.entries["slug"]
+	c.mu.Unlock()
+	if !ok {
+		t.Fatal("load() did not populate the cache")
+	}
+
+	// От момента входа в load TTL пришлось бы отсчитывать так, что expires
+	// оказался бы существенно раньше enteredAt+statusCacheTTL, если бы putLocked
+	// всё ещё использовал старый `now`. Проверяем, что expires близок к
+	// "сейчас + TTL" (после сборки), а не "enteredAt + TTL" (до неё).
+	wantExpiresAfterBuild := time.Now().Add(statusCacheTTL)
+	if entry.expires.Before(enteredAt.Add(statusCacheTTL).Add(buildDelay / 2)) {
+		t.Fatalf("expires = %v looks anchored to load()-entry time (%v) rather than build completion (~%v); TTL is being eaten by build duration",
+			entry.expires, enteredAt, wantExpiresAfterBuild)
+	}
+}

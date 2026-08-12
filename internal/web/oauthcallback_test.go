@@ -3,8 +3,11 @@ package web
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,6 +205,53 @@ func TestCallbackStateMismatch(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("state mismatch status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestOAuthCallback_SSOFailureShowsOrgDomainNotInternalName — P2-9: oauthFail
+// раньше резолвил провайдера через h.OAuth.Get (только env-провайдеры
+// реестра), так что ошибка входа через per-org SSO ("sso-{id}") показывала
+// пользователю сырое внутреннее имя провайдера вместо названия организации.
+// Дёргаем callback без ?code (ветка oauthFail до Exchange — реальный
+// OIDC-issuer не нужен) и проверяем, что страница ошибки называет
+// организацию по домену, а не по внутреннему "sso-<id>".
+func TestOAuthCallback_SSOFailureShowsOrgDomainNotInternalName(t *testing.T) {
+	s := newCallbackStack(t)
+	ctx := context.Background()
+	ownerID, _ := s.auth.Register(ctx, "owner3@corp.com", "password12")
+	o, err := s.org.CreateOrg(ctx, "sso-co3", "SSO Co3", ownerID)
+	if err != nil {
+		t.Fatalf("org: %v", err)
+	}
+	if err := s.org.UpsertSSO(ctx, org.SSOConfig{
+		OrgID: o.ID, Issuer: "https://idp", ClientID: "c", ClientSecret: "s",
+		Domain: "corp.com", DefaultRole: "member", Enforced: false,
+	}); err != nil {
+		t.Fatalf("upsert sso: %v", err)
+	}
+	providerName := "sso-" + strconv.FormatInt(o.ID, 10)
+
+	flow := oauthFlow{Provider: providerName, State: "STATE", IssuedAt: time.Now().Unix()}
+	raw, err := signFlow([]byte("test-secret"), flow)
+	if err != nil {
+		t.Fatalf("signFlow: %v", err)
+	}
+	req, _ := http.NewRequest("GET", s.srv.URL+"/auth/oauth/"+providerName+"/callback?state=STATE", nil)
+	req.AddCookie(&http.Cookie{Name: oauthCookieName, Value: raw})
+	resp, err := s.srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), providerName) {
+		t.Fatalf("error page leaks internal provider name %q: %s", providerName, body)
+	}
+	if !strings.Contains(string(body), "corp.com") {
+		t.Fatalf("error page must show org domain corp.com: %s", body)
 	}
 }
 

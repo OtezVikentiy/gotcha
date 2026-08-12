@@ -130,7 +130,7 @@ func (s *Service) UserByEmail(ctx context.Context, email string) (int64, error) 
 // ErrEmailTaken. Провижининг разрешён только по инвайту (вызывающий проверяет).
 func (s *Service) CreateOAuthUser(ctx context.Context, email string) (int64, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if len(email) > 254 || !reEmail.MatchString(email) {
+	if !ValidEmailFormat(email) {
 		return 0, ErrInvalidEmail
 	}
 	var id int64

@@ -348,6 +348,10 @@
 			if (!selStart || !selEnd) return;
 			var s = startOfDay(selStart);
 			var e = endOfDay(selEnd);
+			// Симметрично концу: pickDay уже не допускает будущих дней (кнопки
+			// disabled), так что на практике сюда не долетает, но не полагаемся
+			// на это молча — начало тоже не должно уйти в будущее.
+			if (s > now) s = now;
 			if (e > now) e = now;
 			startIn.value = localValue(s);
 			endIn.value = localValue(e);
