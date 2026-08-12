@@ -149,10 +149,12 @@ func parseHTTPConfig(raw json.RawMessage) uptime.HTTPConfig {
 // пустым или маской, заменяется прежним сохранённым (plaintext — stored берётся
 // из Get, который уже расшифровал). Имена, которых нет в submitted, не
 // добавляются (оператор удалил строку — заголовок удаляется); заголовок с
-// реальным новым значением остаётся как введён. stored для заголовка с маской
-// обязан существовать (маску оператор получает только для уже сохранённого
-// заголовка) — если вдруг нет, оставляем как пришло, валидность решит
-// validateMonitor.
+// реальным новым значением остаётся как введён. Заголовок с маской без
+// stored-прообраза сюда дойти не должен — вызывающий (monitorUpdate) обязан
+// отсечь его через maskedHeaderMissingStored ДО вызова этой функции (находка
+// P1-5: иначе буквальная строка "****" легла бы в конфиг как настоящее
+// значение). Пустое значение без прообраза — легитимно (новый заголовок без
+// значения) и проходит как есть.
 func mergeKeptHeaders(submitted, stored map[string]string) map[string]string {
 	if len(submitted) == 0 {
 		return submitted
@@ -168,6 +170,33 @@ func mergeKeptHeaders(submitted, stored map[string]string) map[string]string {
 		out[name] = val
 	}
 	return out
+}
+
+// maskedHeaderMissingStored ищет среди submitted заголовок, чьё значение —
+// буквально маска (maskedHeaderValue, «****»), но одноимённого сохранённого
+// значения в stored нет. Такое сочетание не может возникнуть из «оператор
+// оставил поле как есть» (тогда имя совпадало бы со stored) — оно возникает,
+// когда оператор ПЕРЕИМЕНОВАЛ заголовок с маской (Authorization -> Authz):
+// новое имя не находится в stored, а mergeKeptHeaders без этой проверки
+// сохранил бы литеральное «****» как настоящее значение заголовка, молча
+// похоронив исходный секрет под старым именем (оно исчезло из submitted и
+// будет удалено). Возвращает имя первого такого заголовка или "" (нет
+// нарушения) — этого достаточно, чтобы отклонить сохранение целиком.
+//
+// Пустое значение ("") сюда не попадает: пустая новая строка заголовка —
+// легитимный ввод («значения ещё нет»), а не воскресшая маска, и не подлежит
+// этой проверке (в отличие от isBlankOrMasked, используемой в
+// mergeKeptHeaders/keptHeaderWouldRedirect).
+func maskedHeaderMissingStored(submitted, stored map[string]string) string {
+	for name, val := range submitted {
+		if strings.TrimSpace(val) != maskedHeaderValue {
+			continue
+		}
+		if _, ok := stored[name]; !ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // keptHeaderWouldRedirect — при смене URL монитора: есть ли среди заголовков
@@ -231,8 +260,9 @@ func toInt64Set(vals []int64) map[int64]bool {
 
 // monitorFormDefaults — значения формы создания монитора по умолчанию:
 // разумный интервал/таймаут/пороги, majority-консенсус, GET без тела,
-// dns A-запись, heartbeat с минимально допустимым grace (60с), "local"
-// заранее отмеченным регионом.
+// dns A-запись, heartbeat с grace 120с (вдвое больше минимально допустимых
+// 60с, см. uptime.validateHeartbeatConfig), "local" заранее отмеченным
+// регионом.
 func monitorFormDefaults(projectID int64) templates.MonitorFormData {
 	return templates.MonitorFormData{
 		ProjectID:             projectID,
@@ -735,6 +765,18 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 		if submitted.URL != stored.URL && keptHeaderWouldRedirect(submitted.Headers, stored.Headers) {
 			data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
 			data.ErrMsg = i18n.T(r.Context(), "error.monitor.header_reentry_required")
+			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
+			return
+		}
+		// P1-5: заголовок с маской, но без сохранённого прообраза под тем же
+		// именем — типично переименование ключа с маской (Authorization -> Authz):
+		// секрет остался под старым именем (удалится, его нет в submitted), а
+		// новое имя merge заполнил бы буквальной строкой «****» как настоящим
+		// значением. Не URL-специфично (в отличие от блока эксфильтрации выше) —
+		// проверяем независимо от смены URL, ДО merge.
+		if name := maskedHeaderMissingStored(submitted.Headers, stored.Headers); name != "" {
+			data := monitorFormFromRequest(r, m.ProjectID, m.ID, true, m.Kind)
+			data.ErrMsg = i18n.Tf(r.Context(), "error.monitor.header_needs_value", "name", name)
 			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
 			return
 		}

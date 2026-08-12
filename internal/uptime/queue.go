@@ -171,10 +171,13 @@ func (s *Service) lease(ctx context.Context, region string, limit int, probeID, 
 // то, чего избегаем. Логируем и оставляем его config как есть; его проверка
 // упадёт видимо (например 401), а не молча. Тот же приём подеградации, что
 // alert.Service.Channels для нерасшифруемого секрета канала.
+//
+// Вызывается безусловно, даже без мастер-ключа (secretKeySet==false): именно
+// в этой ветке decryptMonitorConfig обнуляет заголовки, оставшиеся
+// enc:-ciphertext'ом от прежнего ключа (откат GOTCHA_SECRET_KEY на dev), —
+// пропуск здесь раньше означал, что чекер получал config as-is и слал
+// ciphertext в исходящий запрос как значение заголовка.
 func (s *Service) decryptJobs(jobs []Job) {
-	if !s.secretKeySet {
-		return
-	}
 	for i := range jobs {
 		if err := s.decryptMonitorConfig(&jobs[i].Monitor); err != nil {
 			slog.Error("uptime: cannot decrypt monitor headers for check",

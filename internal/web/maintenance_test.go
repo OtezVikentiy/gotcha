@@ -275,6 +275,9 @@ func TestWebMaintenanceInvalidWindowShows422(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("POST %s status = %d, want 422: %s", path, resp.StatusCode, body)
 	}
+	if !strings.Contains(string(body), "не может быть пустым") {
+		t.Fatalf("POST %s (empty name) body missing localized detail: %s", path, body)
+	}
 
 	windows, err := s.uptime.Windows(context.Background(), proj.ID)
 	if err != nil {
@@ -282,6 +285,36 @@ func TestWebMaintenanceInvalidWindowShows422(t *testing.T) {
 	}
 	if len(windows) != 0 {
 		t.Fatalf("len(windows) = %d, want 0 (invalid create must not persist)", len(windows))
+	}
+}
+
+// TestWebMaintenanceInvalidTimezoneMessageIsLocalized — P2-1 usability-аудита
+// 2026-08-12: некорректный часовой пояс раньше показывал сырой английский
+// текст time.LoadLocation ("unknown time zone Foo/Bar") посреди переведённой
+// RU-строки. Теперь причина матчится через errors.Is на конкретный сентинель
+// (uptime.ErrInvalidWindowTimezone) и переводится отдельным ключом.
+func TestWebMaintenanceInvalidTimezoneMessageIsLocalized(t *testing.T) {
+	s := newMaintenanceStack(t)
+	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintinvalidtz")
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	form := url.Values{
+		"name":      {"Bad TZ window"},
+		"starts_at": {"2026-08-01T02:00"},
+		"ends_at":   {"2026-08-01T04:00"},
+		"timezone":  {"Not/A_Real_Zone"},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s status = %d, want 422: %s", path, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "unknown time zone") {
+		t.Fatalf("POST %s body leaks raw Go error text: %s", path, body)
+	}
+	if !strings.Contains(string(body), "часовой пояс") {
+		t.Fatalf("POST %s body missing localized timezone detail: %s", path, body)
 	}
 }
 

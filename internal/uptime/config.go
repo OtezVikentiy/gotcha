@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/url"
-	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
@@ -71,13 +70,18 @@ type HeartbeatConfig struct {
 // без изменений; валидность самого config проверяет validateConfig отдельно.
 func sealHTTPHeaders(key [32]byte, raw json.RawMessage) (json.RawMessage, error) {
 	return transformHTTPHeaders(raw, func(v string) (string, error) {
-		// Идемпотентность: уже зашифрованное значение (префикс enc:) НЕ шифруем
-		// повторно — двойной Seal сделал бы его невосстановимым (Open вернул бы
-		// внутренний ciphertext-текст, а не исходное значение). Зеркалит
-		// passthrough на чтении и страхует вызывающих, которые могли передать
-		// сюда ещё не расшифрованный config (bulk-edit, импорт, фид из
-		// List/GetBatch).
-		if strings.HasPrefix(v, secretbox.EncPrefix) {
+		// Идемпотентность: уже зашифрованное значение НЕ шифруем повторно —
+		// двойной Seal сделал бы его невосстановимым (Open вернул бы внутренний
+		// ciphertext-текст, а не исходное значение). Зеркалит passthrough на
+		// чтении и страхует вызывающих, которые могли передать сюда ещё не
+		// расшифрованный config (bulk-edit, импорт, фид из List/GetBatch).
+		//
+		// secretbox.IsEncrypted, а не голая проверка префикса "enc:": реальное
+		// (незашифрованное) значение заголовка тоже может начинаться с "enc:" —
+		// IsEncrypted дополнительно требует валидный base64 нужной длины
+		// (nonce+overhead), так что такое значение по-прежнему шифруется, а не
+		// принимается за уже зашифрованное и не сохраняется как plaintext.
+		if secretbox.IsEncrypted(v) {
 			return v, nil
 		}
 		return secretbox.Seal(key, v)
@@ -91,6 +95,25 @@ func openHTTPHeaders(key [32]byte, raw json.RawMessage) (json.RawMessage, error)
 	return transformHTTPHeaders(raw, func(v string) (string, error) {
 		return secretbox.Open(key, v)
 	})
+}
+
+// scrubEncryptedHeaders обнуляет ЗНАЧЕНИЯ заголовков, которые являются
+// настоящим enc:-ciphertext (secretbox.IsEncrypted) — вызывается, когда
+// мастер-ключа нет (dev-дефолт или откат GOTCHA_SECRET_KEY) и расшифровать их
+// нечем. Без этого openHTTPHeaders никогда бы не вызывался (no-op-ветка при
+// !secretKeySet) и сырой ciphertext уходил бы дальше как значение заголовка —
+// в исходящий HTTP-запрос чекера. Legacy plaintext (в т.ч. случайно
+// начавшийся с "enc:") не трогает. scrubbed=true, если хотя бы одно значение
+// обнулено — вызывающий логирует.
+func scrubEncryptedHeaders(raw json.RawMessage) (out json.RawMessage, scrubbed bool, err error) {
+	out, err = transformHTTPHeaders(raw, func(v string) (string, error) {
+		if secretbox.IsEncrypted(v) {
+			scrubbed = true
+			return "", nil
+		}
+		return v, nil
+	})
+	return out, scrubbed, err
 }
 
 // transformHTTPHeaders применяет fn к каждому значению заголовков http-конфига и
@@ -190,6 +213,13 @@ func validateHTTPConfig(c HTTPConfig) error {
 		if code < 100 || code > 599 {
 			return invalid("expected_status", "http_status_range")
 		}
+	}
+	// HEAD-ответ по определению без тела: проверка BodyContains/
+	// BodyNotContains у него всегда либо false (Contains — монитор вечно
+	// «упал»), либо всегда true (NotContains — проверка бессмысленна).
+	// Отклоняем на входе, а не даём монитору молча никогда не проходить.
+	if c.Method == "HEAD" && (c.BodyContains != "" || c.BodyNotContains != "") {
+		return invalid("body_contains", "http_head_body")
 	}
 	return nil
 }

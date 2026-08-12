@@ -145,6 +145,105 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	}
 }
 
+// TestStaleHeartbeatsPopulatesRegionCount: StaleHeartbeats must fill in
+// Regions/RegionCount like Get/List do (finding P1-3) — checkHeartbeats feeds
+// its result straight into Detector.OnResult/aggregate(), which uses
+// RegionCount as consensus's denominator. Left at zero, a multi-region
+// heartbeat monitor's chosen consensus (all/majority) silently degraded to
+// "whichever region's watchdog reports first" instead of waiting for every
+// configured region.
+func TestStaleHeartbeatsPopulatesRegionCount(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	m := baseHeartbeatMonitor(t, pid, 1, 60)
+	m.Consensus = uptime.ConsensusAll
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local", "eu"})
+	if _, err := pool.Exec(ctx,
+		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", created.ID); err != nil {
+		t.Fatalf("backdate last_beat_at: %v", err)
+	}
+
+	stale, err := svc.StaleHeartbeats(ctx)
+	if err != nil {
+		t.Fatalf("StaleHeartbeats: %v", err)
+	}
+	var found *uptime.Monitor
+	for i := range stale {
+		if stale[i].ID == created.ID {
+			found = &stale[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("StaleHeartbeats did not return monitor %d among %+v", created.ID, stale)
+	}
+	if found.RegionCount != 2 {
+		t.Errorf("RegionCount = %d, want 2 (local+eu)", found.RegionCount)
+	}
+	if len(found.Regions) != 2 {
+		t.Errorf("Regions = %+v, want 2 entries", found.Regions)
+	}
+}
+
+// TestWatchdogHeartbeatConsensusAllWaitsForAllRegions: a two-region
+// deployment (two Watchdog processes, one per region — cfg.LocalRegion in
+// cmd/gotcha, see checkSSL's doc comment) with consensus=all must NOT open
+// an incident off just one region's report. Before the RegionCount fix,
+// StaleHeartbeats left RegionCount at 0, so aggregate() fell back to
+// total=decided and "all" was satisfied (down==total==1) the instant the
+// FIRST region's watchdog ticked — defeating the point of choosing "all".
+func TestWatchdogHeartbeatConsensusAllWaitsForAllRegions(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	m := baseHeartbeatMonitor(t, pid, 1, 60)
+	m.Consensus = uptime.ConsensusAll
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local", "eu"})
+	if _, err := pool.Exec(ctx,
+		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", created.ID); err != nil {
+		t.Fatalf("backdate last_beat_at: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	// Только регион "local" тикает — "eu" пока не сообщил ничего. С
+	// consensus=all и корректным RegionCount=2 инцидент открыться не должен.
+	localWD := fastWatchdog(svc, d, notifier)
+	localWD.Region = "local"
+
+	wctx, wcancel := context.WithCancel(ctx)
+	defer wcancel()
+	go localWD.Run(wctx)
+
+	waitForRunner(t, func() bool {
+		states, err := svc.States(context.Background(), created.ID)
+		return err == nil && len(states) == 1 && states[0].Status == "down"
+	})
+	// Регион "local" уже отчитался down; "eu" ещё нет — только один из двух
+	// настроенных регионов определился. С consensus=all этого недостаточно.
+	assertNoOpenIncident(t, ctx, svc, created.ID)
+	wcancel()
+
+	// Второй регион "eu" тоже тикает: теперь оба региона определились и
+	// оба down — consensus=all должен открыть инцидент.
+	euWD := fastWatchdog(svc, d, notifier)
+	euWD.Region = "eu"
+	wctx2, wcancel2 := context.WithCancel(ctx)
+	defer wcancel2()
+	go euWD.Run(wctx2)
+
+	waitForRunner(t, func() bool {
+		_, open, err := svc.OpenIncidentFor(context.Background(), created.ID)
+		return err == nil && open
+	})
+}
+
 func TestWatchdogSSLExpiringNotifiesLargestUnalertedThresholdOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

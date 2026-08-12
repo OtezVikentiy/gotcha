@@ -305,9 +305,27 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 // StaleHeartbeats returns enabled heartbeat monitors whose grace period has
 // lapsed without a ping: last_beat_at (or, if it never pinged, created_at)
 // plus the monitor's own grace_seconds (from its HeartbeatConfig) is in the
-// past. Regions/ChannelIDs are not populated (unlike Get/List) — the
-// heartbeat watchdog only needs id/project_id/consensus/fail_threshold and
-// friends, all covered by monitorColumns.
+// past. ChannelIDs are not populated (unlike Get) — checkHeartbeats routes
+// its Result through Detector.OnResult/Notifier, neither of which reads
+// Monitor.ChannelIDs.
+//
+// RegionCount IS populated (like Get/List), even though the miss itself is
+// detected centrally from a single last_beat_at column, not per-region: in a
+// multi-region deployment each region runs its own Watchdog
+// (cmd/gotcha's --mode=uptime, one process per region — see checkSSL's
+// comment), and every one of them independently calls ApplyResult under its
+// OWN region once the grace period lapses. aggregate() (detector.go) needs
+// the monitor's configured RegionCount as consensus's denominator, same as
+// any actively-checked monitor — otherwise "all"/"majority" consensus fires
+// on whichever region's Watchdog ticks first, before the others have had a
+// chance to report, exactly the premature-decision bug aggregate's own
+// doc comment describes for regular checks. Previously left at the Go zero
+// value here, RegionCount silently fell back to "total = decided" for every
+// stale heartbeat, so a heartbeat monitor's chosen consensus was only ever
+// honored by the SUCCESSFUL-ping path (web/heartbeat.go, via
+// ByHeartbeatToken -> Get, which does fill it in) — the failure path ignored
+// it. Single-region deployments (the common case) were unaffected, since
+// there decided == RegionCount == 1 either way.
 func (s *Service) StaleHeartbeats(ctx context.Context) ([]Monitor, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, `+monitorColumns+`
@@ -320,19 +338,35 @@ func (s *Service) StaleHeartbeats(ctx context.Context) ([]Monitor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("uptime: stale heartbeats: %w", err)
 	}
-	defer rows.Close()
 	var out []Monitor
+	var ids []int64
 	for rows.Next() {
 		var m Monitor
 		if err := rows.Scan(&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds,
 			&m.TimeoutSeconds, &m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus,
 			&m.RemindEveryMinutes, &m.SSLAlertDays, &m.SSLExpiresAt,
 			&m.LastBeatAt, &m.CreatedAt, &m.Retries); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("uptime: stale heartbeats: %w", err)
 		}
 		out = append(out, m)
+		ids = append(ids, m.ID)
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: stale heartbeats: %w", err)
+	}
+
+	regionsByMon, err := regionsOfBatch(ctx, s.pool, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range out {
+		regions := regionsByMon[m.ID]
+		out[i].Regions = regions
+		out[i].RegionCount = len(regions)
+	}
+	return out, nil
 }
 
 // SSLCandidates returns every monitor with a known certificate expiry

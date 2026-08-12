@@ -12,6 +12,22 @@ import (
 
 var ErrInvalidWindow = errors.New("uptime: invalid maintenance window")
 
+// Подпричины ErrInvalidWindow — каждая validateWindow-ветка оборачивает и
+// ErrInvalidWindow (для существующих errors.Is(err, ErrInvalidWindow) —
+// см. web/maintenance.go), и одну из этих сентинелей (fmt.Errorf с двумя
+// %w, Go 1.20+): вызывающий может отличить конкретную причину через
+// errors.Is, не парся текст ошибки (который к тому же был бы на английском
+// от time.LoadLocation/time.Parse — P2-1 usability-аудита 2026-08-12).
+var (
+	ErrInvalidWindowName      = errors.New("uptime: maintenance window name required")
+	ErrInvalidWindowTimezone  = errors.New("uptime: invalid maintenance window timezone")
+	ErrInvalidWindowWeekday   = errors.New("uptime: invalid maintenance window weekday")
+	ErrInvalidWindowStartTime = errors.New("uptime: invalid maintenance window start_time")
+	ErrInvalidWindowEndTime   = errors.New("uptime: invalid maintenance window end_time")
+	ErrInvalidWindowSameTime  = errors.New("uptime: maintenance window start_time and end_time must differ")
+	ErrInvalidWindowRange     = errors.New("uptime: maintenance window starts_at must be before ends_at")
+)
+
 // Window — окно обслуживания проекта: разовое (StartsAt/EndsAt) либо
 // еженедельное (Weekday + StartTime/EndTime "15:04" в Timezone).
 type Window struct {
@@ -61,25 +77,33 @@ func pgTimeToHHMM(t pgtype.Time) string {
 // one-off-vs-weekly shape.
 func validateWindow(w Window) error {
 	if w.Name == "" {
-		return ErrInvalidWindow
+		return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowName)
 	}
 	if _, err := time.LoadLocation(w.Timezone); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidWindow, err)
+		return fmt.Errorf("%w: %w: %v", ErrInvalidWindow, ErrInvalidWindowTimezone, err)
 	}
 	if w.Weekly {
 		if w.Weekday < 0 || w.Weekday > 6 {
-			return fmt.Errorf("%w: weekday must be 0..6", ErrInvalidWindow)
+			return fmt.Errorf("%w: %w: weekday must be 0..6", ErrInvalidWindow, ErrInvalidWindowWeekday)
 		}
 		if _, _, err := parseHHMM(w.StartTime); err != nil {
-			return fmt.Errorf("%w: invalid start_time: %v", ErrInvalidWindow, err)
+			return fmt.Errorf("%w: %w: %v", ErrInvalidWindow, ErrInvalidWindowStartTime, err)
 		}
 		if _, _, err := parseHHMM(w.EndTime); err != nil {
-			return fmt.Errorf("%w: invalid end_time: %v", ErrInvalidWindow, err)
+			return fmt.Errorf("%w: %w: %v", ErrInvalidWindow, ErrInvalidWindowEndTime, err)
+		}
+		// Одноразовые окна уже требуют EndsAt.After(StartsAt) — тот же запрет
+		// нужен и здесь: StartTime == EndTime не задаёт «мгновенное» окно, а
+		// молча трактуется windowDuration как полные 24 часа (переход через
+		// полночь), так что опечатка при вводе времени блэкаутит уведомления/
+		// аптайм на весь день недели без единого сигнала об ошибке.
+		if w.StartTime == w.EndTime {
+			return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowSameTime)
 		}
 		return nil
 	}
 	if w.StartsAt == nil || w.EndsAt == nil || !w.EndsAt.After(*w.StartsAt) {
-		return fmt.Errorf("%w: one-off window needs starts_at < ends_at", ErrInvalidWindow)
+		return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowRange)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -72,11 +73,31 @@ func (s *Service) encryptMonitorConfig(kind Kind, raw json.RawMessage) (json.Raw
 }
 
 // decryptMonitorConfig расшифровывает значения заголовков http-монитора на месте.
-// Для прочих типов и при отсутствии ключа — no-op. Ошибка означает неразбираемый
-// ciphertext (сменившийся GOTCHA_SECRET_KEY): вызывающий решает, ронять операцию
-// (Get) или деградировать поштучно (lease), не убивая всю партию.
+// Для прочих типов — no-op. Ошибка означает неразбираемый ciphertext
+// (сменившийся GOTCHA_SECRET_KEY): вызывающий решает, ронять операцию (Get)
+// или деградировать поштучно (lease), не убивая всю партию.
+//
+// При отсутствии ключа (dev-дефолт или ОТКАТ GOTCHA_SECRET_KEY на dev — этот
+// метод по имени совпадает с тем, что читает env, но фактически ключ не
+// установлен) заголовки НЕ no-op: настоящий enc:-ciphertext, оставшийся от
+// работы с реальным ключом, без него не читается, и отдать его как значение
+// заголовка — значит отправить ciphertext в исходящий запрос чекера (проверка
+// упадёт на мусорном значении молча, как «неверный токен», а не явно). Такие
+// значения обнуляются; legacy plaintext остаётся как есть.
 func (s *Service) decryptMonitorConfig(m *Monitor) error {
-	if !s.secretKeySet || m.Kind != KindHTTP {
+	if m.Kind != KindHTTP {
+		return nil
+	}
+	if !s.secretKeySet {
+		scrubbedCfg, scrubbed, err := scrubEncryptedHeaders(m.Config)
+		if err != nil {
+			return err
+		}
+		if scrubbed {
+			slog.Error("uptime: monitor has encrypted header values but no master key is set; header values dropped",
+				"monitor_id", m.ID)
+		}
+		m.Config = scrubbedCfg
 		return nil
 	}
 	opened, err := openHTTPHeaders(s.secretKey, m.Config)

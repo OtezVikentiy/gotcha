@@ -224,11 +224,9 @@ func TestWebMonitorUpdateAdminRepointsFreely(t *testing.T) {
 
 // TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed — оператор меняет
 // URL монитора, у которого НЕ было сохранённых заголовков, и печатает новую
-// строку заголовка с пустым/замаскированным значением. Раньше это ловил
-// ложный 422 (блок срабатывал на любое пустое значение при смене URL), хотя
-// уводить нечего — сохранённого секрета под этим именем нет, merge оставит
-// значение пустым. Теперь блок сужен до «пустое значение, чей прообраз реально
-// хранится», поэтому апдейт проходит (303), URL меняется.
+// строку заголовка с ДЕЙСТВИТЕЛЬНО пустым значением (не маской). Уводить
+// нечего — сохранённого секрета под этим именем нет, merge оставит значение
+// пустым — апдейт проходит (303), URL меняется, значение заголовка пусто.
 func TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed(t *testing.T) {
 	s := newMonitorFormStack(t)
 	s.uptime.SetSecretKey("test-master-key-A2b")
@@ -238,9 +236,10 @@ func TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed(t *testing.T) {
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health", nil)
 	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
-	// Смена URL + новая строка заголовка с маской-значением (нового секрета
-	// оператор не ввёл; прежнего под этим именем нет).
-	form := operatorUpdateForm("https://api2.example.com/health", "X-New: ****")
+	// Смена URL + новая строка заголовка с пустым значением (нового секрета
+	// оператор не ввёл; прежнего под этим именем нет; значение — реально пустая
+	// строка, а не маска).
+	form := operatorUpdateForm("https://api2.example.com/health", "X-New: ")
 	resp := postForm(t, s.srv, updatePath, form, s.srv.URL, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -249,5 +248,75 @@ func TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed(t *testing.T) {
 	}
 	if got := httpURLOf(t, s, created.ID); got != "https://api2.example.com/health" {
 		t.Fatalf("URL = %q after update, want changed", got)
+	}
+	if got := httpHeaderOf(t, s, created.ID, "X-New"); got != "" {
+		t.Fatalf("header X-New = %q after update, want empty", got)
+	}
+}
+
+// TestWebMonitorUpdateOperatorMaskedNewHeaderWithoutStoredRejected —
+// P1-5 (находка A): оператор печатает буквальную маску «****» в НОВУЮ строку
+// заголовка, под которой нет сохранённого значения (ни смены URL, ни
+// переименования — просто новое имя). До фикса mergeKeptHeaders сохранял бы
+// «****» как настоящее значение заголовка (испорченные данные, бессмысленный
+// заголовок в исходящих запросах). Теперь — 422, ничего не меняется.
+func TestWebMonitorUpdateOperatorMaskedNewHeaderWithoutStoredRejected(t *testing.T) {
+	s := newMonitorFormStack(t)
+	s.uptime.SetSecretKey("test-master-key-A2b")
+	proj, _, memberCookie := ownerAndMember(t, s, "monhdrmasknonew")
+
+	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health", nil)
+	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
+
+	form := operatorUpdateForm("https://api.example.com/health", "X-New: ****")
+	resp := postForm(t, s.srv, updatePath, form, s.srv.URL, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (operator, masked new header, no stored) status = %d, want 422: %s", updatePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "X-New") {
+		t.Errorf("POST %s (operator, masked new header) error body missing header name: %s", updatePath, body)
+	}
+	if got := httpHeaderOf(t, s, created.ID, "X-New"); got != "" {
+		t.Fatalf("header X-New = %q after rejected update, want not saved at all", got)
+	}
+}
+
+// TestWebMonitorUpdateOperatorRenamedMaskedHeaderRejected — P1-5 (находка A,
+// основной сценарий): оператор видит существующий заголовок с маской,
+// ПЕРЕИМЕНОВЫВАЕТ ключ (Authorization -> Authz) и сохраняет, URL монитора не
+// меняется. Старое имя пропадает из submitted (значит, было бы удалено),
+// новое имя маски не имеет сохранённого прообраза. Блок эксфильтрации
+// (keptHeaderWouldRedirect) это НЕ ловит — он смотрит на URL и на совпадение
+// имени заголовка, а здесь имя как раз новое. Ожидаем 422 и монитор
+// нетронутым: секрет остаётся под старым именем "Authorization".
+func TestWebMonitorUpdateOperatorRenamedMaskedHeaderRejected(t *testing.T) {
+	s := newMonitorFormStack(t)
+	s.uptime.SetSecretKey("test-master-key-A2b")
+	proj, _, memberCookie := ownerAndMember(t, s, "monhdrrename")
+
+	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",
+		map[string]string{"Authorization": "Bearer supersecret"})
+	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
+
+	// URL не меняется — только ключ заголовка: Authorization -> Authz, значение
+	// оставлено маской (оператор её не трогал, думая, что "оставляет как есть").
+	form := operatorUpdateForm("https://api.example.com/health", "Authz: ****")
+	resp := postForm(t, s.srv, updatePath, form, s.srv.URL, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (operator, renamed masked header) status = %d, want 422: %s", updatePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Authz") {
+		t.Errorf("POST %s (operator, renamed masked header) error body missing new header name: %s", updatePath, body)
+	}
+	// Монитор не тронут: старый заголовок с реальным секретом всё ещё на месте.
+	if got := httpHeaderOf(t, s, created.ID, "Authorization"); got != "Bearer supersecret" {
+		t.Fatalf("header Authorization = %q after rejected rename, want unchanged secret", got)
+	}
+	if got := httpHeaderOf(t, s, created.ID, "Authz"); got != "" {
+		t.Fatalf("header Authz = %q after rejected rename, want not created with literal mask", got)
 	}
 }

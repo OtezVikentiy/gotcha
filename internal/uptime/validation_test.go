@@ -48,6 +48,20 @@ func TestValidationCarriesCodeAndField(t *testing.T) {
 			wantCode:  "regions_max",
 			wantField: "regions",
 		},
+		{
+			// HEAD-ответ без тела: BodyContains у него всегда false — монитор
+			// вечно «упал» бы, если бы прошёл валидацию (находка P1-2).
+			name:      "HEAD с BodyContains",
+			monitor:   httpMonitor(`{"method":"HEAD","url":"https://example.com","body_contains":"ok"}`),
+			wantCode:  "http_head_body",
+			wantField: "body_contains",
+		},
+		{
+			name:      "HEAD с BodyNotContains",
+			monitor:   httpMonitor(`{"method":"HEAD","url":"https://example.com","body_not_contains":"error"}`),
+			wantCode:  "http_head_body",
+			wantField: "body_contains",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

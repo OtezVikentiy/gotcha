@@ -94,9 +94,35 @@ func parseMaintenanceForm(r *http.Request, projectID int64) uptime.Window {
 	return w
 }
 
+// maintenanceErrorMessage — P2-1 usability-аудита 2026-08-12: раньше
+// подставляла err.Error() (сырой текст из time.LoadLocation/time.Parse,
+// всегда на английском) в {detail} переведённой строки — RU-пользователь
+// получал «Недопустимое окно обслуживания: unknown time zone Foo/Bar»
+// без объяснения, что имелось в виду. uptime.validateWindow раскладывает
+// ErrInvalidWindow на отдельные сентинели (см. internal/uptime/maintenance.go)
+// — матчим их через errors.Is и переводим каждую причину своим ключом с
+// понятным объяснением формата, вместо показа Go-ошибки как есть.
 func maintenanceErrorMessage(ctx context.Context, err error) string {
-	if errors.Is(err, uptime.ErrInvalidWindow) {
-		return i18n.Tf(ctx, "error.maintenance.invalid_window", "detail", err.Error())
+	switch {
+	case errors.Is(err, uptime.ErrInvalidWindowName):
+		return i18n.T(ctx, "error.maintenance.invalid_name")
+	case errors.Is(err, uptime.ErrInvalidWindowTimezone):
+		return i18n.T(ctx, "error.maintenance.invalid_timezone")
+	case errors.Is(err, uptime.ErrInvalidWindowWeekday):
+		return i18n.T(ctx, "error.maintenance.invalid_weekday")
+	case errors.Is(err, uptime.ErrInvalidWindowStartTime):
+		return i18n.T(ctx, "error.maintenance.invalid_start_time")
+	case errors.Is(err, uptime.ErrInvalidWindowEndTime):
+		return i18n.T(ctx, "error.maintenance.invalid_end_time")
+	case errors.Is(err, uptime.ErrInvalidWindowSameTime):
+		return i18n.T(ctx, "error.maintenance.same_start_end")
+	case errors.Is(err, uptime.ErrInvalidWindowRange):
+		return i18n.T(ctx, "error.maintenance.invalid_range")
+	case errors.Is(err, uptime.ErrInvalidWindow):
+		// Разложенных сентинелей нет (не должно происходить при актуальном
+		// validateWindow, но future-proof на случай новой невыделенной
+		// ветки) — общее сообщение без утечки Go-текста ошибки.
+		return i18n.T(ctx, "error.maintenance.invalid_window_generic")
 	}
 	return i18n.T(ctx, "error.action_failed")
 }

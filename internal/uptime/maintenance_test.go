@@ -233,11 +233,76 @@ func TestCreateWindowInvalidFields(t *testing.T) {
 			ProjectID: pid, Name: "", Weekly: true, Weekday: 1,
 			StartTime: "02:00", EndTime: "04:00", Timezone: "UTC",
 		},
+		// start_time == end_time проходило бы валидацию и трактовалось
+		// windowDuration как 24-часовое окно (P2-3 из аудита 2026-08-12) —
+		// опечатка при вводе времени молча блэкаутила бы весь день недели.
+		"start equals end": {
+			ProjectID: pid, Name: "x", Weekly: true, Weekday: 1,
+			StartTime: "02:00", EndTime: "02:00", Timezone: "UTC",
+		},
 	}
 	for name, w := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, err := svc.CreateWindow(ctx, w); !errors.Is(err, uptime.ErrInvalidWindow) {
 				t.Fatalf("CreateWindow(%+v): err = %v, want ErrInvalidWindow", w, err)
+			}
+		})
+	}
+}
+
+// TestCreateWindowInvalidFieldsSentinels — P2-1 usability-аудита 2026-08-12:
+// validateWindow теперь оборачивает каждую причину своим сентинелем поверх
+// общего ErrInvalidWindow (см. internal/uptime/maintenance.go), чтобы
+// web-слой мог перевести конкретную причину без показа сырого err.Error().
+// Проверяем, что каждая ветка даёт СВОЙ, а не общий, сентинель.
+func TestCreateWindowInvalidFieldsSentinels(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	cases := []struct {
+		name string
+		w    uptime.Window
+		want error
+	}{
+		{"empty name", uptime.Window{
+			ProjectID: pid, Name: "", Weekly: true, Weekday: 1,
+			StartTime: "02:00", EndTime: "04:00", Timezone: "UTC",
+		}, uptime.ErrInvalidWindowName},
+		{"bad timezone", uptime.Window{
+			ProjectID: pid, Name: "x", Weekly: true, Weekday: 1,
+			StartTime: "02:00", EndTime: "04:00", Timezone: "Not/A_Zone",
+		}, uptime.ErrInvalidWindowTimezone},
+		{"bad weekday", uptime.Window{
+			ProjectID: pid, Name: "x", Weekly: true, Weekday: 7,
+			StartTime: "02:00", EndTime: "04:00", Timezone: "UTC",
+		}, uptime.ErrInvalidWindowWeekday},
+		{"bad start time", uptime.Window{
+			ProjectID: pid, Name: "x", Weekly: true, Weekday: 1,
+			StartTime: "25:00", EndTime: "04:00", Timezone: "UTC",
+		}, uptime.ErrInvalidWindowStartTime},
+		{"bad end time", uptime.Window{
+			ProjectID: pid, Name: "x", Weekly: true, Weekday: 1,
+			StartTime: "02:00", EndTime: "not-a-time", Timezone: "UTC",
+		}, uptime.ErrInvalidWindowEndTime},
+		{"start equals end", uptime.Window{
+			ProjectID: pid, Name: "x", Weekly: true, Weekday: 1,
+			StartTime: "02:00", EndTime: "02:00", Timezone: "UTC",
+		}, uptime.ErrInvalidWindowSameTime},
+		{"one-off missing range", uptime.Window{
+			ProjectID: pid, Name: "x", Weekly: false, Timezone: "UTC",
+		}, uptime.ErrInvalidWindowRange},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := svc.CreateWindow(ctx, c.w)
+			if !errors.Is(err, uptime.ErrInvalidWindow) {
+				t.Fatalf("CreateWindow(%+v): err = %v, want ErrInvalidWindow", c.w, err)
+			}
+			if !errors.Is(err, c.want) {
+				t.Fatalf("CreateWindow(%+v): err = %v, want also matching %v", c.w, err, c.want)
 			}
 		})
 	}
