@@ -267,18 +267,20 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
-		if _, _, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil {
-			slog.Warn("oauth open provisioning: accept pending invite", "err", err)
-		}
+		// LinkIdentity ДО принятия инвайта (как и invite-ветка ниже): uid создан
+		// ЭТИМ вызовом (CreateOAuthUser выше) — без привязки он никому не
+		// принадлежит, занимает email, войти под ним нельзя ни паролем (OAuth-юзер
+		// его не получает), ни этим же провайдером (identity не привязана).
+		// Откатываем. Инвайт принимаем ПОСЛЕ успешной привязки, чтобы сбой
+		// LinkIdentity не гасил действующее приглашение (accepted_at), которое
+		// откат юзера не вернул бы в pending.
 		if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
-			// uid только что создан ЭТИМ вызовом (CreateOAuthUser выше) — без
-			// LinkIdentity он никому не принадлежит: занимает email, войти под
-			// ним нельзя ни паролем (OAuth-юзер его не получает), ни этим же
-			// провайдером (identity не привязана). Откатываем best-effort, как
-			// invite-ветка уже делает при сбое AcceptPendingInviteByEmail.
 			_ = h.Auth.DeleteUser(r.Context(), uid)
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
+		}
+		if _, _, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil {
+			slog.Warn("oauth open provisioning: accept pending invite", "err", err)
 		}
 		h.oauthLogin(w, r, uid, "/")
 		return
@@ -298,19 +300,23 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// LinkIdentity ДО принятия инвайта. uid создан этим самым вызовом
+	// (CreateOAuthUser выше); без привязки он занимает email и недоступен ни
+	// одним способом входа, поэтому при сбое откатываем. Инвайт принимаем ТОЛЬКО
+	// после успешной привязки: иначе сбой LinkIdentity выставлял бы accepted_at
+	// и гасил приглашение, а откат юзера (DeleteUser) его в pending не возвращает
+	// — приглашённый терял приглашение навсегда (админ переприглашает).
+	if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
+		_ = h.Auth.DeleteUser(r.Context(), uid)
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	if _, ok, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil || !ok {
-		// Гонка: инвайт исчез между проверкой и принятием — откатываем юзера.
+		// Гонка: инвайт исчез между проверкой (HasPendingInvite) и принятием —
+		// откатываем юзера. DeleteUser каскадит уже привязанную identity.
 		_ = h.Auth.DeleteUser(r.Context(), uid)
 		h.renderError(w, r, http.StatusForbidden,
 			i18n.T(r.Context(), "error.oauth.no_invite"))
-		return
-	}
-	if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
-		// Тот же откат, что и открытая ветка выше, и по той же причине: uid
-		// создан этим самым вызовом, LinkIdentity — последний шаг, без него
-		// аккаунт занимает email и недоступен ни одним способом входа.
-		_ = h.Auth.DeleteUser(r.Context(), uid)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	h.oauthLogin(w, r, uid, "/")

@@ -107,4 +107,14 @@ func TestOAuthInviteProvisionRollsBackOrphanOnLinkIdentityFailure(t *testing.T) 
 	if _, err := authSvc.UserByEmail(ctx, newEmail); !errors.Is(err, auth.ErrUserNotFound) {
 		t.Fatalf("UserByEmail(%q) err = %v, want ErrUserNotFound — orphaned account was not rolled back", newEmail, err)
 	}
+	// F2 (реордер Link→Accept): сбой LinkIdentity НЕ должен гасить приглашение.
+	// Инвайт принимается только после успешной привязки, поэтому accepted_at не
+	// выставлен и приглашённый может войти повторно без переприглашения. До
+	// реордера Accept шёл первым, помечал инвайт принятым, а откат юзера его в
+	// pending не возвращал — приглашение «сгорало».
+	if has, err := orgSvc.HasPendingInvite(ctx, newEmail); err != nil {
+		t.Fatalf("HasPendingInvite(%q): %v", newEmail, err)
+	} else if !has {
+		t.Fatalf("invite for %q was consumed by a failed LinkIdentity — must stay pending", newEmail)
+	}
 }
