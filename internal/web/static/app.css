@@ -1749,6 +1749,39 @@ th {
 	font-size: var(--fs-base);
 }
 
+/* .copy-llm — тулбар «Скопировать для ИИ» (задача copy.js, static/copy.js):
+   две кнопки-триггера + тост «Скопировано» + пара off-screen textarea-блобов
+   (класс .visually-hidden, см. выше) с готовым дампом события. */
+.copy-llm {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin: 6px 0 12px;
+}
+.btn-copy {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	background: transparent;
+	color: var(--text);
+	border: 1px solid var(--border-control);
+	border-radius: var(--radius);
+	font-family: inherit;
+	font-size: var(--fs-sm);
+	font-weight: 600;
+	line-height: 1.4;
+	cursor: pointer;
+}
+.btn-copy:hover {
+	background: var(--surface-2);
+}
+.copy-done {
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
+}
+
 /* .tags парен с .data-table: таблица тегов — это узкий список ключ/значение,
    и растягивать её на всю ширину незачем. Значение моноширинное, как и
    остальные машинные строки (id, стектрейсы). */

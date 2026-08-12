@@ -64,6 +64,12 @@ With an event selected, the page shows a block with:
 - **User and SDK** — the user's id/email/IP (if the SDK sent them) and SDK information.
 - **Contexts** — raw structured data from the event (runtime environment, device, etc. — whatever the SDK sent).
 
+## Copy for AI
+
+For the currently selected event, two buttons — **"Copy for AI (Markdown)"** and **"Copy for AI (text)"** — put the full error context on the clipboard in one shot: exception type and message, the full stack trace (files, lines, functions), the HTTP request (method, URL, query string, headers, body), contexts, tags, and this event's breadcrumbs. The Markdown format is handy when pasting into a chat that renders markdown itself; the plain-text format is for when you just need plain text. It saves copying the pieces by hand when you want a quick fix suggestion from a model.
+
+> **Warning:** the dump includes request and context data for the event (headers, request body, tags, contexts) and is meant to be pasted into an external AI model (a chat, an assistant, and so on). If your project's events may contain sensitive or personal information, don't paste the dump into untrusted services — check first that sensitive data is stripped at ingest (see [Privacy](/docs/privacy)), or clean up the text by hand.
+
 ## Actions
 
 An issue can be **resolved** (marked fixed), **ignored** (hidden without marking it fixed — useful for known noise), or **unresolved** again. A separate form assigns the issue to any project member; assigning doesn't change the status, it's just "who's on it."

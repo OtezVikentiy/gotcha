@@ -153,7 +153,15 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	// (строгий CSP запрещает клиентский JS) — переключается ссылкой на странице.
 	showAllFrames := r.URL.Query().Get("frames") == "all"
 
-	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames).Render(r.Context(), w)
+	// Дампы для «Скопировать для ИИ» считаем только при выбранном событии —
+	// без него copyToolbar не рендерится (см. issuedetail.templ).
+	var copyMD, copyTXT string
+	if selected != nil {
+		copyMD = renderEventForLLM(it, *selected, dumpMarkdown)
+		copyTXT = renderEventForLLM(it, *selected, dumpPlain)
+	}
+
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT).Render(r.Context(), w)
 }
 
 // issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored

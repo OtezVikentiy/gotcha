@@ -607,7 +607,7 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 // selectedID — id события из query (для подсветки строки в таблице), может
 // не совпадать ни с одним из events, если событие устарело/удалено — тогда
 // selected/frames приходят пустыми и блок деталей просто не рендерится.
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool) {
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
 			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
@@ -669,6 +669,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 						@relativeTime(selected.Timestamp)
 					</h2>
 					<div class="culprit event-id">{ selected.ID }</div>
+					@copyToolbar(copyMD, copyTXT)
 
 					if hasTrace {
 						<p class="event-trace-link"><a href={ templ.URL(tracePathFrom(selected.TraceID, "issue", strconv.FormatInt(it.ID, 10))) }>{ i18n.T(ctx, "issues.detail.view_trace") }</a></p>
@@ -775,6 +776,29 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 					</tbody>
 				</table>
 			}
+		</div>
+	}
+}
+
+// copyToolbar — кнопки «Скопировать для ИИ» (Markdown/текст) и скрытые
+// off-screen textarea-источники для JS-обработчика (static/copy.js, Task 4).
+// Рендерится только при непустом md (т.е. selected != nil в вызывающем
+// коде) — без выбранного события копировать нечего. Текст в <textarea>
+// экранируется templ автоматически — это корректно, обходить не нужно.
+templ copyToolbar(md string, txt string) {
+	if md != "" {
+		<div class="copy-llm">
+			<button type="button" class="btn-copy" data-copy-format="md"
+				data-copy-target="copy-md" aria-label={ i18n.T(ctx, "issue.copy.aria") }>
+				{ i18n.T(ctx, "issue.copy.md") }
+			</button>
+			<button type="button" class="btn-copy" data-copy-format="txt"
+				data-copy-target="copy-txt" aria-label={ i18n.T(ctx, "issue.copy.aria") }>
+				{ i18n.T(ctx, "issue.copy.txt") }
+			</button>
+			<span class="copy-done" data-copy-done hidden>{ i18n.T(ctx, "issue.copy.done") }</span>
+			<textarea class="visually-hidden" id="copy-md" data-copy-blob readonly aria-hidden="true">{ md }</textarea>
+			<textarea class="visually-hidden" id="copy-txt" data-copy-blob readonly aria-hidden="true">{ txt }</textarea>
 		</div>
 	}
 }

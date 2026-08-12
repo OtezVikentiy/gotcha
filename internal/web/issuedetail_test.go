@@ -214,3 +214,72 @@ func TestWebIssueDetail(t *testing.T) {
 		t.Fatalf("GET %s?event=<script>garbage missing title: %s", issuePath, body)
 	}
 }
+
+// TestWebIssueDetailCopyToolbar — тулбар «Скопировать для ИИ» (Task 3):
+// при выбранном событии страница несёт обе кнопки (data-copy-format="md"/
+// "txt") и два скрытых textarea-блоба (data-copy-target); issue без единого
+// события — этих узлов нет вовсе (copyMD/copyTXT пусты, selected == nil, см.
+// issuedetail.go).
+func TestWebIssueDetailCopyToolbar(t *testing.T) {
+	s := newIssuesStack(t)
+	ownerID, ownerCookie := registerAndLogin(t, s, "issuedetail-copy-owner@example.com")
+	project := createProject(t, s, ownerID, "issuedetail-copy-org", "issuedetail-copy-proj")
+	now := time.Now().UTC()
+
+	// Issue с ≥1 событием → тулбар присутствует.
+	withEvent, err := s.issues.Upsert(context.Background(), project.ID, "fp-copy-with-event", "NullPointerException", "pkg/a.go:10", "error", "", now)
+	if err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
+	evID := uuid.NewString()
+	s.batcher.Add(event.Event{
+		ID:             evID,
+		ProjectID:      project.ID,
+		IssueID:        withEvent.IssueID,
+		Timestamp:      now,
+		Level:          "error",
+		Message:        "boom",
+		ExceptionType:  "NullPointerException",
+		ExceptionValue: "boom",
+	})
+	s.flushEvents(t)
+
+	withEventPath := "/issues/" + strconv.FormatInt(withEvent.IssueID, 10)
+	resp := getWithCookie(t, s.srv, withEventPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", withEventPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `data-copy-format="md"`) {
+		t.Fatalf("GET %s missing data-copy-format=\"md\": %s", withEventPath, body)
+	}
+	if !strings.Contains(string(body), `data-copy-format="txt"`) {
+		t.Fatalf("GET %s missing data-copy-format=\"txt\": %s", withEventPath, body)
+	}
+	if strings.Count(string(body), "<textarea") < 2 {
+		t.Fatalf("GET %s expected 2+ <textarea (copy blobs): %s", withEventPath, body)
+	}
+	if !strings.Contains(string(body), `data-copy-target="copy-md"`) || !strings.Contains(string(body), `data-copy-target="copy-txt"`) {
+		t.Fatalf("GET %s missing data-copy-target attributes: %s", withEventPath, body)
+	}
+
+	// Issue без единого события → selected == nil, тулбара нет.
+	noEvents, err := s.issues.Upsert(context.Background(), project.ID, "fp-copy-no-events", "OtherError", "pkg/b.go:1", "error", "", now)
+	if err != nil {
+		t.Fatalf("upsert issue (no events): %v", err)
+	}
+	noEventsPath := "/issues/" + strconv.FormatInt(noEvents.IssueID, 10)
+	resp = getWithCookie(t, s.srv, noEventsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", noEventsPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "data-copy-format") {
+		t.Fatalf("GET %s (no events) unexpectedly has copy toolbar: %s", noEventsPath, body)
+	}
+	if strings.Contains(string(body), "data-copy-target") {
+		t.Fatalf("GET %s (no events) unexpectedly has copy blob targets: %s", noEventsPath, body)
+	}
+}

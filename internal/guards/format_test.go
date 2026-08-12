@@ -154,12 +154,18 @@ var permanentFormatExemptions = []Exemption{
 	// value= <input type="datetime-local"> выше (группа timerange.go), только
 	// для другого HTML-атрибута.
 	{Value: exemptLoc("internal/web/templates/relativetime.templ", 22), Why: `<time datetime={ t.UTC().Format(time.RFC3339) }> — машинночитаемый атрибут datetime, не текст для человека (title рядом уже собран через humanize.Time)`, Finding: "по замыслу"},
+
+	// internal/web/eventdump.go: renderEventForLLM собирает контекст события
+	// в текст для вставки в LLM — время в дампе должно быть машинным
+	// (RFC3339 UTC), не human-readable: дамп читает модель, а не пользователь.
+	{Value: exemptLoc("internal/web/eventdump.go", 105), Why: `ev.Timestamp.UTC().Format(time.RFC3339) — машинный timestamp в LLM-дампе события (текст для модели, не человеческий показ)`, Finding: "по замыслу"},
 }
 
-// maxPermanentFormatExemptions — потолок сознательно поднят с 20 до 21
-// заданием C7: relativetime.templ добавил один машинный формат (datetime=
-// для <time>) в постоянные исключения, см. запись выше.
-const maxPermanentFormatExemptions = 21
+// maxPermanentFormatExemptions — потолок сознательно поднят с 21 до 22
+// задачей 2 подпроекта event-llm-copy: eventdump.go добавил один машинный
+// формат (RFC3339 timestamp в LLM-дампе события) в постоянные исключения,
+// см. запись выше.
+const maxPermanentFormatExemptions = 22
 
 // debtFormatExemptions — человекочитаемые макеты времени вне
 // internal/humanize: настоящие копии форматирования, ради поиска которых и
