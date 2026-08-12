@@ -11,17 +11,26 @@
 		m.hidden = false;
 		setTimeout(function () { m.hidden = true; }, 1500);
 	}
-	function copyText(ta, root) {
-		if (navigator.clipboard && navigator.clipboard.writeText) {
-			navigator.clipboard.writeText(ta.value).then(function () { flashDone(root); });
-			return;
-		}
+	function fallbackCopy(ta, root) {
 		ta.removeAttribute("aria-hidden");
 		ta.focus();
 		ta.select();
 		try { if (document.execCommand("copy")) flashDone(root); } catch (e) {}
 		ta.setAttribute("aria-hidden", "true");
 		if (window.getSelection) window.getSelection().removeAllRanges();
+	}
+	function copyText(ta, root) {
+		// navigator.clipboard есть только в secure-context; вдобавок writeText может
+		// ОТКЛОНИТЬСЯ (нет фокуса/жеста, permissions-policy). Реджект тоже уводим в
+		// фолбэк execCommand — иначе кнопка молча ничего не делает (ни копии, ни тоста).
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(ta.value).then(
+				function () { flashDone(root); },
+				function () { fallbackCopy(ta, root); }
+			);
+			return;
+		}
+		fallbackCopy(ta, root);
 	}
 	document.addEventListener("click", function (ev) {
 		var btn = ev.target.closest ? ev.target.closest("[data-copy-format]") : null;

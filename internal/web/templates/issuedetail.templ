@@ -797,8 +797,8 @@ templ copyToolbar(md string, txt string) {
 				{ i18n.T(ctx, "issue.copy.txt") }
 			</button>
 			<span class="copy-done" data-copy-done hidden>{ i18n.T(ctx, "issue.copy.done") }</span>
-			<textarea class="visually-hidden" id="copy-md" data-copy-blob readonly aria-hidden="true">{ md }</textarea>
-			<textarea class="visually-hidden" id="copy-txt" data-copy-blob readonly aria-hidden="true">{ txt }</textarea>
+			<textarea class="visually-hidden" id="copy-md" data-copy-blob readonly aria-hidden="true" tabindex="-1">{ md }</textarea>
+			<textarea class="visually-hidden" id="copy-txt" data-copy-blob readonly aria-hidden="true" tabindex="-1">{ txt }</textarea>
 		</div>
 	}
 }
