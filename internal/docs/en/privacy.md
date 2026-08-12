@@ -6,7 +6,8 @@ Gotcha is a self-hosted platform: you run it on your own infrastructure and cont
 
 ## A dev secret key means no encryption at rest
 
-`GOTCHA_SECRET_KEY` is what encrypts SSO client secrets and channel tokens in
+`GOTCHA_SECRET_KEY` is what encrypts SSO client secrets, channel tokens, and
+monitor HTTP header values (e.g. an `Authorization` bearer token) in
 PostgreSQL. While it is left at the built-in development default, encryption is
 **not enabled at all** — those secrets sit in the database as plain text.
 Encrypting them with a key that is published in the source would be theatre, so
@@ -21,6 +22,17 @@ Two consequences worth knowing:
 - On a non-local `GOTCHA_BASE_URL` the app refuses to start with the default key
   in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`), so this normally only affects local instances — unless
   the refusal was explicitly overridden.
+- **Rotating `GOTCHA_SECRET_KEY` on a running instance is a breaking operation.**
+  Encrypted values (`enc:...`) don't carry a key ID/version, so a new key cannot
+  decrypt ANY previously stored value (SSO client secrets, delivery channel
+  tokens, monitor headers) — they become unreadable (decryption error), exactly
+  as with a wrong key. Reads degrade gracefully (each secret is flagged broken
+  individually rather than failing the whole list), but a working channel/SSO
+  integration will stop functioning until its secret is manually re-entered
+  after rotation. If you do need to rotate the key (leak, scheduled rotation),
+  plan for a manual re-encrypt: after switching keys, reopen and re-save every
+  secret (SSO client secret, Telegram/webhook channel tokens, monitor headers)
+  through the UI so it gets written back under the new key.
 
 ## What personal data is processed
 

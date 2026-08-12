@@ -66,8 +66,8 @@ Being on a team attached to a project — an **operator**, in the table below �
 | Monitors: create, edit, pause/resume, delete | — | ✓ | ✓ | ✓ |
 | Heartbeat monitor: regenerate the ping token | — | ✓ | ✓ | ✓ |
 | Maintenance windows: create, edit, delete | — | ✓ | ✓ | ✓ |
-| Status page content: create/edit/delete a page, pick monitors and titles | — | ✓ (a page an operator creates starts unpublished) | ✓ | ✓ |
-| Status page publication: the "Published" toggle | — | — | ✓ | ✓ |
+| Status page content: create/edit a page, pick monitors and titles; delete it while unpublished | — | ✓ (a page an operator creates starts unpublished) | ✓ | ✓ |
+| Status page publication: the "Published" toggle, or deleting a page that's already published | — | — | ✓ | ✓ |
 | Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
 | Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, enough to tell channels apart when picking one in a rule) | ✓ | ✓ |
 | Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
