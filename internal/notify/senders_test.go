@@ -202,6 +202,52 @@ func TestWebhookSenderSSRFAllowsWhenConfigured(t *testing.T) {
 	}
 }
 
+// TestTelegramSenderSSRFBlocksLoopback — it-sec P2-1 (2026-08-12):
+// TelegramSender теперь проведён через тот же netguard-транспорт, что
+// WebhookSender — без явного Client и с AllowPrivate=false доставка на
+// loopback режется до соединения, симметрично webhook.go (см.
+// TestWebhookSenderSSRFBlocksLoopback выше). BaseURL сегодня всегда
+// операторский (не арендаторский), так что это defense-in-depth, а не
+// закрытие активной дыры.
+func TestTelegramSenderSSRFBlocksLoopback(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sender := &notify.TelegramSender{BaseURL: srv.URL, AllowPrivate: false}
+	target := notify.Target{Kind: "telegram", Target: "12345", Secret: "tok"}
+	if err := sender.Send(context.Background(), target, map[string]any{"body": "hi"}); err == nil {
+		t.Fatal("Send to loopback: want error (blocked), got nil")
+	}
+	if hit {
+		t.Error("request reached the loopback server, want it blocked before dial")
+	}
+}
+
+// TestTelegramSenderSSRFAllowsWhenConfigured — при AllowPrivate=true (нужно
+// операторам со своим telegram-bot-api/прокси на приватном адресе) фильтр
+// отключён и доставка на loopback доходит.
+func TestTelegramSenderSSRFAllowsWhenConfigured(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sender := &notify.TelegramSender{BaseURL: srv.URL, AllowPrivate: true}
+	target := notify.Target{Kind: "telegram", Target: "12345", Secret: "tok"}
+	if err := sender.Send(context.Background(), target, map[string]any{"body": "hi"}); err != nil {
+		t.Fatalf("Send to loopback with AllowPrivate=true: %v", err)
+	}
+	if !hit {
+		t.Error("request did not reach the loopback server, want it delivered")
+	}
+}
+
 func TestTelegramSenderPostsMessage(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any

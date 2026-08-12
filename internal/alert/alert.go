@@ -38,6 +38,10 @@ var (
 	ErrNotFound       = errors.New("alert: not found")
 	ErrInvalidRule    = errors.New("alert: invalid rule")
 	ErrInvalidChannel = errors.New("alert: invalid channel")
+	// ErrSecretBroken — секрет канала зашифрован (настоящий enc:-ciphertext),
+	// но мастер-ключа нет (сброшен/откачен GOTCHA_SECRET_KEY): расшифровать
+	// нечем, а отдавать ciphertext как живой секрет нельзя.
+	ErrSecretBroken = errors.New("alert: channel secret is encrypted but no master key is set")
 )
 
 // Rule — правило алертинга проекта.
@@ -339,6 +343,19 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 				continue
 			}
 			c.Secret = secret
+		} else if secretbox.IsEncrypted(c.Secret) {
+			// Мастер-ключа нет (dev-дефолт или откат GOTCHA_SECRET_KEY), но в
+			// БД лежит НАСТОЯЩИЙ ciphertext, а не legacy plaintext. Отдать его
+			// как есть — значит подсунуть нотифаеру enc:base64... вместо
+			// bot-токена/HMAC-ключа: тихий отказ доставки вместо явного. Тот
+			// же приём, что и выше при ошибке Open — помечаем сломанным и не
+			// отдаём ciphertext.
+			slog.Error("alert: channel secret is encrypted but no master key is set",
+				"channel_id", c.ID, "project_id", c.ProjectID, "kind", c.Kind)
+			c.Secret = ""
+			c.SecretBroken = true
+			out = append(out, c)
+			continue
 		}
 		out = append(out, c)
 	}
@@ -395,6 +412,12 @@ func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, e
 		return "", fmt.Errorf("alert: channel secret: %w", err)
 	}
 	if !s.secretKeySet {
+		if secretbox.IsEncrypted(secret) {
+			// Настоящий ciphertext без ключа для расшифровки — слать
+			// нечего; отдать его как secret значило бы отправить
+			// enc:base64... нотифаеру как bot-токен/HMAC-ключ.
+			return "", fmt.Errorf("alert: channel %d secret is encrypted: %w", channelID, ErrSecretBroken)
+		}
 		return secret, nil
 	}
 	open, err := secretbox.Open(s.secretKey, secret)

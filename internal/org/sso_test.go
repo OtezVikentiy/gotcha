@@ -106,6 +106,53 @@ func TestSSOSecretEncryptedAtRest(t *testing.T) {
 	}
 }
 
+// TestSSOSecretEncryptedWithoutMasterKey — воспроизводит W2/P1-7: SSO-конфиг
+// заведён под мастер-ключом (client_secret зашифрован, enc:-ciphertext в БД),
+// а читается сервисом БЕЗ ключа вовсе (откат GOTCHA_SECRET_KEY на dev-дефолт:
+// main.go SetSecretKey тогда не вызывается, secretKeySet остаётся false).
+// Раньше decryptSSO при !secretKeySet отдавал c.ClientSecret как есть — и
+// SSO-логин ушёл бы в OIDC token-обмен с client_secret=enc:base64.... Теперь
+// такое чтение должно отказывать, а не отдавать ciphertext.
+func TestSSOSecretEncryptedWithoutMasterKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	keyed := org.NewService(pool, 1_000_000)
+	keyed.SetSecretKey("master-key-for-sso-rollback")
+	owner := newUser(t, pool, "sso-rollback@example.com")
+	o, _ := keyed.CreateOrg(ctx, "sso-rollback", "SSO Rollback", owner)
+
+	const plaintext = "real-client-secret"
+	cfg := org.SSOConfig{OrgID: o.ID, Issuer: "https://idp", ClientID: "c", ClientSecret: plaintext, Domain: "rollback.com"}
+	if err := keyed.UpsertSSO(ctx, cfg); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	var stored string
+	if err := pool.QueryRow(ctx, "SELECT client_secret FROM org_sso WHERE org_id = $1", o.ID).Scan(&stored); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if !strings.HasPrefix(stored, "enc:") {
+		t.Fatalf("precondition: client_secret must be encrypted at rest, got %q", stored)
+	}
+
+	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetSecretKey.
+	noKey := org.NewService(pool, 1_000_000)
+	if _, ok, err := noKey.SSOByOrg(ctx, o.ID); err == nil {
+		t.Fatal("SSOByOrg вернул nil-ошибку — должен отказать, а не отдать ciphertext как client_secret")
+	} else if ok {
+		t.Fatal("SSOByOrg вернул ok=true вместе с ошибкой")
+	}
+	if _, ok, err := noKey.SSOByDomain(ctx, "rollback.com"); err == nil {
+		t.Fatal("SSOByDomain вернул nil-ошибку — должен отказать, а не отдать ciphertext как client_secret")
+	} else if ok {
+		t.Fatal("SSOByDomain вернул ok=true вместе с ошибкой")
+	}
+}
+
 func TestEnsureMemberIdempotent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

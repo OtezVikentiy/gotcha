@@ -9,6 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
 const defaultTelegramBaseURL = "https://api.telegram.org"
@@ -17,16 +20,32 @@ const defaultTelegramBaseURL = "https://api.telegram.org"
 // api.telegram.org; непустой задаёт оператор инстанса
 // (GOTCHA_TELEGRAM_API_BASE) — свой telegram-bot-api или прокси, когда до
 // api.telegram.org не достучаться. Тесты подставляют сюда httptest.
+//
+// it-sec P2-1 (2026-08-12): BaseURL сегодня задаёт только оператор, не
+// арендатор (bot-токен идёт в path, @ туда host не подменяет), поэтому это
+// не активная SSRF-дыра. Тем не менее исходящий запрос проведён через тот
+// же netguard-транспорт, что и WebhookSender — для единообразия
+// defense-in-depth и на случай, если base URL когда-нибудь станет
+// пер-канальным (арендаторским). AllowPrivate — тот же экейпхэтч, что и у
+// webhook (см. Config.SSRFAllowPrivateTelegram): нужен операторам, у
+// которых свой telegram-bot-api/прокси на приватном адресе.
 type TelegramSender struct {
-	Client  *http.Client
-	BaseURL string
+	Client       *http.Client
+	BaseURL      string
+	AllowPrivate bool
+
+	safeOnce   sync.Once
+	safeClient *http.Client
 }
 
 func (s *TelegramSender) client() *http.Client {
 	if s.Client != nil {
 		return s.Client
 	}
-	return defaultClient()
+	s.safeOnce.Do(func() {
+		s.safeClient = netguard.SafeHTTPClient(s.AllowPrivate, httpClientTimeout)
+	})
+	return s.safeClient
 }
 
 func (s *TelegramSender) baseURL() string {

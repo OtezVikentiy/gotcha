@@ -61,14 +61,15 @@ func (o *Outbox) Enqueue(ctx context.Context, channelID int64, payload map[strin
 // условие выборки и не будет забрана повторно. Если воркер упал, не успев
 // подтвердить, задача снова станет видимой по истечении лизы.
 //
-// Держим в паре с Worker.claimBatch (worker.go): один тик воркера
-// обрабатывает задачи последовательно, до claimBatch штук, каждая — до
-// defaultSendTimeout (30s) на попытку. claimLease обязана покрывать
-// claimBatch * defaultSendTimeout с запасом — иначе задачи в хвосте батча
-// станут reclaimable другой репликой, пока первая ещё их отправляет (то
-// есть один и тот же outbox-джоб уйдёт дублем на два канала). При
-// claimBatch=5 и defaultSendTimeout=30s это 5*30s=150s худшего случая;
-// 5 минут оставляют комфортный запас. Правьте обе константы вместе.
+// Держим в паре с Worker (worker.go): один тик воркера отправляет батч
+// параллельно (defaultConcurrency штук одновременно), каждая попытка — до
+// defaultSendTimeout (30s). claimLease обязана покрывать время обработки
+// всего батча с запасом — иначе задачи в хвосте батча станут reclaimable
+// другой репликой, пока первая ещё их отправляет (то есть один и тот же
+// outbox-джоб уйдёт дублем на два канала). При defaultConcurrency=4,
+// claimBatchPerWorker=2 (батч 8) и defaultSendTimeout=30s это минута
+// худшего случая (см. точный расчёт в worker.go:claimBatchPerWorker);
+// 5 минут оставляют комфортный запас. Правьте константы вместе.
 const claimLease = 5 * time.Minute
 
 // Claim забирает до limit задач, готовых к отправке (status=pending,

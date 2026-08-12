@@ -102,6 +102,32 @@ func (s *Service) claimBudget(ctx context.Context, projectID int64) (BudgetDecis
 	return d, nil
 }
 
+// refundBudget отменяет claimBudget: возвращает место, занятое
+// уведомлением, чьи Enqueue провалились ПОЛНОСТЬЮ (иначе истраченный
+// бюджет списывался бы на алерт, который так и не ушёл — см. вызов из
+// Evaluator.OnIssue после цикла Enqueue). Ограничен ТЕКУЩИМ окном по той
+// же причине, что и claimBudget: окно, которое уже истекло, claimBudget
+// откроет заново сам, трогать его возвратом ни к чему. Best-effort: ошибка
+// логируется вызывающей стороной, а не ронянет обработку.
+func (s *Service) refundBudget(ctx context.Context, projectID int64) error {
+	window, limit := s.budgetParams()
+	if limit <= 0 {
+		return nil // ограничение выключено — claimBudget тоже ничего не писал
+	}
+	windowSecs := int(window / time.Second)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE alert_project_budget
+		SET sent = sent - 1
+		WHERE project_id = $1
+		  AND window_start > now() - make_interval(secs => $2)
+		  AND sent > 0`,
+		projectID, windowSecs)
+	if err != nil {
+		return fmt.Errorf("alert: refund budget: %w", err)
+	}
+	return nil
+}
+
 // SuppressedBatch — подавленные уведомления одного проекта, готовые к сводке.
 type SuppressedBatch struct {
 	ProjectID  int64

@@ -166,6 +166,14 @@ type Config struct {
 	// ScrubFreeText (RA-L10) — опционально маскировать email-адреса в свободном
 	// тексте (message/exception_value/span.description). По умолчанию выключено
 	// (консервативно, чтобы не портить SQL/URL); только email, не номера.
+	//
+	// it-sec P2-2 (2026-08-12): осознанный остаточный риск — при выключенном
+	// (дефолтном) флаге email внутри свободного текста исключения оседает в
+	// ClickHouse plaintext (структурные email-поля и URL-токены скрабятся
+	// независимо от этого флага, см. internal/ingest/scrub.go:ScrubUser/
+	// ScrubMessage). Задокументировано для операторов, работающих под 152-ФЗ,
+	// в internal/docs/{ru,en}/privacy.md («Обезличивание свободного текста» /
+	// «Free-text scrubbing») и configuration.md.
 	ScrubFreeText bool
 
 	// SSRFAllowPrivate* (SEC-M1) — разрешить исходящим запросам ходить на
@@ -178,14 +186,23 @@ type Config struct {
 	//   Webhook — цель задаёт админ проекта, а ответ цели (до 1 КБ) виден в UI
 	//             на странице доставок: это полноценный внутренний ридер.
 	//   OIDC    — туда уходит client_secret на token_endpoint из discovery.
+	//   Telegram — цель СЕГОДНЯ тоже задаёт только оператор (BaseURL —
+	//             GOTCHA_TELEGRAM_API_BASE, не арендатор), поэтому риск
+	//             ближе к Uptime; проведён через netguard не потому, что
+	//             сейчас есть дыра, а для единообразия defense-in-depth на
+	//             случай, если base URL когда-нибудь станет пер-канальным
+	//             (it-sec P2-1, 2026-08-12). Оператор, у которого свой
+	//             telegram-bot-api/прокси на приватном адресе (docker-сеть
+	//             и т.п.), включает этот флаг явно.
 	// Раньше один GOTCHA_SSRF_ALLOW_PRIVATE расслаблял все три сразу, поэтому
 	// «разрешить мониторить внутренний сервис» незаметно открывало и остальные два.
 	//
-	// Старая переменная сохранена как ДЕФОЛТ для всех трёх — существующие
+	// Старая переменная сохранена как ДЕФОЛТ для всех — существующие
 	// инсталляции не ломаются, но могут сузить разрешение точечно.
-	SSRFAllowPrivateUptime  bool
-	SSRFAllowPrivateWebhook bool
-	SSRFAllowPrivateOIDC    bool
+	SSRFAllowPrivateUptime   bool
+	SSRFAllowPrivateWebhook  bool
+	SSRFAllowPrivateOIDC     bool
+	SSRFAllowPrivateTelegram bool
 	// AutoMigrate (ARCH-M3) — применять миграции схемы на старте. По
 	// умолчанию true; false выносит миграции в отдельный init-job, чтобы
 	// app-реплики не клинили все разом на dirty-состоянии.
@@ -475,6 +492,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.SSRFAllowPrivateUptime = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME", ssrfAll)
 	cfg.SSRFAllowPrivateWebhook = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK", ssrfAll)
 	cfg.SSRFAllowPrivateOIDC = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_OIDC", ssrfAll)
+	cfg.SSRFAllowPrivateTelegram = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_TELEGRAM", ssrfAll)
 	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE", true)
 	// --migrate-only подразумевает применение миграций: этот запуск ради них и
 	// существует. Иначе флаг вместе с GOTCHA_AUTO_MIGRATE=false — а это ровно
@@ -552,6 +570,48 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 			cfg.TrustedProxies = append(cfg.TrustedProxies, n)
 		}
 	}
+	// ops P2-1: проверка GOTCHA_SECRET_KEY стоит ПЕРЕД errs[0] ниже (а не среди
+	// остальных валидаций хвостом функции) сознательно — это единственная
+	// security-critical проверка конфига (слабый/дефолтный ключ на не-local
+	// BaseURL = угон аккаунта через OAuth-link, SEC-C1). Если у оператора
+	// ОДНОВРЕМЕННО опечатка в каком-то числовом поле (например
+	// GOTCHA_RETENTION_DAYS=abc) И слабый секрет, порядок ниже гарантирует,
+	// что он увидит именно предупреждение про секрет первым, а не только
+	// про опечатку — иначе он мог бы исправить опечатку, перезапуститься и
+	// невольно продолжить стартовать со слабым ключом ещё один цикл
+	// деплоя, пока не увидит следующую ошибку.
+	//
+	// SEC-C1: дефолтный ключ подписи oauth-cookie публично известен из
+	// исходников. В серверных режимах на не-localhost BaseURL это дыра
+	// (угон аккаунта через OAuth-link) — отказываемся стартовать.
+	// Escape-hatch для нестандартного dev-окружения —
+	// GOTCHA_ALLOW_INSECURE_SECRET=1.
+	if secretKeyMattersFor(cfg.Mode) &&
+		cfg.SecretKey == devSecretKey &&
+		!isLocalBaseURL(cfg.BaseURL) &&
+		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
+		return Config{}, fmt.Errorf(
+			"GOTCHA_SECRET_KEY must be set to a strong random value for a non-local %s instance "+
+				"(default key is public and enables OAuth account takeover); "+
+				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development", cfg.Mode)
+	}
+
+	// SEC: слишком короткий кастомный ключ — слабый ключ подписи oauth-cookie и
+	// мастер шифрования SSO client_secret. В серверных режимах на не-local
+	// требуем >= 32 байт (стандартный минимум для ключа). Тот же escape-hatch,
+	// что и у проверки дефолтного ключа выше.
+	if secretKeyMattersFor(cfg.Mode) &&
+		cfg.SecretKey != devSecretKey &&
+		len(cfg.SecretKey) < 32 &&
+		!isLocalBaseURL(cfg.BaseURL) &&
+		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
+		return Config{}, fmt.Errorf(
+			"GOTCHA_SECRET_KEY is too short (%d bytes) for a non-local %s instance; "+
+				"use at least 32 random bytes (e.g. `openssl rand -hex 32`); "+
+				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development",
+			len(cfg.SecretKey), cfg.Mode)
+	}
+
 	if len(errs) > 0 {
 		return Config{}, errs[0]
 	}
@@ -686,36 +746,6 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.VKEnabled && (cfg.VKClientID == "" || cfg.VKClientSecret == "") {
 		return Config{}, fmt.Errorf("GOTCHA_VK_ENABLED requires GOTCHA_VK_CLIENT_ID and _CLIENT_SECRET")
-	}
-
-	// SEC-C1: дефолтный ключ подписи oauth-cookie публично известен из исходников.
-	// В серверных режимах на не-localhost BaseURL это дыра (угон аккаунта
-	// через OAuth-link) — отказываемся стартовать. Escape-hatch для нестандартного
-	// dev-окружения — GOTCHA_ALLOW_INSECURE_SECRET=1.
-	if secretKeyMattersFor(cfg.Mode) &&
-		cfg.SecretKey == devSecretKey &&
-		!isLocalBaseURL(cfg.BaseURL) &&
-		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
-		return Config{}, fmt.Errorf(
-			"GOTCHA_SECRET_KEY must be set to a strong random value for a non-local %s instance "+
-				"(default key is public and enables OAuth account takeover); "+
-				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development", cfg.Mode)
-	}
-
-	// SEC: слишком короткий кастомный ключ — слабый ключ подписи oauth-cookie и
-	// мастер шифрования SSO client_secret. В серверных режимах на не-local
-	// требуем >= 32 байт (стандартный минимум для ключа). Тот же escape-hatch,
-	// что и у проверки дефолтного ключа выше.
-	if secretKeyMattersFor(cfg.Mode) &&
-		cfg.SecretKey != devSecretKey &&
-		len(cfg.SecretKey) < 32 &&
-		!isLocalBaseURL(cfg.BaseURL) &&
-		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
-		return Config{}, fmt.Errorf(
-			"GOTCHA_SECRET_KEY is too short (%d bytes) for a non-local %s instance; "+
-				"use at least 32 random bytes (e.g. `openssl rand -hex 32`); "+
-				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development",
-			len(cfg.SecretKey), cfg.Mode)
 	}
 
 	return cfg, nil

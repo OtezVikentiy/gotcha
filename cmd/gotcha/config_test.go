@@ -472,6 +472,29 @@ func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo — ops P2-1: раньше
+// проверка GOTCHA_SECRET_KEY шла хвостом функции, ПОСЛЕ бейл-аута по
+// errs[0] на числовых/булевых полях (config.go). Если оператор одновременно
+// опечатался в GOTCHA_RETENTION_DAYS И оставил слабый/дефолтный секрет на
+// проде, он видел только ошибку про retention, чинил её, перезапускал — и
+// только тогда узнавал про секрет. Секьюрити-критичная проверка теперь идёт
+// раньше errs[0], поэтому именно она должна быть видна первой.
+func TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL":       "https://gotcha.example.com",
+		"GOTCHA_RETENTION_DAYS": "abc", // опечатка в числовом поле
+		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret на не-local URL
+	}
+	getenv := func(k string) string { return env[k] }
+	_, err := loadConfig(getenv, []string{"--mode=all"})
+	if err == nil {
+		t.Fatal("expected error (both a numeric typo and a weak secret are present), got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY") {
+		t.Fatalf("the security-relevant secret error must surface even with an unrelated config typo present, got: %v", err)
+	}
+}
+
 func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {

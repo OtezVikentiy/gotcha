@@ -122,6 +122,11 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		"title", ev.Title, "culprit", ev.Culprit, "level", ev.Level,
 		"count", strconv.FormatInt(ev.TimesSeen, 10), "url", url)
 
+	// deliverableCount/enqueued отслеживают, был ли хоть один УСПЕШНЫЙ
+	// Enqueue среди каналов, куда вообще стоило слать: см. откат claim'ов
+	// после цикла.
+	deliverableCount := 0
+	enqueued := 0
 	for _, ch := range channels {
 		if !ch.Deliverable() {
 			continue
@@ -131,6 +136,7 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 				"project_id", ev.ProjectID, "channel_id", ch.ID)
 			continue
 		}
+		deliverableCount++
 
 		payload := map[string]any{
 			"kind":         ev.Kind,
@@ -155,8 +161,50 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		}
 		if err := e.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("alert: enqueue failed", "channel_id", ch.ID, "error", err)
+			continue
+		}
+		enqueued++
+	}
+
+	// claimThrottle/claimBudget заняты ДО этого цикла ради дедупа (см. их
+	// комментарии): два конкурентных OnIssue для одного issue+rule не должны
+	// оба разослать. Но если каналов, куда стоило слать, было НЕСКОЛЬКО и НИ
+	// ОДИН Enqueue не прошёл (транзиентный сбой БД/outbox) — тот claim
+	// молча хоронит алерт первого обнаружения до истечения ThrottleMinutes,
+	// а следующее событие того же issue снова упрётся в занятый троттл.
+	// Откатываем claim ТОЛЬКО при полном провале: частичный успех (хоть
+	// один канал принят) значит, что доставка состоялась, и откатывать
+	// нечего; ноль deliverable-каналов значит, что слать было некуда —
+	// это не потеря из-за сбоя, а обычная тишина.
+	if deliverableCount > 0 && enqueued == 0 {
+		if err := e.releaseThrottle(ctx, ev.IssueID, rule.ID); err != nil {
+			slog.Error("alert: release throttle after full enqueue failure",
+				"issue_id", ev.IssueID, "rule_id", rule.ID, "error", err)
+		}
+		if err := e.Svc.refundBudget(ctx, ev.ProjectID); err != nil {
+			slog.Error("alert: refund budget after full enqueue failure",
+				"project_id", ev.ProjectID, "error", err)
 		}
 	}
+}
+
+// releaseThrottle отменяет claimThrottle: удаляет только что занятую строку
+// окна, чтобы следующее событие того же issue+rule могло переотправить
+// алерт, а не молча упереться в занятый троттл до истечения
+// ThrottleMinutes. Вызывается ТОЛЬКО непосредственно после своего же
+// claimThrottle в этом же OnIssue, пока последующий claim того же ключа не
+// мог пройти (наш last_sent_at=now() блокирует его до истечения окна) — так
+// что гонка с "чужим" claim'ом здесь исключена, кроме вырожденного случая
+// throttleMinutes=0 (нет троттлинга), где откат best-effort и может задеть
+// более свежий claim: ошибка отката логируется вызывающей стороной и не
+// ронянет обработку.
+func (e *Evaluator) releaseThrottle(ctx context.Context, issueID, ruleID int64) error {
+	if _, err := e.Svc.pool.Exec(ctx,
+		`DELETE FROM alert_throttle WHERE issue_id = $1 AND rule_id = $2`,
+		issueID, ruleID); err != nil {
+		return fmt.Errorf("alert: release throttle: %w", err)
+	}
+	return nil
 }
 
 // ruleByKind возвращает единственное правило (project_id, kind) —

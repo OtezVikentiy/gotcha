@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
 var (
@@ -90,6 +92,13 @@ func scanSSO(row pgx.Row) (SSOConfig, error) {
 // значение как есть, поэтому вызов безопасен и для старых записей.
 func (s *Service) decryptSSO(c SSOConfig) (SSOConfig, error) {
 	if !s.secretKeySet {
+		if secretbox.IsEncrypted(c.ClientSecret) {
+			// Настоящий ciphertext, а ключа нет (сброшен/откачен
+			// GOTCHA_SECRET_KEY): отдать его как есть значило бы уйти в OIDC
+			// token-обмен с client_secret=enc:base64... — тихий отказ логина
+			// вместо явного.
+			return SSOConfig{}, fmt.Errorf("org: sso client_secret is encrypted but no master key is set")
+		}
 		return c, nil
 	}
 	secret, err := openSecret(s.secretKey, c.ClientSecret)

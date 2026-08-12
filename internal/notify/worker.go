@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -171,10 +172,32 @@ func (w *Worker) deliver(ctx context.Context, jobs []Job) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			w.process(ctx, job)
+			w.processGuarded(ctx, job)
 		}(job)
 	}
 	wg.Wait()
+}
+
+// processGuarded вызывает process под recover(): паника внутри (кривой
+// payload, паника в конкретном Sender'е) обязана убить доставку РОВНО этого
+// job'а, а не всю горутину — невосстановленная паника в любой горутине
+// роняет весь процесс целиком (Go), а один job уже держит claim-лизу вместе
+// с остальным батчем. Тот же приём, что processGuarded в
+// ingest/pipeline.go:530 и recover в uptime/runner.go:180.
+//
+// Паника считается неуспехом доставки, а не успехом: job уходит через
+// retryOrFail (ретрай или, после исчерпания попыток, MarkFailed) — как и
+// любая другая ошибка Send. markSent здесь нельзя: process мог упасть уже
+// ПОСЛЕ Send, но саму отправку паника не подтверждает.
+func (w *Worker) processGuarded(ctx context.Context, job Job) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("notify worker: delivery panicked",
+				"job_id", job.ID, "channel_id", job.ChannelID, "panic", r)
+			w.retryOrFail(ctx, job, fmt.Errorf("panic: %v", r))
+		}
+	}()
+	w.process(ctx, job)
 }
 
 func (w *Worker) process(ctx context.Context, job Job) {

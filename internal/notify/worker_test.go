@@ -409,6 +409,68 @@ func TestWorkerFailsAfterFiveAttempts(t *testing.T) {
 
 // slowSender держит каждую отправку delay и запоминает пиковое число
 // одновременных вызовов.
+// panicSender simulates a bug inside a concrete Sender implementation (bad
+// payload assumption, nil deref building the request) by panicking instead
+// of returning an error.
+type panicSender struct {
+	calls int32
+}
+
+func (p *panicSender) Send(ctx context.Context, t notify.Target, payload map[string]any) error {
+	atomic.AddInt32(&p.calls, 1)
+	panic("boom: sender exploded")
+}
+
+// TestWorkerRecoversFromPanicInProcess covers the P1 finding: deliver spawns
+// one goroutine per job calling w.process WITHOUT recover(). Go kills the
+// whole process on an unrecovered panic in any goroutine, so a single bad
+// Sender (or a malformed payload it can't handle) used to take down the
+// entire notify.Worker — and everything else running in the same process —
+// instead of just failing that one job. This proves the panic is now
+// contained: the worker keeps running, the panicking job is treated as a
+// failed delivery (retryable, NOT marked sent), and other jobs in the same
+// batch are still delivered.
+func TestWorkerRecoversFromPanicInProcess(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ob := notify.NewOutbox(pool)
+	badCh := newChannel(t, pool)
+	okCh := newChannel(t, pool)
+
+	bad := &panicSender{}
+	ok := &fakeSender{}
+	w := &notify.Worker{
+		Outbox:   ob,
+		Senders:  map[string]notify.Sender{"bad": bad, "ok": ok},
+		Interval: 20 * time.Millisecond,
+	}
+	enqueueJob(t, ob, badCh, "bad", "dest")
+	enqueueJob(t, ob, okCh, "ok", "dest")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runWorker(t, w, ctx)
+
+	// The panicking job must not be marked delivered: recover() treats a
+	// panic the same as any other Send error, routing it through
+	// retryOrFail, not markSent.
+	s := waitForJobState(t, pool, badCh, 2*time.Second, func(s jobState) bool {
+		return s.attempts == 1 && s.lastError != ""
+	})
+	if s.status != "pending" {
+		t.Errorf("panicking job status = %q, want pending (retryable, not sent)", s.status)
+	}
+
+	// The other job in the same batch must still be delivered: the panic
+	// must not have taken the worker (or the process) down with it.
+	waitForJobState(t, pool, okCh, 2*time.Second, func(s jobState) bool { return s.status == "sent" })
+
+	cancel()
+	<-done
+
+	if got := atomic.LoadInt32(&bad.calls); got != 1 {
+		t.Errorf("bad.calls = %d, want 1", got)
+	}
+}
+
 type slowSender struct {
 	delay   time.Duration
 	inFlt   atomic.Int32

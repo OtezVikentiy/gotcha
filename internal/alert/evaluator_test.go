@@ -2,12 +2,14 @@ package alert_test
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
@@ -440,4 +442,126 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("concurrent OnIssue: enqueued %d jobs, want exactly 1 (throttle must serialize)", len(jobs))
 		}
 	})
+}
+
+// TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget covers the P1
+// finding: claimThrottle/claimBudget occupy the throttle window and budget
+// slot BEFORE the Outbox.Enqueue loop, to serialize concurrent OnIssue calls
+// for the same issue+rule (see claimThrottle's comment). If every Enqueue
+// call in that loop fails (transient DB/outbox outage), the claim used to
+// stay occupied regardless — the very first alert for an issue was lost
+// silently until ThrottleMinutes elapsed, and the next event for the same
+// issue ran straight into the still-occupied throttle. Now a full failure
+// (deliverable channels existed, but zero Enqueue succeeded) rolls back both
+// claims so the next event can retry.
+func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	svc.SetBudget(time.Hour, 5)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "enqueue-fail-full")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	// Two deliverable channels: a full failure must roll back the claims
+	// exactly once, no matter how many channels were attempted.
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel webhook: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "123", Secret: "tok",
+	}); err != nil {
+		t.Fatalf("CreateChannel telegram: %v", err)
+	}
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+
+	// Outbox on a CLOSED pool: Enqueue is guaranteed to fail for every
+	// channel, while claimThrottle/claimBudget (through svc's own pool)
+	// still work normally. Same trick as
+	// trace.TestOutboxNotifierReleasesSlotWhenEnqueueFails.
+	broken, err := pgxpool.New(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("broken pool: %v", err)
+	}
+	broken.Close()
+
+	e := &alert.Evaluator{Svc: svc, Outbox: notify.NewOutbox(broken), BaseURL: "https://gotcha.example"}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e.OnIssue(ctx, ev)
+
+	// Budget refunded: a full failure must not spend a slot of the hourly
+	// project limit on an alert that was never actually delivered.
+	var sent int
+	err = pool.QueryRow(ctx,
+		"SELECT sent FROM alert_project_budget WHERE project_id = $1", pid).Scan(&sent)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("alert_project_budget: %v", err)
+	}
+	if sent != 0 {
+		t.Fatalf("alert_project_budget.sent = %d, want 0 (claim should have been refunded)", sent)
+	}
+
+	// Throttle window freed: the same issue, retried with a WORKING outbox,
+	// must be able to enqueue again immediately instead of running into a
+	// still-occupied throttle window.
+	ob := notify.NewOutbox(pool)
+	e2 := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	e2.OnIssue(ctx, ev)
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("after rollback: enqueued %d jobs, want 2 (throttle should have been released)", len(jobs))
+	}
+}
+
+// TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget covers the other
+// half of the same fix: when at least one channel's Enqueue succeeds, the
+// alert WAS delivered, so the throttle/budget claim must NOT be rolled back
+// — otherwise the next event for the same issue would bypass the throttle
+// window entirely and re-send a duplicate.
+func TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "enqueue-fail-partial")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	ch, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+
+	ob := notify.NewOutbox(pool)
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e.OnIssue(ctx, ev)
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 1 || jobs[0].ChannelID != ch {
+		t.Fatalf("jobs = %+v err=%v, want exactly 1 job for channel %d", jobs, err, ch)
+	}
+
+	// The claim must still be occupied: a second event for the same issue
+	// within the throttle window must NOT enqueue again.
+	e.OnIssue(ctx, ev)
+	jobs2, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs2) != 0 {
+		t.Fatalf("second call within throttle window: jobs=%d err=%v, want 0 (claim must not have been rolled back)", len(jobs2), err)
+	}
 }
