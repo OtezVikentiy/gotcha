@@ -119,7 +119,7 @@ func sampleTx(children int) Transaction {
 func TestSpanWriterAddBuffersRootSpanInBothTables(t *testing.T) {
 	w := NewSpanWriter(&fakeCHConn{})
 	w.interval = time.Hour
-	w.Add(1, sampleTx(3))
+	w.Add(1, 1, sampleTx(3))
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -138,7 +138,7 @@ func TestSpanWriterFlushBySize(t *testing.T) {
 	w.interval = time.Hour // только по размеру
 	go w.Run()
 	for i := 0; i < 10; i++ {
-		w.Add(1, sampleTx(1))
+		w.Add(1, 1, sampleTx(1))
 	}
 	waitForCH(t, func() bool {
 		c.mu.Lock()
@@ -154,8 +154,8 @@ func TestSpanWriterRetryKeepsRows(t *testing.T) {
 	w.batchSize = 2
 	w.interval = 20 * time.Millisecond
 	go w.Run()
-	w.Add(1, sampleTx(1))
-	w.Add(1, sampleTx(1))
+	w.Add(1, 1, sampleTx(1))
+	w.Add(1, 1, sampleTx(1))
 	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.txSends >= 2 }) // ретраится
 	c.mu.Lock()
 	c.failTx, c.failSpans = false, false
@@ -176,7 +176,7 @@ func TestSpanWriterSpanFailureDoesNotResendTransactions(t *testing.T) {
 	w.batchSize = 1
 	w.interval = 20 * time.Millisecond
 	go w.Run()
-	w.Add(1, sampleTx(1))
+	w.Add(1, 1, sampleTx(1))
 	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.txRows == 1 && c.spanSends >= 2 })
 	c.mu.Lock()
 	c.failSpans = false
@@ -201,7 +201,7 @@ func TestSpanWriterDropsOldestOnOverflow(t *testing.T) {
 	w.batchSize = 100
 	w.spanBatchSize = 100
 	for i := 0; i < 8; i++ {
-		w.Add(1, sampleTx(0)) // по 1 строке в каждый буфер
+		w.Add(1, 1, sampleTx(0)) // по 1 строке в каждый буфер
 	}
 	if got := w.Dropped(); got != 6 { // 3 транзакции + 3 спана
 		t.Fatalf("Dropped() = %d, want 6", got)
@@ -218,7 +218,7 @@ func TestSpanWriterCloseFlushesAndIsIdempotent(t *testing.T) {
 	w := NewSpanWriter(c)
 	w.interval = time.Hour
 	go w.Run()
-	w.Add(1, sampleTx(2))
+	w.Add(1, 1, sampleTx(2))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -270,9 +270,9 @@ func TestSpanWriterIsolatesPoisonTxRowAfterThreshold(t *testing.T) {
 	w := NewSpanWriter(c)
 	w.interval = time.Hour // без авто-флаша: гоняем flushTx вручную
 
-	w.Add(1, txNamed("poison"))
+	w.Add(1, 1, txNamed("poison"))
 	for i := 0; i < 5; i++ {
-		w.Add(1, txNamed("ok"))
+		w.Add(1, 1, txNamed("ok"))
 	}
 	// txBuf: 1 ядовитый + 5 хороших (всё в одном батче, batchSize=1000).
 
@@ -307,9 +307,9 @@ func TestSpanWriterIsolatesPoisonSpanRowAfterThreshold(t *testing.T) {
 	w := NewSpanWriter(c)
 	w.interval = time.Hour
 
-	w.Add(1, txWithChildDescs("poison")) // root(ok) + child(poison)
+	w.Add(1, 1, txWithChildDescs("poison")) // root(ok) + child(poison)
 	for i := 0; i < 5; i++ {
-		w.Add(1, txNamed("ok")) // root(ok)
+		w.Add(1, 1, txNamed("ok")) // root(ok)
 	}
 	// spanBuf: 1 ядовитый + 6 хороших (root'ы).
 
@@ -340,7 +340,7 @@ func TestSpanWriterTransientFailureDropsNothing(t *testing.T) {
 	w := NewSpanWriter(c)
 	w.interval = time.Hour
 	for i := 0; i < 4; i++ {
-		w.Add(1, txNamed("ok")) // 1 tx + 1 root-span на каждый Add
+		w.Add(1, 1, txNamed("ok")) // 1 tx + 1 root-span на каждый Add
 	}
 	for i := 0; i < poisonThreshold+3; i++ {
 		w.flushTx(context.Background())
@@ -381,7 +381,7 @@ func TestSpanWriterBoundsBuffersByBytes(t *testing.T) {
 
 	big := strings.Repeat("d", 256<<10)
 	for i := 0; i < 20; i++ {
-		w.Add(1, Transaction{
+		w.Add(1, 1, Transaction{
 			Name:  "GET /x",
 			Tags:  map[string]string{"k": big},
 			Spans: []Span{{Description: big}},

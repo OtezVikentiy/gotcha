@@ -40,7 +40,7 @@ func TestWebVitalsOverview(t *testing.T) {
 	// (p75=2500, граница good) и cls=0.05 (good).
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:      fmt.Sprintf("wv-home-%02d", i),
 			SpanID:       fmt.Sprintf("wv-homespan-%02d", i),
 			Name:         "GET /home",
@@ -56,7 +56,7 @@ func TestWebVitalsOverview(t *testing.T) {
 	// больше, поэтому идёт первой при сортировке по числу замеров.
 	for i := 0; i < 6; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:      fmt.Sprintf("wv-slow-%02d", i),
 			SpanID:       fmt.Sprintf("wv-slowspan-%02d", i),
 			Name:         "GET /slow",
@@ -145,7 +145,7 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	// значения → точный p75).
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("wvp-home-%02d", i),
 			SpanID:      fmt.Sprintf("wvp-homespan-%02d", i),
 			Name:        "GET /home",
@@ -163,7 +163,7 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	// (панели быть не должно).
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("wvp-order-%02d", i),
 			SpanID:      fmt.Sprintf("wvp-orderspan-%02d", i),
 			Name:        "GET /api/orders",

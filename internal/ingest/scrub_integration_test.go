@@ -143,7 +143,7 @@ func TestPipelineScrubTransaction(t *testing.T) {
 		}},
 	}
 
-	p.processTransaction(1, tx)
+	p.processTransaction(1, 1, tx)
 
 	if spans.count() != 1 {
 		t.Fatalf("транзакций записано = %d, want 1", spans.count())
@@ -228,14 +228,14 @@ func TestPipelineScrubTransactionName(t *testing.T) {
 
 	// Включено: email в имени замаскирован тем же способом, что и в прочих полях.
 	p, spans := makePipeline(true)
-	p.processTransaction(1, newTx())
+	p.processTransaction(1, 1, newTx())
 	if got := spans.added[0].Name; got != "GET /u?token=secret&email=[email]" {
 		t.Errorf("tx.Name = %q, want email замаскированным на [email]", got)
 	}
 
 	// Выключено: имя не тронуто (текущее поведение).
 	p, spans = makePipeline(false)
-	p.processTransaction(1, newTx())
+	p.processTransaction(1, 1, newTx())
 	if got := spans.added[0].Name; got != "GET /u?token=secret&email=a@b.com" {
 		t.Errorf("при выключенном флаге tx.Name = %q, want не тронут", got)
 	}
@@ -367,7 +367,7 @@ func TestPipelineScrubFreeTextTransaction(t *testing.T) {
 		}},
 	}
 
-	p.processTransaction(1, tx)
+	p.processTransaction(1, 1, tx)
 
 	if spans.count() != 1 {
 		t.Fatalf("транзакций записано = %d, want 1", spans.count())
@@ -393,7 +393,7 @@ func TestPipelineScrubTransactionTags(t *testing.T) {
 		Tags: map[string]string{"authorization": "Bearer x", "service": "api"},
 	}
 
-	p.processTransaction(1, tx)
+	p.processTransaction(1, 1, tx)
 
 	if spans.count() != 1 {
 		t.Fatalf("транзакций записано = %d, want 1", spans.count())

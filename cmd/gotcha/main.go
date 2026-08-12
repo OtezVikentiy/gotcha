@@ -791,6 +791,13 @@ func run() error {
 		// сливает пачкой по тику (см. Pipeline.DropCounter), а не пишет в БД на
 		// каждый дроп.
 		pipeline.DropCounter = orgSvc
+		// Follow-up (2026-08-12): дропы БУФЕРА ПИСАТЕЛЯ (event.Batcher/
+		// trace.SpanWriter при переполнении под перегрузкой) — тот же класс
+		// потери, что дропы очереди выше, но другой слой. Писатель списывает
+		// выброшенные строки их организациям через эти стоки, а Pipeline сливает
+		// их тем же 60с-флашем в org_usage.dropped_* — единый путь до БД.
+		batcher.SetDropSink(pipeline.CountDroppedEvents)
+		spanWriter.SetDropSink(pipeline.CountDroppedTransactions)
 		pipeline.Start()
 		ingestHandler = ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)

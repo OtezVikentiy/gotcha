@@ -42,7 +42,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 		at := base.Add(time.Duration(i) * 36 * time.Second)
 		dur := time.Duration(i+1) * 1000 * time.Microsecond
-		w.Add(projectID, trace.Transaction{
+		w.Add(projectID, projectID, trace.Transaction{
 			TraceID:     fmt.Sprintf("users-%03d", i),
 			SpanID:      fmt.Sprintf("uspan-%03d", i),
 			Name:        "GET /api/users",
@@ -59,7 +59,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// вклинивались в SlowestTraces (у которого фильтра по окружению нет).
 	for i := 0; i < 5; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
-		w.Add(projectID, trace.Transaction{
+		w.Add(projectID, projectID, trace.Transaction{
 			TraceID:     fmt.Sprintf("users-stg-%d", i),
 			SpanID:      fmt.Sprintf("uspan-stg-%d", i),
 			Name:        "GET /api/users",
@@ -75,7 +75,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// в списке.
 	for i := 0; i < 20; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
-		w.Add(projectID, trace.Transaction{
+		w.Add(projectID, projectID, trace.Transaction{
 			TraceID:     fmt.Sprintf("orders-%02d", i),
 			SpanID:      fmt.Sprintf("ospan-%02d", i),
 			Name:        "GET /api/orders",
@@ -90,7 +90,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// Отдельный трейс с дочерними спанами — для Trace/ProjectForTrace.
 	const wfTrace = "waterfall-trace-id"
 	wfStart := base.Add(10 * time.Minute)
-	w.Add(projectID, trace.Transaction{
+	w.Add(projectID, projectID, trace.Transaction{
 		TraceID:     wfTrace,
 		SpanID:      "wf-root",
 		Name:        "GET /api/checkout",
@@ -109,7 +109,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 
 	// «off-trace» — трейс с виновным db-спаном, несущим ПОЛНЫЙ текст запроса и
 	// data с привязкой к коду (как реальный SDK). Питает подтест OffendingSpans.
-	w.Add(projectID5, trace.Transaction{
+	w.Add(projectID5, projectID5, trace.Transaction{
 		TraceID: "off-trace", SpanID: "off-root", Name: "POST /pay", Op: "http.server",
 		Status: "ok", Start: wfStart, End: wfStart.Add(950 * time.Millisecond), Environment: "production",
 		Spans: []trace.Span{
@@ -128,7 +128,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		at := base.Add(time.Duration(i) * 3 * time.Second) // 0..297 c → корзина 0
 		dur := time.Duration(i+1) * 1000 * time.Microsecond
-		w.Add(projectID2, trace.Transaction{
+		w.Add(projectID2, projectID2, trace.Transaction{
 			TraceID:     fmt.Sprintf("lat-%03d", i),
 			SpanID:      fmt.Sprintf("latspan-%03d", i),
 			Name:        "GET /lat",
@@ -146,7 +146,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// Ни одна не satisfied (все > T·1000 = 50000). Apdex = (0 + 2)/(2·4) = 0.25.
 	for i := 0; i < 2; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		w.Add(projectID2, trace.Transaction{
+		w.Add(projectID2, projectID2, trace.Transaction{
 			TraceID:     fmt.Sprintf("apdex-on-%d", i),
 			SpanID:      fmt.Sprintf("apdexspan-on-%d", i),
 			Name:        "GET /apdex",
@@ -159,7 +159,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		w.Add(projectID2, trace.Transaction{
+		w.Add(projectID2, projectID2, trace.Transaction{
 			TraceID:     fmt.Sprintf("apdex-over-%d", i),
 			SpanID:      fmt.Sprintf("apdexspan-over-%d", i),
 			Name:        "GET /apdex",
@@ -188,7 +188,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			Status:       "ok",
 		}
 	}
-	w.Add(projectID2, trace.Transaction{
+	w.Add(projectID2, projectID2, trace.Transaction{
 		TraceID:     bigTrace,
 		SpanID:      "big-root",
 		Name:        "GET /big",
@@ -205,7 +205,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// первой 5м-корзине [base, base+5m).
 	for i, lcp := range []float64{2000, 2400, 2600} {
 		at := base.Add(time.Duration(i) * time.Second)
-		w.Add(projectID3, trace.Transaction{
+		w.Add(projectID3, projectID3, trace.Transaction{
 			TraceID:      fmt.Sprintf("home-%d", i),
 			SpanID:       fmt.Sprintf("homespan-%d", i),
 			Name:         "GET /home",
@@ -221,7 +221,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// больше, чем у /home, поэтому идёт первой при сортировке по lcp_count DESC.
 	for i := 0; i < 5; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		w.Add(projectID3, trace.Transaction{
+		w.Add(projectID3, projectID3, trace.Transaction{
 			TraceID:      fmt.Sprintf("slow-%d", i),
 			SpanID:       fmt.Sprintf("slowspan-%d", i),
 			Name:         "GET /slow",
@@ -237,7 +237,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// окружению (production lcp_count=3, без фильтра — 5).
 	for i := 0; i < 2; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		w.Add(projectID3, trace.Transaction{
+		w.Add(projectID3, projectID3, trace.Transaction{
 			TraceID:      fmt.Sprintf("home-stg-%d", i),
 			SpanID:       fmt.Sprintf("homestgspan-%d", i),
 			Name:         "GET /home",
@@ -255,7 +255,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// они бы засоряли список WebVitalsPages пустыми строками.
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		w.Add(projectID3, trace.Transaction{
+		w.Add(projectID3, projectID3, trace.Transaction{
 			TraceID:     fmt.Sprintf("noop-%d", i),
 			SpanID:      fmt.Sprintf("noopspan-%d", i),
 			Name:        "GET /api/noop",
@@ -290,7 +290,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	}
 	for di, d := range regDays {
 		for i := 0; i < d.n; i++ {
-			w.Add(projectID4, trace.Transaction{
+			w.Add(projectID4, projectID4, trace.Transaction{
 				TraceID:     fmt.Sprintf("reg-%d-%03d", di, i),
 				SpanID:      fmt.Sprintf("regspan-%d-%03d", di, i),
 				Name:        "GET /reg",
@@ -317,7 +317,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	}
 	for di, d := range vDays {
 		for i := 0; i < d.n; i++ {
-			w.Add(projectID4, trace.Transaction{
+			w.Add(projectID4, projectID4, trace.Transaction{
 				TraceID:      fmt.Sprintf("vp-%d-%03d", di, i),
 				SpanID:       fmt.Sprintf("vpspan-%d-%03d", di, i),
 				Name:         "GET /vpage",
@@ -334,7 +334,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	// Страница «GET /vpage2» с 5 замерами lcp сегодня — низкотрафичная, для
 	// проверки ранжирования TopVitalPages (её меньше, чем у /vpage).
 	for i := 0; i < 5; i++ {
-		w.Add(projectID4, trace.Transaction{
+		w.Add(projectID4, projectID4, trace.Transaction{
 			TraceID:      fmt.Sprintf("vp2-%03d", i),
 			SpanID:       fmt.Sprintf("vp2span-%03d", i),
 			Name:         "GET /vpage2",

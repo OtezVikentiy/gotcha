@@ -180,7 +180,7 @@ func TestEvaluatorLifecycle(t *testing.T) {
 // уникальными id — так перцентиль окна равен ровно durMs.
 func addEndpointTx(w *SpanWriter, pid int64, name string, at time.Time, durMs, n int, prefix string) {
 	for i := 0; i < n; i++ {
-		w.Add(pid, Transaction{
+		w.Add(pid, pid, Transaction{
 			TraceID:     fmt.Sprintf("%s-%06d", prefix, i),
 			SpanID:      fmt.Sprintf("%s-s-%06d", prefix, i),
 			Name:        name,
@@ -198,7 +198,7 @@ func addEndpointTx(w *SpanWriter, pid int64, name string, at time.Time, durMs, n
 // p95 не дрейфовал и не открыл лишний duration-инцидент.
 func addVitalTx(w *SpanWriter, pid int64, name string, at time.Time, lcp float64, n int, prefix string) {
 	for i := 0; i < n; i++ {
-		w.Add(pid, Transaction{
+		w.Add(pid, pid, Transaction{
 			TraceID:      fmt.Sprintf("%s-%06d", prefix, i),
 			SpanID:       fmt.Sprintf("%s-s-%06d", prefix, i),
 			Name:         name,

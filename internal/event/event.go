@@ -5,7 +5,12 @@ import "time"
 
 // Event — одно событие ошибки; поля соответствуют колонкам CH-таблицы events.
 type Event struct {
-	ID             string // canonical UUID
+	ID string // canonical UUID
+	// OrgID — организация проекта. В CH-таблицу events НЕ пишется (там proj-скоуп),
+	// нужен только для per-org атрибуции дропов буфера писателя в org_usage.dropped_*
+	// (см. Batcher.SetDropSink): при переполнении буфера выброшенные строки надо
+	// списать той организации, которой они принадлежали. 0 — атрибутировать некуда.
+	OrgID          int64
 	ProjectID      int64
 	IssueID        int64
 	Timestamp      time.Time

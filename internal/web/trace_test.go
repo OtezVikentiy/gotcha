@@ -118,7 +118,7 @@ func TestWebTraceWaterfall(t *testing.T) {
 	start := now.Add(-5 * time.Minute)
 
 	// Транзакция «GET /api/checkout»: корень + 2 дочерних спана (db, http).
-	s.spans.Add(proj.ID, trace.Transaction{
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
 		TraceID:     traceID,
 		SpanID:      rootSpan,
 		Name:        "GET /api/checkout",
@@ -277,7 +277,7 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 	})
 	// Для traceID записываем транзакцию — только тогда ссылка «Смотреть трейс»
 	// осмысленна (страница трейса что-то покажет), иначе traceWaterfall даёт 404.
-	s.spans.Add(proj.ID, trace.Transaction{
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
 		TraceID:     traceID,
 		SpanID:      "root-link-span",
 		Name:        "GET /linked",
@@ -339,7 +339,7 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 
 	const traceID = "pic-trace-01"
 	start := time.Now().UTC().Add(-2 * time.Minute)
-	s.spans.Add(proj.ID, trace.Transaction{
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
 		TraceID: traceID, SpanID: "pic-root", Name: "GET /pic", Op: "http.server",
 		Status: "ok", Start: start, End: start.Add(100 * time.Millisecond), Environment: "prod",
 	})
@@ -418,7 +418,7 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 
 	const traceID = "xorg-trace-01"
 	start := time.Now().UTC().Add(-5 * time.Minute)
-	s.spans.Add(proj.ID, trace.Transaction{
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
 		TraceID:     traceID,
 		SpanID:      "xorg-span-root",
 		Name:        "GET /api/secret",

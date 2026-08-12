@@ -40,7 +40,10 @@ type AlertSink interface {
 // делает поле необязательным: nil (см. Pipeline.Spans) значит «трейсинг
 // выключен».
 type SpanSink interface {
-	Add(projectID int64, t trace.Transaction)
+	// orgID нужен только для per-org атрибуции дропов буфера писателя в
+	// org_usage.dropped_transactions (см. trace.SpanWriter.SetDropSink); на саму
+	// запись в CH не влияет.
+	Add(orgID, projectID int64, t trace.Transaction)
 }
 
 // PerfSink записывает находку детекторов производительности в perf_issues (PG);
@@ -241,6 +244,21 @@ func (p *Pipeline) countDroppedOrg(orgID int64, kind dropKind, n int64) {
 	p.dropAggMu.Lock()
 	p.dropAgg[dropAggKey{orgID: orgID, kind: kind}] += n
 	p.dropAggMu.Unlock()
+}
+
+// CountDroppedEvents и CountDroppedTransactions — стоки per-org дропов БУФЕРА
+// ПИСАТЕЛЯ (event.Batcher / trace.SpanWriter): их переполнение выбрасывает самое
+// старое, и без атрибуции потеря невидима per-org — тот же класс, что дропы
+// очереди (arch P1-1), но другой слой. main ставит их через SetDropSink; дропы
+// стекаются в тот же dropAgg и тот же 60с-флаш в org_usage.dropped_*, что и
+// дропы очереди — единый путь до БД. n<=0 или orgID<=0 — no-op (см. countDroppedOrg).
+func (p *Pipeline) CountDroppedEvents(orgID, n int64) {
+	p.countDroppedOrg(orgID, dropEvent, n)
+}
+
+// CountDroppedTransactions — см. CountDroppedEvents; для дропов txBuf SpanWriter.
+func (p *Pipeline) CountDroppedTransactions(orgID, n int64) {
+	p.countDroppedOrg(orgID, dropTransaction, n)
 }
 
 // drainDropAgg забирает накопленное и обнуляет агрегат под тем же мьютексом,
@@ -676,7 +694,7 @@ func (p *Pipeline) Close(ctx context.Context) error {
 
 func (p *Pipeline) process(t task) {
 	if t.tx != nil {
-		p.processTransaction(t.projectID, *t.tx)
+		p.processTransaction(t.orgID, t.projectID, *t.tx)
 		return
 	}
 	ev := t.ev
@@ -773,6 +791,7 @@ func (p *Pipeline) process(t task) {
 
 	p.batcher.Add(event.Event{
 		ID:             ev.EventID,
+		OrgID:          t.orgID,
 		ProjectID:      t.projectID,
 		IssueID:        res.IssueID,
 		Timestamp:      ev.Timestamp,
@@ -801,7 +820,7 @@ func (p *Pipeline) process(t task) {
 // производительности. Порядок важен: Spans.Add идёт ПЕРВЫМ, и запись в CH не
 // ждёт ни PG, ни outbox — трейс попадает в хранилище независимо от того, что
 // случится в детекции.
-func (p *Pipeline) processTransaction(projectID int64, tx trace.Transaction) {
+func (p *Pipeline) processTransaction(orgID, projectID int64, tx trace.Transaction) {
 	if p.Spans == nil { // трейсинг выключен — Handler сюда не должен доходить
 		slog.Warn("tracing disabled, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
@@ -825,7 +844,7 @@ func (p *Pipeline) processTransaction(projectID int64, tx trace.Transaction) {
 		tx.Spans[i].Description = p.Scrub.ScrubMessage(tx.Spans[i].Description)
 	}
 
-	p.Spans.Add(projectID, tx)
+	p.Spans.Add(orgID, projectID, tx)
 	p.detectPerfIssues(projectID, tx)
 }
 

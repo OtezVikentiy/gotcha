@@ -35,6 +35,16 @@ type Batcher struct {
 	insertFails int64 // накопительно: сколько флашей провалилось
 	failStreak  int
 	lastDropLog time.Time
+	// pendingDrops — выброшенные с прошлого слива строки по orgID, для per-org
+	// атрибуции в org_usage.dropped_* (см. onDrop/SetDropSink). nil, пока дропов
+	// нет — на горячем пути без потерь не аллоцируется. Заполняется в trimLocked
+	// под mu, сливается в onDrop ВНЕ mu (emitDrops).
+	pendingDrops map[int64]int64
+	// onDrop — сток per-org дропов буфера. Ставится из main (SetDropSink) в
+	// pipeline.CountDroppedEvents — ту же in-memory агрегацию, что и дропы
+	// очереди, с флашем в org_usage раз в 60с. nil — no-op (учитывать некуда,
+	// напр. в тестах писателя без пайплайна). Читается/пишется под mu.
+	onDrop func(orgID, n int64)
 
 	maxBuf      int
 	maxBufBytes int64
@@ -75,7 +85,11 @@ func (b *Batcher) Add(ev Event) {
 	} else {
 		logDrop = false
 	}
+	// Захватываем per-org дропы и сток в той же критической секции; сам вызов
+	// стока — ВНЕ mu (сток берёт свой мьютекс, держать оба нельзя).
+	drops, sink := b.takeDropsLocked()
 	b.mu.Unlock()
+	reportDrops(sink, drops)
 	if logDrop {
 		slog.Warn("event buffer full, dropping oldest", "dropped_total", dropped)
 	}
@@ -84,6 +98,45 @@ func (b *Batcher) Add(ev Event) {
 		case b.kick <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// SetDropSink задаёт сток per-org дропов буфера (см. Batcher.onDrop). Ставится
+// один раз из main до горячего трафика; nil-сток — no-op.
+func (b *Batcher) SetDropSink(fn func(orgID, n int64)) {
+	b.mu.Lock()
+	b.onDrop = fn
+	b.mu.Unlock()
+}
+
+// takeDropsLocked забирает накопленные per-org дропы и текущий сток. Вызывается
+// под mu; вызывающий сливает результат через reportDrops ПОСЛЕ разблокировки.
+func (b *Batcher) takeDropsLocked() (map[int64]int64, func(orgID, n int64)) {
+	if len(b.pendingDrops) == 0 {
+		return nil, b.onDrop
+	}
+	m := b.pendingDrops
+	b.pendingDrops = nil
+	return m, b.onDrop
+}
+
+// emitDrops сливает накопленные per-org дропы в сток. Для путей, где дроп мог
+// случиться под mu, но критическая секция не возвращает сток сама (flush).
+func (b *Batcher) emitDrops() {
+	b.mu.Lock()
+	drops, sink := b.takeDropsLocked()
+	b.mu.Unlock()
+	reportDrops(sink, drops)
+}
+
+// reportDrops вызывает сток по одному разу на организацию. sink==nil или пустая
+// карта — no-op.
+func reportDrops(sink func(orgID, n int64), drops map[int64]int64) {
+	if sink == nil {
+		return
+	}
+	for orgID, n := range drops {
+		sink(orgID, n)
 	}
 }
 
@@ -231,6 +284,17 @@ func (b *Batcher) trimLocked() bool {
 	if drop <= 0 {
 		return false
 	}
+	// Списываем выброшенные строки их организациям (per-org атрибуция потерь в
+	// org_usage.dropped_*): без этого потеря на слое буфера писателя невидима
+	// per-org, как была невидима потеря очереди до arch P1-1.
+	for i := 0; i < drop; i++ {
+		if org := b.buf[i].OrgID; org > 0 {
+			if b.pendingDrops == nil {
+				b.pendingDrops = make(map[int64]int64)
+			}
+			b.pendingDrops[org]++
+		}
+	}
 	b.buf = append(b.buf[:0], b.buf[drop:]...)
 	b.dropped += int64(drop)
 	return true
@@ -247,6 +311,10 @@ func (b *Batcher) recountLocked() {
 }
 
 func (b *Batcher) flush(ctx context.Context) {
+	// Возврат провалившейся пачки в буфер тоже может переполнить его и вызвать
+	// trimLocked (ниже, в ветках изоляции/ретрая) — сливаем накопленные per-org
+	// дропы после того, как критические секции flush отпустят mu.
+	defer b.emitDrops()
 	b.mu.Lock()
 	if len(b.buf) == 0 {
 		b.mu.Unlock()

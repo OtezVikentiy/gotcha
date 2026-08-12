@@ -111,7 +111,7 @@ func TestWebPerformanceList(t *testing.T) {
 		}
 		at := base.Add(time.Duration(i) * time.Second)
 		dur := time.Duration(i+1) * 10 * time.Millisecond
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("plist-users-%02d", i),
 			SpanID:      fmt.Sprintf("plist-uspan-%02d", i),
 			Name:        "GET /api/users",
@@ -125,7 +125,7 @@ func TestWebPerformanceList(t *testing.T) {
 	// «GET /api/health», staging: 5 транзакций — для проверки фильтра окружения.
 	for i := 0; i < 5; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("plist-health-%02d", i),
 			SpanID:      fmt.Sprintf("plist-hspan-%02d", i),
 			Name:        "GET /api/health",
@@ -226,7 +226,7 @@ func TestWebEndpointDetail(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		dur := time.Duration(i+1) * 20 * time.Millisecond
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("pdetail-order-%02d", i),
 			SpanID:      fmt.Sprintf("pdetail-ospan-%02d", i),
 			Name:        "GET /api/orders",
@@ -246,7 +246,7 @@ func TestWebEndpointDetail(t *testing.T) {
 	const pctName = "GET /api/orders%20special"
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("pdetail-pct-%02d", i),
 			SpanID:      fmt.Sprintf("pdetail-pspan-%02d", i),
 			Name:        pctName,
@@ -329,7 +329,7 @@ func TestWebPerformanceListTruncates(t *testing.T) {
 	base := time.Now().UTC().Add(-10 * time.Minute)
 	for i := 0; i < total; i++ {
 		at := base.Add(time.Duration(i) * time.Millisecond)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:     fmt.Sprintf("ptrunc-%03d", i),
 			SpanID:      fmt.Sprintf("ptruncspan-%03d", i),
 			Name:        fmt.Sprintf("GET /api/route/%03d", i),

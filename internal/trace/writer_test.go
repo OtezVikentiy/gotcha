@@ -42,7 +42,7 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 				Start: start.Add(130 * time.Millisecond), End: start.Add(140 * time.Millisecond), Status: "internal_error"},
 		},
 	}
-	w.Add(777, tr)
+	w.Add(777, 777, tr)
 
 	// Close без предшествующего тика/кика обязан слить остаток буфера.
 	if err := w.Close(ctx); err != nil {
@@ -186,8 +186,8 @@ func TestSpanWriterWritesMeasurements(t *testing.T) {
 		Source:      "sentry",
 		// Measurements: nil — должно уехать пустым Map.
 	}
-	w.Add(888, withM)
-	w.Add(888, noM)
+	w.Add(888, 888, withM)
+	w.Add(888, 888, noM)
 
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)

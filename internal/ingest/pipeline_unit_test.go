@@ -19,7 +19,7 @@ type fakeSpanSink struct {
 	added []trace.Transaction
 }
 
-func (f *fakeSpanSink) Add(_ int64, t trace.Transaction) {
+func (f *fakeSpanSink) Add(_, _ int64, t trace.Transaction) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.added = append(f.added, t)

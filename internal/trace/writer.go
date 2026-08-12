@@ -25,6 +25,10 @@ type CHConn interface {
 // txRow — одна строка CH-таблицы transactions (порядок колонок — как в
 // миграции 0003_traces).
 type txRow struct {
+	// OrgID — организация проекта. В CH НЕ пишется; нужен только для per-org
+	// атрибуции дропов txBuf в org_usage.dropped_transactions (см.
+	// SpanWriter.SetDropSink). 0 — атрибутировать некуда.
+	OrgID       int64
 	ProjectID   uint64
 	TraceID     string
 	SpanID      string
@@ -86,6 +90,13 @@ type SpanWriter struct {
 	// подряд-фейлов: изоляция ядовитых рядов включается по каждой таблице отдельно.
 	txFailStreak   int
 	spanFailStreak int
+	// pendingDrops — выброшенные с прошлого слива ТРАНЗАКЦИИ по orgID, для per-org
+	// атрибуции в org_usage.dropped_transactions (см. onDrop/SetDropSink). Только
+	// txBuf: транзакция — квота/биллинг-единица; дроп дочернего спана из spanBuf —
+	// потеря данных, но не «дропнутая транзакция», в счётчик не идёт. nil, пока
+	// дропов нет. Заполняется под mu, сливается ВНЕ mu (emitDrops).
+	pendingDrops map[int64]int64
+	onDrop       func(orgID, n int64) // сток per-org дропов txBuf; nil — no-op. Под mu.
 
 	maxBuf        int
 	maxSpanBuf    int
@@ -120,8 +131,9 @@ func NewSpanWriter(conn CHConn) *SpanWriter {
 // строк в spans (корневой спан тоже попадает в spans). Никогда не блокирует и
 // не возвращает ошибку: приём транзакций не должен зависеть от здоровья
 // ClickHouse.
-func (w *SpanWriter) Add(projectID int64, t Transaction) {
+func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	tx := txRow{
+		OrgID:        orgID,
 		ProjectID:    uint64(projectID),
 		TraceID:      t.TraceID,
 		SpanID:       t.SpanID,
@@ -204,7 +216,11 @@ func (w *SpanWriter) Add(projectID int64, t Transaction) {
 	} else {
 		logDrop = false
 	}
+	// Per-org дропы транзакций и сток захватываем под mu, сливаем — вне (сток
+	// берёт свой мьютекс).
+	drops, sink := w.takeDropsLocked()
 	w.mu.Unlock()
+	reportDrops(sink, drops)
 
 	if logDrop {
 		slog.Warn("trace buffer full, dropping oldest", "dropped_total", dropped)
@@ -214,6 +230,45 @@ func (w *SpanWriter) Add(projectID int64, t Transaction) {
 		case w.kick <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// SetDropSink задаёт сток per-org дропов txBuf (см. SpanWriter.onDrop). Ставится
+// один раз из main до горячего трафика; nil-сток — no-op.
+func (w *SpanWriter) SetDropSink(fn func(orgID, n int64)) {
+	w.mu.Lock()
+	w.onDrop = fn
+	w.mu.Unlock()
+}
+
+// takeDropsLocked забирает накопленные per-org дропы транзакций и текущий сток.
+// Под mu; вызывающий сливает через reportDrops ПОСЛЕ разблокировки.
+func (w *SpanWriter) takeDropsLocked() (map[int64]int64, func(orgID, n int64)) {
+	if len(w.pendingDrops) == 0 {
+		return nil, w.onDrop
+	}
+	m := w.pendingDrops
+	w.pendingDrops = nil
+	return m, w.onDrop
+}
+
+// emitDrops сливает накопленные per-org дропы в сток. Для flush, где возврат
+// провалившейся пачки транзакций может переполнить txBuf уже под mu.
+func (w *SpanWriter) emitDrops() {
+	w.mu.Lock()
+	drops, sink := w.takeDropsLocked()
+	w.mu.Unlock()
+	reportDrops(sink, drops)
+}
+
+// reportDrops вызывает сток по одному разу на организацию. sink==nil или пустая
+// карта — no-op.
+func reportDrops(sink func(orgID, n int64), drops map[int64]int64) {
+	if sink == nil {
+		return
+	}
+	for orgID, n := range drops {
+		sink(orgID, n)
 	}
 }
 
@@ -281,6 +336,17 @@ func (w *SpanWriter) trimTxLocked() bool {
 	}
 	if drop <= 0 {
 		return false
+	}
+	// Списываем выброшенные транзакции их организациям (per-org атрибуция потерь
+	// в org_usage.dropped_transactions): без этого потеря на слое буфера писателя
+	// невидима per-org. Только txBuf — см. докблок pendingDrops.
+	for i := 0; i < drop; i++ {
+		if org := w.txBuf[i].OrgID; org > 0 {
+			if w.pendingDrops == nil {
+				w.pendingDrops = make(map[int64]int64)
+			}
+			w.pendingDrops[org]++
+		}
 	}
 	w.txBuf = append(w.txBuf[:0], w.txBuf[drop:]...)
 	w.dropped += int64(drop)
@@ -425,6 +491,9 @@ func (w *SpanWriter) flush(ctx context.Context) {
 }
 
 func (w *SpanWriter) flushTx(ctx context.Context) {
+	// Возврат провалившейся пачки транзакций может переполнить txBuf и вызвать
+	// trimTxLocked — сливаем per-org дропы после того, как секции отпустят mu.
+	defer w.emitDrops()
 	w.mu.Lock()
 	n := min(len(w.txBuf), w.batchSize)
 	if n == 0 {

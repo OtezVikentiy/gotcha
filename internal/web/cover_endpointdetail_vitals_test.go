@@ -38,7 +38,7 @@ func TestWebEndpointDetailVitalsAndParams(t *testing.T) {
 	// непустую панель (иначе секция не рендерится и её ветки не покрываются).
 	for i := 0; i < 6; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
-		s.writer.Add(proj.ID, trace.Transaction{
+		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
 			TraceID:      fmt.Sprintf("epv-%02d", i),
 			SpanID:       fmt.Sprintf("epvspan-%02d", i),
 			Name:         tx,
