@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-08-12
+
 ### Added
 - Project team members can now manage a project's day-to-day monitoring — monitors (create, edit, pause/resume, delete), the heartbeat ping token, maintenance windows, status-page content, issue alert rules, and metric alerts — without being promoted to organization admin. Alert channels stay owner/admin only, since a channel's recipient and secret (a bot token, an SMTP address, a webhook URL) are credentials and personal data rather than an operational setting; a team member who isn't owner/admin sees the channel list and delivery log with recipients masked instead. Status-page publication (the "Published" toggle) and project/organization settings are unchanged, also owner/admin only. A member with no team attached to a project gets the same 404 as someone with no access at all when visiting that project's operator pages. Monitor header values (e.g. an `Authorization` header on an HTTP check) are now encrypted at rest, the same way alert-channel secrets already were.
 
