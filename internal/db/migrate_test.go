@@ -210,6 +210,13 @@ func TestWithMigrationLockSerializes(t *testing.T) {
 // вернул nil. Раньше тест смотрел лишь на err, и down-миграция, которая молча
 // ничего не делает, проходила его — все 24 down-файла PG были фактически
 // неверифицированы. CH-версия ниже таблицы считала, PG-версия — нет.
+// TestMigratePGUpDownUp проверяет, что весь набор миграций ЦЕЛИКОМ
+// применяется (up), откатывается до пустой схемы (down) и применяется снова
+// (up) без ошибок — это тест на сам факт «миграции идут и откатываются», а
+// НЕ на обратную совместимость старого бинаря с промежуточной/новой схемой
+// (за той границей метода следит статический грep destructiveForms в
+// internal/guards/migrations_test.go — см. комментарий там, qa P2-2,
+// 2026-08-12, про то, чем этот класс проверок НЕ является).
 func TestMigratePGUpDownUp(t *testing.T) {
 	dsn := testenv.PostgresDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

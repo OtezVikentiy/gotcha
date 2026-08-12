@@ -96,13 +96,13 @@ var permanentFormatExemptions = []Exemption{
 	// глаз. Семь мест: сериализация value= (timerange.go, оба поля окна
 	// обслуживания в maintenance.templ) и сборка входных данных в четырёх
 	// тестах timerange_test.go тем же машинным форматом.
-	{Value: exemptLoc("internal/web/timerange.go", 205), Why: `timeRangeFieldValue: return t.UTC().Format("2006-01-02T15:04") — сериализация value= для <input type="datetime-local">, протокол HTML-формы`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/timerange.go", 216), Why: `timeRangeFieldValue: return t.UTC().Format("2006-01-02T15:04") — сериализация value= для <input type="datetime-local">, протокол HTML-формы`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/templates/maintenance.templ", 53), Why: `f["starts_at"] = w.StartsAt.In(loc).Format("2006-01-02T15:04") — то же поле формы datetime-local для окна обслуживания`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/templates/maintenance.templ", 56), Why: `f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04") — то же поле формы datetime-local`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/timerange_test.go", 118), Why: `start := now.Add(-48 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= тем же машинным форматом, что и сама форма, не дублирование человекочитаемого`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/timerange_test.go", 148), Why: `future := now.Add(48 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра end=`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/timerange_test.go", 149), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/timerange_test.go", 162), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseTimeRangeCustomEndDefaultsToNow)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/timerange_test.go", 148), Why: `start := now.Add(-48 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= тем же машинным форматом, что и сама форма, не дублирование человекочитаемого (TestParseTimeRangeStartOnly)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/timerange_test.go", 178), Why: `future := now.Add(48 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра end= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/timerange_test.go", 179), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/timerange_test.go", 192), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseTimeRangeCustomEndDefaultsToNow)`, Finding: "по замыслу"},
 
 	// internal/uptime/window_dst_test.go: пять мест — все аргументы
 	// многострочных t.Errorf/t.Fatalf в тесте перевода часов через DST, но на
@@ -141,9 +141,9 @@ var permanentFormatExemptions = []Exemption{
 	// раунд правок 1 заставил переклассифицировать из "машинный" в "разумное
 	// постоянное решение" — причина исключения та же (не долг), а
 	// формулировка точнее.
-	{Value: exemptLoc("internal/web/statuspage.go", 390), Why: `StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout) — публичная статус-страница всегда в UTC без JS-локализации, самостоятельный формат по документированному дизайн-решению (см. const statusPageTimeLayout)`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/statuspage.go", 454), Why: `From: ni.iv.From.UTC().Format(statusPageTimeLayout) — то же дизайн-решение, окно обслуживания`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/statuspage.go", 455), Why: `To: ni.iv.To.UTC().Format(statusPageTimeLayout) — то же дизайн-решение`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/statuspage.go", 393), Why: `StartedAt: inc.StartedAt.UTC().Format(statusPageTimeLayout) — публичная статус-страница всегда в UTC без JS-локализации, самостоятельный формат по документированному дизайн-решению (см. const statusPageTimeLayout)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/statuspage.go", 457), Why: `From: ni.iv.From.UTC().Format(statusPageTimeLayout) — то же дизайн-решение, окно обслуживания`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/statuspage.go", 458), Why: `To: ni.iv.To.UTC().Format(statusPageTimeLayout) — то же дизайн-решение`, Finding: "по замыслу"},
 
 	// relativetime.templ: компонент relativeTime, задача C7 подпроекта единиц
 	// ("точное время рядом с относительным"). datetime={ t.UTC().Format(time.RFC3339) }
@@ -177,15 +177,15 @@ var debtFormatExemptions = []Exemption{
 	// три разных человекочитаемых макета "день.месяц час:минута" /
 	// "день.месяц" / "час:минута" для одной и той же задачи в одном файле,
 	// девять мест.
-	{Value: exemptLoc("internal/web/svg.go", 328), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика (тултип), человекочитаемый макет вне humanize`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 575), Why: `return t.Format("02.01") — подпись оси X (короткая дата)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 577), Why: `return t.Format("15:04") — подпись оси X (только время)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 776), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика перцентилей (p50)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 837), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика в HTML-экранированном тултипе`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1082), Why: `points[idx].T.UTC().Format("02.01") — подпись оси X во flame/vitals-графике`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1104), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки в другом графике того же файла`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1537), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1673), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 342), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика (тултип), человекочитаемый макет вне humanize`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 590), Why: `return t.Format("02.01") — подпись оси X (короткая дата)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 592), Why: `return t.Format("15:04") — подпись оси X (только время)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 791), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика перцентилей (p50)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 852), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика в HTML-экранированном тултипе`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1097), Why: `points[idx].T.UTC().Format("02.01") — подпись оси X во flame/vitals-графике`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1119), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки в другом графике того же файла`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1552), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1688), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 
 	// internal/web/templates/timerange.templ: prettyBound больше не находится
 	// здесь — задача C8 починила его, переведя на humanize.Time (см. докблок
