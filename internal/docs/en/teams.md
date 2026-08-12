@@ -67,7 +67,7 @@ Being on a team attached to a project — an **operator**, in the table below �
 | Heartbeat monitor: regenerate the ping token | — | ✓ | ✓ | ✓ |
 | Maintenance windows: create, edit, delete | — | ✓ | ✓ | ✓ |
 | Status page content: create/edit/delete a page, pick monitors and titles | — | ✓ (a page an operator creates starts unpublished) | ✓ | ✓ |
-| Status page publication: the "Published" toggle, the slug | — | — | ✓ | ✓ |
+| Status page publication: the "Published" toggle | — | — | ✓ | ✓ |
 | Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
 | Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, enough to tell channels apart when picking one in a rule) | ✓ | ✓ |
 | Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
@@ -79,7 +79,7 @@ Being on a team attached to a project — an **operator**, in the table below �
 
 "Viewer" here isn't a role of its own — it's what `CanAccessProject` grants to anyone who can already see the project (an org owner/admin, or a plain `member` on an attached team), before touching the operator predicate at all. In other words, every operator is also a viewer, and every admin and owner is also an operator: the columns are cumulative, not exclusive tiers.
 
-What team membership buys a `member`, in short: everything about running monitoring day to day on that project's monitors, maintenance windows, status pages, alert rules, and metric alerts — the operational surface, without an organization-wide role. What still requires `admin` (or `owner`): alert channels, because their recipient and secret (a bot token, an SMTP address, a webhook URL) are credentials and personal data, not operational settings; whether a status page is actually public and at what slug, because that's a decision about what the organization shows the world, not how monitoring is run; and project settings and everything at the organization level, unchanged from before.
+What team membership buys a `member`, in short: everything about running monitoring day to day on that project's monitors, maintenance windows, status pages, alert rules, and metric alerts — the operational surface, without an organization-wide role. What still requires `admin` (or `owner`): alert channels, because their recipient and secret (a bot token, an SMTP address, a webhook URL) are credentials and personal data, not operational settings; whether a status page is actually public, because that's a decision about what the organization shows the world, not how monitoring is run; and project settings and everything at the organization level, unchanged from before.
 
 ## What's next
 

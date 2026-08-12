@@ -504,7 +504,6 @@
     "uptime.statuspages.empty.title": "No status pages yet",
     "uptime.statuspages.empty.body": "Create a public status page using the button above.",
     "uptime.statuspages.new_title": "New status page",
-    "uptime.statuspages.field.slug": "Slug",
     "uptime.statuspages.field.title": "Title",
     "uptime.statuspages.field.description": "Description",
     "uptime.statuspages.field.enabled": "Published",

@@ -229,7 +229,6 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 
 	victimSP, err := s.uptime.CreateStatusPage(ctx, uptime.StatusPage{
 		ProjectID: victimProject.ID,
-		Slug:      "b3-victim-sp",
 		Title:     "B3 Victim SP",
 		Enabled:   true,
 	}, nil)
@@ -326,7 +325,11 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 	if _, err := orgSvc.TeamOrg(ctx, victimTeam.ID); err != nil {
 		t.Errorf("victim team deleted by stranger: err=%v", err)
 	}
-	if got, err := s.uptime.StatusPageByID(ctx, victimSP.ID); err != nil || got.Slug != victimSP.Slug || !got.Enabled {
+	// PublicID: единственный публичный адрес страницы, поля Slug у
+	// StatusPage больше нет (T5, миграция 0063 удалила колонку). PublicID
+	// неизменяем и реально хранится в БД — подходящий инвариант
+	// identity-проверки.
+	if got, err := s.uptime.StatusPageByID(ctx, victimSP.ID); err != nil || got.PublicID != victimSP.PublicID || !got.Enabled {
 		t.Errorf("victim statuspage mutated/deleted by stranger: got=%+v err=%v", got, err)
 	}
 	if got, err := s.h.Issues.Get(ctx, issueRes.IssueID); err != nil || got.Status != "unresolved" {

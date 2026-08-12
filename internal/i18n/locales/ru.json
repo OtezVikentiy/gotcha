@@ -504,7 +504,6 @@
     "uptime.statuspages.empty.title": "Статус-страниц ещё нет",
     "uptime.statuspages.empty.body": "Создайте публичную статус-страницу кнопкой выше.",
     "uptime.statuspages.new_title": "Новая статус-страница",
-    "uptime.statuspages.field.slug": "Slug",
     "uptime.statuspages.field.title": "Заголовок",
     "uptime.statuspages.field.description": "Описание",
     "uptime.statuspages.field.enabled": "Опубликована",

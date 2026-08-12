@@ -41,7 +41,7 @@ func TestStatusPageByID(t *testing.T) {
 	pid := newProject(t, pool)
 
 	sp, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "byid", Title: "By ID", Enabled: true,
+		ProjectID: pid, Title: "By ID", Enabled: true,
 	}, nil)
 	if err != nil {
 		t.Fatalf("CreateStatusPage: %v", err)
@@ -51,8 +51,10 @@ func TestStatusPageByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatusPageByID: %v", err)
 	}
-	if got.ID != sp.ID || got.Slug != "byid" || got.ProjectID != pid || got.Title != "By ID" {
-		t.Fatalf("StatusPageByID = %+v, want id=%d slug=byid", got, sp.ID)
+	// slug больше не пишется Create (nullable, не годится как источник
+	// проверки) — сверяем PublicID, который Create заполнил и вернул.
+	if got.ID != sp.ID || got.PublicID != sp.PublicID || got.ProjectID != pid || got.Title != "By ID" {
+		t.Fatalf("StatusPageByID = %+v, want id=%d public_id=%s", got, sp.ID, sp.PublicID)
 	}
 
 	if _, err := svc.StatusPageByID(ctx, 999999999); !errors.Is(err, uptime.ErrNotFound) {
@@ -79,15 +81,20 @@ func TestCreateStatusPageBogusMonitorFKError(t *testing.T) {
 	pid := newProject(t, pool)
 
 	_, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "fk", Title: "FK", Enabled: true,
+		ProjectID: pid, Title: "FK", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: 999999999, DisplayName: "Ghost", Position: 0}})
 	if err == nil {
 		t.Fatal("CreateStatusPage with bogus monitor_id: got nil error, want FK error")
 	}
 
-	// Откат: страница не создана.
-	if _, _, err := svc.StatusPageBySlug(ctx, "fk"); !errors.Is(err, uptime.ErrNotFound) {
-		t.Fatalf("status page must not persist after rollback: err = %v, want ErrNotFound", err)
+	// Откат: страница не создана. По PublicID её взять нечем (Create упал до
+	// присвоения ID/коммита), поэтому проверяем по проекту — список пуст.
+	list, err := svc.StatusPagesOf(ctx, pid)
+	if err != nil {
+		t.Fatalf("StatusPagesOf: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("status page must not persist after rollback: %+v", list)
 	}
 }
 

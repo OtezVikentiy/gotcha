@@ -19,18 +19,23 @@ func statusPageDeletePath(statusPageID int64) string {
 }
 
 // statusPagePublicURL — адрес публичной страницы для показа админу
-// (BaseURL + /status/{slug}).
-func statusPagePublicURL(baseURL, slug string) string {
-	return baseURL + "/status/" + slug
+// (BaseURL + /status/{public_id}). До T3 показывал slug — публичный адрес
+// теперь непрозрачный ключ (public_id), slug для него больше не резолвится
+// напрямую (только через 301, см. web/statuspage.go).
+func statusPagePublicURL(baseURL, publicID string) string {
+	return baseURL + "/status/" + publicID
 }
 
 // StatusPageForm — значения одной формы статус-страницы: либо создания
 // (ID == 0), либо редактирования существующей. Заполняется из БД, а на 422 —
 // из тела запроса, чтобы введённое пользователем не пропадало
-// (web/statuspage.go: renderStatusPages + statusPageFormView).
+// (web/statuspage.go: renderStatusPages + statusPageFormView). PublicID на
+// 422 пуст (страница ещё не создана/не перечитана) — не беда: ссылка на
+// публичный адрес рендерится только при f.ID != 0, а 422 всегда
+// перерисовывает форму с ID существующей страницы или ID==0 у создания.
 type StatusPageForm struct {
 	ID          int64
-	Slug        string
+	PublicID    string
 	Title       string
 	Description string
 	Enabled     bool
@@ -108,12 +113,12 @@ templ statusPageMonitorRow(formID string, f StatusPageFormMonitor) {
 // карточку рисует вызывающий: в списке это карточка статус-страницы, в
 // модалке создания — контейнер модалки, и вкладывать карточку в карточку
 // незачем. Порядок строк = порядок мониторов на странице (position 0,1,2…).
-// canManage — owner/admin организации проекта: публикация (slug смены и
-// enabled) — их зона, у оператора без этих прав поля скрыты (сервер их и так
-// не примет — statuspage.go: statusPagesCreate/Update, но скрытое поле,
-// которое молча не сработает, хуже, чем его отсутствие). Slug при СОЗДАНИИ —
-// исключение: виден всем, иначе оператор вообще не может создать страницу
-// (slug обязателен), а рождается она всё равно выключенной.
+// canManage — owner/admin организации проекта: публикация (enabled) — их
+// зона, у оператора без этих прав поле скрыто (сервер его и так не примет —
+// statuspage.go: statusPagesCreate/Update, но скрытое поле, которое молча не
+// сработает, хуже, чем его отсутствие). Slug'а в форме больше нет вовсе
+// (задача 4 плана): публичный адрес — сгенерированный public_id, он не
+// вводится, а показывается (ниже, в блоке «Публикация»).
 templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canManage bool) {
 	<div class="status-page-editor">
 		<div class="status-page-block">
@@ -124,14 +129,6 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, can
 				action={ templ.URL(statusPageFormAction(projectID, f)) }
 				class="status-page-form"
 			>
-				if f.ID == 0 || canManage {
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "uptime.statuspages.field.slug") }
-							<input type="text" name="slug" value={ f.Slug } required class="input"/>
-						</label>
-					</div>
-				}
 				<div class="field">
 					<label>
 						{ i18n.T(ctx, "uptime.statuspages.field.title") }
@@ -187,7 +184,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, can
 				<p class="status-page-public">
 					{ i18n.T(ctx, "uptime.statuspages.public_url") }
 					<br/>
-					<a href={ templ.URL(statusPagePublicURL(baseURL, f.Slug)) }>{ statusPagePublicURL(baseURL, f.Slug) }</a>
+					<a href={ templ.URL(statusPagePublicURL(baseURL, f.PublicID)) }>{ statusPagePublicURL(baseURL, f.PublicID) }</a>
 				</p>
 			}
 			<div class="card-actions">

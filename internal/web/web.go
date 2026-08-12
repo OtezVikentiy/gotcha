@@ -243,7 +243,7 @@ type Handler struct {
 	// одного IP по РАЗНЫМ email, закрывая обход per-account лимита перебором.
 	ipLimiter *rateLimiter
 	// publicLimiter — per-IP лимитер НЕаутентифицированных машинных и публичных
-	// роутов: /uptime/hb/{token}, /probe/*, /status/{slug}, /auth/oauth/*/start.
+	// роутов: /uptime/hb/{token}, /probe/*, /status/{key}, /auth/oauth/*/start.
 	// Каждый такой запрос от анонима стоит похода в PostgreSQL (резолв токена
 	// пробы/heartbeat-токена/слага), а пул общий с веб-частью, поэтому без капа
 	// аноним без единого ключа выбирает пул и роняет UI, алерты и квоты.
@@ -573,7 +573,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		inner.HandleFunc("POST /probe/lease", h.publicRateLimited(h.probeLease))
 		inner.HandleFunc("POST /probe/results", h.publicRateLimited(h.probeResults))
 
-		inner.HandleFunc("GET /status/{slug}", h.publicRateLimited(h.statusPage))
+		inner.HandleFunc("GET /status/{key}", h.publicRateLimited(h.statusPage))
 	}
 
 	// Fallback: любой путь, не покрытый паттернами выше, — стилизованная 404.

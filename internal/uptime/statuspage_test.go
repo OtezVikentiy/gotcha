@@ -3,6 +3,7 @@ package uptime_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-func TestStatusPageCreateAndFindBySlug(t *testing.T) {
+func TestStatusPageCreateAndFindByPublicID(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -20,7 +21,6 @@ func TestStatusPageCreateAndFindBySlug(t *testing.T) {
 
 	sp, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
 		ProjectID: pid,
-		Slug:      "status",
 		Title:     "API Status",
 		Enabled:   true,
 	}, []uptime.StatusPageMonitor{{MonitorID: mon.ID, DisplayName: "API", Position: 0}})
@@ -31,15 +31,19 @@ func TestStatusPageCreateAndFindBySlug(t *testing.T) {
 		t.Fatalf("CreateStatusPage: id = 0")
 	}
 
-	got, monitors, err := svc.StatusPageBySlug(ctx, "status")
+	if len(sp.PublicID) != 26 || !strings.HasPrefix(sp.PublicID, "p_") {
+		t.Fatalf("CreateStatusPage: PublicID = %q, want \"p_\"+24hex", sp.PublicID)
+	}
+
+	got, monitors, err := svc.StatusPageByPublicID(ctx, sp.PublicID)
 	if err != nil {
-		t.Fatalf("StatusPageBySlug: %v", err)
+		t.Fatalf("StatusPageByPublicID: %v", err)
 	}
 	if got.ID != sp.ID || got.Title != "API Status" {
-		t.Fatalf("StatusPageBySlug: %+v", got)
+		t.Fatalf("StatusPageByPublicID: %+v", got)
 	}
 	if len(monitors) != 1 || monitors[0].MonitorID != mon.ID || monitors[0].DisplayName != "API" {
-		t.Fatalf("StatusPageBySlug monitors: %+v", monitors)
+		t.Fatalf("StatusPageByPublicID monitors: %+v", monitors)
 	}
 
 	list, err := svc.StatusPagesOf(ctx, pid)
@@ -51,7 +55,7 @@ func TestStatusPageCreateAndFindBySlug(t *testing.T) {
 	}
 }
 
-func TestStatusPageDuplicateSlugTaken(t *testing.T) {
+func TestStatusPageInvalidTitle(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -59,57 +63,31 @@ func TestStatusPageDuplicateSlugTaken(t *testing.T) {
 	pid := newProject(t, pool)
 
 	if _, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "dup", Title: "First", Enabled: true,
-	}, nil); err != nil {
-		t.Fatalf("CreateStatusPage first: %v", err)
-	}
-
-	other := newProject(t, pool)
-	if _, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: other, Slug: "dup", Title: "Second", Enabled: true,
-	}, nil); !errors.Is(err, uptime.ErrSlugTaken) {
-		t.Fatalf("CreateStatusPage dup slug: err = %v, want ErrSlugTaken", err)
-	}
-}
-
-func TestStatusPageInvalidSlugOrTitle(t *testing.T) {
-	pool := testenv.MigratedPG(t)
-	svc := uptime.NewService(pool)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pid := newProject(t, pool)
-
-	if _, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "Bad Slug!", Title: "X", Enabled: true,
-	}, nil); !errors.Is(err, uptime.ErrInvalidStatusPage) {
-		t.Fatalf("CreateStatusPage bad slug: err = %v, want ErrInvalidStatusPage", err)
-	}
-
-	if _, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "no-title", Title: "", Enabled: true,
+		ProjectID: pid, Title: "", Enabled: true,
 	}, nil); !errors.Is(err, uptime.ErrInvalidStatusPage) {
 		t.Fatalf("CreateStatusPage empty title: err = %v, want ErrInvalidStatusPage", err)
 	}
 }
 
-func TestStatusPageDisabledOrUnknownSlugNotFound(t *testing.T) {
+func TestStatusPageDisabledOrUnknownPublicIDNotFound(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pid := newProject(t, pool)
 
-	if _, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "hidden", Title: "Hidden", Enabled: false,
-	}, nil); err != nil {
+	sp, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
+		ProjectID: pid, Title: "Hidden", Enabled: false,
+	}, nil)
+	if err != nil {
 		t.Fatalf("CreateStatusPage disabled: %v", err)
 	}
 
-	if _, _, err := svc.StatusPageBySlug(ctx, "hidden"); !errors.Is(err, uptime.ErrNotFound) {
-		t.Fatalf("StatusPageBySlug disabled: err = %v, want ErrNotFound", err)
+	if _, _, err := svc.StatusPageByPublicID(ctx, sp.PublicID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("StatusPageByPublicID disabled: err = %v, want ErrNotFound", err)
 	}
-	if _, _, err := svc.StatusPageBySlug(ctx, "does-not-exist"); !errors.Is(err, uptime.ErrNotFound) {
-		t.Fatalf("StatusPageBySlug unknown slug: err = %v, want ErrNotFound", err)
+	if _, _, err := svc.StatusPageByPublicID(ctx, "p_does000not000exist00000"); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("StatusPageByPublicID unknown key: err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -123,7 +101,7 @@ func TestUpdateAndDeleteStatusPage(t *testing.T) {
 	mon2 := createMonitor(t, svc, pid, 3, 2)
 
 	sp, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: pid, Slug: "up", Title: "Up", Enabled: true,
+		ProjectID: pid, Title: "Up", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: mon1.ID, DisplayName: "One", Position: 0}})
 	if err != nil {
 		t.Fatalf("CreateStatusPage: %v", err)
@@ -137,9 +115,9 @@ func TestUpdateAndDeleteStatusPage(t *testing.T) {
 		t.Fatalf("UpdateStatusPage: %v", err)
 	}
 
-	got, monitors, err := svc.StatusPageBySlug(ctx, "up")
+	got, monitors, err := svc.StatusPageByPublicID(ctx, sp.PublicID)
 	if err != nil {
-		t.Fatalf("StatusPageBySlug after update: %v", err)
+		t.Fatalf("StatusPageByPublicID after update: %v", err)
 	}
 	if got.Title != "Up v2" {
 		t.Fatalf("UpdateStatusPage: title = %q, want %q", got.Title, "Up v2")
@@ -148,7 +126,7 @@ func TestUpdateAndDeleteStatusPage(t *testing.T) {
 		t.Fatalf("UpdateStatusPage monitors not replaced: %+v", monitors)
 	}
 
-	if err := svc.UpdateStatusPage(ctx, uptime.StatusPage{ID: 999999999, Slug: "ghost", Title: "Ghost"}, nil); !errors.Is(err, uptime.ErrNotFound) {
+	if err := svc.UpdateStatusPage(ctx, uptime.StatusPage{ID: 999999999, Title: "Ghost"}, nil); !errors.Is(err, uptime.ErrNotFound) {
 		t.Fatalf("UpdateStatusPage unknown id: err = %v, want ErrNotFound", err)
 	}
 
@@ -158,7 +136,7 @@ func TestUpdateAndDeleteStatusPage(t *testing.T) {
 	if err := svc.DeleteStatusPage(ctx, sp.ID); !errors.Is(err, uptime.ErrNotFound) {
 		t.Fatalf("DeleteStatusPage again: err = %v, want ErrNotFound", err)
 	}
-	if _, _, err := svc.StatusPageBySlug(ctx, "up"); !errors.Is(err, uptime.ErrNotFound) {
-		t.Fatalf("StatusPageBySlug after delete: err = %v, want ErrNotFound", err)
+	if _, _, err := svc.StatusPageByPublicID(ctx, sp.PublicID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("StatusPageByPublicID after delete: err = %v, want ErrNotFound", err)
 	}
 }

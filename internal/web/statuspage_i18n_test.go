@@ -49,13 +49,14 @@ func TestWebStatusPageLocalized(t *testing.T) {
 	s.writer.Add(proj.ID, api.ID, "local", at, uptime.Result{OK: true, StatusCode: 200, TotalMs: 100})
 	s.flush(t)
 
-	if _, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "spi18n-status", Title: "Acme Status", Enabled: true,
-	}, []uptime.StatusPageMonitor{{MonitorID: api.ID, DisplayName: "API", Position: 0}}); err != nil {
+	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Title: "Acme Status", Enabled: true,
+	}, []uptime.StatusPageMonitor{{MonitorID: api.ID, DisplayName: "API", Position: 0}})
+	if err != nil {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	url := s.srv.URL + "/status/spi18n-status"
+	url := s.srv.URL + "/status/" + sp.PublicID
 
 	// Первым греет кеш русский посетитель — именно так локаль и протекала бы.
 	ru := getAnonLang(t, url, "ru-RU,ru;q=0.9")

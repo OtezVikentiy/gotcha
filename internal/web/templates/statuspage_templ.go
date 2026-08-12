@@ -405,7 +405,7 @@ func statusMonitorTile(m StatusMonitorView, days int) templ.Component {
 	})
 }
 
-// PublicStatusPage — GET /status/{slug}: страница для анонимного посетителя.
+// PublicStatusPage — GET /status/{key}: страница для анонимного посетителя.
 func PublicStatusPage(v StatusPageView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context

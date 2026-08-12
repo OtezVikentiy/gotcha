@@ -142,18 +142,19 @@ func TestWebStatusPagePublicHidesInternals(t *testing.T) {
 	s.writer.Add(proj.ID, db.ID, "local", at, uptime.Result{OK: true, StatusCode: 200, TotalMs: 90})
 	s.flush(t)
 
-	if _, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "sppublic-status", Title: "Acme Status", Description: "Состояние наших сервисов", Enabled: true,
+	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Title: "Acme Status", Description: "Состояние наших сервисов", Enabled: true,
 	}, []uptime.StatusPageMonitor{
 		{MonitorID: api.ID, DisplayName: "API", Position: 0},
 		{MonitorID: db.ID, DisplayName: "Billing", Position: 1},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	status, body := getAnon(t, s.srv, "/status/sppublic-status")
+	status, body := getAnon(t, s.srv, "/status/"+sp.PublicID)
 	if status != http.StatusOK {
-		t.Fatalf("GET /status/sppublic-status (anon) = %d, want 200: %s", status, body)
+		t.Fatalf("GET /status/%s (anon) = %d, want 200: %s", sp.PublicID, status, body)
 	}
 	for _, want := range []string{"Acme Status", "Состояние наших сервисов", "API", "Billing", "<svg", "Все системы работают"} {
 		if !strings.Contains(body, want) {
@@ -189,16 +190,17 @@ func TestWebStatusPagePartialOutage(t *testing.T) {
 		t.Fatalf("open incident: %v", err)
 	}
 
-	if _, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "sppartial-status", Title: "Partial", Enabled: true,
+	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Title: "Partial", Enabled: true,
 	}, []uptime.StatusPageMonitor{
 		{MonitorID: up.ID, DisplayName: "Website", Position: 0},
 		{MonitorID: down.ID, DisplayName: "Database", Position: 1},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	status, body := getAnon(t, s.srv, "/status/sppartial-status")
+	status, body := getAnon(t, s.srv, "/status/"+sp.PublicID)
 	if status != http.StatusOK {
 		t.Fatalf("GET status = %d, want 200: %s", status, body)
 	}
@@ -213,33 +215,42 @@ func TestWebStatusPagePartialOutage(t *testing.T) {
 }
 
 // TestWebStatusPageDisabledAndUnknown404 — выключенная страница и
-// несуществующий slug дают одинаковую 404; отрицательный ответ не кешируется
-// (создав страницу с тем же slug, тут же получаем 200).
+// неизвестный ключ дают одинаковую 404; отрицательный ответ не кешируется
+// (создав страницу с тем же ключом, тут же получаем 200).
 func TestWebStatusPageDisabledAndUnknown404(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spoff")
 
 	m := statusPageMonitor(t, s, proj.ID, "hidden-monitor", "https://example.com/hidden")
-	if _, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "spoff-disabled", Title: "Disabled", Enabled: false,
-	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}}); err != nil {
+	spOff, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Title: "Disabled", Enabled: false,
+	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
+	if err != nil {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	if status, body := getAnon(t, s.srv, "/status/spoff-disabled"); status != http.StatusNotFound {
+	// public_id генерируется сервером, поэтому «неизвестный ключ» этого
+	// теста — фиксированная строка того же формата, заведомо не совпадающая
+	// ни с одним настоящим public_id.
+	const missingKey = "p_0000000000000000000missing"
+
+	if status, body := getAnon(t, s.srv, "/status/"+spOff.PublicID); status != http.StatusNotFound {
 		t.Fatalf("GET disabled page = %d, want 404: %s", status, body)
 	}
-	if status, body := getAnon(t, s.srv, "/status/spoff-missing"); status != http.StatusNotFound {
-		t.Fatalf("GET unknown slug = %d, want 404: %s", status, body)
+	if status, body := getAnon(t, s.srv, "/status/"+missingKey); status != http.StatusNotFound {
+		t.Fatalf("GET unknown key = %d, want 404: %s", status, body)
 	}
 
-	// 404 не кешируется: страница, созданная сразу после промаха, видна.
-	if _, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "spoff-missing", Title: "Now Exists", Enabled: true,
-	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}}); err != nil {
-		t.Fatalf("create status page: %v", err)
+	// 404 не кешируется: страница, созданная сразу после промаха С ТЕМ ЖЕ
+	// ключом (вставлена напрямую в БД — обычный CreateStatusPage сам выбирает
+	// public_id и не даёт задать конкретное значение, см. его докблок), тут
+	// же видна.
+	if _, err := s.pool.Exec(context.Background(), `
+		INSERT INTO status_pages (project_id, public_id, title, enabled)
+		VALUES ($1, $2, $3, true)`, proj.ID, missingKey, "Now Exists"); err != nil {
+		t.Fatalf("insert status page: %v", err)
 	}
-	status, body := getAnon(t, s.srv, "/status/spoff-missing")
+	status, body := getAnon(t, s.srv, "/status/"+missingKey)
 	if status != http.StatusOK {
 		t.Fatalf("GET after create = %d, want 200 (404 must not be cached): %s", status, body)
 	}
@@ -257,13 +268,13 @@ func TestWebStatusPageCached(t *testing.T) {
 
 	m := statusPageMonitor(t, s, proj.ID, "cached-monitor", "https://example.com/cached")
 	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "spcache-status", Title: "Cached", Enabled: true,
+		ProjectID: proj.ID, Title: "Cached", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Old Name", Position: 0}})
 	if err != nil {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	status, first := getAnon(t, s.srv, "/status/spcache-status")
+	status, first := getAnon(t, s.srv, "/status/"+sp.PublicID)
 	if status != http.StatusOK || !strings.Contains(first, "Old Name") {
 		t.Fatalf("first GET = %d, want 200 with «Old Name»: %s", status, first)
 	}
@@ -274,7 +285,7 @@ func TestWebStatusPageCached(t *testing.T) {
 		t.Fatalf("update status page: %v", err)
 	}
 
-	status, second := getAnon(t, s.srv, "/status/spcache-status")
+	status, second := getAnon(t, s.srv, "/status/"+sp.PublicID)
 	if status != http.StatusOK {
 		t.Fatalf("second GET = %d, want 200", status)
 	}
@@ -315,16 +326,19 @@ func TestWebStatusPageStampede(t *testing.T) {
 
 	// Две страницы одной формы: warm — эталон цены одной сборки, cold —
 	// мишень штурма.
-	for _, slug := range []string{"spflight-warm", "spflight-cold"} {
-		if _, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-			ProjectID: proj.ID, Slug: slug, Title: "Flight " + slug, Enabled: true,
-		}, monitors); err != nil {
-			t.Fatalf("create status page %s: %v", slug, err)
+	publicID := make(map[string]string, 2)
+	for _, label := range []string{"spflight-warm", "spflight-cold"} {
+		sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+			ProjectID: proj.ID, Title: "Flight " + label, Enabled: true,
+		}, monitors)
+		if err != nil {
+			t.Fatalf("create status page %s: %v", label, err)
 		}
+		publicID[label] = sp.PublicID
 	}
 
 	before := s.pool.Stat().AcquireCount()
-	if status, body := getAnon(t, s.srv, "/status/spflight-warm"); status != http.StatusOK {
+	if status, body := getAnon(t, s.srv, "/status/"+publicID["spflight-warm"]); status != http.StatusOK {
 		t.Fatalf("warm-up GET = %d, want 200: %s", status, body)
 	}
 	oneBuild := s.pool.Stat().AcquireCount() - before
@@ -334,6 +348,7 @@ func TestWebStatusPageStampede(t *testing.T) {
 
 	before = s.pool.Stat().AcquireCount()
 
+	coldURL := s.srv.URL + "/status/" + publicID["spflight-cold"]
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	statuses := make([]int, statusPageStampedeRequests)
@@ -343,7 +358,7 @@ func TestWebStatusPageStampede(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			resp, err := http.Get(s.srv.URL + "/status/spflight-cold")
+			resp, err := http.Get(coldURL)
 			if err != nil {
 				statuses[i] = -1
 				bodies[i] = err.Error()
@@ -391,7 +406,6 @@ func TestWebStatusPagesForeignMonitorRejected(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
 	form := url.Values{
-		"slug":     {"spforeign-status"},
 		"title":    {"Foreign"},
 		"enabled":  {"on"},
 		"monitors": {strconv.FormatInt(mine.ID, 10), strconv.FormatInt(foreign.ID, 10)},
@@ -421,7 +435,7 @@ func TestWebStatusPagesForeignMonitorRejected(t *testing.T) {
 			attached, mine.ID, foreign.ID)
 	}
 
-	status, pub := getAnon(t, s.srv, "/status/spforeign-status")
+	status, pub := getAnon(t, s.srv, "/status/"+pages[0].PublicID)
 	if status != http.StatusOK {
 		t.Fatalf("GET public page = %d, want 200: %s", status, pub)
 	}
@@ -444,7 +458,7 @@ func TestWebStatusPagesForeignOrigin(t *testing.T) {
 	m := statusPageMonitor(t, s, proj.ID, "origin-monitor", "https://example.com/origin")
 
 	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "sporigin-status", Title: "Origin", Enabled: true,
+		ProjectID: proj.ID, Title: "Origin", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
 	if err != nil {
 		t.Fatalf("create status page: %v", err)
@@ -458,8 +472,8 @@ func TestWebStatusPagesForeignOrigin(t *testing.T) {
 		path string
 		form url.Values
 	}{
-		{path, url.Values{"slug": {"sporigin-new"}, "title": {"New"}, "enabled": {"on"}}},
-		{spPath, url.Values{"slug": {"sporigin-status"}, "title": {"Hacked"}, "enabled": {"on"}}},
+		{path, url.Values{"title": {"New"}, "enabled": {"on"}}},
+		{spPath, url.Values{"title": {"Hacked"}, "enabled": {"on"}}},
 		{spPath + "/delete", url.Values{}},
 	}
 	for _, c := range cases {
@@ -481,8 +495,8 @@ func TestWebStatusPagesForeignOrigin(t *testing.T) {
 }
 
 // TestWebStatusPagesSettingsCRUD — admin создаёт страницу, видит публичный
-// URL, ловит 422 на занятый slug (с сохранением введённых значений), правит
-// display_name и удаляет страницу.
+// URL, ловит 422 на пустой заголовок (с сохранением введённых значений),
+// правит display_name и удаляет страницу.
 func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, ownerCookie, _ := statusPageProject(t, s, "spcrud")
@@ -502,7 +516,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	}
 
 	form := url.Values{
-		"slug":        {"spcrud-status"},
 		"title":       {"CRUD Status"},
 		"description": {"desc"},
 		"enabled":     {"on"},
@@ -520,36 +533,42 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status pages of: %v", err)
 	}
-	if len(pages) != 1 || pages[0].Slug != "spcrud-status" || !pages[0].Enabled {
-		t.Fatalf("pages = %+v, want single enabled spcrud-status", pages)
+	// Форма не шлёт slug вовсе (задача 4 плана): публичный адрес —
+	// сгенерированный public_id, страница из БД возвращается с ним.
+	if len(pages) != 1 || pages[0].Title != "CRUD Status" || pages[0].PublicID == "" || !pages[0].Enabled {
+		t.Fatalf("pages = %+v, want single enabled CRUD Status with a public_id", pages)
 	}
 	pageID := pages[0].ID
 
-	// GET: ссылка на публичный URL и текущий display_name в форме
-	// редактирования.
+	// GET: ссылка на публичный URL (по public_id) и текущий display_name в
+	// форме редактирования.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(body), s.srv.URL+"/status/spcrud-status") {
+	if !strings.Contains(string(body), s.srv.URL+"/status/"+pages[0].PublicID) {
 		t.Fatalf("settings page must show the public URL: %s", body)
 	}
 	if !strings.Contains(string(body), "Public API") {
 		t.Fatalf("edit form must prefill display_name: %s", body)
 	}
 
-	// Занятый slug -> 422, введённые значения сохранены, вторая страница не
-	// создана.
-	taken := url.Values{
-		"slug":     {"spcrud-status"},
-		"title":    {"Another Status"},
-		"enabled":  {"on"},
-		"monitors": {strconv.FormatInt(m.ID, 10)},
+	// Невалидная форма (пустой заголовок -> uptime.ErrInvalidStatusPage,
+	// см. validateStatusPage) -> 422, введённые значения сохранены, вторая
+	// страница не создана. Прежний повод для 422 здесь — занятый/невалидный
+	// slug — исчез вместе с полем формы (задача 4 плана) и с самим полем
+	// StatusPage.Slug (T5, миграция 0063): единственная оставшаяся проверка
+	// формы — непустой title.
+	invalid := url.Values{
+		"title":       {""},
+		"description": {"Another Status"},
+		"enabled":     {"on"},
+		"monitors":    {strconv.FormatInt(m.ID, 10)},
 	}
-	resp = postForm(t, s.srv, path, taken, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, path, invalid, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("POST %s (taken slug) = %d, want 422: %s", path, resp.StatusCode, body)
+		t.Fatalf("POST %s (empty title) = %d, want 422: %s", path, resp.StatusCode, body)
 	}
 	if !strings.Contains(string(body), "Another Status") {
 		t.Fatalf("422 must re-render the submitted values: %s", body)
@@ -565,7 +584,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	// Update: новый display_name виден на публичной странице.
 	updatePath := "/statuspages/" + strconv.FormatInt(pageID, 10)
 	update := url.Values{
-		"slug":     {"spcrud-status"},
 		"title":    {"CRUD Status"},
 		"enabled":  {"on"},
 		"monitors": {strconv.FormatInt(m.ID, 10)},
@@ -577,7 +595,7 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s = %d, want 303: %s", updatePath, resp.StatusCode, body)
 	}
-	status, pub := getAnon(t, s.srv, "/status/spcrud-status")
+	status, pub := getAnon(t, s.srv, "/status/"+pages[0].PublicID)
 	if status != http.StatusOK || !strings.Contains(pub, "Renamed API") {
 		t.Fatalf("public page after update = %d: %s", status, pub)
 	}
@@ -613,7 +631,7 @@ func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 
 	m := statusPageMonitor(t, s, proj.ID, "forbid-monitor", "https://example.com/forbid")
 	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "spforbid-status", Title: "Forbid", Enabled: true,
+		ProjectID: proj.ID, Title: "Forbid", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
 	if err != nil {
 		t.Fatalf("create status page: %v", err)
@@ -631,7 +649,7 @@ func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 		t.Fatalf("GET %s (stranger) = %d, want 404", path, resp.StatusCode)
 	}
 
-	resp = postForm(t, s.srv, path, url.Values{"slug": {"x"}, "title": {"x"}}, s.srv.URL, strangerCookie)
+	resp = postForm(t, s.srv, path, url.Values{"title": {"x"}}, s.srv.URL, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -639,7 +657,7 @@ func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 	}
 
 	updatePath := "/statuspages/" + strconv.FormatInt(sp.ID, 10)
-	resp = postForm(t, s.srv, updatePath, url.Values{"slug": {"spforbid-status"}, "title": {"Hacked"}}, s.srv.URL, strangerCookie)
+	resp = postForm(t, s.srv, updatePath, url.Values{"title": {"Hacked"}}, s.srv.URL, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

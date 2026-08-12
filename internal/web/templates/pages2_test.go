@@ -151,33 +151,35 @@ func TestTracePages(t *testing.T) {
 }
 
 // TestStatusPagesSettings — настройки статус-страниц: существующая форма с
-// мониторами и новая пустая форма.
+// мониторами и новая пустая форма. Slug — не поле формы (задача 4 плана):
+// публичный адрес — сгенерированный public_id, форма его не вводит, только
+// показывает (в блоке «Публикация» существующей страницы).
 func TestStatusPagesSettings(t *testing.T) {
 	forms := []StatusPageForm{
-		{ID: 1, Slug: "public", Title: "Статус Acme", Description: "Наш статус", Enabled: true, Monitors: []StatusPageFormMonitor{
+		{ID: 1, PublicID: "p_public123", Title: "Статус Acme", Description: "Наш статус", Enabled: true, Monitors: []StatusPageFormMonitor{
 			{ID: 10, MonitorName: "web", Selected: true, DisplayName: "Веб"},
 			{ID: 20, MonitorName: "api", Selected: false},
 		}},
 	}
 	newForm := StatusPageForm{Monitors: []StatusPageFormMonitor{{ID: 10, MonitorName: "web"}}}
 	out := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", forms, newForm, true, "", "u@e.com"))
-	if !strings.Contains(out, "Статус Acme") || !strings.Contains(out, "public") {
-		t.Error("настройки статус-страниц должны содержать форму")
+	if !strings.Contains(out, "Статус Acme") || !strings.Contains(out, "p_public123") {
+		t.Error("настройки статус-страниц должны содержать форму и публичный адрес")
 	}
 	// С ошибкой.
-	outErr := renderTo(t, StatusPagesSettings(7, "https://x", nil, newForm, true, "занятый slug", "u@e.com"))
-	if !strings.Contains(outErr, "занятый slug") {
+	outErr := renderTo(t, StatusPagesSettings(7, "https://x", nil, newForm, true, "ошибка формы", "u@e.com"))
+	if !strings.Contains(outErr, "ошибка формы") {
 		t.Error("ошибка статус-страницы должна отрендериться")
 	}
-	// canManage=false: у существующей страницы поле slug и чекбокс enabled
-	// скрыты (публикация — admin-only), а форма создания всё равно даёт
-	// задать slug.
+	// canManage=false: у существующей страницы чекбокс enabled скрыт
+	// (публикация — admin-only). Поля slug в форме нет вовсе — ни у
+	// оператора, ни у управляющего.
 	outOperator := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", forms, newForm, false, "", "u@e.com"))
 	if strings.Contains(outOperator, `name="enabled"`) {
 		t.Error("оператор без прав управления не должен видеть чекбокс enabled")
 	}
-	if strings.Count(outOperator, `name="slug"`) != 1 {
-		t.Errorf("оператор должен видеть slug только в форме создания, got %d occurrences", strings.Count(outOperator, `name="slug"`))
+	if strings.Contains(outOperator, `name="slug"`) {
+		t.Error("формы больше не должны присылать slug")
 	}
 	// Кнопка удаления ОПУБЛИКОВАННОЙ страницы (forms[0].Enabled == true) —
 	// зона canManage: сервер режет оператора 403 (statuspage.go), поэтому у
@@ -189,7 +191,7 @@ func TestStatusPagesSettings(t *testing.T) {
 		t.Error("управляющий должен видеть кнопку удаления статус-страницы")
 	}
 	// Черновик (Enabled == false) оператор удаляет свободно — кнопка есть.
-	draft := []StatusPageForm{{ID: 2, Slug: "draft", Title: "Черновик", Enabled: false}}
+	draft := []StatusPageForm{{ID: 2, Title: "Черновик", Enabled: false}}
 	outOperatorDraft := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", draft, newForm, false, "", "u@e.com"))
 	if !strings.Contains(outOperatorDraft, "status-page-delete-form") {
 		t.Error("оператор должен видеть кнопку удаления НЕопубликованной статус-страницы")

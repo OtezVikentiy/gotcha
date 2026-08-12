@@ -163,7 +163,7 @@ templ statusMonitorTile(m StatusMonitorView, days int) {
 	</li>
 }
 
-// PublicStatusPage — GET /status/{slug}: страница для анонимного посетителя.
+// PublicStatusPage — GET /status/{key}: страница для анонимного посетителя.
 templ PublicStatusPage(v StatusPageView) {
 	@statusLayout(v.Title) {
 		<h1>{ v.Title }</h1>

@@ -202,9 +202,10 @@ func buildCountingStatusPage(t *testing.T, n int) (status int, queries int) {
 			MonitorID: created.ID, DisplayName: "Mon", Position: i,
 		})
 	}
-	if _, err := s.uptime.CreateStatusPage(ctx, uptime.StatusPage{
-		ProjectID: proj.ID, Slug: "spqc-status", Title: "SPQC Status", Enabled: true,
-	}, spMonitors); err != nil {
+	sp, err := s.uptime.CreateStatusPage(ctx, uptime.StatusPage{
+		ProjectID: proj.ID, Title: "SPQC Status", Enabled: true,
+	}, spMonitors)
+	if err != nil {
 		t.Fatalf("create status page: %v", err)
 	}
 
@@ -218,7 +219,7 @@ func buildCountingStatusPage(t *testing.T, n int) (status int, queries int) {
 	s.ch.n = 0
 	s.ch.mu.Unlock()
 
-	statusCode, _ := getAnon(t, s.srv, "/status/spqc-status")
+	statusCode, _ := getAnon(t, s.srv, "/status/"+sp.PublicID)
 	return statusCode, s.totalQueries()
 }
 

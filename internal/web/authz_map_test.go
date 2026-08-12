@@ -132,7 +132,7 @@ var routeAuthz = map[string]string{
 	"GET /auth/oauth/{provider}/callback": lvlPublic,
 	"GET /static/":                        lvlPublic,
 	"GET /uptime/hb/{token}":              lvlPublic,
-	"GET /status/{slug}":                  lvlPublic,
+	"GET /status/{key}":                   lvlPublic,
 
 	// --- Любой залогиненный (requireUser), дальше по коду гейта нет —
 	// общие страницы аккаунта/продукта, не привязанные к конкретному

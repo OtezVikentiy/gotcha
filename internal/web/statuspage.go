@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -51,7 +52,7 @@ const (
 
 // statusCacheTTL/statusCacheMaxEntries — публичная страница отдаётся анониму,
 // поэтому каждый её рендер (десятки запросов в PG и ClickHouse) кешируется на
-// 30 секунд. Размер карты ограничен: иначе перебор случайных slug'ов раздул бы
+// 30 секунд. Размер карты ограничен: иначе перебор случайных ключей раздул бы
 // память. Кешируются только успешные страницы — 404 не кешируется, иначе
 // только что включённая страница была бы недоступна до истечения TTL.
 const (
@@ -71,7 +72,7 @@ type statusCacheEntry struct {
 	expires time.Time
 }
 
-// statusBuild — идущая прямо сейчас сборка страницы одного slug'а: done
+// statusBuild — идущая прямо сейчас сборка страницы одного ключа: done
 // закрывается, когда view/err заполнены (запись до close, чтение после — этого
 // достаточно, отдельного мьютекса на поля не нужно).
 type statusBuild struct {
@@ -80,13 +81,13 @@ type statusBuild struct {
 	err  error
 }
 
-// statusCache — кеш публичных статус-страниц по slug'у. Нулевое значение
-// готово к работе (карты создаются лениво), поэтому Handler держит его
-// значением и New не обязан ничего инициализировать.
+// statusCache — кеш публичных статус-страниц по ключу (public_id). Нулевое
+// значение готово к работе (карты создаются лениво), поэтому Handler держит
+// его значением и New не обязан ничего инициализировать.
 //
-// inflight — single-flight: страницу собирает ровно один запрос на slug, все
+// inflight — single-flight: страницу собирает ровно один запрос на ключ, все
 // остальные ждут его результат. Без этого любой аноним, открывший десяток
-// параллельных соединений на холодный (или только что протухший) slug,
+// параллельных соединений на холодный (или только что протухший) ключ,
 // множил бы на десять всю сборку — ~5 запросов в PG и ClickHouse НА КАЖДЫЙ
 // монитор страницы, — и так каждые 30 секунд. Роут публичный и без
 // аутентификации, так что это самый дешёвый способ разложить бэкенд.
@@ -97,7 +98,7 @@ type statusCache struct {
 }
 
 // load отдаёт живую запись кеша, а на промахе собирает страницу через build —
-// но ровно одним вызовом на slug: пришедшие в этот момент запросы ждут ту же
+// но ровно одним вызовом на ключ: пришедшие в этот момент запросы ждут ту же
 // сборку и делят её результат. Кешируется только успех: 404 (ErrNotFound)
 // возвращается всем ждущим, но в кеш не попадает — только что включённая
 // страница должна быть видна сразу.
@@ -108,13 +109,13 @@ type statusCache struct {
 // горутину на каждый запрос — навсегда. Ведущий сборку не бросает (её результат
 // ждут другие), но и она не вечная: её контекст ограничен таймаутом (см.
 // statusPage).
-func (c *statusCache) load(ctx context.Context, slug string, now time.Time, build func() (templates.StatusPageView, error)) (templates.StatusPageView, error) {
+func (c *statusCache) load(ctx context.Context, key string, now time.Time, build func() (templates.StatusPageView, error)) (templates.StatusPageView, error) {
 	c.mu.Lock()
-	if e, ok := c.entries[slug]; ok && now.Before(e.expires) {
+	if e, ok := c.entries[key]; ok && now.Before(e.expires) {
 		c.mu.Unlock()
 		return e.view, nil
 	}
-	if b, ok := c.inflight[slug]; ok {
+	if b, ok := c.inflight[key]; ok {
 		c.mu.Unlock()
 		select {
 		case <-b.done:
@@ -127,15 +128,15 @@ func (c *statusCache) load(ctx context.Context, slug string, now time.Time, buil
 	if c.inflight == nil {
 		c.inflight = make(map[string]*statusBuild)
 	}
-	c.inflight[slug] = b
+	c.inflight[key] = b
 	c.mu.Unlock()
 
 	b.view, b.err = build()
 
 	c.mu.Lock()
-	delete(c.inflight, slug)
+	delete(c.inflight, key)
 	if b.err == nil {
-		c.putLocked(slug, b.view, now)
+		c.putLocked(key, b.view, now)
 	}
 	c.mu.Unlock()
 
@@ -144,24 +145,25 @@ func (c *statusCache) load(ctx context.Context, slug string, now time.Time, buil
 }
 
 // putLocked кладёт готовую страницу в кеш; вызывается под c.mu.
-func (c *statusCache) putLocked(slug string, view templates.StatusPageView, now time.Time) {
+func (c *statusCache) putLocked(key string, view templates.StatusPageView, now time.Time) {
 	if c.entries == nil || len(c.entries) >= statusCacheMaxEntries {
 		// Переполнение сбрасывает кеш целиком (а не вытесняет одну запись):
 		// LRU здесь не нужен — TTL всё равно 30 секунд, а полный сброс не
-		// даёт карте расти от перебора случайных slug'ов.
+		// даёт карте расти от перебора случайных ключей.
 		c.entries = make(map[string]statusCacheEntry, statusCacheMaxEntries)
 	}
-	c.entries[slug] = statusCacheEntry{view: view, expires: now.Add(statusCacheTTL)}
+	c.entries[key] = statusCacheEntry{view: view, expires: now.Add(statusCacheTTL)}
 }
 
-// invalidate выбрасывает slug'и из кеша: правка или удаление страницы в
-// настройках должна быть видна миру сразу, а не через 30 секунд (у правки
-// slug'ов два — старый и новый).
-func (c *statusCache) invalidate(slugs ...string) {
+// invalidate выбрасывает ключи (public_id) из кеша: правка или удаление
+// страницы в настройках должна быть видна миру сразу, а не через 30 секунд.
+// Принимает несколько ключей вариативно (а не один) ради общего вида вызова —
+// public_id неизменяем, так что вызывающие передают ровно один.
+func (c *statusCache) invalidate(keys ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, slug := range slugs {
-		delete(c.entries, slug)
+	for _, key := range keys {
+		delete(c.entries, key)
 	}
 }
 
@@ -169,32 +171,59 @@ func statusPagesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/statuspages"
 }
 
-// statusPage — GET /status/{slug}: публичная страница, без сессии и без
+// statusPage — GET /status/{key}: публичная страница, без сессии и без
 // какой-либо авторизации (единственный такой браузерный роут — ср.
-// heartbeat, машинный). Выключенная страница и неизвестный slug дают
-// одинаковую 404: снаружи их не отличить.
+// heartbeat, машинный). key — непрозрачный public_id страницы; выключенная
+// страница и неизвестный ключ дают одинаковую 404: снаружи их не отличить.
+//
+// Ключ, не резолвящийся напрямую, может оказаться старым slug'ом (до
+// перехода на public_id, задача 4 плана): такой резолвится через
+// status_page_redirects и уходит 301'ом на актуальный /status/{public_id} —
+// старые ссылки/закладки не должны биться. Порядок строго ключ → редирект →
+// 404, редирект не кешируется (одиночный дешёвый запрос вне statusCache).
 //
 // В HTML не попадает ничего внутреннего: только display_name мониторов
 // (не имя монитора и не его URL/хост/порт), статус, uptime% и полоска за 90
 // дней, инциденты без причины и регионов, ближайшие окна обслуживания.
 func (h *Handler) statusPage(w http.ResponseWriter, r *http.Request) {
-	slug := r.PathValue("slug")
+	key := r.PathValue("key")
 	now := time.Now().UTC()
 
-	// Сборку ведёт один запрос на slug (statusCache.load), остальные ждут его
+	// Сборку ведёт один запрос на ключ (statusCache.load), остальные ждут его
 	// результат. Контекст сборки отвязан от отмены запроса — ждущие не должны
 	// получить 500 оттого, что ведущий отвалился на середине (а именно при
-	// штурме холодного slug'а клиенты и отваливаются), — но ОГРАНИЧЕН по
+	// штурме холодного ключа клиенты и отваливаются), — но ОГРАНИЧЕН по
 	// времени, как и в uptime.Runner.runOne: подвисший PG/CH не должен вечно
 	// держать соединение пула и горутину ведущего.
 	buildCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), statusPageBuildTimeout)
 	defer cancel()
 
-	view, err := h.statusCache.load(r.Context(), slug, now, func() (templates.StatusPageView, error) {
-		return h.buildStatusPage(buildCtx, slug, now)
+	view, err := h.statusCache.load(r.Context(), key, now, func() (templates.StatusPageView, error) {
+		return h.buildStatusPage(buildCtx, key, now)
 	})
 	if err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
+			// Не резолвится как ключ — последний шанс: legacy slug из
+			// status_page_redirects. Найден и жив (enabled) → 301 на
+			// актуальный ключ; иначе (не найден, или сама страница
+			// выключена — StatusPageForRedirect отдаёт found=false и в том,
+			// и в другом случае) — обычная 404, не палим разницу.
+			pubID, found, rerr := h.Uptime.StatusPageForRedirect(r.Context(), key)
+			if rerr != nil {
+				if r.Context().Err() != nil {
+					// Клиент ушёл, пока мы искали legacy-редирект: писать
+					// некому, а context.Canceled — не поломка, логировать
+					// как Error и отдавать 500 «в никуда» не за что.
+					return
+				}
+				slog.Error("statusPage: redirect lookup failed", "error", rerr)
+				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+				return
+			}
+			if found {
+				http.Redirect(w, r, "/status/"+pubID, http.StatusMovedPermanently)
+				return
+			}
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
@@ -228,8 +257,8 @@ func (h *Handler) renderStatusPage(w http.ResponseWriter, r *http.Request, view 
 // (uptime.Aggregate — та же consensus-политика, что у детектора), uptime% и
 // полоска за 90 дней (окна обслуживания исключены из знаменателя, как на
 // странице монитора), инциденты за 90 дней и ближайшие окна обслуживания.
-func (h *Handler) buildStatusPage(ctx context.Context, slug string, now time.Time) (templates.StatusPageView, error) {
-	sp, spMonitors, err := h.Uptime.StatusPageBySlug(ctx, slug)
+func (h *Handler) buildStatusPage(ctx context.Context, publicID string, now time.Time) (templates.StatusPageView, error) {
+	sp, spMonitors, err := h.Uptime.StatusPageByPublicID(ctx, publicID)
 	if err != nil {
 		return templates.StatusPageView{}, err
 	}
@@ -486,7 +515,7 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 		}
 		forms = append(forms, templates.StatusPageForm{
 			ID:          sp.ID,
-			Slug:        sp.Slug,
+			PublicID:    sp.PublicID,
 			Title:       sp.Title,
 			Description: sp.Description,
 			Enabled:     sp.Enabled,
@@ -536,7 +565,8 @@ func statusPageFormMonitors(monitors []uptime.Monitor, selected []uptime.StatusP
 // parseStatusPageForm собирает StatusPage и список её мониторов из формы.
 // Позиции — порядок чекбоксов в форме (браузер шлёт их в порядке DOM).
 // Принимаются только мониторы этого проекта: id чужого монитора игнорируется,
-// иначе страница могла бы показать монитор из другого проекта.
+// иначе страница могла бы показать монитор из другого проекта. Публичный
+// адрес — сгенерированный public_id; поля slug у StatusPage больше нет (T5).
 func parseStatusPageForm(r *http.Request, projectID int64, projectMonitors []uptime.Monitor) (uptime.StatusPage, []uptime.StatusPageMonitor) {
 	byID := make(map[int64]uptime.Monitor, len(projectMonitors))
 	for _, m := range projectMonitors {
@@ -545,7 +575,6 @@ func parseStatusPageForm(r *http.Request, projectID int64, projectMonitors []upt
 
 	sp := uptime.StatusPage{
 		ProjectID:   projectID,
-		Slug:        strings.TrimSpace(r.FormValue("slug")),
 		Title:       strings.TrimSpace(r.FormValue("title")),
 		Description: strings.TrimSpace(r.FormValue("description")),
 		Enabled:     formBool(r, "enabled"),
@@ -576,10 +605,13 @@ func parseStatusPageForm(r *http.Request, projectID int64, projectMonitors []upt
 
 // statusPageFormView — введённые значения формы для перерисовки на 422 (тот
 // же набор чекбоксов мониторов проекта, но с отметками и именами из запроса).
-func statusPageFormView(id int64, sp uptime.StatusPage, monitors []uptime.StatusPageMonitor, projectMonitors []uptime.Monitor) templates.StatusPageForm {
+// publicID — ключ существующей страницы (для ссылки на публичный адрес на
+// повторной отрисовке формы редактирования); у формы создания его ещё нет —
+// вызывающий передаёт "".
+func statusPageFormView(id int64, publicID string, sp uptime.StatusPage, monitors []uptime.StatusPageMonitor, projectMonitors []uptime.Monitor) templates.StatusPageForm {
 	return templates.StatusPageForm{
 		ID:          id,
-		Slug:        sp.Slug,
+		PublicID:    publicID,
 		Title:       sp.Title,
 		Description: sp.Description,
 		Enabled:     sp.Enabled,
@@ -589,8 +621,6 @@ func statusPageFormView(id int64, sp uptime.StatusPage, monitors []uptime.Status
 
 func statusPageErrorMessage(ctx context.Context, err error) string {
 	switch {
-	case errors.Is(err, uptime.ErrSlugTaken):
-		return i18n.T(ctx, "error.slug.taken")
 	case errors.Is(err, uptime.ErrInvalidStatusPage):
 		return i18n.T(ctx, "error.statuspage.invalid")
 	default:
@@ -599,8 +629,8 @@ func statusPageErrorMessage(ctx context.Context, err error) string {
 }
 
 // statusPagesCreate — POST /projects/{id}/statuspages: sameOrigin +
-// requireProjectOperator. ErrInvalidStatusPage/ErrSlugTaken → 422 с
-// перерисовкой формы и сохранением введённых значений. Публикация
+// requireProjectOperator. ErrInvalidStatusPage → 422 с перерисовкой формы и
+// сохранением введённых значений. Публикация
 // (Enabled) — admin-only: оператор без прав управления получает страницу,
 // рождённую выключенной, что бы ни прислала форма (защита на сервере, не на
 // видимости чекбокса — спека cld/plans/2026-08-08-access-model-rework.md).
@@ -623,9 +653,11 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// P2-2: лимит на создание статус-страниц (per-user) — до разбора формы и
-	// походов в БД, чтобы перебор slug'ов (успех vs 422 «занято») был дорогим,
-	// а не бесплатным оракулом занятости глобального slug'а. Легитимный
-	// оператор в 12/мин укладывается с запасом.
+	// походов в БД. Раньше повод был ещё и в переборе slug'ов как бесплатном
+	// оракуле занятости (успех vs 422 «занято») — с задачи 4 slug форма не
+	// шлёт вовсе, этот мотив снят, но сама вставка (несколько походов в PG на
+	// попытку) остаётся достаточно дорогой, чтобы её не дать штурмовать без
+	// лимита. Легитимный оператор в 12/мин укладывается с запасом.
 	if h.statusPageLimiter != nil && !h.statusPageLimiter.Allow("sp-create|"+strconv.FormatInt(uid, 10)) {
 		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "error.statuspage.rate_limited"))
 		return
@@ -653,8 +685,8 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.Uptime.CreateStatusPage(r.Context(), sp, monitors); err != nil {
-		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
-			form := statusPageFormView(0, sp, monitors, projectMonitors)
+		if errors.Is(err, uptime.ErrInvalidStatusPage) {
+			form := statusPageFormView(0, "", sp, monitors, projectMonitors)
 			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
@@ -698,9 +730,9 @@ func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, 
 
 // statusPagesUpdate — POST /statuspages/{id}: sameOrigin + оператор проекта
 // самой страницы. 422 перерисовывает именно её форму с введёнными
-// значениями. Slug и Enabled — admin-only: оператор без прав управления не
-// может их сменить, даже прислав другие значения в форме (сервер тихо
-// заменяет их на текущие из БД).
+// значениями. Enabled — admin-only: оператор без прав управления не может
+// его сменить, даже прислав другое значение в форме (сервер тихо заменяет
+// его на текущее из БД).
 func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -733,13 +765,12 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	sp.ID = existing.ID
 
 	if !authz.CanManage {
-		sp.Slug = existing.Slug
 		sp.Enabled = existing.Enabled
 	}
 
 	if err := h.Uptime.UpdateStatusPage(r.Context(), sp, monitors); err != nil {
-		if errors.Is(err, uptime.ErrInvalidStatusPage) || errors.Is(err, uptime.ErrSlugTaken) {
-			form := statusPageFormView(sp.ID, sp, monitors, projectMonitors)
+		if errors.Is(err, uptime.ErrInvalidStatusPage) {
+			form := statusPageFormView(sp.ID, existing.PublicID, sp, monitors, projectMonitors)
 			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, existing.ProjectID, authz.CanManage, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
@@ -750,7 +781,11 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	h.statusCache.invalidate(existing.Slug, sp.Slug)
+	// Инвалидация — по public_id, не по slug: кеш живёт под ключом, по
+	// которому реально резолвится buildStatusPage. public_id неизменяем
+	// (T1), поэтому, в отличие от старого slug'а, старого/нового значения
+	// тут два не бывает — одного вызова достаточно.
+	h.statusCache.invalidate(existing.PublicID)
 	http.Redirect(w, r, statusPagesPath(existing.ProjectID), http.StatusSeeOther)
 }
 
@@ -773,10 +808,9 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Удаление опубликованной страницы освобождает её глобально уникальный
-	// slug и снимает её с публичного интернета — это публикационное
-	// решение (как Enabled в statusPagesUpdate), а не обычное снятие
-	// контента, поэтому оператору недостаточно (спека
+	// Удаление опубликованной страницы снимает её с публичного интернета —
+	// это публикационное решение (как Enabled в statusPagesUpdate), а не
+	// обычное снятие контента, поэтому оператору недостаточно (спека
 	// cld/plans/2026-08-08-access-model-rework.md). Невыключенную страницу
 	// оператор по-прежнему удаляет — она ещё никому не видна. Страница уже
 	// загружена loadManagedStatusPage, существование не секрет → честный
@@ -802,6 +836,6 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	h.statusCache.invalidate(sp.Slug)
+	h.statusCache.invalidate(sp.PublicID)
 	http.Redirect(w, r, statusPagesPath(sp.ProjectID), http.StatusSeeOther)
 }

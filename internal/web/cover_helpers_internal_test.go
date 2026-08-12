@@ -57,7 +57,7 @@ func TestCoverErrorMessages(t *testing.T) {
 		}
 	}
 
-	for _, e := range []error{uptime.ErrSlugTaken, uptime.ErrInvalidStatusPage, dummy} {
+	for _, e := range []error{uptime.ErrInvalidStatusPage, dummy} {
 		if statusPageErrorMessage(ctx, e) == "" {
 			t.Errorf("statusPageErrorMessage(%v) empty", e)
 		}
