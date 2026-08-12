@@ -411,6 +411,57 @@ func TestSetQuotaNegative(t *testing.T) {
 	}
 }
 
+// TestSetQuotas — P2-8: SetQuotas применяет любое подмножество из четырёх
+// квот одним UPDATE. Непереданные (nil) поля не трогает, а на невалидном
+// значении не применяет ничего (в отличие от цикла отдельных Set*Quota,
+// который мог оставить квоты частично изменёнными на сбое посреди цикла).
+func TestSetQuotas(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "quotas-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "quotas-org", "Quotas Org", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// Меняем только два поля из четырёх — остальные два должны остаться
+	// дефолтными (event=1_000_000 задан CreateOrg, tx/metric/profile=0).
+	event, metric := int64(700), int64(200)
+	if err := svc.SetQuotas(ctx, o.ID, &event, nil, &metric, nil); err != nil {
+		t.Fatalf("SetQuotas(event, nil, metric, nil): %v", err)
+	}
+	got, err := svc.Get(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.EventQuota != 700 || got.MetricQuota != 200 || got.TransactionQuota != 0 || got.ProfileQuota != 0 {
+		t.Fatalf("Get after partial SetQuotas = %+v, want event=700 metric=200 tx=0(unchanged) profile=0(unchanged)", got)
+	}
+
+	// Невалидное значение (отрицательное) в одном из четырёх полей → ничего
+	// не применяется, даже прочие валидные поля того же вызова.
+	badTx := int64(-1)
+	newEvent := int64(999)
+	if err := svc.SetQuotas(ctx, o.ID, &newEvent, &badTx, nil, nil); !errors.Is(err, org.ErrInvalidQuota) {
+		t.Fatalf("SetQuotas with negative tx: got %v, want ErrInvalidQuota", err)
+	}
+	afterReject, err := svc.Get(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("Get after rejected SetQuotas: %v", err)
+	}
+	if afterReject.EventQuota != 700 {
+		t.Fatalf("Get after rejected SetQuotas = %+v, want event still 700 (nothing applied)", afterReject)
+	}
+
+	// Неизвестная организация → ErrNotFound.
+	if err := svc.SetQuotas(ctx, 999999, &event, nil, nil, nil); !errors.Is(err, org.ErrNotFound) {
+		t.Fatalf("SetQuotas(unknown org): got %v, want ErrNotFound", err)
+	}
+}
+
 func TestLastOwnerRace(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)

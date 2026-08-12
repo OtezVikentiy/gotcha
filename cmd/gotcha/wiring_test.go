@@ -105,6 +105,65 @@ func TestSetupLoggingAcceptsKnownLevels(t *testing.T) {
 	}
 }
 
+// TestAutoMaxBufferBytesSafeUnderHeapCeiling: находка P0-1 — дефолтный
+// docker-compose.yml (mem_limit 1g, GOTCHA_MAX_BUFFER_BYTES не задан) даёт
+// потолок кучи 819 МиБ (0.8×1024 МиБ), а пять буферов-«единиц» по flat
+// defaultMaxBufBytes=256 МиБ (событие+SpanWriter×2+метрика+профиль) суммарно
+// весят 1.25 ГиБ — больше потолка. Авто-дефолт обязан вывести per-writer-cap,
+// при котором сумма пяти единиц укладывается в потолок с запасом.
+func TestAutoMaxBufferBytesSafeUnderHeapCeiling(t *testing.T) {
+	memLimit1g := int64(1024 << 20)
+	heapCeiling := int64(float64(memLimit1g) * 0.8) // как memlimit.heapTarget
+
+	perWriterCap := autoMaxBufferBytes(heapCeiling)
+	if perWriterCap <= 0 {
+		t.Fatalf("autoMaxBufferBytes(%d) = %d, хочу положительный per-writer-cap", heapCeiling, perWriterCap)
+	}
+	const flatDefault = 256 << 20
+	if perWriterCap >= flatDefault {
+		t.Fatalf("autoMaxBufferBytes(%d) = %d >= flat-дефолт %d — авто-дефолт не уже flat, "+
+			"находка не закрыта", heapCeiling, perWriterCap, flatDefault)
+	}
+	sum := perWriterCap * 5 // event(1) + SpanWriter(2) + metric(1) + profile(1)
+	if sum > heapCeiling {
+		t.Fatalf("5 единиц по %d = %d байт превышают потолок кучи %d — дефолтная поставка всё ещё может OOM",
+			perWriterCap, sum, heapCeiling)
+	}
+}
+
+// TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault: bare-metal без
+// cgroup (memlimit вернул ErrNoLimit → applyMemoryLimit вернул 0) не должен
+// менять поведение — это не регресс, а прежний flat-дефолт пакета-писателя.
+func TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault(t *testing.T) {
+	for _, heapCeiling := range []int64{0, -1} {
+		if got := autoMaxBufferBytes(heapCeiling); got != 0 {
+			t.Errorf("autoMaxBufferBytes(%d) = %d, хочу 0 (сигнал «оставь flat-дефолт пакета»)", heapCeiling, got)
+		}
+	}
+}
+
+// TestEffectiveMaxBufferBytesRespectsExplicitOverride: явный
+// GOTCHA_MAX_BUFFER_BYTES обязан побеждать авто-дефолт в обе стороны — и
+// когда оператор просит больше, и когда меньше того, что вывел бы авто-режим.
+func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
+	const heapCeiling = 800 << 20
+	const explicit = 24 << 20 // как в docker-compose.small.yml
+	if got := effectiveMaxBufferBytes(explicit, heapCeiling); got != explicit {
+		t.Errorf("effectiveMaxBufferBytes(explicit=%d, heap=%d) = %d, явный GOTCHA_MAX_BUFFER_BYTES проигнорирован",
+			explicit, heapCeiling, got)
+	}
+	if got := effectiveMaxBufferBytes(explicit, 0); got != explicit {
+		t.Errorf("effectiveMaxBufferBytes(explicit=%d, heap=0) = %d, явный override не должен зависеть от лимита",
+			explicit, got)
+	}
+	if got, want := effectiveMaxBufferBytes(0, heapCeiling), autoMaxBufferBytes(heapCeiling); got != want {
+		t.Errorf("effectiveMaxBufferBytes(0, %d) = %d, хочу авто-дефолт %d", heapCeiling, got, want)
+	}
+	if got := effectiveMaxBufferBytes(0, 0); got != 0 {
+		t.Errorf("effectiveMaxBufferBytes(0, 0) = %d, хочу 0 (flat-дефолт пакета, не регресс)", got)
+	}
+}
+
 // TestVersionRequested: флаг версии распознаётся до любой инициализации —
 // `gotcha --version` обязан работать без баз и конфигурации.
 func TestVersionRequestedForms(t *testing.T) {

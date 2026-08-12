@@ -134,6 +134,50 @@ func registerWriterMetrics(r *selfmetrics.Registry, name string, w writerStats) 
 		"Failed batch inserts. The batch is retried, so this is not data loss by itself.", lbl, w.InsertFailures)
 }
 
+// autoBufferSafeShare — доля потолка кучи, отдаваемая СУММЕ всех писательских
+// буферов, когда per-writer-потолок выводится автоматически (см.
+// effectiveMaxBufferBytes). Остаток — запас на всё, что не буфер: HTTP-приём,
+// разбор JSON, клиент PostgreSQL, сам рантайм поверх GC-паузы.
+const autoBufferSafeShare = 0.6
+
+// autoBufferCapUnits — на сколько «единиц потолка» делится autoBufferSafeShare
+// потолка кучи. Писателей четыре (event, SpanWriter, metric, profile), но
+// SpanWriter применяет ОДИН per-writer-потолок к ДВУМ независимым буферам
+// (txBuf и spanBuf, см. SpanWriter.SetMaxBufferBytes) — в худшем случае оба
+// заполнены доверху одновременно, значит SpanWriter считается за 2 единицы:
+// event(1) + SpanWriter(2) + metric(1) + profile(1) = 5.
+const autoBufferCapUnits = 5
+
+// autoMaxBufferBytes выводит безопасный per-writer байтовый потолок буфера из
+// обнаруженного потолка кучи (heapLimitBytes — то, что вернул applyMemoryLimit,
+// 0 если лимит не обнаружен или GOMEMLIMIT не удалось вывести). Используется,
+// только когда оператор не задал GOTCHA_MAX_BUFFER_BYTES явно: тогда каждый из
+// пяти буферов-«единиц» брал бы flat defaultMaxBufBytes=256 МиБ пакета-писателя
+// (1.25 ГиБ суммарно) — больше heap-потолка на дефолтном docker-compose.yml
+// (mem_limit 1g → потолок кучи 819 МиБ), то есть дефолтная поставка могла
+// схватить OOM ядра при простое ClickHouse. Возвращает 0, если heapLimitBytes
+// <= 0 — вызывающий в этом случае оставляет прежний flat-дефолт пакета
+// (SetMaxBufferBytes(0) — no-op, регресса нет).
+func autoMaxBufferBytes(heapLimitBytes int64) int64 {
+	if heapLimitBytes <= 0 {
+		return 0
+	}
+	return int64(float64(heapLimitBytes) * autoBufferSafeShare / autoBufferCapUnits)
+}
+
+// effectiveMaxBufferBytes решает, какой per-writer байтовый потолок ставить
+// каждому из четырёх писателей. Явный GOTCHA_MAX_BUFFER_BYTES (cfgMaxBufferBytes
+// != 0) всегда побеждает — оператор, написавший число руками, имел в виду
+// именно его. Иначе — авто-дефолт от обнаруженного потолка кучи
+// (autoMaxBufferBytes); если и его вывести не из чего — 0, что для
+// SetMaxBufferBytes писателя означает «оставить дефолт пакета» (256 МиБ).
+func effectiveMaxBufferBytes(cfgMaxBufferBytes, heapLimitBytes int64) int64 {
+	if cfgMaxBufferBytes != 0 {
+		return cfgMaxBufferBytes
+	}
+	return autoMaxBufferBytes(heapLimitBytes)
+}
+
 // applyMemoryLimit приводит потолок кучи к лимиту контейнера и сообщает
 // результат. Отсутствие лимита — не ошибка: продукт не выдумывает потолок за
 // оператора, но и не молчит об этом.
@@ -520,7 +564,7 @@ func run() error {
 	if outbox != nil {
 		senders := map[string]notify.Sender{
 			alert.ChannelWebhook:  &notify.WebhookSender{AllowPrivate: cfg.SSRFAllowPrivateWebhook},
-			alert.ChannelTelegram: &notify.TelegramSender{BaseURL: cfg.TelegramAPIBase},
+			alert.ChannelTelegram: &notify.TelegramSender{BaseURL: cfg.TelegramAPIBase, AllowPrivate: cfg.SSRFAllowPrivateTelegram},
 		}
 		if emailSender != nil && emailSender.Configured() {
 			senders[alert.ChannelEmail] = emailSender
@@ -648,8 +692,19 @@ func run() error {
 	}
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
+		// maxBufBytes — per-writer байтовый потолок для всех четырёх писателей.
+		// GOTCHA_MAX_BUFFER_BYTES побеждает, если задан; иначе выводится из
+		// обнаруженного потолка кучи (memLimitBytes), чтобы дефолтная поставка
+		// без ручной настройки не могла сложить пять буферов в объём больше
+		// heap-потолка — см. effectiveMaxBufferBytes.
+		maxBufBytes := effectiveMaxBufferBytes(cfg.MaxBufferBytes, memLimitBytes)
+		if cfg.MaxBufferBytes == 0 && maxBufBytes > 0 {
+			slog.Info("writer buffer cap auto-derived from detected heap ceiling",
+				"bytes", maxBufBytes, "heap_ceiling_bytes", memLimitBytes)
+		}
+
 		batcher = event.NewBatcher(ch)
-		batcher.SetMaxBufferBytes(cfg.MaxBufferBytes)
+		batcher.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "events", batcher)
 		go batcher.Run()
 
@@ -657,21 +712,21 @@ func run() error {
 		// envelope-эндпойнтом, что и ошибки, и пишутся своим батчером
 		// (transactions + spans), независимым от батчера событий.
 		spanWriter = trace.NewSpanWriter(ch)
-		spanWriter.SetMaxBufferBytes(cfg.MaxBufferBytes)
+		spanWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "spans", spanWriter)
 		go spanWriter.Run()
 
 		// Метрики (этап 6) — третий приёмник ingest-контура: OTLP /v1/metrics
 		// пишет точки в metric_points своим батчером.
 		metricWriter = metric.NewWriter(ch)
-		metricWriter.SetMaxBufferBytes(cfg.MaxBufferBytes)
+		metricWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "metrics", metricWriter)
 		go metricWriter.Run()
 
 		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и
 		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
 		profileWriter = profile.NewWriter(ch)
-		profileWriter.SetMaxBufferBytes(cfg.MaxBufferBytes)
+		profileWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
@@ -727,6 +782,15 @@ func run() error {
 		scrubber.ScrubFreeText = cfg.ScrubFreeText // RA-L10: opt-in маскирование email в свободном тексте
 		scrubber.SetAllowKeys(cfg.ScrubAllowKeys)  // явные исключения из fail-closed denylist
 		pipeline.Scrub = scrubber
+		// Wave 3 (sdd-audit-2026-08-12): дропы САМОГО пайплайна (переполнение
+		// очереди, отказ PostgreSQL, паника обработчика — уже ПОСЛЕ того, как
+		// grant списал квоту) раньше не попадали в org_usage.dropped_* вовсе —
+		// их видел только process-local pipeline.Dropped(). ingestHandler.DropCounter
+		// ниже покрывает квотные отказы (до постановки в очередь); тот же orgSvc
+		// здесь закрывает вторую половину — Pipeline сам агрегирует per-org и
+		// сливает пачкой по тику (см. Pipeline.DropCounter), а не пишет в БД на
+		// каждый дроп.
+		pipeline.DropCounter = orgSvc
 		pipeline.Start()
 		ingestHandler = ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)

@@ -24,6 +24,10 @@ type ProjectSettings interface {
 // transaction_sample_rate на каждую транзакцию, и ходить за ним в PG каждый
 // раз незачем. Латентность применения новой настройки = TTL кеша (как у
 // KeyCache/OrgQuota). Промахи не кешируются.
+//
+// Как у KeyCache/OrgQuota, размер карты ограничен maxKeyCacheEntries: без
+// этого на инсталляции с очень большим числом проектов за долгий аптайм
+// запись жила бы вечно и карта росла бы без границ.
 type ProjectCache struct {
 	resolver ProjectResolver
 	ttl      time.Duration
@@ -62,7 +66,35 @@ func (c *ProjectCache) Resolve(ctx context.Context, projectID int64) (org.Projec
 		return org.Project{}, err
 	}
 	c.mu.Lock()
+	if len(c.entries) >= maxKeyCacheEntries {
+		c.evict(now)
+	}
 	c.entries[projectID] = projectEntry{project: p, expires: now.Add(c.ttl)}
 	c.mu.Unlock()
 	return p, nil
+}
+
+// evict освобождает место в кеше: сперва истёкшие записи (их потеря
+// бесплатна — следующий Resolve просто перечитает проект), затем десятая
+// часть произвольных, если истёкших не хватило. Вызывать под c.mu.
+func (c *ProjectCache) evict(now time.Time) {
+	for id, e := range c.entries {
+		if !e.expires.After(now) {
+			delete(c.entries, id)
+		}
+	}
+	if len(c.entries) < maxKeyCacheEntries {
+		return
+	}
+	drop := len(c.entries) / 10
+	if drop == 0 {
+		drop = 1
+	}
+	for id := range c.entries {
+		if drop == 0 {
+			break
+		}
+		delete(c.entries, id)
+		drop--
+	}
 }

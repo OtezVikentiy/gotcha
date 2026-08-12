@@ -127,6 +127,9 @@ func newStackTracing(t *testing.T, tracing bool) *stack {
 	}
 	pipeline.Perf = trace.NewIssueService(pool)
 	pipeline.Projects = projects
+	// Wave 3: тот же orgSvc, что у Handler.DropCounter ниже — как в проде
+	// (см. cmd/gotcha/main.go), чтобы стенд не расходился с реальной проводкой.
+	pipeline.DropCounter = orgSvc
 	pipeline.Start()
 	h := ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, 1<<20)
 	h.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)

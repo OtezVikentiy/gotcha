@@ -187,7 +187,7 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.enqueueTransactions(projectID, kept[:granted])
+	h.enqueueTransactions(projectID, key.OrgID, kept[:granted])
 	writeOTLPResponse(w, enc)
 }
 

@@ -132,11 +132,49 @@ type Pipeline struct {
 	closeMu sync.RWMutex
 	closed  bool
 
-	// dropped — потери по причинам. Раньше эти потери ТОЛЬКО логировались и
-	// никуда не считались: org_usage.dropped_* их не видел, поэтому в отчёте о
-	// потерях они не появлялись вовсе — оператор не мог узнать, что часть
-	// событий не доехала.
+	// dropped — потери по причинам. ПРОЦЕСС-ЛОКАЛЬНЫЙ счётчик для
+	// самотелеметрии (gotcha_pipeline_dropped_tasks_total): живёт, пока жив
+	// процесс, и ничего не знает про организацию задачи. Он и раньше
+	// существовал, но org_usage.dropped_* эти потери не видел вовсе — оператор
+	// не мог узнать, ЧЬИ события не доехали и сколько. Per-org учёт — отдельный
+	// путь, см. DropCounter/dropAgg ниже.
 	dropped map[DropReason]*atomic.Int64
+
+	// DropCounter — учёт дропов ПАЙПЛАЙНА (queue_full/queue_bytes/
+	// storage_error/panic/closed) per-org в org_usage.dropped_*; *org.Service
+	// ему удовлетворяет. nil (дефолт) — как раньше: только process-local
+	// dropped выше, без записи в БД.
+	//
+	// Это НЕ дублирует Handler.DropCounter: тот считает квотные отказы
+	// (envelope/OTLP-путь, ДО постановки в очередь), этот — потери самой
+	// очереди и обработки (ПОСЛЕ того, как квота уже списана). Точки жизненного
+	// цикла не пересекаются.
+	//
+	// Дропы идут ШТОРМОМ при перегрузке — синхронный UPSERT в PostgreSQL на
+	// каждый добил бы базу, которая и так деградирует (тот же org_usage, что
+	// под исключительной блокировкой строки списывает квоту, см.
+	// org.Service.checkAndCount). Поэтому Pipeline копит потери per-(org,kind)
+	// в памяти (dropAgg) и сливает пачкой по тику (см. runDropFlush) и на
+	// Close — а не пишет в БД на каждый дроп.
+	DropCounter DropCounter
+
+	dropAggMu sync.Mutex
+	// dropAgg — накопленные с прошлого флаша дропы по (orgID, kind).
+	dropAgg map[dropAggKey]int64
+
+	// dropFlushStop/dropFlushDone — управление фоновым флашем dropAgg; nil, пока
+	// Start() не запустила runDropFlush (запускает, только если DropCounter
+	// задан — иначе копить нечего и некуда сливать).
+	dropFlushStop chan struct{}
+	dropFlushDone chan struct{}
+}
+
+// dropAggKey — ключ агрегата дропов пайплайна: организация + класс задачи.
+// kind — dropKind из handler.go (dropEvent/dropTransaction); Pipeline не
+// видит дропы метрик/профилей — они идут мимо очереди (см. handler.go).
+type dropAggKey struct {
+	orgID int64
+	kind  dropKind
 }
 
 // DropReason — почему задача потеряна. Причина отделена от факта потери
@@ -183,6 +221,104 @@ func (p *Pipeline) countDropped(reason DropReason) {
 	}
 }
 
+// taskDropKind — класс дропа по типу задачи для per-org агрегации: событие
+// или транзакция. Pipeline не видит других классов (метрики/профили идут
+// мимо очереди, см. handler.go).
+func taskDropKind(t task) dropKind {
+	if t.tx != nil {
+		return dropTransaction
+	}
+	return dropEvent
+}
+
+// countDroppedOrg добавляет n к накопленному дропу (orgID, kind) между
+// флашами (см. Pipeline.dropAgg). orgID<=0 (задача не провела orgID) или
+// DropCounter==nil — no-op: атрибутировать некуда или некому.
+func (p *Pipeline) countDroppedOrg(orgID int64, kind dropKind, n int64) {
+	if p.DropCounter == nil || orgID <= 0 || n <= 0 {
+		return
+	}
+	p.dropAggMu.Lock()
+	p.dropAgg[dropAggKey{orgID: orgID, kind: kind}] += n
+	p.dropAggMu.Unlock()
+}
+
+// drainDropAgg забирает накопленное и обнуляет агрегат под тем же мьютексом,
+// что и countDroppedOrg — окно между флашами не теряет и не задваивает дропы.
+func (p *Pipeline) drainDropAgg() map[dropAggKey]int64 {
+	p.dropAggMu.Lock()
+	defer p.dropAggMu.Unlock()
+	if len(p.dropAgg) == 0 {
+		return nil
+	}
+	out := p.dropAgg
+	p.dropAgg = make(map[dropAggKey]int64, len(out))
+	return out
+}
+
+// dropFlushInterval — как часто пайплайн сливает накопленные per-org дропы в
+// org_usage. Крупнее, чем интервал Batcher/SpanWriter (5с, см.
+// event/batcher.go): тем важна свежесть данных в UI, а отчёту о потерях
+// секундная точность не нужна — важно лишь не потерять его насовсем. И
+// крупнее, чем нужно было бы для UPSERT под низкой нагрузкой — специально:
+// именно при шторме дропов (перегрузка) частый флаш добивал бы БД, которая и
+// так деградирует, — см. докблок Pipeline.DropCounter.
+const dropFlushInterval = 20 * time.Second
+
+// dropFlushTimeout — бюджет ОДНОЙ попытки флаша, отдельный от parent ctx: как
+// у Batcher.flushWithTimeout, тикер всегда зовёт с context.Background(), а
+// Close передаёт свой ctx — в обоих случаях один медленный UPSERT не должен
+// зависать дольше разумного.
+const dropFlushTimeout = 5 * time.Second
+
+// runDropFlush — цикл периодического флаша; запускается горутиной из Start(),
+// только если DropCounter задан. Завершается через Close.
+func (p *Pipeline) runDropFlush() {
+	defer close(p.dropFlushDone)
+	ticker := time.NewTicker(dropFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.dropFlushStop:
+			return
+		case <-ticker.C:
+			p.flushDropped(context.Background())
+		}
+	}
+}
+
+// flushDropped сливает накопленные per-org дропы в org_usage.dropped_* через
+// тот же DropCounter-интерфейс, что и Handler (см. handler.go countDrop) —
+// одна реализация (*org.Service), разные вызывающие и разный темп вызовов.
+// Best-effort, как и handler.countDrop: ошибка флаша логируется и не
+// ретраится — drainDropAgg уже забрал накопленное, поэтому неудачный флаш
+// теряет ровно это окно, а не блокирует приём или следующий флаш.
+func (p *Pipeline) flushDropped(parent context.Context) {
+	if p.DropCounter == nil {
+		return
+	}
+	agg := p.drainDropAgg()
+	if len(agg) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, dropFlushTimeout)
+	defer cancel()
+	month := time.Now().UTC()
+	for key, n := range agg {
+		var err error
+		switch key.kind {
+		case dropEvent:
+			err = p.DropCounter.IncDroppedEvents(ctx, key.orgID, month, n)
+		case dropTransaction:
+			err = p.DropCounter.IncDroppedTransactions(ctx, key.orgID, month, n)
+		}
+		if err != nil {
+			slog.Warn("ingest: pipeline drop flush failed, this window's count lost",
+				"org_id", key.orgID, "kind", key.kind, "n", n, "error", err)
+		}
+	}
+}
+
 // Dropped — сколько задач потеряно за время жизни процесса, всего.
 func (p *Pipeline) Dropped() int64 {
 	var total int64
@@ -214,8 +350,12 @@ func (p *Pipeline) QueueCap() int64 { return int64(cap(p.queue)) }
 // task — единица работы воркера: ЛИБО событие (ev), ЛИБО транзакция (tx).
 type task struct {
 	projectID int64
-	ev        *ParsedEvent
-	tx        *trace.Transaction
+	// orgID — организация задачи, для per-org учёта дропов (см.
+	// countDroppedOrg). Заполняется в Enqueue/EnqueueTransaction из аргумента
+	// вызывающего (handler знает key.OrgID из уже пройденной аутентификации).
+	orgID int64
+	ev    *ParsedEvent
+	tx    *trace.Transaction
 	// bytes — вес задачи, посчитанный при постановке. Хранится в самой
 	// задаче, чтобы возврат бюджета не зависел от того, что с полями сделала
 	// обработка (скрубер, например, укорачивает строки).
@@ -229,6 +369,7 @@ func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
 		queue:   make(chan task, 1000),
 		workers: 4,
 		dropped: newDropCounters(),
+		dropAgg: make(map[dropAggKey]int64),
 	}
 }
 
@@ -280,11 +421,56 @@ func taskBytes(t task) int64 {
 	}
 	if tx := t.tx; tx != nil {
 		n += len(tx.Name) + len(tx.TraceID) + len(tx.Environment)
+		for k, v := range tx.Tags {
+			n += len(k) + len(v)
+		}
 		for _, sp := range tx.Spans {
 			n += len(sp.Description) + len(sp.Op) + len(sp.SpanID) + len(sp.Status)
+			n += dataMapBytes(sp.Data)
 		}
 	}
 	return int64(n) + taskOverheadBytes
+}
+
+// dataMapBytes оценивает вес span.Data (map[string]any, «сырой JSON» из SDK) —
+// то самое поле, ради которого байтовый бюджет очереди и заведён (см.
+// taskBytes), но которое таскBytes раньше не считал вовсе. capDataMap
+// (transaction.go/otlp.go) ограничивает Data сверху 64 ключами по 64 руны и
+// строковые значения — 2000 рунами (maxDataValue), но НЕ трогает размер
+// нестроковых значений: вложенные map/slice из JSON-парсинга остаются как
+// есть, поэтому вес считается рекурсивно, а не константой на ключ.
+func dataMapBytes(m map[string]any) int {
+	n := 0
+	for k, v := range m {
+		n += len(k) + dataValueBytes(v)
+	}
+	return n
+}
+
+// dataValueBytes — вес одного значения span.Data. Конкретные типы после
+// encoding/json.Unmarshal в map[string]any: string, float64, bool, nil,
+// map[string]interface{}, []interface{} — остальные (не встречаются на этом
+// пути) оцениваются как 8 байт, по аналогии со стоимостью measurement'а в
+// txRowBytes.
+func dataValueBytes(v any) int {
+	switch val := v.(type) {
+	case string:
+		return len(val)
+	case map[string]interface{}:
+		n := 0
+		for k, vv := range val {
+			n += len(k) + dataValueBytes(vv)
+		}
+		return n
+	case []interface{}:
+		n := 0
+		for _, vv := range val {
+			n += dataValueBytes(vv)
+		}
+		return n
+	default:
+		return 8
+	}
 }
 
 // admit резервирует место под задачу. false — очередь уже держит столько,
@@ -322,6 +508,13 @@ func (p *Pipeline) Start() {
 			}
 		}()
 	}
+	// Флаш дропов запускается, только если есть DropCounter — иначе копить
+	// dropAgg некуда сливать, и тикер впустую просыпался бы всю жизнь процесса.
+	if p.DropCounter != nil {
+		p.dropFlushStop = make(chan struct{})
+		p.dropFlushDone = make(chan struct{})
+		go p.runDropFlush()
+	}
 }
 
 // processGuarded обрабатывает одну задачу под recover(). Паника в разборе
@@ -343,6 +536,7 @@ func (p *Pipeline) processGuarded(t task) {
 				traceID = t.tx.TraceID
 			}
 			p.countDropped(DropPanic)
+			p.countDroppedOrg(t.orgID, taskDropKind(t), 1)
 			slog.Error("ingest task panicked, item dropped",
 				"project_id", t.projectID, "event_id", eventID,
 				"trace_id", traceID, "panic", r)
@@ -355,19 +549,26 @@ func (p *Pipeline) processGuarded(t task) {
 // приём ошибок не должен вставать из-за медленной обработки. После Close
 // событие тоже дропается — send в закрытый канал иначе паникует, если
 // in-flight HTTP-хендлер зовёт Enqueue параллельно с drain'ом.
-func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
+//
+// orgID — организация задачи (handler знает key.OrgID из аутентификации,
+// сделанной выше по стеку); нужен только для per-org учёта дропов (см.
+// countDroppedOrg) — на сам приём не влияет. 0 у вызывающих, которым
+// атрибутировать некуда (в проде такого не бывает).
+func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
 	if p.closed {
 		p.countDropped(DropClosed)
+		p.countDroppedOrg(orgID, dropEvent, 1)
 		slog.Warn("ingest pipeline closed, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
 		return
 	}
-	t := task{projectID: projectID, ev: ev}
+	t := task{projectID: projectID, orgID: orgID, ev: ev}
 	t.bytes = taskBytes(t)
 	if !p.admit(t.bytes) {
 		p.countDropped(DropQueueBytes)
+		p.countDroppedOrg(orgID, dropEvent, 1)
 		slog.Warn("ingest queue byte budget exhausted, dropping event",
 			"project_id", projectID, "event_id", ev.EventID, "task_bytes", t.bytes)
 		return
@@ -377,6 +578,7 @@ func (p *Pipeline) Enqueue(projectID int64, ev *ParsedEvent) {
 	default:
 		p.release(t.bytes)
 		p.countDropped(DropQueueFull)
+		p.countDroppedOrg(orgID, dropEvent, 1)
 		slog.Warn("ingest queue full, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
 	}
@@ -390,20 +592,22 @@ func (p *Pipeline) TracingEnabled() bool {
 }
 
 // EnqueueTransaction — как Enqueue, но для транзакции: не блокирует, дропает
-// с warn-логом при полной очереди или после Close.
-func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
+// с warn-логом при полной очереди или после Close. orgID — см. докблок Enqueue.
+func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transaction) {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
 	if p.closed {
 		p.countDropped(DropClosed)
+		p.countDroppedOrg(orgID, dropTransaction, 1)
 		slog.Warn("ingest pipeline closed, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
 		return
 	}
-	t := task{projectID: projectID, tx: &tx}
+	t := task{projectID: projectID, orgID: orgID, tx: &tx}
 	t.bytes = taskBytes(t)
 	if !p.admit(t.bytes) {
 		p.countDropped(DropQueueBytes)
+		p.countDroppedOrg(orgID, dropTransaction, 1)
 		slog.Warn("ingest queue byte budget exhausted, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID, "task_bytes", t.bytes)
 		return
@@ -413,6 +617,7 @@ func (p *Pipeline) EnqueueTransaction(projectID int64, tx trace.Transaction) {
 	default:
 		p.release(t.bytes)
 		p.countDropped(DropQueueFull)
+		p.countDroppedOrg(orgID, dropTransaction, 1)
 		slog.Warn("ingest queue full, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
 	}
@@ -442,13 +647,31 @@ func (p *Pipeline) Close(ctx context.Context) error {
 		p.wg.Wait()
 		close(done)
 	}()
+	var drainErr error
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
 		slog.Warn("ingest pipeline drain timed out, remaining queue dropped")
-		return ctx.Err()
+		drainErr = ctx.Err()
 	}
+
+	// Финальный слив ПОСЛЕ дренажа очереди: воркеры дописали в dropAgg свои
+	// последние storage_error/panic-дропы, и это единственный шанс дать их
+	// увидеть org_usage — dropAgg живёт только в памяти процесса, который
+	// сейчас останавливается.
+	//
+	// СВОЙ context.Background(), а не ctx: на пути таймаута дренажа ctx уже
+	// Done(), и flushDropped (WithTimeout от НЕГО) отвалился бы немедленно —
+	// смысл финального флаша ровно в том, чтобы не потерять последнее окно, а
+	// унаследованный истёкший ctx его как раз терял. dropFlushTimeout внутри
+	// flushDropped и так ограничивает попытку, так что Close на happy-path не
+	// удлиняется дольше него.
+	if p.dropFlushStop != nil {
+		close(p.dropFlushStop)
+		<-p.dropFlushDone
+	}
+	p.flushDropped(context.Background())
+	return drainErr
 }
 
 func (p *Pipeline) process(t task) {
@@ -471,6 +694,20 @@ func (p *Pipeline) process(t task) {
 	// группировку. No-op при ScrubFreeText=false.
 	ev.Title = p.Scrub.ScrubMessage(ev.Title)
 
+	// arch P2-1 (2026-08-12): Upsert (PG times_seen++) идёт ДО batcher.Add (CH,
+	// ниже) по необходимости — res.IssueID из Upsert нужен для самой CH-строки
+	// события (event.Event.IssueID), так что порядок иначе не построить без
+	// двухфазной записи. Следствие: если CH-батч потом дропнется (переполнение
+	// батчера/деградация CH), issues.times_seen в PG окажется больше числа
+	// реально доехавших до CH событий issue — инвариант «times_seen == count(*)
+	// событий issue в CH» не держится в общем случае. Осознанный компромисс:
+	// телеметрия дропа событий (DropStorageError/countDropped) best-effort и не
+	// продана как точная бухгалтерия; дрейф ограничен размером окна деградации
+	// CH, а откат times_seen на дропе CH-батча потребовал бы либо синхронной
+	// записи в CH перед Upsert (теряет типобезопасность IssueID), либо
+	// компенсирующей транзакции PG на асинхронный дроп батча — оба дороже, чем
+	// стоит эта метрика. Не путать с DropStorageError выше — тот считает
+	// дропнутые ДО Upsert события и НЕ покрывает этот путь.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res, err := p.issues.Upsert(ctx,
@@ -480,6 +717,7 @@ func (p *Pipeline) process(t task) {
 		// очереди: событие не доехало, и молчащий счётчик отправлял оператора
 		// проверять SDK вместо базы.
 		p.countDropped(DropStorageError)
+		p.countDroppedOrg(t.orgID, dropEvent, 1) // process() обрабатывает только события (tx уходит через processTransaction)
 		slog.Error("issue upsert failed, event dropped",
 			"project_id", t.projectID, "event_id", ev.EventID, "error", err)
 		return

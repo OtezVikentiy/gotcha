@@ -495,10 +495,10 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			id = pe.EventID
 		}
 		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
-		h.pipeline.Enqueue(projectID, pe)
+		h.pipeline.Enqueue(projectID, key.OrgID, pe)
 	}
 	if txGranted > 0 {
-		h.enqueueTransactions(projectID, txSelected[:txGranted])
+		h.enqueueTransactions(projectID, key.OrgID, txSelected[:txGranted])
 	}
 	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
 	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
@@ -597,12 +597,13 @@ func (h *Handler) sampleTransactions(ctx context.Context, projectID int64, txs [
 	return kept
 }
 
-// enqueueTransactions отдаёт отобранное и оплаченное в пайплайн.
-func (h *Handler) enqueueTransactions(projectID int64, txs []trace.Transaction) {
+// enqueueTransactions отдаёт отобранное и оплаченное в пайплайн. orgID нужен
+// пайплайну только для per-org учёта дропов (см. Pipeline.DropCounter).
+func (h *Handler) enqueueTransactions(projectID, orgID int64, txs []trace.Transaction) {
 	for i := range txs {
 		tx := txs[i]
 		h.limitCardinality(projectID, &tx)
-		h.pipeline.EnqueueTransaction(projectID, tx)
+		h.pipeline.EnqueueTransaction(projectID, orgID, tx)
 	}
 }
 
@@ -686,7 +687,7 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed event")
 		return
 	}
-	h.pipeline.Enqueue(projectID, pe)
+	h.pipeline.Enqueue(projectID, key.OrgID, pe)
 	writeJSON(w, http.StatusOK, map[string]string{"id": pe.EventID})
 }
 

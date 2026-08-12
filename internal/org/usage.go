@@ -369,6 +369,38 @@ func (s *Service) SetTransactionQuota(ctx context.Context, orgID, quota int64) e
 	return nil
 }
 
+// SetQuotas атомарно применяет любое подмножество из четырёх квот организации
+// одним UPDATE (COALESCE оставляет непереданные поля нетронутыми): nil-поле —
+// эту квоту не трогаем, как и у отдельных Set*Quota ниже. В отличие от
+// последовательных вызовов Set*Quota в цикле, здесь либо применяются все
+// переданные поля, либо ни одно — сбой БД на третьем из четырёх Set*Quota-
+// вызовов не оставит квоты частично изменёнными. Используется формой настроек
+// организации, где за один POST может поменяться несколько квот сразу; сами
+// Set*Quota ниже остаются для точечных мест (bootstrap, тесты), где хватает
+// одной квоты.
+func (s *Service) SetQuotas(ctx context.Context, orgID int64, event, transaction, metric, profile *int64) error {
+	for _, v := range []*int64{event, transaction, metric, profile} {
+		if v != nil && *v < 0 {
+			return ErrInvalidQuota
+		}
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE organizations SET
+			event_quota = COALESCE($2, event_quota),
+			transaction_quota = COALESCE($3, transaction_quota),
+			metric_quota = COALESCE($4, metric_quota),
+			profile_quota = COALESCE($5, profile_quota)
+		WHERE id = $1`,
+		orgID, event, transaction, metric, profile)
+	if err != nil {
+		return fmt.Errorf("org: set quotas: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetQuota меняет месячную квоту событий организации. Quota >= 0 required
 // (0 means unlimited).
 func (s *Service) SetQuota(ctx context.Context, orgID, quota int64) error {
