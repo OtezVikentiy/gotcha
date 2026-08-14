@@ -99,6 +99,43 @@ func TestRedactExternalPayloadUnknownKind(t *testing.T) {
 	}
 }
 
+// TestRedactExternalPayloadShortensURLWhenAsked: нотифаер, у которого деталь
+// несёт сам адрес карточки (хосты — /projects/{id}/hosts/{имя}), кладёт в
+// payload "url_redacted"; редакция подставляет его и в url, и в тело. Само
+// поле — директива, а не вывод: наружу отдельной строкой оно не идёт.
+func TestRedactExternalPayloadShortensURLWhenAsked(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	out := notify.RedactExternalPayload(ctx, map[string]any{
+		"kind":         "host_alert_open",
+		"url":          "https://gotcha.example/projects/7/hosts/web-01",
+		"url_redacted": "https://gotcha.example/projects/7/hosts",
+	})
+	if out["url"] != "https://gotcha.example/projects/7/hosts" {
+		t.Errorf("url = %v, want сокращённую ссылку", out["url"])
+	}
+	if body, _ := out["body"].(string); strings.Contains(body, "web-01") {
+		t.Errorf("body несёт имя хоста внутри ссылки: %q", body)
+	}
+	if _, ok := out["url_redacted"]; ok {
+		t.Errorf("url_redacted не должен переживать редакцию отдельным полем: %+v", out)
+	}
+}
+
+// TestRedactExternalPayloadKeepsURLWithoutDirective: без url_redacted ссылка
+// остаётся прежней — поведение остальных нотифаеров не меняется.
+func TestRedactExternalPayloadKeepsURLWithoutDirective(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	out := notify.RedactExternalPayload(ctx, map[string]any{
+		"kind": "metric_alert_open", "url": "https://gotcha.example/metrics/1",
+	})
+	if out["url"] != "https://gotcha.example/metrics/1" {
+		t.Errorf("url = %v, want исходную ссылку", out["url"])
+	}
+	if body, _ := out["body"].(string); !strings.Contains(body, "https://gotcha.example/metrics/1") {
+		t.Errorf("body потерял ссылку: %q", body)
+	}
+}
+
 // TestRedactExternalPayloadDoesNotMutateInput гарантирует, что исходный
 // payload (уходящий в email/внутренние каналы) не портится.
 func TestRedactExternalPayloadDoesNotMutateInput(t *testing.T) {

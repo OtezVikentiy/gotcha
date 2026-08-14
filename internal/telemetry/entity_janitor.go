@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -122,6 +123,29 @@ var entityRules = []entityRule{
 	{table: "profile_regressions", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionProfiles},
 	// Инцидент метрики без своих точек — то же самое: срок метрик.
 	{table: "metric_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionMetrics},
+	// Хост без метрик за свой срок — то же самое: имя в списке хостов, для
+	// которого ClickHouse уже ничего не покажет. closedOnly нет намеренно, как
+	// у issues — «не молчал 24 часа» не значит «активная проблема», это просто
+	// хост, за которым нечего наблюдать; host_incidents хоста удаляются
+	// каскадом (hosts.id ON DELETE CASCADE).
+	//
+	// Открытый инцидент такой хост при этом не теряет молча: перед удалением
+	// батча срабатывает хук preDeleteHosts (см. PreDelete и host.Retirer) —
+	// он закрывает открытые инциденты и уведомляет о снятии хоста с
+	// наблюдения. Без хука молчащий сервер уносил бы каскадом собственный
+	// открытый инцидент «Тишина», то есть сообщение «сервер мёртв» исчезало бы
+	// само собой; с хуком у исчезновения есть событие, а реестр всё так же не
+	// растёт бесконечно. Провал хука отменяет удаление батча в этом проходе —
+	// хост дождётся следующего (см. purgeTable).
+	{table: "hosts", ageColumn: "last_seen", retention: retentionMetrics},
+	// Закрытый инцидент хоста — то же, что закрытый инцидент метрики: карточка
+	// покажет период, за который в ClickHouse точек уже нет. Своего правила у
+	// него до сих пор не было, а каскад от hosts спасает только тогда, когда
+	// хост удалён целиком: у ЖИВОГО сервера, регулярно пробивающего порог,
+	// host_incidents росли бы вечно. closedOnly, в отличие от правила hosts
+	// выше, обязателен — здесь строка удаляется сама по себе, и открытый
+	// инцидент описывает то, что происходит с хостом сейчас.
+	{table: "host_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionMetrics},
 }
 
 // EntityJanitor удаляет из PostgreSQL сущности, переживших срок хранения
@@ -141,11 +165,36 @@ type EntityJanitor struct {
 	// сущности, а не одним общим (см. entityRules).
 	Retention Retentions
 
+	// PreDelete — хуки «перед удалением батча», по имени таблицы правила.
+	// Пусто (обычный случай) — правило удаляет строки как раньше, одним
+	// оператором.
+	//
+	// Живут на экземпляре, а не полем entityRule, хотя логически принадлежат
+	// правилу: entityRules — package-level var, и хук, вписанный в неё из
+	// main.go, стал бы состоянием процесса, общим для всех яниторов разом (в
+	// том числе для тестов, которые гоняют их параллельно). Ключ — имя
+	// таблицы, потому что оно и есть идентификатор правила.
+	PreDelete map[string]PreDeleteHook
+
 	// Interval — период прохода; 0 означает defaultEntityJanitorInterval.
 	Interval time.Duration
 
 	purged atomic.Int64
 }
+
+// PreDeleteHook — что сделать с батчем строк ПЕРЕД тем, как их удалят.
+//
+// Существует ради одного случая: истёкший хост уносит каскадом свои открытые
+// инциденты, и «сервер мёртв» пропадало бы без единого события. Хук получает
+// идентификаторы уже выбранного батча и на этом же проходе успевает закрыть
+// инциденты и разослать уведомления (см. host.Retirer), после чего строки
+// удаляются.
+//
+// Ошибка отменяет удаление ИМЕННО этого батча в этом проходе: лучше оставить
+// хост на час до следующего прохода, чем удалить его, не сумев рассказать об
+// этом. Побочные действия хука обязаны быть безопасны к повтору — проход
+// повторится с тем же батчем.
+type PreDeleteHook func(ctx context.Context, ids []int64) error
 
 // Purged — сколько строк удалено за время жизни процесса. Для самотелеметрии:
 // у каждого исчезновения данных должно быть число, которое можно посмотреть.
@@ -247,6 +296,7 @@ func (j *EntityJanitor) Tick(ctx context.Context) (int64, error) {
 // *pgxpool.Conn: удаление батчами проверяется без базы, а сам проход — с ней.
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // purgeTable удаляет из одной таблицы всё, что старше срока, батчами.
@@ -254,6 +304,9 @@ func (j *EntityJanitor) purgeTable(ctx context.Context, conn execer, rule entity
 	where := rule.ageColumn + " < now() - make_interval(secs => $1)"
 	if rule.closedOnly != "" {
 		where = rule.closedOnly + " AND " + where
+	}
+	if hook := j.PreDelete[rule.table]; hook != nil {
+		return j.purgeTableHooked(ctx, conn, rule, where, cutoffSecs, hook)
 	}
 	// Имена таблиц и колонок берутся из entityRules — литералов в коде, а не из
 	// пользовательского ввода; срок хранения передаётся параметром.
@@ -274,6 +327,59 @@ func (j *EntityJanitor) purgeTable(ctx context.Context, conn execer, rule entity
 		}
 		// Между батчами уступаем: проход не должен монополизировать базу, по
 		// которой идёт приём.
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		default:
+		}
+	}
+}
+
+// purgeTableHooked — тот же проход батчами, но идентификаторы батча сначала
+// вычитываются, чтобы отдать их хуку, и только потом удаляются.
+//
+// Отдельная ветка, а не общий путь для всех правил: обычному правилу лишний
+// круг «выбрать — удалить» не нужен, а одним оператором строки выбираются и
+// удаляются в одном снимке, без окна между выбором и удалением.
+//
+// Здесь такое окно есть, и DELETE поэтому повторяет условие целиком, а не
+// удаляет по одним лишь id: за время работы хука хост мог ожить (last_seen
+// обновился приёмом), и удалять его уже нельзя. Инциденты ему при этом
+// закроют — но ровно то же сделал бы оценщик, увидев вернувшийся хост.
+func (j *EntityJanitor) purgeTableHooked(ctx context.Context, conn execer, rule entityRule, where string, cutoffSecs int, hook PreDeleteHook) (int64, error) {
+	selectStmt := fmt.Sprintf("SELECT id FROM %s WHERE %s LIMIT %d", rule.table, where, entityBatchSize)
+	deleteStmt := fmt.Sprintf("DELETE FROM %s WHERE id = ANY($2) AND %s", rule.table, where)
+
+	var total int64
+	for {
+		rows, err := conn.Query(ctx, selectStmt, cutoffSecs)
+		if err != nil {
+			return total, fmt.Errorf("telemetry: purge %s: select batch: %w", rule.table, err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return total, fmt.Errorf("telemetry: purge %s: collect batch: %w", rule.table, err)
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		if err := hook(ctx, ids); err != nil {
+			// Батч остаётся жить до следующего прохода: удалить строки, о
+			// которых не удалось сообщить, — ровно тот молчаливый исход,
+			// ради которого хук и заведён.
+			return total, fmt.Errorf("telemetry: purge %s: pre-delete hook: %w", rule.table, err)
+		}
+		tag, err := conn.Exec(ctx, deleteStmt, cutoffSecs, ids)
+		if err != nil {
+			return total, fmt.Errorf("telemetry: purge %s: %w", rule.table, err)
+		}
+		total += tag.RowsAffected()
+		// Выход — по размеру ВЫБОРКИ, а не по числу удалённых: удалить могло
+		// меньше (строка перестала подходить под условие, см. выше), и это не
+		// значит, что просроченных строк больше нет.
+		if len(ids) < entityBatchSize {
+			return total, nil
+		}
 		select {
 		case <-ctx.Done():
 			return total, ctx.Err()

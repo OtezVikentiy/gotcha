@@ -1,0 +1,23 @@
+package templates
+
+// LegendItem — один пункт легенды generic мульти-серийного графика: подпись
+// и CSS-класс свотча (legend-m1..legend-m8 у палитры multiSeriesMarkup, но
+// компонент не завязан именно на неё — подойдёт любой заранее объявленный в
+// app.css класс легенды, как legend-p50/legend-dns у существующих графиков).
+type LegendItem struct {
+	Label string
+	Class string
+}
+
+// chartLegend — переиспользуемая легенда графика: свотч + подпись на пункт,
+// в порядке items. Раньше легенда каждого графика была вписана в разметку
+// страницы литералом (monitordetail.templ, endpoint.templ) — воспроизводимо
+// для двух-четырёх зашитых рядов, но не для генерируемого набора до 8 серий,
+// где число и подписи пунктов заранее не известны.
+templ chartLegend(items []LegendItem) {
+	<p class="chart-legend">
+		for _, it := range items {
+			<span class={ "legend-item", it.Class }>{ it.Label }</span>
+		}
+	</p>
+}

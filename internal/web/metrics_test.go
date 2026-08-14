@@ -119,6 +119,60 @@ func TestWebMetricsList(t *testing.T) {
 	}
 }
 
+// TestWebMetricsListSystemFilter — метрики хостового коллектора (system.*)
+// затопили бы список метрик проекта после подключения хоста (T14–T16):
+// по умолчанию они скрыты за переключателем со счётчиком, ?system=1
+// показывает всё (§5.6 дизайна).
+func TestWebMetricsListSystemFilter(t *testing.T) {
+	s := newMetricsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "metrics-sys-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "ms-co", "MS Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "ms-proj", "MS Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	s.seedGauge(t, project.ID, "app.requests", "prod", 42, nil)
+	s.seedGauge(t, project.ID, "system.cpu.utilization", "prod", 0.3, nil)
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/metrics"
+
+	// По умолчанию: видна прикладная метрика, системная скрыта, есть
+	// переключатель со счётчиком скрытых (1).
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", base, resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "app.requests") {
+		t.Fatalf("list missing app metric: %s", body)
+	}
+	if strings.Contains(string(body), "system.cpu.utilization") {
+		t.Fatalf("system metric should be hidden by default: %s", body)
+	}
+	if !strings.Contains(string(body), "1") {
+		t.Fatalf("hidden count (1) not shown: %s", body)
+	}
+
+	// ?system=1: обе метрики видны.
+	resp = getWithCookie(t, s.srv, base+"?system=1", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?system=1 status = %d, want 200", base, resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "app.requests") {
+		t.Fatalf("list missing app metric with system=1: %s", body)
+	}
+	if !strings.Contains(string(body), "system.cpu.utilization") {
+		t.Fatalf("system metric not shown with system=1: %s", body)
+	}
+}
+
 func TestWebMetricsNilService(t *testing.T) {
 	s := newMetricsStack(t, false)
 	ctx := context.Background()

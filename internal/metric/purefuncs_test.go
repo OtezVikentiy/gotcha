@@ -56,18 +56,36 @@ func TestWorse(t *testing.T) {
 	}
 }
 
-// TestMatcherClause — пустой ключ фильтра не добавляет ни SQL, ни аргументов.
-func TestMatcherClause(t *testing.T) {
-	if matcherClause(LabelMatcher{}) != "" {
-		t.Error("пустой matcher должен давать пустой clause")
+// TestMatchersClause — пустой срез матчеров не добавляет ни SQL, ни
+// аргументов; N матчеров дают N AND-условий и 2N аргументов.
+func TestMatchersClause(t *testing.T) {
+	if matchersClause(nil) != "" {
+		t.Error("пустой срез матчеров должен давать пустой clause")
 	}
-	if matcherClause(LabelMatcher{Key: "host"}) == "" {
-		t.Error("непустой matcher должен давать clause")
+	if matchersClause([]LabelMatcher{{Key: "host"}}) == "" {
+		t.Error("непустой матчер должен давать clause")
 	}
-	if len(appendMatcherArgs(nil, LabelMatcher{})) != 0 {
-		t.Error("пустой matcher не должен добавлять args")
+	if got := matchersClause([]LabelMatcher{{Key: "state"}, {Key: "cpu"}}); got != " AND attributes[?] = ? AND attributes[?] = ?" {
+		t.Errorf("два матчера должны дать два AND-условия, got %q", got)
 	}
-	if got := appendMatcherArgs(nil, LabelMatcher{Key: "host", Value: "api-1"}); len(got) != 2 {
-		t.Errorf("непустой matcher должен добавить 2 арга, got %v", got)
+	if len(appendMatchersArgs(nil, nil)) != 0 {
+		t.Error("пустой срез матчеров не должен добавлять args")
+	}
+	if got := appendMatchersArgs(nil, []LabelMatcher{{Key: "host", Value: "api-1"}}); len(got) != 2 {
+		t.Errorf("один матчер должен добавить 2 арга, got %v", got)
+	}
+	if got := appendMatchersArgs(nil, []LabelMatcher{{Key: "state", Value: "used"}, {Key: "cpu", Value: "0"}}); len(got) != 4 {
+		t.Errorf("два матчера должны добавить 4 арга, got %v", got)
+	}
+}
+
+// TestCompactMatchers — пустой Key отфильтровывается, непустой остаётся.
+func TestCompactMatchers(t *testing.T) {
+	if got := compactMatchers(nil); len(got) != 0 {
+		t.Errorf("compactMatchers(nil) = %v, want пусто", got)
+	}
+	got := compactMatchers([]LabelMatcher{{Key: "", Value: "x"}, {Key: "host", Value: "api-1"}, {}})
+	if len(got) != 1 || got[0].Key != "host" {
+		t.Errorf("compactMatchers = %+v, want один матчер host", got)
 	}
 }

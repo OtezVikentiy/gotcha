@@ -255,6 +255,27 @@ func TestLatencyPhaseTokens(t *testing.T) {
 	}
 }
 
+// TestSeriesPaletteTokens: палитра категориальных цветов серий метрик (--series-m1..8)
+// обязана давать ≥3:1 к --surface в обеих темах, чтобы линии были различимы и без
+// цветового зрения, и не сливались с фоном (см. №83). Без этого сторожа следующая
+// правка палитры может тихо откатить контраст — правило не видно в комментариях.
+func TestSeriesPaletteTokens(t *testing.T) {
+	const want = 3.0
+	order := []string{"series-m1", "series-m2", "series-m3", "series-m4",
+		"series-m5", "series-m6", "series-m7", "series-m8"}
+	for _, theme := range []string{"dark", "light"} {
+		tokens := themeTokens(t, theme)
+		for _, name := range order {
+			if tokens[name] == "" {
+				t.Fatalf("[%s] нет токена --%s", theme, name)
+			}
+			if got := contrast(tokens[name], tokens["surface"]); got < want {
+				t.Errorf("[%s] --%s на --surface = %.2f:1, нужно ≥%.1f:1", theme, name, got, want)
+			}
+		}
+	}
+}
+
 // TestFlashLeavesAccessibilityTree: автоскрытая плашка обязана уходить из
 // дерева доступности, а не только с глаз: opacity:0 оставлял кнопку закрытия в
 // порядке табуляции.

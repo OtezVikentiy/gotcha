@@ -42,6 +42,10 @@ var externalSafeKeys = map[string]struct{}{
 	"channel_kind": {},
 	"target":       {},
 	// Вид алерта и ссылка на карточку — безопасный обезличенный минимум.
+	// Если у нотифаера сам АДРЕС карточки несёт деталь (у хостов это имя
+	// машины), он кладёт в payload "url_redacted" — укороченную ссылку, которой
+	// RedactExternalPayload заменяет "url"; в белый список она не входит (см.
+	// RedactExternalPayload).
 	"kind": {},
 	"url":  {},
 	// Числовые идентификаторы и счётчики: маршрутные, не несут текста ошибки.
@@ -87,6 +91,11 @@ var redactedKindKeys = map[string]string{
 	"up":           "notify.redacted.kind.up",
 	"ssl_expiring": "notify.redacted.kind.ssl_expiring",
 	"reminder":     "notify.redacted.kind.reminder",
+	// встроенные инциденты хоста (host.HostNotifier)
+	"host_alert_open":     "notify.redacted.kind.host_alert_open",
+	"host_alert_resolved": "notify.redacted.kind.host_alert_resolved",
+	// снятие хоста с наблюдения по ретенции (host.Retirer)
+	"host_retired": "notify.redacted.kind.host_retired",
 }
 
 // redactedKindLabel — подпись вида алерта для обезличенной темы/тела.
@@ -113,6 +122,15 @@ func redactedKindLabel(ctx context.Context, kind string) string {
 // инстанса: ctx обязан нести локаль уведомлений (i18n.WithLocale с
 // GOTCHA_LOCALE — тот же ctx, которым нотифаер строил исходные тексты).
 // Исходный payload не мутируется — возвращается новая map.
+//
+// Необязательное поле payload "url_redacted" — сокращённая ссылка на случай,
+// когда деталь несёт сам АДРЕС карточки. Есть — уходит наружу и в out["url"],
+// и в тело вместо полной; нет — поведение прежнее. Так решается случай хостов:
+// карточка адресуется именем машины (/projects/{id}/hosts/{имя}), id-адресации
+// у хоста нет, и при выключенных деталях имя уезжало бы в Telegram внутри
+// разрешённого "url" — теперь нотифаер кладёт рядом ссылку на список хостов.
+// В externalSafeKeys "url_redacted" не входит намеренно: это директива для
+// редакции, а не поле вывода, и отдельной строкой наружу оно не идёт.
 func RedactExternalPayload(ctx context.Context, payload map[string]any) map[string]any {
 	out := make(map[string]any, len(externalSafeKeys))
 	for k, v := range payload {
@@ -122,6 +140,10 @@ func RedactExternalPayload(ctx context.Context, payload map[string]any) map[stri
 	}
 	kind, _ := out["kind"].(string)
 	url, _ := out["url"].(string)
+	if short, _ := payload["url_redacted"].(string); short != "" {
+		url = short
+		out["url"] = short
+	}
 	label := redactedKindLabel(ctx, kind)
 	out["subject"] = i18n.Tf(ctx, "notify.redacted.subject", "kind", label)
 	out["body"] = i18n.Tf(ctx, "notify.redacted.body", "kind", label, "url", url)

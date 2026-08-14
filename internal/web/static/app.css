@@ -51,6 +51,20 @@
 	--phase-tcp: #6770f7;
 	--phase-tls: #9d81ff;
 	--phase-ttfb: #b1a7d9;
+	/* Палитра generic мульти-серийного графика (до 8 рядов, §5.3 карточки
+	   хоста): 8 разведённых по тону цветов, каждый ≥3:1 к --surface —
+	   тот же порог, что и у фаз задержки выше. Тона нарочно обходят зоны
+	   семантических статусных токенов (danger ~0-25°, warn/partial
+	   ~24-59°, good ~116-152°): линия «просто одного из 8 рядов» не должна
+	   на глаз читаться как «ошибка» или «успех». */
+	--series-m1: #4a67d9;
+	--series-m2: #8157db;
+	--series-m3: #b72dd2;
+	--series-m4: #ca2b92;
+	--series-m5: #1b7e69;
+	--series-m6: #227aa0;
+	--series-m7: #3e821c;
+	--series-m8: #5d7a1a;
 	--danger: #f0574a;
 	--info: #3d7bff;
 	--link: #79aaff;
@@ -132,6 +146,14 @@
 	--phase-tcp: #4b52b4;
 	--phase-tls: #7e65d0;
 	--phase-ttfb: #9282c9;
+	--series-m1: #516cd6;
+	--series-m2: #7c51d6;
+	--series-m3: #c051d6;
+	--series-m4: #d651a8;
+	--series-m5: #24997f;
+	--series-m6: #2d92be;
+	--series-m7: #4d9d25;
+	--series-m8: #739523;
 	--danger: #c3202b;
 	--info: #295ee0;
 	--link: #295ee0;
@@ -180,6 +202,14 @@
 		--phase-tcp: #4b52b4;
 		--phase-tls: #7e65d0;
 		--phase-ttfb: #9282c9;
+		--series-m1: #516cd6;
+		--series-m2: #7c51d6;
+		--series-m3: #c051d6;
+		--series-m4: #d651a8;
+		--series-m5: #24997f;
+		--series-m6: #2d92be;
+		--series-m7: #4d9d25;
+		--series-m8: #739523;
 		--danger: #c3202b;
 		--info: #295ee0;
 		--link: #295ee0;
@@ -1781,6 +1811,24 @@ th {
 	font-size: var(--fs-sm);
 	color: var(--text-dim);
 }
+/* .copy-preview — видимое содержимое блока копирования (см. copyBlock,
+   copyblock.templ): своя строка под кнопкой (flex-basis:100%), а не сосед
+   справа. Переносим по словам, а не прокручиваем: горизонтальный скролл
+   внутри <pre> клавиатуре недоступен (та же причина, по которой остальные
+   скролл-контейнеры продукта заведены через @scrollRegion), и глобальное
+   `pre { overflow-x: auto }` здесь пришлось бы перебивать. */
+.copy-preview {
+	flex-basis: 100%;
+	margin: 0;
+	padding: 10px 12px;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-size: var(--fs-sm);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	overflow-x: visible;
+}
 
 /* .tags парен с .data-table: таблица тегов — это узкий список ключ/значение,
    и растягивать её на всю ширину незачем. Значение моноширинное, как и
@@ -2134,6 +2182,56 @@ th {
 }
 .monitor-chart {
 	margin-bottom: 16px;
+}
+
+/* Карточка хоста (/projects/{id}/hosts/{name}, §5.3 дизайна A1): семь
+   графиков (CPU/RAM/диск-занятость/диск-IO/сеть/load/процессы) в адаптивной
+   сетке, открытые и недавние инциденты, кнопка удаления. .host-detail сам
+   несёт только .monitor-meta отступ ниже — раскладку страницы даёт @layout
+   и вложенные .card/.data-table, как у .monitor-detail/.metric-detail. */
+.host-detail .monitor-meta {
+	margin-bottom: 12px;
+}
+.host-settings-form > button[type="submit"] {
+	/* Кнопка «Сохранить» — прямой сосед последнего fieldset'а без своего
+	   вертикального margin: без отступа она прилипала к блоку «Тишина». */
+	margin-top: 16px;
+}
+.host-charts {
+	/* Графики хоста — во всю ширину, друг под другом: на плотной сетке из
+	   пяти колонок оси и подписи были нечитаемы. Одна колонка + широкий
+	   аспект SVG (960×210) даёт крупные читаемые графики. */
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	margin: 16px 0;
+}
+.host-chart-card {
+	/* Без min-width:0 широкий viewBox SVG-графика растягивал бы карточку
+	   шире контейнера — флекс-айтем по умолчанию не сжимается меньше
+	   content-размера. */
+	min-width: 0;
+}
+.host-incidents-open,
+.host-incidents-recent {
+	margin: 16px 0;
+}
+.host-incident-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.host-incident-open {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+.host-actions {
+	margin: 16px 0;
 }
 .latency-chart {
 	display: block;
@@ -3034,6 +3132,20 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    порогами. p50-синий + p95-фиолетовый — та же бренд-пара, что в градиенте. */
 .latency-chart .series-p95 { stroke: #7c5cff; }
 
+/* Generic мульти-серийный график (multiSeriesMarkup, до 8 рядов): цвет
+   линии — из --series-m1..8 (см. токены в :root, разведены под TestLatency-
+   PhaseTokens-подобный порог ≥3:1 к --surface). Заливки под линией нет —
+   восемь наложенных area дали бы мутное пятно, а не читаемые ряды (см.
+   комментарий у writeLineWithArea в multiSeriesMarkup). */
+.metric-chart .series-m1 { stroke: var(--series-m1); }
+.metric-chart .series-m2 { stroke: var(--series-m2); }
+.metric-chart .series-m3 { stroke: var(--series-m3); }
+.metric-chart .series-m4 { stroke: var(--series-m4); }
+.metric-chart .series-m5 { stroke: var(--series-m5); }
+.metric-chart .series-m6 { stroke: var(--series-m6); }
+.metric-chart .series-m7 { stroke: var(--series-m7); }
+.metric-chart .series-m8 { stroke: var(--series-m8); }
+
 /* Фазы запроса — секвенция по бренд-градиенту #3d7bff→#7c5cff. Снизу вверх =
    порядок во времени (DNS→TCP→TLS→TTFB), тёмный низ → светлый верх: цвет сам
    кодирует последовательность фаз, а не набор произвольных категорий. Каждый
@@ -3054,28 +3166,38 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 
    Селектор идёт по классу chart-vb<ширина>, который проставляет сам генератор
    (svgRoot): новый график получает нужный кегль по построению, а не по памяти
-   автора. Значения для 1200 = значения для 720 × 1200/720. Порядок правил
-   строго по возрастанию min-width — они перекрывают друг друга. */
+   автора. Значения для N = значения для 720 × N/720 (1200 — графики частоты и
+   перцентилей, 960 — графики карточки хоста). Порядок правил строго по
+   возрастанию min-width — они перекрывают друг друга.
+
+   Полноту набора ширин держит сторож TestChartViewBoxFontSizeRules
+   (css_chart_vb_test.go): ширина графика меняется в Go — тест краснеет, а не
+   подписи молча уезжают в фолбэк --fs-xs на телефоне. */
 .chart-vb720 text { font-size: 34px; }
+.chart-vb960 text { font-size: 45px; }
 .chart-vb1200 text { font-size: 57px; }
 
 @media (min-width: 700px) {
 	.chart-vb720 text { font-size: 15px; }
+	.chart-vb960 text { font-size: 20px; }
 	.chart-vb1200 text { font-size: 25px; }
 }
 
 @media (min-width: 1000px) {
 	.chart-vb720 text { font-size: 13px; }
+	.chart-vb960 text { font-size: 17px; }
 	.chart-vb1200 text { font-size: 22px; }
 }
 
 @media (min-width: 1300px) {
 	.chart-vb720 text { font-size: 10px; }
+	.chart-vb960 text { font-size: 13px; }
 	.chart-vb1200 text { font-size: 17px; }
 }
 
 @media (min-width: 1700px) {
 	.chart-vb720 text { font-size: 8px; }
+	.chart-vb960 text { font-size: 11px; }
 	.chart-vb1200 text { font-size: 13px; }
 }
 
@@ -3595,7 +3717,12 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    разного цвета без подписи неразличимы по смыслу. */
 .chart-legend {
 	display: flex;
+	flex-wrap: wrap;
+	/* gap идёт ПЕРЕД row-gap: шорткат сбрасывает оба направления, и в обратном
+	   порядке он возвращал межстрочный зазор к 16px. Столбцы 16px, строки 4px:
+	   перенесённая строка легенды не должна отрываться от графика. */
 	gap: 16px;
+	row-gap: 4px;
 	margin: 0 0 8px;
 	font-size: var(--fs-sm);
 	color: var(--text-dim);
@@ -3614,6 +3741,20 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 }
 .legend-p50::before { background: var(--accent); }
 .legend-p95::before { background: #7c5cff; }
+
+/* Свотчи generic мульти-серийной легенды (chartLegend, до 8 рядов) — те же
+   токены --series-m1..8, что и у линий графика (.metric-chart .series-m*):
+   рассинхрон графика с легендой (№74 у фаз задержки) здесь исключён по
+   построению, обе стороны читают один токен. Штрих, не квадрат — свотч
+   изображает ЛИНИЮ, как у p50/p95, а не заливку фазы. */
+.legend-m1::before { background: var(--series-m1); }
+.legend-m2::before { background: var(--series-m2); }
+.legend-m3::before { background: var(--series-m3); }
+.legend-m4::before { background: var(--series-m4); }
+.legend-m5::before { background: var(--series-m5); }
+.legend-m6::before { background: var(--series-m6); }
+.legend-m7::before { background: var(--series-m7); }
+.legend-m8::before { background: var(--series-m8); }
 
 /* Свотчи фаз задержки (DNS/TCP/TLS/TTFB) = цвета сегментов столбика
    (.latency-chart .seg-*). Стоят ПОСЛЕ .legend-item::before, иначе его

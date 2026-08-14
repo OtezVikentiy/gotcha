@@ -19,6 +19,9 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/7/web-vitals", "performance"},
 		{"/traces/abc", "performance"},
 		{"/projects/7/metrics/alerts", "metrics"},
+		{"/projects/5/hosts", "hosts"},
+		{"/projects/5/hosts/settings", "hosts"},
+		{"/projects/5/hosts/web-1", "hosts"},
 		{"/monitors/3", "uptime"},
 		{"/projects/7/alerts", "alerts"},
 		{"/orgs/5/teams", "org"},
@@ -49,6 +52,9 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/performance", "nav.transactions"},
 		{"/projects/7/metrics", "nav.metrics"},
 		{"/projects/7/metrics/alerts", "nav.metric_alerts"},
+		{"/projects/5/hosts", "nav.hosts"},
+		{"/projects/5/hosts/web-1", "nav.hosts"},
+		{"/projects/5/hosts/settings", "nav.host_thresholds"},
 		{"/monitors/3", "nav.monitors"},
 		{"/projects/7/incidents", "nav.incidents"},
 		{"/projects/7/alerts", "nav.alerts"},
@@ -317,6 +323,17 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 		t.Errorf("uptime/зритель: len = %d, want 2 (только monitors+incidents), got %+v", len(got), got)
 	}
 
+	// hosts area: host_thresholds — доступен оператору, не зрителю; сам
+	// список хостов виден обоим.
+	operator.Area, operator.Path = "hosts", "/projects/7/hosts"
+	viewer.Area, viewer.Path = "hosts", "/projects/7/hosts"
+	if got := Subsections(operator); len(got) != 2 {
+		t.Errorf("hosts/оператор: len = %d, want 2 (hosts + host_thresholds), got %+v", len(got), got)
+	}
+	if got := Subsections(viewer); len(got) != 1 {
+		t.Errorf("hosts/зритель: len = %d, want 1 (только hosts), got %+v", len(got), got)
+	}
+
 	// alerts area: вся область гейтится целиком.
 	operator.Area, operator.Path = "alerts", "/projects/7/alerts"
 	viewer.Area, viewer.Path = "alerts", "/projects/7/alerts"
@@ -361,10 +378,10 @@ func TestAreas(t *testing.T) {
 		CanOperate: true,
 	}
 	areas := Areas(s)
-	if len(areas) != 7 {
-		t.Fatalf("Areas() len = %d, want 7 (5 rail + docs + org)", len(areas))
+	if len(areas) != 8 {
+		t.Fatalf("Areas() len = %d, want 8 (6 rail + docs + org)", len(areas))
 	}
-	wantIDs := []string{"issues", "performance", "metrics", "uptime", "alerts", "docs", "org"}
+	wantIDs := []string{"issues", "performance", "metrics", "hosts", "uptime", "alerts", "docs", "org"}
 	for i, a := range areas {
 		if a.ID != wantIDs[i] {
 			t.Errorf("areas[%d].ID = %q, want %q", i, a.ID, wantIDs[i])
@@ -575,6 +592,14 @@ func TestProjectSwitchHref(t *testing.T) {
 	}
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/performance" {
 		t.Errorf("performance → %q, want /projects/2/performance", got)
+	}
+	// hosts: Subsections области непустой при любом CanOperate (пункт
+	// «Хосты» виден всем с доступом к проекту, в отличие от alerts, чья
+	// область целиком схлопывается для не-оператора) — переключатель может
+	// безопасно остаться в разделе хостов, а не падать в issues-фолбэк.
+	shell.Area = "hosts"
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/hosts" {
+		t.Errorf("hosts → %q, want /projects/2/hosts", got)
 	}
 	shell.Area = "uptime"
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/monitors" {

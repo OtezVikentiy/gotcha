@@ -1,6 +1,7 @@
 package docs_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -59,6 +60,33 @@ func TestSlugifyTransliterates(t *testing.T) {
 	for in, want := range cases {
 		if got := docs.SlugifyForTest(in); got != want {
 			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestInPageAnchorLinksResolve: каждая ссылка вида [текст](#якорь) внутри
+// страницы обязана указывать на существующий id заголовка.
+//
+// Якоря кириллических заголовков ТРАНСЛИТЕРИРУЮТСЯ (см. slugify), а не
+// повторяют текст заголовка, — и написанная «по смыслу» ссылка
+// `(#удаление-и-автоматическая-очистка)` уезжает в percent-encoding и не ведёт
+// никуда. Молча: markdown-ссылка на несуществующий якорь — не ошибка сборки, и
+// автор правки замечает её, только если сам щёлкнет по ней в браузере.
+// Проверка идёт по ВСЕМ страницам обеих локалей, а не по списку известных.
+func TestInPageAnchorLinksResolve(t *testing.T) {
+	anchorLink := regexp.MustCompile(`href="#([^"]+)"`)
+	for _, locale := range []string{"ru", "en"} {
+		for _, p := range docs.Pages(locale) {
+			html, _, ok := docs.Render(locale, p.Slug)
+			if !ok {
+				t.Fatalf("нет страницы %s/%s", locale, p.Slug)
+			}
+			for _, m := range anchorLink.FindAllStringSubmatch(html, -1) {
+				if !strings.Contains(html, `id="`+m[1]+`"`) {
+					t.Errorf("%s/%s: ссылка на якорь #%s, а заголовка с таким id на странице нет",
+						locale, p.Slug, m[1])
+				}
+			}
 		}
 	}
 }

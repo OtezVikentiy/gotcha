@@ -120,6 +120,7 @@ var railAreas = []struct {
 	{"issues", "bug", "nav.issues"},
 	{"performance", "zap", "nav.performance"},
 	{"metrics", "chart", "nav.metrics"},
+	{"hosts", "server", "nav.hosts"},
 	{"uptime", "activity", "nav.uptime"},
 	{"alerts", "bell", "nav.alerts"},
 }
@@ -159,6 +160,8 @@ func AreaForPath(path string) string {
 					return "performance"
 				case "metrics":
 					return "metrics"
+				case "hosts":
+					return "hosts"
 				case "monitors", "incidents", "maintenance", "statuspages":
 					return "uptime"
 				case "alerts":
@@ -207,6 +210,11 @@ func BackLabelKey(rawPath string) string {
 					return "nav.metric_alerts"
 				}
 				return "nav.metrics"
+			case "hosts":
+				if len(parts) >= 3 && parts[2] == "settings" {
+					return "nav.host_thresholds"
+				}
+				return "nav.hosts"
 			case "monitors":
 				return "nav.monitors"
 			case "incidents":
@@ -283,6 +291,19 @@ func Subsections(s Shell) []NavItem {
 		if s.CanOperate {
 			items = append(items,
 				NavItem{LabelKey: "nav.metric_alerts", Href: "/projects/" + effID + "/metrics/alerts"},
+			)
+		}
+	case "hosts":
+		items = []NavItem{
+			{LabelKey: "nav.hosts", Href: "/projects/" + effID + "/hosts"},
+		}
+		// Пороги хостов — та же граница CanOperate, что у остальных
+		// мутирующих подразделов (metric_alerts, maintenance, status_pages
+		// выше): просмотр списка хостов открыт всем с доступом к проекту,
+		// настройка порогов — только оператору мониторинга.
+		if s.CanOperate {
+			items = append(items,
+				NavItem{LabelKey: "nav.host_thresholds", Href: "/projects/" + effID + "/hosts/settings"},
 			)
 		}
 	case "uptime":
@@ -505,7 +526,7 @@ func firstSubsectionHref(s Shell, area string) string {
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,
-		"uptime": true,
+		"hosts": true, "uptime": true,
 	}
 	if perProject[s.Area] {
 		target := s

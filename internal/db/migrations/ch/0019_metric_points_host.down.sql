@@ -1,0 +1,1 @@
+ALTER TABLE metric_points DROP COLUMN IF EXISTS host;

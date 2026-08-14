@@ -1,0 +1,1128 @@
+package web_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web"
+)
+
+type hostsStack struct {
+	pool      *pgxpool.Pool
+	ch        driver.Conn
+	srv       *httptest.Server
+	h         *web.Handler
+	org       *org.Service
+	auth      *auth.Service
+	hosts     *host.Store
+	incidents *host.IncidentService
+	settings  *host.SettingsService
+}
+
+// fakeHostForgetter реализует web.HostForgetter без реального host.Toucher —
+// web-тесту hostDelete важен только факт вызова Forget(projectID, name)
+// после удаления, не поведение троттлера (это внутренняя логика host.Toucher,
+// покрытая internal/host/touch_test.go).
+type fakeHostForgetter struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeHostForgetter) Forget(projectID int64, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, strconv.FormatInt(projectID, 10)+":"+name)
+}
+
+func (f *fakeHostForgetter) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// newHostsStack поднимает мигрированные PG+CH и Handler, как newMetricsStack
+// (metrics_test.go) — но дополнительно проводит Hosts/HostIncidents/
+// HostSettings, как это делает cmd/gotcha/main.go всегда вместе с Metrics.
+func newHostsStack(t *testing.T, wireMetrics bool) *hostsStack {
+	t.Helper()
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
+	hostsStore := host.NewStore(pool)
+	hostIncidents := host.NewIncidentService(pool)
+	hostSettings := host.NewSettingsService(pool)
+	if wireMetrics {
+		h.Metrics = metric.NewQuery(ch)
+		h.Hosts = hostsStore
+		h.HostIncidents = hostIncidents
+		h.HostSettings = hostSettings
+	}
+	h.Register(mux)
+	return &hostsStack{
+		pool: pool, ch: ch, srv: srv, h: h, org: orgSvc, auth: authSvc,
+		hosts: hostsStore, incidents: hostIncidents, settings: hostSettings,
+	}
+}
+
+// seedGaugeHost — точка метрики-gauge с host-атрибуцией (как seedGaugeHost в
+// internal/metric — неэкспортируемая копия для web_test, который не может её
+// импортировать).
+func (s *hostsStack) seedGaugeHost(t *testing.T, projectID int64, name, hostName string, ts time.Time, val float64, attrs map[string]string) {
+	t.Helper()
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	if err := s.ch.Exec(context.Background(), `
+		INSERT INTO metric_points (project_id, name, type, unit, service, environment, host, attributes, ts, value, count, bucket_counts, explicit_bounds, monotonic, temporality)
+		VALUES (?, ?, 'gauge', '1', 'api', 'prod', ?, ?, ?, ?, 0, [], [], 0, '')`,
+		projectID, name, hostName, attrs, ts, val); err != nil {
+		t.Fatalf("seed gauge host: %v", err)
+	}
+}
+
+// setHostLastSeen перематывает last_seen хоста напрямую в PG (Store не даёт
+// такой ручки — в проде last_seen двигает только Toucher/ingest) — нужно,
+// чтобы детерминированно смоделировать «тихий» хост в тесте.
+func (s *hostsStack) setHostLastSeen(t *testing.T, projectID int64, name string, ts time.Time) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(),
+		"UPDATE hosts SET last_seen = $1 WHERE project_id = $2 AND name = $3", ts, projectID, name); err != nil {
+		t.Fatalf("set last_seen: %v", err)
+	}
+}
+
+func TestWebHostsList(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "h-co", "H Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "h-proj", "H Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	key, err := s.org.CreateKey(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	now := time.Now().UTC()
+
+	// web-ok: свежий, без инцидентов — все метрики есть.
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-ok"}); err != nil {
+		t.Fatalf("upsert web-ok: %v", err)
+	}
+	s.seedGaugeHost(t, project.ID, "system.cpu.utilization", "web-ok", now.Add(-time.Minute), 0.20, map[string]string{"state": "idle", "cpu": "0"})
+	s.seedGaugeHost(t, project.ID, "system.memory.utilization", "web-ok", now.Add(-time.Minute), 0.55, map[string]string{"state": "used"})
+	s.seedGaugeHost(t, project.ID, "system.filesystem.utilization", "web-ok", now.Add(-time.Minute), 0.30, map[string]string{"mountpoint": "/"})
+	s.seedGaugeHost(t, project.ID, "system.cpu.load_average.5m", "web-ok", now.Add(-time.Minute), 1.5, nil)
+	s.seedGaugeHost(t, project.ID, "system.cpu.logical.count", "web-ok", now.Add(-time.Minute), 3, nil)
+
+	// web-disk: открытый инцидент диска — статус-бейдж вида "disk".
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-disk"}); err != nil {
+		t.Fatalf("upsert web-disk: %v", err)
+	}
+	diskHost, found, err := s.hosts.Get(ctx, project.ID, "web-disk")
+	if err != nil || !found {
+		t.Fatalf("get web-disk: found=%v err=%v", found, err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, diskHost.ID, "disk", 0.95, "/"); err != nil {
+		t.Fatalf("open disk incident: %v", err)
+	}
+
+	// web-quiet: last_seen старше порога тишины, без инцидентов.
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-quiet"}); err != nil {
+		t.Fatalf("upsert web-quiet: %v", err)
+	}
+	if err := s.settings.Save(ctx, project.ID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	s.setHostLastSeen(t, project.ID, "web-quiet", now.Add(-10*time.Minute))
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	for _, name := range []string{"web-ok", "web-disk", "web-quiet"} {
+		if !strings.Contains(text, name) {
+			t.Errorf("список не содержит хост %q: %s", name, text)
+		}
+	}
+	// Значения метрик web-ok (CPU busy = 1-0.20 = 0.80, RAM 0.55, диск 0.30,
+	// load/core = 1.5/3 = 0.50).
+	for _, want := range []string{"80%", "55%", "30%", "0.50"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("список не содержит значение %q: %s", want, text)
+		}
+	}
+	// Статус-бейджи: ok у web-ok, вид инцидента у web-disk, "тихий" у web-quiet.
+	if !strings.Contains(text, "Норма") {
+		t.Errorf("нет бейджа «Норма» (web-ok): %s", text)
+	}
+	if !strings.Contains(text, "Диск") {
+		t.Errorf("нет бейджа вида инцидента «Диск» (web-disk): %s", text)
+	}
+	if !strings.Contains(text, "Тихий") {
+		t.Errorf("нет бейджа «Тихий» (web-quiet): %s", text)
+	}
+	// P2-11: конфиг коллектора доступен и с НЕПУСТОГО списка (подключение
+	// второго сервера), а не только из онбординга пустого состояния.
+	if !strings.Contains(text, "Bearer "+key.PublicKey) {
+		t.Errorf("непустой список без конфига коллектора (нет Bearer с ключом проекта): %s", text)
+	}
+	// P1-1: конфиг виден глазами, а не только «за кнопкой» — проверить
+	// подставленные адрес и ключ можно, ничего не копируя.
+	if !strings.Contains(text, `<pre class="copy-preview">`) {
+		t.Errorf("конфиг коллектора не отрисован видимым блоком: %s", text)
+	}
+
+	// Чужой (не член организации) → 404.
+	_, outsider := orgSettingsRegister(t, s.auth, "hosts-outsider@example.com")
+	resp = getWithCookie(t, s.srv, base, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebHostsSilentBadgeConsistentAcrossSources — регрессия ревью T14
+// (находка 2): хост, тихий по факту открытого incident kind="silent"
+// (host.Evaluator уже тикнул), и хост, тихий только по last_seen (evaluator
+// ещё не тикнул), обязаны получить ОДИН И ТОТ ЖЕ бейдж «Тихий» — не
+// «Тишина» (тот текст означает вид ОТКРЫТОГО инцидента среди «проблемных»,
+// см. hosts.kind.silent). Разные тексты для одного и того же состояния и
+// были бы мерцанием бейджа на тике оценщика без изменения сути.
+func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-silentmix-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hsm-co", "HSM Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hsm-proj", "HSM Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	now := time.Now().UTC()
+
+	// web-silent-incident: last_seen СВЕЖИЙ, но есть открытый incident
+	// kind="silent" (как будто host.Evaluator уже успел его открыть на
+	// предыдущем тике, до того как хост снова "ожил").
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-silent-incident"}); err != nil {
+		t.Fatalf("upsert web-silent-incident: %v", err)
+	}
+	incidentHost, found, err := s.hosts.Get(ctx, project.ID, "web-silent-incident")
+	if err != nil || !found {
+		t.Fatalf("get web-silent-incident: found=%v err=%v", found, err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, incidentHost.ID, "silent", 0, ""); err != nil {
+		t.Fatalf("open silent incident: %v", err)
+	}
+
+	// web-silent-lastseen: тихий ТОЛЬКО по last_seen, без единого инцидента
+	// (evaluator ещё не тикнул).
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-silent-lastseen"}); err != nil {
+		t.Fatalf("upsert web-silent-lastseen: %v", err)
+	}
+	if err := s.settings.Save(ctx, project.ID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	s.setHostLastSeen(t, project.ID, "web-silent-lastseen", now.Add(-10*time.Minute))
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if got := strings.Count(text, "Тихий"); got != 2 {
+		t.Errorf("бейдж «Тихий» встречается %d раз(а), want 2 (оба хоста в одном тире): %s", got, text)
+	}
+	// "Тишина" — текст ВИДА проблемного инцидента (hosts.kind.silent),
+	// появляется, только если kind="silent" по ошибке попал в OpenKinds
+	// (тир "problem"). Его не должно быть вовсе — обе тихих строки не
+	// содержат бейджа "problem".
+	if strings.Contains(text, "Тишина") {
+		t.Errorf("бейдж «Тишина» (тир problem) не должен появляться — silent сворачивается в один тир: %s", text)
+	}
+}
+
+func TestWebHostsListNilMetrics(t *testing.T) {
+	s := newHostsStack(t, false)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-nil-owner@example.com")
+	o, _ := s.org.CreateOrg(ctx, "hn-co", "HN Co", ownerID)
+	project, _ := s.org.CreateProject(ctx, o.ID, "hn-proj", "HN Proj", "go")
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("nil Metrics status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebHostsListNilHostsStore — регрессия ревью T14 (находка 1): Metrics
+// проставлен, а Hosts/HostIncidents/HostSettings — нет. Инвариант «main.go
+// всегда проставляет их вместе с Metrics» на практике уже нарушен другими
+// тестовыми стендами (shell_operate_e2e_test.go, authz_behavior_test.go
+// вооружают только h.Metrics) — без собственного nil-гейта в hostsList
+// авторизованный участник получил бы панику на h.Hosts.List(nil), а не 404.
+func TestWebHostsListNilHostsStore(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
+	h.Metrics = metric.NewQuery(ch) // Hosts/HostIncidents/HostSettings нарочно оставлены nil
+	h.Register(mux)
+
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "hosts-nilstore-owner@example.com")
+	o, err := orgSvc.CreateOrg(ctx, "hns-co", "HNS Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := orgSvc.CreateProject(ctx, o.ID, "hns-proj", "HNS Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, srv, base, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Hosts==nil status = %d, want 404 (not panic)", resp.StatusCode)
+	}
+}
+
+func TestWebHostsListEmptyState(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-empty-owner@example.com")
+	o, _ := s.org.CreateOrg(ctx, "he-co", "HE Co", ownerID)
+	project, _ := s.org.CreateProject(ctx, o.ID, "he-proj", "HE Proj", "go")
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", base, resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Хостов пока нет") {
+		t.Fatalf("пустой список без онбординг-заголовка: %s", body)
+	}
+}
+
+// TestWebHostsSettingsBeatsHostNamedSettings — специфичность маршрута
+// ServeMux (Go 1.22): литеральный сегмент "settings" выигрывает у {name}
+// независимо от порядка регистрации, даже когда в проекте реально есть хост
+// с именем "settings" — по /hosts/settings всегда отвечает
+// hostSettingsPage, не hostDetail (см. web.go, комментарий у маршрутов).
+func TestWebHostsSettingsBeatsHostNamedSettings(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-settings-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hs-co", "HS Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hs-proj", "HS Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"settings"}); err != nil {
+		t.Fatalf("upsert host named settings: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	// hostSettingsPage отвечает страницей формы порогов (маркер — корневой
+	// класс "host-settings" и заголовок nav.host_thresholds, «Пороги
+	// хостов»); hostDetail отвечает карточкой хоста с графиками
+	// (data-chart="..."). Если бы {name} выиграл специфичность, тело
+	// содержало бы маркеры карточки, а не формы настроек.
+	text := string(body)
+	if !strings.Contains(text, `class="host-settings"`) || !strings.Contains(text, "Пороги хостов") {
+		t.Fatalf("тело не похоже на страницу настроек порогов (settings-хендлер): %s", text)
+	}
+	if strings.Contains(text, `data-chart="`) {
+		t.Fatalf("тело содержит маркеры карточки хоста (hostDetail) — {name} выиграл специфичность у settings: %s", text)
+	}
+}
+
+// TestWebHostSettingsGate — не-член организации получает 404 и на GET, и
+// на POST (requireProjectOperator — существования проекта не палит).
+func TestWebHostSettingsGate(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, _ := orgSettingsRegister(t, s.auth, "hset-gate-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hsg-co", "HSG Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hsg-proj", "HSG Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	_, outsider := orgSettingsRegister(t, s.auth, "hset-gate-outsider@example.com")
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	resp := getWithCookie(t, s.srv, path, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider GET status = %d, want 404", resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, path, url.Values{"disk_threshold": {"50"}}, s.srv.URL, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider POST status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebHostSettingsSaveFlow — GET отдаёт дефолты (строки настроек ещё
+// нет); POST без Origin → 403 (denyCrossOrigin), настройки не тронуты;
+// валидный POST (диск 50%, silent 4 мин) → 303 на ту же страницу, Get
+// отдаёт сохранённые 0.50/240s; POST с silent=2 (< MinSilentAfter=180s=3мин)
+// → 422 с FormState-ошибкой, введённое значение "2" возвращается в форму
+// (не потеряно), настройки в БД не изменены последним невалидным POST.
+func TestWebHostSettingsSaveFlow(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hset-save-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hss-co", "HSS Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hss-proj", "HSS Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+
+	// GET — дефолты без сохранённой строки (host.DefaultSettings: 90/90/2.0/5мин).
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+	for _, want := range []string{`value="90"`, `value="2"`, `value="5"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("GET без сохранённых настроек не отдаёт дефолт %q: %s", want, text)
+		}
+	}
+
+	validForm := url.Values{
+		"disk_enabled": {"1"}, "disk_threshold": {"50"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"4"},
+	}
+
+	// Без Origin → 403, настройки НЕ сохраняются.
+	resp = postForm(t, s.srv, path, validForm, "", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
+	}
+	if got, err := s.settings.Get(ctx, project.ID); err != nil || got.DiskThreshold != host.DefaultSettings().DiskThreshold {
+		t.Fatalf("настройки изменились без Origin: %+v, err=%v", got, err)
+	}
+
+	// Валидный POST → 303 на страницу настроек, значения сохранены.
+	resp = postForm(t, s.srv, path, validForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("valid POST status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != path {
+		t.Fatalf("Location = %q, want %q", loc, path)
+	}
+	// P1-5: сохранение сообщает о себе — до правки редирект возвращал форму с
+	// теми же значениями и выглядел как «ничего не произошло».
+	if !hasFlashCookie(resp, "ok|flash.saved") {
+		t.Errorf("после сохранения порогов нет flash-cookie: %v", resp.Header.Values("Set-Cookie"))
+	}
+	saved, err := s.settings.Get(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("get saved settings: %v", err)
+	}
+	if saved.DiskThreshold != 0.50 {
+		t.Errorf("DiskThreshold = %v, want 0.50", saved.DiskThreshold)
+	}
+	if saved.SilentAfter != 240*time.Second {
+		t.Errorf("SilentAfter = %v, want 240s", saved.SilentAfter)
+	}
+
+	// silent=2 мин (< 3 мин минимум) → 422, FormState возвращает введённое
+	// значение, сохранённые настройки не подменяются мусором.
+	invalidForm := url.Values{
+		"disk_enabled": {"1"}, "disk_threshold": {"50"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"2"},
+	}
+	resp = postForm(t, s.srv, path, invalidForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid silent POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	text = string(body)
+	if !strings.Contains(text, `value="2"`) {
+		t.Errorf("422-ответ не вернул введённое значение silent_after=2 в форму: %s", text)
+	}
+	if !strings.Contains(text, "3 минут") {
+		t.Errorf("422-ответ без сообщения о границах тишины: %s", text)
+	}
+	stillSaved, err := s.settings.Get(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("get settings after invalid POST: %v", err)
+	}
+	if stillSaved.SilentAfter != 240*time.Second {
+		t.Errorf("невалидный POST изменил сохранённый SilentAfter: %v, want 240s (предыдущее валидное значение)", stillSaved.SilentAfter)
+	}
+
+	// Верхней границы у поля раньше не было: 10^12 минут переполняли и
+	// time.Duration, и колонку int4 — пользователь получал 500-ю на опечатке
+	// вместо 422 с подсказкой.
+	overflowForm := url.Values{
+		"disk_enabled": {"1"}, "disk_threshold": {"50"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"1000000000000"},
+	}
+	resp = postForm(t, s.srv, path, overflowForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("огромный silent_after status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	afterOverflow, err := s.settings.Get(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("get settings after overflow POST: %v", err)
+	}
+	if afterOverflow.SilentAfter != 240*time.Second {
+		t.Errorf("POST с переполнением изменил сохранённый SilentAfter: %v, want 240s", afterOverflow.SilentAfter)
+	}
+}
+
+// TestWebHostSettingsSaveRejectsNaNInf — ревью T16 (Important): strconv.
+// ParseFloat принимает "NaN"/"Inf" без ошибки, а host.Validate сравнивает
+// порог с границами через </<=/> — сравнение с NaN всегда false в обе
+// стороны, поэтому такой порог тихо проходил бы Validate и сохранялся в
+// БД (Postgres double precision и CHECK(load_threshold > 0) тоже принимают
+// NaN/Infinity), после чего оценщик host.Evaluator никогда бы не срабатывал.
+// disk_threshold=NaN и (отдельным POST) load_threshold=Inf обязаны получить
+// 422 с FormState, а НЕ подменить ранее сохранённое валидное значение.
+func TestWebHostSettingsSaveRejectsNaNInf(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hset-naninf-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hsni-co", "HSNI Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hsni-proj", "HSNI Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	// Известное валидное состояние в БД — POST с NaN/Inf не должен его тронуть.
+	baseline := host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.60,
+		MemoryEnabled: true, MemoryThreshold: 0.70,
+		LoadEnabled: true, LoadThreshold: 1.5,
+		SilentEnabled: true, SilentAfter: 6 * time.Minute,
+	}
+	if err := s.settings.Save(ctx, project.ID, baseline); err != nil {
+		t.Fatalf("save baseline settings: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	base := url.Values{
+		"disk_enabled": {"1"}, "disk_threshold": {"60"},
+		"memory_enabled": {"1"}, "memory_threshold": {"70"},
+		"load_enabled": {"1"}, "load_threshold": {"1.5"},
+		"silent_enabled": {"1"}, "silent_after": {"6"},
+	}
+
+	naNForm := url.Values{}
+	for k, v := range base {
+		naNForm[k] = v
+	}
+	naNForm.Set("disk_threshold", "NaN")
+
+	resp := postForm(t, s.srv, path, naNForm, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("disk_threshold=NaN status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `value="NaN"`) {
+		t.Errorf("422-ответ не вернул введённое значение disk_threshold=NaN в форму: %s", body)
+	}
+	got, err := s.settings.Get(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("get settings after NaN POST: %v", err)
+	}
+	if got.DiskThreshold != baseline.DiskThreshold {
+		t.Errorf("NaN POST подменил сохранённый DiskThreshold: %v, want %v (baseline)", got.DiskThreshold, baseline.DiskThreshold)
+	}
+
+	infForm := url.Values{}
+	for k, v := range base {
+		infForm[k] = v
+	}
+	infForm.Set("load_threshold", "Inf")
+
+	resp = postForm(t, s.srv, path, infForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("load_threshold=Inf status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `value="Inf"`) {
+		t.Errorf("422-ответ не вернул введённое значение load_threshold=Inf в форму: %s", body)
+	}
+	got, err = s.settings.Get(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("get settings after Inf POST: %v", err)
+	}
+	if got.LoadThreshold != baseline.LoadThreshold {
+		t.Errorf("Inf POST подменил сохранённый LoadThreshold: %v, want %v (baseline)", got.LoadThreshold, baseline.LoadThreshold)
+	}
+}
+
+// TestWebHostsListStatusSurvivesManyClosedIncidents — ревью I3: список хостов
+// сворачивал открытые виды из «последних N инцидентов проекта ЛЮБОГО статуса»
+// с лимитом 500. В проекте, где закрытых инцидентов накопилось больше лимита,
+// открытый в выборку не попадал вовсе — хост с живой проблемой показывался
+// спокойным. Здесь закрытых заведомо больше лимита и все они СВЕЖЕЕ открытого.
+func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-manyinc-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hmi-co", "HMI Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hmi-proj", "HMI Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-01"}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+	hst, ok, err := s.hosts.Get(ctx, project.ID, "web-01")
+	if err != nil || !ok {
+		t.Fatalf("get host: ok=%v err=%v", ok, err)
+	}
+
+	// Открытый инцидент — САМЫЙ СТАРЫЙ из всех.
+	open, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "")
+	if err != nil {
+		t.Fatalf("open disk incident: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		"UPDATE host_incidents SET started_at = now() - interval '1 day' WHERE id = $1", open.ID); err != nil {
+		t.Fatalf("состарить открытый инцидент: %v", err)
+	}
+	// 600 закрытых инцидентов свежее открытого — больше прежнего лимита в 500.
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, started_at, resolved_at)
+		SELECT $1, $2, 'load', 'resolved', now() - make_interval(secs => g), now()
+		FROM generate_series(1, 600) AS g`, project.ID, hst.ID); err != nil {
+		t.Fatalf("наполнить закрытыми инцидентами: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(project.ID, 10)+"/hosts", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET списка status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "badge-danger") {
+		t.Errorf("открытый инцидент потерялся за 600 закрытыми — хост с живой проблемой показан спокойным: %s", body)
+	}
+}
+
+// TestWebHostSettingsSaveResolvesDisabledKindIncidents — ревью I2: выключение
+// порога должно иметь обратную силу.
+//
+// Оценщик выключенный вид пропускает целиком, ручного закрытия инцидента хоста
+// в интерфейсе нет — до правки оператор, выключивший шумный порог, оставался с
+// вечно красным бейджем «Диск» на списке хостов и не мог его снять ничем.
+// Проверяем оба направления: инцидент выключенного вида закрыт, инцидент
+// оставшегося включённым — нет.
+func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hset-disable-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hsd-co", "HSD Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hsd-proj", "HSD Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-01"}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+	hst, ok, err := s.hosts.Get(ctx, project.ID, "web-01")
+	if err != nil || !ok {
+		t.Fatalf("get host: ok=%v err=%v", ok, err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "/snap/core"); err != nil {
+		t.Fatalf("open disk incident: %v", err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "memory", 0.95, ""); err != nil {
+		t.Fatalf("open memory incident: %v", err)
+	}
+
+	// Список хостов до правки настроек — хост «проблемный».
+	listPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, listPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "badge-danger") {
+		t.Fatalf("до выключения порога на списке нет проблемного бейджа: %s", body)
+	}
+
+	// Выключаем ТОЛЬКО диск, остальные пороги остаются включёнными.
+	path := listPath + "/settings"
+	form := url.Values{
+		"disk_threshold": {"90"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"5"},
+	}
+	resp = postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST настроек status = %d, want 303", resp.StatusCode)
+	}
+
+	if _, stillOpen, err := s.incidents.OpenFor(ctx, hst.ID, "disk"); err != nil || stillOpen {
+		t.Errorf("инцидент выключенного порога «Диск» остался открытым: open=%v err=%v", stillOpen, err)
+	}
+	if _, stillOpen, err := s.incidents.OpenFor(ctx, hst.ID, "memory"); err != nil || !stillOpen {
+		t.Errorf("закрыт инцидент порога «Память», который остался включённым: open=%v err=%v", stillOpen, err)
+	}
+
+	// Закрытый инцидент диска действительно закрыт, с моментом закрытия.
+	all, err := s.incidents.ListByProject(ctx, project.ID, 10)
+	if err != nil {
+		t.Fatalf("list incidents: %v", err)
+	}
+	for _, in := range all {
+		if in.Kind != "disk" {
+			continue
+		}
+		if in.Status != "resolved" || in.ResolvedAt == nil {
+			t.Errorf("disk-инцидент: status=%q resolved_at=%v, want resolved + момент закрытия", in.Status, in.ResolvedAt)
+		}
+		if in.NotifiedClose {
+			t.Errorf("закрытие по выключению порога отправило уведомление (notified_close=true) — это шум о действии самого оператора")
+		}
+	}
+}
+
+// TestWebHostsListEmptyStateOnboardingConfig — пустой список хостов с
+// активным публичным ключом проекта показывает готовый конфиг коллектора
+// (endpoint+Bearer) и кнопку копирования (copy.js контракт).
+func TestWebHostsListEmptyStateOnboardingConfig(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-onboard-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hob-co", "HOB Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hob-proj", "HOB Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	key, err := s.org.CreateKey(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, "endpoint: "+s.srv.URL) {
+		t.Errorf("нет endpoint в конфиге онбординга: %s", text)
+	}
+	// В HTML-выводе кавычки внутри textarea экранированы (&#34;) — это
+	// корректный текстовый узел, браузер декодирует его обратно в "Bearer
+	// <ключ>" при чтении value; сырую (неэкранированную) строку конфига
+	// проверяет TestCollectorConfig (hosts_test.go), здесь важно, что сам
+	// ключ проекта попал в блок.
+	if !strings.Contains(text, "Bearer "+key.PublicKey) {
+		t.Errorf("нет Bearer-заголовка с публичным ключом проекта: %s", text)
+	}
+	if !strings.Contains(text, `data-copy-format="txt"`) {
+		t.Errorf("нет кнопки копирования конфига (copy.js контракт): %s", text)
+	}
+	// Видимый <pre> рядом с кнопкой (UX-аудит A1, P1-1): скрытая textarea
+	// aria-hidden, то есть до него онбординг был слеп и для скринридера, и
+	// для глаза — проверить подставленные endpoint/ключ было нечем.
+	if !strings.Contains(text, `<pre class="copy-preview">`) {
+		t.Errorf("конфиг коллектора не отрисован видимым блоком: %s", text)
+	}
+}
+
+// TestWebHostDetail — GET /projects/{id}/hosts/{name}: 200 с маркерами всех
+// семи графиков (§5.3) и блоком открытых инцидентов; имя хоста с пробелом и
+// кириллицей (URL-escaped) разбирается корректно; несуществующий хост и
+// хост чужого проекта (не член организации) → 404.
+func TestWebHostDetail(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hostdetail-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hd-co", "HD Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hd-proj", "HD Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Имя с пробелом и кириллицей — {name} должно URL-экранироваться в ссылке
+	// (hostDetailPath) и корректно разбираться r.PathValue обратно.
+	name := "веб сервер 1"
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{name}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+	hst, found, err := s.hosts.Get(ctx, project.ID, name)
+	if err != nil || !found {
+		t.Fatalf("get host: found=%v err=%v", found, err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.95, "/var"); err != nil {
+		t.Fatalf("open disk incident: %v", err)
+	}
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	path := base + "/" + url.PathEscape(name)
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	text := string(body)
+	for _, chart := range []string{"cpu", "mem", "disk_usage", "disk_io", "net", "load", "proc"} {
+		marker := `data-chart="` + chart + `"`
+		if !strings.Contains(text, marker) {
+			t.Errorf("нет маркера графика %q: %s", marker, text)
+		}
+	}
+	// Открытый инцидент диска — виден в блоке открытых инцидентов.
+	if !strings.Contains(text, "Диск") {
+		t.Errorf("нет блока открытых инцидентов (вид «Диск»): %s", text)
+	}
+	// P1-3: значение инцидента печатается юнитом ВИДА порога (host.ValueLabel),
+	// а не сырым числом: диск 0.95 — это «95.0%», как и в списке хостов.
+	if !strings.Contains(text, "95.0%") {
+		t.Errorf("значение инцидента диска не в процентах: %s", text)
+	}
+	if strings.Contains(text, ">0.95<") {
+		t.Errorf("значение инцидента осталось сырой долей: %s", text)
+	}
+	// P2-1: у хоста БЕЗ истории инцидентов пустое состояние — подсказка
+	// строкой, как у блока открытых инцидентов, а не emptyState: его <h3>
+	// печатался тем же ключом, что <h2> секции, и заголовок «Последние
+	// инциденты» шёл дважды подряд. (У хоста выше история непуста, и второе
+	// вхождение там законно — это aria-label скролл-области таблицы.)
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"hd-no-incidents"}); err != nil {
+		t.Fatalf("upsert host without incidents: %v", err)
+	}
+	resp = getWithCookie(t, s.srv, base+"/hd-no-incidents", ownerCookie)
+	quietBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET host without incidents status = %d, want 200: %s", resp.StatusCode, quietBody)
+	}
+	quiet := string(quietBody)
+	if n := strings.Count(quiet, "Последние инциденты"); n != 1 {
+		t.Errorf("заголовок «Последние инциденты» встречается %d раз, ожидался 1: %s", n, quiet)
+	}
+	if !strings.Contains(quiet, "Инцидентов ещё не было") {
+		t.Errorf("нет подсказки пустой истории инцидентов: %s", quiet)
+	}
+
+	// Несуществующее имя хоста в существующем проекте → 404.
+	missing := base + "/no-such-host"
+	resp = getWithCookie(t, s.srv, missing, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (missing host) status = %d, want 404", missing, resp.StatusCode)
+	}
+
+	// Чужой (не член организации) → 404 (существование хоста не палится).
+	_, outsider := orgSettingsRegister(t, s.auth, "hostdetail-outsider@example.com")
+	resp = getWithCookie(t, s.srv, path, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider GET %s status = %d, want 404", path, resp.StatusCode)
+	}
+}
+
+// TestWebHostDetailNilDeps — Metrics/Hosts проставлены, а HostIncidents или
+// HostSettings — нет (тот же инвариант-нарушающий стенд, что и в
+// TestWebHostsListNilHostsStore, T14 находка 1): hostDetail тоже должен
+// звать h.notFound, а не паниковать на nil-указателе.
+func TestWebHostDetailNilDeps(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
+	h.Metrics = metric.NewQuery(ch)
+	h.Hosts = host.NewStore(pool)
+	// HostIncidents/HostSettings нарочно оставлены nil.
+	h.Register(mux)
+
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "hostdetail-nildeps-owner@example.com")
+	o, err := orgSvc.CreateOrg(ctx, "hdnd-co", "HDND Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := orgSvc.CreateProject(ctx, o.ID, "hdnd-proj", "HDND Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/any-name"
+	resp := getWithCookie(t, srv, path, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("HostIncidents/HostSettings==nil status = %d, want 404 (not panic)", resp.StatusCode)
+	}
+}
+
+// TestWebHostDeleteConfirmFlow — POST /projects/{id}/hosts/{name}/delete:
+// без Origin → 403 (denyCrossOrigin); чужой (не член организации) → 404
+// (requireProjectOperator); без confirmed=yes → 200 страница подтверждения,
+// хост НЕ удалён, HostForget.Forget не вызван; с confirmed=yes → 303 на
+// список, хост удалён из PG, HostForget.Forget(projectID, name) вызван ровно
+// один раз.
+func TestWebHostDeleteConfirmFlow(t *testing.T) {
+	s := newHostsStack(t, true)
+	forgetter := &fakeHostForgetter{}
+	s.h.HostForget = forgetter
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hostdel-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hdel-co", "HDel Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hdel-proj", "HDel Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	name := "web-del-1"
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{name}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	deletePath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + url.PathEscape(name) + "/delete"
+
+	// Без Origin → 403.
+	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, "", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
+	}
+	if forgetter.callCount() != 0 {
+		t.Fatalf("Forget called on no-origin request: %d", forgetter.callCount())
+	}
+
+	// Чужой (не член организации) → 404, хост жив, Forget не вызван.
+	_, outsider := orgSettingsRegister(t, s.auth, "hostdel-outsider@example.com")
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider status = %d, want 404", resp.StatusCode)
+	}
+	if _, found, _ := s.hosts.Get(ctx, project.ID, name); !found {
+		t.Fatalf("host removed by outsider-denied request")
+	}
+	if forgetter.callCount() != 0 {
+		t.Fatalf("Forget called on outsider-denied request: %d", forgetter.callCount())
+	}
+
+	// БЕЗ confirmed=yes → 200 страница подтверждения, хост жив, Forget не вызван.
+	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unconfirmed status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
+		t.Fatalf("unconfirmed response missing confirm page hidden field: %s", body)
+	}
+	if _, found, _ := s.hosts.Get(ctx, project.ID, name); !found {
+		t.Fatalf("host removed by unconfirmed request")
+	}
+	if forgetter.callCount() != 0 {
+		t.Fatalf("Forget called on unconfirmed request: %d", forgetter.callCount())
+	}
+
+	// С confirmed=yes → 303 на список, хост удалён, Forget вызван один раз.
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("confirmed status = %d, want 303", resp.StatusCode)
+	}
+	wantLoc := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	if !hasFlashCookie(resp, "ok|flash.deleted") {
+		t.Errorf("после удаления хоста нет flash-cookie: %v", resp.Header.Values("Set-Cookie"))
+	}
+	if loc := resp.Header.Get("Location"); loc != wantLoc {
+		t.Fatalf("Location = %q, want %q", loc, wantLoc)
+	}
+	if _, found, _ := s.hosts.Get(ctx, project.ID, name); found {
+		t.Fatalf("host still present after confirmed delete")
+	}
+	if forgetter.callCount() != 1 {
+		t.Fatalf("Forget calls = %d, want 1", forgetter.callCount())
+	}
+}
+
+// TestWebHostDeleteNilHostForget — HostForget не проставлен (main.go не
+// всегда его проводит — режимы без ingest, см. комментарий у
+// web.HostForgetter): удаление обязано пройти без паники, просто не
+// реактивируя троттлер.
+func TestWebHostDeleteNilHostForget(t *testing.T) {
+	s := newHostsStack(t, true) // s.h.HostForget остаётся nil
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hostdel-nilforget-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hdnf-co", "HDNF Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hdnf-proj", "HDNF Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	name := "web-del-nilforget"
+	if _, err := s.hosts.Upsert(ctx, project.ID, []string{name}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	deletePath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + url.PathEscape(name) + "/delete"
+	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (nil HostForget must not panic)", resp.StatusCode)
+	}
+	if _, found, _ := s.hosts.Get(ctx, project.ID, name); found {
+		t.Fatalf("host still present after confirmed delete")
+	}
+}
+
+// hasFlashCookie — стоит ли в ответе flash-cookie с ожидаемым «вид|ключ».
+// Значение уходит url.QueryEscape'нутым (см. setFlash, flash.go), поэтому
+// сравнивать надо после разэкранирования, а не по сырой строке заголовка.
+func hasFlashCookie(resp *http.Response, want string) bool {
+	for _, c := range resp.Cookies() {
+		if c.Name != "flash" {
+			continue
+		}
+		v, err := url.QueryUnescape(c.Value)
+		if err == nil && v == want {
+			return true
+		}
+	}
+	return false
+}

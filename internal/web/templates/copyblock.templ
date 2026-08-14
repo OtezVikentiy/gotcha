@@ -1,0 +1,40 @@
+package templates
+
+import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+
+// copyBlock — переиспользуемый блок «скопировать в буфер»: кнопка,
+// запускающая copy.js (тот же контракт, что у copyToolbar, issuedetail.templ:
+// корень .copy-llm, [data-copy-format]/[data-copy-target], скрытая textarea
+// [data-copy-blob], тост [data-copy-done]) и единственный источник обычного
+// текста — в отличие от copyToolbar (два формата, Markdown/текст, под одно
+// событие копирования), здесь вызывающий сам решает, когда рендерить блок, и
+// передаёт уже готовое содержимое (конфиг коллектора хостовых метрик, T16).
+// JS не меняется — copy.js уже делегирует через data-атрибуты (m15 плана).
+//
+// id обязан быть уникален на странице — copy.js ищет textarea по
+// data-copy-target именно внутри БЛИЖАЙШЕГО .copy-llm, но два блока с
+// одинаковым id в одном документе всё равно нарушают уникальность id (HTML/
+// querySelector). labelKey — i18n-ключ подписи кнопки, он же аргумент
+// aria-label. Textarea — visually-hidden, НЕ hidden/display:none: фолбэк
+// copy.js на execCommand делает textarea.focus()/select(), а скрытый через
+// display элемент не фокусируется и не выделяется.
+//
+// Видимый <pre> рядом с кнопкой — не дубль скрытой textarea, а само
+// содержимое блока (UX-аудит A1, P1-1): до него единственным следом конфига
+// коллектора была кнопка «Скопировать», то есть проверить глазами
+// подставленные адрес инстанса и ключ было негде, а <summary>«Показать
+// конфиг коллектора»</summary> раскрывался в кнопку вместо текста. Скрытой
+// textarea эту роль не отдать: она aria-hidden (её не читает скринридер) и
+// visually-hidden (её не видит зрячий) — она существует только ради
+// execCommand-фолбэка copy.js.
+templ copyBlock(id, labelKey, content string) {
+	<div class="copy-llm">
+		<button type="button" class="btn-copy" data-copy-format="txt"
+			data-copy-target={ id } aria-label={ i18n.T(ctx, labelKey) }>
+			{ i18n.T(ctx, labelKey) }
+		</button>
+		<span class="copy-done" data-copy-done hidden>{ i18n.T(ctx, "copy.done") }</span>
+		<textarea class="visually-hidden" id={ id } data-copy-blob readonly aria-hidden="true" tabindex="-1">{ content }</textarea>
+		<pre class="copy-preview">{ content }</pre>
+	</div>
+}

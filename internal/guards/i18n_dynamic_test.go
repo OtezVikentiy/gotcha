@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
@@ -43,7 +44,10 @@ import (
 //     internal/web/onboarding.go, allowedPlatforms, теперь он сам строится из
 //     org.Platforms), агрегации правил по метрикам (metric.Aggregations —
 //     раньше приватная validAggregations в internal/metric/rule.go) и типы
-//     метрики (metric.MetricTypes — раунд правок 1, см. ниже).
+//     метрики (metric.MetricTypes — раунд правок 1, см. ниже). Задача A1/T12
+//     добавила пятое множество по той же схеме — виды встроенных инцидентов
+//     хоста (host.Kinds: disk/memory/load/silent), источник истины для
+//     подписей в уведомлениях host.HostNotifier.
 //
 // Раунд правок 1 (metrics.templ): та же задача нашла ЕЩЁ два места сырого
 // значения в соседнем файле, не входившем в исходный список брифа — тип
@@ -83,6 +87,7 @@ func TestDynamicKeysResolve(t *testing.T) {
 		"uptime.kind.":         uptime.Kinds,
 		"metrics.aggregation.": metric.Aggregations,
 		"metrics.type.":        metric.MetricTypes,
+		"hosts.kind.":          host.Kinds,
 	}
 	// Пустая группа — не "нечего проверять", а сигнал, что сборка САМОЙ группы
 	// сломана (баг в quotaKindShortKeys/rangePresetKeys или опустевший

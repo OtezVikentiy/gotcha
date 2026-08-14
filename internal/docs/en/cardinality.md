@@ -15,6 +15,7 @@ The limited fields are the ones whose values come from your code and are open-en
 | Metric name | OTLP instrument name |
 | Service | `service.name` in resource attributes |
 | Span operation | `op` in Sentry SDKs, `span.kind`/name in OTLP |
+| Host | host name (`host.name` in OTLP resource attributes) |
 
 ## Why the limit exists at all
 

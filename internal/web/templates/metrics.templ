@@ -16,16 +16,44 @@ func metricLink(projectID int64, name string) string {
 	return metricsBasePath(projectID) + "/" + url.PathEscape(name)
 }
 
-// MetricsList — GET /projects/{id}/metrics: перечень метрик проекта.
-templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string) {
+// metricsSystemToggleURL — ссылка на список метрик с указанным состоянием
+// переключателя system.*, с сохранением фильтра environment.
+func metricsSystemToggleURL(projectID int64, environment string, showSystem bool) string {
+	q := url.Values{}
+	if environment != "" {
+		q.Set("environment", environment)
+	}
+	if showSystem {
+		q.Set("system", "1")
+	}
+	u := metricsBasePath(projectID)
+	if enc := q.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	return u
+}
+
+// MetricsList — GET /projects/{id}/metrics: перечень метрик проекта. metrics
+// уже отфильтрован по showSystem в metricsList (internal/web/metrics.go);
+// hiddenCount — сколько system.*-метрик скрыто (0, если хостов нет —
+// переключатель тогда не рисуется, поведение без хостов не меняется).
+templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string, showSystem bool, hiddenCount int) {
 	@layout(i18n.T(ctx, "metrics.title"), userEmail) {
 		<div class="metrics">
 			<h1>{ i18n.T(ctx, "metrics.title") }</h1>
 			@helpPanel("metrics", "metrics")
-			if len(metrics) == 0 {
+			if len(metrics) == 0 && hiddenCount == 0 {
 				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics", 2)
 			} else {
 				<div class="card">
+				if hiddenCount > 0 {
+					if showSystem {
+						<p class="frames-toggle"><a href={ templ.URL(metricsSystemToggleURL(projectID, environment, false)) }>{ i18n.T(ctx, "metrics.system.hide_toggle") }</a></p>
+					} else {
+						<p class="frames-toggle"><a href={ templ.URL(metricsSystemToggleURL(projectID, environment, true)) }>{ i18n.Tn(ctx, "metrics.system.show_toggle", hiddenCount) }</a></p>
+						<p class="hint">{ i18n.T(ctx, "hosts.see_hosts_hint") }<a href={ templ.URL(hostsBasePath(projectID)) }>{ i18n.T(ctx, "nav.hosts") }</a>{ i18n.T(ctx, "hosts.see_hosts_hint_suffix") }</p>
+					}
+				}
 				@scrollRegion("table-scroll", "metrics.title") {
 						<table class="data-table">
 							<thead>

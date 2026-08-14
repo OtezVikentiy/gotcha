@@ -132,7 +132,7 @@ func TestEmptyStates(t *testing.T) {
 		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com")),
 		"perfissues":   renderTo(t, PerfIssuesList(7, nil, "unresolved", "u@e.com")),
 		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com")),
-		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com")),
+		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com", false, 0)),
 		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
 		"regressions":  renderTo(t, RegressionsList(7, nil, "open", "u@e.com")),
 		"profileregs":  renderTo(t, ProfileRegressionsList(7, nil, "open", "u@e.com")),

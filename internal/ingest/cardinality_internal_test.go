@@ -39,6 +39,30 @@ func TestCardinalityGuardCollapsesTail(t *testing.T) {
 	}
 }
 
+// TestCardinalityGuardCollapsesHostTail — host.name промоутируется в MetricPoint
+// и обязан быть под тем же гардом, что имена транзакций и метрик: значение
+// открыто клиенту (реальное имя хоста/пода), а в ClickHouse оно стоит в ключе
+// точки — без потолка взрыв кардинальности будет тем же, что и у остальных
+// полей под FieldHost.
+func TestCardinalityGuardCollapsesHostTail(t *testing.T) {
+	g := NewCardinalityGuard(2, time.Hour)
+
+	if got := g.Value(1, FieldHost, "web-1"); got != "web-1" {
+		t.Fatalf("значение в пределах потолка схлопнуто: %q", got)
+	}
+	if got := g.Value(1, FieldHost, "web-2"); got != "web-2" {
+		t.Fatalf("значение в пределах потолка схлопнуто: %q", got)
+	}
+	// Известное имя проходит и после исчерпания потолка.
+	if got := g.Value(1, FieldHost, "web-1"); got != "web-1" {
+		t.Fatalf("известное имя схлопнуто: %q", got)
+	}
+	// Новое сверх потолка — схлопывается.
+	if got := g.Value(1, FieldHost, "web-3"); got != CardinalityOverflow {
+		t.Fatalf("значение сверх потолка не схлопнуто: %q", got)
+	}
+}
+
 // TestCardinalityGuardReportsSamples — отчёт обязан нести ПРИМЕРЫ схлопнутых
 // значений. Ради них он и существует: три имени подряд с разными числами
 // объясняют причину («в имя попал идентификатор») мгновенно, а голый счётчик

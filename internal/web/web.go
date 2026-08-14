@@ -25,6 +25,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
@@ -210,6 +211,25 @@ type Handler struct {
 	// маршруты алертов метрик отвечают 404.
 	MetricRules     *metric.RuleService
 	MetricIncidents *metric.IncidentService
+
+	// Hosts/HostIncidents/HostSettings — реестр хостов, их встроенные
+	// инциденты (диск/память/нагрузка/тишина) и пороги (план A1): страницы
+	// /projects/{id}/hosts[...]. Как Metrics — отдельные необязательные поля;
+	// nil → маршруты хостов отвечают 404. Гейт всех хендлеров хостов — только
+	// h.Metrics == nil (см. hosts.go): main.go всегда проставляет эту тройку
+	// вместе с Metrics, поэтому по факту они nil одновременно.
+	Hosts         *host.Store
+	HostIncidents *host.IncidentService
+	HostSettings  *host.SettingsService
+	// HostForget — инвалидация троттлера регистрации хостов (host.Toucher)
+	// при удалении хоста (Task 15): следующий Touch того же имени не должен
+	// молча проглатываться троттлингом, будто хост уже зарегистрирован.
+	// Интерфейс, а не конкретный *host.Toucher — nil-safe поле: в web-only
+	// режиме (без ingest, см. main.go) остаётся nil, и Forget просто
+	// пропускается (задокументированное ограничение однопроцессного
+	// дефолта — при разнесённых web/ingest-репликах троттлер живёт в чужом
+	// процессе и недостижим отсюда).
+	HostForget HostForgetter
 
 	// Profiles — чтение профилей из ClickHouse (этап 7): страницы
 	// /projects/{id}/profiles[/flame]. Необязательное поле; nil → 404.
@@ -445,6 +465,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertCreate)))
 	inner.Handle("POST /projects/{id}/metrics/alerts/delete", h.requireUser(http.HandlerFunc(h.metricAlertDelete)))
 	inner.Handle("GET /projects/{id}/metrics/{name}", h.requireUser(http.HandlerFunc(h.metricDetail)))
+
+	// Хосты (план A1, задача 14): литерал "settings" перед {name} — ServeMux
+	// (Go 1.22) отдаёт приоритет более специфичному сегменту независимо от
+	// порядка регистрации, поэтому хост с именем "settings" по карточке
+	// недоступен (тот же прецедент, что у /metrics/{name} с метрикой
+	// "alerts"). detail/settings/delete в этой задаче — заглушки; полная
+	// реализация — Task 15 (карточка/удаление) и Task 16 (форма порогов).
+	inner.Handle("GET /projects/{id}/hosts", h.requireUser(http.HandlerFunc(h.hostsList)))
+	inner.Handle("GET /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsPage)))
+	inner.Handle("POST /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsSave)))
+	inner.Handle("GET /projects/{id}/hosts/{name}", h.requireUser(http.HandlerFunc(h.hostDetail)))
+	inner.Handle("POST /projects/{id}/hosts/{name}/delete", h.requireUser(http.HandlerFunc(h.hostDelete)))
 
 	inner.Handle("GET /projects/{id}/profiles", h.requireUser(http.HandlerFunc(h.profilesList)))
 	inner.Handle("GET /projects/{id}/profiles/flame", h.requireUser(http.HandlerFunc(h.profileFlame)))

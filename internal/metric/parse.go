@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -17,6 +18,7 @@ const (
 	attrServiceName   = "service.name"
 	attrDeployEnv     = "deployment.environment"      // старая семконвенция
 	attrDeployEnvName = "deployment.environment.name" // текущая
+	attrHostName      = "host.name"
 )
 
 // maxAttrKeys — кап числа лейблов точки (тот же приём, что maxDataKeys у спанов):
@@ -46,10 +48,10 @@ const maxHistogramBuckets = 512
 func MapOTLP(resourceMetrics []*metricspb.ResourceMetrics, fallbackTS time.Time) []MetricPoint {
 	var out []MetricPoint
 	for _, rm := range resourceMetrics {
-		service, environment := promote(rm.GetResource())
+		service, environment, host := promote(rm.GetResource())
 		for _, sm := range rm.GetScopeMetrics() {
 			for _, m := range sm.GetMetrics() {
-				out = mapMetric(out, m, service, environment, fallbackTS)
+				out = mapMetric(out, m, service, environment, host, fallbackTS)
 				// mapMetric сам не переваливает за maxOTLPMetricPoints (кап внутри
 				// циклов по датапойнтам), поэтому достигнув потолка просто выходим.
 				if len(out) >= maxOTLPMetricPoints {
@@ -61,7 +63,7 @@ func MapOTLP(resourceMetrics []*metricspb.ResourceMetrics, fallbackTS time.Time)
 	return out
 }
 
-func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment string, fallbackTS time.Time) []MetricPoint {
+func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment, host string, fallbackTS time.Time) []MetricPoint {
 	// name/unit — недоверенный ввод, каппим по длине (как имя/юнит спанов в otlp.go),
 	// чтобы одна метрика не раздувала CH-колонки metric_points.
 	name, unit := capRunes(m.GetName(), 200), capRunes(m.GetUnit(), 200)
@@ -71,7 +73,7 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 			return MetricPoint{}, false
 		}
 		return MetricPoint{
-			Name: name, Type: typ, Unit: unit, Service: service, Environment: environment,
+			Name: name, Type: typ, Unit: unit, Service: service, Environment: environment, Host: host,
 			Attributes: attrsToMap(attrs), TS: t,
 		}, true
 	}
@@ -142,10 +144,23 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment stri
 	return out
 }
 
-// capRunes обрезает s до n рун. Локальный аналог одноимённого хелпера из
-// internal/ingest — недоверенные OTLP-строки (name/unit/service/атрибуты) не
-// должны раздувать CH-колонки без ограничения. Не тащим зависимость на ingest.
+// capRunes вырезает NUL и обрезает s до n рун. Локальный аналог одноимённого
+// хелпера из internal/ingest — недоверенные OTLP-строки (name/unit/service/
+// атрибуты) не должны раздувать CH-колонки без ограничения. Не тащим
+// зависимость на ingest.
+//
+// NUL вырезается ровно по той же причине, что и в ingest.capRunes: protobuf и
+// ClickHouse его принимают, а PostgreSQL на text падает («invalid byte sequence
+// for encoding UTF8: 0x00»). Промотированный host.name из этих строк доезжает
+// до PG (реестр hosts, батчевый unnest в host.Store.Upsert), и одно битое имя
+// роняло бы upsert всего батча — вместе с обновлением last_seen соседних живых
+// хостов, которым оценщик тут же открыл бы ложный silent-инцидент.
 func capRunes(s string, n int) string {
+	// IndexByte — дешёвый просмотр без аллокаций; ReplaceAll платится только
+	// строками, реально несущими NUL.
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
 	// Быстрый путь без единой аллокации. В UTF-8 байт всегда не меньше, чем рун,
 	// поэтому len(s) <= n гарантирует, что рун тоже не больше n. Проверка стоит
 	// ДО []rune(s) намеренно: подавляющее большинство строк приёма короткие, и
@@ -206,8 +221,8 @@ func temporalityString(t metricspb.AggregationTemporality) string {
 	}
 }
 
-// promote вытаскивает service.name и environment из ресурсных атрибутов.
-func promote(res *resourcepb.Resource) (service, environment string) {
+// promote вытаскивает service.name, environment и host.name из ресурсных атрибутов.
+func promote(res *resourcepb.Resource) (service, environment, host string) {
 	for _, kv := range res.GetAttributes() {
 		switch kv.GetKey() {
 		case attrServiceName:
@@ -218,11 +233,13 @@ func promote(res *resourcepb.Resource) (service, environment string) {
 			if environment == "" {
 				environment = attrString(kv.GetValue())
 			}
+		case attrHostName:
+			host = attrString(kv.GetValue())
 		}
 	}
 	// Каппим промотируемые поля по длине (как service/environment спанов в otlp.go):
 	// недоверенный ресурсный атрибут не должен раздувать колонки metric_points.
-	return capRunes(service, 200), capRunes(environment, 200)
+	return capRunes(service, 200), capRunes(environment, 200), capRunes(host, 200)
 }
 
 // attrsToMap собирает datapoint-атрибуты в строковый Map (кап maxAttrKeys,

@@ -158,3 +158,14 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 		t.Fatalf("bufBytes = %d, фактический вес %d — учёт разъехался", got, want)
 	}
 }
+
+// TestMetricRowBytesCountsHost проверяет, что вес строки метрики корректно
+// считает поле Host. Строка с Host="web-1" (5 символов) должна быть на 5 байт
+// тяжелее, чем строка без Host (тот же Name).
+func TestMetricRowBytesCountsHost(t *testing.T) {
+	a := metricRowBytes(metricRow{Name: "m"})
+	b := metricRowBytes(metricRow{Name: "m", Host: "web-1"})
+	if b-a != 5 {
+		t.Fatalf("host weight = %d, want 5", b-a)
+	}
+}

@@ -21,7 +21,7 @@ type CHConn interface {
 // рядов бинарным дроблением (chbatch.IsolatePoison).
 const poisonThreshold = 3
 
-// metricRow — одна строка metric_points (порядок колонок — как в миграции 0009).
+// metricRow — одна строка metric_points (порядок колонок соответствует INSERT в insert()).
 type metricRow struct {
 	ProjectID      uint64
 	Name           string
@@ -29,6 +29,7 @@ type metricRow struct {
 	Unit           string
 	Service        string
 	Environment    string
+	Host           string // промоутированный ресурсный host.name
 	Attributes     map[string]string
 	TS             time.Time
 	Value          float64
@@ -88,6 +89,7 @@ func (w *Writer) Add(projectID int64, p MetricPoint) {
 		Unit:           p.Unit,
 		Service:        p.Service,
 		Environment:    p.Environment,
+		Host:           p.Host,
 		Attributes:     p.Attributes,
 		TS:             p.TS,
 		Value:          p.Value,
@@ -150,7 +152,7 @@ const rowOverheadBytes = 64
 
 func metricRowBytes(r metricRow) int64 {
 	n := len(r.Name) + len(r.Type) + len(r.Unit) + len(r.Service) +
-		len(r.Environment) + len(r.Temporality) +
+		len(r.Environment) + len(r.Host) + len(r.Temporality) +
 		8*len(r.BucketCounts) + 8*len(r.ExplicitBounds)
 	for k, v := range r.Attributes {
 		n += len(k) + len(v)
@@ -339,7 +341,7 @@ func (w *Writer) flush(ctx context.Context) {
 
 func (w *Writer) insert(ctx context.Context, rows []metricRow) error {
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO metric_points (
-		project_id, name, type, unit, service, environment,
+		project_id, name, type, unit, service, environment, host,
 		attributes, ts, value, count, bucket_counts, explicit_bounds,
 		monotonic, temporality)`)
 	if err != nil {
@@ -347,7 +349,7 @@ func (w *Writer) insert(ctx context.Context, rows []metricRow) error {
 	}
 	for _, r := range rows {
 		if err := batch.Append(
-			r.ProjectID, r.Name, r.Type, r.Unit, r.Service, r.Environment,
+			r.ProjectID, r.Name, r.Type, r.Unit, r.Service, r.Environment, r.Host,
 			r.Attributes, r.TS, r.Value, r.Count, r.BucketCounts, r.ExplicitBounds,
 			r.Monotonic, r.Temporality,
 		); err != nil {

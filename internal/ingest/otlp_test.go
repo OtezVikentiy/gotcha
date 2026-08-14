@@ -1,16 +1,25 @@
 package ingest
 
 import (
+	"bytes"
+	"context"
 	"encoding/hex"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -1425,5 +1434,191 @@ func TestMapOTLPRedisSpansDetectAsNPlusOne(t *testing.T) {
 	}
 	if want := "GET user:?"; found[0].Description != want {
 		t.Errorf("Description = %q, want %q", found[0].Description, want)
+	}
+}
+
+// --- Task 5: ingest.HostRegistry (сбор хостов на пути otlpMetrics) ---
+
+// fakeHostRegistry копит projectID → хосты, переданные в Touch.
+type fakeHostRegistry struct {
+	mu    sync.Mutex
+	calls map[int64][]string
+}
+
+func newFakeHostRegistry() *fakeHostRegistry {
+	return &fakeHostRegistry{calls: make(map[int64][]string)}
+}
+
+func (f *fakeHostRegistry) Touch(_ context.Context, projectID int64, hosts []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[projectID] = append(f.calls[projectID], hosts...)
+}
+
+func (f *fakeHostRegistry) get(projectID int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls[projectID]...)
+}
+
+// zeroQuotaChecker — QuotaChecker, всегда отвечающий «квота исчерпана»: нужен
+// сценарию (в) — Touch обязан сработать даже когда приём отвечает 429.
+type zeroQuotaChecker struct{}
+
+func (zeroQuotaChecker) CheckAndCount(context.Context, int64, int64) (int64, error) {
+	return 0, nil
+}
+
+// resourceMetricWithHost — один ResourceMetrics с одним gauge-датапойнтом;
+// host="" — резурс без host.name (метрика приложения).
+func resourceMetricWithHost(host, metricName string) *metricspb.ResourceMetrics {
+	var attrs []*commonpb.KeyValue
+	if host != "" {
+		attrs = append(attrs, strAttr("host.name", host))
+	}
+	return &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{Attributes: attrs},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
+			{Name: metricName, Unit: "1", Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{
+				DataPoints: []*metricspb.NumberDataPoint{{
+					TimeUnixNano: uint64(time.Now().Add(-time.Hour).UnixNano()),
+					Value:        &metricspb.NumberDataPoint_AsDouble{AsDouble: 0.5},
+				}},
+			}}},
+		}}},
+	}
+}
+
+func postOTLPMetrics(t *testing.T, h *Handler, rm []*metricspb.ResourceMetrics) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := proto.Marshal(&metricspb.MetricsData{ResourceMetrics: rm})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/v1/metrics", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req.Header.Set("Authorization", "Bearer pub")
+	w := httptest.NewRecorder()
+	h.otlpMetrics(w, req)
+	return w
+}
+
+// TestOTLPMetricsHostRegistryTouch (сценарий а): экспорт с двумя разными
+// host.name → Touch получил оба, без дублей, без пустых.
+func TestOTLPMetricsHostRegistryTouch(t *testing.T) {
+	sink := &collectMetricSink{}
+	hosts := newFakeHostRegistry()
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h.Metrics = sink
+	h.Hosts = hosts
+
+	w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+		resourceMetricWithHost("web-1", "cpu"),
+		resourceMetricWithHost("web-1", "mem"), // тот же хост ещё раз — дедуп
+		resourceMetricWithHost("db-1", "cpu"),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	got := hosts.get(1)
+	want := map[string]bool{"web-1": true, "db-1": true}
+	if len(got) != len(want) {
+		t.Fatalf("Touch hosts = %v, want ровно %v (без дублей)", got, want)
+	}
+	for _, h := range got {
+		if !want[h] {
+			t.Errorf("неожиданный хост в Touch: %q", h)
+		}
+	}
+}
+
+// TestOTLPMetricsHostRegistryNoHost (сценарий б): точки без host.name → Touch
+// не вызывается вовсе.
+func TestOTLPMetricsHostRegistryNoHost(t *testing.T) {
+	sink := &collectMetricSink{}
+	hosts := newFakeHostRegistry()
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h.Metrics = sink
+	h.Hosts = hosts
+
+	w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+		resourceMetricWithHost("", "cpu"),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := hosts.get(1); len(got) != 0 {
+		t.Errorf("Touch вызван без хоста: %v, want пусто", got)
+	}
+}
+
+// TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded (сценарий в): квота
+// метрик исчерпана (granted == 0) → ответ 429, но Touch всё равно вызван:
+// приём принял экспорт, живость хоста не зависит от записи точек в CH.
+func TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded(t *testing.T) {
+	sink := &collectMetricSink{}
+	hosts := newFakeHostRegistry()
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h.Metrics = sink
+	h.Hosts = hosts
+	h.MetricQuota = zeroQuotaChecker{}
+
+	w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+		resourceMetricWithHost("web-1", "cpu"),
+	})
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
+	}
+	if len(sink.points) != 0 {
+		t.Fatalf("точек записано = %d, want 0 (квота исчерпана)", len(sink.points))
+	}
+	if got := hosts.get(1); len(got) != 1 || got[0] != "web-1" {
+		t.Fatalf("Touch hosts = %v, want [web-1] (вызван несмотря на 429)", got)
+	}
+}
+
+// TestOTLPMetricsHostRegistrySkipsCardinalityOverflow (сценарий г): хост,
+// схлопнутый гардом кардинальности в CardinalityOverflow, в Touch не попадает.
+func TestOTLPMetricsHostRegistrySkipsCardinalityOverflow(t *testing.T) {
+	sink := &collectMetricSink{}
+	hosts := newFakeHostRegistry()
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h.Metrics = sink
+	h.Hosts = hosts
+	h.Cardinality = NewCardinalityGuard(1, time.Hour)
+	// Потолок кардинальности по FieldHost уже исчерпан другим хостом проекта.
+	h.Cardinality.Value(1, FieldHost, "web-1")
+
+	w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+		resourceMetricWithHost("web-2", "cpu"),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := hosts.get(1); len(got) != 0 {
+		t.Errorf("схлопнутый хост попал в Touch: %v, want пусто", got)
+	}
+
+	// Гард применяется к host РОВНО ОДИН РАЗ за запрос (сбор хостов + цикл
+	// записи вместе), а не дважды: цикл записи обязан застать уже собранное
+	// (points[i].Host мутирован по индексу в сборе) и попасть в идемпотентную
+	// ветку Value, а не пересчитать схлопывание заново. Иначе Collapsed и
+	// Samples в отчёте оператору врали бы вдвое (см. код ревью задачи 5).
+	reports := h.Cardinality.Report(1)
+	var hostReport *FieldReport
+	for i := range reports {
+		if reports[i].Field == FieldHost {
+			hostReport = &reports[i]
+		}
+	}
+	if hostReport == nil {
+		t.Fatalf("нет отчёта по FieldHost: %+v", reports)
+	}
+	if hostReport.Collapsed != 1 {
+		t.Errorf("Collapsed = %d, want 1 (гард применён к host ровно один раз за запрос)", hostReport.Collapsed)
+	}
+	if want := []string{"web-2"}; !slices.Equal(hostReport.Samples, want) {
+		t.Errorf("Samples = %v, want %v (без дублей)", hostReport.Samples, want)
 	}
 }

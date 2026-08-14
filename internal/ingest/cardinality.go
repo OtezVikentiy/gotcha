@@ -26,6 +26,12 @@ const (
 	FieldMetricName  = "metric_name"
 	FieldService     = "service"
 	FieldOp          = "op"
+	// FieldHost — промоутированный host.name (единственное промоутируемое поле
+	// вне ключа сортировки metric_points: остальные атрибуты точки под гард не
+	// попадают вовсе). Значение открыто клиенту так же, как имя сервиса, — имя
+	// хоста/пода легко превращается в переменную (например, суффикс релиза), и
+	// без потолка это тот же взрыв кардинальности, что и у остальных полей.
+	FieldHost = "host"
 )
 
 const (
@@ -316,6 +322,8 @@ func FieldLabel(field string) string {
 		return "service"
 	case FieldOp:
 		return "span operation"
+	case FieldHost:
+		return "host"
 	default:
 		return strings.ReplaceAll(field, "_", " ")
 	}

@@ -80,6 +80,8 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/alerts/rules":          lvlOperator,
 	"POST /projects/{id}/metrics/alerts":        lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete": lvlOperator,
+	"POST /projects/{id}/hosts/settings":        lvlOperator,
+	"POST /projects/{id}/hosts/{name}/delete":   lvlOperator,
 
 	// --- Org admin/owner (requireOrgRole/requireProjectRole/requireTeamRole:
 	// роль owner или admin в организации). ---
@@ -154,6 +156,8 @@ var routeAuthz = map[string]string{
 	"GET /issues/{id}":                                lvlAccess,
 	"GET /projects/{id}/metrics":                      lvlAccess,
 	"GET /projects/{id}/metrics/{name}":               lvlAccess,
+	"GET /projects/{id}/hosts":                        lvlAccess,
+	"GET /projects/{id}/hosts/{name}":                 lvlAccess,
 	"GET /projects/{id}/profiles":                     lvlAccess,
 	"GET /projects/{id}/profiles/flame":               lvlAccess,
 	"GET /projects/{id}/profile-regressions":          lvlAccess,
@@ -178,6 +182,7 @@ var routeAuthz = map[string]string{
 	// гейт в коде обеих GET-ручек (statusPagesPage, maintenancePage) и всех
 	// их POST — requireProjectOperator; карта отражает код, а не комментарий.
 	"GET /projects/{id}/metrics/alerts":    lvlOperator,
+	"GET /projects/{id}/hosts/settings":    lvlOperator,
 	"GET /projects/{id}/alerts":            lvlOperator,
 	"GET /projects/{id}/alerts/deliveries": lvlOperator,
 	"GET /projects/{id}/monitors/new":      lvlOperator,

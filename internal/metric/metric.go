@@ -24,6 +24,7 @@ var MetricTypes = []string{TypeGauge, TypeSum, TypeHistogram}
 // MetricPoint — одна datapoint метрики, готовая к записи в metric_points.
 type MetricPoint struct {
 	Name, Type, Unit, Service, Environment string
+	Host                                   string // промоутированный ресурсный host.name, пусто у метрик приложений
 	Attributes                             map[string]string
 	TS                                     time.Time
 	Value                                  float64  // sum/gauge: значение; histogram: sum наблюдений

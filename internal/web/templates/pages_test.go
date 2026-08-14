@@ -337,7 +337,7 @@ func TestProfileRegressionsList(t *testing.T) {
 // TestMetricsListAndDetail — список метрик и деталь с перцентилями и лейблами.
 func TestMetricsListAndDetail(t *testing.T) {
 	metrics := []metric.MetricInfo{{Name: "http.rps", Type: "gauge", Unit: "1/s"}, {Name: "queue.depth", Type: "histogram", Unit: ""}}
-	out := renderTo(t, MetricsList(7, metrics, "production", "u@e.com"))
+	out := renderTo(t, MetricsList(7, metrics, "production", "u@e.com", false, 0))
 	if !strings.Contains(out, "http.rps") {
 		t.Error("список метрик должен содержать имя")
 	}

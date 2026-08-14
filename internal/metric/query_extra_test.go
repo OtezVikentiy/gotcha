@@ -52,7 +52,7 @@ func TestQueryRateSeries(t *testing.T) {
 	seedSumCumulative(t, conn, pid, "req.total", "prod", now.Add(-2*time.Minute), 100)
 	seedSumCumulative(t, conn, pid, "req.total", "prod", now.Add(-1*time.Minute), 160)
 
-	pts, err := q.Series(ctx, pid, "req.total", "prod", LabelMatcher{}, "avg",
+	pts, err := q.Series(ctx, pid, "req.total", "prod", "", nil, "avg",
 		now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("rate Series: %v", err)
@@ -80,7 +80,7 @@ func TestQueryRateSeriesSingleBucket(t *testing.T) {
 	const pid = 72
 	seedSumCumulative(t, conn, pid, "req.one", "prod", now.Add(-30*time.Second), 100)
 
-	pts, err := q.Series(ctx, pid, "req.one", "prod", LabelMatcher{}, "avg",
+	pts, err := q.Series(ctx, pid, "req.one", "prod", "", nil, "avg",
 		now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("rate Series single: %v", err)
@@ -104,7 +104,7 @@ func TestAggregateHistogramPercentile(t *testing.T) {
 	const pid = 73
 	seedHistogram(t, conn, pid, "http.dur", "prod", now.Add(-time.Minute), 12, []uint64{2, 8, 2}, []float64{100, 500})
 
-	v, ok, err := q.Aggregate(ctx, pid, "http.dur", "prod", LabelMatcher{}, "p95",
+	v, ok, err := q.Aggregate(ctx, pid, "http.dur", "prod", "", nil, "p95",
 		now.Add(-10*time.Minute), now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("Aggregate histogram: %v", err)
@@ -132,7 +132,7 @@ func TestAggregateNoData(t *testing.T) {
 	// Точка есть, но давно — попадёт в metricType, но не в окно запроса.
 	seedGauge(t, conn, pid, "cpu", "prod", now.Add(-2*time.Hour), 42, nil)
 
-	v, ok, err := q.Aggregate(ctx, pid, "cpu", "prod", LabelMatcher{}, "avg",
+	v, ok, err := q.Aggregate(ctx, pid, "cpu", "prod", "", nil, "avg",
 		now.Add(-5*time.Minute), now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("Aggregate no-data: %v", err)
@@ -161,7 +161,7 @@ func TestQueryRateSeriesSparseScrape(t *testing.T) {
 	seedSumCumulative(t, conn, pid, "sparse.total", "prod", now.Add(-5*time.Minute), 300)
 
 	// Шаг корзины — минута, то есть ВПЯТЕРО меньше интервала скрейпа.
-	pts, err := q.Series(ctx, pid, "sparse.total", "prod", LabelMatcher{}, "avg",
+	pts, err := q.Series(ctx, pid, "sparse.total", "prod", "", nil, "avg",
 		now.Add(-30*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("Series: %v", err)
@@ -194,7 +194,7 @@ func TestAggregateMatchesSeriesForCumulativeCounter(t *testing.T) {
 	seedSumCumulative(t, conn, pid, "huge.total", "prod", now.Add(-1*time.Minute), 1_000_120)
 
 	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
-	got, ok, err := q.Aggregate(ctx, pid, "huge.total", "prod", LabelMatcher{}, "avg", from, to)
+	got, ok, err := q.Aggregate(ctx, pid, "huge.total", "prod", "", nil, "avg", from, to)
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}

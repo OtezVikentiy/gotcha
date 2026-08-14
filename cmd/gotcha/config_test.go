@@ -508,6 +508,19 @@ func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	}
 }
 
+func TestLoadConfigHostEvalInterval(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.HostEvalInterval != 60 {
+		t.Errorf("HostEvalInterval = %d, want 60", cfg.HostEvalInterval)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_HOST_EVAL_INTERVAL": "0"}), nil); err == nil {
+		t.Error("zero host eval interval must fail")
+	}
+}
+
 func TestLoadConfig_Registration(t *testing.T) {
 	// Дефолт — invite.
 	cfg, err := loadConfig(getenvFrom(nil), nil)

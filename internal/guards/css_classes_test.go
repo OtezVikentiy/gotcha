@@ -212,6 +212,8 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "chromeless", Why: "маркер страницы на <body>, стиля нет по замыслу — визуал несут дочерние .chromeless-top/.chromeless-main", Finding: "по замыслу"},
 	{Value: "confirm-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу — внутри уже стилизованная .card", Finding: "по замыслу"},
 	{Value: "docs-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "hosts", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "host-settings", Why: "маркер под-страницы (настройки порогов хоста, T16) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "incidents", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "issues", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "maintenance", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
@@ -269,7 +271,12 @@ var permanentCSSClassExemptions = []Exemption{
 // раунда правок 1 — probe-token оттуда переехал в debtCSSClassExemptions).
 // Список постоянный, а не долг — расти он должен только если появится ещё
 // один законный по замыслу случай той же природы, осознанной правкой числа.
-const maxPermanentCSSClassExemptions = 72
+//
+// 73→75 (T16): "host-settings" — маркер страницы настроек порогов хоста
+// (та же семья, что и "hosts", "metric-detail"); "host-settings-form" был
+// маркером формы порогов, но при приёмке получил реальное правило
+// (.host-settings-form > button — отступ кнопки «Сохранить»), поэтому 75→74.
+const maxPermanentCSSClassExemptions = 74
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

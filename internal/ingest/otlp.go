@@ -237,6 +237,42 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	// несёт тысячи точек, и одна единица за весь батч делала квоту метрик
 	// декоративной.
 	points := metric.MapOTLP(req.GetResourceMetrics(), time.Now().UTC())
+	// Регистрация хостов — ДО среза по квоте и ДО ветки 429: квота ограничивает
+	// запись точек в CH, а не приём экспорта, и живость хоста («он сейчас шлёт
+	// метрики») — это факт о самом экспорте, а не о том, сколько из него влезло
+	// в бюджет организации. Гард кардинальности применяется к ИМЕНИ здесь же.
+	//
+	// points[i].Host ЗАПИСЫВАЕТСЯ ПО ИНДЕКСУ (не в копию цикла `for _, p :=
+	// range`) — иначе цикл записи ниже вызвал бы Value ВТОРОЙ РАЗ с тем же
+	// СЫРЫМ именем и исказил бы CardinalityGuard.Report(): Value идемпотентен
+	// только для уже ПРИНЯТЫХ значений (ветка `known` — просто возвращает их) и
+	// для "" / CardinalityOverflow (ранний return, cardinality.go:127); для
+	// имени, которое ТОЛЬКО ЧТО схлопнулось, повторный вызов с тем же сырым
+	// значением не находит его в f.seen и повторно инкрементирует collapsed и
+	// дублирует sample (cardinality.go:170-173) — счётчик и примеры в отчёте
+	// оператора врали бы вдвое. Записав результат обратно в points[i].Host,
+	// добиваемся, чтобы цикл записи (Task 3, ниже по функции) вызывал Value
+	// уже на ПРИНЯТОМ имени или на CardinalityOverflow — то есть строго по
+	// идемпотентным веткам.
+	if h.Hosts != nil {
+		seen := map[string]struct{}{}
+		var hosts []string
+		for i := range points {
+			name := h.Cardinality.Value(key.ProjectID, FieldHost, points[i].Host)
+			points[i].Host = name
+			if name == "" || name == CardinalityOverflow {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			hosts = append(hosts, name)
+		}
+		if len(hosts) > 0 {
+			h.Hosts.Touch(r.Context(), key.ProjectID, hosts)
+		}
+	}
 	granted := h.grant(r.Context(), h.MetricQuota, key.OrgID, "metric", len(points))
 	if dropped := len(points) - granted; dropped > 0 {
 		h.countDrop(r.Context(), dropMetric, key.OrgID, dropped)
@@ -259,6 +295,10 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		p.Name = h.Cardinality.Value(key.ProjectID, FieldMetricName, p.Name)
 		p.Service = h.Cardinality.Value(key.ProjectID, FieldService, p.Service)
 		p.Environment = h.Cardinality.Value(key.ProjectID, FieldEnvironment, p.Environment)
+		// host.name — единственное промоутированное поле точки вне ключа
+		// сортировки (см. FieldHost), но клиентское и такое же открытое, как имя
+		// сервиса, поэтому под тем же гардом.
+		p.Host = h.Cardinality.Value(key.ProjectID, FieldHost, p.Host)
 		h.Metrics.Add(key.ProjectID, p)
 	}
 	writeOTLPResponse(w, enc)

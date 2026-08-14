@@ -345,6 +345,175 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	return sb.String()
 }
 
+// NamedSeries — один ряд generic мульти-серийного графика: подпись (для
+// легенды и подсказок) + точки. Порядок в срезе задаёт и порядок легенды, и
+// класс палитры линии: i-й элемент рисуется классом series-m{i+1}.
+type NamedSeries struct {
+	Label  string
+	Points []metric.Point
+}
+
+// maxMultiSeries — сколько серий одновременно умеет рисовать
+// multiSeriesMarkup: в app.css заведено ровно восемь пар классов палитры
+// (series-m1..series-m8 / legend-m1..legend-m8). Девятая серия и далее
+// молча отбрасываются — красить её было бы нечем, а падать из-за того, что
+// вызывающий передал больше рядов, чем есть в палитре, не повод.
+const maxMultiSeries = 8
+
+// multiSeriesSVG рисует generic мульти-серийный график (до 8 рядов
+// metric.Point с общей осью значений) с осями, сеткой, пороговыми линиями
+// алертов и подсказками по каждой точке. Обобщение metricSeriesSVG на
+// произвольное число рядов: та же логика NaN-разрывов и порогов, но линия
+// каждого ряда красится классом палитры, а не currentColor. Текст SVG
+// собран из чисел и html-экранированных подписей — templ.Raw безопасен по
+// тем же причинам, что и у metricSeriesSVG.
+func multiSeriesSVG(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, w, h int) templ.Component {
+	return templ.Raw(multiSeriesMarkup(ctx, series, unit, thresholds, w, h))
+}
+
+func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, w, h int) string {
+	if len(series) > maxMultiSeries {
+		series = series[:maxMultiSeries]
+	}
+
+	// Поля холста — как у metricSeriesMarkup (совместимая высота подписей).
+	g := newChartGeom(w, h, 58, 16, 12, 26)
+
+	// Домен: максимум по ВСЕМ сериям (пропуская NaN/Inf, как и в
+	// metricSeriesMarkup) + пороги, чтобы пороговая линия всегда попадала в
+	// область. Шкала «круглая» и растёт от нуля (newYScaleFloat, как в
+	// latencyLinesMarkup) — метрики хоста (CPU/память/диск/сеть) по своей
+	// природе неотрицательны, отдельный нижний домен им не нужен.
+	var max float64
+	haveData := false
+	longest := -1
+	for si, s := range series {
+		for _, p := range s.Points {
+			if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
+				continue
+			}
+			haveData = true
+			if p.V > max {
+				max = p.V
+			}
+		}
+		if longest < 0 || len(s.Points) > len(series[longest].Points) {
+			longest = si
+		}
+	}
+	for _, t := range thresholds {
+		if t.Value > max {
+			max = t.Value
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(svgRoot("metric-chart", w, h, i18n.T(ctx, "a11y.chart.metric_multi")))
+
+	if !haveData {
+		sb.WriteString(`<text x="`)
+		sb.WriteString(formatCoord((g.x0 + g.x1) / 2))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord((g.y0 + g.y1) / 2))
+		sb.WriteString(`" text-anchor="middle" dominant-baseline="middle" fill="currentColor">`)
+		sb.WriteString(html.EscapeString(i18n.T(ctx, "chart.no_data_period")))
+		sb.WriteString(`</text></svg>`)
+		return sb.String()
+	}
+
+	scale := newYScaleFloat(max, 3)
+
+	sb.WriteString(`<g class="chart-axis">`)
+	writeFrame(&sb, g)
+	writeYGrid(&sb, g, scale, func(v float64) string { return formatAxisValue(v, unit) })
+
+	// Ось X строится по самому длинному ряду: на практике все ряды приходят
+	// с одной и той же сетки времени (общий запрос metric.Query.Series), и
+	// это просто самый информативный вариант из имеющихся, а не рассинхрон.
+	times := make([]time.Time, len(series[longest].Points))
+	for i, p := range series[longest].Points {
+		times[i] = p.T
+	}
+	n := len(times)
+	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.xForIndex(i, n) }, 70))
+	sb.WriteString(`</g>`)
+
+	// Пороговые линии алертов — тот же вид, что и в metricSeriesMarkup
+	// (пунктир, подпись у правого края, значения за пределами домена не
+	// рисуются).
+	for _, t := range thresholds {
+		yv := scale.yFor(g, t.Value)
+		if yv < g.y0 || yv > g.y1 {
+			continue
+		}
+		sb.WriteString(`<g class="chart-threshold"><line x1="`)
+		sb.WriteString(formatCoord(g.x0))
+		sb.WriteString(`" y1="`)
+		sb.WriteString(formatCoord(yv))
+		sb.WriteString(`" x2="`)
+		sb.WriteString(formatCoord(g.x1))
+		sb.WriteString(`" y2="`)
+		sb.WriteString(formatCoord(yv))
+		sb.WriteString(`" stroke="currentColor" stroke-width="1" stroke-dasharray="4 3"/><text x="`)
+		sb.WriteString(formatCoord(g.x1 - 4))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(yv - 4))
+		sb.WriteString(`" text-anchor="end" fill="currentColor">`)
+		sb.WriteString(html.EscapeString(comparatorSymbol(t.Comparator) + " " + formatAxisValue(t.Value, unit)))
+		sb.WriteString(`</text></g>`)
+	}
+
+	// Линии рядов: разрывы на NaN/Inf (как в metricSeriesMarkup), цвет — по
+	// классу палитры series-m{i+1}, без заливки под линией (area у 8
+	// перекрывающихся рядов читалась бы мутным пятном, а не сериями — тем же
+	// путём уже пошёл p95 в latencyLinesMarkup: только линия).
+	for i, s := range series {
+		sn := len(s.Points)
+		pts := make([]seriesPoint, sn)
+		for j, p := range s.Points {
+			x := g.xForIndex(j, sn)
+			if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
+				pts[j] = seriesPoint{x: x, has: false}
+				continue
+			}
+			pts[j] = seriesPoint{x: x, y: scale.yFor(g, p.V), has: true}
+		}
+		class := "series-m" + strconv.Itoa(i+1)
+		writeLineWithArea(&sb, pts, g.y1, "", "", `class="`+class+`"`)
+	}
+
+	// Полосы наведения: одна на индекс общей временной сетки, подсказка
+	// перечисляет значения всех рядов, у кого в этой корзине есть данные —
+	// иначе на 8 рядах пришлось бы наводиться на каждый отдельно.
+	band := (g.x1 - g.x0) / float64(n)
+	for i := 0; i < n; i++ {
+		var parts []string
+		for _, s := range series {
+			if i >= len(s.Points) {
+				continue
+			}
+			p := s.Points[i]
+			if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
+				continue
+			}
+			parts = append(parts, s.Label+": "+formatAxisValue(p.V, unit))
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		// humanize.Time, а не свой .Format("02.01 15:04") (как у соседних
+		// функций этого файла) — TestNoRawTimeFormattingOutsideHumanize
+		// держит долг литеральных макетов на потолке 11, поднимать его ради
+		// нового вызова было бы обычным пополнением долга; сюда идёт вызов
+		// уже существующей общей функции.
+		writeHoverBand(&sb, g, g.xForIndex(i, n)-band/2, band,
+			humanize.Time(ctx, times[i], time.UTC)+" — "+strings.Join(parts, " · "))
+	}
+
+	sb.WriteString(`</svg>`)
+	return sb.String()
+}
+
 // axisLine — тонкая линия сетки/оси в текущем цвете (currentColor группы).
 func axisLine(sb *strings.Builder, x1, y1v, x2, y2 float64) {
 	sb.WriteString(`<line x1="`)

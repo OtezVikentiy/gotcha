@@ -1,0 +1,191 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+func hostsBasePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/hosts"
+}
+
+func hostLink(projectID int64, name string) string {
+	return hostsBasePath(projectID) + "/" + url.PathEscape(name)
+}
+
+// HostRowVM — одна строка списка хостов (§5.2 дизайна): последние значения
+// CPU/RAM/диск/load — указатели, потому что молчащий хост (нет точек в
+// 15-минутном окне) не имеет значения вовсе, и шаблон должен отличить «0%»
+// от «нет данных» (прочерк).
+type HostRowVM struct {
+	Name string
+	// StatusKind — "problem" (есть открытые инциденты, см. OpenKinds),
+	// "silent" (last_seen старше порога тишины) или "ok".
+	StatusKind string
+	// OpenKinds — виды открытых инцидентов хоста (disk/memory/load/silent),
+	// заполнено только при StatusKind == "problem".
+	OpenKinds   []string
+	CPU         *float64 // доля [0,1], busy = 1 − idle
+	Mem         *float64 // доля [0,1], used
+	Disk        *float64 // доля [0,1], худший mountpoint
+	LoadPerCore *float64
+	LastSeen    time.Time
+}
+
+// hostPercentText форматирует долю в проценты для показа человеку
+// (fmt.Sprintf, не internal/humanize — в нём процентов нет, см. бриф T14).
+// nil → прочерк (хост не прислал эту метрику за окно).
+func hostPercentText(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f%%", *v*100)
+}
+
+// hostLoadText форматирует load/core двумя знаками; nil — нет load-метрики
+// или логических ядер (деление не выполнено, см. hosts.go).
+func hostLoadText(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f", *v)
+}
+
+// hostStatusBadgeClass — цвет статус-бейджа: тот же набор классов, что у
+// мониторов (monitorStatusBadgeClass) — единая палитра статусов продукта.
+func hostStatusBadgeClass(kind string) string {
+	switch kind {
+	case "problem":
+		return "badge badge-danger"
+	case "silent":
+		return "badge badge-warn"
+	default:
+		return "badge badge-good"
+	}
+}
+
+// HostsList — GET /projects/{id}/hosts: таблица хостов проекта.
+// truncated — потолок в hostsListLimit строк превышен (§5.2, без пагинации).
+// config — готовый YAML коллектора (§5.4 дизайна, h.hostCollectorConfig в
+// hosts.go); пустая строка — в проекте нет ни одного активного публичного
+// ключа, тогда вместо copyBlock показывается подсказка.
+//
+// Конфиг нужен обеим веткам, а не только онбордингу пустого списка (UX-аудит
+// A1, P2-11): подключение ВТОРОГО сервера — тот же сценарий, что первого, а
+// страница настройки порогов, где конфиг лежал ещё раз, закрыта гейтом
+// оператора. Участник проекта без operator оставался без готового YAML вовсе,
+// хотя ключ в нём — тот же DSN, который он и так видит на странице проекта.
+// limit — потолок числа строк (hostsListLimit, web/hosts.go): его называет
+// подсказка усечения, и число в ней не должно быть вписано в перевод, иначе
+// смена потолка молча разъедется с текстом (UX-аудит A1, P2-2).
+templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, config, userEmail string) {
+	@layout(i18n.T(ctx, "nav.hosts"), userEmail) {
+		<div class="hosts">
+			<h1>{ i18n.T(ctx, "nav.hosts") }</h1>
+			@helpPanel("hosts", "hosts")
+			if len(rows) == 0 {
+				@emptyState("server", "hosts.empty.title", "hosts.empty.body", "", "", 2)
+				@hostsOnboarding(config)
+			} else {
+				if truncated {
+					<p class="hint">{ i18n.Tf(ctx, "hosts.limit_notice", "limit", strconv.Itoa(limit)) }</p>
+				}
+				<div class="card">
+				@scrollRegion("table-scroll", "nav.hosts") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "hosts.table.name") }</th>
+									<th scope="col">{ i18n.T(ctx, "hosts.table.status") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.cpu") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.mem") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.disk") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.load") }</th>
+									<th scope="col">{ i18n.T(ctx, "hosts.table.last_seen") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, row := range rows {
+									<tr>
+										<td><a href={ templ.URL(hostLink(projectID, row.Name)) }>{ row.Name }</a></td>
+										<td>
+											switch row.StatusKind {
+												case "problem":
+													<span class={ hostStatusBadgeClass(row.StatusKind) }>
+														for i, k := range row.OpenKinds {
+															if i > 0 {
+																{ ", " }
+															}
+															{ i18n.T(ctx, "hosts.kind."+k) }
+														}
+													</span>
+												case "silent":
+													<span class={ hostStatusBadgeClass(row.StatusKind) }>{ i18n.T(ctx, "hosts.status.silent") }</span>
+												default:
+													<span class={ hostStatusBadgeClass(row.StatusKind) }>{ i18n.T(ctx, "hosts.status.ok") }</span>
+											}
+										</td>
+										<td class="num">{ hostPercentText(row.CPU) }</td>
+										<td class="num">{ hostPercentText(row.Mem) }</td>
+										<td class="num">{ hostPercentText(row.Disk) }</td>
+										<td class="num">{ hostLoadText(row.LoadPerCore) }</td>
+										<td>@relativeTime(row.LastSeen)</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+				}
+				</div>
+				@hostsCollectorConfigDetails("hosts-collector-config", config)
+			}
+		</div>
+	}
+}
+
+// hostsCollectorConfigDetails — свёрнутый блок «показать конфиг коллектора»:
+// один и тот же на непустом списке хостов и на странице порогов
+// (HostSettings). id — id скрытой textarea copyBlock, обязан быть уникален в
+// документе, поэтому его задаёт вызывающий, а не сам компонент.
+templ hostsCollectorConfigDetails(id, config string) {
+	<details>
+		<summary>{ i18n.T(ctx, "hosts.settings.show_config") }</summary>
+		if config != "" {
+			@copyBlock(id, "hosts.copy.button", config)
+		} else {
+			<p class="hint">{ i18n.T(ctx, "hosts.onboarding.no_key") }</p>
+		}
+	</details>
+}
+
+// hostsOnboarding — три шага подключения хоста (§5.4 дизайна): установить
+// коллектор → скопировать готовый конфиг (copyBlock, тот же контракт copy.js,
+// что у copyToolbar) → включить и запустить. config == "" — в проекте ещё
+// нет активного публичного ключа (h.hostCollectorConfig, hosts.go): без него
+// конфиг заполнить нечем (endpoint без ключа не заработает), поэтому вместо
+// copyBlock — подсказка, где ключ завести, а не полу-пустой YAML.
+templ hostsOnboarding(config string) {
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "hosts.onboarding.title") }</h2>
+		<ol>
+			<li>
+				<p>{ i18n.T(ctx, "hosts.onboarding.step1") } <a href="/docs/hosts">{ i18n.T(ctx, "hosts.onboarding.docs_link") }</a></p>
+			</li>
+			<li>
+				<p>{ i18n.T(ctx, "hosts.onboarding.step2") }</p>
+				if config != "" {
+					@copyBlock("hosts-onboarding-collector-config", "hosts.copy.button", config)
+				} else {
+					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.no_key") }</p>
+				}
+			</li>
+			<li>
+				<p>{ i18n.T(ctx, "hosts.onboarding.step3") }</p>
+				<pre>sudo systemctl enable --now otelcol-contrib</pre>
+			</li>
+		</ol>
+	</section>
+}

@@ -119,6 +119,34 @@ means part of the names have disappeared from lists — the affected screens sho
 a notice; the usual cause is an identifier that leaked into a name. The tracked
 gauge is the guard's own memory footprint.
 
+**`gotcha_host_evaluator_last_tick_timestamp_seconds`** /
+**`gotcha_host_evaluator_tick_duration_seconds`** — when the host evaluator (disk,
+memory, load, silence) last completed a pass, and how long that pass took. What
+needs watching here is not failure but continuation: a dead evaluator looks
+exactly like "all hosts are fine", because silence is its normal output. A gap
+between now and the timestamp noticeably larger than `GOTCHA_HOST_EVAL_INTERVAL`
+means host thresholds are not being evaluated; a duration approaching the
+interval means the evaluator is falling behind — usually a slow ClickHouse or a
+fleet that outgrew the interval.
+
+Only a pass that ran to completion moves the timestamp. A pass cut short by its
+own deadline (it evaluates part of the fleet and gives up) does NOT refresh it —
+otherwise an evaluator that gives up halfway through every single time would
+look perfectly healthy from here. The duration is always published: that's what
+makes hitting the budget visible. The reason shows up in the log as `tick did
+not finish within its budget`.
+
+**`gotcha_host_registration_failures_total`** — background writes to the host
+registry that failed. While this grows, host `last_seen` is not refreshed, so
+silence incidents may be raised for machines that are alive; the cause is almost
+always an unavailable PostgreSQL.
+
+**`gotcha_host_registrations_rejected_total`** — new host names dropped by the
+ceiling of 1000 hosts per project. A non-zero value means new machines stop
+appearing in the Hosts section: either the fleet really did reach the ceiling, or
+an identifier leaked into the host name (pods, autoscaling) and every instance
+registers as a separate machine.
+
 **`gotcha_notify_pending_jobs`** / **`gotcha_notify_oldest_pending_age_seconds`** —
 delivery queue depth and the age of the oldest waiting notification. The age
 matters more than the depth: it is the only number that tells "the queue is empty

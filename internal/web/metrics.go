@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
@@ -13,6 +14,27 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
+
+// systemMetricPrefix — метрики хостового коллектора (T14–T16), которые иначе
+// затопили бы список метрик проекта после подключения хоста.
+const systemMetricPrefix = "system."
+
+// filterSystemMetrics отделяет system.*-метрики от списка, уже полученного
+// ListMetrics (SQL не трогаем — фильтрация только здесь). showSystem=false
+// вырезает их из видимого среза; hiddenCount считается в любом случае — по
+// нему шаблон решает, рисовать ли переключатель.
+func filterSystemMetrics(metrics []metric.MetricInfo, showSystem bool) (visible []metric.MetricInfo, hiddenCount int) {
+	for _, m := range metrics {
+		if strings.HasPrefix(m.Name, systemMetricPrefix) {
+			hiddenCount++
+			if !showSystem {
+				continue
+			}
+		}
+		visible = append(visible, m)
+	}
+	return visible, hiddenCount
+}
 
 func metricsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics"
@@ -52,8 +74,20 @@ func (h *Handler) metricsList(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	_ = templates.MetricsList(projectID, metrics, environment, h.currentEmail(r)).Render(r.Context(), w)
+	showSystem := r.URL.Query().Get("system") == "1"
+	visible, hiddenCount := filterSystemMetrics(metrics, showSystem)
+	_ = templates.MetricsList(projectID, visible, environment, h.currentEmail(r), showSystem, hiddenCount).Render(r.Context(), w)
 }
+
+// metricChartWidth/metricChartHeight — размер графика ряда на странице метрики.
+// Ширина названа константой, а не вписана числом в вызов: от неё зависит класс
+// chart-vb<ширина>, который проставляет svgRoot, а значит — и кегль подписей
+// осей в app.css. Связь держит сторож TestChartViewBoxFontSizeRules
+// (css_chart_vb_test.go), и ему нужно имя, а не литерал в аргументе.
+const (
+	metricChartWidth  = 720
+	metricChartHeight = 200
+)
 
 // metricDetail — GET /projects/{id}/metrics/{name}: график ряда метрики.
 func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
@@ -97,12 +131,16 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	environment := r.URL.Query().Get("environment")
 	agg := metricAggFor(info.Type, r.URL.Query().Get("agg"))
 	matcher := metric.LabelMatcher{Key: r.URL.Query().Get("label_key"), Value: r.URL.Query().Get("label_value")}
+	var matchers []metric.LabelMatcher
+	if matcher.Key != "" {
+		matchers = []metric.LabelMatcher{matcher}
+	}
 
 	from, now := tr.From, tr.To
 	// Метрики читают сырую metric_points (без 5m-MV, как у perf), поэтому шаг
 	// может быть мельче — не мельче минуты, без выравнивания (align=0).
 	step := autoStep(tr.Window(), time.Minute, 0, metricChartBuckets)
-	points, err := h.Metrics.Series(r.Context(), projectID, name, environment, matcher, agg, from, now, step)
+	points, err := h.Metrics.Series(r.Context(), projectID, name, environment, "", matchers, agg, from, now, step)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -132,7 +170,7 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		Labels:       labels,
 		LabelKey:     matcher.Key,
 		LabelValue:   matcher.Value,
-		Chart:        metricSeriesSVG(r.Context(), points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), 720, 200),
+		Chart:        metricSeriesSVG(r.Context(), points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), metricChartWidth, metricChartHeight),
 		Percentiles:  info.Type == "histogram",
 	}
 	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)

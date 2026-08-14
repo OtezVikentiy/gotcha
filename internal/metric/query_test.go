@@ -63,7 +63,7 @@ func TestQueryHistogramSeries(t *testing.T) {
 			t.Fatalf("seed hist: %v", err)
 		}
 	}
-	pts, err := q.Series(ctx, 11, "http.dur", "prod", LabelMatcher{}, "p95", now.Add(-5*time.Minute), now.Add(time.Minute), time.Minute)
+	pts, err := q.Series(ctx, 11, "http.dur", "prod", "", nil, "p95", now.Add(-5*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("histogram Series: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestQueryListAndSeries(t *testing.T) {
 	}
 
 	// Series cpu avg по prod за окно, шаг 1m → есть точки.
-	pts, err := q.Series(ctx, 9, "cpu", "prod", LabelMatcher{}, "avg", now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
+	pts, err := q.Series(ctx, 9, "cpu", "prod", "", nil, "avg", now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("Series: %v", err)
 	}
@@ -131,11 +131,74 @@ func TestQueryListAndSeries(t *testing.T) {
 		t.Fatalf("Series returned no points")
 	}
 	// Матчер по host=h2 (только stage-точка) + env stage.
-	pts2, err := q.Series(ctx, 9, "cpu", "stage", LabelMatcher{Key: "host", Value: "h2"}, "max", now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
+	pts2, err := q.Series(ctx, 9, "cpu", "stage", "", []LabelMatcher{{Key: "host", Value: "h2"}}, "max", now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("Series matcher: %v", err)
 	}
 	if len(pts2) != 1 || pts2[0].V != 0.9 {
 		t.Fatalf("matched series = %+v", pts2)
+	}
+}
+
+// seedGaugeHost — как seedGauge, но с колонкой host (для проверки host-фильтра
+// отдельно от атрибутов).
+func seedGaugeHost(t *testing.T, conn interface {
+	Exec(ctx context.Context, query string, args ...any) error
+}, projectID int64, name, env, host string, ts time.Time, val float64, attrs map[string]string) {
+	t.Helper()
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	if err := conn.Exec(context.Background(), `
+		INSERT INTO metric_points (project_id, name, type, unit, service, environment, host, attributes, ts, value, count, bucket_counts, explicit_bounds, monotonic, temporality)
+		VALUES (?, ?, 'gauge', '1', 'api', ?, ?, ?, ?, ?, 0, [], [], 0, '')`,
+		projectID, name, env, host, attrs, ts, val); err != nil {
+		t.Fatalf("seed gauge host: %v", err)
+	}
+}
+
+// TestSeriesMultiMatcherAndHost: два AND-матчера сужают серию до одной, host
+// отсекает чужой хост; пустой host и пустой срез матчеров — прежнее поведение
+// (все точки метрики).
+func TestSeriesMultiMatcherAndHost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+	const pid = 75
+
+	// web-1: state=used,cpu=0 (искомая) и state=free,cpu=0 (не должна попасть).
+	seedGaugeHost(t, conn, pid, "m", "prod", "web-1", now.Add(-1*time.Minute), 1, map[string]string{"state": "used", "cpu": "0"})
+	seedGaugeHost(t, conn, pid, "m", "prod", "web-1", now.Add(-1*time.Minute), 2, map[string]string{"state": "free", "cpu": "0"})
+	// web-2: та же пара лейблов state=used,cpu=0, но чужой хост — должна отсечься host-фильтром.
+	seedGaugeHost(t, conn, pid, "m", "prod", "web-2", now.Add(-1*time.Minute), 9, map[string]string{"state": "used", "cpu": "0"})
+
+	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
+
+	// Два матчера AND + host=web-1 → только первая точка (V=1).
+	pts, err := q.Series(ctx, pid, "m", "", "web-1",
+		[]LabelMatcher{{Key: "state", Value: "used"}, {Key: "cpu", Value: "0"}},
+		"avg", from, to, time.Minute)
+	if err != nil {
+		t.Fatalf("Series multi-matcher+host: %v", err)
+	}
+	if len(pts) != 1 || pts[0].V != 1 {
+		t.Fatalf("pts = %+v, want 1 точку со значением 1", pts)
+	}
+
+	// Пустой host и пустой срез матчеров → все точки метрики (3 записи, но в одном бакете → 1 точка avg).
+	ptsAll, err := q.Series(ctx, pid, "m", "", "", nil, "avg", from, to, time.Minute)
+	if err != nil {
+		t.Fatalf("Series no filters: %v", err)
+	}
+	if len(ptsAll) != 1 {
+		t.Fatalf("ptsAll = %+v, want 1 бакет", ptsAll)
+	}
+	wantAvg := (1.0 + 2.0 + 9.0) / 3.0
+	if ptsAll[0].V < wantAvg-0.01 || ptsAll[0].V > wantAvg+0.01 {
+		t.Fatalf("ptsAll avg = %v, want %v", ptsAll[0].V, wantAvg)
 	}
 }

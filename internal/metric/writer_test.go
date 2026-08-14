@@ -49,3 +49,41 @@ func TestWriterFlushesToCH(t *testing.T) {
 		t.Fatalf("host label = %q err=%v", host, err)
 	}
 }
+
+// TestWriterFlushesHostColumn проверяет, что колонка host пишется в ClickHouse и читается обратно.
+func TestWriterFlushesHostColumn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	w := metric.NewWriter(conn)
+	go w.Run()
+
+	now := time.Now().UTC()
+	// Пишем точку с заполненным Host
+	w.Add(99, metric.MetricPoint{
+		Name:        "cpu",
+		Type:        "gauge",
+		Unit:        "1",
+		Service:     "api",
+		Environment: "prod",
+		Host:        "web-1",
+		TS:          now,
+		Value:       0.5,
+	})
+
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	ctx := context.Background()
+	// Проверяем, что host значение доехало в ClickHouse
+	var hostValue string
+	if err := conn.QueryRow(ctx,
+		"SELECT host FROM metric_points WHERE project_id=99 AND name='cpu'").Scan(&hostValue); err != nil {
+		t.Fatalf("select host: %v", err)
+	}
+	if hostValue != "web-1" {
+		t.Fatalf("host = %q, want 'web-1'", hostValue)
+	}
+}

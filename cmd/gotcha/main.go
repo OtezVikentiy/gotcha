@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
@@ -513,7 +514,7 @@ func run() error {
 		// оставлен прежним намеренно: включать их автоматически везде значило бы
 		// в связке web+uptime гонять двойную оценку.
 		if runEvaluators(cfg) {
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics)
 		}
 
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
@@ -523,14 +524,18 @@ func run() error {
 	if cfg.Mode != "uptime" && cfg.Mode != "all" && cfg.Mode != "probe" {
 		switch {
 		case runEvaluatorsExplicit(cfg):
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics)
 			slog.Info("evaluators enabled by GOTCHA_RUN_EVALUATORS", "mode", cfg.Mode)
 		default:
 			// Молчать здесь нельзя: правило по метрике в интерфейсе выглядит
 			// включённым, а не вычисляется. Оператор должен узнать об этом при
-			// старте, а не во время инцидента.
-			slog.Warn("metric/performance/profile evaluators are NOT running in this mode; "+
-				"metric alert rules and regression detection will never fire — "+
+			// старте, а не во время инцидента. Хостовые пороги перечислены
+			// наравне с остальными (ревью M3): startEvaluators поднимает и
+			// host.Evaluator, а страница /hosts/settings точно так же
+			// показывает пороги включёнными.
+			slog.Warn("metric/performance/profile/host evaluators are NOT running in this mode; "+
+				"metric alert rules, regression detection and host thresholds "+
+				"(disk/memory/load/silence) will never fire — "+
 				"run a --mode=uptime (or --mode=all) replica, or set GOTCHA_RUN_EVALUATORS=true here",
 				"mode", cfg.Mode)
 		}
@@ -550,6 +555,10 @@ func run() error {
 	// cardinality — ограничитель кардинальности; нужен и приёму (схлопывание),
 	// и веб-слою (диагностика: что схлопнуто и примеры значений).
 	var cardinality *ingest.CardinalityGuard
+	// hostToucher — троттлер регистрации хостов (см. internal/host); объявлен
+	// здесь (а не := внутри ingest-блока), чтобы веб-слой мог взять его для
+	// Forget при удалении хоста, как ingestHandler/webHandler/cardinality выше.
+	var hostToucher *host.Toucher
 	// Доставка уведомлений и чистка очереди. Гейт — НЕ режим, а сам факт наличия
 	// outbox: в очередь пишут контуры из разных режимов (uptime.OutboxNotifier в
 	// web|uptime|all, оценщики трейсов/метрик/профилей в ingest|all), и когда
@@ -655,6 +664,27 @@ func run() error {
 		entityJanitor := &telemetry.EntityJanitor{
 			Pool:      pg,
 			Retention: entityRetention,
+			// Хук на правило hosts: удаление хоста каскадит его host_incidents,
+			// включая открытые, — то есть «сервер мёртв» исчезло бы без единого
+			// события. Retirer перед удалением батча закрывает открытые инциденты
+			// и рассылает уведомление о снятии с наблюдения (см. host.Retirer).
+			// Нотифаер — тот же, что у оценщика хостов; alertSvc/outbox/
+			// emailSender построены выше для всех режимов, доживающих сюда с БД
+			// (ingest/web/all — блок orgSvc, uptime — блок uptimeSvc).
+			PreDelete: map[string]telemetry.PreDeleteHook{
+				"hosts": (&host.Retirer{
+					Hosts:     host.NewStore(pg),
+					Incidents: host.NewIncidentService(pg),
+					Notifier: &host.HostNotifier{
+						Alerts:       alertSvc,
+						Outbox:       outbox,
+						BaseURL:      cfg.BaseURL,
+						EmailEnabled: emailSender.Configured(),
+						Details:      detailPolicy(cfg),
+						Locale:       i18n.Locale{Code: cfg.Locale},
+					},
+				}).Retire,
+			},
 		}
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_entities_purged_total",
 			"Rows deleted from PostgreSQL because they outlived the retention of the data they describe.",
@@ -812,6 +842,22 @@ func run() error {
 		// Метрики (этап 6): приёмник + отдельная квота метрик.
 		ingestHandler.Metrics = metricWriter
 		ingestHandler.MetricQuota = ingest.NewOrgMetricQuota(orgSvc)
+		// Реестр хостов (A1): регистрирует host.name, приславшие метрики.
+		// Троттлинг 1/мин на (project, host) — приём шлёт точки чаще, чем имеет
+		// смысл писать в PG; потолок карты троттлера — защита от кардинального
+		// мусора в самих именах хостов (см. host.Toucher).
+		hostToucher = host.NewToucher(host.NewStore(pg), time.Minute, 65536)
+		ingestHandler.Hosts = hostToucher
+		// Регистрация хостов идёт в фоне, и её отказ на приёме не виден: пока
+		// растут эти счётчики, last_seen не обновляется — прямой путь к
+		// silent-инцидентам по живым машинам (failures) или к молчаливому
+		// отсутствию новых машин в разделе (rejected).
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_host_registration_failures_total",
+			"Failed background upserts of the host registry. While this grows, host last_seen is stale and silence alerts may be false.",
+			nil, hostToucher.UpsertFailures)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_host_registrations_rejected_total",
+			"New host names dropped because a project hit the per-project host ceiling.",
+			nil, hostToucher.RejectedNames)
 		// Профили (этап 7): приёмник + отдельная квота профилей.
 		ingestHandler.Profiles = profileWriter
 		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
@@ -873,6 +919,18 @@ func run() error {
 		webHandler.Metrics = metric.NewQuery(ch)
 		webHandler.MetricRules = metric.NewRuleService(pg)
 		webHandler.MetricIncidents = metric.NewIncidentService(pg)
+		// Хосты (план A1, задача 14): реестр + инциденты + пороги — всегда
+		// вместе с Metrics (страницы хостов читают и то, и другое).
+		webHandler.Hosts = host.NewStore(pg)
+		webHandler.HostIncidents = host.NewIncidentService(pg)
+		webHandler.HostSettings = host.NewSettingsService(pg)
+		// hostToucher остаётся nil в чистом web-режиме (создаётся только в
+		// ingest-блоке выше) — тогда HostForget остаётся настоящим nil-
+		// интерфейсом (см. комментарий поля), а не typed-nil, на котором
+		// вызов Forget запаниковал бы.
+		if hostToucher != nil {
+			webHandler.HostForget = hostToucher
+		}
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
@@ -997,7 +1055,8 @@ func run() error {
 // функцию, потому что запускать их надо из двух мест — режима uptime|all и
 // явного GOTCHA_RUN_EVALUATORS в прочих режимах с БД.
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
-	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender) {
+	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
+	selfMetrics *selfmetrics.Registry) {
 	evaluator := &trace.Evaluator{
 		Pool:        pg,
 		Query:       trace.NewQuery(ch),
@@ -1051,6 +1110,36 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Config:   profile.DefaultProfileRegressionConfig(),
 	}
 	go profileRegEval.Run(ctx)
+
+	// Оценщик встроенных порогов хоста (диск/память/нагрузка/тишина, план A1) —
+	// та же ниша, что metric/profile-оценщики выше, но правила не в БД, а
+	// фиксированный набор из четырёх видов + настройки проекта.
+	hostEval := &host.Evaluator{
+		Store:     host.NewStore(pg),
+		Settings:  host.NewSettingsService(pg),
+		Incidents: host.NewIncidentService(pg),
+		Metrics:   metric.NewQuery(ch),
+		Notifier: &host.HostNotifier{
+			Alerts:       alertSvc,
+			Outbox:       outbox,
+			BaseURL:      cfg.BaseURL,
+			EmailEnabled: emailSender.Configured(),
+			Details:      detailPolicy(cfg),
+			Locale:       i18n.Locale{Code: cfg.Locale},
+		},
+		Interval: time.Duration(cfg.HostEvalInterval) * time.Second,
+	}
+	// Живость оценщика хостов. Раньше о нём было известно ровно одно: в журнале
+	// нет ошибок. Умерший или отстающий оценщик выглядит снаружи в точности как
+	// «на хостах всё спокойно» — тишина и есть его нормальный вывод, поэтому
+	// наблюдать надо не отказ, а сам факт продолжения работы.
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_host_evaluator_last_tick_timestamp_seconds",
+		"Unix time of the last completed host threshold evaluation pass. Stale value means host alerts are not being evaluated.",
+		nil, hostEval.LastTickUnix)
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_host_evaluator_tick_duration_seconds",
+		"Duration of the last host threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
+		nil, hostEval.LastTickSeconds)
+	go hostEval.Run(ctx)
 }
 
 // detailPolicy — политика раскрытия деталей события получателю уведомления.

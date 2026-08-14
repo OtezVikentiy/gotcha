@@ -2,6 +2,7 @@ package metric
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,13 @@ import (
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
+
+// strVal создаёт AnyValue со строковым значением.
+func strVal(s string) *commonpb.AnyValue {
+	return &commonpb.AnyValue{
+		Value: &commonpb.AnyValue_StringValue{StringValue: s},
+	}
+}
 
 func kv(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{
@@ -181,5 +189,70 @@ func TestMapOTLPFallbackTS(t *testing.T) {
 	points := MapOTLP(rm, fb)
 	if len(points) != 1 || !points[0].TS.Equal(fb) || points[0].Value != 5 {
 		t.Fatalf("fallback ts/int value = %+v", points)
+	}
+}
+
+func TestMapOTLPPromotesHostName(t *testing.T) {
+	rm := []*metricspb.ResourceMetrics{{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+			{Key: "host.name", Value: strVal("web-1")},
+			{Key: "service.name", Value: strVal("")},
+		}},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{gaugeMetric("system.cpu.utilization", "", 0.5)}}},
+	}}
+	points := MapOTLP(rm, time.Now().UTC())
+	if len(points) != 1 || points[0].Host != "web-1" {
+		t.Fatalf("host = %q, want web-1", points[0].Host)
+	}
+}
+
+// TestMapOTLPStripsNULFromPromotedFields — NUL валиден в protobuf и в
+// ClickHouse, но PostgreSQL отвергает его в text ("invalid byte sequence for
+// encoding UTF8: 0x00"). host.name доезжает до PG (реестр hosts), причём
+// батчем через unnest: одно битое имя роняло бы upsert ВСЕГО батча, а вместе с
+// ним и обновление last_seen соседних живых хостов — ложная «тишина» чужого
+// сервера. Вырезаем на границе разбора, как ingest.capRunes.
+func TestMapOTLPStripsNULFromPromotedFields(t *testing.T) {
+	rm := []*metricspb.ResourceMetrics{{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+			{Key: "host.name", Value: strVal("web\x00-1")},
+			{Key: "service.name", Value: strVal("api\x00")},
+			{Key: "deployment.environment.name", Value: strVal("pro\x00d")},
+		}},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
+			gaugeMetric("sys\x00tem.cpu", "по\x00пугай", 0.5),
+		}}},
+	}}
+	points := MapOTLP(rm, time.Now().UTC())
+	if len(points) != 1 {
+		t.Fatalf("points = %d, want 1", len(points))
+	}
+	for name, got := range map[string]string{
+		"Host":        points[0].Host,
+		"Service":     points[0].Service,
+		"Environment": points[0].Environment,
+		"Name":        points[0].Name,
+		"Unit":        points[0].Unit,
+	} {
+		if strings.ContainsRune(got, 0) {
+			t.Errorf("%s = %q содержит NUL", name, got)
+		}
+	}
+	if points[0].Host != "web-1" {
+		t.Errorf("Host = %q, want %q", points[0].Host, "web-1")
+	}
+}
+
+func TestMapOTLPCapsHostRunes(t *testing.T) {
+	long := strings.Repeat("х", 250)
+	rm := []*metricspb.ResourceMetrics{{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+			{Key: "host.name", Value: strVal(long)},
+		}},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{gaugeMetric("m", "", 1)}}},
+	}}
+	points := MapOTLP(rm, time.Now().UTC())
+	if got := len([]rune(points[0].Host)); got != 200 {
+		t.Fatalf("host runes = %d, want 200", got)
 	}
 }

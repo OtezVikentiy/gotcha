@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -15,6 +17,50 @@ import (
 // Query читает агрегаты метрик из metric_points (аналог trace.Query).
 type Query struct {
 	conn driver.Conn
+	// types — необязательный кеш metricType (см. WithTypeCache). nil у обычного
+	// Query: страничные чтения делают по одному Series/Aggregate на запрос, и
+	// кешировать там нечего.
+	types *TypeCache
+}
+
+// TypeCache — кеш типов метрик на ОДИН проход вызывающего (тик оценщика).
+// metricType не зависит ни от хоста, ни от прочих фильтров — только от
+// (проект, имя, окно), поэтому у проекта с сотней машин половина запросов тика
+// была буквально одинаковой: восемь походов в ClickHouse на хост, из них
+// четыре — повтор одного и того же «какого типа system.memory.utilization».
+//
+// Живёт столько же, сколько проход: инвалидации нет и не нужно, потому что
+// каждый тик заводит новый кеш. Долгоживущим его делать нельзя — тип метрики
+// хоть и стабилен, но окно [from,to) в ключе двигается, а вместе с ним и
+// правильный ответ для пустых окон.
+type TypeCache struct {
+	mu sync.Mutex
+	m  map[typeCacheKey]typeCacheValue
+}
+
+type typeCacheKey struct {
+	projectID int64
+	name      string
+	from, to  int64
+}
+
+type typeCacheValue struct {
+	typ         string
+	monotonic   bool
+	temporality string
+}
+
+func NewTypeCache() *TypeCache {
+	return &TypeCache{m: map[typeCacheKey]typeCacheValue{}}
+}
+
+// WithTypeCache возвращает КОПИЮ Query, чей metricType ходит через кеш c.
+// Копия, а не поле у общего экземпляра: *metric.Query разделяют веб-хендлеры и
+// оценщики, и кеш одного прохода не должен становиться их общим состоянием.
+func (q *Query) WithTypeCache(c *TypeCache) *Query {
+	cp := *q
+	cp.types = c
+	return &cp
 }
 
 // labelSampleRows — потолок строк, читаемых Labels для наполнения дропдауна
@@ -159,6 +205,15 @@ func (q *Query) Environments(ctx context.Context, projectID int64, name string, 
 // каждый тик оценщика метрик-алертов). Если в окне точек нет, Series/Aggregate
 // всё равно вернут пусто — тип тогда не важен.
 func (q *Query) metricType(ctx context.Context, projectID int64, name string, from, to time.Time) (typ string, monotonic bool, temporality string, err error) {
+	key := typeCacheKey{projectID: projectID, name: name, from: from.UnixNano(), to: to.UnixNano()}
+	if q.types != nil {
+		q.types.mu.Lock()
+		v, ok := q.types.m[key]
+		q.types.mu.Unlock()
+		if ok {
+			return v.typ, v.monotonic, v.temporality, nil
+		}
+	}
 	row := q.conn.QueryRow(ctx, `
 		SELECT any(type), any(monotonic), any(temporality)
 		FROM metric_points WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?`,
@@ -174,13 +229,24 @@ func (q *Query) metricType(ctx context.Context, projectID int64, name string, fr
 		}
 		return "", false, "", fmt.Errorf("metric: metric type: %w", err)
 	}
+	// Кешируем только успешный ответ: ошибка запроса — состояние ClickHouse, а
+	// не свойство метрики, и запоминать её на весь проход значило бы разнести
+	// одну неудачу на все хосты проекта.
+	if q.types != nil {
+		q.types.mu.Lock()
+		q.types.m[key] = typeCacheValue{typ: typ, monotonic: mono == 1, temporality: temporality}
+		q.types.mu.Unlock()
+	}
 	return typ, mono == 1, temporality, nil
 }
 
 // Series возвращает временной ряд метрики: bucketing по step, агрегация по типу
 // (gauge/sum non-monotonic → agg; sum monotonic cumulative → rate; histogram +
 // p50/p95/p99 → перцентиль интерполяцией, histogram + avg → sum/count).
-func (q *Query) Series(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time, step time.Duration) ([]Point, error) {
+// matchers — AND всех непустых пар (Key,Value) по attributes; host фильтрует
+// отдельную колонку host (пусто → без фильтра).
+func (q *Query) Series(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time, step time.Duration) ([]Point, error) {
+	matchers = compactMatchers(matchers)
 	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
 	if err != nil {
 		return nil, err
@@ -192,43 +258,45 @@ func (q *Query) Series(ctx context.Context, projectID int64, name, environment s
 
 	switch {
 	case typ == "histogram" && isPercentile(agg):
-		return q.histogramSeries(ctx, projectID, name, environment, matcher, agg, from, to, stepSec)
+		return q.histogramSeries(ctx, projectID, name, environment, host, matchers, agg, from, to, stepSec)
 	case typ == "sum" && monotonic && temporality == "cumulative":
-		return q.rateSeries(ctx, projectID, name, environment, matcher, from, to, stepSec)
+		return q.rateSeries(ctx, projectID, name, environment, host, matchers, from, to, stepSec)
 	default:
-		return q.scalarSeries(ctx, projectID, name, environment, matcher, typ, agg, from, to, stepSec)
+		return q.scalarSeries(ctx, projectID, name, environment, host, matchers, typ, agg, from, to, stepSec)
 	}
 }
 
 // scalarSeries — простая агрегация значения по бакету. Для histogram+avg
 // используем sum(value)/sum(count) (среднее наблюдение).
-func (q *Query) scalarSeries(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, typ, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
+func (q *Query) scalarSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, typ, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
 	aggExpr := scalarAggExpr(typ, agg)
 	sql := fmt.Sprintf(`
 		SELECT toStartOfInterval(ts, INTERVAL %d second) AS b, %s
 		FROM metric_points
 		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
 		  AND (? = '' OR environment = ?)
+		  AND (? = '' OR host = ?)
 		  %s
-		GROUP BY b ORDER BY b`, stepSec, aggExpr, matcherClause(matcher))
-	args := []any{projectID, name, from, to, environment, environment}
-	args = appendMatcherArgs(args, matcher)
+		GROUP BY b ORDER BY b`, stepSec, aggExpr, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment, host, host}
+	args = appendMatchersArgs(args, matchers)
 	return q.scanPoints(ctx, sql, args)
 }
 
 // rateSeries — rate для monotonic cumulative counter'а: max(value) по бакету,
 // затем разность соседних бакетов / шаг. Сброс счётчика (отрицательная
 // разность) → 0.
-func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, from, to time.Time, stepSec int64) ([]Point, error) {
+func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, from, to time.Time, stepSec int64) ([]Point, error) {
 	sql := fmt.Sprintf(`
 		SELECT toStartOfInterval(ts, INTERVAL %d second) AS b, max(value)
 		FROM metric_points
 		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
 		  AND (? = '' OR environment = ?)
+		  AND (? = '' OR host = ?)
 		  %s
-		GROUP BY b ORDER BY b`, stepSec, matcherClause(matcher))
-	args := []any{projectID, name, from, to, environment, environment}
-	args = appendMatcherArgs(args, matcher)
+		GROUP BY b ORDER BY b`, stepSec, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment, host, host}
+	args = appendMatchersArgs(args, matchers)
 	cum, err := q.scanPoints(ctx, sql, args)
 	if err != nil {
 		return nil, err
@@ -258,7 +326,7 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 
 // histogramSeries — перцентиль по бакету: суммируем bucket_counts точек бакета,
 // берём any(explicit_bounds) и считаем квантиль в Go.
-func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
+func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
 	sql := fmt.Sprintf(`
 		SELECT toStartOfInterval(ts, INTERVAL %d second) AS b,
 		       sumForEach(bucket_counts) AS bc,
@@ -266,10 +334,11 @@ func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, envi
 		FROM metric_points
 		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
 		  AND (? = '' OR environment = ?)
+		  AND (? = '' OR host = ?)
 		  %s
-		GROUP BY b ORDER BY b`, stepSec, matcherClause(matcher))
-	args := []any{projectID, name, from, to, environment, environment}
-	args = appendMatcherArgs(args, matcher)
+		GROUP BY b ORDER BY b`, stepSec, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment, host, host}
+	args = appendMatchersArgs(args, matchers)
 	rows, err := q.conn.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("metric: histogram series: %w", err)
@@ -293,7 +362,10 @@ func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, envi
 // [from,to) (без бакетинга) и признак наличия данных. Для histogram+перцентиль
 // суммирует bucket_counts всего окна и считает квантиль. Используется оценщиком
 // пороговых алертов: «avg метрики за окно ⋛ порог». ok=false — данных нет.
-func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
+// matchers — AND всех непустых пар (Key,Value) по attributes; host фильтрует
+// отдельную колонку host (пусто → без фильтра).
+func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
+	matchers = compactMatchers(matchers)
 	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
 	if err != nil {
 		return 0, false, err
@@ -304,13 +376,14 @@ func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environmen
 	// значением 1 000 000 срабатывало на первом же тике и не закрывалось никогда,
 	// хотя на графике рядом рисовалось ~1.0 и пунктир порога «далеко».
 	if typ == "sum" && monotonic && temporality == "cumulative" {
-		return q.aggregateRate(ctx, projectID, name, environment, matcher, agg, from, to)
+		return q.aggregateRate(ctx, projectID, name, environment, host, matchers, agg, from, to)
 	}
 	base := fmt.Sprintf(`FROM metric_points
 		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
-		  AND (? = '' OR environment = ?) %s`, matcherClause(matcher))
-	args := []any{projectID, name, from, to, environment, environment}
-	args = appendMatcherArgs(args, matcher)
+		  AND (? = '' OR environment = ?)
+		  AND (? = '' OR host = ?) %s`, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment, host, host}
+	args = appendMatchersArgs(args, matchers)
 
 	if typ == "histogram" && isPercentile(agg) {
 		row := q.conn.QueryRow(ctx, "SELECT sumForEach(bucket_counts), any(explicit_bounds), sum(count) "+base, args...)
@@ -351,12 +424,12 @@ const aggregateRateBuckets = 60
 
 // aggregateRate сводит ряд СКОРОСТЕЙ монотонного счётчика к одному числу — тем
 // же способом, каким его строит Series, поэтому алерт и график всегда согласованы.
-func (q *Query) aggregateRate(ctx context.Context, projectID int64, name, environment string, matcher LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
+func (q *Query) aggregateRate(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
 	stepSec := int64(to.Sub(from).Seconds()) / aggregateRateBuckets
 	if stepSec < 1 {
 		stepSec = 1
 	}
-	pts, err := q.rateSeries(ctx, projectID, name, environment, matcher, from, to, stepSec)
+	pts, err := q.rateSeries(ctx, projectID, name, environment, host, matchers, from, to, stepSec)
 	if err != nil {
 		return 0, false, err
 	}
@@ -461,18 +534,34 @@ func scalarAggExpr(typ, agg string) string {
 	return "avg(value)"
 }
 
-func matcherClause(m LabelMatcher) string {
-	if m.Key == "" {
-		return ""
+// compactMatchers отбрасывает матчеры с пустым Key (нет фильтра по такой паре).
+func compactMatchers(ms []LabelMatcher) []LabelMatcher {
+	out := ms[:0:0]
+	for _, m := range ms {
+		if m.Key != "" {
+			out = append(out, m)
+		}
 	}
-	return "AND attributes[?] = ?"
+	return out
 }
 
-func appendMatcherArgs(args []any, m LabelMatcher) []any {
-	if m.Key == "" {
-		return args
+// matchersClause — AND-цепочка условий по attributes, по одному на матчер.
+// Вызывающий обязан заранее прогнать ms через compactMatchers.
+func matchersClause(ms []LabelMatcher) string {
+	var b strings.Builder
+	for range ms {
+		b.WriteString(" AND attributes[?] = ?")
 	}
-	return append(args, m.Key, m.Value)
+	return b.String()
+}
+
+// appendMatchersArgs добавляет (Key,Value) каждого матчера в args в порядке,
+// соответствующем плейсхолдерам matchersClause.
+func appendMatchersArgs(args []any, ms []LabelMatcher) []any {
+	for _, m := range ms {
+		args = append(args, m.Key, m.Value)
+	}
+	return args
 }
 
 func isPercentile(agg string) bool {

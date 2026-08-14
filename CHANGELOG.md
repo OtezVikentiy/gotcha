@@ -7,7 +7,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-14
+
+### Added
+- A new "Hosts" section shows system metrics for the servers your application runs on — CPU, memory, disk, network, load average, and process count — collected via the OpenTelemetry Collector (`otelcol-contrib`) and tagged with `host.name`, kept separate from application metrics. Four built-in thresholds (disk, memory, load, and "went silent") open and notify on incidents out of the box, with sane defaults and per-project fine-tuning — no manual alert rules to write. The empty-state onboarding and threshold settings page hand you a ready-made collector config (base URL and project key already filled in) to copy onto the server. System metric names (`system.*`) are now hidden by default behind a toggle on the project's metrics list, so a connected host's metrics don't drown out application metrics there. The new `GOTCHA_HOST_EVAL_INTERVAL` variable (default 60 seconds) controls how often the background loop evaluates host thresholds. A single project holds up to 1000 hosts, and hitting that ceiling is visible in the log and in the `gotcha_host_registrations_rejected_total` counter. The evaluator's own liveness and host registration failures are now published on `/metrics` — `gotcha_host_evaluator_last_tick_timestamp_seconds`, `gotcha_host_evaluator_tick_duration_seconds`, `gotcha_host_registration_failures_total`, `gotcha_host_registrations_rejected_total`. A "Silence" incident is no longer opened for a host observed for less than the threshold (ephemeral pods), nor opened for every host at once in the first minutes after the product restarts — our own downtime no longer looks like a fleet-wide outage. When a host stops reporting past the metric-retention window it is retired rather than vanishing silently: its still-open incidents are closed with a notification, then the host is removed. When detail delivery to a channel is turned off, host alert notifications no longer carry the host name in their link — they point at the hosts list instead.
 
 ## [0.4.12] - 2026-08-12
 

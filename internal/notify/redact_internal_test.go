@@ -23,6 +23,7 @@ func TestRedactedKindLabelsCoverAllKinds(t *testing.T) {
 		"regression_open", "regression_close",
 		"profile_regression_open", "profile_regression_resolved",
 		"down", "up", "ssl_expiring", "reminder",
+		"host_alert_open", "host_alert_resolved", "host_retired",
 	}
 	for _, kind := range allKinds {
 		key, ok := redactedKindKeys[kind]

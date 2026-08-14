@@ -115,6 +115,8 @@ A point timestamped more than 90 days in the past, or more than a day in the fut
 
 `/projects/{id}/metrics` lists every metric in the project: name, type (`gauge`/`sum`/`histogram`), unit. You can filter by environment at the top. While there are no metrics yet, the page shows a hint linking back to this guide.
 
+Host system metrics (names like `system.*` — CPU, memory, disk, network, load average from a server) are hidden from this general list by default, behind a "System metrics" toggle: they're easier to read per host, with ready-made charts and built-in thresholds — see [Hosts](/docs/hosts).
+
 ## Metric detail page
 
 Clicking a metric name opens `/projects/{id}/metrics/{name}` — a time series chart with filters:

@@ -2,6 +2,7 @@ package telemetry_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -357,6 +358,299 @@ func TestEntityJanitorUsesPerEntityRetention(t *testing.T) {
 	}
 	if !incidentExists(t, pool, uptimeInc) {
 		t.Errorf("инцидент аптайма, закрытый 10 дней назад, удалён при своём сроке 90 дней")
+	}
+}
+
+// insertHost добавляет хост проекта с заданным last_seen.
+func insertHost(t *testing.T, pool *pgxpool.Pool, projectID int64, lastSeen time.Time) int64 {
+	t.Helper()
+	n := entitySeq.Add(1)
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO hosts (project_id, name, first_seen, last_seen)
+		 VALUES ($1, $2, $3, $3) RETURNING id`,
+		projectID, fmt.Sprintf("host-%d", n), lastSeen).Scan(&id); err != nil {
+		t.Fatalf("insert host: %v", err)
+	}
+	return id
+}
+
+// insertHostIncident добавляет инцидент хоста (открытый при resolvedAt=nil).
+func insertHostIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, resolvedAt *time.Time) int64 {
+	t.Helper()
+	status := "resolved"
+	if resolvedAt == nil {
+		status = "open"
+	}
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO host_incidents (project_id, host_id, kind, status, resolved_at)
+		 VALUES ($1, $2, 'disk', $3, $4) RETURNING id`,
+		projectID, hostID, status, resolvedAt).Scan(&id); err != nil {
+		t.Fatalf("insert host incident: %v", err)
+	}
+	return id
+}
+
+// TestEntityJanitorPurgesStaleHostsCascadesIncidents — находка A1 (пороги по
+// хостам): хост, не подававший признаков жизни дольше срока хранения метрик,
+// в ClickHouse уже ничего не покажет — держать его строкой в списке хостов
+// незачем. Правило смотрит на last_seen БЕЗ closedOnly (как issues), и
+// host_incidents хоста уходят каскадом FK — в том числе открытые.
+//
+// Молчаливым исчезновением открытого инцидента это не становится: в проде на
+// правило hosts повешен хук PreDelete (host.Retirer), который перед удалением
+// закрывает инциденты и рассылает уведомление о снятии хоста с наблюдения (см.
+// host.TestEntityJanitorRetiresHostsBeforeDelete). Здесь хука нет намеренно —
+// проверяется само правило.
+func TestEntityJanitorPurgesStaleHostsCascadesIncidents(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	stale := insertHost(t, pool, pid, now.Add(-40*24*time.Hour))
+	fresh := insertHost(t, pool, pid, now.Add(-2*24*time.Hour))
+
+	staleOpen := insertHostIncident(t, pool, pid, stale, nil)
+	// Закрыт два дня назад: по своему сроку инцидент живой, унести его мог
+	// только каскад от хоста.
+	freshResolvedAt := now.Add(-2 * 24 * time.Hour)
+	staleClosed := insertHostIncident(t, pool, pid, stale, &freshResolvedAt)
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{Metrics: 30 * 24 * time.Hour}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if rowExists(t, pool, "hosts", stale) {
+		t.Errorf("хост, молчащий 40 дней, жив при сроке метрик 30 дней")
+	}
+	if !rowExists(t, pool, "hosts", fresh) {
+		t.Errorf("хост, видевший событие 2 дня назад, удалён при сроке метрик 30 дней")
+	}
+	if rowExists(t, pool, "host_incidents", staleOpen) {
+		t.Errorf("открытый инцидент удалённого хоста пережил каскад FK")
+	}
+	if rowExists(t, pool, "host_incidents", staleClosed) {
+		t.Errorf("инцидент удалённого хоста пережил каскад FK (свой срок ещё не истёк — унести его мог только каскад)")
+	}
+}
+
+// TestEntityJanitorPreDeleteHookSeesBatchBeforeDelete — контракт хука: он
+// получает идентификаторы батча ДО удаления и видит строки ещё живыми. На этом
+// стоит снятие хоста с наблюдения (host.Retirer): закрыть инциденты и
+// разослать уведомления можно только пока хост существует.
+func TestEntityJanitorPreDeleteHookSeesBatchBeforeDelete(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	stale := insertHost(t, pool, pid, now.Add(-40*24*time.Hour))
+	fresh := insertHost(t, pool, pid, now.Add(-2*24*time.Hour))
+
+	var got []int64
+	aliveInHook := false
+	j := &telemetry.EntityJanitor{
+		Pool:      pool,
+		Retention: telemetry.Retentions{Metrics: 30 * 24 * time.Hour},
+		PreDelete: map[string]telemetry.PreDeleteHook{
+			"hosts": func(_ context.Context, ids []int64) error {
+				got = append(got, ids...)
+				aliveInHook = rowExists(t, pool, "hosts", stale)
+				return nil
+			},
+		},
+	}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if len(got) != 1 || got[0] != stale {
+		t.Errorf("хук получил %v, want [%d] — только истёкший хост", got, stale)
+	}
+	if !aliveInHook {
+		t.Errorf("к моменту вызова хука строка хоста уже удалена — закрывать инциденты будет некому")
+	}
+	if rowExists(t, pool, "hosts", stale) {
+		t.Errorf("истёкший хост не удалён после успешного хука")
+	}
+	if !rowExists(t, pool, "hosts", fresh) {
+		t.Errorf("живой хост удалён")
+	}
+}
+
+// TestEntityJanitorPreDeleteHookErrorKeepsRows — провал хука отменяет удаление
+// батча. Удалить строки, о которых не удалось сообщить, — ровно тот
+// молчаливый исход, ради которого хук и заведён; строки дождутся следующего
+// прохода.
+func TestEntityJanitorPreDeleteHookErrorKeepsRows(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	stale := insertHost(t, pool, pid, now.Add(-40*24*time.Hour))
+	// Соседнее правило (host_incidents) обязано отработать: отказ одного
+	// правила не отменяет остальные.
+	liveHost := insertHost(t, pool, pid, now.Add(-time.Hour))
+	oldResolvedAt := now.Add(-40 * 24 * time.Hour)
+	oldIncident := insertHostIncident(t, pool, pid, liveHost, &oldResolvedAt)
+
+	j := &telemetry.EntityJanitor{
+		Pool:      pool,
+		Retention: telemetry.Retentions{Metrics: 30 * 24 * time.Hour},
+		PreDelete: map[string]telemetry.PreDeleteHook{
+			"hosts": func(context.Context, []int64) error {
+				return errors.New("канал недоступен")
+			},
+		},
+	}
+	// Проход в целом не проваливается: отказ таблицы логируется и не отменяет
+	// остальные (см. Tick).
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if !rowExists(t, pool, "hosts", stale) {
+		t.Errorf("истёкший хост удалён, хотя хук провалился")
+	}
+	if rowExists(t, pool, "host_incidents", oldIncident) {
+		t.Errorf("правило host_incidents не отработало из-за отказа соседнего правила")
+	}
+}
+
+// TestEntityJanitorPreDeleteHookOnlyForItsTable — хук привязан к таблице
+// своего правила: чужие правила про него не знают и работают прежним
+// однооператорным путём.
+func TestEntityJanitorPreDeleteHookOnlyForItsTable(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	staleIssue := insertIssue(t, pool, pid, "hook-foreign-table", now.Add(-40*24*time.Hour), "resolved")
+
+	called := false
+	j := &telemetry.EntityJanitor{
+		Pool:      pool,
+		Retention: telemetry.Retentions{Events: 30 * 24 * time.Hour},
+		PreDelete: map[string]telemetry.PreDeleteHook{
+			"hosts": func(context.Context, []int64) error {
+				called = true
+				return nil
+			},
+		},
+	}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if called {
+		t.Errorf("хук правила hosts вызван при удалении issues")
+	}
+	if rowExists(t, pool, "issues", staleIssue) {
+		t.Errorf("issue, не видевшая событий 40 дней, жива при сроке событий 30 дней")
+	}
+}
+
+// TestEntityJanitorPurgesResolvedHostIncidents — ревью I3: у host_incidents
+// не было своего правила, и каскад от hosts спасал только тогда, когда хост
+// удалён целиком. У ЖИВОГО сервера, регулярно пробивающего порог, закрытые
+// инциденты копились бы вечно. Срок — метрик: карточка закрытого инцидента
+// показывает период, за который точек в ClickHouse уже нет.
+func TestEntityJanitorPurgesResolvedHostIncidents(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	// Хост живой (last_seen свежий) — его самого правило hosts не трогает, и
+	// каскад в этом тесте ничего не удаляет: проверяется именно своё правило.
+	liveHost := insertHost(t, pool, pid, now.Add(-time.Hour))
+
+	oldResolvedAt := now.Add(-40 * 24 * time.Hour)
+	oldResolved := insertHostIncident(t, pool, pid, liveHost, &oldResolvedAt)
+	freshResolvedAt := now.Add(-2 * 24 * time.Hour)
+	freshResolved := insertHostIncident(t, pool, pid, liveHost, &freshResolvedAt)
+	stillOpen := insertHostIncident(t, pool, pid, liveHost, nil)
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{Metrics: 30 * 24 * time.Hour}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if rowExists(t, pool, "host_incidents", oldResolved) {
+		t.Errorf("инцидент, закрытый 40 дней назад, жив при сроке метрик 30 дней")
+	}
+	if !rowExists(t, pool, "host_incidents", freshResolved) {
+		t.Errorf("инцидент, закрытый 2 дня назад, удалён при сроке метрик 30 дней")
+	}
+	if !rowExists(t, pool, "host_incidents", stillOpen) {
+		t.Errorf("ОТКРЫТЫЙ инцидент удалён — он описывает то, что с хостом происходит сейчас")
+	}
+	if !rowExists(t, pool, "hosts", liveHost) {
+		t.Errorf("живой хост удалён — сработало не то правило")
+	}
+}
+
+// TestEntityJanitorHostsUseMetricRetentionNotEvents — хосты живут сроком
+// метрик (GOTCHA_METRIC_RETENTION_DAYS), а не сроком событий: инстанс с
+// долгим хранением событий, но коротким — метрик, не обязан помнить хосты,
+// метрики которых уже вычищены из ClickHouse.
+func TestEntityJanitorHostsUseMetricRetentionNotEvents(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	old := insertHost(t, pool, pid, time.Now().UTC().Add(-10*24*time.Hour))
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{
+		Events:  90 * 24 * time.Hour, // событий срок большой — не должен спасти хост
+		Metrics: 7 * 24 * time.Hour,
+	}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if rowExists(t, pool, "hosts", old) {
+		t.Errorf("хост, молчащий 10 дней, жив при сроке МЕТРИК 7 дней (правило смотрит не на срок событий)")
+	}
+}
+
+// TestEntityJanitorHostsZeroMetricRetentionKeepsHosts — нулевой срок метрик
+// выключает удаление ИМЕННО правила hosts, не задевая соседние правила с
+// другим классом (по образцу TestEntityJanitorZeroClassKeepsItsEntities, но
+// для конкретно добавленного правила hosts/retentionMetrics).
+func TestEntityJanitorHostsZeroMetricRetentionKeepsHosts(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	old := insertHost(t, pool, pid, time.Now().UTC().Add(-400*24*time.Hour))
+	issueID := insertIssue(t, pool, pid, "hosts-zero-metrics", time.Now().UTC().Add(-400*24*time.Hour), "unresolved")
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{
+		Events:  30 * 24 * time.Hour,
+		Metrics: 0, // удаление хостов выключено
+	}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if !rowExists(t, pool, "hosts", old) {
+		t.Errorf("хост удалён при нулевом сроке метрик (Metrics=0 должен выключать именно правило hosts)")
+	}
+	if issueExists(t, pool, issueID) {
+		t.Errorf("группа не удалена при заданном сроке событий — нулевой срок метрик погасил весь проход")
 	}
 }
 

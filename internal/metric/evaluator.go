@@ -61,8 +61,11 @@ func (e *Evaluator) Tick(ctx context.Context) {
 
 func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 	from := now.Add(-time.Duration(r.WindowSeconds) * time.Second)
-	matcher := LabelMatcher{Key: r.LabelKey, Value: r.LabelValue}
-	current, ok, err := e.Query.Aggregate(ctx, r.ProjectID, r.MetricName, r.Environment, matcher, r.Aggregation, from, now)
+	var matchers []LabelMatcher
+	if r.LabelKey != "" {
+		matchers = []LabelMatcher{{Key: r.LabelKey, Value: r.LabelValue}}
+	}
+	current, ok, err := e.Query.Aggregate(ctx, r.ProjectID, r.MetricName, r.Environment, "", matchers, r.Aggregation, from, now)
 	if err != nil {
 		slog.Error("metric evaluator: aggregate failed", "rule_id", r.ID, "error", err)
 		return

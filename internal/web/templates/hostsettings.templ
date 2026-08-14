@@ -1,0 +1,135 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+func hostSettingsFormPath(projectID int64) string {
+	return hostsBasePath(projectID) + "/settings"
+}
+
+// settingsBoolDefault/settingsPercentDefault/settingsFloatDefault/
+// settingsMinutesDefault — значения host.Settings как строки формы: fallback
+// для form.Get, когда форма ещё не отправлялась (GET, form == nil) или поле
+// не было предметом ошибки предыдущей отправки. Доли (0..1] показываются
+// человеку процентами (§4.2 дизайна — «в UI диск/RAM — проценты, храним
+// долями»), конверсия строго на этой границе.
+func settingsBoolDefault(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+func settingsPercentDefault(frac float64) string {
+	return strconv.FormatFloat(frac*100, 'f', -1, 64)
+}
+
+func settingsFloatDefault(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+func settingsMinutesDefault(d time.Duration) string {
+	return strconv.Itoa(int(d / time.Minute))
+}
+
+// HostSettings — GET/POST /projects/{id}/hosts/settings: форма порогов
+// встроенных инцидентов хоста (§5.5 дизайна) + свёрнутая ссылка на конфиг
+// коллектора (тот же copyBlock, что и в онбординге списка, HostsList).
+//
+// form — введённые значения при повторной отрисовке после ошибки валидации
+// (см. FormState); при первом открытии (GET) form == nil, и все поля берут
+// значения из s (сервис уже вернул DefaultSettings, если строки настроек ещё
+// нет). config — пустая строка, если в проекте нет ни одного активного
+// публичного ключа (h.hostCollectorConfig, hosts.go) — тогда вместо
+// copyBlock показывается подсказка, где ключ завести.
+//
+// У каждого числового поля своя подсказка, связанная с полем через
+// aria-describedby (UX-аудит A1, P2-6): подпись «Порог, %» не говорит, ЧТО
+// сравнивается с порогом и за какое окно, а «Порог, на ядро» не объясняла
+// даже, что речь про load average, делённый на число логических ядер. Тексты —
+// краткий пересказ таблицы порогов из docs/hosts.md, туда же ведёт ссылка
+// внизу страницы.
+templ HostSettings(projectID int64, s host.Settings, config string, form FormState, errMsg, userEmail string) {
+	@layout(i18n.T(ctx, "nav.host_thresholds"), userEmail) {
+		<div class="host-settings">
+			<h1>{ i18n.T(ctx, "nav.host_thresholds") }</h1>
+			if errMsg != "" {
+				<p class="error" id="host-settings-error">{ errMsg }</p>
+			}
+			<form method="post" action={ templ.URL(hostSettingsFormPath(projectID)) } class="host-settings-form">
+				<fieldset class="card">
+					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.disk_title") }</legend>
+					<label class="checkbox-inline">
+						<input type="checkbox" name="disk_enabled" checked?={ form.Get("disk_enabled", settingsBoolDefault(s.DiskEnabled)) == "1" }/>
+						{ i18n.T(ctx, "hosts.settings.field.enabled") }
+					</label>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
+							<input type="number" class="input" name="disk_threshold" min="1" max="100" step="1" required
+								value={ form.Get("disk_threshold", settingsPercentDefault(s.DiskThreshold)) }
+								aria-describedby="hint-disk-threshold"/>
+						</label>
+						<p class="hint" id="hint-disk-threshold">{ i18n.T(ctx, "hosts.settings.hint.disk_threshold") }</p>
+					</div>
+				</fieldset>
+				<fieldset class="card">
+					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.memory_title") }</legend>
+					<label class="checkbox-inline">
+						<input type="checkbox" name="memory_enabled" checked?={ form.Get("memory_enabled", settingsBoolDefault(s.MemoryEnabled)) == "1" }/>
+						{ i18n.T(ctx, "hosts.settings.field.enabled") }
+					</label>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
+							<input type="number" class="input" name="memory_threshold" min="1" max="100" step="1" required
+								value={ form.Get("memory_threshold", settingsPercentDefault(s.MemoryThreshold)) }
+								aria-describedby="hint-memory-threshold"/>
+						</label>
+						<p class="hint" id="hint-memory-threshold">{ i18n.T(ctx, "hosts.settings.hint.memory_threshold") }</p>
+					</div>
+				</fieldset>
+				<fieldset class="card">
+					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.load_title") }</legend>
+					<label class="checkbox-inline">
+						<input type="checkbox" name="load_enabled" checked?={ form.Get("load_enabled", settingsBoolDefault(s.LoadEnabled)) == "1" }/>
+						{ i18n.T(ctx, "hosts.settings.field.enabled") }
+					</label>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
+							<input type="number" class="input" name="load_threshold" min="0.1" step="0.1" required
+								value={ form.Get("load_threshold", settingsFloatDefault(s.LoadThreshold)) }
+								aria-describedby="hint-load-threshold"/>
+						</label>
+						<p class="hint" id="hint-load-threshold">{ i18n.T(ctx, "hosts.settings.hint.load_threshold") }</p>
+					</div>
+				</fieldset>
+				<fieldset class="card">
+					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.silent_title") }</legend>
+					<label class="checkbox-inline">
+						<input type="checkbox" name="silent_enabled" checked?={ form.Get("silent_enabled", settingsBoolDefault(s.SilentEnabled)) == "1" }/>
+						{ i18n.T(ctx, "hosts.settings.field.enabled") }
+					</label>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.silent_after") }
+							<input type="number" class="input" name="silent_after" min="3" max="720" step="1" required
+								value={ form.Get("silent_after", settingsMinutesDefault(s.SilentAfter)) }
+								aria-describedby="hint-silent-after"/>
+						</label>
+						<p class="hint" id="hint-silent-after">{ i18n.T(ctx, "hosts.settings.hint.silent_after") }</p>
+					</div>
+				</fieldset>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "hosts.settings.submit") }</button>
+			</form>
+			@hostsCollectorConfigDetails("host-settings-collector-config", config)
+			<p class="hint"><a href="/docs/hosts">{ i18n.T(ctx, "hosts.settings.docs_link") }</a></p>
+		</div>
+	}
+}
