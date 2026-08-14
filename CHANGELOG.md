@@ -7,6 +7,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-14
+
+### Security
+- Rebuilt on Go 1.26.6, which closes seven vulnerabilities in the Go standard library that the shipped binary was exposed to: quadratic complexity in `net/url` path resolution (GO-2026-6218), unbounded post-handshake messages in `crypto/tls` (GO-2026-6090), a missing `ReadHeaderTimeout` on unencrypted HTTP/2 in `net/http` (GO-2026-6089), unbounded recursion in the `encoding/xml` (GO-2026-6088) and `encoding/asn1` (GO-2026-5972) decoders, a parser panic on malformed SVCB/HTTPS DNS records in `golang.org/x/net/dns/dnsmessage` (GO-2026-5942), and an IDNA Punycode label check in `golang.org/x/net/idna` (GO-2026-5026). No application code changed; the toolchain floor in `go.mod` moves from 1.26.5 to 1.26.6.
+
 ## [0.5.0] - 2026-08-14
 
 ### Added
