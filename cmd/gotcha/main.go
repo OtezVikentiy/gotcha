@@ -945,6 +945,13 @@ func run() error {
 		webHandler.RetentionDays = cfg.RetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Purger = telemetry.NewPurger(ch)
+		// Раздача install.sh/бинарей агента (план A2, задача 10): каталог из
+		// GOTCHA_AGENT_DIST_DIR, дефолт совпадает с путём из Dockerfile —
+		// см. AgentDistDir. Порог её лимитера (ops-H4) — отдельно от New(),
+		// чтобы Ansible-раскатка/массовое обновление парка за одним IP не
+		// упирались в дефолт, рассчитанный на штучные установки.
+		webHandler.AgentDistDir = cfg.AgentDistDir
+		webHandler.SetAgentDistRateLimit(cfg.AgentDistRatePerMin)
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_web_cross_origin_rejected_total",
 			"POST requests rejected because Origin/Referer did not match GOTCHA_BASE_URL.",
 			nil, webHandler.CrossOriginRejected)

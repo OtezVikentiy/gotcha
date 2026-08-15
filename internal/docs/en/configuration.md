@@ -259,6 +259,13 @@ Detail level and format of the instance's own logs.
 
 `--mode=probe` is a separate process deployed in another region/data center: it doesn't open PostgreSQL or ClickHouse at all — it only makes outbound HTTP requests to the central instance.
 
+## Agent distribution
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_AGENT_DIST_DIR` | `/opt/gotcha/agent-dist` | Directory with `install.sh` and the built `gotcha-agent` binaries (`gotcha-agent-linux-amd64`, `gotcha-agent-linux-arm64`, `SHA256SUMS`) that the instance serves at `GET /install.sh` and `GET /agent/{file}` — the exact path the agent's install command pulls from (see [Hosts](/docs/hosts)). The default matches where the Docker build places the binaries in the image — a standard `docker-compose` deployment doesn't need to set this. This directory doesn't physically exist in dev mode (`go run` without Docker) or on a build that skipped the Docker image — both routes then answer `404` with a hint instead of failing. This variable only controls the serving directory: the `install.sh` script itself is embedded in the `gotcha` binary and is identical across every instance and product version. |
+| `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `120` | Per-IP rate limit on `GET /agent/{file}` (agent binary and `SHA256SUMS` downloads). One install/update costs 2 requests, so the default allows ~60 hosts/minute from one IP — enough headroom for a mass rollout (Ansible/Terraform) or a fleet-wide update behind one NAT/egress address. Raise it if your fleet behind one IP is larger. |
+
 ## OAuth / SSO
 
 Each login provider is enabled independently. Enabling a provider without setting its required secrets makes the app refuse to start.

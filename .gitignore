@@ -1,5 +1,6 @@
 # Build output
 /gotcha
+/gotcha-agent
 /devseed
 
 # Go artifacts

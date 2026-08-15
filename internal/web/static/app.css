@@ -2192,6 +2192,15 @@ th {
 .host-detail .monitor-meta {
 	margin-bottom: 12px;
 }
+.host-agent-update {
+	margin: 0 0 16px;
+}
+.host-agent-update > summary {
+	cursor: pointer;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	margin-bottom: 6px;
+}
 .host-settings-form > button[type="submit"] {
 	/* Кнопка «Сохранить» — прямой сосед последнего fieldset'а без своего
 	   вертикального margin: без отступа она прилипала к блоку «Тишина». */

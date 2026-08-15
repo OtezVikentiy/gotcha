@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -103,11 +104,11 @@ func (h *Handler) hostDetailCharts(ctx context.Context, projectID int64, name st
 	if err != nil {
 		return nil, err
 	}
-	diskIO, err := h.hostRateChart(ctx, projectID, "system.disk.io", name, from, to, step, "disk_io")
+	diskIO, err := h.hostRateChart(ctx, projectID, hostmetric.DiskIO, name, from, to, step, "disk_io")
 	if err != nil {
 		return nil, err
 	}
-	net, err := h.hostRateChart(ctx, projectID, "system.network.io", name, from, to, step, "net")
+	net, err := h.hostRateChart(ctx, projectID, hostmetric.NetworkIO, name, from, to, step, "net")
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +127,8 @@ func (h *Handler) hostDetailCharts(ctx context.Context, projectID int64, name st
 // 1−v. Пусто (совсем нет точек по запросу, до дозаполнения окна) — карточка
 // пустого состояния со скрейпером cpu вместо графика.
 func (h *Handler) hostCPUChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration) (templates.HostChartVM, error) {
-	pts, err := h.Metrics.Series(ctx, projectID, "system.cpu.utilization", "", name,
-		[]metric.LabelMatcher{{Key: "state", Value: "idle"}}, "avg", from, to, step)
+	pts, err := h.Metrics.Series(ctx, projectID, hostmetric.CPUUtilization, "", name,
+		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "idle"}}, "avg", from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
 	}
@@ -153,8 +154,8 @@ func (h *Handler) hostCPUChart(ctx context.Context, projectID int64, name string
 // инцидент» не относится к линии, но рисовать линию выключенного порога
 // вводило бы в заблуждение: он не действует).
 func (h *Handler) hostMemChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) (templates.HostChartVM, error) {
-	pts, err := h.Metrics.Series(ctx, projectID, "system.memory.utilization", "", name,
-		[]metric.LabelMatcher{{Key: "state", Value: "used"}}, "avg", from, to, step)
+	pts, err := h.Metrics.Series(ctx, projectID, hostmetric.MemoryUtilization, "", name,
+		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}, "avg", from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
 	}
@@ -181,7 +182,7 @@ func (h *Handler) hostMemChart(ctx context.Context, projectID int64, name string
 // та же семантика долей, что у mem. Truncated (>8 mountpoint'ов) едет в VM
 // для подписи «показаны топ-8» в шаблоне.
 func (h *Handler) hostDiskUsageChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) (templates.HostChartVM, error) {
-	result, err := h.Metrics.SeriesGrouped(ctx, projectID, "system.filesystem.utilization", name, "mountpoint", "avg", from, to, step)
+	result, err := h.Metrics.SeriesGrouped(ctx, projectID, hostmetric.FilesystemUtilization, name, hostmetric.AttrMountpoint, "avg", from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
 	}
@@ -206,7 +207,7 @@ func (h *Handler) hostDiskUsageChart(ctx context.Context, projectID int64, name 
 // key — "disk_io"/"net", источник i18n-подписи заголовка/пустого состояния
 // (hosts.chart.<key>/hosts.scraper_hint.<key>) и data-chart в шаблоне.
 func (h *Handler) hostRateChart(ctx context.Context, projectID int64, metricName, hostName string, from, to time.Time, step time.Duration, key string) (templates.HostChartVM, error) {
-	result, err := h.Metrics.SeriesGroupedRate(ctx, projectID, metricName, hostName, "direction", "device", from, to, step)
+	result, err := h.Metrics.SeriesGroupedRate(ctx, projectID, metricName, hostName, hostmetric.AttrDirection, hostmetric.AttrDevice, from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
 	}
@@ -235,7 +236,7 @@ func (h *Handler) hostRateChart(ctx context.Context, projectID int64, metricName
 // отсутствующая линия (например, коллектор не отдаёт 15m) рисуется разрывом
 // через NaN у остальных, а не гасит весь график.
 func (h *Handler) hostLoadChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) (templates.HostChartVM, error) {
-	names := []string{"system.cpu.load_average.1m", "system.cpu.load_average.5m", "system.cpu.load_average.15m"}
+	names := []string{hostmetric.LoadAvg1m, hostmetric.LoadAvg5m, hostmetric.LoadAvg15m}
 	labels := []string{"1m", "5m", "15m"}
 	raw := make([][]metric.Point, len(names))
 	empty := true
@@ -295,7 +296,7 @@ func hostLoadSeries(raw [][]metric.Point, labels []string, from, to time.Time, s
 // какой-то момент в прошлом произвольного диапазона).
 func (h *Handler) hostCores(ctx context.Context, projectID int64, name string) (float64, bool, error) {
 	now := time.Now()
-	byHost, err := h.Metrics.LatestByHost(ctx, projectID, "system.cpu.logical.count", nil, "", "", now.Add(-hostsListWindow), now)
+	byHost, err := h.Metrics.LatestByHost(ctx, projectID, hostmetric.CPULogicalCount, nil, "", "", now.Add(-hostsListWindow), now)
 	if err != nil {
 		return 0, false, err
 	}
@@ -306,7 +307,7 @@ func (h *Handler) hostCores(ctx context.Context, projectID int64, name string) (
 // hostProcChart — §5.3 №7: SeriesGrouped по status, agg=avg, без масштаба —
 // количество процессов, не доля.
 func (h *Handler) hostProcChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration) (templates.HostChartVM, error) {
-	result, err := h.Metrics.SeriesGrouped(ctx, projectID, "system.processes.count", name, "status", "avg", from, to, step)
+	result, err := h.Metrics.SeriesGrouped(ctx, projectID, hostmetric.ProcessesCount, name, hostmetric.AttrStatus, "avg", from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
 	}

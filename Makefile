@@ -81,6 +81,9 @@ run: ## Run the app locally (нужны поднятые postgres+clickhouse: ma
 go-build: ## Build the binary into ./gotcha
 	go build -ldflags "$(LDFLAGS)" -o gotcha ./cmd/gotcha
 
+go-build-agent: ## Build the agent binary into ./gotcha-agent
+	go build -ldflags "$(LDFLAGS)" -o gotcha-agent ./cmd/gotcha-agent
+
 templ: ## Regenerate templ templates (*_templ.go)
 	go run github.com/a-h/templ/cmd/templ@$$(go list -m -f '{{.Version}}' github.com/a-h/templ) generate
 

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -246,6 +247,22 @@ type Handler struct {
 	// (стенды прочих web-тестов Purger не задают). См. ProjectPurger.
 	Purger ProjectPurger
 
+	// AgentDistDir — каталог с install.sh-скриптом (встроен через //go:embed,
+	// см. agentdist.go) и бинарями gotcha-agent (план A2, задача 10):
+	// GOTCHA_AGENT_DIST_DIR, раскладывается в образ сборкой Docker. Дефолт
+	// (cmd/gotcha/config.go) совпадает с путём из Dockerfile — пусто здесь
+	// бывает только в dev-режиме (go run без docker) или если оператор явно
+	// указал каталог, которого физически нет; в обоих случаях GET /install.sh
+	// и GET /agent/{file} отвечают 404 с подсказкой, не паникуют.
+	AgentDistDir string
+	// agentETags — ленивый sha256-ETag раздаваемых бинарей агента, посчитанный
+	// один раз на имя файла (agentdist.go): файлы в образе неизменяемы, поэтому
+	// пересчитывать хэш на каждый запрос незачем. Поле per-Handler (не
+	// package-level), чтобы разные инстансы Handler (например, в тестах на
+	// разных временных каталогах) не делили один кеш. Нулевое значение готово
+	// к работе.
+	agentETags sync.Map
+
 	// ssoProviders — процесс-локальный кеш per-org OIDC-провайдеров (этап 10,
 	// см. sso.go). Нулевое значение готово к работе.
 	ssoProviders ssoCache
@@ -270,6 +287,16 @@ type Handler struct {
 	// Порог щедрый (600/мин ≈ 10/с на IP): один хост с десятками heartbeat-
 	// мониторов и пробой должен укладываться с запасом, а перебор — нет.
 	publicLimiter *rateLimiter
+	// agentLimiter — отдельный узкий per-IP лимитер ТОЛЬКО для раздачи бинарей
+	// агента (GET /agent/{file}, agentdist.go): бинарь ~9.3 МиБ, а общий
+	// publicLimiter (600/мин/IP) с этим весом даёт DoS-профиль — до ~9000
+	// одновременных соединений с одного IP по 15-минутному дедлайну записи
+	// (см. Handler.agentFile). install.sh мал и остаётся под publicLimiter.
+	// Дефолт New() (10/мин) — только для стендов/тестов без конфига; в
+	// проде main.go сразу перекрывает его через SetAgentDistRateLimit
+	// (GOTCHA_AGENT_DIST_RATE_PER_MIN, ops-H4) — щедрее, чтобы одна установка
+	// (2 запроса: бинарь+SHA) не сериализовала раскатку парка за одним IP.
+	agentLimiter *rateLimiter
 	// statusPageLimiter — per-USER лимитер создания статус-страниц (security
 	// P2-2): slug глобально уникален на инстанс, а создание доступно любому
 	// оператору любой организации, поэтому перебором slug'ов (успех vs 422
@@ -320,6 +347,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute),
 		emailLimiter:      newRateLimiter(time.Now, 50, 15*time.Minute),
 		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute),
+		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute),
 		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute),
 	}
 }
@@ -607,6 +635,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 		inner.HandleFunc("GET /status/{key}", h.publicRateLimited(h.statusPage))
 	}
+
+	// Раздача install.sh и бинарей агента (план A2, задача 10): публичный
+	// машинный доступ без сессии (curl | sh на голом сервере, где логиниться
+	// ещё некому) и без sameOrigin — тот же принцип, что у heartbeat/probe/
+	// status выше. Регистрируются безусловно (не под h.Uptime != nil), потому
+	// что AgentDistDir не зависит от режима uptime — свой nil-guard на пустой/
+	// отсутствующий каталог даёт agentdist.go.
+	inner.HandleFunc("GET /install.sh", h.publicRateLimited(h.installSh))
+	// /agent/{file} — под своим agentLimiter, не publicLimiter (см. поле
+	// Handler.agentLimiter): раздача бинарей тяжелее по трафику и времени
+	// соединения, чем остальные публичные роуты, и должна резаться отдельно.
+	inner.HandleFunc("GET /agent/{file}", h.agentDistRateLimited(h.agentFile))
 
 	// Fallback: любой путь, не покрытый паттернами выше, — стилизованная 404.
 	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

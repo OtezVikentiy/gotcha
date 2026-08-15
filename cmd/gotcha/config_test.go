@@ -56,6 +56,43 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.ServerURL != "" {
 		t.Errorf("ServerURL = %q, want empty", cfg.ServerURL)
 	}
+	// rem-A ops-H1: дефолт совпадает с ENV Dockerfile — .env.example с пустым
+	// или отсутствующим значением (env_file compose) не должен гасить раздачу.
+	if cfg.AgentDistDir != "/opt/gotcha/agent-dist" {
+		t.Errorf("AgentDistDir = %q, want /opt/gotcha/agent-dist", cfg.AgentDistDir)
+	}
+	// rem-A ops-H4: щедрее умолчания New() (10/мин) — установка/обновление
+	// парка за одним IP не должны сериализоваться дефолтом, рассчитанным на
+	// одиночный сервер.
+	if cfg.AgentDistRatePerMin != 120 {
+		t.Errorf("AgentDistRatePerMin = %d, want 120", cfg.AgentDistRatePerMin)
+	}
+}
+
+// TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault — rem-A ops-H1: явно
+// заданная пустая строка (как её отдаёт docker-compose env_file на
+// GOTCHA_AGENT_DIST_DIR= из .env.example) неотличима для str() от «не
+// задано» — не должна гасить раздачу пустым значением поверх ENV образа.
+func TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_AGENT_DIST_DIR": ""}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.AgentDistDir != "/opt/gotcha/agent-dist" {
+		t.Errorf("AgentDistDir = %q, want /opt/gotcha/agent-dist (empty env should fall back to default)", cfg.AgentDistDir)
+	}
+}
+
+// TestLoadConfig_AgentDistRatePerMinOverride — GOTCHA_AGENT_DIST_RATE_PER_MIN
+// читается как обычный intNum (rem-A ops-H4).
+func TestLoadConfig_AgentDistRatePerMinOverride(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_AGENT_DIST_RATE_PER_MIN": "500"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.AgentDistRatePerMin != 500 {
+		t.Errorf("AgentDistRatePerMin = %d, want 500", cfg.AgentDistRatePerMin)
+	}
 }
 
 func TestLoadConfigOverrides(t *testing.T) {

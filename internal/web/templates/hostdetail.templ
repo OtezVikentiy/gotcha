@@ -34,6 +34,31 @@ type HostDetailVM struct {
 	RecentIncidents []host.Incident
 	Charts          []HostChartVM
 	CanOperate      bool
+	// Uptime — гуманизированное «сколько хост живёт» (humanize.Duration),
+	// последнее значение system.uptime за hostsListWindow. Пустая строка —
+	// хост ещё не отчитался этой метрикой (агент/коллектор не настроены или
+	// запрос не удался) — блок не рендерится, а не показывает «0».
+	Uptime string
+	// AgentVersion — версия собственного Go-агента (A2), уже пришедшая с
+	// хоста (host.Host.AgentVersion). Задублирована здесь, а не читается из
+	// vm.Host.AgentVersion в шаблоне: тот же контракт карточки хоста
+	// переиспользуют другие VM (T14+), не всегда несущие host.Host целиком.
+	AgentVersion string
+	// AgentUpdateAvailable — версия агента строго старше версии сервера (см.
+	// agentUpdateAvailable, hosts.go): включает бейдж "есть обновление" —
+	// честный сигнал независимо от того, можно ли безопасно предложить команду.
+	AgentUpdateAvailable bool
+	// AgentUpdateCmd — готовая команда переустановки install.sh (см.
+	// agentUpdateCommand, hosts.go). Пусто, если путь агента недоступен
+	// (раздача не сконфигурирована — sec-M1 — или BaseURL не https/локальный —
+	// sec-M4): свёрнутый блок с инструкцией рендерится только когда команда
+	// непуста, отдельно от бейджа (AgentUpdateAvailable).
+	AgentUpdateCmd string
+	// ServerVersion — версия самого сервера (version.Version(), hosts.go), та
+	// же, с которой сверяется AgentUpdateAvailable. Подставляется в заголовок
+	// блока "Как обновить агента до {version}" (rem-E ux-L16): бейдж
+	// "Есть обновление" сам по себе не называл целевую версию.
+	ServerVersion string
 }
 
 func hostDeleteLink(projectID int64, name string) string {
@@ -129,7 +154,30 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 					<div class="stat-label">{ i18n.T(ctx, "hosts.detail.first_seen") }</div>
 					<div class="stat-value">@relativeTime(vm.Host.FirstSeen)</div>
 				</div>
+				if vm.Uptime != "" {
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "hosts.detail.uptime") }</div>
+						<div class="stat-value">{ vm.Uptime }</div>
+					</div>
+				}
+				if vm.AgentVersion != "" {
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "hosts.detail.agent_version") }</div>
+						<div class="stat-value">
+							{ vm.AgentVersion }
+							if vm.AgentUpdateAvailable {
+								<span class="badge badge-info">{ i18n.T(ctx, "hosts.detail.agent_update") }</span>
+							}
+						</div>
+					</div>
+				}
 			</div>
+			if vm.AgentUpdateAvailable && vm.AgentUpdateCmd != "" {
+				<details class="host-agent-update">
+					<summary>{ i18n.Tf(ctx, "hosts.detail.agent_update_howto", "version", vm.ServerVersion) }</summary>
+					@copyBlock("host-agent-update", "hosts.copy.command", vm.AgentUpdateCmd)
+				</details>
+			}
 
 			<form method="get" class="metric-filters">
 				<label>

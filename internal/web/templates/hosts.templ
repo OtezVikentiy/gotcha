@@ -70,9 +70,15 @@ func hostStatusBadgeClass(kind string) string {
 
 // HostsList — GET /projects/{id}/hosts: таблица хостов проекта.
 // truncated — потолок в hostsListLimit строк превышен (§5.2, без пагинации).
-// config — готовый YAML коллектора (§5.4 дизайна, h.hostCollectorConfig в
-// hosts.go); пустая строка — в проекте нет ни одного активного публичного
-// ключа, тогда вместо copyBlock показывается подсказка.
+// installCmd — готовая команда установки собственного Go-агента (A2,
+// h.hostInstallBlocks в hosts.go); config — готовый YAML коллектора
+// otelcol-contrib (§5.4 дизайна, тот же h.hostInstallBlocks) — теперь свёрнутая
+// альтернатива агенту (T14, §2.1 спеки A2: агент — путь по умолчанию, у него
+// нет внешней зависимости от отдельно устанавливаемого пакета). agentReason —
+// почему installCmd пуст при непустом config (rem-A sec-M1/sec-M4, см.
+// hostInstallBlocks); обе строки пустые одновременно (agentReason=="") — в
+// проекте нет ни одного активного публичного ключа (общий firstLiveKey-путь,
+// hosts.go), тогда вместо copyBlock — подсказка.
 //
 // Конфиг нужен обеим веткам, а не только онбордингу пустого списка (UX-аудит
 // A1, P2-11): подключение ВТОРОГО сервера — тот же сценарий, что первого, а
@@ -82,14 +88,14 @@ func hostStatusBadgeClass(kind string) string {
 // limit — потолок числа строк (hostsListLimit, web/hosts.go): его называет
 // подсказка усечения, и число в ней не должно быть вписано в перевод, иначе
 // смена потолка молча разъедется с текстом (UX-аудит A1, P2-2).
-templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, config, userEmail string) {
+templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, installCmd, config, agentReason, userEmail string) {
 	@layout(i18n.T(ctx, "nav.hosts"), userEmail) {
 		<div class="hosts">
 			<h1>{ i18n.T(ctx, "nav.hosts") }</h1>
 			@helpPanel("hosts", "hosts")
 			if len(rows) == 0 {
 				@emptyState("server", "hosts.empty.title", "hosts.empty.body", "", "", 2)
-				@hostsOnboarding(config)
+				@hostsOnboarding(projectID, installCmd, config, agentReason)
 			} else {
 				if truncated {
 					<p class="hint">{ i18n.Tf(ctx, "hosts.limit_notice", "limit", strconv.Itoa(limit)) }</p>
@@ -140,52 +146,120 @@ templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, co
 						</table>
 				}
 				</div>
-				@hostsCollectorConfigDetails("hosts-collector-config", config)
+				@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason)
 			}
 		</div>
 	}
 }
 
-// hostsCollectorConfigDetails — свёрнутый блок «показать конфиг коллектора»:
-// один и тот же на непустом списке хостов и на странице порогов
-// (HostSettings). id — id скрытой textarea copyBlock, обязан быть уникален в
-// документе, поэтому его задаёт вызывающий, а не сам компонент.
-templ hostsCollectorConfigDetails(id, config string) {
+// hostsCollectorConfigDetails — два свёрнутых блока «подключить ещё один
+// сервер»: команда установки агента (по умолчанию, T14) и, отдельным
+// <details>, конфиг коллектора otelcol-contrib — один и тот же набор на
+// непустом списке хостов и на странице порогов (HostSettings). id — id
+// скрытой textarea copyBlock конфига коллектора, обязан быть уникален в
+// документе, поэтому его задаёт вызывающий, а не сам компонент; блок
+// команды агента получает id+"-agent-cmd". projectID — только для ссылки
+// на настройки проекта в подсказке no_key (rem-E ux-M4): у обоих вызывающих
+// (HostsList, HostSettings) он уже есть в сигнатуре.
+//
+// installCmd == "" при пустом agentReason — ключа нет вовсе (см.
+// hostsOnboarding), config в этом случае тоже пуст, подсказки
+// hosts.onboarding.no_key под свёрнутым конфигом достаточно — дублировать её
+// под несуществующим блоком агента незачем. installCmd == "" при непустом
+// agentReason ("dist"/"insecure", rem-A sec-M1/sec-M4) — ключ есть, но путь
+// агента недоступен/небезопасен: коллектор (config) остаётся заполненным,
+// а вместо блока агента — явная причина, не молчание.
+templ hostsCollectorConfigDetails(id string, projectID int64, installCmd, config, agentReason string) {
+	if installCmd != "" {
+		<details>
+			<summary>{ i18n.T(ctx, "hosts.settings.agent_install_howto") }</summary>
+			@copyBlock(id+"-agent-cmd", "hosts.copy.command", installCmd)
+		</details>
+	} else if agentReason == "dist" {
+		<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_unavailable") }</p>
+	} else if agentReason == "insecure" {
+		<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_insecure") }</p>
+	}
 	<details>
 		<summary>{ i18n.T(ctx, "hosts.settings.show_config") }</summary>
 		if config != "" {
 			@copyBlock(id, "hosts.copy.button", config)
 		} else {
-			<p class="hint">{ i18n.T(ctx, "hosts.onboarding.no_key") }</p>
+			<p class="hint">
+				{ i18n.T(ctx, "hosts.onboarding.no_key") }
+				<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
+			</p>
 		}
 	</details>
 }
 
-// hostsOnboarding — три шага подключения хоста (§5.4 дизайна): установить
-// коллектор → скопировать готовый конфиг (copyBlock, тот же контракт copy.js,
-// что у copyToolbar) → включить и запустить. config == "" — в проекте ещё
-// нет активного публичного ключа (h.hostCollectorConfig, hosts.go): без него
-// конфиг заполнить нечем (endpoint без ключа не заработает), поэтому вместо
-// copyBlock — подсказка, где ключ завести, а не полу-пустой YAML.
-templ hostsOnboarding(config string) {
+// hostsOnboarding — подключение первого хоста (§5.4 дизайна, T14 — агент по
+// умолчанию, §2.1 спеки A2): один шаг с готовой командой install.sh
+// (собственный Go-агент, никакого отдельно устанавливаемого пакета) →
+// хост появляется в списке сам, без ручного «включить и запустить». Прежний
+// путь через otelcol-contrib — свёрнутая альтернатива <details> ниже, три
+// шага без изменений (ей отдают предпочтение, когда на хосте уже есть
+// парк out-of-the-box коллекторов или агент не подходит по иной причине).
+//
+// installCmd/collectorCfg == "" одновременно (agentReason=="") — в проекте
+// ещё нет активного публичного ключа (h.hostInstallBlocks, hosts.go, общий
+// firstLiveKey-путь): без него ни командой, ни конфигом заполнить нечего
+// (endpoint без ключа не заработает), поэтому на ОБОИХ путях вместо
+// copyBlock — подсказка, где ключ завести, со ссылкой на настройки проекта
+// (rem-E ux-M4) — тот же projectID, что и у HostsList/HostSettings. Если
+// ключ есть, но installCmd пуст, а collectorCfg — нет, agentReason
+// ("dist"/"insecure", rem-A sec-M1/sec-M4) объясняет, почему шаг агента
+// недоступен/небезопасен, а коллектор ниже — нет.
+templ hostsOnboarding(projectID int64, installCmd, collectorCfg, agentReason string) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "hosts.onboarding.title") }</h2>
 		<ol>
 			<li>
-				<p>{ i18n.T(ctx, "hosts.onboarding.step1") } <a href="/docs/hosts">{ i18n.T(ctx, "hosts.onboarding.docs_link") }</a></p>
-			</li>
-			<li>
-				<p>{ i18n.T(ctx, "hosts.onboarding.step2") }</p>
-				if config != "" {
-					@copyBlock("hosts-onboarding-collector-config", "hosts.copy.button", config)
+				<p>{ i18n.T(ctx, "hosts.onboarding.agent_title") }</p>
+				if installCmd != "" {
+					@copyBlock("hosts-onboarding-agent-cmd", "hosts.copy.command", installCmd)
+					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_update_note") }</p>
+				} else if agentReason == "dist" {
+					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_unavailable") }</p>
+				} else if agentReason == "insecure" {
+					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_insecure") }</p>
 				} else {
-					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.no_key") }</p>
+					<p class="hint">
+						{ i18n.T(ctx, "hosts.onboarding.no_key") }
+						<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
+					</p>
 				}
 			</li>
 			<li>
-				<p>{ i18n.T(ctx, "hosts.onboarding.step3") }</p>
-				<pre>sudo systemctl enable --now otelcol-contrib</pre>
+				<p>{ i18n.T(ctx, "hosts.onboarding.agent_step") }</p>
+				<p class="hint">
+					{ i18n.T(ctx, "hosts.onboarding.agent_platforms") }
+					<a href="/docs/hosts">{ i18n.T(ctx, "hosts.onboarding.docs_link") }</a>
+				</p>
 			</li>
 		</ol>
+		<details>
+			<summary>{ i18n.T(ctx, "hosts.onboarding.collector_alt") }</summary>
+			<ol>
+				<li>
+					<p>{ i18n.T(ctx, "hosts.onboarding.step1") } <a href="/docs/hosts">{ i18n.T(ctx, "hosts.onboarding.docs_link") }</a></p>
+				</li>
+				<li>
+					<p>{ i18n.T(ctx, "hosts.onboarding.step2") }</p>
+					if collectorCfg != "" {
+						@copyBlock("hosts-onboarding-collector-config", "hosts.copy.button", collectorCfg)
+					} else {
+						<p class="hint">
+							{ i18n.T(ctx, "hosts.onboarding.no_key") }
+							<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
+						</p>
+					}
+				</li>
+				<li>
+					<p>{ i18n.T(ctx, "hosts.onboarding.step3") }</p>
+					<pre>sudo systemctl enable --now otelcol-contrib</pre>
+				</li>
+			</ol>
+		</details>
 	</section>
 }

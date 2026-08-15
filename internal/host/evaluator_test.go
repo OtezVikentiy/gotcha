@@ -82,7 +82,7 @@ func seedEvalHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string
 	t.Helper()
 	ctx := context.Background()
 	store := host.NewStore(pool)
-	if _, err := store.Upsert(ctx, projectID, []string{name}); err != nil {
+	if _, err := store.Upsert(ctx, projectID, entries(name)); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 	h, ok, err := store.Get(ctx, projectID, name)
@@ -404,7 +404,7 @@ func TestEvaluatorSilentOpensAndResolvesOnUpsert(t *testing.T) {
 		t.Fatal("silent incident must open: 10 минут тишины > дефолтного порога 5 минут")
 	}
 
-	if _, err := host.NewStore(pool).Upsert(ctx, pid, []string{h.Name}); err != nil {
+	if _, err := host.NewStore(pool).Upsert(ctx, pid, []host.TouchEntry{{Name: h.Name}}); err != nil {
 		t.Fatalf("upsert (host came back): %v", err)
 	}
 	if err := eval.Tick(ctx); err != nil {

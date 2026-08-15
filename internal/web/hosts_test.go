@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"regexp"
 	"slices"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -241,5 +244,307 @@ func TestCollectorConfigExcludesPseudoFilesystems(t *testing.T) {
 	}
 	if _, ok := metrics["system.filesystem.utilization"]; !ok {
 		t.Errorf("system.filesystem.utilization не включена: %+v", metrics)
+	}
+}
+
+// TestCollectorConfigGeneratedLists — списки исключений YAML рендерятся из
+// internal/hostmetric, а не дублируются строкой в шаблоне: правка исключений
+// в одном месте меняет и агент, и конфиг коллектора. Плюс паритет путей —
+// system.uptime едет и с самого коллектора (§3.4 спеки), не только с агента.
+func TestCollectorConfigGeneratedLists(t *testing.T) {
+	cfg := collectorConfig("https://g.example", "pk_x")
+	// Списки исключений рендерятся из hostmetric — источник один.
+	for _, fs := range hostmetric.ExcludedFSTypes {
+		if !strings.Contains(cfg, fs) {
+			t.Errorf("нет fs-типа %q в YAML", fs)
+		}
+	}
+	for _, p := range hostmetric.ExcludedMountPrefixes {
+		if !strings.Contains(cfg, "^"+p+".*") {
+			t.Errorf("нет регэкспа маунта для %q", p)
+		}
+	}
+	// Паритет путей: uptime едет и с коллектора (§3.4 спеки).
+	if !strings.Contains(cfg, "system:") || !strings.Contains(cfg, "system.uptime: {enabled: true}") {
+		t.Error("system-scraper с system.uptime не включён")
+	}
+}
+
+// TestAgentUpdateAvailable — сравнение версий по базе X.Y.Z (спека §3.3):
+// префикс "v" срезается, суффикс после третьей числовой группы (dev-сборка
+// "-N-gHASH") игнорируется, любой невалидный семвер (пустая строка, мусор,
+// "dev" у сервера) даёт false — молчим, а не пугаем оператора ложным
+// бейджем. Агент новее сервера — тоже false: обновление не предлагаем
+// откатить.
+func TestAgentUpdateAvailable(t *testing.T) {
+	cases := []struct {
+		agent, server string
+		want          bool
+	}{
+		{"0.5.0", "0.6.0", true},
+		{"v0.5.0", "0.6.0", true},        // префикс v срезается
+		{"0.6.0", "0.6.0", false},        // версии совпадают
+		{"0.6.1", "0.6.0", false},        // агент новее — не пугаем
+		{"0.6.0-5-gabc", "0.6.0", false}, // сравнение по базе X.Y.Z
+		{"", "0.6.0", false},             // нет данных — молчим
+		{"мусор", "0.6.0", false},
+		{"0.6.0", "dev", false},   // сервер без валидного семвера — молчим
+		{"0.9.0", "0.10.0", true}, // числовое сравнение minor, не лексикографическое ("9" > "10" строкой)
+		{"0.10.0", "0.9.0", false},
+	}
+	for _, c := range cases {
+		t.Run(c.agent+"/"+c.server, func(t *testing.T) {
+			if got := agentUpdateAvailable(c.agent, c.server); got != c.want {
+				t.Errorf("agentUpdateAvailable(%q, %q) = %v, want %v", c.agent, c.server, got, c.want)
+			}
+		})
+	}
+}
+
+// TestAgentCommands — команда установки несёт ключ и endpoint (DSN-эквивалент
+// хостовых метрик), команда обновления — БЕЗ ключа (повторный запуск того же
+// install.sh переустанавливает бинарь агента, а не выпускает новый ключ).
+// Обе загружают install.sh полностью перед исполнением (`sh -c "$(curl ...)"`,
+// не `curl | sh`) — симметрия форм, см. докблок задачи.
+func TestAgentCommands(t *testing.T) {
+	install := agentInstallCommand("https://g.example", "pk_x")
+	if !strings.Contains(install, "https://g.example/install.sh") {
+		t.Errorf("install-команда без /install.sh: %s", install)
+	}
+	if !strings.Contains(install, "GOTCHA_AGENT_KEY=pk_x") {
+		t.Errorf("install-команда без ключа: %s", install)
+	}
+	if !strings.Contains(install, "GOTCHA_AGENT_ENDPOINT=https://g.example") {
+		t.Errorf("install-команда без endpoint: %s", install)
+	}
+
+	update := agentUpdateCommand("https://g.example")
+	if !strings.Contains(update, "https://g.example/install.sh") {
+		t.Errorf("update-команда без /install.sh: %s", update)
+	}
+	if strings.Contains(update, "GOTCHA_AGENT_KEY") {
+		t.Errorf("update-команда не должна нести ключ: %s", update)
+	}
+}
+
+// renderHostDetail — прямой рендер templ-компонента карточки хоста (как
+// renderTo в templates-пакете), без HTTP-стенда: этому тесту важна только
+// разметка шапки по готовой VM.
+func renderHostDetail(t *testing.T, vm templates.HostDetailVM) string {
+	t.Helper()
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	var sb strings.Builder
+	if err := templates.HostDetail(vm, "").Render(ctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return sb.String()
+}
+
+// TestHostDetailShowsAgentVersion — версия агента и бейдж обновления в шапке
+// карточки: при заполненной AgentVersion и доступном обновлении в HTML есть
+// сама версия, i18n-текст ключа "hosts.detail.agent_update" и команда
+// обновления (T13); при AgentVersion=="" — ни строки версии, ни бейджа (нет
+// данных, а не «версия неизвестна»).
+func TestHostDetailShowsAgentVersion(t *testing.T) {
+	base := templates.HostDetailVM{
+		Host: host.Host{Name: "web-1"},
+	}
+
+	withVersion := base
+	withVersion.Host.AgentVersion = "0.5.0"
+	withVersion.AgentVersion = "0.5.0"
+	withVersion.AgentUpdateAvailable = true
+	withVersion.AgentUpdateCmd = agentUpdateCommand("https://g.example")
+	html := renderHostDetail(t, withVersion)
+
+	if !strings.Contains(html, "0.5.0") {
+		t.Errorf("нет версии агента в разметке: %s", html)
+	}
+	wantBadge := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "hosts.detail.agent_update")
+	if !strings.Contains(html, wantBadge) {
+		t.Errorf("нет текста бейджа обновления (%q): %s", wantBadge, html)
+	}
+	if !strings.Contains(html, "install.sh") {
+		t.Errorf("нет команды обновления агента: %s", html)
+	}
+
+	empty := base // AgentVersion пуст
+	html = renderHostDetail(t, empty)
+	if strings.Contains(html, wantBadge) {
+		t.Errorf("бейдж обновления показан без версии агента: %s", html)
+	}
+	if strings.Contains(html, "hosts.detail.agent_version") {
+		t.Errorf("сырой i18n-ключ версии агента в разметке: %s", html)
+	}
+}
+
+// TestHostDetailAgentUpdateShowsTargetVersion — rem-E ux-L16: блок «Как
+// обновить агента» должен называть версию сервера, до которой пойдёт
+// обновление, — бейдж «Есть обновление» сам по себе цель не называет.
+func TestHostDetailAgentUpdateShowsTargetVersion(t *testing.T) {
+	vm := templates.HostDetailVM{
+		Host:                 host.Host{Name: "web-1", AgentVersion: "0.5.0"},
+		AgentVersion:         "0.5.0",
+		AgentUpdateAvailable: true,
+		AgentUpdateCmd:       agentUpdateCommand("https://g.example"),
+		ServerVersion:        "0.6.0",
+	}
+	html := renderHostDetail(t, vm)
+
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantHowto := i18n.Tf(ctx, "hosts.detail.agent_update_howto", "version", "0.6.0")
+	if !strings.Contains(html, wantHowto) {
+		t.Errorf("блок обновления не называет целевую версию (%q): %s", wantHowto, html)
+	}
+}
+
+// renderHostsListOnboarding — прямой рендер онбординга пустого списка хостов
+// (как renderHostDetail): важна только структура блока «Установить агент» +
+// свёрнутая альтернатива коллектора, не сам список.
+func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason string) string {
+	t.Helper()
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	var sb strings.Builder
+	if err := templates.HostsList(1, nil, false, hostsListLimit, installCmd, config, agentReason, "").Render(ctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return sb.String()
+}
+
+// TestHostsOnboardingAgentDefault — T14: онбординг предлагает свой агент по
+// умолчанию (одна install.sh-команда с ключом+endpoint), коллектор otelcol —
+// свёрнутая альтернатива с прежними тремя шагами. Оба пути берут ключ одним
+// и тем же firstLiveKey-путём (h.hostInstallBlocks в hosts.go), поэтому при
+// его отсутствии подсказка hosts.onboarding.no_key
+// показывается на ОБОИХ путях, а не на одном.
+func TestHostsOnboardingAgentDefault(t *testing.T) {
+	installCmd := agentInstallCommand("https://g.example", "pk_x")
+	config := collectorConfig("https://g.example", "pk_x")
+	html := renderHostsListOnboarding(t, installCmd, config, "")
+
+	for _, want := range []string{"GOTCHA_AGENT_ENDPOINT=https://g.example", "GOTCHA_AGENT_KEY=pk_x", "/install.sh"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("онбординг без фрагмента команды агента %q: %s", want, html)
+		}
+	}
+	if !strings.Contains(html, "<details") {
+		t.Errorf("нет свёрнутого блока альтернативы коллектора: %s", html)
+	}
+	if !strings.Contains(html, "otlphttp") { // фрагмент YAML коллектора внутри details
+		t.Errorf("свёрнутый блок без конфига коллектора: %s", html)
+	}
+
+	noKeyHTML := renderHostsListOnboarding(t, "", "", "")
+	wantHint := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "hosts.onboarding.no_key")
+	if got := strings.Count(noKeyHTML, wantHint); got != 2 {
+		t.Errorf("подсказка no_key встречается %d раз(а) без ключа, want 2 (агент-шаг + коллектор-альтернатива): %s", got, noKeyHTML)
+	}
+}
+
+// TestHostsOnboardingAgentDocsLink — rem-E ux-M7: на пути агента по
+// умолчанию (вне свёрнутой коллектор-альтернативы) должна быть своя ссылка
+// на /docs/hosts и подсказка про поддерживаемые платформы — до этой правки
+// на дефолтном пути не было ни того ни другого, обе жили только внутри
+// свёрнутого блока коллектора.
+func TestHostsOnboardingAgentDocsLink(t *testing.T) {
+	installCmd := agentInstallCommand("https://g.example", "pk_x")
+	config := collectorConfig("https://g.example", "pk_x")
+	html := renderHostsListOnboarding(t, installCmd, config, "")
+
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantPlatforms := i18n.T(ctx, "hosts.onboarding.agent_platforms")
+	if !strings.Contains(html, wantPlatforms) {
+		t.Errorf("нет подсказки про платформы на шаге агента (%q): %s", wantPlatforms, html)
+	}
+	if got := strings.Count(html, `href="/docs/hosts"`); got != 3 {
+		t.Errorf("ссылка на /docs/hosts встречается %d раз(а), want 3 (help-панель + агент-шаг + коллектор-альтернатива): %s", got, html)
+	}
+}
+
+// TestHostsOnboardingNoKeyLinksToSettings — rem-E ux-M4: без активного
+// публичного ключа проекта подсказка no_key обязана вести на страницу
+// настроек проекта (/projects/{id}/settings), где ключ и заводится, а не
+// оставлять читателя угадывать путь.
+func TestHostsOnboardingNoKeyLinksToSettings(t *testing.T) {
+	html := renderHostsListOnboarding(t, "", "", "")
+
+	wantHref := `href="/projects/1/settings"`
+	if got := strings.Count(html, wantHref); got != 2 {
+		t.Errorf("ссылка на настройки проекта встречается %d раз(а), want 2 (агент-шаг + коллектор-альтернатива): %s", got, html)
+	}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantLinkText := i18n.T(ctx, "hosts.onboarding.no_key_link")
+	if !strings.Contains(html, wantLinkText) {
+		t.Errorf("нет текста ссылки на настройки (%q): %s", wantLinkText, html)
+	}
+}
+
+// TestHostsOnboardingAgentUnavailable — rem-A sec-M1: ключ есть (коллектор
+// заполнен), но раздача бинарей агента недоступна (agentDistAvailable()
+// ложен на инстансе, собранном не из Docker-образа) — онбординг не должен
+// предлагать install.sh-команду, которая гарантированно упрётся в 404, а
+// обязан объяснить причину явно.
+func TestHostsOnboardingAgentUnavailable(t *testing.T) {
+	config := collectorConfig("https://g.example", "pk_x")
+	html := renderHostsListOnboarding(t, "", config, "dist")
+
+	if strings.Contains(html, "curl") || strings.Contains(html, "/install.sh") {
+		t.Errorf("онбординг предлагает команду агента при недоступной раздаче: %s", html)
+	}
+	wantHint := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "hosts.onboarding.agent_unavailable")
+	if !strings.Contains(html, wantHint) {
+		t.Errorf("нет подсказки о недоступной раздаче (%q): %s", wantHint, html)
+	}
+	if !strings.Contains(html, "otlphttp") {
+		t.Errorf("коллектор-альтернатива должна остаться заполненной: %s", html)
+	}
+}
+
+// TestHostsOnboardingAgentInsecure — rem-A sec-M4: BaseURL не https:// и не
+// локальный — онбординг не должен предлагать root-команду по каналу,
+// уязвимому MITM, и обязан явно предупредить про HTTPS.
+func TestHostsOnboardingAgentInsecure(t *testing.T) {
+	config := collectorConfig("http://gotcha.example", "pk_x")
+	html := renderHostsListOnboarding(t, "", config, "insecure")
+
+	if strings.Contains(html, "curl") || strings.Contains(html, "/install.sh") {
+		t.Errorf("онбординг предлагает команду агента по незащищённому каналу: %s", html)
+	}
+	wantHint := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "hosts.onboarding.agent_insecure")
+	if !strings.Contains(html, wantHint) {
+		t.Errorf("нет предупреждения про HTTPS (%q): %s", wantHint, html)
+	}
+	if !strings.Contains(html, "otlphttp") {
+		t.Errorf("коллектор-альтернатива должна остаться заполненной: %s", html)
+	}
+}
+
+// renderHostSettingsPage — прямой рендер страницы настроек порогов.
+func renderHostSettingsPage(t *testing.T, installCmd, config, agentReason string) string {
+	t.Helper()
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	var sb strings.Builder
+	if err := templates.HostSettings(1, host.DefaultSettings(), installCmd, config, agentReason, nil, "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return sb.String()
+}
+
+// TestHostSettingsAgentInstallBlock — T14: страница настроек порогов несёт
+// свёрнутый блок с готовой командой установки агента рядом со свёрнутым
+// блоком конфига коллектора (hostsCollectorConfigDetails, дополненный этой
+// задачей) — второй сервер подключают тем же путём, что и первый (§5.4).
+func TestHostSettingsAgentInstallBlock(t *testing.T) {
+	installCmd := agentInstallCommand("https://g.example", "pk_x")
+	config := collectorConfig("https://g.example", "pk_x")
+	html := renderHostSettingsPage(t, installCmd, config, "")
+
+	for _, want := range []string{"GOTCHA_AGENT_ENDPOINT=https://g.example", "GOTCHA_AGENT_KEY=pk_x", "/install.sh"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("страница настроек без фрагмента команды агента %q: %s", want, html)
+		}
+	}
+	if !strings.Contains(html, "otlphttp") {
+		t.Errorf("страница настроек без конфига коллектора: %s", html)
 	}
 }

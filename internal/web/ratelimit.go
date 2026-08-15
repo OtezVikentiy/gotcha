@@ -101,6 +101,30 @@ func (h *Handler) publicRateLimited(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// SetAgentDistRateLimit переустанавливает порог per-IP лимитера раздачи
+// бинарей агента (GOTCHA_AGENT_DIST_RATE_PER_MIN, ops-H4, cmd/gotcha/main.go).
+// Отдельный метод, а не публичное поле лимитера: *rateLimiter — внутренний
+// тип пакета, конструктору нужен источник времени. Вызывается один раз при
+// старте, до начала обслуживания запросов — гонок с Allow() нет.
+func (h *Handler) SetAgentDistRateLimit(perMinute int) {
+	h.agentLimiter = newRateLimiter(time.Now, perMinute, time.Minute)
+}
+
+// agentDistRateLimited навешивает узкий per-IP лимит на раздачу бинарей
+// агента (GET /agent/{file}, см. Handler.agentLimiter) — отдельно от общего
+// publicLimiter, чтобы установки агента не могли использовать вес бинаря
+// (~9.3 МиБ) для DoS общего пула соединений (см. комментарий поля).
+func (h *Handler) agentDistRateLimited(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.agentLimiter != nil && !h.agentLimiter.Allow(h.clientIP(r)) {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // remoteHost — host из RemoteAddr (порт отброшен), т.е. адрес непосредственного
 // TCP-пира. За reverse-proxy это адрес прокси, а не клиента (см. clientIP).
 func remoteHost(r *http.Request) string {

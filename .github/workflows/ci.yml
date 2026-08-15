@@ -45,6 +45,16 @@ jobs:
             exit 1
           fi
 
+      # Версия и sha256 пинуются тем же принципом, что и digest базы Dockerfile.
+      - name: shellcheck install.sh
+        run: |
+          SC_VER=v0.10.0
+          SC_SHA256=6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
+          curl -fsSL -o sc.tar.xz "https://github.com/koalaman/shellcheck/releases/download/${SC_VER}/shellcheck-${SC_VER}.linux.x86_64.tar.xz"
+          echo "${SC_SHA256}  sc.tar.xz" | sha256sum -c -
+          tar -xJf sc.tar.xz
+          "./shellcheck-${SC_VER}/shellcheck" internal/web/install.sh
+
       - name: go vet
         run: go vet ./...
 

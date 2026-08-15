@@ -1,10 +1,10 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая — 0068
-// (host_incidents_host_id_idx.up.sql, T10). Тест 0065 (host_threshold_settings,
-// T9) трогать не нужно, он остаётся за 0065.
+// Тест на непустой базе для 0068 (host_incidents_host_id_idx.up.sql, T10).
+// Новейшая миграция сдвинулась на 0069 (hosts_agent_version, T8, см.
+// migrate_0069_test.go) — комментарий-указатель для TestLatestMigrationHasDataTest
+// (internal/guards) переехал туда. Тест 0065 (host_threshold_settings, T9)
+// трогать не нужно, он остаётся за 0065.
 
 import (
 	"context"

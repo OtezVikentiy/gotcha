@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -255,10 +258,20 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	// уже на ПРИНЯТОМ имени или на CardinalityOverflow — то есть строго по
 	// идемпотентным веткам.
 	if h.Hosts != nil {
+		// Версии агента — по СЫРЫМ (ещё не схлопнутым гардом) host.name, отдельным
+		// проходом по ресурсам батча: MapOTLP уплощает ResourceMetrics в плоский
+		// список точек и теряет границу resource (спека §3.2), а версия агента —
+		// resource-атрибут, а не атрибут датапойнта.
+		versions := agentVersionsByRawHost(req.GetResourceMetrics())
 		seen := map[string]struct{}{}
-		var hosts []string
+		var hosts []host.TouchEntry
 		for i := range points {
-			name := h.Cardinality.Value(key.ProjectID, FieldHost, points[i].Host)
+			// raw запоминается ДО Cardinality.Value: Value читает points[i].Host
+			// ровно один раз на точку (см. комментарий выше, про collapsed-
+			// статистику), а raw нужен ещё и как ключ в versions — карте, чьи
+			// ключи посчитаны ДО схлопывания гардом.
+			raw := points[i].Host
+			name := h.Cardinality.Value(key.ProjectID, FieldHost, raw)
 			points[i].Host = name
 			if name == "" || name == CardinalityOverflow {
 				continue
@@ -267,7 +280,7 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			seen[name] = struct{}{}
-			hosts = append(hosts, name)
+			hosts = append(hosts, host.TouchEntry{Name: name, AgentVersion: versions[raw]})
 		}
 		if len(hosts) > 0 {
 			h.Hosts.Touch(r.Context(), key.ProjectID, hosts)
@@ -312,6 +325,95 @@ func otlpUnmarshalMetrics(enc otlpEncoding, raw []byte, req *metricspb.MetricsDa
 		return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(raw, req)
 	}
 	return proto.Unmarshal(raw, req)
+}
+
+// attrHostNameResource — resource-атрибут host.name. Дублирует одноимённую
+// константу metric-пакета (там она не экспортирована): нужна здесь только
+// затем, чтобы agentVersionsByRawHost построила ключ карты, совпадающий с
+// points[i].Host после промоушена в metric.MapOTLP.
+const attrHostNameResource = "host.name"
+
+// agentVersionsByRawHost — версии агента по СЫРОМУ host.name resource-атрибута
+// (с тем же капом в 200 рун, что применяет metric.MapOTLP при промоушене
+// host.name, — иначе ключи этой карты не совпали бы с points[i].Host).
+//
+// Отдельный проход по ResourceMetrics нужен потому, что metric.MapOTLP
+// уплощает батч в плоский список MetricPoint и теряет границу resource (спека
+// §3.2): версия агента лежит в атрибутах РЕСУРСА, а не датапойнта, и после
+// уплощения её было бы уже не привязать к конкретному хосту.
+//
+// В карту попадает ТОЛЬКО валидная непустая версия: смешанный экспорт (агент
+// и коллектор hostmetrics шлют метрики с одним и тем же host.name в одном
+// батче) не должен затирать уже найденную версию пустой — непустая версия
+// побеждает вне зависимости от порядка ресурсов в батче.
+func agentVersionsByRawHost(rms []*metricspb.ResourceMetrics) map[string]string {
+	out := make(map[string]string, 4)
+	for _, rm := range rms {
+		var rawHost, rawVersion string
+		for _, kv := range rm.GetResource().GetAttributes() {
+			switch kv.GetKey() {
+			case attrHostNameResource:
+				rawHost = otlpResourceAttrString(kv.GetValue())
+			case hostmetric.AgentVersionAttr:
+				rawVersion = otlpResourceAttrString(kv.GetValue())
+			}
+		}
+		if rawHost == "" {
+			continue
+		}
+		version := validAgentVersion(rawVersion)
+		if version == "" {
+			continue // пустую/невалидную версию в карту не кладём — см. докблок
+		}
+		out[capRunes(rawHost, 200)] = version
+	}
+	return out
+}
+
+// otlpResourceAttrString — скалярное строковое представление resource-
+// атрибута. Зеркалит attrString из internal/metric/parse.go (не otlpAttrString
+// этого файла — та рекурсивно разворачивает массивы/kvlist и иначе капает
+// строки): host.name и gotcha.agent.version обязаны читаться ИДЕНТИЧНО тому,
+// как их читает metric.MapOTLP, иначе ключ agentVersionsByRawHost разойдётся с
+// points[i].Host.
+func otlpResourceAttrString(v *commonpb.AnyValue) string {
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_StringValue:
+		return x.StringValue
+	case *commonpb.AnyValue_BoolValue:
+		return strconv.FormatBool(x.BoolValue)
+	case *commonpb.AnyValue_IntValue:
+		return strconv.FormatInt(x.IntValue, 10)
+	case *commonpb.AnyValue_DoubleValue:
+		return strconv.FormatFloat(x.DoubleValue, 'f', -1, 64)
+	}
+	return ""
+}
+
+// maxAgentVersionLen — потолок длины resource-атрибута gotcha.agent.version.
+// Настоящая версия укладывается в десяток символов; предел защищает колонку
+// hosts.agent_version от недоверенного значения (тот же приём, что у прочих
+// промотированных resource-атрибутов, см. capRunes(...,200) у host.name).
+const maxAgentVersionLen = 32
+
+// agentVersionPattern — semver-подобие версии агента: major.minor.patch плюс
+// произвольный хвост (pre-release/build/git-описание вроде "0.6.0-5-gabc123").
+// Полного semver не парсим — версия едет в служебное поле для отображения
+// оператору ("Хосты"), не в сравнения версий.
+var agentVersionPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]*$`)
+
+// validAgentVersion проверяет resource-атрибут gotcha.agent.version на
+// semver-подобие и длину. Мусор (SQL-инъекция, случайный текст, чрезмерная
+// длина) → "": пустая версия — валидное состояние, Touch её не пишет поверх
+// уже сохранённой (см. host.TouchEntry).
+func validAgentVersion(s string) string {
+	if len(s) > maxAgentVersionLen {
+		return ""
+	}
+	if !agentVersionPattern.MatchString(s) {
+		return ""
+	}
+	return s
 }
 
 // otlpAuthenticate резолвит публичный ключ DSN из `Authorization: Bearer <key>`

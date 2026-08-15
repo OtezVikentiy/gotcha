@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,8 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
@@ -1439,26 +1442,38 @@ func TestMapOTLPRedisSpansDetectAsNPlusOne(t *testing.T) {
 
 // --- Task 5: ingest.HostRegistry (сбор хостов на пути otlpMetrics) ---
 
-// fakeHostRegistry копит projectID → хосты, переданные в Touch.
+// fakeHostRegistry копит projectID → хосты (и TouchEntry целиком), переданные
+// в Touch.
 type fakeHostRegistry struct {
-	mu    sync.Mutex
-	calls map[int64][]string
+	mu      sync.Mutex
+	calls   map[int64][]string
+	entries map[int64][]host.TouchEntry
 }
 
 func newFakeHostRegistry() *fakeHostRegistry {
-	return &fakeHostRegistry{calls: make(map[int64][]string)}
+	return &fakeHostRegistry{calls: make(map[int64][]string), entries: make(map[int64][]host.TouchEntry)}
 }
 
-func (f *fakeHostRegistry) Touch(_ context.Context, projectID int64, hosts []string) {
+func (f *fakeHostRegistry) Touch(_ context.Context, projectID int64, entries []host.TouchEntry) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls[projectID] = append(f.calls[projectID], hosts...)
+	for _, e := range entries {
+		f.calls[projectID] = append(f.calls[projectID], e.Name)
+	}
+	f.entries[projectID] = append(f.entries[projectID], entries...)
 }
 
 func (f *fakeHostRegistry) get(projectID int64) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.calls[projectID]...)
+}
+
+// getEntries — TouchEntry целиком (Name+AgentVersion), для проверок Task 9.
+func (f *fakeHostRegistry) getEntries(projectID int64) []host.TouchEntry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]host.TouchEntry(nil), f.entries[projectID]...)
 }
 
 // zeroQuotaChecker — QuotaChecker, всегда отвечающий «квота исчерпана»: нужен
@@ -1620,5 +1635,212 @@ func TestOTLPMetricsHostRegistrySkipsCardinalityOverflow(t *testing.T) {
 	}
 	if want := []string{"web-2"}; !slices.Equal(hostReport.Samples, want) {
 		t.Errorf("Samples = %v, want %v (без дублей)", hostReport.Samples, want)
+	}
+}
+
+// --- Task 9: gotcha.agent.version на приёме OTLP-метрик ---
+
+// resourceMetricWithHostVersion — один ResourceMetrics с host.name и
+// (опционально) gotcha.agent.version в resource-атрибутах; version="" —
+// атрибут версии в экспорте отсутствует (как у обычного коллектора hostmetrics).
+func resourceMetricWithHostVersion(host, version, metricName string) *metricspb.ResourceMetrics {
+	var attrs []*commonpb.KeyValue
+	if host != "" {
+		attrs = append(attrs, strAttr("host.name", host))
+	}
+	if version != "" {
+		attrs = append(attrs, strAttr(hostmetric.AgentVersionAttr, version))
+	}
+	return &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{Attributes: attrs},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
+			{Name: metricName, Unit: "1", Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{
+				DataPoints: []*metricspb.NumberDataPoint{{
+					TimeUnixNano: uint64(time.Now().Add(-time.Hour).UnixNano()),
+					Value:        &metricspb.NumberDataPoint_AsDouble{AsDouble: 0.5},
+				}},
+			}}},
+		}}},
+	}
+}
+
+// TestOTLPMetricsAgentVersionTouch (Task 9): resource-атрибут
+// gotcha.agent.version на приёме OTLP-метрик долетает до TouchEntry.AgentVersion.
+func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
+	t.Run("версия есть", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHostVersion("web-1", "0.6.0", "cpu"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		got := hosts.getEntries(1)
+		want := []host.TouchEntry{{Name: "web-1", AgentVersion: "0.6.0"}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("TouchEntry = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("версии нет — пустая", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHostVersion("web-1", "", "cpu"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		got := hosts.getEntries(1)
+		want := []host.TouchEntry{{Name: "web-1", AgentVersion: ""}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("TouchEntry = %+v, want %+v", got, want)
+		}
+	})
+
+	// Смешанный экспорт: один и тот же host.name приезжает в ДВУХ ресурсах
+	// одного батча — один с версией (агент), другой без (коллектор hostmetrics
+	// на том же хосте). Непустая версия обязана победить вне зависимости от
+	// порядка ресурсов в батче (ревью плана №22).
+	t.Run("смешанный экспорт: версия первым ресурсом", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHostVersion("web-1", "0.6.0", "cpu"),
+			resourceMetricWithHostVersion("web-1", "", "mem"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		got := hosts.getEntries(1)
+		want := []host.TouchEntry{{Name: "web-1", AgentVersion: "0.6.0"}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("TouchEntry = %+v, want %+v (непустая версия должна победить)", got, want)
+		}
+	})
+
+	t.Run("смешанный экспорт: версия вторым ресурсом", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHostVersion("web-1", "", "cpu"),
+			resourceMetricWithHostVersion("web-1", "0.6.0", "mem"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		got := hosts.getEntries(1)
+		want := []host.TouchEntry{{Name: "web-1", AgentVersion: "0.6.0"}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("TouchEntry = %+v, want %+v (непустая версия должна победить)", got, want)
+		}
+	})
+}
+
+// TestOTLPMetricsAgentVersionGarbage (Task 9): мусорные значения
+// gotcha.agent.version (инъекция, гигантская строка, произвольный текст) не
+// долетают до AgentVersion — валидация отсекает их до записи в БД.
+func TestOTLPMetricsAgentVersionGarbage(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+	}{
+		{"инъекция", "'; DROP TABLE hosts; --"},
+		{"слишком длинная", strings.Repeat("9", 200) + ".0.0"},
+		{"не semver", "abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &collectMetricSink{}
+			hosts := newFakeHostRegistry()
+			h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+			h.Metrics = sink
+			h.Hosts = hosts
+
+			w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+				resourceMetricWithHostVersion("web-1", tc.version, "cpu"),
+			})
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			got := hosts.getEntries(1)
+			want := []host.TouchEntry{{Name: "web-1", AgentVersion: ""}}
+			if !slices.Equal(got, want) {
+				t.Fatalf("TouchEntry = %+v, want %+v (мусорная версия → пусто)", got, want)
+			}
+		})
+	}
+}
+
+// TestOTLPMetricsAgentVersionNotInAttrs (Task 9, тест-сторож): resource-атрибут
+// gotcha.agent.version не попадает в принятые CH-точки — ни в промоутированные
+// поля, ни в Attributes датапойнта. Гарантия сегодня даёт сам metric.MapOTLP
+// (ресурсные атрибуты не копируются в datapoint Attributes); тест фиксирует
+// инвариант, чтобы будущая правка его не сломала молча. Проверяем ЛЮБОЙ
+// атрибут с префиксом hostmetric.AgentAttrPrefix (не только точное имя версии)
+// — эта же гарантия задумана для всего служебного неймспейса агента, а не
+// только для уже существующего сегодня единственного атрибута в нём.
+func TestOTLPMetricsAgentVersionNotInAttrs(t *testing.T) {
+	sink := &collectMetricSink{}
+	hosts := newFakeHostRegistry()
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h.Metrics = sink
+	h.Hosts = hosts
+
+	w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+		resourceMetricWithHostVersion("web-1", "0.6.0", "cpu"),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if len(sink.points) == 0 {
+		t.Fatalf("sink.points пуст, нечего проверять")
+	}
+	for _, p := range sink.points {
+		for attr := range p.Attributes {
+			if strings.HasPrefix(attr, hostmetric.AgentAttrPrefix) {
+				t.Errorf("точка %q: служебный атрибут агента %q утёк в CH-атрибуты", p.Name, attr)
+			}
+		}
+	}
+}
+
+// TestValidAgentVersion (Task 9): semver-подобие
+// ^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]*$, длина ≤ 32.
+func TestValidAgentVersion(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"валид без v", "0.6.0", "0.6.0"},
+		{"валид с v", "v0.6.0", "v0.6.0"},
+		{"валид git-описание", "0.6.0-5-gabc", "0.6.0-5-gabc"},
+		{"пусто", "", ""},
+		{"не semver кириллица", "мусор", ""},
+		{"не semver буквы", "abc", ""},
+		{"неполный semver", "1.2", ""},
+		{"валидная форма, но длиннее 32", "0.0.0" + strings.Repeat("a", 30), ""},
+		{"инъекция", "'; DROP TABLE", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validAgentVersion(tc.in); got != tc.want {
+				t.Errorf("validAgentVersion(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

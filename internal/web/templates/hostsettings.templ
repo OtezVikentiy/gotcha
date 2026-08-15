@@ -38,15 +38,20 @@ func settingsMinutesDefault(d time.Duration) string {
 }
 
 // HostSettings — GET/POST /projects/{id}/hosts/settings: форма порогов
-// встроенных инцидентов хоста (§5.5 дизайна) + свёрнутая ссылка на конфиг
-// коллектора (тот же copyBlock, что и в онбординге списка, HostsList).
+// встроенных инцидентов хоста (§5.5 дизайна) + свёрнутые блоки команды
+// установки агента и конфига коллектора (hostsCollectorConfigDetails, тот
+// же компонент, что на непустом списке хостов, HostsList — T14).
 //
 // form — введённые значения при повторной отрисовке после ошибки валидации
 // (см. FormState); при первом открытии (GET) form == nil, и все поля берут
 // значения из s (сервис уже вернул DefaultSettings, если строки настроек ещё
-// нет). config — пустая строка, если в проекте нет ни одного активного
-// публичного ключа (h.hostCollectorConfig, hosts.go) — тогда вместо
-// copyBlock показывается подсказка, где ключ завести.
+// нет). installCmd/config — пустые одновременно, если в проекте нет ни
+// одного активного публичного ключа (h.hostInstallBlocks, hosts.go, общий
+// firstLiveKey-путь) — тогда вместо copyBlock показывается подсказка, где
+// ключ завести. agentReason — почему installCmd пуст при непустом config
+// (rem-A sec-M1/sec-M4): см. комментарий hostInstallBlocks и
+// hostsCollectorConfigDetails (hosts.templ, тот же компонент рендерит блоки
+// здесь).
 //
 // У каждого числового поля своя подсказка, связанная с полем через
 // aria-describedby (UX-аудит A1, P2-6): подпись «Порог, %» не говорит, ЧТО
@@ -54,7 +59,7 @@ func settingsMinutesDefault(d time.Duration) string {
 // даже, что речь про load average, делённый на число логических ядер. Тексты —
 // краткий пересказ таблицы порогов из docs/hosts.md, туда же ведёт ссылка
 // внизу страницы.
-templ HostSettings(projectID int64, s host.Settings, config string, form FormState, errMsg, userEmail string) {
+templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentReason string, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.host_thresholds"), userEmail) {
 		<div class="host-settings">
 			<h1>{ i18n.T(ctx, "nav.host_thresholds") }</h1>
@@ -128,7 +133,7 @@ templ HostSettings(projectID int64, s host.Settings, config string, form FormSta
 				</fieldset>
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "hosts.settings.submit") }</button>
 			</form>
-			@hostsCollectorConfigDetails("host-settings-collector-config", config)
+			@hostsCollectorConfigDetails("host-settings-collector-config", projectID, installCmd, config, agentReason)
 			<p class="hint"><a href="/docs/hosts">{ i18n.T(ctx, "hosts.settings.docs_link") }</a></p>
 		</div>
 	}

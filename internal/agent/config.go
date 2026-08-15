@@ -1,0 +1,68 @@
+// Package agent — ядро gotcha-agent: сбор хост-метрик через gopsutil,
+// сборка OTLP-экспорта и push на инстанс Gotcha с буферизацией недоставленного.
+// Вся логика здесь (cmd/gotcha-agent — тонкая обвязка): пакет входит в
+// BACK-агрегат покрытия, а точка входа — в щадящую CMD-группу.
+package agent
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// Config — публичный контракт GOTCHA_AGENT_* (фиксируется набело, спека §1.4).
+type Config struct {
+	Endpoint           string        // базовый URL инстанса, без пути
+	Key                string        // публичный ключ проекта (Bearer)
+	Hostname           string        // переопределение host.name; "" — os.Hostname в Run
+	CACert             string        // путь к PEM CA (самоподписанные инстансы)
+	Interval           time.Duration // 10s..5m, дефолт 30s
+	InsecureSkipVerify bool          // крайнее средство; рекомендуемый путь — CACert
+}
+
+const (
+	defaultInterval = 30 * time.Second
+	minInterval     = 10 * time.Second // ниже — самоDoS ключом по ingest
+	maxInterval     = 5 * time.Minute  // выше — «тишина» порогов ложно срабатывает
+)
+
+// LoadConfig читает окружение. getenv параметром — детерминированные тесты
+// без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
+func LoadConfig(getenv func(string) string) (Config, error) {
+	cfg := Config{
+		Endpoint: strings.TrimRight(getenv("GOTCHA_AGENT_ENDPOINT"), "/"),
+		Key:      getenv("GOTCHA_AGENT_KEY"),
+		Hostname: getenv("GOTCHA_AGENT_HOSTNAME"),
+		CACert:   getenv("GOTCHA_AGENT_CA_CERT"),
+		Interval: defaultInterval,
+	}
+	if cfg.Endpoint == "" {
+		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT is required")
+	}
+	u, err := url.Parse(cfg.Endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT must be an http(s) URL, got %q", cfg.Endpoint)
+	}
+	if cfg.Key == "" {
+		return Config{}, fmt.Errorf("GOTCHA_AGENT_KEY is required")
+	}
+	if raw := getenv("GOTCHA_AGENT_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("GOTCHA_AGENT_INTERVAL: %w", err)
+		}
+		if d < minInterval || d > maxInterval {
+			return Config{}, fmt.Errorf("GOTCHA_AGENT_INTERVAL must be within %s..%s, got %s", minInterval, maxInterval, d)
+		}
+		cfg.Interval = d
+	}
+	switch getenv("GOTCHA_AGENT_TLS_SKIP_VERIFY") {
+	case "", "0", "false":
+	case "1", "true":
+		cfg.InsecureSkipVerify = true
+	default:
+		return Config{}, fmt.Errorf("GOTCHA_AGENT_TLS_SKIP_VERIFY must be 0/1/true/false")
+	}
+	return cfg, nil
+}

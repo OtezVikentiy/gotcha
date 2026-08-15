@@ -236,6 +236,23 @@ type Config struct {
 	ProbeToken string
 	ServerURL  string
 
+	// AgentDistDir — каталог с install.sh и бинарями gotcha-agent (GOTCHA_AGENT_DIST_DIR,
+	// план A2, задача 10): раскладывается в образ на этапе сборки Docker (Task 12/13),
+	// сервер отдаёт их из web-хендлера (internal/web/agentdist.go). Дефолт совпадает с
+	// `ENV GOTCHA_AGENT_DIST_DIR` в Dockerfile — на штатном Docker-проде оператору не
+	// нужно ничего задавать явно, а env_file с пустым значением переменной (или её
+	// отсутствием) не гасит раздачу (rem-A ops-H1: `str()` трактует пустую строку как
+	// «не задано» и берёт этот дефолт). В dev-режиме (go run без docker) каталога по
+	// этому пути физически нет — agentDistAvailable() честно отдаёт 404 с подсказкой.
+	AgentDistDir string
+	// AgentDistRatePerMin — порог per-IP лимитера раздачи бинарей агента
+	// (GOTCHA_AGENT_DIST_RATE_PER_MIN, ops-H4): install.sh качает бинарь и SHA256SUMS
+	// (2 запроса на установку/обновление), а ключ лимитера — клиентский IP, поэтому
+	// парк за одним egress-адресом (NAT, Ansible-раскатка) делит один бюджет. Дефолт
+	// 120/мин — это 60 хостов в минуту с одного IP, с запасом для обычной раскатки;
+	// оператор с ещё большим парком за одним IP может поднять порог на время операции.
+	AgentDistRatePerMin int
+
 	// OAuth/social login (этап 5). Каждый провайдер включается независимо;
 	// включённый без обязательных секретов → отказ на старте. Секреты живут
 	// только в памяти процесса.
@@ -471,6 +488,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
 		ProbeToken:               str("GOTCHA_PROBE_TOKEN", ""),
 		ServerURL:                str("GOTCHA_SERVER_URL", ""),
+		AgentDistDir:             str("GOTCHA_AGENT_DIST_DIR", "/opt/gotcha/agent-dist"),
+		AgentDistRatePerMin:      intNum("GOTCHA_AGENT_DIST_RATE_PER_MIN", 120),
 	}
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")

@@ -37,7 +37,7 @@ func setupIncidentHost(t *testing.T) (*pgxpool.Pool, *host.IncidentService, int6
 	}
 
 	store := host.NewStore(pool)
-	if _, err := store.Upsert(ctx, projectID, []string{"web-01"}); err != nil {
+	if _, err := store.Upsert(ctx, projectID, entries("web-01")); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 	h, ok, err := store.Get(ctx, projectID, "web-01")
@@ -319,7 +319,7 @@ func secondHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) 
 	t.Helper()
 	ctx := context.Background()
 	store := host.NewStore(pool)
-	if _, err := store.Upsert(ctx, projectID, []string{name}); err != nil {
+	if _, err := store.Upsert(ctx, projectID, entries(name)); err != nil {
 		t.Fatalf("upsert host %s: %v", name, err)
 	}
 	h, ok, err := store.Get(ctx, projectID, name)

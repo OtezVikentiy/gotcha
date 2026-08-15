@@ -14,6 +14,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
@@ -85,7 +86,7 @@ type Handler struct {
 // Семантика: «приём принял экспорт», не «данные записаны в CH» — поэтому
 // вызывается и при отказе по квоте (живость хоста ≠ запись точек).
 type HostRegistry interface {
-	Touch(ctx context.Context, projectID int64, hosts []string)
+	Touch(ctx context.Context, projectID int64, entries []host.TouchEntry)
 }
 
 // DropCounter учитывает отклонённые единицы приёма по орге за текущий месяц.

@@ -136,7 +136,7 @@ func TestWebHostsList(t *testing.T) {
 	now := time.Now().UTC()
 
 	// web-ok: свежий, без инцидентов — все метрики есть.
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-ok"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-ok"}}); err != nil {
 		t.Fatalf("upsert web-ok: %v", err)
 	}
 	s.seedGaugeHost(t, project.ID, "system.cpu.utilization", "web-ok", now.Add(-time.Minute), 0.20, map[string]string{"state": "idle", "cpu": "0"})
@@ -146,7 +146,7 @@ func TestWebHostsList(t *testing.T) {
 	s.seedGaugeHost(t, project.ID, "system.cpu.logical.count", "web-ok", now.Add(-time.Minute), 3, nil)
 
 	// web-disk: открытый инцидент диска — статус-бейдж вида "disk".
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-disk"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-disk"}}); err != nil {
 		t.Fatalf("upsert web-disk: %v", err)
 	}
 	diskHost, found, err := s.hosts.Get(ctx, project.ID, "web-disk")
@@ -158,7 +158,7 @@ func TestWebHostsList(t *testing.T) {
 	}
 
 	// web-quiet: last_seen старше порога тишины, без инцидентов.
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-quiet"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-quiet"}}); err != nil {
 		t.Fatalf("upsert web-quiet: %v", err)
 	}
 	if err := s.settings.Save(ctx, project.ID, host.Settings{
@@ -222,6 +222,93 @@ func TestWebHostsList(t *testing.T) {
 	}
 }
 
+// TestWebHostsListAgentDistUnavailable — rem-A sec-M1: активный ключ проекта
+// есть (коллектор заполняется), но раздача бинарей агента не сконфигурирована
+// (h.AgentDistDir пуст — как newHostsStack поднимает Handler по умолчанию,
+// та же ситуация, что на инстансе, собранном не из Docker-образа). Онбординг
+// не должен предлагать install.sh-команду: `agentDistAvailable()` лжив, и
+// эта команда гарантированно упёрлась бы в 404 на каждом хосте парка.
+func TestWebHostsListAgentDistUnavailable(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-dist-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "h-dist-co", "H Dist Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "h-dist-proj", "H Dist Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.org.CreateKey(ctx, project.ID); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if strings.Contains(text, "curl -fsSL") {
+		t.Errorf("онбординг предлагает install.sh-команду при недоступной раздаче агента: %s", text)
+	}
+	if !strings.Contains(text, "otlphttp") {
+		t.Errorf("коллектор-альтернатива должна остаться заполненной без раздачи агента: %s", text)
+	}
+}
+
+// TestWebHostsListAgentInsecureBaseURL — rem-A sec-M4: BaseURL не https:// и
+// не локальный — онбординг не должен отдавать root-команду, которая тянет
+// бинарь и SHA256SUMS по каналу, уязвимому MITM. Второй Handler на отдельном
+// сервере, чтобы не трогать h.BaseURL исходного стенда (тот httptest-локален
+// и остаётся валидным фикстурой для остальных тестов файла).
+func TestWebHostsListAgentInsecureBaseURL(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+
+	mux2 := http.NewServeMux()
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	h2 := web.New(s.auth, s.org, nil, nil, "http://gotcha.example") // http://, не localhost — sec-M4
+	h2.AgentDistDir = t.TempDir()                                   // раздача доступна — изолирует именно sec-M4
+	h2.Metrics = metric.NewQuery(s.ch)
+	h2.Hosts = s.hosts
+	h2.HostIncidents = s.incidents
+	h2.HostSettings = s.settings
+	h2.Register(mux2)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-insecure-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "h-insecure-co", "H Insecure Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "h-insecure-proj", "H Insecure Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.org.CreateKey(ctx, project.ID); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+	resp := getWithCookie(t, srv2, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if strings.Contains(text, "curl -fsSL") {
+		t.Errorf("онбординг предлагает install.sh-команду по незащищённому http:// BaseURL: %s", text)
+	}
+	if !strings.Contains(text, "otlphttp") {
+		t.Errorf("коллектор-альтернатива должна остаться заполненной при небезопасном BaseURL: %s", text)
+	}
+}
+
 // TestWebHostsSilentBadgeConsistentAcrossSources — регрессия ревью T14
 // (находка 2): хост, тихий по факту открытого incident kind="silent"
 // (host.Evaluator уже тикнул), и хост, тихий только по last_seen (evaluator
@@ -246,7 +333,7 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 	// web-silent-incident: last_seen СВЕЖИЙ, но есть открытый incident
 	// kind="silent" (как будто host.Evaluator уже успел его открыть на
 	// предыдущем тике, до того как хост снова "ожил").
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-silent-incident"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-silent-incident"}}); err != nil {
 		t.Fatalf("upsert web-silent-incident: %v", err)
 	}
 	incidentHost, found, err := s.hosts.Get(ctx, project.ID, "web-silent-incident")
@@ -259,7 +346,7 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 
 	// web-silent-lastseen: тихий ТОЛЬКО по last_seen, без единого инцидента
 	// (evaluator ещё не тикнул).
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-silent-lastseen"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-silent-lastseen"}}); err != nil {
 		t.Fatalf("upsert web-silent-lastseen: %v", err)
 	}
 	if err := s.settings.Save(ctx, project.ID, host.Settings{
@@ -384,7 +471,7 @@ func TestWebHostsSettingsBeatsHostNamedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"settings"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "settings"}}); err != nil {
 		t.Fatalf("upsert host named settings: %v", err)
 	}
 
@@ -676,7 +763,7 @@ func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-01"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-01"}}); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 	hst, ok, err := s.hosts.Get(ctx, project.ID, "web-01")
@@ -732,7 +819,7 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"web-01"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-01"}}); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 	hst, ok, err := s.hosts.Get(ctx, project.ID, "web-01")
@@ -865,7 +952,7 @@ func TestWebHostDetail(t *testing.T) {
 	// Имя с пробелом и кириллицей — {name} должно URL-экранироваться в ссылке
 	// (hostDetailPath) и корректно разбираться r.PathValue обратно.
 	name := "веб сервер 1"
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{name}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 	hst, found, err := s.hosts.Get(ctx, project.ID, name)
@@ -908,7 +995,7 @@ func TestWebHostDetail(t *testing.T) {
 	// печатался тем же ключом, что <h2> секции, и заголовок «Последние
 	// инциденты» шёл дважды подряд. (У хоста выше история непуста, и второе
 	// вхождение там законно — это aria-label скролл-области таблицы.)
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{"hd-no-incidents"}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "hd-no-incidents"}}); err != nil {
 		t.Fatalf("upsert host without incidents: %v", err)
 	}
 	resp = getWithCookie(t, s.srv, base+"/hd-no-incidents", ownerCookie)
@@ -1007,7 +1094,7 @@ func TestWebHostDeleteConfirmFlow(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	name := "web-del-1"
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{name}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 
@@ -1095,7 +1182,7 @@ func TestWebHostDeleteNilHostForget(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	name := "web-del-nilforget"
-	if _, err := s.hosts.Upsert(ctx, project.ID, []string{name}); err != nil {
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
 

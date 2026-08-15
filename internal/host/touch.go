@@ -14,6 +14,22 @@ type touchKey struct {
 	name      string
 }
 
+// TouchEntry — один хост, встреченный на приёме: имя и версия агента, если
+// экспорт пришёл от internal/agent (Task 9+, A2) и версию удалось извлечь.
+//
+// AgentVersion — string, не *string, как в спеке §3.2: пустая строка несёт
+// смысл «версия неизвестна ИЗ ЭТОГО батча» и трактуется как «не менять
+// существующее значение» — тот же смысл, что и *string==nil, но без указателя
+// на вызывающей стороне (ingest собирает TouchEntry в цикле по точкам метрик,
+// где для OTel-коллектора и SDK-транзакций версии попросту нет, — плодить
+// nil-проверки под это было бы накладнее, чем просто сравнивать с ""). NULLIF
+// на стороне SQL (host.go, Store.Upsert) даёт тот же NULL, что дал бы *string
+// == nil — отклонение формы, не смысла контракта.
+type TouchEntry struct {
+	Name         string
+	AgentVersion string
+}
+
 // Toucher троттлит регистрацию хостов на приёме: карта (project,host) →
 // время последнего upsert'а, не чаще every на пару, потолок maxEntries с
 // вытеснением самой старой записи (иначе кардинальный мусор — случайные или
@@ -31,7 +47,7 @@ type Toucher struct {
 	// upsert — подменяется в тестах; в бою пишет через Store с таймаутом.
 	// Возвращает ошибку, чтобы Touch снял пометку seen и следующий батч
 	// попробовал снова (см. Touch).
-	upsert func(ctx context.Context, projectID int64, names []string) error
+	upsert func(ctx context.Context, projectID int64, entries []TouchEntry) error
 	wg     sync.WaitGroup // для wait() в тестах — дождаться фоновых upsert'ов
 
 	failures atomic.Int64 // проваленные upsert'ы регистрации — self-метрика
@@ -48,13 +64,13 @@ func NewToucher(store *Store, every time.Duration, maxEntries int) *Toucher {
 		every: every,
 		max:   maxEntries,
 	}
-	t.upsert = func(ctx context.Context, projectID int64, names []string) error {
+	t.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		if store == nil {
 			return nil
 		}
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		rejected, err := store.Upsert(ctx, projectID, names)
+		rejected, err := store.Upsert(ctx, projectID, entries)
 		if err != nil {
 			slog.Warn("host: toucher: upsert failed", "project_id", projectID, "error", err)
 			return err
@@ -82,27 +98,32 @@ func (t *Toucher) UpsertFailures() int64 { return t.failures.Load() }
 // MaxHostsPerProject (self-метрика gotcha_host_registrations_rejected_total).
 func (t *Toucher) RejectedNames() int64 { return t.rejected.Load() }
 
-// Touch регистрирует имена хостов проекта асинхронно и с троттлингом: имена,
-// тронутые в пределах every, пропускаются; остальным карта проставляет now(),
-// и они уходят в фоновую горутину на upsert. Пустые имена пропускаются
+// Touch регистрирует хосты проекта асинхронно и с троттлингом: имена,
+// тронутые в пределах every, пропускаются целиком — троттлинг по-прежнему
+// ключуется только по имени (touchKey), не по (имя, версия): сменившаяся в
+// пределах every версия агента НЕ пробивает троттлинг и не форсирует
+// внеочередной upsert (осознанно, спека §3.2 — свежая версия долетит со
+// следующим тиком не позже every, а тратить upsert на «то же самое имя, но
+// другая версия» ценой не оправдано). Остальным карта проставляет now(), и
+// они уходят в фоновую горутину на upsert. Пустые имена пропускаются
 // защитно — фильтрацию по cardinality-переполнению делает вызывающий
 // (ingest), чтобы пакет host не зависел от него.
 //
 // context.WithoutCancel: горутина переживает возврат из Touch и не должна
 // обрываться отменой ctx вызывающего (конец обработки батча событий) —
 // иначе upsert систематически отменялся бы раньше, чем успевал выполниться.
-func (t *Toucher) Touch(ctx context.Context, projectID int64, names []string) {
-	if len(names) == 0 {
+func (t *Toucher) Touch(ctx context.Context, projectID int64, entries []TouchEntry) {
+	if len(entries) == 0 {
 		return
 	}
 	now := time.Now()
 	t.mu.Lock()
-	var due []string
-	for _, n := range names {
-		if !validName(n) {
+	var due []TouchEntry
+	for _, e := range entries {
+		if !validName(e.Name) {
 			continue
 		}
-		key := touchKey{projectID: projectID, name: n}
+		key := touchKey{projectID: projectID, name: e.Name}
 		if last, ok := t.seen[key]; ok {
 			if now.Sub(last) < t.every {
 				continue
@@ -111,7 +132,7 @@ func (t *Toucher) Touch(ctx context.Context, projectID int64, names []string) {
 			t.evictOldestLocked()
 		}
 		t.seen[key] = now
-		due = append(due, n)
+		due = append(due, e)
 	}
 	upsert := t.upsert
 	t.mu.Unlock()
@@ -130,8 +151,8 @@ func (t *Toucher) Touch(ctx context.Context, projectID int64, names []string) {
 			// Гонка с параллельным Touch, успевшим пометить те же имена заново,
 			// стоит одного лишнего upsert'а — на порядок дешевле ложного алерта.
 			t.failures.Add(1)
-			for _, n := range due {
-				t.Forget(projectID, n)
+			for _, e := range due {
+				t.Forget(projectID, e.Name)
 			}
 		}
 	}()

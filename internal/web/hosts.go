@@ -10,12 +10,16 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -120,31 +124,31 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// Двухуровневая агрегация (§5.2, B1): CPU busy% = 1 − idle-доля усреднённая
 	// по ядрам (subKey="cpu", subAgg=avg); худший диск = max по mountpoint'ам;
 	// load/core делится в Go, а не в SQL — обе метрики читаются отдельно.
-	idleByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, "system.cpu.utilization",
-		[]metric.LabelMatcher{{Key: "state", Value: "idle"}}, "cpu", "avg", from, now)
+	idleByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.CPUUtilization,
+		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "idle"}}, "cpu", "avg", from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	memByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, "system.memory.utilization",
-		[]metric.LabelMatcher{{Key: "state", Value: "used"}}, "", "", from, now)
+	memByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.MemoryUtilization,
+		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}, "", "", from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	diskByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, "system.filesystem.utilization",
-		nil, "mountpoint", "max", from, now)
+	diskByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.FilesystemUtilization,
+		nil, hostmetric.AttrMountpoint, "max", from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	load5mByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, "system.cpu.load_average.5m",
+	load5mByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.LoadAvg5m,
 		nil, "", "", from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	coresByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, "system.cpu.logical.count",
+	coresByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.CPULogicalCount,
 		nil, "", "", from, now)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -181,15 +185,15 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	}
 	sortHostRows(rows)
 
-	// Конфиг коллектора нужен обеим веткам страницы (UX-аудит A1, P2-11):
-	// онбордингу пустого списка (§5.4) и свёрнутому блоку под непустым —
-	// второй сервер подключают тем же YAML, а страница порогов, где он лежал
-	// ещё раз, закрыта гейтом оператора. Цена — один запрос ключей проекта на
-	// отрисовку списка; граница видимости та же, что у DSN (CanAccessProject
-	// проверен выше).
-	config := h.hostCollectorConfig(r.Context(), projectID)
+	// Команда агента и конфиг коллектора нужны обеим веткам страницы
+	// (UX-аудит A1, P2-11): онбордингу пустого списка (§5.4) и свёрнутому
+	// блоку под непустым — второй сервер подключают тем же путём, а страница
+	// порогов, где эти блоки лежали ещё раз, закрыта гейтом оператора. Цена —
+	// один запрос ключей проекта на отрисовку списка (hostInstallBlocks);
+	// граница видимости та же, что у DSN (CanAccessProject проверен выше).
+	installCmd, config, agentReason := h.hostInstallBlocks(r.Context(), projectID)
 
-	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, config, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, installCmd, config, agentReason, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // hostRowStatus классифицирует статус строки хоста по открытым инцидентам
@@ -255,13 +259,18 @@ func sortHostRows(rows []templates.HostRowVM) {
 // метрик (§5.4 дизайна). Собирается через fmt.Sprintf строкой, а не YAML-
 // маршалингом структуры: это конфиг ЧУЖОЙ программы (otelcol-contrib), не
 // внутренняя структура продукта — маршалинг завёл бы Go-типы под формат,
-// которым мы не управляем и не тестируем сами, ради двух подстановок.
+// которым мы не управляем и не тестируем сами, ради четырёх подстановок.
 //
 // system.cpu.logical.count включена явно (делитель load/core, §4.1) —
 // избыточно, если в конкретной версии otelcol-contrib она и так входит в
 // default-набор, но безвредно, а страхует от версий, где это не так
 // (metadata.yaml default-набор зависит от версии, m10 ревью плана). endpoint
 // — БАЗОВЫЙ URL без /v1/metrics: путь дописывает сам otlphttp-экспортёр.
+//
+// system-скрейпер с system.uptime добавлен для паритета путей (§3.4
+// спеки): аптайм должен ехать и с самого коллектора, не только с
+// собственного Go-агента (A2) — иначе владелец, поставивший только
+// otelcol-contrib без агента, останется без метрики «сколько хост живёт».
 //
 // exclude_fs_types/exclude_mount_points у скрейпера filesystem — не
 // косметика, а условие работоспособности порога диска (ревью I1). Скрейпер
@@ -275,7 +284,11 @@ func sortHostRows(rows []templates.HostRowVM) {
 // топ-8 графика занятости они вытесняли реальные разделы. Синтаксис
 // (fs_types/mount_points + match_type: strict|regexp) — из README
 // hostmetricsreceiver; регулярные выражения якорим на ^, потому что
-// filterset/regexp матчит подстроку.
+// filterset/regexp матчит подстроку. Оба списка (fs_types и regexp'ы точек
+// монтирования) рендерятся из internal/hostmetric.ExcludedFSTypes/
+// ExcludedMountPrefixes — единственного источника правды, общего с агентом
+// (см. package doc hostmetric): правка исключений в одном месте меняет и
+// то, что фильтрует свой агент, и то, что отдаётся владельцу в этом YAML.
 const collectorConfigTmpl = `receivers:
   hostmetrics:
     collection_interval: 30s
@@ -290,19 +303,19 @@ const collectorConfigTmpl = `receivers:
       filesystem:
         exclude_fs_types:
           match_type: strict
-          fs_types: [autofs, binfmt_misc, bpf, cgroup, cgroup2, configfs, debugfs,
-            devpts, devtmpfs, efivarfs, fusectl, hugetlbfs, iso9660, mqueue, nsfs,
-            overlay, proc, pstore, ramfs, securityfs, squashfs, sysfs, tmpfs, tracefs]
+          fs_types: [%s]
         exclude_mount_points:
           match_type: regexp
-          mount_points: [^/snap/.*, ^/var/lib/docker/.*, ^/var/lib/kubelet/.*,
-            ^/run/.*, ^/dev/.*, ^/proc/.*, ^/sys/.*]
+          mount_points: [%s]
         metrics:
           system.filesystem.utilization: {enabled: true}
       disk: {}
       network: {}
       load: {}
       processes: {}
+      system:
+        metrics:
+          system.uptime: {enabled: true}
 processors:
   resourcedetection:
     detectors: [env, system]
@@ -322,27 +335,152 @@ service:
 
 // collectorConfig собирает готовый YAML коллектора: baseURL — BaseURL
 // инстанса (без пути), key — публичный ключ проекта, идущий в заголовок
-// Authorization как DSN-эквивалент для хостовых метрик.
+// Authorization как DSN-эквивалент для хостовых метрик. Списки исключений
+// ФС генерируются из hostmetric.ExcludedFSTypes/ExcludedMountPrefixes —
+// источник один с агентом (см. комментарий к collectorConfigTmpl).
 func collectorConfig(baseURL, key string) string {
-	return fmt.Sprintf(collectorConfigTmpl, baseURL, key)
+	fsTypes := strings.Join(hostmetric.ExcludedFSTypes, ", ")
+	mountPoints := make([]string, len(hostmetric.ExcludedMountPrefixes))
+	for i, p := range hostmetric.ExcludedMountPrefixes {
+		mountPoints[i] = "^" + p + ".*"
+	}
+	return fmt.Sprintf(collectorConfigTmpl, fsTypes, strings.Join(mountPoints, ", "), baseURL, key)
 }
 
-// hostCollectorConfig собирает конфиг коллектора для проекта: BaseURL +
-// первый активный публичный ключ (та же граница видимости, что у DSN на
-// странице настройки проекта — buildDSN/firstLiveKey, onboarding.go).
-// Пустая строка — в проекте нет ни одного активного ключа (шаблон решает,
-// что показать вместо конфига) или чтение ключей провалилось (запасной путь
-// — не заваливать всю страницу списка/настроек ради вспомогательного блока).
-func (h *Handler) hostCollectorConfig(ctx context.Context, projectID int64) string {
+// hostInstallBlocks собирает обе готовые строки подключения хоста — команду
+// установки собственного Go-агента (путь по умолчанию, T14) и конфиг
+// коллектора otelcol-contrib (свёрнутая альтернатива) — по ОДНОМУ чтению
+// ключей проекта: обе строки делят один и тот же первый активный публичный
+// ключ (та же граница видимости, что у DSN на странице настройки проекта —
+// buildDSN/firstLiveKey, onboarding.go).
+//
+// installCmd и config пусты одновременно, если в проекте нет ни одного
+// активного ключа, или чтение ключей провалилось (запасной путь — не
+// заваливать страницу списка/настроек ради вспомогательных блоков); тогда
+// agentReason == "" и шаблон показывает общую подсказку hosts.onboarding.no_key
+// под обоими блоками (ключом не заполнить ни один).
+//
+// Если ключ есть, а installCmd всё равно пуст — agentReason объясняет,
+// почему путь агента недоступен, а коллектор (config) при этом остаётся
+// заполненным (rem-A sec-M1/sec-M4, не показываем заведомо мёртвую или
+// небезопасную команду):
+//   - "dist" — раздача бинарей не сконфигурирована/каталог физически не
+//     существует на этом инстансе (h.agentDistAvailable()); типично для
+//     сборки не из Docker-образа. Команда установки вела бы к 404.
+//   - "insecure" — BaseURL не https:// и не локальный (agentBaseURLSecure);
+//     команда исполняется под root, а без TLS и SHA256SUMS, и сам бинарь
+//     идут по каналу, где их подменяет MITM.
+func (h *Handler) hostInstallBlocks(ctx context.Context, projectID int64) (installCmd, config, agentReason string) {
 	keys, err := h.Org.KeysForProject(ctx, projectID)
 	if err != nil {
-		return ""
+		return "", "", ""
 	}
 	key := firstLiveKey(keys)
 	if key == "" {
-		return ""
+		return "", "", ""
 	}
-	return collectorConfig(h.BaseURL, key)
+	config = collectorConfig(h.BaseURL, key)
+	switch {
+	case !h.agentDistAvailable():
+		return "", config, "dist"
+	case !agentBaseURLSecure(h.BaseURL):
+		return "", config, "insecure"
+	}
+	return agentInstallCommand(h.BaseURL, key), config, ""
+}
+
+// isLocalBaseURL — BaseURL указывает на локальную разработку (localhost/
+// loopback). Продублировано из cmd/gotcha/config.go: обе версии — короткие
+// чистые функции над net/url, а cmd/gotcha — пакет main, отсюда его не
+// импортировать; заводить общий пакет ради одной функции дороже дублирования.
+func isLocalBaseURL(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+// agentBaseURLSecure — BaseURL безопасен для команды установки/обновления
+// агента (sec-M4): https:// (канал шифрован) или локальный адрес
+// (isLocalBaseURL — та же граница, что cmd/gotcha/config.go применяет к
+// прочим небезопасным дефолтам на localhost-стендах). При http:// на
+// произвольном хосте команда исполняется под root, а SHA256SUMS едет тем же
+// MITM-уязвимым каналом, что и сам бинарь — сверка сумм не защищает.
+func agentBaseURLSecure(baseURL string) bool {
+	return strings.HasPrefix(baseURL, "https://") || isLocalBaseURL(baseURL)
+}
+
+// agentInstallCommand — команда установки/регистрации собственного Go-агента
+// (A2, §2.1 спеки): endpoint и ключ проекта передаются переменными
+// окружения, install.sh сам ставит бинарь и systemd-юнит. Полная загрузка
+// скрипта в подстановку команды перед исполнением (`sh -c "$(curl ...)"`, а
+// не `curl | sh`) — по замыслу симметрична agentUpdateCommand, а не
+// проверяется целостность: обе формы одинаково уязвимы MITM без TLS-пиннинга,
+// разница только в том, что `$(...)` не начинает выполнять байты по мере
+// получения потоковым pipe'ом.
+func agentInstallCommand(baseURL, key string) string {
+	return fmt.Sprintf(`GOTCHA_AGENT_ENDPOINT=%s GOTCHA_AGENT_KEY=%s sh -c "$(curl -fsSL %s/install.sh)"`,
+		baseURL, key, baseURL)
+}
+
+// agentUpdateCommand — та же команда БЕЗ ключа и endpoint: install.sh,
+// однажды запущенный на хосте, помнит их сам (файл окружения юнита), и
+// повторный запуск того же скрипта переустанавливает бинарь агента поверх
+// уже настроенного — обновление, а не повторная регистрация.
+func agentUpdateCommand(baseURL string) string {
+	return fmt.Sprintf(`sh -c "$(curl -fsSL %s/install.sh)"`, baseURL)
+}
+
+// parseSemverBase разбирает ведущий "vX.Y.Z"-префикс строки версии: срез
+// префикса "v", затем три числовые группы вплоть до первого символа вне
+// [0-9.] (суффикс вида "-5-gabcdef-dirty" у git-описания просто отбрасывается
+// — сравнение версий агента/сервера идёт по базе релиза, спека §3.3). Любое
+// отклонение от X.Y.Z (не три группы, нечисловая группа) — ok=false: вызывающая
+// сторона (agentUpdateAvailable) в этом случае молчит, а не гадает.
+func parseSemverBase(s string) (maj, min, pat int, ok bool) {
+	s = strings.TrimPrefix(s, "v")
+	i := 0
+	for i < len(s) && (s[i] == '.' || (s[i] >= '0' && s[i] <= '9')) {
+		i++
+	}
+	parts := strings.Split(s[:i], ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var err error
+	if maj, err = strconv.Atoi(parts[0]); err != nil {
+		return 0, 0, 0, false
+	}
+	if min, err = strconv.Atoi(parts[1]); err != nil {
+		return 0, 0, 0, false
+	}
+	if pat, err = strconv.Atoi(parts[2]); err != nil {
+		return 0, 0, 0, false
+	}
+	return maj, min, pat, true
+}
+
+// agentUpdateAvailable — версия агента строго старше версии сервера (по
+// базе X.Y.Z, см. parseSemverBase). Любой невалидный семвер с любой стороны
+// (агент ещё ни разу не отчитался, дев-сборка сервера без канона версии) —
+// false: карточка молчит про обновление, а не показывает ложный бейдж.
+// Агент новее сервера (staging/canary агент против отставшего prod-сервера)
+// тоже false — не пугаем оператора несуществующим "устарел".
+func agentUpdateAvailable(agentV, serverV string) bool {
+	aMaj, aMin, aPat, aOK := parseSemverBase(agentV)
+	sMaj, sMin, sPat, sOK := parseSemverBase(serverV)
+	if !aOK || !sOK {
+		return false
+	}
+	if aMaj != sMaj {
+		return aMaj < sMaj
+	}
+	if aMin != sMin {
+		return aMin < sMin
+	}
+	return aPat < sPat
 }
 
 // hostSettingsFormState — введённые значения формы порогов для повторной
@@ -460,17 +598,18 @@ func hostSettingsErrorMessage(ctx context.Context, err error) string {
 
 // renderHostSettings отрисовывает страницу настроек: текущие пороги
 // (h.HostSettings.Get — DefaultSettings, если строка ещё не сохранялась) +
-// конфиг коллектора под свёрнутой ссылкой. form/errMsg — введённые
-// пользователем значения при ошибке валидации (см. FormState).
+// команда установки агента и конфиг коллектора под свёрнутыми блоками.
+// form/errMsg — введённые пользователем значения при ошибке валидации (см.
+// FormState).
 func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	settings, err := h.HostSettings.Get(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	config := h.hostCollectorConfig(r.Context(), projectID)
+	installCmd, config, agentReason := h.hostInstallBlocks(r.Context(), projectID)
 	w.WriteHeader(status)
-	_ = templates.HostSettings(projectID, settings, config, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.HostSettings(projectID, settings, installCmd, config, agentReason, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // hostSettingsPage — GET /projects/{id}/hosts/settings: форма порогов
@@ -658,6 +797,23 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Аптайм — вспомогательный элемент шапки, не один из семи обязательных
+	// графиков карточки: ошибка запроса не роняет всю страницу (как чарты
+	// выше), а оставляет блок пустым — тем же принципом, что «нет ключа в
+	// карте LatestByHost» ниже (хост ещё не отчитался uptime своим агентом
+	// или коллектором). Окно — hostsListWindow, как у списка хостов (§5.2):
+	// нужно самое свежее значение «сейчас», а не история за выбранный на
+	// странице период vm.Range.
+	var uptimeStr string
+	now := time.Now()
+	uptimeByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.Uptime,
+		nil, "", "max", now.Add(-hostsListWindow), now)
+	if err != nil {
+		slog.Warn("web: host uptime query failed", "project_id", projectID, "host", name, "error", err)
+	} else if sec, ok := uptimeByHost[name]; ok {
+		uptimeStr = humanize.Duration(r.Context(), time.Duration(sec*float64(time.Second)))
+	}
+
 	// CanOperate — read-only: считаем прямо здесь (не через requireProjectOperator,
 	// который на отказе рендерит 404 всей странице) ровно как canManage у
 	// MonitorDetail — просмотр карточки доступен всем с доступом к проекту,
@@ -668,16 +824,36 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AgentUpdateCmd — пусто, если путь агента недоступен (раздача не
+	// сконфигурирована — sec-M1 — или BaseURL небезопасен — sec-M4): бейдж
+	// "есть обновление" остаётся honest-сигналом (сверен по версии,
+	// hst.AgentVersion пришла от самого агента), а готовую команду карточка
+	// не предлагает, если её нельзя безопасно исполнить.
+	agentUpdateCmd := ""
+	if h.agentDistAvailable() && agentBaseURLSecure(h.BaseURL) {
+		agentUpdateCmd = agentUpdateCommand(h.BaseURL)
+	}
+
+	// serverVersion — цель сравнения AgentUpdateAvailable и, отдельно,
+	// подпись блока "Как обновить агента до {version}" (rem-E ux-L16):
+	// бейдж "Есть обновление" сам не называл, до какой версии.
+	serverVersion := version.Version()
+
 	vm := templates.HostDetailVM{
-		ProjectID:       projectID,
-		Host:            hst,
-		Range:           timeRangeVM(tr),
-		StatusKind:      statusKind,
-		ProblemKinds:    problemKinds,
-		OpenIncidents:   openIncidents,
-		RecentIncidents: recentIncidents,
-		Charts:          charts,
-		CanOperate:      canOperate,
+		ProjectID:            projectID,
+		Host:                 hst,
+		Range:                timeRangeVM(tr),
+		StatusKind:           statusKind,
+		ProblemKinds:         problemKinds,
+		OpenIncidents:        openIncidents,
+		RecentIncidents:      recentIncidents,
+		Charts:               charts,
+		CanOperate:           canOperate,
+		Uptime:               uptimeStr,
+		AgentVersion:         hst.AgentVersion,
+		AgentUpdateAvailable: agentUpdateAvailable(hst.AgentVersion, serverVersion),
+		AgentUpdateCmd:       agentUpdateCmd,
+		ServerVersion:        serverVersion,
 	}
 	_ = templates.HostDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }

@@ -135,6 +135,8 @@ var routeAuthz = map[string]string{
 	"GET /static/":                        lvlPublic,
 	"GET /uptime/hb/{token}":              lvlPublic,
 	"GET /status/{key}":                   lvlPublic,
+	"GET /install.sh":                     lvlPublic, // раздача агента (план A2) — машинная ручка, curl без сессии
+	"GET /agent/{file}":                   lvlPublic,
 
 	// --- Любой залогиненный (requireUser), дальше по коду гейта нет —
 	// общие страницы аккаунта/продукта, не привязанные к конкретному

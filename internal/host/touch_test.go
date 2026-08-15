@@ -8,23 +8,33 @@ import (
 	"time"
 )
 
+// entries — короткая сборка []TouchEntry из одних имён (без версии агента)
+// для тестов, которым версия не важна.
+func entries(names ...string) []TouchEntry {
+	out := make([]TouchEntry, len(names))
+	for i, n := range names {
+		out[i] = TouchEntry{Name: n}
+	}
+	return out
+}
+
 // TestToucherThrottles — второй Touch того же имени в пределах every
 // подавляется, upsert вызывается один раз.
 func TestToucherThrottles(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
 	tc := NewToucher(nil, time.Hour, 10) // store=nil: подменяем upsert
-	tc.upsert = func(ctx context.Context, projectID int64, names []string) error {
+	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		mu.Lock()
-		for _, n := range names {
-			calls[n]++
+		for _, e := range entries {
+			calls[e.Name]++
 		}
 		mu.Unlock()
 		return nil
 	}
-	tc.Touch(context.Background(), 1, []string{"a"})
-	tc.Touch(context.Background(), 1, []string{"a"}) // в пределах every — подавлен
-	tc.wait()                                        // дождаться горутин
+	tc.Touch(context.Background(), 1, entries("a"))
+	tc.Touch(context.Background(), 1, entries("a")) // в пределах every — подавлен
+	tc.wait()                                       // дождаться горутин
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -40,19 +50,19 @@ func TestToucherForgetAllowsImmediateRetouch(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
 	tc := NewToucher(nil, time.Hour, 10)
-	tc.upsert = func(ctx context.Context, projectID int64, names []string) error {
+	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		mu.Lock()
-		for _, n := range names {
-			calls[n]++
+		for _, e := range entries {
+			calls[e.Name]++
 		}
 		mu.Unlock()
 		return nil
 	}
 
-	tc.Touch(context.Background(), 1, []string{"a"})
+	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
 	tc.Forget(1, "a")
-	tc.Touch(context.Background(), 1, []string{"a"})
+	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
 
 	mu.Lock()
@@ -71,16 +81,16 @@ func TestToucherRetriesAfterFailedUpsert(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	tc := NewToucher(nil, time.Hour, 10)
-	tc.upsert = func(ctx context.Context, projectID int64, names []string) error {
+	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		mu.Lock()
 		calls++
 		mu.Unlock()
 		return errors.New("pg is down")
 	}
 
-	tc.Touch(context.Background(), 1, []string{"a"})
+	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
-	tc.Touch(context.Background(), 1, []string{"a"}) // every=час, но прошлый upsert провалился
+	tc.Touch(context.Background(), 1, entries("a")) // every=час, но прошлый upsert провалился
 	tc.wait()
 
 	mu.Lock()
@@ -104,14 +114,16 @@ func TestToucherSkipsPathTraversalNames(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
 	tc := NewToucher(nil, time.Hour, 10)
-	tc.upsert = func(ctx context.Context, projectID int64, names []string) error {
+	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		mu.Lock()
-		got = append(got, names...)
+		for _, e := range entries {
+			got = append(got, e.Name)
+		}
 		mu.Unlock()
 		return nil
 	}
 
-	tc.Touch(context.Background(), 1, []string{".", "..", "", "web-01"})
+	tc.Touch(context.Background(), 1, entries(".", "..", "", "web-01"))
 	tc.wait()
 
 	mu.Lock()
@@ -121,24 +133,51 @@ func TestToucherSkipsPathTraversalNames(t *testing.T) {
 	}
 }
 
+// TestToucherThrottleIgnoresVersionChange — троттлинг ключуется только по
+// имени (touchKey), не по (имя, версия): второй Touch того же имени с ДРУГОЙ
+// версией агента в пределах every всё равно подавляется — упавшая версия
+// долетит со следующим тиком не позже every, форсировать внеочередной upsert
+// ради неё не оправдано (осознанно, спека §3.2).
+func TestToucherThrottleIgnoresVersionChange(t *testing.T) {
+	var mu sync.Mutex
+	var got []TouchEntry
+	tc := NewToucher(nil, time.Hour, 10)
+	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
+		mu.Lock()
+		got = append(got, entries...)
+		mu.Unlock()
+		return nil
+	}
+
+	tc.Touch(context.Background(), 1, []TouchEntry{{Name: "a", AgentVersion: "0.6.0"}})
+	tc.Touch(context.Background(), 1, []TouchEntry{{Name: "a", AgentVersion: "0.6.1"}}) // в пределах every — подавлен, версия не долетит
+	tc.wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].AgentVersion != "0.6.0" {
+		t.Fatalf("upserts = %+v, want ровно один с версией 0.6.0 (смена версии не должна пробивать троттлинг)", got)
+	}
+}
+
 // TestToucherEvictsOldest — при maxEntries=2 третий уникальный ключ
 // вытесняет самую старую запись, карта не растёт без границы.
 func TestToucherEvictsOldest(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
 	tc := NewToucher(nil, time.Hour, 2)
-	tc.upsert = func(ctx context.Context, projectID int64, names []string) error {
+	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		mu.Lock()
-		for _, n := range names {
-			calls[n]++
+		for _, e := range entries {
+			calls[e.Name]++
 		}
 		mu.Unlock()
 		return nil
 	}
 
-	tc.Touch(context.Background(), 1, []string{"a"})
+	tc.Touch(context.Background(), 1, entries("a"))
 	time.Sleep(2 * time.Millisecond) // порядок вытеснения зависит от времени записи
-	tc.Touch(context.Background(), 1, []string{"b"})
+	tc.Touch(context.Background(), 1, entries("b"))
 	tc.wait()
 
 	tc.mu.Lock()
@@ -149,7 +188,7 @@ func TestToucherEvictsOldest(t *testing.T) {
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	tc.Touch(context.Background(), 1, []string{"c"}) // должен вытеснить "a" — самую старую запись
+	tc.Touch(context.Background(), 1, entries("c")) // должен вытеснить "a" — самую старую запись
 	tc.wait()
 
 	tc.mu.Lock()
@@ -169,7 +208,7 @@ func TestToucherEvictsOldest(t *testing.T) {
 
 	// Раз "a" вытеснена — троттлинг для неё снят, повторный Touch снова
 	// проходит и увеличивает счётчик upsert'ов.
-	tc.Touch(context.Background(), 1, []string{"a"})
+	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
 
 	mu.Lock()

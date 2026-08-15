@@ -46,6 +46,27 @@ func key(i int) string {
 	return "192.168.1.1|test" + string(rune(i))
 }
 
+// TestSetAgentDistRateLimit — rem-A ops-H4: main.go зовёт этот метод один раз
+// при старте с порогом из GOTCHA_AGENT_DIST_RATE_PER_MIN, перекрывая
+// дефолтный лимитер New() (10/мин — рассчитан на одиночный сервер, ломает
+// Ansible-раскатку/массовое обновление парка за одним IP).
+func TestSetAgentDistRateLimit(t *testing.T) {
+	h := New(nil, nil, nil, nil, "http://localhost")
+	h.SetAgentDistRateLimit(2)
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/x", nil)
+	req.RemoteAddr = "203.0.113.7:1234"
+	if !h.agentLimiter.Allow(h.clientIP(req)) {
+		t.Fatal("1-й запрос должен пройти под лимитом 2/мин")
+	}
+	if !h.agentLimiter.Allow(h.clientIP(req)) {
+		t.Fatal("2-й запрос должен пройти под лимитом 2/мин")
+	}
+	if h.agentLimiter.Allow(h.clientIP(req)) {
+		t.Fatal("3-й запрос обязан упереться в перекрытый лимит 2/мин")
+	}
+}
+
 // TestPublicRateLimitedGuardsUnauthRoutes фиксирует класс «нет лимита на
 // неаутентифицированных роутах»: каждый такой запрос от анонима стоит похода в
 // PostgreSQL (резолв heartbeat-токена / токена пробы / слага статус-страницы), а

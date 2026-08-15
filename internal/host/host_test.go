@@ -10,6 +10,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
+// entries — короткая сборка []host.TouchEntry из одних имён (без версии
+// агента), чтобы не плодить составные литералы в каждом вызове Upsert
+// тестов, которым версия не важна.
+func entries(names ...string) []host.TouchEntry {
+	out := make([]host.TouchEntry, len(names))
+	for i, n := range names {
+		out[i] = host.TouchEntry{Name: n}
+	}
+	return out
+}
+
 // setupProject поднимает мигрированную PG-базу и одну организацию/проект —
 // заготовка, общая для всех тестов пакета.
 func setupProject(t *testing.T) (*host.Store, int64) {
@@ -38,7 +49,7 @@ func TestStoreUpsertThenList(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{"web-02", "web-01"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("web-02", "web-01")); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
@@ -68,7 +79,7 @@ func TestStoreUpsertAgainBumpsLastSeen(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{"web-01"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("web-01")); err != nil {
 		t.Fatalf("Upsert #1: %v", err)
 	}
 	before, ok, err := s.Get(ctx, projectID, "web-01")
@@ -81,7 +92,7 @@ func TestStoreUpsertAgainBumpsLastSeen(t *testing.T) {
 	// точку часов на быстрой машине.
 	time.Sleep(10 * time.Millisecond)
 
-	if _, err := s.Upsert(ctx, projectID, []string{"web-01"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("web-01")); err != nil {
 		t.Fatalf("Upsert #2: %v", err)
 	}
 	after, ok, err := s.Get(ctx, projectID, "web-01")
@@ -108,7 +119,7 @@ func TestStoreUpsertDeduplicatesNamesInBatch(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{"a", "a", "b", "a"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("a", "a", "b", "a")); err != nil {
 		t.Fatalf("Upsert с дублями: %v", err)
 	}
 
@@ -127,7 +138,7 @@ func TestStoreDeleteIdempotent(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{"web-01"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("web-01")); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
@@ -197,10 +208,10 @@ func TestStoreListActiveWithProject(t *testing.T) {
 	}
 
 	s := host.NewStore(pool)
-	if _, err := s.Upsert(ctx, freshProjectID, []string{"fresh-01"}); err != nil {
+	if _, err := s.Upsert(ctx, freshProjectID, entries("fresh-01")); err != nil {
 		t.Fatalf("Upsert fresh: %v", err)
 	}
-	if _, err := s.Upsert(ctx, staleProjectID, []string{"stale-01"}); err != nil {
+	if _, err := s.Upsert(ctx, staleProjectID, entries("stale-01")); err != nil {
 		t.Fatalf("Upsert stale: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
@@ -232,9 +243,9 @@ func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 	ctx := context.Background()
 
 	// Наливаем ровно потолок за один батч.
-	full := make([]string, 0, host.MaxHostsPerProject)
+	full := make([]host.TouchEntry, 0, host.MaxHostsPerProject)
 	for i := 0; i < host.MaxHostsPerProject; i++ {
-		full = append(full, fmt.Sprintf("host-%04d", i))
+		full = append(full, host.TouchEntry{Name: fmt.Sprintf("host-%04d", i)})
 	}
 	rejected, err := s.Upsert(ctx, projectID, full)
 	if err != nil {
@@ -250,7 +261,7 @@ func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Get: ok=%v err=%v", ok, err)
 	}
-	rejected, err = s.Upsert(ctx, projectID, []string{"host-0000", "pod-xxxx", "pod-yyyy"})
+	rejected, err = s.Upsert(ctx, projectID, entries("host-0000", "pod-xxxx", "pod-yyyy"))
 	if err != nil {
 		t.Fatalf("Upsert сверх потолка: %v", err)
 	}
@@ -280,7 +291,7 @@ func TestStoreUpsertRejectsPathTraversalNames(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{".", "..", "", "web-01"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries(".", "..", "", "web-01")); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	got, err := s.List(ctx, projectID, 0)
@@ -301,7 +312,7 @@ func TestStoreListRespectsLimit(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{"a", "b", "c"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("a", "b", "c")); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	got, err := s.List(ctx, projectID, 2)
@@ -323,7 +334,7 @@ func TestStoreListActiveRespectsLimit(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	if _, err := s.Upsert(ctx, projectID, []string{"a", "b", "c"}); err != nil {
+	if _, err := s.Upsert(ctx, projectID, entries("a", "b", "c")); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	got, err := s.ListActiveWithProject(ctx, time.Hour, 2)
@@ -332,5 +343,67 @@ func TestStoreListActiveRespectsLimit(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
+	}
+}
+
+// TestUpsertAgentVersion — версия агента переживает Upsert без версии
+// (collector-путь): пустая AgentVersion в батче НЕ затирает уже известную
+// (спека §3.2), а непустая — обновляет.
+func TestUpsertAgentVersion(t *testing.T) {
+	s, projectID := setupProject(t)
+	ctx := context.Background()
+
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "web-1", AgentVersion: "0.6.0"}}); err != nil {
+		t.Fatalf("Upsert с версией: %v", err)
+	}
+	got, ok, err := s.Get(ctx, projectID, "web-1")
+	if err != nil || !ok {
+		t.Fatalf("Get после первого Upsert: ok=%v err=%v", ok, err)
+	}
+	if got.AgentVersion != "0.6.0" {
+		t.Fatalf("AgentVersion = %q, want 0.6.0", got.AgentVersion)
+	}
+
+	// Повторный Upsert без версии (собственно collector-путь: OTel-коллектор
+	// не знает о версии агента) — версия обязана остаться прежней.
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "web-1"}}); err != nil {
+		t.Fatalf("Upsert без версии: %v", err)
+	}
+	got, ok, err = s.Get(ctx, projectID, "web-1")
+	if err != nil || !ok {
+		t.Fatalf("Get после Upsert без версии: ok=%v err=%v", ok, err)
+	}
+	if got.AgentVersion != "0.6.0" {
+		t.Fatalf("AgentVersion = %q после Upsert без версии, want сохранённые 0.6.0", got.AgentVersion)
+	}
+
+	// Новая версия — обновляет.
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "web-1", AgentVersion: "0.6.1"}}); err != nil {
+		t.Fatalf("Upsert с новой версией: %v", err)
+	}
+	got, ok, err = s.Get(ctx, projectID, "web-1")
+	if err != nil || !ok {
+		t.Fatalf("Get после Upsert с новой версией: ok=%v err=%v", ok, err)
+	}
+	if got.AgentVersion != "0.6.1" {
+		t.Fatalf("AgentVersion = %q, want 0.6.1", got.AgentVersion)
+	}
+}
+
+// TestUpsertAgentVersionNewHost — новый хост сразу с версией: INSERT-ветка
+// (не ON CONFLICT) тоже обязана сохранить AgentVersion, не только UPDATE.
+func TestUpsertAgentVersionNewHost(t *testing.T) {
+	s, projectID := setupProject(t)
+	ctx := context.Background()
+
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "agent-new", AgentVersion: "0.6.0"}}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, ok, err := s.Get(ctx, projectID, "agent-new")
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if got.AgentVersion != "0.6.0" {
+		t.Fatalf("AgentVersion = %q, want 0.6.0 у нового хоста", got.AgentVersion)
 	}
 }

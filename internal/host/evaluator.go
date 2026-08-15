@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
@@ -358,7 +359,7 @@ func (e *Evaluator) aggregate(ctx context.Context, q *metric.Query, projectID in
 
 // evalDisk — max утилизации ФС за окно по всем mountpoint'ам хоста.
 func (e *Evaluator) evalDisk(ctx context.Context, q *metric.Query, h Host, s Settings, now time.Time) {
-	current, ok, err := e.aggregate(ctx, q, h.ProjectID, "system.filesystem.utilization", h.Name, nil, "max", now)
+	current, ok, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.FilesystemUtilization, h.Name, nil, "max", now)
 	if err != nil {
 		warnHostQuery(ctx, "host evaluator: disk aggregate failed", h, err)
 		return
@@ -377,8 +378,8 @@ func (e *Evaluator) evalDisk(ctx context.Context, q *metric.Query, h Host, s Set
 // долей всех состояний тождественно ~1 и порог 0.90 пробивала бы память,
 // которая на самом деле свободна.
 func (e *Evaluator) evalMemory(ctx context.Context, q *metric.Query, h Host, s Settings, now time.Time) {
-	matchers := []metric.LabelMatcher{{Key: "state", Value: "used"}}
-	current, ok, err := e.aggregate(ctx, q, h.ProjectID, "system.memory.utilization", h.Name, matchers, "avg", now)
+	matchers := []metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}
+	current, ok, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.MemoryUtilization, h.Name, matchers, "avg", now)
 	if err != nil {
 		warnHostQuery(ctx, "host evaluator: memory aggregate failed", h, err)
 		return
@@ -395,7 +396,7 @@ func (e *Evaluator) evalMemory(ctx context.Context, q *metric.Query, h Host, s S
 // отсутствии метрики ядер нагрузка НЕ оценивается вообще, а не считается
 // как есть.
 func (e *Evaluator) evalLoad(ctx context.Context, q *metric.Query, h Host, s Settings, now time.Time) {
-	load, ok, err := e.aggregate(ctx, q, h.ProjectID, "system.cpu.load_average.5m", h.Name, nil, "avg", now)
+	load, ok, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.LoadAvg5m, h.Name, nil, "avg", now)
 	if err != nil {
 		warnHostQuery(ctx, "host evaluator: load aggregate failed", h, err)
 		return
@@ -406,7 +407,7 @@ func (e *Evaluator) evalLoad(ctx context.Context, q *metric.Query, h Host, s Set
 	// system.cpu.logical.count — gauge-подобный счётчик, не монотонный
 	// cumulative sum: agg "last" берёт актуальное число ядер, а не сумму/среднее
 	// по окну (среднее числа ядер за 5 минут бессмысленно).
-	cores, coresOK, err := e.aggregate(ctx, q, h.ProjectID, "system.cpu.logical.count", h.Name, nil, "last", now)
+	cores, coresOK, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.CPULogicalCount, h.Name, nil, "last", now)
 	if err != nil {
 		warnHostQuery(ctx, "host evaluator: cores aggregate failed", h, err)
 		return
@@ -472,7 +473,7 @@ func (e *Evaluator) worstMountpoint(ctx context.Context, q *metric.Query, h Host
 	// контексту ТИКА, и затенение ctx сделало бы это различие невозможным.
 	queryCtx, cancel := context.WithTimeout(ctx, chQueryTimeout)
 	defer cancel()
-	res, err := q.SeriesGrouped(queryCtx, h.ProjectID, "system.filesystem.utilization", h.Name, "mountpoint", "max", now.Add(-aggregateWindow), now, aggregateWindow)
+	res, err := q.SeriesGrouped(queryCtx, h.ProjectID, hostmetric.FilesystemUtilization, h.Name, hostmetric.AttrMountpoint, "max", now.Add(-aggregateWindow), now, aggregateWindow)
 	if err != nil {
 		warnHostQuery(ctx, "host evaluator: disk detail failed", h, err)
 		return ""
