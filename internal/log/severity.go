@@ -18,6 +18,10 @@ const (
 	SevFatal = "fatal"
 )
 
+// Severities — канон в порядке возрастания серьёзности. Для наполнения
+// селекта фильтра severity в UI и валидации входных значений List.
+var Severities = []string{SevTrace, SevDebug, SevInfo, SevWarn, SevError, SevFatal}
+
 // CanonFromNumber сводит OTLP SeverityNumber (1-24, см. спецификацию OTel) к
 // канону: 1-4 trace, 5-8 debug, 9-12 info, 13-16 warn, 17-20 error, 21-24
 // fatal. Число вне диапазона (0, отрицательное, >24) — не ошибка формата
