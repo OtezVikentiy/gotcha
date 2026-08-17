@@ -168,6 +168,10 @@ Compatibility markers did not exist from the first release — `CHANGELOG.md` in
 
 This is why "take a backup before upgrading" at the top of this page stays mandatory: some rollbacks work without it, but not all.
 
+## Agents on hosts are updated separately
+
+Upgrading the instance doesn't touch the `gotcha-agent` installed on your servers: they keep reporting on the old version. A host's card shows an "Update available" badge with the command ready to copy — updating is the same install command, run on the host without the environment variables (see [Hosts](/docs/hosts)). An older agent stays compatible: metric names and the protocol didn't change, the update carries fixes to the agent itself.
+
 ## Verify after upgrading
 
 ```bash

@@ -67,6 +67,54 @@ func TestSetAgentDistRateLimit(t *testing.T) {
 	}
 }
 
+// TestSetAgentDistRateLimitZeroMeansUnlimited — SHOULD из аудита A2: соглашение
+// продукта «0 = без границы» (как у *_RETENTION_DAYS) должно работать и здесь.
+// До фикса SetAgentDistRateLimit(0) создавал лимитер с limit=0, у которого
+// `len(fresh) >= rl.limit` истинно всегда — раздача агента 429-ила бы на любой
+// запрос. Теперь 0 (и отрицательные) должны снимать лимит полностью (nil).
+func TestSetAgentDistRateLimitZeroMeansUnlimited(t *testing.T) {
+	h := New(nil, nil, nil, nil, "http://localhost")
+	h.SetAgentDistRateLimit(0)
+
+	if h.agentLimiter != nil {
+		t.Fatal("SetAgentDistRateLimit(0) должен обнулять agentLimiter (nil = без лимита), а не создавать лимитер с limit=0")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agent/x", nil)
+	req.RemoteAddr = "203.0.113.9:1234"
+	guarded := h.agentDistRateLimited(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	for i := 0; i < 1000; i++ {
+		rec := httptest.NewRecorder()
+		guarded(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("запрос %d: status = %d, want 200 — при 0 лимит должен быть снят полностью", i+1, rec.Code)
+		}
+	}
+
+	// Отрицательное значение — та же гарантия.
+	h.SetAgentDistRateLimit(-5)
+	if h.agentLimiter != nil {
+		t.Fatal("SetAgentDistRateLimit(-5) тоже должен обнулять agentLimiter")
+	}
+
+	// Положительное значение — лимитирует как раньше.
+	h.SetAgentDistRateLimit(2)
+	if h.agentLimiter == nil {
+		t.Fatal("SetAgentDistRateLimit(2) должен создавать лимитер")
+	}
+	if !h.agentLimiter.Allow(h.clientIP(req)) {
+		t.Fatal("1-й запрос должен пройти под лимитом 2/мин")
+	}
+	if !h.agentLimiter.Allow(h.clientIP(req)) {
+		t.Fatal("2-й запрос должен пройти под лимитом 2/мин")
+	}
+	if h.agentLimiter.Allow(h.clientIP(req)) {
+		t.Fatal("3-й запрос обязан упереться в лимит 2/мин")
+	}
+}
+
 // TestPublicRateLimitedGuardsUnauthRoutes фиксирует класс «нет лимита на
 // неаутентифицированных роутах»: каждый такой запрос от анонима стоит похода в
 // PostgreSQL (резолв heartbeat-токена / токена пробы / слага статус-страницы), а

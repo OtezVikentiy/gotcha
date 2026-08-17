@@ -62,15 +62,39 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Откуда открыли трейс — нужно и ниже (состояние «спаны истекли»), и в
+	// конце функции (обычный waterfall), поэтому разбираем один раз.
+	origin, originID, originTransaction := traceOrigin(r)
+
 	root, spans, err := h.Trace.Trace(r.Context(), projectID, traceID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if len(spans) == 0 {
-		// ProjectForTrace нашёл трейс в transactions, но спанов нет — трейс
-		// без спанов рисовать нечем, 404 (тот же смысл «нет такой страницы»).
-		h.notFound(w, r)
+		// ProjectForTrace нашёл трейс в transactions (TTL 90 дней), но в spans
+		// для него уже ничего нет — waterfall рисовать нечем. Это НЕ «страницы
+		// не существует» (для этого остаётся notFound выше, когда
+		// ProjectForTrace вообще не находит трейс), а отдельное состояние —
+		// осмысленная 404 с trace_id и куда вернуться, а не голая заглушка.
+		// Покрывает разом все ссылки на /traces/{id}: из списков медленных
+		// трейсов, issue-detail, perf-issue. h.SpanRetentionDays — настраиваемый
+		// TTL spans (GOTCHA_SPAN_RETENTION_DAYS, applies через
+		// db.ApplySpanRetention на каждом старте) — источник истины, а не
+		// trace.SpanRetentionDays (тот лишь дефолт первой установки); шаблон
+		// решает по нему, писать ли «истекли N дней» или нейтральный текст про
+		// удаление (retention=0 значит «вечно», то есть спаны пропали не по TTL).
+		data := templates.TraceExpiredData{
+			ProjectID:       projectID,
+			TraceID:         traceID,
+			RetentionDays:   h.SpanRetentionDays,
+			From:            origin,
+			FromID:          originID,
+			FromTransaction: originTransaction,
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_ = templates.TraceExpired(data, h.currentEmail(r)).Render(r.Context(), w)
 		return
 	}
 
@@ -143,9 +167,9 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		HasProfile:  hasProfile,
 	}
 	// Откуда открыли трейс — чтобы крошка вернула туда же, а не в список
-	// транзакций. Значения приходят из адреса, поэтому источник сверяется со
-	// списком известных, а идентификатор разбирается как число.
-	data.From, data.FromID, data.FromTransaction = traceOrigin(r)
+	// транзакций (разобрано один раз в начале функции — нужно и здесь, и в
+	// состоянии «спаны истекли» выше).
+	data.From, data.FromID, data.FromTransaction = origin, originID, originTransaction
 	_ = templates.TraceWaterfall(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 

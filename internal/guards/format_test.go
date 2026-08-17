@@ -93,9 +93,10 @@ func exemptLoc(path string, line int) string {
 var permanentFormatExemptions = []Exemption{
 	// <input type="datetime-local"> отдаёт и принимает значение только в
 	// этом виде (без секунд, без зоны) — протокол HTML-формы, а не текст для
-	// глаз. Семь мест: сериализация value= (timerange.go, оба поля окна
-	// обслуживания в maintenance.templ) и сборка входных данных в четырёх
-	// тестах timerange_test.go тем же машинным форматом.
+	// глаз. Восемь мест: сериализация value= (timerange.go, оба поля окна
+	// обслуживания в maintenance.templ) и сборка входных данных в пяти
+	// тестах (четыре в timerange_test.go, один в performance_test.go) тем
+	// же машинным форматом.
 	{Value: exemptLoc("internal/web/timerange.go", 216), Why: `timeRangeFieldValue: return t.UTC().Format("2006-01-02T15:04") — сериализация value= для <input type="datetime-local">, протокол HTML-формы`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/templates/maintenance.templ", 53), Why: `f["starts_at"] = w.StartsAt.In(loc).Format("2006-01-02T15:04") — то же поле формы datetime-local для окна обслуживания`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/templates/maintenance.templ", 56), Why: `f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04") — то же поле формы datetime-local`, Finding: "по замыслу"},
@@ -103,6 +104,7 @@ var permanentFormatExemptions = []Exemption{
 	{Value: exemptLoc("internal/web/timerange_test.go", 178), Why: `future := now.Add(48 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра end= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/timerange_test.go", 179), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/timerange_test.go", 192), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseTimeRangeCustomEndDefaultsToNow)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/performance_test.go", 415), Why: `start := now.Add(-45 * 24 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра ?start= тем же машинным форматом, что и сама форма (TestWebEndpointDetailSlowestExpiryConfigurable нужен custom-диапазон на 45 дней назад, дефолтные 24ч не захватили бы старые трейсы)`, Finding: "по замыслу"},
 
 	// internal/uptime/window_dst_test.go: пять мест — все аргументы
 	// многострочных t.Errorf/t.Fatalf в тесте перевода часов через DST, но на
@@ -162,10 +164,13 @@ var permanentFormatExemptions = []Exemption{
 }
 
 // maxPermanentFormatExemptions — потолок сознательно поднят с 21 до 22
-// задачей 2 подпроекта event-llm-copy: eventdump.go добавил один машинный
-// формат (RFC3339 timestamp в LLM-дампе события) в постоянные исключения,
-// см. запись выше.
-const maxPermanentFormatExemptions = 22
+// задачей 2 подпроекта event-llm-copy (eventdump.go добавил один машинный
+// формат, RFC3339 timestamp в LLM-дампе события), затем с 22 до 23 фикс-
+// раундом настраиваемого SpanRetentionDays: TestWebEndpointDetailSlowestExpiryConfigurable
+// (performance_test.go) собирает ?start= тем же машинным форматом
+// datetime-local, что и остальные семь мест выше, — восьмое такое место,
+// см. запись в permanentFormatExemptions.
+const maxPermanentFormatExemptions = 23
 
 // debtFormatExemptions — человекочитаемые макеты времени вне
 // internal/humanize: настоящие копии форматирования, ради поиска которых и

@@ -33,6 +33,9 @@ type perfStack struct {
 	org    *org.Service
 	auth   *auth.Service
 	writer *trace.SpanWriter
+	// h — сам хендлер, нужен тестам, настраивающим h.SpanRetentionDays (TTL
+	// spans, GOTCHA_SPAN_RETENTION_DAYS) явно вместо дефолта.
+	h *web.Handler
 }
 
 func newPerfStack(t *testing.T) *perfStack {
@@ -64,7 +67,7 @@ func newPerfStack(t *testing.T) *perfStack {
 	h.PerfIssues = trace.NewIssueService(pool)
 	h.Register(mux)
 
-	return &perfStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, writer: writer}
+	return &perfStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, writer: writer, h: h}
 }
 
 // flush синхронно выгружает буфер SpanWriter в ClickHouse (как flush в
@@ -273,6 +276,19 @@ func TestWebEndpointDetail(t *testing.T) {
 		}
 	}
 
+	// Баг C: подсказка на «Пороге Apdex» (значение в мс) должна объяснять
+	// именно порог, а не индекс 0..1 — раньше туда была прицеплена подсказка
+	// для колонки Apdex-индекса (perf.help.apdex), и пользователь видел
+	// «Порог Apdex: Nms» с тултипом про «от 0 до 1». Страница эндпойнта
+	// вообще не показывает индекс, поэтому текста про 0..1 на ней быть не
+	// должно.
+	if !strings.Contains(string(body), "Порог Apdex T — целевое время ответа") {
+		t.Fatalf("GET %s (owner) missing the apdex threshold tooltip: %s", txPath, body)
+	}
+	if strings.Contains(string(body), "индекс удовлетворённости от 0 до 1") {
+		t.Fatalf("GET %s (owner) apdex threshold tooltip still describes the 0..1 index: %s", txPath, body)
+	}
+
 	// Эндпойнт с «%» в имени: детальная страница должна показать ЕГО данные
 	// (ссылку на его трейс), а не 404/чужой эндпойнт из-за двойного декодирования.
 	pctPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" + url.PathEscape(pctName)
@@ -356,6 +372,91 @@ func TestWebPerformanceListTruncates(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Показаны первые") {
 		t.Fatalf("missing truncation notice for %d endpoints: %s", total, body)
+	}
+}
+
+// TestWebEndpointDetailSlowestExpiryConfigurable — «истёкшая» ссылка в
+// таблице «самые медленные трейсы» зависит от h.SpanRetentionDays
+// (GOTCHA_SPAN_RETENTION_DAYS), настраиваемого TTL spans, а НЕ от
+// захардкоженной константы: с retention=90 трейс возрастом 40 дней остаётся
+// кликабельным (моложе порога); с retention=7 трейс возрастом 10 дней теряет
+// ссылку (старше порога); с retention=0 (TTL не задан, спаны хранятся вечно)
+// ссылка не пропадает никогда, сколько бы трейсу ни было лет.
+func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
+	s := newPerfStack(t)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "perfexp-owner@example.com")
+	o, err := s.org.CreateOrg(context.Background(), "perfexp-co", "PerfExp Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), o.ID, "perfexp-proj", "PerfExp Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	const transaction = "GET /api/old"
+	const trace40 = "perfexp-trace-40d"
+	const trace10 = "perfexp-trace-10d"
+	now := time.Now().UTC()
+	at40 := now.Add(-40 * 24 * time.Hour)
+	at10 := now.Add(-10 * 24 * time.Hour)
+	s.writer.Add(proj.ID, proj.ID, trace.Transaction{
+		TraceID: trace40, SpanID: "perfexp-span-40d", Name: transaction, Op: "http.server",
+		Status: "ok", Start: at40, End: at40.Add(50 * time.Millisecond), Environment: "production",
+	})
+	s.writer.Add(proj.ID, proj.ID, trace.Transaction{
+		TraceID: trace10, SpanID: "perfexp-span-10d", Name: transaction, Op: "http.server",
+		Status: "ok", Start: at10, End: at10.Add(40 * time.Millisecond), Environment: "production",
+	})
+	s.flush(t)
+
+	// Custom-диапазон на 45 дней назад — дефолтные 24ч (perfDefaultPeriod) не
+	// захватили бы эти трейсы.
+	start := now.Add(-45 * 24 * time.Hour).Format("2006-01-02T15:04")
+	txPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" +
+		url.PathEscape(transaction) + "?period=custom&start=" + start
+
+	link40 := `<a href="/traces/` + trace40
+	link10 := `<a href="/traces/` + trace10
+
+	// retention=90: трейс 40д моложе порога — ссылка живая.
+	s.h.SpanRetentionDays = 90
+	resp := getWithCookie(t, s.srv, txPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (retention=90) status = %d: %s", txPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), link40) {
+		t.Fatalf("GET %s (retention=90): трейс 40д должен остаться кликабельным: %s", txPath, body)
+	}
+
+	// retention=7: трейс 10д старше порога — ссылка снята, trace_id остаётся
+	// текстом.
+	s.h.SpanRetentionDays = 7
+	resp = getWithCookie(t, s.srv, txPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (retention=7) status = %d: %s", txPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), link10) {
+		t.Fatalf("GET %s (retention=7): трейс 10д должен потерять ссылку: %s", txPath, body)
+	}
+	if !strings.Contains(string(body), trace10) {
+		t.Fatalf("GET %s (retention=7): trace_id 10д должен остаться текстом: %s", txPath, body)
+	}
+
+	// retention=0 (TTL не задан): ни один трейс не помечается истёкшим.
+	s.h.SpanRetentionDays = 0
+	resp = getWithCookie(t, s.srv, txPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (retention=0) status = %d: %s", txPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), link10) || !strings.Contains(string(body), link40) {
+		t.Fatalf("GET %s (retention=0): ни один trace_id не должен терять ссылку: %s", txPath, body)
 	}
 }
 

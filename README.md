@@ -18,6 +18,7 @@ works.
 - **Metrics** — ingestion via OTLP, metric queries, threshold-based alert rules and incidents.
 - **Profiling** — CPU/flamegraph profiles from Sentry profiling payloads and pprof, with regression detection.
 - **Uptime monitoring** — HTTP checks from a built-in local region or remote probes, incident detection, public status pages.
+- **Hosts** — system metrics for your servers (CPU, memory, disk, network, load average, processes) via the native `gotcha-agent` (installed with one command straight from the instance) or an OpenTelemetry Collector; built-in thresholds and incidents.
 - **Alerting** — delivery via email, webhook, and Telegram; rules for new issues, spikes, metric thresholds, and performance/uptime regressions.
 - **Organizations, teams and RBAC** — multi-tenant organizations, projects, membership roles.
 - **SSO** — OIDC (generic), Yandex ID, and VK ID login, each independently configurable.
@@ -25,8 +26,11 @@ works.
 
 ## Architecture
 
-Gotcha ships as a single binary, `gotcha`, with a `--mode` flag that selects
-which subsystems run in a given process:
+The server ships as a single binary, `gotcha`, with a `--mode` flag that
+selects which subsystems run in a given process; a separate small binary,
+`gotcha-agent`, runs on monitored hosts and reports system metrics (see
+Hosts above) — it's served by the instance itself and installed with one
+command, no manual build needed:
 
 - `--mode=ingest` — HTTP ingestion (Sentry envelope endpoints, OTLP metrics), event/span/metric/profile batching, alert evaluation on ingested data.
 - `--mode=web` — the SSR web UI (templ + htmx), auth, org/project administration, dashboards, public status pages.
@@ -141,6 +145,11 @@ Requires Go 1.26+.
 go build -o gotcha ./cmd/gotcha
 # or, via make:
 make go-build
+
+# the host-metrics agent is a separate binary:
+go build -o gotcha-agent ./cmd/gotcha-agent
+# or:
+make go-build-agent
 ```
 
 Running locally still needs PostgreSQL and ClickHouse. The bundled

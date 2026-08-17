@@ -119,17 +119,25 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 		stats = stats[:perfEndpointLimit]
 	}
 
+	// Спарклайн p95 на каждую строку — раньше это было по одному CH-запросу
+	// (EndpointLatency) на строку, до perfEndpointLimit последовательных
+	// round-trip'ов подряд на загрузку страницы. EndpointLatencyBatch читает все
+	// строки ОДНИМ запросом (WHERE transaction IN ?).
 	step := perfBucketStep(tr.Window(), perfSparklineBuckets)
+	transactions := make([]string, len(stats))
+	for i, st := range stats {
+		transactions[i] = st.Transaction
+	}
+	latencyByTx, err := h.Trace.EndpointLatencyBatch(r.Context(), projectID, transactions, from, now, step, environment)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	rows := make([]templates.EndpointRow, len(stats))
 	for i, st := range stats {
-		points, err := h.Trace.EndpointLatency(r.Context(), projectID, st.Transaction, from, now, step, environment)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
 		rows[i] = templates.EndpointRow{
 			Stat:      st,
-			Sparkline: latencySparklineSVG(r.Context(), points, perfSparklineWidth, perfSparklineHeight),
+			Sparkline: latencySparklineSVG(r.Context(), latencyByTx[st.Transaction], perfSparklineWidth, perfSparklineHeight),
 		}
 	}
 
@@ -252,6 +260,29 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Строки старше h.SpanRetentionDays честно остаются в списке (трейс правда
+	// был медленным — это данные, а не мусор), но ссылка на /traces/{id} для
+	// них ведёт в 404: spans для такого трейса уже вне TTL (transactions живёт
+	// дольше spans). Помечаем их здесь, а не в шаблоне — "сейчас" единственный
+	// раз берём из хендлера. h.SpanRetentionDays <= 0 — TTL не настроен (0 =
+	// вечно) или хендлер не в стенде, где его вообще проставляют: тогда мы не
+	// знаем момент истечения и НЕ помечаем ничего — ссылка остаётся живой
+	// (если спанов у трейса реально уже нет, /traces/{id} сам покажет
+	// «недоступны» по факту, а не по расчётной дате — см. traceWaterfall).
+	slowestRows := make([]templates.SlowestTraceRow, len(slowest))
+	if h.SpanRetentionDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(h.SpanRetentionDays) * 24 * time.Hour)
+		for i, row := range slowest {
+			slowestRows[i] = templates.SlowestTraceRow{
+				Row:     row,
+				Expired: row.Timestamp.Before(cutoff),
+			}
+		}
+	} else {
+		for i, row := range slowest {
+			slowestRows[i] = templates.SlowestTraceRow{Row: row}
+		}
+	}
 
 	// Связанные perf-проблемы этого эндпойнта: List отдаёт проблемы проекта, а
 	// culprit (имя транзакции) фильтруем в Go — минимальный вариант без нового
@@ -291,7 +322,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		Histogram:    durationHistogramSVG(r.Context(), histogram, perfLatencyChartWidth, perfLatencyChartHeight),
 		StepLabel:    formatStep(step),
 		From:         endpointOrigin(r.URL.Query().Get("from")),
-		Slowest:      slowest,
+		Slowest:      slowestRows,
 		PerfIssues:   perfIssues,
 		Vitals:       vitals,
 	}

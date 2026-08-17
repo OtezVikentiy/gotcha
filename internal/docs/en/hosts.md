@@ -25,7 +25,7 @@ What the command does:
 
 **Trust boundary.** Installing the agent means the host trusts your Gotcha instance (and the network path to it) as a source of code that runs as root — the same arrangement Datadog's, Zabbix's, and Netdata's agents rely on. The SHA-256 check above catches a broken download or a proxy cache serving something stale, but it **doesn't protect against a compromised instance**: the checksums travel over the same channel as the binary, so a forged source simply serves forged checksums to match. That's why the delivery channel matters: if the instance's address isn't `https://` (and isn't localhost), the UI won't show the install command at all — only a hint to enable HTTPS or connect the host through the collector instead — otherwise the command, carrying the project's key and running as root, would go out in the clear, and any on-path attacker on that network would get the same root access across your whole fleet. And the usual care that comes with root access applies to who you give administrator rights to the instance itself.
 
-The agent collects the same set of `system.*` metrics as the shipped collector config (see the table below), plus `system.uptime`, over the same OTLP protocol — the page's contract (metric names, the `host.name` promotion) is identical for the agent and the collector, so switching between them requires no changes on the Gotcha side. It exports every 30 seconds by default. If the instance is temporarily unreachable (a restart, a network blip), the agent buffers undelivered batches in memory — at the default interval that's roughly an **hour** of history (120 batches) — and sends them once connectivity is back, losing nothing to a short outage.
+The agent collects the same set of `system.*` metrics as the shipped collector config (see the table below), plus `system.uptime`, over the same OTLP protocol — the page's contract (metric names, the `host.name` promotion) is identical for the agent and the collector, so switching between them requires no changes on the Gotcha side. It exports every 30 seconds by default. If the instance is temporarily unreachable (a restart, a network blip), the agent buffers undelivered batches in memory — at the default interval that's roughly an **hour** of history (120 batches **or 8 MiB, whichever comes first**) — and sends them once connectivity is back, losing nothing to a short outage.
 
 The installed agent's version shows on the host's card; if it's behind the instance's version, the card shows an "Update available" badge. You can also check the installed version on the host itself: `gotcha-agent --version`; the card catches up with the next export — within one collection interval (30 seconds by default).
 
@@ -42,6 +42,7 @@ sudo systemctl disable --now gotcha-agent
 sudo rm /usr/local/bin/gotcha-agent /etc/systemd/system/gotcha-agent.service
 sudo rm -r /etc/gotcha-agent
 sudo systemctl daemon-reload
+sudo userdel gotcha-agent
 ```
 
 **Customizing the systemd unit.** The unit file is an installer artifact: both the install and every update overwrite it wholesale, so editing `/etc/systemd/system/gotcha-agent.service` directly won't survive the next `sh -c "$(curl ...)"`. For changes that need to stick (a custom `RestartSec`, extra systemd sandboxing, and so on), use a drop-in: `sudo systemctl edit gotcha-agent` creates a separate file under `/etc/systemd/system/gotcha-agent.service.d/`, which the installer never touches.
@@ -50,7 +51,9 @@ sudo systemctl daemon-reload
 
 **Closed networks: a separate endpoint for the agent.** The install command shown in the UI fills `GOTCHA_AGENT_ENDPOINT` with the instance's `GOTCHA_BASE_URL` — the address browsers use to reach it. If hosts running the agent reach the instance by a different path (an internal DNS name/IP, a separate internal domain, a reverse proxy dedicated to telemetry), edit `GOTCHA_AGENT_ENDPOINT` to that address before running the command — the agent itself doesn't need to be reachable from outside, and doesn't need to reach the instance the same way a browser does.
 
-Supported platforms are Linux amd64/arm64 with systemd; for another OS, or without systemd, use the collector below.
+Supported platforms are Linux amd64/arm64 with systemd; for another OS, or without systemd, use the collector below. Besides systemd the host needs `curl`, `useradd` (shadow-utils) and `sha256sum`/`install`/`mktemp` (coreutils) — present on any normal distribution; on a minimal image the installer says what's missing up front, without changing anything.
+
+The `gotcha-agent` unit runs with `MemoryMax=128M`, `Nice=10`, and `CPUWeight=20` — on a shared server the agent doesn't compete for CPU with your main workload and can't grow past that memory ceiling.
 
 **Migrating from the collector to the agent.** If `otelcol-contrib` is already running on the host from the earlier instructions, stop it before installing the agent — otherwise both send metrics under the same `host.name`: points are duplicated, the rate charts (network, disk I/O) are computed over an interleaved series, and the "Silence" threshold stops catching an agent failure for as long as the collector is alive.
 
@@ -71,7 +74,8 @@ journalctl -u gotcha-agent -n 50
 
 - a `401` in the log means the key in `/etc/gotcha-agent/gotcha-agent.env` is wrong (a revoked key, for instance): fix `GOTCHA_AGENT_KEY` and run `sudo systemctl restart gotcha-agent`;
 - connection or TLS errors mean the instance isn't reachable from this host at `GOTCHA_AGENT_ENDPOINT` (see "Closed networks" above), or its certificate is self-signed (`GOTCHA_AGENT_CA_CERT`);
-- if the unit doesn't start at all, `journalctl -u gotcha-agent` says why: the agent validates its config at startup and names the offending variable.
+- if the unit doesn't start at all, `journalctl -u gotcha-agent` says why: the agent validates its config at startup and names the offending variable;
+- the fastest way to check the config itself without touching the live process: `sudo systemd-run --quiet --wait --pipe -p EnvironmentFile=/etc/gotcha-agent/gotcha-agent.env /usr/local/bin/gotcha-agent --check` (the installer runs this same check itself).
 
 #### Agent environment variables
 

@@ -316,6 +316,116 @@ func (q *Query) EndpointLatency(ctx context.Context, projectID int64, transactio
 	return out, nil
 }
 
+// EndpointLatencyBatch — EndpointLatency сразу для нескольких transactions ОДНИМ
+// запросом к ClickHouse (WHERE transaction IN ? вместо N отдельных запросов).
+// Список эндпойнтов (performanceList) собирает спарклайн на каждую строку —
+// раньше это было до perfEndpointLimit последовательных round-trip'ов на
+// загрузку страницы; здесь один. Сетка точек, заполнение пропусков и выбор
+// MV/сырых transactions — 1:1 с EndpointLatency (та же логика, применена per-
+// transaction после разбора одного набора строк). Пустой transactions → пустая
+// карта без обращения к ClickHouse. Отсутствующий в БД transaction получает
+// такой же ряд из нулевых точек, что и одиночный EndpointLatency для него.
+func (q *Query) EndpointLatencyBatch(ctx context.Context, projectID int64, transactions []string, from, to time.Time, step time.Duration, environment string) (map[string][]LatencyPoint, error) {
+	out := make(map[string][]LatencyPoint, len(transactions))
+	if len(transactions) == 0 {
+		return out, nil
+	}
+
+	stepSec := int64(step / time.Second)
+	if stepSec <= 0 {
+		return nil, fmt.Errorf("trace: endpoint latency batch: step must be at least one second, got %s", step)
+	}
+
+	fromMV := step >= 5*time.Minute && step%(5*time.Minute) == 0
+
+	var (
+		table   string
+		timeCol string
+	)
+	if fromMV {
+		table, timeCol = "transactions_5m", "bucket"
+	} else {
+		table, timeCol = "transactions", "timestamp"
+	}
+
+	where := "project_id = ? AND transaction IN ? AND " + timeCol + " >= ? AND " + timeCol + " < ?"
+	args := []any{stepSec, uint64(projectID), transactions, from, to}
+	if environment != "" {
+		where += " AND environment = ?"
+		args = append(args, environment)
+	}
+
+	var selectExpr string
+	if fromMV {
+		selectExpr = `countMerge(cnt) AS c, quantilesMerge(0.5, 0.75, 0.95, 0.99)(dur) AS q`
+	} else {
+		selectExpr = `count() AS c, quantiles(0.5, 0.95)(duration_us) AS q`
+	}
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, toStartOfInterval(`+timeCol+`, INTERVAL ? second) AS bucket_ts, `+selectExpr+`
+		FROM `+table+`
+		WHERE `+where+`
+		GROUP BY transaction, bucket_ts
+		ORDER BY transaction, bucket_ts`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("trace: endpoint latency batch: %w", err)
+	}
+	defer rows.Close()
+
+	byTxBucket := make(map[string]map[int64]LatencyPoint, len(transactions))
+	for rows.Next() {
+		var tx string
+		var t time.Time
+		var c uint64
+		var qs []float64
+		if err := rows.Scan(&tx, &t, &c, &qs); err != nil {
+			return nil, fmt.Errorf("trace: endpoint latency batch: scan: %w", err)
+		}
+		p := LatencyPoint{Count: c}
+		// MV: q = [p50,p75,p95,p99] (индексы 0 и 2); raw: q = [p50,p95].
+		if fromMV && len(qs) == 4 {
+			p.P50 = usFromFloat(qs[0])
+			p.P95 = usFromFloat(qs[2])
+		} else if !fromMV && len(qs) == 2 {
+			p.P50 = usFromFloat(qs[0])
+			p.P95 = usFromFloat(qs[1])
+		}
+		byBucket, ok := byTxBucket[tx]
+		if !ok {
+			byBucket = make(map[int64]LatencyPoint)
+			byTxBucket[tx] = byBucket
+		}
+		byBucket[t.UTC().Unix()] = p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: endpoint latency batch: %w", err)
+	}
+
+	// Та же выравненная по epoch сетка, что в EndpointLatency, построенная один
+	// раз и применённая к каждому transaction — раскладка по map, а не N
+	// запросов, и есть весь смысл батча.
+	fromUnix := from.UTC().Unix()
+	toUnix := to.UTC().Unix()
+	startUnix := (fromUnix / stepSec) * stepSec
+	endUnix := ((toUnix - 1) / stepSec) * stepSec
+	if endUnix < startUnix {
+		endUnix = startUnix
+	}
+
+	for _, tx := range transactions {
+		byBucket := byTxBucket[tx] // nil, если transaction не встретился ни разу — ниже даст ряд нулей
+		series := make([]LatencyPoint, 0, (endUnix-startUnix)/stepSec+1)
+		for curUnix := startUnix; curUnix <= endUnix; curUnix += stepSec {
+			p := byBucket[curUnix]
+			p.T = time.Unix(curUnix, 0).UTC()
+			series = append(series, p)
+		}
+		out[tx] = series
+	}
+	return out, nil
+}
+
 // DurationHistogram строит гистограмму длительностей эндпойнта за [from, to)
 // из сырых transactions: buckets корзин равной ширины по длительности. Ширина
 // определяется по максимальной длительности за период. UpperUS корзины i —
@@ -414,6 +524,23 @@ func (q *Query) SlowestTraces(ctx context.Context, projectID int64, transaction 
 	}
 	return out, nil
 }
+
+// SpanRetentionDays — TTL таблицы spans по умолчанию при первой установке
+// (internal/db/migrations/ch/0004_spans.up.sql: TTL toDateTime(timestamp) +
+// INTERVAL 30 DAY). transactions живёт дольше (90 дней при дефолте,
+// ch/0003_transactions.up.sql), поэтому трейс подходящего возраста ещё виден
+// в списках (Endpoints/SlowestTraces читают transactions), но Trace() для
+// него уже не находит ни одного спана — waterfall рисовать нечем.
+//
+// ВАЖНО: TTL spans настраивается в проде (GOTCHA_SPAN_RETENTION_DAYS,
+// применяется на каждом старте через db.ApplySpanRetention →
+// ALTER TABLE spans MODIFY TTL) и на не-дефолтных инстансах отличается от
+// этой константы. web.Handler.SpanRetentionDays (проставляется из
+// cfg.SpanRetentionDays в main.go) — источник истины для UI
+// (web.traceWaterfall, templates.EndpointDetail.Slowest); эта константа —
+// только дефолт первой установки, годится для доков и тестов, но НЕ для
+// сравнения с реальным возрастом трейса в хендлерах.
+const SpanRetentionDays = 30
 
 // traceSpanLimit — верхняя граница числа спанов, читаемых Trace из ClickHouse.
 // Патологический трейс (десятки тысяч спанов) не должен грузиться в память

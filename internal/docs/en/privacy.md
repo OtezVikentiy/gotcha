@@ -42,6 +42,7 @@ Two consequences worth knowing:
 | End users of observed applications | ClickHouse: `events`, `transactions`, `metric_points` | `user_id`, `user_ip`, `user_email`, `user.*` attributes in tags/attributes |
 | Free text with possible personal data | ClickHouse: `events.message`/`exception_value`/`stacktrace`/`contexts`, `spans.description`/`data`, `profile_samples.stack`, `tags` | anything an SDK or developer placed into an error message, transaction name, SQL/URL |
 | Notification delivery addresses | PostgreSQL: `org_invites.email`, channel configuration | invitee emails, email/Telegram/webhook recipient addresses |
+| Host telemetry | PostgreSQL: `hosts` (`name`, `agent_version`); ClickHouse: `metric_points` (`system.*` metrics) | `host.name` — often an internal server name rather than personal data, but sometimes includes an owner's login or domain; the installed `gotcha-agent` version; uptime and system metrics (CPU/memory/disk/network) carry no personal data on their own |
 
 Sessions (`sessions`) store only a token hash and `user_id` — no IP, no user agent — so minimization is enforced at the schema level.
 

@@ -99,6 +99,66 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 	}
 }
 
+// TraceExpiredData — состояние «трейс есть, но спанов для него уже нет»: у
+// трейса есть транзакция в transactions (90 дней, ProjectForTrace нашёл,
+// доступ подтверждён CanAccessProject), но в spans для него уже ничего нет —
+// waterfall рисовать нечем. Это НЕ «страницы не существует» (обычный notFound
+// остаётся для трейсов, которых нет вовсе), а отдельное, осмысленное
+// состояние, показанное с кодом 404: заголовок с trace_id и куда вернуться,
+// вместо голой заглушки.
+type TraceExpiredData struct {
+	ProjectID int64
+	TraceID   string
+
+	// RetentionDays — настроенный TTL spans (h.SpanRetentionDays,
+	// GOTCHA_SPAN_RETENTION_DAYS), а НЕ trace.SpanRetentionDays: TTL
+	// настраивается в проде и может отличаться от дефолта миграции. >0 →
+	// текст объясняет истечение срока хранения («хранятся N дней»); <=0 (TTL
+	// не задан, спаны хранятся вечно) → спаны пропали не по TTL (ручная
+	// очистка/запрос на удаление), и текст про число дней был бы враньём —
+	// используется нейтральная формулировка без чисел.
+	RetentionDays int
+
+	// From/FromID/FromTransaction — откуда открыли трейс, та же семантика, что
+	// в TraceWaterfallData (см. tracePathFrom/traceOrigin): страница показывает
+	// то же самое состояние независимо от источника ссылки (список медленных
+	// трейсов, issue-detail, perf-issue).
+	From            string
+	FromID          int64
+	FromTransaction string
+}
+
+// TraceExpired — GET /traces/{trace_id}, когда спанов трейса больше нет:
+// breadcrumb туда же, куда вела бы обычная страница трейса, заголовок с
+// trace_id и пояснение вместо waterfall. Handler отдаёт эту страницу с
+// HTTP-статусом 404.
+templ TraceExpired(d TraceExpiredData, userEmail string) {
+	@layout(d.TraceID, userEmail) {
+		<div class="trace-detail">
+			switch d.From {
+				case "perf-issue":
+					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
+				case "issue":
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
+				case "endpoint":
+					@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
+				default:
+					@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.transactions"))
+			}
+			<h1>{ d.TraceID }</h1>
+			<div class="empty-state">
+				@icon("clock")
+				<h2 class="empty-title">{ i18n.T(ctx, "trace.expired.title") }</h2>
+				if d.RetentionDays > 0 {
+					<p>{ i18n.Tf(ctx, "trace.expired.body", "period", i18n.Tn(ctx, "unit.days", d.RetentionDays)) }</p>
+				} else {
+					<p>{ i18n.T(ctx, "trace.expired.body_purged") }</p>
+				}
+			</div>
+		</div>
+	}
+}
+
 // TraceFlameData — страница flamegraph трейса (profiling-in-context, этап 8).
 type TraceFlameData struct {
 	TraceID string

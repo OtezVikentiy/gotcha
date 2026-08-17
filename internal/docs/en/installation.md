@@ -270,7 +270,7 @@ Before pointing real users or real application traffic at this instance, make su
   - **nginx**: a config with `proxy_pass http://127.0.0.1:59080;` and a Let's Encrypt certificate (`certbot --nginx`).
   - **Caddy**: even simpler, HTTPS is automatic — a `Caddyfile` line like `gotcha.example.com { reverse_proxy localhost:59080 }` is all you need.
 
-  Without HTTPS, session cookies travel over the network in plain text — the server even warns about this in its logs (`GOTCHA_BASE_URL is non-local plain HTTP`).
+  Without HTTPS, session cookies travel over the network in plain text — the server even warns about this in its logs (`GOTCHA_BASE_URL is non-local plain HTTP`). If the proxy restricts paths to an allowlist, add `/install.sh` and `/agent/` to it — otherwise installing the host-metrics agent (see [Hosts](/docs/hosts)) won't work.
 - [ ] **SMTP** — without it, invite emails and the email alert channel don't work. Setup is covered in [Configuration](/docs/configuration).
 - [ ] **Backups** — set these up before real data accumulates in the database. See [Backup & Restore](/docs/backup-restore).
 - [ ] **Quotas** — if a project DSN could leak publicly (e.g. frontend JS), set `GOTCHA_DEFAULT_*_QUOTA` (unlimited by default in the oss edition). See [Configuration](/docs/configuration).

@@ -36,6 +36,9 @@ type traceStack struct {
 	issues  *issue.Service
 	spans   *trace.SpanWriter
 	batcher *event.Batcher
+	// h — сам хендлер, нужен тестам, которые настраивают h.SpanRetentionDays
+	// (TTL spans, GOTCHA_SPAN_RETENTION_DAYS) явно, а не полагаются на дефолт.
+	h *web.Handler
 }
 
 func newTraceStack(t *testing.T) *traceStack {
@@ -70,7 +73,7 @@ func newTraceStack(t *testing.T) *traceStack {
 	h.Profiles = profile.NewQuery(ch)
 	h.Register(mux)
 
-	return &traceStack{pool: pool, ch: ch, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, spans: spans, batcher: batcher}
+	return &traceStack{pool: pool, ch: ch, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, spans: spans, batcher: batcher, h: h}
 }
 
 // flush синхронно выгружает оба буфера (spans и events) в ClickHouse до
@@ -447,5 +450,116 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("stranger GET %s status = %d, want 404", path, resp.StatusCode)
 		}
+	}
+}
+
+// TestWebTraceWaterfallExpiredSpans — трейс, для которого в transactions
+// строка ещё жива (значит попадает в списки и даёт кликабельную ссылку), но
+// spans для него уже пусты — waterfall рисовать нечем. Раньше это давало
+// голый 404 («страницы не существует» — та же заглушка, что и для трейса,
+// которого нет вовсе); теперь — осмысленное состояние с trace_id и пояснением
+// (i18n trace.expired.*), всё ещё с кодом 404, но НЕ error.internal и НЕ общей
+// заглушкой error.404. Текст пояснения зависит от h.SpanRetentionDays
+// (настраиваемый TTL, GOTCHA_SPAN_RETENTION_DAYS) — НЕ от захардкоженного
+// trace.SpanRetentionDays: >0 → «хранятся N дней» с верным plural, <=0 (TTL
+// не задан, спаны хранятся вечно) → нейтральный текст без чисел (спаны
+// пропали не по TTL — ручная очистка/запрос на удаление). Трейс, которого нет
+// вовсе, по-прежнему даёт обычный notFound — этот регресс проверяется здесь
+// же, а межорговый обход уже покрыт TestWebTraceCrossOrgStranger выше.
+func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
+	s := newTraceStack(t)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-expired-owner@example.com")
+	_, outsiderCookie := orgSettingsRegister(t, s.auth, "trace-expired-outsider@example.com")
+
+	o, err := s.org.CreateOrg(context.Background(), "trace-expired-co", "Trace Expired Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), o.ID, "trace-expired-proj", "Trace Expired Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	const traceID = "expired-trace-01"
+	start := time.Now().UTC().Add(-60 * 24 * time.Hour)
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
+		TraceID:     traceID,
+		SpanID:      "expired-root",
+		Name:        "GET /api/old",
+		Op:          "http.server",
+		Status:      "ok",
+		Start:       start,
+		End:         start.Add(100 * time.Millisecond),
+		Environment: "production",
+	})
+	s.flush(t)
+
+	// Симулируем истечение TTL spans напрямую (реальный TTL ждать дни
+	// нельзя): строка транзакции остаётся, спаны трейса удаляем синхронной
+	// мутацией — тот же приём, что и ручная очистка в internal/telemetry/purge.go.
+	if err := s.ch.Exec(context.Background(),
+		"ALTER TABLE spans DELETE WHERE trace_id = ? SETTINGS mutations_sync = 2", traceID); err != nil {
+		t.Fatalf("simulate span TTL: %v", err)
+	}
+
+	tracePath := "/traces/" + traceID
+
+	// h.SpanRetentionDays=30 (типичный конфиг) — текст называет срок с верным
+	// plural, а не «30 дней» дословно из старого хардкода: проверяем именно
+	// склонённую форму, которую даёт i18n.Tn.
+	s.h.SpanRetentionDays = 30
+	resp := getWithCookie(t, s.srv, tracePath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s status = %d, want 404: %s", tracePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), traceID) {
+		t.Fatalf("GET %s missing trace_id in expired state: %s", tracePath, body)
+	}
+	if !strings.Contains(string(body), "хранятся 30 дней") {
+		t.Fatalf("GET %s missing the configured-retention wording (h.SpanRetentionDays=30): %s", tracePath, body)
+	}
+	if strings.Contains(string(body), "Страница не найдена") {
+		t.Fatalf("GET %s must not fall back to the generic 404 page: %s", tracePath, body)
+	}
+
+	// h.SpanRetentionDays=0 (TTL не задан, спаны хранятся вечно) — тот же
+	// трейс без спанов теперь описывается как «удалены вручную», а не как
+	// «истёк TTL» (говорить о днях хранения было бы неправдой при TTL=0).
+	s.h.SpanRetentionDays = 0
+	resp = getWithCookie(t, s.srv, tracePath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (retention=0) status = %d, want 404: %s", tracePath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "хранятся") {
+		t.Fatalf("GET %s (retention=0) must not claim a retention period: %s", tracePath, body)
+	}
+	if !strings.Contains(string(body), "были удалены") {
+		t.Fatalf("GET %s (retention=0) missing the purge wording: %s", tracePath, body)
+	}
+
+	s.h.SpanRetentionDays = 30
+
+	// Чужой проект — по-прежнему обычный 404 (не палим существование трейса).
+	resp = getWithCookie(t, s.srv, tracePath, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s (outsider) status = %d, want 404", tracePath, resp.StatusCode)
+	}
+
+	// Трейс, которого нет вовсе, — обычный notFound с общей заглушкой, не
+	// trace.expired (не должен путать «нет спанов» с «нет трейса»).
+	resp = getWithCookie(t, s.srv, "/traces/never-existed", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /traces/never-existed status = %d, want 404", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "хранятся") || strings.Contains(string(body), "были удалены") {
+		t.Fatalf("GET /traces/never-existed must show the generic 404, not trace.expired: %s", body)
 	}
 }

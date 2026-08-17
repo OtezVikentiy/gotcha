@@ -106,7 +106,20 @@ func (h *Handler) publicRateLimited(next http.HandlerFunc) http.HandlerFunc {
 // Отдельный метод, а не публичное поле лимитера: *rateLimiter — внутренний
 // тип пакета, конструктору нужен источник времени. Вызывается один раз при
 // старте, до начала обслуживания запросов — гонок с Allow() нет.
+//
+// perMinute <= 0 обнуляет h.agentLimiter (nil), а не создаёт лимитер с
+// limit=0: внутри rateLimiter.Allow условие `len(fresh) >= rl.limit` при
+// limit=0 истинно всегда, то есть лимитер с нулевым порогом резал бы 429
+// АБСОЛЮТНО все запросы. В продукте соглашение обратное — 0 у числовых
+// GOTCHA_*-переменных значит «без границы» (как *_RETENTION_DAYS), и
+// agentDistRateLimited уже трактует nil как «лимит снят» — переиспользуем
+// этот путь, чтобы оператор, вписавший 0, получил ожидаемое поведение, а не
+// тихо запертую раздачу агента по всему парку.
 func (h *Handler) SetAgentDistRateLimit(perMinute int) {
+	if perMinute <= 0 {
+		h.agentLimiter = nil
+		return
+	}
 	h.agentLimiter = newRateLimiter(time.Now, perMinute, time.Minute)
 }
 

@@ -150,6 +150,44 @@ func TestTracePages(t *testing.T) {
 	}
 }
 
+// TestTraceExpired — состояние «спанов трейса больше нет» (баг: TTL spans
+// настраивается через GOTCHA_SPAN_RETENTION_DAYS, поэтому текст обязан брать
+// число дней из TraceExpiredData.RetentionDays, а не из захардкоженной
+// константы, и склонять его по CLDR-правилам ru, а не печатать «1 дней»).
+// RetentionDays<=0 (TTL не задан, спаны хранятся вечно) — отдельный текст без
+// чисел: спаны пропали не по TTL, а значит вручную/по запросу на удаление.
+func TestTraceExpired(t *testing.T) {
+	cases := []struct {
+		days int
+		want string
+	}{
+		{days: 1, want: "хранятся 1 день"},
+		{days: 2, want: "хранятся 2 дня"},
+		{days: 5, want: "хранятся 5 дней"},
+		{days: 30, want: "хранятся 30 дней"},
+	}
+	for _, c := range cases {
+		d := TraceExpiredData{ProjectID: 7, TraceID: "trace-exp", RetentionDays: c.days}
+		out := renderTo(t, TraceExpired(d, "u@e.com"))
+		if !strings.Contains(out, "trace-exp") {
+			t.Errorf("RetentionDays=%d: должен содержать trace_id", c.days)
+		}
+		if !strings.Contains(out, c.want) {
+			t.Errorf("RetentionDays=%d: missing %q: %s", c.days, c.want, out)
+		}
+	}
+
+	// RetentionDays=0 — TTL не задан (спаны хранятся вечно): текст не должен
+	// называть срок хранения (он бесконечен, «хранятся 0 дней» — неправда).
+	purged := renderTo(t, TraceExpired(TraceExpiredData{ProjectID: 7, TraceID: "trace-purged", RetentionDays: 0}, "u@e.com"))
+	if strings.Contains(purged, "хранятся") {
+		t.Errorf("RetentionDays=0 не должен утверждать срок хранения: %s", purged)
+	}
+	if !strings.Contains(purged, "были удалены") {
+		t.Errorf("RetentionDays=0 должен объяснять пропажу спанов без TTL: %s", purged)
+	}
+}
+
 // TestStatusPagesSettings — настройки статус-страниц: существующая форма с
 // мониторами и новая пустая форма. Slug — не поле формы (задача 4 плана):
 // публичный адрес — сгенерированный public_id, форма его не вводит, только

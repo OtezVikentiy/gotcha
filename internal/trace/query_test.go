@@ -485,6 +485,73 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
+	t.Run("EndpointLatencyBatch5m", func(t *testing.T) {
+		// Батч на паре transactions должен дать те же точки, что и по одному
+		// EndpointLatency на каждый — это единственное, что оправдывает замену N
+		// запросов на один в performanceList.
+		names := []string{"GET /api/users", "GET /api/orders"}
+		batch, err := q.EndpointLatencyBatch(ctx, projectID, names, from, to, 5*time.Minute, "production")
+		if err != nil {
+			t.Fatalf("EndpointLatencyBatch: %v", err)
+		}
+		if len(batch) != len(names) {
+			t.Fatalf("len(batch) = %d, want %d (%+v)", len(batch), len(names), batch)
+		}
+		for _, name := range names {
+			want, err := q.EndpointLatency(ctx, projectID, name, from, to, 5*time.Minute, "production")
+			if err != nil {
+				t.Fatalf("EndpointLatency(%q): %v", name, err)
+			}
+			got, ok := batch[name]
+			if !ok {
+				t.Fatalf("batch missing %q", name)
+			}
+			if len(got) != len(want) {
+				t.Fatalf("%s: len(got) = %d, want %d", name, len(got), len(want))
+			}
+			for i := range want {
+				if !got[i].T.Equal(want[i].T) || got[i].P50 != want[i].P50 ||
+					got[i].P95 != want[i].P95 || got[i].Count != want[i].Count {
+					t.Fatalf("%s point %d = %+v, want %+v", name, i, got[i], want[i])
+				}
+			}
+		}
+	})
+
+	t.Run("EndpointLatencyBatchRaw7m", func(t *testing.T) {
+		// 7м не кратно 5м → raw-путь (сырые transactions), как и в
+		// EndpointLatencyRaw7m — батч обязан выбирать ту же таблицу.
+		const name = "GET /api/users"
+		batch, err := q.EndpointLatencyBatch(ctx, projectID, []string{name}, from, to, 7*time.Minute, "production")
+		if err != nil {
+			t.Fatalf("EndpointLatencyBatch raw: %v", err)
+		}
+		want, err := q.EndpointLatency(ctx, projectID, name, from, to, 7*time.Minute, "production")
+		if err != nil {
+			t.Fatalf("EndpointLatency raw: %v", err)
+		}
+		got := batch[name]
+		if len(got) != len(want) {
+			t.Fatalf("len(got) = %d, want %d", len(got), len(want))
+		}
+		for i := range want {
+			if !got[i].T.Equal(want[i].T) || got[i].P50 != want[i].P50 ||
+				got[i].P95 != want[i].P95 || got[i].Count != want[i].Count {
+				t.Fatalf("point %d = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("EndpointLatencyBatchEmpty", func(t *testing.T) {
+		got, err := q.EndpointLatencyBatch(ctx, projectID, nil, from, to, 5*time.Minute, "production")
+		if err != nil {
+			t.Fatalf("EndpointLatencyBatch empty: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("len(got) = %d, want 0 (%+v)", len(got), got)
+		}
+	})
+
 	t.Run("DurationHistogram", func(t *testing.T) {
 		buckets := 10
 		hist, err := q.DurationHistogram(ctx, projectID, "GET /api/users", from, to, "production", buckets)

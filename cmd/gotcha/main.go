@@ -943,6 +943,7 @@ func run() error {
 		webHandler.TrustedProxies = cfg.TrustedProxies
 		webHandler.RegistrationMode = cfg.RegistrationMode
 		webHandler.RetentionDays = cfg.RetentionDays
+		webHandler.SpanRetentionDays = cfg.SpanRetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Purger = telemetry.NewPurger(ch)
 		// Раздача install.sh/бинарей агента (план A2, задача 10): каталог из

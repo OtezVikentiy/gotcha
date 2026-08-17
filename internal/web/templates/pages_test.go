@@ -149,13 +149,35 @@ func TestEndpointDetail(t *testing.T) {
 	d := EndpointDetailData{
 		ProjectID: 7, Transaction: "GET /api", Range: TimeRangeVM{Key: "24h"}, Environment: "production", ApdexT: 500,
 		LatencyChart: stub(), Throughput: stub(), Histogram: stub(), StepLabel: "1h",
-		Slowest:    []trace.TraceRow{{TraceID: "t1", DurationUS: 120000, Timestamp: time.Now(), Status: "ok"}},
+		Slowest: []SlowestTraceRow{
+			{Row: trace.TraceRow{TraceID: "t1", DurationUS: 120000, Timestamp: time.Now(), Status: "ok"}},
+			// Expired: спаны вне TTL — trace_id должен рендериться текстом, а не
+			// ссылкой на /traces/{id} (там теперь состояние «спаны истекли»).
+			{Row: trace.TraceRow{TraceID: "t2-expired", DurationUS: 90000, Timestamp: time.Now().Add(-60 * 24 * time.Hour), Status: "ok"}, Expired: true},
+		},
 		PerfIssues: []trace.PerfIssue{{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Status: "unresolved", Count: 9}},
 		Vitals:     []VitalPanelRow{{Vital: trace.Vital{Name: "lcp", P75: 2400, Rating: "good", Count: 50}, Chart: stub()}},
 	}
 	out := renderTo(t, EndpointDetail(d, "u@e.com"))
 	if !strings.Contains(out, "GET /api") || !strings.Contains(out, "N+1") {
 		t.Error("деталь эндпойнта должна показать транзакцию и perf-issue")
+	}
+	if !strings.Contains(out, `<a href="/traces/t1?from=endpoint`) {
+		t.Error("не истёкший трейс должен рендериться кликабельной ссылкой")
+	}
+	if strings.Contains(out, `<a href="/traces/t2-expired`) {
+		t.Error("истёкший трейс не должен рендериться ссылкой (спанов уже нет — вела бы на 404)")
+	}
+	if !strings.Contains(out, "t2-expired") {
+		t.Error("истёкший трейс всё равно должен показывать trace_id текстом")
+	}
+	// Баг C: подсказка «Порога Apdex» (значение в мс) должна объяснять порог,
+	// а не индекс 0..1 (страница не показывает Apdex-индекс вообще).
+	if !strings.Contains(out, i18n.T(ruCtx(), "perf.help.apdex_threshold")) {
+		t.Error("подсказка «Порог Apdex» должна использовать perf.help.apdex_threshold")
+	}
+	if strings.Contains(out, i18n.T(ruCtx(), "perf.help.apdex")) {
+		t.Error("подсказка «Порог Apdex» не должна использовать perf.help.apdex (это подсказка индекса 0..1)")
 	}
 }
 

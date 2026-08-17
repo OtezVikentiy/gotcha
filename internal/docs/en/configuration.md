@@ -218,6 +218,7 @@ Ceilings that protect the instance from a flood, plus how often the background e
 | `GOTCHA_RUN_EVALUATORS` | by mode | Whether to run the periodic evaluators: performance regressions, metric alert rules, profile regressions, built-in host thresholds (disk/memory/load/silence). They ship with `uptime` and `all` by default, although they have nothing to do with uptime. In a `web`+`ingest` split (no uptime in use) a metric alert rule looks enabled and **never fires** — set this on exactly one replica. A warning is logged at startup in modes without evaluators. |
 | `GOTCHA_METRIC_EVAL_INTERVAL` | `60` | How often (seconds) metric threshold alert rules are evaluated. |
 | `GOTCHA_PROFILE_EVAL_INTERVAL` | `300` | How often (seconds) the profiling regression detector runs. |
+| `GOTCHA_HOST_EVAL_INTERVAL` | `60` | How often (seconds) the background evaluator recomputes built-in host thresholds (disk/memory/load/silence) and opens/closes their incidents, see [Hosts](/docs/hosts). Minimum 1 second. Lowering it only makes sense on a small fleet: every tick queries the latest points for every host in the project. |
 
 ## Observability and logs
 
@@ -264,7 +265,7 @@ Detail level and format of the instance's own logs.
 | Variable | Default | Description |
 |---|---|---|
 | `GOTCHA_AGENT_DIST_DIR` | `/opt/gotcha/agent-dist` | Directory with `install.sh` and the built `gotcha-agent` binaries (`gotcha-agent-linux-amd64`, `gotcha-agent-linux-arm64`, `SHA256SUMS`) that the instance serves at `GET /install.sh` and `GET /agent/{file}` — the exact path the agent's install command pulls from (see [Hosts](/docs/hosts)). The default matches where the Docker build places the binaries in the image — a standard `docker-compose` deployment doesn't need to set this. This directory doesn't physically exist in dev mode (`go run` without Docker) or on a build that skipped the Docker image — both routes then answer `404` with a hint instead of failing. This variable only controls the serving directory: the `install.sh` script itself is embedded in the `gotcha` binary and is identical across every instance and product version. |
-| `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `120` | Per-IP rate limit on `GET /agent/{file}` (agent binary and `SHA256SUMS` downloads). One install/update costs 2 requests, so the default allows ~60 hosts/minute from one IP — enough headroom for a mass rollout (Ansible/Terraform) or a fleet-wide update behind one NAT/egress address. Raise it if your fleet behind one IP is larger. |
+| `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `120` | Per-IP rate limit on `GET /agent/{file}` (agent binary and `SHA256SUMS` downloads). One install/update costs 2 requests, so the default allows ~60 hosts/minute from one IP — enough headroom for a mass rollout (Ansible/Terraform) or a fleet-wide update behind one NAT/egress address. Raise it if your fleet behind one IP is larger. `0` (or negative) removes the rate limit entirely — `GET /agent/{file}` stops being throttled, the same "0 = unbounded" convention used by `*_RETENTION_DAYS`. |
 
 ## OAuth / SSO
 

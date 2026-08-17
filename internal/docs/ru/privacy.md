@@ -43,6 +43,7 @@ PostgreSQL. Пока он остаётся встроенным дефолтом
 | Конечные пользователи наблюдаемых приложений | ClickHouse: `events`, `transactions`, `metric_points` | `user_id`, `user_ip`, `user_email`, атрибуты `user.*` в тегах/атрибутах |
 | Свободный текст с возможными ПДн | ClickHouse: `events.message`/`exception_value`/`stacktrace`/`contexts`, `spans.description`/`data`, `profile_samples.stack`, `tags` | всё, что SDK или разработчик поместил в текст ошибки, имя транзакции, SQL/URL |
 | Адреса доставки уведомлений | PostgreSQL: `org_invites.email`, конфигурация каналов | email приглашённых, адреса email/Telegram/webhook-получателей |
+| Хостовая телеметрия | PostgreSQL: `hosts` (`name`, `agent_version`); ClickHouse: `metric_points` (метрики `system.*`) | `host.name` — часто внутреннее имя сервера, а не ПДн, но иногда содержит логин/домен владельца; версия установленного `gotcha-agent`; аптайм и системные метрики (CPU/память/диск/сеть) сами по себе персональных данных не несут |
 
 Сессии (`sessions`) хранят только хеш токена и `user_id`, без IP и user-agent — минимизация соблюдена на уровне схемы.
 

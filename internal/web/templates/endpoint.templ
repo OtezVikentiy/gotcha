@@ -39,7 +39,7 @@ type EndpointDetailData struct {
 	// крошка всегда вела бы в «Транзакции», куда пользователь не заходил.
 	From string
 
-	Slowest    []trace.TraceRow
+	Slowest    []SlowestTraceRow
 	PerfIssues []trace.PerfIssue
 
 	// Vitals — панель Web Vitals (этап 4, план 2, задача 2): непустой слайс →
@@ -53,6 +53,19 @@ type EndpointDetailData struct {
 type VitalPanelRow struct {
 	Vital trace.Vital
 	Chart templ.Component
+}
+
+// SlowestTraceRow — строка таблицы «самые медленные трейсы»: сам трейс
+// (trace.TraceRow) и Expired — истёк ли TTL его спанов по настроенному
+// h.SpanRetentionDays (сравнение с "сейчас" и с порогом сделано в
+// web/performance.go, а не здесь — шаблон не должен решать, что такое
+// "сейчас", и не знает о конфиге хендлера). Expired=true → trace_id рисуется
+// простым текстом без ссылки: у /traces/{id} для такого трейса нет спанов,
+// ссылка вела бы на состояние "детали недоступны". Данные при этом не
+// прячутся — трейс действительно был медленным, это не мусор.
+type SlowestTraceRow struct {
+	Row     trace.TraceRow
+	Expired bool
 }
 
 // EndpointDetail — GET /projects/{id}/performance/{transaction}: перцентили и
@@ -89,7 +102,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 					</div>
 				}
 				<div class="stat-tile">
-					<div class="stat-label">@metricHead("perf.apdex_threshold", "perf.help.apdex")</div>
+					<div class="stat-label">@metricHead("perf.apdex_threshold", "perf.help.apdex_threshold")</div>
 					<div class="stat-value">{ strconv.Itoa(d.ApdexT) }ms</div>
 				</div>
 			</div>
@@ -166,12 +179,18 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 									</tr>
 								</thead>
 								<tbody>
-									for _, tr := range d.Slowest {
+									for _, row := range d.Slowest {
 										<tr>
-											<td>@relativeTime(tr.Timestamp)</td>
-											<td class="num">{ formatDurationUS(tr.DurationUS) }</td>
-											<td>{ tr.Status }</td>
-											<td><a href={ templ.URL(tracePathFrom(tr.TraceID, "endpoint", d.Transaction)) }>{ tr.TraceID }</a></td>
+											<td>@relativeTime(row.Row.Timestamp)</td>
+											<td class="num">{ formatDurationUS(row.Row.DurationUS) }</td>
+											<td>{ row.Row.Status }</td>
+											<td>
+												if row.Expired {
+													<span class="trace-id-expired" title={ i18n.T(ctx, "perf.slowest.table.trace_expired") }>{ row.Row.TraceID }</span>
+												} else {
+													<a href={ templ.URL(tracePathFrom(row.Row.TraceID, "endpoint", d.Transaction)) }>{ row.Row.TraceID }</a>
+												}
+											</td>
 										</tr>
 									}
 								</tbody>

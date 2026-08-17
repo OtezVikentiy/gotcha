@@ -75,6 +75,18 @@ type Handler struct {
 	// задан, подпись не рендерится.
 	RetentionDays int
 
+	// SpanRetentionDays — срок хранения spans (детали waterfall трейса) в днях
+	// (GOTCHA_SPAN_RETENTION_DAYS). Проставляется из cfg.SpanRetentionDays в
+	// main.go, применяется на каждом старте к TTL таблицы spans
+	// (db.ApplySpanRetention) — настраивается независимо от RetentionDays
+	// (события) и от TTL таблицы transactions, которая живёт дольше. Источник
+	// истины для traceWaterfall/performanceList при решении, истекли ли spans
+	// у конкретного трейса; trace.SpanRetentionDays — лишь справочный дефолт
+	// первой установки (для доков/тестов), не читать его напрямую в хендлерах.
+	// 0 — TTL не задан (спаны хранятся вечно); тогда истёкшими spans не
+	// считаются вовсе, а «пустой Trace()» трактуется как ручное удаление.
+	SpanRetentionDays int
+
 	// pages — роутер страниц (внутренний mux). Заполняется в Register;
 	// читается только RoutePattern.
 	pages *http.ServeMux

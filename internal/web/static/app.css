@@ -1125,6 +1125,15 @@ button:hover {
 	margin: 4px 0;
 }
 
+/* trace_id самого медленного трейса, чьи спаны уже вне TTL: обычная ссылка
+   вела бы на 404, поэтому это просто текст с подсказкой (title) вместо неё. */
+.trace-id-expired {
+	color: var(--text-dim);
+	text-decoration: underline dashed;
+	text-decoration-color: var(--border);
+	cursor: help;
+}
+
 table {
 	width: 100%;
 	border-collapse: collapse;
