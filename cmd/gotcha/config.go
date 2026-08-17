@@ -42,6 +42,9 @@ type Config struct {
 	SpanRetentionDays    int
 	MetricRetentionDays  int
 	ProfileRetentionDays int
+	// LogRetentionDays — срок хранения структурированных логов
+	// (GOTCHA_LOG_RETENTION_DAYS). Логи объёмны, поэтому дефолт короче спанов.
+	LogRetentionDays int
 	// IncidentRetentionDays — срок хранения ЗАКРЫТЫХ инцидентов аптайма
 	// (GOTCHA_INCIDENT_RETENTION_DAYS). Свой, а не общий с событиями: у
 	// инцидента нет собственной телеметрии в ClickHouse, зато его показывает
@@ -460,6 +463,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
 		MetricRetentionDays:      intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
 		ProfileRetentionDays:     intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
+		LogRetentionDays:         intNum("GOTCHA_LOG_RETENTION_DAYS", 14),
 		IncidentRetentionDays:    intNum("GOTCHA_INCIDENT_RETENTION_DAYS", 90),
 		Edition:                  edition,
 		DefaultEventQuota:        num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
@@ -684,6 +688,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.ProfileRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.ProfileRetentionDays)
+	}
+	if cfg.LogRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_LOG_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.LogRetentionDays)
 	}
 	if cfg.IncidentRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.IncidentRetentionDays)

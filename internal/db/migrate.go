@@ -423,6 +423,14 @@ func ApplyProfileRetention(ctx context.Context, conn driver.Conn, days int) erro
 	return applyTableTTLColumn(ctx, conn, "profile_samples", "toDateTime(ts)", days)
 }
 
+// ApplyLogRetention выставляет TTL таблицы logs на days дней (по колонке
+// timestamp, как ApplyMetricRetention). Логи объёмны, дефолт короче спанов.
+// days == 0 — «хранить вечно» (снятие TTL); days < 0 — ошибка (см.
+// applyTableTTLColumn).
+func ApplyLogRetention(ctx context.Context, conn driver.Conn, days int) error {
+	return applyTableTTLColumn(ctx, conn, "logs", "toDateTime(timestamp)", days)
+}
+
 // ApplyTransactionRetention приводит TTL таблицы transactions и MV
 // transactions_5m к days дням. transactions хранит время в колонке timestamp
 // (DateTime64) — тот же путь, что ApplyRetention; transactions_5m хранит время

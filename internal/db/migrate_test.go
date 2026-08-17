@@ -853,6 +853,30 @@ func TestMigrateMetricPointsCH(t *testing.T) {
 	}
 }
 
+func TestMigrateLogsCH(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	ctx := context.Background()
+	if err := conn.Exec(ctx,
+		"INSERT INTO logs (project_id,timestamp,observed_ts,severity,severity_number,severity_text,body) "+
+			"VALUES (1,now64(3),now64(3),'error',17,'ERROR','boom')"); err != nil {
+		t.Fatalf("insert logs: %v", err)
+	}
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM logs WHERE project_id=1").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("count = %d err=%v", n, err)
+	}
+	// Ретенция идемпотентна и переопределяет TTL.
+	if err := db.ApplyLogRetention(ctx, conn, 5); err != nil {
+		t.Fatalf("ApplyLogRetention: %v", err)
+	}
+	if err := db.ApplyLogRetention(ctx, conn, 5); err != nil {
+		t.Fatalf("ApplyLogRetention (idempotent): %v", err)
+	}
+}
+
 func TestMigrateProfileSamples(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")

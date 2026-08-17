@@ -35,6 +35,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.SpanRetentionDays != 30 {
 		t.Errorf("SpanRetentionDays = %d, want 30", cfg.SpanRetentionDays)
 	}
+	if cfg.LogRetentionDays != 14 {
+		t.Errorf("LogRetentionDays = %d, want 14", cfg.LogRetentionDays)
+	}
 	if cfg.DefaultEventQuota != 0 {
 		t.Errorf("DefaultEventQuota = %d, want 0 (oss unlimited)", cfg.DefaultEventQuota)
 	}
@@ -266,6 +269,7 @@ func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 		"GOTCHA_SPAN_RETENTION_DAYS":     "0",
 		"GOTCHA_METRIC_RETENTION_DAYS":   "0",
 		"GOTCHA_PROFILE_RETENTION_DAYS":  "0",
+		"GOTCHA_LOG_RETENTION_DAYS":      "0",
 		"GOTCHA_INCIDENT_RETENTION_DAYS": "0",
 	}
 	cfg, err := loadConfig(getenvFrom(env), nil)
@@ -274,10 +278,10 @@ func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 	}
 	if cfg.RetentionDays != 0 || cfg.SpanRetentionDays != 0 ||
 		cfg.MetricRetentionDays != 0 || cfg.ProfileRetentionDays != 0 ||
-		cfg.IncidentRetentionDays != 0 {
-		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d",
+		cfg.LogRetentionDays != 0 || cfg.IncidentRetentionDays != 0 {
+		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d/%d",
 			cfg.RetentionDays, cfg.SpanRetentionDays, cfg.MetricRetentionDays,
-			cfg.ProfileRetentionDays, cfg.IncidentRetentionDays)
+			cfg.ProfileRetentionDays, cfg.LogRetentionDays, cfg.IncidentRetentionDays)
 	}
 }
 
@@ -287,6 +291,7 @@ func TestLoadConfigNegativeRetentionRejected(t *testing.T) {
 		"GOTCHA_SPAN_RETENTION_DAYS",
 		"GOTCHA_METRIC_RETENTION_DAYS",
 		"GOTCHA_PROFILE_RETENTION_DAYS",
+		"GOTCHA_LOG_RETENTION_DAYS",
 		"GOTCHA_INCIDENT_RETENTION_DAYS",
 	} {
 		env := map[string]string{key: "-1"}
