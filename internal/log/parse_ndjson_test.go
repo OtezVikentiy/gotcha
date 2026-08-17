@@ -298,6 +298,57 @@ func TestParseNDJSONAttributeValueCapped(t *testing.T) {
 	}
 }
 
+// timestamp явным null (не только отсутствующее поле) → now.
+func TestParseNDJSONTimestampNullUsesNow(t *testing.T) {
+	out, err := ParseNDJSON(strings.NewReader(`{"message":"a","timestamp":null}`), ndjsonFallback())
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !out[0].Timestamp.Equal(ndjsonFallback()) {
+		t.Errorf("Timestamp = %v, want fallback %v", out[0].Timestamp, ndjsonFallback())
+	}
+}
+
+// Нестроковые значения атрибутов (число/bool — обычное дело у JSON-логеров)
+// раньше роняли json.Unmarshal всей строки типовой ошибкой (Attributes был
+// map[string]string) и теряли валидный message вместе с ней. Атрибут-null
+// пропускается как ключ, а не превращается в строку "null".
+func TestParseNDJSONAttributeNonStringValuesDoNotDropRecord(t *testing.T) {
+	body := `{"message":"ok","attributes":{"n":3,"b":true,"s":"x","z":null}}`
+	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1 (message не должен теряться из-за нестрокового атрибута)", len(out))
+	}
+	if out[0].Body != "ok" {
+		t.Errorf("Body = %q, want ok", out[0].Body)
+	}
+	want := map[string]string{"n": "3", "b": "true", "s": "x"}
+	for k, v := range want {
+		if got := out[0].LogAttributes[k]; got != v {
+			t.Errorf("LogAttributes[%q] = %q, want %q", k, got, v)
+		}
+	}
+	if _, ok := out[0].LogAttributes["z"]; ok {
+		t.Errorf("LogAttributes[z] присутствует, want отсутствие ключа (null-атрибут пропущен)")
+	}
+}
+
+// Вложенный объект/массив в значении атрибута сериализуется в JSON-строку —
+// та же семантика, что anyValueToString для тела OTLP-лога с kvlist/array.
+func TestParseNDJSONAttributeStructuredValueMarshaled(t *testing.T) {
+	body := `{"message":"a","attributes":{"ctx":{"k":"v"}}}`
+	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got := out[0].LogAttributes["ctx"]; got != `{"k":"v"}` {
+		t.Errorf("LogAttributes[ctx] = %q, want {\"k\":\"v\"}", got)
+	}
+}
+
 // errReader — недоверенное тело, которое всегда падает на чтении (эмуляция
 // оборванного соединения). Единственный случай, когда ParseNDJSON обязан
 // вернуть ошибку — битая строка внутри тела на неё не похожа.

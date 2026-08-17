@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,13 +14,19 @@ import (
 // недоверенный по сравнению с OTLP: сам формат необязательно валиден
 // построчно, поэтому распознаём только то, что нужно, остального не
 // заявляем — лишние поля json.Unmarshal молча игнорирует.
+//
+// Attributes — map[string]any, не map[string]string: реальные JSON-логеры
+// сплошь и рядом кладут в атрибуты числа/bool ({"retry_count":3}), а
+// map[string]string на таком значении роняет json.Unmarshal ошибкой типа —
+// строка целиком трактовалась бы как битый JSON и терялась вместе с валидным
+// message. С any разбор всегда успешен, коэрсия в строку — в capNDJSONAttrs.
 type ndjsonLine struct {
-	Message    string            `json:"message"`
-	Level      string            `json:"level"`
-	Timestamp  json.RawMessage   `json:"timestamp"`
-	Attributes map[string]string `json:"attributes"`
-	TraceID    string            `json:"trace_id"`
-	SpanID     string            `json:"span_id"`
+	Message    string          `json:"message"`
+	Level      string          `json:"level"`
+	Timestamp  json.RawMessage `json:"timestamp"`
+	Attributes map[string]any  `json:"attributes"`
+	TraceID    string          `json:"trace_id"`
+	SpanID     string          `json:"span_id"`
 }
 
 // maxNDJSONLineBytes — потолок сырой строки, после которого она отбрасывается
@@ -45,6 +52,12 @@ const maxNDJSONLineBytes = maxBodyBytes * 4
 // весь хвост батча. bufio.Reader.ReadString сам растит буфер до \n
 // независимо от длины строки, так что после отбрасывания одной гигантской
 // строки чтение следующих продолжается штатно.
+//
+// Контракт ошибки: err != nil означает, что чтение тела оборвалось (реальная
+// I/O-ошибка, не битая строка) — возвращаемый out в этом случае содержит
+// только то, что успело разобраться ДО обрыва, и вызывающий код ОБЯЗАН его
+// игнорировать: батч из оборванного тела недопринят и не должен считаться
+// успешно записанным частично.
 func ParseNDJSON(r io.Reader, now time.Time) ([]LogRecord, error) {
 	br := bufio.NewReader(r)
 	var out []LogRecord
@@ -145,20 +158,24 @@ func nsSinceEpoch(t time.Time) uint64 {
 
 // capNDJSONAttrs — те же капы, что attrsToMap в sanitize.go (ключ 64/значение
 // 200/maxAttrKeys, детерминированно по отсортированным ключам при
-// переполнении), но для уже готовой map[string]string: NDJSON присылает
+// переполнении), но для уже готовой map[string]any: NDJSON присылает
 // attributes сразу объектом, а не OTLP-шным []*commonpb.KeyValue, под который
 // заточена attrsToMap, — переиспользовать её сигнатуру не выйдет, capRunes и
-// maxAttrKeys переиспользуются как есть.
-func capNDJSONAttrs(attrs map[string]string) map[string]string {
+// maxAttrKeys переиспользуются как есть. Значение nil (JSON null) — ключ
+// пропускается целиком, а не превращается в строку "null".
+func capNDJSONAttrs(attrs map[string]any) map[string]string {
 	if len(attrs) == 0 {
 		return nil
 	}
 	m := make(map[string]string, len(attrs))
 	for k, v := range attrs {
-		if k == "" {
+		if k == "" || v == nil {
 			continue
 		}
-		m[capRunes(k, 64)] = capRunes(v, 200)
+		m[capRunes(k, 64)] = capRunes(ndjsonAttrString(v), 200)
+	}
+	if len(m) == 0 {
+		return nil
 	}
 	if len(m) <= maxAttrKeys {
 		return m
@@ -173,4 +190,32 @@ func capNDJSONAttrs(attrs map[string]string) map[string]string {
 		capped[k] = m[k]
 	}
 	return capped
+}
+
+// ndjsonAttrString переводит значение атрибута после json.Unmarshal в
+// map[string]any (string/float64/bool/map[string]any/[]any — nil сюда не
+// доходит, его отсеивает capNDJSONAttrs) в строку. Скаляры — калька attrString
+// из sanitize.go (JSON различает только один числовой тип, float64, поэтому
+// int и float здесь неразличимы — форматируем как есть, "3", не "3.0", тем же
+// приёмом -1-точности, что и attrString для DoubleValue). Структурные
+// значения (объект/массив) — JSON-строкой, как anyValueToString делает для
+// тела OTLP-лога с kvlist/array.
+func ndjsonAttrString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
 }
