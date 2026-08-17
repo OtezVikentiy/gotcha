@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-17
+
 ### Changed
 - Building the image no longer reaches the internet for Go modules: dependencies are vendored (`vendor/`) and the build runs with `-mod=vendor`, so `make up-rebuild` works in closed networks with no outbound access. Previously the build ran `go mod download` against `proxy.golang.org`, which failed behind a restricted network.
 
