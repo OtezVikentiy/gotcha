@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS logs (
     observed_ts     DateTime64(3),
     severity        LowCardinality(String),
     severity_number UInt8,
-    severity_text   LowCardinality(String),
+    severity_text   String,
     body            String,
     trace_id        String,
     span_id         String,

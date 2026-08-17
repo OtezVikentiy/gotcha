@@ -223,6 +223,28 @@ func TestParseNDJSONBodyCapped(t *testing.T) {
 	}
 }
 
+// trace_id/span_id — недоверенный клиентский текст без встроенного ограничения
+// формата (в отличие от OTLP, где они байты фиксированной длины): аномально
+// длинное значение каппится, а не улетает в хранилище как есть; запись при
+// этом не теряется.
+func TestParseNDJSONTraceSpanIDCapped(t *testing.T) {
+	huge := strings.Repeat("f", 500)
+	body := fmt.Sprintf(`{"message":"a","trace_id":%q,"span_id":%q}`, huge, huge)
+	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1", len(out))
+	}
+	if len(out[0].TraceID) != 64 {
+		t.Errorf("len(TraceID) = %d, want 64", len(out[0].TraceID))
+	}
+	if len(out[0].SpanID) != 64 {
+		t.Errorf("len(SpanID) = %d, want 64", len(out[0].SpanID))
+	}
+}
+
 // Окно таймстемпов: значение старше now-90d подтягивается к нижней границе.
 func TestParseNDJSONTimestampWindowLowerBound(t *testing.T) {
 	tooOld := ndjsonFallback().Add(-100 * 24 * time.Hour)

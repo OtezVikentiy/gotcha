@@ -131,8 +131,8 @@ var permanentFormatExemptions = []Exemption{
 	{Value: exemptLoc("internal/ingest/sentry_test.go", 191), Why: `inWindow.Format(time.RFC3339Nano) — тестовый payload в формате Sentry API`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/ingest/transaction_test.go", 69), Why: `base.Add(...).Format(time.RFC3339Nano) — testTransactionRFC3339JSON: часть SDK (sentry-python/старые sentry-php) шлёт timestamps в RFC3339, тестовый payload в том же формате`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 122), Why: `ts.Format(time.RFC3339) — сборка NDJSON-payload с timestamp в RFC3339 (TestParseNDJSONTimestampRFC3339String): вход API логов, машинный формат, не человекочитаемое дублирование`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 229), Why: `tooOld.Format(time.RFC3339) — NDJSON-payload на now-100d для проверки нижней границы окна (TestParseNDJSONTimestampWindowLowerBound), now-относительное время, литералом не заменить`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 243), Why: `tooNew.Format(time.RFC3339) — NDJSON-payload на now+48h для проверки верхней границы окна (TestParseNDJSONTimestampWindowUpperBound)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 251), Why: `tooOld.Format(time.RFC3339) — NDJSON-payload на now-100d для проверки нижней границы окна (TestParseNDJSONTimestampWindowLowerBound), now-относительное время, литералом не заменить`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 265), Why: `tooNew.Format(time.RFC3339) — NDJSON-payload на now+48h для проверки верхней границы окна (TestParseNDJSONTimestampWindowUpperBound)`, Finding: "по замыслу"},
 
 	// internal/web/statuspage.go: statusPageTimeLayout = "2006-01-02 15:04
 	// UTC" — НЕ машинный формат (это тот же общий вид, что у humanize.Time),

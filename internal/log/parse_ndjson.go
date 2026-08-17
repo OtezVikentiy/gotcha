@@ -106,8 +106,12 @@ func parseNDJSONLine(line string, now time.Time) (LogRecord, bool) {
 
 		Body: capBytes(raw.Message, maxBodyBytes),
 
-		TraceID: raw.TraceID,
-		SpanID:  raw.SpanID,
+		// Валидный trace_id — 32 hex, span_id — 16 hex; 64 — щедрый запас, чтобы
+		// легитимные ID проходили не тронутыми, а патологически длинная строка от
+		// недоверенного клиента резалась (в отличие от OTLP, где trace_id/span_id
+		// уже ограничены байтами самого протокола).
+		TraceID: capRunes(raw.TraceID, 64),
+		SpanID:  capRunes(raw.SpanID, 64),
 
 		LogAttributes: capNDJSONAttrs(raw.Attributes),
 	}, true
