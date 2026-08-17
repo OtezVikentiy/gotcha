@@ -343,7 +343,7 @@ func run() error {
 	var outbox *notify.Outbox
 	if cfg.Mode == "ingest" || cfg.Mode == "web" || cfg.Mode == "all" {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
-		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 		// SSO client_secret шифруется этим мастер-ключом at-rest. С публично
 		// известным dev-дефолтом шифровать бессмысленно — ключ виден в исходниках,
 		// а «enc:»-значение давало бы ложное чувство защиты (Info21). Тогда

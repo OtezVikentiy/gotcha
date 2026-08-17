@@ -67,6 +67,9 @@ type Org struct {
 	// ProfileQuota — месячная квота профилей (этап 7), счётчик свой
 	// (org_usage.profiles_count).
 	ProfileQuota int64
+	// LogQuota — месячная квота логов (C1), счётчик свой
+	// (org_usage.logs_count): логи не тратят бюджет ошибок/транзакций/метрик/профилей.
+	LogQuota int64
 }
 
 // Service — доменная логика тенантности поверх PostgreSQL.
@@ -74,12 +77,14 @@ type Service struct {
 	pool *pgxpool.Pool
 	// defaultQuota — дефолтная квота событий для новых орг (event_quota).
 	defaultQuota int64
-	// defaultTxQuota/defaultMetricQuota/defaultProfileQuota — дефолтные квоты
-	// транзакций/метрик/профилей для новых орг. По умолчанию 0 (безлимит);
-	// задаются через SetQuotaDefaults из конфига (см. cmd/gotcha/main.go).
+	// defaultTxQuota/defaultMetricQuota/defaultProfileQuota/defaultLogQuota —
+	// дефолтные квоты транзакций/метрик/профилей/логов для новых орг. По
+	// умолчанию 0 (безлимит); задаются через SetQuotaDefaults из конфига
+	// (см. cmd/gotcha/main.go).
 	defaultTxQuota      int64
 	defaultMetricQuota  int64
 	defaultProfileQuota int64
+	defaultLogQuota     int64
 	// secretKey — мастер-ключ (sha256 от cfg.SecretKey) для шифрования
 	// чувствительных полей at-rest (org_sso.client_secret). secretKeySet=false
 	// (пустой ключ, dev) → шифрование выключено, пишем plaintext.
@@ -95,13 +100,14 @@ func NewService(pool *pgxpool.Pool, defaultQuota int64) *Service {
 	return &Service{pool: pool, defaultQuota: defaultQuota}
 }
 
-// SetQuotaDefaults задаёт дефолтные квоты транзакций/метрик/профилей для
-// новых орг (проставляются в CreateOrg). Вызывается из bootstrap'а с
+// SetQuotaDefaults задаёт дефолтные квоты транзакций/метрик/профилей/логов
+// для новых орг (проставляются в CreateOrg). Вызывается из bootstrap'а с
 // конфиг-значениями; в OSS все они = 0 (безлимит).
-func (s *Service) SetQuotaDefaults(transaction, metric, profile int64) {
+func (s *Service) SetQuotaDefaults(transaction, metric, profile, log int64) {
 	s.defaultTxQuota = transaction
 	s.defaultMetricQuota = metric
 	s.defaultProfileQuota = profile
+	s.defaultLogQuota = log
 }
 
 // SetSecretKey задаёт мастер-ключ шифрования чувствительных полей at-rest.
@@ -134,11 +140,12 @@ func (s *Service) CreateOrg(ctx context.Context, slug, name string, ownerID int6
 		TransactionQuota: s.defaultTxQuota,
 		MetricQuota:      s.defaultMetricQuota,
 		ProfileQuota:     s.defaultProfileQuota,
+		LogQuota:         s.defaultLogQuota,
 	}
 	err = tx.QueryRow(ctx,
-		"INSERT INTO organizations (slug, name, event_quota, transaction_quota, metric_quota, profile_quota) "+
-			"VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-		slug, name, s.defaultQuota, s.defaultTxQuota, s.defaultMetricQuota, s.defaultProfileQuota).Scan(&o.ID)
+		"INSERT INTO organizations (slug, name, event_quota, transaction_quota, metric_quota, profile_quota, log_quota) "+
+			"VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+		slug, name, s.defaultQuota, s.defaultTxQuota, s.defaultMetricQuota, s.defaultProfileQuota, s.defaultLogQuota).Scan(&o.ID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Org{}, ErrSlugTaken
@@ -200,7 +207,7 @@ func (s *Service) DeleteOrg(ctx context.Context, orgID int64) error {
 // (нужна страница «нет доступных проектов»).
 func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT o.id, o.slug, o.name, o.event_quota, o.transaction_quota, o.metric_quota, o.profile_quota FROM organizations o "+
+		"SELECT o.id, o.slug, o.name, o.event_quota, o.transaction_quota, o.metric_quota, o.profile_quota, o.log_quota FROM organizations o "+
 			"JOIN org_members m ON m.org_id = o.id WHERE m.user_id = $1 ORDER BY o.name",
 		userID)
 	if err != nil {
@@ -210,7 +217,7 @@ func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 	var out []Org
 	for rows.Next() {
 		var o Org
-		if err := rows.Scan(&o.ID, &o.Slug, &o.Name, &o.EventQuota, &o.TransactionQuota, &o.MetricQuota, &o.ProfileQuota); err != nil {
+		if err := rows.Scan(&o.ID, &o.Slug, &o.Name, &o.EventQuota, &o.TransactionQuota, &o.MetricQuota, &o.ProfileQuota, &o.LogQuota); err != nil {
 			return nil, fmt.Errorf("org: orgs of: %w", err)
 		}
 		out = append(out, o)
@@ -222,8 +229,8 @@ func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 func (s *Service) Get(ctx context.Context, orgID int64) (Org, error) {
 	o := Org{ID: orgID}
 	err := s.pool.QueryRow(ctx,
-		"SELECT slug, name, event_quota, transaction_quota, metric_quota, profile_quota FROM organizations WHERE id = $1",
-		orgID).Scan(&o.Slug, &o.Name, &o.EventQuota, &o.TransactionQuota, &o.MetricQuota, &o.ProfileQuota)
+		"SELECT slug, name, event_quota, transaction_quota, metric_quota, profile_quota, log_quota FROM organizations WHERE id = $1",
+		orgID).Scan(&o.Slug, &o.Name, &o.EventQuota, &o.TransactionQuota, &o.MetricQuota, &o.ProfileQuota, &o.LogQuota)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Org{}, ErrNotFound
 	}

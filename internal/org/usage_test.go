@@ -2,8 +2,11 @@ package org_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -39,6 +42,71 @@ func TestMetricUsage(t *testing.T) {
 	}
 }
 
+// TestLogUsage — CheckAndCountLogs/SetLogQuota по образцу TestMetricUsage.
+// LogUsage-геттера у сервиса нет (C1 не заводит его — Dropped/DroppedUsage
+// тоже не трогаем), поэтому logs_count читается напрямую из org_usage.
+func TestLogUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "lq-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "lq", "LQ", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	logsCount := func() int64 {
+		var n int64
+		err := pool.QueryRow(ctx,
+			"SELECT logs_count FROM org_usage WHERE org_id = $1 AND period_month = $2",
+			o.ID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)).Scan(&n)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0
+		}
+		if err != nil {
+			t.Fatalf("select logs_count: %v", err)
+		}
+		return n
+	}
+
+	if n := logsCount(); n != 0 {
+		t.Fatalf("initial logs_count = %d, want 0", n)
+	}
+	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
+		t.Fatalf("1st: granted=%v err=%v, want (1,nil)", granted, err)
+	}
+	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
+		t.Fatalf("2nd: granted=%v err=%v, want (1,nil)", granted, err)
+	}
+	if n := logsCount(); n != 2 {
+		t.Fatalf("logs_count after 2 accepted = %d, want 2", n)
+	}
+	// Квота исчерпана: третья попытка отклоняется, счётчик не растёт.
+	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 0 {
+		t.Fatalf("3rd (over quota): granted=%v err=%v, want (0,nil)", granted, err)
+	}
+	if n := logsCount(); n != 2 {
+		t.Fatalf("logs_count after rejected = %d, want 2 (rejected must not count)", n)
+	}
+
+	if err := svc.SetLogQuota(ctx, o.ID, 500); err != nil {
+		t.Fatalf("set log quota: %v", err)
+	}
+	got, _ := svc.Get(ctx, o.ID)
+	if got.LogQuota != 500 {
+		t.Fatalf("LogQuota = %d, want 500", got.LogQuota)
+	}
+
+	// Независимость классов: events_count логами не задет.
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
+		t.Fatalf("events_count = %d, want 0 (untouched by logs)", n)
+	}
+}
+
 func TestDroppedUsage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -71,6 +139,12 @@ func TestDroppedUsage(t *testing.T) {
 	if err := svc.IncDroppedProfiles(ctx, o.ID, now, 1); err != nil {
 		t.Fatalf("inc dropped profiles: %v", err)
 	}
+	// IncDroppedLogs — та же схема, но logs_count/dropped_logs не входят в
+	// Dropped/DroppedUsage (C1 их не трогает), поэтому проверяется отдельным
+	// прямым запросом ниже.
+	if err := svc.IncDroppedLogs(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("inc dropped logs: %v", err)
+	}
 	// Повторный инкремент событий — суммируется (+7 → 12).
 	if err := svc.IncDroppedEvents(ctx, o.ID, now, 7); err != nil {
 		t.Fatalf("inc dropped events 2: %v", err)
@@ -83,6 +157,16 @@ func TestDroppedUsage(t *testing.T) {
 	want := org.Dropped{Events: 12, Transactions: 3, Metrics: 2, Profiles: 1}
 	if d != want {
 		t.Fatalf("dropped = %+v, want %+v", d, want)
+	}
+
+	var droppedLogs int64
+	if err := pool.QueryRow(ctx,
+		"SELECT dropped_logs FROM org_usage WHERE org_id = $1 AND period_month = $2",
+		o.ID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)).Scan(&droppedLogs); err != nil {
+		t.Fatalf("select dropped_logs: %v", err)
+	}
+	if droppedLogs != 4 {
+		t.Fatalf("dropped_logs = %d, want 4", droppedLogs)
 	}
 
 	// Принятые счётчики (events_count и др.) счётчиком дропов не задеты.

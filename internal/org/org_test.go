@@ -313,13 +313,13 @@ func TestUsageAndQuota(t *testing.T) {
 	}
 }
 
-// TestCreateOrgQuotas — CreateOrg проставляет все 4 квоты из дефолтов сервиса:
-// event = defaultQuota (из NewService), tx/metric/profile — из SetQuotaDefaults.
+// TestCreateOrgQuotas — CreateOrg проставляет все 5 квот из дефолтов сервиса:
+// event = defaultQuota (из NewService), tx/metric/profile/log — из SetQuotaDefaults.
 // В OSS-конфиге все дефолты = 0 (безлимит), и созданная орга наследует их.
 func TestCreateOrgQuotas(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 0)
-	svc.SetQuotaDefaults(0, 0, 0)
+	svc.SetQuotaDefaults(0, 0, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -329,7 +329,7 @@ func TestCreateOrgQuotas(t *testing.T) {
 		t.Fatalf("CreateOrg: %v", err)
 	}
 	// Возврат CreateOrg тоже несёт все квоты.
-	if o.EventQuota != 0 || o.TransactionQuota != 0 || o.MetricQuota != 0 || o.ProfileQuota != 0 {
+	if o.EventQuota != 0 || o.TransactionQuota != 0 || o.MetricQuota != 0 || o.ProfileQuota != 0 || o.LogQuota != 0 {
 		t.Fatalf("CreateOrg returned %+v, want all quotas 0", o)
 	}
 
@@ -349,14 +349,17 @@ func TestCreateOrgQuotas(t *testing.T) {
 	if got.ProfileQuota != 0 {
 		t.Errorf("ProfileQuota = %d, want 0", got.ProfileQuota)
 	}
+	if got.LogQuota != 0 {
+		t.Errorf("LogQuota = %d, want 0", got.LogQuota)
+	}
 }
 
-// TestCreateOrgQuotasFromConfig — все 4 дефолта берутся из конфига независимо:
+// TestCreateOrgQuotasFromConfig — все 5 дефолтов берутся из конфига независимо:
 // event из NewService, остальные из SetQuotaDefaults.
 func TestCreateOrgQuotasFromConfig(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 500)
-	svc.SetQuotaDefaults(100, 200, 300)
+	svc.SetQuotaDefaults(100, 200, 300, 400)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -369,8 +372,8 @@ func TestCreateOrgQuotasFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.EventQuota != 500 || got.TransactionQuota != 100 || got.MetricQuota != 200 || got.ProfileQuota != 300 {
-		t.Fatalf("Get = %+v, want event=500 tx=100 metric=200 profile=300", got)
+	if got.EventQuota != 500 || got.TransactionQuota != 100 || got.MetricQuota != 200 || got.ProfileQuota != 300 || got.LogQuota != 400 {
+		t.Fatalf("Get = %+v, want event=500 tx=100 metric=200 profile=300 log=400", got)
 	}
 }
 

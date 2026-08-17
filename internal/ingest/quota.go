@@ -32,6 +32,7 @@ type quotaResolver interface {
 	CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
 	CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
 	CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
+	CheckAndCountLogs(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error)
 }
 
 // OrgQuota — QuotaChecker поверх org.Service. Квота организации кешируется на
@@ -104,6 +105,14 @@ func NewOrgProfileQuota(svc *org.Service) *OrgQuota {
 	return newOrgQuota(svc,
 		func(o org.Org) int64 { return o.ProfileQuota },
 		svc.CheckAndCountProfiles)
+}
+
+// NewOrgLogQuota — квота ЛОГОВ: log_quota против org_usage.logs_count.
+// Отдельный счётчик — логи не тратят бюджет ошибок/транзакций/метрик/профилей.
+func NewOrgLogQuota(svc *org.Service) *OrgQuota {
+	return newOrgQuota(svc,
+		func(o org.Org) int64 { return o.LogQuota },
+		svc.CheckAndCountLogs)
 }
 
 func newOrgQuota(

@@ -60,6 +60,7 @@ type Config struct {
 	DefaultTransactionQuota int64
 	DefaultMetricQuota      int64
 	DefaultProfileQuota     int64
+	DefaultLogQuota         int64
 	MaxEventBytes           int64
 	// MaxBufferBytes — байтовый потолок КАЖДОГО буфера писателя. 0 = значение
 	// по умолчанию из пакета писателя (256 МиБ). Нужен для стеснённых профилей:
@@ -470,6 +471,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultTransactionQuota:  num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
 		DefaultMetricQuota:       num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
 		DefaultProfileQuota:      num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
+		DefaultLogQuota:          num("GOTCHA_DEFAULT_LOG_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_LIMIT", 500),
 		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
@@ -722,6 +724,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.DefaultProfileQuota < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_PROFILE_QUOTA must be >= 0, got %d", cfg.DefaultProfileQuota)
+	}
+	if cfg.DefaultLogQuota < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_LOG_QUOTA must be >= 0, got %d", cfg.DefaultLogQuota)
 	}
 	if cfg.MaxEventBytes < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_MAX_EVENT_BYTES must be >= 1, got %d", cfg.MaxEventBytes)

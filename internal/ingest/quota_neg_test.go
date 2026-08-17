@@ -31,6 +31,9 @@ func (f *fakeQuotaResolver) CheckAndCountMetrics(_ context.Context, _ int64, _ t
 func (f *fakeQuotaResolver) CheckAndCountProfiles(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
 	return want, nil
 }
+func (f *fakeQuotaResolver) CheckAndCountLogs(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
+	return want, nil
+}
 
 // TestQuotaNegativeCacheShortCircuits: после первого over-quota повторные
 // проверки той же орги в пределах TTL НЕ ходят в PG (ни checkCount, ни Get).

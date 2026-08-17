@@ -227,6 +227,11 @@ func (s *Service) IncDroppedProfiles(ctx context.Context, orgID int64, month tim
 	return s.incDropped(ctx, "dropped_profiles", orgID, month, n)
 }
 
+// IncDroppedLogs увеличивает счётчик отклонённых логов за месяц на n.
+func (s *Service) IncDroppedLogs(ctx context.Context, orgID int64, month time.Time, n int64) error {
+	return s.incDropped(ctx, "dropped_logs", orgID, month, n)
+}
+
 // checkAndCount условно списывает want единиц из месячной квоты и возвращает,
 // СКОЛЬКО удалось списать. Отклонённое НЕ инкрементит счётчик (usage не считает
 // то, что не приняли).
@@ -318,6 +323,11 @@ func (s *Service) CheckAndCountProfiles(ctx context.Context, orgID int64, month 
 	return s.checkAndCount(ctx, "profiles_count", orgID, month, quota, want)
 }
 
+// CheckAndCountLogs — то же для счётчика логов (независимая квота).
+func (s *Service) CheckAndCountLogs(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
+	return s.checkAndCount(ctx, "logs_count", orgID, month, quota, want)
+}
+
 // SetProfileQuota меняет месячную квоту профилей организации. Quota >= 0 required
 // (0 means unlimited).
 func (s *Service) SetProfileQuota(ctx context.Context, orgID, quota int64) error {
@@ -345,6 +355,24 @@ func (s *Service) SetMetricQuota(ctx context.Context, orgID, quota int64) error 
 		"UPDATE organizations SET metric_quota = $2 WHERE id = $1", orgID, quota)
 	if err != nil {
 		return fmt.Errorf("org: set metric quota: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetLogQuota меняет месячную квоту логов организации. Quota >= 0 required
+// (0 means unlimited). Точечный сеттер для bootstrap/тестов — форма настроек
+// организации в C1 не трогается (см. SetQuotas).
+func (s *Service) SetLogQuota(ctx context.Context, orgID, quota int64) error {
+	if quota < 0 {
+		return ErrInvalidQuota
+	}
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE organizations SET log_quota = $2 WHERE id = $1", orgID, quota)
+	if err != nil {
+		return fmt.Errorf("org: set log quota: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
