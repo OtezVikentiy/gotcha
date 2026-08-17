@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Log ingest: OTLP/HTTP (`POST /v1/logs`, protobuf and JSON) and newline-delimited JSON (`POST /logs`) both accept structured log records, authorized with the project's public key the same way as metrics. Severity is canonicalized to a fixed six-level scale (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) from either OTLP's `SeverityNumber` or a free-text level. Logs are stored in ClickHouse with their own monthly quota (`GOTCHA_DEFAULT_LOG_QUOTA`) and retention (`GOTCHA_LOG_RETENTION_DAYS`, 14 days by default).
+
 ## [0.6.2] - 2026-08-17
 
 ### Changed

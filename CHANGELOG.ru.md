@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Добавлено
+- Приём логов: OTLP/HTTP (`POST /v1/logs`, protobuf и JSON) и построчный newline-delimited JSON (`POST /logs`) принимают структурные записи логов, авторизация — публичным ключом проекта, как у метрик. Severity приводится к единому канону из шести уровней (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) — из числового OTLP `SeverityNumber` либо из текстового уровня. Логи хранятся в ClickHouse со своей месячной квотой (`GOTCHA_DEFAULT_LOG_QUOTA`) и сроком хранения (`GOTCHA_LOG_RETENTION_DAYS`, по умолчанию 14 дней).
+
 ## [0.6.2] - 2026-08-17
 
 ### Изменено
