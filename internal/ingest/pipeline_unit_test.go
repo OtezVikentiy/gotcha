@@ -421,6 +421,7 @@ type fakeDropCounter struct {
 	transactions  map[int64]int64
 	metricsCalls  int
 	profilesCalls int
+	logsCalls     int
 }
 
 func newFakeDropCounter() *fakeDropCounter {
@@ -466,6 +467,15 @@ func (f *fakeDropCounter) IncDroppedProfiles(_ context.Context, _ int64, _ time.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.profilesCalls++
+	return nil
+}
+
+// IncDroppedLogs — та же заглушка, что IncDroppedMetrics/IncDroppedProfiles:
+// логи, как и метрики/профили, идут мимо очереди Pipeline (см. handler.go).
+func (f *fakeDropCounter) IncDroppedLogs(_ context.Context, _ int64, _ time.Time, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logsCalls++
 	return nil
 }
 
