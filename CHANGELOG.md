@@ -7,6 +7,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Building the image no longer reaches the internet for Go modules: dependencies are vendored (`vendor/`) and the build runs with `-mod=vendor`, so `make up-rebuild` works in closed networks with no outbound access. Previously the build ran `go mod download` against `proxy.golang.org`, which failed behind a restricted network.
+
+## [0.6.1] - 2026-08-17
+
+### Fixed
+- The endpoint list (`/performance`) no longer issues one ClickHouse query per row to build sparklines — all rows are fetched in a single grouped query, so the page opens without delay on projects with many endpoints.
+- Clicking a "slowest trace" whose spans have already passed their retention no longer returns a bare 404: a clear "trace details are unavailable" state is shown instead (span-level detail is kept for a shorter time than the transaction summary). The retention window is read from `GOTCHA_SPAN_RETENTION_DAYS`, so the message and the link removal are correct for any configured retention, including "keep forever".
+- The "Apdex threshold" field on the endpoint page described the Apdex index (0..1); its help now explains the threshold — the target response time in milliseconds. The 0..1 explanation stays on the Apdex index column.
+- `GOTCHA_AGENT_DIST_RATE_PER_MIN=0` now removes the agent distribution rate limit (consistent with `0` meaning "no bound" elsewhere) instead of blocking distribution with a 429 for everyone.
+
+### Documentation
+- Added `GOTCHA_HOST_EVAL_INTERVAL` to the configuration reference (previously linked from the Hosts guide but missing). The README and upgrade guide now cover the second `gotcha-agent` binary and that host agents are updated separately from the instance.
+
 ## [0.6.0] - 2026-08-15
 
 ### Added
