@@ -154,6 +154,8 @@ make up-rebuild
 
 (`make` computes the git version and stamps it into the build — `/version` and the About page will name the exact release. If `make` isn't installed, `docker compose up -d` works too, but the instance will report "no build metadata" instead of a verifiable version.)
 
+Dependencies are vendored (a `vendor/` directory in the repository), so building the image **does not reach the internet** for Go modules — it works in closed networks with no outbound access. If a build fails with `go mod download ... proxy.golang.org ... no route to host`, you're on an older, un-vendored version or a custom Dockerfile — update the repository to the current release.
+
 What this does:
 
 1. Docker builds the Gotcha application image (compiles the Go program inside a container — the first run can take a couple of minutes).

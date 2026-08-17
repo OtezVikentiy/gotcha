@@ -74,6 +74,21 @@ jobs:
             exit 1
           fi
 
+      # vendor/ обязан совпадать с go.mod: docker-сборка идёт с -mod=vendor и без
+      # выхода в сеть (proxy.golang.org недоступен в закрытых периметрах, где
+      # ставят self-hosted). Устаревший vendor/ либо сломал бы сборку, либо
+      # тихо собрал не те версии, что go.mod. go mod verify — целостность
+      # содержимого, go mod vendor без диффа — актуальность набора.
+      - name: vendor — синхронен с go.mod
+        run: |
+          go mod verify
+          go mod vendor
+          if ! git diff --quiet vendor go.mod go.sum; then
+            echo "vendor/ расходится с go.mod — выполните go mod vendor и закоммитьте:"
+            git --no-pager diff --stat vendor go.mod go.sum
+            exit 1
+          fi
+
       # Сгенерированные шаблоны обязаны совпадать с исходниками: иначе правка
       # .templ уезжает в main, а рендерится старый *_templ.go — расхождение,
       # которое не ловится ни компилятором, ни тестами.

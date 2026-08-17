@@ -3,13 +3,16 @@
 #   docker buildx imagetools inspect golang:1.26-alpine   (copy the Digest)
 FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS build
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
+# Зависимости завендорены (vendor/), поэтому сборка НЕ ходит в сеть за модулями
+# (нет `go mod download` и обращения к proxy.golang.org) — образ собирается в
+# закрытых сетях без выхода в интернет. Синхронность vendor/ ↔ go.mod проверяет
+# CI (go mod verify + go mod vendor без диффа). -mod=vendor задан явно: при
+# рассинхроне сборка падает, а не тихо уходит в сеть.
 COPY . .
 ARG VERSION=dev
 ARG COMMIT=
 ARG DATE=
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=0 go build -mod=vendor \
       -ldflags "-X gitflic.ru/otezvikentiy/gotcha/internal/version.version=${VERSION} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.commit=${COMMIT} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.date=${DATE}" \
@@ -17,12 +20,12 @@ RUN CGO_ENABLED=0 go build \
 
 # Кросс-бинарники агента раздаются самим инстансом (/agent/*, спека A2 §3.1):
 # CGO_ENABLED=0 — обычный go build с GOOS/GOARCH, multi-platform buildx не нужен.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor \
       -ldflags "-s -w -X gitflic.ru/otezvikentiy/gotcha/internal/version.version=${VERSION} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.commit=${COMMIT} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.date=${DATE}" \
       -o /out/agent-dist/gotcha-agent-linux-amd64 ./cmd/gotcha-agent \
- && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+ && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor \
       -ldflags "-s -w -X gitflic.ru/otezvikentiy/gotcha/internal/version.version=${VERSION} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.commit=${COMMIT} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.date=${DATE}" \
