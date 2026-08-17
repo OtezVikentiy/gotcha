@@ -169,6 +169,7 @@ type Dropped struct {
 	Transactions int64
 	Metrics      int64
 	Profiles     int64
+	Logs         int64
 }
 
 // DroppedUsage возвращает счётчики дропов организации за месяц (нули, если
@@ -176,9 +177,9 @@ type Dropped struct {
 func (s *Service) DroppedUsage(ctx context.Context, orgID int64, month time.Time) (Dropped, error) {
 	var d Dropped
 	err := s.pool.QueryRow(ctx, `
-		SELECT dropped_events, dropped_transactions, dropped_metrics, dropped_profiles
+		SELECT dropped_events, dropped_transactions, dropped_metrics, dropped_profiles, dropped_logs
 		FROM org_usage WHERE org_id = $1 AND period_month = $2`,
-		orgID, monthStart(month)).Scan(&d.Events, &d.Transactions, &d.Metrics, &d.Profiles)
+		orgID, monthStart(month)).Scan(&d.Events, &d.Transactions, &d.Metrics, &d.Profiles, &d.Logs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Dropped{}, nil
 	}

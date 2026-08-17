@@ -70,6 +70,12 @@ envelope). `service.name`/`deployment.environment.name` (or the legacy
 stored as-is (hex) — groundwork for log↔trace correlation in a future
 release.
 
+The record text (`body`) goes through the same unconditional URL scrub as
+error messages: query-string tokens and basic-auth in URLs inside the text
+are always stripped, regardless of `GOTCHA_SCRUB_FREETEXT` (see
+[Privacy](/docs/privacy)) — privacy by default, same as the rest of the
+telemetry.
+
 For regular traffic it's easier to configure your OTel SDK's log exporter
 with environment variables, the same way as metrics:
 
@@ -93,7 +99,7 @@ Line schema:
 | `level` | optional | A text severity (`info`, `warn`, `err`, `critical`, etc. — see canonicalization below). Empty or unrecognized → `info`. |
 | `timestamp` | optional | Either an RFC3339 string (`"2026-08-18T12:00:00Z"`) or unix time in seconds as a number (a fraction is allowed, `1755518400.5`). Missing, empty, unparsable, or not later than the epoch — the server's receive time is used instead. |
 | `attributes` | optional | An arbitrary JSON object: string/number/bool values are copied as-is, nested objects/arrays are serialized back to a JSON string. |
-| `trace_id` | optional | A string, stored as-is (no format validation, unlike OTLP). |
+| `trace_id` | optional | A string (no format validation, unlike OTLP), capped at 64 characters — longer values are truncated, same as other fields. |
 | `span_id` | optional | Same. |
 
 NDJSON records carry no resource attributes — their "service" and

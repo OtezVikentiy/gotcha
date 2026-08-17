@@ -144,6 +144,11 @@ func sanitizeLog(h *Handler, projectID int64, r *log.LogRecord) {
 	h.Scrub.ScrubTags(r.LogAttributes)
 	h.Scrub.ScrubTags(r.ResourceAttrs)
 	r.Body = stripNUL(r.Body)
+	// Тело лога — единственное свободнотекстовое поле пайплайна логов, и без
+	// ScrubMessage оно обходило бы безусловный скраб query-токенов/basic-auth
+	// из URL, который уже применяется к message событий, имени транзакции и
+	// описанию спанов (pipeline.go, handler.go) — паритет приватности.
+	r.Body = h.Scrub.ScrubMessage(r.Body)
 	r.TraceID = stripNUL(r.TraceID)
 	r.SpanID = stripNUL(r.SpanID)
 	r.Service = h.Cardinality.Value(projectID, FieldService, r.Service)
@@ -160,14 +165,20 @@ func stripNUL(s string) string {
 	return strings.ReplaceAll(s, "\x00", "")
 }
 
-// otlpUnmarshalLogs — разбор тела /v1/logs, калька otlpUnmarshalMetrics: у
-// логов, как и у метрик, нет верхнеуровневых байтовых идентификаторов,
-// которые мы читаем и подменяем (в отличие от трейсов, см. otlpUnmarshal),
-// поэтому hex-переписывание не нужно.
+// otlpUnmarshalLogs — разбор тела /v1/logs, калька otlpUnmarshal (трейсы): у
+// логов, как и у трейсов, есть верхнеуровневые байтовые идентификаторы
+// (trace_id/span_id LogRecord), закодированные в OTLP/JSON как HEX, а не
+// base64 — без otlpJSONHexIDs protojson молча декодирует hex как base64 и
+// портит id (см. её докблок в otlp.go). Раньше здесь ошибочно считалось, что
+// у логов таких идентификаторов нет.
 func otlpUnmarshalLogs(enc otlpEncoding, raw []byte) (*logspb.LogsData, error) {
 	var data logspb.LogsData
 	var err error
 	if enc == otlpJSON {
+		raw, err = otlpJSONHexIDs(raw)
+		if err != nil {
+			return nil, err // errJSONTooDeep — единственная ошибка, otlpJSONHexIDs больше не отдаёт
+		}
 		err = protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(raw, &data)
 	} else {
 		err = proto.Unmarshal(raw, &data)

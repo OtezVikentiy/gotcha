@@ -343,6 +343,7 @@ func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 		{org.QuotaKindTransactions, d.Transactions},
 		{org.QuotaKindMetrics, d.Metrics},
 		{org.QuotaKindProfiles, d.Profiles},
+		{org.QuotaKindLogs, d.Logs},
 	} {
 		if kind.n <= 0 {
 			continue
@@ -366,7 +367,7 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 		slog.Warn("quotaBanner: dropped usage", "org_id", orgID, "err", err)
 		return nil
 	}
-	total := dropped.Events + dropped.Transactions + dropped.Metrics + dropped.Profiles
+	total := dropped.Events + dropped.Transactions + dropped.Metrics + dropped.Profiles + dropped.Logs
 	if total > 0 {
 		return &templates.QuotaBanner{
 			Text: i18n.Tn(ctx, "org.quota.dropped_banner", int(total)),

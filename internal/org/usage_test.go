@@ -139,9 +139,9 @@ func TestDroppedUsage(t *testing.T) {
 	if err := svc.IncDroppedProfiles(ctx, o.ID, now, 1); err != nil {
 		t.Fatalf("inc dropped profiles: %v", err)
 	}
-	// IncDroppedLogs — та же схема, но logs_count/dropped_logs не входят в
-	// Dropped/DroppedUsage (C1 их не трогает), поэтому проверяется отдельным
-	// прямым запросом ниже.
+	// IncDroppedLogs — та же схема; dropped_logs теперь тоже входит в
+	// Dropped/DroppedUsage (Fix B волны устранения аудита C1: дропы логов
+	// обязаны быть видны оператору, как и у прочих видов).
 	if err := svc.IncDroppedLogs(ctx, o.ID, now, 4); err != nil {
 		t.Fatalf("inc dropped logs: %v", err)
 	}
@@ -154,19 +154,9 @@ func TestDroppedUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dropped usage: %v", err)
 	}
-	want := org.Dropped{Events: 12, Transactions: 3, Metrics: 2, Profiles: 1}
+	want := org.Dropped{Events: 12, Transactions: 3, Metrics: 2, Profiles: 1, Logs: 4}
 	if d != want {
 		t.Fatalf("dropped = %+v, want %+v", d, want)
-	}
-
-	var droppedLogs int64
-	if err := pool.QueryRow(ctx,
-		"SELECT dropped_logs FROM org_usage WHERE org_id = $1 AND period_month = $2",
-		o.ID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)).Scan(&droppedLogs); err != nil {
-		t.Fatalf("select dropped_logs: %v", err)
-	}
-	if droppedLogs != 4 {
-		t.Fatalf("dropped_logs = %d, want 4", droppedLogs)
 	}
 
 	// Принятые счётчики (events_count и др.) счётчиком дропов не задеты.

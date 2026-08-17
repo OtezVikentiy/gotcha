@@ -47,11 +47,19 @@ const (
 	QuotaKindTransactions = "transactions"
 	QuotaKindMetrics      = "metrics"
 	QuotaKindProfiles     = "profiles"
+	QuotaKindLogs         = "logs"
 )
 
 // QuotaKinds — все классы квоты, в порядке, в котором организация их видит
 // (события — самый базовый и старый класс, дальше в порядке появления).
-var QuotaKinds = []string{QuotaKindEvents, QuotaKindTransactions, QuotaKindMetrics, QuotaKindProfiles}
+//
+// Логи (C1) сюда входят как источник истины для i18n-ключей разбивки дропов
+// (org.quota.kind.<kind>.short в orgsettings.droppedBreakdown), НЕ как поле
+// формы настроек квот: log_quota пока не оператор-настраиваемый (только
+// bootstrap SetLogQuota) — форма (см. orgsettings.go, orgSettingsPage)
+// строится отдельным литеральным списком, а не из этого среза, так что
+// добавление логов сюда не открывает в форме несохраняемый инпут.
+var QuotaKinds = []string{QuotaKindEvents, QuotaKindTransactions, QuotaKindMetrics, QuotaKindProfiles, QuotaKindLogs}
 
 type Org struct {
 	ID         int64

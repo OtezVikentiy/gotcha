@@ -124,6 +124,45 @@ func TestOTLPLogsBasic(t *testing.T) {
 	}
 }
 
+// TestOTLPLogsJSONHexTraceID — Fix A: OTLP/JSON кодирует trace_id/span_id как
+// HEX (не base64), а protojson без предварительного otlpJSONHexIDs молча
+// декодирует hex как base64 и портит id той же формы, но другого значения
+// (см. TestOTLPUnmarshalJSONHexIDs в otlp_test.go — тот же класс дефекта для
+// трасс). До фикса otlpUnmarshalLogs шёл в protojson напрямую — эта дыра была
+// не покрыта тестами: parse_otlp_test строит структуры напрямую, минуя JSON.
+func TestOTLPLogsJSONHexTraceID(t *testing.T) {
+	const (
+		wantTrace = "ab0102030405060708090a0b0c0d0eff"
+		wantSpan  = "deadbeef01020304"
+	)
+	sink := &collectLogSink{}
+	h := newLogsTestHandler(sink)
+
+	body := `{"resourceLogs":[{"scopeLogs":[{"logRecords":[
+		{"body":{"stringValue":"hello"},
+		 "traceId":"` + wantTrace + `",
+		 "spanId":"` + wantSpan + `"}]}]}]}`
+	req := httptest.NewRequest("POST", "/v1/logs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer pub")
+	w := httptest.NewRecorder()
+	h.otlpLogs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(sink.records))
+	}
+	r := sink.records[0]
+	if r.TraceID != wantTrace {
+		t.Errorf("TraceID = %q, want %q (hex испорчен protojson-декодированием как base64?)", r.TraceID, wantTrace)
+	}
+	if r.SpanID != wantSpan {
+		t.Errorf("SpanID = %q, want %q", r.SpanID, wantSpan)
+	}
+}
+
 func TestOTLPLogsUnauthenticated(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{"pub": {ID: 1, ProjectID: 1, OrgID: 1, PublicKey: "pub"}}}
 	sink := &collectLogSink{}
@@ -322,6 +361,42 @@ func TestLogsSanitizeDenylistAttribute(t *testing.T) {
 	}
 	if r.ResourceAttrs["token"] != scrubMask {
 		t.Errorf("ResourceAttrs[token] = %q, want маску %q", r.ResourceAttrs["token"], scrubMask)
+	}
+}
+
+// TestLogsSanitizeBodyURLScrub — Fix C: тело лога (`body`) — единственное
+// свободнотекстовое поле пайплайна логов, и без ScrubMessage оно обходило бы
+// безусловный скраб query-токенов/basic-auth в URL, применяемый к message
+// событий, имени транзакции и описанию спанов (см. пайплайн событий,
+// TestScrubReAuditRound2/M2 — тот же контракт: чистится ВСЕГДА, даже при
+// ScrubFreeText=false). Обычный текст без URL не должен искажаться.
+func TestLogsSanitizeBodyURLScrub(t *testing.T) {
+	sink := &collectLogSink{}
+	h := newLogsTestHandler(sink)
+	h.Scrub = NewScrubber(false, false, []string{"token"}) // ScrubFreeText=false — URL всё равно чистится (M2)
+
+	body := `{"message":"GET https://api.example/reset?token=SECRET&ok=1"}` + "\n" +
+		`{"message":"DSN https://user:hunter2@db.example/app fell over"}` + "\n" +
+		`{"message":"plain error without any url"}` + "\n"
+	w := postNDJSON(t, h, body, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if len(sink.records) != 3 {
+		t.Fatalf("records = %d, want 3", len(sink.records))
+	}
+
+	tokenMsg := sink.records[0].Body
+	if strings.Contains(tokenMsg, "SECRET") || !strings.Contains(tokenMsg, "token=[scrubbed]") || !strings.Contains(tokenMsg, "ok=1") {
+		t.Errorf("query-токен в теле лога не вычищен: %q", tokenMsg)
+	}
+	authMsg := sink.records[1].Body
+	if strings.Contains(authMsg, "hunter2") || !strings.Contains(authMsg, "user:[scrubbed]@") {
+		t.Errorf("basic-auth в теле лога не вычищен: %q", authMsg)
+	}
+	plainMsg := sink.records[2].Body
+	if plainMsg != "plain error without any url" {
+		t.Errorf("текст без URL исказился: %q", plainMsg)
 	}
 }
 
