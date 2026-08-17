@@ -130,6 +130,9 @@ var permanentFormatExemptions = []Exemption{
 	{Value: exemptLoc("internal/ingest/sentry_test.go", 173), Why: `now.Add(-200*24*time.Hour).Format(time.RFC3339Nano) — тестовый payload в формате Sentry API (TestParseEventClampsTimestampToWindow)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/ingest/sentry_test.go", 191), Why: `inWindow.Format(time.RFC3339Nano) — тестовый payload в формате Sentry API`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/ingest/transaction_test.go", 69), Why: `base.Add(...).Format(time.RFC3339Nano) — testTransactionRFC3339JSON: часть SDK (sentry-python/старые sentry-php) шлёт timestamps в RFC3339, тестовый payload в том же формате`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 122), Why: `ts.Format(time.RFC3339) — сборка NDJSON-payload с timestamp в RFC3339 (TestParseNDJSONTimestampRFC3339String): вход API логов, машинный формат, не человекочитаемое дублирование`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 229), Why: `tooOld.Format(time.RFC3339) — NDJSON-payload на now-100d для проверки нижней границы окна (TestParseNDJSONTimestampWindowLowerBound), now-относительное время, литералом не заменить`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/parse_ndjson_test.go", 243), Why: `tooNew.Format(time.RFC3339) — NDJSON-payload на now+48h для проверки верхней границы окна (TestParseNDJSONTimestampWindowUpperBound)`, Finding: "по замыслу"},
 
 	// internal/web/statuspage.go: statusPageTimeLayout = "2006-01-02 15:04
 	// UTC" — НЕ машинный формат (это тот же общий вид, что у humanize.Time),
@@ -169,8 +172,12 @@ var permanentFormatExemptions = []Exemption{
 // раундом настраиваемого SpanRetentionDays: TestWebEndpointDetailSlowestExpiryConfigurable
 // (performance_test.go) собирает ?start= тем же машинным форматом
 // datetime-local, что и остальные семь мест выше, — восьмое такое место,
-// см. запись в permanentFormatExemptions.
-const maxPermanentFormatExemptions = 23
+// см. запись в permanentFormatExemptions. Затем с 23 до 26 фичей C1 (приём
+// логов): три теста NDJSON-парсера (parse_ndjson_test.go) собирают timestamp
+// входного payload в RFC3339 из now-относительного времени (RFC3339-строка и
+// обе границы окна ретенции) — тот же машинный формат API, что и тестовые
+// payload'ы sentry_test.go/transaction_test.go выше, литералом не заменить.
+const maxPermanentFormatExemptions = 26
 
 // debtFormatExemptions — человекочитаемые макеты времени вне
 // internal/humanize: настоящие копии форматирования, ради поиска которых и
