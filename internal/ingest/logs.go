@@ -134,12 +134,12 @@ func (h *Handler) grantAndSanitizeLogs(ctx context.Context, orgID, projectID int
 // otlpMetrics (otlp.go): капы длины и число атрибутов УЖЕ наложены в парсерах
 // (log.MapOTLPLogs/log.ParseNDJSON), здесь их не дублируем.
 //
-// stripNUL — на TraceID/SpanID/Body: у OTLP-пути это уже чистые значения
-// (hex/capBytes в парсере), а у NDJSON trace_id/span_id приходят от клиента
-// БЕЗ капа парсера (в отличие от Body, который parseNDJSONLine уже прогнал
-// через capBytes) — NUL в них ничем не запрещён, а PostgreSQL падает на нём в
-// text-колонках при дальнейшей склейке с трейсами (тот же класс дефекта, что
-// у capRunes в sentry.go).
+// stripNUL — на TraceID/SpanID/Body как defense-in-depth: у OTLP-пути это уже
+// чистые значения (hex/capBytes в парсере), у NDJSON trace_id/span_id парсер
+// капает их capRunes(...,64) (capRunes сам вырезает NUL), а Body капается
+// capBytes. Повторный stripNUL здесь дёшев и гарантирует отсутствие NUL
+// независимо от пути — NUL в text-колонках роняет PostgreSQL при дальнейшей
+// склейке с трейсами (тот же класс дефекта, что у capRunes в sentry.go).
 func sanitizeLog(h *Handler, projectID int64, r *log.LogRecord) {
 	h.Scrub.ScrubTags(r.LogAttributes)
 	h.Scrub.ScrubTags(r.ResourceAttrs)
