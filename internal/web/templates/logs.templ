@@ -35,6 +35,9 @@ type LogsFilter struct {
 	// фильтра (правка ревью UX Minor #1: без этого раскрытый атрибут
 	// схлопывался при переходе на следующую страницу).
 	Facet string
+	// TraceID — активный жёсткий скоуп по trace_id (C3): показывается снимаемым
+	// чипом и переносится по всем ссылкам (пагинация/фасеты) через logsPageURLValues.
+	TraceID string
 	// RangeClamped/RetentionDays — окно из пресета (Range) урезано снизу по
 	// сроку хранения логов (web.parseLogFilter, правка ревью UX Important #2 /
 	// ops P2): пользователь выбрал, например, 30d, а фактически видит данные
@@ -447,8 +450,26 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	for _, a := range f.Attrs {
 		q.Add("attr", logAttrFilterParam(a))
 	}
+	if f.TraceID != "" {
+		q.Set("trace_id", f.TraceID)
+	}
 	f.Range.apply(q)
 	return q
+}
+
+// shortTraceID укорачивает trace_id для подписи чипа (полный — в URL).
+func shortTraceID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
+}
+
+// logsTraceChipRemoveURL — ссылка на тот же экран логов без trace_id (снятие
+// чипа). f — копия по значению, безопасно обнуляем поле.
+func logsTraceChipRemoveURL(projectID int64, f LogsFilter) string {
+	f.TraceID = ""
+	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
 // logAttrFilterParam сериализует log.AttrFilter обратно в значение ?attr=
@@ -537,6 +558,12 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				@timeRangeFields(filter.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
 			</form>
+			if filter.TraceID != "" {
+				<p class="logs-trace-chip">
+					{ i18n.Tf(ctx, "logs.chip.trace", "id", shortTraceID(filter.TraceID)) }
+					<a class="chip-remove" href={ templ.URL(logsTraceChipRemoveURL(projectID, filter)) } title={ i18n.T(ctx, "logs.chip.trace_remove") }>✕</a>
+				</p>
+			}
 			if filter.RangeClamped {
 				<p class="hint logs-range-clamped">{ i18n.Tf(ctx, "logs.range.clamped", "days", strconv.Itoa(filter.RetentionDays)) }</p>
 			}

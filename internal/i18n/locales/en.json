@@ -1295,6 +1295,8 @@
     "logs.table.attributes": "Attributes",
     "logs.table.trace_id": "Trace ID",
     "logs.table.trace_link_title": "View this log's trace",
+    "logs.chip.trace": "Trace: {id}",
+    "logs.chip.trace_remove": "Remove trace filter",
     "logs.empty.none.title": "No logs yet",
     "logs.empty.none.body": "Connect your app or the Gotcha agent to start sending logs.",
     "logs.empty.none.cta": "Get started",

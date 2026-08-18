@@ -200,9 +200,10 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		Environment: f.Environment,
 		Query:       f.Query,
 		Attrs:       f.Attrs,
+		TraceID:     f.TraceID,
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
-			rng.Key != "24h",
+			f.TraceID != "" || rng.Key != "24h",
 		Facet:         q.Get("facet"),
 		RangeClamped:  rangeClamped,
 		RetentionDays: h.LogRetentionDays,
@@ -290,6 +291,13 @@ func (h *Handler) logsAttrKeys(w http.ResponseWriter, r *http.Request) {
 
 	rng := h.resolveTimeRange(w, r, "24h")
 	from, _ := clampLogRetention(rng.From, h.LogRetentionDays)
+	// trace_id намеренно не передаётся сюда (C3, план Task 2): кэш автокомплита
+	// attrKeysCache ключуется по (projectID, prefix, окно) — БЕЗ trace_id; если бы
+	// f.TraceID сюда попадал, typeahead кэшировал бы ключи одного трейса под тем
+	// же ключом кэша, что и ключи всего окна, и отдавал бы их другому трейсу. В
+	// узком контексте одного трейса подсказки ключей почти не используются, а
+	// лишняя подсказка ключа вне трейса безвредна: клик по ней даст пустой
+	// AttrValues, который уже корректно скоупится по trace_id (Task 1).
 	f := log.ListFilter{From: from, To: rng.To}
 	values, err := h.LogQuery.AttrKeys(r.Context(), projectID, f, prefix, logsAttrKeysAutocompleteLimit)
 	if err != nil {
@@ -472,6 +480,7 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListF
 		Service:     q.Get("service"),
 		Environment: q.Get("environment"),
 		Query:       q.Get("q"),
+		TraceID:     q.Get("trace_id"),
 		Limit:       logsListLimit,
 	}
 

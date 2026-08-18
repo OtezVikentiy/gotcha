@@ -1295,6 +1295,8 @@
     "logs.table.attributes": "Атрибуты",
     "logs.table.trace_id": "ID трейса",
     "logs.table.trace_link_title": "Трейс этого лога",
+    "logs.chip.trace": "Трейс: {id}",
+    "logs.chip.trace_remove": "Убрать фильтр по трейсу",
     "logs.empty.none.title": "Логов пока нет",
     "logs.empty.none.body": "Подключите приложение или агент Gotcha, чтобы начать приём логов.",
     "logs.empty.none.cta": "Начать",
