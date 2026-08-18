@@ -191,6 +191,7 @@ var routeAuthz = map[string]string{
 	// их POST — requireProjectOperator; карта отражает код, а не комментарий.
 	"GET /projects/{id}/metrics/alerts":    lvlOperator,
 	"GET /projects/{id}/slos":              lvlOperator,
+	"GET /projects/{id}/slos/{sloID}":      lvlOperator,
 	"GET /projects/{id}/hosts/settings":    lvlOperator,
 	"GET /projects/{id}/alerts":            lvlOperator,
 	"GET /projects/{id}/alerts/deliveries": lvlOperator,

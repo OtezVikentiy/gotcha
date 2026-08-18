@@ -546,6 +546,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// SLO (план D1): список определений + форма создания + удаление. Гейт всех
 	// трёх — оператор проекта (см. slos.go, зеркало metric-alerts).
 	inner.Handle("GET /projects/{id}/slos", h.requireUser(http.HandlerFunc(h.slosPage)))
+	inner.Handle("GET /projects/{id}/slos/{sloID}", h.requireUser(http.HandlerFunc(h.sloDetail)))
 	inner.Handle("POST /projects/{id}/slos", h.requireUser(http.HandlerFunc(h.sloCreate)))
 	inner.Handle("POST /projects/{id}/slos/{sloID}/delete", h.requireUser(http.HandlerFunc(h.sloDelete)))
 

@@ -1796,7 +1796,7 @@ th {
 
 /* Оси/сетка и подписи графиков: приглушённый цвет, моноширинный мелкий шрифт.
    Пороговые линии — цвет опасности. */
-.metric-chart text, .chart-freq text, .latency-chart text, .chart text { font-size: var(--fs-xs); font-family: var(--font-mono); }
+.metric-chart text, .chart-freq text, .latency-chart text, .chart text, .slo-burndown text { font-size: var(--fs-xs); font-family: var(--font-mono); }
 
 /* Скруглённый верх у баров (трафик, гистограмма, частота событий) — мягче и
    современнее, единый язык с остальными графиками. Прозрачные полосы наведения
@@ -2771,6 +2771,52 @@ form.inline {
 .slo-indicator-good { background: var(--good); }
 .slo-indicator-warn { background: var(--warn); }
 .slo-indicator-danger { background: var(--danger); }
+
+/* Экран деталей SLO (план D1, T7): вертикальная колонка — крошки, заголовок,
+   карточки метрик, открытый инцидент, burn-down график, история инцидентов. */
+.slo-detail {
+	min-width: 0;
+}
+/* Ряд карточек-метрик (цель/достижение/остаток/burn) — переиспользует .stat-tile
+   из монитор-детали; здесь только раскладка в гибкую сетку. */
+.slo-detail-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin: 12px 0 20px;
+}
+.slo-detail-meta .stat-tile {
+	flex: 1 1 160px;
+}
+/* Карточка открытого инцидента — акцент опасности слева, как у баннеров
+   внимания. */
+.slo-open-incident {
+	border-left: 3px solid var(--danger);
+	margin-bottom: 20px;
+}
+/* Карточка вокруг burn-down графика: горизонтальная прокрутка узкого экрана,
+   как у .issue-chart (SVG шире мобильного вьюпорта). */
+.slo-burndown-card {
+	margin-bottom: 16px;
+	overflow-x: auto;
+}
+/* burn-down SVG: тянем на всю карточку, цвет заливки/акцента — бренд-токен
+   (SVG рисует заливку currentColor, линию — классом ниже). */
+.slo-burndown {
+	display: block;
+	width: 100%;
+	height: auto;
+	color: var(--accent);
+}
+/* Линия остатка бюджета — акцентный штрих поверх мягкой заливки. */
+.slo-burndown-line {
+	stroke: var(--accent);
+}
+/* Зона перерасхода (остаток < 0%): полупрозрачная заливка опасности под линией
+   нуля. */
+.slo-burndown-overspend {
+	fill: color-mix(in srgb, var(--danger) 14%, transparent);
+}
 
 /* -- Data table --
    Отдельный класс поверх глобальных table/th/td: компактнее, с hover-строками

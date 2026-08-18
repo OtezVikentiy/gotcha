@@ -124,7 +124,7 @@ templ SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, fo
 							<tbody>
 								for _, row := range rows {
 									<tr>
-										<td>{ row.Name }</td>
+										<td><a href={ templ.URL(sloDetailPath(projectID, row.ID)) }>{ row.Name }</a></td>
 										<td>{ sloKindLabel(ctx, row.Kind) }</td>
 										<td class="num">{ fmtPct(row.TargetPct) }</td>
 										if row.HasData {
