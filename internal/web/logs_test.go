@@ -2,9 +2,11 @@ package web_test
 
 import (
 	"context"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -271,6 +273,150 @@ func TestWebLogsListCursorPagination(t *testing.T) {
 	}
 	if !strings.Contains(text, "log one") {
 		t.Errorf("before=t2&tskip=1 потерял самую старую строку: %s", text)
+	}
+}
+
+// logRowBodyRe вытаскивает тело строки лога из <summary> раскрытия
+// (logRowView в logs.templ — <summary>{ logBodyPreview(...) }</summary>, БЕЗ
+// атрибутов). Осознанно НЕ используем плоский "(?s)<summary>(.*?)</summary>"
+// по всему документу: у шаблона хватает других plain <summary> без класса —
+// переключатель проекта и в сайдбаре, и в мобильном меню (details
+// class="proj-switch"><summary>...) рендерят его ДВАЖДЫ на каждой странице.
+// Поэтому сначала вырезаем <tbody>...</tbody> (см. logRowsTBodyRe), и уже
+// внутри него ищем <summary>.
+var logRowsTBodyRe = regexp.MustCompile(`(?s)<tbody>(.*?)</tbody>`)
+var logRowBodyRe = regexp.MustCompile(`<summary>([^<]*)</summary>`)
+
+// olderHrefRe вытаскивает href ссылки «показать старее» — единственный
+// <nav class="pagination"> на странице логов (см. logs.templ, LogsScreen).
+var olderHrefRe = regexp.MustCompile(`<nav class="pagination"[^>]*><a href="([^"]+)">`)
+
+// beforeParamRe — значение ?before= в извлечённой ссылке, для подсчёта, сколько
+// страниц подряд идут с ОДНИМ И ТЕМ ЖЕ курсором (тай растягивается больше чем
+// на страницу — именно этот путь ловит off-by-one в накоплении TieSkip).
+var beforeParamRe = regexp.MustCompile(`before=(\d+)`)
+
+// logRowBodiesOnPage возвращает тела строк лога, показанных на текущей
+// странице (см. logRowBodyRe), пусто — если таблицы на странице нет
+// (пустое состояние).
+func logRowBodiesOnPage(t *testing.T, htmlBody string) []string {
+	t.Helper()
+	m := logRowsTBodyRe.FindStringSubmatch(htmlBody)
+	if m == nil {
+		return nil
+	}
+	var out []string
+	for _, sm := range logRowBodyRe.FindAllStringSubmatch(m[1], -1) {
+		out = append(out, sm[1])
+	}
+	return out
+}
+
+// TestWebLogsListCursorNoDupNoLoss — курсор «показать старее», пройденный по
+// РЕАЛЬНО СГЕНЕРИРОВАННОЙ хендлером ссылке (не собранной вручную в тесте, как
+// в TestWebLogsListCursorPagination выше): тай-группа (250 строк на одной
+// timestamp) больше лимита страницы (100) и заведомо растягивается на
+// НЕСКОЛЬКО страниц подряд с ОДНИМ И ТЕМ ЖЕ Before и растущим TieSkip — именно
+// эта конфигурация ловит off-by-one в накоплении (web.nextLogCursor). Полное
+// прохождение курсора обязано покрыть весь засеянный набор без дублей и без
+// потерь.
+func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-walk-owner@example.com", "logs-walk-co", "logs-walk-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	const distinctCount = 5
+	const tieCount = 250 // >> logsListLimit(100) — гарантированно многостраничный тай
+
+	want := map[string]bool{}
+	var records []log.LogRecord
+
+	// Самые свежие distinctCount строк — каждая на своей отметке времени, не
+	// участвуют в тай-группе; должны попасть на первую страницу вместе с
+	// частью тай-группы (тай — сразу следом, старше).
+	for i := 0; i < distinctCount; i++ {
+		ts := now.Add(-time.Duration(i) * time.Second)
+		body := "row-" + strconv.Itoa(i)
+		records = append(records, log.LogRecord{Timestamp: ts, ObservedTS: ts, Severity: log.SevInfo, Body: body})
+		want[body] = true
+	}
+
+	// Тай-группа: все tieCount строк на ОДНОЙ отметке времени, старше всех
+	// distinctCount — ложится ровно на границу первой страницы и растягивается
+	// на несколько последующих (лимит 100 << 250).
+	tieTS := now.Add(-time.Duration(distinctCount+1) * time.Second)
+	for i := 0; i < tieCount; i++ {
+		body := "tie-" + strconv.Itoa(i)
+		records = append(records, log.LogRecord{Timestamp: tieTS, ObservedTS: tieTS, Severity: log.SevInfo, Body: body})
+		want[body] = true
+	}
+
+	// Хвостовая строка старше тай-группы — маркер «страниц больше нет».
+	tailTS := tieTS.Add(-time.Minute)
+	records = append(records, log.LogRecord{Timestamp: tailTS, ObservedTS: tailTS, Severity: log.SevInfo, Body: "tail"})
+	want["tail"] = true
+
+	s.seedLogs(t, project.ID, records...)
+
+	path := logsBasePath(project.ID)
+	seen := map[string]bool{}
+	var lastBefore string
+	sameBeforeStreak := 0
+	pages := 0
+	for {
+		pages++
+		if pages > 20 {
+			t.Fatalf("слишком много страниц (%d) — вероятно, зацикливание курсора", pages)
+		}
+		resp := getWithCookie(t, s.srv, path, ownerCookie)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+		}
+		text := string(body)
+
+		for _, b := range logRowBodiesOnPage(t, text) {
+			if seen[b] {
+				t.Fatalf("дубль строки %q на странице %d (path=%s)", b, pages, path)
+			}
+			seen[b] = true
+		}
+
+		m := olderHrefRe.FindStringSubmatch(text)
+		if m == nil {
+			break // страниц больше нет
+		}
+		href := html.UnescapeString(m[1]) // атрибут href экранирован (& -> &amp;)
+		if bm := beforeParamRe.FindStringSubmatch(href); bm != nil {
+			if bm[1] == lastBefore {
+				sameBeforeStreak++
+			}
+			lastBefore = bm[1]
+		}
+		path = href
+	}
+
+	if len(seen) != len(want) {
+		var missing, extra []string
+		for b := range want {
+			if !seen[b] {
+				missing = append(missing, b)
+			}
+		}
+		for b := range seen {
+			if !want[b] {
+				extra = append(extra, b)
+			}
+		}
+		t.Fatalf("покрытие разошлось: показано %d, ожидалось %d; отсутствуют=%v лишние=%v", len(seen), len(want), missing, extra)
+	}
+	if pages < 2 {
+		t.Fatalf("страниц = %d, want >= 2 (тай-группа в %d строк на лимите 100 обязана растянуться на несколько страниц)", pages, tieCount)
+	}
+	if sameBeforeStreak < 1 {
+		t.Errorf("ни одна пара страниц подряд не использовала один и тот же Before — тест не прогнал накопление TieSkip через несколько хопов")
 	}
 }
 
