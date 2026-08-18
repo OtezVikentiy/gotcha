@@ -102,9 +102,25 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		olderHref = templates.LogsPageURL(projectID, filter, before, tieSkip)
 	}
 
-	histogram := h.logsHistogram(r.Context(), projectID, f)
+	// loadFailed уже означает, что List не смог прочитать ClickHouse —
+	// гистограмма и фасеты пропускаются тоже (Minor из ревью задачи 3: не
+	// бить лишними запросами по CH, который уже недоступен) и приходят в
+	// своём собственном состоянии отказа без похода в БД.
+	var histogram templates.LogsHistogram
+	var facets templates.LogFacets
+	if loadFailed {
+		histogram = templates.LogsHistogram{Empty: true}
+		facets = templates.LogFacets{
+			Severity:    templates.LogFacet{TooMuchData: true},
+			Service:     templates.LogFacet{TooMuchData: true},
+			Environment: templates.LogFacet{TooMuchData: true},
+		}
+	} else {
+		histogram = h.logsHistogram(r.Context(), projectID, f)
+		facets = h.logsFacets(r.Context(), projectID, f, filter)
+	}
 
-	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // logsHistogram считает гистограмму объёма (задача 3, C2) по тому же фильтру
@@ -130,6 +146,34 @@ func (h *Handler) logsHistogram(ctx context.Context, projectID int64, f log.List
 	return templates.LogsHistogram{
 		Chart:  logHistogramSVG(ctx, times, series, latencyChartWidth, latencyChartHeight),
 		Legend: legend,
+	}
+}
+
+// logsFacets считает три встроенных фасета (задача 4, C2): severity/service/
+// environment — Query.Facet по тому же фильтру f, что и список/гистограмма.
+// Ошибка/таймаут отдельного фасета (SETTINGS max_execution_time=5 внутри
+// Query.Facet) — та же деградация, что и у логgsHistogram: предупреждение в
+// лог, секция рендерится пустой с пометкой «слишком много данных» вместо
+// падения всей страницы (тот же принцип, что и у logsHistogram); остальные
+// две секции при этом считаются независимо — падение одного фасета не тянет
+// за собой другие.
+func (h *Handler) logsFacets(ctx context.Context, projectID int64, f log.ListFilter, filter templates.LogsFilter) templates.LogFacets {
+	sevValues, sevErr := h.LogQuery.Facet(ctx, projectID, f, "severity")
+	if sevErr != nil {
+		slog.Warn("logs: facet failed", "project_id", projectID, "col", "severity", "err", sevErr)
+	}
+	svcValues, svcErr := h.LogQuery.Facet(ctx, projectID, f, "service")
+	if svcErr != nil {
+		slog.Warn("logs: facet failed", "project_id", projectID, "col", "service", "err", svcErr)
+	}
+	envValues, envErr := h.LogQuery.Facet(ctx, projectID, f, "environment")
+	if envErr != nil {
+		slog.Warn("logs: facet failed", "project_id", projectID, "col", "environment", "err", envErr)
+	}
+	return templates.LogFacets{
+		Severity:    templates.NewSeverityFacet(ctx, projectID, filter, sevValues, sevErr != nil),
+		Service:     templates.NewServiceFacet(projectID, filter, svcValues, svcErr != nil),
+		Environment: templates.NewEnvironmentFacet(projectID, filter, envValues, envErr != nil),
 	}
 }
 

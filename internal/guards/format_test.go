@@ -172,7 +172,7 @@ var permanentFormatExemptions = []Exemption{
 	// курсоре keyset-пагинации это роняло граничную строку. Строка с
 	// миллисекундами — SQL-параметр для toDateTime64(?, 3), не текст для
 	// человека, см. докблок chTimeArg.
-	{Value: exemptLoc("internal/log/query.go", 346), Why: `t.UTC().Format("2006-01-02 15:04:05.000") — SQL-параметр toDateTime64(?, 3), обход бага биндинга clickhouse-go (TimeUnit=Seconds по умолчанию у позиционных "?"), не человекочитаемый вывод`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/query.go", 448), Why: `t.UTC().Format("2006-01-02 15:04:05.000") — SQL-параметр toDateTime64(?, 3), обход бага биндинга clickhouse-go (TimeUnit=Seconds по умолчанию у позиционных "?"), не человекочитаемый вывод`, Finding: "по замыслу"},
 }
 
 // maxPermanentFormatExemptions — потолок сознательно поднят с 21 до 22

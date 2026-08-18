@@ -336,6 +336,108 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 	return times, series, nil
 }
 
+// facetColumns — whitelist имён колонок, допустимых в Facet: единственное
+// место во всём файле, где текст SQL строится из параметра, а не из
+// плейсхолдера ?. Значение параметра col сверяется с этой картой ДО того,
+// как попасть в текст запроса (fmt.Errorf на отсутствии), поэтому подставить
+// произвольную колонку (тем более что-то вроде "1=1 UNION ...") через него
+// нельзя — конкатенации пользовательского ввода тут нет в принципе, только
+// сверка с закрытым списком.
+var facetColumns = map[string]bool{
+	"severity":    true,
+	"service":     true,
+	"environment": true,
+}
+
+// facetLimit — сколько топ-значений отдаёт Facet (см. §4 спеки C2).
+const facetLimit = 10
+
+// Facet считает распределение значений колонки col (severity/service/
+// environment — только они, facetColumns; иначе ошибка) в окне+фильтрах f,
+// топ facetLimit по убыванию count. Курсор (Before/TieSkip) и Limit из f не
+// применяются — фасет считает распределение по ВСЕМУ окну, а не по одной
+// странице списка (тот же принцип, что и у Histogram).
+//
+// exclude-self: для col=="severity" собственное условие "severity IN (...)"
+// в WHERE не добавляется — фасет обязан показывать распределение по ВСЕМ
+// уровням, даже когда часть из них уже выбрана пользователем (иначе счётчик
+// невыбранного уровня был бы всегда 0 — строки с этим уровнем уже отфильтрованы
+// самим f.Severity — и клик по нему стал бы невозможен: он не сумел бы сузить
+// список за пределы того, что уже видно). Для service/environment такой
+// проблемы в MVP нет (одиночный select-фильтр, не мультивыбор, как у
+// severity) — применяются ВСЕ фильтры, включая f.Severity, как в List.
+//
+// SETTINGS max_execution_time = 5 (литерал в тексте, НЕ плейсхолдер — тот же
+// приём, что export.go) снижает пер-соединенческий дефолт 60с до 5с: тяжёлый
+// фасет-запрос на большом окне обрывается быстро, а не вешает страницу —
+// logsList при ошибке показывает конкретную секцию фасета пустой с пометкой,
+// а не 500-т всю страницу.
+func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col string) ([]FacetValue, error) {
+	if !facetColumns[col] {
+		return nil, fmt.Errorf("log: facet: column %q is not in the whitelist", col)
+	}
+
+	// where — тот же набор условий, что у List/Histogram (окно+прочие
+	// фильтры), но БЕЗ курсора/LIMIT списка и без пустых значений самой
+	// фасетной колонки (пустая строка — "атрибут не заполнен", отдельная
+	// строка "" в топе только шумит).
+	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3) AND " + col + " != ''"
+	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
+
+	if len(f.Severity) > 0 && col != "severity" {
+		where += " AND severity IN (?)"
+		args = append(args, f.Severity)
+	}
+	if f.Service != "" {
+		where += " AND service = ?"
+		args = append(args, f.Service)
+	}
+	if f.Environment != "" {
+		where += " AND environment = ?"
+		args = append(args, f.Environment)
+	}
+	if f.Query != "" {
+		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
+		args = append(args, f.Query)
+	}
+	for _, a := range f.Attrs {
+		attrCol := "log_attributes"
+		if a.Resource {
+			attrCol = "resource_attrs"
+		}
+		where += " AND " + attrCol + "[?] = ?"
+		args = append(args, a.Key, a.Value)
+	}
+	args = append(args, facetLimit)
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT `+col+`, count() AS c
+		FROM logs
+		WHERE `+where+`
+		GROUP BY `+col+`
+		ORDER BY c DESC
+		LIMIT ?
+		SETTINGS max_execution_time = 5`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("log: facet: %w", err)
+	}
+	defer rows.Close()
+
+	var out []FacetValue
+	for rows.Next() {
+		var v string
+		var c uint64
+		if err := rows.Scan(&v, &c); err != nil {
+			return nil, fmt.Errorf("log: facet: scan: %w", err)
+		}
+		out = append(out, FacetValue{Value: v, Count: int64(c)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("log: facet: %w", err)
+	}
+	return out, nil
+}
+
 // chTimeArg форматирует t строкой с точностью до миллисекунды для
 // toDateTime64(?, 3) в SQL — см. комментарий у сборки where в List: голый
 // time.Time аргументом "?" драйвер clickhouse-go биндит с точностью только до

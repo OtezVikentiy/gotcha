@@ -420,6 +420,155 @@ func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 	}
 }
 
+// logFacetSectionRe вырезает одну секцию сайдбара фасетов (logFacetSection в
+// logs.templ) — секции идут в фиксированном порядке severity/service/
+// environment (см. logFacetsSidebar), поэтому индекс совпадения однозначно
+// говорит, какой это фасет, без завязки на локализованный заголовок.
+var logFacetSectionRe = regexp.MustCompile(`(?s)<section class="card logs-facet">(.*?)</section>`)
+
+// logFacetItemRe вытаскивает одно значение фасета внутри секции: класс
+// ссылки (logs-facet-value или logs-facet-value logs-facet-value-active),
+// href, метку и count (logFacetSection в logs.templ).
+var logFacetItemRe = regexp.MustCompile(`<a class="(logs-facet-value[^"]*)" href="([^"]+)"[^>]*>([^<]*)</a>\s*<span class="logs-facet-count">(\d+)</span>`)
+
+type logFacetItem struct {
+	Active bool
+	Href   string
+	Label  string
+	Count  string
+}
+
+// logFacetItems разбирает N-ю (0-based) секцию сайдбара фасетов из HTML
+// страницы логов.
+func logFacetItems(t *testing.T, htmlBody string, sectionIdx int) []logFacetItem {
+	t.Helper()
+	sections := logFacetSectionRe.FindAllStringSubmatch(htmlBody, -1)
+	if len(sections) <= sectionIdx {
+		t.Fatalf("секция фасета #%d не найдена (всего секций: %d)", sectionIdx, len(sections))
+	}
+	var out []logFacetItem
+	for _, m := range logFacetItemRe.FindAllStringSubmatch(sections[sectionIdx][1], -1) {
+		out = append(out, logFacetItem{
+			Active: strings.Contains(m[1], "logs-facet-value-active"),
+			Href:   html.UnescapeString(m[2]),
+			Label:  m[3],
+			Count:  m[4],
+		})
+	}
+	return out
+}
+
+func findFacetItem(items []logFacetItem, label string) (logFacetItem, bool) {
+	for _, it := range items {
+		if it.Label == label {
+			return it, true
+		}
+	}
+	return logFacetItem{}, false
+}
+
+// findSeverityInfoItem — значение фасета severity для уровня "info": метка
+// уже локализована (severityLabel), а тест не знает заранее, ru или en
+// отдаёт стенд по умолчанию (тот же приём, что и остальные тесты файла,
+// проверяющие оба варианта литералом).
+func findSeverityInfoItem(items []logFacetItem) (logFacetItem, bool) {
+	if it, ok := findFacetItem(items, "Info"); ok {
+		return it, true
+	}
+	return findFacetItem(items, "Инфо")
+}
+
+// TestWebLogsListFacets — задача 4 плана C2: встроенные фасеты severity/
+// service/environment в сайдбаре — counts, отсутствие активной метки без
+// фильтров, клик по значению (переход по сгенерированной ссылке) реально
+// сужает список и помечает значение активным.
+func TestWebLogsListFacets(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-facets-owner@example.com", "logs-facets-co", "logs-facets-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{Timestamp: now.Add(-1 * time.Minute), ObservedTS: now.Add(-1 * time.Minute), Severity: log.SevInfo, Body: "row-api-info-1", Service: "api", Environment: "production"},
+		log.LogRecord{Timestamp: now.Add(-2 * time.Minute), ObservedTS: now.Add(-2 * time.Minute), Severity: log.SevInfo, Body: "row-api-info-2", Service: "api", Environment: "production"},
+		log.LogRecord{Timestamp: now.Add(-3 * time.Minute), ObservedTS: now.Add(-3 * time.Minute), Severity: log.SevError, Body: "row-api-error", Service: "api", Environment: "production"},
+		log.LogRecord{Timestamp: now.Add(-4 * time.Minute), ObservedTS: now.Add(-4 * time.Minute), Severity: log.SevDebug, Body: "row-worker-debug", Service: "worker", Environment: "staging"},
+	)
+
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+
+	sevItems := logFacetItems(t, text, 0)
+	svcItems := logFacetItems(t, text, 1)
+	envItems := logFacetItems(t, text, 2)
+
+	if it, ok := findSeverityInfoItem(sevItems); !ok || it.Count != "2" {
+		t.Fatalf("severity facet: info count != 2: %+v", sevItems)
+	}
+	svcAPI, ok := findFacetItem(svcItems, "api")
+	if !ok || svcAPI.Count != "3" {
+		t.Fatalf("service facet: api count != 3: %+v", svcItems)
+	}
+	svcWorker, ok := findFacetItem(svcItems, "worker")
+	if !ok || svcWorker.Count != "1" {
+		t.Fatalf("service facet: worker count != 1: %+v", svcItems)
+	}
+	if svcAPI.Active || svcWorker.Active {
+		t.Fatalf("без фильтров ни одно значение service не должно быть активным: api=%v worker=%v", svcAPI.Active, svcWorker.Active)
+	}
+	envProd, ok := findFacetItem(envItems, "production")
+	if !ok || envProd.Count != "3" {
+		t.Fatalf("environment facet: production count != 3: %+v", envItems)
+	}
+	envStaging, ok := findFacetItem(envItems, "staging")
+	if !ok || envStaging.Count != "1" {
+		t.Fatalf("environment facet: staging count != 1: %+v", envItems)
+	}
+
+	// Клик по значению "worker" фасета service — переход по СГЕНЕРИРОВАННОЙ
+	// ссылке (не собранной вручную в тесте) должен сузить список до
+	// service=worker и пометить это значение активным.
+	resp = getWithCookie(t, s.srv, svcWorker.Href, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (facet click) status = %d, want 200: %s", svcWorker.Href, resp.StatusCode, body)
+	}
+	text = string(body)
+	if strings.Contains(text, "row-api-info-1") || strings.Contains(text, "row-api-error") {
+		t.Errorf("клик по фасету service=worker не сузил список: %s", text)
+	}
+	if !strings.Contains(text, "row-worker-debug") {
+		t.Errorf("клик по фасету service=worker потерял свою же строку: %s", text)
+	}
+	svcItemsAfter := logFacetItems(t, text, 1)
+	workerAfter, ok := findFacetItem(svcItemsAfter, "worker")
+	if !ok || !workerAfter.Active {
+		t.Fatalf("после клика значение worker должно быть отмечено активным: %+v", svcItemsAfter)
+	}
+	apiAfter, ok := findFacetItem(svcItemsAfter, "api")
+	if ok && apiAfter.Active {
+		t.Fatalf("после выбора worker значение api не должно быть активным: %+v", svcItemsAfter)
+	}
+
+	// exclude-self: ?severity=error всё равно показывает ВСЕ уровни в фасете
+	// severity (не только error) — счётчик info не должен упасть до 0.
+	resp = getWithCookie(t, s.srv, base+"?severity=error", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text = string(body)
+	sevItemsFiltered := logFacetItems(t, text, 0)
+	infoAfter, ok := findSeverityInfoItem(sevItemsFiltered)
+	if !ok || infoAfter.Count != "2" {
+		t.Fatalf("exclude-self: severity=error не должен занулять count info: %+v", sevItemsFiltered)
+	}
+}
+
 // TestWebLogsListNilLogQuery404 — h.LogQuery == nil (стенд без проводки
 // логов) отдаёт 404, а не паникует на разыменовании.
 func TestWebLogsListNilLogQuery404(t *testing.T) {

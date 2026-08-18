@@ -1304,6 +1304,12 @@
     "logs.error.body": "Хранилище логов временно недоступно. Попробуйте ещё раз через минуту.",
     "logs.older": "Показать старее",
     "logs.histogram.title": "Объём по времени",
+    "logs.facet.title": "Фасеты",
+    "logs.facet.severity": "Уровень",
+    "logs.facet.service": "Сервис",
+    "logs.facet.environment": "Окружение",
+    "logs.facet.empty": "Нет данных для текущих фильтров",
+    "logs.facet.too_much_data": "Слишком много данных, сузьте окно",
     "a11y.chart.logs_volume": "График объёма логов по времени и уровню"
   },
   "plurals": {

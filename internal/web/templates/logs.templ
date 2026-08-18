@@ -38,6 +38,128 @@ type LogsHistogram struct {
 	Empty  bool
 }
 
+// LogFacets — три встроенных фасета сайдбара логов (задача 4, C2): severity/
+// service/environment. Атрибут-фасеты (авто-обнаружение ключей Map-колонок)
+// — отдельная задача (T5), здесь их нет.
+type LogFacets struct {
+	Severity    LogFacet
+	Service     LogFacet
+	Environment LogFacet
+}
+
+// LogFacet — одна секция сайдбара: до facetLimit (log.Query.Facet, сейчас
+// 10) значений с counts, уже готовые ссылки на клик. TooMuchData — Facet
+// вернул ошибку (таймаут SETTINGS max_execution_time=5 на тяжёлом окне,
+// временная недоступность ClickHouse) — секция рендерится пустой с пометкой
+// вместо падения всей страницы, тот же принцип деградации, что и
+// LogsHistogram.Empty.
+type LogFacet struct {
+	Values      []LogFacetValue
+	TooMuchData bool
+}
+
+// LogFacetValue — одно значение фасета: локализованная метка, count и уже
+// готовая ссылка (клик добавляет фильтр, клик по уже активному — снимает
+// именно его). Active — значение уже входит в текущий фильтр filter.
+type LogFacetValue struct {
+	Label  string
+	Count  int64
+	Href   string
+	Active bool
+}
+
+// NewSeverityFacet строит вью-модель фасета severity: ссылка — ТОГГЛ в
+// мультивыборе (тот же принцип, что чекбоксы filter.Severity в форме выше —
+// клик добавляет уровень к уже выбранным, повторный клик по активному
+// снимает именно его, остальные выбранные уровни не трогает).
+func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	items := make([]LogFacetValue, len(values))
+	for i, v := range values {
+		items[i] = LogFacetValue{
+			Label:  severityLabel(ctx, v.Value),
+			Count:  v.Count,
+			Href:   logFacetSeverityURL(projectID, filter, v.Value),
+			Active: severitySelected(filter.Severity, v.Value),
+		}
+	}
+	return LogFacet{Values: items, TooMuchData: tooMuchData}
+}
+
+// NewServiceFacet строит вью-модель фасета service: одиночный select-фильтр
+// (в отличие от мультивыбора severity) — клик ЗАМЕНЯЕТ filter.Service
+// выбранным значением, клик по уже активному — сбрасывает к "" (снимает
+// фильтр).
+func NewServiceFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	return newSingleValueFacet(projectID, filter, values, tooMuchData,
+		func(f LogsFilter) string { return f.Service },
+		func(f LogsFilter, v string) LogsFilter { f.Service = v; return f },
+	)
+}
+
+// NewEnvironmentFacet — то же самое для environment.
+func NewEnvironmentFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	return newSingleValueFacet(projectID, filter, values, tooMuchData,
+		func(f LogsFilter) string { return f.Environment },
+		func(f LogsFilter, v string) LogsFilter { f.Environment = v; return f },
+	)
+}
+
+// newSingleValueFacet — общая реализация NewServiceFacet/NewEnvironmentFacet:
+// оба фильтра одиночные (в отличие от мультивыбора severity), различаются
+// только тем, какое поле LogsFilter читают/пишут — get/set вынесены
+// параметрами, чтобы не дублировать саму сборку LogFacetValue дважды.
+func newSingleValueFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool, get func(LogsFilter) string, set func(LogsFilter, string) LogsFilter) LogFacet {
+	items := make([]LogFacetValue, len(values))
+	for i, v := range values {
+		active := get(filter) == v.Value
+		next := filter
+		if active {
+			next = set(next, "")
+		} else {
+			next = set(next, v.Value)
+		}
+		items[i] = LogFacetValue{
+			Label:  v.Value,
+			Count:  v.Count,
+			Href:   LogsPageURL(projectID, next, time.Time{}, 0),
+			Active: active,
+		}
+	}
+	return LogFacet{Values: items, TooMuchData: tooMuchData}
+}
+
+// logFacetSeverityURL — ссылка значения фасета severity: тоггл sev в
+// filter.Severity (добавить, если отсутствует; убрать, если уже выбран,
+// остальные выбранные уровни не трогая). Курсор пагинации сбрасывается
+// (LogsPageURL с before нулевым временем) — после смены фильтра прежний
+// курсор уже не имеет смысла (список изменился).
+func logFacetSeverityURL(projectID int64, filter LogsFilter, sev string) string {
+	next := filter
+	if severitySelected(filter.Severity, sev) {
+		out := make([]string, 0, len(filter.Severity))
+		for _, s := range filter.Severity {
+			if s != sev {
+				out = append(out, s)
+			}
+		}
+		next.Severity = out
+	} else {
+		next.Severity = append(append([]string{}, filter.Severity...), sev)
+	}
+	return LogsPageURL(projectID, next, time.Time{}, 0)
+}
+
+// logFacetValueClass — CSS-класс ссылки значения фасета: активное значение
+// получает модификатор -active (тот же приём, что perfStatusFilterClass у
+// вкладок perf-issues — helper с литеральными строками класса, а не
+// динамическая конкатенация).
+func logFacetValueClass(active bool) string {
+	if active {
+		return "logs-facet-value logs-facet-value-active"
+	}
+	return "logs-facet-value"
+}
+
 // LogRow — строка списка логов вместе с уже собранной для раскрытия
 // таблицей атрибутов.
 type LogRow struct {
@@ -160,11 +282,13 @@ func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) s
 // LogsScreen — GET /projects/{id}/logs: базовый просмотрщик логов (задача 2,
 // C2) — фильтры (severity/service/environment/тело/окно времени), список с
 // раскрытием строки, курсорная пагинация «показать старее», гистограмма
-// объёма по времени и severity (задача 3). loadFailed — не смогли прочитать
-// ClickHouse: список пуст, но страница не падает 500-й — вместо таблицы
-// дружелюбное сообщение. olderHref — пусто, если страницы дальше нет (см.
-// web.nextLogCursor).
-templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, userEmail string) {
+// объёма по времени и severity (задача 3), встроенные фасеты severity/
+// service/environment в сайдбаре (задача 4). loadFailed — не смогли
+// прочитать ClickHouse: список пуст, но страница не падает 500-й — вместо
+// таблицы дружелюбное сообщение (гистограмма и фасеты в этом случае тоже не
+// запрашиваются — см. web.logsList — и приходят уже в состоянии отказа).
+// olderHref — пусто, если страницы дальше нет (см. web.nextLogCursor).
+templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, facets LogFacets, userEmail string) {
 	@layout(i18n.T(ctx, "logs.title"), userEmail) {
 		<div class="logs">
 			<h1>{ i18n.T(ctx, "logs.title") }</h1>
@@ -192,42 +316,82 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 					@chartLegend(histogram.Legend)
 				</div>
 			}
-			<div id="logs-table">
-				if loadFailed {
-					@emptyState("file-text", "logs.error.title", "logs.error.body", "", "", 2)
-				} else if len(rows) == 0 && filter.Active {
-					@emptyState("file-text", "logs.empty.filter.title", "logs.empty.filter.body", "logs.empty.filter.cta", logsPath(projectID), 2)
-				} else if len(rows) == 0 {
-					@emptyState("file-text", "logs.empty.none.title", "logs.empty.none.body", "logs.empty.none.cta", projectSetupPath(projectID), 2)
-				} else {
-					<div class="card">
-						@scrollRegion("table-scroll", "logs.title") {
-							<table class="data-table">
-								<thead>
-									<tr>
-										<th scope="col">{ i18n.T(ctx, "logs.table.time") }</th>
-										<th scope="col">{ i18n.T(ctx, "logs.table.severity") }</th>
-										<th scope="col">{ i18n.T(ctx, "logs.table.service") }</th>
-										<th scope="col">{ i18n.T(ctx, "logs.table.body") }</th>
-									</tr>
-								</thead>
-								<tbody>
-									for _, row := range rows {
-										@logRowView(projectID, row)
-									}
-								</tbody>
-							</table>
+			<div class="logs-body">
+				<div id="logs-table">
+					if loadFailed {
+						@emptyState("file-text", "logs.error.title", "logs.error.body", "", "", 2)
+					} else if len(rows) == 0 && filter.Active {
+						@emptyState("file-text", "logs.empty.filter.title", "logs.empty.filter.body", "logs.empty.filter.cta", logsPath(projectID), 2)
+					} else if len(rows) == 0 {
+						@emptyState("file-text", "logs.empty.none.title", "logs.empty.none.body", "logs.empty.none.cta", projectSetupPath(projectID), 2)
+					} else {
+						<div class="card">
+							@scrollRegion("table-scroll", "logs.title") {
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th scope="col">{ i18n.T(ctx, "logs.table.time") }</th>
+											<th scope="col">{ i18n.T(ctx, "logs.table.severity") }</th>
+											<th scope="col">{ i18n.T(ctx, "logs.table.service") }</th>
+											<th scope="col">{ i18n.T(ctx, "logs.table.body") }</th>
+										</tr>
+									</thead>
+									<tbody>
+										for _, row := range rows {
+											@logRowView(projectID, row)
+										}
+									</tbody>
+								</table>
+							}
+						</div>
+						if olderHref != "" {
+							<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
+								<a href={ templ.URL(olderHref) }>{ i18n.T(ctx, "logs.older") }</a>
+							</nav>
 						}
-					</div>
-					if olderHref != "" {
-						<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
-							<a href={ templ.URL(olderHref) }>{ i18n.T(ctx, "logs.older") }</a>
-						</nav>
 					}
-				}
+				</div>
+				@logFacetsSidebar(facets)
 			</div>
 		</div>
 	}
+}
+
+// logFacetsSidebar — сайдбар встроенных фасетов (задача 4, C2): три секции
+// severity/service/environment, каждая — карточка со списком значений и
+// counts (logFacetSection). Рендерится всегда (даже когда все три секции
+// пусты/в состоянии отказа) — так сайдбар не прыгает по ширине между
+// перезагрузками страницы с разными фильтрами.
+templ logFacetsSidebar(facets LogFacets) {
+	<aside class="logs-facets" aria-label={ i18n.T(ctx, "logs.facet.title") }>
+		@logFacetSection("logs.facet.severity", facets.Severity)
+		@logFacetSection("logs.facet.service", facets.Service)
+		@logFacetSection("logs.facet.environment", facets.Environment)
+	</aside>
+}
+
+// logFacetSection — одна карточка сайдбара: заголовок + список значений с
+// counts, либо пометка (нет данных / слишком много данных — TooMuchData).
+// Каждое значение — обычная ссылка (logFacetValueClass/aria-current
+// показывают активность), работает без JS, как остальные фильтры экрана.
+templ logFacetSection(titleKey string, facet LogFacet) {
+	<section class="card logs-facet">
+		<h2 class="logs-facet-title">{ i18n.T(ctx, titleKey) }</h2>
+		if facet.TooMuchData {
+			<p class="logs-facet-note">{ i18n.T(ctx, "logs.facet.too_much_data") }</p>
+		} else if len(facet.Values) == 0 {
+			<p class="logs-facet-note">{ i18n.T(ctx, "logs.facet.empty") }</p>
+		} else {
+			<ul class="logs-facet-list">
+				for _, v := range facet.Values {
+					<li class="logs-facet-item">
+						<a class={ logFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Label }</a>
+						<span class="logs-facet-count">{ strconv.FormatInt(v.Count, 10) }</span>
+					</li>
+				}
+			</ul>
+		}
+	</section>
 }
 
 // logRowView — одна строка списка: свёрнутое превью тела разворачивается

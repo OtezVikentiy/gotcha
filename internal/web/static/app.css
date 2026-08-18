@@ -2320,6 +2320,87 @@ th {
 	margin-bottom: 16px;
 }
 
+/* Список логов + фасет-сайдбар (задача 4, C2): на мобильном одна колонка —
+   фасеты идут ПОСЛЕ списка в том же порядке, что и в DOM (см. logs.templ,
+   .logs-body), на широких экранах вторая узкая колонка справа. */
+.logs-body {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 16px;
+	align-items: start;
+}
+@media (min-width: 900px) {
+	.logs-body {
+		grid-template-columns: 1fr 260px;
+	}
+}
+.logs-facets {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+/* min-width:0 — без него дефолтный min-width:auto флекс-айтема (.logs-facet
+   секция внутри .logs-facets) не даёт длинному значению сжаться до ширины
+   сайдбара: text-overflow:ellipsis у .logs-facet-value тогда просто не
+   срабатывает, значение вылезает за карточку вместо усечения многоточием. */
+.logs-facet {
+	min-width: 0;
+}
+.logs-facet-title {
+	margin: 0 0 8px;
+	font-size: var(--fs-sm);
+	font-weight: 650;
+}
+.logs-facet-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.logs-facet-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+/* Значение фасета — интерактивная ссылка (клик добавляет/снимает фильтр),
+   поэтому граница активного состояния — --border-control (WCAG 1.4.11), а не
+   декоративный --border (см. комментарий у самой переменной в :root). */
+.logs-facet-value {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text);
+	text-decoration: none;
+	border-radius: var(--radius);
+	padding: 2px 6px;
+	margin: -2px -6px;
+}
+.logs-facet-value:hover {
+	background: var(--surface-2);
+}
+.logs-facet-value-active {
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	color: var(--accent);
+	border: 1px solid var(--border-control);
+	font-weight: 600;
+}
+.logs-facet-count {
+	flex: 0 0 auto;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
+}
+.logs-facet-note {
+	margin: 0;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
+
 /* Публичная статус-страница (/status/{slug}): свой layout, без шапки
    приложения — отсюда собственные отступы у main. */
 .status-page {

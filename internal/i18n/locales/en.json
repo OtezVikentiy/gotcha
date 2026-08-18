@@ -1304,6 +1304,12 @@
     "logs.error.body": "Log storage is temporarily unavailable. Try again in a moment.",
     "logs.older": "Show older",
     "logs.histogram.title": "Volume over time",
+    "logs.facet.title": "Facets",
+    "logs.facet.severity": "Severity",
+    "logs.facet.service": "Service",
+    "logs.facet.environment": "Environment",
+    "logs.facet.empty": "No data for the current filters",
+    "logs.facet.too_much_data": "Too much data, narrow the time range",
     "a11y.chart.logs_volume": "Log volume by time and severity chart"
   },
   "plurals": {

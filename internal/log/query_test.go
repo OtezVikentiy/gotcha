@@ -466,3 +466,183 @@ func TestQueryHistogram(t *testing.T) {
 		t.Fatalf("total = %d, want 10", total)
 	}
 }
+
+// facetCount — count() значения value в результате Facet, 0 если значения
+// вообще нет в срезе (facet ORDER BY count() DESC GROUP BY — отсутствующее
+// значение просто не встретилось в окне+фильтрах, это не ошибка теста).
+func facetCount(values []log.FacetValue, value string) int64 {
+	for _, v := range values {
+		if v.Value == value {
+			return v.Count
+		}
+	}
+	return 0
+}
+
+// TestQueryFacet — задача 4 плана C2: встроенные фасеты severity/service/
+// environment. Ключевая проверка — exclude-self: фасет severity игнорирует
+// СВОЙ фильтр (f.Severity), но применяет остальные (Service/Environment/...),
+// тогда как фасеты service/environment применяют ВСЕ фильтры без исключений
+// (включая severity) — иначе клик по невыбранному значению фасета не мог бы
+// расширить выборку обратно (счётчик всегда 0, раз строки уже отфильтрованы).
+func TestQueryFacet(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(76)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	from := base
+	to := base.Add(2 * time.Hour)
+
+	add := func(n int, sev, service, env string) {
+		for i := 0; i < n; i++ {
+			ts := base.Add(time.Duration(i) * time.Second)
+			w.Add(projectID, log.LogRecord{
+				Timestamp: ts, ObservedTS: ts, Severity: sev, Body: "x",
+				Service: service, Environment: env,
+			})
+		}
+	}
+	add(10, log.SevInfo, "web", "production")
+	add(3, log.SevError, "web", "production")
+	add(5, log.SevWarn, "api", "staging")
+	add(1, log.SevDebug, "worker", "production")
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+
+	q := log.NewQuery(conn)
+
+	t.Run("severity facet excludes its own filter", func(t *testing.T) {
+		got, err := q.Facet(ctx, projectID, log.ListFilter{From: from, To: to, Severity: []string{log.SevError}}, "severity")
+		if err != nil {
+			t.Fatalf("Facet: %v", err)
+		}
+		// exclude-self: собственный фильтр Severity=["error"] игнорируется —
+		// видны ВСЕ уровни, встретившиеся в окне, не только error.
+		if c := facetCount(got, log.SevInfo); c != 10 {
+			t.Fatalf("info count = %d, want 10 (%+v)", c, got)
+		}
+		if c := facetCount(got, log.SevWarn); c != 5 {
+			t.Fatalf("warn count = %d, want 5 (%+v)", c, got)
+		}
+		if c := facetCount(got, log.SevError); c != 3 {
+			t.Fatalf("error count = %d, want 3 (%+v)", c, got)
+		}
+		if c := facetCount(got, log.SevDebug); c != 1 {
+			t.Fatalf("debug count = %d, want 1 (%+v)", c, got)
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i-1].Count < got[i].Count {
+				t.Fatalf("not sorted count() DESC at %d: %+v", i, got)
+			}
+		}
+	})
+
+	t.Run("severity facet still applies other filters", func(t *testing.T) {
+		got, err := q.Facet(ctx, projectID, log.ListFilter{From: from, To: to, Service: "web"}, "severity")
+		if err != nil {
+			t.Fatalf("Facet: %v", err)
+		}
+		if c := facetCount(got, log.SevInfo); c != 10 {
+			t.Fatalf("info count = %d, want 10 (%+v)", c, got)
+		}
+		if c := facetCount(got, log.SevError); c != 3 {
+			t.Fatalf("error count = %d, want 3 (%+v)", c, got)
+		}
+		if c := facetCount(got, log.SevWarn); c != 0 {
+			t.Fatalf("warn count = %d, want 0 — service=web не должен пропускать warn (сервис api) (%+v)", c, got)
+		}
+	})
+
+	t.Run("service facet applies severity filter (no exclude-self outside own column)", func(t *testing.T) {
+		got, err := q.Facet(ctx, projectID, log.ListFilter{From: from, To: to, Severity: []string{log.SevError}}, "service")
+		if err != nil {
+			t.Fatalf("Facet: %v", err)
+		}
+		if len(got) != 1 || got[0].Value != "web" || got[0].Count != 3 {
+			t.Fatalf("service facet = %+v, want ровно [{web 3}]", got)
+		}
+	})
+
+	t.Run("environment facet", func(t *testing.T) {
+		got, err := q.Facet(ctx, projectID, log.ListFilter{From: from, To: to}, "environment")
+		if err != nil {
+			t.Fatalf("Facet: %v", err)
+		}
+		if c := facetCount(got, "production"); c != 14 {
+			t.Fatalf("production count = %d, want 14 (10 info + 3 error + 1 debug) (%+v)", c, got)
+		}
+		if c := facetCount(got, "staging"); c != 5 {
+			t.Fatalf("staging count = %d, want 5 (%+v)", c, got)
+		}
+	})
+
+	t.Run("invalid column rejected by whitelist", func(t *testing.T) {
+		_, err := q.Facet(ctx, projectID, log.ListFilter{From: from, To: to}, "body")
+		if err == nil {
+			t.Fatal("Facet(col=\"body\"): want error (не в whitelist), got nil")
+		}
+	})
+}
+
+// TestQueryFacetLimit — Facet отдаёт top-N по count() DESC (facetLimit=10),
+// а не все различающиеся значения колонки: 15 сервисов с УБЫВАЮЩИМ числом
+// строк (svc00 больше всех, svc14 меньше всех) — должны остаться ровно
+// svc00..svc09 в порядке убывания.
+func TestQueryFacetLimit(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(77)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	from := base
+	to := base.Add(time.Hour)
+
+	const n = 15
+	for i := 0; i < n; i++ {
+		count := n - i
+		svc := fmt.Sprintf("svc%02d", i)
+		for j := 0; j < count; j++ {
+			ts := base.Add(time.Duration(i*count+j) * time.Second)
+			w.Add(projectID, log.LogRecord{Timestamp: ts, ObservedTS: ts, Severity: log.SevInfo, Body: "x", Service: svc})
+		}
+	}
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+
+	q := log.NewQuery(conn)
+	got, err := q.Facet(ctx, projectID, log.ListFilter{From: from, To: to}, "service")
+	if err != nil {
+		t.Fatalf("Facet: %v", err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("len(got) = %d, want 10 (facetLimit): %+v", len(got), got)
+	}
+	for i, v := range got {
+		wantSvc := fmt.Sprintf("svc%02d", i)
+		wantCount := int64(n - i)
+		if v.Value != wantSvc || v.Count != wantCount {
+			t.Fatalf("got[%d] = %+v, want {%s %d}", i, v, wantSvc, wantCount)
+		}
+	}
+}
