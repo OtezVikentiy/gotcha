@@ -294,6 +294,24 @@ func TestQueryList(t *testing.T) {
 		}
 	})
 
+	// TieSkip из URL заклампен в самой List: гигантский tskip не превращается в
+	// LIMIT = limit + tskip (иначе одиночный GET материализует всё окно → OOM
+	// мультитенантного процесса, находка финального ревью C2). Отрицательный
+	// tskip тоже обнуляется (иначе отрицательный queryLimit роняет CH).
+	t.Run("TieSkip из URL заклампен — гигантский/отрицательный не амплифицирует LIMIT", func(t *testing.T) {
+		for _, tskip := range []int{2_000_000_000, -999_999} {
+			got, err := q.List(ctx, projectID3, log.ListFilter{
+				From: cursorFrom, To: cursorTo, Limit: 2, Before: cursorNew, TieSkip: tskip,
+			})
+			if err != nil {
+				t.Fatalf("List(tskip=%d): %v (кламп не сработал — отрицательный queryLimit?)", tskip, err)
+			}
+			if len(got) > 2 {
+				t.Fatalf("List(tskip=%d) вернул %d строк, ждём ≤ Limit(2) — LIMIT амплифицирован tskip", tskip, len(got))
+			}
+		}
+	})
+
 	// Проверяет фикс на «близнецах»: две строки с одинаковым timestamp и
 	// одинаковыми всеми скалярными полями (различаются только log_attributes)
 	// разведены по разным страницам (Limit=1) без дубля и без потери — второй

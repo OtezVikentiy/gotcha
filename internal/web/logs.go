@@ -457,6 +457,9 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) log.ListFilt
 		if ms, err := strconv.ParseInt(beforeMS, 10, 64); err == nil && ms > 0 {
 			f.Before = time.UnixMilli(ms).UTC()
 			f.TieSkip, _ = strconv.Atoi(q.Get("tskip")) // невалидное/пустое tskip — 0, что и так дефолт Atoi-ошибки
+			if f.TieSkip < 0 {
+				f.TieSkip = 0 // защита от отрицательного из URL; верхний потолок ставит сам log.List (maxListLimit)
+			}
 		}
 	}
 

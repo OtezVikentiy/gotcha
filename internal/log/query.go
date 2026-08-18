@@ -157,6 +157,19 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 
 	queryLimit := limit
 	if !f.Before.IsZero() {
+		// TieSkip приходит из URL (внешний слой) и ОБЯЗАН клампиться здесь, как
+		// limit (List не полагается на вызывающего, см. maxListLimit выше): без
+		// потолка queryLimit = limit + TieSkip снимает LIMIT и материализует всё
+		// окно в память до обрезки out[:limit] — одиночный GET с гигантским
+		// tskip кладёт мультитенантный процесс OOM. Легитимное накопление тай
+		// крошечно (строки одной миллисекунды, при высоком rps единицы), так что
+		// потолок maxListLimit с огромным запасом безопасен; отрицательный tskip
+		// (дал бы отрицательный queryLimit → ошибка CH) обнуляется.
+		if f.TieSkip < 0 {
+			f.TieSkip = 0
+		} else if f.TieSkip > maxListLimit {
+			f.TieSkip = maxListLimit
+		}
 		where += " AND timestamp <= toDateTime64(?, 3)"
 		args = append(args, chTimeArg(f.Before))
 		queryLimit = limit + f.TieSkip
