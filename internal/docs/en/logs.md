@@ -20,8 +20,10 @@ The filter form above the list needs no JavaScript (a plain GET form —
   (presets 1h/24h/7d/30d plus a custom range). For logs, the window is also
   clamped to the retention period (`GOTCHA_LOG_RETENTION_DAYS`, 14 days by
   default — see [Configuration](/docs/configuration)): picking a preset wider
-  than the actual TTL just yields a shorter effective window, since a query
-  past retention would return nothing anyway.
+  than the actual TTL yields a shorter effective window, since a query past
+  retention would return nothing anyway. The screen makes this explicit — a
+  "window clamped to the log retention period (N days)" note next to the
+  filters, not a silently shorter list.
 - **Severity** — a multi-select over the six canonical levels (`trace` …
   `fatal`, see [canonicalization](#what-gets-canonicalized-in-severity)
   below).
@@ -58,9 +60,14 @@ keep working.
 
 The attribute search field in the sidebar suggests keys as you type
 (typeahead): start typing a prefix (e.g. `http.`) and matching keys appear
-(`http.method`, `http.status_code`, …) with their frequency. This is a
-progressive enhancement over a plain text field — without JavaScript the
-field works as a regular text input, the autocomplete simply doesn't load.
+(`http.method`, `http.status_code`, …) with their frequency. It searches the
+same time window as the current list filter (the preset/custom range above),
+not a separate fixed window — suggestions match what's visible in the
+sidebar and the list. This is a JS enhancement on top of the "Attributes"
+sidebar facet, not a separate form: without JavaScript the field itself is
+inactive (it submits nothing), but the keys are still available — listed
+with their counts right in the sidebar, each expandable by click into its
+top values (see above).
 
 ### Pinpoint attribute filters
 

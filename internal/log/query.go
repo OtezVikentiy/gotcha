@@ -192,6 +192,14 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	// же миллисекунду — у logs нет уникального id, и такие строки неотличимы
 	// друг от друга по содержимому, так что дубль/потеря одной из них не
 	// заметны: контент на экране тот же.
+	// SETTINGS max_execution_time = 20 (тот же литеральный приём, что у
+	// Facet/AttrKeys/AttrValues ниже, только запас больше: список — единственный
+	// из запросов логов, где полнотекст positionCaseInsensitiveUTF8 сочетается с
+	// широким окном И это основной путь экрана, не вспомогательный фасет, так
+	// что 20с вместо 5с). Без потолка тяжёлый запрос держит соединение до
+	// дефолтных 60с общего CH-пула, которым делятся трейсы/метрики — долгий
+	// список логов подвесил бы соседние разделы. При таймауте List вернёт
+	// ошибку — logsList уже показывает её дружелюбно (loadFailed), а не 500-й.
 	rows, err := q.conn.Query(ctx, `
 		SELECT timestamp, observed_ts, severity, severity_number, severity_text,
 			body, trace_id, span_id, log_attributes, resource_attrs, service, environment
@@ -200,7 +208,8 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 		ORDER BY timestamp DESC,
 			cityHash64(observed_ts, severity_number, severity_text, body, trace_id, span_id,
 				toString(log_attributes), toString(resource_attrs), service, environment) DESC
-		LIMIT ?`, args...)
+		LIMIT ?
+		SETTINGS max_execution_time = 20`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("log: list: %w", err)
 	}
@@ -291,12 +300,17 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 		args = append(args, a.Key, a.Value)
 	}
 
+	// SETTINGS max_execution_time = 10 (тот же приём, что у List/Facet выше и
+	// ниже) — Histogram считает по ВСЕМУ окну без LIMIT (см. докблок), поэтому
+	// без потолка держит CH-соединение общего пула до дефолтных 60с. При
+	// таймауте logsHistogram уже деградирует дружелюбно (Empty=true).
 	rows, err := q.conn.Query(ctx, `
 		SELECT toStartOfInterval(timestamp, INTERVAL ? second) AS t, severity, count() AS c
 		FROM logs
 		WHERE `+where+`
 		GROUP BY t, severity
-		ORDER BY t`, args...)
+		ORDER BY t
+		SETTINGS max_execution_time = 10`, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("log: histogram: %w", err)
 	}

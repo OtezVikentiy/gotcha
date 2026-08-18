@@ -45,14 +45,6 @@ const (
 // совпадений с непустым q может быть длиннее без потери релевантности.
 const logsAttrKeysAutocompleteLimit = 20
 
-// logsAttrKeysAutocompleteWindow — окно, за которое ищутся ключи для
-// автокомплита (задача 6, §6 спеки: «окно = последние 24ч (или текущее окно
-// фильтра, если передано)»). Эндпоинт вызывается отдельным fetch без
-// остальных query-параметров экрана (logs.js бьёт только по q=<prefix>), так
-// что текущее окно фильтра ему недоступно — фиксированные последние 24ч,
-// тот же дефолт, что и у самого экрана логов (resolveTimeRange(...,"24h")).
-const logsAttrKeysAutocompleteWindow = 24 * time.Hour
-
 // attrKeysCacheTTL — время жизни одной записи кеша автокомплита ключей
 // атрибутов (задача 6, C2, §6 спеки): «кеш per-project ~60с — авто-
 // обнаружение ключей не обязано быть свежим до секунды». Тот же принцип, что
@@ -61,20 +53,36 @@ const logsAttrKeysAutocompleteWindow = 24 * time.Hour
 const attrKeysCacheTTL = 60 * time.Second
 
 // maxAttrKeysCacheEntries — верхняя граница числа кешируемых комбинаций
-// (projectID, prefix). prefix вводит пользователь произвольным текстом —
-// без потолка поток разных префиксов раздул бы карту неограниченно (тот же
-// класс дефекта, что maxKeyCacheEntries/maxRateLimitKeys в internal/ingest).
-// При переполнении карта очищается целиком: записи короткоживущие (TTL 60с)
-// и дёшевы для пересчёта, ярусное вытеснение как у KeyCache здесь не того
-// стоит.
+// (projectID, prefix, окно). prefix вводит пользователь произвольным
+// текстом — без потолка поток разных префиксов раздул бы карту неограниченно
+// (тот же класс дефекта, что maxKeyCacheEntries/maxRateLimitKeys в
+// internal/ingest). При переполнении карта очищается целиком: записи
+// короткоживущие (TTL 60с) и дёшевы для пересчёта, ярусное вытеснение как у
+// KeyCache здесь не того стоит.
 const maxAttrKeysCacheEntries = 10000
 
-// attrKeysCacheKey — ключ кеша: пара (projectID, prefix) — тот же набор, что
-// определяет результат AttrKeys для автокомплита (окно фиксировано, см.
-// logsAttrKeysAutocompleteWindow).
+// attrKeysCacheKey — ключ кеша: (projectID, prefix, окно) — тот же набор,
+// что определяет результат AttrKeys для автокомплита. period/start/end —
+// СЫРЫЕ значения query-параметров окна (не резолвленные абсолютные
+// timestamps): при периоде-пресете ("24h" и т.п.) они стабильны между
+// последовательными нажатиями клавиш в поле поиска (в отличие от
+// h.resolveTimeRange(...).From, который на каждый вызов пересчитывается от
+// time.Now() и никогда не совпал бы буквально — кеш не бил бы вовсе).
+// Правка ревью UX Important #3: без окна в ключе автокомплит с ДРУГИМ окном
+// фильтра мог получить закешированный ответ от предыдущего окна.
 type attrKeysCacheKey struct {
 	projectID int64
 	prefix    string
+	period    string
+	start     string
+	end       string
+}
+
+// attrKeysWindowKey извлекает сырые значения окна из query-параметров
+// запроса (period/start/end — тот же набор, что читает parseTimeRange) для
+// ключа кеша attrKeysCache.
+func attrKeysWindowKey(q url.Values) (period, start, end string) {
+	return q.Get("period"), q.Get("start"), q.Get("end")
 }
 
 type attrKeysCacheEntry struct {
@@ -82,7 +90,7 @@ type attrKeysCacheEntry struct {
 	expires time.Time
 }
 
-// attrKeysCache — per-(projectID, prefix) кеш ответов AttrKeys для
+// attrKeysCache — per-(projectID, prefix, окно) кеш ответов AttrKeys для
 // автокомплита (задача 6, C2). now инжектируется для тестов без реального
 // sleep (тот же приём, что KeyCache.now в internal/ingest/auth.go).
 type attrKeysCache struct {
@@ -100,8 +108,8 @@ func newAttrKeysCache() *attrKeysCache {
 }
 
 // get возвращает закешированные значения, если запись есть и не истекла.
-func (c *attrKeysCache) get(projectID int64, prefix string) ([]log.FacetValue, bool) {
-	key := attrKeysCacheKey{projectID: projectID, prefix: prefix}
+func (c *attrKeysCache) get(projectID int64, prefix, period, start, end string) ([]log.FacetValue, bool) {
+	key := attrKeysCacheKey{projectID: projectID, prefix: prefix, period: period, start: start, end: end}
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -114,8 +122,8 @@ func (c *attrKeysCache) get(projectID int64, prefix string) ([]log.FacetValue, b
 
 // put кладёт результат в кеш на attrKeysCacheTTL, вытесняя карту целиком при
 // переполнении (см. maxAttrKeysCacheEntries).
-func (c *attrKeysCache) put(projectID int64, prefix string, values []log.FacetValue) {
-	key := attrKeysCacheKey{projectID: projectID, prefix: prefix}
+func (c *attrKeysCache) put(projectID int64, prefix, period, start, end string, values []log.FacetValue) {
+	key := attrKeysCacheKey{projectID: projectID, prefix: prefix, period: period, start: start, end: end}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= maxAttrKeysCacheEntries {
@@ -167,7 +175,7 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	// обрезанное окно, это осознанное упрощение MVP (см. бриф задачи 2).
 	rng := h.resolveTimeRange(w, r, "24h")
 	q := r.URL.Query()
-	f := parseLogFilter(q, rng, h.LogRetentionDays)
+	f, rangeClamped := parseLogFilter(q, rng, h.LogRetentionDays)
 
 	rows, listErr := h.LogQuery.List(r.Context(), projectID, f)
 	// Ошибка чтения ClickHouse — НЕ 500: логи вспомогательный раздел, который
@@ -195,6 +203,9 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
 			rng.Key != "24h",
+		Facet:         q.Get("facet"),
+		RangeClamped:  rangeClamped,
+		RetentionDays: h.LogRetentionDays,
 	}
 
 	var olderHref string
@@ -218,7 +229,7 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		histogram = h.logsHistogram(r.Context(), projectID, f)
-		facets = h.logsFacets(r.Context(), projectID, f, filter, q.Get("facet"))
+		facets = h.logsFacets(r.Context(), projectID, f, filter, filter.Facet)
 	}
 
 	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r)).Render(r.Context(), w)
@@ -232,12 +243,17 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 // частоты ключей log_attributes), что и сам список логов, изоляция проекта
 // обязана быть той же.
 //
-// Окно фиксировано (logsAttrKeysAutocompleteWindow, последние 24ч) —
-// текущее окно фильтра экрана сюда не передаётся, JS бьёт отдельным fetch
-// только с q=<prefix>. Результат кешируется на attrKeysCacheTTL per
-// (projectID, prefix): авто-обнаружение ключей не обязано быть свежим до
-// секунды, а быстрый набор текста иначе бил бы по ClickHouse на каждый
-// символ (клиентский дебаунс сглаживает, но не исключает гонки/повторы).
+// Окно — то же, что у самого списка (правка ревью UX Important #3: раньше
+// было жёстко «последние 24ч», из-за чего подсказки не совпадали с сайдбаром
+// на любом другом пресете): logs.js дописывает текущие period=/start=/end=
+// из window.location к fetch (см. static/logs.js), h.resolveTimeRange
+// резолвит их тем же приёмом, что и logsList (явный query → cookie →
+// дефолт "24h" — фолбэк именно для случая, когда параметров окна нет, как и
+// просил бриф), затем окно клампится retention'ом так же, как в
+// parseLogFilter. Результат кешируется на attrKeysCacheTTL per (projectID,
+// prefix, окно) — авто-обнаружение ключей не обязано быть свежим до секунды,
+// а быстрый набор текста иначе бил бы по ClickHouse на каждый символ
+// (клиентский дебаунс сглаживает, но не исключает гонки/повторы).
 func (h *Handler) logsAttrKeys(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -263,16 +279,18 @@ func (h *Handler) logsAttrKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prefix := r.URL.Query().Get("q")
+	period, start, end := attrKeysWindowKey(r.URL.Query())
 
 	if h.attrKeysCache != nil {
-		if values, hit := h.attrKeysCache.get(projectID, prefix); hit {
+		if values, hit := h.attrKeysCache.get(projectID, prefix, period, start, end); hit {
 			writeAttrKeysJSON(w, values)
 			return
 		}
 	}
 
-	now := time.Now().UTC()
-	f := log.ListFilter{From: now.Add(-logsAttrKeysAutocompleteWindow), To: now}
+	rng := h.resolveTimeRange(w, r, "24h")
+	from, _ := clampLogRetention(rng.From, h.LogRetentionDays)
+	f := log.ListFilter{From: from, To: rng.To}
 	values, err := h.LogQuery.AttrKeys(r.Context(), projectID, f, prefix, logsAttrKeysAutocompleteLimit)
 	if err != nil {
 		// Та же деградация, что и у logsAttrFacets: предупреждение в лог,
@@ -284,7 +302,7 @@ func (h *Handler) logsAttrKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.attrKeysCache != nil {
-		h.attrKeysCache.put(projectID, prefix, values)
+		h.attrKeysCache.put(projectID, prefix, period, start, end, values)
 	}
 	writeAttrKeysJSON(w, values)
 }
@@ -417,6 +435,21 @@ func logsHistogramHasData(series map[string][]int64) bool {
 	return false
 }
 
+// clampLogRetention обрезает from снизу сроком хранения логов — общая логика
+// для окна списка (parseLogFilter) и окна автокомплита ключей атрибутов
+// (logsAttrKeys, правка ревью UX Important #3): запрос за окно шире TTL
+// сканирует партиции ClickHouse, в которых данных гарантированно уже нет.
+// retentionDays<=0 — хранение бессрочно, кламп невозможен.
+func clampLogRetention(from time.Time, retentionDays int) (clampedFrom time.Time, clamped bool) {
+	if retentionDays <= 0 {
+		return from, false
+	}
+	if cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour); from.Before(cutoff) {
+		return cutoff, true
+	}
+	return from, false
+}
+
 // parseLogFilter собирает log.ListFilter из query-параметров и уже
 // резолвленного окна времени rng (h.resolveTimeRange(w,r,"24h") — см.
 // logsList). Вынесена в чистую функцию без (h, w): resolveTimeRange
@@ -424,15 +457,16 @@ func logsHistogramHasData(series map[string][]int64) bool {
 // окна), а результирующий rng нужен ОБА раза — и для фильтра List, и для
 // вью-модели формы (templates.LogsFilter.Range) — так что дублировать вызов
 // незачем.
-func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) log.ListFilter {
-	from := rng.From
-	if retentionDays > 0 {
-		if cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour); from.Before(cutoff) {
-			from = cutoff
-		}
-	}
+//
+// clamped (второй результат, правка ревью UX Important #2 / ops P2) — true,
+// если выбранный пресет (rng.From) урезан снизу сроком хранения: пользователь
+// видит в селекте, например, «30d», а фактически запрошено окно короче
+// retentionDays — logsList прокидывает флаг в LogsFilter, чтобы экран
+// показал явную подпись вместо молчаливо усечённого списка.
+func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListFilter, clamped bool) {
+	from, clamped := clampLogRetention(rng.From, retentionDays)
 
-	f := log.ListFilter{
+	f = log.ListFilter{
 		From:        from,
 		To:          rng.To,
 		Service:     q.Get("service"),
@@ -463,7 +497,7 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) log.ListFilt
 		}
 	}
 
-	return f
+	return f, clamped
 }
 
 // parseLogAttrFilter разбирает значение повторяющегося ?attr=[res:]key:value:

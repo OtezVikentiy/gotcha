@@ -1,7 +1,9 @@
 package templates
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
@@ -102,5 +104,36 @@ func TestNewAttrFacetsNoExpandedKey(t *testing.T) {
 	}
 	if got.Keys[0].Expanded {
 		t.Errorf("без ?facet= ни один элемент не должен быть раскрыт: %+v", got.Keys[0])
+	}
+}
+
+// TestLogsPageURLPreservesFacet — правка ревью UX Minor #1: раскрытый
+// атрибут-фасет (?facet=<key>) должен сохраняться в ссылке «показать
+// старее» — иначе раскрытая секция сайдбара схлопывалась бы при переходе на
+// следующую страницу списка.
+func TestLogsPageURLPreservesFacet(t *testing.T) {
+	got := LogsPageURL(1, LogsFilter{Facet: "http.method"}, time.UnixMilli(1000), 2)
+	if !strings.Contains(got, "facet=http.method") {
+		t.Fatalf("LogsPageURL(...) = %q, want facet=http.method сохранённым", got)
+	}
+}
+
+// TestLogsPageURLNoFacetWhenEmpty — пустой Filter.Facet не добавляет
+// параметр в URL (обычная ссылка без раскрытого атрибут-фасета).
+func TestLogsPageURLNoFacetWhenEmpty(t *testing.T) {
+	got := LogsPageURL(1, LogsFilter{}, time.Time{}, 0)
+	if strings.Contains(got, "facet=") {
+		t.Fatalf("LogsPageURL(...) = %q, facet не должен появляться без Filter.Facet", got)
+	}
+}
+
+// TestLogTracePath — правка ревью UX Important #4: trace_id лога должен
+// вести на реальную страницу трейса (/traces/{trace_id}), не на общий
+// раздел «Производительность».
+func TestLogTracePath(t *testing.T) {
+	got := logTracePath("abc123")
+	want := "/traces/abc123"
+	if got != want {
+		t.Fatalf("logTracePath(%q) = %q, want %q", "abc123", got, want)
 	}
 }

@@ -4,11 +4,15 @@
  * базовая страница логов не ломается, просто не подсказывает.
  *
  * На ввод (дебаунс ~200мс) бьёт fetch по data-attr-keys-url?q=<prefix>
- * (web.logsAttrKeys) и рисует выпадашку найденных ключей со счётчиками.
- * Клик по подсказке — обычная ссылка на data-attr-base-href с добавленным
- * facet=<key>: раскрывает тот же сайдбар-фасет, что и клик по ключу из
- * самого сайдбара (см. logAttrKeyFacetURL в logs.templ), в том числе для
- * ключей ВНЕ топ-N сайдбара (carry-fix задачи 6, см. NewAttrFacets).
+ * (web.logsAttrKeys) и рисует выпадашку найденных ключей со счётчиками. К
+ * запросу добавляются текущие period=/start=/end= из window.location
+ * (правка ревью UX Important #3) — иначе автокомплит искал ключи в своём
+ * фиксированном окне, а не в том, что выбрано в фильтре текущей страницы, и
+ * подсказывал ключи, которых в видимой выборке нет. Клик по подсказке —
+ * обычная ссылка на data-attr-base-href с добавленным facet=<key>: раскрывает
+ * тот же сайдбар-фасет, что и клик по ключу из самого сайдбара (см.
+ * logAttrKeyFacetURL в logs.templ), в том числе для ключей ВНЕ топ-N
+ * сайдбара (carry-fix задачи 6, см. NewAttrFacets).
  *
  * CSP строгий: внешний файл, никакого inline. */
 (function () {
@@ -38,6 +42,22 @@
 		function facetHref(key) {
 			var sep = baseHref.indexOf("?") === -1 ? "?" : "&";
 			return baseHref + sep + "facet=" + encodeURIComponent(key);
+		}
+
+		// windowRangeQuery — текущее окно фильтра страницы (period=/start=/end=
+		// из адресной строки), дописывается к fetch за ключами: без этого
+		// web.logsAttrKeys не может узнать, какое окно выбрано на странице, и
+		// откатывается на дефолт (см. её докблок).
+		function windowRangeQuery() {
+			var params = new URLSearchParams(window.location.search);
+			var q = "";
+			["period", "start", "end"].forEach(function (name) {
+				var v = params.get(name);
+				if (v) {
+					q += "&" + name + "=" + encodeURIComponent(v);
+				}
+			});
+			return q;
 		}
 
 		function render(items) {
@@ -78,7 +98,7 @@
 			if (controller) {
 				opts.signal = controller.signal;
 			}
-			fetch(keysURL + "?q=" + encodeURIComponent(prefix), opts)
+			fetch(keysURL + "?q=" + encodeURIComponent(prefix) + windowRangeQuery(), opts)
 				.then(function (r) {
 					if (!r.ok) {
 						throw new Error("attr-keys: bad status " + r.status);

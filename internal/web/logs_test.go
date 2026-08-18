@@ -180,6 +180,94 @@ func TestWebLogsList(t *testing.T) {
 	}
 }
 
+// TestWebLogsListTraceLink — правка ревью UX Important #4: trace_id
+// раскрытой строки лога должен вести на реальную страницу трейса
+// (/traces/{trace_id}), а не на общий раздел «Производительность» без
+// пометки, и появляться независимо от span_id (раньше ссылка требовала ОБА
+// поля, хотя у самого трейса своей страницы достаточно trace_id). Заодно
+// (правка Minor #2) — таблица атрибутов раскрытой строки должна получить
+// заголовок (мёртвый до этой правки ключ "logs.table.attributes").
+func TestWebLogsListTraceLink(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-tracelink-owner@example.com", "logs-tracelink-co", "logs-tracelink-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
+			Severity: log.SevInfo, Body: "row-with-trace", Service: "api",
+			TraceID:       "trace-abc-123", // без SpanID — ссылка обязана появиться и так
+			LogAttributes: map[string]string{"http.method": "GET"},
+		},
+	)
+
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, `href="/traces/trace-abc-123"`) {
+		t.Errorf("trace_id должен вести на /traces/trace-abc-123: %s", text)
+	}
+	// Именно строка trace_id (не вся страница — в rail-навигации всегда есть
+	// своя ссылка "Транзакции" на /projects/{id}/performance, это отдельное
+	// и легитимное) не должна вести на общий раздел без пометки.
+	i := strings.Index(text, `class="log-row-trace"`)
+	if i == -1 {
+		t.Fatalf("не нашли блок log-row-trace: %s", text)
+	}
+	traceBlock := text[i : i+300]
+	if strings.Contains(traceBlock, "/performance") {
+		t.Errorf("trace_id не должен вести на общий раздел «Производительность» без пометки: %s", traceBlock)
+	}
+	if !strings.Contains(text, `<h4 class="ctx-title">`+html.EscapeString("Атрибуты")+`</h4>`) {
+		t.Errorf("таблица атрибутов раскрытой строки должна получить заголовок «Атрибуты»: %s", text)
+	}
+}
+
+// TestWebLogsListRangeClamped — правка ревью UX Important #2 / ops P2:
+// выбранный пресет окна шире срока хранения логов должен показывать явную
+// подпись о клампе, а не молча урезанный список без объяснения.
+func TestWebLogsListRangeClamped(t *testing.T) {
+	s := newLogsStack(t, true)
+	s.h.LogRetentionDays = 3
+	_, ownerCookie, project := newLogsProject(t, s, "logs-clamp-owner@example.com", "logs-clamp-co", "logs-clamp-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute), Severity: log.SevInfo, Body: "row-recent", Service: "api"},
+	)
+
+	base := logsBasePath(project.ID)
+
+	// period=30d шире retentionDays=3 — подпись обязана появиться.
+	resp := getWithCookie(t, s.srv, base+"?period=30d", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?period=30d status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, "logs-range-clamped") {
+		t.Errorf("period=30d при retentionDays=3 должен показать подпись о клампе: %s", text)
+	}
+	if !strings.Contains(text, "3 дн.") {
+		t.Errorf("подпись о клампе должна упомянуть retentionDays=3 (i18n-подстановка {days}): %s", text)
+	}
+
+	// period=1h короче retentionDays=3 — клампа нет, подписи тоже.
+	resp = getWithCookie(t, s.srv, base+"?period=1h", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text = string(body)
+	if strings.Contains(text, "logs-range-clamped") {
+		t.Errorf("period=1h короче retentionDays=3, подписи о клампе быть не должно: %s", text)
+	}
+}
+
 // TestWebLogsListEmptyStates — оба пустых состояния: проект без единого лога
 // («logs.empty.none») и проект с логами, но фильтр ничего не оставил
 // («logs.empty.filter»).
@@ -786,6 +874,76 @@ func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 	}
 	if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, "/login") {
 		t.Errorf("unauthenticated redirect Location = %q, want prefix /login", loc)
+	}
+}
+
+// TestWebLogsAttrKeysAutocompleteWindow — правка ревью UX Important #3 (§6
+// спеки, C2): автокомплит ключей атрибутов ищет в ТЕКУЩЕМ окне фильтра
+// (period=/start=/end= из адресной строки, дописывает logs.js), а не в
+// фиксированных последних 24ч. Узкое окно (period=1h) не должно вернуть
+// ключ записи трёхчасовой давности — иначе подсказка вела бы к ключу,
+// которого в видимой при этом окне выборке нет; широкое окно (7d) видит
+// обе записи.
+func TestWebLogsAttrKeysAutocompleteWindow(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrkeys-window-owner@example.com", "logs-attrkeys-window-co", "logs-attrkeys-window-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
+			Severity: log.SevInfo, Body: "row-recent", Service: "api",
+			LogAttributes: map[string]string{"recent.key": "1"},
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-3 * time.Hour), ObservedTS: now.Add(-3 * time.Hour),
+			Severity: log.SevInfo, Body: "row-old", Service: "api",
+			LogAttributes: map[string]string{"old.key": "1"},
+		},
+	)
+
+	base := logsBasePath(project.ID) + "/attr-keys"
+
+	// Узкое окно (последний час) — виден только recent.key.
+	resp := getWithCookie(t, s.srv, base+"?period=1h", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?period=1h status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	var got []attrKeyJSON
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("json.Unmarshal(%s): %v", body, err)
+	}
+	byKey := map[string]int64{}
+	for _, it := range got {
+		byKey[it.Key] = it.Count
+	}
+	if _, ok := byKey["old.key"]; ok {
+		t.Errorf("period=1h не должен вернуть old.key (запись за пределами окна): %+v", got)
+	}
+	if _, ok := byKey["recent.key"]; !ok {
+		t.Errorf("period=1h должен вернуть recent.key: %+v", got)
+	}
+
+	// Широкое окно (7d) — виден и старый ключ тоже (и другой ключ кеша, чем у
+	// period=1h выше — не должно склеиться с уже закешированным ответом).
+	resp = getWithCookie(t, s.srv, base+"?period=7d", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	got = nil
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("json.Unmarshal(%s): %v", body, err)
+	}
+	byKey = map[string]int64{}
+	for _, it := range got {
+		byKey[it.Key] = it.Count
+	}
+	if _, ok := byKey["old.key"]; !ok {
+		t.Errorf("period=7d должен вернуть old.key тоже: %+v", got)
+	}
+	if _, ok := byKey["recent.key"]; !ok {
+		t.Errorf("period=7d должен вернуть recent.key тоже: %+v", got)
 	}
 }
 

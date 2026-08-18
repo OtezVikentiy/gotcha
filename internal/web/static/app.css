@@ -1119,7 +1119,7 @@ button:hover {
 }
 
 /* Приглушённые пояснительные абзацы (подсказки полей, заметки о лимитах). */
-.hint, .apdex-note, .perf-cap-note, .trace-cap-note, .retention-notice {
+.hint, .apdex-note, .perf-cap-note, .trace-cap-note, .retention-notice, .logs-range-clamped {
 	color: var(--text-dim);
 	font-size: var(--fs-sm);
 	margin: 4px 0;
