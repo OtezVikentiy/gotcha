@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"encoding/json"
 	"html"
 	"io"
 	"net/http"
@@ -690,5 +691,193 @@ func TestWebLogsListNilLogQuery404(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("h.LogQuery=nil status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// attrKeyJSON — форма одного элемента ответа logsAttrKeys (см.
+// web.attrKeyJSON) — тест собственную копию не импортирует (неэкспортируемый
+// тип другого пакета), декодирует в такую же структуру по контракту JSON.
+type attrKeyJSON struct {
+	Key   string `json:"key"`
+	Count int64  `json:"count"`
+}
+
+// TestWebLogsAttrKeysAutocomplete — задача 6 плана C2, §6 спеки: JSON-
+// эндпоинт GET /projects/{id}/logs/attr-keys?q=<prefix> фильтрует по
+// префиксу ключа, чужой проект → 404, неавторизованный → редирект на
+// /login, стенд без проводки логов (h.LogQuery==nil) → 404 (тот же гейт,
+// что у самого списка).
+func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrkeys-owner@example.com", "logs-attrkeys-co", "logs-attrkeys-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
+			Severity: log.SevInfo, Body: "row-1", Service: "api",
+			LogAttributes: map[string]string{"http.method": "GET", "http.status_code": "200"},
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-2 * time.Minute), ObservedTS: now.Add(-2 * time.Minute),
+			Severity: log.SevInfo, Body: "row-2", Service: "api",
+			LogAttributes: map[string]string{"db.statement": "SELECT 1"},
+		},
+	)
+
+	base := logsBasePath(project.ID) + "/attr-keys"
+
+	// Префикс "http." отфильтровывает db.statement.
+	resp := getWithCookie(t, s.srv, base+"?q=http.", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?q=http. status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var got []attrKeyJSON
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("json.Unmarshal(%s): %v", body, err)
+	}
+	byKey := map[string]int64{}
+	for _, it := range got {
+		byKey[it.Key] = it.Count
+	}
+	if byKey["http.method"] != 1 || byKey["http.status_code"] != 1 {
+		t.Errorf("attr-keys q=http. = %+v, want http.method=1 и http.status_code=1", got)
+	}
+	if _, ok := byKey["db.statement"]; ok {
+		t.Errorf("attr-keys q=http. не должен вернуть db.statement (не совпадает по префиксу): %+v", got)
+	}
+
+	// Без q — все обнаруженные ключи, включая db.statement.
+	resp = getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	got = nil
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("json.Unmarshal(%s): %v", body, err)
+	}
+	byKey = map[string]int64{}
+	for _, it := range got {
+		byKey[it.Key] = it.Count
+	}
+	if _, ok := byKey["db.statement"]; !ok {
+		t.Errorf("attr-keys без q должен вернуть db.statement тоже: %+v", got)
+	}
+
+	// Чужой (не член организации) → 404.
+	_, outsider := orgSettingsRegister(t, s.auth, "logs-attrkeys-outsider@example.com")
+	resp = getWithCookie(t, s.srv, base+"?q=http.", outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider status = %d, want 404", resp.StatusCode)
+	}
+
+	// Неавторизованный → редирект на /login.
+	resp = getWithCookie(t, s.srv, base+"?q=http.", nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("unauthenticated status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, "/login") {
+		t.Errorf("unauthenticated redirect Location = %q, want prefix /login", loc)
+	}
+}
+
+// TestWebLogsAttrKeysAutocompleteNilLogQuery404 — тот же гейт, что у
+// logsList: без проводки логов эндпоинт отдаёт 404, а не паникует.
+func TestWebLogsAttrKeysAutocompleteNilLogQuery404(t *testing.T) {
+	s := newLogsStack(t, false)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrkeys-noquery-owner@example.com", "logs-attrkeys-noquery-co", "logs-attrkeys-noquery-proj")
+
+	resp := getWithCookie(t, s.srv, logsBasePath(project.ID)+"/attr-keys?q=a", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("h.LogQuery=nil status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebLogsAttrFacetsExpandedKeyOutsideTop — carry-fix из ревью задачи T5
+// (§6 спеки, задача 6): раскрытый в URL ключ (?facet=<key>), найденный
+// автокомплитом, но не входящий в топ-N сайдбара (logsAttrKeysLimit=20),
+// всё равно должен посчитаться и отрендериться со своими значениями — иначе
+// «кликнул из автокомплита — ничего не раскрылось» (см. NewAttrFacets в
+// logs.templ). Здесь topN намеренно исчерпан 20 РАЗНЫМИ ключами большей
+// частоты, а искомый rare.key — 21-й, редкий, гарантированно вне топа.
+func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrtop-owner@example.com", "logs-attrtop-co", "logs-attrtop-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	var records []log.LogRecord
+	// 20 частых ключей (по 3 записи каждый) занимают весь топ сайдбара.
+	for i := 0; i < 20; i++ {
+		key := "common.key" + strconv.Itoa(i)
+		for j := 0; j < 3; j++ {
+			records = append(records, log.LogRecord{
+				Timestamp: now.Add(-time.Duration(i*3+j+1) * time.Minute), ObservedTS: now,
+				Severity: log.SevInfo, Body: "row-common", Service: "api",
+				LogAttributes: map[string]string{key: "v"},
+			})
+		}
+	}
+	// rare.key — редкий, один раз, гарантированно вне топ-20 по count DESC.
+	records = append(records, log.LogRecord{
+		Timestamp: now.Add(-500 * time.Millisecond), ObservedTS: now,
+		Severity: log.SevInfo, Body: "row-rare", Service: "api",
+		LogAttributes: map[string]string{"rare.key": "rare-value"},
+	})
+	s.seedLogs(t, project.ID, records...)
+
+	// Сайдбар не показывает rare.key в списке ключей (он вне топ-20).
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	attrItems := logFacetItems(t, string(body), 3)
+	if _, ok := findFacetItem(attrItems, "rare.key"); ok {
+		t.Fatalf("rare.key не должен быть виден в топ-N сайдбара (тест сам себя не проверяет): %+v", attrItems)
+	}
+
+	// Автокомплит его находит.
+	resp = getWithCookie(t, s.srv, base+"/attr-keys?q=rare.", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var found []attrKeyJSON
+	if err := json.Unmarshal(body, &found); err != nil {
+		t.Fatalf("json.Unmarshal(%s): %v", body, err)
+	}
+	if len(found) != 1 || found[0].Key != "rare.key" {
+		t.Fatalf("attr-keys q=rare. = %+v, want [{rare.key 1}]", found)
+	}
+
+	// Клик по найденному автокомплитом ключу (?facet=rare.key) — carry-fix:
+	// значение rare-value должно отрендериться, хотя ключ вне топ-N.
+	resp = getWithCookie(t, s.srv, base+"?facet=rare.key", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?facet=rare.key status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	expandedItems := logFacetItems(t, string(body), 3)
+	keyItem, ok := findFacetItem(expandedItems, "rare.key")
+	if !ok {
+		t.Fatalf("раскрытый ?facet=rare.key должен появиться в сайдбаре, хотя вне топ-N: %+v", expandedItems)
+	}
+	if !keyItem.Active {
+		t.Fatalf("раскрытый rare.key должен быть отмечен активным: %+v", keyItem)
+	}
+	valueItem, ok := findFacetItem(expandedItems, "rare-value")
+	if !ok || valueItem.Count != "1" {
+		t.Fatalf("значение rare-value раскрытого rare.key не отрендерилось: %+v", expandedItems)
 	}
 }

@@ -2417,6 +2417,54 @@ th {
 	gap: 4px;
 	border-left: 1px solid var(--border);
 }
+/* Typeahead поиска ключа атрибута (задача 6, C2): .input в контейнере с
+   position:relative, выпадашка — тот же образец попапа, что .dr-popup у
+   пикера дат (position:absolute, тень, z-index над остальным сайдбаром). */
+.logs-attr-search {
+	position: relative;
+	margin-bottom: 12px;
+}
+.logs-attr-suggestions {
+	position: absolute;
+	z-index: 30;
+	top: calc(100% + 4px);
+	left: 0;
+	right: 0;
+	margin: 0;
+	padding: 4px;
+	list-style: none;
+	max-height: 240px;
+	overflow-y: auto;
+	background: var(--surface);
+	border: 1px solid var(--border-control);
+	border-radius: var(--radius-lg);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+}
+:root[data-theme="light"] .logs-attr-suggestions { box-shadow: 0 10px 28px rgba(20, 30, 50, .14); }
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) .logs-attr-suggestions { box-shadow: 0 10px 28px rgba(20, 30, 50, .14); }
+}
+.logs-attr-suggestions[hidden] { display: none; }
+.logs-attr-suggestion {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 8px;
+	border-radius: var(--radius);
+	color: var(--text);
+	text-decoration: none;
+}
+.logs-attr-suggestion:hover,
+.logs-attr-suggestion:focus-visible {
+	background: var(--surface-2);
+}
+.logs-attr-suggestion-count {
+	flex: 0 0 auto;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
+}
 
 /* Публичная статус-страница (/status/{slug}): свой layout, без шапки
    приложения — отсюда собственные отступы у main. */

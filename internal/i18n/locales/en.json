@@ -1309,6 +1309,7 @@
     "logs.facet.service": "Service",
     "logs.facet.environment": "Environment",
     "logs.facet.attributes": "Attributes",
+    "logs.facet.attr_search": "Search attribute key…",
     "logs.facet.empty": "No data for the current filters",
     "logs.facet.too_much_data": "Too much data, narrow the time range",
     "a11y.chart.logs_volume": "Log volume by time and severity chart"

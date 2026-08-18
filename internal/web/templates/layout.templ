@@ -67,6 +67,12 @@ templ headTag(title string) {
 		<script src={ assetURL("/static/daterange.js") } defer></script>
 		<script src={ assetURL("/static/modal.js") } defer></script>
 		<script src={ assetURL("/static/copy.js") } defer></script>
+		// Прогрессивное улучшение поиска ключа атрибута на экране логов
+		// (задача 6, C2): без него поле — обычный текстовый инпут, ничего не
+		// подсказывающий. Общий блок скриптов, а не ручной <script> в
+		// logs.templ — единая точка версионирования (assetURL/assetVer), как
+		// и у daterange/modal/copy выше.
+		<script src={ assetURL("/static/logs.js") } defer></script>
 	</head>
 }
 

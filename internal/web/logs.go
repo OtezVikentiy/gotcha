@@ -2,12 +2,14 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
@@ -36,14 +38,100 @@ const (
 	logsAttrValuesLimit = 10
 )
 
+// logsAttrKeysAutocompleteLimit — сколько ключей отдаёт JSON-эндпоинт
+// автокомплита (задача 6, C2, §6 спеки): чуть шире, чем сайдбар
+// (logsAttrKeysLimit), — typeahead ищет по произвольному префиксу среди ВСЕХ
+// обнаруженных ключей, не только топ-20 без фильтра, так что список
+// совпадений с непустым q может быть длиннее без потери релевантности.
+const logsAttrKeysAutocompleteLimit = 20
+
+// logsAttrKeysAutocompleteWindow — окно, за которое ищутся ключи для
+// автокомплита (задача 6, §6 спеки: «окно = последние 24ч (или текущее окно
+// фильтра, если передано)»). Эндпоинт вызывается отдельным fetch без
+// остальных query-параметров экрана (logs.js бьёт только по q=<prefix>), так
+// что текущее окно фильтра ему недоступно — фиксированные последние 24ч,
+// тот же дефолт, что и у самого экрана логов (resolveTimeRange(...,"24h")).
+const logsAttrKeysAutocompleteWindow = 24 * time.Hour
+
+// attrKeysCacheTTL — время жизни одной записи кеша автокомплита ключей
+// атрибутов (задача 6, C2, §6 спеки): «кеш per-project ~60с — авто-
+// обнаружение ключей не обязано быть свежим до секунды». Тот же принцип, что
+// у KeyCache ingest (internal/ingest/auth.go) — только здесь кешируется
+// результат AttrKeys, а не резолв ключа проекта.
+const attrKeysCacheTTL = 60 * time.Second
+
+// maxAttrKeysCacheEntries — верхняя граница числа кешируемых комбинаций
+// (projectID, prefix). prefix вводит пользователь произвольным текстом —
+// без потолка поток разных префиксов раздул бы карту неограниченно (тот же
+// класс дефекта, что maxKeyCacheEntries/maxRateLimitKeys в internal/ingest).
+// При переполнении карта очищается целиком: записи короткоживущие (TTL 60с)
+// и дёшевы для пересчёта, ярусное вытеснение как у KeyCache здесь не того
+// стоит.
+const maxAttrKeysCacheEntries = 10000
+
+// attrKeysCacheKey — ключ кеша: пара (projectID, prefix) — тот же набор, что
+// определяет результат AttrKeys для автокомплита (окно фиксировано, см.
+// logsAttrKeysAutocompleteWindow).
+type attrKeysCacheKey struct {
+	projectID int64
+	prefix    string
+}
+
+type attrKeysCacheEntry struct {
+	values  []log.FacetValue
+	expires time.Time
+}
+
+// attrKeysCache — per-(projectID, prefix) кеш ответов AttrKeys для
+// автокомплита (задача 6, C2). now инжектируется для тестов без реального
+// sleep (тот же приём, что KeyCache.now в internal/ingest/auth.go).
+type attrKeysCache struct {
+	now func() time.Time
+
+	mu      sync.Mutex
+	entries map[attrKeysCacheKey]attrKeysCacheEntry
+}
+
+func newAttrKeysCache() *attrKeysCache {
+	return &attrKeysCache{
+		now:     time.Now,
+		entries: map[attrKeysCacheKey]attrKeysCacheEntry{},
+	}
+}
+
+// get возвращает закешированные значения, если запись есть и не истекла.
+func (c *attrKeysCache) get(projectID int64, prefix string) ([]log.FacetValue, bool) {
+	key := attrKeysCacheKey{projectID: projectID, prefix: prefix}
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok || !e.expires.After(now) {
+		return nil, false
+	}
+	return e.values, true
+}
+
+// put кладёт результат в кеш на attrKeysCacheTTL, вытесняя карту целиком при
+// переполнении (см. maxAttrKeysCacheEntries).
+func (c *attrKeysCache) put(projectID int64, prefix string, values []log.FacetValue) {
+	key := attrKeysCacheKey{projectID: projectID, prefix: prefix}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= maxAttrKeysCacheEntries {
+		c.entries = map[attrKeysCacheKey]attrKeysCacheEntry{}
+	}
+	c.entries[key] = attrKeysCacheEntry{values: values, expires: c.now().Add(attrKeysCacheTTL)}
+}
+
 // logsList — GET /projects/{id}/logs: просмотрщик логов проекта (задача 2 плана
 // C2): фильтры (severity/service/environment/тело/окно времени), список с
 // раскрытием строки (полное тело + атрибуты + trace/span), курсорная
 // пагинация «показать старее», гистограмма объёма по времени и severity
 // (задача 3), встроенные фасеты (задача 4) и атрибут-фасеты — авто-
 // обнаруженные ключи Map-колонок с ленивыми значениями (задача 5, ядро-
-// дифференциатор фичи). Автокомплит ключей — отдельный JSON-эндпоинт,
-// задача T6, здесь его пока нет.
+// дифференциатор фичи). Автокомплит ключей — отдельный JSON-эндпоинт
+// logsAttrKeys (задача 6, ниже).
 func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -134,6 +222,94 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// logsAttrKeys — GET /projects/{id}/logs/attr-keys?q=<prefix>: JSON-эндпоинт
+// автокомплита ключей атрибутов (задача 6, C2, §6 спеки), потребляется
+// typeahead полем поиска атрибута в сайдбаре (static/logs.js). Тот же гейт
+// доступа, что у logsList (auth → parsePathProjectID → h.LogQuery==nil →
+// 404 → CanAccessProject → 404): эндпоинт открывает те же данные (имена и
+// частоты ключей log_attributes), что и сам список логов, изоляция проекта
+// обязана быть той же.
+//
+// Окно фиксировано (logsAttrKeysAutocompleteWindow, последние 24ч) —
+// текущее окно фильтра экрана сюда не передаётся, JS бьёт отдельным fetch
+// только с q=<prefix>. Результат кешируется на attrKeysCacheTTL per
+// (projectID, prefix): авто-обнаружение ключей не обязано быть свежим до
+// секунды, а быстрый набор текста иначе бил бы по ClickHouse на каждый
+// символ (клиентский дебаунс сглаживает, но не исключает гонки/повторы).
+func (h *Handler) logsAttrKeys(w http.ResponseWriter, r *http.Request) {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.LogQuery == nil {
+		h.notFound(w, r)
+		return
+	}
+	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
+	if err != nil {
+		http.Error(w, i18n.T(r.Context(), "error.internal"), http.StatusInternalServerError)
+		return
+	}
+	if !canAccess {
+		h.notFound(w, r)
+		return
+	}
+
+	prefix := r.URL.Query().Get("q")
+
+	if h.attrKeysCache != nil {
+		if values, hit := h.attrKeysCache.get(projectID, prefix); hit {
+			writeAttrKeysJSON(w, values)
+			return
+		}
+	}
+
+	now := time.Now().UTC()
+	f := log.ListFilter{From: now.Add(-logsAttrKeysAutocompleteWindow), To: now}
+	values, err := h.LogQuery.AttrKeys(r.Context(), projectID, f, prefix, logsAttrKeysAutocompleteLimit)
+	if err != nil {
+		// Та же деградация, что и у logsAttrFacets: предупреждение в лог,
+		// клиенту — пустой список (typeahead просто ничего не покажет), а не
+		// 500 — автокомплит вспомогателен, его сбой не должен мешать ручному
+		// вводу в остальные фильтры экрана.
+		slog.Warn("logs: attr keys autocomplete failed", "project_id", projectID, "err", err)
+		writeAttrKeysJSON(w, nil)
+		return
+	}
+	if h.attrKeysCache != nil {
+		h.attrKeysCache.put(projectID, prefix, values)
+	}
+	writeAttrKeysJSON(w, values)
+}
+
+// attrKeyJSON — форма одного элемента ответа logsAttrKeys: log.FacetValue
+// сериализуется под именами, которых ждёт logs.js (key/count), а не под
+// именем Value/Count — оставлять поля FacetValue экспортируемыми как есть
+// смешало бы вью-контракт JSON-эндпоинта с внутренним типом пакета log.
+type attrKeyJSON struct {
+	Key   string `json:"key"`
+	Count int64  `json:"count"`
+}
+
+func writeAttrKeysJSON(w http.ResponseWriter, values []log.FacetValue) {
+	out := make([]attrKeyJSON, len(values))
+	for i, v := range values {
+		out[i] = attrKeyJSON{Key: v.Value, Count: v.Count}
+	}
+	// Content-Type — тот же голый "application/json" без charset, что и у
+	// остальных JSON-эндпоинтов web (probeapi.go writeProbeJSON, heartbeat.go).
+	// Cache-Control: no-store уже проставлен глобально (securityHeaders) — сам
+	// список ключей атрибутов вспомогателен, но может отражать имена
+	// приватных полей приложения, отдельно повторять заголовок незачем.
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // logsHistogram считает гистограмму объёма (задача 3, C2) по тому же фильтру
