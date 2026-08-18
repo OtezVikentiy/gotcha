@@ -80,6 +80,8 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/alerts/rules":          lvlOperator,
 	"POST /projects/{id}/metrics/alerts":        lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete": lvlOperator,
+	"POST /projects/{id}/slos":                  lvlOperator,
+	"POST /projects/{id}/slos/{sloID}/delete":   lvlOperator,
 	"POST /projects/{id}/hosts/settings":        lvlOperator,
 	"POST /projects/{id}/hosts/{name}/delete":   lvlOperator,
 
@@ -188,6 +190,7 @@ var routeAuthz = map[string]string{
 	// гейт в коде обеих GET-ручек (statusPagesPage, maintenancePage) и всех
 	// их POST — requireProjectOperator; карта отражает код, а не комментарий.
 	"GET /projects/{id}/metrics/alerts":    lvlOperator,
+	"GET /projects/{id}/slos":              lvlOperator,
 	"GET /projects/{id}/hosts/settings":    lvlOperator,
 	"GET /projects/{id}/alerts":            lvlOperator,
 	"GET /projects/{id}/alerts/deliveries": lvlOperator,

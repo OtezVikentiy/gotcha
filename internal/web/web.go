@@ -37,6 +37,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -226,6 +227,14 @@ type Handler struct {
 	// маршруты алертов метрик отвечают 404.
 	MetricRules     *metric.RuleService
 	MetricIncidents *metric.IncidentService
+
+	// SLO/SLOProviders — определения SLO (PG) и SLI-провайдеры (CH) для
+	// раздела /projects/{id}/slos (план D1): список с достижением/остатком
+	// бюджета и форма создания. Как Metrics — необязательные поля; SLO nil →
+	// маршруты SLO отвечают 404 (nil-guard). SLOProviders nil → список
+	// рендерится без процентов (HasData=false), расчёт достижения пропускается.
+	SLO          *slo.Store
+	SLOProviders map[slo.SLIKind]slo.Provider
 
 	// Hosts/HostIncidents/HostSettings — реестр хостов, их встроенные
 	// инциденты (диск/память/нагрузка/тишина) и пороги (план A1): страницы
@@ -533,6 +542,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertCreate)))
 	inner.Handle("POST /projects/{id}/metrics/alerts/delete", h.requireUser(http.HandlerFunc(h.metricAlertDelete)))
 	inner.Handle("GET /projects/{id}/metrics/{name}", h.requireUser(http.HandlerFunc(h.metricDetail)))
+
+	// SLO (план D1): список определений + форма создания + удаление. Гейт всех
+	// трёх — оператор проекта (см. slos.go, зеркало metric-alerts).
+	inner.Handle("GET /projects/{id}/slos", h.requireUser(http.HandlerFunc(h.slosPage)))
+	inner.Handle("POST /projects/{id}/slos", h.requireUser(http.HandlerFunc(h.sloCreate)))
+	inner.Handle("POST /projects/{id}/slos/{sloID}/delete", h.requireUser(http.HandlerFunc(h.sloDelete)))
 
 	// Хосты (план A1, задача 14): литерал "settings" перед {name} — ServeMux
 	// (Go 1.22) отдаёт приоритет более специфичному сегменту независимо от

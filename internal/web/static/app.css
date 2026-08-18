@@ -2755,6 +2755,23 @@ form.inline {
 	color: var(--text-dim);
 }
 
+/* Индикатор остатка бюджета SLO — цветная точка перед процентом в колонке
+   «Остаток бюджета» (раздел /projects/{id}/slos, план D1). Цвет повторяет
+   семантику бейджа статуса: good — есть запас, warn — горит, danger —
+   исчерпан. */
+.slo-indicator {
+	display: inline-block;
+	width: 0.6em;
+	height: 0.6em;
+	border-radius: 50%;
+	margin-right: 0.4em;
+	vertical-align: baseline;
+	background: var(--text-dim);
+}
+.slo-indicator-good { background: var(--good); }
+.slo-indicator-warn { background: var(--warn); }
+.slo-indicator-danger { background: var(--danger); }
+
 /* -- Data table --
    Отдельный класс поверх глобальных table/th/td: компактнее, с hover-строками
    и колонкой .num для чисел. Не конфликтует с существующими table/th/td —

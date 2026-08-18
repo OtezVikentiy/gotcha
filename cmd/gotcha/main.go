@@ -957,6 +957,12 @@ func run() error {
 		// Деплои (C5): store читается веб-слоем для маркеров на графиках,
 		// экрана-списка и привязки регрессий (тот же пул, что у ingest.Deploy).
 		webHandler.Deploy = deploy.NewStore(pg)
+		// SLO (план D1): раздел /projects/{id}/slos читает определения из PG
+		// (SLO) и считает достижение/остаток бюджета за окно теми же
+		// провайдерами, что и оценщик (availability/latency из trace,
+		// uptime из uptime.Query; окна обслуживания не жгут бюджет).
+		webHandler.SLO = slo.NewStore(pg)
+		webHandler.SLOProviders = slo.Providers(trace.NewQuery(ch), uptime.NewQuery(ch), uptime.NewService(pg), cfg.RetentionDays)
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)

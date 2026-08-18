@@ -167,7 +167,7 @@ func AreaForPath(path string) string {
 					return "logs"
 				case "monitors", "incidents", "maintenance", "statuspages":
 					return "uptime"
-				case "alerts":
+				case "alerts", "slos":
 					return "alerts"
 				case "settings", "setup":
 					// Not a rail area (nothing lights up in the rail), but
@@ -237,6 +237,8 @@ func BackLabelKey(rawPath string) string {
 					return "nav.alert_deliveries"
 				}
 				return "nav.alerts"
+			case "slos":
+				return "nav.slo"
 			case "settings", "setup":
 				return "nav.project_settings"
 			}
@@ -344,6 +346,10 @@ func Subsections(s Shell) []NavItem {
 		items = []NavItem{
 			{LabelKey: "nav.alerts", Href: "/projects/" + effID + "/alerts"},
 			{LabelKey: "nav.alert_deliveries", Href: "/projects/" + effID + "/alerts/deliveries"},
+			// SLO (план D1) — управленческий слой алертинга: цели качества и
+			// сжигание бюджета шлют инциденты по тем же каналам проекта, что и
+			// остальные пункты этой области. Тот же гейт CanOperate.
+			{LabelKey: "nav.slo", Href: "/projects/" + effID + "/slos"},
 		}
 	case "docs":
 		// Doc page labels come from the markdown H1 (localized by

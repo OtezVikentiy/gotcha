@@ -25,6 +25,7 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/5/logs", "logs"},
 		{"/monitors/3", "uptime"},
 		{"/projects/7/alerts", "alerts"},
+		{"/projects/7/slos", "alerts"},
 		{"/orgs/5/teams", "org"},
 		{"/projects", "org"},
 		// Настройки проекта — не область рейла (в рейле ничего не
@@ -63,6 +64,7 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/incidents", "nav.incidents"},
 		{"/projects/7/alerts", "nav.alerts"},
 		{"/projects/7/alerts/deliveries", "nav.alert_deliveries"},
+		{"/projects/7/slos", "nav.slo"},
 		{"/projects", "nav.projects"},
 		{"/projects/7/settings", "nav.project_settings"},
 		{"/docs/glossary", "docs.index.title"},
@@ -347,8 +349,8 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 	// alerts area: вся область гейтится целиком.
 	operator.Area, operator.Path = "alerts", "/projects/7/alerts"
 	viewer.Area, viewer.Path = "alerts", "/projects/7/alerts"
-	if got := Subsections(operator); len(got) != 2 {
-		t.Errorf("alerts/оператор: len = %d, want 2, got %+v", len(got), got)
+	if got := Subsections(operator); len(got) != 3 {
+		t.Errorf("alerts/оператор: len = %d, want 3 (alerts+deliveries+slo), got %+v", len(got), got)
 	}
 	if got := Subsections(viewer); got != nil {
 		t.Errorf("alerts/зритель: got %+v, want nil", got)
@@ -528,7 +530,7 @@ func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
 	hiddenFromViewer := map[string][]string{
 		"metrics": {"nav.metric_alerts"},
 		"uptime":  {"nav.maintenance", "nav.status_pages"},
-		"alerts":  {"nav.alerts", "nav.alert_deliveries"},
+		"alerts":  {"nav.alerts", "nav.alert_deliveries", "nav.slo"},
 	}
 	for area, hidden := range hiddenFromViewer {
 		got := viewer(area)

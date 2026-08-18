@@ -191,6 +191,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "project-rename-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "sso-delete-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "status-page-delete-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "slo-form", Why: "семантический маркер формы (создание SLO, план D1), стиля нет по замыслу — оформление от .field/.select/.input/.btn* внутри", Finding: "по замыслу"},
 	{Value: "status-page-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "subject-export-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "subject-purge-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
@@ -232,6 +233,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "projects-list", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "regressions", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "setup", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "slos", Why: "маркер страницы на корневом <div> (список SLO, план D1), стиля нет по замыслу — визуал от @layout и вложенных .card/.data-table", Finding: "по замыслу"},
 	{Value: "teams", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "web-vitals", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 
@@ -295,7 +297,11 @@ var permanentCSSClassExemptions = []Exemption{
 // список не попал — получил реальное правило в app.css. C5 (список деплоев)
 // добавил "deployments" — маркер страницы на корневом <div> (семья
 // "regressions"/"logs"); класс deploy-changelog получил реальное правило в app.css.
-const maxPermanentCSSClassExemptions = 79
+// 79→81 (план D1): раздел SLO добавил "slos" — маркер страницы на корневом
+// <div> (семья "logs"/"metrics"/"deployments") — и "slo-form" — маркер формы
+// создания (семья *-form). Индикаторы .slo-indicator* получили реальные
+// правила в app.css, в список исключений не попали.
+const maxPermanentCSSClassExemptions = 81
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

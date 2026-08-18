@@ -1,0 +1,255 @@
+package templates
+
+import (
+	"context"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// SLOsPath — адрес раздела SLO проекта. Экспортирован: им пользуются веб-слой
+// (редиректы), навигация и экран деталей (T7).
+func SLOsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/slos"
+}
+
+// SLORow — строка таблицы SLO: цель и посчитанные за окно достижение и остаток
+// бюджета в процентах. HasData=false — за окно не набралось событий (total==0)
+// или провайдер недоступен: проценты не показываем (прочерк), Status при этом
+// не осмыслен. Status ∈ healthy/burning/exhausted.
+type SLORow struct {
+	ID                 int64
+	Name               string
+	Kind               string // код SLI: availability/latency/uptime
+	TargetPct          float64
+	AttainmentPct      float64
+	BudgetRemainingPct float64
+	HasData            bool
+	Status             string
+}
+
+// SLOMonitorOption — монитор проекта для выпадающего списка формы uptime-SLO.
+type SLOMonitorOption struct {
+	ID   int64
+	Name string
+}
+
+// sloKindLabel — локализованная подпись типа SLI. Литеральные i18n-ключи (не
+// конкатенация): их видит общий сканер каталога (i18n_keys_test.go), отдельная
+// динамическая группа не нужна.
+func sloKindLabel(ctx context.Context, kind string) string {
+	switch kind {
+	case "latency":
+		return i18n.T(ctx, "slo.sli.latency")
+	case "uptime":
+		return i18n.T(ctx, "slo.sli.uptime")
+	default:
+		return i18n.T(ctx, "slo.sli.availability")
+	}
+}
+
+// sloStatusLabel — локализованная подпись статуса бюджета.
+func sloStatusLabel(ctx context.Context, status string) string {
+	switch status {
+	case "exhausted":
+		return i18n.T(ctx, "slo.status.exhausted")
+	case "burning":
+		return i18n.T(ctx, "slo.status.burning")
+	default:
+		return i18n.T(ctx, "slo.status.healthy")
+	}
+}
+
+// sloStatusBadgeClass — цвет бейджа статуса через дизайн-систему бейджей
+// (good/warn/danger), как incidentBadgeClass у метрик-алертов.
+func sloStatusBadgeClass(status string) string {
+	switch status {
+	case "exhausted":
+		return "badge badge-danger"
+	case "burning":
+		return "badge badge-warn"
+	default:
+		return "badge badge-good"
+	}
+}
+
+// sloIndicatorClass — класс цветного индикатора-точки перед остатком бюджета.
+func sloIndicatorClass(status string) string {
+	switch status {
+	case "exhausted":
+		return "slo-indicator slo-indicator-danger"
+	case "burning":
+		return "slo-indicator slo-indicator-warn"
+	default:
+		return "slo-indicator slo-indicator-good"
+	}
+}
+
+// fmtPct — процент с одним знаком после запятой для колонок достижения/бюджета.
+func fmtPct(v float64) string {
+	return strconv.FormatFloat(v, 'f', 1, 64) + "%"
+}
+
+// SLOsScreen — GET /projects/{id}/slos: список определений SLO с текущим
+// достижением и остатком бюджета + форма создания. errMsg — ошибка валидации
+// формы (показывается внутри модалки), form — введённые значения для повторной
+// отрисовки. monitors — мониторы проекта для выбора в uptime-SLO.
+//
+// Отклонение от эталонной сигнатуры плана (там был неиспользуемый параметр
+// filter): раздел SLO фильтров не имеет — вместо него проброшены errMsg и
+// monitors, как у соседних форм (metricalerts).
+templ SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, form FormState, errMsg, userEmail string) {
+	@layout(i18n.T(ctx, "slo.title"), userEmail) {
+		<div class="slos">
+			<h1>{ i18n.T(ctx, "slo.title") }</h1>
+			@helpPanel("slo", "slo")
+			@createTrigger("new-slo", "slo.new")
+			if len(rows) == 0 {
+				@emptyState("activity", "slo.empty.title", "slo.empty.body", "slo.empty.cta", "/docs/slo", 2)
+			} else {
+				<div class="card">
+					@scrollRegion("table-scroll", "slo.title") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "slo.list.name") }</th>
+									<th scope="col">{ i18n.T(ctx, "slo.list.kind") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "slo.list.target") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "slo.list.attainment") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "slo.list.budget") }</th>
+									<th scope="col">{ i18n.T(ctx, "slo.list.status") }</th>
+									<th scope="col"></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, row := range rows {
+									<tr>
+										<td>{ row.Name }</td>
+										<td>{ sloKindLabel(ctx, row.Kind) }</td>
+										<td class="num">{ fmtPct(row.TargetPct) }</td>
+										if row.HasData {
+											<td class="num">{ fmtPct(row.AttainmentPct) }</td>
+											<td class="num">
+												<span class={ sloIndicatorClass(row.Status) }></span>
+												{ fmtPct(row.BudgetRemainingPct) }
+											</td>
+											<td><span class={ sloStatusBadgeClass(row.Status) }>{ sloStatusLabel(ctx, row.Status) }</span></td>
+										} else {
+											<td class="num">{ i18n.T(ctx, "slo.list.no_data") }</td>
+											<td class="num">{ i18n.T(ctx, "slo.list.no_data") }</td>
+											<td><span class="badge badge-neutral">{ i18n.T(ctx, "slo.list.no_data") }</span></td>
+										}
+										<td>
+											<form method="post" action={ templ.URL(SLOsPath(projectID) + "/" + strconv.FormatInt(row.ID, 10) + "/delete") } class="inline">
+												<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "slo.delete") }</button>
+											</form>
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+				</div>
+			}
+			@createModalOpen("new-slo", "slo.new", false, form.Has()) {
+				<form method="post" action={ templ.URL(SLOsPath(projectID)) } class="slo-form">
+					if errMsg != "" {
+						<p class="error" id="new-slo-error">{ errMsg }</p>
+					}
+					<div class="form-grid">
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.name") }
+								<input type="text" name="name" required class="input" value={ form.Get("name", "") }
+									if errMsg != "" {
+										aria-invalid="true"
+										aria-describedby="new-slo-error"
+									}
+								/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.kind") }
+								<select name="sli_kind" class="select">
+									if form.Selected("sli_kind", "availability", "availability") {
+										<option value="availability" selected>{ i18n.T(ctx, "slo.sli.availability") }</option>
+									} else {
+										<option value="availability">{ i18n.T(ctx, "slo.sli.availability") }</option>
+									}
+									if form.Selected("sli_kind", "latency", "availability") {
+										<option value="latency" selected>{ i18n.T(ctx, "slo.sli.latency") }</option>
+									} else {
+										<option value="latency">{ i18n.T(ctx, "slo.sli.latency") }</option>
+									}
+									if form.Selected("sli_kind", "uptime", "availability") {
+										<option value="uptime" selected>{ i18n.T(ctx, "slo.sli.uptime") }</option>
+									} else {
+										<option value="uptime">{ i18n.T(ctx, "slo.sli.uptime") }</option>
+									}
+								</select>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.target") }
+								<input type="text" name="target" required placeholder="99" class="input" value={ form.Get("target", "") }/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.window") }
+								<input type="number" name="window_days" value={ form.Get("window_days", "30") } min="1" max="90" required class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.transaction") }
+								<input type="text" name="transaction" placeholder={ i18n.T(ctx, "slo.form.any") } class="input" value={ form.Get("transaction", "") }/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.environment") }
+								<input type="text" name="environment" placeholder={ i18n.T(ctx, "slo.form.any") } class="input" value={ form.Get("environment", "") }/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.threshold") }
+								<input type="number" name="threshold_ms" min="1" placeholder="300" class="input" value={ form.Get("threshold_ms", "") }/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.monitor") }
+								if len(monitors) == 0 {
+									<span class="hint">{ i18n.T(ctx, "slo.form.monitor_none") }</span>
+									<input type="hidden" name="monitor_id" value=""/>
+								} else {
+									<select name="monitor_id" class="select">
+										<option value="">{ i18n.T(ctx, "slo.form.monitor_pick") }</option>
+										for _, m := range monitors {
+											if form.Selected("monitor_id", strconv.FormatInt(m.ID, 10), "") {
+												<option value={ strconv.FormatInt(m.ID, 10) } selected>{ m.Name }</option>
+											} else {
+												<option value={ strconv.FormatInt(m.ID, 10) }>{ m.Name }</option>
+											}
+										}
+									</select>
+								}
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "slo.form.burn") }
+								<input type="text" name="burn_threshold" placeholder="14.4" class="input" value={ form.Get("burn_threshold", "14.4") }/>
+							</label>
+						</div>
+					</div>
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "slo.form.submit") }</button>
+				</form>
+			}
+		</div>
+	}
+}
