@@ -1187,9 +1187,16 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	// инциденты) и CH (ряды good/total через провайдеры). uptime.Service/Query
 	// здесь не построены (в отличие от aптайм-воркера), поэтому конструируем их
 	// под провайдеры: Service — окна обслуживания (не жгут бюджет), Query —
-	// ряд успешных проверок для uptime-SLO. Нотифаер соберёт Task 5; до тех пор
-	// nil — оценщик открывает/закрывает инциденты, но молча (nil-гвард в notify).
-	var sloNotifier slo.Notifier
+	// ряд успешных проверок для uptime-SLO. Нотифаер шлёт алерт сжигания бюджета
+	// по тем же каналам проекта, что и остальные (regression/uptime/host).
+	sloNotifier := &slo.SLOBurnNotifier{
+		Alerts:       alertSvc,
+		Outbox:       outbox,
+		BaseURL:      cfg.BaseURL,
+		EmailEnabled: emailSender.Configured(),
+		Details:      detailPolicy(cfg),
+		Locale:       i18n.Locale{Code: cfg.Locale},
+	}
 	sloEval := &slo.Evaluator{
 		Pool:      pg,
 		Store:     slo.NewStore(pg),
