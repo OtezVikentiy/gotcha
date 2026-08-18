@@ -516,9 +516,9 @@ func (q *Query) AttrKeys(ctx context.Context, projectID int64, f ListFilter, pre
 // ограниченная выборка.
 //
 // mapContains(<map>, ?)-гард ОБЯЗАТЕЛЕН: `<map>[key]` в ClickHouse
-// возвращает '' для строки, где такого ключа вообще нет — без гарда такие
-// строки молча склеились бы в один бакет со значением '' вместе с
-// реальными пустыми значениями атрибута, искажая counts. mapContains,
+// возвращает пустую строку для строки, где такого ключа вообще нет — без
+// гарда такие строки молча склеились бы в один бакет с пустым значением
+// вместе с реальными пустыми значениями атрибута, искажая counts. mapContains,
 // а не has(mapKeys(...)) — не строит промежуточный массив ключей, дешевле.
 func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, resource bool, key string, limit int) ([]FacetValue, error) {
 	if limit <= 0 {
