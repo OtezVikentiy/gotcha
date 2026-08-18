@@ -127,6 +127,13 @@ var entityRules = []entityRule{
 	{table: "profile_regressions", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionProfiles},
 	// Инцидент метрики без своих точек — то же самое: срок метрик.
 	{table: "metric_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionMetrics},
+	// Закрытый инцидент сжигания бюджета SLO — то же, что закрытый инцидент
+	// метрики: его карточка показывает период сжигания, за который точек
+	// good/total в ClickHouse уже нет (availability/latency живут сроком
+	// транзакций, uptime — сроком проверок; общий класс — метрики). Открытый
+	// инцидент описывает то, что с бюджетом происходит сейчас, поэтому
+	// closedOnly обязателен, как у metric_incidents.
+	{table: "slo_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionMetrics},
 	// Хост без метрик за свой срок — то же самое: имя в списке хостов, для
 	// которого ClickHouse уже ничего не покажет. closedOnly нет намеренно, как
 	// у issues — «не молчал 24 часа» не значит «активная проблема», это просто
