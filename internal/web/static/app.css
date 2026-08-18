@@ -1808,7 +1808,7 @@ th {
 }
 
 .event-trace-link,
-.event-logs-link {
+.logs-link {
 	margin: 6px 0 12px;
 	font-size: var(--fs-base);
 }
