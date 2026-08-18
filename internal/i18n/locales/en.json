@@ -66,6 +66,7 @@
     "nav.profiles": "Profiles",
     "nav.perf_issues": "Performance Issues",
     "nav.regressions": "Regressions",
+    "nav.dependencies": "Dependencies",
     "nav.metric_alerts": "Metric Alerts",
     "nav.host_thresholds": "Host Thresholds",
     "nav.monitors": "Monitors",

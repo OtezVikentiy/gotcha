@@ -66,6 +66,7 @@
     "nav.profiles": "Профили",
     "nav.perf_issues": "Проблемы производительности",
     "nav.regressions": "Регрессии",
+    "nav.dependencies": "Зависимости",
     "nav.metric_alerts": "Оповещения по метрикам",
     "nav.host_thresholds": "Пороги хостов",
     "nav.monitors": "Мониторы",
