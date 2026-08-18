@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Dependency map: the new "Dependencies" screen under Transactions shows a service's external dependencies (databases, caches, outbound HTTP calls) with call volume, latency (p50/p95), and error rate — derived from traces you're already collecting, no extra setup required.
+
 ## [0.9.0] - 2026-08-18
 
 ### Added
