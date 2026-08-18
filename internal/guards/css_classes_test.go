@@ -212,6 +212,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "chromeless", Why: "маркер страницы на <body>, стиля нет по замыслу — визуал несут дочерние .chromeless-top/.chromeless-main", Finding: "по замыслу"},
 	{Value: "confirm-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу — внутри уже стилизованная .card", Finding: "по замыслу"},
 	{Value: "deps", Why: "маркер страницы карты зависимостей (C4) на корневом <div>, стиля нет по замыслу — визуал от @layout и вложенных .card/.data-table", Finding: "по замыслу"},
+	{Value: "deployments", Why: "маркер страницы на корневом <div> (список деплоев, C5), стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "docs-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "hosts", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "host-settings", Why: "маркер под-страницы (настройки порогов хоста, T16) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
@@ -287,13 +288,14 @@ var permanentCSSClassExemptions = []Exemption{
 // log-row-expanded, log-row-trace) получили реальные правила в app.css, в
 // список исключений не попали.
 //
-// 75→78 (задача 2, C4): "deps" — маркер страницы карты зависимостей на
-// корневом <div> (та же семья, что и "logs"/"performance"); "deps-map-card" —
-// стоит в паре с .card (та же природа, что "rate-guard-card"/"team");
-// "deps-truncated" — стоит в паре с .hint (та же природа, что "sso-status").
-// "deps-filters" в список не попал — получил реальное правило в app.css
-// (присоединён к общей группе .issues-filters/.performance-filters/...).
-const maxPermanentCSSClassExemptions = 78
+// 75→79 (C4 +3, C5 +1): C4 (карта зависимостей) добавил "deps" — маркер
+// страницы на корневом <div> (та же семья, что "logs"/"performance");
+// "deps-map-card" — в паре с .card (как "rate-guard-card"/"team");
+// "deps-truncated" — в паре с .hint (как "sso-status"). "deps-filters" в
+// список не попал — получил реальное правило в app.css. C5 (список деплоев)
+// добавил "deployments" — маркер страницы на корневом <div> (семья
+// "regressions"/"logs"); класс deploy-changelog получил реальное правило в app.css.
+const maxPermanentCSSClassExemptions = 79
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

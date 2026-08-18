@@ -646,6 +646,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// детекции.
 	inner.Handle("GET /projects/{id}/regressions", h.requireUser(http.HandlerFunc(h.regressionsList)))
 
+	// Список деплоев проекта (C5): версия/окружение/когда/изменения/ссылка на
+	// прогон CI. Доступ — CanAccessProject; nil-guard на h.Deploy отвечает 404
+	// в стендах без приёма деплоев.
+	inner.Handle("GET /projects/{id}/deployments", h.requireUser(http.HandlerFunc(h.deployments)))
+
 	// Waterfall трейса (этап 3, план 4, задача 3): доступ — по проекту трейса
 	// (ProjectForTrace → CanAccessProject → 404), не по {id} в пути. Только
 	// чтение, POST'ов и sameOrigin здесь нет. Как и /performance*,

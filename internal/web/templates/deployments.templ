@@ -1,0 +1,81 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// deploymentsPath — адрес экрана списка деплоев проекта.
+func deploymentsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/deployments"
+}
+
+// DeploymentRow — строка списка деплоев. URL — исходный адрес прогона CI (может
+// быть пустым или с небезопасной схемой); LinkURL/IsLink заполняет хендлер
+// через safeExternalHref: рисуем ссылку только для http/https, иначе URL
+// показывается простым текстом (или не показывается, если пуст).
+type DeploymentRow struct {
+	Version     string
+	Environment string
+	URL         string
+	LinkURL     string
+	IsLink      bool
+	Changelog   string
+	DeployedAt  time.Time
+}
+
+// DeploymentsScreen — GET /projects/{id}/deployments: таблица деплоев проекта
+// (версия, окружение, когда, изменения, ссылка на прогон CI). Только чтение,
+// без JS — как список регрессий/инцидентов. Пусто → единое пустое состояние с
+// подсказкой, как пушить деплой из CI.
+templ DeploymentsScreen(projectID int64, deps []DeploymentRow, userEmail string) {
+	@layout(i18n.T(ctx, "deploy.title"), userEmail) {
+		<div class="deployments">
+			<h1>{ i18n.T(ctx, "deploy.title") }</h1>
+			if len(deps) == 0 {
+				@emptyState("server", "deploy.empty.title", "deploy.empty.body", "deploy.empty.cta", "/docs/deployments", 2)
+			} else {
+				<div class="card">
+					@scrollRegion("table-scroll", "deploy.title") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "deploy.table.version") }</th>
+									<th scope="col">{ i18n.T(ctx, "deploy.table.environment") }</th>
+									<th scope="col">{ i18n.T(ctx, "deploy.table.when") }</th>
+									<th scope="col">{ i18n.T(ctx, "deploy.table.changelog") }</th>
+									<th scope="col">{ i18n.T(ctx, "deploy.table.link") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, d := range deps {
+									<tr>
+										<td>{ d.Version }</td>
+										<td>{ d.Environment }</td>
+										<td>@relativeTime(d.DeployedAt)</td>
+										<td>
+											if d.Changelog != "" {
+												<span class="deploy-changelog">{ d.Changelog }</span>
+											}
+										</td>
+										<td>
+											if d.IsLink {
+												<a href={ templ.URL(d.LinkURL) } target="_blank" rel="noopener noreferrer">
+													@icon("external-link")
+												</a>
+											} else if d.URL != "" {
+												{ d.URL }
+											}
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+				</div>
+			}
+		</div>
+	}
+}

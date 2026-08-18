@@ -2799,6 +2799,11 @@ form.inline {
 .data-table tbody tr:hover {
 	background: var(--surface-2);
 }
+/* Changelog деплоя многострочен: CI присылает список изменений с переносами,
+   и они должны читаться как список, а не склеиваться в одну строку. */
+.deploy-changelog {
+	white-space: pre-line;
+}
 .data-table .num {
 	text-align: right;
 	font-variant-numeric: tabular-nums;

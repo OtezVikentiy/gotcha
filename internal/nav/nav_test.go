@@ -52,6 +52,7 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/web-vitals", "nav.webvitals"},
 		{"/projects/7/dependencies", "nav.dependencies"},
 		{"/projects/7/performance", "nav.transactions"},
+		{"/projects/7/deployments", "nav.deployments"},
 		{"/projects/7/metrics", "nav.metrics"},
 		{"/projects/7/metrics/alerts", "nav.metric_alerts"},
 		{"/projects/5/hosts", "nav.hosts"},
@@ -87,6 +88,7 @@ func TestAreaForPathExtras(t *testing.T) {
 		{"/projects/7/perf-issues", "performance"},
 		{"/projects/7/regressions", "performance"},
 		{"/projects/7/dependencies", "performance"},
+		{"/projects/7/deployments", "performance"},
 		{"/perf-issues/1", "performance"},
 		{"/projects/7/metrics", "metrics"},
 		{"/projects/7/incidents", "uptime"},
@@ -141,6 +143,7 @@ func TestSubsectionsPerformance(t *testing.T) {
 		"/projects/7/perf-issues",
 		"/projects/7/regressions",
 		"/projects/7/dependencies",
+		"/projects/7/deployments",
 	}
 	wantLabels := []string{
 		"nav.transactions",
@@ -149,6 +152,7 @@ func TestSubsectionsPerformance(t *testing.T) {
 		"nav.perf_issues",
 		"nav.regressions",
 		"nav.dependencies",
+		"nav.deployments",
 	}
 	activeIdx := -1
 	for i, it := range items {
