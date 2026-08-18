@@ -62,7 +62,7 @@ templ DeploymentsScreen(projectID int64, deps []DeploymentRow, userEmail string)
 										</td>
 										<td>
 											if d.IsLink {
-												<a href={ templ.URL(d.LinkURL) } target="_blank" rel="noopener noreferrer">
+												<a href={ templ.URL(d.LinkURL) } target="_blank" rel="noopener noreferrer" aria-label={ i18n.T(ctx, "deploy.table.link") } title={ i18n.T(ctx, "deploy.table.link") }>
 													@icon("external-link")
 												</a>
 											} else if d.URL != "" {

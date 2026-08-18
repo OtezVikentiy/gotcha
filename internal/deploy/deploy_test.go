@@ -98,3 +98,74 @@ func TestDeployStore(t *testing.T) {
 		t.Fatalf("чужой проект не пуст: %+v", other)
 	}
 }
+
+// TestDeployTenantIsolationRealProject — деплои проекта A не видны проекту B
+// (реальный второй проект, а не выдуманный id): List/Recent/Nearest фильтруют по
+// project_id. Регрессия на арендатора утекла бы через любой из трёх методов.
+func TestDeployTenantIsolationRealProject(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	var orgID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO organizations (slug, name, event_quota) VALUES ('c5-iso', 'C5 Iso', 0) RETURNING id").
+		Scan(&orgID); err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	var projA, projB int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'c5-iso-a', 'A') RETURNING id", orgID).Scan(&projA); err != nil {
+		t.Fatalf("insert project A: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'c5-iso-b', 'B') RETURNING id", orgID).Scan(&projB); err != nil {
+		t.Fatalf("insert project B: %v", err)
+	}
+
+	st := deploy.NewStore(pool)
+	t0 := time.Now().UTC().Truncate(time.Second)
+	if _, err := st.Record(ctx, projA, deploy.Deployment{Version: "vA", Environment: "prod", DeployedAt: t0.Add(-time.Hour)}); err != nil {
+		t.Fatalf("record A: %v", err)
+	}
+
+	// B не видит деплой A ни одним методом.
+	if got, err := st.Recent(ctx, projB, 10); err != nil || len(got) != 0 {
+		t.Fatalf("Recent(B) = %+v err=%v, want пусто", got, err)
+	}
+	if got, err := st.List(ctx, projB, t0.Add(-2*time.Hour), t0, 10); err != nil || len(got) != 0 {
+		t.Fatalf("List(B) = %+v err=%v, want пусто", got, err)
+	}
+	if _, ok, err := st.Nearest(ctx, projB, t0); err != nil || ok {
+		t.Fatalf("Nearest(B) ok=%v err=%v, want ok=false (деплой A не течёт в B)", ok, err)
+	}
+	// A по-прежнему видит свой деплой (изоляция не «слепая»).
+	if got, err := st.Recent(ctx, projA, 10); err != nil || len(got) != 1 {
+		t.Fatalf("Recent(A) = %+v err=%v, want 1", got, err)
+	}
+}
+
+// TestDeployNearestBoundaryEqual — граница Nearest: деплой РОВНО в момент before
+// (deployed_at == before) обязан привязываться (SQL-условие deployed_at <=
+// before включительно), иначе регрессия, начавшаяся в ту же секунду, что и
+// выкладка, осталась бы без привязки.
+func TestDeployNearestBoundaryEqual(t *testing.T) {
+	st, pid := setupProject(t)
+	ctx := context.Background()
+
+	at := time.Now().UTC().Truncate(time.Second)
+	if _, err := st.Record(ctx, pid, deploy.Deployment{Version: "v-boundary", Environment: "prod", DeployedAt: at}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// before РОВНО == deployed_at → привязывается.
+	near, ok, err := st.Nearest(ctx, pid, at)
+	if err != nil || !ok || near.Version != "v-boundary" {
+		t.Fatalf("Nearest(==deployed_at) = %+v ok=%v err=%v, want v-boundary", near, ok, err)
+	}
+	// before на секунду РАНЬШЕ → уже не предшествует, ok=false.
+	if _, ok2, err := st.Nearest(ctx, pid, at.Add(-time.Second)); err != nil {
+		t.Fatalf("Nearest(before-1s): err=%v", err)
+	} else if ok2 {
+		t.Fatalf("Nearest на секунду раньше деплоя должен дать ok=false")
+	}
+}

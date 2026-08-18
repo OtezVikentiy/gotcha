@@ -221,14 +221,28 @@ func writeDeployMarker(sb *strings.Builder, g chartGeom, times []time.Time, depl
 	if span <= 0 {
 		return
 	}
-	// Кап подписей: на плотном окне выкладок могло бы быть много, и версии
-	// наехали бы друг на друга в сплошную кашу — линии рисуем все, а подписи
-	// только у первых maxDeployLabels.
-	const maxDeployLabels = 20
-	for i, d := range deploys {
+	// Порог у правого края: подпись версии свежего деплоя (маркер у x1) с якорем
+	// start вылезла бы за холст и обрезалась — прижимаем её к правому краю, как
+	// writeXTicks поступает с меткой последнего тика.
+	const labelEdgePx = 40
+	// Антиколлизия подписей: на плотном окне выкладок версии наехали бы друг на
+	// друга в сплошную кашу. Линии рисуем ВСЕ (маркер важнее подписи), а подпись
+	// пропускаем, если её x ближе minGap к предыдущей НАРИСОВАННОЙ. Так кап по
+	// числу не нужен: на любой плотности остаётся читаемый разреженный ряд.
+	const labelMinGapPx = 44
+	lastLabelX := -1e9
+	for _, d := range deploys {
 		off := d.DeployedAt.Sub(times[0]).Seconds()
-		if off < 0 || off > span {
+		if off < 0 {
+			// Деплой левее окна графика: точки с таким временем на графике нет,
+			// маркер за левой рамкой вводил бы в заблуждение — пропускаем.
 			continue
+		}
+		if off > span {
+			// Деплой в хвосте (times[last], to]: последняя корзина агрегирует
+			// данные до now, поэтому «только что выкатил» семантически лежит на
+			// правом краю — клампим к x1, иначе ядро фичи не рисовалось бы.
+			off = span
 		}
 		x := g.x0 + off/span*(g.x1-g.x0)
 		sb.WriteString(`<line class="chart-deploy-marker" x1="`)
@@ -239,16 +253,31 @@ func writeDeployMarker(sb *strings.Builder, g chartGeom, times []time.Time, depl
 		sb.WriteString(formatCoord(x))
 		sb.WriteString(`" y2="`)
 		sb.WriteString(formatCoord(g.y1))
-		sb.WriteString(`"/>`)
-		if i < maxDeployLabels {
-			sb.WriteString(`<text class="chart-deploy-label" x="`)
-			sb.WriteString(formatCoord(x + 2))
-			sb.WriteString(`" y="`)
-			sb.WriteString(formatCoord(g.y0 + 10))
-			sb.WriteString(`">`)
-			sb.WriteString(html.EscapeString(d.Version))
-			sb.WriteString(`</text>`)
+		sb.WriteString(`"><title>`)
+		sb.WriteString(html.EscapeString(d.Version + " · " + d.DeployedAt.UTC().Format("02.01 15:04")))
+		sb.WriteString(`</title></line>`)
+
+		gap := x - lastLabelX
+		if gap < 0 {
+			gap = -gap
 		}
+		if gap < labelMinGapPx {
+			continue
+		}
+		lastLabelX = x
+		// Якорь подписи: у правого края разворачиваем на end (текст влево от
+		// линии), иначе start (вправо) — сверено с writeXTicks.
+		anchor, lx := "start", x+2
+		if x > g.x1-labelEdgePx {
+			anchor, lx = "end", x-2
+		}
+		sb.WriteString(`<text class="chart-deploy-label" text-anchor="` + anchor + `" x="`)
+		sb.WriteString(formatCoord(lx))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(g.y0 + 10))
+		sb.WriteString(`">`)
+		sb.WriteString(html.EscapeString(d.Version))
+		sb.WriteString(`</text>`)
 	}
 }
 

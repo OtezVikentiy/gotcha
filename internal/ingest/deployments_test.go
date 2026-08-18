@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,6 +14,47 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
+
+// TestParseDeployTime — прямой разбор поля deployed_at: три допустимые формы
+// (RFC3339-строка, Unix-секунды числом, отсутствие/null) плюс мусор от кривого
+// CI. Всё непонятное → нулевое время (Record подставит now()), БЕЗ паники.
+func TestParseDeployTime(t *testing.T) {
+	wantRFC := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		raw  string
+		zero bool
+		want time.Time
+	}{
+		{"rfc3339", `"2026-01-02T03:04:05Z"`, false, wantRFC},
+		{"unix-seconds", `1735780800`, false, time.Unix(1735780800, 0).UTC()},
+		{"empty", ``, true, time.Time{}},
+		{"null", `null`, true, time.Time{}},
+		{"object", `{"x":1}`, true, time.Time{}},
+		{"bool", `true`, true, time.Time{}},
+		{"fractional", `1.5`, true, time.Time{}},
+		{"non-time-string", `"not-a-time"`, true, time.Time{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseDeployTime(json.RawMessage(tc.raw))
+			if tc.zero {
+				if !got.IsZero() {
+					t.Fatalf("parseDeployTime(%q) = %s, want zero", tc.raw, got)
+				}
+				return
+			}
+			if !got.Equal(tc.want) {
+				t.Fatalf("parseDeployTime(%q) = %s, want %s", tc.raw, got, tc.want)
+			}
+			// Unix-число разбирается именно в UTC (маркеры графиков в UTC).
+			if got.Location() != time.UTC {
+				t.Errorf("parseDeployTime(%q) в зоне %s, want UTC", tc.raw, got.Location())
+			}
+		})
+	}
+}
 
 // newIngestTestWithDeploy строит ingest-хендлер с КОНКРЕТНЫМ deploy.Store поверх
 // мигрированной PG и засеянными org/project. Ключ авторизации указывает на тот же
