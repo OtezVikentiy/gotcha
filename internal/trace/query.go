@@ -190,7 +190,7 @@ func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time
 					startsWith(op,'db.'),
 						arrayElement(splitByChar('.', op), 2),
 					coalesce(
-						nullIf(JSONExtractString(data,'server.address'),''),
+						nullIf(replaceRegexpOne(JSONExtractString(data,'server.address'), ':[0-9]+$', ''),''),
 						nullIf(domain(JSONExtractString(data,'url.full')),''),
 						nullIf(domain(replaceRegexpOne(description, '^\\S+\\s+', '')),''),
 						'http')

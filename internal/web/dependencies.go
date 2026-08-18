@@ -73,7 +73,7 @@ func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 	// error/empty-состояние по loadFailed/len(rows).
 	var mapSVG templ.Component = templ.NopComponent
 	if !loadFailed && len(rows) > 0 {
-		mapSVG = dependencyMapSVG(r.Context(), rows, 720, 360)
+		mapSVG = dependencyMapSVG(r.Context(), rows, 720, 420)
 	}
 	_ = templates.DependenciesScreen(projectID, rows, filter, mapSVG, loadFailed, truncated, h.currentEmail(r)).Render(r.Context(), w)
 }

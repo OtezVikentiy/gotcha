@@ -379,6 +379,17 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			{SpanID: "deps-cdn", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Start: depsAt, End: depsAt.Add(30000 * time.Microsecond),
 				Data: map[string]any{"url.full": "https://cdn.example.com/asset.js"}},
+			// один и тот же хост db.internal через server.address С ПОРТОМ и через
+			// url.full С ПОРТОМ — должны схлопнуться в ОДИН узел «db.internal» (аудит
+			// QA P1: без снятия :port у server.address получалось два узла). Хост с
+			// точкой намеренно: ClickHouse domain() отвергает односоставные хосты
+			// без точки (это и есть путь url.full).
+			{SpanID: "deps-dbhost-a", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(5000 * time.Microsecond),
+				Data: map[string]any{"server.address": "db.internal:5432"}},
+			{SpanID: "deps-dbhost-b", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(5000 * time.Microsecond),
+				Data: map[string]any{"url.full": "https://db.internal:5432/probe"}},
 			// http.server (второй, дочерний) — НЕ зависимость.
 			{SpanID: "deps-httpserver", ParentSpanID: "deps-root", Op: "http.server", Status: "ok",
 				Start: depsAt, End: depsAt.Add(120000 * time.Microsecond)},
@@ -516,6 +527,14 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if byTarget["cdn.example.com"].Kind != "http" {
 			t.Fatalf("cdn.example.com.Kind = %q, want http", byTarget["cdn.example.com"].Kind)
 		}
+		// db-host: server.address:port И url.full:port схлопнулись в ОДИН узел
+		// (2 вызова), :port снят с обеих сторон — узла «db.internal:5432» быть не должно.
+		if _, ok := byTarget["db.internal:5432"]; ok {
+			t.Fatalf("byTarget содержит db.internal:5432 — порт не снят у server.address (сплит хоста)")
+		}
+		if dh := byTarget["db.internal"]; dh.Kind != "http" || dh.Calls != 2 {
+			t.Fatalf("db.internal = {Kind:%q Calls:%d}, want {http 2} (server.address:port + url.full:port должны схлопнуться)", dh.Kind, dh.Calls)
+		}
 		// http.server / view.render / чужой oracle НЕ попали; нет вырожденного
 		// 'http'-таргета.
 		if _, ok := byTarget["oracle"]; ok {
@@ -524,9 +543,9 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if _, ok := byTarget["http"]; ok {
 			t.Fatalf("byTarget contains degenerate 'http' target")
 		}
-		// 5 таргетов: postgresql, mysql, redis, api.stripe.com, cdn.example.com.
-		if len(deps) != 5 {
-			t.Fatalf("len(deps) = %d, want 5 (%+v)", len(deps), deps)
+		// 6 таргетов: postgresql, mysql, redis, api.stripe.com, cdn.example.com, db-host.
+		if len(deps) != 6 {
+			t.Fatalf("len(deps) = %d, want 6 (%+v)", len(deps), deps)
 		}
 	})
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/a-h/templ"
@@ -20,15 +21,28 @@ import (
 // i/N·2π — без учёта текущего времени или недетерминированной итерации
 // map, поэтому два рендера одних и тех же данных дают идентичный вывод (см.
 // TestDependencyMapSVG).
+// depsMapNodeCap — карта показывает только топ-N зависимостей (deps уже
+// отсортированы по числу вызовов). Радиальная раскладка на десятки узлов
+// нечитаема (окружность не резиновая), поэтому лишние остаются только в
+// таблице ниже — под картой рисуется пометка «+N ещё». Полный список (до
+// depsLimit=50) всегда в таблице.
+const depsMapNodeCap = 8
+
 func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w, h int) templ.Component {
 	return templ.ComponentFunc(func(ctx context.Context, wr io.Writer) error {
 		var sb strings.Builder
 		sb.WriteString(svgRoot("deps-map", w, h, i18n.T(ctx, "region.deps.map")))
 		cx, cy := float64(w)/2, float64(h)/2
-		radius := math.Min(cx, cy) - 90
+		// radius: центр отстоит от узла минимум на полуширину узла (50) + зазор,
+		// иначе узел на угле 0° налезает на хаб (была причина перекрытия).
+		radius := math.Min(cx, cy) - 60
 		sb.WriteString(depNodeSVG(cx, cy, i18n.T(ctx, "deps.center"), "deps-node deps-center"))
-		n := len(deps)
-		for i, d := range deps {
+		shown := deps
+		if len(shown) > depsMapNodeCap {
+			shown = shown[:depsMapNodeCap]
+		}
+		n := len(shown)
+		for i, d := range shown {
 			ang := (float64(i) / float64(max(n, 1))) * 2 * math.Pi
 			x := cx + radius*math.Cos(ang)
 			y := cy + radius*math.Sin(ang)
@@ -46,6 +60,11 @@ func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w, h 
 				formatCoord(mx), formatCoord(my), templ.EscapeString(label)))
 			sb.WriteString(depNodeSVG(x, y, d.Target, "deps-node"))
 		}
+		if len(deps) > depsMapNodeCap {
+			more := i18n.Tf(ctx, "deps.map_more", "n", strconv.Itoa(len(deps)-depsMapNodeCap))
+			sb.WriteString(fmt.Sprintf(`<text class="deps-more" x="%s" y="%s" text-anchor="middle">%s</text>`,
+				formatCoord(cx), formatCoord(float64(h)-12), templ.EscapeString(more)))
+		}
 		sb.WriteString(`</svg>`)
 		_, err := io.WriteString(wr, sb.String())
 		return err
@@ -56,8 +75,8 @@ func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w, h 
 // (cx, cy). class различает узел-владельца ("deps-node deps-center") от
 // узлов зависимостей ("deps-node").
 func depNodeSVG(cx, cy float64, text, class string) string {
-	return fmt.Sprintf(`<g class="%s"><rect x="%s" y="%s" rx="6" width="120" height="30"/><text x="%s" y="%s" text-anchor="middle">%s</text></g>`,
-		class, formatCoord(cx-60), formatCoord(cy-15), formatCoord(cx), formatCoord(cy+5), templ.EscapeString(text))
+	return fmt.Sprintf(`<g class="%s"><rect x="%s" y="%s" rx="6" width="100" height="28"/><text x="%s" y="%s" text-anchor="middle">%s</text></g>`,
+		class, formatCoord(cx-50), formatCoord(cy-14), formatCoord(cx), formatCoord(cy+4), templ.EscapeString(text))
 }
 
 // depMicros форматирует микросекунды для подписи ребра: локальный форматтер

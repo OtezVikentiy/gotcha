@@ -953,6 +953,8 @@
     "deps.apply": "Apply",
     "deps.empty.title": "No dependencies",
     "deps.empty.body": "The service made no calls to external dependencies (databases, caches, outbound HTTP) in the selected window.",
+    "deps.empty.cta": "How to enable tracing",
+    "deps.map_more": "+{n} more — see the table below",
     "deps.error.title": "Failed to load",
     "deps.error.body": "Dependency data is temporarily unavailable. Try refreshing the page.",
     "deps.truncated": "Showing the first {n} dependencies.",

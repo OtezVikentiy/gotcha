@@ -1286,9 +1286,21 @@ th {
 .deps-center rect {
 	stroke: var(--link);
 }
-.deps-node text {
+/* Размер подписей карты квалифицирован .deps-map, иначе его перебивает общий
+   responsive-класс осей `.chart-vb720 text` (та же специфичность, объявлен
+   позже) — из-за чего кегль в карте прыгал по ширине вьюпорта. Здесь фиксируем
+   в единицах viewBox: масштабируется вместе с диаграммой, не с системой осей. */
+.deps-map .deps-node text {
 	fill: var(--text);
+	font-size: 13px;
+}
+.deps-map .deps-edge-label {
+	fill: var(--text-dim);
 	font-size: 11px;
+}
+.deps-map .deps-more {
+	fill: var(--text-dim);
+	font-size: 12px;
 }
 .deps-edge {
 	stroke: var(--border-control);
@@ -1299,10 +1311,6 @@ th {
 }
 .deps-edge-bad {
 	stroke: var(--danger);
-}
-.deps-edge-label {
-	fill: var(--text-dim);
-	font-size: 10px;
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
 .issues-filters .input[type="text"],

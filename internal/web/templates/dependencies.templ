@@ -42,11 +42,10 @@ templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilte
 			if loadFailed {
 				@emptyState("server", "deps.error.title", "deps.error.body", "", "", 2)
 			} else if len(deps) == 0 {
-				@emptyState("server", "deps.empty.title", "deps.empty.body", "", "", 2)
+				@emptyState("server", "deps.empty.title", "deps.empty.body", "deps.empty.cta", "/docs/dependencies", 2)
 			} else {
 				<div class="card deps-map-card">
 					@scrollRegion("deps-map-wrap", "region.deps.map") {
-						<!-- hub-svg: Task 3 -->
 						@mapSVG
 					}
 				</div>
