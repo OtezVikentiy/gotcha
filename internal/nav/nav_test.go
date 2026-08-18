@@ -133,8 +133,8 @@ func TestFromContextZeroValue(t *testing.T) {
 func TestSubsectionsPerformance(t *testing.T) {
 	s := Shell{ProjectID: 7, Area: "performance", Path: "/projects/7/web-vitals"}
 	items := Subsections(s)
-	if len(items) != 6 {
-		t.Fatalf("Subsections(performance) len = %d, want 6", len(items))
+	if len(items) != 7 {
+		t.Fatalf("Subsections(performance) len = %d, want 7", len(items))
 	}
 	wantHrefs := []string{
 		"/projects/7/performance",
