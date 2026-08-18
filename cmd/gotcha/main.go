@@ -19,6 +19,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -873,6 +874,8 @@ func run() error {
 		// Логи (C1): приёмник + отдельная квота логов.
 		ingestHandler.Logs = logWriter
 		ingestHandler.LogQuota = ingest.NewOrgLogQuota(orgSvc)
+		// Деплои (C5): реестр выкладок из CI (PG-таблица deployments).
+		ingestHandler.Deploy = deploy.NewStore(pg)
 		ingestHandler.DropCounter = orgSvc
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех

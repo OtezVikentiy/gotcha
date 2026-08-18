@@ -14,6 +14,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
@@ -88,6 +89,11 @@ type Handler struct {
 	// LogQuota — квота ЛОГОВ (log_quota против org_usage.logs_count),
 	// отдельный счётчик. nil → логи не квотируются.
 	LogQuota QuotaChecker
+
+	// Deploy — реестр деплоев проекта (C5): ingest-эндпоинт деплоя пишет сюда
+	// событие выкладки из CI (*deploy.Store, PG-таблица deployments). nil →
+	// приём деплоев выключен, эндпоинт отвечает 503.
+	Deploy *deploy.Store
 }
 
 // HostRegistry регистрирует хосты, приславшие метрики (PG-сущность «хост»).
@@ -182,6 +188,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// OTLP-экспортёра (см. logsNDJSON).
 	mux.HandleFunc("POST /v1/logs", h.otlpLogs)
 	mux.HandleFunc("POST /logs", h.logsNDJSON)
+	// Деплои (C5) — server-to-server вход из CI (не браузер), поэтому без CORS и
+	// preflight, в отличие от envelope/store: sentry_key передаётся заголовком
+	// или query, тело — JSON одного события выкладки (см. deployments.go).
+	mux.HandleFunc("POST /api/{project}/deployments/{$}", h.deploymentsIngest)
 }
 
 // corsHeaders разрешает кросс-origin отправку телеметрии из браузера: DSN
