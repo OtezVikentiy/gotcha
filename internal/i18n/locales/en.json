@@ -963,6 +963,7 @@
     "deps.kind.database": "Database",
     "deps.kind.cache": "Cache",
     "deps.kind.http": "HTTP",
+    "deps.center": "This service",
     "profiles.table.weight": "Weight",
     "profiles.list.caption": "Profile groups: service, type and transaction. Click a service to open its flamegraph for the selected period.",
     "chart.total": "total",

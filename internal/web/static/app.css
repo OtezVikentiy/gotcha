@@ -1275,6 +1275,35 @@ th {
 	width: auto;
 	min-width: 128px;
 }
+/* Hub-SVG карты зависимостей (задача 3, C4): сервис-владелец в центре
+   (.deps-center), зависимости радиально (.deps-node), рёбра окрашены по
+   доле ошибок — нейтральный/warn/danger те же токены, что у остальных
+   графиков продукта. */
+.deps-node rect {
+	fill: var(--surface-2);
+	stroke: var(--border-control);
+}
+.deps-center rect {
+	stroke: var(--link);
+}
+.deps-node text {
+	fill: var(--text);
+	font-size: 11px;
+}
+.deps-edge {
+	stroke: var(--border-control);
+	stroke-width: 1.5;
+}
+.deps-edge-warn {
+	stroke: var(--warn);
+}
+.deps-edge-bad {
+	stroke: var(--danger);
+}
+.deps-edge-label {
+	fill: var(--text-dim);
+	font-size: 10px;
+}
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
 .issues-filters .input[type="text"],
 .logs-filters .input[type="text"] {

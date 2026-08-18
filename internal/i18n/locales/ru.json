@@ -963,6 +963,7 @@
     "deps.kind.database": "БД",
     "deps.kind.cache": "Кеш",
     "deps.kind.http": "HTTP",
+    "deps.center": "Этот сервис",
     "profiles.table.weight": "Вес",
     "profiles.list.caption": "Группы профилей: сервис, тип и транзакция. Клик по сервису открывает флеймграф за выбранный период.",
     "chart.total": "всего",

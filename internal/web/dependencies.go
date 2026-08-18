@@ -67,8 +67,12 @@ func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 	}
 	filter := templates.DepsFilter{Range: timeRangeVM(tr), Active: tr.Key != perfDefaultPeriod}
 	// SVG строится в package web и передаётся в шаблон компонентом (шаблон не
-	// может вызвать web-функцию). Задача 2 — NopComponent (пусто), задача 3
-	// заменит на реальный dependencyMapSVG(...).
+	// может вызвать web-функцию). Пусто при ошибке загрузки или отсутствии
+	// зависимостей — рисовать пустую карту незачем, экран уже показывает
+	// error/empty-состояние по loadFailed/len(rows).
 	var mapSVG templ.Component = templ.NopComponent
+	if !loadFailed && len(rows) > 0 {
+		mapSVG = dependencyMapSVG(r.Context(), rows, 720, 360)
+	}
 	_ = templates.DependenciesScreen(projectID, rows, filter, mapSVG, loadFailed, truncated, h.currentEmail(r)).Render(r.Context(), w)
 }
