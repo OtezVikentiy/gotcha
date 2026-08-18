@@ -607,6 +607,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/performance", h.requireUser(http.HandlerFunc(h.performanceList)))
 	inner.Handle("GET /projects/{id}/performance/{transaction...}", h.requireUser(http.HandlerFunc(h.endpointDetail)))
 
+	// Карта зависимостей (C4): таблица внешних вызовов (БД/кеш/HTTP) сервиса,
+	// агрегированная из client-op спанов — доступ по CanAccessProject → 404, как
+	// у performanceList.
+	inner.Handle("GET /projects/{id}/dependencies", h.requireUser(http.HandlerFunc(h.dependencies)))
+
 	// Web Vitals (этап 4, план 2, задача 2): обзорная страница страниц проекта с
 	// p75 LCP/INP/CLS — только чтение, доступ по CanAccessProject → 404, как
 	// performanceList. Панель Web Vitals на странице эндпойнта отдельного роута

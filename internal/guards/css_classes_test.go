@@ -211,6 +211,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "alerts", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "chromeless", Why: "маркер страницы на <body>, стиля нет по замыслу — визуал несут дочерние .chromeless-top/.chromeless-main", Finding: "по замыслу"},
 	{Value: "confirm-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу — внутри уже стилизованная .card", Finding: "по замыслу"},
+	{Value: "deps", Why: "маркер страницы карты зависимостей (C4) на корневом <div>, стиля нет по замыслу — визуал от @layout и вложенных .card/.data-table", Finding: "по замыслу"},
 	{Value: "docs-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "hosts", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "host-settings", Why: "маркер под-страницы (настройки порогов хоста, T16) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
@@ -247,6 +248,8 @@ var permanentCSSClassExemptions = []Exemption{
 	// затронула (не запрашивалась), см. task-5-report.md, раздел «Раунд
 	// правок 1» — там же зафиксирована асимметрия между ними.
 	{Value: "alerts-section", Why: "семантический маркер секции внутри страницы alerts, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "deps-map-card", Why: "семантический маркер, стоит в паре с .card (class=\"card deps-map-card\", C4)", Finding: "по замыслу"},
+	{Value: "deps-truncated", Why: "семантический маркер, стоит в паре с .hint (class=\"hint deps-truncated\", C4)", Finding: "по замыслу"},
 	{Value: "gdpr-block", Why: "семантический маркер секции (152-ФЗ экспорт/удаление ПДн), стиля нет по замыслу — внутри уже стилизованные .field/.hint/.btn-ghost", Finding: "по замыслу"},
 	{Value: "invite-accept", Why: "семантический маркер, стоит в паре с .card (class=\"invite-accept card\") — визуал от .card", Finding: "по замыслу"},
 	{Value: "invite-link-block", Why: "семантический маркер, стоит в паре с .card (class=\"card invite-link-block\")", Finding: "по замыслу"},
@@ -283,7 +286,14 @@ var permanentCSSClassExemptions = []Exemption{
 // классы разметки (logs-filters, logs-severity-filter, log-row-details,
 // log-row-expanded, log-row-trace) получили реальные правила в app.css, в
 // список исключений не попали.
-const maxPermanentCSSClassExemptions = 75
+//
+// 75→78 (задача 2, C4): "deps" — маркер страницы карты зависимостей на
+// корневом <div> (та же семья, что и "logs"/"performance"); "deps-map-card" —
+// стоит в паре с .card (та же природа, что "rate-guard-card"/"team");
+// "deps-truncated" — стоит в паре с .hint (та же природа, что "sso-status").
+// "deps-filters" в список не попал — получил реальное правило в app.css
+// (присоединён к общей группе .issues-filters/.performance-filters/...).
+const maxPermanentCSSClassExemptions = 78
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

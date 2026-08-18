@@ -1253,7 +1253,8 @@ th {
 .issues-filters,
 .performance-filters,
 .metric-filters,
-.logs-filters {
+.logs-filters,
+.deps-filters {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-end;
@@ -1268,7 +1269,9 @@ th {
 .performance-filters .input,
 .metric-filters .select,
 .logs-filters .select,
-.logs-filters .input {
+.logs-filters .input,
+.deps-filters .select,
+.deps-filters .input {
 	width: auto;
 	min-width: 128px;
 }
