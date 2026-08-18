@@ -172,6 +172,15 @@ type Dependency struct {
 // description (подзапрос, чтобы GROUP BY шёл по уже вычисленным полям). http.server
 // (сама транзакция) и internal-op в фильтр НЕ входят. Считается по СЫРЫМ spans
 // (не по MV) — окно защищено max_execution_time + LIMIT + дефолт-окном на слое web.
+//
+// HTTP-цель нормализуется по хосту, чтобы один хост не двоился между
+// server.address (может нести :port) и url.full (domain() порт снимает):
+// у server.address порт снимается регуляркой `:[0-9]+$`. Две известные
+// границы (косметика отображения, не корректность агрегата, редки для
+// именованных зависимостей): (1) domain() отвергает односоставные хосты без
+// точки (localhost, internal-svc через url.full) — такой уходит в общий узел
+// 'http'; (2) `:[0-9]+$` может срезать хвост числового hextet у голого
+// IPv6-литерала (fe80::1 → fe80:).
 func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time.Time, limit int) ([]Dependency, error) {
 	if limit <= 0 {
 		limit = 50

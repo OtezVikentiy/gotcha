@@ -60,6 +60,12 @@ func TestDependencyMapSVGCap(t *testing.T) {
 	if strings.Contains(out, fmt.Sprintf("svc-%02d", depsMapNodeCap)) {
 		t.Errorf("узел за кэпом (svc-%02d) не должен рисоваться на карте", depsMapNodeCap)
 	}
+	// РОВНО depsMapNodeCap узлов-зависимостей (класс `deps-node"` с кавычкой —
+	// у центра класс `deps-node deps-center` без кавычки после, не считается) —
+	// ловит off-by-one в срезе кэпа.
+	if got := strings.Count(out, `deps-node"`); got != depsMapNodeCap {
+		t.Errorf("узлов-зависимостей на карте = %d, ожидалось %d (кэп)", got, depsMapNodeCap)
+	}
 	// пометка про остаток
 	if !strings.Contains(out, "deps-more") {
 		t.Errorf("нет пометки «+N ещё» при превышении кэпа")
