@@ -504,7 +504,9 @@ const attrKeysScanLimit = 50000
 // Прочие фильтры f (severity/service/...) НЕ применяются: подзапрос сузил
 // бы выборку ключей ещё сильнее, теряя редкие ключи ради точности, которая
 // обнаружению ключей не нужна (ту же логику отражает spec §4 — только
-// project_id+окно).
+// project_id+окно). ЕДИНСТВЕННОЕ исключение — f.TraceID (C3): он не мягкий
+// фасет, а жёсткий скоуп контекста трейса, поэтому применяется и здесь (см.
+// условие в подзапросе ниже).
 func (q *Query) AttrKeys(ctx context.Context, projectID int64, f ListFilter, prefix string, limit int) ([]FacetValue, error) {
 	if limit <= 0 {
 		limit = facetLimit
