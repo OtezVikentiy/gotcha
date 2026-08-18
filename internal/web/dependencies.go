@@ -20,7 +20,8 @@ const depsLimit = 50
 // dependencies — GET /projects/{id}/dependencies: таблица внешних зависимостей
 // сервиса (БД/кеш/HTTP), агрегированных из client-op спанов трейсов проекта.
 // Доступ — CanAccessProject, иначе 404 (тот же принцип, что у performanceList).
-// SVG hub-and-spoke карта — задача 3 (здесь templ.NopComponent-плейсхолдер).
+// SVG hub-and-spoke карта строится из строк зависимостей (dependencyMapSVG) и
+// передаётся в шаблон компонентом; при пустом/ошибочном результате — NopComponent.
 func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
