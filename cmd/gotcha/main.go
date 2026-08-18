@@ -33,6 +33,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
+	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -1180,6 +1181,29 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		"Duration of the last host threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, hostEval.LastTickSeconds)
 	go hostEval.Run(ctx)
+
+	// Оценщик error budget / burn rate по SLO (план D1): та же ниша, что
+	// metric/host/profile-оценщики — периодическая джоба поверх PG (определения+
+	// инциденты) и CH (ряды good/total через провайдеры). uptime.Service/Query
+	// здесь не построены (в отличие от aптайм-воркера), поэтому конструируем их
+	// под провайдеры: Service — окна обслуживания (не жгут бюджет), Query —
+	// ряд успешных проверок для uptime-SLO. Нотифаер соберёт Task 5; до тех пор
+	// nil — оценщик открывает/закрывает инциденты, но молча (nil-гвард в notify).
+	var sloNotifier slo.Notifier
+	sloEval := &slo.Evaluator{
+		Pool:      pg,
+		Store:     slo.NewStore(pg),
+		Providers: slo.Providers(trace.NewQuery(ch), uptime.NewQuery(ch), uptime.NewService(pg), cfg.RetentionDays),
+		Notifier:  sloNotifier,
+		Interval:  time.Duration(cfg.SLOEvalInterval) * time.Second,
+	}
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_last_tick_timestamp_seconds",
+		"Unix time of the last completed SLO burn-rate evaluation pass. Stale value means SLO error-budget alerts are not being evaluated.",
+		nil, sloEval.LastTickUnix)
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_slo_evaluator_tick_duration_seconds",
+		"Duration of the last SLO burn-rate evaluation pass. Approaching the interval means the evaluator stops keeping up.",
+		nil, sloEval.LastTickSeconds)
+	go sloEval.Run(ctx)
 }
 
 // detailPolicy — политика раскрытия деталей события получателю уведомления.

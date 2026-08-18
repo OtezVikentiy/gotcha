@@ -136,6 +136,16 @@ look perfectly healthy from here. The duration is always published: that's what
 makes hitting the budget visible. The reason shows up in the log as `tick did
 not finish within its budget`.
 
+**`gotcha_slo_evaluator_last_tick_timestamp_seconds`** /
+**`gotcha_slo_evaluator_tick_duration_seconds`** — when the SLO burn-rate
+evaluator last completed a pass over every enabled SLO, and how long it took.
+Same blind spot as the host evaluator: silence is the normal output, so a dead
+evaluator looks exactly like "every error budget is fine". A gap between now and
+the timestamp noticeably larger than `GOTCHA_SLO_EVAL_INTERVAL` means burn rates
+are not being recomputed and error-budget incidents are neither opened nor
+closed; a duration approaching the interval means the evaluator is falling
+behind.
+
 **`gotcha_host_registration_failures_total`** — background writes to the host
 registry that failed. While this grows, host `last_seen` is not refreshed, so
 silence incidents may be raised for machines that are alive; the cause is almost
