@@ -1039,3 +1039,153 @@ func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 		t.Fatalf("значение rare-value раскрытого rare.key не отрендерилось: %+v", expandedItems)
 	}
 }
+
+// TestWebLogsTraceIDFilterChip — задача 2 плана C3: экран /logs принимает
+// ?trace_id=, показывает его снимаемым чипом (укороченный id) и переносит
+// параметр в ссылки фасетов сайдбара (не только пагинацию — logsPageURLValues
+// единая точка сборки для обеих). Ссылка снятия чипа ведёт на тот же экран
+// БЕЗ trace_id.
+func TestWebLogsTraceIDFilterChip(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-tracechip-owner@example.com", "logs-tracechip-co", "logs-tracechip-proj")
+
+	const traceID = "abcd1234ef567890"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
+			Severity: log.SevInfo, Body: "row-in-trace", Service: "api",
+			TraceID: traceID,
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-2 * time.Minute), ObservedTS: now.Add(-2 * time.Minute),
+			Severity: log.SevInfo, Body: "row-without-trace", Service: "worker",
+		},
+	)
+
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base+"?trace_id="+traceID, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?trace_id=%s status = %d, want 200: %s", base, traceID, resp.StatusCode, body)
+	}
+	text := string(body)
+
+	// Список сужен до строки этого trace_id (Task 1, query-слой).
+	if strings.Contains(text, "row-without-trace") {
+		t.Errorf("trace_id=%s не сузил список: %s", traceID, text)
+	}
+	if !strings.Contains(text, "row-in-trace") {
+		t.Errorf("trace_id=%s потерял свою же строку: %s", traceID, text)
+	}
+
+	// Чип виден с укороченным id.
+	if !strings.Contains(text, "abcd1234") {
+		t.Errorf("чип с укороченным trace_id не найден: %s", text)
+	}
+
+	// Facet-ссылки (сайдбар) несут trace_id дальше — фасет service гарантированно
+	// есть (одна строка в скоупе trace_id, service=api).
+	svcItems := logFacetItems(t, text, 1)
+	svcAPI, ok := findFacetItem(svcItems, "api")
+	if !ok {
+		t.Fatalf("service facet: api не найден: %+v", svcItems)
+	}
+	if !strings.Contains(svcAPI.Href, "trace_id="+traceID) {
+		t.Errorf("facet-ссылка service=api не несёт trace_id: %s", svcAPI.Href)
+	}
+
+	// Ссылка снятия чипа ведёт на тот же экран логов БЕЗ trace_id.
+	removeRe := regexp.MustCompile(`<a class="chip-remove" href="([^"]+)"[^>]*title="[^"]*"`)
+	m := removeRe.FindStringSubmatch(text)
+	if m == nil {
+		t.Fatalf("не нашли ссылку снятия чипа trace_id: %s", text)
+	}
+	removeHref := html.UnescapeString(m[1])
+	if strings.Contains(removeHref, "trace_id") {
+		t.Errorf("ссылка снятия чипа не должна содержать trace_id: %s", removeHref)
+	}
+	if !strings.HasPrefix(removeHref, base) {
+		t.Errorf("ссылка снятия чипа должна вести на %s, получили %s", base, removeHref)
+	}
+
+	// Переход по ссылке снятия чипа реально убирает скоуп по trace_id.
+	resp = getWithCookie(t, s.srv, removeHref, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (снятие чипа) status = %d, want 200: %s", removeHref, resp.StatusCode, body)
+	}
+	text = string(body)
+	if !strings.Contains(text, "row-without-trace") {
+		t.Errorf("после снятия чипа список должен снова показывать все строки: %s", text)
+	}
+}
+
+// TestWebLogsAttrFilterChip — аудит UX P1: ссылка «Логи хоста» ставит
+// resource-attr фильтр ?attr=res:host.name:X. До фикса он был НЕВИДИМ (чип
+// показывался только для trace_id). Теперь активный attr-фильтр (в т.ч.
+// resource, у которого фасета в сайдбаре нет) рендерится снимаемым чипом.
+func TestWebLogsAttrFilterChip(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrchip-owner@example.com", "logs-attrchip-co", "logs-attrchip-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
+			Severity: log.SevInfo, Body: "row-on-host", Service: "api",
+			ResourceAttrs: map[string]string{"host.name": "web-01"},
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-2 * time.Minute), ObservedTS: now.Add(-2 * time.Minute),
+			Severity: log.SevInfo, Body: "row-other-host", Service: "api",
+			ResourceAttrs: map[string]string{"host.name": "web-02"},
+		},
+	)
+
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base+"?attr=res:host.name:web-01", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?attr=res:host.name:web-01 status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+
+	// Список сужен до строки этого хоста (существующий attr-фильтр C2).
+	if strings.Contains(text, "row-other-host") {
+		t.Errorf("attr host.name=web-01 не сузил список: %s", text)
+	}
+	if !strings.Contains(text, "row-on-host") {
+		t.Errorf("attr host.name=web-01 потерял свою же строку: %s", text)
+	}
+
+	// Чип активного attr-фильтра виден с подписью "host.name: web-01".
+	if !strings.Contains(text, "host.name: web-01") {
+		t.Errorf("чип attr-фильтра host.name не найден: %s", text)
+	}
+
+	// Ссылка снятия чипа ведёт на тот же экран БЕЗ этого attr.
+	removeRe := regexp.MustCompile(`<a class="chip-remove" href="([^"]+)"`)
+	m := removeRe.FindStringSubmatch(text)
+	if m == nil {
+		t.Fatalf("не нашли ссылку снятия attr-чипа: %s", text)
+	}
+	removeHref := html.UnescapeString(m[1])
+	if strings.Contains(removeHref, "host.name") {
+		t.Errorf("ссылка снятия attr-чипа не должна содержать host.name: %s", removeHref)
+	}
+
+	// Переход по снятию реально убирает attr-скоуп.
+	resp = getWithCookie(t, s.srv, removeHref, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (снятие attr-чипа) status = %d, want 200: %s", removeHref, resp.StatusCode, body)
+	}
+	if text := string(body); !strings.Contains(text, "row-other-host") {
+		t.Errorf("после снятия attr-чипа список должен снова показывать все строки: %s", text)
+	}
+}

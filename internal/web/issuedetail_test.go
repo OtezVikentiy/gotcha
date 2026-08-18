@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,19 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 )
+
+// logsLinkStartRe/logsLinkEndRe — проверяют, что ссылка «Логи вокруг события»
+// несёт окно start=/end= (unix-секунды). url.Values.Encode() сортирует
+// параметры по имени (end= раньше start=), поэтому порядок не фиксируется —
+// оба паттерна проверяются независимо.
+var (
+	logsLinkStartRe = regexp.MustCompile(`/logs\?[^"]*start=\d+`)
+	logsLinkEndRe   = regexp.MustCompile(`/logs\?[^"]*end=\d+`)
+)
+
+func hasLogsLinkWindow(body string) bool {
+	return logsLinkStartRe.MatchString(body) && logsLinkEndRe.MatchString(body)
+}
 
 // issueStacktrace — JSON исключения (формат из брифа задачи 7) с двумя
 // фреймами: один in_app, один системный. Используется для проверки, что
@@ -281,5 +295,85 @@ func TestWebIssueDetailCopyToolbar(t *testing.T) {
 	}
 	if strings.Contains(string(body), "data-copy-target") {
 		t.Fatalf("GET %s (no events) unexpectedly has copy blob targets: %s", noEventsPath, body)
+	}
+}
+
+// TestWebIssueDetailLogsLink — «Логи вокруг события» (C3 задача 3): ссылка
+// присутствует безусловно (в отличие от trace-ссылки, которая требует
+// hasTrace) и всегда несёт окно ±5м, иначе логи события старше суток
+// отсекались бы дефолтным 24ч-окном /logs. С trace_id — окно + trace_id;
+// без trace_id — окно + environment (без trace_id вовсе).
+func TestWebIssueDetailLogsLink(t *testing.T) {
+	s := newIssuesStack(t)
+	ownerID, ownerCookie := registerAndLogin(t, s, "issuedetail-logs-owner@example.com")
+	project := createProject(t, s, ownerID, "issuedetail-logs-org", "issuedetail-logs-proj")
+	now := time.Now().UTC()
+
+	// Событие С trace_id → ссылка несёт trace_id И окно start=/end=.
+	withTrace, err := s.issues.Upsert(context.Background(), project.ID, "fp-logs-trace", "NullPointerException", "pkg/a.go:10", "error", "", now)
+	if err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
+	evTraceID := uuid.NewString()
+	s.batcher.Add(event.Event{
+		ID:            evTraceID,
+		ProjectID:     project.ID,
+		IssueID:       withTrace.IssueID,
+		Timestamp:     now,
+		Level:         "error",
+		Message:       "boom",
+		ExceptionType: "NullPointerException",
+		TraceID:       "tr-123",
+		Environment:   "production",
+	})
+	s.flushEvents(t)
+
+	withTracePath := "/issues/" + strconv.FormatInt(withTrace.IssueID, 10)
+	resp := getWithCookie(t, s.srv, withTracePath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", withTracePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "trace_id=tr-123") {
+		t.Fatalf("GET %s missing trace_id= in logs link: %s", withTracePath, body)
+	}
+	if !hasLogsLinkWindow(string(body)) {
+		t.Fatalf("GET %s logs link missing start=/end= window: %s", withTracePath, body)
+	}
+
+	// Событие БЕЗ trace_id, с environment=prod → окно + environment, без trace_id.
+	noTrace, err := s.issues.Upsert(context.Background(), project.ID, "fp-logs-no-trace", "OtherError", "pkg/b.go:1", "error", "", now)
+	if err != nil {
+		t.Fatalf("upsert issue (no trace): %v", err)
+	}
+	evNoTraceID := uuid.NewString()
+	s.batcher.Add(event.Event{
+		ID:            evNoTraceID,
+		ProjectID:     project.ID,
+		IssueID:       noTrace.IssueID,
+		Timestamp:     now,
+		Level:         "error",
+		Message:       "boom",
+		ExceptionType: "OtherError",
+		Environment:   "prod",
+	})
+	s.flushEvents(t)
+
+	noTracePath := "/issues/" + strconv.FormatInt(noTrace.IssueID, 10)
+	resp = getWithCookie(t, s.srv, noTracePath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", noTracePath, resp.StatusCode, body)
+	}
+	if !hasLogsLinkWindow(string(body)) {
+		t.Fatalf("GET %s logs link missing start=/end= window: %s", noTracePath, body)
+	}
+	if !strings.Contains(string(body), "environment=prod") {
+		t.Fatalf("GET %s missing environment=prod in logs link: %s", noTracePath, body)
+	}
+	if strings.Contains(string(body), "trace_id=") {
+		t.Fatalf("GET %s (no trace) unexpectedly has trace_id= in logs link: %s", noTracePath, body)
 	}
 }

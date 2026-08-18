@@ -144,6 +144,7 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 			@breadcrumbBackTo(templ.URL(hostsBasePath(vm.ProjectID)), i18n.T(ctx, "nav.hosts"))
 			<h1>{ vm.Host.Name }</h1>
 			<span class={ hostStatusBadgeClass(vm.StatusKind) }>@hostStatusText(vm.StatusKind, vm.ProblemKinds)</span>
+			<p class="logs-link"><a href={ templ.URL(logsForHostPath(vm.ProjectID, vm.Host.Name)) }>{ i18n.T(ctx, "hosts.detail.view_logs") }</a></p>
 
 			<div class="monitor-meta">
 				<div class="stat-tile">

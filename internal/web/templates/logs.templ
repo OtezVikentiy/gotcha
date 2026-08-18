@@ -35,6 +35,9 @@ type LogsFilter struct {
 	// фильтра (правка ревью UX Minor #1: без этого раскрытый атрибут
 	// схлопывался при переходе на следующую страницу).
 	Facet string
+	// TraceID — активный жёсткий скоуп по trace_id (C3): показывается снимаемым
+	// чипом и переносится по всем ссылкам (пагинация/фасеты) через logsPageURLValues.
+	TraceID string
 	// RangeClamped/RetentionDays — окно из пресета (Range) урезано снизу по
 	// сроку хранения логов (web.parseLogFilter, правка ревью UX Important #2 /
 	// ops P2): пользователь выбрал, например, 30d, а фактически видит данные
@@ -447,8 +450,51 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	for _, a := range f.Attrs {
 		q.Add("attr", logAttrFilterParam(a))
 	}
+	if f.TraceID != "" {
+		q.Set("trace_id", f.TraceID)
+	}
 	f.Range.apply(q)
 	return q
+}
+
+// shortTraceID укорачивает trace_id для подписи чипа (полный — в URL).
+func shortTraceID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
+}
+
+// logsTraceChipRemoveURL — ссылка на тот же экран логов без trace_id (снятие
+// чипа). f — копия по значению, безопасно обнуляем поле.
+func logsTraceChipRemoveURL(projectID int64, f LogsFilter) string {
+	f.TraceID = ""
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
+// logAttrChipLabel — подпись чипа активного attr-фильтра: "ключ: значение".
+// Ключ уже несёт namespace (host.name, http.method), префикс res: в подписи не
+// показываем — пользователю важно значение, а не в какой из карт оно лежит.
+func logAttrChipLabel(a log.AttrFilter) string {
+	return a.Key + ": " + a.Value
+}
+
+// logAttrChipRemoveURL — снятие конкретного attr-фильтра по идентичности
+// (Resource+Key+Value), не трогая остальные; курсор пагинации и раскрытый фасет
+// сбрасываются — это действие фильтра, как снятие trace-чипа. Нужен отдельно от
+// logAttrValueURL (тот тоглит только log_attributes через !a.Resource и
+// сохраняет facet): чип обязан уметь снять и resource-атрибут (напр. host.name
+// из ссылки «Логи хоста»), у которого фасета в сайдбаре нет вовсе.
+func logAttrChipRemoveURL(projectID int64, f LogsFilter, target log.AttrFilter) string {
+	out := make([]log.AttrFilter, 0, len(f.Attrs))
+	for _, a := range f.Attrs {
+		if a.Resource == target.Resource && a.Key == target.Key && a.Value == target.Value {
+			continue
+		}
+		out = append(out, a)
+	}
+	f.Attrs = out
+	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
 // logAttrFilterParam сериализует log.AttrFilter обратно в значение ?attr=
@@ -487,6 +533,60 @@ func logsURLFromValues(projectID int64, q url.Values) string {
 		return logsPath(projectID)
 	}
 	return logsPath(projectID) + "?" + qs
+}
+
+// logsAroundEventWindow — полуокно «логи вокруг события» (§3 дизайна C3):
+// событие ±5 мин, если у него нет trace_id для точной склейки.
+const logsAroundEventWindow = 5 * time.Minute
+
+// logsAroundEventPath — ссылка «Логи вокруг события» со страницы ошибки.
+// ⚠ Окно [ts±5м] задаётся ВСЕГДА (обе ветки): без него /logs берёт дефолтное
+// окно 24ч (resolveTimeRange), и List отсекает логи трейса старше суток
+// (timestamp>=from) — дежурный, открывший вчерашнюю ошибку, получил бы пустой
+// экран (ревью плана, блокер). trace_id, если есть, ДОБАВЛЯЕТСЯ поверх окна
+// (точная склейка внутри окна); иначе окно сужается по environment (у события
+// нет поля Service; logs.service — иное пространство имён). Время — unix-секунды
+// (Global Constraints: обход format-guard + граница пакета templates/web).
+func logsAroundEventPath(projectID int64, traceID string, ts time.Time, env string) string {
+	q := url.Values{}
+	q.Set("start", strconv.FormatInt(ts.Add(-logsAroundEventWindow).Unix(), 10))
+	q.Set("end", strconv.FormatInt(ts.Add(logsAroundEventWindow).Unix(), 10))
+	if traceID != "" {
+		q.Set("trace_id", traceID)
+	} else if env != "" {
+		q.Set("environment", env)
+	}
+	return logsURLFromValues(projectID, q)
+}
+
+// logsForTracePath — ссылка «Логи этого трейса» с waterfall: trace_id точно +
+// окно трейса [from, from+длительность+1с] ограничивает скан партиций.
+//
+// Окно — ЛИШЬ оптимизация скана (trace_id фильтрует точно). Но TotalUS
+// насыщается на ^uint32(0) (~71 мин, trace.go считает totalUS uint32-микросекундами)
+// для очень длинных трейсов — тогда тесное окно молча отсекло бы хвост логов
+// трейса за пределами 71-й минуты (аудит QA, P1). При насыщении берём заведомо
+// широкий конец (from+24ч): любой реальный трейс в него укладывается, а ретеншен
+// логов всё равно ограничивает выборку сверху; корректность важнее экономии скана.
+func logsForTracePath(projectID int64, traceID string, from time.Time, totalUS uint32) string {
+	q := url.Values{}
+	q.Set("trace_id", traceID)
+	q.Set("start", strconv.FormatInt(from.Unix(), 10))
+	window := time.Duration(totalUS)*time.Microsecond + time.Second
+	if totalUS == ^uint32(0) {
+		window = 24 * time.Hour
+	}
+	q.Set("end", strconv.FormatInt(from.Add(window).Unix(), 10))
+	return logsURLFromValues(projectID, q)
+}
+
+// logsForHostPath — ссылка «Логи хоста» с карточки хоста: точечный фильтр по
+// resource-атрибуту host.name (без изменений query-слоя, повторно использует
+// парсинг ?attr=res:key:value из C2).
+func logsForHostPath(projectID int64, hostName string) string {
+	q := url.Values{}
+	q.Set("attr", "res:host.name:"+hostName)
+	return logsURLFromValues(projectID, q)
 }
 
 // LogsPageURL строит ссылку на список логов с сохранением текущих фильтров
@@ -537,6 +637,22 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				@timeRangeFields(filter.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
 			</form>
+			if filter.TraceID != "" || len(filter.Attrs) > 0 {
+				<div class="logs-active-filters">
+					if filter.TraceID != "" {
+						<span class="logs-filter-chip">
+							{ i18n.Tf(ctx, "logs.chip.trace", "id", shortTraceID(filter.TraceID)) }
+							<a class="chip-remove" href={ templ.URL(logsTraceChipRemoveURL(projectID, filter)) } title={ i18n.T(ctx, "logs.chip.trace_remove") } aria-label={ i18n.T(ctx, "logs.chip.trace_remove") }>✕</a>
+						</span>
+					}
+					for _, a := range filter.Attrs {
+						<span class="logs-filter-chip">
+							{ logAttrChipLabel(a) }
+							<a class="chip-remove" href={ templ.URL(logAttrChipRemoveURL(projectID, filter, a)) } title={ i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key) } aria-label={ i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key) }>✕</a>
+						</span>
+					}
+				</div>
+			}
 			if filter.RangeClamped {
 				<p class="hint logs-range-clamped">{ i18n.Tf(ctx, "logs.range.clamped", "days", strconv.Itoa(filter.RetentionDays)) }</p>
 			}

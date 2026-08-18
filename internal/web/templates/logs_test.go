@@ -1,12 +1,142 @@
 package templates
 
 import (
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
+
+// parseLogsLink разбирает URL, построенный хелперами контекст-ссылок C3, и
+// отдаёт его query-параметры для проверки. Заодно проверяет, что путь — тот же
+// относительный /projects/{id}/logs (не абсолютный, не чужой).
+func parseLogsLink(t *testing.T, raw string, projectID int64) url.Values {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("не разобрать ссылку %q: %v", raw, err)
+	}
+	if want := logsPath(projectID); u.Path != want {
+		t.Fatalf("путь ссылки = %q, ожидался %q", u.Path, want)
+	}
+	return u.Query()
+}
+
+// unixWindow достаёт start/end из query и проверяет, что они заданы, парсятся
+// как unix-секунды и образуют невырожденное окно (start < end). Возвращает обе
+// границы для дополнительных проверок.
+func unixWindow(t *testing.T, q url.Values) (from, to time.Time) {
+	t.Helper()
+	s, e := q.Get("start"), q.Get("end")
+	if s == "" || e == "" {
+		t.Fatalf("окно неполно: start=%q end=%q", s, e)
+	}
+	si, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("start не unix-секунды: %q", s)
+	}
+	ei, err := strconv.ParseInt(e, 10, 64)
+	if err != nil {
+		t.Fatalf("end не unix-секунды: %q", e)
+	}
+	if si >= ei {
+		t.Fatalf("окно вырождено: start=%d >= end=%d", si, ei)
+	}
+	return time.Unix(si, 0).UTC(), time.Unix(ei, 0).UTC()
+}
+
+// TestLogsAroundEventWindowAlways — ключевой инвариант блокера ревью плана:
+// «Логи вокруг события» ВСЕГДА задают временное окно, в ОБЕИХ ветках (с trace_id
+// и без) — без окна /logs берёт дефолтные 24ч и отсёк бы логи события старше
+// суток.
+func TestLogsAroundEventWindowAlways(t *testing.T) {
+	ts := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+
+	// Ветка с trace_id: окно есть И trace_id добавлен поверх, environment нет.
+	q := parseLogsLink(t, logsAroundEventPath(1, "tr-abc", ts, "prod"), 1)
+	from, to := unixWindow(t, q)
+	if q.Get("trace_id") != "tr-abc" {
+		t.Fatalf("trace_id-ветка: trace_id=%q, ожидался tr-abc", q.Get("trace_id"))
+	}
+	if q.Get("environment") != "" {
+		t.Fatalf("trace_id-ветка не должна ставить environment, получено %q", q.Get("environment"))
+	}
+	if !from.Before(ts) || !to.After(ts) {
+		t.Fatalf("окно [%v,%v] не окружает событие %v", from, to, ts)
+	}
+
+	// Ветка без trace_id: окно есть, скоуп по environment, trace_id нет.
+	q2 := parseLogsLink(t, logsAroundEventPath(1, "", ts, "prod"), 1)
+	unixWindow(t, q2)
+	if q2.Get("trace_id") != "" {
+		t.Fatalf("без-trace-ветка не должна ставить trace_id, получено %q", q2.Get("trace_id"))
+	}
+	if q2.Get("environment") != "prod" {
+		t.Fatalf("без-trace-ветка: environment=%q, ожидался prod", q2.Get("environment"))
+	}
+
+	// Без trace_id и без environment: только окно, ничего лишнего.
+	q3 := parseLogsLink(t, logsAroundEventPath(1, "", ts, ""), 1)
+	unixWindow(t, q3)
+	if q3.Get("trace_id") != "" || q3.Get("environment") != "" {
+		t.Fatalf("пустая ветка должна нести только окно, получено trace_id=%q env=%q", q3.Get("trace_id"), q3.Get("environment"))
+	}
+}
+
+// TestLogsForTraceSaturatedWindow — аудит QA P1: TotalUS насыщается на ^uint32(0)
+// (~71 мин) у очень длинных трейсов; тесное окно отсекло бы хвост логов. При
+// насыщении окно обязано быть заведомо широким (>=24ч от начала), а не ~71 мин.
+func TestLogsForTraceSaturatedWindow(t *testing.T) {
+	from := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+
+	// Нормальный трейс: окно ~= длительность (+1с), несколько секунд.
+	qn := parseLogsLink(t, logsForTracePath(1, "tr", from, 5_000_000 /* 5s */), 1)
+	_, tn := unixWindow(t, qn)
+	if span := tn.Sub(from); span > time.Minute {
+		t.Fatalf("нормальный трейс: окно %v неожиданно широкое", span)
+	}
+
+	// Насыщенный TotalUS: окно должно быть >=24ч, а не ~71 мин.
+	qs := parseLogsLink(t, logsForTracePath(1, "tr", from, ^uint32(0)), 1)
+	_, ts := unixWindow(t, qs)
+	if span := ts.Sub(from); span < 24*time.Hour {
+		t.Fatalf("насыщенный TotalUS: окно %v < 24ч — хвост логов длинного трейса был бы отсечён", span)
+	}
+	if qs.Get("trace_id") != "tr" {
+		t.Fatalf("trace_id должен присутствовать при любом окне")
+	}
+}
+
+// TestLogsForHostPathEncoding — host→логи: значение host.name с спецсимволами
+// (точки, дефисы, двоеточия) должно корректно кодироваться в ?attr=res:host.name:…
+// и переживать разбор web.parseLogAttrFilter (режет по ПЕРВОМУ ":").
+func TestLogsForHostPathEncoding(t *testing.T) {
+	q := parseLogsLink(t, logsForHostPath(1, "web-01.dc:eu"), 1)
+	attr := q.Get("attr")
+	want := "res:host.name:web-01.dc:eu"
+	if attr != want {
+		t.Fatalf("attr=%q, ожидался %q (первое ':' делит префикс/ключ/значение, двоеточия значения сохраняются)", attr, want)
+	}
+}
+
+// TestLogAttrChipRemoveURL — снятие attr-чипа убирает ИМЕННО целевой фильтр (по
+// Resource+Key+Value), не трогая остальные; работает и для resource-атрибута
+// (host.name из ссылки «Логи хоста»), у которого фасета в сайдбаре нет.
+func TestLogAttrChipRemoveURL(t *testing.T) {
+	f := LogsFilter{Attrs: []log.AttrFilter{
+		{Resource: true, Key: "host.name", Value: "web-01"},
+		{Resource: false, Key: "http.method", Value: "GET"},
+	}}
+	target := log.AttrFilter{Resource: true, Key: "host.name", Value: "web-01"}
+	q := parseLogsLink(t, logAttrChipRemoveURL(1, f, target), 1)
+	attrs := q["attr"]
+	if len(attrs) != 1 || attrs[0] != "http.method:GET" {
+		t.Fatalf("после снятия host.name остаться должен только http.method:GET, получено %v", attrs)
+	}
+}
 
 // TestNewAttrFacetsExpandedKeyOutsideTop — carry-fix из ревью задачи T5
 // (задача 6, C2): раскрытый в URL ключ (?facet=<key>), найденный автокомплитом

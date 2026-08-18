@@ -1807,7 +1807,8 @@ th {
 	margin: 20px 0 8px;
 }
 
-.event-trace-link {
+.event-trace-link,
+.logs-link {
 	margin: 6px 0 12px;
 	font-size: var(--fs-base);
 }
@@ -2929,6 +2930,45 @@ form.inline {
 	background: var(--accent-soft);
 	border-color: var(--link);
 	color: var(--link);
+}
+
+/* Ряд активных чипов-фильтров логов (C3): trace_id и attr-фильтры (в т.ч.
+   host.name из ссылки «Логи хоста»), каждый со своим ✕. Обёртка-flex, чтобы
+   несколько чипов переносились по строке. */
+.logs-active-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 8px 0 0;
+}
+/* Активный чип фильтра логов (C3): pill в стиле .chip.is-active с кнопкой
+   снятия. Отдельный класс, а не .chip — это не кликабельный фильтр-переключатель,
+   а индикатор активного скоупа со своим ✕. */
+.logs-filter-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	width: fit-content;
+	padding: 3px 6px 3px 12px;
+	background: var(--accent-soft);
+	border: 1px solid var(--link);
+	border-radius: 999px;
+	color: var(--link);
+	font-size: var(--fs-sm);
+}
+.chip-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	color: var(--link);
+	text-decoration: none;
+	line-height: 1;
+}
+.chip-remove:hover {
+	background: var(--surface-2);
 }
 
 /* -- Breadcrumb -- */

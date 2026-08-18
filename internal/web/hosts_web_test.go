@@ -1031,6 +1031,44 @@ func TestWebHostDetail(t *testing.T) {
 	}
 }
 
+// TestWebHostDetailLogsLink — C3 «логи в контексте»: карточка хоста несёт
+// ссылку на /logs с атрибут-фильтром res:host.name:<имя> (использует тот же
+// logsForHostPath, что и раздел трейсов, Task 3), url-экранированную (":" →
+// "%3A" через url.Values.Encode).
+func TestWebHostDetailLogsLink(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hostdetail-logs-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hd-logs-co", "HD Logs Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hd-logs-proj", "HD Logs Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	name := "web-01"
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + name
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, "/logs?") {
+		t.Errorf("нет ссылки на /logs: %s", text)
+	}
+	if !strings.Contains(text, "attr=res%3Ahost.name%3Aweb-01") {
+		t.Errorf("нет url-экранированного attr=res:host.name:web-01: %s", text)
+	}
+}
+
 // TestWebHostDetailNilDeps — Metrics/Hosts проставлены, а HostIncidents или
 // HostSettings — нет (тот же инвариант-нарушающий стенд, что и в
 // TestWebHostsListNilHostsStore, T14 находка 1): hostDetail тоже должен
