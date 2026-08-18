@@ -331,6 +331,7 @@
     "perf.regressions.metric.duration_p95": "duration p95",
     "perf.regressions.empty.title": "No regressions",
     "perf.regressions.empty.body": "Significant latency and Web Vitals regressions against the baseline will show up here.",
+    "regressions.after_deploy": "after deploy {version}",
     "metrics.title": "Metrics",
     "metrics.table.metric": "Metric",
     "metrics.table.type": "Type",

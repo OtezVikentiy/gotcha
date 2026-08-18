@@ -134,7 +134,7 @@ func TestEmptyStates(t *testing.T) {
 		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com")),
 		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com", false, 0)),
 		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
-		"regressions":  renderTo(t, RegressionsList(7, nil, "open", "u@e.com")),
+		"regressions":  renderTo(t, RegressionsList(7, nil, nil, "open", "u@e.com")),
 		"profileregs":  renderTo(t, ProfileRegressionsList(7, nil, "open", "u@e.com")),
 		"alerts":       renderTo(t, Alerts(7, nil, nil, false, true, nil, "", "u@e.com")),
 		"teams":        renderTo(t, Teams(o, nil, nil, nil, nil, "", "u@e.com")),

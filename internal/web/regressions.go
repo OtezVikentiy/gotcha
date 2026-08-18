@@ -1,10 +1,14 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -19,6 +23,11 @@ const regressionsPreFilterLimit = 500
 
 // regressionsListLimit — сколько строк показываем после фильтрации по статусу.
 const regressionsListLimit = 100
+
+// regressionDeployWindow — насколько далеко назад от начала регрессии ищем
+// предшествующий деплой для привязки «что изменилось перед сбоем». Деплой
+// старше окна с регрессией уже не связан — за неделю накатывается что угодно.
+const regressionDeployWindow = 7 * 24 * time.Hour
 
 func regressionsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/regressions"
@@ -88,5 +97,74 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = templates.RegressionsList(projectID, items, filterName, h.currentEmail(r)).Render(r.Context(), w)
+	deployAttr := regressionDeployAttribution(r.Context(), h.Deploy, projectID, items)
+
+	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// regressionDeployAttribution для каждой регрессии из items возвращает текст
+// «после деплоя vX (когда)» ближайшего ПРЕДШЕСТВУЮЩЕГО деплоя (deployed_at <=
+// started_at, в пределах regressionDeployWindow), либо "" если такого нет. Срез
+// той же длины и порядка, что items — параллелен строкам таблицы.
+//
+// Один запрос к стору деплоев на весь список: окно List покрывает все
+// показываемые регрессии (от самой ранней минус окно привязки до now), а сама
+// привязка ближайшего предшествующего деплоя считается в Go — без N+1 по
+// строкам. Ошибка стора не роняет страницу: привязка декоративна, без неё
+// таблица регрессий остаётся полной.
+func regressionDeployAttribution(ctx context.Context, store *deploy.Store, projectID int64, items []trace.Regression) []string {
+	attr := make([]string, len(items))
+	if store == nil || len(items) == 0 {
+		return attr
+	}
+
+	// Нижняя граница окна выборки — начало самой ранней регрессии минус окно
+	// привязки: раньше него ни одна регрессия не может привязаться к деплою.
+	minStarted := items[0].StartedAt
+	for _, reg := range items[1:] {
+		if reg.StartedAt.Before(minStarted) {
+			minStarted = reg.StartedAt
+		}
+	}
+	from := minStarted.Add(-regressionDeployWindow)
+	// Верхняя граница List — эксклюзивна; берём now с запасом, чтобы деплой,
+	// совпавший по времени с концом окна, в выборку попал.
+	to := time.Now().Add(time.Minute)
+
+	deploys, err := store.List(ctx, projectID, from, to, 0)
+	if err != nil {
+		return attr
+	}
+
+	for i, reg := range items {
+		best, found := nearestPrecedingDeploy(deploys, reg.StartedAt)
+		if !found {
+			continue
+		}
+		attr[i] = i18n.Tf(ctx, "regressions.after_deploy", "version", best.Version) +
+			" (" + humanize.Ago(ctx, best.DeployedAt) + ")"
+	}
+	return attr
+}
+
+// nearestPrecedingDeploy ищет в deploys ближайший деплой ПЕРЕД started (или
+// ровно в его момент) в пределах regressionDeployWindow — тот, после которого
+// началась регрессия. deploys приходит из List newest-first, но опираться на
+// порядок не станем: явно максимизируем DeployedAt.
+func nearestPrecedingDeploy(deploys []deploy.Deployment, started time.Time) (deploy.Deployment, bool) {
+	var best deploy.Deployment
+	found := false
+	for _, d := range deploys {
+		if d.DeployedAt.After(started) {
+			continue
+		}
+		if started.Sub(d.DeployedAt) > regressionDeployWindow {
+			continue
+		}
+		if !found || d.DeployedAt.After(best.DeployedAt) {
+			best = d
+			found = true
+		}
+	}
+	return best, found
 }

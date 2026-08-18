@@ -2804,6 +2804,13 @@ form.inline {
 .deploy-changelog {
 	white-space: pre-line;
 }
+/* Привязка регрессии к предшествующему деплою: мелкая приглушённая подпись под
+   временем начала («после деплоя vX (когда)»), ссылка ведёт на список деплоев. */
+.regression-deploy-attr {
+	margin-top: 2px;
+	font-size: 12px;
+	color: var(--text-dim);
+}
 .data-table .num {
 	text-align: right;
 	font-variant-numeric: tabular-nums;

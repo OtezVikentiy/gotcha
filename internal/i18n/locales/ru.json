@@ -331,6 +331,7 @@
     "perf.regressions.metric.duration_p95": "p95 длительности",
     "perf.regressions.empty.title": "Регрессий нет",
     "perf.regressions.empty.body": "Здесь появятся значимые ухудшения латентности и Web Vitals относительно базовой линии.",
+    "regressions.after_deploy": "после деплоя {version}",
     "metrics.title": "Метрики",
     "metrics.table.metric": "Метрика",
     "metrics.table.type": "Тип",
