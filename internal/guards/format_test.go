@@ -258,7 +258,7 @@ var debtFormatExemptions = []Exemption{
 	// деплоя «{версия} · {время}» тем же человекочитаемым макетом "02.01 15:04",
 	// что и соседние подписи точек графиков в svg.go выше — та же природа долга
 	// C8, одно новое место того же уже открытого нарушения.
-	{Value: exemptLoc("internal/web/svgaxis.go", 257), Why: `html.EscapeString(d.Version + " · " + d.DeployedAt.UTC().Format("02.01 15:04")) — время в <title> маркера деплоя, человекочитаемый макет вне humanize (тот же, что тултипы точек графиков)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svgaxis.go", 260), Why: `html.EscapeString(d.Version + " · " + d.DeployedAt.UTC().Format("02.01 15:04")) — время в <title> маркера деплоя, человекочитаемый макет вне humanize (тот же, что тултипы точек графиков)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 }
 
 // Потолок сознательно опущен с 13 до 12 задачей C8 (prettyBound), затем с 12
