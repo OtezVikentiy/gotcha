@@ -60,6 +60,53 @@ type Interval struct {
 	From, To time.Time
 }
 
+// CountBucket — корзина ряда good/total проверок за интервал, отдаваемая
+// SLI-провайдерам (internal/slo). Отдельный тип (не общий с trace и не slo.Bucket)
+// специально: uptime не должен импортировать ни slo, ни trace — конвертацию в
+// slo.Bucket делает провайдер. T — начало корзины (UTC).
+type CountBucket struct {
+	T           time.Time
+	Good, Total uint64
+}
+
+// UpBuckets строит ряд good/total проверок монитора за [from, to) с шагом step
+// из check_results — источник uptime-SLI. good = sum(ok), total = count().
+// Окна обслуживания здесь НЕ исключаются: это делает провайдер (по центру
+// корзины), единообразно со всеми SLI. Пустые корзины в ряд не попадают.
+func (q *Query) UpBuckets(ctx context.Context, monitorID int64, from, to time.Time, step time.Duration) ([]CountBucket, error) {
+	stepSec := int64(step / time.Second)
+	if stepSec <= 0 {
+		return nil, fmt.Errorf("uptime: up buckets: step must be at least one second, got %s", step)
+	}
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT toStartOfInterval(timestamp, INTERVAL ? second) AS t,
+			sum(ok) AS good, count() AS total
+		FROM check_results
+		WHERE monitor_id = ? AND timestamp >= ? AND timestamp < ?
+		GROUP BY t
+		ORDER BY t`,
+		stepSec, uint64(monitorID), from, to)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: up buckets: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CountBucket
+	for rows.Next() {
+		var t time.Time
+		var good, total uint64
+		if err := rows.Scan(&t, &good, &total); err != nil {
+			return nil, fmt.Errorf("uptime: up buckets: scan: %w", err)
+		}
+		out = append(out, CountBucket{T: t.UTC(), Good: good, Total: total})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: up buckets: %w", err)
+	}
+	return out, nil
+}
+
 // Recent возвращает до limit последних проверок монитора, отсортированных по
 // timestamp DESC (сначала самая новая).
 func (q *Query) Recent(ctx context.Context, monitorID int64, limit int) ([]CheckRow, error) {
