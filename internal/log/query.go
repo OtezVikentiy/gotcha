@@ -55,6 +55,13 @@ type ListFilter struct {
 	Query       string // подстрока body, регистронезависимо
 	Attrs       []AttrFilter
 
+	// TraceID — жёсткий скоуп по trace_id (C3, logs in context): при непустом
+	// добавляет "AND trace_id = ?" во ВСЕ запросы логов, включая подзапрос
+	// AttrKeys (в отличие от прочих фильтров f, которые AttrKeys игнорирует, —
+	// это осознанное отклонение: автокомплит ключей в контексте трейса обязан
+	// быть по строкам этого трейса).
+	TraceID string
+
 	Limit int
 
 	// Before/TieSkip — курсор пагинации keyset, см. List. TieSkip — сколько
@@ -153,6 +160,10 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 		}
 		where += " AND " + col + "[?] = ?"
 		args = append(args, a.Key, a.Value)
+	}
+	if f.TraceID != "" {
+		where += " AND trace_id = ?"
+		args = append(args, f.TraceID)
 	}
 
 	queryLimit := limit
@@ -299,6 +310,10 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 		where += " AND " + col + "[?] = ?"
 		args = append(args, a.Key, a.Value)
 	}
+	if f.TraceID != "" {
+		where += " AND trace_id = ?"
+		args = append(args, f.TraceID)
+	}
 
 	// SETTINGS max_execution_time = 10 (тот же приём, что у List/Facet выше и
 	// ниже) — Histogram считает по ВСЕМУ окну без LIMIT (см. докблок), поэтому
@@ -435,6 +450,10 @@ func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col st
 		where += " AND " + attrCol + "[?] = ?"
 		args = append(args, a.Key, a.Value)
 	}
+	if f.TraceID != "" {
+		where += " AND trace_id = ?"
+		args = append(args, f.TraceID)
+	}
 	args = append(args, facetLimit)
 
 	rows, err := q.conn.Query(ctx, `
@@ -491,17 +510,26 @@ func (q *Query) AttrKeys(ctx context.Context, projectID int64, f ListFilter, pre
 		limit = facetLimit
 	}
 
+	subWhere := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
+	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
+	if f.TraceID != "" {
+		// Единственный фильтр f, который AttrKeys чтит: trace_id — жёсткий скоуп
+		// (контекст трейса), а не мягкий фасет (см. докблок метода).
+		subWhere += " AND trace_id = ?"
+		args = append(args, f.TraceID)
+	}
+	args = append(args, attrKeysScanLimit)
+
 	query := `
 		SELECT key, count() AS c
 		FROM (
 			SELECT log_attributes
 			FROM logs
-			WHERE project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)
+			WHERE ` + subWhere + `
 			ORDER BY timestamp DESC
 			LIMIT ?
 		)
 		ARRAY JOIN mapKeys(log_attributes) AS key`
-	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To), attrKeysScanLimit}
 	if prefix != "" {
 		query += " WHERE key LIKE concat(?, '%')"
 		args = append(args, prefix)
@@ -585,6 +613,10 @@ func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, r
 		}
 		where += " AND " + attrCol + "[?] = ?"
 		whereArgs = append(whereArgs, a.Key, a.Value)
+	}
+	if f.TraceID != "" {
+		where += " AND trace_id = ?"
+		whereArgs = append(whereArgs, f.TraceID)
 	}
 
 	// Порядок args обязан идти 1:1 с порядком "?" в тексте запроса ниже:

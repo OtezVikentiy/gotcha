@@ -861,3 +861,85 @@ func TestQueryAttrValues(t *testing.T) {
 		}
 	})
 }
+
+// TestQueryTraceIDScope — задача 1 плана C3 (logs in context): ListFilter.TraceID
+// должен жёстко скопировать List и AttrKeys к строкам одного trace_id (в
+// отличие от прочих фильтров f, которые AttrKeys игнорирует, — см. её докблок).
+func TestQueryTraceIDScope(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(80)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
+	from := base
+	to := base.Add(time.Hour)
+
+	w.Add(projectID, log.LogRecord{
+		Timestamp: base, ObservedTS: base, Severity: log.SevInfo, Body: "in-trace",
+		TraceID: "aaaa", LogAttributes: map[string]string{"k": "v"},
+	})
+	w.Add(projectID, log.LogRecord{
+		Timestamp: base.Add(time.Second), ObservedTS: base.Add(time.Second), Severity: log.SevInfo, Body: "other",
+		TraceID: "bbbb", LogAttributes: map[string]string{"z": "w"},
+	})
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+
+	q := log.NewQuery(conn)
+
+	t.Run("List scoped to trace_id", func(t *testing.T) {
+		rows, err := q.List(ctx, projectID, log.ListFilter{From: from, To: to, TraceID: "aaaa"})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("len(rows) = %d, want 1: %+v", len(rows), rows)
+		}
+		if rows[0].Body != "in-trace" {
+			t.Fatalf("rows[0].Body = %q, want %q", rows[0].Body, "in-trace")
+		}
+	})
+
+	t.Run("empty TraceID means no condition", func(t *testing.T) {
+		all, err := q.List(ctx, projectID, log.ListFilter{From: from, To: to})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(all) != 2 {
+			t.Fatalf("len(all) = %d, want 2: %+v", len(all), all)
+		}
+	})
+
+	t.Run("AttrKeys scoped to trace_id", func(t *testing.T) {
+		keys, err := q.AttrKeys(ctx, projectID, log.ListFilter{From: from, To: to, TraceID: "aaaa"}, "", 10)
+		if err != nil {
+			t.Fatalf("AttrKeys: %v", err)
+		}
+		if c := facetCount(keys, "k"); c != 1 {
+			t.Fatalf("key %q count = %d, want 1: %+v", "k", c, keys)
+		}
+		if c := facetCount(keys, "z"); c != 0 {
+			t.Fatalf("key %q must not leak from other trace: %+v", "z", keys)
+		}
+	})
+
+	t.Run("injection-safe: placeholder, not concatenation", func(t *testing.T) {
+		safe, err := q.List(ctx, projectID, log.ListFilter{From: from, To: to, TraceID: "aaaa' OR '1'='1"})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(safe) != 0 {
+			t.Fatalf("len(safe) = %d, want 0 (no such trace_id, not the whole table): %+v", len(safe), safe)
+		}
+	})
+}
