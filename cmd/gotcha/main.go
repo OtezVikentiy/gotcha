@@ -24,6 +24,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/memlimit"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -142,19 +143,19 @@ func registerWriterMetrics(r *selfmetrics.Registry, name string, w writerStats) 
 const autoBufferSafeShare = 0.6
 
 // autoBufferCapUnits — на сколько «единиц потолка» делится autoBufferSafeShare
-// потолка кучи. Писателей четыре (event, SpanWriter, metric, profile), но
+// потолка кучи. Писателей пять (event, SpanWriter, metric, profile, log), но
 // SpanWriter применяет ОДИН per-writer-потолок к ДВУМ независимым буферам
 // (txBuf и spanBuf, см. SpanWriter.SetMaxBufferBytes) — в худшем случае оба
 // заполнены доверху одновременно, значит SpanWriter считается за 2 единицы:
-// event(1) + SpanWriter(2) + metric(1) + profile(1) = 5.
-const autoBufferCapUnits = 5
+// event(1) + SpanWriter(2) + metric(1) + profile(1) + log(1) = 6.
+const autoBufferCapUnits = 6
 
 // autoMaxBufferBytes выводит безопасный per-writer байтовый потолок буфера из
 // обнаруженного потолка кучи (heapLimitBytes — то, что вернул applyMemoryLimit,
 // 0 если лимит не обнаружен или GOMEMLIMIT не удалось вывести). Используется,
 // только когда оператор не задал GOTCHA_MAX_BUFFER_BYTES явно: тогда каждый из
-// пяти буферов-«единиц» брал бы flat defaultMaxBufBytes=256 МиБ пакета-писателя
-// (1.25 ГиБ суммарно) — больше heap-потолка на дефолтном docker-compose.yml
+// шести буферов-«единиц» брал бы flat defaultMaxBufBytes=256 МиБ пакета-писателя
+// (1.5 ГиБ суммарно) — больше heap-потолка на дефолтном docker-compose.yml
 // (mem_limit 1g → потолок кучи 819 МиБ), то есть дефолтная поставка могла
 // схватить OOM ядра при простое ClickHouse. Возвращает 0, если heapLimitBytes
 // <= 0 — вызывающий в этом случае оставляет прежний flat-дефолт пакета
@@ -343,7 +344,7 @@ func run() error {
 	var outbox *notify.Outbox
 	if cfg.Mode == "ingest" || cfg.Mode == "web" || cfg.Mode == "all" {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
-		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 		// SSO client_secret шифруется этим мастер-ключом at-rest. С публично
 		// известным dev-дефолтом шифровать бессмысленно — ключ виден в исходниках,
 		// а «enc:»-значение давало бы ложное чувство защиты (Info21). Тогда
@@ -546,6 +547,7 @@ func run() error {
 	var spanWriter *trace.SpanWriter
 	var metricWriter *metric.Writer
 	var profileWriter *profile.Writer
+	var logWriter *log.Writer
 	// ingestHandler/webHandler объявлены здесь, а не через := в своих
 	// if-блоках ниже: newRootMux собирается один раз, после того как оба
 	// хендлера построены (или остались nil, если режим их не поднимает), а не
@@ -760,6 +762,13 @@ func run() error {
 		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
+		// Логи (C1) — пятый приёмник: OTLP /v1/logs и NDJSON /logs пишут в
+		// logs своим батчером, тем же паттерном, что метрики и профили выше.
+		logWriter = log.NewWriter(ch)
+		logWriter.SetMaxBufferBytes(maxBufBytes)
+		registerWriterMetrics(&selfMetrics, "logs", logWriter)
+		go logWriter.Run()
+
 		evaluator := &alert.Evaluator{
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
 			Details: detailPolicy(cfg),
@@ -861,6 +870,9 @@ func run() error {
 		// Профили (этап 7): приёмник + отдельная квота профилей.
 		ingestHandler.Profiles = profileWriter
 		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
+		// Логи (C1): приёмник + отдельная квота логов.
+		ingestHandler.Logs = logWriter
+		ingestHandler.LogQuota = ingest.NewOrgLogQuota(orgSvc)
 		ingestHandler.DropCounter = orgSvc
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех
@@ -1023,6 +1035,13 @@ func run() error {
 			defer cancel()
 			if err := profileWriter.Close(cctx); err != nil {
 				slog.Error("profile writer drain failed", "error", err)
+			}
+		}
+		if logWriter != nil {
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := logWriter.Close(cctx); err != nil {
+				slog.Error("log writer drain failed", "error", err)
 			}
 		}
 		if runner != nil {

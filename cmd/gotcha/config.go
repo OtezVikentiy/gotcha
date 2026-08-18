@@ -42,6 +42,9 @@ type Config struct {
 	SpanRetentionDays    int
 	MetricRetentionDays  int
 	ProfileRetentionDays int
+	// LogRetentionDays — срок хранения структурированных логов
+	// (GOTCHA_LOG_RETENTION_DAYS). Логи объёмны, поэтому дефолт короче спанов.
+	LogRetentionDays int
 	// IncidentRetentionDays — срок хранения ЗАКРЫТЫХ инцидентов аптайма
 	// (GOTCHA_INCIDENT_RETENTION_DAYS). Свой, а не общий с событиями: у
 	// инцидента нет собственной телеметрии в ClickHouse, зато его показывает
@@ -57,6 +60,7 @@ type Config struct {
 	DefaultTransactionQuota int64
 	DefaultMetricQuota      int64
 	DefaultProfileQuota     int64
+	DefaultLogQuota         int64
 	MaxEventBytes           int64
 	// MaxBufferBytes — байтовый потолок КАЖДОГО буфера писателя. 0 = значение
 	// по умолчанию из пакета писателя (256 МиБ). Нужен для стеснённых профилей:
@@ -460,12 +464,14 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
 		MetricRetentionDays:      intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
 		ProfileRetentionDays:     intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
+		LogRetentionDays:         intNum("GOTCHA_LOG_RETENTION_DAYS", 14),
 		IncidentRetentionDays:    intNum("GOTCHA_INCIDENT_RETENTION_DAYS", 90),
 		Edition:                  edition,
 		DefaultEventQuota:        num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
 		DefaultTransactionQuota:  num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),
 		DefaultMetricQuota:       num("GOTCHA_DEFAULT_METRIC_QUOTA", defQuota),
 		DefaultProfileQuota:      num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
+		DefaultLogQuota:          num("GOTCHA_DEFAULT_LOG_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_LIMIT", 500),
 		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
@@ -685,6 +691,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.ProfileRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.ProfileRetentionDays)
 	}
+	if cfg.LogRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_LOG_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.LogRetentionDays)
+	}
 	if cfg.IncidentRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.IncidentRetentionDays)
 	}
@@ -715,6 +724,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.DefaultProfileQuota < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_PROFILE_QUOTA must be >= 0, got %d", cfg.DefaultProfileQuota)
+	}
+	if cfg.DefaultLogQuota < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_LOG_QUOTA must be >= 0, got %d", cfg.DefaultLogQuota)
 	}
 	if cfg.MaxEventBytes < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_MAX_EVENT_BYTES must be >= 1, got %d", cfg.MaxEventBytes)

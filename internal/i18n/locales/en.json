@@ -1105,6 +1105,7 @@
     "org.quota.kind.transactions.short": "transactions",
     "org.quota.kind.metrics.short": "metrics",
     "org.quota.kind.profiles.short": "profiles",
+    "org.quota.kind.logs.short": "logs",
     "org.members.role_label": "Member role",
     "status.uptime_period": "Uptime ({period}): {value}",
     "status.incidents.title_period": "Incidents over the last {period}",

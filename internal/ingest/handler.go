@@ -15,6 +15,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
@@ -79,6 +80,14 @@ type Handler struct {
 	// internal/host). Опциональный: nil — приём работает без регистрации
 	// (режимы без PG). *host.Toucher ему удовлетворяет.
 	Hosts HostRegistry
+
+	// Logs — приёмник логов (C1): /v1/logs (OTLP) и /logs (NDJSON) кладут
+	// распарсенные записи сюда (*log.Writer ему удовлетворяет). nil → логи
+	// выключены, эндпоинты отвечают успехом без записи (как Metrics nil).
+	Logs LogSink
+	// LogQuota — квота ЛОГОВ (log_quota против org_usage.logs_count),
+	// отдельный счётчик. nil → логи не квотируются.
+	LogQuota QuotaChecker
 }
 
 // HostRegistry регистрирует хосты, приславшие метрики (PG-сущность «хост»).
@@ -97,6 +106,7 @@ type DropCounter interface {
 	IncDroppedTransactions(ctx context.Context, orgID int64, month time.Time, n int64) error
 	IncDroppedMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error
 	IncDroppedProfiles(ctx context.Context, orgID int64, month time.Time, n int64) error
+	IncDroppedLogs(ctx context.Context, orgID int64, month time.Time, n int64) error
 }
 
 // MetricSink принимает распарсенную metric-точку. Реализация — *metric.Writer.
@@ -107,6 +117,11 @@ type MetricSink interface {
 // ProfileSink принимает распарсенный профиль. Реализация — *profile.Writer.
 type ProfileSink interface {
 	Add(projectID int64, p profile.Profile)
+}
+
+// LogSink принимает распарсенную запись лога. Реализация — *log.Writer.
+type LogSink interface {
+	Add(projectID int64, r log.LogRecord)
 }
 
 func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEventBytes int64) *Handler {
@@ -162,6 +177,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Профили pprof (этап 7): свой минимальный эндпоинт (стандарта пуша pprof
 	// нет), Bearer-DSN auth + метаданные из query.
 	mux.HandleFunc("POST /profiles/pprof", h.pprofIngest)
+	// Логи (C1) — OTLP-вход, четвёртая дверь в тот же ingest-mux (своя квота и
+	// своя таблица logs, см. logs.go otlpLogs), и NDJSON-вход для источников без
+	// OTLP-экспортёра (см. logsNDJSON).
+	mux.HandleFunc("POST /v1/logs", h.otlpLogs)
+	mux.HandleFunc("POST /logs", h.logsNDJSON)
 }
 
 // corsHeaders разрешает кросс-origin отправку телеметрии из браузера: DSN
@@ -255,6 +275,7 @@ const (
 	dropTransaction
 	dropMetric
 	dropProfile
+	dropLog
 )
 
 // countDrop списывает n отклонённых единиц класса kind на текущий месяц орги.
@@ -275,6 +296,8 @@ func (h *Handler) countDrop(ctx context.Context, kind dropKind, orgID int64, n i
 		err = h.DropCounter.IncDroppedMetrics(ctx, orgID, month, int64(n))
 	case dropProfile:
 		err = h.DropCounter.IncDroppedProfiles(ctx, orgID, month, int64(n))
+	case dropLog:
+		err = h.DropCounter.IncDroppedLogs(ctx, orgID, month, int64(n))
 	}
 	if err != nil {
 		slog.Warn("ingest: drop counter update failed",

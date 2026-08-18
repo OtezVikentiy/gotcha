@@ -134,6 +134,7 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 				"spans":    cfg.SpanRetentionDays,
 				"metrics":  cfg.MetricRetentionDays,
 				"profiles": cfg.ProfileRetentionDays,
+				"logs":     cfg.LogRetentionDays,
 			}); err != nil {
 				return err
 			} else {
@@ -158,6 +159,9 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 				return err
 			}
 			if err := db.ApplyTransactionRetention(ctx, ch, cfg.RetentionDays); err != nil {
+				return err
+			}
+			if err := db.ApplyLogRetention(ctx, ch, cfg.LogRetentionDays); err != nil {
 				return err
 			}
 			// RA-L3 (audit-3): web_vitals_5m тоже должен получать TTL, иначе inner-таблица

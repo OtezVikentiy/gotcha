@@ -60,6 +60,12 @@ var skipRootDirs = map[string]bool{
 	"deploy":       true,
 	"cld":          true,
 	".superpowers": true,
+	// vendor — вендоренные Go-зависимости (появились с офлайн-сборкой v0.6.2):
+	// сторонний код, к нашим правилам форматирования/стиля отношения не имеет
+	// (тот же класс, что node_modules ниже). Без пропуска сторожа обхода дерева
+	// (напр. TestNoRawTimeFormattingOutsideHumanize) падают на .Format() внутри
+	// pgx/protobuf/logrus и т.п.
+	"vendor": true,
 }
 
 // skipAnyDepthDirs — каталоги, которые пропускаются на любой глубине: .git

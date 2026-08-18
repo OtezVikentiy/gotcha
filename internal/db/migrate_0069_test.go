@@ -1,9 +1,8 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0069_hosts_agent_version.up.sql (T8, A2).
+// Тест на непустой базе для НОВЕЙШЕЙ миграции живёт в файле этой самой
+// новейшей миграции — см. migrate_0070_test.go (0070_org_usage_logs.up.sql,
+// C1, задача 2).
 
 import (
 	"context"

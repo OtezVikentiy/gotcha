@@ -262,6 +262,7 @@ func TestRetentionValidatesDays(t *testing.T) {
 	funcs := map[string]func(context.Context, driver.Conn, int) error{
 		"metric":      ApplyMetricRetention,
 		"profile":     ApplyProfileRetention,
+		"log":         ApplyLogRetention,
 		"transaction": ApplyTransactionRetention,
 		"webvitals":   ApplyWebVitalsRetention,
 	}

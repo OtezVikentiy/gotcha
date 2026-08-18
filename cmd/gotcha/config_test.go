@@ -35,6 +35,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.SpanRetentionDays != 30 {
 		t.Errorf("SpanRetentionDays = %d, want 30", cfg.SpanRetentionDays)
 	}
+	if cfg.LogRetentionDays != 14 {
+		t.Errorf("LogRetentionDays = %d, want 14", cfg.LogRetentionDays)
+	}
 	if cfg.DefaultEventQuota != 0 {
 		t.Errorf("DefaultEventQuota = %d, want 0 (oss unlimited)", cfg.DefaultEventQuota)
 	}
@@ -266,6 +269,7 @@ func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 		"GOTCHA_SPAN_RETENTION_DAYS":     "0",
 		"GOTCHA_METRIC_RETENTION_DAYS":   "0",
 		"GOTCHA_PROFILE_RETENTION_DAYS":  "0",
+		"GOTCHA_LOG_RETENTION_DAYS":      "0",
 		"GOTCHA_INCIDENT_RETENTION_DAYS": "0",
 	}
 	cfg, err := loadConfig(getenvFrom(env), nil)
@@ -274,10 +278,10 @@ func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 	}
 	if cfg.RetentionDays != 0 || cfg.SpanRetentionDays != 0 ||
 		cfg.MetricRetentionDays != 0 || cfg.ProfileRetentionDays != 0 ||
-		cfg.IncidentRetentionDays != 0 {
-		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d",
+		cfg.LogRetentionDays != 0 || cfg.IncidentRetentionDays != 0 {
+		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d/%d",
 			cfg.RetentionDays, cfg.SpanRetentionDays, cfg.MetricRetentionDays,
-			cfg.ProfileRetentionDays, cfg.IncidentRetentionDays)
+			cfg.ProfileRetentionDays, cfg.LogRetentionDays, cfg.IncidentRetentionDays)
 	}
 }
 
@@ -287,6 +291,7 @@ func TestLoadConfigNegativeRetentionRejected(t *testing.T) {
 		"GOTCHA_SPAN_RETENTION_DAYS",
 		"GOTCHA_METRIC_RETENTION_DAYS",
 		"GOTCHA_PROFILE_RETENTION_DAYS",
+		"GOTCHA_LOG_RETENTION_DAYS",
 		"GOTCHA_INCIDENT_RETENTION_DAYS",
 	} {
 		env := map[string]string{key: "-1"}
@@ -621,9 +626,9 @@ func TestLoadConfig_Edition(t *testing.T) {
 	if cfg.DefaultEventQuota != 0 {
 		t.Errorf("DefaultEventQuota (oss) = %d, want 0", cfg.DefaultEventQuota)
 	}
-	if cfg.DefaultTransactionQuota != 0 || cfg.DefaultMetricQuota != 0 || cfg.DefaultProfileQuota != 0 {
-		t.Errorf("oss quotas not all 0: tx=%d metric=%d profile=%d",
-			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+	if cfg.DefaultTransactionQuota != 0 || cfg.DefaultMetricQuota != 0 || cfg.DefaultProfileQuota != 0 || cfg.DefaultLogQuota != 0 {
+		t.Errorf("oss quotas not all 0: tx=%d metric=%d profile=%d log=%d",
+			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 	}
 
 	// SaaS-редакция: дефолты квот = 1_000_000.
@@ -637,9 +642,9 @@ func TestLoadConfig_Edition(t *testing.T) {
 	if cfg.DefaultEventQuota != 1_000_000 {
 		t.Errorf("DefaultEventQuota (saas) = %d, want 1000000", cfg.DefaultEventQuota)
 	}
-	if cfg.DefaultTransactionQuota != 1_000_000 || cfg.DefaultMetricQuota != 1_000_000 || cfg.DefaultProfileQuota != 1_000_000 {
-		t.Errorf("saas quotas not all 1000000: tx=%d metric=%d profile=%d",
-			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+	if cfg.DefaultTransactionQuota != 1_000_000 || cfg.DefaultMetricQuota != 1_000_000 || cfg.DefaultProfileQuota != 1_000_000 || cfg.DefaultLogQuota != 1_000_000 {
+		t.Errorf("saas quotas not all 1000000: tx=%d metric=%d profile=%d log=%d",
+			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 	}
 
 	// 0 = безлимит — легитимная конфигурация в любой редакции, включая saas.
@@ -654,25 +659,29 @@ func TestLoadConfig_Edition(t *testing.T) {
 		t.Errorf("DefaultEventQuota = %d, want 0", cfg.DefaultEventQuota)
 	}
 
-	// Явные env-переопределения всех четырёх дефолтов.
+	// Явные env-переопределения всех пяти дефолтов.
 	cfg, err = loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_DEFAULT_EVENT_QUOTA":       "10",
 		"GOTCHA_DEFAULT_TRANSACTION_QUOTA": "20",
 		"GOTCHA_DEFAULT_METRIC_QUOTA":      "30",
 		"GOTCHA_DEFAULT_PROFILE_QUOTA":     "40",
+		"GOTCHA_DEFAULT_LOG_QUOTA":         "50",
 	}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig overrides: %v", err)
 	}
 	if cfg.DefaultEventQuota != 10 || cfg.DefaultTransactionQuota != 20 ||
-		cfg.DefaultMetricQuota != 30 || cfg.DefaultProfileQuota != 40 {
-		t.Errorf("quota overrides failed: event=%d tx=%d metric=%d profile=%d",
-			cfg.DefaultEventQuota, cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota)
+		cfg.DefaultMetricQuota != 30 || cfg.DefaultProfileQuota != 40 || cfg.DefaultLogQuota != 50 {
+		t.Errorf("quota overrides failed: event=%d tx=%d metric=%d profile=%d log=%d",
+			cfg.DefaultEventQuota, cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 	}
 
 	// Отрицательная квота — ошибка (0 разрешён, <0 нет).
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DEFAULT_METRIC_QUOTA": "-1"}), nil); err == nil {
 		t.Error("negative GOTCHA_DEFAULT_METRIC_QUOTA must fail")
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DEFAULT_LOG_QUOTA": "-1"}), nil); err == nil {
+		t.Error("negative GOTCHA_DEFAULT_LOG_QUOTA must fail")
 	}
 
 	// Мусорная редакция — ошибка.

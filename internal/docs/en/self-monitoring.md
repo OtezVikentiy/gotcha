@@ -70,9 +70,9 @@ scrape_configs:
 
 **`gotcha_writer_buffered_rows{writer="…"}`** — rows sitting in memory, waiting
 to be written to ClickHouse. Writers: `events`, `spans`, `metrics`, `profiles`,
-`uptime_results`. A healthy instance keeps this near zero and flushes within a
-second or two. A number that climbs and stays high means ClickHouse is not
-accepting writes.
+`logs`, `uptime_results`. A healthy instance keeps this near zero and flushes
+within a second or two. A number that climbs and stays high means ClickHouse
+is not accepting writes.
 
 **`gotcha_writer_insert_failures_total{writer="…"}`** — batch inserts that
 failed. This is *not* data loss on its own: the batch goes back into the buffer

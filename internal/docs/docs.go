@@ -50,6 +50,7 @@ var registry = []struct{ Slug, Group string }{
 	{"metrics", "docs.group.sections"},
 	{"metric-alerts", "docs.group.sections"},
 	{"hosts", "docs.group.sections"},
+	{"logs", "docs.group.sections"},
 	{"profiling", "docs.group.sections"},
 	{"uptime", "docs.group.sections"},
 	{"status-pages", "docs.group.sections"},

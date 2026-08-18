@@ -1,11 +1,13 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,6 +218,50 @@ func TestCoverQuotaBannerNearLimit(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET settings (near limit) status = %d, want 200", resp.StatusCode)
 	}
+}
+
+// TestCoverQuotaBannerDroppedLogs — Fix B волны устранения аудита C1: дропы
+// логов обязаны быть видны оператору в баннере (принцип PROD-P1, как и у
+// прочих видов), НО log_quota намеренно не выставлен полем формы настроек
+// квот (см. org.QuotaKinds) — эта проверка бьёт только по баннеру.
+func TestCoverQuotaBannerDroppedLogs(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "banner-logs-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "banner-logs-co", "Banner Logs Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.IncDroppedLogs(context.Background(), o.ID, time.Now(), 4); err != nil {
+		t.Fatalf("inc dropped logs: %v", err)
+	}
+	resp := getWithCookie(t, s.srv, "/orgs/"+strconv.FormatInt(o.ID, 10)+"/settings", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET settings (dropped logs) status = %d, want 200", resp.StatusCode)
+	}
+	html := string(body)
+	// Разбивка баннера ("Отклонено по видам: логи 4.") — короткая метка вида и
+	// число; итог баннера ("...4 элемента отклонено...") тоже должен считать
+	// логи, а не игнорировать их.
+	if !containsAll(html, "логи", "4") {
+		t.Fatalf("страница настроек не показывает дропнутые логи в баннере, body=%s", html)
+	}
+	if !bytes.Contains(body, []byte("отклонено")) {
+		t.Fatalf("баннер дропов не отрисован для dropped_logs>0")
+	}
+}
+
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestCoverTeamsInvalidPathAndForm — teams: невалидный {id} команды → 404;
