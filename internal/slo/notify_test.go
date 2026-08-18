@@ -58,7 +58,7 @@ func TestSLOBurnNotifierEnqueues(t *testing.T) {
 	if jobs[0].ChannelID != webhookCh {
 		t.Errorf("job channel = %d, want %d", jobs[0].ChannelID, webhookCh)
 	}
-	if p["kind"] != "slo_burn" ||
+	if p["kind"] != "slo_burn_open" ||
 		p["channel_kind"] != alert.ChannelWebhook ||
 		p["target"] != "https://example.com/hook" ||
 		p["target_name"] != "checkout" {

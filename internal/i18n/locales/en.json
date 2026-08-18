@@ -1298,6 +1298,8 @@
     "notify.redacted.kind.metric_alert_resolved": "Metric alert resolved",
     "notify.redacted.kind.regression_open": "Performance regression",
     "notify.redacted.kind.regression_close": "Performance regression resolved",
+    "notify.redacted.kind.slo_burn_open": "SLO error budget burning",
+    "notify.redacted.kind.slo_burn_close": "SLO error budget recovered",
     "notify.redacted.kind.profile_regression_open": "Profile regression",
     "notify.redacted.kind.profile_regression_resolved": "Profile regression resolved",
     "notify.redacted.kind.down": "Monitor is down",

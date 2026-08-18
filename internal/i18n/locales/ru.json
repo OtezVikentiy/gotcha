@@ -1298,6 +1298,8 @@
     "notify.redacted.kind.metric_alert_resolved": "Метрический алерт: решён",
     "notify.redacted.kind.regression_open": "Регрессия производительности",
     "notify.redacted.kind.regression_close": "Регрессия производительности: решена",
+    "notify.redacted.kind.slo_burn_open": "Сжигается бюджет ошибок SLO",
+    "notify.redacted.kind.slo_burn_close": "Бюджет ошибок SLO восстановлен",
     "notify.redacted.kind.profile_regression_open": "Регрессия профиля",
     "notify.redacted.kind.profile_regression_resolved": "Регрессия профиля: решена",
     "notify.redacted.kind.down": "Монитор недоступен",

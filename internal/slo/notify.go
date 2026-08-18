@@ -55,6 +55,15 @@ func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
 	subject := sloSubject(ctx, ev)
 	body := sloBody(ctx, ev, url)
 
+	// Два вида вместо одного: на обезличенном (трансграничном) пути поле "opened"
+	// вырезается, поэтому открытие и закрытие инцидента различает только сам kind
+	// (иначе получатель не отличит тревогу от отбоя). Оба зарегистрированы в
+	// notify.redactedKindKeys — иначе наружу ушёл бы сырой enum.
+	kind := "slo_burn_open"
+	if !ev.Opened {
+		kind = "slo_burn_close"
+	}
+
 	for _, ch := range channels {
 		if !ch.Deliverable() {
 			continue
@@ -68,7 +77,7 @@ func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
 		// Ловушка имён: адрес канала (webhook URL / chat_id) кладём под "target"
 		// — его читает notify.Worker; имя SLO — под "target_name".
 		payload := map[string]any{
-			"kind":             "slo_burn",
+			"kind":             kind,
 			"project_id":       ev.SLO.ProjectID,
 			"target_name":      ev.SLO.Name,
 			"sli_kind":         string(ev.SLO.Kind),

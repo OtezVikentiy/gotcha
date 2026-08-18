@@ -21,6 +21,7 @@ func TestRedactedKindLabelsCoverAllKinds(t *testing.T) {
 		"metric_alert_open", "metric_alert_resolved",
 		"n_plus_one", "slow_db_query", "http_flood",
 		"regression_open", "regression_close",
+		"slo_burn_open", "slo_burn_close",
 		"profile_regression_open", "profile_regression_resolved",
 		"down", "up", "ssl_expiring", "reminder",
 		"host_alert_open", "host_alert_resolved", "host_retired",
