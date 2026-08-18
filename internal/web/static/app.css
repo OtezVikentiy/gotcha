@@ -2931,6 +2931,37 @@ form.inline {
 	color: var(--link);
 }
 
+/* Активный чип фильтра логов по trace_id (C3): pill в стиле .chip.is-active
+   с кнопкой снятия. Отдельный класс, а не .chip — это не кликабельный
+   фильтр-переключатель, а индикатор активного скоупа со своим ✕. */
+.logs-trace-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	width: fit-content;
+	margin: 8px 0 0;
+	padding: 3px 6px 3px 12px;
+	background: var(--accent-soft);
+	border: 1px solid var(--link);
+	border-radius: 999px;
+	color: var(--link);
+	font-size: var(--fs-sm);
+}
+.chip-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	color: var(--link);
+	text-decoration: none;
+	line-height: 1;
+}
+.chip-remove:hover {
+	background: var(--surface-2);
+}
+
 /* -- Breadcrumb -- */
 .breadcrumb {
 	display: flex;
