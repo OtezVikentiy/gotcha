@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-18
+
 ### Added
 - Logs are now cross-linked with errors, traces, and hosts: an error's detail page offers "Logs around this event", a trace's waterfall offers "Logs for this trace", and a host's card offers "Host logs". The logs screen accepts a `trace_id` filter shown as a removable chip.
 
