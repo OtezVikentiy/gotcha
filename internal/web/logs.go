@@ -32,7 +32,8 @@ const logsHistogramBuckets = 48
 // C2): фильтры (severity/service/environment/тело/окно времени), список с
 // раскрытием строки (полное тело + атрибуты + trace/span), курсорная
 // пагинация «показать старее», гистограмма объёма по времени и severity
-// (задача 3). Фасеты и автокомплит атрибутов — задачи T4-T6, здесь их нет.
+// (задача 3). Встроенные фасеты — задача 4 (реализовано ниже); атрибут-фасеты и
+// автокомплит — задачи T5-T6, здесь их пока нет.
 func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -152,7 +153,7 @@ func (h *Handler) logsHistogram(ctx context.Context, projectID int64, f log.List
 // logsFacets считает три встроенных фасета (задача 4, C2): severity/service/
 // environment — Query.Facet по тому же фильтру f, что и список/гистограмма.
 // Ошибка/таймаут отдельного фасета (SETTINGS max_execution_time=5 внутри
-// Query.Facet) — та же деградация, что и у логgsHistogram: предупреждение в
+// Query.Facet) — та же деградация, что и у logsHistogram: предупреждение в
 // лог, секция рендерится пустой с пометкой «слишком много данных» вместо
 // падения всей страницы (тот же принцип, что и у logsHistogram); остальные
 // две секции при этом считаются независимо — падение одного фасета не тянет
