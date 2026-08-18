@@ -121,6 +121,7 @@ var railAreas = []struct {
 	{"performance", "zap", "nav.performance"},
 	{"metrics", "chart", "nav.metrics"},
 	{"hosts", "server", "nav.hosts"},
+	{"logs", "file-text", "nav.logs"},
 	{"uptime", "activity", "nav.uptime"},
 	{"alerts", "bell", "nav.alerts"},
 }
@@ -162,6 +163,8 @@ func AreaForPath(path string) string {
 					return "metrics"
 				case "hosts":
 					return "hosts"
+				case "logs":
+					return "logs"
 				case "monitors", "incidents", "maintenance", "statuspages":
 					return "uptime"
 				case "alerts":
@@ -215,6 +218,8 @@ func BackLabelKey(rawPath string) string {
 					return "nav.host_thresholds"
 				}
 				return "nav.hosts"
+			case "logs":
+				return "nav.logs"
 			case "monitors":
 				return "nav.monitors"
 			case "incidents":
@@ -305,6 +310,13 @@ func Subsections(s Shell) []NavItem {
 			items = append(items,
 				NavItem{LabelKey: "nav.host_thresholds", Href: "/projects/" + effID + "/hosts/settings"},
 			)
+		}
+	case "logs":
+		// Просмотрщик логов (задача 2, C2): единственный подраздел —
+		// список открыт всем с доступом к проекту, как и hosts выше (не
+		// требует CanOperate — это не настройка, а чтение телеметрии).
+		items = []NavItem{
+			{LabelKey: "nav.logs", Href: "/projects/" + effID + "/logs"},
 		}
 	case "uptime":
 		items = []NavItem{
@@ -526,7 +538,7 @@ func firstSubsectionHref(s Shell, area string) string {
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,
-		"hosts": true, "uptime": true,
+		"hosts": true, "logs": true, "uptime": true,
 	}
 	if perProject[s.Area] {
 		target := s

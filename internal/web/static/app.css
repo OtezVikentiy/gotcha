@@ -1252,7 +1252,8 @@ th {
    «Применить» замыкает ряд справа. На узких экранах ряд переносится. -- */
 .issues-filters,
 .performance-filters,
-.metric-filters {
+.metric-filters,
+.logs-filters {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-end;
@@ -1265,15 +1266,38 @@ th {
 .issues-filters .input,
 .performance-filters .select,
 .performance-filters .input,
-.metric-filters .select {
+.metric-filters .select,
+.logs-filters .select,
+.logs-filters .input {
 	width: auto;
 	min-width: 128px;
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
-.issues-filters .input[type="text"] {
+.issues-filters .input[type="text"],
+.logs-filters .input[type="text"] {
 	flex: 1 1 200px;
 	min-width: 180px;
 	max-width: 380px;
+}
+/* Фильтр severity (задача 2, C2) — набор чекбоксов вместо <select>: значения
+   мультипараметра ?severity= читаются НЕЗАВИСИМО (в отличие от одиночных
+   селектов status/level рядом), нативный <select multiple> для этого
+   неудобен (требует ctrl/cmd-клик, плохо работает на мобильном). <fieldset>
+   сброшен до плоского вида, чтобы не выбиваться из компактного тулбара
+   бордером/паддингом браузерного дефолта. */
+.logs-severity-filter {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px;
+	margin: 0;
+	padding: 0;
+	border: none;
+}
+.logs-severity-filter legend {
+	padding: 0;
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
 }
 /* Единый селектор окна времени: пресеты (<select>) и два поля произвольного
    диапазона стоят одной группой в общей «обойме». Поля дат компактны и
@@ -2090,6 +2114,19 @@ th {
 	color: var(--text-dim);
 	font-size: var(--fs-sm);
 	margin-bottom: 6px;
+}
+/* Раскрытие строки лога (задача 2, C2) — тот же приём, что .raw-json: нативный
+   <details>/<summary> без JS, summary — обрезанное превью тела. */
+.log-row-details > summary {
+	cursor: pointer;
+}
+.log-row-expanded {
+	margin-top: 8px;
+}
+.log-row-trace {
+	margin: 8px 0 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
 }
 /* Breadcrumbs — таймлайн следов до ошибки (лог/HTTP/навигация). */
 .breadcrumbs {

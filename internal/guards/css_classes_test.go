@@ -216,6 +216,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "host-settings", Why: "маркер под-страницы (настройки порогов хоста, T16) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "incidents", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "issues", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "logs", Why: "маркер страницы на корневом <div> (задача 2, C2), стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "maintenance", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "metric-detail", Why: "маркер под-страницы (метрика) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "metrics", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
@@ -276,7 +277,13 @@ var permanentCSSClassExemptions = []Exemption{
 // (та же семья, что и "hosts", "metric-detail"); "host-settings-form" был
 // маркером формы порогов, но при приёмке получил реальное правило
 // (.host-settings-form > button — отступ кнопки «Сохранить»), поэтому 75→74.
-const maxPermanentCSSClassExemptions = 74
+//
+// 74→75 (задача 2, C2): "logs" — маркер страницы просмотрщика логов на
+// корневом <div> (та же семья, что и "issues"/"hosts"); остальные новые
+// классы разметки (logs-filters, logs-severity-filter, log-row-details,
+// log-row-expanded, log-row-trace) получили реальные правила в app.css, в
+// список исключений не попали.
+const maxPermanentCSSClassExemptions = 75
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

@@ -324,3 +324,49 @@ func TestQueryList(t *testing.T) {
 		}
 	})
 }
+
+// TestQueryListBeforeCursorSubMillisecondPrecision — регрессия: Before с
+// НЕнулевыми миллисекундами (реальные timestamp почти никогда не выровнены
+// на секунду) не должен терять граничную строку. До фикса (toDateTime64(?, 3)
+// + строковый аргумент вместо голого time.Time в "?") позиционный биндинг
+// clickhouse-go форматировал ЛЮБОЙ time.Time-аргумент с TimeUnit=Seconds
+// (bindPositional в драйвере жёстко использует эту шкалу), то есть Before
+// обрезался до целой секунды на пути в SQL — "timestamp <= Before" ложно
+// сравнивалось для самой граничной строки, и курсор «показать старее» терял
+// её молча. Тест выше (TestQueryList/cursor pagination…) этот баг не ловил:
+// его фикстуры построены на Truncate(time.Hour)+целые секунды, то есть
+// специально без миллисекунд — там обрезка до секунды ничего не меняла.
+func TestQueryListBeforeCursorSubMillisecondPrecision(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const projectID = int64(74)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	// .280мс — намеренно НЕ выровнено на секунду/на ноль.
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	t1 := base.Add(-2 * time.Minute)
+	t2 := base.Add(-time.Minute)
+	w.Add(projectID, log.LogRecord{Timestamp: t1, ObservedTS: t1, Severity: log.SevInfo, Body: "older"})
+	w.Add(projectID, log.LogRecord{Timestamp: t2, ObservedTS: t2, Severity: log.SevInfo, Body: "boundary"})
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	q := log.NewQuery(conn)
+	got, err := q.List(ctx, projectID, log.ListFilter{
+		From: base.Add(-time.Hour), To: base.Add(time.Hour), Limit: 100, Before: t2,
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2 (Before must include the boundary row itself): %+v", len(got), got)
+	}
+	if got[0].Body != "boundary" || got[1].Body != "older" {
+		t.Fatalf("unexpected rows: %+v", got)
+	}
+}

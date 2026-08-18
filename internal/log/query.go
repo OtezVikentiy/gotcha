@@ -107,8 +107,28 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 		limit = maxListLimit
 	}
 
-	where := "project_id = ? AND timestamp >= ? AND timestamp < ?"
-	args := []any{uint64(projectID), f.From, f.To}
+	// toDateTime64(?, 3) + строковый аргумент вместо голого "timestamp >= ?"
+	// с time.Time — обход бага биндинга clickhouse-go: позиционный "?"
+	// (bindPositional в bind.go драйвера) форматирует ЛЮБОЙ time.Time
+	// аргумент с жёстко зашитым TimeUnit=Seconds ("toDateTime('%d')" от
+	// value.Unix()), то есть ВСЕГДА обрезает миллисекунды параметра до целой
+	// секунды — независимо от реальной точности значения и от того, что
+	// колонка timestamp объявлена DateTime64(3). Для полуоткрытого окна
+	// [From, To) эта потеря безобидна (фуззи на <1с по краю окна, тот же
+	// паттерн есть и в trace/metric/event query.go, там сравнение не
+	// точечное). Но для Before — точечного курсора keyset-пагинации
+	// ("timestamp <= Before" + постфильтр Timestamp.Equal(Before) в конце
+	// функции) она РОНЯЕТ ровно ГРАНИЧНУЮ строку курсора всякий раз, когда её
+	// миллисекунды не нулевые (то есть почти всегда на реальных данных):
+	// секундное округление параметра делает Before МЕНЬШЕ фактического
+	// значения строки, и "stored_ts <= truncated(Before)" ложно для самой
+	// строки-границы — следующая страница «показать старее» теряет её молча.
+	// chTimeArg форматирует время строкой с миллисекундами САМ (в обход
+	// автоопределения типа драйвером — аргумент из time.Time становится
+	// string), а toDateTime64(?, 3) в SQL кастует её обратно с нужной
+	// точностью на стороне ClickHouse.
+	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
+	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
 
 	if len(f.Severity) > 0 {
 		where += " AND severity IN (?)"
@@ -137,8 +157,8 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 
 	queryLimit := limit
 	if !f.Before.IsZero() {
-		where += " AND timestamp <= ?"
-		args = append(args, f.Before)
+		where += " AND timestamp <= toDateTime64(?, 3)"
+		args = append(args, chTimeArg(f.Before))
 		queryLimit = limit + f.TieSkip
 	}
 	args = append(args, queryLimit)
@@ -200,4 +220,14 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	}
 
 	return out, nil
+}
+
+// chTimeArg форматирует t строкой с точностью до миллисекунды для
+// toDateTime64(?, 3) в SQL — см. комментарий у сборки where в List: голый
+// time.Time аргументом "?" драйвер clickhouse-go биндит с точностью только до
+// секунды (bindPositional жёстко использует TimeUnit=Seconds), это теряет
+// миллисекунды параметра молча. UTC — то же соглашение, что и у остальных
+// временных сравнений продукта (сервер и хранилище работают в UTC).
+func chTimeArg(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05.000")
 }

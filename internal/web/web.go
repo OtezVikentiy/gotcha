@@ -30,6 +30,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
@@ -243,6 +244,18 @@ type Handler struct {
 	// дефолта — при разнесённых web/ingest-репликах троттлер живёт в чужом
 	// процессе и недостижим отсюда).
 	HostForget HostForgetter
+
+	// LogQuery — чтение структурированных логов из ClickHouse (C2, задача 2):
+	// страница /projects/{id}/logs. Как Trace/Metrics — отдельное
+	// необязательное поле; nil → маршрут логов отвечает 404 (nil-guard).
+	LogQuery *log.Query
+	// LogRetentionDays — срок хранения логов в днях (GOTCHA_LOG_RETENTION_DAYS,
+	// cfg.LogRetentionDays). Обрезает From окна списка логов снизу независимо
+	// от выбранного пресета: без этого запрос за окно шире фактического TTL
+	// сканирует партиции, в которых данных гарантированно уже нет. 0 — срок не
+	// задан (логи хранятся вечно), обрезка не применяется. Тот же принцип, что
+	// у SpanRetentionDays.
+	LogRetentionDays int
 
 	// Profiles — чтение профилей из ClickHouse (этап 7): страницы
 	// /projects/{id}/profiles[/flame]. Необязательное поле; nil → 404.
@@ -517,6 +530,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsSave)))
 	inner.Handle("GET /projects/{id}/hosts/{name}", h.requireUser(http.HandlerFunc(h.hostDetail)))
 	inner.Handle("POST /projects/{id}/hosts/{name}/delete", h.requireUser(http.HandlerFunc(h.hostDelete)))
+
+	// Логи (C2, задача 2): базовый просмотрщик — фильтры/список/раскрытие/
+	// курсорная пагинация. Гистограмма/фасеты/автокомплит — задачи T3-T6.
+	inner.Handle("GET /projects/{id}/logs", h.requireUser(http.HandlerFunc(h.logsList)))
 
 	inner.Handle("GET /projects/{id}/profiles", h.requireUser(http.HandlerFunc(h.profilesList)))
 	inner.Handle("GET /projects/{id}/profiles/flame", h.requireUser(http.HandlerFunc(h.profileFlame)))

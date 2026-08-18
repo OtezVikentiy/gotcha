@@ -1,0 +1,243 @@
+package templates
+
+import (
+	"context"
+	"net/url"
+	"sort"
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+)
+
+// LogsFilter — вью-модель фильтров формы + текущего окна времени списка
+// логов (задача 2, C2). Поля сохраняются в GET-форме и переносятся в ссылку
+// «показать старее», как IssuesFilter у issues.
+type LogsFilter struct {
+	Severity    []string
+	Service     string
+	Environment string
+	Query       string
+	Range       TimeRangeVM
+	// Active — фильтр сужает список относительно умолчаний (окно 24ч, без
+	// доп. условий): пустой список при Active=true значит «ничего не
+	// подошло под фильтры», а не «логов ещё не было» — тот же принцип,
+	// что issues.Active (№23).
+	Active bool
+}
+
+// LogRow — строка списка логов вместе с уже собранной для раскрытия
+// таблицей атрибутов.
+type LogRow struct {
+	Row   log.LogRow
+	Attrs []ctxRow
+}
+
+// NewLogRow строит вью-строку из log.LogRow: атрибуты записи и атрибуты
+// ресурса сведены в один отсортированный по ключу список ctxRow (тот же
+// компонент contextTable, что и у заголовков запроса в issuedetail.templ) —
+// атрибуты ресурса помечены префиксом "resource.", чтобы не путаться с
+// одноимённым ключом атрибута самой записи.
+func NewLogRow(r log.LogRow) LogRow {
+	var attrs []ctxRow
+	for _, k := range sortedAttrKeys(r.LogAttributes) {
+		attrs = append(attrs, ctxRow{Key: k, Val: r.LogAttributes[k]})
+	}
+	for _, k := range sortedAttrKeys(r.ResourceAttrs) {
+		attrs = append(attrs, ctxRow{Key: "resource." + k, Val: r.ResourceAttrs[k]})
+	}
+	return LogRow{Row: r, Attrs: attrs}
+}
+
+// sortedAttrKeys — ключи карты атрибутов в стабильном порядке: карта Go не
+// гарантирует порядок обхода, без сортировки таблица атрибутов дрожала бы
+// между рендерами одной и той же записи.
+func sortedAttrKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func logsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/logs"
+}
+
+// logsPerformancePath — ссылка-заглушка со страницы лога со span_id на
+// «Производительность» проекта: реальный переход к конкретному
+// трейсу/спану — задача C3, здесь только видимая привязка к разделу.
+func logsPerformancePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/performance"
+}
+
+// maxLogBodyPreviewRunes — предел усечённого тела в свёрнутой строке списка
+// (не байт — чтобы не резать многобайтовые UTF-8-последовательности, тот же
+// приём, что и truncateFailedError в alertdeliveries.templ).
+const maxLogBodyPreviewRunes = 160
+
+func logBodyPreview(s string) string {
+	r := []rune(s)
+	if len(r) <= maxLogBodyPreviewRunes {
+		return s
+	}
+	return string(r[:maxLogBodyPreviewRunes]) + "…"
+}
+
+// severityBadgeClass — цвет бейджа уровня лога: тот же набор классов, что и
+// levelBadgeClass у issues (danger/warn/info/neutral), сведённый к канону
+// log.Sev*.
+func severityBadgeClass(sev string) string {
+	switch sev {
+	case log.SevError, log.SevFatal:
+		return "badge badge-danger"
+	case log.SevWarn:
+		return "badge badge-warn"
+	case log.SevInfo:
+		return "badge badge-info"
+	default:
+		return "badge badge-neutral"
+	}
+}
+
+func severityLabel(ctx context.Context, sev string) string {
+	return i18n.T(ctx, "logs.severity."+sev)
+}
+
+func severitySelected(selected []string, sev string) bool {
+	for _, s := range selected {
+		if s == sev {
+			return true
+		}
+	}
+	return false
+}
+
+// LogsPageURL строит ссылку на список логов с сохранением текущих фильтров
+// и заданным курсором пагинации (before/tskip). before нулевое — курсор из
+// ссылки убирается (используется для «сбросить фильтры», не для пагинации).
+func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) string {
+	q := url.Values{}
+	for _, sv := range f.Severity {
+		q.Add("severity", sv)
+	}
+	if f.Service != "" {
+		q.Set("service", f.Service)
+	}
+	if f.Environment != "" {
+		q.Set("environment", f.Environment)
+	}
+	if f.Query != "" {
+		q.Set("q", f.Query)
+	}
+	f.Range.apply(q)
+	if !before.IsZero() {
+		q.Set("before", strconv.FormatInt(before.UnixMilli(), 10))
+		if tieSkip > 0 {
+			q.Set("tskip", strconv.Itoa(tieSkip))
+		}
+	}
+	qs := q.Encode()
+	if qs == "" {
+		return logsPath(projectID)
+	}
+	return logsPath(projectID) + "?" + qs
+}
+
+// LogsScreen — GET /projects/{id}/logs: базовый просмотрщик логов (задача 2,
+// C2) — фильтры (severity/service/environment/тело/окно времени), список с
+// раскрытием строки, курсорная пагинация «показать старее». loadFailed — не
+// смогли прочитать ClickHouse: список пуст, но страница не падает 500-й —
+// вместо таблицы дружелюбное сообщение. olderHref — пусто, если страницы
+// дальше нет (см. web.nextLogCursor).
+templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, userEmail string) {
+	@layout(i18n.T(ctx, "logs.title"), userEmail) {
+		<div class="logs">
+			<h1>{ i18n.T(ctx, "logs.title") }</h1>
+			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
+				<fieldset class="logs-severity-filter">
+					<legend>{ i18n.T(ctx, "logs.filter.severity_all") }</legend>
+					for _, sev := range log.Severities {
+						<label class="checkbox-inline">
+							<input type="checkbox" name="severity" value={ sev } checked?={ severitySelected(filter.Severity, sev) }/>
+							{ severityLabel(ctx, sev) }
+						</label>
+					}
+				</fieldset>
+				<input type="text" name="service" class="input" placeholder={ i18n.T(ctx, "logs.filter.service") } value={ filter.Service } aria-label={ i18n.T(ctx, "logs.filter.service") }/>
+				<input type="text" name="environment" class="input" placeholder={ i18n.T(ctx, "logs.filter.environment") } value={ filter.Environment } aria-label={ i18n.T(ctx, "logs.filter.environment") }/>
+				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "logs.filter.query") } value={ filter.Query } aria-label={ i18n.T(ctx, "logs.filter.query") }/>
+				@timeRangeFields(filter.Range)
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
+			</form>
+			<div id="logs-table">
+				if loadFailed {
+					@emptyState("file-text", "logs.error.title", "logs.error.body", "", "", 2)
+				} else if len(rows) == 0 && filter.Active {
+					@emptyState("file-text", "logs.empty.filter.title", "logs.empty.filter.body", "logs.empty.filter.cta", logsPath(projectID), 2)
+				} else if len(rows) == 0 {
+					@emptyState("file-text", "logs.empty.none.title", "logs.empty.none.body", "logs.empty.none.cta", projectSetupPath(projectID), 2)
+				} else {
+					<div class="card">
+						@scrollRegion("table-scroll", "logs.title") {
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th scope="col">{ i18n.T(ctx, "logs.table.time") }</th>
+										<th scope="col">{ i18n.T(ctx, "logs.table.severity") }</th>
+										<th scope="col">{ i18n.T(ctx, "logs.table.service") }</th>
+										<th scope="col">{ i18n.T(ctx, "logs.table.body") }</th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, row := range rows {
+										@logRowView(projectID, row)
+									}
+								</tbody>
+							</table>
+						}
+					</div>
+					if olderHref != "" {
+						<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
+							<a href={ templ.URL(olderHref) }>{ i18n.T(ctx, "logs.older") }</a>
+						</nav>
+					}
+				}
+			</div>
+		</div>
+	}
+}
+
+// logRowView — одна строка списка: свёрнутое превью тела разворачивается
+// нативным <details> (без JS) в полное тело, таблицу атрибутов и
+// trace_id/span_id.
+templ logRowView(projectID int64, row LogRow) {
+	<tr>
+		<td>@relativeTime(row.Row.Timestamp)</td>
+		<td><span class={ severityBadgeClass(row.Row.Severity) }>{ severityLabel(ctx, row.Row.Severity) }</span></td>
+		<td>{ row.Row.Service }</td>
+		<td>
+			<details class="log-row-details">
+				<summary>{ logBodyPreview(row.Row.Body) }</summary>
+				<div class="log-row-expanded">
+					<pre class="contexts-json">{ row.Row.Body }</pre>
+					if len(row.Attrs) > 0 {
+						@contextTable(row.Attrs)
+					}
+					if row.Row.TraceID != "" {
+						<p class="log-row-trace">
+							<span class="ctx-key">{ i18n.T(ctx, "logs.table.trace_id") }</span>
+							if row.Row.SpanID != "" {
+								<a href={ templ.URL(logsPerformancePath(projectID)) }>{ row.Row.TraceID }</a>
+							} else {
+								{ row.Row.TraceID }
+							}
+						</p>
+					}
+				</div>
+			</details>
+		</td>
+	</tr>
+}

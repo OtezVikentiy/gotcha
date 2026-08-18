@@ -164,6 +164,15 @@ var permanentFormatExemptions = []Exemption{
 	// в текст для вставки в LLM — время в дампе должно быть машинным
 	// (RFC3339 UTC), не human-readable: дамп читает модель, а не пользователь.
 	{Value: exemptLoc("internal/web/eventdump.go", 105), Why: `ev.Timestamp.UTC().Format(time.RFC3339) — машинный timestamp в LLM-дампе события (текст для модели, не человеческий показ)`, Finding: "по замыслу"},
+
+	// internal/log/query.go: chTimeArg — обход бага биндинга clickhouse-go
+	// (задача 2, C2): позиционный "?" форматирует ЛЮБОЙ time.Time-аргумент с
+	// жёстко зашитым TimeUnit=Seconds (bindPositional в драйвере), теряя
+	// миллисекунды параметра молча — для точечного сравнения Before в
+	// курсоре keyset-пагинации это роняло граничную строку. Строка с
+	// миллисекундами — SQL-параметр для toDateTime64(?, 3), не текст для
+	// человека, см. докблок chTimeArg.
+	{Value: exemptLoc("internal/log/query.go", 232), Why: `t.UTC().Format("2006-01-02 15:04:05.000") — SQL-параметр toDateTime64(?, 3), обход бага биндинга clickhouse-go (TimeUnit=Seconds по умолчанию у позиционных "?"), не человекочитаемый вывод`, Finding: "по замыслу"},
 }
 
 // maxPermanentFormatExemptions — потолок сознательно поднят с 21 до 22
@@ -177,7 +186,10 @@ var permanentFormatExemptions = []Exemption{
 // входного payload в RFC3339 из now-относительного времени (RFC3339-строка и
 // обе границы окна ретенции) — тот же машинный формат API, что и тестовые
 // payload'ы sentry_test.go/transaction_test.go выше, литералом не заменить.
-const maxPermanentFormatExemptions = 26
+// Затем с 26 до 27 задачей 2 подпроекта C2 (просмотрщик логов): chTimeArg в
+// internal/log/query.go — SQL-параметр toDateTime64(?, 3), обход бага
+// биндинга clickhouse-go (см. запись в permanentFormatExemptions).
+const maxPermanentFormatExemptions = 27
 
 // debtFormatExemptions — человекочитаемые макеты времени вне
 // internal/humanize: настоящие копии форматирования, ради поиска которых и

@@ -943,6 +943,12 @@ func run() error {
 		if hostToucher != nil {
 			webHandler.HostForget = hostToucher
 		}
+		// Логи (C2, задача 2): просмотрщик /projects/{id}/logs читает из того же
+		// CH-подключения, что и остальные телеметрийные разделы; LogRetentionDays —
+		// реальный TTL хранения (обрезает окно снизу, см. web.parseLogFilter),
+		// не только справочный дефолт.
+		webHandler.LogQuery = log.NewQuery(ch)
+		webHandler.LogRetentionDays = cfg.LogRetentionDays
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
