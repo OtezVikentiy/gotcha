@@ -20,6 +20,7 @@ func TestQueryList(t *testing.T) {
 	const projectID = int64(70)
 	const projectID2 = int64(71) // чужой проект — не должен утекать в List(projectID, ...)
 	const projectID3 = int64(72) // отдельный проект под курсорный тест (границы по одинаковому timestamp)
+	const projectID4 = int64(73) // курсорный тест: строки-«близнецы» с разными атрибутами в одну мс
 
 	w := log.NewWriter(conn)
 	go w.Run()
@@ -88,6 +89,20 @@ func TestQueryList(t *testing.T) {
 		})
 	}
 	w.Add(projectID3, log.LogRecord{Timestamp: cursorNew, ObservedTS: cursorNew, Severity: log.SevInfo, Body: "cursor new", TraceID: "cursor-new"})
+
+	// Пара строк-«близнецов»: совпадают по всем скалярным полям (timestamp,
+	// observed_ts, severity, body, trace_id, span_id, service, environment —
+	// у обеих нулевые/одинаковые значения), различаются ТОЛЬКО атрибутом
+	// log_attributes. Проверяет, что хэш второго ключа сортировки учитывает
+	// атрибуты и не схлопывает такие строки в один тай-порядок.
+	twinTS := cursorFrom.Add(10 * time.Second).Truncate(time.Millisecond)
+	for i := 0; i < 2; i++ {
+		w.Add(projectID4, log.LogRecord{
+			Timestamp: twinTS, ObservedTS: twinTS, Severity: log.SevInfo, SeverityNumber: 9, SeverityText: "INFO",
+			Body:          "twin body",
+			LogAttributes: map[string]string{"idx": fmt.Sprintf("%d", i)},
+		})
+	}
 
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -276,6 +291,36 @@ func TestQueryList(t *testing.T) {
 			if !seen[id] {
 				t.Fatalf("missing row across pages: trace_id=%s", id)
 			}
+		}
+	})
+
+	// Проверяет фикс на «близнецах»: две строки с одинаковым timestamp и
+	// одинаковыми всеми скалярными полями (различаются только log_attributes)
+	// разведены по разным страницам (Limit=1) без дубля и без потери — второй
+	// ключ сортировки должен учитывать атрибуты, а не только скаляры.
+	t.Run("cursor pagination: twin rows differing only by attributes don't collide", func(t *testing.T) {
+		page1, err := q.List(ctx, projectID4, log.ListFilter{From: cursorFrom, To: cursorTo, Limit: 1})
+		if err != nil {
+			t.Fatalf("List page1: %v", err)
+		}
+		if len(page1) != 1 {
+			t.Fatalf("len(page1) = %d, want 1", len(page1))
+		}
+		page2, err := q.List(ctx, projectID4, log.ListFilter{
+			From: cursorFrom, To: cursorTo, Limit: 1, Before: page1[0].Timestamp, TieSkip: 1,
+		})
+		if err != nil {
+			t.Fatalf("List page2: %v", err)
+		}
+		if len(page2) != 1 {
+			t.Fatalf("len(page2) = %d, want 1", len(page2))
+		}
+		idx1, idx2 := page1[0].LogAttributes["idx"], page2[0].LogAttributes["idx"]
+		if idx1 == idx2 {
+			t.Fatalf("duplicate twin row across pages: idx=%s returned on both pages", idx1)
+		}
+		if (idx1 != "0" && idx1 != "1") || (idx2 != "0" && idx2 != "1") {
+			t.Fatalf("unexpected idx values: page1=%q page2=%q", idx1, idx2)
 		}
 	})
 }

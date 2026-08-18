@@ -57,7 +57,14 @@ type ListFilter struct {
 
 	Limit int
 
-	// Before/TieSkip — курсор пагинации keyset, см. List.
+	// Before/TieSkip — курсор пагинации keyset, см. List. TieSkip — сколько
+	// строк с timestamp == Before ВСЕГО уже показано вызывающему. Если
+	// хвостовой Before НЕ меняется между вызовами (тай тянется больше одной
+	// страницы), TieSkip накапливается вызывающим (прибавляется), а не
+	// пересчитывается заново по последней странице — иначе следующая
+	// страница переспросит уже показанные строки этой тай-группы и вернёт
+	// дубль. Референс правильной логики накопления — тестовый цикл
+	// постраничного обхода в query_test.go.
 	Before  time.Time
 	TieSkip int
 }
@@ -143,17 +150,23 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	// вправе перемешать тай по-своему). Без второго ключа TieSkip пропускает
 	// не те строки и дублирует/теряет их на границе. cityHash64 — чистая
 	// функция от значений самой строки, поэтому детерминирована между любыми
-	// запросами по неизменным данным; хэшируем несколько скалярных колонок
-	// сразу (не только body), чтобы совпадение хэша у двух РАЗНЫХ строк было
-	// маловероятным — log_attributes/resource_attrs (Map) в hash не берём,
-	// cityHash64 их не принимает напрямую.
+	// запросами по неизменным данным (строка в таблице не меняется между
+	// вызовами); хэшируем ВСЕ 12 колонок результата, включая log_attributes/
+	// resource_attrs через toString(Map) — иначе две строки, различающиеся
+	// только атрибутами, схлопывались бы в один и тот же хэш. Коллизия
+	// (а с ней риск дубля/потери одной строки на границе страницы) остаётся
+	// только для строк, идентичных БУКВАЛЬНО по всем 12 колонкам в одну и ту
+	// же миллисекунду — у logs нет уникального id, и такие строки неотличимы
+	// друг от друга по содержимому, так что дубль/потеря одной из них не
+	// заметны: контент на экране тот же.
 	rows, err := q.conn.Query(ctx, `
 		SELECT timestamp, observed_ts, severity, severity_number, severity_text,
 			body, trace_id, span_id, log_attributes, resource_attrs, service, environment
 		FROM logs
 		WHERE `+where+`
 		ORDER BY timestamp DESC,
-			cityHash64(observed_ts, severity_number, severity_text, body, trace_id, span_id, service, environment) DESC
+			cityHash64(observed_ts, severity_number, severity_text, body, trace_id, span_id,
+				toString(log_attributes), toString(resource_attrs), service, environment) DESC
 		LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("log: list: %w", err)
