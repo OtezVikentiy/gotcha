@@ -156,6 +156,93 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 	return out, nil
 }
 
+// Dependency — одна внешняя зависимость сервиса (узел карты C4): вид (database/
+// cache/http), цель (db.system / хранилище / хост) и агрегаты вызовов за окно.
+type Dependency struct {
+	Kind      string // database | cache | http
+	Target    string // postgresql | redis | api.stripe.com | ...
+	Calls     int64
+	P50US     uint32
+	P95US     uint32
+	ErrorRate float64 // доля спанов со status != 'ok'
+}
+
+// Dependencies агрегирует внешние зависимости сервиса из client-op спанов за
+// окно [from,to): узлы карты C4. kind/target выводятся в SQL из op/data/
+// description (подзапрос, чтобы GROUP BY шёл по уже вычисленным полям). http.server
+// (сама транзакция) и internal-op в фильтр НЕ входят. Считается по СЫРЫМ spans
+// (не по MV) — окно защищено max_execution_time + LIMIT + дефолт-окном на слое web.
+//
+// HTTP-цель нормализуется по хосту, чтобы один хост не двоился между
+// server.address (может нести :port) и url.full (domain() порт снимает):
+// у server.address порт снимается регуляркой `:[0-9]+$`. Две известные
+// границы (косметика отображения, не корректность агрегата, редки для
+// именованных зависимостей): (1) domain() отвергает односоставные хосты без
+// точки (localhost, internal-svc через url.full) — такой уходит в общий узел
+// 'http'; (2) `:[0-9]+$` может срезать хвост числового hextet у голого
+// IPv6-литерала (fe80::1 → fe80:).
+func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time.Time, limit int) ([]Dependency, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT kind, target, count() AS c, countIf(status != 'ok') AS f,
+			quantiles(0.5, 0.95)(duration_us) AS q
+		FROM (
+			SELECT
+				multiIf(op = 'db' OR startsWith(op,'db.sql') OR op = 'db.query', 'database',
+						startsWith(op,'db.'), 'cache',
+						'http') AS kind,
+				multiIf(
+					op = 'db' OR startsWith(op,'db.sql') OR op = 'db.query',
+						coalesce(nullIf(JSONExtractString(data,'db.system'),''), nullIf(JSONExtractString(data,'db.system.name'),''), 'database'),
+					startsWith(op,'db.'),
+						arrayElement(splitByChar('.', op), 2),
+					coalesce(
+						nullIf(replaceRegexpOne(JSONExtractString(data,'server.address'), ':[0-9]+$', ''),''),
+						nullIf(domain(JSONExtractString(data,'url.full')),''),
+						nullIf(domain(replaceRegexpOne(description, '^\\S+\\s+', '')),''),
+						'http')
+				) AS target,
+				status, duration_us
+			FROM spans
+			WHERE project_id = ? AND timestamp >= ? AND timestamp < ?
+				AND (op = 'db' OR startsWith(op,'db.') OR op = 'http.client' OR startsWith(op,'http.client.'))
+		)
+		GROUP BY kind, target
+		ORDER BY c DESC, target
+		LIMIT ?
+		SETTINGS max_execution_time = 10`,
+		uint64(projectID), from, to, limit)
+	if err != nil {
+		return nil, fmt.Errorf("trace: dependencies: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Dependency
+	for rows.Next() {
+		var d Dependency
+		var calls, failures uint64
+		var qs []float64
+		if err := rows.Scan(&d.Kind, &d.Target, &calls, &failures, &qs); err != nil {
+			return nil, fmt.Errorf("trace: dependencies: scan: %w", err)
+		}
+		d.Calls = int64(calls)
+		if len(qs) == 2 {
+			d.P50US = usFromFloat(qs[0])
+			d.P95US = usFromFloat(qs[1])
+		}
+		if d.Calls > 0 {
+			d.ErrorRate = float64(failures) / float64(d.Calls)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: dependencies: %w", err)
+	}
+	return out, nil
+}
+
 // apdexBoundsUS переводит apdex_threshold_ms (T) в границы µs для
 // countIf-запроса: satUS = T·1000, tolUS = 4·T·1000.
 //

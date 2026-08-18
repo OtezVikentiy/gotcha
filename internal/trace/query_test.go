@@ -23,6 +23,8 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	const projectID3 = int64(57) // отдельный проект для Web Vitals
 	const projectID4 = int64(58) // отдельный проект для запросов регрессий (данные по дням)
 	const projectID5 = int64(59) // отдельный проект для OffendingSpans (не влияет на Endpoints)
+	const projectID6 = int64(60) // отдельный проект для Dependencies
+	const projectID7 = int64(61) // «чужой» проект для Dependencies (проверка изоляции)
 
 	w := trace.NewSpanWriter(conn)
 	go w.Run()
@@ -347,6 +349,67 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
+	// projectID6: трейс с client-op спанами разных видов — данные для
+	// Dependencies. Корень — обычная http.server-транзакция (сама зависимостью
+	// не является), дочерние спаны несут db/cache/http-операции.
+	depsAt := base.Add(30 * time.Minute)
+	w.Add(projectID6, projectID6, trace.Transaction{
+		TraceID: "deps-trace", SpanID: "deps-root", Name: "GET /api/checkout", Op: "http.server",
+		Status: "ok", Start: depsAt, End: depsAt.Add(200 * time.Millisecond), Environment: "production",
+		Spans: []trace.Span{
+			// SQL БД (db.system.name) — 2 вызова, 1 ошибка.
+			{SpanID: "deps-db1", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Start: depsAt, End: depsAt.Add(3000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "postgresql"}},
+			{SpanID: "deps-db2", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "internal_error",
+				Start: depsAt, End: depsAt.Add(9000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "postgresql"}},
+			// кеш redis.
+			{SpanID: "deps-redis", ParentSpanID: "deps-root", Op: "db.redis", Status: "ok",
+				Start: depsAt, End: depsAt.Add(500 * time.Microsecond)},
+			// старый ключ db.system (coalesce-ветка) — mysql.
+			{SpanID: "deps-mysql", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Start: depsAt, End: depsAt.Add(2000 * time.Microsecond),
+				Data: map[string]any{"db.system": "mysql"}},
+			// внешний http (server.address).
+			{SpanID: "deps-stripe", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(60000 * time.Microsecond),
+				Data: map[string]any{"server.address": "api.stripe.com"}},
+			// внешний http через url.full (coalesce-ветка) — host извлекается domain().
+			{SpanID: "deps-cdn", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(30000 * time.Microsecond),
+				Data: map[string]any{"url.full": "https://cdn.example.com/asset.js"}},
+			// один и тот же хост db.internal через server.address С ПОРТОМ и через
+			// url.full С ПОРТОМ — должны схлопнуться в ОДИН узел «db.internal» (аудит
+			// QA P1: без снятия :port у server.address получалось два узла). Хост с
+			// точкой намеренно: ClickHouse domain() отвергает односоставные хосты
+			// без точки (это и есть путь url.full).
+			{SpanID: "deps-dbhost-a", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(5000 * time.Microsecond),
+				Data: map[string]any{"server.address": "db.internal:5432"}},
+			{SpanID: "deps-dbhost-b", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(5000 * time.Microsecond),
+				Data: map[string]any{"url.full": "https://db.internal:5432/probe"}},
+			// http.server (второй, дочерний) — НЕ зависимость.
+			{SpanID: "deps-httpserver", ParentSpanID: "deps-root", Op: "http.server", Status: "ok",
+				Start: depsAt, End: depsAt.Add(120000 * time.Microsecond)},
+			// internal — НЕ зависимость.
+			{SpanID: "deps-render", ParentSpanID: "deps-root", Op: "view.render", Status: "ok",
+				Start: depsAt, End: depsAt.Add(1000 * time.Microsecond)},
+		},
+	})
+	// projectID7: чужой проект — не должен течь в Dependencies(projectID6, ...)
+	// (уникальный db.system.name 'oracle', его в projectID6 нет).
+	w.Add(projectID7, projectID7, trace.Transaction{
+		TraceID: "deps-other-trace", SpanID: "deps-other-root", Name: "GET /x", Op: "http.server",
+		Status: "ok", Start: depsAt, End: depsAt.Add(100 * time.Millisecond), Environment: "production",
+		Spans: []trace.Span{
+			{SpanID: "deps-other-db", ParentSpanID: "deps-other-root", Op: "db.sql.query", Status: "ok",
+				Start: depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "oracle"}},
+		},
+	})
+
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -426,6 +489,63 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 		if len(got) != 0 {
 			t.Fatalf("len(got) = %d, want 0 for unknown project", len(got))
+		}
+	})
+
+	t.Run("Dependencies", func(t *testing.T) {
+		deps, err := q.Dependencies(ctx, projectID6, from, to, 50)
+		if err != nil {
+			t.Fatalf("Dependencies: %v", err)
+		}
+		byTarget := map[string]trace.Dependency{}
+		for _, d := range deps {
+			byTarget[d.Target] = d
+		}
+		// postgres: 2 вызова (db.system.name), error-rate 0.5, kind database.
+		pg := byTarget["postgresql"]
+		if pg.Kind != "database" {
+			t.Fatalf("postgresql.Kind = %q, want database", pg.Kind)
+		}
+		if pg.Calls != 2 {
+			t.Fatalf("postgresql.Calls = %d, want 2", pg.Calls)
+		}
+		if pg.ErrorRate < 0.499 || pg.ErrorRate > 0.501 {
+			t.Fatalf("postgresql.ErrorRate = %v, want 0.5", pg.ErrorRate)
+		}
+		// mysql: старый ключ db.system, kind database.
+		if byTarget["mysql"].Kind != "database" {
+			t.Fatalf("mysql.Kind = %q, want database", byTarget["mysql"].Kind)
+		}
+		// redis: kind cache.
+		if byTarget["redis"].Kind != "cache" {
+			t.Fatalf("redis.Kind = %q, want cache", byTarget["redis"].Kind)
+		}
+		// stripe (server.address) + cdn (url.full→domain): kind http.
+		if byTarget["api.stripe.com"].Kind != "http" {
+			t.Fatalf("api.stripe.com.Kind = %q, want http", byTarget["api.stripe.com"].Kind)
+		}
+		if byTarget["cdn.example.com"].Kind != "http" {
+			t.Fatalf("cdn.example.com.Kind = %q, want http", byTarget["cdn.example.com"].Kind)
+		}
+		// db-host: server.address:port И url.full:port схлопнулись в ОДИН узел
+		// (2 вызова), :port снят с обеих сторон — узла «db.internal:5432» быть не должно.
+		if _, ok := byTarget["db.internal:5432"]; ok {
+			t.Fatalf("byTarget содержит db.internal:5432 — порт не снят у server.address (сплит хоста)")
+		}
+		if dh := byTarget["db.internal"]; dh.Kind != "http" || dh.Calls != 2 {
+			t.Fatalf("db.internal = {Kind:%q Calls:%d}, want {http 2} (server.address:port + url.full:port должны схлопнуться)", dh.Kind, dh.Calls)
+		}
+		// http.server / view.render / чужой oracle НЕ попали; нет вырожденного
+		// 'http'-таргета.
+		if _, ok := byTarget["oracle"]; ok {
+			t.Fatalf("byTarget contains oracle (leaked from projectID7)")
+		}
+		if _, ok := byTarget["http"]; ok {
+			t.Fatalf("byTarget contains degenerate 'http' target")
+		}
+		// 6 таргетов: postgresql, mysql, redis, api.stripe.com, cdn.example.com, db-host.
+		if len(deps) != 6 {
+			t.Fatalf("len(deps) = %d, want 6 (%+v)", len(deps), deps)
 		}
 	})
 

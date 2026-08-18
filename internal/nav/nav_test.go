@@ -50,6 +50,7 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/issues?status=resolved", "nav.issues"},
 		{"/issues/9", "nav.issues"},
 		{"/projects/7/web-vitals", "nav.webvitals"},
+		{"/projects/7/dependencies", "nav.dependencies"},
 		{"/projects/7/performance", "nav.transactions"},
 		{"/projects/7/metrics", "nav.metrics"},
 		{"/projects/7/metrics/alerts", "nav.metric_alerts"},
@@ -85,6 +86,7 @@ func TestAreaForPathExtras(t *testing.T) {
 		{"/projects/7/profile-regressions", "performance"},
 		{"/projects/7/perf-issues", "performance"},
 		{"/projects/7/regressions", "performance"},
+		{"/projects/7/dependencies", "performance"},
 		{"/perf-issues/1", "performance"},
 		{"/projects/7/metrics", "metrics"},
 		{"/projects/7/incidents", "uptime"},
@@ -129,8 +131,8 @@ func TestFromContextZeroValue(t *testing.T) {
 func TestSubsectionsPerformance(t *testing.T) {
 	s := Shell{ProjectID: 7, Area: "performance", Path: "/projects/7/web-vitals"}
 	items := Subsections(s)
-	if len(items) != 5 {
-		t.Fatalf("Subsections(performance) len = %d, want 5", len(items))
+	if len(items) != 6 {
+		t.Fatalf("Subsections(performance) len = %d, want 6", len(items))
 	}
 	wantHrefs := []string{
 		"/projects/7/performance",
@@ -138,6 +140,7 @@ func TestSubsectionsPerformance(t *testing.T) {
 		"/projects/7/profiles",
 		"/projects/7/perf-issues",
 		"/projects/7/regressions",
+		"/projects/7/dependencies",
 	}
 	wantLabels := []string{
 		"nav.transactions",
@@ -145,6 +148,7 @@ func TestSubsectionsPerformance(t *testing.T) {
 		"nav.profiles",
 		"nav.perf_issues",
 		"nav.regressions",
+		"nav.dependencies",
 	}
 	activeIdx := -1
 	for i, it := range items {

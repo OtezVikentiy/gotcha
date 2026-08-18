@@ -1,0 +1,84 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// DependencyRow — строка таблицы деталей: агрегат зависимости (trace.Dependency)
+// в готовом для рендера виде (числовая агрегация уже сделана в web/dependencies.go,
+// шаблон только форматирует — тот же приём, что EndpointRow/MonitorRow).
+type DependencyRow struct {
+	Kind      string
+	Target    string
+	Calls     int64
+	P50US     uint32
+	P95US     uint32
+	ErrorRate float64
+}
+
+// DepsFilter — состояние фильтра окна времени экрана зависимостей.
+type DepsFilter struct {
+	Range  TimeRangeVM
+	Active bool
+}
+
+// dependenciesPath — путь экрана зависимостей. В package templates (как
+// performancePath, performance.templ:13), т.к. вызывается из шаблона (form
+// action) и нав-подменю.
+func dependenciesPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/dependencies"
+}
+
+templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter, mapSVG templ.Component, loadFailed bool, truncated bool, userEmail string) {
+	@layout(i18n.T(ctx, "deps.title"), userEmail) {
+		<div class="deps">
+			<h1>{ i18n.T(ctx, "deps.title") }</h1>
+			<form method="get" action={ templ.URL(dependenciesPath(projectID)) } class="deps-filters">
+				@timeRangeFields(filter.Range)
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "deps.apply") }</button>
+			</form>
+			if loadFailed {
+				@emptyState("server", "deps.error.title", "deps.error.body", "", "", 2)
+			} else if len(deps) == 0 {
+				@emptyState("server", "deps.empty.title", "deps.empty.body", "deps.empty.cta", "/docs/dependencies", 2)
+			} else {
+				<div class="card deps-map-card">
+					@scrollRegion("deps-map-wrap", "region.deps.map") {
+						@mapSVG
+					}
+				</div>
+				if truncated {
+					<p class="hint deps-truncated">{ i18n.Tf(ctx, "deps.truncated", "n", strconv.Itoa(len(deps))) }</p>
+				}
+				<div class="card">
+					@scrollRegion("deps-table", "deps.title") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "deps.table.dependency") }</th>
+									<th scope="col">{ i18n.T(ctx, "deps.table.calls") }</th>
+									<th scope="col">{ i18n.T(ctx, "deps.table.p50") }</th>
+									<th scope="col">{ i18n.T(ctx, "deps.table.p95") }</th>
+									<th scope="col">{ i18n.T(ctx, "deps.table.error_rate") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, d := range deps {
+									<tr>
+										<td>{ i18n.T(ctx, "deps.kind." + d.Kind) }: { d.Target }</td>
+										<td>{ strconv.FormatInt(d.Calls, 10) }</td>
+										<td>{ formatDurationUS(d.P50US) }</td>
+										<td>{ formatDurationUS(d.P95US) }</td>
+										<td>{ formatFailureRate(d.ErrorRate) }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+				</div>
+			}
+		</div>
+	}
+}
