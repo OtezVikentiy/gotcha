@@ -942,4 +942,30 @@ func TestQueryTraceIDScope(t *testing.T) {
 			t.Fatalf("len(safe) = %d, want 0 (no such trace_id, not the whole table): %+v", len(safe), safe)
 		}
 	})
+
+	// Инвертированное окно (From>To) — аудит QA P1a: ссылка «Логи вокруг события»
+	// на событие старше срока хранения логов приходит на /logs, где кламп
+	// ретеншена поднимает From к cutoff, а To остаётся в прошлом → From>To. Это
+	// НЕ ошибка, а корректно-пустой результат (логи той давности уже удалены TTL):
+	// List/Histogram обязаны вернуть пусто без ошибки, а не упасть.
+	t.Run("inverted window (From>To) is graceful empty", func(t *testing.T) {
+		rows, err := q.List(ctx, projectID, log.ListFilter{From: to, To: from})
+		if err != nil {
+			t.Fatalf("List inverted window: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("len(rows) = %d, want 0 for inverted window", len(rows))
+		}
+		_, series, err := q.Histogram(ctx, projectID, log.ListFilter{From: to, To: from}, 12)
+		if err != nil {
+			t.Fatalf("Histogram inverted window: %v", err)
+		}
+		for sev, buckets := range series {
+			for _, c := range buckets {
+				if c != 0 {
+					t.Fatalf("Histogram inverted window: severity %q has non-zero bucket %d", sev, c)
+				}
+			}
+		}
+	})
 }

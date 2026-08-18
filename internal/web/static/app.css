@@ -2932,15 +2932,23 @@ form.inline {
 	color: var(--link);
 }
 
-/* Активный чип фильтра логов по trace_id (C3): pill в стиле .chip.is-active
-   с кнопкой снятия. Отдельный класс, а не .chip — это не кликабельный
-   фильтр-переключатель, а индикатор активного скоупа со своим ✕. */
-.logs-trace-chip {
+/* Ряд активных чипов-фильтров логов (C3): trace_id и attr-фильтры (в т.ч.
+   host.name из ссылки «Логи хоста»), каждый со своим ✕. Обёртка-flex, чтобы
+   несколько чипов переносились по строке. */
+.logs-active-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 8px 0 0;
+}
+/* Активный чип фильтра логов (C3): pill в стиле .chip.is-active с кнопкой
+   снятия. Отдельный класс, а не .chip — это не кликабельный фильтр-переключатель,
+   а индикатор активного скоупа со своим ✕. */
+.logs-filter-chip {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
 	width: fit-content;
-	margin: 8px 0 0;
 	padding: 3px 6px 3px 12px;
 	background: var(--accent-soft);
 	border: 1px solid var(--link);

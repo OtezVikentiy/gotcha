@@ -1122,3 +1122,70 @@ func TestWebLogsTraceIDFilterChip(t *testing.T) {
 		t.Errorf("после снятия чипа список должен снова показывать все строки: %s", text)
 	}
 }
+
+// TestWebLogsAttrFilterChip — аудит UX P1: ссылка «Логи хоста» ставит
+// resource-attr фильтр ?attr=res:host.name:X. До фикса он был НЕВИДИМ (чип
+// показывался только для trace_id). Теперь активный attr-фильтр (в т.ч.
+// resource, у которого фасета в сайдбаре нет) рендерится снимаемым чипом.
+func TestWebLogsAttrFilterChip(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrchip-owner@example.com", "logs-attrchip-co", "logs-attrchip-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
+			Severity: log.SevInfo, Body: "row-on-host", Service: "api",
+			ResourceAttrs: map[string]string{"host.name": "web-01"},
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-2 * time.Minute), ObservedTS: now.Add(-2 * time.Minute),
+			Severity: log.SevInfo, Body: "row-other-host", Service: "api",
+			ResourceAttrs: map[string]string{"host.name": "web-02"},
+		},
+	)
+
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base+"?attr=res:host.name:web-01", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?attr=res:host.name:web-01 status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+
+	// Список сужен до строки этого хоста (существующий attr-фильтр C2).
+	if strings.Contains(text, "row-other-host") {
+		t.Errorf("attr host.name=web-01 не сузил список: %s", text)
+	}
+	if !strings.Contains(text, "row-on-host") {
+		t.Errorf("attr host.name=web-01 потерял свою же строку: %s", text)
+	}
+
+	// Чип активного attr-фильтра виден с подписью "host.name: web-01".
+	if !strings.Contains(text, "host.name: web-01") {
+		t.Errorf("чип attr-фильтра host.name не найден: %s", text)
+	}
+
+	// Ссылка снятия чипа ведёт на тот же экран БЕЗ этого attr.
+	removeRe := regexp.MustCompile(`<a class="chip-remove" href="([^"]+)"`)
+	m := removeRe.FindStringSubmatch(text)
+	if m == nil {
+		t.Fatalf("не нашли ссылку снятия attr-чипа: %s", text)
+	}
+	removeHref := html.UnescapeString(m[1])
+	if strings.Contains(removeHref, "host.name") {
+		t.Errorf("ссылка снятия attr-чипа не должна содержать host.name: %s", removeHref)
+	}
+
+	// Переход по снятию реально убирает attr-скоуп.
+	resp = getWithCookie(t, s.srv, removeHref, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (снятие attr-чипа) status = %d, want 200: %s", removeHref, resp.StatusCode, body)
+	}
+	if text := string(body); !strings.Contains(text, "row-other-host") {
+		t.Errorf("после снятия attr-чипа список должен снова показывать все строки: %s", text)
+	}
+}
