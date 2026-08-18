@@ -1194,6 +1194,7 @@
     "hosts.scraper_hint.proc": "processes",
     "hosts.detail.last_seen": "Последний раз",
     "hosts.detail.first_seen": "Впервые замечен",
+    "hosts.detail.view_logs": "Логи хоста",
     "hosts.detail.uptime": "Время работы",
     "hosts.detail.agent_version": "Версия агента",
     "hosts.detail.agent_update": "Есть обновление",

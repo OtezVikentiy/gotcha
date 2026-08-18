@@ -1194,6 +1194,7 @@
     "hosts.scraper_hint.proc": "processes",
     "hosts.detail.last_seen": "Last seen",
     "hosts.detail.first_seen": "First seen",
+    "hosts.detail.view_logs": "Host logs",
     "hosts.detail.uptime": "Uptime",
     "hosts.detail.agent_version": "Agent version",
     "hosts.detail.agent_update": "Update available",
