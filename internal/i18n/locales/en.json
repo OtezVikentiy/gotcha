@@ -386,6 +386,7 @@
     "trace.flame.title": "Flamegraph",
     "trace.waterfall_link": "Waterfall",
     "trace.view_flamegraph": "View flamegraph →",
+    "trace.view_logs": "Logs for this trace",
     "trace.field.trace_id": "Trace ID",
     "trace.field.duration": "Duration",
     "trace.field.when": "When",

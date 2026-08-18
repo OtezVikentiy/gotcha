@@ -221,6 +221,60 @@ func TestWebTraceWaterfall(t *testing.T) {
 	}
 }
 
+// TestWebTraceWaterfallLogsLink — задача 4 C3: на странице трейса всегда есть
+// ссылка «Логи этого трейса» на /logs с фильтром по trace_id и временным
+// окном (start/end, unix-секунды) вокруг трейса. Фикстура — трейс БЕЗ
+// профиля: ссылка на логи не должна зависеть от наличия flamegraph
+// (в отличие от ссылки на flamegraph, которая рисуется только при HasProfile).
+func TestWebTraceWaterfallLogsLink(t *testing.T) {
+	s := newTraceStack(t)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-logs-owner@example.com")
+
+	o, err := s.org.CreateOrg(context.Background(), "trace-logs-co", "Trace Logs Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), o.ID, "trace-logs-proj", "Trace Logs Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	const traceID = "logs-link-trace-01"
+	start := time.Now().UTC().Add(-10 * time.Minute)
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
+		TraceID:     traceID,
+		SpanID:      "logs-link-root",
+		Name:        "GET /api/logs-link",
+		Op:          "http.server",
+		Status:      "ok",
+		Start:       start,
+		End:         start.Add(100 * time.Millisecond),
+		Environment: "production",
+	})
+	s.flush(t)
+
+	tracePath := "/traces/" + traceID
+	resp := getWithCookie(t, s.srv, tracePath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", tracePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "/logs?") {
+		t.Fatalf("GET %s missing logs link: %s", tracePath, body)
+	}
+	if !strings.Contains(string(body), "trace_id="+traceID) {
+		t.Fatalf("GET %s logs link missing trace_id=%s: %s", tracePath, traceID, body)
+	}
+	if !hasLogsLinkWindow(string(body)) {
+		t.Fatalf("GET %s logs link missing start/end window: %s", tracePath, body)
+	}
+	// Без профиля — ссылка на логи всё равно должна быть (не под if d.HasProfile).
+	if strings.Contains(string(body), "Смотреть flamegraph") {
+		t.Fatalf("GET %s must not show flamegraph link without a profile: %s", tracePath, body)
+	}
+}
+
 // TestWebIssueDetailTraceLink — событие с trace_id → на странице issue есть
 // ссылка «Смотреть трейс» на /traces/{trace_id}; событие без trace_id → ссылки
 // нет.

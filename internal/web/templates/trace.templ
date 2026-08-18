@@ -89,6 +89,7 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 			if d.HasProfile {
 				<p class="trace-actions"><a class="btn btn-ghost" href={ templ.URL(traceFlamePath(d.TraceID)) }>{ i18n.T(ctx, "trace.view_flamegraph") }</a></p>
 			}
+			<p class="trace-actions"><a class="btn btn-ghost" href={ templ.URL(logsForTracePath(d.ProjectID, d.TraceID, d.Timestamp, d.TotalUS)) }>{ i18n.T(ctx, "trace.view_logs") }</a></p>
 			if d.TotalRows > d.ShownRows {
 				<p class="trace-cap-note">{ i18n.Tf(ctx, "trace.truncated", "shown", strconv.Itoa(d.ShownRows), "total", strconv.Itoa(d.TotalRows)) }</p>
 			}
