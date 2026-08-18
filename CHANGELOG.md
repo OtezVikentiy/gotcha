@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Deployment markers: CI can report each release with a single request (`POST /api/{project}/deployments/`, authorized with the project's `sentry_key`). Reported deployments show up as version-labelled vertical markers on the performance, metrics, host, and uptime charts, in a "Deployments" list under the Performance area, and as an "after deploy vX" note next to any regression that started within 7 days after a release — so a regression can be traced back to the change that most likely introduced it.
+
 ## [0.10.0] - 2026-08-18
 
 ### Added

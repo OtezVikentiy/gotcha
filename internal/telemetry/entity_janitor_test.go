@@ -21,7 +21,7 @@ var entitySeq atomic.Int64
 // TestEntityJanitorUsesPerEntityRetention), а сам механизм удаления, и им
 // нужен ровно прежний, общий срок.
 func uniformRetention(d time.Duration) telemetry.Retentions {
-	return telemetry.Retentions{Events: d, Metrics: d, Profiles: d, Incidents: d}
+	return telemetry.Retentions{Events: d, Metrics: d, Profiles: d, Incidents: d, Deployments: d}
 }
 
 // newEntityProject создаёт организацию с проектом. Каждый тест работает в своём
@@ -651,6 +651,76 @@ func TestEntityJanitorHostsZeroMetricRetentionKeepsHosts(t *testing.T) {
 	}
 	if issueExists(t, pool, issueID) {
 		t.Errorf("группа не удалена при заданном сроке событий — нулевой срок метрик погасил весь проход")
+	}
+}
+
+// insertDeployment добавляет маркер выкладки с заданным моментом деплоя.
+func insertDeployment(t *testing.T, pool *pgxpool.Pool, projectID int64, deployedAt time.Time) int64 {
+	t.Helper()
+	n := entitySeq.Add(1)
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO deployments (project_id, version, environment, deployed_at)
+		 VALUES ($1, $2, 'production', $3) RETURNING id`,
+		projectID, fmt.Sprintf("v%d", n), deployedAt).Scan(&id); err != nil {
+		t.Fatalf("insert deployment: %v", err)
+	}
+	return id
+}
+
+// TestEntityJanitorPurgesExpiredDeployments — маркеры выкладок пишет публичный
+// ключ приёма (CI шлёт деплой тем же DSN, что и события) и вне квоты: без
+// своего срока таблица растёт вечно. Правило смотрит на deployed_at без
+// closedOnly — деплой это точечное событие, оно всегда «состоялось».
+func TestEntityJanitorPurgesExpiredDeployments(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	old := insertDeployment(t, pool, pid, now.Add(-120*24*time.Hour))
+	fresh := insertDeployment(t, pool, pid, now.Add(-2*24*time.Hour))
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{Deployments: 90 * 24 * time.Hour}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if rowExists(t, pool, "deployments", old) {
+		t.Errorf("деплой 120-дневной давности жив при сроке деплоев 90 дней")
+	}
+	if !rowExists(t, pool, "deployments", fresh) {
+		t.Errorf("деплой 2-дневной давности удалён при сроке деплоев 90 дней")
+	}
+}
+
+// TestEntityJanitorDeploymentsUseOwnRetention — деплои живут своим сроком
+// (GOTCHA_DEPLOY_RETENTION_DAYS), а не сроком событий: нулевой срок деплоев
+// выключает удаление ИМЕННО их, не задевая соседние правила.
+func TestEntityJanitorDeploymentsUseOwnRetention(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	old := time.Now().UTC().Add(-400 * 24 * time.Hour)
+	dep := insertDeployment(t, pool, pid, old)
+	issueID := insertIssue(t, pool, pid, "deploy-zero-retention", old, "unresolved")
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{
+		Events:      30 * 24 * time.Hour,
+		Deployments: 0, // удаление деплоев выключено
+	}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if !rowExists(t, pool, "deployments", dep) {
+		t.Errorf("деплой удалён при нулевом сроке деплоев (Deployments=0 должен выключать именно правило deployments)")
+	}
+	if issueExists(t, pool, issueID) {
+		t.Errorf("группа не удалена при заданном сроке событий — нулевой срок деплоев погасил весь проход")
 	}
 }
 

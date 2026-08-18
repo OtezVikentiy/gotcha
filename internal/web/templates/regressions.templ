@@ -114,7 +114,7 @@ templ regressionStatusTab(projectID int64, value, label, active string) {
 // RegressionsList — GET /projects/{id}/regressions: таблица регрессий
 // производительности с вкладками фильтра по статусу. Только чтение, без JS
 // (обычные ссылки), визуально повторяет список инцидентов uptime.
-templ RegressionsList(projectID int64, regressions []trace.Regression, filter string, userEmail string) {
+templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string) {
 	@layout(i18n.T(ctx, "nav.regressions"), userEmail) {
 		<div class="regressions">
 			<h1>{ i18n.T(ctx, "nav.regressions") }</h1>
@@ -142,14 +142,19 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, filter st
 							</tr>
 						</thead>
 						<tbody>
-							for _, reg := range regressions {
+							for i, reg := range regressions {
 								<tr>
 									<td><a href={ templ.URL(regressionTargetURL(projectID, reg)) }>{ reg.Target }</a></td>
 									<td>{ regressionMetricLabel(ctx, reg.Metric) }</td>
 									<td class="num">{ regressionIncreasePct(reg) }</td>
 									<td class="num">{ regressionValueRange(ctx, reg) }</td>
 									<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
-									<td>@relativeTime(reg.StartedAt)</td>
+									<td>
+										@relativeTime(reg.StartedAt)
+										if i < len(deployAttr) && deployAttr[i] != "" {
+											<div class="regression-deploy-attr"><a href={ templ.URL(deploymentsPath(projectID)) }>{ deployAttr[i] }</a></div>
+										}
+									</td>
 									<td class="num">{ regressionDurationText(ctx, reg) }</td>
 								</tr>
 							}

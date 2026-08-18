@@ -175,6 +175,7 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/perf-issues":                  lvlAccess,
 	"GET /perf-issues/{id}":                           lvlAccess,
 	"GET /projects/{id}/regressions":                  lvlAccess,
+	"GET /projects/{id}/deployments":                  lvlAccess,
 	"GET /traces/{trace_id}":                          lvlAccess,
 	"GET /traces/{trace_id}/flame":                    lvlAccess,
 

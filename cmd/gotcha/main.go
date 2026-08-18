@@ -19,6 +19,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -657,10 +658,11 @@ func run() error {
 	// на нескольких репликах безопасен — проход берёт advisory-лок и на
 	// занятом молча уступает.
 	entityRetention := telemetry.Retentions{
-		Events:    time.Duration(cfg.RetentionDays) * 24 * time.Hour,
-		Metrics:   time.Duration(cfg.MetricRetentionDays) * 24 * time.Hour,
-		Profiles:  time.Duration(cfg.ProfileRetentionDays) * 24 * time.Hour,
-		Incidents: time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+		Events:      time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+		Metrics:     time.Duration(cfg.MetricRetentionDays) * 24 * time.Hour,
+		Profiles:    time.Duration(cfg.ProfileRetentionDays) * 24 * time.Hour,
+		Incidents:   time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+		Deployments: time.Duration(cfg.DeployRetentionDays) * 24 * time.Hour,
 	}
 	if pg != nil && entityRetention.Any() {
 		entityJanitor := &telemetry.EntityJanitor{
@@ -873,6 +875,8 @@ func run() error {
 		// Логи (C1): приёмник + отдельная квота логов.
 		ingestHandler.Logs = logWriter
 		ingestHandler.LogQuota = ingest.NewOrgLogQuota(orgSvc)
+		// Деплои (C5): реестр выкладок из CI (PG-таблица deployments).
+		ingestHandler.Deploy = deploy.NewStore(pg)
 		ingestHandler.DropCounter = orgSvc
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех
@@ -949,6 +953,9 @@ func run() error {
 		// не только справочный дефолт.
 		webHandler.LogQuery = log.NewQuery(ch)
 		webHandler.LogRetentionDays = cfg.LogRetentionDays
+		// Деплои (C5): store читается веб-слоем для маркеров на графиках,
+		// экрана-списка и привязки регрессий (тот же пул, что у ingest.Deploy).
+		webHandler.Deploy = deploy.NewStore(pg)
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)

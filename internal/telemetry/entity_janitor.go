@@ -68,22 +68,24 @@ const (
 	retentionMetrics
 	retentionProfiles
 	retentionIncidents
+	retentionDeployments
 )
 
 // Retentions — сроки хранения по классам данных: GOTCHA_RETENTION_DAYS,
 // GOTCHA_METRIC_RETENTION_DAYS, GOTCHA_PROFILE_RETENTION_DAYS,
-// GOTCHA_INCIDENT_RETENTION_DAYS. Нулевой срок класса выключает удаление в его
-// правилах.
+// GOTCHA_INCIDENT_RETENTION_DAYS, GOTCHA_DEPLOY_RETENTION_DAYS. Нулевой срок
+// класса выключает удаление в его правилах.
 type Retentions struct {
-	Events    time.Duration
-	Metrics   time.Duration
-	Profiles  time.Duration
-	Incidents time.Duration
+	Events      time.Duration
+	Metrics     time.Duration
+	Profiles    time.Duration
+	Incidents   time.Duration
+	Deployments time.Duration
 }
 
 // Any — задан ли хоть один срок. Ни одного — чистильщика запускать незачем.
 func (r Retentions) Any() bool {
-	return r.Events > 0 || r.Metrics > 0 || r.Profiles > 0 || r.Incidents > 0
+	return r.Events > 0 || r.Metrics > 0 || r.Profiles > 0 || r.Incidents > 0 || r.Deployments > 0
 }
 
 func (r Retentions) forKind(k retentionKind) time.Duration {
@@ -96,6 +98,8 @@ func (r Retentions) forKind(k retentionKind) time.Duration {
 		return r.Profiles
 	case retentionIncidents:
 		return r.Incidents
+	case retentionDeployments:
+		return r.Deployments
 	default:
 		return 0
 	}
@@ -146,6 +150,14 @@ var entityRules = []entityRule{
 	// выше, обязателен — здесь строка удаляется сама по себе, и открытый
 	// инцидент описывает то, что происходит с хостом сейчас.
 	{table: "host_incidents", ageColumn: "resolved_at", closedOnly: "status = 'resolved' AND resolved_at IS NOT NULL", retention: retentionMetrics},
+	// Маркер выкладки — своя ось истории: он не привязан к телеметрии в
+	// ClickHouse, а показывает, что и когда выкатили. Срок поэтому свой, а не
+	// заимствованный. closedOnly нет намеренно, как у issues: деплой — точечное
+	// событие, оно всегда «состоялось» и удаляется по возрасту deployed_at.
+	// TTL здесь не роскошь, а обязателен: таблицу пишет публичный ключ приёма
+	// (CI шлёт выкладку тем же DSN, что и события), без границы она растёт
+	// вечно и вне квоты.
+	{table: "deployments", ageColumn: "deployed_at", retention: retentionDeployments},
 }
 
 // EntityJanitor удаляет из PostgreSQL сущности, переживших срок хранения

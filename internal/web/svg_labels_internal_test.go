@@ -33,8 +33,8 @@ func TestChartLabelsMatchWhatTheyDraw(t *testing.T) {
 	}{
 		{
 			name:     "пропускная способность",
-			empty:    throughputBarsMarkup(ctx, nil, 720, 200),
-			full:     throughputBarsMarkup(ctx, []trace.LatencyPoint{{T: now, Count: 5}}, 720, 200),
+			empty:    throughputBarsMarkup(ctx, nil, nil, 720, 200),
+			full:     throughputBarsMarkup(ctx, []trace.LatencyPoint{{T: now, Count: 5}}, nil, 720, 200),
 			wantKey:  "a11y.chart.throughput",
 			wrongKey: []string{"a11y.chart.latency", "a11y.chart.frequency"},
 		},

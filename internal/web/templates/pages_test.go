@@ -454,7 +454,7 @@ func TestIncidentsAndRegressionsLists(t *testing.T) {
 		{ID: 1, TargetKind: "endpoint_p95", Target: "GET /api", Metric: "duration", Status: "open", BaselineValue: 100, PeakValue: 300, CurrentValue: 250, StartedAt: now.Add(-time.Hour)},
 		{ID: 2, TargetKind: "webvital_p75", Target: "/home", Metric: "lcp", Status: "resolved", BaselineValue: 2000, PeakValue: 4000, StartedAt: now.Add(-3 * time.Hour), ResolvedAt: ptrTime(now.Add(-time.Hour))},
 	}
-	outR := renderTo(t, RegressionsList(7, regs, "open", "u@e.com"))
+	outR := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com"))
 	if !strings.Contains(outR, "GET /api") {
 		t.Error("регрессии должны содержать цель")
 	}

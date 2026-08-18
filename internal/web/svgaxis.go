@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 )
 
 // Общий каркас графиков: поля под подписи, «круглая» шкала Y с сеткой и
@@ -197,6 +199,89 @@ func writeHoverBand(sb *strings.Builder, g chartGeom, x, width float64, title st
 	sb.WriteString(`"><title>`)
 	sb.WriteString(html.EscapeString(title))
 	sb.WriteString(`</title></rect>`)
+}
+
+// writeDeployMarker рисует вертикальные пунктирные линии в моменты деплоя
+// (C5): по каждому графику проекта видно, когда была выкладка, чтобы
+// сопоставить её с изменением метрик/латентности/трафика. Позиция берётся по
+// СРЕЗУ timestamp'ов точек графика, а не по окну хендлера: деплой между
+// times[0] и times[len-1] попадает ровно на ту x-координату, где стоит точка с
+// таким же временем. Деплой ЛЕВЕЕ times[0] пропускается (маркер за левой рамкой
+// вводил бы в заблуждение), а хвостовой — между times[len-1] и концом окна
+// хендлера (to=now отстаёт от последней корзины на ~step) — клампится к правому
+// краю x1: последняя корзина агрегирует данные до now, поэтому «только что
+// выкатили» садится на правый край графика, а не пропадает.
+//
+// Для линейных графиков вызывающий передаёт g как есть (times[0]→g.x0,
+// times[last]→g.x1). Для столбчатых — копию g с x1, укороченным до левого края
+// последнего слота (g.x0 + (n-1)*barW), чтобы маркер лёг в ту же шкалу
+// времени, что и подписи оси X (writeXTicks строит их по g.x0 + i*barW).
+func writeDeployMarker(sb *strings.Builder, g chartGeom, times []time.Time, deploys []deploy.Deployment) {
+	if len(times) < 2 || len(deploys) == 0 {
+		return
+	}
+	span := times[len(times)-1].Sub(times[0]).Seconds()
+	if span <= 0 {
+		return
+	}
+	// Порог у правого края: подпись версии свежего деплоя (маркер у x1) с якорем
+	// start вылезла бы за холст и обрезалась — прижимаем её к правому краю, как
+	// writeXTicks поступает с меткой последнего тика.
+	const labelEdgePx = 40
+	// Антиколлизия подписей: на плотном окне выкладок версии наехали бы друг на
+	// друга в сплошную кашу. Линии рисуем ВСЕ (маркер важнее подписи), а подпись
+	// пропускаем, если её x ближе minGap к предыдущей НАРИСОВАННОЙ. Так кап по
+	// числу не нужен: на любой плотности остаётся читаемый разреженный ряд.
+	const labelMinGapPx = 44
+	lastLabelX := -1e9
+	for _, d := range deploys {
+		off := d.DeployedAt.Sub(times[0]).Seconds()
+		if off < 0 {
+			// Деплой левее окна графика: точки с таким временем на графике нет,
+			// маркер за левой рамкой вводил бы в заблуждение — пропускаем.
+			continue
+		}
+		if off > span {
+			// Деплой в хвосте (times[last], to]: последняя корзина агрегирует
+			// данные до now, поэтому «только что выкатил» семантически лежит на
+			// правом краю — клампим к x1, иначе ядро фичи не рисовалось бы.
+			off = span
+		}
+		x := g.x0 + off/span*(g.x1-g.x0)
+		sb.WriteString(`<line class="chart-deploy-marker" x1="`)
+		sb.WriteString(formatCoord(x))
+		sb.WriteString(`" y1="`)
+		sb.WriteString(formatCoord(g.y0))
+		sb.WriteString(`" x2="`)
+		sb.WriteString(formatCoord(x))
+		sb.WriteString(`" y2="`)
+		sb.WriteString(formatCoord(g.y1))
+		sb.WriteString(`"><title>`)
+		sb.WriteString(html.EscapeString(d.Version + " · " + d.DeployedAt.UTC().Format("02.01 15:04")))
+		sb.WriteString(`</title></line>`)
+
+		gap := x - lastLabelX
+		if gap < 0 {
+			gap = -gap
+		}
+		if gap < labelMinGapPx {
+			continue
+		}
+		lastLabelX = x
+		// Якорь подписи: у правого края разворачиваем на end (текст влево от
+		// линии), иначе start (вправо) — сверено с writeXTicks.
+		anchor, lx := "start", x+2
+		if x > g.x1-labelEdgePx {
+			anchor, lx = "end", x-2
+		}
+		sb.WriteString(`<text class="chart-deploy-label" text-anchor="` + anchor + `" x="`)
+		sb.WriteString(formatCoord(lx))
+		sb.WriteString(`" y="`)
+		sb.WriteString(formatCoord(g.y0 + 10))
+		sb.WriteString(`">`)
+		sb.WriteString(html.EscapeString(d.Version))
+		sb.WriteString(`</text>`)
+	}
 }
 
 // formatUSAxis — длительность для подписи оси: микросекунды приводятся к

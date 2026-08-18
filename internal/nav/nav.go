@@ -157,7 +157,7 @@ func AreaForPath(path string) string {
 				switch parts[1] {
 				case "issues":
 					return "issues"
-				case "performance", "web-vitals", "profiles", "profile-regressions", "perf-issues", "regressions", "dependencies":
+				case "performance", "web-vitals", "profiles", "profile-regressions", "perf-issues", "regressions", "dependencies", "deployments":
 					return "performance"
 				case "metrics":
 					return "metrics"
@@ -210,6 +210,8 @@ func BackLabelKey(rawPath string) string {
 				return "nav.regressions"
 			case "dependencies":
 				return "nav.dependencies"
+			case "deployments":
+				return "nav.deployments"
 			case "metrics":
 				if len(parts) >= 3 && parts[2] == "alerts" {
 					return "nav.metric_alerts"
@@ -282,6 +284,7 @@ func Subsections(s Shell) []NavItem {
 			{LabelKey: "nav.perf_issues", Href: "/projects/" + effID + "/perf-issues"},
 			{LabelKey: "nav.regressions", Href: "/projects/" + effID + "/regressions"},
 			{LabelKey: "nav.dependencies", Href: "/projects/" + effID + "/dependencies"},
+			{LabelKey: "nav.deployments", Href: "/projects/" + effID + "/deployments"},
 		}
 	case "metrics":
 		items = []NavItem{

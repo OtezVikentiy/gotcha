@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -21,11 +23,12 @@ import (
 // regressionsStack — стенд страницы регрессий: только PG (страница читает
 // trace.RegressionService, CH здесь не нужен).
 type regressionsStack struct {
-	pool *pgxpool.Pool
-	srv  *httptest.Server
-	org  *org.Service
-	auth *auth.Service
-	reg  *trace.RegressionService
+	pool   *pgxpool.Pool
+	srv    *httptest.Server
+	org    *org.Service
+	auth   *auth.Service
+	reg    *trace.RegressionService
+	deploy *deploy.Store
 }
 
 func newRegressionsStack(t *testing.T, wireReg bool) *regressionsStack {
@@ -35,6 +38,7 @@ func newRegressionsStack(t *testing.T, wireReg bool) *regressionsStack {
 	authSvc := auth.NewService(pool)
 	orgSvc := org.NewService(pool, 1_000_000)
 	regSvc := trace.NewRegressionService(pool)
+	deploySvc := deploy.NewStore(pool)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,10 +49,11 @@ func newRegressionsStack(t *testing.T, wireReg bool) *regressionsStack {
 	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
 	if wireReg {
 		h.Regressions = regSvc
+		h.Deploy = deploySvc
 	}
 	h.Register(mux)
 
-	return &regressionsStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, reg: regSvc}
+	return &regressionsStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, reg: regSvc, deploy: deploySvc}
 }
 
 func TestWebRegressionsList(t *testing.T) {
@@ -148,6 +153,56 @@ func TestWebRegressionsList(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("GET %s (outsider) status = %d, want 404", listPath, resp.StatusCode)
+	}
+}
+
+// TestWebRegressionsDeployAttribution — под регрессией показывается ближайший
+// ПРЕДШЕСТВУЮЩИЙ деплой в пределах окна привязки; деплой старше окна не
+// привязывается.
+func TestWebRegressionsDeployAttribution(t *testing.T) {
+	s := newRegressionsStack(t, true)
+	ctx := context.Background()
+
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "reg-deploy-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "reg-deploy-co", "Reg Deploy Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "reg-deploy-proj", "Reg Deploy Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Деплой в пределах окна (за час до регрессии) должен привязаться, деплой
+	// восьмидневной давности — нет (за пределами 7-дневного окна).
+	if _, err := s.deploy.Record(ctx, project.ID, deploy.Deployment{Version: "v9.9.9-recent", Environment: "prod", DeployedAt: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatalf("record recent deploy: %v", err)
+	}
+	if _, err := s.deploy.Record(ctx, project.ID, deploy.Deployment{Version: "v0.0.0-stale", Environment: "prod", DeployedAt: time.Now().Add(-8 * 24 * time.Hour)}); err != nil {
+		t.Fatalf("record stale deploy: %v", err)
+	}
+
+	// Открытая регрессия эндпойнта (started_at = now по умолчанию).
+	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150); err != nil {
+		t.Fatalf("open regression: %v", err)
+	}
+
+	listPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/regressions"
+	resp := getWithCookie(t, s.srv, listPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", listPath, resp.StatusCode, body)
+	}
+	bs := string(body)
+	if !strings.Contains(bs, "v9.9.9-recent") {
+		t.Fatalf("regression must be attributed to preceding deploy in window: %s", bs)
+	}
+	if !strings.Contains(bs, "после деплоя") {
+		t.Fatalf("attribution missing localized prefix: %s", bs)
+	}
+	if strings.Contains(bs, "v0.0.0-stale") {
+		t.Fatalf("deploy older than window must not attribute: %s", bs)
 	}
 }
 

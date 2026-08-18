@@ -25,6 +25,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -244,6 +245,12 @@ type Handler struct {
 	// дефолта — при разнесённых web/ingest-репликах троттлер живёт в чужом
 	// процессе и недостижим отсюда).
 	HostForget HostForgetter
+
+	// Deploy — Postgres-store деплоев (C5): вертикальные маркеры на графиках
+	// проекта, экран-список деплоев и привязка регрессий к ближайшему
+	// предшествующему деплою. Как Hosts/Metrics — отдельное необязательное
+	// поле; nil → маркеры не рисуются, экран отвечает 404 (nil-guard).
+	Deploy *deploy.Store
 
 	// LogQuery — чтение структурированных логов из ClickHouse (C2, задача 2):
 	// страница /projects/{id}/logs. Как Trace/Metrics — отдельное
@@ -638,6 +645,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// /performance; nil-guard на h.Regressions отвечает 404 в стендах без
 	// детекции.
 	inner.Handle("GET /projects/{id}/regressions", h.requireUser(http.HandlerFunc(h.regressionsList)))
+
+	// Список деплоев проекта (C5): версия/окружение/когда/изменения/ссылка на
+	// прогон CI. Доступ — CanAccessProject; nil-guard на h.Deploy отвечает 404
+	// в стендах без приёма деплоев.
+	inner.Handle("GET /projects/{id}/deployments", h.requireUser(http.HandlerFunc(h.deployments)))
 
 	// Waterfall трейса (этап 3, план 4, задача 3): доступ — по проекту трейса
 	// (ProjectForTrace → CanAccessProject → 404), не по {id} в пути. Только

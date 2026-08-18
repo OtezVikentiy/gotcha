@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -311,14 +312,21 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Маркеры деплоев на графиках латентности и трафика (C5): выкладки этого
+	// проекта в том же окне. nil-guard — стенды без деплоев не рисуют маркеров.
+	var deploys []deploy.Deployment
+	if h.Deploy != nil {
+		deploys, _ = h.Deploy.List(r.Context(), projectID, from, now, 20)
+	}
+
 	data := templates.EndpointDetailData{
 		ProjectID:    projectID,
 		Transaction:  transaction,
 		Range:        timeRangeVM(tr),
 		Environment:  environment,
 		ApdexT:       int(project.ApdexThresholdMS),
-		LatencyChart: latencyLinesSVG(r.Context(), points, perfLatencyChartWidth, perfLatencyChartHeight),
-		Throughput:   throughputBarsSVG(r.Context(), points, perfLatencyChartWidth, perfLatencyChartHeight),
+		LatencyChart: latencyLinesSVG(r.Context(), points, deploys, perfLatencyChartWidth, perfLatencyChartHeight),
+		Throughput:   throughputBarsSVG(r.Context(), points, deploys, perfLatencyChartWidth, perfLatencyChartHeight),
 		Histogram:    durationHistogramSVG(r.Context(), histogram, perfLatencyChartWidth, perfLatencyChartHeight),
 		StepLabel:    formatStep(step),
 		From:         endpointOrigin(r.URL.Query().Get("from")),

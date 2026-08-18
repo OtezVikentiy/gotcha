@@ -21,7 +21,7 @@ func TestMetricSeriesMarkupAxes(t *testing.T) {
 		{T: base.Add(time.Hour), V: 25},
 	}
 	thresholds := []metricThreshold{{Value: 30, Comparator: "gt"}}
-	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, 720, 200)
+	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, nil, 720, 200)
 
 	for _, want := range []string{
 		`class="metric-chart chart-vb720"`, // + класс ширины viewBox: от неё зависит кегль подписей
@@ -42,7 +42,7 @@ func TestMetricSeriesMarkupAxes(t *testing.T) {
 // TestMetricSeriesMarkupEmpty — пустой ряд рисует оси и заметку «нет данных»,
 // а не падает и не оставляет голый холст.
 func TestMetricSeriesMarkupEmpty(t *testing.T) {
-	out := metricSeriesMarkup(context.Background(), nil, "", nil, 720, 200)
+	out := metricSeriesMarkup(context.Background(), nil, "", nil, nil, 720, 200)
 	if !strings.Contains(out, "chart-axis") {
 		t.Errorf("empty metric chart should still draw axes: %s", out)
 	}
@@ -57,7 +57,7 @@ func TestMetricSeriesMarkupThresholdInDomain(t *testing.T) {
 	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	points := []metric.Point{{T: base, V: 10}, {T: base.Add(time.Hour), V: 20}}
 	// Порог включён в домен, поэтому линия обязана присутствовать.
-	out := metricSeriesMarkup(context.Background(), points, "", []metricThreshold{{Value: 15, Comparator: "lt"}}, 720, 200)
+	out := metricSeriesMarkup(context.Background(), points, "", []metricThreshold{{Value: 15, Comparator: "lt"}}, nil, 720, 200)
 	if !strings.Contains(out, "chart-threshold") {
 		t.Errorf("threshold within data range must be drawn: %s", out)
 	}
@@ -77,7 +77,7 @@ func TestMetricSeriesMarkupIgnoresInf(t *testing.T) {
 		{T: base.Add(30 * time.Minute), V: math.Inf(1)},
 		{T: base.Add(time.Hour), V: 25},
 	}
-	out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+	out := metricSeriesMarkup(context.Background(), points, "ms", nil, nil, 720, 200)
 	if strings.Contains(out, "NaN") || strings.Contains(out, "Inf") {
 		t.Errorf("Inf point must not leak into coordinates: %s", out)
 	}
@@ -97,7 +97,7 @@ func TestMetricSeriesMarkupFlatSeriesSingleYLabel(t *testing.T) {
 	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	points := []metric.Point{{T: base, V: 5}, {T: base.Add(time.Hour), V: 5}}
 	thresholds := []metricThreshold{{Value: 20, Comparator: "gt"}}
-	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, 720, 200)
+	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, nil, 720, 200)
 
 	// Только подписи оси Y используют этот атрибутный набор — в отличие от
 	// hover-band тултипов (<title>…) и порога, которые тоже могут содержать
@@ -215,7 +215,7 @@ func TestMetricSeriesSparseSeriesIsOneLine(t *testing.T) {
 		}
 		points = append(points, p)
 	}
-	out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+	out := metricSeriesMarkup(context.Background(), points, "ms", nil, nil, 720, 200)
 	if got := strings.Count(out, "<polyline"); got != 1 {
 		t.Errorf("разрежённый ряд должен давать одну линию, получено %d polyline\n%s", got, out)
 	}
@@ -235,7 +235,7 @@ func TestMetricSeriesRealGapBreaksLine(t *testing.T) {
 		}
 		points = append(points, p)
 	}
-	out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+	out := metricSeriesMarkup(context.Background(), points, "ms", nil, nil, 720, 200)
 	if got := strings.Count(out, "<polyline"); got != 2 {
 		t.Errorf("длинный пропуск должен рвать линию надвое, получено %d polyline\n%s", got, out)
 	}

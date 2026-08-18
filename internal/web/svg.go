@@ -14,6 +14,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -162,11 +163,11 @@ type metricThreshold struct {
 // юнит слева), ось X (время снизу) и пунктирные пороговые линии алертов
 // (Grafana-style). Текст SVG состоит из чисел и html-экранированных подписей —
 // templ.Raw безопасен, как в latencyLinesSVG.
-func metricSeriesSVG(ctx context.Context, points []metric.Point, unit string, thresholds []metricThreshold, w, h int) templ.Component {
-	return templ.Raw(metricSeriesMarkup(ctx, points, unit, thresholds, w, h))
+func metricSeriesSVG(ctx context.Context, points []metric.Point, unit string, thresholds []metricThreshold, deploys []deploy.Deployment, w, h int) templ.Component {
+	return templ.Raw(metricSeriesMarkup(ctx, points, unit, thresholds, deploys, w, h))
 }
 
-func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string, thresholds []metricThreshold, w, h int) string {
+func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string, thresholds []metricThreshold, deploys []deploy.Deployment, w, h int) string {
 	const (
 		padL = 58 // место под подписи оси Y
 		padR = 16
@@ -342,6 +343,14 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		writeHoverBand(&sb, g, x-band/2, band,
 			p.T.UTC().Format("02.01 15:04")+" — "+formatAxisValue(p.V, unit))
 	}
+
+	// Маркеры деплоев (C5): вертикали в моменты выкладок по срезу времён точек.
+	times := make([]time.Time, n)
+	for i, p := range points {
+		times[i] = p.T
+	}
+	writeDeployMarker(&sb, g, times, deploys)
+
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
@@ -368,11 +377,11 @@ const maxMultiSeries = 8
 // каждого ряда красится классом палитры, а не currentColor. Текст SVG
 // собран из чисел и html-экранированных подписей — templ.Raw безопасен по
 // тем же причинам, что и у metricSeriesSVG.
-func multiSeriesSVG(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, w, h int) templ.Component {
-	return templ.Raw(multiSeriesMarkup(ctx, series, unit, thresholds, w, h))
+func multiSeriesSVG(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, deploys []deploy.Deployment, w, h int) templ.Component {
+	return templ.Raw(multiSeriesMarkup(ctx, series, unit, thresholds, deploys, w, h))
 }
 
-func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, w, h int) string {
+func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, deploys []deploy.Deployment, w, h int) string {
 	if len(series) > maxMultiSeries {
 		series = series[:maxMultiSeries]
 	}
@@ -510,6 +519,9 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 		writeHoverBand(&sb, g, g.xForIndex(i, n)-band/2, band,
 			humanize.Time(ctx, times[i], time.UTC)+" — "+strings.Join(parts, " · "))
 	}
+
+	// Маркеры деплоев (C5): times уже построены по самому длинному ряду выше.
+	writeDeployMarker(&sb, g, times, deploys)
 
 	sb.WriteString(`</svg>`)
 	return sb.String()
@@ -905,14 +917,14 @@ var perfLatencyLineClasses = [2]string{"series-p50", "series-p95"}
 // points приходят из trace.Query.EndpointLatency (числа), поэтому собранный
 // SVG-текст состоит только из чисел и фиксированных цветов — templ.Raw
 // безопасен по тем же причинам, что и в sparklineSVG.
-func latencyLinesSVG(ctx context.Context, points []trace.LatencyPoint, w, h int) templ.Component {
-	return templ.Raw(latencyLinesMarkup(ctx, points, w, h))
+func latencyLinesSVG(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) templ.Component {
+	return templ.Raw(latencyLinesMarkup(ctx, points, deploys, w, h))
 }
 
 // latencyLinesMarkup — перцентили p50/p95 во времени с осями, сеткой и
 // подсказками. Раньше это была голая ломаная без единой подписи: ни величины
 // (микросекунды? миллисекунды?), ни времени, ни какая линия что означает.
-func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, w, h int) string {
+func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) string {
 	var max uint32
 	for _, p := range points {
 		if p.P95 > max {
@@ -962,17 +974,21 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, w, h i
 				" · p95 "+formatUSAxis(float64(p.P95))+" · "+
 				i18n.Tn(ctx, "chart.bar.transactions", int(p.Count)))
 	}
+
+	// Маркеры деплоев (C5): times построены по точкам выше.
+	writeDeployMarker(&sb, g, times, deploys)
+
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
 
-func throughputBarsSVG(ctx context.Context, points []trace.LatencyPoint, w, h int) templ.Component {
-	return templ.Raw(throughputBarsMarkup(ctx, points, w, h))
+func throughputBarsSVG(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) templ.Component {
+	return templ.Raw(throughputBarsMarkup(ctx, points, deploys, w, h))
 }
 
 // throughputBarsMarkup — число транзакций за интервал агрегации, столбиками,
 // с осями и подсказкой на каждом столбике.
-func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, w, h int) string {
+func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) string {
 	var max uint64
 	for _, p := range points {
 		if p.Count > max {
@@ -1023,6 +1039,14 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, w, h
 			i18n.Tn(ctx, "chart.bar.transactions", int(p.Count))))
 		sb.WriteString(`</title></rect>`)
 	}
+
+	// Маркеры деплоев (C5): столбчатая шкала времени ставит точку i в g.x0 +
+	// i*barW (см. writeXTicks выше), поэтому маркеру нужна та же шкала — копия
+	// g с x1, укороченным до левого края последнего слота.
+	bg := g
+	bg.x1 = g.x0 + float64(n-1)*barW
+	writeDeployMarker(&sb, bg, times, deploys)
+
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
@@ -1768,11 +1792,11 @@ var latencySegmentNames = [4]string{"DNS", "TCP", "TLS", "TTFB"}
 // points приходят из uptime.Query.Latency (числа), поэтому собранный
 // SVG-текст состоит только из чисел и фиксированных цветов —
 // templ.Raw здесь безопасен по тем же причинам, что и в sparklineSVG.
-func latencyStackedSVG(ctx context.Context, points []uptime.LatencyPoint, w, h int) templ.Component {
-	return templ.Raw(latencyStackedMarkup(ctx, points, w, h))
+func latencyStackedSVG(ctx context.Context, points []uptime.LatencyPoint, deploys []deploy.Deployment, w, h int) templ.Component {
+	return templ.Raw(latencyStackedMarkup(ctx, points, deploys, w, h))
 }
 
-func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, h int) string {
+func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, deploys []deploy.Deployment, w, h int) string {
 	var maxPhase uint32
 	for _, p := range points {
 		if sum := p.AvgDNSMs + p.AvgConnectMs + p.AvgTLSMs + p.AvgTTFBMs; sum > maxPhase {
@@ -1865,6 +1889,13 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, 
 		}
 		writeHoverBand(&sb, g, slotX-gap/2, barW, title)
 	}
+
+	// Маркеры деплоев (C5): та же столбчатая шкала времени, что и в
+	// throughputBarsMarkup (точка i в g.x0 + i*barW).
+	bg := g
+	bg.x1 = g.x0 + float64(n-1)*barW
+	writeDeployMarker(&sb, bg, times, deploys)
+
 	sb.WriteString(`</svg>`)
 	return sb.String()
 }
