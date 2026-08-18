@@ -1,9 +1,98 @@
 # Logs
 
-The telemetry channel for structured application logs. This version of
-Gotcha accepts and stores logs; browsing them in the UI (list, filters,
-correlation with traces and errors) arrives later — for now, only the
-ingest API described below is available.
+The telemetry channel for structured application logs: the ingest API
+(described below) and a browsing/search screen in the UI.
+
+## Browsing and search
+
+The project's logs screen lives at `/projects/{id}/logs` ("Logs" in the
+project navigation). The list shows the newest records first; clicking a row
+expands the full body, a table of attributes (`log_attributes` and
+`resource_attrs` shown separately), and `trace_id`/`span_id` when the record
+carries them.
+
+### Filters
+
+The filter form above the list needs no JavaScript (a plain GET form —
+"Apply" reloads the page with the new filter):
+
+- **Time range** — the product's shared [time range control](/docs/time-range)
+  (presets 1h/24h/7d/30d plus a custom range). For logs, the window is also
+  clamped to the retention period (`GOTCHA_LOG_RETENTION_DAYS`, 14 days by
+  default — see [Configuration](/docs/configuration)): picking a preset wider
+  than the actual TTL just yields a shorter effective window, since a query
+  past retention would return nothing anyway.
+- **Severity** — a multi-select over the six canonical levels (`trace` …
+  `fatal`, see [canonicalization](#what-gets-canonicalized-in-severity)
+  below).
+- **Service** and **Environment** — exact match against the values attached
+  at ingest (`service.name`/`deployment.environment.name` from OTLP).
+- **Text search** — a case-insensitive substring search over the record body.
+
+Active filters are reflected in the URL — the current slice can be shared or
+the page reloaded without losing state.
+
+### Facets
+
+The sidebar next to the list shows **facets** — top values with record counts
+for the current window and the rest of the active filters:
+
+- **Severity, service, environment** — the same three dimensions as the
+  filter form; clicking a value adds it to the filter (or removes it, if
+  already selected). The severity facet excludes its own filter from the
+  count — it always shows the distribution across all levels, even with one
+  or two already selected (otherwise a selected level would immediately
+  swallow the whole facet).
+- **Attributes** — keys auto-discovered in `log_attributes` across the
+  current window's records (top by frequency), each with a count. Clicking a
+  key expands its top 10 values (also with counts) — the server computes
+  those lazily, only for the expanded key, not for every key at once.
+  Clicking a value adds a pinpoint filter on that attribute (see below).
+
+If a facet can't finish computing in time (a very wide window plus a lot of
+data), it shows "too much data" instead of values — narrow the window or add
+a filter. This doesn't fail the whole page: the list and the other facets
+keep working.
+
+### Attribute key autocomplete
+
+The attribute search field in the sidebar suggests keys as you type
+(typeahead): start typing a prefix (e.g. `http.`) and matching keys appear
+(`http.method`, `http.status_code`, …) with their frequency. This is a
+progressive enhancement over a plain text field — without JavaScript the
+field works as a regular text input, the autocomplete simply doesn't load.
+
+### Pinpoint attribute filters
+
+Besides clicking a facet, a slice on a specific attribute can be set manually
+via the repeatable `attr` query parameter:
+
+```
+/projects/{id}/logs?attr=http.method:GET&attr=http.status_code:500
+```
+
+The value is `key:value`, split on the first `:` (the value itself may
+contain a colon, e.g. a URL: `attr=http.url:http://example.com/x`). To filter
+on a **resource** attribute (`resource_attrs`, not `log_attributes`), prefix
+with `res:`: `attr=res:host.name:web-01`. Multiple `attr` parameters narrow
+the result (logical AND). Only exact match is supported — regular
+expressions and "not equal" are out of scope for the MVP.
+
+### Volume histogram
+
+Above the list, a histogram shows record volume over time, broken down by
+severity (the same stacked style as the rest of the product's charts). Bucket
+width is picked to fit the selected window's span. If there's no data for the
+current filter, the histogram is hidden instead of rendering an empty chart.
+
+### Pagination
+
+The list shows one page of recent records; the **"Show older"** button loads
+the next page of the same size via a time-based cursor — there's no "total
+found" count or deep page navigation (at log volume, offset pagination with a
+total count would be an expensive full scan). Getting an accurate picture of
+the whole period is better done through facets and the histogram than by
+paging through the list to the end.
 
 ## How to send a log
 
