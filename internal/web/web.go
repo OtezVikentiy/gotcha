@@ -25,6 +25,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -244,6 +245,12 @@ type Handler struct {
 	// дефолта — при разнесённых web/ingest-репликах троттлер живёт в чужом
 	// процессе и недостижим отсюда).
 	HostForget HostForgetter
+
+	// Deploy — Postgres-store деплоев (C5): вертикальные маркеры на графиках
+	// проекта, экран-список деплоев и привязка регрессий к ближайшему
+	// предшествующему деплою. Как Hosts/Metrics — отдельное необязательное
+	// поле; nil → маркеры не рисуются, экран отвечает 404 (nil-guard).
+	Deploy *deploy.Store
 
 	// LogQuery — чтение структурированных логов из ClickHouse (C2, задача 2):
 	// страница /projects/{id}/logs. Как Trace/Metrics — отдельное

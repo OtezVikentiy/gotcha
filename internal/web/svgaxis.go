@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 )
 
 // Общий каркас графиков: поля под подписи, «круглая» шкала Y с сеткой и
@@ -197,6 +199,57 @@ func writeHoverBand(sb *strings.Builder, g chartGeom, x, width float64, title st
 	sb.WriteString(`"><title>`)
 	sb.WriteString(html.EscapeString(title))
 	sb.WriteString(`</title></rect>`)
+}
+
+// writeDeployMarker рисует вертикальные пунктирные линии в моменты деплоя
+// (C5): по каждому графику проекта видно, когда была выкладка, чтобы
+// сопоставить её с изменением метрик/латентности/трафика. Позиция берётся по
+// СРЕЗУ timestamp'ов точек графика, а не по окну хендлера: деплой между
+// times[0] и times[len-1] попадает ровно на ту x-координату, где стоит точка с
+// таким же временем. Деплои вне окна графика пропускаются (маркер за рамкой
+// вводил бы в заблуждение).
+//
+// Для линейных графиков вызывающий передаёт g как есть (times[0]→g.x0,
+// times[last]→g.x1). Для столбчатых — копию g с x1, укороченным до левого края
+// последнего слота (g.x0 + (n-1)*barW), чтобы маркер лёг в ту же шкалу
+// времени, что и подписи оси X (writeXTicks строит их по g.x0 + i*barW).
+func writeDeployMarker(sb *strings.Builder, g chartGeom, times []time.Time, deploys []deploy.Deployment) {
+	if len(times) < 2 || len(deploys) == 0 {
+		return
+	}
+	span := times[len(times)-1].Sub(times[0]).Seconds()
+	if span <= 0 {
+		return
+	}
+	// Кап подписей: на плотном окне выкладок могло бы быть много, и версии
+	// наехали бы друг на друга в сплошную кашу — линии рисуем все, а подписи
+	// только у первых maxDeployLabels.
+	const maxDeployLabels = 20
+	for i, d := range deploys {
+		off := d.DeployedAt.Sub(times[0]).Seconds()
+		if off < 0 || off > span {
+			continue
+		}
+		x := g.x0 + off/span*(g.x1-g.x0)
+		sb.WriteString(`<line class="chart-deploy-marker" x1="`)
+		sb.WriteString(formatCoord(x))
+		sb.WriteString(`" y1="`)
+		sb.WriteString(formatCoord(g.y0))
+		sb.WriteString(`" x2="`)
+		sb.WriteString(formatCoord(x))
+		sb.WriteString(`" y2="`)
+		sb.WriteString(formatCoord(g.y1))
+		sb.WriteString(`"/>`)
+		if i < maxDeployLabels {
+			sb.WriteString(`<text class="chart-deploy-label" x="`)
+			sb.WriteString(formatCoord(x + 2))
+			sb.WriteString(`" y="`)
+			sb.WriteString(formatCoord(g.y0 + 10))
+			sb.WriteString(`">`)
+			sb.WriteString(html.EscapeString(d.Version))
+			sb.WriteString(`</text>`)
+		}
+	}
 }
 
 // formatUSAxis — длительность для подписи оси: микросекунды приводятся к

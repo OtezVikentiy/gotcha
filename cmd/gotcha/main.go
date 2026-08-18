@@ -952,6 +952,9 @@ func run() error {
 		// не только справочный дефолт.
 		webHandler.LogQuery = log.NewQuery(ch)
 		webHandler.LogRetentionDays = cfg.LogRetentionDays
+		// Деплои (C5): store читается веб-слоем для маркеров на графиках,
+		// экрана-списка и привязки регрессий (тот же пул, что у ingest.Deploy).
+		webHandler.Deploy = deploy.NewStore(pg)
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)

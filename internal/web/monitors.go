@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -365,7 +366,13 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	latencyPoints = fillSeries(latencyPoints, tr.From, tr.To, latencyStep,
 		func(p uptime.LatencyPoint) time.Time { return p.T },
 		func(t time.Time) uptime.LatencyPoint { return uptime.LatencyPoint{T: t} })
-	latencyChart := latencyStackedSVG(r.Context(), latencyPoints, latencyChartWidth, latencyChartHeight)
+	// Маркеры деплоев на графике задержек монитора (C5): выкладки проекта в
+	// том же выбранном окне графика.
+	var deploys []deploy.Deployment
+	if h.Deploy != nil {
+		deploys, _ = h.Deploy.List(r.Context(), m.ProjectID, tr.From, tr.To, 20)
+	}
+	latencyChart := latencyStackedSVG(r.Context(), latencyPoints, deploys, latencyChartWidth, latencyChartHeight)
 
 	checks, err := h.UptimeQuery.Recent(r.Context(), m.ID, monitorDetailChecksLimit)
 	if err != nil {

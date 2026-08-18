@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -160,6 +161,11 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Маркеры деплоев на графике метрики (C5), выкладки проекта за то же окно.
+	var deploys []deploy.Deployment
+	if h.Deploy != nil {
+		deploys, _ = h.Deploy.List(r.Context(), projectID, from, now, 20)
+	}
 	vm := templates.MetricDetailVM{
 		ProjectID:    projectID,
 		Info:         info,
@@ -170,7 +176,7 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		Labels:       labels,
 		LabelKey:     matcher.Key,
 		LabelValue:   matcher.Value,
-		Chart:        metricSeriesSVG(r.Context(), points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), metricChartWidth, metricChartHeight),
+		Chart:        metricSeriesSVG(r.Context(), points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), deploys, metricChartWidth, metricChartHeight),
 		Percentiles:  info.Type == "histogram",
 	}
 	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)

@@ -18,7 +18,7 @@ func TestChartsHaveTooltips(t *testing.T) {
 
 	t.Run("график метрики", func(t *testing.T) {
 		points := []metric.Point{{T: base, V: 738}, {T: base.Add(time.Hour), V: 1024}}
-		out := metricSeriesMarkup(context.Background(), points, "ms", nil, 720, 200)
+		out := metricSeriesMarkup(context.Background(), points, "ms", nil, nil, 720, 200)
 		if !strings.Contains(out, "hover-band") {
 			t.Errorf("нет полос наведения: %s", out)
 		}
@@ -33,7 +33,7 @@ func TestChartsHaveTooltips(t *testing.T) {
 		points := []uptime.LatencyPoint{{
 			T: base, AvgTotalMs: 180, AvgDNSMs: 20, AvgConnectMs: 40, AvgTLSMs: 60, AvgTTFBMs: 60,
 		}}
-		out := latencyStackedMarkup(context.Background(), points, 480, 160)
+		out := latencyStackedMarkup(context.Background(), points, nil, 480, 160)
 		for _, want := range []string{"<title>", "DNS 20ms", "180ms", "chart-axis", "hover-band"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("подсказка без %q: %s", want, out)
@@ -49,7 +49,7 @@ func TestChartsHaveTooltips(t *testing.T) {
 			{T: base.Add(time.Hour), AvgTotalMs: 30000},
 			{T: base.Add(2 * time.Hour), AvgTotalMs: 95, AvgDNSMs: 12, AvgConnectMs: 21, AvgTLSMs: 26, AvgTTFBMs: 31},
 		}
-		out := latencyStackedMarkup(context.Background(), points, 480, 160)
+		out := latencyStackedMarkup(context.Background(), points, nil, 480, 160)
 		if strings.Contains(out, "30000ms") == false {
 			t.Errorf("нет полного total выброса в подсказке: %s", out)
 		}

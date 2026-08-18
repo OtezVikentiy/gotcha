@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -92,31 +93,37 @@ func hostGapFill(points []metric.Point, from, to time.Time, step time.Duration) 
 // процессы. Ошибка любого из них — общая 500 (как остальные запросы
 // hostDetail): частичная карточка хуже честной ошибки.
 func (h *Handler) hostDetailCharts(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) ([]templates.HostChartVM, error) {
-	cpu, err := h.hostCPUChart(ctx, projectID, name, from, to, step)
+	// Маркеры деплоев (C5): один дозапрос выкладок проекта на все семь графиков
+	// хоста (общее окно). nil-guard — стенды без деплоев маркеров не рисуют.
+	var deploys []deploy.Deployment
+	if h.Deploy != nil {
+		deploys, _ = h.Deploy.List(ctx, projectID, from, to, 20)
+	}
+	cpu, err := h.hostCPUChart(ctx, projectID, name, from, to, step, deploys)
 	if err != nil {
 		return nil, err
 	}
-	mem, err := h.hostMemChart(ctx, projectID, name, from, to, step, settings)
+	mem, err := h.hostMemChart(ctx, projectID, name, from, to, step, settings, deploys)
 	if err != nil {
 		return nil, err
 	}
-	diskUsage, err := h.hostDiskUsageChart(ctx, projectID, name, from, to, step, settings)
+	diskUsage, err := h.hostDiskUsageChart(ctx, projectID, name, from, to, step, settings, deploys)
 	if err != nil {
 		return nil, err
 	}
-	diskIO, err := h.hostRateChart(ctx, projectID, hostmetric.DiskIO, name, from, to, step, "disk_io")
+	diskIO, err := h.hostRateChart(ctx, projectID, hostmetric.DiskIO, name, from, to, step, "disk_io", deploys)
 	if err != nil {
 		return nil, err
 	}
-	net, err := h.hostRateChart(ctx, projectID, hostmetric.NetworkIO, name, from, to, step, "net")
+	net, err := h.hostRateChart(ctx, projectID, hostmetric.NetworkIO, name, from, to, step, "net", deploys)
 	if err != nil {
 		return nil, err
 	}
-	load, err := h.hostLoadChart(ctx, projectID, name, from, to, step, settings)
+	load, err := h.hostLoadChart(ctx, projectID, name, from, to, step, settings, deploys)
 	if err != nil {
 		return nil, err
 	}
-	proc, err := h.hostProcChart(ctx, projectID, name, from, to, step)
+	proc, err := h.hostProcChart(ctx, projectID, name, from, to, step, deploys)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +133,7 @@ func (h *Handler) hostDetailCharts(ctx context.Context, projectID int64, name st
 // hostCPUChart — §5.3 №1: scalar Series matcher state=idle, agg=avg, busy =
 // 1−v. Пусто (совсем нет точек по запросу, до дозаполнения окна) — карточка
 // пустого состояния со скрейпером cpu вместо графика.
-func (h *Handler) hostCPUChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration) (templates.HostChartVM, error) {
+func (h *Handler) hostCPUChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, deploys []deploy.Deployment) (templates.HostChartVM, error) {
 	pts, err := h.Metrics.Series(ctx, projectID, hostmetric.CPUUtilization, "", name,
 		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "idle"}}, "avg", from, to, step)
 	if err != nil {
@@ -142,7 +149,7 @@ func (h *Handler) hostCPUChart(ctx context.Context, projectID int64, name string
 	series := []NamedSeries{{Label: i18n.T(ctx, "hosts.chart.cpu"), Points: hostGapFill(busy, from, to, step)}}
 	return templates.HostChartVM{
 		Key:    "cpu",
-		Chart:  multiSeriesSVG(ctx, series, "%", nil, hostChartWidth, hostChartHeight),
+		Chart:  multiSeriesSVG(ctx, series, "%", nil, deploys, hostChartWidth, hostChartHeight),
 		Legend: []templates.LegendItem{{Label: i18n.T(ctx, "hosts.chart.cpu"), Class: "legend-m1"}},
 	}, nil
 }
@@ -153,7 +160,7 @@ func (h *Handler) hostCPUChart(ctx context.Context, projectID int64, name string
 // если порог включён (выключенный порог не оценивается — «нет данных ≠
 // инцидент» не относится к линии, но рисовать линию выключенного порога
 // вводило бы в заблуждение: он не действует).
-func (h *Handler) hostMemChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) (templates.HostChartVM, error) {
+func (h *Handler) hostMemChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings, deploys []deploy.Deployment) (templates.HostChartVM, error) {
 	pts, err := h.Metrics.Series(ctx, projectID, hostmetric.MemoryUtilization, "", name,
 		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}, "avg", from, to, step)
 	if err != nil {
@@ -173,7 +180,7 @@ func (h *Handler) hostMemChart(ctx context.Context, projectID int64, name string
 	series := []NamedSeries{{Label: i18n.T(ctx, "hosts.chart.mem"), Points: hostGapFill(scaled, from, to, step)}}
 	return templates.HostChartVM{
 		Key:    "mem",
-		Chart:  multiSeriesSVG(ctx, series, "%", thresholds, hostChartWidth, hostChartHeight),
+		Chart:  multiSeriesSVG(ctx, series, "%", thresholds, deploys, hostChartWidth, hostChartHeight),
 		Legend: []templates.LegendItem{{Label: i18n.T(ctx, "hosts.chart.mem"), Class: "legend-m1"}},
 	}, nil
 }
@@ -181,7 +188,7 @@ func (h *Handler) hostMemChart(ctx context.Context, projectID int64, name string
 // hostDiskUsageChart — §5.3 №3: SeriesGrouped по mountpoint, top-8, ×100 —
 // та же семантика долей, что у mem. Truncated (>8 mountpoint'ов) едет в VM
 // для подписи «показаны топ-8» в шаблоне.
-func (h *Handler) hostDiskUsageChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) (templates.HostChartVM, error) {
+func (h *Handler) hostDiskUsageChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings, deploys []deploy.Deployment) (templates.HostChartVM, error) {
 	result, err := h.Metrics.SeriesGrouped(ctx, projectID, hostmetric.FilesystemUtilization, name, hostmetric.AttrMountpoint, "avg", from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
@@ -196,7 +203,7 @@ func (h *Handler) hostDiskUsageChart(ctx context.Context, projectID int64, name 
 	}
 	return templates.HostChartVM{
 		Key:       "disk_usage",
-		Chart:     multiSeriesSVG(ctx, series, "%", thresholds, hostChartWidth, hostChartHeight),
+		Chart:     multiSeriesSVG(ctx, series, "%", thresholds, deploys, hostChartWidth, hostChartHeight),
 		Legend:    legend,
 		Truncated: result.Truncated,
 	}, nil
@@ -206,7 +213,7 @@ func (h *Handler) hostDiskUsageChart(ctx context.Context, projectID int64, name 
 // groupKey=direction, deviceKey=device — сумма скоростей по устройствам).
 // key — "disk_io"/"net", источник i18n-подписи заголовка/пустого состояния
 // (hosts.chart.<key>/hosts.scraper_hint.<key>) и data-chart в шаблоне.
-func (h *Handler) hostRateChart(ctx context.Context, projectID int64, metricName, hostName string, from, to time.Time, step time.Duration, key string) (templates.HostChartVM, error) {
+func (h *Handler) hostRateChart(ctx context.Context, projectID int64, metricName, hostName string, from, to time.Time, step time.Duration, key string, deploys []deploy.Deployment) (templates.HostChartVM, error) {
 	result, err := h.Metrics.SeriesGroupedRate(ctx, projectID, metricName, hostName, hostmetric.AttrDirection, hostmetric.AttrDevice, from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
@@ -222,7 +229,7 @@ func (h *Handler) hostRateChart(ctx context.Context, projectID int64, metricName
 	// P2-4/P2-8).
 	return templates.HostChartVM{
 		Key:       key,
-		Chart:     multiSeriesSVG(ctx, series, i18n.T(ctx, "hosts.chart.unit.bytes_per_second"), nil, hostChartWidth, hostChartHeight),
+		Chart:     multiSeriesSVG(ctx, series, i18n.T(ctx, "hosts.chart.unit.bytes_per_second"), nil, deploys, hostChartWidth, hostChartHeight),
 		Legend:    legend,
 		Truncated: result.Truncated,
 	}, nil
@@ -235,7 +242,7 @@ func (h *Handler) hostRateChart(ctx context.Context, projectID int64, metricName
 // выбранный период графика). Пусто — только если ВСЕ три ряда пусты: одна
 // отсутствующая линия (например, коллектор не отдаёт 15m) рисуется разрывом
 // через NaN у остальных, а не гасит весь график.
-func (h *Handler) hostLoadChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings) (templates.HostChartVM, error) {
+func (h *Handler) hostLoadChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, settings host.Settings, deploys []deploy.Deployment) (templates.HostChartVM, error) {
 	names := []string{hostmetric.LoadAvg1m, hostmetric.LoadAvg5m, hostmetric.LoadAvg15m}
 	labels := []string{"1m", "5m", "15m"}
 	raw := make([][]metric.Point, len(names))
@@ -266,7 +273,7 @@ func (h *Handler) hostLoadChart(ctx context.Context, projectID int64, name strin
 	}
 	return templates.HostChartVM{
 		Key:    "load",
-		Chart:  multiSeriesSVG(ctx, series, "", thresholds, hostChartWidth, hostChartHeight),
+		Chart:  multiSeriesSVG(ctx, series, "", thresholds, deploys, hostChartWidth, hostChartHeight),
 		Legend: legend,
 	}, nil
 }
@@ -306,7 +313,7 @@ func (h *Handler) hostCores(ctx context.Context, projectID int64, name string) (
 
 // hostProcChart — §5.3 №7: SeriesGrouped по status, agg=avg, без масштаба —
 // количество процессов, не доля.
-func (h *Handler) hostProcChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration) (templates.HostChartVM, error) {
+func (h *Handler) hostProcChart(ctx context.Context, projectID int64, name string, from, to time.Time, step time.Duration, deploys []deploy.Deployment) (templates.HostChartVM, error) {
 	result, err := h.Metrics.SeriesGrouped(ctx, projectID, hostmetric.ProcessesCount, name, hostmetric.AttrStatus, "avg", from, to, step)
 	if err != nil {
 		return templates.HostChartVM{}, err
@@ -318,7 +325,7 @@ func (h *Handler) hostProcChart(ctx context.Context, projectID int64, name strin
 	localizeGroupLabels(ctx, series, legend)
 	return templates.HostChartVM{
 		Key:       "proc",
-		Chart:     multiSeriesSVG(ctx, series, "", nil, hostChartWidth, hostChartHeight),
+		Chart:     multiSeriesSVG(ctx, series, "", nil, deploys, hostChartWidth, hostChartHeight),
 		Legend:    legend,
 		Truncated: result.Truncated,
 	}, nil

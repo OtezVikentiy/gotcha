@@ -30,7 +30,7 @@ func TestMultiSeriesMarkupClassesAndCap(t *testing.T) {
 	for i := range series {
 		series[i] = NamedSeries{Label: fmt.Sprintf("s%d", i), Points: somePoints()}
 	}
-	svg := multiSeriesMarkup(context.Background(), series, "", nil, 720, 200)
+	svg := multiSeriesMarkup(context.Background(), series, "", nil, nil, 720, 200)
 	if !strings.Contains(svg, "series-m1") || !strings.Contains(svg, "series-m8") {
 		t.Fatal("classes missing")
 	}
@@ -42,12 +42,12 @@ func TestMultiSeriesMarkupClassesAndCap(t *testing.T) {
 // TestMultiSeriesMarkupEmpty: без серий/без данных — оси и заметка «нет
 // данных», как и у одиночного metricSeriesMarkup, а не пустой холст.
 func TestMultiSeriesMarkupEmpty(t *testing.T) {
-	out := multiSeriesMarkup(context.Background(), nil, "", nil, 720, 200)
+	out := multiSeriesMarkup(context.Background(), nil, "", nil, nil, 720, 200)
 	if !strings.Contains(out, "нет данных") {
 		t.Errorf("пустой мульти-серийный график должен отмечать отсутствие данных: %s", out)
 	}
 
-	out = multiSeriesMarkup(context.Background(), []NamedSeries{{Label: "a", Points: nil}}, "", nil, 720, 200)
+	out = multiSeriesMarkup(context.Background(), []NamedSeries{{Label: "a", Points: nil}}, "", nil, nil, 720, 200)
 	if !strings.Contains(out, "нет данных") {
 		t.Errorf("серия без точек тоже должна давать «нет данных»: %s", out)
 	}
@@ -64,7 +64,7 @@ func TestMultiSeriesMarkupNaNGap(t *testing.T) {
 		{T: base.Add(30 * time.Minute), V: 25},
 	}
 	series := []NamedSeries{{Label: "cpu", Points: points}}
-	out := multiSeriesMarkup(context.Background(), series, "%", nil, 720, 200)
+	out := multiSeriesMarkup(context.Background(), series, "%", nil, nil, 720, 200)
 	if !strings.Contains(out, "series-m1") {
 		t.Fatal("класс первой серии отсутствует")
 	}
@@ -77,7 +77,7 @@ func TestMultiSeriesMarkupNaNGap(t *testing.T) {
 // metricThreshold, что и у одиночного графика метрики.
 func TestMultiSeriesMarkupThresholds(t *testing.T) {
 	series := []NamedSeries{{Label: "cpu", Points: somePoints()}}
-	out := multiSeriesMarkup(context.Background(), series, "", []metricThreshold{{Value: 6, Comparator: "gt"}}, 720, 200)
+	out := multiSeriesMarkup(context.Background(), series, "", []metricThreshold{{Value: 6, Comparator: "gt"}}, nil, 720, 200)
 	if !strings.Contains(out, "chart-threshold") || !strings.Contains(out, "stroke-dasharray") {
 		t.Errorf("порог не нарисован: %s", out)
 	}
