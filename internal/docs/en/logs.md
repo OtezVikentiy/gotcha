@@ -101,6 +101,32 @@ total count would be an expensive full scan). Getting an accurate picture of
 the whole period is better done through facets and the histogram than by
 paging through the list to the end.
 
+### Correlation with errors, traces, and hosts
+
+The logs screen accepts a `trace_id` filter via the `?trace_id=…` query
+parameter — in the filter list it shows up as its own removable chip (the "x"
+next to the shortened ID clears just that filter, leaving the rest in place).
+It can be set directly in the URL, but the usual path onto the logs screen
+with a ready-made slice is one of three links elsewhere in the product:
+
+- **"Logs around this event"** — on the error detail page, next to the
+  selected event. If the event has a `trace_id`, the link opens logs with
+  that trace ID within a `[event time ± 5 min]` window; without a `trace_id`
+  it narrows the same time slice by the event's environment instead of an
+  exact trace filter.
+- **"Logs for this trace"** — on a trace's waterfall (`/traces/{id}`). An
+  exact `trace_id` filter plus the trace's own time window (start to end,
+  plus a 1-second margin) so ingest doesn't scan extra partitions.
+- **"Host logs"** — on a host's card. Not a `trace_id` link: it's a pinpoint
+  filter on a resource attribute (`?attr=res:host.name:<name>`), see
+  ["Pinpoint attribute filters"](#pinpoint-attribute-filters) above. It only
+  works if the log source itself puts `host.name` in the record's resource
+  attributes — the built-in `gotcha-agent` (see [Hosts](/docs/hosts)) doesn't
+  send logs at all, only metrics, so this link shows an empty log list for
+  hosts connected through `gotcha-agent`. The attribute only appears if the
+  same host also ships logs through an OTel collector with
+  `resource.attributes.host.name` set manually in its config.
+
 ## How to send a log
 
 Two independent formats are accepted on separate paths of the same host (see
