@@ -187,6 +187,7 @@
     "issues.detail.recent_events": "Последние события",
     "issues.detail.no_stacktrace": "У этого события нет стектрейса.",
     "issues.detail.view_trace": "Смотреть трейс",
+    "issues.detail.view_logs": "Логи вокруг события",
     "issues.detail.stacktrace": "Стектрейс",
     "issues.detail.tags": "Теги",
     "issues.detail.user": "Пользователь",

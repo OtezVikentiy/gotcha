@@ -675,6 +675,8 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 						<p class="event-trace-link"><a href={ templ.URL(tracePathFrom(selected.TraceID, "issue", strconv.FormatInt(it.ID, 10))) }>{ i18n.T(ctx, "issues.detail.view_trace") }</a></p>
 					}
 
+					<p class="event-logs-link"><a href={ templ.URL(logsAroundEventPath(it.ProjectID, selected.TraceID, selected.Timestamp, selected.Environment)) }>{ i18n.T(ctx, "issues.detail.view_logs") }</a></p>
+
 					if len(frames) > 0 {
 						<h3>{ i18n.T(ctx, "issues.detail.stacktrace") }</h3>
 						if showAllFrames {

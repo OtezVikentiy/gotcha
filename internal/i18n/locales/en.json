@@ -187,6 +187,7 @@
     "issues.detail.recent_events": "Recent events",
     "issues.detail.no_stacktrace": "This event has no stacktrace.",
     "issues.detail.view_trace": "View trace",
+    "issues.detail.view_logs": "Logs around this event",
     "issues.detail.stacktrace": "Stacktrace",
     "issues.detail.tags": "Tags",
     "issues.detail.user": "User",

@@ -1807,7 +1807,8 @@ th {
 	margin: 20px 0 8px;
 }
 
-.event-trace-link {
+.event-trace-link,
+.event-logs-link {
 	margin: 6px 0 12px;
 	font-size: var(--fs-base);
 }

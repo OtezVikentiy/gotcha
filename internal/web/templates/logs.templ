@@ -510,6 +510,50 @@ func logsURLFromValues(projectID int64, q url.Values) string {
 	return logsPath(projectID) + "?" + qs
 }
 
+// logsAroundEventWindow — полуокно «логи вокруг события» (§3 дизайна C3):
+// событие ±5 мин, если у него нет trace_id для точной склейки.
+const logsAroundEventWindow = 5 * time.Minute
+
+// logsAroundEventPath — ссылка «Логи вокруг события» со страницы ошибки.
+// ⚠ Окно [ts±5м] задаётся ВСЕГДА (обе ветки): без него /logs берёт дефолтное
+// окно 24ч (resolveTimeRange), и List отсекает логи трейса старше суток
+// (timestamp>=from) — дежурный, открывший вчерашнюю ошибку, получил бы пустой
+// экран (ревью плана, блокер). trace_id, если есть, ДОБАВЛЯЕТСЯ поверх окна
+// (точная склейка внутри окна); иначе окно сужается по environment (у события
+// нет поля Service; logs.service — иное пространство имён). Время — unix-секунды
+// (Global Constraints: обход format-guard + граница пакета templates/web).
+func logsAroundEventPath(projectID int64, traceID string, ts time.Time, env string) string {
+	q := url.Values{}
+	q.Set("start", strconv.FormatInt(ts.Add(-logsAroundEventWindow).Unix(), 10))
+	q.Set("end", strconv.FormatInt(ts.Add(logsAroundEventWindow).Unix(), 10))
+	if traceID != "" {
+		q.Set("trace_id", traceID)
+	} else if env != "" {
+		q.Set("environment", env)
+	}
+	return logsURLFromValues(projectID, q)
+}
+
+// logsForTracePath — ссылка «Логи этого трейса» с waterfall: trace_id точно +
+// окно трейса [from, from+длительность+1с] ограничивает скан партиций.
+func logsForTracePath(projectID int64, traceID string, from time.Time, totalUS uint32) string {
+	q := url.Values{}
+	q.Set("trace_id", traceID)
+	q.Set("start", strconv.FormatInt(from.Unix(), 10))
+	end := from.Add(time.Duration(totalUS)*time.Microsecond + time.Second)
+	q.Set("end", strconv.FormatInt(end.Unix(), 10))
+	return logsURLFromValues(projectID, q)
+}
+
+// logsForHostPath — ссылка «Логи хоста» с карточки хоста: точечный фильтр по
+// resource-атрибуту host.name (без изменений query-слоя, повторно использует
+// парсинг ?attr=res:key:value из C2).
+func logsForHostPath(projectID int64, hostName string) string {
+	q := url.Values{}
+	q.Set("attr", "res:host.name:"+hostName)
+	return logsURLFromValues(projectID, q)
+}
+
 // LogsPageURL строит ссылку на список логов с сохранением текущих фильтров
 // и заданным курсором пагинации (before/tskip). before нулевое — курсор из
 // ссылки убирается (используется для «сбросить фильтры», не для пагинации).
