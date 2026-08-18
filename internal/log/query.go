@@ -438,6 +438,165 @@ func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col st
 	return out, nil
 }
 
+// attrKeysScanLimit — сколько последних (по timestamp) строк сканирует
+// AttrKeys для обнаружения ключей (правка ревью IMPORTANT-1, §4 спеки C2):
+// наивный "ARRAY JOIN mapKeys(log_attributes) GROUP BY key" по ВСЕМУ окну
+// раскладывает каждую строку в N и на целевом трафике (150k rpm × 24ч ≈
+// 200M+ строк) почти всегда обрывает SETTINGS max_execution_time=5 — тогда
+// ядро-дифференциатор фичи (авто-фасеты по Map-атрибутам) молча пустует.
+// Обнаружению ключей полная точность окна не нужна: ограниченная свежая
+// выборка (50000 самых новых строк окна) даёт представительный набор ключей
+// по предсказуемой и малой стоимости.
+const attrKeysScanLimit = 50000
+
+// AttrKeys возвращает топ ключей log_attributes по count() DESC в окне
+// f.From/f.To — авто-обнаружение атрибут-фасетов (§4 спеки C2, ядро-
+// дифференциатор: Grafana поверх Map-колонок так не умеет). Считается по
+// ОГРАНИЧЕННОЙ свежей выборке (attrKeysScanLimit последних по времени
+// строк), а не по всему окну — см. её комментарий. prefix, если не пустой,
+// фильтрует ключи по префиксу (used автокомплитом T6); limit<=0 — facetLimit.
+// Прочие фильтры f (severity/service/...) НЕ применяются: подзапрос сузил
+// бы выборку ключей ещё сильнее, теряя редкие ключи ради точности, которая
+// обнаружению ключей не нужна (ту же логику отражает spec §4 — только
+// project_id+окно).
+func (q *Query) AttrKeys(ctx context.Context, projectID int64, f ListFilter, prefix string, limit int) ([]FacetValue, error) {
+	if limit <= 0 {
+		limit = facetLimit
+	}
+
+	query := `
+		SELECT key, count() AS c
+		FROM (
+			SELECT log_attributes
+			FROM logs
+			WHERE project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)
+			ORDER BY timestamp DESC
+			LIMIT ?
+		)
+		ARRAY JOIN mapKeys(log_attributes) AS key`
+	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To), attrKeysScanLimit}
+	if prefix != "" {
+		query += " WHERE key LIKE concat(?, '%')"
+		args = append(args, prefix)
+	}
+	query += `
+		GROUP BY key
+		ORDER BY c DESC
+		LIMIT ?
+		SETTINGS max_execution_time = 5`
+	args = append(args, limit)
+
+	rows, err := q.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("log: attr keys: %w", err)
+	}
+	defer rows.Close()
+
+	var out []FacetValue
+	for rows.Next() {
+		var v string
+		var c uint64
+		if err := rows.Scan(&v, &c); err != nil {
+			return nil, fmt.Errorf("log: attr keys: scan: %w", err)
+		}
+		out = append(out, FacetValue{Value: v, Count: int64(c)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("log: attr keys: %w", err)
+	}
+	return out, nil
+}
+
+// AttrValues возвращает топ значений одного атрибута (log_attributes, либо
+// resource_attrs при resource=true) по count() DESC в окне+фильтрах f — для
+// РАСКРЫТОГО в UI ключа атрибут-фасета (§4 спеки C2), подгружается лениво
+// (только для конкретного key по клику, не для всех ключей сразу). В
+// отличие от AttrKeys считается по ВСЕМУ окну+фильтрам (тот же принцип, что
+// Facet/Histogram) — раз ключ уже выбран, для него важна точность, не
+// ограниченная выборка.
+//
+// mapContains(<map>, ?)-гард ОБЯЗАТЕЛЕН: `<map>[key]` в ClickHouse
+// возвращает '' для строки, где такого ключа вообще нет — без гарда такие
+// строки молча склеились бы в один бакет со значением '' вместе с
+// реальными пустыми значениями атрибута, искажая counts. mapContains,
+// а не has(mapKeys(...)) — не строит промежуточный массив ключей, дешевле.
+func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, resource bool, key string, limit int) ([]FacetValue, error) {
+	if limit <= 0 {
+		limit = facetLimit
+	}
+	col := "log_attributes"
+	if resource {
+		col = "resource_attrs"
+	}
+
+	// where — тот же набор условий, что у List/Facet (окно+ВСЕ фильтры,
+	// включая f.Attrs — точечные фильтры по ДРУГИМ ключам продолжают сужать
+	// выборку значений этого ключа).
+	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
+	whereArgs := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
+
+	if len(f.Severity) > 0 {
+		where += " AND severity IN (?)"
+		whereArgs = append(whereArgs, f.Severity)
+	}
+	if f.Service != "" {
+		where += " AND service = ?"
+		whereArgs = append(whereArgs, f.Service)
+	}
+	if f.Environment != "" {
+		where += " AND environment = ?"
+		whereArgs = append(whereArgs, f.Environment)
+	}
+	if f.Query != "" {
+		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
+		whereArgs = append(whereArgs, f.Query)
+	}
+	for _, a := range f.Attrs {
+		attrCol := "log_attributes"
+		if a.Resource {
+			attrCol = "resource_attrs"
+		}
+		where += " AND " + attrCol + "[?] = ?"
+		whereArgs = append(whereArgs, a.Key, a.Value)
+	}
+
+	// Порядок args обязан идти 1:1 с порядком "?" в тексте запроса ниже:
+	// сперва SELECT col[?] (key), затем where-условия, затем mapContains(col,
+	// ?) (key ещё раз), затем LIMIT.
+	args := make([]any, 0, len(whereArgs)+3)
+	args = append(args, key)
+	args = append(args, whereArgs...)
+	args = append(args, key)
+	args = append(args, limit)
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT `+col+`[?] AS v, count() AS c
+		FROM logs
+		WHERE `+where+` AND mapContains(`+col+`, ?)
+		GROUP BY v
+		ORDER BY c DESC
+		LIMIT ?
+		SETTINGS max_execution_time = 5`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("log: attr values: %w", err)
+	}
+	defer rows.Close()
+
+	var out []FacetValue
+	for rows.Next() {
+		var v string
+		var c uint64
+		if err := rows.Scan(&v, &c); err != nil {
+			return nil, fmt.Errorf("log: attr values: scan: %w", err)
+		}
+		out = append(out, FacetValue{Value: v, Count: int64(c)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("log: attr values: %w", err)
+	}
+	return out, nil
+}
+
 // chTimeArg форматирует t строкой с точностью до миллисекунды для
 // toDateTime64(?, 3) в SQL — см. комментарий у сборки where в List: голый
 // time.Time аргументом "?" драйвер clickhouse-go биндит с точностью только до

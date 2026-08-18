@@ -1308,6 +1308,7 @@
     "logs.facet.severity": "Уровень",
     "logs.facet.service": "Сервис",
     "logs.facet.environment": "Окружение",
+    "logs.facet.attributes": "Атрибуты",
     "logs.facet.empty": "Нет данных для текущих фильтров",
     "logs.facet.too_much_data": "Слишком много данных, сузьте окно",
     "a11y.chart.logs_volume": "График объёма логов по времени и уровню"

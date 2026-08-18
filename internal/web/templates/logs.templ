@@ -19,7 +19,12 @@ type LogsFilter struct {
 	Service     string
 	Environment string
 	Query       string
-	Range       TimeRangeVM
+	// Attrs — точечные фильтры по атрибутам (§3 спеки C2: клик по значению
+	// фасета или ручной ?attr=), сохраняются в URL наравне с остальными
+	// полями (см. LogsPageURL) — иначе клик по встроенному фасету (severity/
+	// service/environment) молча сбросил бы уже выбранные attr-фильтры.
+	Attrs []log.AttrFilter
+	Range TimeRangeVM
 	// Active — фильтр сужает список относительно умолчаний (окно 24ч, без
 	// доп. условий): пустой список при Active=true значит «ничего не
 	// подошло под фильтры», а не «логов ещё не было» — тот же принцип,
@@ -38,13 +43,14 @@ type LogsHistogram struct {
 	Empty  bool
 }
 
-// LogFacets — три встроенных фасета сайдбара логов (задача 4, C2): severity/
-// service/environment. Атрибут-фасеты (авто-обнаружение ключей Map-колонок)
-// — отдельная задача (T5), здесь их нет.
+// LogFacets — сайдбар фасетов логов: три встроенных (severity/service/
+// environment, задача 4) плюс атрибут-фасеты — авто-обнаруженные ключи
+// Map-колонок с ленивыми значениями (задача 5, ядро-дифференциатор фичи).
 type LogFacets struct {
 	Severity    LogFacet
 	Service     LogFacet
 	Environment LogFacet
+	Attrs       LogAttrFacets
 }
 
 // LogFacet — одна секция сайдбара: до facetLimit (log.Query.Facet, сейчас
@@ -160,6 +166,126 @@ func logFacetValueClass(active bool) string {
 	return "logs-facet-value"
 }
 
+// LogAttrFacets — секция авто-обнаруженных атрибут-фасетов сайдбара (задача
+// 5, C2, ядро-дифференциатор фичи — Grafana поверх Map-колонок так не
+// умеет): список ключей log_attributes со счётчиками (log.Query.AttrKeys).
+// Значения подгружаются ЛЕНИВО — только для раскрытого в URL ключа
+// (?facet=<key>, см. LogAttrKeyFacet.Expanded/Values), остальные ключи
+// остаются просто счётчиком. TooMuchData — та же деградация, что и у
+// LogFacet (AttrKeys вернул ошибку/таймаут).
+type LogAttrFacets struct {
+	Keys        []LogAttrKeyFacet
+	TooMuchData bool
+}
+
+// LogAttrKeyFacet — один ключ атрибут-фасета: счётчик всегда, Values —
+// только когда Expanded (клик по ключу раскрывает/сворачивает его, Href
+// ведёт на тот же экран с/без ?facet=key).
+type LogAttrKeyFacet struct {
+	Key      string
+	Count    int64
+	Href     string
+	Expanded bool
+	Values   []LogAttrValueFacet
+}
+
+// LogAttrValueFacet — одно значение раскрытого ключа: клик добавляет
+// точечный фильтр log_attributes[key]=value (§3 спеки), клик по уже
+// активному — снимает именно его.
+type LogAttrValueFacet struct {
+	Value  string
+	Count  int64
+	Href   string
+	Active bool
+}
+
+// NewAttrFacets строит вью-модель секции атрибут-фасетов: keys — результат
+// log.Query.AttrKeys (топ ключей+counts), expandedKey — раскрытый в URL
+// ключ (?facet=, пусто — ничего не раскрыто), values — результат
+// log.Query.AttrValues ДЛЯ expandedKey. Если запрос значений раскрытого
+// ключа не удался (values==nil при непустом expandedKey), ключ всё равно
+// рендерится раскрытым, но без значений — секция ключей не рушится целиком
+// из-за отказа одного ленивого догруза (та же деградация по уровням, что и
+// у logsFacets в web/logs.go).
+func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, expandedKey string, values []log.FacetValue) LogAttrFacets {
+	items := make([]LogAttrKeyFacet, len(keys))
+	for i, k := range keys {
+		expanded := expandedKey != "" && k.Value == expandedKey
+		item := LogAttrKeyFacet{
+			Key:      k.Value,
+			Count:    k.Count,
+			Href:     logAttrKeyFacetURL(projectID, filter, k.Value, expanded),
+			Expanded: expanded,
+		}
+		if expanded {
+			item.Values = make([]LogAttrValueFacet, len(values))
+			for j, v := range values {
+				item.Values[j] = LogAttrValueFacet{
+					Value:  v.Value,
+					Count:  v.Count,
+					Href:   logAttrValueURL(projectID, filter, k.Value, v.Value),
+					Active: logAttrValueActive(filter, k.Value, v.Value),
+				}
+			}
+		}
+		items[i] = item
+	}
+	return LogAttrFacets{Keys: items}
+}
+
+// logAttrKeyFacetURL — ссылка раскрытия/сворачивания ключа атрибут-фасета:
+// клик по нераскрытому ключу выставляет ?facet=key (сервер на следующем
+// рендере досчитает log.Query.AttrValues только для него), клик по уже
+// раскрытому — снимает ?facet= (сворачивает обратно к списку одних
+// счётчиков). Курсор пагинации сбрасывается — тот же принцип, что и у
+// остальных фасетных ссылок экрана (LogsPageURL с before нулевым).
+func logAttrKeyFacetURL(projectID int64, filter LogsFilter, key string, expanded bool) string {
+	q := logsPageURLValues(filter)
+	if !expanded {
+		q.Set("facet", key)
+	}
+	return logsURLFromValues(projectID, q)
+}
+
+// logAttrValueURL — ссылка значения раскрытого атрибут-фасета: тоггл пары
+// key:value в filter.Attrs (добавляет, если её ещё нет; снимает именно её,
+// если уже активна — остальные выбранные attr-фильтры не трогая, тот же
+// принцип, что logFacetSeverityURL у мультивыбора severity). Раскрытие
+// ключа (?facet=key) СОХРАНЯЕТСЯ (в отличие от курсора пагинации, который
+// сбрасывается, как и у остальных фасетных ссылок) — после клика по
+// значению сайдбар остаётся на этом же раскрытом ключе с уже суженными
+// counts, а не сворачивается: так видно результат клика сразу и можно
+// потогглить ещё одно значение того же ключа без повторного раскрытия.
+func logAttrValueURL(projectID int64, filter LogsFilter, key, value string) string {
+	next := filter
+	if logAttrValueActive(filter, key, value) {
+		out := make([]log.AttrFilter, 0, len(filter.Attrs))
+		for _, a := range filter.Attrs {
+			if a.Resource || a.Key != key || a.Value != value {
+				out = append(out, a)
+			}
+		}
+		next.Attrs = out
+	} else {
+		next.Attrs = append(append([]log.AttrFilter{}, filter.Attrs...), log.AttrFilter{Key: key, Value: value})
+	}
+	q := logsPageURLValues(next)
+	q.Set("facet", key)
+	return logsURLFromValues(projectID, q)
+}
+
+// logAttrValueActive — пара (key, value) уже входит в filter.Attrs как
+// фильтр по log_attributes (не resource_attrs — атрибут-фасеты задачи 5
+// раскрывают только log_attributes, см. комментарий у web.logsAttrFacets).
+func logAttrValueActive(filter LogsFilter, key, value string) bool {
+	for _, a := range filter.Attrs {
+		if !a.Resource && a.Key == key && a.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
 // LogRow — строка списка логов вместе с уже собранной для раскрытия
 // таблицей атрибутов.
 type LogRow struct {
@@ -248,10 +374,12 @@ func severitySelected(selected []string, sev string) bool {
 	return false
 }
 
-// LogsPageURL строит ссылку на список логов с сохранением текущих фильтров
-// и заданным курсором пагинации (before/tskip). before нулевое — курсор из
-// ссылки убирается (используется для «сбросить фильтры», не для пагинации).
-func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) string {
+// logsPageURLValues строит url.Values из фильтра f (без курсора пагинации)
+// — общая часть LogsPageURL и билдеров ссылок атрибут-фасетов
+// (logAttrKeyFacetURL), которым сверх стандартных полей фильтра нужно ЕЩЁ
+// добавить facet= поверх, не дублируя сборку severity/service/environment/
+// q/attr/range.
+func logsPageURLValues(f LogsFilter) url.Values {
 	q := url.Values{}
 	for _, sv := range f.Severity {
 		q.Add("severity", sv)
@@ -265,18 +393,48 @@ func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) s
 	if f.Query != "" {
 		q.Set("q", f.Query)
 	}
+	for _, a := range f.Attrs {
+		q.Add("attr", logAttrFilterParam(a))
+	}
 	f.Range.apply(q)
+	return q
+}
+
+// logAttrFilterParam сериализует log.AttrFilter обратно в значение ?attr=
+// (инверсия web.parseLogAttrFilter): resource_attrs — префикс "res:", иначе
+// без префикса; ключ/значение — как есть, разделены первым ":" (значение
+// само может содержать ":" — парсер режет по ПЕРВОМУ вхождению, см.
+// web.parseLogAttrFilter).
+func logAttrFilterParam(a log.AttrFilter) string {
+	s := a.Key + ":" + a.Value
+	if a.Resource {
+		return "res:" + s
+	}
+	return s
+}
+
+// logsURLFromValues дописывает q к пути списка логов проекта — общий хвост
+// LogsPageURL/logAttrKeyFacetURL после сборки url.Values.
+func logsURLFromValues(projectID int64, q url.Values) string {
+	qs := q.Encode()
+	if qs == "" {
+		return logsPath(projectID)
+	}
+	return logsPath(projectID) + "?" + qs
+}
+
+// LogsPageURL строит ссылку на список логов с сохранением текущих фильтров
+// и заданным курсором пагинации (before/tskip). before нулевое — курсор из
+// ссылки убирается (используется для «сбросить фильтры», не для пагинации).
+func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) string {
+	q := logsPageURLValues(f)
 	if !before.IsZero() {
 		q.Set("before", strconv.FormatInt(before.UnixMilli(), 10))
 		if tieSkip > 0 {
 			q.Set("tskip", strconv.Itoa(tieSkip))
 		}
 	}
-	qs := q.Encode()
-	if qs == "" {
-		return logsPath(projectID)
-	}
-	return logsPath(projectID) + "?" + qs
+	return logsURLFromValues(projectID, q)
 }
 
 // LogsScreen — GET /projects/{id}/logs: базовый просмотрщик логов (задача 2,
@@ -367,7 +525,49 @@ templ logFacetsSidebar(facets LogFacets) {
 		@logFacetSection("logs.facet.severity", facets.Severity)
 		@logFacetSection("logs.facet.service", facets.Service)
 		@logFacetSection("logs.facet.environment", facets.Environment)
+		@logAttrFacetSection(facets.Attrs)
 	</aside>
+}
+
+// logAttrFacetSection — секция авто-обнаруженных атрибут-фасетов (задача 5,
+// C2): список ключей, у раскрытого ключа (Expanded) значения показаны
+// вложенным списком прямо под ним, остальные ключи — просто счётчик.
+// Внешняя обёртка ("card logs-facet") намеренно та же, что у logFacetSection
+// — единый визуальный ряд секций сайдбара.
+templ logAttrFacetSection(facet LogAttrFacets) {
+	<section class="card logs-facet">
+		<h2 class="logs-facet-title">{ i18n.T(ctx, "logs.facet.attributes") }</h2>
+		if facet.TooMuchData {
+			<p class="logs-facet-note">{ i18n.T(ctx, "logs.facet.too_much_data") }</p>
+		} else if len(facet.Keys) == 0 {
+			<p class="logs-facet-note">{ i18n.T(ctx, "logs.facet.empty") }</p>
+		} else {
+			<ul class="logs-facet-list">
+				for _, k := range facet.Keys {
+					<li class="logs-attr-key-item">
+						<div class="logs-facet-item">
+							<a class={ logFacetValueClass(k.Expanded) } href={ templ.URL(k.Href) } if k.Expanded { aria-current="page" }>{ k.Key }</a>
+							<span class="logs-facet-count">{ strconv.FormatInt(k.Count, 10) }</span>
+						</div>
+						if k.Expanded {
+							if len(k.Values) == 0 {
+								<p class="logs-facet-note">{ i18n.T(ctx, "logs.facet.empty") }</p>
+							} else {
+								<ul class="logs-facet-values">
+									for _, v := range k.Values {
+										<li class="logs-facet-item">
+											<a class={ logFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Value }</a>
+											<span class="logs-facet-count">{ strconv.FormatInt(v.Count, 10) }</span>
+										</li>
+									}
+								</ul>
+							}
+						}
+					</li>
+				}
+			</ul>
+		}
+	</section>
 }
 
 // logFacetSection — одна карточка сайдбара: заголовок + список значений с

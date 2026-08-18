@@ -28,12 +28,22 @@ const logsListLimit = 100
 // ширину, что и monitorLatencyBuckets.
 const logsHistogramBuckets = 48
 
+// logsAttrKeysLimit/logsAttrValuesLimit — размер топа атрибут-фасетов
+// (задача 5, C2, §4 спеки): 20 ключей в сайдбаре, 10 значений раскрытого
+// ключа (тот же порядок величины, что facetLimit у встроенных фасетов).
+const (
+	logsAttrKeysLimit   = 20
+	logsAttrValuesLimit = 10
+)
+
 // logsList — GET /projects/{id}/logs: просмотрщик логов проекта (задача 2 плана
 // C2): фильтры (severity/service/environment/тело/окно времени), список с
 // раскрытием строки (полное тело + атрибуты + trace/span), курсорная
 // пагинация «показать старее», гистограмма объёма по времени и severity
-// (задача 3). Встроенные фасеты — задача 4 (реализовано ниже); атрибут-фасеты и
-// автокомплит — задачи T5-T6, здесь их пока нет.
+// (задача 3), встроенные фасеты (задача 4) и атрибут-фасеты — авто-
+// обнаруженные ключи Map-колонок с ленивыми значениями (задача 5, ядро-
+// дифференциатор фичи). Автокомплит ключей — отдельный JSON-эндпоинт,
+// задача T6, здесь его пока нет.
 func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -93,8 +103,9 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		Service:     f.Service,
 		Environment: f.Environment,
 		Query:       f.Query,
+		Attrs:       f.Attrs,
 		Range:       timeRangeVM(rng),
-		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" ||
+		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
 			rng.Key != "24h",
 	}
 
@@ -115,10 +126,11 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 			Severity:    templates.LogFacet{TooMuchData: true},
 			Service:     templates.LogFacet{TooMuchData: true},
 			Environment: templates.LogFacet{TooMuchData: true},
+			Attrs:       templates.LogAttrFacets{TooMuchData: true},
 		}
 	} else {
 		histogram = h.logsHistogram(r.Context(), projectID, f)
-		facets = h.logsFacets(r.Context(), projectID, f, filter)
+		facets = h.logsFacets(r.Context(), projectID, f, filter, q.Get("facet"))
 	}
 
 	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r)).Render(r.Context(), w)
@@ -158,7 +170,7 @@ func (h *Handler) logsHistogram(ctx context.Context, projectID int64, f log.List
 // падения всей страницы (тот же принцип, что и у logsHistogram); остальные
 // две секции при этом считаются независимо — падение одного фасета не тянет
 // за собой другие.
-func (h *Handler) logsFacets(ctx context.Context, projectID int64, f log.ListFilter, filter templates.LogsFilter) templates.LogFacets {
+func (h *Handler) logsFacets(ctx context.Context, projectID int64, f log.ListFilter, filter templates.LogsFilter, expandedAttrKey string) templates.LogFacets {
 	sevValues, sevErr := h.LogQuery.Facet(ctx, projectID, f, "severity")
 	if sevErr != nil {
 		slog.Warn("logs: facet failed", "project_id", projectID, "col", "severity", "err", sevErr)
@@ -175,7 +187,44 @@ func (h *Handler) logsFacets(ctx context.Context, projectID int64, f log.ListFil
 		Severity:    templates.NewSeverityFacet(ctx, projectID, filter, sevValues, sevErr != nil),
 		Service:     templates.NewServiceFacet(projectID, filter, svcValues, svcErr != nil),
 		Environment: templates.NewEnvironmentFacet(projectID, filter, envValues, envErr != nil),
+		Attrs:       h.logsAttrFacets(ctx, projectID, f, filter, expandedAttrKey),
 	}
+}
+
+// logsAttrFacets считает секцию атрибут-фасетов сайдбара (задача 5, C2,
+// ядро-дифференциатор): авто-обнаруженные ключи log_attributes
+// (log.Query.AttrKeys, ограниченная свежая выборка — см. её комментарий) со
+// счётчиками; если expandedKey непуст (?facet=<key> в URL) — для НЕГО ЖЕ
+// дополнительно считаются значения (log.Query.AttrValues), остальные ключи
+// остаются только счётчиком (ленивая подгрузка, §4 спеки C2). resource=false
+// у AttrValues — атрибут-фасеты MVP раскрывают только log_attributes:
+// AttrKeys (сайдбар) обнаруживает ключи ТОЛЬКО в log_attributes (§4 спеки —
+// resource_attrs авто-обнаружению не подлежит), так что раскрытый ключ
+// всегда оттуда же; resource_attrs остаётся доступен через ручной
+// ?attr=res:key:value (§3), но не через сайдбар этой задачи.
+//
+// Деградация — по уровням, а не всё-или-ничего: ошибка/таймаут AttrKeys
+// (SETTINGS max_execution_time=5) — вся секция пустеет с пометкой, как и
+// встроенные фасеты; ошибка AttrValues раскрытого ключа НЕ рушит список
+// ключей — тот же ключ просто рендерится раскрытым, но без значений.
+func (h *Handler) logsAttrFacets(ctx context.Context, projectID int64, f log.ListFilter, filter templates.LogsFilter, expandedKey string) templates.LogAttrFacets {
+	keys, err := h.LogQuery.AttrKeys(ctx, projectID, f, "", logsAttrKeysLimit)
+	if err != nil {
+		slog.Warn("logs: attr keys failed", "project_id", projectID, "err", err)
+		return templates.LogAttrFacets{TooMuchData: true}
+	}
+
+	var values []log.FacetValue
+	if expandedKey != "" {
+		var valuesErr error
+		values, valuesErr = h.LogQuery.AttrValues(ctx, projectID, f, false, expandedKey, logsAttrValuesLimit)
+		if valuesErr != nil {
+			slog.Warn("logs: attr values failed", "project_id", projectID, "key", expandedKey, "err", valuesErr)
+			values = nil
+		}
+	}
+
+	return templates.NewAttrFacets(projectID, filter, keys, expandedKey, values)
 }
 
 // logsHistogramHasData — во всех корзинах всех severity одни нули (окно

@@ -569,6 +569,116 @@ func TestWebLogsListFacets(t *testing.T) {
 	}
 }
 
+// TestWebLogsListAttrFacets — задача 5 плана C2: сайдбар атрибут-фасетов
+// (4-я секция, после severity/service/environment, см. logAttrFacetSection в
+// logs.templ) — авто-обнаруженные ключи со счётчиками видны сразу; клик по
+// ключу (переход по СГЕНЕРИРОВАННОЙ ссылке ?facet=<key>) раскрывает его
+// значения; клик по значению добавляет точечный фильтр и сужает список;
+// повторный клик по уже активному значению снимает фильтр.
+func TestWebLogsListAttrFacets(t *testing.T) {
+	s := newLogsStack(t, true)
+	_, ownerCookie, project := newLogsProject(t, s, "logs-attrfacets-owner@example.com", "logs-attrfacets-co", "logs-attrfacets-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	s.seedLogs(t, project.ID,
+		log.LogRecord{
+			Timestamp: now.Add(-1 * time.Minute), ObservedTS: now.Add(-1 * time.Minute),
+			Severity: log.SevInfo, Body: "row-get-1", Service: "api",
+			LogAttributes: map[string]string{"http.method": "GET"},
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-2 * time.Minute), ObservedTS: now.Add(-2 * time.Minute),
+			Severity: log.SevInfo, Body: "row-get-2", Service: "api",
+			LogAttributes: map[string]string{"http.method": "GET"},
+		},
+		log.LogRecord{
+			Timestamp: now.Add(-3 * time.Minute), ObservedTS: now.Add(-3 * time.Minute),
+			Severity: log.SevInfo, Body: "row-post", Service: "api",
+			LogAttributes: map[string]string{"http.method": "POST"},
+		},
+	)
+
+	base := logsBasePath(project.ID)
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+
+	// Сайдбар (4-я секция, индекс 3): ключ http.method виден сразу со
+	// счётчиком, значения ещё не раскрыты (ссылка на раскрытие).
+	attrItems := logFacetItems(t, text, 3)
+	keyItem, ok := findFacetItem(attrItems, "http.method")
+	if !ok || keyItem.Count != "3" {
+		t.Fatalf("attr facet: http.method count != 3: %+v", attrItems)
+	}
+	if keyItem.Active {
+		t.Fatalf("нераскрытый ключ не должен быть помечен активным: %+v", keyItem)
+	}
+	if _, ok := findFacetItem(attrItems, "GET"); ok {
+		t.Fatalf("значения нераскрытого ключа не должны быть видны: %+v", attrItems)
+	}
+
+	// Клик по ключу (сгенерированная ссылка ?facet=http.method) раскрывает
+	// значения GET/POST со своими counts.
+	resp = getWithCookie(t, s.srv, keyItem.Href, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (facet key click) status = %d, want 200: %s", keyItem.Href, resp.StatusCode, body)
+	}
+	text = string(body)
+	expandedItems := logFacetItems(t, text, 3)
+	keyExpanded, ok := findFacetItem(expandedItems, "http.method")
+	if !ok || !keyExpanded.Active {
+		t.Fatalf("раскрытый ключ должен быть отмечен активным (aria-current): %+v", expandedItems)
+	}
+	getValue, ok := findFacetItem(expandedItems, "GET")
+	if !ok || getValue.Count != "2" {
+		t.Fatalf("attr facet values: GET count != 2: %+v", expandedItems)
+	}
+	postValue, ok := findFacetItem(expandedItems, "POST")
+	if !ok || postValue.Count != "1" {
+		t.Fatalf("attr facet values: POST count != 1: %+v", expandedItems)
+	}
+	if getValue.Active || postValue.Active {
+		t.Fatalf("без выбранного значения ни GET, ни POST не должны быть активны: get=%v post=%v", getValue.Active, postValue.Active)
+	}
+
+	// Клик по значению GET (сгенерированная ссылка) сужает список до
+	// log_attributes[http.method]=GET и помечает значение активным.
+	resp = getWithCookie(t, s.srv, getValue.Href, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (facet value click) status = %d, want 200: %s", getValue.Href, resp.StatusCode, body)
+	}
+	text = string(body)
+	if strings.Contains(text, "row-post") {
+		t.Errorf("клик по значению GET не сузил список: %s", text)
+	}
+	if !strings.Contains(text, "row-get-1") || !strings.Contains(text, "row-get-2") {
+		t.Errorf("клик по значению GET потерял свои же строки: %s", text)
+	}
+	afterClickItems := logFacetItems(t, text, 3)
+	getAfter, ok := findFacetItem(afterClickItems, "GET")
+	if !ok || !getAfter.Active {
+		t.Fatalf("после клика значение GET должно быть активным: %+v", afterClickItems)
+	}
+
+	// Повторный клик по уже активному значению GET снимает фильтр — список
+	// возвращается к полному набору http.method.
+	resp = getWithCookie(t, s.srv, getAfter.Href, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text = string(body)
+	if !strings.Contains(text, "row-post") {
+		t.Errorf("повторный клик по активному GET не снял фильтр: %s", text)
+	}
+}
+
 // TestWebLogsListNilLogQuery404 — h.LogQuery == nil (стенд без проводки
 // логов) отдаёт 404, а не паникует на разыменовании.
 func TestWebLogsListNilLogQuery404(t *testing.T) {

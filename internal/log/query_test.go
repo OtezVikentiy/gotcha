@@ -646,3 +646,200 @@ func TestQueryFacetLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestQueryAttrKeys — задача 5 плана C2: авто-обнаружение ключей
+// log_attributes (Query.AttrKeys) — топ ключей+counts DESC и фильтрация по
+// префиксу. Наивная реализация ("ARRAY JOIN mapKeys по всему окну") на
+// целевом трафике (150k rpm) обрывается SETTINGS max_execution_time=5 —
+// поэтому AttrKeys считает по ограниченной СВЕЖЕЙ выборке (LIMIT 50000
+// внутреннего подзапроса), но это деталь стоимости, не корректности: тест
+// проверяет только правильность результата на маленьком наборе (полный
+// прогон 50k+ строк — отдельная забота нагрузочного тестирования, не
+// unit/integration уровня).
+func TestQueryAttrKeys(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(78)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
+	from := base
+	to := base.Add(time.Hour)
+
+	addAttr := func(n int, attrs map[string]string) {
+		for i := 0; i < n; i++ {
+			ts := base.Add(time.Duration(i) * time.Second)
+			w.Add(projectID, log.LogRecord{
+				Timestamp: ts, ObservedTS: ts, Severity: log.SevInfo, Body: "x",
+				LogAttributes: attrs,
+			})
+		}
+	}
+	addAttr(8, map[string]string{"http.method": "GET"})
+	addAttr(3, map[string]string{"http.method": "POST"})
+	addAttr(5, map[string]string{"http.status": "200"})
+	addAttr(2, map[string]string{"other.thing": "x"})
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+
+	q := log.NewQuery(conn)
+
+	t.Run("top keys by count DESC, no prefix", func(t *testing.T) {
+		got, err := q.AttrKeys(ctx, projectID, log.ListFilter{From: from, To: to}, "", 20)
+		if err != nil {
+			t.Fatalf("AttrKeys: %v", err)
+		}
+		if c := facetCount(got, "http.method"); c != 11 {
+			t.Fatalf("http.method count = %d, want 11 (8 GET + 3 POST) (%+v)", c, got)
+		}
+		if c := facetCount(got, "http.status"); c != 5 {
+			t.Fatalf("http.status count = %d, want 5 (%+v)", c, got)
+		}
+		if c := facetCount(got, "other.thing"); c != 2 {
+			t.Fatalf("other.thing count = %d, want 2 (%+v)", c, got)
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i-1].Count < got[i].Count {
+				t.Fatalf("not sorted count() DESC at %d: %+v", i, got)
+			}
+		}
+	})
+
+	t.Run("prefix filter", func(t *testing.T) {
+		got, err := q.AttrKeys(ctx, projectID, log.ListFilter{From: from, To: to}, "http.", 20)
+		if err != nil {
+			t.Fatalf("AttrKeys: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("len(got) = %d, want 2 (http.method + http.status only): %+v", len(got), got)
+		}
+		if c := facetCount(got, "http.method"); c != 11 {
+			t.Fatalf("http.method count = %d, want 11: %+v", c, got)
+		}
+		if c := facetCount(got, "http.status"); c != 5 {
+			t.Fatalf("http.status count = %d, want 5: %+v", c, got)
+		}
+		if c := facetCount(got, "other.thing"); c != 0 {
+			t.Fatalf("prefix \"http.\" should not match other.thing: %+v", got)
+		}
+	})
+
+	t.Run("limit caps result", func(t *testing.T) {
+		got, err := q.AttrKeys(ctx, projectID, log.ListFilter{From: from, To: to}, "", 1)
+		if err != nil {
+			t.Fatalf("AttrKeys: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("len(got) = %d, want 1 (limit): %+v", len(got), got)
+		}
+		if got[0].Value != "http.method" {
+			t.Fatalf("got[0] = %+v, want top key http.method (count 11)", got[0])
+		}
+	})
+}
+
+// TestQueryAttrValues — задача 5 плана C2: значения раскрытого ключа
+// атрибут-фасета (Query.AttrValues) — topN+counts DESC, mapContains-гард
+// (строки без ключа НЕ должны склеиваться в бакет "") и источник
+// log_attributes/resource_attrs по флагу resource.
+func TestQueryAttrValues(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(79)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
+	from := base
+	to := base.Add(time.Hour)
+
+	add := func(n int, logAttrs, resAttrs map[string]string) {
+		for i := 0; i < n; i++ {
+			ts := base.Add(time.Duration(i) * time.Second)
+			w.Add(projectID, log.LogRecord{
+				Timestamp: ts, ObservedTS: ts, Severity: log.SevInfo, Body: "x",
+				LogAttributes: logAttrs, ResourceAttrs: resAttrs,
+			})
+		}
+	}
+	add(8, map[string]string{"http.method": "GET"}, map[string]string{"host.name": "web-01"})
+	add(3, map[string]string{"http.method": "POST"}, map[string]string{"host.name": "web-01"})
+	// Строки БЕЗ ключа http.method вообще (только http.status) — mapContains
+	// обязан их исключить из значений http.method, а не склеить в бакет "".
+	add(5, map[string]string{"http.status": "200"}, map[string]string{"host.name": "web-02"})
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+
+	q := log.NewQuery(conn)
+
+	t.Run("log_attributes values with mapContains guard", func(t *testing.T) {
+		got, err := q.AttrValues(ctx, projectID, log.ListFilter{From: from, To: to}, false, "http.method", 10)
+		if err != nil {
+			t.Fatalf("AttrValues: %v", err)
+		}
+		if c := facetCount(got, "GET"); c != 8 {
+			t.Fatalf("GET count = %d, want 8: %+v", c, got)
+		}
+		if c := facetCount(got, "POST"); c != 3 {
+			t.Fatalf("POST count = %d, want 3: %+v", c, got)
+		}
+		if c := facetCount(got, ""); c != 0 {
+			t.Fatalf("mapContains guard failed: bucket \"\" = %d, want 0 (rows without the key must not leak in): %+v", c, got)
+		}
+		var total int64
+		for _, v := range got {
+			total += v.Count
+		}
+		if total != 11 {
+			t.Fatalf("total = %d, want 11 (8 GET + 3 POST, NOT the 5 rows without http.method): %+v", total, got)
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i-1].Count < got[i].Count {
+				t.Fatalf("not sorted count() DESC at %d: %+v", i, got)
+			}
+		}
+	})
+
+	t.Run("resource_attrs source (resource=true)", func(t *testing.T) {
+		got, err := q.AttrValues(ctx, projectID, log.ListFilter{From: from, To: to}, true, "host.name", 10)
+		if err != nil {
+			t.Fatalf("AttrValues: %v", err)
+		}
+		if c := facetCount(got, "web-01"); c != 11 {
+			t.Fatalf("web-01 count = %d, want 11 (8 + 3): %+v", c, got)
+		}
+		if c := facetCount(got, "web-02"); c != 5 {
+			t.Fatalf("web-02 count = %d, want 5: %+v", c, got)
+		}
+	})
+
+	t.Run("limit caps result", func(t *testing.T) {
+		got, err := q.AttrValues(ctx, projectID, log.ListFilter{From: from, To: to}, false, "http.method", 1)
+		if err != nil {
+			t.Fatalf("AttrValues: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("len(got) = %d, want 1 (limit): %+v", len(got), got)
+		}
+		if got[0].Value != "GET" {
+			t.Fatalf("got[0] = %+v, want top value GET (count 8)", got[0])
+		}
+	})
+}

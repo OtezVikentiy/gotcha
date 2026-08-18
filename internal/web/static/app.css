@@ -2400,6 +2400,23 @@ th {
 	color: var(--text-dim);
 	font-size: var(--fs-sm);
 }
+/* Атрибут-фасет (задача 5, C2): li ключа — колонка (строка ключа + под ней,
+   когда раскрыт, вложенный список значений), в отличие от плоских li
+   встроенных фасетов (.logs-facet-item сам по себе — строка). */
+.logs-attr-key-item {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.logs-facet-values {
+	list-style: none;
+	margin: 0;
+	padding: 2px 0 2px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border-left: 1px solid var(--border);
+}
 
 /* Публичная статус-страница (/status/{slug}): свой layout, без шапки
    приложения — отсюда собственные отступы у main. */
