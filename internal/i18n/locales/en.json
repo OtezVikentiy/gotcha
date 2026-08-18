@@ -1302,7 +1302,9 @@
     "logs.empty.filter.cta": "Reset filters",
     "logs.error.title": "Couldn't load logs",
     "logs.error.body": "Log storage is temporarily unavailable. Try again in a moment.",
-    "logs.older": "Show older"
+    "logs.older": "Show older",
+    "logs.histogram.title": "Volume over time",
+    "a11y.chart.logs_volume": "Log volume by time and severity chart"
   },
   "plurals": {
     "chart.bar.transactions": {

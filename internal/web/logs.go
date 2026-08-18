@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -21,11 +22,17 @@ import (
 // ClickHouse keyset-курсор (log.ListFilter.Before/TieSkip) не считает total.
 const logsListLimit = 100
 
+// logsHistogramBuckets — целевое число корзин гистограммы объёма (задача 3,
+// C2). График переиспользует viewBox стека задержек монитора (720×160,
+// latencyChartWidth/Height в svg.go) — тот же ориентир числа корзин на
+// ширину, что и monitorLatencyBuckets.
+const logsHistogramBuckets = 48
+
 // logsList — GET /projects/{id}/logs: просмотрщик логов проекта (задача 2 плана
 // C2): фильтры (severity/service/environment/тело/окно времени), список с
 // раскрытием строки (полное тело + атрибуты + trace/span), курсорная
-// пагинация «показать старее». Гистограмма, фасеты и автокомплит атрибутов —
-// задачи T3-T6, здесь их нет.
+// пагинация «показать старее», гистограмма объёма по времени и severity
+// (задача 3). Фасеты и автокомплит атрибутов — задачи T4-T6, здесь их нет.
 func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -95,7 +102,49 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		olderHref = templates.LogsPageURL(projectID, filter, before, tieSkip)
 	}
 
-	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, h.currentEmail(r)).Render(r.Context(), w)
+	histogram := h.logsHistogram(r.Context(), projectID, f)
+
+	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// logsHistogram считает гистограмму объёма (задача 3, C2) по тому же фильтру
+// f, что и список (окно+severity/service/environment/полнотекст/attrs) — БЕЗ
+// курсора: log.Query.Histogram сам его игнорирует, но f сюда передаётся
+// целиком, чтобы гистограмма отражала те же условия, что и видимый список.
+// Ошибка чтения ClickHouse — та же деградация, что и у List: предупреждение в
+// лог, график молча скрывается (Empty=true), страница не падает.
+func (h *Handler) logsHistogram(ctx context.Context, projectID int64, f log.ListFilter) templates.LogsHistogram {
+	times, series, err := h.LogQuery.Histogram(ctx, projectID, f, logsHistogramBuckets)
+	if err != nil {
+		slog.Warn("logs: histogram failed", "project_id", projectID, "err", err)
+		return templates.LogsHistogram{Empty: true}
+	}
+	if !logsHistogramHasData(series) {
+		return templates.LogsHistogram{Empty: true}
+	}
+
+	legend := make([]templates.LegendItem, len(log.Severities))
+	for i, sev := range log.Severities {
+		legend[i] = templates.LegendItem{Label: i18n.T(ctx, "logs.severity."+sev), Class: "legend-sev-" + sev}
+	}
+	return templates.LogsHistogram{
+		Chart:  logHistogramSVG(ctx, times, series, latencyChartWidth, latencyChartHeight),
+		Legend: legend,
+	}
+}
+
+// logsHistogramHasData — во всех корзинах всех severity одни нули (окно
+// пустое или все строки отфильтрованы) — тот же случай, что «нет данных»,
+// график скрывается целиком, а не рисует плоскую шкалу без смысла.
+func logsHistogramHasData(series map[string][]int64) bool {
+	for _, vals := range series {
+		for _, v := range vals {
+			if v > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // parseLogFilter собирает log.ListFilter из query-параметров и уже

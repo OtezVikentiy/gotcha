@@ -27,6 +27,17 @@ type LogsFilter struct {
 	Active bool
 }
 
+// LogsHistogram — гистограмма объёма логов по времени и severity (задача 3,
+// C2): готовый SVG (stacked-bar, logHistogramSVG) + легенда severity, либо
+// Empty=true, если данных совсем нет (окно/фильтры дали одни нули, либо
+// ClickHouse временно недоступен) — тогда график не рендерится вовсе, а не
+// показывает пустую шкалу без смысла.
+type LogsHistogram struct {
+	Chart  templ.Component
+	Legend []LegendItem
+	Empty  bool
+}
+
 // LogRow — строка списка логов вместе с уже собранной для раскрытия
 // таблицей атрибутов.
 type LogRow struct {
@@ -148,11 +159,12 @@ func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) s
 
 // LogsScreen — GET /projects/{id}/logs: базовый просмотрщик логов (задача 2,
 // C2) — фильтры (severity/service/environment/тело/окно времени), список с
-// раскрытием строки, курсорная пагинация «показать старее». loadFailed — не
-// смогли прочитать ClickHouse: список пуст, но страница не падает 500-й —
-// вместо таблицы дружелюбное сообщение. olderHref — пусто, если страницы
-// дальше нет (см. web.nextLogCursor).
-templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, userEmail string) {
+// раскрытием строки, курсорная пагинация «показать старее», гистограмма
+// объёма по времени и severity (задача 3). loadFailed — не смогли прочитать
+// ClickHouse: список пуст, но страница не падает 500-й — вместо таблицы
+// дружелюбное сообщение. olderHref — пусто, если страницы дальше нет (см.
+// web.nextLogCursor).
+templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, userEmail string) {
 	@layout(i18n.T(ctx, "logs.title"), userEmail) {
 		<div class="logs">
 			<h1>{ i18n.T(ctx, "logs.title") }</h1>
@@ -172,6 +184,14 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				@timeRangeFields(filter.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
 			</form>
+			if !histogram.Empty {
+				<div class="card logs-histogram">
+					@scrollRegion("logs-histogram-wrap", "logs.histogram.title") {
+						@histogram.Chart
+					}
+					@chartLegend(histogram.Legend)
+				</div>
+			}
 			<div id="logs-table">
 				if loadFailed {
 					@emptyState("file-text", "logs.error.title", "logs.error.body", "", "", 2)

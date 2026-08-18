@@ -172,7 +172,7 @@ var permanentFormatExemptions = []Exemption{
 	// курсоре keyset-пагинации это роняло граничную строку. Строка с
 	// миллисекундами — SQL-параметр для toDateTime64(?, 3), не текст для
 	// человека, см. докблок chTimeArg.
-	{Value: exemptLoc("internal/log/query.go", 232), Why: `t.UTC().Format("2006-01-02 15:04:05.000") — SQL-параметр toDateTime64(?, 3), обход бага биндинга clickhouse-go (TimeUnit=Seconds по умолчанию у позиционных "?"), не человекочитаемый вывод`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/log/query.go", 346), Why: `t.UTC().Format("2006-01-02 15:04:05.000") — SQL-параметр toDateTime64(?, 3), обход бага биндинга clickhouse-go (TimeUnit=Seconds по умолчанию у позиционных "?"), не человекочитаемый вывод`, Finding: "по замыслу"},
 }
 
 // maxPermanentFormatExemptions — потолок сознательно поднят с 21 до 22
@@ -211,15 +211,22 @@ var debtFormatExemptions = []Exemption{
 	// три разных человекочитаемых макета "день.месяц час:минута" /
 	// "день.месяц" / "час:минута" для одной и той же задачи в одном файле,
 	// девять мест.
-	{Value: exemptLoc("internal/web/svg.go", 342), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика (тултип), человекочитаемый макет вне humanize`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 759), Why: `return t.Format("02.01") — подпись оси X (короткая дата)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 761), Why: `return t.Format("15:04") — подпись оси X (только время)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 960), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика перцентилей (p50)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1021), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика в HTML-экранированном тултипе`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1266), Why: `points[idx].T.UTC().Format("02.01") — подпись оси X во flame/vitals-графике`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1288), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки в другом графике того же файла`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1721), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: exemptLoc("internal/web/svg.go", 1857), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 343), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика (тултип), человекочитаемый макет вне humanize`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 760), Why: `return t.Format("02.01") — подпись оси X (короткая дата)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 762), Why: `return t.Format("15:04") — подпись оси X (только время)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 961), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика перцентилей (p50)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1022), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика в HTML-экранированном тултипе`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1267), Why: `points[idx].T.UTC().Format("02.01") — подпись оси X во flame/vitals-графике`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1289), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки в другом графике того же файла`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1722), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	{Value: exemptLoc("internal/web/svg.go", 1858), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	// Гистограмма объёма логов (T3, C2) — тот же тултип-макет "день.месяц
+	// час:минута", что и у остальных девяти мест выше в этом же файле: новый
+	// график unavoidably повторяет открытый долг C8 (единого human-friendly
+	// хелпера для этого макета в internal/humanize пока нет), а не изобретать
+	// свой обходной путь для одного места, оставляя девять соседних как есть.
+	// Потолок ниже поднят на 1 осознанно (не тихим "почините находки").
+	{Value: exemptLoc("internal/web/svg.go", 1946), Why: `title := times[i].UTC().Format("02.01 15:04") — заголовок корзины гистограммы объёма логов`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 
 	// internal/web/templates/timerange.templ: prettyBound больше не находится
 	// здесь — задача C8 починила его, переведя на humanize.Time (см. докблок
@@ -253,7 +260,12 @@ var debtFormatExemptions = []Exemption{
 // на humanize.Time, его запись выше удалена — потолок долгового списка
 // двигается только вниз, вслед за реальной починкой, а не остаётся прежним
 // "про запас".
-const maxDebtFormatExemptions = 11
+// Потолок поднят с 11 до 12 задачей 3 подпроекта C2 (гистограмма объёма
+// логов): новый график добавил ОДНО место того же уже открытого долга C8
+// (см. запись svg.go:1946 выше) — список долга по-прежнему обязаны СНИЖАТЬ по
+// мере починки C7/C8/C9, разовый +1 здесь — не тихое пополнение "про запас",
+// а тот самый предусмотренный правилом путь "осознанно поднимите потолок".
+const maxDebtFormatExemptions = 12
 
 // minFormatCallsFound — нижний порог: сколько вызовов форматирования времени
 // (все четыре признака — .Format("литерал"), .Format(нелитерал),
@@ -265,10 +277,11 @@ const maxDebtFormatExemptions = 11
 // же приёмом защищены minKeysFound (i18n_keys_test.go) и minBlocksInsideMedia
 // (css_border_test.go).
 //
-// Фактически на этом дереве — 33 совпадения на 32 местах (пересчитано после
-// задачи C7: relativetime.templ добавил одно место в permanentFormatExemptions
-// — см. запись выше; свежий пересчёт вместо унаследованной истории до C7/C8/C9
-// см. в git-истории этого файла): 23 литеральных макета (formatLiteralRe) + 10
+// Фактически на этом дереве — 34 совпадения на 33 местах (пересчитано после
+// задачи 3 подпроекта C2: гистограмма объёма логов добавила одно литеральное
+// место, svg.go:1946, в debtFormatExemptions — см. запись выше; свежий
+// пересчёт вместо унаследованной истории до C7/C8/C9 см. в git-истории этого
+// файла): 24 литеральных макета (formatLiteralRe) + 10
 // нелитеральных аргументов (formatNonLiteralRe, раунд правок 1). Нелитеральных
 // именно 10, а не 9: макеты, вынесенные в константы (time.RFC3339Nano,
 // statusPageTimeLayout), — нелитералы, их легко просчитать как литералы, глядя

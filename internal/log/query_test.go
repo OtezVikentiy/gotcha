@@ -370,3 +370,99 @@ func TestQueryListBeforeCursorSubMillisecondPrecision(t *testing.T) {
 		t.Fatalf("unexpected rows: %+v", got)
 	}
 }
+
+// TestQueryHistogram — задача 3 плана C2: гистограмма объёма логов по времени
+// и severity. Окно 6 часов, buckets=6 (шаг 1ч): корзина 0 — 3 info + 2 error,
+// корзина 2 — 4 warn, корзина 5 — 1 fatal, корзины 1/3/4 — пусты (проверка
+// добивки нулями по ВСЕМ 6 severity, не только по тем, что встретились в
+// окне).
+func TestQueryHistogram(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(75)
+
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-8 * time.Hour)
+	from := base
+	to := base.Add(6 * time.Hour)
+	const buckets = 6 // шаг = (to-from)/buckets = 1ч
+
+	for i := 0; i < 3; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		w.Add(projectID, log.LogRecord{Timestamp: ts, ObservedTS: ts, Severity: log.SevInfo, Body: "b0-info"})
+	}
+	for i := 0; i < 2; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		w.Add(projectID, log.LogRecord{Timestamp: ts, ObservedTS: ts, Severity: log.SevError, Body: "b0-error"})
+	}
+	b2 := base.Add(2 * time.Hour)
+	for i := 0; i < 4; i++ {
+		ts := b2.Add(time.Duration(i) * time.Minute)
+		w.Add(projectID, log.LogRecord{Timestamp: ts, ObservedTS: ts, Severity: log.SevWarn, Body: "b2-warn"})
+	}
+	b5 := base.Add(5 * time.Hour)
+	w.Add(projectID, log.LogRecord{Timestamp: b5, ObservedTS: b5, Severity: log.SevFatal, Body: "b5-fatal"})
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := w.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+
+	q := log.NewQuery(conn)
+	times, series, err := q.Histogram(ctx, projectID, log.ListFilter{From: from, To: to}, buckets)
+	if err != nil {
+		t.Fatalf("Histogram: %v", err)
+	}
+
+	if len(times) != buckets {
+		t.Fatalf("len(times) = %d, want %d", len(times), buckets)
+	}
+	for _, sev := range log.Severities {
+		if len(series[sev]) != buckets {
+			t.Fatalf("len(series[%s]) = %d, want %d", sev, len(series[sev]), buckets)
+		}
+	}
+
+	// Пустые корзины (1, 3, 4) — нули по ВСЕМ severity, не только по тем, что
+	// встретились где-то ещё в окне.
+	for _, idx := range []int{1, 3, 4} {
+		for _, sev := range log.Severities {
+			if series[sev][idx] != 0 {
+				t.Fatalf("series[%s][%d] = %d, want 0 (empty bucket)", sev, idx, series[sev][idx])
+			}
+		}
+	}
+
+	if series[log.SevInfo][0] != 3 {
+		t.Fatalf("series[info][0] = %d, want 3", series[log.SevInfo][0])
+	}
+	if series[log.SevError][0] != 2 {
+		t.Fatalf("series[error][0] = %d, want 2", series[log.SevError][0])
+	}
+	if series[log.SevWarn][2] != 4 {
+		t.Fatalf("series[warn][2] = %d, want 4", series[log.SevWarn][2])
+	}
+	if series[log.SevFatal][5] != 1 {
+		t.Fatalf("series[fatal][5] = %d, want 1", series[log.SevFatal][5])
+	}
+	if series[log.SevTrace][0] != 0 || series[log.SevDebug][0] != 0 {
+		t.Fatalf("series[trace/debug][0] should be 0, got trace=%d debug=%d", series[log.SevTrace][0], series[log.SevDebug][0])
+	}
+
+	// Сумма по всем корзинам и severity = число написанных строк.
+	var total int64
+	for _, sev := range log.Severities {
+		for _, v := range series[sev] {
+			total += v
+		}
+	}
+	if total != 10 {
+		t.Fatalf("total = %d, want 10", total)
+	}
+}

@@ -1302,7 +1302,9 @@
     "logs.empty.filter.cta": "Сбросить фильтры",
     "logs.error.title": "Не удалось загрузить логи",
     "logs.error.body": "Хранилище логов временно недоступно. Попробуйте ещё раз через минуту.",
-    "logs.older": "Показать старее"
+    "logs.older": "Показать старее",
+    "logs.histogram.title": "Объём по времени",
+    "a11y.chart.logs_volume": "График объёма логов по времени и уровню"
   },
   "plurals": {
     "chart.bar.transactions": {

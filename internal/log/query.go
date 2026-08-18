@@ -222,6 +222,120 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	return out, nil
 }
 
+// Histogram считает объём логов проекта на окне [f.From, f.To), разложенный
+// по корзинам времени и severity (для stacked-графика T3). Корзин ровно
+// buckets, ширина — размах окна / buckets, сетка выровнена по Unix epoch тем
+// же приёмом, что EndpointLatency в trace/query.go (startUnix/endUnix через
+// целочисленное деление на шаг). where — тот же набор условий, что у List
+// (severity/service/environment/полнотекст/attrs), но БЕЗ курсора
+// (Before/TieSkip) и БЕЗ LIMIT: гистограмма считает объём по ВСЕМУ окну, а не
+// по одной странице.
+//
+// Результат уже пивотирован и добит нулями: series содержит ровно
+// len(Severities) рядов (по одному на каждый канон severity, даже если в
+// окне такого уровня вообще не было), каждый длиной len(times), пустая
+// корзина — 0. GROUP BY t, severity в SQL отдаёт только НЕпустые пары
+// (корзина, severity) — плоский пивот по всем 6 severity и добивка сеткой
+// делаются здесь, в Go (fillSeries из trace/query.go заполняет один ряд, для
+// stacked-графика по 6 severity нужен пивот, не переиспользуем его как есть).
+func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, buckets int) ([]time.Time, map[string][]int64, error) {
+	if buckets <= 0 {
+		return nil, nil, fmt.Errorf("log: histogram: buckets must be positive, got %d", buckets)
+	}
+
+	stepSec := int64(f.To.Sub(f.From) / time.Duration(buckets) / time.Second)
+	if stepSec < 1 {
+		stepSec = 1
+	}
+
+	// where — 1:1 с List (см. её комментарий про chTimeArg/toDateTime64), но
+	// без блока курсора и без LIMIT.
+	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
+	args := []any{stepSec, uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
+
+	if len(f.Severity) > 0 {
+		where += " AND severity IN (?)"
+		args = append(args, f.Severity)
+	}
+	if f.Service != "" {
+		where += " AND service = ?"
+		args = append(args, f.Service)
+	}
+	if f.Environment != "" {
+		where += " AND environment = ?"
+		args = append(args, f.Environment)
+	}
+	if f.Query != "" {
+		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
+		args = append(args, f.Query)
+	}
+	for _, a := range f.Attrs {
+		col := "log_attributes"
+		if a.Resource {
+			col = "resource_attrs"
+		}
+		where += " AND " + col + "[?] = ?"
+		args = append(args, a.Key, a.Value)
+	}
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT toStartOfInterval(timestamp, INTERVAL ? second) AS t, severity, count() AS c
+		FROM logs
+		WHERE `+where+`
+		GROUP BY t, severity
+		ORDER BY t`, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("log: histogram: %w", err)
+	}
+	defer rows.Close()
+
+	byBucket := make(map[int64]map[string]int64)
+	for rows.Next() {
+		var t time.Time
+		var sev string
+		var c uint64
+		if err := rows.Scan(&t, &sev, &c); err != nil {
+			return nil, nil, fmt.Errorf("log: histogram: scan: %w", err)
+		}
+		bucketUnix := t.UTC().Unix()
+		if byBucket[bucketUnix] == nil {
+			byBucket[bucketUnix] = make(map[string]int64, len(Severities))
+		}
+		byBucket[bucketUnix][sev] += int64(c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("log: histogram: %w", err)
+	}
+
+	// Сетка по Unix epoch — тот же приём, что EndpointLatency: последняя
+	// корзина — та, что СОДЕРЖИТ момент f.To (не следующая за ним), иначе в
+	// сетку попала бы корзина, для которой запрос физически не мог вернуть
+	// данных (timestamp < f.To).
+	fromUnix := f.From.UTC().Unix()
+	toUnix := f.To.UTC().Unix()
+	startUnix := (fromUnix / stepSec) * stepSec
+	endUnix := ((toUnix - 1) / stepSec) * stepSec
+	if endUnix < startUnix {
+		endUnix = startUnix
+	}
+
+	n := int((endUnix-startUnix)/stepSec) + 1
+	times := make([]time.Time, 0, n)
+	series := make(map[string][]int64, len(Severities))
+	for _, sev := range Severities {
+		series[sev] = make([]int64, 0, n)
+	}
+	for cur := startUnix; cur <= endUnix; cur += stepSec {
+		times = append(times, time.Unix(cur, 0).UTC())
+		bucket := byBucket[cur] // nil-карта — все severity этой корзины нулевые
+		for _, sev := range Severities {
+			series[sev] = append(series[sev], bucket[sev])
+		}
+	}
+
+	return times, series, nil
+}
+
 // chTimeArg форматирует t строкой с точностью до миллисекунды для
 // toDateTime64(?, 3) в SQL — см. комментарий у сборки where в List: голый
 // time.Time аргументом "?" драйвер clickhouse-go биндит с точностью только до

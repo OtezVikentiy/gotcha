@@ -2308,6 +2308,18 @@ th {
 	height: auto;
 }
 
+/* Гистограмма объёма логов (T3, C2) на всю ширину карточки — тот же приём,
+   что .monitor-chart .latency-chart выше (разметка/viewBox переиспользованы,
+   только контекст-класс обёртки другой). */
+.logs-histogram .latency-chart {
+	width: 100%;
+	max-width: none;
+	height: auto;
+}
+.logs-histogram {
+	margin-bottom: 16px;
+}
+
 /* Публичная статус-страница (/status/{slug}): свой layout, без шапки
    приложения — отсюда собственные отступы у main. */
 .status-page {
@@ -3211,6 +3223,21 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .latency-chart .seg-ttfb    { fill: var(--phase-ttfb); }
 /* Метка выброса (час выше шкалы: медленно/таймаут). Цветом события, не фазы. */
 .latency-chart .seg-cap     { fill: var(--danger); }
+
+/* Гистограмма объёма логов (T3, C2): заливка сегментов severity — те же
+   токены, что и у бейджей уровня в списке логов (severityBadgeClass,
+   templates/logs.templ), не отдельная палитра. trace/debug делят
+   нейтральный (как badge-neutral), error/fatal делят --danger (как их
+   бейджи) — намеренно, гистограмма и бейджи говорят об одном и том же
+   уровне одним цветом. Классы .sev-* заведены под .logs-histogram, а не под
+   .latency-chart, — сама разметка графика переиспользована, но заливка
+   специфична для этих данных. */
+.logs-histogram .sev-trace,
+.logs-histogram .sev-debug { fill: var(--text-dim); }
+.logs-histogram .sev-info  { fill: var(--info); }
+.logs-histogram .sev-warn  { fill: var(--warn); }
+.logs-histogram .sev-error,
+.logs-histogram .sev-fatal { fill: var(--danger); }
 /* Кегль подписей осей задаётся В ЕДИНИЦАХ viewBox, а на экране равен
    font-size × ширинаКарточки / ширинаViewBox. Значит один и тот же font-size
    даёт разный размер у графиков с разным viewBox, а их в продукте два.
@@ -3824,6 +3851,23 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .legend-tcp::before,
 .legend-tls::before,
 .legend-ttfb::before { width: 11px; height: 11px; border-radius: 3px; }
+
+/* Свотчи легенды гистограммы объёма логов (T3, C2) = те же токены, что
+   заливка сегментов (.logs-histogram .sev-* выше) и бейджи уровня в списке
+   логов. Квадрат, не штрих — по той же причине, что фазы задержки: severity
+   на графике заливка, а не линия. */
+.legend-sev-trace::before,
+.legend-sev-debug::before { background: var(--text-dim); }
+.legend-sev-info::before  { background: var(--info); }
+.legend-sev-warn::before  { background: var(--warn); }
+.legend-sev-error::before,
+.legend-sev-fatal::before { background: var(--danger); }
+.legend-sev-trace::before,
+.legend-sev-debug::before,
+.legend-sev-info::before,
+.legend-sev-warn::before,
+.legend-sev-error::before,
+.legend-sev-fatal::before { width: 11px; height: 11px; border-radius: 3px; }
 
 /* ===== Форма окна обслуживания ===== */
 
