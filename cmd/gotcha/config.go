@@ -50,6 +50,11 @@ type Config struct {
 	// инцидента нет собственной телеметрии в ClickHouse, зато его показывает
 	// публичная статус-страница, обещающая историю за девяносто дней.
 	IncidentRetentionDays int
+	// DeployRetentionDays — срок хранения маркеров выкладок
+	// (GOTCHA_DEPLOY_RETENTION_DAYS). Свой, а не общий с событиями: история
+	// выкладок — отдельная ось, не привязанная к телеметрии в ClickHouse, а
+	// таблицу пишет публичный ключ приёма вне квоты, поэтому граница обязательна.
+	DeployRetentionDays int
 	// Edition — редакция сборки (oss | saas). Влияет на дефолты квот:
 	// в oss все дефолты = 0 (безлимит), в saas = 1_000_000. См. loadConfig.
 	Edition string
@@ -466,6 +471,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ProfileRetentionDays:     intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
 		LogRetentionDays:         intNum("GOTCHA_LOG_RETENTION_DAYS", 14),
 		IncidentRetentionDays:    intNum("GOTCHA_INCIDENT_RETENTION_DAYS", 90),
+		DeployRetentionDays:      intNum("GOTCHA_DEPLOY_RETENTION_DAYS", 90),
 		Edition:                  edition,
 		DefaultEventQuota:        num("GOTCHA_DEFAULT_EVENT_QUOTA", defQuota),
 		DefaultTransactionQuota:  num("GOTCHA_DEFAULT_TRANSACTION_QUOTA", defQuota),

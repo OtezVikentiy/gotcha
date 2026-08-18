@@ -23,10 +23,11 @@ func TestEntityRulesDeclareRetention(t *testing.T) {
 	// Все сроки заданы и положительны — значит, ноль на выходе означает ровно
 	// одно: у правила не проставлен retention (retentionUnset).
 	all := Retentions{
-		Events:    time.Hour,
-		Metrics:   time.Hour,
-		Profiles:  time.Hour,
-		Incidents: time.Hour,
+		Events:      time.Hour,
+		Metrics:     time.Hour,
+		Profiles:    time.Hour,
+		Incidents:   time.Hour,
+		Deployments: time.Hour,
 	}
 	for _, rule := range entityRules {
 		if all.forKind(rule.retention) <= 0 {
@@ -51,7 +52,7 @@ func TestRetentionsAnyRequiresPositive(t *testing.T) {
 // TestRetentionsForKindUnsetIsZero — нулевое значение retentionKind не должно
 // разрешать удаление: это единственное, на чём держится сторож выше.
 func TestRetentionsForKindUnsetIsZero(t *testing.T) {
-	all := Retentions{Events: time.Hour, Metrics: time.Hour, Profiles: time.Hour, Incidents: time.Hour}
+	all := Retentions{Events: time.Hour, Metrics: time.Hour, Profiles: time.Hour, Incidents: time.Hour, Deployments: time.Hour}
 	if d := all.forKind(retentionUnset); d != 0 {
 		t.Errorf("forKind(retentionUnset) = %v, want 0: правило без срока унаследовало бы чужой", d)
 	}

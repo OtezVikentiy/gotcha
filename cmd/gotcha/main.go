@@ -658,10 +658,11 @@ func run() error {
 	// на нескольких репликах безопасен — проход берёт advisory-лок и на
 	// занятом молча уступает.
 	entityRetention := telemetry.Retentions{
-		Events:    time.Duration(cfg.RetentionDays) * 24 * time.Hour,
-		Metrics:   time.Duration(cfg.MetricRetentionDays) * 24 * time.Hour,
-		Profiles:  time.Duration(cfg.ProfileRetentionDays) * 24 * time.Hour,
-		Incidents: time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+		Events:      time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+		Metrics:     time.Duration(cfg.MetricRetentionDays) * 24 * time.Hour,
+		Profiles:    time.Duration(cfg.ProfileRetentionDays) * 24 * time.Hour,
+		Incidents:   time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+		Deployments: time.Duration(cfg.DeployRetentionDays) * 24 * time.Hour,
 	}
 	if pg != nil && entityRetention.Any() {
 		entityJanitor := &telemetry.EntityJanitor{
