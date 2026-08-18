@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Log ingest: OTLP/HTTP (`POST /v1/logs`, protobuf and JSON) and newline-delimited JSON (`POST /logs`) both accept structured log records, authorized with the project's public key the same way as metrics. Severity is canonicalized to a fixed six-level scale (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) from either OTLP's `SeverityNumber` or a free-text level. Logs are stored in ClickHouse with their own monthly quota (`GOTCHA_DEFAULT_LOG_QUOTA`) and retention (`GOTCHA_LOG_RETENTION_DAYS`, 14 days by default). The log body goes through the same unconditional URL scrub (query-string tokens, basic-auth) as error messages, and drops from an exhausted log quota now show up in the organization's usage banner alongside events/transactions/metrics/profiles.
+- A new logs screen (`/projects/{id}/logs`) makes stored logs browsable: filters for time range, severity, service, environment, and full-text search over the body; a newest-first list with expandable rows (full body, attributes, trace/span IDs); keyset ("show older") pagination; a stacked volume-by-severity histogram; built-in facets (severity, service, environment) with counts and click-to-filter; auto-discovered attribute-key facets with lazily loaded top values; and a typeahead autocomplete endpoint for attribute keys. Attribute filters (`?attr=[res:]key:value`) support exact match only, and the time window is clamped to `GOTCHA_LOG_RETENTION_DAYS`.
 
 ## [0.6.2] - 2026-08-17
 

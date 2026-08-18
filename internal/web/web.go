@@ -30,6 +30,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
@@ -244,6 +245,25 @@ type Handler struct {
 	// процессе и недостижим отсюда).
 	HostForget HostForgetter
 
+	// LogQuery — чтение структурированных логов из ClickHouse (C2, задача 2):
+	// страница /projects/{id}/logs. Как Trace/Metrics — отдельное
+	// необязательное поле; nil → маршрут логов отвечает 404 (nil-guard).
+	LogQuery *log.Query
+	// attrKeysCache — кеш ответов logsAttrKeys (задача 6, C2, §6 спеки:
+	// «кеш per-project ~60с»). Заполняется в New() всегда (нужен вне
+	// зависимости от того, проведён ли LogQuery — сам эндпоинт проверяет
+	// h.LogQuery==nil раньше, чем заглянуть в кеш), не экспортируется:
+	// внешние вызывающие (main.go, тестовые стенды) не настраивают его
+	// напрямую, в отличие от LogQuery.
+	attrKeysCache *attrKeysCache
+	// LogRetentionDays — срок хранения логов в днях (GOTCHA_LOG_RETENTION_DAYS,
+	// cfg.LogRetentionDays). Обрезает From окна списка логов снизу независимо
+	// от выбранного пресета: без этого запрос за окно шире фактического TTL
+	// сканирует партиции, в которых данных гарантированно уже нет. 0 — срок не
+	// задан (логи хранятся вечно), обрезка не применяется. Тот же принцип, что
+	// у SpanRetentionDays.
+	LogRetentionDays int
+
 	// Profiles — чтение профилей из ClickHouse (этап 7): страницы
 	// /projects/{id}/profiles[/flame]. Необязательное поле; nil → 404.
 	Profiles *profile.Query
@@ -361,6 +381,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute),
 		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute),
 		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute),
+		attrKeysCache:     newAttrKeysCache(),
 	}
 }
 
@@ -517,6 +538,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsSave)))
 	inner.Handle("GET /projects/{id}/hosts/{name}", h.requireUser(http.HandlerFunc(h.hostDetail)))
 	inner.Handle("POST /projects/{id}/hosts/{name}/delete", h.requireUser(http.HandlerFunc(h.hostDelete)))
+
+	// Логи (C2, задача 2): базовый просмотрщик — фильтры/список/раскрытие/
+	// курсорная пагинация. Гистограмма/фасеты — задачи T3-T5.
+	inner.Handle("GET /projects/{id}/logs", h.requireUser(http.HandlerFunc(h.logsList)))
+	// Автокомплит ключей атрибутов (задача 6, C2, §6 спеки): отдельный
+	// GET-роут ПЕРЕД /logs/{...} нет конфликтов, так как под /logs других
+	// сегментов не зарегистрировано — ServeMux (Go 1.22) сам разберёт более
+	// специфичный литеральный сегмент "attr-keys" впереди возможных будущих
+	// {name}-шаблонов.
+	inner.Handle("GET /projects/{id}/logs/attr-keys", h.requireUser(http.HandlerFunc(h.logsAttrKeys)))
 
 	inner.Handle("GET /projects/{id}/profiles", h.requireUser(http.HandlerFunc(h.profilesList)))
 	inner.Handle("GET /projects/{id}/profiles/flame", h.requireUser(http.HandlerFunc(h.profileFlame)))

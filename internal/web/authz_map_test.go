@@ -160,6 +160,8 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/metrics/{name}":               lvlAccess,
 	"GET /projects/{id}/hosts":                        lvlAccess,
 	"GET /projects/{id}/hosts/{name}":                 lvlAccess,
+	"GET /projects/{id}/logs":                         lvlAccess,
+	"GET /projects/{id}/logs/attr-keys":               lvlAccess, // задача 6 (автокомплит): тот же гейт, что у самого списка логов
 	"GET /projects/{id}/profiles":                     lvlAccess,
 	"GET /projects/{id}/profiles/flame":               lvlAccess,
 	"GET /projects/{id}/profile-regressions":          lvlAccess,

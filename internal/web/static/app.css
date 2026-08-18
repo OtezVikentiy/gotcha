@@ -1119,7 +1119,7 @@ button:hover {
 }
 
 /* Приглушённые пояснительные абзацы (подсказки полей, заметки о лимитах). */
-.hint, .apdex-note, .perf-cap-note, .trace-cap-note, .retention-notice {
+.hint, .apdex-note, .perf-cap-note, .trace-cap-note, .retention-notice, .logs-range-clamped {
 	color: var(--text-dim);
 	font-size: var(--fs-sm);
 	margin: 4px 0;
@@ -1252,7 +1252,8 @@ th {
    «Применить» замыкает ряд справа. На узких экранах ряд переносится. -- */
 .issues-filters,
 .performance-filters,
-.metric-filters {
+.metric-filters,
+.logs-filters {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-end;
@@ -1265,15 +1266,38 @@ th {
 .issues-filters .input,
 .performance-filters .select,
 .performance-filters .input,
-.metric-filters .select {
+.metric-filters .select,
+.logs-filters .select,
+.logs-filters .input {
 	width: auto;
 	min-width: 128px;
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
-.issues-filters .input[type="text"] {
+.issues-filters .input[type="text"],
+.logs-filters .input[type="text"] {
 	flex: 1 1 200px;
 	min-width: 180px;
 	max-width: 380px;
+}
+/* Фильтр severity (задача 2, C2) — набор чекбоксов вместо <select>: значения
+   мультипараметра ?severity= читаются НЕЗАВИСИМО (в отличие от одиночных
+   селектов status/level рядом), нативный <select multiple> для этого
+   неудобен (требует ctrl/cmd-клик, плохо работает на мобильном). <fieldset>
+   сброшен до плоского вида, чтобы не выбиваться из компактного тулбара
+   бордером/паддингом браузерного дефолта. */
+.logs-severity-filter {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px;
+	margin: 0;
+	padding: 0;
+	border: none;
+}
+.logs-severity-filter legend {
+	padding: 0;
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
 }
 /* Единый селектор окна времени: пресеты (<select>) и два поля произвольного
    диапазона стоят одной группой в общей «обойме». Поля дат компактны и
@@ -2091,6 +2115,19 @@ th {
 	font-size: var(--fs-sm);
 	margin-bottom: 6px;
 }
+/* Раскрытие строки лога (задача 2, C2) — тот же приём, что .raw-json: нативный
+   <details>/<summary> без JS, summary — обрезанное превью тела. */
+.log-row-details > summary {
+	cursor: pointer;
+}
+.log-row-expanded {
+	margin-top: 8px;
+}
+.log-row-trace {
+	margin: 8px 0 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+}
 /* Breadcrumbs — таймлайн следов до ошибки (лог/HTTP/навигация). */
 .breadcrumbs {
 	list-style: none;
@@ -2269,6 +2306,164 @@ th {
 	width: 100%;
 	max-width: none;
 	height: auto;
+}
+
+/* Гистограмма объёма логов (T3, C2) на всю ширину карточки — тот же приём,
+   что .monitor-chart .latency-chart выше (разметка/viewBox переиспользованы,
+   только контекст-класс обёртки другой). */
+.logs-histogram .latency-chart {
+	width: 100%;
+	max-width: none;
+	height: auto;
+}
+.logs-histogram {
+	margin-bottom: 16px;
+}
+
+/* Список логов + фасет-сайдбар (задача 4, C2): на мобильном одна колонка —
+   фасеты идут ПОСЛЕ списка в том же порядке, что и в DOM (см. logs.templ,
+   .logs-body), на широких экранах вторая узкая колонка справа. */
+.logs-body {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 16px;
+	align-items: start;
+}
+@media (min-width: 900px) {
+	.logs-body {
+		grid-template-columns: 1fr 260px;
+	}
+}
+.logs-facets {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+/* min-width:0 — без него дефолтный min-width:auto флекс-айтема (.logs-facet
+   секция внутри .logs-facets) не даёт длинному значению сжаться до ширины
+   сайдбара: text-overflow:ellipsis у .logs-facet-value тогда просто не
+   срабатывает, значение вылезает за карточку вместо усечения многоточием. */
+.logs-facet {
+	min-width: 0;
+}
+.logs-facet-title {
+	margin: 0 0 8px;
+	font-size: var(--fs-sm);
+	font-weight: 650;
+}
+.logs-facet-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.logs-facet-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+/* Значение фасета — интерактивная ссылка (клик добавляет/снимает фильтр),
+   поэтому граница активного состояния — --border-control (WCAG 1.4.11), а не
+   декоративный --border (см. комментарий у самой переменной в :root). */
+.logs-facet-value {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text);
+	text-decoration: none;
+	border-radius: var(--radius);
+	padding: 2px 6px;
+	margin: -2px -6px;
+}
+.logs-facet-value:hover {
+	background: var(--surface-2);
+}
+.logs-facet-value-active {
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	color: var(--accent);
+	border: 1px solid var(--border-control);
+	font-weight: 600;
+}
+.logs-facet-count {
+	flex: 0 0 auto;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
+}
+.logs-facet-note {
+	margin: 0;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
+/* Атрибут-фасет (задача 5, C2): li ключа — колонка (строка ключа + под ней,
+   когда раскрыт, вложенный список значений), в отличие от плоских li
+   встроенных фасетов (.logs-facet-item сам по себе — строка). */
+.logs-attr-key-item {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.logs-facet-values {
+	list-style: none;
+	margin: 0;
+	padding: 2px 0 2px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border-left: 1px solid var(--border);
+}
+/* Typeahead поиска ключа атрибута (задача 6, C2): .input в контейнере с
+   position:relative, выпадашка — тот же образец попапа, что .dr-popup у
+   пикера дат (position:absolute, тень, z-index над остальным сайдбаром). */
+.logs-attr-search {
+	position: relative;
+	margin-bottom: 12px;
+}
+.logs-attr-suggestions {
+	position: absolute;
+	z-index: 30;
+	top: calc(100% + 4px);
+	left: 0;
+	right: 0;
+	margin: 0;
+	padding: 4px;
+	list-style: none;
+	max-height: 240px;
+	overflow-y: auto;
+	background: var(--surface);
+	border: 1px solid var(--border-control);
+	border-radius: var(--radius-lg);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+}
+:root[data-theme="light"] .logs-attr-suggestions { box-shadow: 0 10px 28px rgba(20, 30, 50, .14); }
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) .logs-attr-suggestions { box-shadow: 0 10px 28px rgba(20, 30, 50, .14); }
+}
+.logs-attr-suggestions[hidden] { display: none; }
+.logs-attr-suggestion {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 8px;
+	border-radius: var(--radius);
+	color: var(--text);
+	text-decoration: none;
+}
+.logs-attr-suggestion:hover,
+.logs-attr-suggestion:focus-visible {
+	background: var(--surface-2);
+}
+.logs-attr-suggestion-count {
+	flex: 0 0 auto;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
 }
 
 /* Публичная статус-страница (/status/{slug}): свой layout, без шапки
@@ -3174,6 +3369,21 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .latency-chart .seg-ttfb    { fill: var(--phase-ttfb); }
 /* Метка выброса (час выше шкалы: медленно/таймаут). Цветом события, не фазы. */
 .latency-chart .seg-cap     { fill: var(--danger); }
+
+/* Гистограмма объёма логов (T3, C2): заливка сегментов severity — те же
+   токены, что и у бейджей уровня в списке логов (severityBadgeClass,
+   templates/logs.templ), не отдельная палитра. trace/debug делят
+   нейтральный (как badge-neutral), error/fatal делят --danger (как их
+   бейджи) — намеренно, гистограмма и бейджи говорят об одном и том же
+   уровне одним цветом. Классы .sev-* заведены под .logs-histogram, а не под
+   .latency-chart, — сама разметка графика переиспользована, но заливка
+   специфична для этих данных. */
+.logs-histogram .sev-trace,
+.logs-histogram .sev-debug { fill: var(--text-dim); }
+.logs-histogram .sev-info  { fill: var(--info); }
+.logs-histogram .sev-warn  { fill: var(--warn); }
+.logs-histogram .sev-error,
+.logs-histogram .sev-fatal { fill: var(--danger); }
 /* Кегль подписей осей задаётся В ЕДИНИЦАХ viewBox, а на экране равен
    font-size × ширинаКарточки / ширинаViewBox. Значит один и тот же font-size
    даёт разный размер у графиков с разным viewBox, а их в продукте два.
@@ -3787,6 +3997,23 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .legend-tcp::before,
 .legend-tls::before,
 .legend-ttfb::before { width: 11px; height: 11px; border-radius: 3px; }
+
+/* Свотчи легенды гистограммы объёма логов (T3, C2) = те же токены, что
+   заливка сегментов (.logs-histogram .sev-* выше) и бейджи уровня в списке
+   логов. Квадрат, не штрих — по той же причине, что фазы задержки: severity
+   на графике заливка, а не линия. */
+.legend-sev-trace::before,
+.legend-sev-debug::before { background: var(--text-dim); }
+.legend-sev-info::before  { background: var(--info); }
+.legend-sev-warn::before  { background: var(--warn); }
+.legend-sev-error::before,
+.legend-sev-fatal::before { background: var(--danger); }
+.legend-sev-trace::before,
+.legend-sev-debug::before,
+.legend-sev-info::before,
+.legend-sev-warn::before,
+.legend-sev-error::before,
+.legend-sev-fatal::before { width: 11px; height: 11px; border-radius: 3px; }
 
 /* ===== Форма окна обслуживания ===== */
 

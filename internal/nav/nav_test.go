@@ -22,6 +22,7 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/5/hosts", "hosts"},
 		{"/projects/5/hosts/settings", "hosts"},
 		{"/projects/5/hosts/web-1", "hosts"},
+		{"/projects/5/logs", "logs"},
 		{"/monitors/3", "uptime"},
 		{"/projects/7/alerts", "alerts"},
 		{"/orgs/5/teams", "org"},
@@ -55,6 +56,7 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/5/hosts", "nav.hosts"},
 		{"/projects/5/hosts/web-1", "nav.hosts"},
 		{"/projects/5/hosts/settings", "nav.host_thresholds"},
+		{"/projects/5/logs", "nav.logs"},
 		{"/monitors/3", "nav.monitors"},
 		{"/projects/7/incidents", "nav.incidents"},
 		{"/projects/7/alerts", "nav.alerts"},
@@ -378,10 +380,10 @@ func TestAreas(t *testing.T) {
 		CanOperate: true,
 	}
 	areas := Areas(s)
-	if len(areas) != 8 {
-		t.Fatalf("Areas() len = %d, want 8 (6 rail + docs + org)", len(areas))
+	if len(areas) != 9 {
+		t.Fatalf("Areas() len = %d, want 9 (7 rail + docs + org)", len(areas))
 	}
-	wantIDs := []string{"issues", "performance", "metrics", "hosts", "uptime", "alerts", "docs", "org"}
+	wantIDs := []string{"issues", "performance", "metrics", "hosts", "logs", "uptime", "alerts", "docs", "org"}
 	for i, a := range areas {
 		if a.ID != wantIDs[i] {
 			t.Errorf("areas[%d].ID = %q, want %q", i, a.ID, wantIDs[i])
@@ -600,6 +602,13 @@ func TestProjectSwitchHref(t *testing.T) {
 	shell.Area = "hosts"
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/hosts" {
 		t.Errorf("hosts → %q, want /projects/2/hosts", got)
+	}
+	// logs: та же логика, что и у hosts выше — единственный подраздел
+	// открыт всем с доступом к проекту, переключатель остаётся в разделе
+	// логов вместо issues-фолбэка (задача 2, C2).
+	shell.Area = "logs"
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/logs" {
+		t.Errorf("logs → %q, want /projects/2/logs", got)
 	}
 	shell.Area = "uptime"
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/monitors" {

@@ -17,6 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -1862,6 +1863,116 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, w, 
 		if capped {
 			title += " · " + i18n.T(ctx, "uptime.chart.over_scale")
 		}
+		writeHoverBand(&sb, g, slotX-gap/2, barW, title)
+	}
+	sb.WriteString(`</svg>`)
+	return sb.String()
+}
+
+// logSeverityClasses — CSS-класс заливки сегмента гистограммы объёма логов
+// (T3, C2) на каждый канон severity. Цвета — те же токены, что и у
+// severityBadgeClass в templates/logs.templ: trace/debug делят нейтральный
+// (как badge-neutral), error/fatal делят danger (как их бейджи) — гистограмма
+// говорит на том же цветовом языке, что и бейджи уровня в списке логов,
+// намеренно не заводя шести различных цветов там, где бейджи и так сводят их
+// к четырём.
+var logSeverityClasses = map[string]string{
+	log.SevTrace: "sev-trace",
+	log.SevDebug: "sev-debug",
+	log.SevInfo:  "sev-info",
+	log.SevWarn:  "sev-warn",
+	log.SevError: "sev-error",
+	log.SevFatal: "sev-fatal",
+}
+
+// logHistogramSVG строит inline-SVG stacked-bar-график объёма логов
+// (log.Query.Histogram: сетка времён + ряды по severity, уже добитые
+// нулями) — тем же каркасом (svgaxis.go) и тем же приёмом укладки сегментов
+// снизу вверх, что и latencyStackedSVG. times/series приходят из
+// ClickHouse-агрегата (числа), поэтому templ.Raw безопасен по тем же
+// причинам, что и у соседних графиков пакета.
+func logHistogramSVG(ctx context.Context, times []time.Time, series map[string][]int64, w, h int) templ.Component {
+	return templ.Raw(logHistogramMarkup(ctx, times, series, w, h))
+}
+
+func logHistogramMarkup(ctx context.Context, times []time.Time, series map[string][]int64, w, h int) string {
+	n := len(times)
+	var maxSum int64
+	for i := 0; i < n; i++ {
+		var sum int64
+		for _, sev := range log.Severities {
+			sum += series[sev][i]
+		}
+		if sum > maxSum {
+			maxSum = sum
+		}
+	}
+	if n == 0 || maxSum == 0 {
+		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.logs_volume"))
+	}
+
+	g := newChartGeom(w, h, 48, 16, 26, 26)
+	scale := newYScale(uint64(maxSum), 3)
+	barW := g.barWidth(n)
+	gap := barW * 0.15
+	plotH := g.y1 - g.y0
+
+	var sb strings.Builder
+	// "latency-chart" переиспользован НЕ по смыслу данных, а ради готовой
+	// разметки: тот же viewBox 720, для которого в app.css уже есть кегль
+	// подписей (.chart-vb720 text) и правило font-size (.latency-chart
+	// text). Заливка сегментов (.sev-*) специфична для этого графика и
+	// заведена под родительским классом обёртки .logs-histogram (см.
+	// logs.templ) — тот же приём вложенности, что .monitor-chart .latency-chart
+	// у стека задержек монитора.
+	sb.WriteString(svgRoot("latency-chart", w, h, i18n.T(ctx, "a11y.chart.logs_volume")))
+
+	sb.WriteString(`<g class="chart-axis">`)
+	writeFrame(&sb, g)
+	writeYGrid(&sb, g, scale, func(v float64) string { return strconv.FormatFloat(v, 'f', 0, 64) })
+	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.x0 + float64(i)*barW }, 70))
+	sb.WriteString(`</g>`)
+
+	// segGap — тот же тонкий зазор между сегментами, что и у стека задержек
+	// монитора: сегмент рисуется на segGap короче сверху, обнажая фон
+	// карточки, чтобы severity различались не только цветом.
+	const segGap = 1.5
+
+	for i := 0; i < n; i++ {
+		slotX := g.x0 + float64(i)*barW + gap/2
+		bw := barW - gap
+		bottom := g.y1
+
+		title := times[i].UTC().Format("02.01 15:04")
+		for _, sev := range log.Severities {
+			c := series[sev][i]
+			if c == 0 {
+				continue
+			}
+			segH := float64(c) / scale.top * plotH
+			top := bottom - segH
+			bottom = top
+			drawY, drawH := top, segH
+			if segH > segGap*2 {
+				drawY, drawH = top+segGap, segH-segGap
+			}
+			sb.WriteString(`<rect x="`)
+			sb.WriteString(formatCoord(slotX))
+			sb.WriteString(`" y="`)
+			sb.WriteString(formatCoord(drawY))
+			sb.WriteString(`" width="`)
+			sb.WriteString(formatCoord(bw))
+			sb.WriteString(`" height="`)
+			sb.WriteString(formatCoord(drawH))
+			sb.WriteString(`" class="`)
+			sb.WriteString(logSeverityClasses[sev])
+			sb.WriteString(`"/>`)
+
+			title += " · " + i18n.T(ctx, "logs.severity."+sev) + " " + strconv.FormatInt(c, 10)
+		}
+
+		// Полоса наведения на весь слот: подсказка появляется и над пустой
+		// корзиной (все severity — 0), там просто не будет перечисления.
 		writeHoverBand(&sb, g, slotX-gap/2, barW, title)
 	}
 	sb.WriteString(`</svg>`)

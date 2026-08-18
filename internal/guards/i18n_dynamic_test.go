@@ -9,6 +9,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -47,7 +48,10 @@ import (
 //     метрики (metric.MetricTypes — раунд правок 1, см. ниже). Задача A1/T12
 //     добавила пятое множество по той же схеме — виды встроенных инцидентов
 //     хоста (host.Kinds: disk/memory/load/silent), источник истины для
-//     подписей в уведомлениях host.HostNotifier.
+//     подписей в уведомлениях host.HostNotifier. Задача 2 плана C2 добавила
+//     шестое — уровни severity просмотрщика логов (log.Severities), тот же
+//     мультиселект-фильтр на /projects/{id}/logs, что и severity в самом
+//     запросе.
 //
 // Раунд правок 1 (metrics.templ): та же задача нашла ЕЩЁ два места сырого
 // значения в соседнем файле, не входившем в исходный список брифа — тип
@@ -88,6 +92,7 @@ func TestDynamicKeysResolve(t *testing.T) {
 		"metrics.aggregation.": metric.Aggregations,
 		"metrics.type.":        metric.MetricTypes,
 		"hosts.kind.":          host.Kinds,
+		"logs.severity.":       log.Severities,
 	}
 	// Пустая группа — не "нечего проверять", а сигнал, что сборка САМОЙ группы
 	// сломана (баг в quotaKindShortKeys/rangePresetKeys или опустевший
