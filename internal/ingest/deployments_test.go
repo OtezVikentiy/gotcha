@@ -116,3 +116,28 @@ func TestIngestDeploymentDisabled(t *testing.T) {
 		t.Fatalf("h.Deploy==nil → %d, want 503", rec.Code)
 	}
 }
+
+// TestIngestDeploymentRateLimited: эндпоинт деплоя троттлится тем же per-DSN
+// лимитером, что envelope/store (публичный sentry_key → без rate-limit безлимитный
+// поток INSERT'ов). Фиксированные часы + burst 1: первый запрос проходит, второй
+// в тот же миг — 429, и вторая запись НЕ появляется в сторе.
+func TestIngestDeploymentRateLimited(t *testing.T) {
+	h, projectID := newIngestTestWithDeploy(t)
+	now := time.Unix(0, 0)
+	h.SetRateLimit(func() time.Time { return now }, 1, 1) // 1 ток/с, запас 1
+
+	if rec := postDeploy(t, h, projectID, `{"version":"v1.0.0"}`); rec.Code != http.StatusOK {
+		t.Fatalf("первый запрос: status=%d, want 200", rec.Code)
+	}
+	if rec := postDeploy(t, h, projectID, `{"version":"v1.0.1"}`); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("второй запрос: status=%d, want 429", rec.Code)
+	}
+
+	deps, err := h.Deploy.Recent(context.Background(), projectID, 10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("после 429 в сторе должна быть 1 запись, got %d: %+v", len(deps), deps)
+	}
+}

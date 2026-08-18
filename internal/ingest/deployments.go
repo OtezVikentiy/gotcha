@@ -20,6 +20,13 @@ func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Тот же per-DSN троттлинг, что у envelope/store: ключ — публичный sentry_key,
+	// поэтому без rate-limit любой владелец DSN мог бы лить неограниченный поток
+	// INSERT'ов в общую таблицу деплоев. Квоту деплои не расходуют (не биллинговая
+	// телеметрия), достаточно rate-limit.
+	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+		return
+	}
 	if h.Deploy == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "deployments disabled")
 		return
