@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-19
+
 ### Added
 - SLOs and error budgets: define a service level objective (a target such as 99% over a rolling 1–90 day window) on any of three indicator types — availability (share of successful requests to a transaction), latency (share of requests faster than a threshold), or uptime (share of successful monitor checks). Each SLO tracks its attainment and remaining error budget, and a two-window burn-rate alert opens an incident only when both a long and a short window are burning the budget above the threshold (default 14.4) and closes it when the short window cools — notifying through the existing alert channels. A new SLO screen lists every objective with its current attainment and budget; the detail view adds a budget-burn chart and incident history. Maintenance windows are excluded from every calculation, and each evaluation clips its window to the available telemetry retention.
 
