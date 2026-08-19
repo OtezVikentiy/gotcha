@@ -176,6 +176,110 @@ func TestEvaluatorLifecycle(t *testing.T) {
 	}
 }
 
+// TestEvaluatorSeasonalOpensAndFallback проверяет сезонный режим оценщика на
+// живых PG+CH. Проект с cfg.SeasonalEnabled=true оценивается по сезонному base
+// (то же окно того же дня недели за прошлые недели), а не по скользящему:
+//
+//   - «GET /seasonal» имеет сезонный слот ~200мс за 3 прошлые недели (в окне
+//     [now−60м, now), сдвинутом на 7/14/21 сут) и свежий скачок ~400мс →
+//     открывается по СЕЗОННОМУ коридору (400 > 200×1.25 и > 200+floor). У этой
+//     цели НЕТ дневной истории внутри скользящего окна [now−7д, now) (слоты
+//     лежат ≥7 сут назад), поэтому при скользящем base она бы не открылась —
+//     открытие доказывает, что взят именно сезонный base (baseline_value ≈ 200).
+//   - «GET /nohist» сезонной истории не имеет (слот < min_samples) → fallback на
+//     скользящий: дневная база ~200мс за 6 прошлых суток + свежий скачок ~400мс →
+//     открывается по скользящему коридору, без паники.
+//
+// Внутренний тест (package trace) — чтобы звать evalProject с управляемым now
+// (сезонный якорь должен быть детерминированным, а не time.Now в tick).
+func TestEvaluatorSeasonalOpensAndFallback(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	defer cancel()
+
+	ev := &Evaluator{
+		Pool:         pool,
+		Query:        NewQuery(conn),
+		Regressions:  NewRegressionService(pool),
+		TopK:         50,
+		BaselineDays: 7,
+	}
+
+	pid := createEvalProject(t, pool, "eval-seasonal")
+	// Сезонный режим включён; порог/пол/восстановление — дефолтные (0.25/100/0.10),
+	// min_samples снижен до 40, чтобы сеять слот дешевле (60 сэмплов слота > 40).
+	setRegConfig(t, ctx, pool, pid, `{"seasonal_enabled":true,"seasonal_weeks":3,"min_samples":40}`)
+	cfg, err := RegressionConfigFromJSON(regConfigRaw(t, ctx, pool, pid))
+	if err != nil {
+		t.Fatalf("parse cfg: %v", err)
+	}
+
+	// Якорь now — полдень позавчера (UTC), кратный 5 минутам: окна слота и смещения
+	// −30 мин ложатся ровно в 5-минутные бакеты MV без пограничного дребезга.
+	now := time.Now().UTC().Truncate(24 * time.Hour).Add(-36 * time.Hour)
+	const weekD = 7 * 24 * time.Hour
+
+	w := NewSpanWriter(conn)
+	go w.Run()
+
+	// «GET /seasonal»: сезонный слот ~200мс за 3 недели (сдвиг 7/14/21 сут в том же
+	// окне) + свежий скачок 400мс. Слоты лежат ≥7 сут назад — вне скользящего окна.
+	const seasonalTarget = "GET /seasonal"
+	addEndpointTx(w, pid, seasonalTarget, now.Add(-1*weekD).Add(-30*time.Minute), 200, 20, "se-w1")
+	addEndpointTx(w, pid, seasonalTarget, now.Add(-2*weekD).Add(-30*time.Minute), 200, 20, "se-w2")
+	addEndpointTx(w, pid, seasonalTarget, now.Add(-3*weekD).Add(-30*time.Minute), 200, 20, "se-w3")
+	addEndpointTx(w, pid, seasonalTarget, now.Add(-30*time.Minute), 400, 120, "se-rec")
+
+	// «GET /nohist»: сезонной истории нет; дневная база ~200мс за 6 прошлых суток
+	// (внутри скользящего окна, но не в недельном слоте) + свежий скачок 400мс.
+	const fallbackTarget = "GET /nohist"
+	for d := 1; d <= 6; d++ {
+		addEndpointTx(w, pid, fallbackTarget, now.Add(-time.Duration(d)*24*time.Hour).Add(-30*time.Minute), 200, 20, fmt.Sprintf("no-base-%d", d))
+	}
+	addEndpointTx(w, pid, fallbackTarget, now.Add(-30*time.Minute), 400, 120, "no-rec")
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	ev.evalProject(ctx, pid, cfg, 50, 7, now)
+
+	// Обе цели открылись: сезонная — по сезонному коридору, fallback — по скользящему.
+	if got := countIncidents(t, ctx, pool, pid); got != 2 {
+		t.Fatalf("после сезонного прохода: инцидентов = %d, want 2 (сезонный OPEN + fallback OPEN)", got)
+	}
+	if status, _, _ := incidentState(t, ctx, pool, pid, seasonalTarget, "duration"); status != "open" {
+		t.Fatalf("сезонная цель: status=%q, want open", status)
+	}
+	if status, _, _ := incidentState(t, ctx, pool, pid, fallbackTarget, "duration"); status != "open" {
+		t.Fatalf("fallback-цель: status=%q, want open (скользящий base)", status)
+	}
+	// baseline_value сезонной цели ≈ 200мс доказывает, что взят сезонный слот
+	// (медиана недельных p95), а не скользящее окно (где базы у цели нет вовсе).
+	var seasonalBase float64
+	if err := pool.QueryRow(ctx,
+		"SELECT baseline_value FROM perf_regressions WHERE project_id=$1 AND target=$2 AND metric='duration'",
+		pid, seasonalTarget).Scan(&seasonalBase); err != nil {
+		t.Fatalf("seasonal baseline_value: %v", err)
+	}
+	if seasonalBase < 180 || seasonalBase > 220 {
+		t.Fatalf("сезонный baseline_value = %.0f, want ~200 (сезонный слот, не скользящий)", seasonalBase)
+	}
+}
+
+// regConfigRaw читает сырой perf_regression_config проекта — чтобы тест разобрал
+// его тем же RegressionConfigFromJSON, что и оценщик в проде.
+func regConfigRaw(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64) []byte {
+	t.Helper()
+	var raw []byte
+	if err := pool.QueryRow(ctx,
+		"SELECT perf_regression_config FROM projects WHERE id=$1", pid).Scan(&raw); err != nil {
+		t.Fatalf("read reg config: %v", err)
+	}
+	return raw
+}
+
 // addEndpointTx добавляет n одинаковых http.server-транзакций (все durMs мс) с
 // уникальными id — так перцентиль окна равен ровно durMs.
 func addEndpointTx(w *SpanWriter, pid int64, name string, at time.Time, durMs, n int, prefix string) {
