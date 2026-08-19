@@ -73,6 +73,15 @@ func TestSLODetailScreenRendersFullState(t *testing.T) {
 			t.Errorf("SLODetailScreen не содержит %q", want)
 		}
 	}
+	// Регрессия приёмки (прод 0.12.0): в блоке открытого инцидента @relativeTime стоял
+	// инлайн после текста и уезжал в разметку СЫРЫМ литералом, а не рендерился. Открытое
+	// время должно быть настоящим <time>, а литерала "@relativeTime" быть не должно.
+	if strings.Contains(out, "@relativeTime") {
+		t.Errorf("сырой templ-литерал @relativeTime в разметке: %s", out)
+	}
+	if !strings.Contains(out, "<time") {
+		t.Errorf("открытый инцидент не отрендерил относительное время (<time>): %s", out)
+	}
 	// P2-5: статус бюджета продублирован текстом (WCAG 1.4.1 — не только цветом точки).
 	if !strings.Contains(out, sloStatusLabel(ctx, "exhausted")) {
 		t.Errorf("SLODetailScreen не содержит текстовый лейбл статуса %q", sloStatusLabel(ctx, "exhausted"))

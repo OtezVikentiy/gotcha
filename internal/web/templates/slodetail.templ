@@ -138,7 +138,8 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 					<h2>{ i18n.T(ctx, "slo.detail.incident_open_title") }</h2>
 					<p>
 						<span class="badge badge-danger">{ i18n.T(ctx, "slo.detail.incident_open") }</span>
-						{ i18n.T(ctx, "slo.detail.started") }: @relativeTime(vm.OpenIncident.StartedAt)
+						{ i18n.T(ctx, "slo.detail.started") }:
+						@relativeTime(vm.OpenIncident.StartedAt)
 					</p>
 					<p>{ i18n.T(ctx, "slo.detail.burn") }: { sloBurnText(vm.OpenIncident.BurnRate) }</p>
 					if vm.OpenIncident.HasBudget {
