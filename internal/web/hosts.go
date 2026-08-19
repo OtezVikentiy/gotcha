@@ -55,6 +55,15 @@ const hostsListWindow = 15 * time.Minute
 // §5.2); превышение помечается i18n-подсказкой в шаблоне.
 const hostsListLimit = 500
 
+// hostNewWindow — окно «новый хост» (B1, T5): бейдж row.IsNew и SQL-ветка
+// HostFilter.NewOnly (host.Store.ListFiltered, `interval '24 hours'`)
+// обязаны использовать ОДНО и то же число — иначе фильтр по чипу «новые» и
+// бейдж «новый» у той же строки молча разъехались бы. Определён ЗДЕСЬ (не в
+// internal/host — фильтр там оперирует SQL-литералом, а не значением этой
+// константы) единственный раз; всё, что рисует бейдж/чип «новый» (в том
+// числе T7), только ПОТРЕБЛЯЕТ hostNewWindow, не переопределяет его заново.
+const hostNewWindow = 24 * time.Hour
+
 // hostsList — GET /projects/{id}/hosts: список хостов проекта со сводным
 // статусом (ok / открытые инциденты / тихий) и последними значениями CPU/
 // RAM/диск/load за 15 минут. Гейт — как у метрик (h.Metrics == nil → 404),
@@ -87,9 +96,31 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Фильтр читается из query СТРОГО на стороне SQL (host.Store.ListFiltered,
+	// WHERE), не Go-срезом поверх List — план-ревью Major-2: при парке,
+	// упёршемся в hostsListLimit+1, срез поверх уже усечённой выборки давал бы
+	// ложную пустоту вместо настоящих совпадений за пределами страницы.
+	q := r.URL.Query()
+	filter := host.HostFilter{
+		Environment: q.Get("env"),
+		Role:        q.Get("role"),
+		NewOnly:     q.Get("new") == "1",
+	}
+
 	// hostsListLimit+1 — ровно столько, чтобы отличить «влезло» от «есть ещё»
 	// (см. truncated ниже) и не вычитывать ради подсказки весь реестр проекта.
-	hosts, err := h.Hosts.List(r.Context(), projectID, hostsListLimit+1)
+	hosts, err := h.Hosts.ListFiltered(r.Context(), projectID, filter, hostsListLimit+1)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
+	// Значения фасетов — ВСЕГДА по полному реестру проекта (без учёта текущего
+	// фильтра), не по уже отфильтрованной hosts выше: иначе выбор одного
+	// значения env стирал бы из сайдбара все прочие значения env, которые
+	// перестали совпадать сами с собой — фасет должен предлагать переключение
+	// на любое другое значение, а не только те, что видны в текущей выборке.
+	envValues, roleValues, err := h.Hosts.FacetValues(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -161,7 +192,13 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]templates.HostRowVM, 0, len(hosts))
 	for _, hst := range hosts {
-		row := templates.HostRowVM{Name: hst.Name, LastSeen: hst.LastSeen}
+		row := templates.HostRowVM{
+			Name:        hst.Name,
+			LastSeen:    hst.LastSeen,
+			Environment: hst.Environment,
+			Role:        hst.Role,
+			IsNew:       now.Sub(hst.FirstSeen) < hostNewWindow,
+		}
 		if idle, ok := idleByHost[hst.Name]; ok {
 			busy := 1 - idle
 			row.CPU = &busy
@@ -193,7 +230,15 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// граница видимости та же, что у DSN (CanAccessProject проверен выше).
 	installCmd, config, agentReason := h.hostInstallBlocks(r.Context(), projectID)
 
-	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, installCmd, config, agentReason, h.currentEmail(r)).Render(r.Context(), w)
+	filterVM := templates.HostsFilterVM{
+		Environment: filter.Environment,
+		Role:        filter.Role,
+		NewOnly:     filter.NewOnly,
+		Active:      filter.Environment != "" || filter.Role != "" || filter.NewOnly,
+	}
+	facets := templates.NewHostsFacets(r.Context(), projectID, filterVM, envValues, roleValues)
+
+	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, installCmd, config, agentReason, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // hostRowStatus классифицирует статус строки хоста по открытым инцидентам

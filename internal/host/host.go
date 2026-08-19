@@ -58,7 +58,7 @@ const MaxActiveHostsPerTick = 20_000
 // *string (см. докблок TouchEntry в touch.go про то же осознанное
 // отклонение от спеки §3.2): пустая строка и NULL несут один и тот же смысл
 // «версия неизвестна», и лишний указатель на вызывающей стороне (веб-хендлеры,
-// шаблоны) ничего бы не добавил. environment/role (B1) уже NOT NULL DEFAULT ''
+// шаблоны) ничего бы не добавил. environment/role (B1) уже NOT NULL DEFAULT ”
 // в схеме (миграция 0073) — без COALESCE.
 const hostColumns = `id, project_id, name, first_seen, last_seen, COALESCE(agent_version, ''), environment, role`
 
@@ -207,6 +207,122 @@ func (s *Store) List(ctx context.Context, projectID int64, limit int) ([]Host, e
 			return nil, fmt.Errorf("host: list scan: %w", err)
 		}
 		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// HostLabelNone — сентинел «без метки» для HostFilter.Environment/Role:
+// значение метки, а не пустая строка (пустая строка в HostFilter значит «не
+// фильтровать по этому полю», см. ListFiltered/add). Экспортирован — им же
+// строятся ссылки чипа «(без метки)» в internal/web/templates (T5): один
+// источник правды на обеих сторонах фильтра (SQL здесь и URL там), а не два
+// магических литерала, которые могут разъехаться. Коллизия с буквальным
+// значением метки "__none__" документирована как ничтожная — такое имя
+// окружения/роли никто в здравом уме не заведёт, а если заведёт, то этот
+// единственный хост будет неотличим от «без метки» в фильтре; последствие не
+// опаснее, чем сам факт использования подобного имени.
+const HostLabelNone = "__none__"
+
+// HostFilter — фильтр Store.ListFiltered (B1, T5): Environment/Role — ""
+// значит «не фильтровать по этому полю», HostLabelNone — «только пустая
+// метка», непустое иное значение — точное совпадение. NewOnly — только хосты
+// моложе hostNewWindow (internal/web/hosts.go, T5) по first_seen.
+type HostFilter struct {
+	Environment string
+	Role        string
+	NewOnly     bool
+}
+
+// ListFiltered — то же, что List, плюс фильтр по env/role/new, применённый
+// СТРОГО в SQL (WHERE), а не Go-срезом поверх List: при парке, упёршемся в
+// MaxHostsPerProject, List отдаёт не больше hostsListLimit+1 строк — фильтр
+// поверх уже усечённой выборки давал бы ложную пустоту вместо настоящих
+// совпадений, оставшихся за пределами страницы.
+//
+// Окно NewOnly — ровно 24 часа литералом в SQL, а не параметром: то же
+// значение, что hostNewWindow в internal/web/hosts.go (T5), которое красит
+// бейдж "новый" у той же строки — расхождение окна между фильтром чипа и
+// бейджем строки было бы видимым и необъяснимым багом. Параметризовать через
+// interval-арифметику Postgres ($N::interval) можно было бы, но литерал
+// проще читать в самом запросе, а связь двух чисел документирована здесь и в
+// hostNewWindow явной перекрёстной ссылкой в комментариях, а не общим кодом.
+func (s *Store) ListFiltered(ctx context.Context, projectID int64, f HostFilter, limit int) ([]Host, error) {
+	if limit <= 0 {
+		limit = MaxHostsPerProject
+	}
+	q := "SELECT " + hostColumns + " FROM hosts WHERE project_id = $1"
+	args := []any{projectID}
+	add := func(col, val string) {
+		if val == "" {
+			return
+		}
+		if val == HostLabelNone {
+			q += " AND " + col + " = ''"
+			return
+		}
+		args = append(args, val)
+		q += fmt.Sprintf(" AND %s = $%d", col, len(args))
+	}
+	add("environment", f.Environment)
+	add("role", f.Role)
+	if f.NewOnly {
+		// interval '24 hours' — см. hostNewWindow (internal/web/hosts.go, T5):
+		// то же окно, тем же литералом.
+		q += " AND first_seen > now() - interval '24 hours'"
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY name LIMIT $%d", len(args))
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("host: list filtered: %w", err)
+	}
+	defer rows.Close()
+	var out []Host
+	for rows.Next() {
+		h, err := scanHost(rows)
+		if err != nil {
+			return nil, fmt.Errorf("host: list filtered scan: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// FacetValues возвращает различающиеся непустые значения environment/role
+// хостов проекта, отсортированные по значению — источник значений для чипов
+// фасетов списка хостов (T5). Два отдельных DISTINCT-запроса, не один с
+// UNION: колонки разной семантики (env vs role), а строк в таблице проекта
+// ≤MaxHostsPerProject (1000) — цена двух отдельных сканов таблицы пренебрежимо
+// мала на этом масштабе.
+func (s *Store) FacetValues(ctx context.Context, projectID int64) (envs, roles []string, err error) {
+	envs, err = s.distinctLabelValues(ctx, projectID, "environment")
+	if err != nil {
+		return nil, nil, err
+	}
+	roles, err = s.distinctLabelValues(ctx, projectID, "role")
+	if err != nil {
+		return nil, nil, err
+	}
+	return envs, roles, nil
+}
+
+// distinctLabelValues — общая реализация обеих веток FacetValues; col —
+// литерал имени колонки ("environment"/"role"), задаётся только вызывающим
+// внутри пакета — не пользовательский ввод, SQL-инъекции через него нет.
+func (s *Store) distinctLabelValues(ctx context.Context, projectID int64, col string) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		"SELECT DISTINCT "+col+" FROM hosts WHERE project_id = $1 AND "+col+" <> '' ORDER BY 1", projectID)
+	if err != nil {
+		return nil, fmt.Errorf("host: facet values %s: %w", col, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("host: facet values %s scan: %w", col, err)
+		}
+		out = append(out, v)
 	}
 	return out, rows.Err()
 }

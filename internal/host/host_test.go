@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -405,6 +406,104 @@ func TestUpsertAgentVersionNewHost(t *testing.T) {
 	}
 	if got.AgentVersion != "0.6.0" {
 		t.Fatalf("AgentVersion = %q, want 0.6.0 у нового хоста", got.AgentVersion)
+	}
+}
+
+// names — join'ит имена хостов через запятую (в порядке List/ListFiltered —
+// по имени), чтобы не писать цикл сравнения в каждом тесте фильтра.
+func names(hosts []host.Host) string {
+	out := make([]string, len(hosts))
+	for i, h := range hosts {
+		out[i] = h.Name
+	}
+	return strings.Join(out, ",")
+}
+
+// TestListFiltered — фильтр стора по env/role/new, СТРОГО в SQL (WHERE, а не
+// Go-срез поверх List): env='prod' отдаёт оба хоста с этой меткой, а
+// role=hostLabelNone (сентинел «без метки») — хост без role вовсе.
+func TestListFiltered(t *testing.T) {
+	s, projectID := setupProject(t)
+	ctx := context.Background()
+
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "a", Environment: "prod", Role: "web"}}); err != nil {
+		t.Fatalf("upsert a: %v", err)
+	}
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "b", Environment: "prod", Role: "db"}}); err != nil {
+		t.Fatalf("upsert b: %v", err)
+	}
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "c"}}); err != nil { // без меток
+		t.Fatalf("upsert c: %v", err)
+	}
+
+	got, err := s.ListFiltered(ctx, projectID, host.HostFilter{Environment: "prod"}, 0)
+	if err != nil {
+		t.Fatalf("filter env: %v", err)
+	}
+	if names(got) != "a,b" {
+		t.Fatalf("env=prod → %s, want a,b", names(got))
+	}
+
+	// сентинел «без метки»
+	none, err := s.ListFiltered(ctx, projectID, host.HostFilter{Role: host.HostLabelNone}, 0)
+	if err != nil {
+		t.Fatalf("filter role=none: %v", err)
+	}
+	if names(none) != "c" {
+		t.Fatalf("role=__none__ → %s, want c", names(none))
+	}
+
+	byRole, err := s.ListFiltered(ctx, projectID, host.HostFilter{Role: "db"}, 0)
+	if err != nil {
+		t.Fatalf("filter role=db: %v", err)
+	}
+	if names(byRole) != "b" {
+		t.Fatalf("role=db → %s, want b", names(byRole))
+	}
+}
+
+// TestListFilteredNewOnly — NewOnly фильтрует по first_seen в окне
+// hostNewWindow (24ч, SQL-ветка interval '24 hours'): свежий хост входит,
+// искусственно состаренный — нет.
+func TestListFilteredNewOnly(t *testing.T) {
+	// Не setupProject: тесту нужен прямой доступ к пулу для UPDATE first_seen
+	// (age), а testenv.MigratedPG(t) при повторном вызове в том же тесте
+	// выдаёт НОВУЮ уникальную базу (см. PostgresDSN) — второй пул смотрел бы в
+	// пустую базу, не в ту, где Upsert только что создал строки.
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	var orgID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO organizations (slug, name, event_quota) VALUES ('host-newonly', 'Host NewOnly', 0) RETURNING id").
+		Scan(&orgID); err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	var projectID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'host-newonly', 'Host NewOnly') RETURNING id", orgID).
+		Scan(&projectID); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	s := host.NewStore(pool)
+
+	if _, err := s.Upsert(ctx, projectID, entries("fresh")); err != nil {
+		t.Fatalf("upsert fresh: %v", err)
+	}
+	if _, err := s.Upsert(ctx, projectID, entries("old")); err != nil {
+		t.Fatalf("upsert old: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE hosts SET first_seen = now() - interval '2 days' WHERE project_id = $1 AND name = 'old'", projectID); err != nil {
+		t.Fatalf("age old host: %v", err)
+	}
+
+	got, err := s.ListFiltered(ctx, projectID, host.HostFilter{NewOnly: true}, 0)
+	if err != nil {
+		t.Fatalf("filter new: %v", err)
+	}
+	if names(got) != "fresh" {
+		t.Fatalf("new=1 → %s, want fresh", names(got))
 	}
 }
 

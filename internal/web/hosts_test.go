@@ -405,7 +405,7 @@ func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason str
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, installCmd, config, agentReason, "").Render(ctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, installCmd, config, agentReason, "").Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
@@ -516,6 +516,84 @@ func TestHostsOnboardingAgentInsecure(t *testing.T) {
 	}
 	if !strings.Contains(html, "otlphttp") {
 		t.Errorf("коллектор-альтернатива должна остаться заполненной: %s", html)
+	}
+}
+
+// TestHostsListFiltersRendersChipsAndRows — B1, T5: фильтр env/role/new
+// рендерит фасет-чипы (значения + сентинел «без метки»), активное значение
+// отмечено, отфильтрованные строки несут свои env/role-бейджи. Рендерится
+// VM напрямую (rows/filter/facets, а не через хендлер+стор) — тот же приём,
+// что у renderHostDetail/renderHostsListOnboarding по соседству.
+func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{
+		{Name: "web-1", StatusKind: "ok", Environment: "prod", Role: "web"},
+	}
+	filter := templates.HostsFilterVM{Environment: "prod", Active: true}
+	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod", "staging"}, []string{"web", "db"})
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+
+	// Активное значение фасета — ссылка со сбросом (env=prod уже выбран,
+	// повторный клик снимает фильтр: href БЕЗ env=).
+	if !strings.Contains(html, `class="chip is-active"`) {
+		t.Errorf("нет активного чипа фасета: %s", html)
+	}
+	if !strings.Contains(html, "href=\"/projects/1/hosts?env=prod&amp;role=web\"") {
+		t.Errorf("нет ссылки-тоггла на значение фасета role=web: %s", html)
+	}
+	// Сентинел «без метки» присутствует в обоих фасетах.
+	wantNoneLabel := i18n.T(rctx, "hosts.label.none")
+	if got := strings.Count(html, wantNoneLabel); got != 2 {
+		t.Errorf("сентинел «без метки» встречается %d раз(а), want 2 (env+role): %s", got, html)
+	}
+	if !strings.Contains(html, "role=__none__") {
+		t.Errorf("ссылка сентинела не несёт __none__: %s", html)
+	}
+	// Отфильтрованная строка со своими бейджами env/role.
+	if !strings.Contains(html, `<a href="/projects/1/hosts/web-1">web-1</a>`) {
+		t.Errorf("нет строки отфильтрованного хоста web-1: %s", html)
+	}
+	if !strings.Contains(html, `<span class="badge badge-neutral">prod</span>`) {
+		t.Errorf("нет бейджа environment=prod у строки: %s", html)
+	}
+	if !strings.Contains(html, `<span class="badge badge-neutral">web</span>`) {
+		t.Errorf("нет бейджа role=web у строки: %s", html)
+	}
+	// Активный фильтр — ссылка полного сброса.
+	wantReset := i18n.T(rctx, "hosts.filter.reset")
+	if !strings.Contains(html, wantReset) {
+		t.Errorf("нет ссылки сброса фильтра при активном фильтре: %s", html)
+	}
+}
+
+// TestHostsListFilterEmptyShowsResetNotOnboarding — под фильтром, давшим
+// пустой результат, список НЕ должен показывать онбординг «Хостов пока
+// нет» (проект не пуст — просто ни один хост не подошёл под фильтр) — иначе
+// текст с готовностью установить агента вводит в заблуждение владельца,
+// у которого хосты уже есть.
+func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	filter := templates.HostsFilterVM{Environment: "nowhere", Active: true}
+	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+
+	wantEmptyFilterTitle := i18n.T(rctx, "hosts.empty.filter.title")
+	if !strings.Contains(html, wantEmptyFilterTitle) {
+		t.Errorf("нет заголовка «под фильтр ничего не подошло»: %s", html)
+	}
+	wantOnboardingTitle := i18n.T(rctx, "hosts.empty.title")
+	if strings.Contains(html, wantOnboardingTitle) {
+		t.Errorf("показан онбординг «хостов пока нет» вместо сброса фильтра: %s", html)
 	}
 }
 
