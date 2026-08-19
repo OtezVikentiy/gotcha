@@ -1,0 +1,2 @@
+ALTER TABLE hosts DROP COLUMN role;
+ALTER TABLE hosts DROP COLUMN environment;

@@ -59,6 +59,10 @@ type HostDetailVM struct {
 	// блока "Как обновить агента до {version}" (rem-E ux-L16): бейдж
 	// "Есть обновление" сам по себе не называл целевую версию.
 	ServerVersion string
+	// IsNew — first_seen моложе hostNewWindow (24ч, internal/web/hosts.go,
+	// T5) — тем же окном и правилом, что row.IsNew в списке (T7): бейдж
+	// «новый» в шапке карточки и в строке списка означает одно и то же.
+	IsNew bool
 }
 
 func hostDeleteLink(projectID int64, name string) string {
@@ -144,6 +148,15 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 			@breadcrumbBackTo(templ.URL(hostsBasePath(vm.ProjectID)), i18n.T(ctx, "nav.hosts"))
 			<h1>{ vm.Host.Name }</h1>
 			<span class={ hostStatusBadgeClass(vm.StatusKind) }>@hostStatusText(vm.StatusKind, vm.ProblemKinds)</span>
+			if vm.IsNew {
+				<span class="badge badge-info">{ i18n.T(ctx, "hosts.badge.new") }</span>
+			}
+			if vm.Host.Environment != "" {
+				<span class="badge badge-neutral" title={ i18n.T(ctx, "hosts.col.environment") }>{ vm.Host.Environment }</span>
+			}
+			if vm.Host.Role != "" {
+				<span class="badge badge-neutral" title={ i18n.T(ctx, "hosts.col.role") }>{ vm.Host.Role }</span>
+			}
 			<p class="logs-link"><a href={ templ.URL(logsForHostPath(vm.ProjectID, vm.Host.Name)) }>{ i18n.T(ctx, "hosts.detail.view_logs") }</a></p>
 
 			<div class="monitor-meta">

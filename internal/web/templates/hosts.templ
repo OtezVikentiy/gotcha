@@ -1,11 +1,13 @@
 package templates
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
@@ -34,6 +36,35 @@ type HostRowVM struct {
 	Disk        *float64 // доля [0,1], худший mountpoint
 	LoadPerCore *float64
 	LastSeen    time.Time
+	// Environment/Role — метки хоста (B1), "" — метка ещё не пришла ни в
+	// одном приёме. IsNew — first_seen моложе hostNewWindow (24ч,
+	// internal/web/hosts.go, T5) — тем же окном, что и SQL-ветка
+	// HostFilter.NewOnly, которой фильтруется чип «новые» над таблицей.
+	Environment string
+	Role        string
+	IsNew       bool
+}
+
+// HostSection — одна секция сгруппированного списка хостов (T6, group=env/
+// role): Label — значение метки, i18n hosts.label.none для пустой (та же
+// подпись, что у сентинела фасета — «без метки» значит одно и то же в обоих
+// местах). Rows — строки секции в том же относительном порядке, что даёт
+// sortHostRows (internal/web/hosts.go: проблемные → тихие → ok, по имени
+// внутри) — группировка (groupHostRows) режет уже отсортированный список на
+// части, не переупорядочивает.
+type HostSection struct {
+	Label string
+	Rows  []HostRowVM
+}
+
+// hostLabelText — текст ячейки env/role: дефис для незаполненной метки, тем
+// же принципом, что hostPercentText/hostLoadText («нет данных» отличимо от
+// значения, а не рисуется пустой ячейкой).
+func hostLabelText(v string) string {
+	if v == "" {
+		return "—"
+	}
+	return v
 }
 
 // hostPercentText форматирует долю в проценты для показа человеку
@@ -68,6 +99,152 @@ func hostStatusBadgeClass(kind string) string {
 	}
 }
 
+// HostsFilterVM — текущий фильтр списка хостов (B1, T5): что пришло в query
+// (host.HostFilter — тот же смысл полей, отдельная вью-модель — потому что
+// web/templates не должен знать про SQL-сторону выше уровня значений полей)
+// и Active — фильтр сужает список относительно умолчаний (тот же принцип,
+// что LogsFilter.Active, C2) — используется, чтобы отличить «под фильтром
+// ничего не нашлось» от «в проекте вообще нет хостов» (см. HostsList).
+type HostsFilterVM struct {
+	Environment string
+	Role        string
+	NewOnly     bool
+	Active      bool
+	// Group — текущая группировка списка (T6): "" (равнозначно "none") |
+	// "env" | "role". Отдельно от Active — группировка не сужает список
+	// (не «фильтр»), поэтому не должна прятать онбординг пустого проекта.
+	Group string
+}
+
+// HostsFacetValue — одно значение фасета env/role: метка (i18n для
+// сентинела «без метки», иначе — само значение метки), готовая ссылка-тоггл
+// (клик добавляет фильтр, клик по уже активному — снимает его) и Active.
+type HostsFacetValue struct {
+	Label  string
+	Href   string
+	Active bool
+}
+
+// HostsFacets — обе секции фасетов над таблицей списка (T5): значения из
+// host.Store.FacetValues (PG DISTINCT, полный реестр проекта — см.
+// web/hosts.go про то, почему НЕ по уже отфильтрованной выборке).
+type HostsFacets struct {
+	Environment []HostsFacetValue
+	Role        []HostsFacetValue
+}
+
+// NewHostsFacets строит вью-модель обеих секций фасетов из различающихся
+// значений (envValues/roleValues — host.Store.FacetValues) плюс
+// синтетическая запись host.HostLabelNone («без метки») в конце каждого
+// списка. Показывается ВСЕГДА, а не только когда такие хосты действительно
+// есть: PG DISTINCT (в отличие от фасетов логов, задача C2, поверх
+// ClickHouse) не считает count'ы, и дешёвого способа заранее узнать, есть ли
+// хоть один хост без метки, нет — прятать полезный фильтр ради этого не
+// стоит лишнего похода в БД.
+func NewHostsFacets(ctx context.Context, projectID int64, filter HostsFilterVM, envValues, roleValues []string) HostsFacets {
+	return HostsFacets{
+		Environment: newHostsFacetValues(ctx, projectID, filter, envValues,
+			func(f HostsFilterVM) string { return f.Environment },
+			func(f HostsFilterVM, v string) HostsFilterVM { f.Environment = v; return f }),
+		Role: newHostsFacetValues(ctx, projectID, filter, roleValues,
+			func(f HostsFilterVM) string { return f.Role },
+			func(f HostsFilterVM, v string) HostsFilterVM { f.Role = v; return f }),
+	}
+}
+
+// newHostsFacetValues — общая реализация обеих секций NewHostsFacets:
+// различаются только тем, какое поле HostsFilterVM читают/пишут (get/set,
+// тот же приём, что newSingleValueFacet у фасетов логов, C2).
+func newHostsFacetValues(ctx context.Context, projectID int64, filter HostsFilterVM, values []string, get func(HostsFilterVM) string, set func(HostsFilterVM, string) HostsFilterVM) []HostsFacetValue {
+	items := make([]HostsFacetValue, 0, len(values)+1)
+	for _, v := range values {
+		items = append(items, hostsFacetValueItem(projectID, filter, v, v, get, set))
+	}
+	items = append(items, hostsFacetValueItem(projectID, filter, host.HostLabelNone, i18n.T(ctx, "hosts.label.none"), get, set))
+	return items
+}
+
+// hostsFacetValueItem строит одно значение фасета: клик по неактивному —
+// заменяет фильтр на value (одиночный select, не мультивыбор — тот же
+// принцип, что NewServiceFacet/NewEnvironmentFacet у логов), клик по уже
+// активному — сбрасывает поле к "" (снимает фильтр).
+func hostsFacetValueItem(projectID int64, filter HostsFilterVM, value, label string, get func(HostsFilterVM) string, set func(HostsFilterVM, string) HostsFilterVM) HostsFacetValue {
+	active := get(filter) == value
+	next := filter
+	if active {
+		next = set(next, "")
+	} else {
+		next = set(next, value)
+	}
+	return HostsFacetValue{Label: label, Href: hostsFilterURL(projectID, next), Active: active}
+}
+
+// hostsNewFilterURL — ссылка чипа «новые»: тоггл NewOnly (включить/снять),
+// остальные поля фильтра сохраняются.
+func hostsNewFilterURL(projectID int64, filter HostsFilterVM) string {
+	next := filter
+	next.NewOnly = !filter.NewOnly
+	return hostsFilterURL(projectID, next)
+}
+
+// hostsFilterURL строит ссылку на список хостов с заданным фильтром в query
+// (env/role/new/group) — курсора/пагинации у списка хостов нет (§5.2, без
+// пагинации), поэтому, в отличие от LogsPageURL, сериализовать больше нечего.
+// group=none в query никогда не пишется — тем же принципом, что new=0:
+// отсутствие параметра И есть состояние по умолчанию.
+func hostsFilterURL(projectID int64, f HostsFilterVM) string {
+	q := url.Values{}
+	if f.Environment != "" {
+		q.Set("env", f.Environment)
+	}
+	if f.Role != "" {
+		q.Set("role", f.Role)
+	}
+	if f.NewOnly {
+		q.Set("new", "1")
+	}
+	if f.Group != "" && f.Group != "none" {
+		q.Set("group", f.Group)
+	}
+	path := hostsBasePath(projectID)
+	if len(q) == 0 {
+		return path
+	}
+	return path + "?" + q.Encode()
+}
+
+// hostsGroupFilterURL — ссылка сегмента переключателя группировки списка
+// (?group=env|role, отсутствие параметра = none), сохраняющая активный
+// фильтр env/role/new (T6) — фильтр и группировка компонуются через один и
+// тот же query, оба без JS.
+func hostsGroupFilterURL(projectID int64, filter HostsFilterVM, group string) string {
+	next := filter
+	next.Group = group
+	return hostsFilterURL(projectID, next)
+}
+
+// hostsGroupActive — активен ли сегмент переключателя группировки group при
+// текущем filter.Group ("" — синоним "none", см. hostsFilterURL).
+func hostsGroupActive(filterGroup, group string) bool {
+	if group == "none" {
+		return filterGroup == "" || filterGroup == "none"
+	}
+	return filterGroup == group
+}
+
+// hostsFacetValueClass — CSS-класс значения фасета/чипа фильтра: общий
+// компонент .chip/.chip.is-active (app.css, «Filter chips / pills») — тот же
+// переключаемый пилл, что уже применяется в продукте (например,
+// metricLabelFilterURL), а не отдельный набор классов, скопированный с
+// сайдбара логов (C2), которому здесь негде развернуться — список хостов
+// таблица в одну колонку, не двухколоночный layout с сайдбаром.
+func hostsFacetValueClass(active bool) string {
+	if active {
+		return "chip is-active"
+	}
+	return "chip"
+}
+
 // HostsList — GET /projects/{id}/hosts: таблица хостов проекта.
 // truncated — потолок в hostsListLimit строк превышен (§5.2, без пагинации).
 // installCmd — готовая команда установки собственного Go-агента (A2,
@@ -87,69 +264,158 @@ func hostStatusBadgeClass(kind string) string {
 // хотя ключ в нём — тот же DSN, который он и так видит на странице проекта.
 // limit — потолок числа строк (hostsListLimit, web/hosts.go): его называет
 // подсказка усечения, и число в ней не должно быть вписано в перевод, иначе
-// смена потолка молча разъедется с текстом (UX-аудит A1, P2-2).
-templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, installCmd, config, agentReason, userEmail string) {
+// смена потолка молча разъедется с текстом (UX-аудит A1, P2-2). filter/facets
+// (B1, T5) — текущий фильтр env/role/new и значения фасетов над таблицей;
+// рендерятся, кроме случая полностью пустого проекта без активного фильтра
+// (тогда фильтровать нечего, показывается только онбординг). sections (T6) —
+// строки, разбитые на секции по env/role, при filter.Group == "env"/"role";
+// nil при "" (без группировки) — тогда рисуется прежняя плоская таблица над
+// rows напрямую. Обе вью-модели строит один и тот же rows (см. web/hosts.go
+// groupHostRows) — sections не самостоятельный источник данных.
+// hostsTable — тело таблицы списка (thead+tbody): вынесено из HostsList, чтобы
+// один и тот же разметочный блок рисовал и плоский список (filter.Group ==
+// ""), и каждую секцию сгруппированного (T6) — набор колонок и содержимое
+// строки от группировки не зависят.
+templ hostsTable(projectID int64, rows []HostRowVM) {
+	<table class="data-table">
+		<thead>
+			<tr>
+				<th scope="col">{ i18n.T(ctx, "hosts.table.name") }</th>
+				<th scope="col">{ i18n.T(ctx, "hosts.table.status") }</th>
+				<th scope="col">{ i18n.T(ctx, "hosts.col.environment") }</th>
+				<th scope="col">{ i18n.T(ctx, "hosts.col.role") }</th>
+				<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.cpu") }</th>
+				<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.mem") }</th>
+				<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.disk") }</th>
+				<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.load") }</th>
+				<th scope="col">{ i18n.T(ctx, "hosts.table.last_seen") }</th>
+			</tr>
+		</thead>
+		<tbody>
+			for _, row := range rows {
+				<tr>
+					<td>
+						<a href={ templ.URL(hostLink(projectID, row.Name)) }>{ row.Name }</a>
+						if row.IsNew {
+							<span class="badge badge-info">{ i18n.T(ctx, "hosts.badge.new") }</span>
+						}
+					</td>
+					<td>
+						switch row.StatusKind {
+							case "problem":
+								<span class={ hostStatusBadgeClass(row.StatusKind) }>
+									for i, k := range row.OpenKinds {
+										if i > 0 {
+											{ ", " }
+										}
+										{ i18n.T(ctx, "hosts.kind."+k) }
+									}
+								</span>
+							case "silent":
+								<span class={ hostStatusBadgeClass(row.StatusKind) }>{ i18n.T(ctx, "hosts.status.silent") }</span>
+							default:
+								<span class={ hostStatusBadgeClass(row.StatusKind) }>{ i18n.T(ctx, "hosts.status.ok") }</span>
+						}
+					</td>
+					<td>
+						if row.Environment != "" {
+							<span class="badge badge-neutral">{ row.Environment }</span>
+						} else {
+							{ hostLabelText(row.Environment) }
+						}
+					</td>
+					<td>
+						if row.Role != "" {
+							<span class="badge badge-neutral">{ row.Role }</span>
+						} else {
+							{ hostLabelText(row.Role) }
+						}
+					</td>
+					<td class="num">{ hostPercentText(row.CPU) }</td>
+					<td class="num">{ hostPercentText(row.Mem) }</td>
+					<td class="num">{ hostPercentText(row.Disk) }</td>
+					<td class="num">{ hostLoadText(row.LoadPerCore) }</td>
+					<td>@relativeTime(row.LastSeen)</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+}
+
+templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, filter HostsFilterVM, facets HostsFacets, sections []HostSection, installCmd, config, agentReason, userEmail string) {
 	@layout(i18n.T(ctx, "nav.hosts"), userEmail) {
 		<div class="hosts">
 			<h1>{ i18n.T(ctx, "nav.hosts") }</h1>
 			@helpPanel("hosts", "hosts")
-			if len(rows) == 0 {
+			if len(rows) == 0 && !filter.Active {
 				@emptyState("server", "hosts.empty.title", "hosts.empty.body", "", "", 2)
 				@hostsOnboarding(projectID, installCmd, config, agentReason)
 			} else {
+				@hostsFilterBar(projectID, filter, facets)
 				if truncated {
 					<p class="hint">{ i18n.Tf(ctx, "hosts.limit_notice", "limit", strconv.Itoa(limit)) }</p>
 				}
-				<div class="card">
-				@scrollRegion("table-scroll", "nav.hosts") {
-						<table class="data-table">
-							<thead>
-								<tr>
-									<th scope="col">{ i18n.T(ctx, "hosts.table.name") }</th>
-									<th scope="col">{ i18n.T(ctx, "hosts.table.status") }</th>
-									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.cpu") }</th>
-									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.mem") }</th>
-									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.disk") }</th>
-									<th scope="col" class="num">{ i18n.T(ctx, "hosts.table.load") }</th>
-									<th scope="col">{ i18n.T(ctx, "hosts.table.last_seen") }</th>
-								</tr>
-							</thead>
-							<tbody>
-								for _, row := range rows {
-									<tr>
-										<td><a href={ templ.URL(hostLink(projectID, row.Name)) }>{ row.Name }</a></td>
-										<td>
-											switch row.StatusKind {
-												case "problem":
-													<span class={ hostStatusBadgeClass(row.StatusKind) }>
-														for i, k := range row.OpenKinds {
-															if i > 0 {
-																{ ", " }
-															}
-															{ i18n.T(ctx, "hosts.kind."+k) }
-														}
-													</span>
-												case "silent":
-													<span class={ hostStatusBadgeClass(row.StatusKind) }>{ i18n.T(ctx, "hosts.status.silent") }</span>
-												default:
-													<span class={ hostStatusBadgeClass(row.StatusKind) }>{ i18n.T(ctx, "hosts.status.ok") }</span>
-											}
-										</td>
-										<td class="num">{ hostPercentText(row.CPU) }</td>
-										<td class="num">{ hostPercentText(row.Mem) }</td>
-										<td class="num">{ hostPercentText(row.Disk) }</td>
-										<td class="num">{ hostLoadText(row.LoadPerCore) }</td>
-										<td>@relativeTime(row.LastSeen)</td>
-									</tr>
-								}
-							</tbody>
-						</table>
+				if len(rows) == 0 {
+					@emptyState("server", "hosts.empty.filter.title", "hosts.empty.filter.body", "hosts.empty.filter.cta", hostsBasePath(projectID), 2)
+				} else if filter.Group == "" {
+					<div class="card">
+					@scrollRegion("table-scroll", "nav.hosts") {
+						@hostsTable(projectID, rows)
+					}
+					</div>
+					@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason)
+				} else {
+					for _, sec := range sections {
+						<div class="card hosts-section">
+							<h2 class="card-header">{ sec.Label }</h2>
+							@scrollRegion("table-scroll", "nav.hosts") {
+								@hostsTable(projectID, sec.Rows)
+							}
+						</div>
+					}
+					@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason)
 				}
-				</div>
-				@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason)
 			}
 		</div>
 	}
+}
+
+// hostsFilterBar — блок над таблицей (B1, T5): фасеты env/role как чипы-
+// ссылки (?env=…/?role=…, активный — со сбросом по повторному клику, тот же
+// .chip/.chip.is-active компонент, что и остальной продукт), чип «новые»
+// (тоггл ?new=1) и, только при активном фильтре, ссылка полного сброса —
+// тот же принцип, что «✕»-чипы активных фильтров логов (C2/C3), но без
+// отдельного набора чипов на каждое значение: здесь фильтр одиночный по
+// каждому полю, снять его можно повторным кликом по уже активному значению
+// фасета, а «Сбросить всё» нужен только когда полей выбрано больше одного.
+templ hostsFilterBar(projectID int64, filter HostsFilterVM, facets HostsFacets) {
+	<div class="hosts-filters">
+		<div class="hosts-filter-group">
+			<span class="hosts-filter-label">{ i18n.T(ctx, "hosts.filter.environment") }</span>
+			for _, v := range facets.Environment {
+				<a class={ hostsFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Label }</a>
+			}
+		</div>
+		<div class="hosts-filter-group">
+			<span class="hosts-filter-label">{ i18n.T(ctx, "hosts.filter.role") }</span>
+			for _, v := range facets.Role {
+				<a class={ hostsFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Label }</a>
+			}
+		</div>
+		<div class="hosts-filter-group">
+			<span class="hosts-filter-label">{ i18n.T(ctx, "hosts.filter.age") }</span>
+			<a class={ hostsFacetValueClass(filter.NewOnly) } href={ templ.URL(hostsNewFilterURL(projectID, filter)) } if filter.NewOnly { aria-current="page" }>{ i18n.T(ctx, "hosts.filter.new") }</a>
+		</div>
+		<div class="hosts-filter-group">
+			<span class="hosts-filter-label">{ i18n.T(ctx, "hosts.group.label") }</span>
+			for _, g := range []string{"none", "env", "role"} {
+				<a class={ hostsFacetValueClass(hostsGroupActive(filter.Group, g)) } href={ templ.URL(hostsGroupFilterURL(projectID, filter, g)) } if hostsGroupActive(filter.Group, g) { aria-current="page" }>{ i18n.T(ctx, "hosts.group."+g) }</a>
+			}
+		</div>
+		if filter.Active {
+			<a class="hosts-filter-reset" href={ templ.URL(hostsBasePath(projectID)) }>{ i18n.T(ctx, "hosts.filter.reset") }</a>
+		}
+	</div>
 }
 
 // hostsCollectorConfigDetails — два свёрнутых блока «подключить ещё один

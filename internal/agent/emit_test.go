@@ -76,7 +76,7 @@ func allMetricNames(req *metricspb.MetricsData) []string {
 // метрик полного Sample должен совпадать с hostmetric.AllMetrics() один в
 // один. Добавили имя в hostmetric — тест падает, пока агент его не эмитит.
 func TestBuildExportParity(t *testing.T) {
-	req := BuildExport("host1", fullSample())
+	req := BuildExport("host1", "", "", fullSample())
 	got := allMetricNames(req)
 	want := hostmetric.AllMetrics()
 	if len(got) != len(want) {
@@ -94,7 +94,7 @@ func TestBuildExportParity(t *testing.T) {
 func TestBuildExportFirstTick(t *testing.T) {
 	s := fullSample()
 	s.CPU = nil
-	req := BuildExport("host1", s)
+	req := BuildExport("host1", "", "", s)
 	if m := metricByName(req, hostmetric.CPUUtilization); m != nil {
 		t.Errorf("%s присутствует на первом тике без CPU-дельты", hostmetric.CPUUtilization)
 	}
@@ -111,7 +111,7 @@ func TestBuildExportFirstTick(t *testing.T) {
 // TestBuildExportResource — resource-атрибуты: host.name из параметра,
 // os.type фиксирован "linux", версия агента из version.Version().
 func TestBuildExportResource(t *testing.T) {
-	req := BuildExport("myhost.local", fullSample())
+	req := BuildExport("myhost.local", "", "", fullSample())
 	if len(req.GetResourceMetrics()) != 1 {
 		t.Fatalf("ResourceMetrics = %d, want 1", len(req.GetResourceMetrics()))
 	}
@@ -134,11 +134,32 @@ func TestBuildExportResource(t *testing.T) {
 	}
 }
 
+// TestBuildExportLabels — deployment.environment/host.role в resource только
+// при непустых значениях (спека §1.4: агент не эмитит пустые атрибуты).
+func TestBuildExportLabels(t *testing.T) {
+	req := BuildExport("h1", "prod", "web", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)})
+	attrs := req.GetResourceMetrics()[0].GetResource().GetAttributes()
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[kv.GetKey()] = kv.GetValue().GetStringValue()
+	}
+	if got["deployment.environment"] != "prod" || got["host.role"] != "web" {
+		t.Fatalf("resource labels=%v", got)
+	}
+	// Пустые метки не эмитятся.
+	req2 := BuildExport("h1", "", "", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)})
+	for _, kv := range req2.GetResourceMetrics()[0].GetResource().GetAttributes() {
+		if kv.GetKey() == "deployment.environment" || kv.GetKey() == "host.role" {
+			t.Fatalf("пустая метка %q попала в resource", kv.GetKey())
+		}
+	}
+}
+
 // TestBuildExportCumulative — DiskIO/NetworkIO: Sum монотонный, кумулятивная
 // темпоральность, StartTimeUnixNano == BootTime, атрибуты direction+device.
 func TestBuildExportCumulative(t *testing.T) {
 	s := fullSample()
-	req := BuildExport("host1", s)
+	req := BuildExport("host1", "", "", s)
 	wantStart := uint64(s.BootTime.UnixNano())
 
 	diskM := metricByName(req, hostmetric.DiskIO)
@@ -205,7 +226,7 @@ func TestBuildExportCumulative(t *testing.T) {
 // type/mode; ProcessesCount: Sum non-monotonic по status.
 func TestBuildExportGaugeAttrs(t *testing.T) {
 	s := fullSample()
-	req := BuildExport("host1", s)
+	req := BuildExport("host1", "", "", s)
 
 	cpuM := metricByName(req, hostmetric.CPUUtilization)
 	if cpuM == nil {
@@ -286,7 +307,7 @@ func TestBuildExportGaugeAttrs(t *testing.T) {
 // (otlp.go) распаковывает Content-Encoding: gzip и должен получить исходный
 // req обратно бит в бит.
 func TestEncodeBodyGzipRoundTrip(t *testing.T) {
-	req := BuildExport("host1", fullSample())
+	req := BuildExport("host1", "", "", fullSample())
 	body, err := EncodeBody(req)
 	if err != nil {
 		t.Fatalf("EncodeBody: %v", err)

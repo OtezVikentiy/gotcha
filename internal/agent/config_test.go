@@ -41,6 +41,20 @@ func TestLoadConfigRejects(t *testing.T) {
 	}
 }
 
+func TestLoadConfigLabels(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_AGENT_ENDPOINT": "https://x.example", "GOTCHA_AGENT_KEY": "k",
+		"GOTCHA_AGENT_ENVIRONMENT": "prod", "GOTCHA_AGENT_ROLE": "web",
+	}
+	cfg, err := LoadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Environment != "prod" || cfg.Role != "web" {
+		t.Fatalf("labels=(%q,%q), want (prod,web)", cfg.Environment, cfg.Role)
+	}
+}
+
 func TestLoadConfigTrimsEndpointSlash(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT": "https://g.example/",

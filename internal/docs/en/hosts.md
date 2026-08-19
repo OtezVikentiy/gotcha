@@ -87,6 +87,8 @@ journalctl -u gotcha-agent -n 50
 | `GOTCHA_AGENT_HOSTNAME` | no | the server's `os.Hostname()` | Overrides `host.name`, for when the system hostname isn't what you want on the card. |
 | `GOTCHA_AGENT_CA_CERT` | no | *(empty)* | Path to a PEM CA file — for instances with a self-signed TLS certificate. The recommended way to trust such an instance. |
 | `GOTCHA_AGENT_TLS_SKIP_VERIFY` | no | `false` | Disables TLS certificate verification for the instance entirely (`0`/`1`/`true`/`false`). A last resort — prefer `GOTCHA_AGENT_CA_CERT`; this removes MITM protection on the metric delivery channel. |
+| `GOTCHA_AGENT_ENVIRONMENT` | no | *(empty)* | Host environment label (`prod`, `staging`, …). Lands in the `deployment.environment` resource attribute; an empty value isn't emitted. |
+| `GOTCHA_AGENT_ROLE` | no | *(empty)* | Host role label (`web`, `db`, …). Lands in the `host.role` resource attribute; an empty value isn't emitted. |
 
 Except for the required ones on first install, these variables are applied once — at the moment the install command runs — and land in `/etc/gotcha-agent/gotcha-agent.env`. To change them later, edit the file and run `sudo systemctl restart gotcha-agent` (re-running the installer without the variables won't pick them up, and it explicitly fails if only optional ones are left in the command — on purpose, so a value never gets silently dropped).
 
@@ -195,6 +197,23 @@ Every chart on a host's card and every built-in threshold needs specific metrics
 
 The ready-made config from step 2 already enables everything needed for the full set of charts and thresholds, out of the box. The Gotcha agent has no config of its own — it always sends this same full set.
 
+## Host labels: environment, role, filter, grouping
+
+Hosts in the list can carry an environment and a role label — both come from the telemetry itself; the UI doesn't set or edit them:
+
+- **Environment** — the `deployment.environment` resource attribute (the same one metrics/traces/logs use) or the agent's `GOTCHA_AGENT_ENVIRONMENT` variable (see the table above).
+- **Role** — the `host.role` resource attribute or the agent's `GOTCHA_AGENT_ROLE` variable (see the table above).
+
+A host with no label shows up empty in the list's "Environment"/"Role" columns, and under a shared "(no label)" heading in the filter and when grouping.
+
+**Filter.** Above the list there are facets for the environment and role values seen in the project (the same mechanism as the [logs](/docs/logs) facets), plus a separate "New" chip (see below). Facets are always computed over the project's whole host registry, not the already-filtered list — picking one value doesn't remove the others from the facets you could switch to. The "Reset filter" link returns the list to its unfiltered state.
+
+**Grouping.** The "Group by" toggle next to the filter splits the list into sections by environment or by role; hosts with no label form their own "(no label)" section. The order of hosts within each section is the same as in the plain list (problem hosts first, then silent, then ok, all then by name) — grouping only slices the already-computed order into sections, it doesn't re-sort it. With no grouping selected, the list stays a plain flat table.
+
+**"New" badge.** A host younger than 24 hours since it was first seen (`first_seen`) is marked with a "new" badge — in the list and on the host's card. The "New" filter chip selects the same hosts using the same 24-hour window.
+
+The list page shows at most **500** hosts at a time; if a project has more, narrow the selection with the environment/role/"new" filter — otherwise some hosts on the page won't be visible.
+
 ## Built-in thresholds and their settings
 
 Thresholds are a fixed built-in set (not created by hand like metric alert rules), tunable on `/projects/{id}/hosts/settings` (available to project operators):
@@ -268,7 +287,8 @@ The names `.` and `..` are never registered: a host card's address is `/projects
 ## Limitations
 
 - A host literally named `settings` isn't reachable through its card: `/projects/{id}/hosts/settings` is the threshold settings page, and that literal route segment wins over the `{name}` wildcard. The same accepted limitation already exists for a metric literally named `alerts` under "Metrics".
-- There's no per-host threshold override — the settings on `/hosts/settings` apply to every host in the project at once. Per-host thresholds, tags, and status-aware auto-registration aren't part of this version.
+- There's no per-host threshold override — the settings on `/hosts/settings` apply to every host in the project at once. Per-host thresholds and status-aware auto-registration aren't part of this version.
+- Environment and role labels are read-only and come only from telemetry (see [Host labels](#host-labels-environment-role-filter-grouping) above) — the UI doesn't offer freeform labels of its own, unmoored from a resource attribute.
 - Per-process metrics aren't collected — only the `system.processes.count` aggregate broken down by status.
 
 ## What's next

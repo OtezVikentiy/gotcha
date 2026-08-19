@@ -37,7 +37,9 @@ const (
 // BuildExport собирает один тик Sample в OTLP-экспорт: один ResourceMetrics +
 // один ScopeMetrics. На первом тике (s.CPU == nil — ещё нет дельты, см.
 // Collector.cpuUtilization) system.cpu.utilization не эмитится, остальные
-// метрики идут как обычно.
+// метрики идут как обычно. environment/role — resource-метки
+// deployment.environment/host.role (GOTCHA_AGENT_ENVIRONMENT/ROLE); попадают
+// в resource только при непустом значении.
 //
 // Возвращает metricspb.MetricsData, а не collector-обёртку
 // ExportMetricsServiceRequest: сервер (internal/ingest/otlp.go,
@@ -46,7 +48,7 @@ const (
 // wire-формат идентичен, но пакет collector/metrics/v1 несёт в той же
 // директории сгенерённый gRPC-gateway код и тащит grpc+grpc-gateway в
 // зависимости и в бинарь агента, который сам никогда не ходит по gRPC.
-func BuildExport(hostname string, s Sample) *metricspb.MetricsData {
+func BuildExport(hostname, environment, role string, s Sample) *metricspb.MetricsData {
 	ts := uint64(s.Time.UnixNano())
 	bootNano := uint64(s.BootTime.UnixNano())
 
@@ -69,13 +71,21 @@ func BuildExport(hostname string, s Sample) *metricspb.MetricsData {
 		gaugeMetric(hostmetric.Uptime, []*metricspb.NumberDataPoint{doubleDataPoint(ts, s.UptimeSec, nil)}),
 	)
 
+	attrs := []*commonpb.KeyValue{
+		stringAttr("host.name", hostname),
+		stringAttr("os.type", "linux"),
+		stringAttr(hostmetric.AgentVersionAttr, version.Version()),
+	}
+	if environment != "" {
+		attrs = append(attrs, stringAttr("deployment.environment", environment))
+	}
+	if role != "" {
+		attrs = append(attrs, stringAttr("host.role", role))
+	}
+
 	return &metricspb.MetricsData{
 		ResourceMetrics: []*metricspb.ResourceMetrics{{
-			Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
-				stringAttr("host.name", hostname),
-				stringAttr("os.type", "linux"),
-				stringAttr(hostmetric.AgentVersionAttr, version.Version()),
-			}},
+			Resource: &resourcepb.Resource{Attributes: attrs},
 			ScopeMetrics: []*metricspb.ScopeMetrics{{
 				Scope:   &commonpb.InstrumentationScope{Name: scopeName},
 				Metrics: metrics,

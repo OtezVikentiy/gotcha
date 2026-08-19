@@ -2950,6 +2950,11 @@ form.inline {
 	font-size: var(--fs-sm);
 	font-weight: 500;
 }
+/* .hosts-section — карточка одной группы (environment/role) на /hosts при
+   группировке; отступ снизу отделяет соседние группы друг от друга. */
+.hosts-section {
+	margin-bottom: 16px;
+}
 
 /* -- Адаптивная сетка блоков настроек (settings/profile/teams/org) --
    1 колонка → 2 (≥1024px) → 3 (≥1440px). minmax(0,1fr) не даёт широкому
@@ -3108,6 +3113,35 @@ form.inline {
 }
 .chip-remove:hover {
 	background: var(--surface-2);
+}
+
+/* Фильтр списка хостов (B1, T5): фасеты env/role + чип «новые» как обычный
+   ряд .chip/.chip.is-active (см. выше) — список хостов однa таблица без
+   сайдбара, отдельный набор классов вроде .logs-facet (C2) здесь избыточен. */
+.hosts-filters {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+	margin: 0 0 12px;
+}
+.hosts-filter-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.hosts-filter-label {
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+}
+.hosts-filter-reset {
+	color: var(--link);
+	font-size: var(--fs-sm);
+	text-decoration: none;
+}
+.hosts-filter-reset:hover {
+	text-decoration: underline;
 }
 
 /* -- Breadcrumb -- */
