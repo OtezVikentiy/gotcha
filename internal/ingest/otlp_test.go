@@ -1822,6 +1822,57 @@ func TestOTLPMetricsAgentVersionNotInAttrs(t *testing.T) {
 	}
 }
 
+// --- Task 3 (B1): метки хоста environment/role на приёме OTLP-метрик ---
+
+// resourceMetricWithHostLabels — один ResourceMetrics с host.name и
+// (опционально) deployment.environment.name/host.role в resource-атрибутах.
+func resourceMetricWithHostLabels(host, env, role, metricName string) *metricspb.ResourceMetrics {
+	var attrs []*commonpb.KeyValue
+	if host != "" {
+		attrs = append(attrs, strAttr("host.name", host))
+	}
+	if env != "" {
+		attrs = append(attrs, strAttr("deployment.environment.name", env))
+	}
+	if role != "" {
+		attrs = append(attrs, strAttr("host.role", role))
+	}
+	return &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{Attributes: attrs},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
+			{Name: metricName, Unit: "1", Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{
+				DataPoints: []*metricspb.NumberDataPoint{{
+					TimeUnixNano: uint64(time.Now().Add(-time.Hour).UnixNano()),
+					Value:        &metricspb.NumberDataPoint_AsDouble{AsDouble: 0.5},
+				}},
+			}}},
+		}}},
+	}
+}
+
+// TestOTLPMetricsHostLabelsTouch (Task 3): resource-атрибуты
+// deployment.environment.name (СОВРЕМЕННЫЙ ключ, через промоут metric.MapOTLP)
+// и host.role (отдельный resource-проход) долетают до TouchEntry.
+func TestOTLPMetricsHostLabelsTouch(t *testing.T) {
+	sink := &collectMetricSink{}
+	hosts := newFakeHostRegistry()
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h.Metrics = sink
+	h.Hosts = hosts
+
+	w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+		resourceMetricWithHostLabels("web-1", "prod", "web", "cpu"),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	got := hosts.getEntries(1)
+	want := []host.TouchEntry{{Name: "web-1", Environment: "prod", Role: "web"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("TouchEntry = %+v, want %+v (deployment.environment.name → Environment, host.role → Role)", got, want)
+	}
+}
+
 // TestValidAgentVersion (Task 9): semver-подобие
 // ^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]*$, длина ≤ 32.
 func TestValidAgentVersion(t *testing.T) {

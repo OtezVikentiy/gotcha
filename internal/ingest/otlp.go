@@ -263,6 +263,7 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		// список точек и теряет границу resource (спека §3.2), а версия агента —
 		// resource-атрибут, а не атрибут датапойнта.
 		versions := agentVersionsByRawHost(req.GetResourceMetrics())
+		roles := hostRolesByRawHost(req.GetResourceMetrics())
 		seen := map[string]struct{}{}
 		var hosts []host.TouchEntry
 		for i := range points {
@@ -280,7 +281,17 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			seen[name] = struct{}{}
-			hosts = append(hosts, host.TouchEntry{Name: name, AgentVersion: versions[raw]})
+			hosts = append(hosts, host.TouchEntry{
+				Name:         name,
+				AgentVersion: versions[raw],
+				// points[i].Environment — промоутированное значение (metric.MapOTLP
+				// разрешает оба env-ключа и применяет capRunes) ДО
+				// Cardinality.Value(FieldEnvironment) — та применяется ниже, в цикле
+				// записи (301-316). Для метки хоста это корректно: кардинальный гард
+				// к строке hosts не нужен, потолок хостов держит MaxHostsPerProject.
+				Environment: points[i].Environment,
+				Role:        roles[raw],
+			})
 		}
 		if len(hosts) > 0 {
 			h.Hosts.Touch(r.Context(), key.ProjectID, hosts)
@@ -366,6 +377,33 @@ func agentVersionsByRawHost(rms []*metricspb.ResourceMetrics) map[string]string 
 			continue // пустую/невалидную версию в карту не кладём — см. докблок
 		}
 		out[capRunes(rawHost, 200)] = version
+	}
+	return out
+}
+
+// attrHostRoleResource — resource-атрибут host.role: не промоутируется
+// MapOTLP и в атрибутах датапойнта его нет, поэтому читается тем же отдельным
+// проходом по ResourceMetrics, что и версия агента.
+const attrHostRoleResource = "host.role"
+
+// hostRolesByRawHost — роль хоста по СЫРОМУ host.name resource-атрибута, тем
+// же проходом и с тем же капом 200 рун, что agentVersionsByRawHost.
+func hostRolesByRawHost(rms []*metricspb.ResourceMetrics) map[string]string {
+	out := make(map[string]string, 4)
+	for _, rm := range rms {
+		var rawHost, rawRole string
+		for _, kv := range rm.GetResource().GetAttributes() {
+			switch kv.GetKey() {
+			case attrHostNameResource:
+				rawHost = otlpResourceAttrString(kv.GetValue())
+			case attrHostRoleResource:
+				rawRole = otlpResourceAttrString(kv.GetValue())
+			}
+		}
+		if rawHost == "" || rawRole == "" {
+			continue
+		}
+		out[capRunes(rawHost, 200)] = capRunes(rawRole, 200)
 	}
 	return out
 }
