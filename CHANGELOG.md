@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-19
+
 ### Added
 - Seasonal baseline for the regression detector: instead of comparing against a rolling daily average, the detector can compare each metric against the same window on the same day of the week over prior weeks (default 4, configurable 2–12) — cutting false alarms on services with a pronounced daily or weekly load profile, where the rolling baseline goes silent at night and rings during the morning ramp-up. It's a per-project toggle in the "Regressions" settings card, tagged with a "Seasonal mode" badge in the regressions list, and falls back to the rolling baseline automatically for any target that doesn't have enough seasonal history yet.
 
