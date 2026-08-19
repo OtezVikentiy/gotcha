@@ -15,9 +15,11 @@ import (
 )
 
 // Host — строка таблицы hosts: имя хоста в рамках проекта, окно его
-// видимости (первое и последнее событие с этим именем) и версия агента
-// (Task 8+, A2), если он когда-либо заходил. AgentVersion=="" — агент не
-// заходил, хост известен только по OTel-коллектору/SDK-транзакциям.
+// видимости (первое и последнее событие с этим именем), версия агента
+// (Task 8+, A2), если он когда-либо заходил, и метки environment/role (B1).
+// AgentVersion=="" — агент не заходил, хост известен только по
+// OTel-коллектору/SDK-транзакциям. Environment/Role=="" — метка ещё не
+// пришла ни в одном приёме этого хоста.
 type Host struct {
 	ID           int64
 	ProjectID    int64
@@ -25,6 +27,8 @@ type Host struct {
 	FirstSeen    time.Time
 	LastSeen     time.Time
 	AgentVersion string
+	Environment  string
+	Role         string
 }
 
 // MaxHostsPerProject — потолок числа хостов ОДНОГО проекта. Единственной
@@ -54,8 +58,9 @@ const MaxActiveHostsPerTick = 20_000
 // *string (см. докблок TouchEntry в touch.go про то же осознанное
 // отклонение от спеки §3.2): пустая строка и NULL несут один и тот же смысл
 // «версия неизвестна», и лишний указатель на вызывающей стороне (веб-хендлеры,
-// шаблоны) ничего бы не добавил.
-const hostColumns = `id, project_id, name, first_seen, last_seen, COALESCE(agent_version, '')`
+// шаблоны) ничего бы не добавил. environment/role (B1) уже NOT NULL DEFAULT ''
+// в схеме (миграция 0073) — без COALESCE.
+const hostColumns = `id, project_id, name, first_seen, last_seen, COALESCE(agent_version, ''), environment, role`
 
 // validName — годится ли имя к регистрации. Пустое отсекается защитно (см.
 // Upsert), "." и ".." — потому что имя хоста едет в путь карточки
@@ -69,7 +74,7 @@ func validName(name string) bool {
 
 func scanHost(row pgx.Row) (Host, error) {
 	var h Host
-	err := row.Scan(&h.ID, &h.ProjectID, &h.Name, &h.FirstSeen, &h.LastSeen, &h.AgentVersion)
+	err := row.Scan(&h.ID, &h.ProjectID, &h.Name, &h.FirstSeen, &h.LastSeen, &h.AgentVersion, &h.Environment, &h.Role)
 	return h, err
 }
 
@@ -120,6 +125,12 @@ func (s *Store) Upsert(ctx context.Context, projectID int64, entries []TouchEntr
 			if e.AgentVersion != "" {
 				dedup[i].AgentVersion = e.AgentVersion
 			}
+			if e.Environment != "" {
+				dedup[i].Environment = e.Environment
+			}
+			if e.Role != "" {
+				dedup[i].Role = e.Role
+			}
 			continue
 		}
 		idx[e.Name] = len(dedup)
@@ -130,33 +141,39 @@ func (s *Store) Upsert(ctx context.Context, projectID int64, entries []TouchEntr
 	}
 	names := make([]string, len(dedup))
 	versions := make([]string, len(dedup))
+	envs := make([]string, len(dedup))
+	roles := make([]string, len(dedup))
 	for i, e := range dedup {
 		names[i] = e.Name
 		versions[i] = e.AgentVersion
+		envs[i] = e.Environment
+		roles[i] = e.Role
 	}
 	tag, err := s.pool.Exec(ctx, `
 		WITH input AS (
-			SELECT DISTINCT ON (i.name) i.name, i.agent_version
-			  FROM unnest($2::text[], $4::text[]) AS i(name, agent_version)
+			SELECT DISTINCT ON (i.name) i.name, i.agent_version, i.environment, i.role
+			  FROM unnest($2::text[], $4::text[], $5::text[], $6::text[]) AS i(name, agent_version, environment, role)
 		),
 		room AS (
 			SELECT GREATEST($3::bigint - count(*), 0) AS free FROM hosts WHERE project_id = $1
 		),
 		allowed AS (
-			SELECT i.name, i.agent_version FROM input i
+			SELECT i.name, i.agent_version, i.environment, i.role FROM input i
 			 WHERE EXISTS (SELECT 1 FROM hosts h WHERE h.project_id = $1 AND h.name = i.name)
 			UNION ALL
-			(SELECT i.name, i.agent_version FROM input i
+			(SELECT i.name, i.agent_version, i.environment, i.role FROM input i
 			  WHERE NOT EXISTS (SELECT 1 FROM hosts h WHERE h.project_id = $1 AND h.name = i.name)
 			  ORDER BY i.name
 			  LIMIT (SELECT free FROM room))
 		)
-		INSERT INTO hosts (project_id, name, agent_version)
-		SELECT $1, name, NULLIF(agent_version, '') FROM allowed
+		INSERT INTO hosts (project_id, name, agent_version, environment, role)
+		SELECT $1, name, NULLIF(agent_version, ''), environment, role FROM allowed
 		ON CONFLICT (project_id, name) DO UPDATE SET
 			last_seen = now(),
-			agent_version = CASE WHEN EXCLUDED.agent_version <> '' THEN EXCLUDED.agent_version ELSE hosts.agent_version END`,
-		projectID, names, MaxHostsPerProject, versions)
+			agent_version = CASE WHEN EXCLUDED.agent_version <> '' THEN EXCLUDED.agent_version ELSE hosts.agent_version END,
+			environment   = CASE WHEN EXCLUDED.environment   <> '' THEN EXCLUDED.environment   ELSE hosts.environment END,
+			role          = CASE WHEN EXCLUDED.role          <> '' THEN EXCLUDED.role          ELSE hosts.role END`,
+		projectID, names, MaxHostsPerProject, versions, envs, roles)
 	if err != nil {
 		return 0, fmt.Errorf("host: upsert: %w", err)
 	}

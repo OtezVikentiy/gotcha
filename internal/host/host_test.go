@@ -407,3 +407,41 @@ func TestUpsertAgentVersionNewHost(t *testing.T) {
 		t.Fatalf("AgentVersion = %q, want 0.6.0 у нового хоста", got.AgentVersion)
 	}
 }
+
+// TestUpsertLabelsNonEmptyWins — метки environment/role (B1) переживают
+// Upsert без меток тем же принципом, что и AgentVersion (см.
+// TestUpsertAgentVersion): пустая метка в батче НЕ затирает уже известную. И
+// в дублях ОДНОГО батча непустая метка побеждает пустую — тот же дедуп, что
+// уже есть для AgentVersion (119-124 host.go).
+func TestUpsertLabelsNonEmptyWins(t *testing.T) {
+	s, projectID := setupProject(t)
+	ctx := context.Background()
+
+	// Первый приём: метки заданы.
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "h1", Environment: "prod", Role: "web"}}); err != nil {
+		t.Fatalf("upsert 1: %v", err)
+	}
+	// Второй приём того же хоста БЕЗ меток — не должен затирать.
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "h1"}}); err != nil {
+		t.Fatalf("upsert 2: %v", err)
+	}
+	h, ok, err := s.Get(ctx, projectID, "h1")
+	if err != nil || !ok {
+		t.Fatalf("get: %v ok=%v", err, ok)
+	}
+	if h.Environment != "prod" || h.Role != "web" {
+		t.Fatalf("labels=(%q,%q), want (prod,web) — пустой тик затёр метку", h.Environment, h.Role)
+	}
+
+	// Дубли в ОДНОМ батче: непустая метка побеждает пустую.
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "h2"}, {Name: "h2", Environment: "stg", Role: "db"}}); err != nil {
+		t.Fatalf("upsert 3: %v", err)
+	}
+	h2, ok, err := s.Get(ctx, projectID, "h2")
+	if err != nil || !ok {
+		t.Fatalf("get h2: %v ok=%v", err, ok)
+	}
+	if h2.Environment != "stg" || h2.Role != "db" {
+		t.Fatalf("in-batch dedup labels=(%q,%q), want (stg,db)", h2.Environment, h2.Role)
+	}
+}
