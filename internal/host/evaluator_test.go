@@ -141,6 +141,8 @@ func newEvaluator(pool *pgxpool.Pool, ch driver.Conn, notifier host.Notifier) *h
 		Settings:  host.NewSettingsService(pool),
 		Incidents: host.NewIncidentService(pool),
 		Metrics:   metric.NewQuery(ch),
+		Overrides: host.NewHostOverrideService(pool),
+		Groups:    host.NewGroupThresholdService(pool),
 		Notifier:  notifier,
 		Interval:  time.Hour, // тикер не используем — дёргаем Tick вручную
 		StartedAt: time.Now().UTC().Add(-24 * time.Hour),
@@ -983,5 +985,95 @@ func TestEvaluatorKeepsNotifiedFalseWhenNotifierFails(t *testing.T) {
 	}
 	if notifiedOpen {
 		t.Error("notified_open=true при провале постановки в очередь — флаг врёт оператору")
+	}
+}
+
+// TestEvaluatorHostOverrideOpensBelowProjectThreshold — Task 5: оценщик
+// берёт ЭФФЕКТИВНЫЙ порог из каскада (host-override → group → project →
+// default), а не проектный напрямую. Per-host override диска (0.50) должен
+// открыть инцидент при утилизации 60%, хотя дефолтный проектный порог
+// (0.90) при тех же 60% инцидент бы не открыл.
+func TestEvaluatorHostOverrideOpensBelowProjectThreshold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedEvalProject(t, pool)
+	h := seedEvalHost(t, pool, pid, "web-01")
+	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.60, time.Minute)
+
+	overrides := host.NewHostOverrideService(pool)
+	on := true
+	threshold := 0.50
+	if err := overrides.Save(ctx, h.ID, host.ThresholdOverride{DiskEnabled: &on, DiskThreshold: &threshold}); err != nil {
+		t.Fatalf("save override: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	eval := newEvaluator(pool, ch, notifier)
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	_, open, err := incidents.OpenFor(ctx, h.ID, "disk")
+	if err != nil {
+		t.Fatalf("OpenFor: %v", err)
+	}
+	if !open {
+		t.Error("disk incident must be open at 60% против эффективного (host-override) порога 0.50 — проектный 0.90 при этой утилизации не открыл бы")
+	}
+}
+
+// TestEvaluatorDisablingViaOverrideResolvesOpenIncident — M-A (брифа Task
+// 5): host-override, выключивший вид, у которого уже есть открытый
+// инцидент, обязан этот инцидент закрыть на следующем тике — иначе он висел
+// бы открытым вечно (ручного закрытия инцидента хоста в интерфейсе нет).
+func TestEvaluatorDisablingViaOverrideResolvesOpenIncident(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedEvalProject(t, pool)
+	h := seedEvalHost(t, pool, pid, "web-01")
+	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
+
+	notifier := &fakeNotifier{}
+	eval := newEvaluator(pool, ch, notifier)
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick 1: %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	in, open, err := incidents.OpenFor(ctx, h.ID, "disk")
+	if err != nil {
+		t.Fatalf("OpenFor after tick 1: %v", err)
+	}
+	if !open {
+		t.Fatal("disk incident must be open after 0.95 > 0.90 (setup)")
+	}
+
+	overrides := host.NewHostOverrideService(pool)
+	off := false
+	if err := overrides.Save(ctx, h.ID, host.ThresholdOverride{DiskEnabled: &off}); err != nil {
+		t.Fatalf("save override: %v", err)
+	}
+
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick 2: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, "SELECT status FROM host_incidents WHERE id = $1", in.ID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "resolved" {
+		t.Errorf("status = %q, want resolved (M-A: выключенный override'ом вид должен закрыть открытый инцидент хоста)", status)
 	}
 }

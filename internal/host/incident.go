@@ -159,6 +159,33 @@ func (s *IncidentService) ResolveOpenByProjectKind(ctx context.Context, projectI
 	return tag.RowsAffected(), nil
 }
 
+// ResolveOpenByHostKind закрывает открытый инцидент КОНКРЕТНОГО хоста
+// данного вида, если он есть, и возвращает 1 (или 0, если открытого не
+// было).
+//
+// Зеркало ResolveOpenByProjectKind, но по одному хосту: каскад порогов
+// (Task 4/5) может выключить вид ТОЧЕЧНО на одном хосте (host-override) или
+// группе (role/env-override), а не на всём проекте, и в этом случае закрывать
+// инциденты всех хостов проекта разом было бы неверно — соседей с включённым
+// видом это задело бы напрасно. Evaluator.Tick зовёт этот метод для хоста,
+// чей эффективный порог (Task 4) выключен, а открытый инцидент есть — иначе
+// он висел бы открытым вечно: ручного закрытия инцидента хоста в интерфейсе
+// нет.
+//
+// Уведомление о закрытии здесь тоже НЕ ставится в очередь — по той же
+// причине, что и у ResolveOpenByProjectKind: порог выключил сам оператор
+// (или его собственная настройка каскада), и «инцидент закрыт» в канал — это
+// шум о его же действии, а не новость.
+func (s *IncidentService) ResolveOpenByHostKind(ctx context.Context, hostID int64, kind string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE host_incidents SET status = 'resolved', resolved_at = now()
+		WHERE host_id = $1 AND kind = $2 AND status = 'open'`, hostID, kind)
+	if err != nil {
+		return 0, fmt.Errorf("host: resolve open incidents by host kind: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // MarkNotified фиксирует отправку уведомления (open → notified_open, иначе
 // notified_close).
 func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool) error {

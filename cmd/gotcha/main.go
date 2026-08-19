@@ -1166,6 +1166,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Settings:  host.NewSettingsService(pg),
 		Incidents: host.NewIncidentService(pg),
 		Metrics:   metric.NewQuery(ch),
+		Overrides: host.NewHostOverrideService(pg),
+		Groups:    host.NewGroupThresholdService(pg),
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
