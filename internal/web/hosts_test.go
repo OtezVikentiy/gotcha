@@ -584,6 +584,9 @@ func TestHostNewBadgeBoundary(t *testing.T) {
 	rows := []templates.HostRowVM{
 		{Name: "web-1", StatusKind: "ok", IsNew: now.Sub(now.Add(-23*time.Hour)) < hostNewWindow},
 		{Name: "web-2", StatusKind: "ok", IsNew: now.Sub(now.Add(-25*time.Hour)) < hostNewWindow},
+		// web-3 — ровно на границе (first_seen ровно 24ч назад): сравнение
+		// строгое (<), поэтому IsNew=false, как и у 25ч-хоста.
+		{Name: "web-3", StatusKind: "ok", IsNew: now.Sub(now.Add(-24*time.Hour)) < hostNewWindow},
 	}
 	var sb strings.Builder
 	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {

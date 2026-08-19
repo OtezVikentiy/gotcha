@@ -152,10 +152,10 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 				<span class="badge badge-info">{ i18n.T(ctx, "hosts.badge.new") }</span>
 			}
 			if vm.Host.Environment != "" {
-				<span class="badge badge-neutral">{ vm.Host.Environment }</span>
+				<span class="badge badge-neutral" title={ i18n.T(ctx, "hosts.col.environment") }>{ vm.Host.Environment }</span>
 			}
 			if vm.Host.Role != "" {
-				<span class="badge badge-neutral">{ vm.Host.Role }</span>
+				<span class="badge badge-neutral" title={ i18n.T(ctx, "hosts.col.role") }>{ vm.Host.Role }</span>
 			}
 			<p class="logs-link"><a href={ templ.URL(logsForHostPath(vm.ProjectID, vm.Host.Name)) }>{ i18n.T(ctx, "hosts.detail.view_logs") }</a></p>
 

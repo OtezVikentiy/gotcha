@@ -403,6 +403,7 @@ templ hostsFilterBar(projectID int64, filter HostsFilterVM, facets HostsFacets) 
 			}
 		</div>
 		<div class="hosts-filter-group">
+			<span class="hosts-filter-label">{ i18n.T(ctx, "hosts.filter.age") }</span>
 			<a class={ hostsFacetValueClass(filter.NewOnly) } href={ templ.URL(hostsNewFilterURL(projectID, filter)) } if filter.NewOnly { aria-current="page" }>{ i18n.T(ctx, "hosts.filter.new") }</a>
 		</div>
 		<div class="hosts-filter-group">

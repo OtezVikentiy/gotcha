@@ -290,7 +290,13 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 				// записи (301-316). Для метки хоста это корректно: кардинальный гард
 				// к строке hosts не нужен, потолок хостов держит MaxHostsPerProject.
 				Environment: points[i].Environment,
-				Role:        roles[raw],
+				// Role — non-empty-wins по ресурсам батча (hostRolesByRawHost), а
+				// Environment здесь берётся с первого ресурса хоста, встреченного
+				// в points (seen-дедуп выше). Если один хост в одном батче разбит
+				// на несколько ResourceMetrics с расходящимися метками (мисконфиг
+				// источника, не штатный случай) — источники могут разойтись;
+				// самоизлечивается на следующем тике non-empty-wins. Риск ~0.
+				Role: roles[raw],
 			})
 		}
 		if len(hosts) > 0 {
