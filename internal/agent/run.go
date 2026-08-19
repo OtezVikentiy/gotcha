@@ -41,12 +41,14 @@ const maxDrainPerTick = 8
 // бэкофф с полом из Retry-After сервера (429): повторные ошибки не должны
 // долбить недоступный/квотированный инстанс на каждом тике.
 type runner struct {
-	hostname  string
-	collector *Collector
-	sender    *Sender
-	buffer    *Buffer
-	log       *slog.Logger
-	rng       *rand.Rand // джиттер бэкоффа (thundering herd), seed — см. seedFromHost
+	hostname    string
+	environment string // resource-метка deployment.environment; "" — не эмитится
+	role        string // resource-метка host.role; "" — не эмитится
+	collector   *Collector
+	sender      *Sender
+	buffer      *Buffer
+	log         *slog.Logger
+	rng         *rand.Rand // джиттер бэкоффа (thundering herd), seed — см. seedFromHost
 
 	notBefore time.Time
 	fails     int
@@ -84,12 +86,14 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	probes := DefaultProbes()
 	probes.Procs = throttledProcs(probes.Procs, time.Now, procsProbeInterval)
 	r := &runner{
-		hostname:  hostname,
-		collector: NewCollector(probes),
-		sender:    sender,
-		buffer:    NewBuffer(bufferMaxBatches, bufferMaxBytes),
-		log:       logger,
-		rng:       rand.New(rand.NewSource(seedFromHost(hostname, os.Getpid()))),
+		hostname:    hostname,
+		environment: cfg.Environment,
+		role:        cfg.Role,
+		collector:   NewCollector(probes),
+		sender:      sender,
+		buffer:      NewBuffer(bufferMaxBatches, bufferMaxBytes),
+		log:         logger,
+		rng:         rand.New(rand.NewSource(seedFromHost(hostname, os.Getpid()))),
 	}
 
 	// Стартовый баннер (ops-MED, немота): здоровый агент до этой правки не
@@ -132,7 +136,7 @@ func (r *runner) tick(ctx context.Context, now time.Time) {
 		r.log.Warn("agent: all content probes empty for this tick, skipping")
 		return
 	}
-	body, err := EncodeBody(BuildExport(r.hostname, s))
+	body, err := EncodeBody(BuildExport(r.hostname, r.environment, r.role, s))
 	if err != nil {
 		r.log.Error("agent: export encoding failed", "error", err)
 		return

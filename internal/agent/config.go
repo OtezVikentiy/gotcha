@@ -19,6 +19,8 @@ type Config struct {
 	CACert             string        // путь к PEM CA (самоподписанные инстансы)
 	Interval           time.Duration // 10s..5m, дефолт 30s
 	InsecureSkipVerify bool          // крайнее средство; рекомендуемый путь — CACert
+	Environment        string        // resource-метка deployment.environment; "" — не эмитится
+	Role               string        // resource-метка host.role; "" — не эмитится
 }
 
 const (
@@ -31,11 +33,13 @@ const (
 // без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		Endpoint: strings.TrimRight(getenv("GOTCHA_AGENT_ENDPOINT"), "/"),
-		Key:      getenv("GOTCHA_AGENT_KEY"),
-		Hostname: getenv("GOTCHA_AGENT_HOSTNAME"),
-		CACert:   getenv("GOTCHA_AGENT_CA_CERT"),
-		Interval: defaultInterval,
+		Endpoint:    strings.TrimRight(getenv("GOTCHA_AGENT_ENDPOINT"), "/"),
+		Key:         getenv("GOTCHA_AGENT_KEY"),
+		Hostname:    getenv("GOTCHA_AGENT_HOSTNAME"),
+		CACert:      getenv("GOTCHA_AGENT_CA_CERT"),
+		Interval:    defaultInterval,
+		Environment: getenv("GOTCHA_AGENT_ENVIRONMENT"),
+		Role:        getenv("GOTCHA_AGENT_ROLE"),
 	}
 	if cfg.Endpoint == "" {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT is required")
