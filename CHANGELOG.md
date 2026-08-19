@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Host threshold overrides: each of the 4 built-in host thresholds (disk/memory/load/silence) can now be overridden per host or per group of hosts sharing an environment/role label, on top of the existing project-wide setting. The cascade resolves host → role → environment → project → default, per threshold kind, with enabled/value resolved independently — so a level can inherit one and override the other. Every level offers three states: inherit, override, or turn off. Per-host overrides live in a new block on the host's card (read-only for non-operators, showing the effective value and its source); group rules by environment or role live in a new block on the threshold settings page.
+
 ## [0.14.0] - 2026-08-19
 
 ### Added
