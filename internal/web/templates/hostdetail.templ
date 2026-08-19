@@ -1,7 +1,9 @@
 package templates
 
 import (
+	"context"
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -63,10 +65,225 @@ type HostDetailVM struct {
 	// T5) — тем же окном и правилом, что row.IsNew в списке (T7): бейдж
 	// «новый» в шапке карточки и в строке списка означает одно и то же.
 	IsNew bool
+
+	// Override — текущий per-host override этого хоста (B2, T6),
+	// host.HostOverrideService.Get: nil-поля = «наследовать» на этом виде.
+	// Форма блока «Пороги этого хоста» строит из него режим radio-группы
+	// (thresholdMode) при первом открытии (ThresholdsForm == nil).
+	Override host.ThresholdOverride
+	// Effective — результат ThresholdResolver.Effective(Host) (T3-T5):
+	// каскад host-override → role-group → env-group → project → default,
+	// отдельно по каждому из 4 видов. Источник каждого вида (Source) — для
+	// подписи «действует: 90% (проект)» рядом с полем формы/в readonly-виде.
+	Effective host.EffectiveSettings
+	// ThresholdsForm — введённые значения формы порогов при переотрисовке
+	// после ошибки валидации (hostThresholdsSave, 422) — тот же приём, что
+	// form у HostSettings. nil на первом открытии (GET) — тогда поля формы
+	// берут значения из Override/Effective.
+	ThresholdsForm FormState
+	// ThresholdsErr — сообщение об ошибке валидации формы порогов (пусто на
+	// первом открытии).
+	ThresholdsErr string
 }
 
 func hostDeleteLink(projectID int64, name string) string {
 	return hostLink(projectID, name) + "/delete"
+}
+
+func hostThresholdsPath(projectID int64, name string) string {
+	return hostLink(projectID, name) + "/thresholds"
+}
+
+// thresholdMode — режим формы «Пороги этого хоста» (B2, T6) для одного вида
+// порога: nil Enabled → "inherit" (наследовать со следующего уровня
+// каскада), non-nil true → "override" (пришпилено на этом хосте), non-nil
+// false → "off" (выключено на этом хосте). Тот же смысл, что у
+// ThresholdOverride в резолвере (host/resolve.go), в терминах трёх кнопок UI.
+func thresholdMode(enabled *bool) string {
+	if enabled == nil {
+		return "inherit"
+	}
+	if *enabled {
+		return "override"
+	}
+	return "off"
+}
+
+// thresholdModeFor — выбранный radio с учётом ThresholdsForm (переотрисовка
+// после ошибки валидации, form.Get побеждает) или, на первом открытии,
+// текущего Override (thresholdMode).
+func thresholdModeFor(form FormState, field string, current *bool) string {
+	return form.Get(field, thresholdMode(current))
+}
+
+// thresholdPercentValue/thresholdFloatValue/thresholdMinutesValue —
+// значение числового поля формы по умолчанию: текущий override, если задан,
+// иначе текущее ЭФФЕКТИВНОЕ значение (каскада) — переключение radio на
+// "Переопределить" начинается не с нуля, а с уже действующего числа.
+// Конвертация в проценты/минуты — та же граница, что у settingsPercentDefault
+// и settingsMinutesDefault (hostsettings.templ).
+func thresholdPercentValue(ov *float64, effective float64) string {
+	if ov != nil {
+		return settingsPercentDefault(*ov)
+	}
+	return settingsPercentDefault(effective)
+}
+
+func thresholdFloatValue(ov *float64, effective float64) string {
+	if ov != nil {
+		return settingsFloatDefault(*ov)
+	}
+	return settingsFloatDefault(effective)
+}
+
+func thresholdMinutesValue(ov *time.Duration, effective time.Duration) string {
+	if ov != nil {
+		return settingsMinutesDefault(*ov)
+	}
+	return settingsMinutesDefault(effective)
+}
+
+// thresholdEffectiveLabel — подпись «действует: 90% (проект)» / «действует:
+// выключено (роль web)»: значение из EffectiveSettings, форматированное
+// host.ValueLabel (тот же формат, что у значений инцидентов этой же
+// карточки, hostIncidentRow), плюс источник (ThresholdSource.Level/Label,
+// ключи host.threshold.effective_from.* — level уже совпадает с их
+// суффиксом: "host"/"role"/"env"/"project"/"default"). value — сырое
+// значение вида (доля для disk/memory, само число для load, СЕКУНДЫ для
+// silent — вызывающий передаёт SilentAfter.Seconds(), контракт
+// host.ValueLabel).
+func thresholdEffectiveLabel(ctx context.Context, kind string, enabled bool, value float64, src host.ThresholdSource) string {
+	valueText := i18n.T(ctx, "host.threshold.off_value")
+	if enabled {
+		valueText = host.ValueLabel(ctx, kind, value)
+	}
+	return i18n.Tf(ctx, "host.threshold.effective_from."+string(src.Level), "value", valueText, "label", src.Label)
+}
+
+// hostThresholdsSection — блок «Пороги этого хоста» (B2, T6): у оператора —
+// форма per-host override по 4 видам (наследовать/переопределить/выключить +
+// значение), у остальных — тот же набор readonly (эффективные значения +
+// источник, без формы). CanOperate — то же поле VM, что скрывает кнопку
+// удаления ниже.
+templ hostThresholdsSection(vm HostDetailVM) {
+	<section class="host-thresholds">
+		<h2>{ i18n.T(ctx, "host.threshold.title") }</h2>
+		if vm.ThresholdsErr != "" {
+			<p class="error" id="host-thresholds-error">{ vm.ThresholdsErr }</p>
+		}
+		if vm.CanOperate {
+			<form method="post" action={ templ.URL(hostThresholdsPath(vm.ProjectID, vm.Host.Name)) } class="host-thresholds-form">
+				<fieldset class="card th-kind">
+					<legend class="card-header">{ i18n.T(ctx, "host.threshold.disk") }</legend>
+					<p class="hint">{ thresholdEffectiveLabel(ctx, "disk", vm.Effective.Settings.DiskEnabled, vm.Effective.Settings.DiskThreshold, vm.Effective.DiskSource) }</p>
+					<div class="segmented">
+						<label>
+							<input type="radio" name="disk_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "inherit" }/>
+							{ i18n.T(ctx, "host.threshold.inherit") }
+						</label>
+						<label>
+							<input type="radio" name="disk_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "override" }/>
+							{ i18n.T(ctx, "host.threshold.override") }
+						</label>
+						<label>
+							<input type="radio" name="disk_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "off" }/>
+							{ i18n.T(ctx, "host.threshold.off") }
+						</label>
+					</div>
+					<div class="field th-disk-value">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
+							<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
+								value={ vm.ThresholdsForm.Get("disk_value", thresholdPercentValue(vm.Override.DiskThreshold, vm.Effective.Settings.DiskThreshold)) }/>
+						</label>
+					</div>
+				</fieldset>
+				<fieldset class="card th-kind">
+					<legend class="card-header">{ i18n.T(ctx, "host.threshold.memory") }</legend>
+					<p class="hint">{ thresholdEffectiveLabel(ctx, "memory", vm.Effective.Settings.MemoryEnabled, vm.Effective.Settings.MemoryThreshold, vm.Effective.MemorySource) }</p>
+					<div class="segmented">
+						<label>
+							<input type="radio" name="memory_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "inherit" }/>
+							{ i18n.T(ctx, "host.threshold.inherit") }
+						</label>
+						<label>
+							<input type="radio" name="memory_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "override" }/>
+							{ i18n.T(ctx, "host.threshold.override") }
+						</label>
+						<label>
+							<input type="radio" name="memory_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "off" }/>
+							{ i18n.T(ctx, "host.threshold.off") }
+						</label>
+					</div>
+					<div class="field th-memory-value">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
+							<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
+								value={ vm.ThresholdsForm.Get("memory_value", thresholdPercentValue(vm.Override.MemoryThreshold, vm.Effective.Settings.MemoryThreshold)) }/>
+						</label>
+					</div>
+				</fieldset>
+				<fieldset class="card th-kind">
+					<legend class="card-header">{ i18n.T(ctx, "host.threshold.load") }</legend>
+					<p class="hint">{ thresholdEffectiveLabel(ctx, "load", vm.Effective.Settings.LoadEnabled, vm.Effective.Settings.LoadThreshold, vm.Effective.LoadSource) }</p>
+					<div class="segmented">
+						<label>
+							<input type="radio" name="load_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "inherit" }/>
+							{ i18n.T(ctx, "host.threshold.inherit") }
+						</label>
+						<label>
+							<input type="radio" name="load_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "override" }/>
+							{ i18n.T(ctx, "host.threshold.override") }
+						</label>
+						<label>
+							<input type="radio" name="load_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "off" }/>
+							{ i18n.T(ctx, "host.threshold.off") }
+						</label>
+					</div>
+					<div class="field th-load-value">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
+							<input type="number" class="input" name="load_value" min="0.1" step="0.1"
+								value={ vm.ThresholdsForm.Get("load_value", thresholdFloatValue(vm.Override.LoadThreshold, vm.Effective.Settings.LoadThreshold)) }/>
+						</label>
+					</div>
+				</fieldset>
+				<fieldset class="card th-kind">
+					<legend class="card-header">{ i18n.T(ctx, "host.threshold.silent") }</legend>
+					<p class="hint">{ thresholdEffectiveLabel(ctx, "silent", vm.Effective.Settings.SilentEnabled, vm.Effective.Settings.SilentAfter.Seconds(), vm.Effective.SilentSource) }</p>
+					<div class="segmented">
+						<label>
+							<input type="radio" name="silent_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "inherit" }/>
+							{ i18n.T(ctx, "host.threshold.inherit") }
+						</label>
+						<label>
+							<input type="radio" name="silent_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "override" }/>
+							{ i18n.T(ctx, "host.threshold.override") }
+						</label>
+						<label>
+							<input type="radio" name="silent_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "off" }/>
+							{ i18n.T(ctx, "host.threshold.off") }
+						</label>
+					</div>
+					<div class="field th-silent-value">
+						<label>
+							{ i18n.T(ctx, "hosts.settings.field.silent_after") }
+							<input type="number" class="input" name="silent_value" min="3" max="720" step="1"
+								value={ vm.ThresholdsForm.Get("silent_value", thresholdMinutesValue(vm.Override.SilentAfter, vm.Effective.Settings.SilentAfter)) }/>
+						</label>
+					</div>
+				</fieldset>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "hosts.settings.submit") }</button>
+			</form>
+		} else {
+			<ul class="host-thresholds-readonly">
+				<li>{ i18n.T(ctx, "host.threshold.disk") }: { thresholdEffectiveLabel(ctx, "disk", vm.Effective.Settings.DiskEnabled, vm.Effective.Settings.DiskThreshold, vm.Effective.DiskSource) }</li>
+				<li>{ i18n.T(ctx, "host.threshold.memory") }: { thresholdEffectiveLabel(ctx, "memory", vm.Effective.Settings.MemoryEnabled, vm.Effective.Settings.MemoryThreshold, vm.Effective.MemorySource) }</li>
+				<li>{ i18n.T(ctx, "host.threshold.load") }: { thresholdEffectiveLabel(ctx, "load", vm.Effective.Settings.LoadEnabled, vm.Effective.Settings.LoadThreshold, vm.Effective.LoadSource) }</li>
+				<li>{ i18n.T(ctx, "host.threshold.silent") }: { thresholdEffectiveLabel(ctx, "silent", vm.Effective.Settings.SilentEnabled, vm.Effective.Settings.SilentAfter.Seconds(), vm.Effective.SilentSource) }</li>
+			</ul>
+		}
+	</section>
 }
 
 // hostChartCard — карточка одного графика: заголовок, SVG+легенда либо
@@ -252,6 +469,8 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 					</div>
 				}
 			</section>
+
+			@hostThresholdsSection(vm)
 
 			if vm.CanOperate {
 				<form method="post" action={ templ.URL(hostDeleteLink(vm.ProjectID, vm.Host.Name)) } class="host-actions">

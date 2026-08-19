@@ -941,6 +941,11 @@ func run() error {
 		webHandler.Hosts = host.NewStore(pg)
 		webHandler.HostIncidents = host.NewIncidentService(pg)
 		webHandler.HostSettings = host.NewSettingsService(pg)
+		// HostOverrides/GroupThresholds (план B2): та же ниша, что тройка выше
+		// — карточка хоста показывает и правит per-host override поверх
+		// каскада host→role→env→project→default (ThresholdResolver).
+		webHandler.HostOverrides = host.NewHostOverrideService(pg)
+		webHandler.GroupThresholds = host.NewGroupThresholdService(pg)
 		// hostToucher остаётся nil в чистом web-режиме (создаётся только в
 		// ingest-блоке выше) — тогда HostForget остаётся настоящим nil-
 		// интерфейсом (см. комментарий поля), а не typed-nil, на котором

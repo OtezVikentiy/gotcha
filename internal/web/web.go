@@ -245,6 +245,18 @@ type Handler struct {
 	Hosts         *host.Store
 	HostIncidents *host.IncidentService
 	HostSettings  *host.SettingsService
+	// HostOverrides — per-host переопределения порогов (план B2, T6):
+	// карточка хоста читает/пишет их через ThresholdResolver.Effective (см.
+	// hosts.go renderHostDetail/hostThresholdsSave). nil-guard в hostDetail —
+	// такой же, как у Hosts/HostIncidents/HostSettings (main.go всегда
+	// проставляет их вместе).
+	HostOverrides *host.HostOverrideService
+	// GroupThresholds — групповые пороги по role/env (план B2, T7). Отдельно
+	// от HostOverrides по nil-безопасности: пока T7 не отгружен, поле может
+	// оставаться nil даже когда HostOverrides уже проставлен — резолвер
+	// (ThresholdResolver.Groups) трактует nil/пустой список так же, как
+	// «групповых порогов нет», каскад просто идёт дальше к project/default.
+	GroupThresholds *host.GroupThresholdService
 	// HostForget — инвалидация троттлера регистрации хостов (host.Toucher)
 	// при удалении хоста (Task 15): следующий Touch того же имени не должен
 	// молча проглатываться троттлингом, будто хост уже зарегистрирован.
@@ -560,6 +572,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsPage)))
 	inner.Handle("POST /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsSave)))
 	inner.Handle("GET /projects/{id}/hosts/{name}", h.requireUser(http.HandlerFunc(h.hostDetail)))
+	inner.Handle("POST /projects/{id}/hosts/{name}/thresholds", h.requireUser(http.HandlerFunc(h.hostThresholdsSave)))
 	inner.Handle("POST /projects/{id}/hosts/{name}/delete", h.requireUser(http.HandlerFunc(h.hostDelete)))
 
 	// Логи (C2, задача 2): базовый просмотрщик — фильтры/список/раскрытие/

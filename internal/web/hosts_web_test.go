@@ -33,6 +33,8 @@ type hostsStack struct {
 	hosts     *host.Store
 	incidents *host.IncidentService
 	settings  *host.SettingsService
+	overrides *host.HostOverrideService
+	groups    *host.GroupThresholdService
 }
 
 // fakeHostForgetter реализует web.HostForgetter без реального host.Toucher —
@@ -76,16 +78,21 @@ func newHostsStack(t *testing.T, wireMetrics bool) *hostsStack {
 	hostsStore := host.NewStore(pool)
 	hostIncidents := host.NewIncidentService(pool)
 	hostSettings := host.NewSettingsService(pool)
+	hostOverrides := host.NewHostOverrideService(pool)
+	groupThresholds := host.NewGroupThresholdService(pool)
 	if wireMetrics {
 		h.Metrics = metric.NewQuery(ch)
 		h.Hosts = hostsStore
 		h.HostIncidents = hostIncidents
 		h.HostSettings = hostSettings
+		h.HostOverrides = hostOverrides
+		h.GroupThresholds = groupThresholds
 	}
 	h.Register(mux)
 	return &hostsStack{
 		pool: pool, ch: ch, srv: srv, h: h, org: orgSvc, auth: authSvc,
 		hosts: hostsStore, incidents: hostIncidents, settings: hostSettings,
+		overrides: hostOverrides, groups: groupThresholds,
 	}
 }
 
@@ -1108,6 +1115,162 @@ func TestWebHostDetailNilDeps(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("HostIncidents/HostSettings==nil status = %d, want 404 (not panic)", resp.StatusCode)
+	}
+}
+
+// TestWebHostThresholdsSaveFlow — POST /projects/{id}/hosts/{name}/thresholds
+// (B2, T6): без Origin → 403 и override не меняется; чужой (не оператор) →
+// 404 (requireProjectOperator); валидный POST по трём режимам (override/off/
+// inherit) → 303 на карточку + flash "сохранено" + override в PG совпадает с
+// формой, а GET-карточка после сохранения показывает эффективные
+// значения/источники (host для переопределённого, "выключено" для off);
+// невалидный POST (значение вне границы) → 422 с сообщением И введённым
+// значением в форме, ранее сохранённый override НЕ подменяется мусором.
+func TestWebHostThresholdsSaveFlow(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hthr-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hthr-co", "Hthr Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hthr-proj", "Hthr Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	name := "web-01"
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+	hst, found, err := s.hosts.Get(ctx, project.ID, name)
+	if err != nil || !found {
+		t.Fatalf("get host: found=%v err=%v", found, err)
+	}
+
+	detailPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + name
+	savePath := detailPath + "/thresholds"
+
+	// GET без override — форма оператора, все режимы "inherit" (нет
+	// сохранённой строки override), эффективные значения — дефолт проекта
+	// (проектных настроек тоже ещё нет — host.DefaultSettings, LevelDefault).
+	resp := getWithCookie(t, s.srv, detailPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `class="host-thresholds-form"`) {
+		t.Errorf("оператору не показана форма порогов: %s", body)
+	}
+
+	validForm := url.Values{
+		"disk_mode": {"override"}, "disk_value": {"50"},
+		"memory_mode": {"off"},
+		"load_mode":   {"inherit"},
+		"silent_mode": {"override"}, "silent_value": {"10"},
+	}
+
+	// Без Origin → 403, override не сохраняется.
+	resp = postForm(t, s.srv, savePath, validForm, "", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
+	}
+	if got, err := s.overrides.Get(ctx, hst.ID); err != nil || got.DiskEnabled != nil {
+		t.Fatalf("override изменился без Origin: %+v, err=%v", got, err)
+	}
+
+	// Чужой (не член организации, не оператор) → 404, override не меняется.
+	_, outsider := orgSettingsRegister(t, s.auth, "hthr-outsider@example.com")
+	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider POST status = %d, want 404", resp.StatusCode)
+	}
+
+	// Валидный POST → 303 на карточку, flash "сохранено", override в PG.
+	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("valid POST status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != detailPath {
+		t.Fatalf("Location = %q, want %q", loc, detailPath)
+	}
+	if !hasFlashCookie(resp, "ok|flash.saved") {
+		t.Errorf("после сохранения порогов нет flash-cookie: %v", resp.Header.Values("Set-Cookie"))
+	}
+	saved, err := s.overrides.Get(ctx, hst.ID)
+	if err != nil {
+		t.Fatalf("get saved override: %v", err)
+	}
+	if saved.DiskEnabled == nil || !*saved.DiskEnabled || saved.DiskThreshold == nil || *saved.DiskThreshold != 0.50 {
+		t.Errorf("disk override = %+v, want enabled=true value=0.50", saved.DiskEnabled)
+	}
+	if saved.MemoryEnabled == nil || *saved.MemoryEnabled {
+		t.Errorf("memory override enabled = %v, want false (off)", saved.MemoryEnabled)
+	}
+	if saved.MemoryThreshold != nil {
+		t.Errorf("memory override value = %v, want nil (off без значения)", *saved.MemoryThreshold)
+	}
+	if saved.LoadEnabled != nil {
+		t.Errorf("load override enabled = %v, want nil (inherit)", saved.LoadEnabled)
+	}
+	if saved.SilentEnabled == nil || !*saved.SilentEnabled || saved.SilentAfter == nil || *saved.SilentAfter != 10*time.Minute {
+		t.Errorf("silent override = %+v, want enabled=true value=10m", saved.SilentEnabled)
+	}
+
+	// GET после сохранения — эффективные значения отражают override:
+	// disk 50% (источник — этот хост), memory «выключено».
+	resp = getWithCookie(t, s.srv, detailPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text := string(body)
+	if !strings.Contains(text, "50.0%") {
+		t.Errorf("карточка после сохранения не показывает эффективные 50%% диска: %s", text)
+	}
+	if !strings.Contains(text, "выключено") {
+		t.Errorf("карточка после сохранения не показывает «выключено» для памяти: %s", text)
+	}
+
+	// Невалидный POST (диск вне границы 1..100%) → 422, сообщение + введённое
+	// значение в форме, ранее сохранённый override НЕ подменяется мусором.
+	invalidForm := url.Values{
+		"disk_mode": {"override"}, "disk_value": {"150"},
+		"memory_mode": {"off"},
+		"load_mode":   {"inherit"},
+		"silent_mode": {"override"}, "silent_value": {"10"},
+	}
+	resp = postForm(t, s.srv, savePath, invalidForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid disk POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	text = string(body)
+	if !strings.Contains(text, `value="150"`) {
+		t.Errorf("422-ответ не вернул введённое значение disk_value=150 в форму: %s", text)
+	}
+	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
+		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
+	}
+	stillSaved, err := s.overrides.Get(ctx, hst.ID)
+	if err != nil {
+		t.Fatalf("get override after invalid POST: %v", err)
+	}
+	if stillSaved.DiskThreshold == nil || *stillSaved.DiskThreshold != 0.50 {
+		t.Errorf("невалидный POST изменил сохранённый override диска: %+v, want 0.50", stillSaved.DiskThreshold)
+	}
+
+	// Несуществующее имя хоста → 404.
+	resp = postForm(t, s.srv, "/projects/"+strconv.FormatInt(project.ID, 10)+"/hosts/no-such-host/thresholds", validForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing host POST status = %d, want 404", resp.StatusCode)
 	}
 }
 
