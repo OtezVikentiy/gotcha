@@ -68,7 +68,7 @@ func hostExists(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 // openIncident открывает инцидент вида kind у хоста.
 func openIncident(t *testing.T, svc *host.IncidentService, projectID int64, h host.Host, kind string) host.Incident {
 	t.Helper()
-	in, created, err := svc.Open(context.Background(), projectID, h.ID, kind, 0.99, "")
+	in, created, err := svc.Open(context.Background(), projectID, h.ID, kind, 0.99, "", false)
 	if err != nil || !created {
 		t.Fatalf("open incident %s: created=%v err=%v", kind, created, err)
 	}

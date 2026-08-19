@@ -1109,6 +1109,14 @@ func run() error {
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
 	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
 	selfMetrics *selfmetrics.Registry) {
+	// maint — окна обслуживания проекта (план B3): подавляет open/close-
+	// уведомления инцидентов всех источников оценщиков ниже (host сейчас,
+	// metric/trace/profile/slo следом). uptimeSvc:385 здесь НЕ переиспользуем —
+	// он строится только в режимах uptime|all, а startEvaluators зовётся и без
+	// них (GOTCHA_RUN_EVALUATORS); uptime.NewService(pg) требует только пул,
+	// тот же приём уже применён ниже для sloEval (:1216).
+	maint := uptime.NewService(pg)
+
 	evaluator := &trace.Evaluator{
 		Pool:        pg,
 		Query:       trace.NewQuery(ch),
@@ -1173,6 +1181,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Metrics:   metric.NewQuery(ch),
 		Overrides: host.NewHostOverrideService(pg),
 		Groups:    host.NewGroupThresholdService(pg),
+		Maint:     maint,
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
