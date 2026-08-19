@@ -827,7 +827,7 @@
     "project.settings.regressions.floor_fcp.help": "Нижний порог для FCP (мс): регрессии FCP ниже этого абсолютного значения не поднимаются.",
     "project.settings.regressions.floor_ttfb.help": "Нижний порог для TTFB (мс): регрессии TTFB ниже этого абсолютного значения не поднимаются.",
     "project.settings.regressions.enabled": "Включено (enabled)",
-    "project.settings.regressions.seasonal_enabled": "Сезонный baseline (тот же день недели × час)",
+    "project.settings.regressions.seasonal_enabled": "Сезонная база (тот же день недели × час)",
     "project.settings.regressions.seasonal_weeks": "Недель истории (seasonal_weeks)",
     "project.settings.regressions.seasonal_weeks.help": "Сколько прошлых недель берётся в сезонный слот: по каждой неделе считается p95/p75 в том же окне того же дня недели, итог — их медиана.",
     "project.settings.regressions.seasonal_hint": "Сравнивать метрику с тем же часом того же дня недели за прошлые недели; при нехватке истории — скользящая база. Окно по UTC.",

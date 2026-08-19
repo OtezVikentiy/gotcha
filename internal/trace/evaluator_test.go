@@ -268,6 +268,93 @@ func TestEvaluatorSeasonalOpensAndFallback(t *testing.T) {
 	}
 }
 
+// TestEvaluatorSeasonalVitalPartialFallback покрывает vital-ветку сезонного
+// оценщика e2e (SeasonalBaselineVitalP75s + пер-ключевой merge fallback), которую
+// TestEvaluatorSeasonalOpensAndFallback не исполняет (там только эндпойнты). Самое
+// нетривиальное — merge «переопределить только недобравшие ключи (страница,
+// метрика), набравшие оставить сезонными» — до этого теста e2e не проверялось.
+//
+// Одна страница, две метрики с разной судьбой:
+//   - lcp: сезонный слот ~200 за 3 недели (в окне [now−60м, now), сдвинутом на
+//     7/14/21 сут) + свежий скачок 600 → открывается по СЕЗОННОМУ коридору
+//     (600 > 200×1.25 и > 200+floorLCP(200)); baseline_value ≈ 200. Слоты лежат
+//     ≥7 сут назад — скользящей истории у lcp нет, при скользящем base не открылся бы.
+//   - inp: сезонной истории НЕТ (слот < min_samples) → страница попадает в добор,
+//     но переопределяется ТОЛЬКО ключ inp: дневная база ~150 за 6 суток внутри
+//     скользящего окна + свежий скачок 500 → открывается по СКОЛЬЗЯЩЕМУ коридору
+//     (500 > 150×1.25 и > 150+floorINP(50)); baseline_value ≈ 150.
+//
+// Совпадение ОБЕИХ баз (lcp≈200 сезонный, inp≈150 скользящий) на одной странице
+// доказывает частичный merge: затри он набравший ключ или не добери недобравший —
+// одна из баз оказалась бы не той или инцидент не открылся.
+func TestEvaluatorSeasonalVitalPartialFallback(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	defer cancel()
+
+	ev := &Evaluator{
+		Pool:         pool,
+		Query:        NewQuery(conn),
+		Regressions:  NewRegressionService(pool),
+		TopK:         50,
+		BaselineDays: 7,
+	}
+
+	pid := createEvalProject(t, pool, "eval-seasonal-vital")
+	setRegConfig(t, ctx, pool, pid, `{"seasonal_enabled":true,"seasonal_weeks":3,"min_samples":40}`)
+	cfg, err := RegressionConfigFromJSON(regConfigRaw(t, ctx, pool, pid))
+	if err != nil {
+		t.Fatalf("parse cfg: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(24 * time.Hour).Add(-36 * time.Hour)
+	const weekD = 7 * 24 * time.Hour
+	const page = "/vp"
+
+	w := NewSpanWriter(conn)
+	go w.Run()
+
+	// lcp: сезонный слот ~200 за 3 недели (сдвиг 7/14/21 сут) + свежий скачок 600.
+	addVitalMetricTx(w, pid, page, now.Add(-1*weekD).Add(-30*time.Minute), "lcp", 200, 60, "vl-w1")
+	addVitalMetricTx(w, pid, page, now.Add(-2*weekD).Add(-30*time.Minute), "lcp", 200, 60, "vl-w2")
+	addVitalMetricTx(w, pid, page, now.Add(-3*weekD).Add(-30*time.Minute), "lcp", 200, 60, "vl-w3")
+	addVitalMetricTx(w, pid, page, now.Add(-30*time.Minute), "lcp", 600, 120, "vl-rec")
+
+	// inp: сезонной истории нет; дневная база ~150 за 6 суток (внутри скользящего
+	// окна, но не в недельном слоте) + свежий скачок 500.
+	for d := 1; d <= 6; d++ {
+		addVitalMetricTx(w, pid, page, now.Add(-time.Duration(d)*24*time.Hour).Add(-30*time.Minute), "inp", 150, 60, fmt.Sprintf("vi-d%d", d))
+	}
+	addVitalMetricTx(w, pid, page, now.Add(-30*time.Minute), "inp", 500, 120, "vi-rec")
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	ev.evalProject(ctx, pid, cfg, 50, 7, now)
+
+	// Обе метрики страницы открылись; duration остался плоским (1 с) — лишнего
+	// инцидента нет, поэтому ровно 2.
+	if got := countIncidents(t, ctx, pool, pid); got != 2 {
+		t.Fatalf("vital-проход: инцидентов = %d, want 2 (lcp сезонный + inp fallback)", got)
+	}
+	if status, _, _ := incidentState(t, ctx, pool, pid, page, "lcp"); status != "open" {
+		t.Fatalf("lcp: status=%q, want open (сезонный)", status)
+	}
+	if status, _, _ := incidentState(t, ctx, pool, pid, page, "inp"); status != "open" {
+		t.Fatalf("inp: status=%q, want open (fallback скользящий)", status)
+	}
+	// Ключевое: базы разошлись — lcp остался сезонным (~200), inp ушёл в скользящий
+	// (~150). Совпадение обеих на одной странице доказывает пер-ключевой merge.
+	if lcpBase := vitalBaseline(t, ctx, pool, pid, page, "lcp"); lcpBase < 180 || lcpBase > 220 {
+		t.Fatalf("lcp baseline_value = %.0f, want ~200 (сезонный слот)", lcpBase)
+	}
+	if inpBase := vitalBaseline(t, ctx, pool, pid, page, "inp"); inpBase < 130 || inpBase > 170 {
+		t.Fatalf("inp baseline_value = %.0f, want ~150 (скользящий, не сезонный)", inpBase)
+	}
+}
+
 // regConfigRaw читает сырой perf_regression_config проекта — чтобы тест разобрал
 // его тем же RegressionConfigFromJSON, что и оценщик в проде.
 func regConfigRaw(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64) []byte {
@@ -314,6 +401,37 @@ func addVitalTx(w *SpanWriter, pid int64, name string, at time.Time, lcp float64
 			Measurements: map[string]float64{"lcp": lcp},
 		})
 	}
+}
+
+// addVitalMetricTx добавляет n pageload-транзакций страницы name с фиксированным
+// значением одной web-vital-метрики; длительность транзакции постоянна (1 с),
+// чтобы её эндпойнтный p95 не дрейфовал и не открыл лишний duration-инцидент.
+func addVitalMetricTx(w *SpanWriter, pid int64, name string, at time.Time, metric string, val float64, n int, prefix string) {
+	for i := 0; i < n; i++ {
+		w.Add(pid, pid, Transaction{
+			TraceID:      fmt.Sprintf("%s-%06d", prefix, i),
+			SpanID:       fmt.Sprintf("%s-s-%06d", prefix, i),
+			Name:         name,
+			Op:           "pageload",
+			Status:       "ok",
+			Start:        at,
+			End:          at.Add(time.Second),
+			Environment:  "production",
+			Measurements: map[string]float64{metric: val},
+		})
+	}
+}
+
+// vitalBaseline читает baseline_value инцидента vital-метрики (страница, метрика).
+func vitalBaseline(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64, target, metric string) float64 {
+	t.Helper()
+	var v float64
+	if err := pool.QueryRow(ctx,
+		"SELECT baseline_value FROM perf_regressions WHERE project_id=$1 AND target=$2 AND metric=$3",
+		pid, target, metric).Scan(&v); err != nil {
+		t.Fatalf("vital baseline_value (%s): %v", metric, err)
+	}
+	return v
 }
 
 // createEvalProject заводит проект прямыми вставками (пакет trace не зависит от

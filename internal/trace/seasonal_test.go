@@ -19,9 +19,11 @@ func TestSeasonalBaselines(t *testing.T) {
 	defer cancel()
 
 	const (
-		pEndpoint = int64(71) // сезонный endpoint: 3 недели + шум
-		pSmall    = int64(72) // одна неделя истории (малый слот, для fallback T3)
-		pVital    = int64(73) // сезонный vital (lcp)
+		pEndpoint   = int64(71) // сезонный endpoint: 3 недели + шум
+		pSmall      = int64(72) // одна неделя истории (малый слот, для fallback T3)
+		pVital      = int64(73) // сезонный vital (lcp)
+		pClamp      = int64(74) // дискриминатор клампа окна (endpoint)
+		pClampVital = int64(75) // дискриминатор клампа окна (vital)
 	)
 
 	w := trace.NewSpanWriter(conn)
@@ -87,6 +89,25 @@ func TestSeasonalBaselines(t *testing.T) {
 	addVital(pVital, "GET /vs", now.Add(-2*weekD).Add(-30*time.Minute), 1100, 20, "vs-w2")
 	addVital(pVital, "GET /vs", now.Add(-3*weekD).Add(-50*time.Minute), 900, 20, "vs-w3")
 	addVital(pVital, "GET /vs", now.Add(-30*time.Minute), 5000, 20, "vs-cur")
+
+	// pClamp «GET /c»: слот 3 недель (200мс, 60 замеров) ПЛЮС «широкие» бакеты на
+	// k=1 и k=2 с позицией-в-неделе 2 сут (>24ч, но та же неделя). При окне ≤1440
+	// (кламп) они вне слота и в базу не входят → {60, 200}. Без клампа окно 20000
+	// вырождает modulo(...)<winSec в always-true и втягивает их в недельный агрегат
+	// → {100, ~900}. Дискриминатор: снятый кламп заставляет WindowClampEndpoint упасть.
+	addEndpoint(pClamp, "GET /c", now.Add(-1*weekD).Add(-30*time.Minute), 200, 20, "c-w1")
+	addEndpoint(pClamp, "GET /c", now.Add(-2*weekD).Add(-30*time.Minute), 200, 20, "c-w2")
+	addEndpoint(pClamp, "GET /c", now.Add(-3*weekD).Add(-30*time.Minute), 200, 20, "c-w3")
+	addEndpoint(pClamp, "GET /c", now.Add(-1*weekD).Add(-2*24*time.Hour), 900, 20, "c-wide1")
+	addEndpoint(pClamp, "GET /c", now.Add(-2*weekD).Add(-2*24*time.Hour), 900, 20, "c-wide2")
+
+	// pClampVital «GET /cv» (lcp): то же для vital — слот 1000мс + широкие 3000мс на
+	// k=1/k=2. Кламп → {60, 1000}; без клампа → {100, ~3000}.
+	addVital(pClampVital, "GET /cv", now.Add(-1*weekD).Add(-30*time.Minute), 1000, 20, "cv-w1")
+	addVital(pClampVital, "GET /cv", now.Add(-2*weekD).Add(-30*time.Minute), 1000, 20, "cv-w2")
+	addVital(pClampVital, "GET /cv", now.Add(-3*weekD).Add(-30*time.Minute), 1000, 20, "cv-w3")
+	addVital(pClampVital, "GET /cv", now.Add(-1*weekD).Add(-2*24*time.Hour), 3000, 20, "cv-wide1")
+	addVital(pClampVital, "GET /cv", now.Add(-2*weekD).Add(-2*24*time.Hour), 3000, 20, "cv-wide2")
 
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -159,5 +180,56 @@ func TestSeasonalBaselines(t *testing.T) {
 		if _, err := q.SeasonalBaselineVitalP75s(ctx, pVital, []string{"GET /vs"}, []string{"bogus"}, 60, 3, now); err == nil {
 			t.Fatalf("неизвестная метрика: want error, got nil")
 		}
+	})
+
+	// WindowClamp: window_minutes сверх максимума (слот шире суток) вырождал бы
+	// фильтр modulo(...) < winSec в always-true — слот перестал бы сужать выборку и
+	// запрос сканировал бы весь ретеншен. Кламп в запросе держит окно у́же недели
+	// (≤1440 мин), поэтому абсурдно большое окно обязано давать РОВНО тот же
+	// результат, что и максимум. Сид pClamp/pClampVital содержит «широкие» бакеты
+	// (k≥1, позиция-в-неделе 2 сут), которые попадают в выборку ТОЛЬКО без клампа —
+	// поэтому при снятом клампе окно 20000 расходится с 1440 (Samples 100 vs 60,
+	// медиана ~900 vs 200) и тест падает. Дополнительно фиксируем ожидаемый
+	// «слотовый» результат, чтобы тест не был замкнут сам на себя.
+	t.Run("WindowClampEndpoint", func(t *testing.T) {
+		atMax, err := q.SeasonalBaselineEndpointP95s(ctx, pClamp, []string{"GET /c"}, 1440, 3, now)
+		if err != nil {
+			t.Fatalf("endpoint at max window: %v", err)
+		}
+		huge, err := q.SeasonalBaselineEndpointP95s(ctx, pClamp, []string{"GET /c"}, 20000, 3, now)
+		if err != nil {
+			t.Fatalf("endpoint huge window: %v", err)
+		}
+		a, h := atMax["GET /c"], huge["GET /c"]
+		if a.Samples != h.Samples || a.Value != h.Value {
+			t.Fatalf("окно 20000 != окно 1440: {%d, %.1f} vs {%d, %.1f} — кламп не сработал",
+				h.Samples, h.Value, a.Samples, a.Value)
+		}
+		// Клампнутый результат = только слот (широкие бакеты исключены): 60 замеров, медиана 200.
+		if a.Samples != 60 {
+			t.Fatalf("клампнутый Samples = %d, want 60 (широкие бакеты вне слота)", a.Samples)
+		}
+		assertNearF(t, "клампнутый base p95 ms", a.Value, 200, 1)
+	})
+
+	t.Run("WindowClampVital", func(t *testing.T) {
+		key := trace.VitalKey{Transaction: "GET /cv", Metric: "lcp"}
+		atMax, err := q.SeasonalBaselineVitalP75s(ctx, pClampVital, []string{"GET /cv"}, []string{"lcp"}, 1440, 3, now)
+		if err != nil {
+			t.Fatalf("vital at max window: %v", err)
+		}
+		huge, err := q.SeasonalBaselineVitalP75s(ctx, pClampVital, []string{"GET /cv"}, []string{"lcp"}, 20000, 3, now)
+		if err != nil {
+			t.Fatalf("vital huge window: %v", err)
+		}
+		a, h := atMax[key], huge[key]
+		if a.Samples != h.Samples || a.Value != h.Value {
+			t.Fatalf("vital окно 20000 != окно 1440: {%d, %.1f} vs {%d, %.1f} — кламп не сработал",
+				h.Samples, h.Value, a.Samples, a.Value)
+		}
+		if a.Samples != 60 {
+			t.Fatalf("vital клампнутый Samples = %d, want 60 (широкие бакеты вне слота)", a.Samples)
+		}
+		assertNearF(t, "vital клампнутый base p75", a.Value, 1000, 1)
 	})
 }

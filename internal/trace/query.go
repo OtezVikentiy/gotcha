@@ -1250,6 +1250,14 @@ func (q *Query) BaselineEndpointP95s(ctx context.Context, projectID int64, trans
 	return out, rows.Err()
 }
 
+// maxSeasonalWindowMinutes ограничивает окно сезонного слота. Слот «того же дня
+// недели × часа» шире суток теряет смысл, а window_minutes ≥ недели вырождает
+// фильтр modulo(...) < winSec в always-true — слот перестаёт сужать выборку и
+// запрос сканирует все бакеты ретеншена (амплификация нагрузки на ClickHouse из
+// фонового оценщика). Клампим здесь, а не только валидацией формы: конфиг мог
+// быть сохранён до появления границы или прийти из старого jsonb напрямую.
+const maxSeasonalWindowMinutes = 1440
+
 // SeasonalBaselineEndpointP95s — сезонные базы по списку эндпойнтов: медиана
 // НЕДЕЛЬНЫХ p95 по тому же окну [now−windowMinutes, now) того же дня недели за
 // k=1..weeks недель назад (сдвиг ровно на k·7 суток сохраняет день недели и час).
@@ -1264,6 +1272,9 @@ func (q *Query) SeasonalBaselineEndpointP95s(ctx context.Context, projectID int6
 	out := make(map[string]RegressionSample, len(transactions))
 	if len(transactions) == 0 {
 		return out, nil
+	}
+	if windowMinutes > maxSeasonalWindowMinutes {
+		windowMinutes = maxSeasonalWindowMinutes // см. maxSeasonalWindowMinutes: держим слот у́же недели
 	}
 	weekSec := int64(7 * 24 * 3600)
 	winSec := int64(windowMinutes) * 60
@@ -1408,6 +1419,9 @@ func (q *Query) SeasonalBaselineVitalP75s(ctx context.Context, projectID int64, 
 		outer = append(outer,
 			fmt.Sprintf("quantileExactIf(0.5)(%s_daily, %s_cnt > 0) AS %s_base", m, m, m),
 			fmt.Sprintf("sum(%s_cnt) AS %s_total", m, m))
+	}
+	if windowMinutes > maxSeasonalWindowMinutes {
+		windowMinutes = maxSeasonalWindowMinutes // см. maxSeasonalWindowMinutes: держим слот у́же недели
 	}
 	weekSec := int64(7 * 24 * 3600)
 	winSec := int64(windowMinutes) * 60
