@@ -14,6 +14,15 @@ const metricDuration = "duration"
 // незнакомой метрики берём консервативные 200 (мс у ms-метрик) вместо нуля.
 const defaultVitalFloor = 200
 
+// Границы числа недель сезонной истории. Клампинг [2,12] строго валидирует UI,
+// но при чтении битого jsonb значение вне диапазона заменяется дефолтом, чтобы
+// оценщик не получил мусор.
+const (
+	defaultSeasonalWeeks = 4
+	minSeasonalWeeks     = 2
+	maxSeasonalWeeks     = 12
+)
+
 // RegressionConfig — пороги детектора регрессий, приезжают из
 // projects.perf_regression_config. Это ДРУГОЙ механизм, чем DetectorConfig
 // этапа 3 (N+1/медленные запросы): здесь отслеживается рост p95/p75 над
@@ -31,6 +40,8 @@ type RegressionConfig struct {
 	DurationFloorMs float64            `json:"duration_floor_ms"` // абсолютный пол для метрики duration
 	VitalFloor      map[string]float64 `json:"vital_floor"`       // абсолютные полы web-vital'ов: lcp/fcp/ttfb/inp/cls
 	Enabled         bool               `json:"enabled"`           // выключенный проект не оценивается
+	SeasonalEnabled bool               `json:"seasonal_enabled"`  // сезонный baseline: сравнивать с тем же окном того же дня недели за прошлые недели
+	SeasonalWeeks   int                `json:"seasonal_weeks"`    // сколько прошлых недель берётся в сезонный слот (медиана); [2,12]
 }
 
 // DefaultRegressionConfig — дефолты из спеки (§6). Пол обязателен: +100% на
@@ -49,7 +60,9 @@ func DefaultRegressionConfig() RegressionConfig {
 			"inp":  50,
 			"cls":  0.05,
 		},
-		Enabled: true,
+		Enabled:         true,
+		SeasonalEnabled: false,
+		SeasonalWeeks:   defaultSeasonalWeeks,
 	}
 }
 
@@ -65,6 +78,8 @@ type regressionConfigJSON struct {
 	DurationFloorMs *float64           `json:"duration_floor_ms"`
 	VitalFloor      map[string]float64 `json:"vital_floor"`
 	Enabled         *bool              `json:"enabled"`
+	SeasonalEnabled *bool              `json:"seasonal_enabled"`
+	SeasonalWeeks   *int               `json:"seasonal_weeks"`
 }
 
 // RegressionConfigFromJSON парсит projects.perf_regression_config. Пустой/nil
@@ -98,6 +113,14 @@ func RegressionConfigFromJSON(raw []byte) (RegressionConfig, error) {
 	}
 	if j.Enabled != nil {
 		cfg.Enabled = *j.Enabled
+	}
+	if j.SeasonalEnabled != nil {
+		cfg.SeasonalEnabled = *j.SeasonalEnabled
+	}
+	// Защитно: из битого jsonb значение вне [2,12] → дефолт (строгую валидацию
+	// диапазона делает UI при сохранении).
+	if j.SeasonalWeeks != nil && *j.SeasonalWeeks >= minSeasonalWeeks && *j.SeasonalWeeks <= maxSeasonalWeeks {
+		cfg.SeasonalWeeks = *j.SeasonalWeeks
 	}
 	// Перекрываем только заданные метрики: cfg.VitalFloor — свежая карта из
 	// DefaultRegressionConfig, мутировать её безопасно.

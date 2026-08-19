@@ -66,6 +66,8 @@ type RegressionSettingsForm struct {
 	FloorFCP        string
 	FloorTTFB       string
 	Enabled         bool
+	SeasonalEnabled bool
+	SeasonalWeeks   string
 }
 
 // keyStatusBadgeClass — цвет статуса DSN-ключа через дизайн-систему: живой
@@ -236,6 +238,17 @@ templ regressionSettingsForm(projectID int64, f RegressionSettingsForm) {
 				<input type="checkbox" name="enabled" value="1" checked?={ f.Enabled }/>
 				{ i18n.T(ctx, "project.settings.regressions.enabled") }
 			</label>
+			<label class="checkbox-inline">
+				<input type="checkbox" name="seasonal_enabled" value="1" checked?={ f.SeasonalEnabled }/>
+				{ i18n.T(ctx, "project.settings.regressions.seasonal_enabled") }
+			</label>
+			<div class="field">
+				<label>
+					@helpLabel("project.settings.regressions.seasonal_weeks", "project.settings.regressions.seasonal_weeks.help")
+					<input type="number" name="seasonal_weeks" value={ f.SeasonalWeeks } min="2" max="12" step="1" required class="input"/>
+				</label>
+				<p class="hint">{ i18n.T(ctx, "project.settings.regressions.seasonal_hint") }</p>
+			</div>
 			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.regressions.submit") }</button>
 		</form>
 	</section>

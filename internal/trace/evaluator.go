@@ -178,7 +178,36 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 			slog.Error("trace: evaluator: recent endpoint p95s failed", "project_id", projectID, "error", err)
 			recents = nil
 		}
-		bases, err := e.Query.BaselineEndpointP95s(ctx, projectID, endpoints, baselineDays, now)
+		var bases map[string]RegressionSample
+		if cfg.SeasonalEnabled {
+			// Сезонный base: то же окно того же дня недели за прошлые недели.
+			bases, err = e.Query.SeasonalBaselineEndpointP95s(ctx, projectID, endpoints, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
+			if err == nil {
+				// Fallback: цели с недобором сезонной истории (< min_samples в
+				// слоте) добираем скользящим base одним запросом и подменяем
+				// только их — иначе новая цель без прошлых недель молчала бы.
+				var undershoot []string
+				for _, tx := range endpoints {
+					if bases[tx].Samples < cfg.MinSamples {
+						undershoot = append(undershoot, tx)
+					}
+				}
+				if len(undershoot) > 0 {
+					rolling, rerr := e.Query.BaselineEndpointP95s(ctx, projectID, undershoot, baselineDays, now)
+					if rerr != nil {
+						// Добор не удался — оставляем сезонные (недобранные)
+						// значения: мало сэмплов → Decide вернёт None, не паника.
+						slog.Error("trace: evaluator: rolling fallback endpoint p95s failed", "project_id", projectID, "error", rerr)
+					} else {
+						for _, tx := range undershoot {
+							bases[tx] = rolling[tx]
+						}
+					}
+				}
+			}
+		} else {
+			bases, err = e.Query.BaselineEndpointP95s(ctx, projectID, endpoints, baselineDays, now)
+		}
 		if err != nil {
 			slog.Error("trace: evaluator: baseline endpoint p95s failed", "project_id", projectID, "error", err)
 			bases = nil
@@ -210,7 +239,46 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 		slog.Error("trace: evaluator: recent vital p75s failed", "project_id", projectID, "error", err)
 		return
 	}
-	vitalBases, err := e.Query.BaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, baselineDays, now)
+	var vitalBases map[VitalKey]RegressionSample
+	if cfg.SeasonalEnabled {
+		vitalBases, err = e.Query.SeasonalBaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
+		if err == nil {
+			// Fallback по СТРАНИЦАМ: BaselineVitalP75s декартова (страница×метрика),
+			// подмножество пар одним запросом не добрать. Собираем уникальные
+			// страницы, у которых хоть один ключ (страница,метрика) недобрал слот,
+			// и добираем их скользящим — переопределяя лишь недобравшие ключи.
+			var undershootPages []string
+			seen := make(map[string]bool)
+			for _, page := range pages {
+				for _, m := range evaluatorVitalMetrics {
+					if vitalBases[VitalKey{Transaction: page, Metric: m}].Samples < cfg.MinSamples {
+						if !seen[page] {
+							seen[page] = true
+							undershootPages = append(undershootPages, page)
+						}
+						break
+					}
+				}
+			}
+			if len(undershootPages) > 0 {
+				rolling, rerr := e.Query.BaselineVitalP75s(ctx, projectID, undershootPages, evaluatorVitalMetrics, baselineDays, now)
+				if rerr != nil {
+					slog.Error("trace: evaluator: rolling fallback vital p75s failed", "project_id", projectID, "error", rerr)
+				} else {
+					for _, page := range undershootPages {
+						for _, m := range evaluatorVitalMetrics {
+							key := VitalKey{Transaction: page, Metric: m}
+							if vitalBases[key].Samples < cfg.MinSamples {
+								vitalBases[key] = rolling[key]
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		vitalBases, err = e.Query.BaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, baselineDays, now)
+	}
 	if err != nil {
 		slog.Error("trace: evaluator: baseline vital p75s failed", "project_id", projectID, "error", err)
 		return

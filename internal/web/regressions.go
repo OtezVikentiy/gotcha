@@ -99,7 +99,16 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 
 	deployAttr := regressionDeployAttribution(r.Context(), h.Deploy, projectID, items)
 
-	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r)).Render(r.Context(), w)
+	// Индикатор сезонного режима детекции берём из конфига проекта. Ошибка чтения
+	// проекта не должна ронять список — бейдж декоративен: тогда seasonal=false.
+	seasonal := false
+	if project, err := h.Org.GetProject(r.Context(), projectID); err == nil {
+		if cfg, cErr := trace.RegressionConfigFromJSON([]byte(project.PerfRegressionConfig)); cErr == nil {
+			seasonal = cfg.SeasonalEnabled
+		}
+	}
+
+	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r), seasonal).Render(r.Context(), w)
 }
 
 // regressionDeployAttribution для каждой регрессии из items возвращает текст

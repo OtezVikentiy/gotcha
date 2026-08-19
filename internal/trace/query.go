@@ -1250,6 +1250,68 @@ func (q *Query) BaselineEndpointP95s(ctx context.Context, projectID int64, trans
 	return out, rows.Err()
 }
 
+// maxSeasonalWindowMinutes ограничивает окно сезонного слота. Слот «того же дня
+// недели × часа» шире суток теряет смысл, а window_minutes ≥ недели вырождает
+// фильтр modulo(...) < winSec в always-true — слот перестаёт сужать выборку и
+// запрос сканирует все бакеты ретеншена (амплификация нагрузки на ClickHouse из
+// фонового оценщика). Клампим здесь, а не только валидацией формы: конфиг мог
+// быть сохранён до появления границы или прийти из старого jsonb напрямую.
+const maxSeasonalWindowMinutes = 1440
+
+// SeasonalBaselineEndpointP95s — сезонные базы по списку эндпойнтов: медиана
+// НЕДЕЛЬНЫХ p95 по тому же окну [now−windowMinutes, now) того же дня недели за
+// k=1..weeks недель назад (сдвиг ровно на k·7 суток сохраняет день недели и час).
+//
+// Зеркало BaselineEndpointP95s, но слой недельный вместо дневного. modulo по
+// weekSec отбирает бакеты в окне слота (позиция внутри недели < windowMinutes);
+// intDiv даёт номер недели назад k; WHERE k >= 1 отбрасывает текущую (неполную)
+// неделю, чтобы недобранный текущий час не занижал базу. Нижняя граница from
+// включает −windowMinutes: иначе окно самой старой недели (k=weeks) целиком
+// оказалось бы < from и терялось.
+func (q *Query) SeasonalBaselineEndpointP95s(ctx context.Context, projectID int64, transactions []string, windowMinutes, weeks int, now time.Time) (map[string]RegressionSample, error) {
+	out := make(map[string]RegressionSample, len(transactions))
+	if len(transactions) == 0 {
+		return out, nil
+	}
+	if windowMinutes > maxSeasonalWindowMinutes {
+		windowMinutes = maxSeasonalWindowMinutes // см. maxSeasonalWindowMinutes: держим слот у́же недели
+	}
+	weekSec := int64(7 * 24 * 3600)
+	winSec := int64(windowMinutes) * 60
+	nowSec := int64(now.Unix()) // epoch считаем в Go, а не toUInt32(param) в SQL
+	from := now.Add(-time.Duration(weeks) * 7 * 24 * time.Hour).Add(-time.Duration(windowMinutes) * time.Minute)
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, quantileExact(0.5)(weekly) AS base, sum(cnt) AS total
+		FROM (
+			SELECT transaction,
+				intDiv(? - toUInt32(bucket), ?) AS k,
+				quantilesMerge(0.95)(dur)[1] AS weekly,
+				countMerge(cnt) AS cnt
+			FROM transactions_5m
+			WHERE project_id = ? AND transaction IN ?
+				AND bucket >= ? AND bucket < ?
+				AND modulo(? - toUInt32(bucket), ?) < ?
+			GROUP BY transaction, k
+		)
+		WHERE k >= 1
+		GROUP BY transaction`,
+		nowSec, weekSec, uint64(projectID), transactions, from, now, nowSec, weekSec, winSec)
+	if err != nil {
+		return nil, fmt.Errorf("trace: seasonal baseline endpoint p95s: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var med float64
+		var total uint64
+		if err := rows.Scan(&name, &med, &total); err != nil {
+			return nil, fmt.Errorf("trace: seasonal baseline endpoint p95s scan: %w", err)
+		}
+		out[name] = msSample(med, total)
+	}
+	return out, rows.Err()
+}
+
 // VitalKey — страница и метрика: ключ карт, возвращаемых vital-запросами.
 type VitalKey struct {
 	Transaction string
@@ -1331,6 +1393,60 @@ func (q *Query) BaselineVitalP75s(ctx context.Context, projectID int64, transact
 	defer rows.Close()
 	if err := scanVitalRows(rows, metrics, out); err != nil {
 		return nil, fmt.Errorf("trace: baseline vital p75s: %w", err)
+	}
+	return out, rows.Err()
+}
+
+// SeasonalBaselineVitalP75s — сезонные базы по списку страниц сразу по всем
+// метрикам: медиана НЕДЕЛЬНЫХ p75 по тому же окну того же дня недели за
+// k=1..weeks недель назад. Зеркало BaselineVitalP75s (декартово страницы×метрики,
+// ключ VitalKey), но группировка по неделе (intDiv/modulo) вместо суток; смысл
+// колонок m_daily/m_cnt тот же, только теперь per-неделя. Границы окна и
+// исключение текущей недели (k>=1) — как в SeasonalBaselineEndpointP95s.
+func (q *Query) SeasonalBaselineVitalP75s(ctx context.Context, projectID int64, transactions, metrics []string, windowMinutes, weeks int, now time.Time) (map[VitalKey]RegressionSample, error) {
+	out := make(map[VitalKey]RegressionSample, len(transactions)*len(metrics))
+	if len(transactions) == 0 || len(metrics) == 0 {
+		return out, nil
+	}
+	var inner, outer []string
+	for _, m := range metrics {
+		if !vitalKnown(m) {
+			return nil, fmt.Errorf("trace: seasonal baseline vital p75s: unknown vital %q", m)
+		}
+		inner = append(inner,
+			fmt.Sprintf("quantilesMerge(0.75)(%s)[1] AS %s_daily", m, m),
+			fmt.Sprintf("countMerge(%s_count) AS %s_cnt", m, m))
+		outer = append(outer,
+			fmt.Sprintf("quantileExactIf(0.5)(%s_daily, %s_cnt > 0) AS %s_base", m, m, m),
+			fmt.Sprintf("sum(%s_cnt) AS %s_total", m, m))
+	}
+	if windowMinutes > maxSeasonalWindowMinutes {
+		windowMinutes = maxSeasonalWindowMinutes // см. maxSeasonalWindowMinutes: держим слот у́же недели
+	}
+	weekSec := int64(7 * 24 * 3600)
+	winSec := int64(windowMinutes) * 60
+	nowSec := int64(now.Unix())
+	from := now.Add(-time.Duration(weeks) * 7 * 24 * time.Hour).Add(-time.Duration(windowMinutes) * time.Minute)
+	rows, err := q.conn.Query(ctx, `
+		SELECT transaction, `+strings.Join(outer, ", ")+`
+		FROM (
+			SELECT transaction,
+				intDiv(? - toUInt32(bucket), ?) AS k, `+strings.Join(inner, ", ")+`
+			FROM web_vitals_5m
+			WHERE project_id = ? AND transaction IN ?
+				AND bucket >= ? AND bucket < ?
+				AND modulo(? - toUInt32(bucket), ?) < ?
+			GROUP BY transaction, k
+		)
+		WHERE k >= 1
+		GROUP BY transaction`,
+		nowSec, weekSec, uint64(projectID), transactions, from, now, nowSec, weekSec, winSec)
+	if err != nil {
+		return nil, fmt.Errorf("trace: seasonal baseline vital p75s: %w", err)
+	}
+	defer rows.Close()
+	if err := scanVitalRows(rows, metrics, out); err != nil {
+		return nil, fmt.Errorf("trace: seasonal baseline vital p75s: %w", err)
 	}
 	return out, rows.Err()
 }
