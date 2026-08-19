@@ -102,7 +102,12 @@ func validateWindow(w Window) error {
 		}
 		return nil
 	}
-	if w.StartsAt == nil || w.EndsAt == nil || !w.EndsAt.After(*w.StartsAt) {
+	// «Бессрочно»: EndsAt == nil означает открытое окно, StartsAt всё равно
+	// обязателен — иначе не от чего было бы вести активность (windowActive).
+	if w.StartsAt == nil {
+		return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowRange)
+	}
+	if w.EndsAt != nil && !w.EndsAt.After(*w.StartsAt) {
 		return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowRange)
 	}
 	return nil
@@ -276,10 +281,19 @@ func WindowIntervals(ws []Window, from, to time.Time) []Interval {
 // of a weekly window.
 func windowIntervalsOne(w Window, from, to time.Time) []Interval {
 	if !w.Weekly {
-		if w.StartsAt == nil || w.EndsAt == nil {
+		if w.StartsAt == nil {
 			return nil
 		}
-		iv, ok := clipInterval(*w.StartsAt, *w.EndsAt, from, to)
+		// «Бессрочно» (EndsAt == nil): не буквальная +∞ — WindowIntervals
+		// всегда зовётся с ограниченным [from,to), и клипа к `to` довольно,
+		// чтобы отдать «активно до конца запрошенного диапазона» и оставить
+		// caller'ам (uptime %, slo.excludeMaintenance) дело с обычными
+		// конечными интервалами.
+		end := to
+		if w.EndsAt != nil {
+			end = *w.EndsAt
+		}
+		iv, ok := clipInterval(*w.StartsAt, end, from, to)
 		if !ok {
 			return nil
 		}
@@ -396,8 +410,15 @@ func windowOccurrence(w Window, day time.Time, loc *time.Location) (time.Time, t
 
 func windowActive(w Window, at time.Time) (bool, error) {
 	if !w.Weekly {
-		if w.StartsAt == nil || w.EndsAt == nil {
+		// Guard перед разыменованием: CHECK maintenance_windows_shape
+		// гарантирует StartsAt для разовых окон, но windowActive не должен
+		// зависеть от этого — защита остаётся, даже если её никогда не
+		// заденет валидная строка.
+		if w.StartsAt == nil {
 			return false, nil
+		}
+		if w.EndsAt == nil {
+			return !at.Before(*w.StartsAt), nil // «бессрочно»
 		}
 		return !at.Before(*w.StartsAt) && at.Before(*w.EndsAt), nil
 	}

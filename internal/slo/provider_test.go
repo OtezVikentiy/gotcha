@@ -227,6 +227,50 @@ func TestProviderExcludesMaintenance(t *testing.T) {
 	}
 }
 
+// TestProviderExcludesMaintenanceUnbounded — «бессрочное» окно обслуживания
+// (starts_at в прошлом, ends_at NULL) выбрасывает ВЕСЬ запрошенный диапазон:
+// windowIntervalsOne клампит его конец к запрошенному `to`, так что каждый
+// бакет попадает внутрь и excludeMaintenance возвращает пустой ряд. Это
+// осознанное поведение (см. бриф Task 2), не баг: оператор, оставивший
+// окно открытым навсегда, не должен ждать данных по SLO этого проекта, пока
+// не закроет окно явно.
+func TestProviderExcludesMaintenanceUnbounded(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedProject(t, pool)
+	maint := uptime.NewService(pool)
+
+	base := time.Now().UTC().Truncate(5 * time.Minute).Add(-30 * time.Minute)
+
+	// Окно началось задолго до запрошенного диапазона и никогда не заканчивается.
+	winStart := base.Add(-24 * time.Hour)
+	if _, err := maint.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid, Name: "unbounded", Weekly: false,
+		StartsAt: &winStart, EndsAt: nil, Timezone: "UTC",
+	}); err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	seedTransactions(t, conn, pid, "GET /m", base, []txSpec{
+		{offset: 0, dur: 50 * time.Millisecond, status: "ok", env: "production"},
+		{offset: time.Millisecond, dur: 50 * time.Millisecond, status: "ok", env: "production"},
+	})
+
+	q := trace.NewQuery(conn)
+	from, to := base, base.Add(5*time.Minute)
+
+	p := slo.NewAvailabilityProvider(q, maint, 90)
+	bs, err := p.Buckets(ctx, slo.SLO{ProjectID: pid, Kind: slo.SLIAvailability, Transaction: "GET /m"}, from, to, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("Buckets: %v", err)
+	}
+	if len(bs) != 0 {
+		t.Fatalf("бакетов = %d, want 0 (бессрочное окно накрывает весь диапазон)", len(bs))
+	}
+}
+
 // TestRetentionCap — cfg.RetentionDays → длительность клипа; 0 = без клипа.
 func TestRetentionCap(t *testing.T) {
 	conn := testenv.MigratedCH(t)

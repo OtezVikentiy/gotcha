@@ -73,6 +73,75 @@ func TestCreateWindowOneOffActiveWithinAndOutsideInterval(t *testing.T) {
 	}
 }
 
+// TestCreateWindowOneOffUnboundedValid — «бессрочно»: разовое окно с
+// ends_at == nil больше не отвергается как ErrInvalidWindowRange (миграция
+// 0076 разрешила это в CHECK; validateWindow должен соответствовать).
+func TestCreateWindowOneOffUnboundedValid(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	start := time.Now().UTC().Add(-time.Hour)
+	w, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid,
+		Name:      "Бессрочное",
+		StartsAt:  &start,
+		EndsAt:    nil,
+		Timezone:  "UTC",
+	})
+	if err != nil {
+		t.Fatalf("CreateWindow unbounded: %v", err)
+	}
+	if w.ID == 0 {
+		t.Fatalf("CreateWindow unbounded: id = 0")
+	}
+}
+
+// TestInMaintenanceUnboundedWindow — окно, начавшееся в прошлом и без
+// ends_at, активно сейчас и остаётся активным сколь угодно далеко в будущем,
+// но неактивно до starts_at.
+func TestInMaintenanceUnboundedWindow(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	start := time.Now().UTC().Add(-24 * time.Hour)
+	if _, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid, Name: "Бессрочное",
+		StartsAt: &start, EndsAt: nil, Timezone: "UTC",
+	}); err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	active, err := svc.InMaintenance(ctx, pid, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("InMaintenance now: %v", err)
+	}
+	if !active {
+		t.Fatalf("InMaintenance unbounded (now): got false, want true")
+	}
+
+	active, err = svc.InMaintenance(ctx, pid, start.AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatalf("InMaintenance far future: %v", err)
+	}
+	if !active {
+		t.Fatalf("InMaintenance unbounded (far future): got false, want true")
+	}
+
+	active, err = svc.InMaintenance(ctx, pid, start.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("InMaintenance before start: %v", err)
+	}
+	if active {
+		t.Fatalf("InMaintenance unbounded (before start): got true, want false")
+	}
+}
+
 func TestWeeklyWindowMoscowTimezone(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
