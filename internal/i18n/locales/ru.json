@@ -332,6 +332,8 @@
     "perf.regressions.empty.title": "Регрессий нет",
     "perf.regressions.empty.body": "Здесь появятся значимые ухудшения латентности и Web Vitals относительно базовой линии.",
     "regressions.after_deploy": "после деплоя {version}",
+    "regressions.seasonal_badge": "Сезонный режим",
+    "regressions.seasonal_badge_hint": "База — то же окно того же дня недели за прошлые недели; при нехватке истории — скользящая.",
     "metrics.title": "Метрики",
     "metrics.table.metric": "Метрика",
     "metrics.table.type": "Тип",

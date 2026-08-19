@@ -114,10 +114,15 @@ templ regressionStatusTab(projectID int64, value, label, active string) {
 // RegressionsList — GET /projects/{id}/regressions: таблица регрессий
 // производительности с вкладками фильтра по статусу. Только чтение, без JS
 // (обычные ссылки), визуально повторяет список инцидентов uptime.
-templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string) {
+templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string, seasonal bool) {
 	@layout(i18n.T(ctx, "nav.regressions"), userEmail) {
 		<div class="regressions">
-			<h1>{ i18n.T(ctx, "nav.regressions") }</h1>
+			<h1>
+				{ i18n.T(ctx, "nav.regressions") }
+				if seasonal {
+					<span class="badge badge-info" title={ i18n.T(ctx, "regressions.seasonal_badge_hint") }>{ i18n.T(ctx, "regressions.seasonal_badge") }</span>
+				}
+			</h1>
 			@helpPanel("regressions", "performance")
 			<nav class="tabs" aria-label={ i18n.T(ctx, "filter.status") }>
 				@regressionStatusTab(projectID, "open", i18n.T(ctx, "perf.tab.open"), filter)

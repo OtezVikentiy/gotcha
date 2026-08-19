@@ -332,6 +332,8 @@
     "perf.regressions.empty.title": "No regressions",
     "perf.regressions.empty.body": "Significant latency and Web Vitals regressions against the baseline will show up here.",
     "regressions.after_deploy": "after deploy {version}",
+    "regressions.seasonal_badge": "Seasonal mode",
+    "regressions.seasonal_badge_hint": "Baseline is the same window of the same weekday over past weeks; falls back to rolling when history is thin.",
     "metrics.title": "Metrics",
     "metrics.table.metric": "Metric",
     "metrics.table.type": "Type",
