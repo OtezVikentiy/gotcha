@@ -66,6 +66,23 @@ When an incident opens or closes, Gotcha notifies through the same
 objective's current attainment and remaining budget at a glance; the detail
 screen adds a budget-burn chart and the incident history.
 
+## Burn rate assumes steady traffic
+
+Burn rate is calibrated for a service under **stable, continuous load** — the case
+where "how fast am I spending the budget right now" is a meaningful question. On
+**sparse or intermittent** traffic the signal gets weaker: the short window may
+contain only a handful of requests (or none), so a single failure swings the rate
+sharply, and when the stream falls quiet the last non-empty bucket keeps standing
+in as "now" until fresh traffic arrives. The result is a burn-rate reading that can
+lag reality — it self-corrects within the burn window (about an hour for the
+default long window) once traffic resumes, but until then it may under- or
+over-state how fast you're really spending.
+
+For a service that legitimately receives only occasional requests, prefer an
+**uptime SLO** on a monitor that probes it on a fixed schedule: a steady stream of
+checks gives the burn-rate math the continuous signal it needs, regardless of how
+rarely real users call the service.
+
 ## Two things that don't burn budget
 
 **Maintenance windows are excluded.** Any period covered by a project
