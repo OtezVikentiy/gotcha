@@ -449,6 +449,8 @@
     "err.slo.monitor_required": "Выберите монитор для аптайм-SLO",
     "err.slo.monitor_invalid": "Этот монитор не принадлежит проекту",
     "err.slo.burn_positive": "Порог скорости сжигания должен быть больше нуля",
+    "err.slo.threshold_max": "Порог задержки слишком большой",
+    "err.slo.too_many": "Достигнут лимит SLO для проекта (100)",
     "profiles.regressions.title": "Регрессии профилей",
     "profiles.regressions.empty.title": "Регрессий профилей нет",
     "profiles.regressions.empty.body": "Здесь появятся ухудшения CPU и времени выполнения по данным профилей.",

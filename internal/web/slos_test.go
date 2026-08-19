@@ -117,6 +117,15 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("latency no-threshold status = %d, want 422", resp.StatusCode)
 	}
 
+	// latency с порогом выше потолка (1 час в мс) → 422, а не 500 (int4-overflow).
+	bigLat := url.Values{"name": {"big"}, "sli_kind": {"latency"}, "target": {"99"}, "window_days": {"30"}, "threshold_ms": {"3600001"}}
+	resp = postForm(t, s.srv, base, bigLat, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("latency over-max status = %d, want 422", resp.StatusCode)
+	}
+
 	// uptime без монитора → 422 (kind-специфичная валидация).
 	badUp := url.Values{"name": {"up"}, "sli_kind": {"uptime"}, "target": {"99"}, "window_days": {"30"}}
 	resp = postForm(t, s.srv, base, badUp, s.srv.URL, ownerCookie)
@@ -148,6 +157,25 @@ func TestWebSLOsList(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("member (no team) status = %d, want 404", resp.StatusCode)
+	}
+
+	// Кап-на-проект на web-слое: добиваем до 100 через стор, 101-й POST → 422
+	// (ErrTooManySLOs транслируется в err.slo.too_many, а не 500).
+	cur, _ := s.slo.List(ctx, project.ID)
+	for i := len(cur); i < 100; i++ {
+		if _, err := s.slo.Create(ctx, slo.SLO{
+			ProjectID: project.ID, Name: "fill", Kind: slo.SLIAvailability, Target: 0.99,
+			WindowDays: 30, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+		}); err != nil {
+			t.Fatalf("fill #%d: %v", i, err)
+		}
+	}
+	over := url.Values{"name": {"over"}, "sli_kind": {"availability"}, "target": {"99"}, "window_days": {"30"}}
+	resp = postForm(t, s.srv, base, over, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("over-cap create status = %d, want 422", resp.StatusCode)
 	}
 }
 

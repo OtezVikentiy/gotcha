@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"strconv"
@@ -28,6 +29,11 @@ const (
 	defaultSLOBurnShortMin  = 5
 	defaultSLOBurnThreshold = 14.4
 )
+
+// maxThresholdMS — потолок порога задержки latency-SLO (1 час в мс). Выше
+// бессмысленно для SLI задержки и вдобавок переполняет колонку int4 (>2^31-1 →
+// INSERT падает → 500 вместо 422). Валидируем до вставки.
+const maxThresholdMS = 3_600_000
 
 // slosPage — GET /projects/{id}/slos: список определений SLO с текущим
 // достижением и остатком бюджета + форма создания. Доступ — оператор проекта
@@ -239,6 +245,10 @@ func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 			fail("err.slo.threshold_positive")
 			return
 		}
+		if thr > maxThresholdMS {
+			fail("err.slo.threshold_max")
+			return
+		}
 		s.ThresholdMS = thr
 	case slo.SLIUptime:
 		monitorID, err := strconv.ParseInt(r.FormValue("monitor_id"), 10, 64)
@@ -254,6 +264,10 @@ func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.SLO.Create(r.Context(), s); err != nil {
+		if errors.Is(err, slo.ErrTooManySLOs) {
+			fail("err.slo.too_many")
+			return
+		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}

@@ -449,6 +449,8 @@
     "err.slo.monitor_required": "Pick a monitor for the uptime SLO",
     "err.slo.monitor_invalid": "That monitor does not belong to this project",
     "err.slo.burn_positive": "Burn-rate threshold must be greater than zero",
+    "err.slo.threshold_max": "Latency threshold is too large",
+    "err.slo.too_many": "Project SLO limit reached (100)",
     "profiles.regressions.title": "Profile regressions",
     "profiles.regressions.empty.title": "No profile regressions",
     "profiles.regressions.empty.body": "CPU and execution-time regressions from profile data will show up here.",

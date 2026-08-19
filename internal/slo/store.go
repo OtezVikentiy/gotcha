@@ -12,6 +12,17 @@ import (
 // maxName — максимум рун в имени SLO (капается по рунам, не по байтам).
 const maxName = 200
 
+// maxSLOsPerProject — верхний предел числа SLO на проект. Кап-на-проект — главная
+// защита от раздувания: без него оператор плодит latency-SLO (raw-скан ~10с
+// каждый), а единый последовательный оценщик (ListEnabled) растягивает тик за
+// интервал → error-budget алерты задерживаются у ВСЕХ тенантов (cross-tenant
+// blast radius).
+const maxSLOsPerProject = 100
+
+// ErrTooManySLOs — достигнут предел числа SLO на проект. Экспортируется, чтобы
+// web-слой отличил её от прочих ошибок и отдал 422, а не 500.
+var ErrTooManySLOs = errors.New("slo: too many slos for project")
+
 // capStr — обрезка строки до n рун. Имя НЕ `cap`: тот шадовит builtin.
 func capStr(s string, n int) string {
 	r := []rune(s)
@@ -53,6 +64,17 @@ func (s *Store) Create(ctx context.Context, in SLO) (SLO, error) {
 	in.Name = capStr(in.Name, maxName)
 	in.Transaction = capStr(in.Transaction, maxName)
 	in.Environment = capStr(in.Environment, maxName)
+	// Кап-на-проект: считаем существующие до вставки. При гонке на границе
+	// возможен небольшой перелёт, но это не защита безопасности, а ограничение
+	// blast-radius оценщика — точность до единицы не требуется.
+	var count int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM slos WHERE project_id = $1", in.ProjectID).Scan(&count); err != nil {
+		return SLO{}, fmt.Errorf("slo: create count: %w", err)
+	}
+	if count >= maxSLOsPerProject {
+		return SLO{}, ErrTooManySLOs
+	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO slos
 			(project_id, name, sli_kind, target, window_days, transaction, environment,
@@ -84,8 +106,10 @@ func (s *Store) Get(ctx context.Context, projectID, id int64) (SLO, bool, error)
 
 // List возвращает SLO проекта, свежайшие первыми.
 func (s *Store) List(ctx context.Context, projectID int64) ([]SLO, error) {
+	// LIMIT с запасом над капом-на-проект (maxSLOsPerProject=100) — defence in
+	// depth: даже если кап обойдён (гонка/ручная вставка), список не станет O(N).
 	rows, err := s.pool.Query(ctx,
-		"SELECT "+sloColumns+" FROM slos WHERE project_id = $1 ORDER BY created_at DESC, id DESC", projectID)
+		"SELECT "+sloColumns+" FROM slos WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT 200", projectID)
 	if err != nil {
 		return nil, fmt.Errorf("slo: list: %w", err)
 	}
@@ -103,8 +127,12 @@ func (s *Store) List(ctx context.Context, projectID int64) ([]SLO, error) {
 
 // ListEnabled возвращает все включённые SLO по всем проектам — для оценщика.
 func (s *Store) ListEnabled(ctx context.Context) ([]SLO, error) {
+	// LIMIT — вторичная защита от неограниченного прохода оценщика на инсталляции
+	// с тысячами проектов (кап-на-проект ограничивает каждый проект, но не их
+	// число). Потолок с большим запасом: 5000 включённых SLO — уже за гранью
+	// разумного для одного оценочного тика.
 	rows, err := s.pool.Query(ctx,
-		"SELECT "+sloColumns+" FROM slos WHERE enabled ORDER BY id")
+		"SELECT "+sloColumns+" FROM slos WHERE enabled ORDER BY id LIMIT 5000")
 	if err != nil {
 		return nil, fmt.Errorf("slo: list enabled: %w", err)
 	}

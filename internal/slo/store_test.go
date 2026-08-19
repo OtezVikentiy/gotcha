@@ -2,6 +2,7 @@ package slo_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -110,5 +111,27 @@ func TestSLOStore(t *testing.T) {
 	list2, _ := st.List(ctx, pid)
 	if len(list2) != 0 {
 		t.Fatalf("после Delete список не пуст: %+v", list2)
+	}
+
+	// Кап-на-проект: 100 создаётся, 101-й отвергается ErrTooManySLOs.
+	for i := 0; i < 100; i++ {
+		if _, err := st.Create(ctx, slo.SLO{
+			ProjectID: pid, Name: "cap", Kind: slo.SLIAvailability, Target: 0.99,
+			WindowDays: 30, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+		}); err != nil {
+			t.Fatalf("Create #%d: %v", i, err)
+		}
+	}
+	_, err = st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "over", Kind: slo.SLIAvailability, Target: 0.99,
+		WindowDays: 30, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if !errors.Is(err, slo.ErrTooManySLOs) {
+		t.Fatalf("101-й SLO: err = %v, want ErrTooManySLOs", err)
+	}
+	// List отдаёт не больше капа (и ≤ LIMIT 200).
+	capped, err := st.List(ctx, pid)
+	if err != nil || len(capped) != 100 {
+		t.Fatalf("List после капа = %d err=%v, want 100", len(capped), err)
 	}
 }
