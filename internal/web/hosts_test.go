@@ -405,7 +405,7 @@ func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason str
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, installCmd, config, agentReason, "").Render(ctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, agentReason, "").Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
@@ -533,7 +533,7 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod", "staging"}, []string{"web", "db"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "").Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -582,7 +582,7 @@ func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, nil, "", "", "", "").Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -594,6 +594,95 @@ func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
 	wantOnboardingTitle := i18n.T(rctx, "hosts.empty.title")
 	if strings.Contains(html, wantOnboardingTitle) {
 		t.Errorf("показан онбординг «хостов пока нет» вместо сброса фильтра: %s", html)
+	}
+}
+
+// TestGroupHostRows — группировка строк списка по env/role (T6): пустое
+// значение метки уходит в отдельную секцию «(без метки)», секции
+// сортируются по итоговому (локализованному) label, порядок строк внутри
+// секции сохраняется от sortHostRows (группировка режет уже отсортированный
+// список, не переупорядочивает).
+func TestGroupHostRows(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{
+		{Name: "b-staging", Environment: "staging"},
+		{Name: "a-prod", Environment: "prod"},
+		{Name: "c-none", Environment: ""},
+		{Name: "b-prod", Environment: "prod"},
+	}
+
+	sections := groupHostRows(rctx, rows, "env")
+
+	wantNone := i18n.T(rctx, "hosts.label.none")
+	if len(sections) != 3 {
+		t.Fatalf("секций %d, want 3: %+v", len(sections), sections)
+	}
+	wantLabels := []string{wantNone, "prod", "staging"}
+	for i, want := range wantLabels {
+		if sections[i].Label != want {
+			t.Errorf("sections[%d].Label = %q, want %q (все: %+v)", i, sections[i].Label, want, sections)
+		}
+	}
+	prodSection := sections[1]
+	if len(prodSection.Rows) != 2 || prodSection.Rows[0].Name != "a-prod" || prodSection.Rows[1].Name != "b-prod" {
+		t.Errorf("секция prod = %+v, want [a-prod, b-prod] в исходном порядке", prodSection.Rows)
+	}
+	noneSection := sections[0]
+	if len(noneSection.Rows) != 1 || noneSection.Rows[0].Name != "c-none" {
+		t.Errorf("секция «без метки» = %+v, want [c-none]", noneSection.Rows)
+	}
+
+	// group == "" (по умолчанию, без группировки) — сечений нет вовсе.
+	if got := groupHostRows(rctx, rows, ""); got != nil {
+		t.Errorf("groupHostRows с group=\"\" = %+v, want nil", got)
+	}
+}
+
+// TestHostsListGroupRendersSections — HostsList с group=env рендерит строки
+// секциями (заголовок = label секции) вместо плоской таблицы, а переключатель
+// группировки сохраняет активный фильтр env/role/new в ссылках сегментов
+// (T6: «фильтр и группировка компонуются»).
+func TestHostsListGroupRendersSections(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{
+		{Name: "web-1", StatusKind: "ok", Environment: "prod"},
+		{Name: "web-2", StatusKind: "ok", Environment: ""},
+	}
+	filter := templates.HostsFilterVM{Role: "web", Active: true, Group: "env"}
+	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
+	sections := groupHostRows(rctx, rows, "env")
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, sections, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+
+	headerRe := regexp.MustCompile(`<h2 class="card-header">([^<]*)</h2>`)
+	var headers []string
+	for _, m := range headerRe.FindAllStringSubmatch(html, -1) {
+		headers = append(headers, m[1])
+	}
+	wantNone := i18n.T(rctx, "hosts.label.none")
+	if want := []string{wantNone, "prod"}; len(headers) != len(want) || headers[0] != want[0] || headers[1] != want[1] {
+		t.Errorf("заголовки секций = %v, want %v", headers, want)
+	}
+	for _, want := range []string{"web-1", "web-2"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("нет строки %q в сгруппированном рендере: %s", want, html)
+		}
+	}
+	// Переключатель группировки: активный сегмент "По окружению", ссылка на
+	// "По роли" сохраняет role=web (уже активный фильтр).
+	wantActiveEnv := i18n.T(rctx, "hosts.group.env")
+	if !strings.Contains(html, `aria-current="page">`+wantActiveEnv+`</a>`) {
+		t.Errorf("сегмент «по окружению» не отмечен активным: %s", html)
+	}
+	if !strings.Contains(html, `href="/projects/1/hosts?group=role&amp;role=web"`) {
+		t.Errorf("ссылка переключения на group=role не сохраняет role=web: %s", html)
+	}
+	if !strings.Contains(html, `href="/projects/1/hosts?role=web"`) {
+		t.Errorf("ссылка «без группировки» не сохраняет role=web и не убирает group=: %s", html)
 	}
 }
 

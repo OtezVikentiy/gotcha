@@ -106,6 +106,9 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 		Role:        q.Get("role"),
 		NewOnly:     q.Get("new") == "1",
 	}
+	// group — только вью-слой (T6): режет уже отфильтрованные/отсортированные
+	// rows на секции, не участвует в SQL WHERE (host.HostFilter выше).
+	group := normalizeHostGroup(q.Get("group"))
 
 	// hostsListLimit+1 — ровно столько, чтобы отличить «влезло» от «есть ещё»
 	// (см. truncated ниже) и не вычитывать ради подсказки весь реестр проекта.
@@ -235,10 +238,62 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 		Role:        filter.Role,
 		NewOnly:     filter.NewOnly,
 		Active:      filter.Environment != "" || filter.Role != "" || filter.NewOnly,
+		Group:       group,
 	}
 	facets := templates.NewHostsFacets(r.Context(), projectID, filterVM, envValues, roleValues)
+	sections := groupHostRows(r.Context(), rows, group)
 
-	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, installCmd, config, agentReason, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, sections, installCmd, config, agentReason, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// normalizeHostGroup приводит query-параметр group к одному из {"", "env",
+// "role"} (T6): "" — значение по умолчанию (без группировки) — hostsFilterURL
+// (web/templates/hosts.templ) никогда не пишет его в query, тем же принципом,
+// что new=0 никогда не появляется в ссылках чипов. Любое незнакомое значение
+// (опечатка в URL, старая закладка) — тоже "", а не 500.
+func normalizeHostGroup(v string) string {
+	if v == "env" || v == "role" {
+		return v
+	}
+	return ""
+}
+
+// groupHostRows делит уже отфильтрованные и отсортированные (sortHostRows)
+// rows на секции по значению Environment/Role (T6): пустое значение метки —
+// отдельная секция с i18n-подписью hosts.label.none (тем же сентинелом, что
+// и у фасетов, NewHostsFacets). Секции сортируются по итоговому
+// (локализованному) label; порядок строк ВНУТРИ секции не меняется —
+// группировка режет уже готовый порядок sortHostRows, не пересортировывает.
+// group вне {"env","role"} (в т.ч. "") — nil: HostsList в этом случае рисует
+// прежнюю плоскую таблицу над rows напрямую.
+func groupHostRows(ctx context.Context, rows []templates.HostRowVM, group string) []templates.HostSection {
+	if group != "env" && group != "role" {
+		return nil
+	}
+	byKey := map[string][]templates.HostRowVM{}
+	for _, row := range rows {
+		key := row.Environment
+		if group == "role" {
+			key = row.Role
+		}
+		byKey[key] = append(byKey[key], row)
+	}
+	labelOf := func(key string) string {
+		if key == "" {
+			return i18n.T(ctx, "hosts.label.none")
+		}
+		return key
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return labelOf(keys[i]) < labelOf(keys[j]) })
+	sections := make([]templates.HostSection, 0, len(keys))
+	for _, key := range keys {
+		sections = append(sections, templates.HostSection{Label: labelOf(key), Rows: byKey[key]})
+	}
+	return sections
 }
 
 // hostRowStatus классифицирует статус строки хоста по открытым инцидентам
