@@ -972,6 +972,105 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	}
 }
 
+// TestWebHostGroupThresholdScopeLabelValidation — hostGroupThresholdSave,
+// две ветки проверки scope/label, которые TestWebHostGroupThresholdsFlow не
+// бьёт (noScopeForm там — пустой scope И пустой label одновременно): валидный
+// scope с ПУСТЫМ label (ключ UNIQUE(project_id, scope, ”) собрал бы
+// несвязанные правила в одну строку, см. докблок hostGroupThresholdSave) и
+// label длиннее maxGroupThresholdLabelLen (256 рун, it-sec P2-1 ремедиации,
+// B2) — обе 422 с тем же сообщением error.hostsettings.group_scope_label,
+// правило не создаётся. Плюс: удаление чужим (не оператором) → 404, как у
+// сохранения (requireProjectOperator, тот же гейт).
+func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hgtval-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hgtval-co", "HGTVal Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hgtval-proj", "HGTVal Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	savePath := path + "/groups"
+	deletePath := savePath + "/delete"
+
+	// Валидный scope, пустой label → 422, правило не создано.
+	emptyLabelForm := url.Values{
+		"scope": {"env"}, "label_env": {""},
+		"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
+		"load_mode": {"inherit"}, "silent_mode": {"inherit"},
+	}
+	resp := postForm(t, s.srv, savePath, emptyLabelForm, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("empty-label POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Выберите окружение или роль и метку из списка") {
+		t.Errorf("нет сообщения о scope/label: %s", body)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 0 {
+		t.Fatalf("правило создано с пустым label: %+v, err=%v", got, err)
+	}
+
+	// label длиннее 256 рун → 422, правило не создано (it-sec P2-1: без
+	// границы GroupThresholdService.List читал бы её заново на каждом тике
+	// оценщика).
+	tooLong := strings.Repeat("я", 257)
+	tooLongForm := url.Values{
+		"scope": {"env"}, "label_env": {tooLong},
+		"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
+		"load_mode": {"inherit"}, "silent_mode": {"inherit"},
+	}
+	resp = postForm(t, s.srv, savePath, tooLongForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("too-long-label POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Выберите окружение или роль и метку из списка") {
+		t.Errorf("нет сообщения о scope/label для слишком длинной метки: %s", body)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 0 {
+		t.Fatalf("правило создано со слишком длинным label: %+v, err=%v", got, err)
+	}
+
+	// label РОВНО на границе (256 рун) — валиден, правило создаётся.
+	exactLen := strings.Repeat("я", 256)
+	exactForm := url.Values{
+		"scope": {"env"}, "label_env": {exactLen},
+		"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
+		"load_mode": {"inherit"}, "silent_mode": {"inherit"},
+	}
+	resp = postForm(t, s.srv, savePath, exactForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("boundary-label POST status = %d, want 303", resp.StatusCode)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 1 {
+		t.Fatalf("правило с граничным label не создано: %+v, err=%v", got, err)
+	}
+
+	// Удаление чужим (не член организации, не оператор) → 404, правило не
+	// удалено — тот же гейт requireProjectOperator, что у save.
+	_, outsider := orgSettingsRegister(t, s.auth, "hgtval-outsider@example.com")
+	delForm := url.Values{"scope": {"env"}, "label": {exactLen}}
+	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider delete POST status = %d, want 404", resp.StatusCode)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 1 {
+		t.Fatalf("правило удалено чужим: %+v, err=%v", got, err)
+	}
+}
+
 // TestWebHostsListStatusSurvivesManyClosedIncidents — ревью I3: список хостов
 // сворачивал открытые виды из «последних N инцидентов проекта ЛЮБОГО статуса»
 // с лимитом 500. В проекте, где закрытых инцидентов накопилось больше лимита,
@@ -1490,6 +1589,80 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing host POST status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebHostThresholdsSaveInvalidMemoryLoadSilent — hostThresholdsSave, три
+// ветки hostSettingsErrorMessage/errors.Is, которые
+// TestWebHostThresholdsSaveFlow не бьёт (там невалиден только disk):
+// значения вне границ памяти/нагрузки/тишины проходят parseHostThresholdsForm
+// (числа сами по себе валидны — не NaN/Inf), но отвергаются
+// HostOverrideService.Save → ValidateOverride (host/override.go) — тот же
+// сентинел-набор host.ErrInvalid*, что и у диска, но другая ветка switch в
+// hostThresholdsSave/hostSettingsErrorMessage. Silent — отдельный случай:
+// 1 минута не переполняет parseHostThresholdsForm (граница там — 0..720
+// минут, host.MaxSilentAfter), но меньше host.MinSilentAfter (3 минуты) —
+// ошибка возникает именно на Save, не на разборе формы.
+func TestWebHostThresholdsSaveInvalidMemoryLoadSilent(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hthrmls-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hthrmls-co", "Hthrmls Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hthrmls-proj", "Hthrmls Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	name := "web-01"
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+	savePath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + name + "/thresholds"
+
+	cases := []struct {
+		name string
+		form url.Values
+		want string
+	}{
+		{
+			"memory вне границы",
+			url.Values{
+				"disk_mode": {"inherit"}, "memory_mode": {"override"}, "memory_value": {"150"},
+				"load_mode": {"inherit"}, "silent_mode": {"inherit"},
+			},
+			"Порог памяти должен быть от 1 до 100%",
+		},
+		{
+			"load не больше 0",
+			url.Values{
+				"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
+				"load_mode": {"override"}, "load_value": {"0"}, "silent_mode": {"inherit"},
+			},
+			"Порог нагрузки должен быть больше 0",
+		},
+		{
+			"silent меньше 3 минут",
+			url.Values{
+				"disk_mode": {"inherit"}, "memory_mode": {"inherit"}, "load_mode": {"inherit"},
+				"silent_mode": {"override"}, "silent_value": {"1"},
+			},
+			"Порог тишины — от 3 минут до 12 часов",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := postForm(t, s.srv, savePath, c.form, s.srv.URL, ownerCookie)
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422: %s", resp.StatusCode, body)
+			}
+			if !strings.Contains(string(body), c.want) {
+				t.Errorf("нет сообщения %q: %s", c.want, body)
+			}
+		})
 	}
 }
 

@@ -138,6 +138,30 @@ func TestHostThresholdsReadonlyForNonOperator(t *testing.T) {
 	}
 }
 
+// TestHostThresholdsLoadOverrideValue — thresholdFloatValue (в отличие от
+// thresholdPercentValue/thresholdMinutesValue, покрытых disk/memory/silent
+// выше) обслуживает ТОЛЬКО load_value — обе его ветки нужно бить отдельно:
+// hostThresholdsFixtureVM даёт load БЕЗ override (Override.LoadThreshold ==
+// nil, предзаполнение эффективным значением 4 — ветка ov==nil, уже покрыта
+// TestHostThresholdsFormModes косвенно через "load — off"). Здесь —
+// LoadThreshold ЗАДАН (ov != nil), поле должно показать именно его
+// (2.5), а не эффективное значение каскада.
+func TestHostThresholdsLoadOverrideValue(t *testing.T) {
+	vm := hostThresholdsFixtureVM(true, nil)
+	loadEnabled := true
+	loadThreshold := 2.5
+	vm.Override.LoadEnabled = &loadEnabled
+	vm.Override.LoadThreshold = &loadThreshold
+
+	out := renderHostThresholds(t, vm)
+	if !strings.Contains(out, `name="load_mode" value="override" checked`) {
+		t.Errorf("load_mode не выбран override: %s", out)
+	}
+	if !strings.Contains(out, `name="load_value"`) || !strings.Contains(out, `value="2.5"`) {
+		t.Errorf("load_value не предзаполнен override (2.5), а не эффективным значением: %s", out)
+	}
+}
+
 // TestHostThresholdsErrorAndFormState — при ошибке валидации (422) карточка
 // переотрисовывается с сообщением и введёнными (а не старыми) значениями
 // формы — тот же приём, что у HostSettings/FormState.
