@@ -32,7 +32,7 @@ receive backported fixes — upgrade to the current release to get them.
 
 A few defaults are worth knowing about when running Gotcha:
 
-- **Privacy scrubbing is on by default.** Reporter IP addresses and email
+- **PII scrubbing is on by default.** Reporter IP and email
   addresses are zeroed server-side (`GOTCHA_SCRUB_IP`, `GOTCHA_SCRUB_EMAIL`,
   both default `true`), and a denylist of sensitive key names (passwords,
   tokens, cookies, API keys, etc.) is redacted from tags/contexts/stack
