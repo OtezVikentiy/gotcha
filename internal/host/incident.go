@@ -186,6 +186,40 @@ func (s *IncidentService) ResolveOpenByHostKind(ctx context.Context, hostID int6
 	return tag.RowsAffected(), nil
 }
 
+// ListOpenKindsForHosts — батч-версия «какие виды инцидентов сейчас открыты»
+// для оценщика (evaluator.go): один запрос на ВСЕ хосты тика вместо отдельного
+// UPDATE на каждый (host, kind) с выключенным видом (M-A ремедиации Task 5,
+// см. Evaluator.evalOrCloseKind). Хосты без открытых инцидентов в карте
+// отсутствуют — как GetForHosts у HostOverrideService.
+func (s *IncidentService) ListOpenKindsForHosts(ctx context.Context, hostIDs []int64) (map[int64]map[string]bool, error) {
+	out := make(map[int64]map[string]bool, len(hostIDs))
+	if len(hostIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT host_id, kind FROM host_incidents WHERE host_id = ANY($1) AND status = 'open'`,
+		hostIDs)
+	if err != nil {
+		return nil, fmt.Errorf("host: list open incident kinds for hosts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var hostID int64
+		var kind string
+		if err := rows.Scan(&hostID, &kind); err != nil {
+			return nil, fmt.Errorf("host: scan open incident kind row: %w", err)
+		}
+		if out[hostID] == nil {
+			out[hostID] = make(map[string]bool)
+		}
+		out[hostID][kind] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("host: list open incident kinds for hosts: %w", err)
+	}
+	return out, nil
+}
+
 // MarkNotified фиксирует отправку уведомления (open → notified_open, иначе
 // notified_close).
 func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool) error {

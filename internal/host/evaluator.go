@@ -180,6 +180,11 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 	}
 	now := time.Now().UTC()
 
+	hostIDs := make([]int64, len(hosts))
+	for i, h := range hosts {
+		hostIDs[i] = h.ID
+	}
+
 	// Overrides — один батч-запрос на ВСЕ хосты тика вместо N+1 (M1 брифа
 	// Task 5): у хостов одного проекта host-override отдельный per-host, но
 	// сам запрос один. e.Overrides==nil (деградированная сборка) и провал
@@ -188,16 +193,27 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 	// («наследовать всё»), паники нет.
 	var overrides map[int64]ThresholdOverride
 	if e.Overrides != nil {
-		hostIDs := make([]int64, len(hosts))
-		for i, h := range hosts {
-			hostIDs[i] = h.ID
-		}
 		loaded, err := e.Overrides.GetForHosts(ctx, hostIDs)
 		if err != nil {
 			slog.Warn("host evaluator: load overrides failed", "error", err)
 		} else {
 			overrides = loaded
 		}
+	}
+
+	// openKinds — какие (host_id, kind) сейчас держат открытый инцидент,
+	// один батч-запрос на ВЕСЬ тик (M-A ремедиации Task 5): раньше
+	// evalOrCloseKind при выключенном виде звал ResolveOpenByHostKind (UPDATE)
+	// для КАЖДОГО хоста на КАЖДОМ тике, даже когда закрывать нечего — на парке
+	// в тысячи хостов это worst-case тысячи пустых UPDATE за тик. nil-карта
+	// (провал запроса) — сознательная деградация до старого поведения:
+	// evalOrCloseKind тогда снова зовёт ResolveOpenByHostKind безусловно, чтобы
+	// временная недоступность PostgreSQL не оставила выключенный вид с реально
+	// открытым инцидентом висеть вечно.
+	openKinds, err := e.Incidents.ListOpenKindsForHosts(ctx, hostIDs)
+	if err != nil {
+		slog.Warn("host evaluator: load open incident kinds failed", "error", err)
+		openKinds = nil
 	}
 
 	// Кеши на тик для резолвера (resolve.go): у хостов одного проекта
@@ -285,7 +301,7 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		e.evalOrCloseKind(ctx, h, "silent", eff.Settings.SilentEnabled, func() {
+		e.evalOrCloseKind(ctx, h, "silent", eff.Settings.SilentEnabled, openKinds, func() {
 			e.evalSilent(ctx, h, eff.Settings, now)
 		})
 	}
@@ -307,13 +323,13 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 			if !ok {
 				continue
 			}
-			e.evalOrCloseKind(ctx, h, "disk", eff.Settings.DiskEnabled, func() {
+			e.evalOrCloseKind(ctx, h, "disk", eff.Settings.DiskEnabled, openKinds, func() {
 				e.evalDisk(ctx, q, h, eff.Settings, now)
 			})
-			e.evalOrCloseKind(ctx, h, "memory", eff.Settings.MemoryEnabled, func() {
+			e.evalOrCloseKind(ctx, h, "memory", eff.Settings.MemoryEnabled, openKinds, func() {
 				e.evalMemory(ctx, q, h, eff.Settings, now)
 			})
-			e.evalOrCloseKind(ctx, h, "load", eff.Settings.LoadEnabled, func() {
+			e.evalOrCloseKind(ctx, h, "load", eff.Settings.LoadEnabled, openKinds, func() {
 				e.evalLoad(ctx, q, h, eff.Settings, now)
 			})
 		}
@@ -353,9 +369,18 @@ func (e *Evaluator) tickBudget() time.Duration {
 // только project-уровень (ResolveOpenByProjectKind, вызывался вручную со
 // страницы настроек). Без этого гейта инцидент выключенного на хосте вида
 // висел бы открытым вечно: ручного закрытия в интерфейсе нет.
-func (e *Evaluator) evalOrCloseKind(ctx context.Context, h Host, kind string, enabled bool, eval func()) {
+//
+// openKinds — префетч Tick (ListOpenKindsForHosts): non-nil карта позволяет
+// пропустить ResolveOpenByHostKind вовсе, когда для (h.ID, kind) открытого
+// инцидента заведомо нет — иначе выключенный вид на живом парке давал бы
+// пустой UPDATE на КАЖДОМ тике (M-A ремедиации). nil-карта (провал префетча в
+// Tick) — деградация до безусловного вызова, как до этой оптимизации.
+func (e *Evaluator) evalOrCloseKind(ctx context.Context, h Host, kind string, enabled bool, openKinds map[int64]map[string]bool, eval func()) {
 	if enabled {
 		eval()
+		return
+	}
+	if openKinds != nil && !openKinds[h.ID][kind] {
 		return
 	}
 	if _, err := e.Incidents.ResolveOpenByHostKind(ctx, h.ID, kind); err != nil {

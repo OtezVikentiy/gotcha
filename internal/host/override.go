@@ -82,8 +82,8 @@ func validateSilentOverride(enabled *bool, after *time.Duration) error {
 }
 
 // durationPtrFromSeconds конвертирует nullable-колонку silent_after_seconds
-// (INTEGER) в *time.Duration. pgx не умеет сканить BOOLEAN/INTEGER NULL
-// напрямую в *time.Duration — колонка всегда сканится в промежуточный *int, а
+// (INTEGER) в *time.Duration. pgx не умеет сканить INTEGER NULL напрямую в
+// *time.Duration — колонка всегда сканится в промежуточный *int, а
 // конвертация выполняется здесь.
 func durationPtrFromSeconds(secs *int) *time.Duration {
 	if secs == nil {

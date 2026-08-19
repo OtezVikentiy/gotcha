@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
@@ -947,15 +948,13 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, hostSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// groupThresholdSettingsPath/groupThresholdDeletePath — action у формы
-// добавления/редактирования и у формы удаления строки таблицы (T7).
-func groupThresholdSettingsPath(projectID int64) string {
-	return hostSettingsPath(projectID) + "/groups"
-}
-
-func groupThresholdDeleteSettingsPath(projectID int64) string {
-	return groupThresholdSettingsPath(projectID) + "/delete"
-}
+// maxGroupThresholdLabelLen — верхняя граница длины label группового порога
+// (it-sec P2-1 ремедиации): без неё оператор мог создать орфан-правило со
+// сколь угодно длинной меткой — GroupThresholdService.List читает ВСЕ
+// групповые пороги проекта на каждом тике оценщика (evaluator.go), и такая
+// строка грузилась бы из PostgreSQL заново каждый Interval. Значение с
+// большим запасом над любой реальной меткой окружения/роли из телеметрии.
+const maxGroupThresholdLabelLen = 256
 
 // hostGroupThresholdSave — POST /projects/{id}/hosts/settings/groups:
 // сохранить групповой порог по scope (env/role) + label (значение метки из
@@ -1003,7 +1002,7 @@ func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request)
 	// §host_group_thresholds). Проверяется только форма: scope — одно из
 	// двух известных значений, label — непусто (иначе UNIQUE-ключ (project_id,
 	// scope, '') собирал бы несвязанные правила в одну строку).
-	if (scope != "env" && scope != "role") || label == "" {
+	if (scope != "env" && scope != "role") || label == "" || utf8.RuneCountInString(label) > maxGroupThresholdLabelLen {
 		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
 			groupThresholdFormState(r), i18n.T(r.Context(), "error.hostsettings.group_scope_label"))
 		return
