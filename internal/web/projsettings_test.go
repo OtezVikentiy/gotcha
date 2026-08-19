@@ -344,7 +344,8 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		`name="threshold_pct"`, `name="recovery_pct"`, `name="window_minutes"`,
 		`name="min_samples"`, `name="duration_floor_ms"`, `name="floor_lcp"`,
 		`name="floor_inp"`, `name="floor_cls"`, `name="floor_fcp"`, `name="floor_ttfb"`,
-		`name="enabled"`, `value="25"`, `value="10"`, `value="60"`, `value="100"`,
+		`name="enabled"`, `name="seasonal_enabled"`, `name="seasonal_weeks"`,
+		`value="25"`, `value="10"`, `value="60"`, `value="100"`,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s Регрессии form missing %q: %s", settingsPath, want, body)
@@ -359,6 +360,7 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 			"duration_floor_ms": {"250"},
 			"floor_lcp":         {"300"}, "floor_inp": {"80"}, "floor_cls": {"0.1"},
 			"floor_fcp": {"300"}, "floor_ttfb": {"300"}, "enabled": {"1"},
+			"seasonal_weeks": {"4"},
 		}
 	}
 
@@ -416,6 +418,33 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 	if cfg.Enabled {
 		t.Fatalf("Enabled after unchecked = true, want false")
 	}
+	// Сезонный режим: seasonal_enabled=on + seasonal_weeks=6 → сохраняется в конфиг.
+	seasonal := valid()
+	seasonal.Set("seasonal_enabled", "1")
+	seasonal.Set("seasonal_weeks", "6")
+	resp = postForm(t, s.srv, regPath, seasonal, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (seasonal) status = %d, want 303", regPath, resp.StatusCode)
+	}
+	gotProj, _ = orgSvc.GetProject(context.Background(), proj.ID)
+	cfg, _ = trace.RegressionConfigFromJSON([]byte(gotProj.PerfRegressionConfig))
+	if !cfg.SeasonalEnabled || cfg.SeasonalWeeks != 6 {
+		t.Fatalf("round-trip seasonal = %v/%d, want true/6", cfg.SeasonalEnabled, cfg.SeasonalWeeks)
+	}
+	// Снятый чекбокс seasonal_enabled → false (присутствие поля = вкл), недели хранятся.
+	noSeasonal := valid()
+	noSeasonal.Set("seasonal_weeks", "5")
+	resp = postForm(t, s.srv, regPath, noSeasonal, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	gotProj, _ = orgSvc.GetProject(context.Background(), proj.ID)
+	cfg, _ = trace.RegressionConfigFromJSON([]byte(gotProj.PerfRegressionConfig))
+	if cfg.SeasonalEnabled || cfg.SeasonalWeeks != 5 {
+		t.Fatalf("seasonal off round-trip = %v/%d, want false/5", cfg.SeasonalEnabled, cfg.SeasonalWeeks)
+	}
+
 	// Вернём валидную запись с enabled для дальнейшей проверки «не менялось».
 	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -442,6 +471,9 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		{"min_samples=0", "min_samples", "0"},
 		{"negative floor", "floor_lcp", "-5"},
 		{"NaN duration", "duration_floor_ms", "NaN"},
+		{"seasonal_weeks=1", "seasonal_weeks", "1"},
+		{"seasonal_weeks=99", "seasonal_weeks", "99"},
+		{"seasonal_weeks empty", "seasonal_weeks", ""},
 	}
 	for _, tc := range bad {
 		form := valid()

@@ -79,6 +79,8 @@ func regressionFormFromProject(p org.Project) templates.RegressionSettingsForm {
 		FloorFCP:        formatRegressionFloor(cfg.Floor("fcp")),
 		FloorTTFB:       formatRegressionFloor(cfg.Floor("ttfb")),
 		Enabled:         cfg.Enabled,
+		SeasonalEnabled: cfg.SeasonalEnabled,
+		SeasonalWeeks:   strconv.Itoa(cfg.SeasonalWeeks),
 	}
 }
 
@@ -488,6 +490,8 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		FloorFCP:        r.FormValue("floor_fcp"),
 		FloorTTFB:       r.FormValue("floor_ttfb"),
 		Enabled:         r.FormValue("enabled") != "",
+		SeasonalEnabled: r.FormValue("seasonal_enabled") != "",
+		SeasonalWeeks:   r.FormValue("seasonal_weeks"),
 	}
 	reject := func(msg string) {
 		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, msg, nil, &submitted)
@@ -520,6 +524,14 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		reject(i18n.T(r.Context(), "err.proj.metric_floors"))
 		return
 	}
+	// Число недель сезонной истории: целое в [2,12] (границы minSeasonalWeeks..
+	// maxSeasonalWeeks). Форма всегда рендерит число (дефолт 4), поэтому валидируем
+	// всегда, а не только при seasonal_enabled — пустое/вне диапазона это ошибка ввода.
+	seasonalWeeks, err := strconv.Atoi(submitted.SeasonalWeeks)
+	if err != nil || seasonalWeeks < 2 || seasonalWeeks > 12 {
+		reject(i18n.T(r.Context(), "err.proj.seasonal_weeks"))
+		return
+	}
 
 	cfgJSON, err := json.Marshal(trace.RegressionConfig{
 		ThresholdPct:    thresholdRatio,
@@ -534,7 +546,9 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 			"fcp":  floorFCP,
 			"ttfb": floorTTFB,
 		},
-		Enabled: submitted.Enabled,
+		Enabled:         submitted.Enabled,
+		SeasonalEnabled: submitted.SeasonalEnabled,
+		SeasonalWeeks:   seasonalWeeks,
 	})
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
