@@ -2950,6 +2950,11 @@ form.inline {
 	font-size: var(--fs-sm);
 	font-weight: 500;
 }
+/* .hosts-section — карточка одной группы (environment/role) на /hosts при
+   группировке; отступ снизу отделяет соседние группы друг от друга. */
+.hosts-section {
+	margin-bottom: 16px;
+}
 
 /* -- Адаптивная сетка блоков настроек (settings/profile/teams/org) --
    1 колонка → 2 (≥1024px) → 3 (≥1440px). minmax(0,1fr) не даёт широкому
