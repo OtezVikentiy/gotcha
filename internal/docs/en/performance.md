@@ -105,3 +105,17 @@ A background evaluator periodically compares a recent window (60 minutes by defa
 Default absolute floors: 100 ms for endpoint duration, 200 ms for LCP/FCP/TTFB, 50 ms for INP, 0.05 for CLS.
 
 All of these thresholds (opening/closing percentages, window size, minimum samples, per-metric floors, and a full on/off switch for the detector) are configurable per project — the **"Regressions"** card on the **"Project settings"** page.
+
+### Seasonal baseline (day-of-week × hour)
+
+By default the baseline is rolling: the median of daily values over the last 7 days. It doesn't account for daily or weekly seasonality, so for services with a pronounced load profile it behaves awkwardly. At night, when traffic naturally drops and latency looks different, the detector can stay silent through a real degradation; in the morning, heading into the peak, that same rolling baseline is lagging low — and the ordinary daily ramp-up reads as a regression. A daily rolling average simply blends "3 a.m." and "Tuesday noon" into one number.
+
+**Seasonal mode** compares the recent window not against the daily average but against the same window on the same day of the week in prior weeks. For "Tuesday morning" the baseline becomes "Tuesday morning" one, two, three weeks ago — so the expectation is taken from a comparably loaded moment rather than smeared across the whole day. The median is taken over those weekly slices, so a single week's outlier doesn't move the baseline.
+
+**When to enable it.** The mode helps services with pronounced daily or weekly seasonality: business hours versus night, weekdays versus weekends, regular morning or evening peaks. If load is flat around the clock, the rolling baseline is enough and there's no reason to turn seasonal mode on.
+
+**How to configure it.** In the **"Regressions"** card of the project settings — the **"Seasonal baseline"** toggle and a **"Weeks of history"** field (2 to 12, default 4): how many prior weeks of the same day and hour to include in the baseline. When the mode is on, the regressions list is tagged with a **"Seasonal mode"** badge so it's clear which baseline the decision was made against.
+
+**While history is still thin.** If a given target doesn't have enough seasonal history yet — a new project, or a rare hour-slot where prior weeks haven't accumulated the minimum sample count — the detector automatically falls back to the ordinary rolling baseline for that target. That way it keeps working during the accumulation period and switches to seasonal comparison on its own as history builds up; nothing needs toggling.
+
+The semantics are unchanged and one-directional — upward only: an alert opens on a degradation relative to the seasonal expectation. Anomalously low latency (faster than expected) is not treated as a regression. Seasonality is computed by UTC hour — projects live in a single time zone, and the day-of-week × hour slots are defined in UTC.
