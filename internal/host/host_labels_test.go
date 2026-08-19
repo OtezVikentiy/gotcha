@@ -9,7 +9,7 @@ import (
 
 // TestHostLabelsMigrationApplies проверяет, что миграция 0073 добавила
 // колонки environment/role на hosts, и для уже существующих строк метка
-// «неизвестна» моделируется пустой строкой (NOT NULL DEFAULT '').
+// «неизвестна» моделируется пустой строкой (NOT NULL DEFAULT ”).
 func TestHostLabelsMigrationApplies(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Host labels: hosts can now be tagged with an environment (`deployment.environment` resource attribute or the agent's `GOTCHA_AGENT_ENVIRONMENT`) and a role (`host.role` or `GOTCHA_AGENT_ROLE`), both read-only and sourced straight from telemetry. The hosts list gets environment/role facet filters plus a "new" chip (hosts younger than 24h), an optional group-by-environment/role view, and a "new" badge on both the list rows and the host's own card.
+
 ## [0.13.0] - 2026-08-19
 
 ### Added
