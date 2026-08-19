@@ -8,11 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a-h/templ"
 	"gopkg.in/yaml.v3"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -731,6 +733,372 @@ func renderHostSettingsPage(t *testing.T, installCmd, config, agentReason string
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
+}
+
+// TestHostsTableStatusKinds — добор покрытия TEMPL (hostsTable): все три
+// ветки switch по row.StatusKind ("problem" с несколькими OpenKinds — ветка
+// разделителя ", " при i>0, "silent", default "ok") в одном рендере.
+func TestHostsTableStatusKinds(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{
+		{Name: "p-1", StatusKind: "problem", OpenKinds: []string{"disk", "load"}},
+		{Name: "s-1", StatusKind: "silent"},
+		{Name: "o-1", StatusKind: "ok"},
+	}
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+
+	wantDisk := i18n.T(rctx, "hosts.kind.disk")
+	wantLoad := i18n.T(rctx, "hosts.kind.load")
+	// Разделитель ", " окружён пробелами разметки шаблона (переносы строк
+	// вокруг { i, ... } в hosts.templ) — сравниваем нестрого по пробелам.
+	kindsRe := regexp.MustCompile(regexp.QuoteMeta(wantDisk) + `\s*,\s*` + regexp.QuoteMeta(wantLoad))
+	if !kindsRe.MatchString(html) {
+		t.Errorf("нет перечисления видов проблемного статуса через запятую: %s", html)
+	}
+	wantSilent := i18n.T(rctx, "hosts.status.silent")
+	if !strings.Contains(html, wantSilent) {
+		t.Errorf("нет статуса «тихий»: %s", html)
+	}
+	wantOK := i18n.T(rctx, "hosts.status.ok")
+	if !strings.Contains(html, wantOK) {
+		t.Errorf("нет статуса «норма»: %s", html)
+	}
+}
+
+// TestHostsTableMetricsValues — добор покрытия hostsTable/hostPercentText/
+// hostLoadText: строка с заполненными CPU/Mem/Disk/LoadPerCore (ветка «есть
+// значение», не «нет данных»/прочерк, покрытый другими тестами).
+func TestHostsTableMetricsValues(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	cpu, mem, disk, load := 0.421, 0.75, 0.9, 1.5
+	rows := []templates.HostRowVM{
+		{Name: "web-1", StatusKind: "ok", CPU: &cpu, Mem: &mem, Disk: &disk, LoadPerCore: &load},
+	}
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+	for _, want := range []string{"42%", "75%", "90%", "1.50"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("нет значения метрики %q: %s", want, html)
+		}
+	}
+}
+
+// Прямой вызов hostLabelText с непустым значением (ветка «есть значение» —
+// в hostsTable функция вызывается только с пустой строкой, непустая метка
+// рисуется бейджем в отдельной ветке шаблона) — см.
+// internal/web/templates/hosts_helpers_test.go (тот же пакет, unexported).
+
+// TestHostsFilterBarNewOnlyAndGroupRole — добор покрытия hostsFilterBar:
+// чип «новые» активен (NewOnly=true, ветка aria-current), переключатель
+// группировки на сегменте "role" (третье значение цикла, до этого
+// покрывались только "none" и "env").
+func TestHostsFilterBarNewOnlyAndGroupRole(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
+	filter := templates.HostsFilterVM{NewOnly: true, Active: true, Group: "role"}
+	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+
+	wantNew := i18n.T(rctx, "hosts.filter.new")
+	if !strings.Contains(html, `aria-current="page">`+wantNew+`</a>`) {
+		t.Errorf("чип «новые» не отмечен активным при NewOnly=true: %s", html)
+	}
+	wantRole := i18n.T(rctx, "hosts.group.role")
+	if !strings.Contains(html, `aria-current="page">`+wantRole+`</a>`) {
+		t.Errorf("сегмент «по роли» не отмечен активным при Group=role: %s", html)
+	}
+}
+
+// TestHostsListCollectorConfigDetailsInstallCmd — добор покрытия
+// hostsCollectorConfigDetails/HostsList: список НЕ пуст (не онбординг),
+// installCmd непуст — раскрывающийся блок команды агента; truncated=true —
+// подсказка усечения списка.
+func TestHostsListCollectorConfigDetailsInstallCmd(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
+	installCmd := agentInstallCommand("https://g.example", "pk_x")
+	config := collectorConfig("https://g.example", "pk_x")
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, true, 1, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+
+	if !strings.Contains(html, "GOTCHA_AGENT_KEY=pk_x") {
+		t.Errorf("нет блока команды установки агента в непустом списке: %s", html)
+	}
+	if !strings.Contains(html, "otlphttp") {
+		t.Errorf("нет свёрнутого конфига коллектора в непустом списке: %s", html)
+	}
+	wantLimitNotice := i18n.Tf(rctx, "hosts.limit_notice", "limit", "1")
+	if !strings.Contains(html, wantLimitNotice) {
+		t.Errorf("нет подсказки усечения списка при truncated=true: %s", html)
+	}
+}
+
+// TestHostsListCollectorConfigDetailsDist/Insecure — те же ветки
+// hostsCollectorConfigDetails, что и в онбординге (rem-A sec-M1/sec-M4), но
+// в контексте непустого списка хостов, где функция вызывается отдельно от
+// hostsOnboarding.
+func TestHostsListCollectorConfigDetailsDist(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
+	config := collectorConfig("https://g.example", "pk_x")
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "dist", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+	wantHint := i18n.T(rctx, "hosts.onboarding.agent_unavailable")
+	if !strings.Contains(html, wantHint) {
+		t.Errorf("нет подсказки о недоступной раздаче в непустом списке: %s", html)
+	}
+}
+
+func TestHostsListCollectorConfigDetailsInsecure(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
+	config := collectorConfig("http://gotcha.example", "pk_x")
+
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "insecure", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+	wantHint := i18n.T(rctx, "hosts.onboarding.agent_insecure")
+	if !strings.Contains(html, wantHint) {
+		t.Errorf("нет предупреждения про HTTPS в непустом списке: %s", html)
+	}
+}
+
+// TestHostDetailEnvironmentRoleBadges — добор покрытия HostDetail: бейджи
+// environment/role в шапке карточки (title=подпись колонки, тот же принцип,
+// что у строки списка).
+func TestHostDetailEnvironmentRoleBadges(t *testing.T) {
+	vm := templates.HostDetailVM{
+		Host: host.Host{Name: "web-1", Environment: "prod", Role: "db"},
+	}
+	html := renderHostDetail(t, vm)
+	if !strings.Contains(html, `<span class="badge badge-neutral" title="Окружение">prod</span>`) {
+		t.Errorf("нет бейджа environment в шапке карточки: %s", html)
+	}
+	if !strings.Contains(html, `<span class="badge badge-neutral" title="Роль">db</span>`) {
+		t.Errorf("нет бейджа role в шапке карточки: %s", html)
+	}
+}
+
+// TestHostDetailUptimeShown/NotShown — добор покрытия HostDetail: плитка
+// «время работы» рисуется только при непустом Uptime (хост уже отчитался
+// метрикой), а не «0».
+func TestHostDetailUptimeShown(t *testing.T) {
+	vm := templates.HostDetailVM{Host: host.Host{Name: "web-1"}, Uptime: "3д 4ч"}
+	html := renderHostDetail(t, vm)
+	if !strings.Contains(html, "3д 4ч") {
+		t.Errorf("нет плитки uptime при непустом Uptime: %s", html)
+	}
+}
+
+func TestHostDetailUptimeNotShown(t *testing.T) {
+	vm := templates.HostDetailVM{Host: host.Host{Name: "web-1"}}
+	html := renderHostDetail(t, vm)
+	wantLabel := "Время работы"
+	if strings.Contains(html, wantLabel) {
+		t.Errorf("плитка uptime показана при пустом Uptime: %s", html)
+	}
+}
+
+// TestHostDetailAgentUpdateBadgeWithoutCmd — AgentUpdateAvailable=true, но
+// AgentUpdateCmd пуст (путь агента недоступен/небезопасен, rem-A sec-M1/
+// sec-M4): бейдж «есть обновление» в плитке версии остаётся, но свёрнутый
+// блок с готовой командой не рендерится (комбинация && во втором операнде).
+func TestHostDetailAgentUpdateBadgeWithoutCmd(t *testing.T) {
+	vm := templates.HostDetailVM{
+		Host:                 host.Host{Name: "web-1", AgentVersion: "0.5.0"},
+		AgentVersion:         "0.5.0",
+		AgentUpdateAvailable: true,
+		AgentUpdateCmd:       "",
+	}
+	html := renderHostDetail(t, vm)
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantBadge := i18n.T(ctx, "hosts.detail.agent_update")
+	if !strings.Contains(html, wantBadge) {
+		t.Errorf("нет бейджа обновления при AgentUpdateCmd=\"\": %s", html)
+	}
+	if strings.Contains(html, "<details class=\"host-agent-update\"") {
+		t.Errorf("свёрнутый блок команды обновления показан при пустом AgentUpdateCmd: %s", html)
+	}
+}
+
+// TestHostDetailOpenIncidents — добор покрытия HostDetail/hostOpenIncidentRow:
+// список открытых инцидентов с двумя строками — Detail заполнен и Detail
+// пуст (обе ветки docblock-примечания hostOpenIncidentRow).
+func TestHostDetailOpenIncidents(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	vm := templates.HostDetailVM{
+		Host: host.Host{Name: "web-1"},
+		OpenIncidents: []host.Incident{
+			{Kind: "disk", CurrentValue: 0.93, Detail: "/var", StartedAt: started},
+			{Kind: "load", CurrentValue: 1.8, StartedAt: started},
+		},
+	}
+	html := renderHostDetail(t, vm)
+
+	if !strings.Contains(html, "93.0%") {
+		t.Errorf("нет значения диска в строке открытого инцидента: %s", html)
+	}
+	if !strings.Contains(html, "(/var)") {
+		t.Errorf("нет детали инцидента в скобках: %s", html)
+	}
+	if !strings.Contains(html, "1.80×") {
+		t.Errorf("нет значения load в строке открытого инцидента: %s", html)
+	}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantEmpty := i18n.T(ctx, "hosts.detail.incidents_open_empty")
+	if strings.Contains(html, wantEmpty) {
+		t.Errorf("подсказка «нет открытых» показана при непустом списке: %s", html)
+	}
+}
+
+// TestHostDetailRecentIncidents — добор покрытия HostDetail/hostIncidentRow:
+// таблица истории инцидентов с открытой и решённой строкой.
+func TestHostDetailRecentIncidents(t *testing.T) {
+	vm := templates.HostDetailVM{
+		Host: host.Host{Name: "web-1"},
+		RecentIncidents: []host.Incident{
+			{Kind: "memory", Status: "open", PeakValue: 0.95, CurrentValue: 0.91},
+			{Kind: "disk", Status: "resolved", PeakValue: 0.92, CurrentValue: 0.5},
+		},
+	}
+	html := renderHostDetail(t, vm)
+
+	if !strings.Contains(html, "95.0%") || !strings.Contains(html, "91.0%") {
+		t.Errorf("нет пиковых/текущих значений истории инцидентов: %s", html)
+	}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantOpen := i18n.T(ctx, "metrics.alerts.status.open")
+	wantResolved := i18n.T(ctx, "metrics.alerts.status.resolved")
+	if !strings.Contains(html, wantOpen) {
+		t.Errorf("нет статуса «открыт» в истории: %s", html)
+	}
+	if !strings.Contains(html, wantResolved) {
+		t.Errorf("нет статуса «решён» в истории: %s", html)
+	}
+	wantEmpty := i18n.T(ctx, "hosts.detail.incidents_empty")
+	if strings.Contains(html, wantEmpty) {
+		t.Errorf("подсказка «истории нет» показана при непустом списке: %s", html)
+	}
+}
+
+// TestHostDetailCanOperate — добор покрытия HostDetail: форма удаления
+// хоста рендерится только при CanOperate=true (operator+, остальные тесты
+// пакета держат его в значении по умолчанию false).
+func TestHostDetailCanOperate(t *testing.T) {
+	vm := templates.HostDetailVM{Host: host.Host{Name: "web-1"}, CanOperate: true}
+	html := renderHostDetail(t, vm)
+	if !strings.Contains(html, `class="host-actions"`) {
+		t.Errorf("нет формы удаления хоста при CanOperate=true: %s", html)
+	}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantDelete := i18n.T(ctx, "hosts.detail.delete")
+	if !strings.Contains(html, wantDelete) {
+		t.Errorf("нет текста кнопки удаления: %s", html)
+	}
+}
+
+// TestHostStatusTextKinds — добор покрытия hostStatusText: три ветки
+// switch по kind в бейдже шапки карточки (problem с несколькими
+// ProblemKinds — та же ветка разделителя ", ", что у hostsTable; silent;
+// default ok), считаем и через HostDetail напрямую.
+func TestHostStatusTextKinds(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	problem := renderHostDetail(t, templates.HostDetailVM{
+		Host: host.Host{Name: "web-1"}, StatusKind: "problem", ProblemKinds: []string{"memory", "disk"},
+	})
+	wantMem := i18n.T(ctx, "hosts.kind.memory")
+	wantDisk := i18n.T(ctx, "hosts.kind.disk")
+	kindsRe := regexp.MustCompile(regexp.QuoteMeta(wantMem) + `\s*,\s*` + regexp.QuoteMeta(wantDisk))
+	if !kindsRe.MatchString(problem) {
+		t.Errorf("нет перечисления видов проблемного статуса в шапке карточки: %s", problem)
+	}
+
+	silent := renderHostDetail(t, templates.HostDetailVM{Host: host.Host{Name: "web-1"}, StatusKind: "silent"})
+	wantSilent := i18n.T(ctx, "hosts.status.silent")
+	if !strings.Contains(silent, wantSilent) {
+		t.Errorf("нет статуса «тихий» в шапке карточки: %s", silent)
+	}
+
+	ok := renderHostDetail(t, templates.HostDetailVM{Host: host.Host{Name: "web-1"}, StatusKind: "ok"})
+	wantOK := i18n.T(ctx, "hosts.status.ok")
+	if !strings.Contains(ok, wantOK) {
+		t.Errorf("нет статуса «норма» в шапке карточки: %s", ok)
+	}
+}
+
+// TestHostChartCardBranches — добор покрытия hostChartCard: три состояния
+// графика — Empty=true (пустое состояние со скрейпер-подсказкой), Empty=
+// false без легенды/усечения, Empty=false с легендой и Truncated=true
+// (подпись топ-N групп).
+func TestHostChartCardBranches(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+
+	empty := templates.HostDetailVM{
+		Host:   host.Host{Name: "web-1"},
+		Charts: []templates.HostChartVM{{Key: "cpu", Empty: true}},
+	}
+	htmlEmpty := renderHostDetail(t, empty)
+	wantScraper := i18n.T(ctx, "hosts.scraper_hint.cpu")
+	if !strings.Contains(htmlEmpty, wantScraper) {
+		t.Errorf("нет подсказки скрейпера в пустом состоянии графика: %s", htmlEmpty)
+	}
+
+	plain := templates.HostDetailVM{
+		Host: host.Host{Name: "web-1"},
+		Charts: []templates.HostChartVM{
+			{Key: "mem", Empty: false, Chart: templ.Raw("<svg data-test-chart=\"mem\"></svg>")},
+		},
+	}
+	htmlPlain := renderHostDetail(t, plain)
+	if !strings.Contains(htmlPlain, `data-test-chart="mem"`) {
+		t.Errorf("нет отрисованного графика без легенды: %s", htmlPlain)
+	}
+
+	withLegend := templates.HostDetailVM{
+		Host: host.Host{Name: "web-1"},
+		Charts: []templates.HostChartVM{
+			{
+				Key:       "load",
+				Empty:     false,
+				Chart:     templ.Raw("<svg data-test-chart=\"load\"></svg>"),
+				Legend:    []templates.LegendItem{{Label: "core-0", Class: "series-0"}},
+				Truncated: true,
+			},
+		},
+	}
+	htmlLegend := renderHostDetail(t, withLegend)
+	if !strings.Contains(htmlLegend, "core-0") {
+		t.Errorf("нет легенды графика: %s", htmlLegend)
+	}
+	wantTruncated := i18n.Tf(ctx, "hosts.chart.top_groups", "n", "8")
+	if metric.MaxSeriesGroups != 8 {
+		t.Fatalf("metric.MaxSeriesGroups изменился (%d) — обнови ожидание подписи усечения", metric.MaxSeriesGroups)
+	}
+	if !strings.Contains(htmlLegend, wantTruncated) {
+		t.Errorf("нет подписи усечения топ-N групп: %s", htmlLegend)
+	}
 }
 
 // TestHostSettingsAgentInstallBlock — T14: страница настроек порогов несёт
