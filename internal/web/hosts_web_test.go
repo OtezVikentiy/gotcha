@@ -753,6 +753,225 @@ func TestWebHostSettingsSaveRejectsNaNInf(t *testing.T) {
 	}
 }
 
+// TestWebHostGroupThresholdsFlow — блок «Пороги по окружению/роли» (B2, T7)
+// на /hosts/settings: без Origin/чужому оператору — 403/404, ничего не
+// меняется; валидный POST scope=role/label=web создаёт правило
+// (GroupThresholdService.Upsert), 303 на страницу настроек, flash, строка в
+// таблице; повторный POST под ТОЙ ЖЕ парой scope+label — редактирование
+// (замещает диск-override другим значением, а не создаёт вторую строку —
+// Upsert идемпотентен по (project_id,scope,label)); невалидный POST (диск
+// вне границы) → 422 с сообщением и введённым значением, сохранённое правило
+// не подменяется мусором; POST без scope/label → 422; удаление — 303,
+// правило исчезает из PG и со страницы, повторное удаление идемпотентно.
+func TestWebHostGroupThresholdsFlow(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hgt-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hgt-co", "HGT Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hgt-proj", "HGT Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{
+		{Name: "web-1", Environment: "prod", Role: "web"},
+	}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	savePath := path + "/groups"
+	deletePath := savePath + "/delete"
+
+	// GET — форма добавления показана (у проекта есть метки prod/web),
+	// групповых правил ещё нет.
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, `id="host-group-threshold-form"`) {
+		t.Errorf("форма группового правила не показана: %s", text)
+	}
+	if !strings.Contains(text, `value="prod"`) || !strings.Contains(text, `value="web"`) {
+		t.Errorf("метки хоста (prod/web) не предложены в select: %s", text)
+	}
+
+	validForm := url.Values{
+		"scope": {"role"}, "label_role": {"web"},
+		"disk_mode": {"override"}, "disk_value": {"70"},
+		"memory_mode": {"inherit"},
+		"load_mode":   {"inherit"},
+		"silent_mode": {"inherit"},
+	}
+
+	// Без Origin → 403, правило не создано.
+	resp = postForm(t, s.srv, savePath, validForm, "", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 0 {
+		t.Fatalf("правило создано без Origin: %+v, err=%v", got, err)
+	}
+
+	// Чужой (не член организации) → 404.
+	_, outsider := orgSettingsRegister(t, s.auth, "hgt-outsider@example.com")
+	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, outsider)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider POST status = %d, want 404", resp.StatusCode)
+	}
+
+	// Валидный POST → 303, flash, правило в PG.
+	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("valid POST status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != path {
+		t.Fatalf("Location = %q, want %q", loc, path)
+	}
+	if !hasFlashCookie(resp, "ok|flash.saved") {
+		t.Errorf("после сохранения правила нет flash-cookie: %v", resp.Header.Values("Set-Cookie"))
+	}
+	saved, err := s.groups.List(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list groups: %v", err)
+	}
+	if len(saved) != 1 || saved[0].Scope != "role" || saved[0].Label != "web" {
+		t.Fatalf("saved groups = %+v, want one role/web", saved)
+	}
+	if saved[0].DiskEnabled == nil || !*saved[0].DiskEnabled || saved[0].DiskThreshold == nil || *saved[0].DiskThreshold != 0.70 {
+		t.Errorf("disk override = %+v, want enabled=true value=0.70", saved[0].DiskEnabled)
+	}
+
+	// GET после сохранения — таблица показывает строку правила.
+	resp = getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text = string(body)
+	if !strings.Contains(text, "70.0%") {
+		t.Errorf("таблица правил не показывает заданный порог диска: %s", text)
+	}
+
+	// Повторный POST под той же парой scope+label — редактирование: Upsert
+	// замещает диск-override другим значением, а не создаёт вторую строку.
+	editForm := url.Values{
+		"scope": {"role"}, "label_role": {"web"},
+		"disk_mode": {"override"}, "disk_value": {"55"},
+		"memory_mode": {"inherit"},
+		"load_mode":   {"inherit"},
+		"silent_mode": {"inherit"},
+	}
+	resp = postForm(t, s.srv, savePath, editForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("edit POST status = %d, want 303", resp.StatusCode)
+	}
+	edited, err := s.groups.List(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list groups after edit: %v", err)
+	}
+	if len(edited) != 1 || edited[0].DiskThreshold == nil || *edited[0].DiskThreshold != 0.55 {
+		t.Fatalf("edited groups = %+v, want ОДНО правило role/web с disk=0.55 (не вторая строка)", edited)
+	}
+
+	// Невалидный POST (диск вне границы 1..100%) → 422, сообщение + введённое
+	// значение, ранее сохранённое правило не подменяется мусором.
+	invalidForm := url.Values{
+		"scope": {"role"}, "label_role": {"web"},
+		"disk_mode": {"override"}, "disk_value": {"150"},
+		"memory_mode": {"inherit"},
+		"load_mode":   {"inherit"},
+		"silent_mode": {"inherit"},
+	}
+	resp = postForm(t, s.srv, savePath, invalidForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid disk POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	text = string(body)
+	if !strings.Contains(text, `value="150"`) {
+		t.Errorf("422-ответ не вернул введённое значение disk_value=150: %s", text)
+	}
+	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
+		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
+	}
+	stillSaved, err := s.groups.List(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list groups after invalid POST: %v", err)
+	}
+	if len(stillSaved) != 1 || stillSaved[0].DiskThreshold == nil || *stillSaved[0].DiskThreshold != 0.55 {
+		t.Errorf("невалидный POST изменил сохранённое правило: %+v, want disk=0.55", stillSaved)
+	}
+
+	// POST без scope/label → 422 (нечего сохранять).
+	noScopeForm := url.Values{
+		"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
+		"load_mode": {"inherit"}, "silent_mode": {"inherit"},
+	}
+	resp = postForm(t, s.srv, savePath, noScopeForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("no-scope POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+
+	// Удаление без Origin → 403, правило не удалено.
+	delForm := url.Values{"scope": {"role"}, "label": {"web"}}
+	resp = postForm(t, s.srv, deletePath, delForm, "", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("delete no-origin status = %d, want 403", resp.StatusCode)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 1 {
+		t.Fatalf("правило удалено без Origin: %+v, err=%v", got, err)
+	}
+
+	// Валидное удаление → 303, flash, правило исчезает из PG и со страницы.
+	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete POST status = %d, want 303", resp.StatusCode)
+	}
+	if !hasFlashCookie(resp, "ok|flash.deleted") {
+		t.Errorf("после удаления правила нет flash-cookie: %v", resp.Header.Values("Set-Cookie"))
+	}
+	afterDelete, err := s.groups.List(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list groups after delete: %v", err)
+	}
+	if len(afterDelete) != 0 {
+		t.Errorf("правило не удалено: %+v", afterDelete)
+	}
+	resp = getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "Групповых правил ещё нет") {
+		t.Errorf("страница после удаления не показывает пустой список правил: %s", body)
+	}
+
+	// Повторное удаление отсутствующей строки — идемпотентно, 303, без ошибки.
+	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("repeat delete POST status = %d, want 303", resp.StatusCode)
+	}
+}
+
 // TestWebHostsListStatusSurvivesManyClosedIncidents — ревью I3: список хостов
 // сворачивал открытые виды из «последних N инцидентов проекта ЛЮБОГО статуса»
 // с лимитом 500. В проекте, где закрытых инцидентов накопилось больше лимита,

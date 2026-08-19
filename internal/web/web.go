@@ -571,6 +571,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/hosts", h.requireUser(http.HandlerFunc(h.hostsList)))
 	inner.Handle("GET /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsPage)))
 	inner.Handle("POST /projects/{id}/hosts/settings", h.requireUser(http.HandlerFunc(h.hostSettingsSave)))
+	// Групповые пороги по окружению/роли (B2, T7): литеральные сегменты
+	// "settings"/"groups"/"delete" — тем же приоритетом ServeMux, что у
+	// "settings" перед {name} в комментарии выше.
+	inner.Handle("POST /projects/{id}/hosts/settings/groups", h.requireUser(http.HandlerFunc(h.hostGroupThresholdSave)))
+	inner.Handle("POST /projects/{id}/hosts/settings/groups/delete", h.requireUser(http.HandlerFunc(h.hostGroupThresholdDelete)))
 	inner.Handle("GET /projects/{id}/hosts/{name}", h.requireUser(http.HandlerFunc(h.hostDetail)))
 	inner.Handle("POST /projects/{id}/hosts/{name}/thresholds", h.requireUser(http.HandlerFunc(h.hostThresholdsSave)))
 	inner.Handle("POST /projects/{id}/hosts/{name}/delete", h.requireUser(http.HandlerFunc(h.hostDelete)))

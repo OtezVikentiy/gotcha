@@ -4281,13 +4281,21 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .host-thresholds-form .th-disk-value,
 .host-thresholds-form .th-memory-value,
 .host-thresholds-form .th-load-value,
-.host-thresholds-form .th-silent-value {
+.host-thresholds-form .th-silent-value,
+.host-group-threshold-form .th-disk-value,
+.host-group-threshold-form .th-memory-value,
+.host-group-threshold-form .th-load-value,
+.host-group-threshold-form .th-silent-value {
 	display: none;
 }
 .host-thresholds-form:has(input[name="disk_mode"][value="override"]:checked) .th-disk-value,
 .host-thresholds-form:has(input[name="memory_mode"][value="override"]:checked) .th-memory-value,
 .host-thresholds-form:has(input[name="load_mode"][value="override"]:checked) .th-load-value,
-.host-thresholds-form:has(input[name="silent_mode"][value="override"]:checked) .th-silent-value {
+.host-thresholds-form:has(input[name="silent_mode"][value="override"]:checked) .th-silent-value,
+.host-group-threshold-form:has(input[name="disk_mode"][value="override"]:checked) .th-disk-value,
+.host-group-threshold-form:has(input[name="memory_mode"][value="override"]:checked) .th-memory-value,
+.host-group-threshold-form:has(input[name="load_mode"][value="override"]:checked) .th-load-value,
+.host-group-threshold-form:has(input[name="silent_mode"][value="override"]:checked) .th-silent-value {
 	display: block;
 }
 .host-thresholds-readonly {
@@ -4296,6 +4304,31 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	margin: 0;
 	display: grid;
 	gap: 0.5rem;
+}
+
+/* ===== Групповые пороги по окружению/роли (B2, T7) ===== */
+
+.host-group-thresholds {
+	margin-top: 1.5rem;
+}
+
+/* Метка формы добавления/редактирования — тот же приём :has(), что у
+   значения вида выше: select привязан к scope, отправлять оба сразу не
+   нужно, второй скрыт целиком (остаётся в DOM и в POST, но handler читает
+   только тот, что соответствует отправленному scope, hostGroupThresholdSave). */
+.host-group-threshold-form .gt-label-env,
+.host-group-threshold-form .gt-label-role {
+	display: none;
+}
+.host-group-threshold-form:has(input[name="scope"][value="env"]:checked) .gt-label-env,
+.host-group-threshold-form:has(input[name="scope"][value="role"]:checked) .gt-label-role {
+	display: block;
+}
+
+.gt-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
 }
 
 /* Сегмент-контрол «Разовое / Еженедельное» — две склеенные кнопки, как у
