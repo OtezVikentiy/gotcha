@@ -110,6 +110,7 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 							<span class={ sloIndicatorClass(vm.Status) }></span>
 							{ fmtPct(vm.BudgetRemainingPct) }
 						</div>
+						<div class="slo-status-line"><span class={ sloStatusBadgeClass(vm.Status) }>{ sloStatusLabel(ctx, vm.Status) }</span></div>
 					</div>
 				} else {
 					<div class="stat-tile stat-tile--text">
@@ -118,16 +119,19 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 					</div>
 				}
 				if vm.HasBurn {
-					<div class="stat-tile">
+					<div class="stat-tile" title={ i18n.T(ctx, "slo.detail.burn_hint") }>
 						<div class="stat-label">{ i18n.T(ctx, "slo.detail.burn_short") }</div>
 						<div class="stat-value">{ sloBurnText(vm.BurnShort) }</div>
 					</div>
-					<div class="stat-tile">
+					<div class="stat-tile" title={ i18n.T(ctx, "slo.detail.burn_hint") }>
 						<div class="stat-label">{ i18n.T(ctx, "slo.detail.burn_long") }</div>
 						<div class="stat-value">{ sloBurnText(vm.BurnLong) }</div>
 					</div>
 				}
 			</div>
+			if vm.HasBurn {
+				<p class="hint">{ i18n.T(ctx, "slo.detail.burn_hint") }</p>
+			}
 
 			if vm.HasOpenIncident {
 				<div class="card slo-open-incident">

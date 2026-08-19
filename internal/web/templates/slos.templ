@@ -135,9 +135,9 @@ templ SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, fo
 											</td>
 											<td><span class={ sloStatusBadgeClass(row.Status) }>{ sloStatusLabel(ctx, row.Status) }</span></td>
 										} else {
-											<td class="num">{ i18n.T(ctx, "slo.list.no_data") }</td>
-											<td class="num">{ i18n.T(ctx, "slo.list.no_data") }</td>
-											<td><span class="badge badge-neutral">{ i18n.T(ctx, "slo.list.no_data") }</span></td>
+											<td class="num" title={ i18n.T(ctx, "slo.list.no_data_hint") }>{ i18n.T(ctx, "slo.list.no_data") }</td>
+											<td class="num" title={ i18n.T(ctx, "slo.list.no_data_hint") }>{ i18n.T(ctx, "slo.list.no_data") }</td>
+											<td><span class="badge badge-neutral" title={ i18n.T(ctx, "slo.list.no_data_hint") }>{ i18n.T(ctx, "slo.list.no_data") }</span></td>
 										}
 										<td>
 											<form method="post" action={ templ.URL(SLOsPath(projectID) + "/" + strconv.FormatInt(row.ID, 10) + "/delete") } class="inline">
@@ -245,6 +245,7 @@ templ SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, fo
 								{ i18n.T(ctx, "slo.form.burn") }
 								<input type="text" name="burn_threshold" placeholder="14.4" class="input" value={ form.Get("burn_threshold", "14.4") }/>
 							</label>
+							<span class="hint">{ i18n.T(ctx, "slo.form.burn_hint") }</span>
 						</div>
 					</div>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "slo.form.submit") }</button>

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/a-h/templ"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
 // TestSLOsScreenRendersDataRows покрывает ветку HasData=true списка SLO (индикатор
@@ -30,6 +32,14 @@ func TestSLOsScreenRendersDataRows(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("SLOsScreen не содержит %q", want)
 		}
+	}
+	// P2-4: у прочерка «нет данных» есть title-подсказка (нет трафика vs сломалось).
+	if !strings.Contains(out, i18n.T(ctx, "slo.list.no_data_hint")) {
+		t.Errorf("SLOsScreen не содержит подсказку slo.list.no_data_hint для строки без данных")
+	}
+	// P2-3: под полем порога сжигания в форме есть подсказка про 14.4.
+	if !strings.Contains(out, i18n.T(ctx, "slo.form.burn_hint")) {
+		t.Errorf("SLOsScreen не содержит подсказку slo.form.burn_hint в форме")
 	}
 }
 
@@ -62,6 +72,14 @@ func TestSLODetailScreenRendersFullState(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("SLODetailScreen не содержит %q", want)
 		}
+	}
+	// P2-5: статус бюджета продублирован текстом (WCAG 1.4.1 — не только цветом точки).
+	if !strings.Contains(out, sloStatusLabel(ctx, "exhausted")) {
+		t.Errorf("SLODetailScreen не содержит текстовый лейбл статуса %q", sloStatusLabel(ctx, "exhausted"))
+	}
+	// P2-2: под burn-карточками есть подсказка про смысл ×N.
+	if !strings.Contains(out, i18n.T(ctx, "slo.detail.burn_hint")) {
+		t.Errorf("SLODetailScreen не содержит подсказку slo.detail.burn_hint")
 	}
 
 	// HasData=false — график и проценты не рендерятся, экран не падает.
