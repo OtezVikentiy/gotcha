@@ -120,10 +120,13 @@ func NewSettingsService(pool *pgxpool.Pool) *SettingsService {
 	return &SettingsService{pool: pool}
 }
 
-// Get возвращает пороги проекта. Строки нет (порог ещё не сохранялся) —
-// не ошибка, а DefaultSettings(): строка создаётся лениво, только при
-// первом Save.
-func (s *SettingsService) Get(ctx context.Context, projectID int64) (Settings, error) {
+// GetWithExists возвращает пороги проекта и признак, есть ли для проекта
+// сохранённая строка (M2: нужен вызывающим, различающим «явно не настроено»
+// от «настроено и совпало с дефолтом» — например, каскаду override/group/
+// project/default, которому важно, останавливаться ли на уровне проекта).
+// Строки нет (порог ещё не сохранялся) — не ошибка: DefaultSettings() и
+// exists=false, строка создаётся лениво, только при первом Save.
+func (s *SettingsService) GetWithExists(ctx context.Context, projectID int64) (Settings, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT disk_enabled, disk_threshold, memory_enabled, memory_threshold,
 		       load_enabled, load_threshold, silent_enabled, silent_after_seconds
@@ -139,13 +142,20 @@ func (s *SettingsService) Get(ctx context.Context, projectID int64) (Settings, e
 		&out.SilentEnabled, &silentSeconds,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return DefaultSettings(), nil
+		return DefaultSettings(), false, nil
 	}
 	if err != nil {
-		return Settings{}, fmt.Errorf("host: get settings: %w", err)
+		return Settings{}, false, fmt.Errorf("host: get settings: %w", err)
 	}
 	out.SilentAfter = time.Duration(silentSeconds) * time.Second
-	return out, nil
+	return out, true, nil
+}
+
+// Get возвращает пороги проекта — обёртка над GetWithExists, отбрасывающая
+// признак наличия строки для вызывающих, которым он не нужен.
+func (s *SettingsService) Get(ctx context.Context, projectID int64) (Settings, error) {
+	out, _, err := s.GetWithExists(ctx, projectID)
+	return out, err
 }
 
 // Save валидирует и сохраняет пороги проекта (upsert — первый Save проекта
