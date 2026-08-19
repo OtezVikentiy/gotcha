@@ -294,7 +294,12 @@ templ hostsTable(projectID int64, rows []HostRowVM) {
 		<tbody>
 			for _, row := range rows {
 				<tr>
-					<td><a href={ templ.URL(hostLink(projectID, row.Name)) }>{ row.Name }</a></td>
+					<td>
+						<a href={ templ.URL(hostLink(projectID, row.Name)) }>{ row.Name }</a>
+						if row.IsNew {
+							<span class="badge badge-info">{ i18n.T(ctx, "hosts.badge.new") }</span>
+						}
+					</td>
 					<td>
 						switch row.StatusKind {
 							case "problem":

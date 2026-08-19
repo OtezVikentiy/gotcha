@@ -1283,6 +1283,7 @@
     "hosts.filter.role": "Роль:",
     "hosts.filter.new": "Новые",
     "hosts.filter.reset": "Сбросить фильтр",
+    "hosts.badge.new": "новый",
     "hosts.label.none": "(без метки)",
     "hosts.group.label": "Группировка:",
     "hosts.group.none": "Без группировки",

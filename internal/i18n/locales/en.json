@@ -1283,6 +1283,7 @@
     "hosts.filter.role": "Role:",
     "hosts.filter.new": "New",
     "hosts.filter.reset": "Reset filter",
+    "hosts.badge.new": "new",
     "hosts.label.none": "(no label)",
     "hosts.group.label": "Group by:",
     "hosts.group.none": "No grouping",

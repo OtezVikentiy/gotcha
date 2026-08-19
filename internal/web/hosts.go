@@ -954,6 +954,7 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 		AgentUpdateAvailable: agentUpdateAvailable(hst.AgentVersion, serverVersion),
 		AgentUpdateCmd:       agentUpdateCmd,
 		ServerVersion:        serverVersion,
+		IsNew:                now.Sub(hst.FirstSeen) < hostNewWindow,
 	}
 	_ = templates.HostDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }

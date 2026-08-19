@@ -571,6 +571,39 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	}
 }
 
+// TestHostNewBadgeBoundary — граница hostNewWindow (24ч, T5): хост с
+// first_seen 23ч назад показывает бейдж «новый» (и в строке списка, и в
+// шапке карточки), хост с first_seen 25ч назад — не показывает. Правило
+// IsNew то же самое, что SQL-ветка HostFilter.NewOnly (host_test.go) —
+// здесь проверяется только рендер бейджа, а не сам подсчёт границы.
+func TestHostNewBadgeBoundary(t *testing.T) {
+	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantBadge := i18n.T(rctx, "hosts.badge.new")
+	now := time.Now()
+
+	rows := []templates.HostRowVM{
+		{Name: "web-1", StatusKind: "ok", IsNew: now.Sub(now.Add(-23*time.Hour)) < hostNewWindow},
+		{Name: "web-2", StatusKind: "ok", IsNew: now.Sub(now.Add(-25*time.Hour)) < hostNewWindow},
+	}
+	var sb strings.Builder
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+	if got := strings.Count(html, wantBadge); got != 1 {
+		t.Errorf("бейдж «новый» встречается %d раз(а) в списке, want 1 (только у 23ч-хоста): %s", got, html)
+	}
+
+	newDetail := renderHostDetail(t, templates.HostDetailVM{Host: host.Host{Name: "web-1"}, IsNew: true})
+	if !strings.Contains(newDetail, wantBadge) {
+		t.Errorf("нет бейджа «новый» в карточке при IsNew=true: %s", newDetail)
+	}
+	oldDetail := renderHostDetail(t, templates.HostDetailVM{Host: host.Host{Name: "web-1"}, IsNew: false})
+	if strings.Contains(oldDetail, wantBadge) {
+		t.Errorf("бейдж «новый» показан в карточке при IsNew=false: %s", oldDetail)
+	}
+}
+
 // TestHostsListFilterEmptyShowsResetNotOnboarding — под фильтром, давшим
 // пустой результат, список НЕ должен показывать онбординг «Хостов пока
 // нет» (проект не пуст — просто ни один хост не подошёл под фильтр) — иначе
