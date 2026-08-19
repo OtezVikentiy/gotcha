@@ -222,6 +222,7 @@ Ceilings that protect the instance from a flood, plus how often the background e
 | `GOTCHA_METRIC_EVAL_INTERVAL` | `60` | How often (seconds) metric threshold alert rules are evaluated. |
 | `GOTCHA_PROFILE_EVAL_INTERVAL` | `300` | How often (seconds) the profiling regression detector runs. |
 | `GOTCHA_HOST_EVAL_INTERVAL` | `60` | How often (seconds) the background evaluator recomputes built-in host thresholds (disk/memory/load/silence) and opens/closes their incidents, see [Hosts](/docs/hosts). Minimum 1 second. Lowering it only makes sense on a small fleet: every tick queries the latest points for every host in the project. |
+| `GOTCHA_SLO_EVAL_INTERVAL` | `120` | How often (seconds) the background evaluator recomputes SLO burn rates over the fast/slow windows and opens/closes error-budget incidents. Minimum 1 second. SLOs live on multi-day windows, so a slower tick than the metric/host evaluators is enough. |
 
 ## Observability and logs
 

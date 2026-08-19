@@ -306,6 +306,66 @@ func insertMetricIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, res
 	return id
 }
 
+// insertSLOIncident добавляет инцидент сжигания бюджета SLO вместе с самим SLO,
+// на который он ссылается. resolvedAt==nil — инцидент открыт.
+func insertSLOIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt *time.Time) int64 {
+	t.Helper()
+	ctx := context.Background()
+	n := entitySeq.Add(1)
+	status := "resolved"
+	if resolvedAt == nil {
+		status = "open"
+	}
+	var sloID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO slos (project_id, name, sli_kind, target, window_days)
+		 VALUES ($1, $2, 'availability', 0.99, 30) RETURNING id`,
+		projectID, fmt.Sprintf("slo-%d", n)).Scan(&sloID); err != nil {
+		t.Fatalf("insert slo: %v", err)
+	}
+	var id int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO slo_incidents (slo_id, project_id, status, burn_rate, started_at, resolved_at)
+		 VALUES ($1, $2, $3, 14.4, now() - interval '1 hour', $4) RETURNING id`,
+		sloID, projectID, status, resolvedAt).Scan(&id); err != nil {
+		t.Fatalf("insert slo incident: %v", err)
+	}
+	return id
+}
+
+// TestEntityJanitorPurgesResolvedSLOIncidents — закрытый инцидент сжигания
+// бюджета SLO живёт сроком метрик (зеркало metric_incidents): карточка показывает
+// период, за который точек good/total в ClickHouse уже нет. Открытый инцидент
+// описывает то, что с бюджетом происходит сейчас, и по возрасту не удаляется.
+func TestEntityJanitorPurgesResolvedSLOIncidents(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newEntityProject(t, pool)
+
+	now := time.Now().UTC()
+	oldResolvedAt := now.Add(-40 * 24 * time.Hour)
+	oldResolved := insertSLOIncident(t, pool, pid, &oldResolvedAt)
+	freshResolvedAt := now.Add(-2 * 24 * time.Hour)
+	freshResolved := insertSLOIncident(t, pool, pid, &freshResolvedAt)
+	stillOpen := insertSLOIncident(t, pool, pid, nil)
+
+	j := &telemetry.EntityJanitor{Pool: pool, Retention: telemetry.Retentions{Metrics: 30 * 24 * time.Hour}}
+	if _, err := j.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if rowExists(t, pool, "slo_incidents", oldResolved) {
+		t.Errorf("инцидент SLO, закрытый 40 дней назад, жив при сроке метрик 30 дней")
+	}
+	if !rowExists(t, pool, "slo_incidents", freshResolved) {
+		t.Errorf("инцидент SLO, закрытый 2 дня назад, удалён при сроке метрик 30 дней")
+	}
+	if !rowExists(t, pool, "slo_incidents", stillOpen) {
+		t.Errorf("ОТКРЫТЫЙ инцидент SLO удалён — он описывает то, что с бюджетом происходит сейчас")
+	}
+}
+
 // rowExists — жива ли строка таблицы. Имя таблицы приходит из литералов теста.
 func rowExists(t *testing.T, pool *pgxpool.Pool, table string, id int64) bool {
 	t.Helper()

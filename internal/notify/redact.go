@@ -83,6 +83,9 @@ var redactedKindKeys = map[string]string{
 	// регрессии латентности (trace.RegressionNotifier)
 	"regression_open":  "notify.redacted.kind.regression_open",
 	"regression_close": "notify.redacted.kind.regression_close",
+
+	"slo_burn_open":  "notify.redacted.kind.slo_burn_open",
+	"slo_burn_close": "notify.redacted.kind.slo_burn_close",
 	// регрессии профилей (profile.RegressionNotifier)
 	"profile_regression_open":     "notify.redacted.kind.profile_regression_open",
 	"profile_regression_resolved": "notify.redacted.kind.profile_regression_resolved",

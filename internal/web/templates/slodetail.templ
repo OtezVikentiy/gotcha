@@ -1,0 +1,199 @@
+package templates
+
+import (
+	"context"
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// sloDetailPath — адрес экрана деталей SLO. Должен совпадать со ссылкой
+// url-нотифаера (T5) и с роутом web.go: /projects/{id}/slos/{sloID}.
+func sloDetailPath(projectID, sloID int64) string {
+	return SLOsPath(projectID) + "/" + strconv.FormatInt(sloID, 10)
+}
+
+// SLOIncidentRow — строка истории инцидентов сжигания бюджета SLO.
+type SLOIncidentRow struct {
+	Open               bool
+	StartedAt          time.Time
+	ResolvedAt         *time.Time
+	BurnRate           float64
+	HasBudget          bool
+	BudgetRemainingPct float64
+}
+
+// SLODetailVM — вью-модель экрана деталей одного SLO. HasData=false — за окно
+// нет событий или провайдер недоступен (проценты и график не показываем).
+// HasBurn=false — узкое burn-окно пусто (burn сейчас не считается).
+type SLODetailVM struct {
+	ProjectID     int64
+	ID            int64
+	Name          string
+	Kind          string // код SLI: availability/latency/uptime
+	TargetPct     float64
+	WindowDays    int
+	BurnThreshold float64
+
+	HasData            bool
+	AttainmentPct      float64
+	BudgetRemainingPct float64
+	Status             string // healthy/burning/exhausted
+
+	HasBurn   bool
+	BurnShort float64
+	BurnLong  float64
+
+	HasOpenIncident bool
+	OpenIncident    SLOIncidentRow
+
+	Chart     templ.Component
+	Incidents []SLOIncidentRow
+}
+
+// sloBurnText — burn rate в виде «×N» с одним знаком после запятой.
+func sloBurnText(rate float64) string {
+	return "×" + strconv.FormatFloat(rate, 'f', 1, 64)
+}
+
+// sloIncidentStatusBadgeClass/sloIncidentStatusKey — открытый инцидент требует
+// внимания (danger), закрытый — good, тот же приём, что incidentStatusBadgeClass
+// в monitordetail.templ.
+func sloIncidentStatusBadgeClass(open bool) string {
+	if open {
+		return "badge badge-danger"
+	}
+	return "badge badge-good"
+}
+
+func sloIncidentStatusKey(open bool) string {
+	if open {
+		return "slo.detail.incident_open"
+	}
+	return "slo.detail.incident_resolved"
+}
+
+// sloIncidentDuration — «идёт» для открытого, иначе длительность между
+// started_at и resolved_at (humanize.Duration, не свой макет).
+func sloIncidentDuration(ctx context.Context, row SLOIncidentRow) string {
+	if row.ResolvedAt == nil {
+		return i18n.T(ctx, "slo.detail.ongoing")
+	}
+	return humanize.Duration(ctx, row.ResolvedAt.Sub(row.StartedAt))
+}
+
+// SLODetailScreen — GET /projects/{id}/slos/{sloID}: карточки (цель/достижение/
+// остаток бюджета/burn сейчас), открытый инцидент, burn-down график сжигания
+// бюджета и история инцидентов SLO. Хлебные крошки ведут в список SLO.
+templ SLODetailScreen(vm SLODetailVM, userEmail string) {
+	@layout(vm.Name, userEmail) {
+		<div class="slo-detail">
+			@breadcrumbBackTo(templ.URL(SLOsPath(vm.ProjectID)), i18n.T(ctx, "slo.title"))
+			<h1>{ vm.Name }</h1>
+			<span class="chip">{ sloKindLabel(ctx, vm.Kind) }</span>
+
+			<div class="slo-detail-meta">
+				<div class="stat-tile">
+					<div class="stat-label">{ i18n.T(ctx, "slo.detail.target") }</div>
+					<div class="stat-value">{ fmtPct(vm.TargetPct) }</div>
+				</div>
+				if vm.HasData {
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "slo.detail.attainment") }</div>
+						<div class="stat-value">{ fmtPct(vm.AttainmentPct) }</div>
+					</div>
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "slo.detail.budget") }</div>
+						<div class="stat-value">
+							<span class={ sloIndicatorClass(vm.Status) }></span>
+							{ fmtPct(vm.BudgetRemainingPct) }
+						</div>
+						<div class="slo-status-line"><span class={ sloStatusBadgeClass(vm.Status) }>{ sloStatusLabel(ctx, vm.Status) }</span></div>
+					</div>
+				} else {
+					<div class="stat-tile stat-tile--text">
+						<div class="stat-label">{ i18n.T(ctx, "slo.detail.attainment") }</div>
+						<div class="stat-value">{ i18n.T(ctx, "slo.list.no_data") }</div>
+					</div>
+				}
+				if vm.HasBurn {
+					<div class="stat-tile" title={ i18n.T(ctx, "slo.detail.burn_hint") }>
+						<div class="stat-label">{ i18n.T(ctx, "slo.detail.burn_short") }</div>
+						<div class="stat-value">{ sloBurnText(vm.BurnShort) }</div>
+					</div>
+					<div class="stat-tile" title={ i18n.T(ctx, "slo.detail.burn_hint") }>
+						<div class="stat-label">{ i18n.T(ctx, "slo.detail.burn_long") }</div>
+						<div class="stat-value">{ sloBurnText(vm.BurnLong) }</div>
+					</div>
+				}
+			</div>
+			if vm.HasBurn {
+				<p class="hint">{ i18n.T(ctx, "slo.detail.burn_hint") }</p>
+			}
+
+			if vm.HasOpenIncident {
+				<div class="card slo-open-incident">
+					<h2>{ i18n.T(ctx, "slo.detail.incident_open_title") }</h2>
+					<p>
+						<span class="badge badge-danger">{ i18n.T(ctx, "slo.detail.incident_open") }</span>
+						{ i18n.T(ctx, "slo.detail.started") }: @relativeTime(vm.OpenIncident.StartedAt)
+					</p>
+					<p>{ i18n.T(ctx, "slo.detail.burn") }: { sloBurnText(vm.OpenIncident.BurnRate) }</p>
+					if vm.OpenIncident.HasBudget {
+						<p>{ i18n.T(ctx, "slo.detail.budget") }: { fmtPct(vm.OpenIncident.BudgetRemainingPct) }</p>
+					}
+				</div>
+			}
+
+			<h2>{ i18n.T(ctx, "slo.detail.burndown_title") }</h2>
+			<p class="chart-caption">{ i18n.T(ctx, "slo.detail.burndown_caption") }</p>
+			if vm.HasData {
+				<div class="card slo-burndown-card">
+					@vm.Chart
+				</div>
+			} else {
+				@emptyState("activity", "slo.detail.no_data.title", "slo.detail.no_data.body", "", "", 3)
+			}
+
+			<h2>{ i18n.T(ctx, "slo.detail.history_title") }</h2>
+			if len(vm.Incidents) == 0 {
+				@emptyState("activity", "slo.detail.history_empty.title", "slo.detail.history_empty.body", "", "", 3)
+			} else {
+				<div class="card">
+					@scrollRegion("table-scroll", "slo.detail.history_title") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "slo.detail.col_status") }</th>
+									<th scope="col">{ i18n.T(ctx, "slo.detail.col_started") }</th>
+									<th scope="col">{ i18n.T(ctx, "slo.detail.col_resolved") }</th>
+									<th scope="col">{ i18n.T(ctx, "slo.detail.col_duration") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "slo.detail.col_burn") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, row := range vm.Incidents {
+									<tr>
+										<td><span class={ sloIncidentStatusBadgeClass(row.Open) }>{ i18n.T(ctx, sloIncidentStatusKey(row.Open)) }</span></td>
+										<td>@relativeTime(row.StartedAt)</td>
+										<td>
+											if row.ResolvedAt != nil {
+												@relativeTime(*row.ResolvedAt)
+											} else {
+												{ i18n.T(ctx, "slo.detail.ongoing") }
+											}
+										</td>
+										<td>{ sloIncidentDuration(ctx, row) }</td>
+										<td class="num">{ sloBurnText(row.BurnRate) }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+				</div>
+			}
+		</div>
+	}
+}

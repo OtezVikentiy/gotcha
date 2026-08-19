@@ -1462,3 +1462,119 @@ func usFromFloat(v float64) uint32 {
 	}
 	return uint32(r)
 }
+
+// CountBucket — корзина ряда good/total за интервал времени, отдаваемая
+// SLI-провайдерам (internal/slo). Живёт в trace, а не в slo, специально: иначе
+// пакет trace импортировал бы slo и возник цикл (slo → trace → slo). Провайдер
+// в internal/slo конвертирует CountBucket в slo.Bucket. T — начало корзины (UTC).
+type CountBucket struct {
+	T           time.Time
+	Good, Total uint64
+}
+
+// GoodTotalBuckets строит ряд good/total транзакций проекта за [from, to) с
+// шагом step из MV transactions_5m — источник availability-SLI. total =
+// countMerge(cnt) (все транзакции корзины), good = total - failures, где
+// failures = countMerge(failures) (состояние countIfState(status != 'ok'),
+// базовый комбинатор которого — countMerge, как в Endpoints). step должен быть
+// кратен 5 минутам (гранулярность MV); пустые transaction/environment снимают
+// соответствующий фильтр. Значения только через ? (никогда не конкатенируются).
+func (q *Query) GoodTotalBuckets(ctx context.Context, projectID int64, transaction, environment string, from, to time.Time, step time.Duration) ([]CountBucket, error) {
+	stepSec := int64(step / time.Second)
+	if stepSec <= 0 {
+		return nil, fmt.Errorf("trace: good/total buckets: step must be at least one second, got %s", step)
+	}
+
+	where := "project_id = ? AND bucket >= ? AND bucket < ?"
+	args := []any{stepSec, uint64(projectID), from, to}
+	if transaction != "" {
+		where += " AND transaction = ?"
+		args = append(args, transaction)
+	}
+	if environment != "" {
+		where += " AND environment = ?"
+		args = append(args, environment)
+	}
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT toStartOfInterval(bucket, INTERVAL ? second) AS t,
+			countMerge(cnt) AS total,
+			countMerge(failures) AS failures
+		FROM transactions_5m
+		WHERE `+where+`
+		GROUP BY t
+		ORDER BY t`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("trace: good/total buckets: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CountBucket
+	for rows.Next() {
+		var t time.Time
+		var total, failures uint64
+		if err := rows.Scan(&t, &total, &failures); err != nil {
+			return nil, fmt.Errorf("trace: good/total buckets: scan: %w", err)
+		}
+		good := uint64(0)
+		if total > failures { // failures ≤ total всегда, но вычитание uint64 защищаем
+			good = total - failures
+		}
+		out = append(out, CountBucket{T: t.UTC(), Good: good, Total: total})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: good/total buckets: %w", err)
+	}
+	return out, nil
+}
+
+// LatencyGoodBuckets строит ряд good/total транзакций проекта за [from, to) с
+// шагом step из СЫРЫХ transactions — источник latency-SLI. total = count(),
+// good = countIf(duration_us <= thresholdUS). Порог — в микросекундах. Окно
+// защищено max_execution_time (как соседние raw-запросы, ср. Dependencies).
+// Пустые transaction/environment снимают соответствующий фильтр.
+func (q *Query) LatencyGoodBuckets(ctx context.Context, projectID int64, transaction, environment string, thresholdUS uint64, from, to time.Time, step time.Duration) ([]CountBucket, error) {
+	stepSec := int64(step / time.Second)
+	if stepSec <= 0 {
+		return nil, fmt.Errorf("trace: latency good buckets: step must be at least one second, got %s", step)
+	}
+
+	where := "project_id = ? AND timestamp >= ? AND timestamp < ?"
+	args := []any{stepSec, thresholdUS, uint64(projectID), from, to}
+	if transaction != "" {
+		where += " AND transaction = ?"
+		args = append(args, transaction)
+	}
+	if environment != "" {
+		where += " AND environment = ?"
+		args = append(args, environment)
+	}
+
+	rows, err := q.conn.Query(ctx, `
+		SELECT toStartOfInterval(timestamp, INTERVAL ? second) AS t,
+			count() AS total,
+			countIf(duration_us <= ?) AS good
+		FROM transactions
+		WHERE `+where+`
+		GROUP BY t
+		ORDER BY t
+		SETTINGS max_execution_time = 10`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("trace: latency good buckets: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CountBucket
+	for rows.Next() {
+		var t time.Time
+		var total, good uint64
+		if err := rows.Scan(&t, &total, &good); err != nil {
+			return nil, fmt.Errorf("trace: latency good buckets: scan: %w", err)
+		}
+		out = append(out, CountBucket{T: t.UTC(), Good: good, Total: total})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: latency good buckets: %w", err)
+	}
+	return out, nil
+}

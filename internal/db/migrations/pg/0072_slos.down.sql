@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS slo_incidents;
+DROP TABLE IF EXISTS slos;
