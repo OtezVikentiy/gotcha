@@ -94,6 +94,23 @@ func hostThresholdsPath(projectID int64, name string) string {
 	return hostLink(projectID, name) + "/thresholds"
 }
 
+// hostThresholdCascadeDocsLink — ссылка «Как работает каскад →» на раздел
+// docs/hosts, объясняющий приоритет хост→роль→окружение→проект→умолчание
+// (UX-аудит B2, P2-4). Якорь — транслитерация заголовка ("## Пороги: каскад
+// и переопределение" / "## Thresholds: cascade and overrides", см.
+// internal/docs/anchors.go, slugify) и РАЗНЫЙ для двух локалей — то же
+// содержимое, но разные заголовки, разные якоря. Захардкожен, а не вычислен
+// от slugify напрямую: templates не имеет доступа к internal/docs (импорт
+// создал бы обратную зависимость), поэтому якорь сверяется руками с текстом
+// заголовка в internal/docs/{ru,en}/hosts.md при каждой правке заголовка
+// раздела.
+func hostThresholdCascadeDocsLink(ctx context.Context) string {
+	if i18n.FromContext(ctx).Code == "en" {
+		return "/docs/hosts#thresholds-cascade-and-overrides"
+	}
+	return "/docs/hosts#porogi-kaskad-i-pereopredelenie"
+}
+
 // thresholdMode — режим формы «Пороги этого хоста» (B2, T6) для одного вида
 // порога: nil Enabled → "inherit" (наследовать со следующего уровня
 // каскада), non-nil true → "override" (пришпилено на этом хосте), non-nil
@@ -168,6 +185,7 @@ func thresholdEffectiveLabel(ctx context.Context, kind string, enabled bool, val
 templ hostThresholdsSection(vm HostDetailVM) {
 	<section class="host-thresholds">
 		<h2>{ i18n.T(ctx, "host.threshold.title") }</h2>
+		<p class="hint"><a href={ templ.URL(hostThresholdCascadeDocsLink(ctx)) }>{ i18n.T(ctx, "host.threshold.cascade_help") }</a></p>
 		if vm.ThresholdsErr != "" {
 			<p class="error" id="host-thresholds-error">{ vm.ThresholdsErr }</p>
 		}

@@ -4374,6 +4374,19 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	outline: 2px solid var(--accent);
 	outline-offset: -2px;
 }
+/* Пороги хоста/группы (B2) держат три ДЛИННЫЕ подписи в одном сегмент-
+   контроле ("Наследовать"/"Переопределить"/"Выключить") — на узком экране
+   (~360px) четыре таких контрола в карточке хоста не помещаются в строку и
+   раздвигают всю страницу вбок (та же природа page-overflow, что уже
+   чинилась в B2). Перенос вместо горизонтального раздвижения: у самого
+   .segmented — inline-flex без wrap по умолчанию, оставлен как есть для
+   короткого maintenance-контрола ("Разовое"/"Еженедельное" — двух подписей
+   ширина экрана хватает всегда), а wrap включён точечно только там, где
+   подписи длинные. */
+.host-thresholds .segmented,
+.host-group-threshold-form .segmented {
+	flex-wrap: wrap;
+}
 /* Подпись сегмента набирается как обычная подпись поля. */
 .field > .field-label {
 	display: block;

@@ -2,6 +2,7 @@ package templates
 
 import (
 	"context"
+	"math"
 	"net/url"
 	"strconv"
 	"time"
@@ -27,8 +28,14 @@ func settingsBoolDefault(b bool) string {
 	return "0"
 }
 
+// settingsPercentDefault округляет процент до 1 знака ПЕРЕД форматированием
+// (T6 косметика): 0.28*100 без округления даёт двоичный мусор
+// "28.000000000000004" (FormatFloat с precision=-1 печатает кратчайшее
+// РОВНОЕ представление, а не красивое число) — округление до десятых убирает
+// артефакт, не теряя данных: на сабмите форма делит обратно на 100, точности
+// десятой доли процента более чем достаточно для порога диска/памяти.
 func settingsPercentDefault(frac float64) string {
-	return strconv.FormatFloat(frac*100, 'f', -1, 64)
+	return strconv.FormatFloat(math.Round(frac*100*10)/10, 'f', -1, 64)
 }
 
 func settingsFloatDefault(v float64) string {
@@ -348,9 +355,12 @@ templ hostGroupThresholdSection(projectID int64, s host.Settings, groups HostGro
 		if len(groups.Envs) == 0 && len(groups.Roles) == 0 {
 			<p class="hint">{ i18n.T(ctx, "host.group_threshold.no_labels") }</p>
 		} else {
-			{{ editing, _ := groupThresholdBy(groups.Groups, groups.EditScope, groups.EditLabel) }}
+			{{ editing, editingFound := groupThresholdBy(groups.Groups, groups.EditScope, groups.EditLabel) }}
 			{{ scopeDefault := groupScopeDefault(groups.EditScope, groups.Envs, groups.Roles) }}
 			<form id="host-group-threshold-form" method="post" action={ templ.URL(groupThresholdSettingsPath(projectID)) } class="host-group-threshold-form">
+				if editingFound {
+					<p class="hint" id="host-group-threshold-editing">{ i18n.Tf(ctx, "host.group_threshold.editing", "scope", i18n.T(ctx, "host.threshold.scope."+groups.EditScope), "label", groups.EditLabel) }</p>
+				}
 				<fieldset class="field">
 					<legend class="field-label">{ i18n.T(ctx, "host.group_threshold.scope") }</legend>
 					<div class="segmented">

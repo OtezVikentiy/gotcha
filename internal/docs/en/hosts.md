@@ -254,6 +254,8 @@ Role outranks environment: if a host carries both labels and both have a group r
 - **Thresholds for this host** — a block on the host's card (`/projects/{id}/hosts/{name}`), one tri-state per kind, for a project operator. Next to each kind is what's in effect right now and where it came from: "In effect on this host: 85%", "Inherited from role \"db\": 90%", "Inherited from environment \"prod\": 2.0", "Inherited from project settings: 90%", or "Default value: 90%". A member without operator rights sees the same values and sources, but read-only — no form.
 - **Thresholds by environment/role** — a block on `/projects/{id}/hosts/settings` (for operators). One rule is one pair (an "Environment"/"Role" scope plus a label). The label is picked from values already seen in the project — the same ones the host-list filter's facets use — freeform entry isn't supported: until some host in the project carries the environment or role you want, there's nothing to attach a rule to. Saving the same (scope, label) pair again edits the existing rule instead of creating a second one.
 
+Changing the scope (environment/role) or the label on save creates a separate rule — the original stays in place; delete it from the table to remove it.
+
 The effective value is the same one the background incident evaluator uses (`GOTCHA_HOST_EVAL_INTERVAL`) and the one shown in the UI with its source. An override that turns a kind off resolves the host's already-open incidents for that kind right away — the same rule, and the same lack of notification, as changing the project-wide settings (see above).
 
 ## Notification privacy
