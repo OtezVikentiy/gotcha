@@ -138,6 +138,16 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// CanOperate — read-only, тот же приём, что hostDetail (renderHostDetail):
+	// страница открыта любому с доступом, а кнопка создания порогов у
+	// не-оператора не рендерится вовсе (POST и так гейтится
+	// requireProjectOperator — тут только честность разметки: кнопка,
+	// ведущая зрителя в 404, хуже подсказки).
+	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	dataArrives := h.recipeDataArrives(r.Context(), projectID, rec)
 	var charts []templates.RecipeChartVM
 	if dataArrives {
@@ -157,6 +167,7 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 		Config:      h.recipeConfig(r.Context(), projectID, rec),
 		Statuses:    recipes.RuleStatuses(existing, rec),
 		Charts:      charts,
+		CanOperate:  canOperate,
 	}
 	_ = templates.RecipeDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }

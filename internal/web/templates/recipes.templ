@@ -51,6 +51,11 @@ type RecipeDetailVM struct {
 	Config      string
 	Statuses    []recipes.RuleStatus
 	Charts      []RecipeChartVM
+	// CanOperate — оператор ли смотрящий (то же поле, что у HostDetailVM):
+	// кнопка «Создать рекомендованные пороги» POST'ит в
+	// requireProjectOperator-гейт, зрителю вместо неё — подсказка, а не
+	// кнопка, ведущая в 404.
+	CanOperate bool
 }
 
 func recipesBasePath(projectID int64) string {
@@ -73,6 +78,7 @@ templ recipeDataBadge(arrives bool) {
 templ RecipesList(projectID int64, cards []RecipeCardVM, userEmail string) {
 	@layout(i18n.T(ctx, "recipes.list.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "recipes.list.title") }</h1>
+		@helpPanel("recipes", "recipes")
 		<p class="hint">{ i18n.T(ctx, "recipes.list.lead") }</p>
 		for _, card := range cards {
 			<section class="card" data-recipe={ card.ID }>
@@ -127,6 +133,9 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 		</h1>
 		<p>{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".desc") }</p>
 		<p class="hint">{ i18n.T(ctx, "recipes.assumption") }</p>
+		// Ссылка на гайд — тем же приёмом, что hosts.onboarding.docs_link
+		// (hosts.templ): вся фраза кликабельна, ведёт на /docs/recipes.
+		<p class="hint"><a href="/docs/recipes">{ i18n.T(ctx, "recipes.docs_link") }</a></p>
 		<section class="card">
 			<h2 class="card-header">{ i18n.T(ctx, "recipes.steps.title") }</h2>
 			<ol>
@@ -137,11 +146,20 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 					<p>{ i18n.T(ctx, "recipes.steps.config") }</p>
 					if vm.Config != "" {
 						@copyBlock("recipe-config", "recipes.copy.config", vm.Config)
-						if vm.Recipe.ID == "redis" {
-							// Ревью T1 (minor): password в сниппете обязателен не
-							// всегда — без requirepass строку надо убрать, иначе
-							// ресивер не подключится.
-							<p class="hint">{ i18n.T(ctx, "recipes.redis.password_note") }</p>
+						// Пер-рецептная подсказка о предусловии, без которого
+						// сниппет не заработает (аудит UX P1-2): требования у
+						// сервисов разные, а до этого подсказка была только у
+						// redis (ревью T1 minor: без requirepass строку password
+						// надо убрать, иначе ресивер не подключится).
+						switch vm.Recipe.ID {
+							case "redis":
+								<p class="hint">{ i18n.T(ctx, "recipes.redis.password_note") }</p>
+							case "nginx":
+								<p class="hint">{ i18n.T(ctx, "recipes.nginx.stub_note") }</p>
+							case "postgres":
+								<p class="hint">{ i18n.T(ctx, "recipes.postgres.user_note") }</p>
+							case "docker":
+								<p class="hint">{ i18n.T(ctx, "recipes.docker.socket_note") }</p>
 						}
 					} else {
 						<p class="hint">
@@ -168,18 +186,23 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 			if len(vm.Statuses) == 0 {
 				// Единственный рецепт без порогов — docker (реестр, развилка
 				// F1): пер-контейнерные метрики без разумного общего дефолта.
-				<p>{ i18n.T(ctx, "recipes.docker.no_rules") }</p>
+				// Упомянутая страница правил — рабочей ссылкой (приём
+				// no_key/no_key_link), а не голым названием.
+				<p>
+					{ i18n.T(ctx, "recipes.docker.no_rules") }
+					<a href={ templ.URL(metricAlertsBasePath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.docker.no_rules_link") }</a>
+				</p>
 			} else {
 				@scrollRegion("table-scroll", "recipes.thresholds.title") {
 					<table>
 						<thead>
 							<tr>
-								<th>{ i18n.T(ctx, "recipes.table.metric") }</th>
-								<th>{ i18n.T(ctx, "recipes.table.condition") }</th>
-								<th>{ i18n.T(ctx, "recipes.table.window") }</th>
-								<th>{ i18n.T(ctx, "recipes.table.severity") }</th>
-								<th>{ i18n.T(ctx, "recipes.table.note") }</th>
-								<th>{ i18n.T(ctx, "recipes.table.status") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.metric") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.condition") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.window") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.severity") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.note") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.status") }</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -203,9 +226,16 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 					</table>
 				}
 				if recipeHasPending(vm.Statuses) {
-					<form method="post" action={ templ.URL(recipesBasePath(vm.ProjectID) + "/" + vm.Recipe.ID + "/thresholds") }>
-						<button type="submit" class="btn btn-primary" aria-label={ i18n.T(ctx, "recipes.create_rules") }>{ i18n.T(ctx, "recipes.create_rules") }</button>
-					</form>
+					if vm.CanOperate {
+						<form method="post" action={ templ.URL(recipesBasePath(vm.ProjectID) + "/" + vm.Recipe.ID + "/thresholds") }>
+							<button type="submit" class="btn btn-primary" aria-label={ i18n.T(ctx, "recipes.create_rules") }>{ i18n.T(ctx, "recipes.create_rules") }</button>
+						</form>
+					} else {
+						// Зрителю кнопка вела бы в 404 requireProjectOperator
+						// (аудит UX/QA P1): вместо мёртвого контрола — честная
+						// подсказка, кому доступно создание.
+						<p class="hint">{ i18n.T(ctx, "recipes.operator_only") }</p>
+					}
 				} else {
 					<p class="hint">{ i18n.T(ctx, "recipes.all_created") }</p>
 				}

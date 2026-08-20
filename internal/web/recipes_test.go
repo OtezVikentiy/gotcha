@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
 // wireRecipes заводит на стенде RuleService порогов — страницы рецептов
@@ -141,6 +143,68 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 	}
 }
 
+// TestWebRecipesDetailCanOperate — гейт кнопки «Создать рекомендованные
+// пороги» (аудит UX/QA P1: зрителю кнопка вела в 404 requireProjectOperator).
+//
+// ВАЖНО про предикаты: сегодня CanOperate == CanAccessProject
+// (canOperateProject в operate.go — прямой алиас, случая «доступ есть,
+// оператор — нет» не существует), поэтому НАСТОЯЩИЙ участник команды с
+// доступом к проекту видит кнопку, и живого пользователя с CanOperate=false
+// на открытой странице не существует. HTTP-часть фиксирует это совпадение
+// (участник команды видит кнопку), а ветку зрителя (hint вместо формы)
+// проверяем прямым рендером шаблона с CanOperate=false — она сработает в
+// тот момент, когда предикаты разойдутся.
+func TestWebRecipesDetailCanOperate(t *testing.T) {
+	s := newStack(t)
+	wireRecipes(s)
+	proj, _, orgSvc := recipesSeedProject(t, s, "rcp-oper")
+
+	authSvc := auth.NewService(s.pool)
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "rcp-oper-member@example.com")
+	if err := orgSvc.AddMember(context.Background(), proj.OrgID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	// Доступ члена — через команду проекта (lvlAccess): member видит только
+	// проекты своих команд.
+	addTeamAccess(t, orgSvc, proj.OrgID, proj.ID, memberID, "rcp-oper-team")
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/recipes/redis"
+	resp := getWithCookie(t, s.srv, path, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (team member) status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantBtn := i18n.T(ctx, "recipes.create_rules")
+	if !strings.Contains(string(body), wantBtn) {
+		t.Errorf("участник команды (CanOperate==CanAccessProject) не видит кнопку %q: %s", wantBtn, body)
+	}
+	if strings.Contains(string(body), i18n.T(ctx, "recipes.operator_only")) {
+		t.Errorf("hint «только оператору» показан оператору: %s", body)
+	}
+
+	// Ветка зрителя — прямой рендер шаблона (как renderHostDetail):
+	// CanOperate=false при незакрытых порогах — hint вместо формы POST.
+	rec, _ := recipes.ByID("redis")
+	vm := templates.RecipeDetailVM{
+		ProjectID: proj.ID,
+		Recipe:    rec,
+		Statuses:  recipes.RuleStatuses(nil, rec),
+	}
+	var sb strings.Builder
+	if err := templates.RecipeDetail(vm, "").Render(ctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := sb.String()
+	if !strings.Contains(html, i18n.T(ctx, "recipes.operator_only")) {
+		t.Errorf("CanOperate=false: нет подсказки recipes.operator_only: %s", html)
+	}
+	if strings.Contains(html, "/thresholds") || strings.Contains(html, wantBtn) {
+		t.Errorf("CanOperate=false: форма/кнопка создания порогов всё ещё в разметке: %s", html)
+	}
+}
+
 // TestWebRecipesThresholdsCreate — POST под оператором создаёт ровно
 // len(Rules) правил и редиректит на страницу рецепта; ПОВТОРНЫЙ POST правил
 // не добавляет (идемпотентность T3 через HTTP); member без командного
@@ -218,5 +282,21 @@ func TestWebRecipesThresholdsCreate(t *testing.T) {
 	}
 	if len(rules) != len(rec.Rules) {
 		t.Fatalf("после повторного POST правил = %d, want %d (идемпотентность)", len(rules), len(rec.Rules))
+	}
+
+	// Неизвестный slug — 404 и никаких новых правил (recipes.ByID до гейта).
+	resp = postForm(t, s.srv, "/projects/"+strconv.FormatInt(proj.ID, 10)+"/recipes/nope/thresholds",
+		url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST .../recipes/nope/thresholds status = %d, want 404", resp.StatusCode)
+	}
+	rules, err = s.h.MetricRules.List(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(rules) != len(rec.Rules) {
+		t.Fatalf("после POST на неизвестный slug правил = %d, want %d", len(rules), len(rec.Rules))
 	}
 }
