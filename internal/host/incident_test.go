@@ -451,6 +451,76 @@ func TestIncidentServiceResolveOpenByProjectKind(t *testing.T) {
 	}
 }
 
+// TestIncidentServiceAcknowledge — B4: Acknowledge на открытом инциденте
+// ставит acknowledged_at/acknowledged_by и возвращает ok=true; повторный
+// вызов и вызов на закрытом инциденте — идемпотентно ok=false. scan (List)
+// после ack отдаёт заполненные поля, до ack — nil.
+func TestIncidentServiceAcknowledge(t *testing.T) {
+	pool, svc, projectID, hostID := setupIncidentHost(t)
+	ctx := context.Background()
+
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "host-ack@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	in, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var full", false)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	list, err := svc.ListByProject(ctx, projectID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil || list[0].AcknowledgedBy != nil {
+		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
+	}
+
+	ok, err := svc.Acknowledge(ctx, in.ID, userID)
+	if err != nil {
+		t.Fatalf("Acknowledge: %v", err)
+	}
+	if !ok {
+		t.Fatal("Acknowledge: ok = false, want true")
+	}
+
+	list, err = svc.ListByProject(ctx, projectID, 10)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("после Acknowledge: list=%+v err=%v", list, err)
+	}
+	if list[0].AcknowledgedAt == nil {
+		t.Fatal("после Acknowledge: AcknowledgedAt = nil, want заполнено")
+	}
+	if list[0].AcknowledgedBy == nil || *list[0].AcknowledgedBy != userID {
+		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
+	}
+
+	// Повторный ack — идемпотентно ok=false.
+	ok2, err := svc.Acknowledge(ctx, in.ID, userID)
+	if err != nil {
+		t.Fatalf("повторный Acknowledge: %v", err)
+	}
+	if ok2 {
+		t.Fatal("повторный Acknowledge: ok = true, want false (идемпотентность)")
+	}
+
+	// Acknowledge закрытого инцидента — ok=false.
+	other, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.9, "", false)
+	if err != nil {
+		t.Fatalf("Open memory: %v", err)
+	}
+	if _, err := svc.Resolve(ctx, other.ID, 0.1); err != nil {
+		t.Fatalf("Resolve memory: %v", err)
+	}
+	okClosed, err := svc.Acknowledge(ctx, other.ID, userID)
+	if err != nil {
+		t.Fatalf("Acknowledge closed: %v", err)
+	}
+	if okClosed {
+		t.Fatal("Acknowledge закрытого инцидента: ok = true, want false")
+	}
+}
+
 // TestIncidentsCascadeDeletedWithHost — удаление хоста (ON DELETE CASCADE
 // host_incidents.host_id) уносит за собой все его инциденты, открытые и
 // закрытые.

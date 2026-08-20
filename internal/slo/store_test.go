@@ -135,3 +135,69 @@ func TestSLOStore(t *testing.T) {
 		t.Fatalf("List после капа = %d err=%v, want 100", len(capped), err)
 	}
 }
+
+// TestSLOStoreAcknowledge — B4: Acknowledge на открытом инциденте ставит
+// acknowledged_at/acknowledged_by и возвращает ok=true; повторный вызов и
+// вызов на закрытом инциденте — идемпотентно ok=false. scan (Incidents)
+// после ack отдаёт заполненные поля, до ack — nil.
+func TestSLOStoreAcknowledge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	st := slo.NewStore(pool)
+
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "slo-ack@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	def, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "ack slo", Kind: slo.SLIAvailability, Target: 0.99,
+		WindowDays: 30, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rem := 0.5
+	inc, created, err := st.OpenIncident(ctx, def.ID, pid, 20.0, &rem, false)
+	if err != nil || !created {
+		t.Fatalf("OpenIncident = (%+v,%v,%v)", inc, created, err)
+	}
+
+	list, err := st.Incidents(ctx, pid, def.ID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil || list[0].AcknowledgedBy != nil {
+		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
+	}
+
+	ok, err := st.Acknowledge(ctx, inc.ID, userID)
+	if err != nil || !ok {
+		t.Fatalf("Acknowledge = (%v,%v), want (true,nil)", ok, err)
+	}
+
+	list, err = st.Incidents(ctx, pid, def.ID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt == nil {
+		t.Fatalf("после Acknowledge: list=%+v err=%v, want AcknowledgedAt заполнено", list, err)
+	}
+	if list[0].AcknowledgedBy == nil || *list[0].AcknowledgedBy != userID {
+		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
+	}
+
+	// Повторный ack — идемпотентно ok=false.
+	if ok2, err := st.Acknowledge(ctx, inc.ID, userID); err != nil || ok2 {
+		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
+	}
+
+	// Acknowledge закрытого инцидента — ok=false.
+	if _, resolved, err := st.ResolveIncident(ctx, def.ID); err != nil || !resolved {
+		t.Fatalf("ResolveIncident = (%v,%v)", resolved, err)
+	}
+	if okClosed, err := st.Acknowledge(ctx, inc.ID, userID); err != nil || okClosed {
+		t.Fatalf("Acknowledge закрытого = (%v,%v), want (false,nil)", okClosed, err)
+	}
+}

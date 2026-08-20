@@ -14,30 +14,34 @@ var ErrRegressionNotFound = errors.New("profile: regression not found")
 
 // Regression — строка profile_regressions (для оценщика и UI).
 type Regression struct {
-	ID            int64
-	ProjectID     int64
-	Service       string
-	ProfileType   string
-	Function      string
-	Status        string
-	BaselineShare float64
-	PeakShare     float64
-	CurrentShare  float64
-	StartedAt     time.Time
-	ResolvedAt    *time.Time
-	InMaintenance bool
-	NotifiedOpen  bool
-	NotifiedClose bool
+	ID             int64
+	ProjectID      int64
+	Service        string
+	ProfileType    string
+	Function       string
+	Status         string
+	BaselineShare  float64
+	PeakShare      float64
+	CurrentShare   float64
+	StartedAt      time.Time
+	ResolvedAt     *time.Time
+	InMaintenance  bool
+	NotifiedOpen   bool
+	NotifiedClose  bool
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
 }
 
 const regressionColumns = `id, project_id, service, profile_type, function, status,
-	baseline_share, peak_share, current_share, started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	baseline_share, peak_share, current_share, started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by`
 
 func scanRegression(row pgx.Row) (Regression, error) {
 	var r Regression
 	err := row.Scan(&r.ID, &r.ProjectID, &r.Service, &r.ProfileType, &r.Function, &r.Status,
 		&r.BaselineShare, &r.PeakShare, &r.CurrentShare, &r.StartedAt, &r.ResolvedAt,
-		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose)
+		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose,
+		&r.AcknowledgedAt, &r.AcknowledgedBy)
 	return r, err
 }
 
@@ -140,6 +144,25 @@ func (s *RegressionService) MarkNotified(ctx context.Context, id int64, open boo
 		return ErrRegressionNotFound
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
+// если инцидент уже подтверждён или закрыт (идемпотентно).
+func (s *RegressionService) Acknowledge(ctx context.Context, incidentID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE profile_regressions SET acknowledged_at=now(), acknowledged_by=$2
+		WHERE id=$1 AND status='open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("profile: acknowledge regression: %w", err)
+	}
+	return true, nil
 }
 
 // List возвращает регрессии проекта, свежайшие первыми. status: ""/"all" — все,

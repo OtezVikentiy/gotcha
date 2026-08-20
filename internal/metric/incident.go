@@ -14,26 +14,30 @@ var ErrIncidentNotFound = errors.New("metric: incident not found")
 
 // Incident — открытый или закрытый инцидент пробоя порога (metric_incidents).
 type Incident struct {
-	ID            int64
-	RuleID        int64
-	ProjectID     int64
-	Status        string
-	PeakValue     float64
-	CurrentValue  float64
-	StartedAt     time.Time
-	ResolvedAt    *time.Time
-	InMaintenance bool
-	NotifiedOpen  bool
-	NotifiedClose bool
+	ID             int64
+	RuleID         int64
+	ProjectID      int64
+	Status         string
+	PeakValue      float64
+	CurrentValue   float64
+	StartedAt      time.Time
+	ResolvedAt     *time.Time
+	InMaintenance  bool
+	NotifiedOpen   bool
+	NotifiedClose  bool
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
 }
 
 const incidentColumns = `id, rule_id, project_id, status, peak_value, current_value,
-	started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.RuleID, &in.ProjectID, &in.Status, &in.PeakValue, &in.CurrentValue,
-		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
+		&in.AcknowledgedAt, &in.AcknowledgedBy)
 	return in, err
 }
 
@@ -140,6 +144,25 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 		return ErrIncidentNotFound
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
+// если инцидент уже подтверждён или закрыт (идемпотентно).
+func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE metric_incidents SET acknowledged_at = now(), acknowledged_by = $2
+		WHERE id = $1 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("metric: acknowledge incident: %w", err)
+	}
+	return true, nil
 }
 
 // List возвращает инциденты проекта, свежайшие первыми (для UI).

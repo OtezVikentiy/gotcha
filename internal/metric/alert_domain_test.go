@@ -123,6 +123,78 @@ func TestIncidentServiceOpenClose(t *testing.T) {
 	}
 }
 
+// TestIncidentServiceAcknowledge — B4: Acknowledge на открытом инциденте
+// ставит acknowledged_at/acknowledged_by и возвращает ok=true; повторный
+// вызов и вызов на закрытом инциденте — идемпотентно ok=false. scan (List)
+// после ack отдаёт заполненные поля, до ack — nil.
+func TestIncidentServiceAcknowledge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	rules := metric.NewRuleService(pool)
+	inc := metric.NewIncidentService(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	rule, err := rules.Create(ctx, metric.Rule{ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt", Threshold: 90, WindowSeconds: 300, Enabled: true})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "metric-ack@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	list, err := inc.List(ctx, projectID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil || list[0].AcknowledgedBy != nil {
+		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
+	}
+
+	ok, err := inc.Acknowledge(ctx, in.ID, userID)
+	if err != nil || !ok {
+		t.Fatalf("Acknowledge = (%v,%v), want (true,nil)", ok, err)
+	}
+
+	list, err = inc.List(ctx, projectID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt == nil {
+		t.Fatalf("после Acknowledge: list=%+v err=%v, want AcknowledgedAt заполнено", list, err)
+	}
+	if list[0].AcknowledgedBy == nil || *list[0].AcknowledgedBy != userID {
+		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
+	}
+
+	// Повторный ack — идемпотентно ok=false.
+	if ok2, err := inc.Acknowledge(ctx, in.ID, userID); err != nil || ok2 {
+		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
+	}
+
+	// Acknowledge закрытого инцидента — ok=false.
+	if _, err := inc.Resolve(ctx, in.ID, 50); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	rule2, err := rules.Create(ctx, metric.Rule{ProjectID: projectID, MetricName: "mem", Aggregation: "avg", Comparator: "gt", Threshold: 90, WindowSeconds: 300, Enabled: true})
+	if err != nil {
+		t.Fatalf("create rule2: %v", err)
+	}
+	closedIn, _, err := inc.Open(ctx, rule2.ID, projectID, 100, false)
+	if err != nil {
+		t.Fatalf("open closedIn: %v", err)
+	}
+	if _, err := inc.Resolve(ctx, closedIn.ID, 10); err != nil {
+		t.Fatalf("resolve closedIn: %v", err)
+	}
+	if okClosed, err := inc.Acknowledge(ctx, closedIn.ID, userID); err != nil || okClosed {
+		t.Fatalf("Acknowledge закрытого = (%v,%v), want (false,nil)", okClosed, err)
+	}
+}
+
 func TestIncidentOpenConcurrentOnlyOneWins(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

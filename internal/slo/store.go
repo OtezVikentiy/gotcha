@@ -160,12 +160,14 @@ func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
 }
 
 const incidentColumns = `id, slo_id, project_id, status, burn_rate, budget_remaining,
-	started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.SLOID, &in.ProjectID, &in.Status, &in.BurnRate, &in.BudgetRemaining,
-		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
+		&in.AcknowledgedAt, &in.AcknowledgedBy)
 	return in, err
 }
 
@@ -265,6 +267,25 @@ func (s *Store) MarkNotified(ctx context.Context, incidentID int64, open bool) e
 		return fmt.Errorf("slo: mark notified: %w", err)
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
+// если инцидент уже подтверждён или закрыт (идемпотентно).
+func (s *Store) Acknowledge(ctx context.Context, incidentID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE slo_incidents SET acknowledged_at = now(), acknowledged_by = $2
+		WHERE id = $1 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("slo: acknowledge incident: %w", err)
+	}
+	return true, nil
 }
 
 // Incidents возвращает инциденты SLO в проекте, свежайшие первыми.

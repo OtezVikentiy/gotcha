@@ -20,29 +20,33 @@ var ErrIncidentNotFound = errors.New("host: incident not found")
 // Incident — открытый или закрытый инцидент встроенного порога хоста
 // (host_incidents): диск/память/нагрузка/тишина.
 type Incident struct {
-	ID            int64
-	ProjectID     int64
-	HostID        int64
-	Kind          string
-	Status        string
-	CurrentValue  float64
-	PeakValue     float64
-	Detail        string
-	StartedAt     time.Time
-	ResolvedAt    *time.Time
-	InMaintenance bool
-	NotifiedOpen  bool
-	NotifiedClose bool
+	ID             int64
+	ProjectID      int64
+	HostID         int64
+	Kind           string
+	Status         string
+	CurrentValue   float64
+	PeakValue      float64
+	Detail         string
+	StartedAt      time.Time
+	ResolvedAt     *time.Time
+	InMaintenance  bool
+	NotifiedOpen   bool
+	NotifiedClose  bool
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
 }
 
 const incidentColumns = `id, project_id, host_id, kind, status, current_value, peak_value,
-	detail, started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	detail, started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.ProjectID, &in.HostID, &in.Kind, &in.Status,
 		&in.CurrentValue, &in.PeakValue, &in.Detail,
-		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
+		&in.AcknowledgedAt, &in.AcknowledgedBy)
 	return in, err
 }
 
@@ -238,6 +242,26 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 		return ErrIncidentNotFound
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию (T4 читает
+// acknowledged_at IS NULL). ok=false, если инцидент уже подтверждён или закрыт
+// (идемпотентно: WHERE держит и status='open', и acknowledged_at IS NULL).
+func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE host_incidents SET acknowledged_at = now(), acknowledged_by = $2
+		WHERE id = $1 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("host: acknowledge incident: %w", err)
+	}
+	return true, nil
 }
 
 // ListByProject возвращает инциденты проекта, свежайшие первыми (для UI).

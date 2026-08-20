@@ -54,4 +54,6 @@ type Incident struct {
 	InMaintenance   bool
 	NotifiedOpen    bool
 	NotifiedClose   bool
+	AcknowledgedAt  *time.Time
+	AcknowledgedBy  *int64
 }
