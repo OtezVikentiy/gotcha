@@ -120,8 +120,8 @@ templ escalationStepFields(step EscalationStepForm, channels []alert.Channel) {
 				<input type="number" class="input" name={ stepDelayField(step.StepNo) } value={ step.DelayMinutes } min="0"/>
 			</label>
 		</div>
-		<div class="field checkbox-field">
-			<span class="field-label">{ i18n.T(ctx, "escalations.field.channels") }</span>
+		<div class="field checkbox-field" role="group" aria-label={ i18n.T(ctx, "escalations.field.channels") }>
+			<span class="field-label" aria-hidden="true">{ i18n.T(ctx, "escalations.field.channels") }</span>
 			for _, c := range channels {
 				if c.Deliverable() {
 					<label class="checkbox-inline">
@@ -147,6 +147,7 @@ templ escalationSeveritySection(projectID int64, form EscalationLadderForm, chan
 		if !hasDeliverableChannel(channels) {
 			<p class="hint">{ i18n.T(ctx, "escalations.field.channels_none") }</p>
 		}
+		<p class="hint">{ i18n.T(ctx, "escalations.default_notice") }</p>
 		<form method="post" action={ templ.URL(EscalationsPath(projectID)) } class="escalation-ladder-form">
 			<input type="hidden" name="severity" value={ form.Severity }/>
 			for _, step := range form.Steps {
