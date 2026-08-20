@@ -114,7 +114,7 @@ func TestBurnRate(t *testing.T) {
 // TestDecideBurn — двухоконное решение открыть/закрыть.
 func TestDecideBurn(t *testing.T) {
 	target, thr := 0.99, 14.4
-	hot := []slo.Bucket{{Good: 800, Total: 1000}}  // burn 20
+	hot := []slo.Bucket{{Good: 800, Total: 1000}}   // burn 20
 	cool := []slo.Bucket{{Good: 1000, Total: 1000}} // burn 0
 
 	// оба окна горят 20× ≥ 14.4 → open, не close.
