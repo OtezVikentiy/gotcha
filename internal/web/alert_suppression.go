@@ -107,8 +107,89 @@ func (h *Handler) renderAlertSuppression(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
+	preview := suppressionPreviewRows(r.Context(), edges, hostNames, monitorNames, hosts, monitors)
+
 	w.WriteHeader(status)
-	_ = templates.AlertSuppression(projectID, rows, hostOptions, monitorOptions, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.AlertSuppression(projectID, rows, hostOptions, monitorOptions, preview, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// suppressionPreviewRows — dry-run: для каждого родителя, встречающегося в
+// edges (в порядке Store.List, первое вхождение занимает позицию строки),
+// какие узлы подавились бы, если бы этот родитель сейчас упал.
+// depsuppress.PreviewSuppression — чистая функция без БД (Task 9b); здесь
+// только сборка входа (hosts/monitors проекта → HostLite/NodeRef) и вывода
+// (map → стабильно упорядоченные строки шаблона).
+func suppressionPreviewRows(ctx context.Context, edges []depsuppress.Edge, hostNames, monitorNames map[int64]string, hosts []host.Host, monitors []uptime.Monitor) []templates.SuppressionPreviewView {
+	hostLites := make([]depsuppress.HostLite, len(hosts))
+	for i, hh := range hosts {
+		hostLites[i] = depsuppress.HostLite{ID: hh.ID, Name: hh.Name, Environment: hh.Environment, Role: hh.Role}
+	}
+	monitorRefs := make([]depsuppress.NodeRef, len(monitors))
+	for i, m := range monitors {
+		monitorRefs[i] = depsuppress.NodeRef{Kind: "monitor", ID: m.ID, Name: m.Name}
+	}
+
+	preview := depsuppress.PreviewSuppression(edges, hostLites, monitorRefs)
+
+	var rows []templates.SuppressionPreviewView
+	seenParent := map[depsuppress.NodeRef]bool{}
+	for _, e := range edges {
+		parent, ok := suppressionParentRef(e, hostNames, monitorNames)
+		if !ok || seenParent[parent] {
+			continue
+		}
+		children := preview[parent]
+		if len(children) == 0 {
+			continue
+		}
+		seenParent[parent] = true
+		childLabels := make([]string, len(children))
+		for i, c := range children {
+			childLabels[i] = suppressionNodeRefLabel(ctx, c)
+		}
+		rows = append(rows, templates.SuppressionPreviewView{
+			ParentLabel: suppressionNodeRefLabel(ctx, parent),
+			Children:    childLabels,
+		})
+	}
+	return rows
+}
+
+// suppressionParentRef резолвит родителя ребра в тот же depsuppress.NodeRef,
+// что строит depsuppress.PreviewSuppression внутри себя (Kind/ID из
+// ParentHostID/ParentMonitorID ребра, Name — из уже собранных hostNames/
+// monitorNames). false — родитель с тех пор удалён из проекта, строка
+// dry-run для него не строится (тот же принцип, что и "ghost"-фильтрация
+// внутри PreviewSuppression).
+func suppressionParentRef(e depsuppress.Edge, hostNames, monitorNames map[int64]string) (depsuppress.NodeRef, bool) {
+	if e.ParentHostID != nil {
+		name, ok := hostNames[*e.ParentHostID]
+		if !ok {
+			return depsuppress.NodeRef{}, false
+		}
+		return depsuppress.NodeRef{Kind: "host", ID: *e.ParentHostID, Name: name}, true
+	}
+	if e.ParentMonitorID != nil {
+		name, ok := monitorNames[*e.ParentMonitorID]
+		if !ok {
+			return depsuppress.NodeRef{}, false
+		}
+		return depsuppress.NodeRef{Kind: "monitor", ID: *e.ParentMonitorID, Name: name}, true
+	}
+	return depsuppress.NodeRef{}, false
+}
+
+// suppressionNodeRefLabel — «Host: web1» / «Monitor: ping-google» для узла
+// dry-run превью, теми же i18n-ключами, что и у списка рёбер
+// (suppressionHostLabel/suppressionMonitorLabel): узел из PreviewSuppression
+// уже резолвлен в NodeRef.Name, повторного разрешения имени не требуется.
+func suppressionNodeRefLabel(ctx context.Context, n depsuppress.NodeRef) string {
+	switch n.Kind {
+	case "monitor":
+		return i18n.Tf(ctx, "alert_suppression.node.monitor", "name", n.Name)
+	default:
+		return i18n.Tf(ctx, "alert_suppression.node.host", "name", n.Name)
+	}
 }
 
 // suppressionNodes читает хосты и мониторы проекта для селектов формы и

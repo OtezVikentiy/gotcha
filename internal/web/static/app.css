@@ -4654,3 +4654,18 @@ input[type="radio"]:focus-visible {
 	border-color: color-mix(in srgb, var(--warn) 45%, transparent);
 	color: var(--warn-ink);
 }
+/* .preview-list — dry-run строки предпросмотра подавления (alert-suppression,
+   B5 Task 9b): «если бы <родитель> сейчас упал…» на каждую строку. Ничего
+   кроме отступов — тот же принцип, что и .logs-facet-list: список read-only
+   текста внутри карточки, не таблица и не форма. */
+.preview-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.preview-list li {
+	color: var(--text-dim);
+}

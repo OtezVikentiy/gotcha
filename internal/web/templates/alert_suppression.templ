@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
@@ -31,6 +32,16 @@ type SuppressionEdgeView struct {
 type SuppressionNodeOption struct {
 	ID   int64
 	Name string
+}
+
+// SuppressionPreviewView — одна строка dry-run предпросмотра (Task 9b): «Если
+// бы ParentLabel сейчас упал, подавились бы: Children». Родитель/дети уже
+// сведены в человекочитаемые подписи в web-слое (см.
+// alert_suppression.go:suppressionPreviewRows), тем же приёмом, что и
+// SuppressionEdgeView.
+type SuppressionPreviewView struct {
+	ParentLabel string
+	Children    []string
 }
 
 templ suppressionNodeOptions(opts []SuppressionNodeOption) {
@@ -157,10 +168,42 @@ templ suppressionForm(projectID int64, hosts, monitors []SuppressionNodeOption) 
 	</form>
 }
 
+// suppressionPreviewRow — одна строка dry-run: «Если бы <родитель> сейчас
+// упал, подавились бы: <дети>». aria-label дублирует видимый текст явно (как
+// у suppressionEdgeRow:delete_aria) — список не интерактивен, но повтор в
+// aria-label ничего не стоит и держит и голос, и текст в одном ключе.
+templ suppressionPreviewRow(p SuppressionPreviewView) {
+	<li aria-label={ i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")) }>
+		{ i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")) }
+	</li>
+}
+
+// suppressionPreview — карточка dry-run предпросмотра (Task 9b): для каждого
+// родителя с рёбрами показывает, что подавилось бы прямо сейчас, если бы он
+// упал (без БД — чистая depsuppress.PreviewSuppression, посчитанная заранее
+// в web-слое). Секция всегда показана, если у проекта есть хоть одно ребро —
+// пустой preview (все дети — label-селекторы без совпадений) отдельным
+// текстом, не молчаливым исчезновением карточки.
+templ suppressionPreview(preview []SuppressionPreviewView) {
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.preview.title") }</h2>
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.preview.intro") }</p>
+		if len(preview) == 0 {
+			<p class="hint">{ i18n.T(ctx, "alert_suppression.preview.empty") }</p>
+		} else {
+			<ul class="preview-list">
+				for _, p := range preview {
+					@suppressionPreviewRow(p)
+				}
+			</ul>
+		}
+	</section>
+}
+
 // AlertSuppression — GET/POST /projects/{id}/alert-suppression: список рёбер
 // зависимостей проекта + форма добавления. Доступ — оператор проекта
 // (requireProjectOperator, как Escalations/SLOsScreen).
-templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, errMsg, userEmail string) {
+templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "alert_suppression.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "alert_suppression.title") }</h1>
 		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro") }</p>
@@ -190,6 +233,9 @@ templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, moni
 				}
 			}
 		</section>
+		if len(edges) > 0 {
+			@suppressionPreview(preview)
+		}
 		<section class="card">
 			<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.form.title") }</h2>
 			@suppressionForm(projectID, hosts, monitors)
