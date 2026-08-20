@@ -1006,6 +1006,11 @@ func run() error {
 		// поверх пула, плодить общий синглтон между стартом оценщиков и
 		// web-обвязкой не требуется).
 		webHandler.EscalationPolicy = escalation.NewPolicyStore(pg)
+		// Подавление шторма (B5, задача 9): /projects/{id}/alert-suppression
+		// читает/правит рёбра зависимостей тем же Store, что использует
+		// depSuppressor выше (независимый объект без состояния поверх пула,
+		// тот же принцип, что и у EscalationPolicy).
+		webHandler.AlertDeps = depsuppress.NewStore(pg)
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
