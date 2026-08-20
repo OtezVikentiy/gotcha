@@ -227,6 +227,12 @@ func TestWindowScheduleText(t *testing.T) {
 	if !strings.Contains(unknown, "?") {
 		t.Errorf("окно без дат должно показать ?: %q", unknown)
 	}
+	// Разовое окно без даты окончания — «бессрочно», не «?» (T8: UI
+	// коммуникация indefinite-окон).
+	indefinite := windowScheduleText(ctx, uptime.Window{StartsAt: &now, Timezone: "UTC"})
+	if !strings.Contains(indefinite, "бессрочно") || strings.Contains(indefinite, "?") {
+		t.Errorf("окно без даты окончания должно показать «бессрочно», не ?: %q", indefinite)
+	}
 }
 
 // TestPathHelpers — базовые маршруты содержат идентификаторы (в т.ч. tracePath
