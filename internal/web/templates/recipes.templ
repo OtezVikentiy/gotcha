@@ -42,7 +42,8 @@ type RecipeCardVM struct {
 // RecipeDetailVM — страница рецепта. Config == "" — в проекте нет живого
 // ключа (или чтение ключей упало): сниппет скрыт, вместо него подсказка со
 // ссылкой на настройки проекта (контракт hostInstallBlocks). Charts == nil —
-// хендлер T4, блок графиков не рендерится вовсе; билдер T5 наполнит срез.
+// данные ещё не приходят (recipeDataArrives=false): блок графиков не
+// рендерится вовсе, страница остаётся инструкцией подключения.
 type RecipeDetailVM struct {
 	ProjectID   int64
 	Recipe      recipes.Recipe
@@ -154,8 +155,8 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 				</li>
 			</ol>
 		</section>
-		// Блок графиков: хендлер T4 передаёт Charts == nil — секция не
-		// рендерится вовсе; билдер T5 наполнит срез RecipeChartVM.
+		// Блок графиков: пока данные не приходят, хендлер передаёт
+		// Charts == nil — секция не рендерится вовсе (см. RecipeDetailVM).
 		if len(vm.Charts) > 0 {
 			<h2>{ i18n.T(ctx, "recipes.charts.title") }</h2>
 			for _, c := range vm.Charts {

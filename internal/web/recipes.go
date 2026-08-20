@@ -101,8 +101,10 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 // recipeDetailPage — GET /projects/{id}/recipes/{slug}: шаги подключения со
 // сниппетом конфига (ключ проекта — тем же путём KeysForProject→firstLiveKey,
 // что hostInstallBlocks; нет живого ключа → сниппет скрыт с подсказкой),
-// статус данных и таблица рекомендованных порогов. Доступ — как у списка.
-// Графики (T5) хендлер этой задачи не строит: charts=nil, блок не рендерится.
+// статус данных, преднастроенные графики (только когда данные уже приходят —
+// до первого скрейпа блок из одних пустых карточек лишь загромождал бы
+// инструкцию подключения) и таблица рекомендованных порогов. Доступ — как у
+// списка.
 func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -136,13 +138,25 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	dataArrives := h.recipeDataArrives(r.Context(), projectID, rec)
+	var charts []templates.RecipeChartVM
+	if dataArrives {
+		// Диапазон ФИКСИРОВАННЫЙ — recipeChartWindow от реального «сейчас»,
+		// НЕ resolveTimeRange (см. докблок константы: страница рецепта не
+		// должна молча уезжать за глобальной кукой диапазона). Шаг — той же
+		// формулой autoStep, что metricDetail: метрики читают сырую
+		// metric_points, шаг не мельче минуты, без выравнивания.
+		now := time.Now()
+		step := autoStep(recipeChartWindow, time.Minute, 0, metricChartBuckets)
+		charts = h.recipeCharts(r.Context(), projectID, rec, now.Add(-recipeChartWindow), now, step)
+	}
 	vm := templates.RecipeDetailVM{
 		ProjectID:   projectID,
 		Recipe:      rec,
-		DataArrives: h.recipeDataArrives(r.Context(), projectID, rec),
+		DataArrives: dataArrives,
 		Config:      h.recipeConfig(r.Context(), projectID, rec),
 		Statuses:    recipes.RuleStatuses(existing, rec),
-		Charts:      nil, // T5: билдер графиков подставит RecipeChartVM сюда
+		Charts:      charts,
 	}
 	_ = templates.RecipeDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
