@@ -205,6 +205,33 @@ func TestWebRecipesDetailCanOperate(t *testing.T) {
 	}
 }
 
+// TestWebRecipesNilService — h.MetricRules не проведён (узкий тестовый
+// стенд): без RuleService не посчитать статусы порогов, а POST создания
+// мёртв — раздел целиком отвечает 404 (тот же nil-guard, что у
+// TestWebAlertSuppressionNilService / escalationsPage / slosPage).
+// wireRecipes здесь НАРОЧНО не зовётся.
+func TestWebRecipesNilService(t *testing.T) {
+	s := newStack(t)
+	proj, ownerCookie, _ := recipesSeedProject(t, s, "rcp-nil")
+
+	base := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/recipes"
+	for _, path := range []string{base, base + "/redis"} {
+		resp := getWithCookie(t, s.srv, path, ownerCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s (nil MetricRules) status = %d, want 404", path, resp.StatusCode)
+		}
+	}
+
+	resp := postForm(t, s.srv, base+"/redis/thresholds", url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("POST %s/redis/thresholds (nil MetricRules) status = %d, want 404", base, resp.StatusCode)
+	}
+}
+
 // TestWebRecipesThresholdsCreate — POST под оператором создаёт ровно
 // len(Rules) правил и редиректит на страницу рецепта; ПОВТОРНЫЙ POST правил
 // не добавляет (идемпотентность T3 через HTTP); member без командного
