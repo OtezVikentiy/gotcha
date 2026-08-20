@@ -258,6 +258,94 @@ func TestSeriesGroupedScalar(t *testing.T) {
 	}
 }
 
+// TestSeriesGroupedEmptyHostAllHosts: host=="" обязан означать «все хосты»
+// (симметрия с Series/scalarSeries), а не «строки с буквально пустым host» —
+// рецепты сервисов B6 живут без resourcedetection, их метрики приходят с
+// пустым host, и жёсткое равенство host оставляло график рецепта пустым. Контроль:
+// непустой host по-прежнему фильтрует только свои строки.
+func TestSeriesGroupedEmptyHostAllHosts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+	const pid = 89
+
+	seedGaugeHost(t, conn, pid, "system.filesystem.utilization", "prod", "srv-1",
+		now.Add(-2*time.Minute), 0.5, map[string]string{"mountpoint": "/"})
+	seedGaugeHost(t, conn, pid, "system.filesystem.utilization", "prod", "srv-2",
+		now.Add(-2*time.Minute), 0.7, map[string]string{"mountpoint": "/data"})
+
+	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
+
+	// host="" → точки обоих хостов видны (две группы по mountpoint).
+	res, err := q.SeriesGrouped(ctx, pid, "system.filesystem.utilization", "",
+		"mountpoint", "avg", from, to, time.Minute)
+	if err != nil {
+		t.Fatalf("SeriesGrouped host=empty: %v", err)
+	}
+	if len(res.Groups) != 2 {
+		t.Fatalf("groups host=empty = %+v, want 2 (points of all hosts)", res.Groups)
+	}
+
+	// Контроль: host="srv-1" фильтрует только его.
+	res1, err := q.SeriesGrouped(ctx, pid, "system.filesystem.utilization", "srv-1",
+		"mountpoint", "avg", from, to, time.Minute)
+	if err != nil {
+		t.Fatalf("SeriesGrouped host=srv-1: %v", err)
+	}
+	if len(res1.Groups) != 1 || res1.Groups[0].Key != "/" {
+		t.Fatalf("groups host=srv-1 = %+v, want only group / of srv-1", res1.Groups)
+	}
+}
+
+// TestSeriesGroupedRateEmptyHostAllHosts: тот же пустой-байпас host для
+// rate-версии — счётчики без host-атрибуции должны быть видны при host=="".
+func TestSeriesGroupedRateEmptyHostAllHosts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+	const pid = 90
+
+	base := now.Add(-3 * time.Minute)
+	for i := 0; i <= 3; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		seedSumCumulativeHost(t, conn, pid, "system.network.io", "srv-1", ts, float64(60*i),
+			map[string]string{"direction": "receive", "device": "eth0"})
+	}
+
+	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
+
+	// host="" → точки srv-1 видны.
+	res, err := q.SeriesGroupedRate(ctx, pid, "system.network.io", "",
+		"direction", "device", from, to, time.Minute)
+	if err != nil {
+		t.Fatalf("SeriesGroupedRate host=empty: %v", err)
+	}
+	if len(res.Groups) != 1 || res.Groups[0].Key != "receive" {
+		t.Fatalf("groups host=empty = %+v, want one group receive", res.Groups)
+	}
+	if len(res.Groups[0].Points) == 0 {
+		t.Fatalf("points host=empty are empty, want rate points of srv-1")
+	}
+
+	// Контроль: чужой host по-прежнему отфильтровывает всё.
+	resOther, err := q.SeriesGroupedRate(ctx, pid, "system.network.io", "srv-2",
+		"direction", "device", from, to, time.Minute)
+	if err != nil {
+		t.Fatalf("SeriesGroupedRate host=srv-2: %v", err)
+	}
+	if len(resOther.Groups) != 0 {
+		t.Fatalf("groups host=srv-2 = %+v, want empty (foreign host)", resOther.Groups)
+	}
+}
+
 // TestLatestByHostWorstMountpoint: у web-1 два лейбла mountpoint внутри метрики
 // (/, /var) и у /var есть СТАРАЯ точка-приманка со значением 0.10 до свежих
 // 0.30 и 0.95. Одноуровневый argMax по host взял бы значение ОДНОГО случайного
