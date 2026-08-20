@@ -49,10 +49,17 @@ func (h *Handler) recipeCharts(ctx context.Context, projectID int64, rec recipes
 // каждый ChartSeries, собранные в общий multiSeriesSVG).
 func (h *Handler) recipeChartVM(ctx context.Context, projectID int64, rec recipes.Recipe, chart recipes.Chart, deploys []deploy.Deployment, from, to time.Time, step time.Duration) templates.RecipeChartVM {
 	vm := templates.RecipeChartVM{
-		Key:         chart.Key,
-		TitleKey:    "recipes." + rec.ID + ".chart." + chart.Key,
-		ExplorerURL: recipeExplorerURL(projectID, chart),
+		Key:      chart.Key,
+		TitleKey: "recipes." + rec.ID + ".chart." + chart.Key,
 	}
+	// Реестр гарантирует непустые Series (инвариант-тест), но билдер зовётся
+	// и с синтетическими рецептами: без гварда пустой Chart уронил бы
+	// Series[0] (здесь же, в recipeExplorerURL) паникой, а не честным Empty.
+	if len(chart.Series) == 0 {
+		vm.Empty = true
+		return vm
+	}
+	vm.ExplorerURL = recipeExplorerURL(projectID, chart)
 	var series []NamedSeries
 	var legend []templates.LegendItem
 	if chart.GroupKey != "" {

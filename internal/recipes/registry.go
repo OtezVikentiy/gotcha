@@ -22,12 +22,18 @@ import "fmt"
 // postgresConfigTmpl: postgresql-ресивер. postgresql.deadlocks по умолчанию
 // ВЫКЛЮЧЕНА в metadata.yaml ресивера (сверка T1 Step 1) — включаем явно,
 // иначе рекомендованный critical-порог по дедлокам был бы мёртвым.
+// Строка databases закомментирована нарочно (финревью P1-1): без неё ресивер
+// собирает ВСЕ базы, и порог по дедлокам следит за суммой/максимумом — для
+// точного порога по одной базе пользователь раскомментирует и сужает список.
+// Комментарий в YAML — по-английски: сниппет один на обе локали, а кириллица
+// в проде живёт только в i18n-каталогах.
 const postgresConfigTmpl = `receivers:
   postgresql:
     endpoint: localhost:5432
     transport: tcp
     username: CHANGE_ME
     password: CHANGE_ME
+    # databases: [CHANGE_ME]  # limit to a single database for a precise deadlock threshold
     tls:
       insecure: true
     collection_interval: 30s
@@ -98,9 +104,11 @@ service:
 `
 
 // dockerConfigTmpl: docker_stats-ресивер (нужен доступ к докер-сокету).
-// Каждый контейнер у ресивера — отдельный Resource; container.name и
-// container.image.name — resource-атрибуты, продвигаем обязательно, иначе
-// пер-контейнерные графики слипнутся в одну группу "".
+// Каждый контейнер у ресивера — отдельный Resource; container.name —
+// resource-атрибут, продвигаем обязательно, иначе пер-контейнерные графики
+// слипнутся в одну группу "". container.image.name НЕ продвигаем (аудит P2):
+// им не пользуется ни один график/порог, а лишний datapoint-атрибут — лишняя
+// кардинальность в metric_points.
 const dockerConfigTmpl = `receivers:
   docker_stats:
     endpoint: unix:///var/run/docker.sock
@@ -111,7 +119,6 @@ processors:
       - context: datapoint
         statements:
           - set(attributes["container.name"], resource.attributes["container.name"])
-          - set(attributes["container.image.name"], resource.attributes["container.image.name"])
   batch: {}
 exporters:
   otlphttp:
@@ -154,10 +161,16 @@ var registry = []Recipe{
 			}},
 			{Key: "db_size", Unit: "By", Series: []ChartSeries{{Metric: "postgresql.db_size"}},
 				GroupKey: "postgresql.database.name", Agg: "avg"},
+			// blocks_read и deadlocks — пер-базовая группировка (финревью
+			// P1-1): без GroupKey счётчики РАЗНЫХ баз складывались бы в одну
+			// линию, а rate на сумме кумулятивов от нескольких баз даёт
+			// артефакты при рестарте любой из них.
 			{Key: "blocks_read", Unit: "1/s", Agg: "avg",
-				Series: []ChartSeries{{Metric: "postgresql.blocks_read", Rate: true}}},
+				Series:   []ChartSeries{{Metric: "postgresql.blocks_read", Rate: true}},
+				GroupKey: "postgresql.database.name"},
 			{Key: "deadlocks", Unit: "1/s", Agg: "avg",
-				Series: []ChartSeries{{Metric: "postgresql.deadlocks", Rate: true}}},
+				Series:   []ChartSeries{{Metric: "postgresql.deadlocks", Rate: true}},
+				GroupKey: "postgresql.database.name"},
 			// rows — не-monotonic sum (текущее число строк), скалярный график
 			// с группировкой по родному datapoint-атрибуту state (live/dead).
 			{Key: "rows", Series: []ChartSeries{{Metric: "postgresql.rows"}},
@@ -249,16 +262,23 @@ var registry = []Recipe{
 			"container.cpu.utilization", "container.memory.percent",
 			"container.network.io.usage.rx_bytes", "container.network.io.usage.tx_bytes",
 		},
-		PromotedAttrs: []string{"container.name", "container.image.name"},
+		PromotedAttrs: []string{"container.name"},
 		Charts: []Chart{
 			{Key: "cpu", Series: []ChartSeries{{Metric: "container.cpu.utilization"}},
 				GroupKey: "container.name", Agg: "avg"},
 			{Key: "memory", Series: []ChartSeries{{Metric: "container.memory.percent"}},
 				GroupKey: "container.name", Agg: "avg"},
-			{Key: "network", Unit: "By/s", Agg: "avg", Series: []ChartSeries{
-				{Metric: "container.network.io.usage.rx_bytes", Rate: true, LabelSuffix: "rx"},
-				{Metric: "container.network.io.usage.tx_bytes", Rate: true, LabelSuffix: "tx"},
-			}},
+			// Сеть — ДВА графика, по направлению на каждый (аудит QA P1-2):
+			// парный rx+tx без GroupKey складывал счётчики всех контейнеров в
+			// две безымянные линии; пер-контейнерная группировка (как у cpu и
+			// memory) требует ровно одной Series на график — направление
+			// поэтому разнесено по графикам, а не по рядам.
+			{Key: "network_rx", Unit: "By/s", Agg: "avg",
+				Series:   []ChartSeries{{Metric: "container.network.io.usage.rx_bytes", Rate: true}},
+				GroupKey: "container.name"},
+			{Key: "network_tx", Unit: "By/s", Agg: "avg",
+				Series:   []ChartSeries{{Metric: "container.network.io.usage.tx_bytes", Rate: true}},
+				GroupKey: "container.name"},
 		},
 		// Rules пусты намеренно (развилка F1): метрики пер-контейнерные,
 		// разумный дефолт «на все контейнеры разом» невозможен; страница

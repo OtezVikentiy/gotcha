@@ -112,9 +112,10 @@ func TestRecipeChartsRedis(t *testing.T) {
 
 // TestRecipeChartsGrouped — обе групповые ветки билдера: SeriesGrouped
 // (postgres backends по postgresql.database.name, скаляр) и SeriesGroupedRate
-// (синтетический Chart c GroupKey+Rate — в реестре сейчас такой комбинации
-// нет, но модель её допускает и билдер обязан её поддерживать). Легенда
-// групповых рядов — сырые ключи групп.
+// (синтетический Chart c GroupKey+Rate; в реестре так устроены deadlocks/
+// blocks_read postgres и network_rx/tx docker — синтетика оставлена, чтобы
+// тест ветки не зависел от состава реестра). Легенда групповых рядов — сырые
+// ключи групп.
 func TestRecipeChartsGrouped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

@@ -59,9 +59,16 @@ func TestApplyRulesIdempotent(t *testing.T) {
 	if len(rules) != len(rec.Rules) {
 		t.Fatalf("rules in db = %d, want %d", len(rules), len(rec.Rules))
 	}
+	wantSeverity := map[string]string{}
+	for _, spec := range rec.Rules {
+		wantSeverity[spec.Metric] = spec.Severity
+	}
 	for _, r := range rules {
 		if r.Environment != "" || !r.Enabled || r.ProjectID != pid {
 			t.Fatalf("created rule %+v: want all-env, enabled, project %d", r, pid)
+		}
+		if r.Severity != wantSeverity[r.MetricName] {
+			t.Fatalf("created rule %s severity = %q, want %q (из RuleSpec)", r.MetricName, r.Severity, wantSeverity[r.MetricName])
 		}
 	}
 

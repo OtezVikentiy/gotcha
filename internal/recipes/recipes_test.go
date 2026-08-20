@@ -58,7 +58,14 @@ func TestRegistryInvariants(t *testing.T) {
 		if !contains(r.Metrics, r.Signature) {
 			t.Fatalf("recipe %q: Signature не в Metrics", r.ID)
 		}
+		chartKeys := map[string]bool{}
 		for _, c := range r.Charts {
+			// Chart.Key — суффикс i18n-ключа заголовка и data-chart-маркер:
+			// дубль дал бы два графика с одним заголовком и неразличимые тесты.
+			if chartKeys[c.Key] {
+				t.Fatalf("recipe %q: дубль Chart.Key %q", r.ID, c.Key)
+			}
+			chartKeys[c.Key] = true
 			if c.GroupKey != "" {
 				if len(c.Series) != 1 || len(c.Series[0].Matchers) != 0 {
 					t.Fatalf("recipe %q chart %q: GroupKey требует ровно 1 Series без Matchers", r.ID, c.Key)
@@ -66,6 +73,14 @@ func TestRegistryInvariants(t *testing.T) {
 			}
 			if len(c.Series) == 0 {
 				t.Fatalf("recipe %q chart %q: нет рядов", r.ID, c.Key)
+			}
+			// Пара рядов без различимых LabelSuffix — легенда из двух
+			// одинаковых (или пустых) подписей, нечитаемая по построению.
+			if len(c.Series) == 2 {
+				a, b := c.Series[0].LabelSuffix, c.Series[1].LabelSuffix
+				if a == "" || b == "" || a == b {
+					t.Fatalf("recipe %q chart %q: у пары рядов LabelSuffix должны быть непустыми и различными (%q, %q)", r.ID, c.Key, a, b)
+				}
 			}
 			if !validAgg(c.Agg) {
 				t.Fatalf("recipe %q chart %q: agg %q", r.ID, c.Key, c.Agg)
@@ -84,11 +99,14 @@ func TestRegistryInvariants(t *testing.T) {
 			t.Fatalf("recipe %q: артефакт форматирования в Config", r.ID)
 		}
 		// Transform-инвариант (BLOCKER-1 спеки): каждый PromotedAttr реально
-		// продвигается сниппетом; GroupKey либо продвинут, либо родной
+		// продвигается сниппетом ПОЛНЫМ transform-стейтментом (два раздельных
+		// Contains пропускали бы attr, упомянутый где угодно в конфиге при
+		// любом transform); GroupKey либо продвинут, либо родной
 		// datapoint-атрибут (nginx/postgres state — сверено в Step 1).
 		for _, attr := range r.PromotedAttrs {
-			if !strings.Contains(cfg, "transform") || !strings.Contains(cfg, attr) {
-				t.Fatalf("recipe %q: PromotedAttr %q не продвинут transform'ом в Config", r.ID, attr)
+			stmt := `set(attributes["` + attr + `"], resource.attributes["` + attr + `"])`
+			if !strings.Contains(cfg, stmt) {
+				t.Fatalf("recipe %q: PromotedAttr %q не продвинут transform'ом в Config (нет %q)", r.ID, attr, stmt)
 			}
 		}
 		for _, c := range r.Charts {
@@ -96,6 +114,7 @@ func TestRegistryInvariants(t *testing.T) {
 				t.Fatalf("recipe %q chart %q: GroupKey %q ни продвинут, ни родной datapoint-атрибут", r.ID, c.Key, c.GroupKey)
 			}
 		}
+		ruleKeys := map[string]bool{}
 		for _, rs := range r.Rules {
 			if !validAgg(rs.Agg) || (rs.Comparator != "gt" && rs.Comparator != "lt") {
 				t.Fatalf("recipe %q rule %q: agg/comparator", r.ID, rs.Metric)
@@ -109,6 +128,20 @@ func TestRegistryInvariants(t *testing.T) {
 			if !contains(r.Metrics, rs.Metric) {
 				t.Fatalf("recipe %q rule: метрика %q не в Metrics", r.ID, rs.Metric)
 			}
+			// LabelValue без LabelKey ключ идемпотентности (matches) ещё
+			// переживёт, а LabelKey без LabelValue — матчер «ключ есть,
+			// значение пустое», которого модель правил не выражает.
+			if rs.LabelKey != "" && rs.LabelValue == "" {
+				t.Fatalf("recipe %q rule %q: LabelKey без LabelValue", r.ID, rs.Metric)
+			}
+			// Полный ключ идемпотентности ApplyRules: два RuleSpec с одним
+			// ключом в одном рецепте — второй никогда не создастся (первый
+			// уже existing) и вечно висел бы «будет создан».
+			key := rs.Metric + "|" + rs.Agg + "|" + rs.Comparator + "|" + rs.LabelKey + "|" + rs.LabelValue
+			if ruleKeys[key] {
+				t.Fatalf("recipe %q: дубль ключа RuleSpec %q", r.ID, key)
+			}
+			ruleKeys[key] = true
 		}
 	}
 	if len(seen) != 4 {
