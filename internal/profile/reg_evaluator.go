@@ -153,7 +153,7 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 			slog.Error("profile evaluator: resolve failed", "id", open.ID, "error", err)
 			return
 		}
-		if closed && !open.InMaintenance {
+		if closed {
 			e.notifyClose(ctx, open)
 		}
 	}

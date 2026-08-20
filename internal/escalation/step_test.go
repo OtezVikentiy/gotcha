@@ -140,11 +140,14 @@ func TestSendStepIfDueLevelBeyondLadder(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueNotifyStepErrorSkipsLogAndBump — provал notifyStep не
-// логирует (нечего логировать — возвращённый слайс отбрасывается вместе с
-// ошибкой) и не бампает уровень: провалившаяся отправка не должна молчаливо
-// продвигать эскалацию дальше.
-func TestSendStepIfDueNotifyStepErrorSkipsLogAndBump(t *testing.T) {
+// TestSendStepIfDueNotifyStepTotalFailureSkipsLogAndBump — ТОТАЛЬНЫЙ провал
+// notifyStep (ни один канал не заенкенился — enqueued пуст) не логирует
+// (нечего логировать) и не бампает уровень: следующий тик повторит ступень
+// целиком, а не молчаливо продвинет эскалацию дальше. QA P2-3: до фикса
+// discard всех enqueued при err != nil был общим для тотального и частичного
+// сбоя — здесь фиксируем, что для тотального сбоя (пустой enqueued) поведение
+// осталось прежним; частичный сбой см. TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps.
+func TestSendStepIfDueNotifyStepTotalFailureSkipsLogAndBump(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
 	}
@@ -165,10 +168,10 @@ func TestSendStepIfDueNotifyStepErrorSkipsLogAndBump(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, wantErr)
 	}
 	if sent {
-		t.Error("sent = true, want false (notifyStep провалился)")
+		t.Error("sent = true, want false (notifyStep провалился тотально)")
 	}
 	if bumpCalled {
-		t.Error("bump вызван при провале notifyStep — не должен")
+		t.Error("bump вызван при тотальном провале notifyStep — не должен")
 	}
 
 	var count int
@@ -178,6 +181,66 @@ func TestSendStepIfDueNotifyStepErrorSkipsLogAndBump(t *testing.T) {
 		t.Fatalf("select escalation log: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("incident_escalations rows = %d, want 0 (notifyStep провалился)", count)
+		t.Errorf("incident_escalations rows = %d, want 0 (notifyStep провалился тотально)", count)
+	}
+}
+
+// TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps — ЧАСТИЧНЫЙ провал
+// notifyStep (c1 реально заенкенился, но вызов вернул ошибку — напр. второй
+// канал в очередь не встал) обязан залогировать c1 в incident_escalations
+// (иначе recovery не найдёт его и не пришлёт отбой запейдженному каналу) И
+// продвинуть уровень (иначе один битый канал клинит лесенку бесконечным
+// пере-пейджем c1). Ошибка при этом не проглатывается — прокидывается вызывающему. QA P2-3.
+func TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+	c2 := newChannel(t, pool, pid, true)
+
+	ladder := escalation.Ladder{{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1, c2}}}
+	const incidentID = int64(4546)
+	wantErr := errors.New("channel c2 enqueue failed")
+
+	bumpCalled := false
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "metric", pool, incidentID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return []int64{c1}, wantErr },
+		func(id int64, from int) (bool, error) {
+			bumpCalled = true
+			if id != incidentID || from != 0 {
+				t.Errorf("bump(id=%d, from=%d), want (%d, 0)", id, from, incidentID)
+			}
+			return true, nil
+		})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want wrapped %v", err, wantErr)
+	}
+	if !sent {
+		t.Error("sent = false, want true (хотя бы один канал заенкенился, bump применился)")
+	}
+	if !bumpCalled {
+		t.Error("bump не вызван при частичном провале — должен, иначе лесенка клинит на плохом канале")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND channel_id=$2 AND step=0",
+		incidentID, c1).Scan(&count); err != nil {
+		t.Fatalf("select escalation log: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("incident_escalations rows for c1 = %d, want 1 (реально заенкенился, должен быть залогирован)", count)
+	}
+
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND channel_id=$2 AND step=0",
+		incidentID, c2).Scan(&count); err != nil {
+		t.Fatalf("select escalation log: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("incident_escalations rows for c2 = %d, want 0 (не заенкенился — не должен быть залогирован)", count)
 	}
 }

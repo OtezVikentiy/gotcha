@@ -123,7 +123,7 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 			slog.Error("metric evaluator: resolve failed", "rule_id", r.ID, "error", err)
 			return
 		}
-		if ok && !open.InMaintenance {
+		if ok {
 			e.notifyClose(ctx, open)
 		}
 	}

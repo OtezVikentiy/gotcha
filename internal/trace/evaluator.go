@@ -385,7 +385,7 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 			slog.Error("trace: evaluator: resolve regression failed", "id", open.ID, "error", err)
 			return
 		}
-		if closed && !open.InMaintenance {
+		if closed {
 			e.notifyClose(ctx, open)
 		}
 

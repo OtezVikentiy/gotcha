@@ -477,7 +477,7 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			slog.Warn("host evaluator: silent resolve failed", "host_id", h.ID, "error", err)
 			return
 		}
-		if resolved && !open.InMaintenance {
+		if resolved {
 			e.notifyClose(ctx, open)
 		}
 	case opened && silence >= open.PeakValue*silentBumpGrowth:
@@ -638,7 +638,7 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 			slog.Warn("host evaluator: resolve failed", "host_id", h.ID, "kind", kind, "error", err)
 			return
 		}
-		if resolved && !open.InMaintenance {
+		if resolved {
 			e.notifyClose(ctx, open)
 		}
 	}

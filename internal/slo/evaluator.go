@@ -241,9 +241,7 @@ func (e *Evaluator) close(ctx context.Context, s SLO) bool {
 	if !resolved {
 		return false // открытого не было — закрывать нечего
 	}
-	if !inc.InMaintenance {
-		e.notifyClose(ctx, inc)
-	}
+	e.notifyClose(ctx, inc)
 	return true
 }
 

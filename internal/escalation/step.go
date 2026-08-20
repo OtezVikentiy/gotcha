@@ -2,6 +2,7 @@ package escalation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,10 +11,15 @@ import (
 )
 
 // SendStepIfDue шлёт ступень [level] лесенки, если её задержка от открытия
-// инцидента (elapsed) уже настала, и бампает уровень эскалации. sent=true —
-// уведомление реально ушло (notifyStep не ошибся) И бамп применился; в
-// остальных случаях (лесенка исчерпана, ступень ещё не подошла по времени,
-// провал notifyStep) — false. Порядок notifyStep(enqueue)→log→bump намеренный
+// инцидента (elapsed) уже настала, и бампает уровень эскалации. Бамп
+// применяется всегда, КРОМЕ тотального провала notifyStep — ошибка И ни один
+// канал не заенкенился (QA P2-3: частичный сбой, когда хоть один канал
+// реально ушёл в очередь, прогрессу не мешает — иначе один битый канал клинит
+// лесенку бесконечным пере-пейджем здоровых; пустой enqueued БЕЗ ошибки — это
+// не сбой, а просто пустая лесенка, бамп идёт как обычно). sent=true — бамп
+// применился; в остальных случаях (лесенка исчерпана, ступень ещё не подошла
+// по времени, тотальный провал notifyStep) — false, чтобы следующий тик
+// повторил ступень целиком. Порядок notifyStep(enqueue)→log→bump намеренный
 // (M-3 брифа Task 6).
 //
 // Логирование в incident_escalations — ЗДЕСЬ, в оркестрации, а не внутри
@@ -32,17 +38,31 @@ func SendStepIfDue(ctx context.Context, ladder Ladder, source string, pool *pgxp
 	if elapsed < time.Duration(ladder[level].DelayMinutes)*time.Minute {
 		return false, nil
 	}
-	enqueued, err := notifyStep(ladder[level].ChannelIDs, level)
-	if err != nil {
-		return false, err
-	}
+	enqueued, notifyErr := notifyStep(ladder[level].ChannelIDs, level)
+	// Логируем РЕАЛЬНО заенкенные каналы ДАЖЕ при ошибке notifyStep — они уже
+	// в очереди, и recovery должен про них знать (иначе пробел отбоя для тех,
+	// кого реально запейджило). QA P2-3.
 	for _, ch := range enqueued {
 		if err := LogStep(ctx, pool, source, incidentID, ch, level); err != nil {
 			slog.Error("escalation: log step failed", "source", source, "incident_id", incidentID, "channel_id", ch, "error", err)
 		}
 	}
-	ok, err := bump(incidentID, level)
-	return ok, err
+	if notifyErr != nil && len(enqueued) == 0 {
+		// ТОТАЛЬНЫЙ сбой: notifyStep вернул ошибку И ни один канал не
+		// заенкенился — не бампим, следующий тик повторит эту же ступень
+		// целиком. len(enqueued)==0 БЕЗ ошибки (напр. в лесенке нет ни одного
+		// канала — проект без alert-каналов) сюда не попадает: notifyStep не
+		// провалился, бампить дальше можно и нужно, как и раньше.
+		return false, notifyErr
+	}
+	// Либо notifyStep не ошибся (обычный путь, enqueued может быть и пуст —
+	// каналов в лесенке просто не было), либо хотя бы один канал реально
+	// получил ступень при частичном сбое — продвигаем уровень, чтобы один
+	// плохой канал не клинил лесенку бесконечным пере-пейджем здоровых.
+	// Каналы, не попавшие в enqueued при частичном сбое, пропустят эту
+	// ступень — осознанный компромисс: прогресс важнее стагнации.
+	ok, bumpErr := bump(incidentID, level)
+	return ok, errors.Join(notifyErr, bumpErr)
 }
 
 // RecoveryChannels возвращает каналы, в которые за время жизни инцидента
