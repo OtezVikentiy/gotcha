@@ -84,6 +84,7 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/incidents/{source}/{incident_id}/ack": lvlOperator,
 	"POST /projects/{id}/metrics/alerts":                       lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete":                lvlOperator,
+	"POST /projects/{id}/recipes/{slug}/thresholds":            lvlOperator, // рецепты B6: создание порогов — как metric alerts
 	"POST /projects/{id}/slos":                                 lvlOperator,
 	"POST /projects/{id}/slos/{sloID}/delete":                  lvlOperator,
 	"POST /projects/{id}/hosts/settings":                       lvlOperator,
@@ -167,6 +168,8 @@ var routeAuthz = map[string]string{
 	"GET /issues/{id}":                                lvlAccess,
 	"GET /projects/{id}/metrics":                      lvlAccess,
 	"GET /projects/{id}/metrics/{name}":               lvlAccess,
+	"GET /projects/{id}/recipes":                      lvlAccess, // рецепты B6: просмотр — как /metrics
+	"GET /projects/{id}/recipes/{slug}":               lvlAccess,
 	"GET /projects/{id}/hosts":                        lvlAccess,
 	"GET /projects/{id}/hosts/{name}":                 lvlAccess,
 	"GET /projects/{id}/logs":                         lvlAccess,

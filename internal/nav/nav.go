@@ -159,7 +159,7 @@ func AreaForPath(path string) string {
 					return "issues"
 				case "performance", "web-vitals", "profiles", "profile-regressions", "perf-issues", "regressions", "dependencies", "deployments":
 					return "performance"
-				case "metrics":
+				case "metrics", "recipes":
 					return "metrics"
 				case "hosts":
 					return "hosts"
@@ -217,6 +217,8 @@ func BackLabelKey(rawPath string) string {
 					return "nav.metric_alerts"
 				}
 				return "nav.metrics"
+			case "recipes":
+				return "nav.recipes"
 			case "hosts":
 				if len(parts) >= 3 && parts[2] == "settings" {
 					return "nav.host_thresholds"
@@ -295,6 +297,10 @@ func Subsections(s Shell) []NavItem {
 	case "metrics":
 		items = []NavItem{
 			{LabelKey: "nav.metrics", Href: "/projects/" + effID + "/metrics"},
+			// Рецепты мониторинга (B6): просмотр открыт всем с доступом к
+			// проекту (как сам список метрик) — без гейта CanOperate; гейт
+			// оператора стоит только на POST создания порогов.
+			{LabelKey: "nav.recipes", Href: "/projects/" + effID + "/recipes"},
 		}
 		// Правила по метрикам, окна обслуживания, статус-страницы и обе
 		// страницы оповещений требуют оператора проекта

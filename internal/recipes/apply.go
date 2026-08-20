@@ -52,7 +52,9 @@ func RuleStatuses(existing []metric.Rule, r Recipe) []RuleStatus {
 // metric_alert_rules НЕТ unique-констрейнта по ключу, так что гонка двойного
 // клика теоретически даёт дубль правила — это benign (спека §4.4): дубль
 // виден в списке правил и удаляется вручную, а повторный ApplyRules дублей
-// уже не плодит.
+// уже не плодит. При частичном сбое (часть правил создана, затем Create
+// упал) повторный вызов дозаполнит недостающие: уже созданные попадут в
+// skipped, ошибка не оставляет проект в невосстановимом состоянии.
 func ApplyRules(ctx context.Context, svc *metric.RuleService, projectID int64, r Recipe) (int, int, error) {
 	existing, err := svc.List(ctx, projectID)
 	if err != nil {
