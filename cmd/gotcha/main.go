@@ -986,6 +986,12 @@ func run() error {
 		// uptime из uptime.Query; окна обслуживания не жгут бюджет).
 		webHandler.SLO = slo.NewStore(pg)
 		webHandler.SLOProviders = slo.Providers(trace.NewQuery(ch), uptime.NewQuery(ch), uptime.NewService(pg), cfg.RetentionDays)
+		// Эскалации (B4, задача 9): /projects/{id}/escalations читает и правит
+		// ту же политику, что резолвят оценщики (startEvaluators заводит свой
+		// отдельный NewPolicyStore(pg) — это дешёвый объект без состояния
+		// поверх пула, плодить общий синглтон между стартом оценщиков и
+		// web-обвязкой не требуется).
+		webHandler.EscalationPolicy = escalation.NewPolicyStore(pg)
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)

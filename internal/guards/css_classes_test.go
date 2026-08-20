@@ -192,6 +192,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "sso-delete-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "status-page-delete-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "slo-form", Why: "семантический маркер формы (создание SLO, план D1), стиля нет по замыслу — оформление от .field/.select/.input/.btn* внутри", Finding: "по замыслу"},
+	{Value: "escalation-ladder-form", Why: "семантический маркер формы (лесенка эскалации, B4 T9), стиля нет по замыслу — оформление от .field/.checkbox-field/.btn* внутри", Finding: "по замыслу"},
 	{Value: "status-page-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "subject-export-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "subject-purge-form", Why: "семантический маркер формы, стиля нет по замыслу", Finding: "по замыслу"},
@@ -215,6 +216,7 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "deps", Why: "маркер страницы карты зависимостей (C4) на корневом <div>, стиля нет по замыслу — визуал от @layout и вложенных .card/.data-table", Finding: "по замыслу"},
 	{Value: "deployments", Why: "маркер страницы на корневом <div> (список деплоев, C5), стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "docs-page", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "escalations", Why: "маркер страницы на корневом <div> (лесенки эскалации, B4 T9), стиля нет по замыслу — визуал от @layout и вложенных .card/.field/.checkbox-field", Finding: "по замыслу"},
 	{Value: "hosts", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "host-settings", Why: "маркер под-страницы (настройки порогов хоста, T16) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "incidents", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
@@ -251,6 +253,7 @@ var permanentCSSClassExemptions = []Exemption{
 	// затронула (не запрашивалась), см. task-5-report.md, раздел «Раунд
 	// правок 1» — там же зафиксирована асимметрия между ними.
 	{Value: "alerts-section", Why: "семантический маркер секции внутри страницы alerts, стиля нет по замыслу", Finding: "по замыслу"},
+	{Value: "escalations-section", Why: "семантический маркер секции внутри страницы escalations (B4 T9), стиля нет по замыслу — стоит в паре с .card (class=\"escalations-section card\")", Finding: "по замыслу"},
 	{Value: "deps-map-card", Why: "семантический маркер, стоит в паре с .card (class=\"card deps-map-card\", C4)", Finding: "по замыслу"},
 	{Value: "deps-truncated", Why: "семантический маркер, стоит в паре с .hint (class=\"hint deps-truncated\", C4)", Finding: "по замыслу"},
 	{Value: "gdpr-block", Why: "семантический маркер секции (152-ФЗ экспорт/удаление ПДн), стиля нет по замыслу — внутри уже стилизованные .field/.hint/.btn-ghost", Finding: "по замыслу"},
@@ -301,7 +304,15 @@ var permanentCSSClassExemptions = []Exemption{
 // <div> (семья "logs"/"metrics"/"deployments") — и "slo-form" — маркер формы
 // создания (семья *-form). Индикаторы .slo-indicator* получили реальные
 // правила в app.css, в список исключений не попали.
-const maxPermanentCSSClassExemptions = 81
+//
+// 81→84 (B4, задача 9): раздел эскалаций добавил "escalations" — маркер
+// страницы на корневом <div> (та же семья, что "slos"/"deployments"),
+// "escalations-section" — маркер секции в паре с .card (как "alerts-section"),
+// и "escalation-ladder-form" — маркер формы (семья *-form). Отступы между
+// ступенями и dry-run-блок (.escalation-step, .escalation-dryrun,
+// .escalation-dryrun-list) получили реальные правила в app.css, в список
+// исключений не попали.
+const maxPermanentCSSClassExemptions = 84
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

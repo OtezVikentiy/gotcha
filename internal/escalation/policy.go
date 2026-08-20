@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -171,6 +172,49 @@ func (s *PolicyStore) Ladders(ctx context.Context, projectID int64) (map[string]
 	return out, nil
 }
 
+// verifyChannelsBelongToProject проверяет, что каждый channel_id, упомянутый
+// в steps, принадлежит projectID — а не другому проекту той же (или чужой)
+// организации. Дедуплицирует id перед запросом: одна и та же ступень нередко
+// ссылается на канал, уже встретившийся в другой ступени.
+func verifyChannelsBelongToProject(ctx context.Context, tx pgx.Tx, projectID int64, steps []Step) error {
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, st := range steps {
+		for _, id := range st.ChannelIDs {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx,
+		"SELECT id FROM alert_channels WHERE project_id = $1 AND id = ANY($2)", projectID, ids)
+	if err != nil {
+		return fmt.Errorf("escalation: set ladder: verify channels: %w", err)
+	}
+	defer rows.Close()
+	owned := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("escalation: set ladder: verify channels: %w", err)
+		}
+		owned[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("escalation: set ladder: verify channels: %w", err)
+	}
+	for _, id := range ids {
+		if !owned[id] {
+			return fmt.Errorf("%w: channel %d does not belong to project %d", ErrInvalidPolicy, id, projectID)
+		}
+	}
+	return nil
+}
+
 // SetLadder транзакционно заменяет лесенку эскалации проекта для данной
 // severity: старые шаги (и их каналы, каскадом FK) удаляются, новые
 // вставляются целиком. Пустой steps допустим — снимает настроенную лесенку,
@@ -188,6 +232,17 @@ func (s *PolicyStore) SetLadder(ctx context.Context, projectID int64, severity s
 		return fmt.Errorf("escalation: set ladder: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Defense-in-depth (T9, concern T2): хендлер веб-слоя уже фильтрует
+	// channel_id формы по каналам ПРОЕКТА до вызова SetLadder, но эта
+	// проверка — единственная, которую нельзя обойти ни забытым фильтром на
+	// новом вызывающем, ни прямым вызовом стора в обход веб-слоя. Без неё
+	// оператор проекта A мог бы подобрать channel_id чужого проекта B и
+	// прицепить его к своей лесенке — уведомления инцидентов проекта A
+	// улетели бы в канал, которым владеет и управляет B.
+	if err := verifyChannelsBelongToProject(ctx, tx, projectID, steps); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(ctx,
 		"DELETE FROM escalation_steps WHERE project_id = $1 AND severity = $2", projectID, severity); err != nil {

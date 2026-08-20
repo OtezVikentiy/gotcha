@@ -2772,6 +2772,25 @@ form.inline {
 .slo-indicator-warn { background: var(--warn); }
 .slo-indicator-danger { background: var(--danger); }
 
+/* Эскалации (B4, задача 9): отступ между карточками-ступенями лесенки — те
+   же 12px, что и между полями соседних форм страницы (.field). */
+.escalation-step + .escalation-step {
+	margin-top: 12px;
+}
+/* Dry-run-предпросмотр под формой лесенки: отделён от формы отступом сверху,
+   список ступеней — без маркеров браузера по умолчанию (свой порядок уже
+   виден по тексту "Ступень N"). */
+.escalation-dryrun {
+	margin-top: 16px;
+}
+.escalation-dryrun-list {
+	margin: 0 0 8px;
+	padding-left: 20px;
+}
+.escalation-dryrun-list li {
+	margin: 2px 0;
+}
+
 /* Экран деталей SLO (план D1, T7): вертикальная колонка — крошки, заголовок,
    карточки метрик, открытый инцидент, burn-down график, история инцидентов. */
 .slo-detail {

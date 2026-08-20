@@ -12,17 +12,28 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newProject: прямые вставки — escalation-пакет не зависит от org.
+// newProject: прямые вставки — escalation-пакет не зависит от org. slug
+// организации/проекта фиксирован ('escorg'/'esc') — годится, пока тест
+// заводит ровно один проект; тест с двумя проектами (cross-tenant) должен
+// звать newProjectNamed с разными слагами, иначе второй INSERT упадёт на
+// organizations_slug_key.
 func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	return newProjectNamed(t, pool, "escorg", "esc")
+}
+
+// newProjectNamed — та же прямая вставка, но с явными слагами: нужно тестам,
+// заводящим больше одного проекта в рамках одного pool (см. newProject).
+func newProjectNamed(t *testing.T, pool *pgxpool.Pool, orgSlug, projectSlug string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var orgID, projectID int64
 	if err := pool.QueryRow(ctx,
-		"INSERT INTO organizations (slug, name, event_quota) VALUES ('escorg','Esc Org',1000000) RETURNING id").Scan(&orgID); err != nil {
+		"INSERT INTO organizations (slug, name, event_quota) VALUES ($1,'Esc Org',1000000) RETURNING id", orgSlug).Scan(&orgID); err != nil {
 		t.Fatalf("org: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
-		"INSERT INTO projects (org_id, slug, name) VALUES ($1,'esc','Esc') RETURNING id", orgID).Scan(&projectID); err != nil {
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1,$2,'Esc') RETURNING id", orgID, projectSlug).Scan(&projectID); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	return projectID
@@ -211,6 +222,40 @@ func TestSetLadderValidation(t *testing.T) {
 				t.Fatalf("SetLadder(%s): err = %v, want wrapping ErrInvalidPolicy", tc.name, err)
 			}
 		})
+	}
+}
+
+// TestSetLadderForeignChannel — cross-tenant (T9, concern T2): channel_id
+// принадлежащий ДРУГОМУ проекту отвергается ДО любой записи — ни новые шаги,
+// ни их каналы не должны попасть в БД (транзакция откатывается целиком, а не
+// только для чужого id).
+func TestSetLadderForeignChannel(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	store := escalation.NewPolicyStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pidA := newProjectNamed(t, pool, "escorg-a", "esc-a")
+	pidB := newProjectNamed(t, pool, "escorg-b", "esc-b")
+	ownChannel := newChannel(t, pool, pidA, true)
+	foreignChannel := newChannel(t, pool, pidB, true)
+
+	err := store.SetLadder(ctx, pidA, escalation.SeverityCritical, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{ownChannel, foreignChannel}},
+	})
+	if err == nil {
+		t.Fatalf("SetLadder with foreign channel: want error, got nil")
+	}
+	if !errors.Is(err, escalation.ErrInvalidPolicy) {
+		t.Fatalf("SetLadder with foreign channel: err = %v, want wrapping ErrInvalidPolicy", err)
+	}
+
+	var stepCount int64
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM escalation_steps WHERE project_id=$1", pidA).Scan(&stepCount); err != nil {
+		t.Fatalf("count steps: %v", err)
+	}
+	if stepCount != 0 {
+		t.Fatalf("escalation_steps count after rejected SetLadder = %d, want 0 (nothing persisted)", stepCount)
 	}
 }
 
