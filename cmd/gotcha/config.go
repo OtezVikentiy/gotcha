@@ -116,8 +116,14 @@ type Config struct {
 	// эскалаций (B4, T8): как часто он проверяет, не настала ли задержка
 	// очередной ступени лесенки для открытых неподтверждённых инцидентов
 	// всех 5 источников.
-	EscalationInterval  int
-	OutboxRetentionDays int
+	EscalationInterval int
+	// DependencySettleSeconds — задержка первого уведомления узла с
+	// задекларированным родителем (B5, T8): схлопывание гонки детекции, пока
+	// не ясно, упал ли родитель следом. Должна быть >= самого медленного
+	// порога тишины хостов-родителей проекта, иначе окно не успевает накрыть
+	// реальную гонку (GOTCHA_DEPENDENCY_SETTLE_SECONDS).
+	DependencySettleSeconds int
+	OutboxRetentionDays     int
 	// PurgeReconcileHours — период сверки телеметрии удалённых проектов
 	// (GOTCHA_PURGE_RECONCILE_HOURS); 0 выключает сверку. Ноль здесь не
 	// ошибка, а выключатель: установка, где в ClickHouse пишет что-то помимо
@@ -498,6 +504,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		HostEvalInterval:         intNum("GOTCHA_HOST_EVAL_INTERVAL", 60),
 		SLOEvalInterval:          intNum("GOTCHA_SLO_EVAL_INTERVAL", 120),
 		EscalationInterval:       intNum("GOTCHA_ESCALATION_INTERVAL", 60),
+		DependencySettleSeconds:  intNum("GOTCHA_DEPENDENCY_SETTLE_SECONDS", 300),
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
 		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
@@ -731,6 +738,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.EscalationInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_ESCALATION_INTERVAL must be >= 1, got %d", cfg.EscalationInterval)
+	}
+	if cfg.DependencySettleSeconds < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEPENDENCY_SETTLE_SECONDS must be >= 0, got %d", cfg.DependencySettleSeconds)
 	}
 	// Квоты: 0 = безлимит (легитимно в любой редакции), отрицательные — ошибка.
 	if cfg.DefaultEventQuota < 0 {

@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/depsuppress"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
@@ -370,6 +371,16 @@ func run() error {
 		outbox = notify.NewOutbox(pg)
 	}
 
+	// depSuppressor — гейт зависимостей (B5, T8): один инстанс на процесс,
+	// используется и детектором аптайма ниже, и оценщиками хостов/эскалации в
+	// startEvaluators — кеш снапшота графа зависимостей общий на тик, а не
+	// пересобирается отдельно на каждого потребителя. settleGrace — задержка
+	// первого уведомления узла с задекларированным родителем (см.
+	// DependencySettleSeconds), общая для обоих потребителей (uptime.Detector,
+	// escalation.Scheduler).
+	depSuppressor := depsuppress.NewSuppressor(pg)
+	settleGrace := time.Duration(cfg.DependencySettleSeconds) * time.Second
+
 	// uptimeSvc/uptimeWriter — как и orgSvc/issueSvc выше, общие для любого
 	// активного режима, которому они нужны: web монтирует героя этой задачи,
 	// публичный heartbeat-роут (webHandler.Uptime/UptimeWriter), даже когда
@@ -442,7 +453,10 @@ func run() error {
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
 		}
-		uptimeDetector = &uptime.Detector{Svc: uptimeSvc, Notifier: uptimeNotifier}
+		uptimeDetector = &uptime.Detector{
+			Svc: uptimeSvc, Notifier: uptimeNotifier,
+			Dep: depSuppressor, SettleGrace: settleGrace,
+		}
 		// Ingestor нужен и режиму web (через него /probe/results проводит
 		// результаты выносных проб), и режиму uptime (тот же хвост у
 		// локальной пробы, Runner собирает его из своих полей) — детекция
@@ -518,7 +532,7 @@ func run() error {
 		// оставлен прежним намеренно: включать их автоматически везде значило бы
 		// в связке web+uptime гонять двойную оценку.
 		if runEvaluators(cfg) {
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, settleGrace)
 		}
 
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
@@ -528,7 +542,7 @@ func run() error {
 	if cfg.Mode != "uptime" && cfg.Mode != "all" && cfg.Mode != "probe" {
 		switch {
 		case runEvaluatorsExplicit(cfg):
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, settleGrace)
 			slog.Info("evaluators enabled by GOTCHA_RUN_EVALUATORS", "mode", cfg.Mode)
 		default:
 			// Молчать здесь нельзя: правило по метрике в интерфейсе выглядит
@@ -1132,7 +1146,7 @@ func run() error {
 // явного GOTCHA_RUN_EVALUATORS в прочих режимах с БД.
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
 	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
-	selfMetrics *selfmetrics.Registry) {
+	selfMetrics *selfmetrics.Registry, dep *depsuppress.Suppressor, settleGrace time.Duration) {
 	// maint — окна обслуживания проекта (план B3): подавляет open/close-
 	// уведомления инцидентов всех источников оценщиков ниже (host сейчас,
 	// metric/trace/profile/slo следом). uptimeSvc:385 здесь НЕ переиспользуем —
@@ -1234,6 +1248,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Maint:     maint,
 		Policy:    policyStore,
 		Pool:      pg,
+		// Dep — гейт зависимостей (B5, T8): подавляет инцидент хоста, пока у
+		// его задекларированного родителя открыт свой.
+		Dep: dep,
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1320,6 +1337,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Pool:     pg,
 		Interval: time.Duration(cfg.EscalationInterval) * time.Second,
 		Now:      time.Now,
+		// Dep/SettleGrace — гейт зависимостей (B5, T8): придерживает ступень 0
+		// лесенки, пока у инцидента есть живой задекларированный родитель.
+		Dep:         dep,
+		SettleGrace: settleGrace,
 	}
 	go sched.Run(ctx)
 
