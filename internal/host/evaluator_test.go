@@ -1288,3 +1288,72 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 		t.Errorf("opened notifications = %d, want 1 (not suppressed outside maintenance)", notifier.openedCount())
 	}
 }
+
+// TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds — дискриминирует
+// close-гейт «по сохранённому флагу инцидента» (!open.InMaintenance) от
+// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем инцидент В
+// окне (in_maintenance=true), затем окно ЗАКАНЧИВАЕТСЯ (mock переключается на
+// false) — close всё равно должен быть подавлен, т.к. читается сохранённый
+// флаг инцидента, а не текущее состояние окна. Перепиши close-гейт на «сейчас
+// окно» — при mock→false close разуведомит, и этот тест упадёт.
+func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedEvalProject(t, pool)
+	h := seedEvalHost(t, pool, pid, "web-01")
+	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
+
+	notifier := &fakeNotifier{}
+	eval := newEvaluator(pool, ch, notifier)
+	inWindow := true
+	eval.Maint = mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil })
+
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick open: %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	in, open, err := incidents.OpenFor(ctx, h.ID, "disk")
+	if err != nil {
+		t.Fatalf("OpenFor: %v", err)
+	}
+	if !open {
+		t.Fatal("disk incident must be open after 0.95 > 0.90 even in maintenance")
+	}
+	if !in.InMaintenance {
+		t.Fatal("Incident.InMaintenance = false, want true (open must persist the flag)")
+	}
+	if notifier.openedCount() != 0 {
+		t.Fatalf("opened notifications = %d, want 0 (suppressed by maintenance)", notifier.openedCount())
+	}
+
+	// Окно обслуживания закончилось — mock переключаем на false. Close-гейт
+	// обязан смотреть на сохранённый open.InMaintenance (true), а не на
+	// текущее состояние окна.
+	inWindow = false
+
+	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.50, time.Minute)
+
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick resolve: %v", err)
+	}
+
+	_, open, err = incidents.OpenFor(ctx, h.ID, "disk")
+	if err != nil {
+		t.Fatalf("OpenFor after resolve: %v", err)
+	}
+	if open {
+		t.Error("disk incident must be resolved after recovery to 0.50")
+	}
+	if notifier.resolvedCount() != 0 {
+		t.Errorf("resolved notifications = %d, want 0 (close by saved flag, not by current window)", notifier.resolvedCount())
+	}
+}

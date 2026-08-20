@@ -509,6 +509,82 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
+// TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds — дискриминирует
+// close-гейт «по сохранённому флагу» (!open.InMaintenance) от ошибочного «по
+// текущему окну» (!e.inMaintenance(now)): открываем регрессию В окне, затем
+// окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё равно должен быть подавлен, т.к.
+// читается сохранённый флаг инцидента. Зеркало
+// host.TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds.
+func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	defer cancel()
+
+	asvc := alert.NewService(pool)
+	notifier := &RegressionNotifier{
+		Alerts: asvc, Outbox: notify.NewOutbox(pool), BaseURL: "https://gotcha.example",
+	}
+	inWindow := true
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
+		Notifier: notifier, TopK: 50, BaselineDays: 7,
+		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
+	}
+
+	pid := createEvalProject(t, pool, "eval-maint-flag")
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	const target = "GET /maintflag"
+
+	now := time.Now().UTC()
+	w := NewSpanWriter(conn)
+	go w.Run()
+	for d := 1; d <= 6; d++ {
+		addEndpointTx(w, pid, target, now.Add(-time.Duration(d)*24*time.Hour), 800, 20, fmt.Sprintf("fbase-%d", d))
+	}
+	addEndpointTx(w, pid, target, now.Add(-2*time.Minute), 1200, 120, "fspikeA")
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed spike close: %v", err)
+	}
+
+	ev.tick(ctx)
+	status, _, _ := incidentState(t, ctx, pool, pid, target, "duration")
+	if status != "open" {
+		t.Fatalf("after open tick: status=%q, want open", status)
+	}
+	if !regressionInMaintenance(t, ctx, pool, pid, target, "duration") {
+		t.Fatal("in_maintenance = false, want true (открыто в окне)")
+	}
+	if got := outboxCount(t, ctx, pool); got != 0 {
+		t.Fatalf("outbox rows after open tick = %d, want 0 (suppressed by maintenance)", got)
+	}
+
+	// Окно обслуживания закончилось — close-гейт должен смотреть на
+	// сохранённый флаг, а не на текущее состояние окна.
+	inWindow = false
+
+	now2 := time.Now().UTC()
+	w2 := NewSpanWriter(conn)
+	go w2.Run()
+	addEndpointTx(w2, pid, target, now2.Add(-1*time.Minute), 800, 4000, "frecoverA")
+	if err := w2.Close(ctx); err != nil {
+		t.Fatalf("seed recovery close: %v", err)
+	}
+
+	ev.tick(ctx)
+	status, _, _ = incidentState(t, ctx, pool, pid, target, "duration")
+	if status != "resolved" {
+		t.Fatalf("after resolve tick: status=%q, want resolved", status)
+	}
+	if got := outboxCount(t, ctx, pool); got != 0 {
+		t.Errorf("outbox rows after resolve tick = %d, want still 0 (close by saved flag, not by current window)", got)
+	}
+}
+
 // regConfigRaw читает сырой perf_regression_config проекта — чтобы тест разобрал
 // его тем же RegressionConfigFromJSON, что и оценщик в проде.
 func regConfigRaw(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64) []byte {

@@ -157,3 +157,86 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 		t.Errorf("notify events after open tick = %+v, want 1 open event (not suppressed outside maintenance)", evs)
 	}
 }
+
+// TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds —
+// дискриминирует close-гейт «по сохранённому флагу» (!inc.InMaintenance) от
+// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем инцидент
+// сжигания бюджета В окне, затем окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё
+// равно должен быть подавлен, т.к. читается сохранённый флаг инцидента.
+// Зеркало trace/profile-аналогов.
+func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres and clickhouse containers")
+	}
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	st := slo.NewStore(pool)
+
+	s, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "checkout maint flag", Kind: slo.SLIAvailability,
+		Target: 0.99, WindowDays: 30, Transaction: "GET /checkout",
+		BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
+
+	notifier := &capturingNotifier{}
+	inWindow := true
+	e := &slo.Evaluator{
+		Pool:      pool,
+		Store:     st,
+		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
+		Notifier:  notifier,
+		Maint:     mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
+	}
+
+	n, err := e.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick(open): %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("переходов при открытии = %d, want 1", n)
+	}
+	incs, err := st.Incidents(ctx, pid, s.ID, 10)
+	if err != nil || len(incs) != 1 || incs[0].Status != "open" {
+		t.Fatalf("инцидент не открыт: %+v err=%v", incs, err)
+	}
+	if !incs[0].InMaintenance {
+		t.Fatal("InMaintenance = false, want true (открыт в окне)")
+	}
+	if evs := notifier.snapshot(); len(evs) != 0 {
+		t.Fatalf("notify events after open tick = %d, want 0 (suppressed by maintenance)", len(evs))
+	}
+
+	// Окно обслуживания закончилось — close-гейт должен смотреть на
+	// сохранённый флаг инцидента, а не на текущее состояние окна.
+	inWindow = false
+
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
+
+	for i := 0; i < 2; i++ {
+		if n3, err := e.Tick(ctx); err != nil || n3 != 0 {
+			t.Fatalf("тик %d остывания: переходов %d err=%v, want 0 (рано закрывать)", i+1, n3, err)
+		}
+	}
+
+	n4, err := e.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick(close): %v", err)
+	}
+	if n4 != 1 {
+		t.Fatalf("переходов при закрытии = %d, want 1", n4)
+	}
+	closed, _ := st.Incidents(ctx, pid, s.ID, 10)
+	if len(closed) == 0 || closed[0].Status != "resolved" {
+		t.Fatalf("инцидент не закрыт после 3 тиков остывания: %+v", closed)
+	}
+	if evs := notifier.snapshot(); len(evs) != 0 {
+		t.Errorf("notify events after resolve tick = %d, want still 0 (close by saved flag, not by current window)", len(evs))
+	}
+}

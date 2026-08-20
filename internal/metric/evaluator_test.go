@@ -233,3 +233,82 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 		t.Errorf("open jobs = %d, want 1 (not suppressed outside maintenance)", len(jobs))
 	}
 }
+
+// TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds — дискриминирует
+// close-гейт «по сохранённому флагу инцидента» (!open.InMaintenance) от
+// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем инцидент В
+// окне, затем окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё равно должен быть
+// подавлен, т.к. читается сохранённый флаг инцидента. Зеркало
+// host.TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds.
+func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	rules := metric.NewRuleService(pool)
+	incidents := metric.NewIncidentService(pool)
+	projectID := seedProject(t, pool)
+
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("channel: %v", err)
+	}
+	rule, err := rules.Create(ctx, metric.Rule{
+		ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt",
+		Threshold: 100, WindowSeconds: 300, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("rule: %v", err)
+	}
+
+	inWindow := true
+	eval := &metric.Evaluator{
+		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Interval: time.Hour,
+		Maint:    mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
+	}
+
+	seedMetricGauge(t, ch, projectID, "cpu", 140, time.Minute)
+	seedMetricGauge(t, ch, projectID, "cpu", 160, 2*time.Minute)
+	eval.Tick(ctx)
+
+	in, open, err := incidents.OpenFor(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("OpenFor: %v", err)
+	}
+	if !open {
+		t.Fatal("incident must be open after breach even in maintenance")
+	}
+	if !in.InMaintenance {
+		t.Fatal("Incident.InMaintenance = false, want true")
+	}
+	jobs, _ := ob.Claim(ctx, 10)
+	if len(jobs) != 0 {
+		t.Fatalf("open jobs = %d, want 0 (suppressed by maintenance)", len(jobs))
+	}
+
+	// Окно закончилось — close-гейт должен смотреть на сохранённый флаг
+	// инцидента, а не на текущее состояние окна.
+	inWindow = false
+
+	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	seedMetricGauge(t, ch, projectID, "cpu", 50, time.Minute)
+	eval.Tick(ctx)
+
+	if _, open, _ := incidents.OpenFor(ctx, rule.ID); open {
+		t.Error("incident must be resolved after recovery")
+	}
+	jobs2, _ := ob.Claim(ctx, 10)
+	if len(jobs2) != 0 {
+		t.Errorf("close jobs = %d, want 0 (close by saved flag, not by current window)", len(jobs2))
+	}
+}
