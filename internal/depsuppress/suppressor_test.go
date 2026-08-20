@@ -121,6 +121,37 @@ func TestMarkSuppressed(t *testing.T) {
 	}
 }
 
+// TestParentDownLabelDoesNotCrossProjectBoundary — находка ревью (CRITICAL):
+// label-ребро одного проекта (родитель gw role=web, проект P1) не должно
+// матчить одноимённую метку role=web у хоста ДРУГОГО проекта (P2) — метки
+// типовые (web/prod/db) и коллизируют между тенантами. Без сверки project_id
+// упавший gw в P1 подавлял бы реальный инцидент чужого хоста в P2 (тихая
+// потеря алертов). Контрольная проверка: хост с той же меткой В ТОМ ЖЕ
+// проекте P1 обязан подавляться как обычно.
+func TestParentDownLabelDoesNotCrossProjectBoundary(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	p1, gw, mon1 := seedProjectHostMonitor(t, pool) // gw role='web' env='prod', проект P1
+	_ = mon1
+	p1Web := seedHost(t, pool, p1, "p1-web", "web", "prod") // контроль: тот же проект P1
+	p2, p2Web, _ := seedProjectHostMonitor(t, pool)         // независимый проект P2
+	_ = p2
+
+	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
+		VALUES ($1,$2,'role','web')`, p1, gw)
+	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
+		VALUES ($1,$2,'silent','open',now())`, p1, gw)
+
+	sup := depsuppress.NewSuppressor(pool)
+	ctx := context.Background()
+
+	if down, err := sup.ParentDown(ctx, "host", p2Web); err != nil || down {
+		t.Fatalf("хост ЧУЖОГО проекта P2 не должен подавляться label-ребром P1: ParentDown = %v/%v, want false", down, err)
+	}
+	if down, err := sup.ParentDown(ctx, "host", p1Web); err != nil || !down {
+		t.Fatalf("контроль: хост СВОЕГО проекта P1 обязан подавляться: ParentDown = %v/%v, want true", down, err)
+	}
+}
+
 // TestCheckIncidentHostSource проверяет резолвинг по инциденту (не по
 // узлу), как его вызывает escalation-scheduler: source="host" join'ит
 // host_id и резолвит HasParent/ParentDown; прочие source — сразу

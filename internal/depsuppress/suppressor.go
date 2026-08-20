@@ -17,11 +17,16 @@ import (
 // без дополнительных SQL-запросов (никакого N+1 по узлам).
 const cacheTTL = 5 * time.Second
 
-// hostLabels — метки хоста (env/role, волна B1), нужны для резолвинга
-// label-селекторов ребра (child_label_scope/child_label_value).
+// hostLabels — метки хоста (env/role, волна B1) плюс его project_id, нужны
+// для резолвинга label-селекторов ребра (child_label_scope/child_label_
+// value). project_id обязателен: метки типовые (web/prod/db повторяются
+// между тенантами), и без сверки проекта label-ребро одного проекта
+// подавляло бы инциденты одноимённых хостов ЧУЖОГО проекта (межпроектная
+// утечка подавления — находка ревью).
 type hostLabels struct {
-	env  string
-	role string
+	projectID int64
+	env       string
+	role      string
 }
 
 // snapshot — единый срез состояния на момент loadedAt, по которому
@@ -268,10 +273,12 @@ func (s *Suppressor) loadDownMonitors(ctx context.Context) (map[int64]bool, erro
 	return out, nil
 }
 
-// loadHostLabels — метки (env, role) всех хостов, нужны для резолвинга
-// label-селекторов рёбер (child_label_scope/value) без N+1-запроса на узел.
+// loadHostLabels — project_id и метки (env, role) всех хостов, нужны для
+// резолвинга label-селекторов рёбер (child_label_scope/value) без N+1-
+// запроса на узел; project_id — обязательная часть снимка ради изоляции
+// тенантов при матче (см. edgeMatchesChild).
 func (s *Suppressor) loadHostLabels(ctx context.Context) (map[int64]hostLabels, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, environment, role FROM hosts`)
+	rows, err := s.pool.Query(ctx, `SELECT id, project_id, environment, role FROM hosts`)
 	if err != nil {
 		return nil, fmt.Errorf("depsuppress: load host labels: %w", err)
 	}
@@ -281,7 +288,7 @@ func (s *Suppressor) loadHostLabels(ctx context.Context) (map[int64]hostLabels, 
 	for rows.Next() {
 		var id int64
 		var lbl hostLabels
-		if err := rows.Scan(&id, &lbl.env, &lbl.role); err != nil {
+		if err := rows.Scan(&id, &lbl.projectID, &lbl.env, &lbl.role); err != nil {
 			return nil, fmt.Errorf("depsuppress: scan host label row: %w", err)
 		}
 		out[id] = lbl
@@ -294,7 +301,17 @@ func (s *Suppressor) loadHostLabels(ctx context.Context) (map[int64]hostLabels, 
 
 // matchingParents возвращает рёбра, чей ребёнок — узел (kind, nodeID):
 // явное совпадение (child_host_id/child_monitor_id) либо, для kind="host",
-// label-селектор (child_label_scope/value), матчащий метки хоста nodeID.
+// label-селектор (child_label_scope/value), матчащий метки хоста nodeID В
+// ТОМ ЖЕ ПРОЕКТЕ, что и ребро (e.ProjectID == hostLabels[nodeID].projectID).
+// Explicit-рёбра project_id не сверяют — child_host_id/child_monitor_id уже
+// глобально уникальны и принадлежность проекту проверена Store.Create при
+// вставке ребра.
+//
+// Проверка проекта для label-рёбер обязательна: метки типовые (web/prod/db
+// повторяются между тенантами), и без неё ребро одного проекта (например,
+// «шлюз P1 → все хосты role=web») матчило бы одноимённые хосты ЧУЖОГО
+// проекта — межпроектная утечка подавления, тихая потеря чужих алертов
+// (находка ревью, устранена).
 //
 // Self-match ИСКЛЮЧАЕТСЯ: ребро пропускается, если его РОДИТЕЛЬ — тот же
 // узел (kind, nodeID) — иначе узел с label-ребром на собственную группу
@@ -332,7 +349,7 @@ func edgeMatchesChild(e Edge, snap *snapshot, kind string, nodeID int64) bool {
 		}
 		if e.ChildLabelScope != nil && e.ChildLabelValue != nil {
 			lbl, ok := snap.hostLabels[nodeID]
-			if !ok {
+			if !ok || lbl.projectID != e.ProjectID {
 				return false
 			}
 			switch *e.ChildLabelScope {
