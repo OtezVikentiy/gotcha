@@ -11,8 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.16.0] - 2026-08-20
 
-## [0.15.0] - 2026-08-20
-
 ### Added
 - Maintenance windows now silence notifications from every source in the project — uptime, hosts, metrics, regressions, profiles, SLOs, and error alerts — instead of just monitor checks as before. Windows also gained an indefinite type: check "No end date" for a window with no end, useful for maintenance of unknown duration. Data collection and incident tracking are unaffected either way; only outbound notifications are held.
 
