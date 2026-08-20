@@ -1166,6 +1166,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	profileRegEval := &profile.RegressionEvaluator{
 		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pg),
+		Maint:       maint,
 		Notifier: &profile.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1233,6 +1234,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Providers: slo.Providers(trace.NewQuery(ch), uptime.NewQuery(ch), uptime.NewService(pg), cfg.RetentionDays),
 		Notifier:  sloNotifier,
 		Interval:  time.Duration(cfg.SLOEvalInterval) * time.Second,
+		Maint:     maint,
 	}
 	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_last_tick_timestamp_seconds",
 		"Unix time of the last completed SLO burn-rate evaluation pass. Stale value means SLO error-budget alerts are not being evaluated.",

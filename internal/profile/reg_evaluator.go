@@ -30,6 +30,7 @@ type RegressionEvaluator struct {
 	Notifier    *RegressionNotifier
 	Interval    time.Duration
 	Config      RegressionConfig
+	Maint       MaintenanceChecker
 }
 
 func (e *RegressionEvaluator) Run(ctx context.Context) {
@@ -96,11 +97,11 @@ func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService
 	for _, sh := range shares {
 		// Функции без базовой линии сравниваются с нулём — так же, как раньше
 		// при пустом результате поштучного запроса.
-		e.evalFunction(ctx, ps, sh, baselines[sh.Function])
+		e.evalFunction(ctx, ps, sh, baselines[sh.Function], now)
 	}
 }
 
-func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectService, sh FunctionShare, base float64) {
+func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectService, sh FunctionShare, base float64, now time.Time) {
 	cfg := e.Config
 	projectID, service, profileType, function := ps.ProjectID, ps.Service, ps.Type, sh.Function
 	recent, samples := sh.Share, sh.Samples
@@ -113,7 +114,8 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 
 	switch Decide(base, recent, samples, cfg, hasOpen).Kind {
 	case DecisionOpen:
-		rec, created, err := e.Regressions.Open(ctx, projectID, service, profileType, function, base, recent)
+		inMaint := e.inMaintenance(ctx, projectID, now)
+		rec, created, err := e.Regressions.Open(ctx, projectID, service, profileType, function, base, recent, inMaint)
 		if err != nil {
 			slog.Error("profile evaluator: open failed", "project_id", projectID, "function", function, "error", err)
 			return
@@ -124,7 +126,9 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 			}
 			return
 		}
-		e.notify(ctx, projectID, service, profileType, function, base, recent, true, rec.ID)
+		if !inMaint {
+			e.notify(ctx, projectID, service, profileType, function, base, recent, true, rec.ID)
+		}
 	case DecisionBump:
 		if err := e.Regressions.Bump(ctx, open.ID, recent); err != nil {
 			slog.Error("profile evaluator: bump failed", "id", open.ID, "error", err)
@@ -135,10 +139,29 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 			slog.Error("profile evaluator: resolve failed", "id", open.ID, "error", err)
 			return
 		}
-		if closed {
+		if closed && !open.InMaintenance {
 			e.notify(ctx, projectID, service, profileType, function, base, recent, false, open.ID)
 		}
 	}
+}
+
+// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
+// notify в evalFunction. Ошибка проверки НЕ отменяет открытие регрессии: она
+// лишь означает, что не удалось выяснить, плановые ли это работы, и трактуется
+// как «не в окне» — молчать о реальной регрессии дороже, чем уведомить лишний
+// раз (то же решение, что host.Evaluator.inMaintenance). Maint==nil
+// (деградированная сборка) — тот же результат.
+func (e *RegressionEvaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
+	if e.Maint == nil {
+		return false
+	}
+	v, err := e.Maint.InMaintenance(ctx, projectID, now)
+	if err != nil {
+		slog.Error("profile evaluator: maintenance check failed, treating as not in maintenance",
+			"project_id", projectID, "error", err)
+		return false
+	}
+	return v
 }
 
 func (e *RegressionEvaluator) notify(ctx context.Context, projectID int64, service, profileType, function string, base, recent float64, opened bool, id int64) {

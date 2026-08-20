@@ -35,7 +35,7 @@ func TestWebSLODetail(t *testing.T) {
 	}
 	// История инцидентов: один открыт-затем-закрыт.
 	rem := 0.4
-	if _, _, err := s.slo.OpenIncident(ctx, created.ID, project.ID, 22.5, &rem); err != nil {
+	if _, _, err := s.slo.OpenIncident(ctx, created.ID, project.ID, 22.5, &rem, false); err != nil {
 		t.Fatalf("open incident: %v", err)
 	}
 	if _, _, err := s.slo.ResolveIncident(ctx, created.ID); err != nil {

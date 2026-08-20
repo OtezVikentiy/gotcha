@@ -71,11 +71,11 @@ func TestSLOStore(t *testing.T) {
 
 	// инцидент: open идемпотентен (один open на slo)
 	rem := 0.5
-	inc, created, err := st.OpenIncident(ctx, got.ID, pid, 20.0, &rem)
+	inc, created, err := st.OpenIncident(ctx, got.ID, pid, 20.0, &rem, false)
 	if err != nil || !created || inc.Status != "open" {
 		t.Fatalf("OpenIncident = %+v created=%v err=%v", inc, created, err)
 	}
-	_, created2, err := st.OpenIncident(ctx, got.ID, pid, 25.0, &rem)
+	_, created2, err := st.OpenIncident(ctx, got.ID, pid, 25.0, &rem, false)
 	if err != nil || created2 {
 		t.Fatalf("второй open не должен создавать (one-open): created=%v err=%v", created2, err)
 	}
@@ -100,7 +100,7 @@ func TestSLOStore(t *testing.T) {
 	}
 
 	// после закрытия open снова создаёт новый инцидент
-	_, created3, err := st.OpenIncident(ctx, got.ID, pid, 30.0, nil)
+	_, created3, err := st.OpenIncident(ctx, got.ID, pid, 30.0, nil, false)
 	if err != nil || !created3 {
 		t.Fatalf("после resolve open должен создавать: created=%v err=%v", created3, err)
 	}

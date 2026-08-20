@@ -160,12 +160,12 @@ func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
 }
 
 const incidentColumns = `id, slo_id, project_id, status, burn_rate, budget_remaining,
-	started_at, resolved_at, notified_open, notified_close`
+	started_at, resolved_at, in_maintenance, notified_open, notified_close`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.SLOID, &in.ProjectID, &in.Status, &in.BurnRate, &in.BudgetRemaining,
-		&in.StartedAt, &in.ResolvedAt, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
 	return in, err
 }
 
@@ -188,7 +188,7 @@ func (s *Store) OpenIncidentFor(ctx context.Context, sloID int64) (Incident, boo
 // created=true — вставлен новый; created=false — уже был открытый (вернётся он).
 // Выполняется в транзакции: SELECT открытого → если есть, вернуть; иначе INSERT.
 // При гонке параллельный INSERT ловит уникальное нарушение → перечитываем победителя.
-func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRate float64, budgetRemaining *float64) (Incident, bool, error) {
+func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRate float64, budgetRemaining *float64, inMaintenance bool) (Incident, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Incident{}, false, fmt.Errorf("slo: open incident begin: %w", err)
@@ -210,10 +210,10 @@ func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRa
 
 	// Открытого нет — вставляем.
 	in, err := scanIncident(tx.QueryRow(ctx, `
-		INSERT INTO slo_incidents (slo_id, project_id, burn_rate, budget_remaining)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO slo_incidents (slo_id, project_id, burn_rate, budget_remaining, in_maintenance)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING `+incidentColumns,
-		sloID, projectID, burnRate, budgetRemaining))
+		sloID, projectID, burnRate, budgetRemaining, inMaintenance))
 	if err != nil {
 		// Гонка: параллельный INSERT уже создал открытый — перечитываем победителя.
 		if isUniqueViolation(err) {
