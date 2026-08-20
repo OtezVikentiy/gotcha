@@ -3,7 +3,9 @@ package templates
 import (
 	"strconv"
 	"strings"
+	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
@@ -202,11 +204,22 @@ templ suppressionPreview(preview []SuppressionPreviewView) {
 
 // AlertSuppression — GET/POST /projects/{id}/alert-suppression: список рёбер
 // зависимостей проекта + форма добавления. Доступ — оператор проекта
-// (requireProjectOperator, как Escalations/SLOsScreen).
-templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, errMsg, userEmail string) {
+// (requireProjectOperator, как Escalations/SLOsScreen). grace — h.SuppressionGrace
+// (задержка первого уведомления, GOTCHA_DEPENDENCY_SETTLE_SECONDS): значение и
+// предупреждение про silent_after показываются, только когда оно положительное
+// (P2-1 устранения аудита B5) — нулевое означает, что грейс выключен либо
+// экран собран на узком тестовом стенде без main.go, где показывать
+// конкретную цифру нечего.
+templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, grace time.Duration, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "alert_suppression.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "alert_suppression.title") }</h1>
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.model") }</p>
 		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro") }</p>
+		if grace > 0 {
+			<p class="hint">{ i18n.Tf(ctx, "alert_suppression.intro.grace", "grace", humanize.Duration(ctx, grace)) }</p>
+			<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.grace_warning") }</p>
+		}
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.scope") }</p>
 		if errMsg != "" {
 			<p class="error">{ errMsg }</p>
 		}

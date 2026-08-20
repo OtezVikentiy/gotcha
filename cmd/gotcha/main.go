@@ -1011,6 +1011,12 @@ func run() error {
 		// depSuppressor выше (независимый объект без состояния поверх пула,
 		// тот же принцип, что и у EscalationPolicy).
 		webHandler.AlertDeps = depsuppress.NewStore(pg)
+		// SuppressionGrace — та же задержка первого уведомления
+		// (GOTCHA_DEPENDENCY_SETTLE_SECONDS), что задаёт settleGrace для
+		// depSuppressor/uptime.Detector/escalation.Scheduler выше: экран
+		// подавления шторма показывает оператору фактически действующую
+		// величину, а не догадку (P2-1 устранения аудита B5).
+		webHandler.SuppressionGrace = settleGrace
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)

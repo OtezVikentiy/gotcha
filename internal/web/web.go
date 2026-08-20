@@ -251,6 +251,16 @@ type Handler struct {
 	// и у EscalationPolicy/SLO выше.
 	AlertDeps *depsuppress.Store
 
+	// SuppressionGrace — задержка первого уведомления узла с
+	// задекларированным родителем (GOTCHA_DEPENDENCY_SETTLE_SECONDS, та же
+	// величина, что settleGrace у depSuppressor/uptime.Detector/
+	// escalation.Scheduler в cmd/gotcha/main.go): экран подавления шторма
+	// показывает её оператору, а не оставляет догадываться (устранение
+	// аудита B5, P2-1). Нулевое значение (main.go не проведён / узкий
+	// тестовый стенд) — подсказка про грейс молча не показывается, тот же
+	// nil-safe принцип, что и у Hosts/Uptime в suppressionNodes.
+	SuppressionGrace time.Duration
+
 	// Hosts/HostIncidents/HostSettings — реестр хостов, их встроенные
 	// инциденты (диск/память/нагрузка/тишина) и пороги (план A1): страницы
 	// /projects/{id}/hosts[...]. Как Metrics — отдельные необязательные поля;

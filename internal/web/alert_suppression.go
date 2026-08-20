@@ -110,7 +110,7 @@ func (h *Handler) renderAlertSuppression(w http.ResponseWriter, r *http.Request,
 	preview := suppressionPreviewRows(r.Context(), edges, hostNames, monitorNames, hosts, monitors)
 
 	w.WriteHeader(status)
-	_ = templates.AlertSuppression(projectID, rows, hostOptions, monitorOptions, preview, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.AlertSuppression(projectID, rows, hostOptions, monitorOptions, preview, h.SuppressionGrace, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // suppressionPreviewRows — dry-run: для каждого родителя, встречающегося в
@@ -259,9 +259,32 @@ func suppressionChildLabel(ctx context.Context, e depsuppress.Edge, hostNames, m
 	case e.ChildMonitorID != nil:
 		return suppressionMonitorLabel(ctx, *e.ChildMonitorID, monitorNames)
 	case e.ChildLabelScope != nil && e.ChildLabelValue != nil:
-		return i18n.Tf(ctx, "alert_suppression.node.label", "scope", *e.ChildLabelScope, "value", *e.ChildLabelValue)
+		return i18n.Tf(ctx, "alert_suppression.node.label", "scope", suppressionScopeLabel(ctx, *e.ChildLabelScope), "value", *e.ChildLabelValue)
 	default:
 		return ""
+	}
+}
+
+// suppressionScopeLabel — локализованное имя label-скоупа ("env"/"role") для
+// подстановки в alert_suppression.node.label, теми же ключами
+// alert_suppression.scope.env/.role, что уже использует форма (P2-3
+// устранения аудита B5: раньше сырой e.ChildLabelScope "env"/"role" уходил в
+// подпись как есть — латиницей и рассинхронизированный с формой в RU-локали).
+// Явный switch на литеральные ключи, а не конкатенация "alert_suppression.
+// scope."+scope — сканер literalKeyRe (i18n_keys_test.go) видит только
+// буквальные вызовы i18n.T, динамический ключ потребовал бы отдельной записи
+// в TestDynamicKeysResolve ради двух значений, что дороже двух case.
+// Неизвестный scope (данных не бывает — Store.validateShape пускает только
+// "env"/"role" — но defensive default на случай будущего расширения набора)
+// возвращает исходную строку как есть, а не пустую подпись.
+func suppressionScopeLabel(ctx context.Context, scope string) string {
+	switch scope {
+	case "env":
+		return i18n.T(ctx, "alert_suppression.scope.env")
+	case "role":
+		return i18n.T(ctx, "alert_suppression.scope.role")
+	default:
+		return scope
 	}
 }
 
