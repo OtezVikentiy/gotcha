@@ -59,11 +59,17 @@ func maintenanceTimezone(r *http.Request) string {
 // datetime-local (или его отсутствие) оставляет StartsAt/EndsAt = nil —
 // validateWindow на стороне uptime.Service отклонит такое окно как
 // ErrInvalidWindow, а не запаникует.
-func parseMaintenanceForm(r *http.Request, projectID int64) uptime.Window {
+//
+// Второе возвращаемое значение — отмечен ли чекбокс «без даты окончания»:
+// вызывающая сторона (maintenanceCreate/maintenanceUpdate) гонит по нему
+// гард end_required ПЕРЕД тем, как отдать окно в CreateWindow/UpdateWindow —
+// см. их комментарии.
+func parseMaintenanceForm(r *http.Request, projectID int64) (uptime.Window, bool) {
 	// «kind» — radio: oneoff|weekly. Тип окна взаимоисключающий, поэтому это
 	// выбор одного из двух, а не флаг (раньше был чекбокс «weekly»).
 	weekly := r.FormValue("kind") == "weekly"
 	tz := maintenanceTimezone(r)
+	indefinite := r.FormValue("indefinite") != ""
 
 	w := uptime.Window{
 		ProjectID: projectID,
@@ -75,7 +81,7 @@ func parseMaintenanceForm(r *http.Request, projectID int64) uptime.Window {
 		w.Weekday = formInt(r, "weekday")
 		w.StartTime = r.FormValue("start_time")
 		w.EndTime = r.FormValue("end_time")
-		return w
+		return w, indefinite
 	}
 
 	loc, err := time.LoadLocation(tz)
@@ -88,10 +94,12 @@ func parseMaintenanceForm(r *http.Request, projectID int64) uptime.Window {
 	if starts, ok := parseLocalDateTime(r.FormValue("starts_at"), loc); ok {
 		w.StartsAt = &starts
 	}
-	if ends, ok := parseLocalDateTime(r.FormValue("ends_at"), loc); ok {
-		w.EndsAt = &ends
+	if !indefinite {
+		if ends, ok := parseLocalDateTime(r.FormValue("ends_at"), loc); ok {
+			w.EndsAt = &ends
+		}
 	}
-	return w
+	return w, indefinite
 }
 
 // maintenanceErrorMessage — P2-1 usability-аудита 2026-08-12: раньше
@@ -125,6 +133,15 @@ func maintenanceErrorMessage(ctx context.Context, err error) string {
 		return i18n.T(ctx, "error.maintenance.invalid_window_generic")
 	}
 	return i18n.T(ctx, "error.action_failed")
+}
+
+// oneOffEndRequired — пред-B3 гард, восстановленный в web-слое: validateWindow
+// теперь намеренно принимает nil EndsAt как «бессрочно» (см. его комментарий
+// в internal/uptime/maintenance.go), а этот смысл обязан быть явным выбором
+// человека (чекбокс «indefinite»), а не тем, что он забыл дату конца.
+// Еженедельные окна сюда не попадают — у них нет EndsAt вовсе.
+func oneOffEndRequired(win uptime.Window, indefinite bool) bool {
+	return !win.Weekly && !indefinite && win.EndsAt == nil
 }
 
 // windowBelongsToProject — тот же приём, что и keyBelongsToProject/
@@ -175,7 +192,7 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 func maintenanceFormState(r *http.Request) templates.FormState {
 	f := templates.FormState{}
 	for _, name := range []string{
-		"name", "kind", "starts_at", "ends_at",
+		"name", "kind", "starts_at", "ends_at", "indefinite",
 		"weekday", "start_time", "end_time", "timezone_custom",
 	} {
 		if v := r.FormValue(name); v != "" {
@@ -233,7 +250,13 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	win := parseMaintenanceForm(r, projectID)
+	win, indefinite := parseMaintenanceForm(r, projectID)
+	if oneOffEndRequired(win, indefinite) {
+		h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID,
+			maintenanceFormState(r).Open("new-maintenance-window"),
+			i18n.T(r.Context(), "error.maintenance.end_required"))
+		return
+	}
 	if _, err := h.Uptime.CreateWindow(r.Context(), win); err != nil {
 		if errors.Is(err, uptime.ErrInvalidWindow) {
 			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID,
@@ -294,8 +317,14 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	win := parseMaintenanceForm(r, projectID)
+	win, indefinite := parseMaintenanceForm(r, projectID)
 	win.ID = windowID
+	if oneOffEndRequired(win, indefinite) {
+		h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID,
+			maintenanceFormState(r).Open(templates.EditWindowModalID(windowID)),
+			i18n.T(r.Context(), "error.maintenance.end_required"))
+		return
+	}
 	if err := h.Uptime.UpdateWindow(r.Context(), win); err != nil {
 		if errors.Is(err, uptime.ErrInvalidWindow) {
 			h.renderMaintenance(w, r, http.StatusUnprocessableEntity, projectID,
@@ -366,7 +395,7 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 			[]templates.HiddenField{{Name: "window_id", Value: strconv.FormatInt(windowID, 10)}})
 		return
 	}
-	if err := h.Uptime.DeleteWindow(r.Context(), windowID); err != nil {
+	if err := h.Uptime.DeleteWindow(r.Context(), windowID, projectID); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}

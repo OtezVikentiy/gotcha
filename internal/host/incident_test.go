@@ -55,7 +55,7 @@ func TestIncidentServiceOpenNewReturnsCreatedTrue(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	in, created, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var full")
+	in, created, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var full", false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestIncidentServiceOpenConcurrentOnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			in, created, err := svc.Open(ctx, projectID, hostID, "disk", 0.9, "")
+			in, created, err := svc.Open(ctx, projectID, hostID, "disk", 0.9, "", false)
 			if err != nil {
 				errs[i] = err
 				return
@@ -142,12 +142,12 @@ func TestIncidentServiceOpenDifferentKindIsSeparateIncident(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	diskIn, created, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "")
+	diskIn, created, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "", false)
 	if err != nil || !created {
 		t.Fatalf("Open disk: created=%v err=%v", created, err)
 	}
 
-	loadIn, created, err := svc.Open(ctx, projectID, hostID, "load", 3.5, "")
+	loadIn, created, err := svc.Open(ctx, projectID, hostID, "load", 3.5, "", false)
 	if err != nil {
 		t.Fatalf("Open load: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestIncidentServiceBumpUpdatesCurrentAndPeak(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	in, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.91, "")
+	in, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.91, "", false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestIncidentServiceResolveTwiceSecondReturnsFalse(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	in, _, err := svc.Open(ctx, projectID, hostID, "silent", 0, "")
+	in, _, err := svc.Open(ctx, projectID, hostID, "silent", 0, "", false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestIncidentServiceResolveTwiceSecondReturnsFalse(t *testing.T) {
 	}
 
 	// Открытие того же (host, kind) после Resolve — новая запись, не переиспользование id.
-	in2, created, err := svc.Open(ctx, projectID, hostID, "silent", 0, "")
+	in2, created, err := svc.Open(ctx, projectID, hostID, "silent", 0, "", false)
 	if err != nil {
 		t.Fatalf("Open после Resolve: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestIncidentServiceMarkNotified(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	in, _, err := svc.Open(ctx, projectID, hostID, "load", 2.5, "")
+	in, _, err := svc.Open(ctx, projectID, hostID, "load", 2.5, "", false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -293,12 +293,12 @@ func TestIncidentServiceListByProjectFreshestFirst(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	first, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "")
+	first, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "", false)
 	if err != nil {
 		t.Fatalf("Open disk: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	second, _, err := svc.Open(ctx, projectID, hostID, "load", 3.0, "")
+	second, _, err := svc.Open(ctx, projectID, hostID, "load", 3.0, "", false)
 	if err != nil {
 		t.Fatalf("Open load: %v", err)
 	}
@@ -342,17 +342,17 @@ func TestIncidentServiceListOpenByProject(t *testing.T) {
 	ctx := context.Background()
 	otherID := secondHost(t, pool, projectID, "web-02")
 
-	oldOpen, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "")
+	oldOpen, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "", false)
 	if err != nil {
 		t.Fatalf("Open disk: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	otherOpen, _, err := svc.Open(ctx, projectID, otherID, "memory", 0.99, "")
+	otherOpen, _, err := svc.Open(ctx, projectID, otherID, "memory", 0.99, "", false)
 	if err != nil {
 		t.Fatalf("Open memory на втором хосте: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	closed, _, err := svc.Open(ctx, projectID, hostID, "load", 3.0, "")
+	closed, _, err := svc.Open(ctx, projectID, hostID, "load", 3.0, "", false)
 	if err != nil {
 		t.Fatalf("Open load: %v", err)
 	}
@@ -385,15 +385,15 @@ func TestIncidentServiceResolveOpenByProjectKind(t *testing.T) {
 	ctx := context.Background()
 	otherID := secondHost(t, pool, projectID, "web-02")
 
-	diskA, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var")
+	diskA, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var", false)
 	if err != nil {
 		t.Fatalf("Open disk A: %v", err)
 	}
-	diskB, _, err := svc.Open(ctx, projectID, otherID, "disk", 0.99, "/")
+	diskB, _, err := svc.Open(ctx, projectID, otherID, "disk", 0.99, "/", false)
 	if err != nil {
 		t.Fatalf("Open disk B: %v", err)
 	}
-	mem, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.93, "")
+	mem, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.93, "", false)
 	if err != nil {
 		t.Fatalf("Open memory: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestIncidentServiceResolveOpenByProjectKind(t *testing.T) {
 		t.Fatalf("insert second project: %v", err)
 	}
 	foreignHost := secondHost(t, pool, otherProject, "web-01")
-	foreign, _, err := svc.Open(ctx, otherProject, foreignHost, "disk", 0.97, "")
+	foreign, _, err := svc.Open(ctx, otherProject, foreignHost, "disk", 0.97, "", false)
 	if err != nil {
 		t.Fatalf("Open disk в соседнем проекте: %v", err)
 	}
@@ -458,10 +458,10 @@ func TestIncidentsCascadeDeletedWithHost(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
 
-	if _, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, ""); err != nil {
+	if _, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "", false); err != nil {
 		t.Fatalf("Open disk: %v", err)
 	}
-	resolved, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.91, "")
+	resolved, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.91, "", false)
 	if err != nil {
 		t.Fatalf("Open memory: %v", err)
 	}

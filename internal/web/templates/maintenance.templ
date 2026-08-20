@@ -54,6 +54,11 @@ func windowFieldDefaults(w uptime.Window) FormState {
 		}
 		if w.EndsAt != nil {
 			f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04")
+		} else {
+			// Бессрочное окно (EndsAt == nil) — чекбокс «без даты окончания»
+			// предотмечен при открытии формы правки, иначе сохранение без
+			// изменений тут же упёрлось бы в oneOffEndRequired.
+			f["indefinite"] = "1"
 		}
 	}
 	if !knownTimezone(w.Timezone) {
@@ -108,6 +113,9 @@ func windowKindTextKey(w uptime.Window) string {
 	if w.Weekly {
 		return "uptime.maintenance.kind.weekly"
 	}
+	if w.EndsAt == nil {
+		return "uptime.maintenance.indefinite"
+	}
 	return "uptime.maintenance.kind.oneoff"
 }
 
@@ -120,7 +128,10 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	// (Europe/Moscow)» — число одного пояса под именем другого. Соседняя
 	// функция этого же файла переводила время честно.
 	loc := humanize.LocationOrUTC(w.Timezone)
-	starts, ends := "?", "?"
+	// EndsAt == nil — не «неизвестно», а «бессрочно» (validateWindow требует
+	// StartsAt всегда, так что "?" у начала — чисто defensive и на практике
+	// у сохранённых окон не встречается).
+	starts, ends := "?", i18n.T(ctx, "uptime.maintenance.indefinite")
 	if w.StartsAt != nil {
 		starts = humanize.Time(ctx, *w.StartsAt, loc)
 	}
@@ -179,7 +190,7 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 				<p class="error" id={ errID }>{ errMsg }</p>
 			}
 			<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
-			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit", errID)
+			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit", errID, EditWindowModalID(w.ID))
 		</form>
 	}
 }
@@ -196,7 +207,13 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 // errID — id блока ошибки валидации в вызывающей модалке (пустой, если
 // ошибки нет): первое текстовое поле получает aria-invalid/aria-describedby,
 // чтобы скринридер связал сообщение с полем (№80).
-templ maintenanceFields(values FormState, submitKey string, errID string) {
+//
+// idPrefix — модалка создания и модалка правки каждого окна рендерят этот
+// фрагмент на одной странице ("new-maintenance-window" / EditWindowModalID),
+// поэтому статичные id полей (сейчас — подсказки под ends_at) собираются из
+// него, а не зашиты в разметке: иначе на странице с несколькими окнами id
+// задвоились бы.
+templ maintenanceFields(values FormState, submitKey string, errID string, idPrefix string) {
 	<div class="field">
 		<label>
 			{ i18n.T(ctx, "uptime.maintenance.field.name") }
@@ -242,6 +259,24 @@ templ maintenanceFields(values FormState, submitKey string, errID string) {
 	// блок при активном первом только сбивал бы с толку. Скрытие — чистый CSS
 	// через :has() по radio, без JS (см. .maintenance-form в app.css).
 	<div class="mw-oneoff">
+		// Чекбокс явного выбора «бессрочно» стоит ПЕРЕД полем конца: пустой
+		// ends_at раньше молча значил то же самое (T2 смягчил validateWindow),
+		// а забытая дата тихо глушила весь проект навсегда вместо ошибки —
+		// см. oneOffEndRequired в web/maintenance.go. Предупреждение о
+		// последствии бессрочного окна для SLO живёт прямо под чекбоксом
+		// (aria-describedby на нём же), а не постоянным жёлтым баннером под
+		// ends_at для ЛЮБОГО разового окна.
+		<div class="checkbox-field">
+			<label class="checkbox-inline">
+				if values.Checked("indefinite", false) {
+					<input type="checkbox" name="indefinite" checked aria-describedby={ idPrefix + "-indefinite-warning" }/>
+				} else {
+					<input type="checkbox" name="indefinite" aria-describedby={ idPrefix + "-indefinite-warning" }/>
+				}
+				{ i18n.T(ctx, "uptime.maintenance.oneoff.indefinite") }
+			</label>
+			<p class="hint hint--warn" id={ idPrefix + "-indefinite-warning" }>{ i18n.T(ctx, "uptime.maintenance.indefinite_slo_warning") }</p>
+		</div>
 		<div class="form-grid">
 			<div class="field">
 				<label>
@@ -361,7 +396,7 @@ templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errM
 				if createErrID != "" {
 					<p class="error" id={ createErrID }>{ errMsg }</p>
 				}
-				@maintenanceFields(form, "uptime.maintenance.submit", createErrID)
+				@maintenanceFields(form, "uptime.maintenance.submit", createErrID, "new-maintenance-window")
 			</form>
 			}
 		</div>

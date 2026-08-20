@@ -33,7 +33,7 @@ var evaluatorVitalMetrics = []string{"lcp", "inp", "cls"}
 // бы тяжелее и хрупче.
 type RegressionStore interface {
 	OpenForProject(ctx context.Context, projectID int64) (map[RegressionKey]Regression, error)
-	Open(ctx context.Context, projectID int64, targetKind, target, metric string, base, current float64) (Regression, bool, error)
+	Open(ctx context.Context, projectID int64, targetKind, target, metric string, base, current float64, inMaintenance bool) (Regression, bool, error)
 	Bump(ctx context.Context, id int64, current float64) error
 	Resolve(ctx context.Context, id int64, current float64) (bool, error)
 	MarkNotified(ctx context.Context, id int64, open bool) error
@@ -57,9 +57,33 @@ type Evaluator struct {
 	Regressions RegressionStore     // инциденты в perf_regressions (PG); *RegressionService в проде
 	Notifier    *RegressionNotifier // nil → только инциденты, без алертов
 
+	// Maint — окна обслуживания проекта (B3): подавляет open/close-уведомления,
+	// не подавляет сбор данных/открытие инцидента. nil (дефолт) — окна не
+	// подавляют ничего, обратная совместимость со сборками без maintenance.
+	Maint MaintenanceChecker
+
 	Interval     time.Duration // период тика, дефолт 5 минут
 	TopK         int           // сколько верхних по трафику целей оценивать, дефолт 50
 	BaselineDays int           // ширина окна скользящей базы, дефолт 7 дней
+}
+
+// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
+// notify в evalTarget. Ошибка проверки НЕ отменяет открытие/закрытие инцидента:
+// она лишь означает, что не удалось выяснить, плановые ли это работы, и
+// трактуется как «не в окне» — молчать о реальной регрессии дороже, чем
+// уведомить лишний раз (то же решение, что host.Evaluator.inMaintenance).
+// Maint==nil (деградированная сборка) — тот же результат.
+func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
+	if e.Maint == nil {
+		return false
+	}
+	v, err := e.Maint.InMaintenance(ctx, projectID, now)
+	if err != nil {
+		slog.Error("trace: evaluator: maintenance check failed, treating as not in maintenance",
+			"project_id", projectID, "error", err)
+		return false
+	}
+	return v
 }
 
 // Run тикает каждый Interval, пока не отменят ctx. Запускается как
@@ -323,7 +347,8 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind, target, metric string, base, recent RegressionSample, cfg RegressionConfig, now time.Time, open Regression, hasOpen bool) {
 	switch Decide(base, recent, cfg, metric, hasOpen).Kind {
 	case DecisionOpen:
-		rec, created, err := e.Regressions.Open(ctx, projectID, targetKind, target, metric, base.Value, recent.Value)
+		inMaint := e.inMaintenance(ctx, projectID, now)
+		rec, created, err := e.Regressions.Open(ctx, projectID, targetKind, target, metric, base.Value, recent.Value, inMaint)
 		if err != nil {
 			slog.Error("trace: evaluator: open regression failed", "project_id", projectID, "target", target, "metric", metric, "error", err)
 			return
@@ -336,7 +361,7 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 			}
 			return
 		}
-		if e.Notifier != nil {
+		if e.Notifier != nil && !inMaint {
 			ev := RegressionEvent{
 				Kind:          "regression_open",
 				ProjectID:     projectID,
@@ -360,7 +385,7 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 			slog.Error("trace: evaluator: resolve regression failed", "id", open.ID, "error", err)
 			return
 		}
-		if closed && e.Notifier != nil {
+		if closed && e.Notifier != nil && !open.InMaintenance {
 			ev := RegressionEvent{
 				Kind:            "regression_close",
 				ProjectID:       projectID,

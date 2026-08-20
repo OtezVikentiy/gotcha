@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -52,6 +53,12 @@ type Evaluator struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
 	Locale i18n.Locale
+
+	// Maint — окна обслуживания проекта (B3): подавляет issue-алерты. nil —
+	// окна не подавляют (обратная совместимость). У issue-алертов нет
+	// таблицы инцидентов и флага (они throttle+budget-based), поэтому гейт
+	// стоит ДО claimThrottle/claimBudget в OnIssue, а не флагом на записи.
+	Maint MaintenanceChecker
 }
 
 // issueAlertKindLabel — человекочитаемое имя вида алерта для темы письма.
@@ -78,6 +85,14 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 	}
 	if !ok || !rule.Enabled {
 		return
+	}
+
+	if e.Maint != nil {
+		if inMaint, err := e.Maint.InMaintenance(ctx, ev.ProjectID, time.Now()); err != nil {
+			slog.Error("alert: maintenance check failed", "project_id", ev.ProjectID, "issue_id", ev.IssueID, "error", err)
+		} else if inMaint {
+			return // окно обслуживания: не жжём throttle/budget, не в suppressed-digest
+		}
 	}
 
 	claimed, err := e.claimThrottle(ctx, ev.IssueID, rule.ID, rule.ThrottleMinutes)

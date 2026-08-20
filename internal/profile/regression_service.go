@@ -25,18 +25,19 @@ type Regression struct {
 	CurrentShare  float64
 	StartedAt     time.Time
 	ResolvedAt    *time.Time
+	InMaintenance bool
 	NotifiedOpen  bool
 	NotifiedClose bool
 }
 
 const regressionColumns = `id, project_id, service, profile_type, function, status,
-	baseline_share, peak_share, current_share, started_at, resolved_at, notified_open, notified_close`
+	baseline_share, peak_share, current_share, started_at, resolved_at, in_maintenance, notified_open, notified_close`
 
 func scanRegression(row pgx.Row) (Regression, error) {
 	var r Regression
 	err := row.Scan(&r.ID, &r.ProjectID, &r.Service, &r.ProfileType, &r.Function, &r.Status,
 		&r.BaselineShare, &r.PeakShare, &r.CurrentShare, &r.StartedAt, &r.ResolvedAt,
-		&r.NotifiedOpen, &r.NotifiedClose)
+		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose)
 	return r, err
 }
 
@@ -54,13 +55,13 @@ func NewRegressionService(pool *pgxpool.Pool) *RegressionService {
 // нет. Гонко-безопасно через partial-индекс profile_regressions_one_open_idx:
 // из параллельных вызовов ровно один INSERT проходит, остальные ловят конфликт
 // (DO NOTHING → нет RETURNING) и дочитывают победителя. peak=current на вставке.
-func (s *RegressionService) Open(ctx context.Context, projectID int64, service, profileType, function string, base, current float64) (Regression, bool, error) {
+func (s *RegressionService) Open(ctx context.Context, projectID int64, service, profileType, function string, base, current float64, inMaintenance bool) (Regression, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO profile_regressions (project_id, service, profile_type, function, baseline_share, peak_share, current_share)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		INSERT INTO profile_regressions (project_id, service, profile_type, function, baseline_share, peak_share, current_share, in_maintenance)
+		VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
 		ON CONFLICT (project_id, service, profile_type, function) WHERE status = 'open' DO NOTHING
 		RETURNING `+regressionColumns,
-		projectID, service, profileType, function, base, current)
+		projectID, service, profileType, function, base, current, inMaintenance)
 	r, err := scanRegression(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, found, err := s.OpenFor(ctx, projectID, service, profileType, function)

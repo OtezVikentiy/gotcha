@@ -30,11 +30,11 @@ func TestRegressionServiceOpenClose(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool)
 
-	r, created, err := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.3)
+	r, created, err := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.3, false)
 	if err != nil || !created {
 		t.Fatalf("open = (%+v,%v,%v)", r, created, err)
 	}
-	if _, c2, _ := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.4); c2 {
+	if _, c2, _ := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.4, false); c2 {
 		t.Fatal("second open must be created=false")
 	}
 	if err := svc.Bump(ctx, r.ID, 0.4); err != nil {
@@ -46,7 +46,7 @@ func TestRegressionServiceOpenClose(t *testing.T) {
 	if ok, _ := svc.Resolve(ctx, r.ID, 0.11); ok {
 		t.Fatal("second resolve must be ok=false")
 	}
-	if _, c3, _ := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.5); !c3 {
+	if _, c3, _ := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.5, false); !c3 {
 		t.Fatal("open after resolve must be created=true")
 	}
 	// List фильтры: 1 open + 1 resolved = 2 all.
@@ -77,7 +77,7 @@ func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			_, c, err := svc.Open(ctx, pid, "api", "cpu", "hot", 0.1, 0.2+float64(i)/100)
+			_, c, err := svc.Open(ctx, pid, "api", "cpu", "hot", 0.1, 0.2+float64(i)/100, false)
 			if err != nil {
 				t.Errorf("open %d: %v", i, err)
 			}

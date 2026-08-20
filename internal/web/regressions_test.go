@@ -71,13 +71,13 @@ func TestWebRegressionsList(t *testing.T) {
 	}
 
 	// Открытая регрессия эндпойнта: p95 длительности 100ms → 150ms (+50%).
-	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150); err != nil {
+	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150, false); err != nil {
 		t.Fatalf("open endpoint regression: %v", err)
 	}
 	// Закрытая регрессия web-vital: LCP p75 2000ms → пик 4000ms (+100%), затем
 	// закрыта значением восстановления 2100 (около базы). Рост % считается от
 	// ПИКА, а не от current: иначе у закрытой строки было бы +5%, а не +100%.
-	wv, _, err := s.reg.Open(ctx, project.ID, "webvital_p75", "/checkout", "lcp", 2000, 4000)
+	wv, _, err := s.reg.Open(ctx, project.ID, "webvital_p75", "/checkout", "lcp", 2000, 4000, false)
 	if err != nil {
 		t.Fatalf("open webvital regression: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestWebRegressionsDeployAttribution(t *testing.T) {
 	}
 
 	// Открытая регрессия эндпойнта (started_at = now по умолчанию).
-	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150); err != nil {
+	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150, false); err != nil {
 		t.Fatalf("open regression: %v", err)
 	}
 

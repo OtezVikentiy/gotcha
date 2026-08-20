@@ -91,6 +91,12 @@ type Evaluator struct {
 	Overrides *HostOverrideService
 	Groups    *GroupThresholdService
 
+	// Maint — окна обслуживания проекта (B3: подавление уведомлений). Nil-
+	// совместим, как Overrides/Groups: деградированная сборка без него просто
+	// никогда не подавляет (inMaintenance всегда false), а не паникует. ПРОД
+	// (main.go, startEvaluators) обязан его заполнять.
+	Maint MaintenanceChecker
+
 	// StartedAt — момент, с которого оценщик наблюдает за хостами. Тишина
 	// хоста, накопленная ДО него, ему не принадлежит: пока продукт стоял
 	// (рестарт, недоступность PostgreSQL, разворачивание раздела на живой
@@ -388,6 +394,25 @@ func (e *Evaluator) evalOrCloseKind(ctx context.Context, h Host, kind string, en
 	}
 }
 
+// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open-
+// notify в evalSilent/applyDecision. Ошибка проверки НЕ отменяет открытие
+// инцидента: она лишь означает, что не удалось выяснить, плановые ли это
+// работы, и трактуется как «не в окне» — молчать о реальном инциденте
+// дороже, чем уведомить лишний раз (то же решение, что uptime.Detector.
+// openIncident). Maint==nil (деградированная сборка) — тот же результат.
+func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
+	if e.Maint == nil {
+		return false
+	}
+	v, err := e.Maint.InMaintenance(ctx, projectID, now)
+	if err != nil {
+		slog.Error("host evaluator: maintenance check failed, treating as not in maintenance",
+			"project_id", projectID, "error", err)
+		return false
+	}
+	return v
+}
+
 // evalSilent — тишина хоста: секунды с last_seen против SilentAfter.
 //
 // В ОТЛИЧИЕ от disk/memory/load — БЕЗ гистерезиса (design.md §4.4): сравнение
@@ -414,12 +439,13 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 		if !e.mayOpenSilent(h, s, now) {
 			return
 		}
-		in, created, err := e.Incidents.Open(ctx, h.ProjectID, h.ID, "silent", silence, "")
+		inMaint := e.inMaintenance(ctx, h.ProjectID, now)
+		in, created, err := e.Incidents.Open(ctx, h.ProjectID, h.ID, "silent", silence, "", inMaint)
 		if err != nil {
 			slog.Warn("host evaluator: silent open failed", "host_id", h.ID, "error", err)
 			return
 		}
-		if created {
+		if created && !inMaint {
 			e.notify(ctx, in, h, s, true)
 		}
 	case opened && silence <= threshold:
@@ -428,7 +454,7 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			slog.Warn("host evaluator: silent resolve failed", "host_id", h.ID, "error", err)
 			return
 		}
-		if resolved {
+		if resolved && !open.InMaintenance {
 			e.notify(ctx, open, h, s, false)
 		}
 	case opened && silence >= open.PeakValue*silentBumpGrowth:
@@ -566,12 +592,13 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 		if kind == "disk" {
 			detail = e.worstMountpoint(ctx, q, h, now)
 		}
-		in, created, err := e.Incidents.Open(ctx, h.ProjectID, h.ID, kind, current, detail)
+		inMaint := e.inMaintenance(ctx, h.ProjectID, now)
+		in, created, err := e.Incidents.Open(ctx, h.ProjectID, h.ID, kind, current, detail, inMaint)
 		if err != nil {
 			slog.Warn("host evaluator: open failed", "host_id", h.ID, "kind", kind, "error", err)
 			return
 		}
-		if created {
+		if created && !inMaint {
 			e.notify(ctx, in, h, s, true)
 		}
 	case d.Bump:
@@ -588,7 +615,7 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 			slog.Warn("host evaluator: resolve failed", "host_id", h.ID, "kind", kind, "error", err)
 			return
 		}
-		if resolved {
+		if resolved && !open.InMaintenance {
 			e.notify(ctx, open, h, s, false)
 		}
 	}

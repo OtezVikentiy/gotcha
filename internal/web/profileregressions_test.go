@@ -55,10 +55,10 @@ func TestWebProfileRegressions(t *testing.T) {
 	proj, _ := s.org.CreateProject(ctx, o.ID, "preg-proj", "PReg Proj", "go")
 
 	// Открытая регрессия функции compress; закрытая — decode.
-	if _, _, err := s.reg.Open(ctx, proj.ID, "api", "cpu", "compress", 0.1, 0.3); err != nil {
+	if _, _, err := s.reg.Open(ctx, proj.ID, "api", "cpu", "compress", 0.1, 0.3, false); err != nil {
 		t.Fatalf("open compress: %v", err)
 	}
-	dec, _, err := s.reg.Open(ctx, proj.ID, "api", "cpu", "decode", 0.1, 0.25)
+	dec, _, err := s.reg.Open(ctx, proj.ID, "api", "cpu", "decode", 0.1, 0.25, false)
 	if err != nil {
 		t.Fatalf("open decode: %v", err)
 	}

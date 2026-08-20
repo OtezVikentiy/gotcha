@@ -30,18 +30,19 @@ type Incident struct {
 	Detail        string
 	StartedAt     time.Time
 	ResolvedAt    *time.Time
+	InMaintenance bool
 	NotifiedOpen  bool
 	NotifiedClose bool
 }
 
 const incidentColumns = `id, project_id, host_id, kind, status, current_value, peak_value,
-	detail, started_at, resolved_at, notified_open, notified_close`
+	detail, started_at, resolved_at, in_maintenance, notified_open, notified_close`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.ProjectID, &in.HostID, &in.Kind, &in.Status,
 		&in.CurrentValue, &in.PeakValue, &in.Detail,
-		&in.StartedAt, &in.ResolvedAt, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
 	return in, err
 }
 
@@ -57,18 +58,20 @@ func NewIncidentService(pool *pgxpool.Pool) *IncidentService {
 }
 
 // Open открывает инцидент по (host_id, kind), если открытого такого ещё
-// нет. Гонко-безопасно через частичный уникальный индекс
-// host_incidents_one_open_idx (host_id, kind) WHERE status='open': из
+// нет. inMaintenance фиксируется на инциденте на всё его время (B3): вызывающий
+// решает по MaintenanceChecker в момент открытия, гейт notify — на нём же, а не
+// на состоянии окна в момент закрытия. Гонко-безопасно через частичный уникальный
+// индекс host_incidents_one_open_idx (host_id, kind) WHERE status='open': из
 // параллельных вызовов ровно один INSERT проходит, остальные ловят
 // конфликт (DO NOTHING → нет RETURNING) и дочитывают победителя через
 // OpenFor. peak=current на вставке.
-func (s *IncidentService) Open(ctx context.Context, projectID, hostID int64, kind string, current float64, detail string) (Incident, bool, error) {
+func (s *IncidentService) Open(ctx context.Context, projectID, hostID int64, kind string, current float64, detail string, inMaintenance bool) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
-		VALUES ($1, $2, $3, 'open', $4, $4, $5)
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, in_maintenance)
+		VALUES ($1, $2, $3, 'open', $4, $4, $5, $6)
 		ON CONFLICT (host_id, kind) WHERE status = 'open' DO NOTHING
 		RETURNING `+incidentColumns,
-		projectID, hostID, kind, current, detail)
+		projectID, hostID, kind, current, detail, inMaintenance)
 	in, err := scanIncident(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, found, err := s.OpenFor(ctx, hostID, kind)

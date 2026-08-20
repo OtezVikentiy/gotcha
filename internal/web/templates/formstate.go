@@ -66,3 +66,16 @@ func (f FormState) Has() bool {
 func (f FormState) Selected(name, value, fallback string) bool {
 	return f.Get(name, fallback) == value
 }
+
+// Checked — атрибут checked для чекбокса. Снятый чекбокс не попадает в
+// r.Form вовсе (в отличие от снятого radio, который приходит пустой
+// строкой), поэтому здесь — просто наличие ключа, а не сравнение значения.
+func (f FormState) Checked(name string, fallback bool) bool {
+	if f == nil {
+		return fallback
+	}
+	if _, ok := f[name]; ok {
+		return true
+	}
+	return fallback
+}

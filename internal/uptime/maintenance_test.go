@@ -65,11 +65,110 @@ func TestCreateWindowOneOffActiveWithinAndOutsideInterval(t *testing.T) {
 		t.Fatalf("Windows = %+v", windows)
 	}
 
-	if err := svc.DeleteWindow(ctx, w.ID); err != nil {
+	if err := svc.DeleteWindow(ctx, w.ID, pid); err != nil {
 		t.Fatalf("DeleteWindow: %v", err)
 	}
-	if err := svc.DeleteWindow(ctx, w.ID); !errors.Is(err, uptime.ErrNotFound) {
+	if err := svc.DeleteWindow(ctx, w.ID, pid); !errors.Is(err, uptime.ErrNotFound) {
 		t.Fatalf("DeleteWindow again: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeleteWindowForeignProjectDoesNotDelete — project_id — часть WHERE, а
+// не отдельная проверка на вызывающей стороне: подобранный id окна с чужим
+// project_id не должен удалиться (0 rows), даже если запрос как-то обойдёт
+// windowBelongsToProject в web-слое.
+func TestDeleteWindowForeignProjectDoesNotDelete(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+	otherPID := newProject(t, pool)
+
+	w, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid, Name: "Mine", Weekly: true, Weekday: 1,
+		StartTime: "00:00", EndTime: "01:00", Timezone: "UTC",
+	})
+	if err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	if err := svc.DeleteWindow(ctx, w.ID, otherPID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("DeleteWindow with foreign project_id: err = %v, want ErrNotFound", err)
+	}
+
+	windows, err := svc.Windows(ctx, pid)
+	if err != nil || len(windows) != 1 || windows[0].ID != w.ID {
+		t.Fatalf("windows = %+v err=%v, want the window to survive the foreign delete", windows, err)
+	}
+}
+
+// TestCreateWindowOneOffUnboundedValid — «бессрочно»: разовое окно с
+// ends_at == nil больше не отвергается как ErrInvalidWindowRange (миграция
+// 0076 разрешила это в CHECK; validateWindow должен соответствовать).
+func TestCreateWindowOneOffUnboundedValid(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	start := time.Now().UTC().Add(-time.Hour)
+	w, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid,
+		Name:      "Бессрочное",
+		StartsAt:  &start,
+		EndsAt:    nil,
+		Timezone:  "UTC",
+	})
+	if err != nil {
+		t.Fatalf("CreateWindow unbounded: %v", err)
+	}
+	if w.ID == 0 {
+		t.Fatalf("CreateWindow unbounded: id = 0")
+	}
+}
+
+// TestInMaintenanceUnboundedWindow — окно, начавшееся в прошлом и без
+// ends_at, активно сейчас и остаётся активным сколь угодно далеко в будущем,
+// но неактивно до starts_at.
+func TestInMaintenanceUnboundedWindow(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	start := time.Now().UTC().Add(-24 * time.Hour)
+	if _, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid, Name: "Бессрочное",
+		StartsAt: &start, EndsAt: nil, Timezone: "UTC",
+	}); err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	active, err := svc.InMaintenance(ctx, pid, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("InMaintenance now: %v", err)
+	}
+	if !active {
+		t.Fatalf("InMaintenance unbounded (now): got false, want true")
+	}
+
+	active, err = svc.InMaintenance(ctx, pid, start.AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatalf("InMaintenance far future: %v", err)
+	}
+	if !active {
+		t.Fatalf("InMaintenance unbounded (far future): got false, want true")
+	}
+
+	active, err = svc.InMaintenance(ctx, pid, start.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("InMaintenance before start: %v", err)
+	}
+	if active {
+		t.Fatalf("InMaintenance unbounded (before start): got true, want false")
 	}
 }
 

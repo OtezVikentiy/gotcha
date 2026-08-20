@@ -51,6 +51,7 @@ type Incident struct {
 	BudgetRemaining *float64
 	StartedAt       time.Time
 	ResolvedAt      *time.Time
+	InMaintenance   bool
 	NotifiedOpen    bool
 	NotifiedClose   bool
 }

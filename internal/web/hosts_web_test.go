@@ -160,7 +160,7 @@ func TestWebHostsList(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get web-disk: found=%v err=%v", found, err)
 	}
-	if _, _, err := s.incidents.Open(ctx, project.ID, diskHost.ID, "disk", 0.95, "/"); err != nil {
+	if _, _, err := s.incidents.Open(ctx, project.ID, diskHost.ID, "disk", 0.95, "/", false); err != nil {
 		t.Fatalf("open disk incident: %v", err)
 	}
 
@@ -347,7 +347,7 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get web-silent-incident: found=%v err=%v", found, err)
 	}
-	if _, _, err := s.incidents.Open(ctx, project.ID, incidentHost.ID, "silent", 0, ""); err != nil {
+	if _, _, err := s.incidents.Open(ctx, project.ID, incidentHost.ID, "silent", 0, "", false); err != nil {
 		t.Fatalf("open silent incident: %v", err)
 	}
 
@@ -1097,7 +1097,7 @@ func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 	}
 
 	// Открытый инцидент — САМЫЙ СТАРЫЙ из всех.
-	open, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "")
+	open, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "", false)
 	if err != nil {
 		t.Fatalf("open disk incident: %v", err)
 	}
@@ -1151,10 +1151,10 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get host: ok=%v err=%v", ok, err)
 	}
-	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "/snap/core"); err != nil {
+	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "/snap/core", false); err != nil {
 		t.Fatalf("open disk incident: %v", err)
 	}
-	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "memory", 0.95, ""); err != nil {
+	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "memory", 0.95, "", false); err != nil {
 		t.Fatalf("open memory incident: %v", err)
 	}
 
@@ -1284,7 +1284,7 @@ func TestWebHostDetail(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get host: found=%v err=%v", found, err)
 	}
-	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.95, "/var"); err != nil {
+	if _, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.95, "/var", false); err != nil {
 		t.Fatalf("open disk incident: %v", err)
 	}
 

@@ -88,13 +88,20 @@ func TestRegressionMetricLabel(t *testing.T) {
 	}
 }
 
-// TestWindowKindTextKey — еженедельное/разовое окно обслуживания.
+// TestWindowKindTextKey — еженедельное/разовое/бессрочное окно обслуживания.
+// P2-4 устранения аудита B3: разовое окно без EndsAt (бессрочное) должно
+// показывать метку «бессрочное», а не «разовое» — колонка «Тип» иначе врала
+// бы про окно, глушащее проект навсегда.
 func TestWindowKindTextKey(t *testing.T) {
 	if windowKindTextKey(uptime.Window{Weekly: true}) != "uptime.maintenance.kind.weekly" {
 		t.Error("еженедельное окно")
 	}
-	if windowKindTextKey(uptime.Window{}) != "uptime.maintenance.kind.oneoff" {
-		t.Error("разовое окно")
+	end := time.Now()
+	if windowKindTextKey(uptime.Window{EndsAt: &end}) != "uptime.maintenance.kind.oneoff" {
+		t.Error("разовое окно с датой окончания")
+	}
+	if windowKindTextKey(uptime.Window{}) != "uptime.maintenance.indefinite" {
+		t.Error("разовое окно без даты окончания (бессрочное)")
 	}
 }
 
@@ -226,6 +233,12 @@ func TestWindowScheduleText(t *testing.T) {
 	unknown := windowScheduleText(ctx, uptime.Window{Timezone: "UTC"})
 	if !strings.Contains(unknown, "?") {
 		t.Errorf("окно без дат должно показать ?: %q", unknown)
+	}
+	// Разовое окно без даты окончания — «бессрочно», не «?» (T8: UI
+	// коммуникация indefinite-окон).
+	indefinite := windowScheduleText(ctx, uptime.Window{StartsAt: &now, Timezone: "UTC"})
+	if !strings.Contains(indefinite, "бессрочно") || strings.Contains(indefinite, "?") {
+		t.Errorf("окно без даты окончания должно показать «бессрочно», не ?: %q", indefinite)
 	}
 }
 

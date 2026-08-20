@@ -318,6 +318,80 @@ func TestWebMaintenanceInvalidTimezoneMessageIsLocalized(t *testing.T) {
 	}
 }
 
+// TestWebMaintenanceOneOffWithoutIndefiniteRequiresEndDate — P1 устранения
+// аудита B3: до T2 пустой ends_at у разового окна был ErrInvalidWindowRange;
+// после T2 (validateWindow смягчён под «бессрочно») тот же пустой ends_at без
+// явного чекбокса indefinite не должен молча создавать бессрочное окно, а
+// обязан вернуть end_required и ничего не сохранить — забытая дата не должна
+// глушить проект навсегда.
+func TestWebMaintenanceOneOffWithoutIndefiniteRequiresEndDate(t *testing.T) {
+	s := newMaintenanceStack(t)
+	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintendreq")
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	form := url.Values{
+		"name":      {"Forgot the end date"},
+		"kind":      {"oneoff"},
+		"starts_at": {"2026-08-01T02:00"},
+		// ends_at пуст и indefinite не отмечен.
+		"timezone": {"UTC"},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s status = %d, want 422: %s", path, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Укажите дату окончания") {
+		t.Fatalf("POST %s body missing end_required message: %s", path, body)
+	}
+
+	windows, err := s.uptime.Windows(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("windows: %v", err)
+	}
+	if len(windows) != 0 {
+		t.Fatalf("len(windows) = %d, want 0 (must not silently create an indefinite window)", len(windows))
+	}
+}
+
+// TestWebMaintenanceOneOffIndefiniteChecked — с отмеченным чекбоксом
+// indefinite пустой ends_at — законный выбор: окно создаётся с EndsAt == nil.
+func TestWebMaintenanceOneOffIndefiniteChecked(t *testing.T) {
+	s := newMaintenanceStack(t)
+	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintindef")
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	form := url.Values{
+		"name":       {"Open-ended freeze"},
+		"kind":       {"oneoff"},
+		"starts_at":  {"2026-08-01T02:00"},
+		"indefinite": {"on"},
+		"timezone":   {"UTC"},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s status = %d, want 303: %s", path, resp.StatusCode, body)
+	}
+
+	windows, err := s.uptime.Windows(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("windows: %v", err)
+	}
+	if len(windows) != 1 {
+		t.Fatalf("len(windows) = %d, want 1", len(windows))
+	}
+	w := windows[0]
+	if w.Weekly || w.StartsAt == nil {
+		t.Fatalf("window = %+v, want one-off with StartsAt set", w)
+	}
+	if w.EndsAt != nil {
+		t.Fatalf("EndsAt = %v, want nil (indefinite)", w.EndsAt)
+	}
+}
+
 // TestWebMaintenanceDelete — creates then deletes a window; it's gone from
 // Windows afterwards.
 func TestWebMaintenanceDelete(t *testing.T) {

@@ -37,6 +37,27 @@ func TestWindowIntervalsOneOffOutsideRangeExcluded(t *testing.T) {
 	}
 }
 
+// TestWindowIntervalsOneOffUnboundedClampsToRequestedEnd: a «бессрочно»
+// window (EndsAt == nil) contributes an interval up to the requested range's
+// end, not a literal +∞ — WindowIntervals is always called with a bounded
+// [from,to), and an unbounded Interval would make every caller (uptime %,
+// slo.excludeMaintenance) reason about infinity for no benefit.
+func TestWindowIntervalsOneOffUnboundedClampsToRequestedEnd(t *testing.T) {
+	from := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(30 * 24 * time.Hour)
+
+	start := from.Add(-time.Hour) // starts before the query range, never ends
+	windows := []uptime.Window{{StartsAt: &start, EndsAt: nil, Timezone: "UTC"}}
+
+	got := uptime.WindowIntervals(windows, from, to)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %+v", len(got), got)
+	}
+	if !got[0].From.Equal(from) || !got[0].To.Equal(to) {
+		t.Fatalf("got %+v, want From=%v To=%v", got[0], from, to)
+	}
+}
+
 func TestWindowIntervalsOneOffMissingFieldsSkipped(t *testing.T) {
 	from := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)

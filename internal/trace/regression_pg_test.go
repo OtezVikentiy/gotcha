@@ -33,7 +33,7 @@ func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, created, err := svc.Open(ctx, pid, "endpoint_p95", "GET /race", "duration", 100, 250)
+			_, created, err := svc.Open(ctx, pid, "endpoint_p95", "GET /race", "duration", 100, 250, false)
 			if err != nil {
 				errs[i] = err
 				return
@@ -76,7 +76,7 @@ func TestRegressionOpenIdempotent(t *testing.T) {
 
 	pid := newPerfProject(t, pool, "reg-open")
 
-	rec1, created1, err := svc.Open(ctx, pid, "endpoint_p95", "GET /api/users", "duration", 100, 250)
+	rec1, created1, err := svc.Open(ctx, pid, "endpoint_p95", "GET /api/users", "duration", 100, 250, false)
 	if err != nil {
 		t.Fatalf("Open 1: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestRegressionOpenIdempotent(t *testing.T) {
 		t.Fatalf("Open 1: values = base %v peak %v cur %v, want 100/250/250", rec1.BaselineValue, rec1.PeakValue, rec1.CurrentValue)
 	}
 
-	rec2, created2, err := svc.Open(ctx, pid, "endpoint_p95", "GET /api/users", "duration", 999, 999)
+	rec2, created2, err := svc.Open(ctx, pid, "endpoint_p95", "GET /api/users", "duration", 999, 999, false)
 	if err != nil {
 		t.Fatalf("Open 2: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRegressionBump(t *testing.T) {
 	defer cancel()
 
 	pid := newPerfProject(t, pool, "reg-bump")
-	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /x", "duration", 100, 200)
+	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /x", "duration", 100, 200, false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestRegressionResolveIdempotent(t *testing.T) {
 	defer cancel()
 
 	pid := newPerfProject(t, pool, "reg-resolve")
-	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /y", "duration", 100, 200)
+	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /y", "duration", 100, 200, false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestRegressionResolveIdempotent(t *testing.T) {
 	}
 
 	// После закрытия частичный индекс свободен — новый open по той же цели.
-	rec3, created3, err := svc.Open(ctx, pid, "endpoint_p95", "GET /y", "duration", 100, 300)
+	rec3, created3, err := svc.Open(ctx, pid, "endpoint_p95", "GET /y", "duration", 100, 300, false)
 	if err != nil {
 		t.Fatalf("Open after resolve: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestRegressionOpenFor(t *testing.T) {
 		t.Fatalf("OpenFor before any: found=%v err=%v", found, err)
 	}
 
-	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /z", "duration", 100, 200)
+	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /z", "duration", 100, 200, false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestRegressionMarkNotified(t *testing.T) {
 	defer cancel()
 
 	pid := newPerfProject(t, pool, "reg-notify")
-	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /n", "duration", 100, 200)
+	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /n", "duration", 100, 200, false)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -277,17 +277,17 @@ func TestRegressionPartialIndex(t *testing.T) {
 	pid := newPerfProject(t, pool, "reg-index")
 
 	// Разные метрики одной цели — тоже разные цели индекса (project,target,metric).
-	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /a", "duration", 1, 2); err != nil || !c {
+	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /a", "duration", 1, 2, false); err != nil || !c {
 		t.Fatalf("Open a/duration: c=%v err=%v", c, err)
 	}
-	if _, c, err := svc.Open(ctx, pid, "webvital_p75", "GET /a", "lcp", 1, 2); err != nil || !c {
+	if _, c, err := svc.Open(ctx, pid, "webvital_p75", "GET /a", "lcp", 1, 2, false); err != nil || !c {
 		t.Fatalf("Open a/lcp: c=%v err=%v", c, err)
 	}
-	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /b", "duration", 1, 2); err != nil || !c {
+	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /b", "duration", 1, 2, false); err != nil || !c {
 		t.Fatalf("Open b/duration: c=%v err=%v", c, err)
 	}
 	// Дубль по (a,duration) — не создаётся.
-	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /a", "duration", 1, 2); err != nil || c {
+	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /a", "duration", 1, 2, false); err != nil || c {
 		t.Fatalf("Open a/duration dup: c=%v err=%v, want created=false", c, err)
 	}
 
@@ -310,12 +310,12 @@ func TestRegressionList(t *testing.T) {
 
 	pid := newPerfProject(t, pool, "reg-list")
 
-	r1, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /1", "duration", 1, 2)
+	r1, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /1", "duration", 1, 2, false)
 	if err != nil {
 		t.Fatalf("Open 1: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	r2, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /2", "duration", 1, 2)
+	r2, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /2", "duration", 1, 2, false)
 	if err != nil {
 		t.Fatalf("Open 2: %v", err)
 	}

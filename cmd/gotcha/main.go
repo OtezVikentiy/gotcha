@@ -776,6 +776,10 @@ func run() error {
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
 			Details: detailPolicy(cfg),
 			Locale:  i18n.Locale{Code: cfg.Locale},
+			// Maint (B3) — окна обслуживания проекта: подавляет issue-алерты
+			// (new_issue/regression/spike) ДО claimThrottle/claimBudget в
+			// OnIssue, тем же приёмом, что pipeline.Maint ниже.
+			Maint: uptime.NewService(pg),
 		}
 		spikeWorker := &alert.Spike{
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
@@ -819,6 +823,12 @@ func run() error {
 		pipeline.Spans = spanWriter
 		pipeline.Perf = trace.NewIssueService(pg)
 		pipeline.PerfAlerts = perfNotifier
+		// Maint (B3) — окна обслуживания проекта: подавляет только notify в
+		// recordFinding, детекция/Record в perf_issues продолжает работать как
+		// обычно. startEvaluators строит свой отдельный maint (не в scope
+		// здесь, другая функция) тем же приёмом — uptime.NewService(pg)
+		// требует только пул.
+		pipeline.Maint = uptime.NewService(pg)
 		pipeline.Projects = projectCache
 		scrubber := ingest.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
 		scrubber.ScrubFreeText = cfg.ScrubFreeText // RA-L10: opt-in маскирование email в свободном тексте
@@ -1109,10 +1119,19 @@ func run() error {
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
 	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
 	selfMetrics *selfmetrics.Registry) {
+	// maint — окна обслуживания проекта (план B3): подавляет open/close-
+	// уведомления инцидентов всех источников оценщиков ниже (host сейчас,
+	// metric/trace/profile/slo следом). uptimeSvc:385 здесь НЕ переиспользуем —
+	// он строится только в режимах uptime|all, а startEvaluators зовётся и без
+	// них (GOTCHA_RUN_EVALUATORS); uptime.NewService(pg) требует только пул,
+	// тот же приём уже применён ниже для sloEval (:1216).
+	maint := uptime.NewService(pg)
+
 	evaluator := &trace.Evaluator{
 		Pool:        pg,
 		Query:       trace.NewQuery(ch),
 		Regressions: trace.NewRegressionService(pg),
+		Maint:       maint,
 		Notifier: &trace.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1132,6 +1151,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Rules:     metric.NewRuleService(pg),
 		Query:     metric.NewQuery(ch),
 		Incidents: metric.NewIncidentService(pg),
+		Maint:     maint,
 		Notifier: &metric.MetricNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1150,6 +1170,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	profileRegEval := &profile.RegressionEvaluator{
 		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pg),
+		Maint:       maint,
 		Notifier: &profile.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1173,6 +1194,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Metrics:   metric.NewQuery(ch),
 		Overrides: host.NewHostOverrideService(pg),
 		Groups:    host.NewGroupThresholdService(pg),
+		Maint:     maint,
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1216,6 +1238,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Providers: slo.Providers(trace.NewQuery(ch), uptime.NewQuery(ch), uptime.NewService(pg), cfg.RetentionDays),
 		Notifier:  sloNotifier,
 		Interval:  time.Duration(cfg.SLOEvalInterval) * time.Second,
+		Maint:     maint,
 	}
 	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_last_tick_timestamp_seconds",
 		"Unix time of the last completed SLO burn-rate evaluation pass. Stale value means SLO error-budget alerts are not being evaluated.",

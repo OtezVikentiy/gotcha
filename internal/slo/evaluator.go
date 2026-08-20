@@ -57,6 +57,7 @@ type Evaluator struct {
 	Providers map[SLIKind]Provider
 	Notifier  Notifier
 	Interval  time.Duration
+	Maint     MaintenanceChecker
 
 	// closeStreak — счётчик подряд идущих «остывших» тиков на SLO (гистерезис
 	// флапа). Ленивая инициализация в Tick: структуру собирают литералом без
@@ -192,7 +193,8 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 		return false // инцидент уже открыт — прожог продолжается, ничего нового
 	}
 	budget, attainment, remaining := e.fullWindowBudget(ctx, p, s, now)
-	inc, created, err := e.Store.OpenIncident(ctx, s.ID, s.ProjectID, d.BurnShort, budget)
+	inMaint := e.inMaintenance(ctx, s.ProjectID, now)
+	inc, created, err := e.Store.OpenIncident(ctx, s.ID, s.ProjectID, d.BurnShort, budget, inMaint)
 	if err != nil {
 		slog.Error("slo evaluator: open incident failed", "slo_id", s.ID, "error", err)
 		return false
@@ -200,7 +202,9 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 	if !created {
 		return false // гонка: параллельный тик успел открыть — не дублируем уведомление
 	}
-	e.notify(ctx, s, inc, true, attainment, remaining, d.BurnShort)
+	if !inMaint {
+		e.notify(ctx, s, inc, true, attainment, remaining, d.BurnShort)
+	}
 	return true
 }
 
@@ -216,7 +220,9 @@ func (e *Evaluator) close(ctx context.Context, p Provider, s SLO, now time.Time,
 		return false // открытого не было — закрывать нечего
 	}
 	_, attainment, remaining := e.fullWindowBudget(ctx, p, s, now)
-	e.notify(ctx, s, inc, false, attainment, remaining, d.BurnShort)
+	if !inc.InMaintenance {
+		e.notify(ctx, s, inc, false, attainment, remaining, d.BurnShort)
+	}
 	return true
 }
 
@@ -242,6 +248,25 @@ func (e *Evaluator) fullWindowBudget(ctx context.Context, p Provider, s SLO, now
 		return nil, att, 0
 	}
 	return &rem, att, rem
+}
+
+// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
+// notify в open/close. Ошибка проверки НЕ отменяет открытие инцидента: она
+// лишь означает, что не удалось выяснить, плановые ли это работы, и трактуется
+// как «не в окне» — молчать о реальном прожоге бюджета дороже, чем уведомить
+// лишний раз (то же решение, что host.Evaluator.inMaintenance). Maint==nil
+// (деградированная сборка) — тот же результат.
+func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
+	if e.Maint == nil {
+		return false
+	}
+	v, err := e.Maint.InMaintenance(ctx, projectID, now)
+	if err != nil {
+		slog.Error("slo evaluator: maintenance check failed, treating as not in maintenance",
+			"project_id", projectID, "error", err)
+		return false
+	}
+	return v
 }
 
 // notify рассылает событие (если нотифаер задан) и помечает инцидент, чтобы алерт
