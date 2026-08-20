@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // Kinds — виды встроенных инцидентов хоста (host_incidents.kind, CHECK
@@ -260,6 +262,51 @@ func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, userID in
 	}
 	if err != nil {
 		return false, fmt.Errorf("host: acknowledge incident: %w", err)
+	}
+	return true, nil
+}
+
+// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
+// 'host' в incident_escalations (0077).
+func (s *IncidentService) Name() string { return "host" }
+
+// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
+// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
+// host_incidents_esc_pending_idx (0077).
+func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, project_id, started_at, severity, escalation_level
+		FROM host_incidents WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("host: open unacked incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("host: open unacked incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
+// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
+// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE host_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
+		WHERE id = $1 AND escalation_level = $2
+		RETURNING id`, id, from)
+	var bumpedID int64
+	err := row.Scan(&bumpedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("host: bump escalation: %w", err)
 	}
 	return true, nil
 }
