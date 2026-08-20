@@ -776,6 +776,10 @@ func run() error {
 			Svc: alertSvc, Outbox: outbox, BaseURL: cfg.BaseURL, EmailEnabled: emailSender.Configured(),
 			Details: detailPolicy(cfg),
 			Locale:  i18n.Locale{Code: cfg.Locale},
+			// Maint (B3) — окна обслуживания проекта: подавляет issue-алерты
+			// (new_issue/regression/spike) ДО claimThrottle/claimBudget в
+			// OnIssue, тем же приёмом, что pipeline.Maint ниже.
+			Maint: uptime.NewService(pg),
 		}
 		spikeWorker := &alert.Spike{
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,

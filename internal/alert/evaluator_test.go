@@ -565,3 +565,95 @@ func TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget(t *testing.T) {
 		t.Fatalf("second call within throttle window: jobs=%d err=%v, want 0 (claim must not have been rolled back)", len(jobs2), err)
 	}
 }
+
+// mockMaint — alert.MaintenanceChecker для тестов: func-обёртка вместо
+// полноценного uptime.Service, тем же приёмом, что host.mockMaint/
+// trace.mockMaint (Task 3/5).
+type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
+
+func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
+	return m(ctx, projectID, at)
+}
+
+// TestEvaluatorMaintenanceSuppressesIssueAlert — Task 7 брифа B3:
+// issue-алерты (new_issue/regression/spike) не имеют таблицы инцидентов и
+// флага (throttle+budget-based), поэтому гейт стоит ДО claimThrottle/
+// claimBudget. Подавленный алерт не должен занять троттл-окно, не должен
+// списать бюджетный слот и не должен попасть в suppressed-digest — иначе он
+// уехал бы в сводку «подавлено N», хотя это не бюджетное подавление.
+func TestEvaluatorMaintenanceSuppressesIssueAlert(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "eval-maint")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+	e := &alert.Evaluator{
+		Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example",
+		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
+	}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e.OnIssue(ctx, ev)
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("in maintenance: jobs=%d err=%v, want 0", len(jobs), err)
+	}
+
+	// Гейт ДО claimThrottle: подавленный алерт не должен занять троттл-окно.
+	var throttleRows int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM alert_throttle WHERE issue_id = $1", issueID).Scan(&throttleRows); err != nil {
+		t.Fatalf("count alert_throttle: %v", err)
+	}
+	if throttleRows != 0 {
+		t.Errorf("alert_throttle rows for issue = %d, want 0 (maintenance gate must precede claimThrottle)", throttleRows)
+	}
+
+	// Гейт ДО claimBudget: подавленный алерт не должен списать бюджетный
+	// слот и не должен растить suppressed (иначе он уехал бы в digest как
+	// «подавлено бюджетом», хотя причина другая).
+	var sent, suppressed int
+	err = pool.QueryRow(ctx,
+		"SELECT sent, suppressed FROM alert_project_budget WHERE project_id = $1", pid).Scan(&sent, &suppressed)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("alert_project_budget: %v", err)
+	}
+	if sent != 0 || suppressed != 0 {
+		t.Errorf("alert_project_budget sent=%d suppressed=%d, want 0/0 (budget claim must not run)", sent, suppressed)
+	}
+
+	// Maint != nil, false: обычная отправка, троттл занят.
+	e2 := &alert.Evaluator{
+		Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example",
+		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
+	}
+	issueID2 := newEvalIssue(t, pool, pid, "fp-2")
+	ev2 := alert.Event{ProjectID: pid, IssueID: issueID2, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e2.OnIssue(ctx, ev2)
+
+	jobs2, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs2) != 1 {
+		t.Fatalf("outside maintenance: jobs=%d err=%v, want 1", len(jobs2), err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM alert_throttle WHERE issue_id = $1", issueID2).Scan(&throttleRows); err != nil {
+		t.Fatalf("count alert_throttle: %v", err)
+	}
+	if throttleRows != 1 {
+		t.Errorf("alert_throttle rows for issue2 = %d, want 1 (normal send must claim throttle)", throttleRows)
+	}
+}
