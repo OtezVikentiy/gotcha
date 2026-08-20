@@ -350,7 +350,7 @@ func TestProfileRegressionsList(t *testing.T) {
 		{ID: 1, Service: "web", ProfileType: "cpu", Function: "hot()", Status: "open", BaselineShare: 0.1, PeakShare: 0.3, CurrentShare: 0.25, StartedAt: now.Add(-time.Hour)},
 		{ID: 2, Service: "api", ProfileType: "heap", Function: "leak()", Status: "resolved", BaselineShare: 0.05, PeakShare: 0.2, StartedAt: now.Add(-3 * time.Hour), ResolvedAt: ptrTime(now.Add(-time.Hour))},
 	}
-	out := renderTo(t, ProfileRegressionsList(7, regs, "open", "u@e.com"))
+	out := renderTo(t, ProfileRegressionsList(7, regs, "open", "u@e.com", true))
 	if !strings.Contains(out, "hot()") {
 		t.Error("регрессии профилей должны содержать функцию")
 	}
@@ -454,7 +454,7 @@ func TestIncidentsAndRegressionsLists(t *testing.T) {
 		{ID: 1, TargetKind: "endpoint_p95", Target: "GET /api", Metric: "duration", Status: "open", BaselineValue: 100, PeakValue: 300, CurrentValue: 250, StartedAt: now.Add(-time.Hour)},
 		{ID: 2, TargetKind: "webvital_p75", Target: "/home", Metric: "lcp", Status: "resolved", BaselineValue: 2000, PeakValue: 4000, StartedAt: now.Add(-3 * time.Hour), ResolvedAt: ptrTime(now.Add(-time.Hour))},
 	}
-	outR := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com", false))
+	outR := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com", false, true))
 	if !strings.Contains(outR, "GET /api") {
 		t.Error("регрессии должны содержать цель")
 	}
@@ -467,11 +467,11 @@ func TestRegressionsListSeasonalBadge(t *testing.T) {
 	regs := []trace.Regression{
 		{ID: 1, TargetKind: "endpoint_p95", Target: "GET /api", Metric: "duration", Status: "open", BaselineValue: 100, PeakValue: 300, StartedAt: now.Add(-time.Hour)},
 	}
-	on := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com", true))
+	on := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com", true, true))
 	if !strings.Contains(on, "Сезонный режим") {
 		t.Error("при seasonal=true должен быть бейдж «Сезонный режим»")
 	}
-	off := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com", false))
+	off := renderTo(t, RegressionsList(7, regs, nil, "open", "u@e.com", false, true))
 	if strings.Contains(off, "Сезонный режим") {
 		t.Error("при seasonal=false бейджа быть не должно")
 	}

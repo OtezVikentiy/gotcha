@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -48,9 +49,15 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	}
 
 	cfg := profile.DefaultProfileRegressionConfig()
+	regressions := profile.NewRegressionService(pool)
 	eval := &profile.RegressionEvaluator{
-		Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
-		Notifier: &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Query: profile.NewQuery(ch), Regressions: regressions,
+		Notifier: &profile.RegressionNotifier{
+			Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+			Regressions: regressions, Pool: pool,
+		},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour, Config: cfg,
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
@@ -115,9 +122,15 @@ func TestRegressionEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 
 	cfg := profile.DefaultProfileRegressionConfig()
+	regressions := profile.NewRegressionService(pool)
 	eval := &profile.RegressionEvaluator{
-		Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
-		Notifier: &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Query: profile.NewQuery(ch), Regressions: regressions,
+		Notifier: &profile.RegressionNotifier{
+			Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+			Regressions: regressions, Pool: pool,
+		},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour, Config: cfg,
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
 	}
@@ -167,9 +180,15 @@ func TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *t
 
 	cfg := profile.DefaultProfileRegressionConfig()
 	inWindow := true
+	regressions := profile.NewRegressionService(pool)
 	eval := &profile.RegressionEvaluator{
-		Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
-		Notifier: &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Query: profile.NewQuery(ch), Regressions: regressions,
+		Notifier: &profile.RegressionNotifier{
+			Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+			Regressions: regressions, Pool: pool,
+		},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour, Config: cfg,
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
 	}

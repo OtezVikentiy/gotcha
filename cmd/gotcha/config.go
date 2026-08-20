@@ -112,6 +112,11 @@ type Config struct {
 	ProfileEvalInterval int
 	HostEvalInterval    int
 	SLOEvalInterval     int
+	// EscalationInterval — период тика централизованного планировщика
+	// эскалаций (B4, T8): как часто он проверяет, не настала ли задержка
+	// очередной ступени лесенки для открытых неподтверждённых инцидентов
+	// всех 5 источников.
+	EscalationInterval  int
 	OutboxRetentionDays int
 	// PurgeReconcileHours — период сверки телеметрии удалённых проектов
 	// (GOTCHA_PURGE_RECONCILE_HOURS); 0 выключает сверку. Ноль здесь не
@@ -492,6 +497,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
 		HostEvalInterval:         intNum("GOTCHA_HOST_EVAL_INTERVAL", 60),
 		SLOEvalInterval:          intNum("GOTCHA_SLO_EVAL_INTERVAL", 120),
+		EscalationInterval:       intNum("GOTCHA_ESCALATION_INTERVAL", 60),
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
 		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
@@ -722,6 +728,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.SLOEvalInterval < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_SLO_EVAL_INTERVAL must be >= 1, got %d", cfg.SLOEvalInterval)
+	}
+	if cfg.EscalationInterval < 1 {
+		return Config{}, fmt.Errorf("GOTCHA_ESCALATION_INTERVAL must be >= 1, got %d", cfg.EscalationInterval)
 	}
 	// Квоты: 0 = безлимит (легитимно в любой редакции), отрицательные — ошибка.
 	if cfg.DefaultEventQuota < 0 {

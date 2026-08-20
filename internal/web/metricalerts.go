@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -48,7 +49,7 @@ func metricRuleFormState(r *http.Request) templates.FormState {
 	f := templates.FormState{}
 	for _, name := range []string{
 		"metric_name", "aggregation", "comparator", "threshold",
-		"window_seconds", "environment", "label_key", "label_value",
+		"window_seconds", "environment", "label_key", "label_value", "severity",
 	} {
 		if v := r.FormValue(name); v != "" {
 			f[name] = v
@@ -130,6 +131,16 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, metricRuleFormState(r), i18n.T(r.Context(), "err.metricalert.window_positive"))
 		return
 	}
+	// severity — "" (наследовать дефолт источника 'warning') | critical | warning
+	// (escalation.SeverityCritical/Warning, T4/T7 резолвят лесенку эскалации по
+	// этому override — см. ruleSeverity в evaluator.go). Select в форме отдаёт
+	// только эти три значения, но проверяем и на прямой POST мимо формы — иначе
+	// произвольная строка дойдёт до CHECK-ограничения БД и 500-нет вместо 422.
+	severity := r.FormValue("severity")
+	if severity != "" && severity != escalation.SeverityCritical && severity != escalation.SeverityWarning {
+		h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, metricRuleFormState(r), i18n.T(r.Context(), "err.metricalert.invalid_rule"))
+		return
+	}
 	rule := metric.Rule{
 		ProjectID:     projectID,
 		MetricName:    r.FormValue("metric_name"),
@@ -141,6 +152,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 		LabelKey:      r.FormValue("label_key"),
 		LabelValue:    r.FormValue("label_value"),
 		Enabled:       true,
+		Severity:      severity,
 	}
 	if _, err := h.MetricRules.Create(r.Context(), rule); err != nil {
 		if errors.Is(err, metric.ErrInvalidRule) {

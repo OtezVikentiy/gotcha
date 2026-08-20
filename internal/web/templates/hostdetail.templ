@@ -355,14 +355,16 @@ templ hostStatusText(kind string, problemKinds []string) {
 // выглядел как «0.93» при «93%» в списке строкой выше, а тишина — как «3.6K»
 // (секунды без единицы). Таблица «вид → формат» одна на карточку и на текст
 // уведомления, см. докблок host.ValueLabel.
-templ hostOpenIncidentRow(inc host.Incident) {
+templ hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool) {
 	<li class="host-incident-open">
 		<span class={ hostStatusBadgeClass("problem") }>{ i18n.T(ctx, "hosts.kind."+inc.Kind) }</span>
+		@incidentSeverityBadge(inc.Severity)
 		{ host.ValueLabel(ctx, inc.Kind, inc.CurrentValue) }
 		if inc.Detail != "" {
 			<span class="hint">({ inc.Detail })</span>
 		}
 		@relativeTime(inc.StartedAt)
+		@ackControl(projectID, "host", inc.ID, canOperate, inc.AcknowledgedAt)
 	</li>
 }
 
@@ -370,6 +372,7 @@ templ hostIncidentRow(inc host.Incident) {
 	<tr>
 		<td>@incidentStatusBadge(inc.Status)</td>
 		<td>{ i18n.T(ctx, "hosts.kind."+inc.Kind) }</td>
+		<td>@incidentSeverityBadge(inc.Severity)</td>
 		<td class="num">{ host.ValueLabel(ctx, inc.Kind, inc.PeakValue) }</td>
 		<td class="num">{ host.ValueLabel(ctx, inc.Kind, inc.CurrentValue) }</td>
 		<td>@relativeTime(inc.StartedAt)</td>
@@ -443,7 +446,7 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 				} else {
 					<ul class="host-incident-list">
 						for _, inc := range vm.OpenIncidents {
-							@hostOpenIncidentRow(inc)
+							@hostOpenIncidentRow(inc, vm.ProjectID, vm.CanOperate)
 						}
 					</ul>
 				}
@@ -472,6 +475,7 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 									<tr>
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
 										<th scope="col">{ i18n.T(ctx, "hosts.table.kind") }</th>
+										<th scope="col">{ i18n.T(ctx, "incidents.table.severity") }</th>
 										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
 										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.started") }</th>

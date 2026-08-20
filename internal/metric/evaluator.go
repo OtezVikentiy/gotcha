@@ -4,6 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 const evaluatorDefaultInterval = 60 * time.Second
@@ -31,6 +35,16 @@ type Evaluator struct {
 	// (inMaintenance всегда false), а не паникует. ПРОД (main.go,
 	// startEvaluators) обязан его заполнять.
 	Maint MaintenanceChecker
+
+	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
+	// severity) на открытии инцидента. Nil-совместим — деградированная сборка
+	// без него просто не уведомляет об открытии.
+	Policy *escalation.PolicyStore
+
+	// Pool — та же PG, что под Incidents/Rules: читает лог эскалации
+	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
+	// notifyClose, escalation.RecoveryChannels). Nil-совместим.
+	Pool *pgxpool.Pool
 }
 
 // Run тикает каждый Interval, пока не отменят ctx.
@@ -90,13 +104,13 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 	switch {
 	case d.Open:
 		inMaint := e.inMaintenance(ctx, r.ProjectID, now)
-		in, created, err := e.Incidents.Open(ctx, r.ID, r.ProjectID, current, inMaint)
+		in, created, err := e.Incidents.Open(ctx, r.ID, r.ProjectID, current, inMaint, r.Severity)
 		if err != nil {
 			slog.Error("metric evaluator: open failed", "rule_id", r.ID, "error", err)
 			return
 		}
 		if created && !inMaint {
-			e.notify(ctx, r, in, current, current, true)
+			e.notifyOpen(ctx, r, in)
 		}
 	case d.Bump:
 		peak := worse(r.Comparator, open.PeakValue, current)
@@ -109,10 +123,21 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 			slog.Error("metric evaluator: resolve failed", "rule_id", r.ID, "error", err)
 			return
 		}
-		if ok && !open.InMaintenance {
-			e.notify(ctx, r, open, current, open.PeakValue, false)
+		if ok {
+			e.notifyClose(ctx, open)
 		}
 	}
+}
+
+// ruleSeverity — severity для резолва лесенки эскалации: override правила
+// (Task 5, metric_alert_rules.severity), а "" (нет override) — table-DEFAULT
+// metric_incidents.severity ('warning', 0077), той же константой, что
+// IncidentService.Open подставляет в БД через COALESCE.
+func ruleSeverity(r Rule) string {
+	if r.Severity != "" {
+		return r.Severity
+	}
+	return escalation.SeverityWarning
 }
 
 // inMaintenance — проект сейчас в окне обслуживания (B3), для гейта
@@ -134,21 +159,55 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 	return v
 }
 
-// notify шлёт событие и помечает инцидент, чтобы алерт ушёл ровно один раз.
-func (e *Evaluator) notify(ctx context.Context, r Rule, in Incident, current, peak float64, opened bool) {
-	if e.Notifier == nil {
+// notifyOpen — реролл (B4, T7): открытие инцидента резолвит лесенку
+// эскалации (project, severity правила — ruleSeverity) и шлёт РОВНО СТУПЕНЬ
+// 0, если её задержка (обычно 0) уже настала; остальные ступени досылает
+// планировщик (T8). Ошибка политики/уведомления не должна ронять оценку.
+func (e *Evaluator) notifyOpen(ctx context.Context, r Rule, in Incident) {
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
 	}
-	ev := MetricEvent{
-		ProjectID: r.ProjectID, RuleID: r.ID, MetricName: r.MetricName, Aggregation: r.Aggregation,
-		Comparator: r.Comparator, Threshold: r.Threshold, Current: current, Peak: peak,
-		Environment: r.Environment, LabelKey: r.LabelKey, LabelValue: r.LabelValue, Opened: opened,
+	ladder, err := e.Policy.Ladder(ctx, r.ProjectID, ruleSeverity(r))
+	if err != nil {
+		slog.Error("metric evaluator: escalation policy failed", "incident_id", in.ID, "error", err)
+		return
 	}
-	if err := e.Notifier.Notify(ctx, ev); err != nil {
-		slog.Error("metric evaluator: notify failed", "rule_id", r.ID, "error", err)
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "metric", e.Pool, in.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, in.ID, chs, step) },
+		func(id int64, from int) (bool, error) { return e.Incidents.BumpEscalation(ctx, id, from) })
+	if err != nil {
+		slog.Error("metric evaluator: notify step failed", "incident_id", in.ID, "error", err)
+		return
 	}
-	if err := e.Incidents.MarkNotified(ctx, in.ID, opened); err != nil {
-		slog.Error("metric evaluator: mark notified failed", "incident_id", in.ID, "error", err)
+	if sent {
+		if err := e.Incidents.MarkNotified(ctx, in.ID, true); err != nil {
+			slog.Error("metric evaluator: mark notified failed", "incident_id", in.ID, "error", err)
+		}
+	}
+}
+
+// notifyClose — реролл (B4, T7): закрытие инцидента шлёт recovery адресно, в
+// каналы из лога эскалации (escalation.RecoveryChannels); пустой набор —
+// молчание (M-7 брифа Task 6, ничего не отправлялось — отправлять «закрыт»
+// нечего).
+func (e *Evaluator) notifyClose(ctx context.Context, open Incident) {
+	if e.Pool == nil || e.Notifier == nil {
+		return
+	}
+	chs, err := escalation.RecoveryChannels(ctx, e.Pool, "metric", open.ID)
+	if err != nil {
+		slog.Error("metric evaluator: recovery channels failed", "incident_id", open.ID, "error", err)
+		return
+	}
+	if len(chs) == 0 {
+		return
+	}
+	if err := e.Notifier.NotifyRecovery(ctx, open.ID, chs); err != nil {
+		slog.Error("metric evaluator: notify recovery failed", "incident_id", open.ID, "error", err)
+		return
+	}
+	if err := e.Incidents.MarkNotified(ctx, open.ID, false); err != nil {
+		slog.Error("metric evaluator: mark notified failed", "incident_id", open.ID, "error", err)
 	}
 }
 

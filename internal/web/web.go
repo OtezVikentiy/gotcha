@@ -26,6 +26,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -235,6 +236,12 @@ type Handler struct {
 	// рендерится без процентов (HasData=false), расчёт достижения пропускается.
 	SLO          *slo.Store
 	SLOProviders map[slo.SLIKind]slo.Provider
+
+	// EscalationPolicy — политика эскалации проекта (лесенки critical/warning,
+	// B4 T7): раздел /projects/{id}/escalations читает и правит её тем же
+	// стором, что резолвят все пять оценщиков на открытии инцидента (T2). nil →
+	// маршруты эскалаций отвечают 404, тот же nil-guard, что и у SLO/Alerts.
+	EscalationPolicy *escalation.PolicyStore
 
 	// Hosts/HostIncidents/HostSettings — реестр хостов, их встроенные
 	// инциденты (диск/память/нагрузка/тишина) и пороги (план A1): страницы
@@ -611,6 +618,17 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/alerts/channels/update", h.requireUser(http.HandlerFunc(h.alertsChannelUpdate)))
 	inner.Handle("POST /projects/{id}/alerts/channels/delete", h.requireUser(http.HandlerFunc(h.alertsChannelDelete)))
 	inner.Handle("POST /projects/{id}/alerts/channels/test", h.requireUser(http.HandlerFunc(h.alertsChannelTest)))
+
+	// Эскалации (B4, задача 9): редактор лесенок critical/warning + dry-run-
+	// предпросмотр. Доступ — оператор проекта (requireProjectOperator), как
+	// alerts/slos/metric-alerts выше.
+	inner.Handle("GET /projects/{id}/escalations", h.requireUser(http.HandlerFunc(h.escalationsPage)))
+	inner.Handle("POST /projects/{id}/escalations", h.requireUser(http.HandlerFunc(h.escalationsSave)))
+
+	// Ack инцидентов (B4, задача 10): один эндпоинт на все 5 источников
+	// (host/metric/trace/profile/slo), диспатч по {source} — см.
+	// incidents_ack.go. Доступ — оператор проекта, как у escalations выше.
+	inner.Handle("POST /projects/{id}/incidents/{source}/{incident_id}/ack", h.requireUser(http.HandlerFunc(h.incidentAck)))
 
 	inner.Handle("POST /orgs/{id}/settings/quota", h.requireUser(http.HandlerFunc(h.orgSettingsQuota)))
 

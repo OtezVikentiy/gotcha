@@ -35,6 +35,7 @@ var flashKeys = map[string]bool{
 	"flash.channel_test_sent": true,
 	"flash.team_deleted":      true,
 	"flash.rules_saved":       true,
+	"flash.escalations_saved": true,
 	"flash.subject_purged":    true,
 	"flash.invite_revoked":    true,
 	// Удаление проекта и организации сообщает про ОЧЕРЕДЬ, а не про

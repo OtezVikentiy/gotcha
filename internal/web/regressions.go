@@ -78,6 +78,14 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
+	// CanOperate — read-only, тот же приём, что hostDetail (renderHostDetail):
+	// список открыт всем участникам проекта (CanAccessProject выше), ack-кнопка
+	// на строке открытой регрессии — только оператору.
+	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 
 	filterName, keep := regressionStatusFilter(r.URL.Query().Get("status"))
 	all, err := h.Regressions.List(r.Context(), projectID, regressionsPreFilterLimit)
@@ -108,7 +116,7 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r), seasonal).Render(r.Context(), w)
+	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r), seasonal, canOperate).Render(r.Context(), w)
 }
 
 // regressionDeployAttribution для каждой регрессии из items возвращает текст

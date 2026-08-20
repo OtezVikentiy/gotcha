@@ -13,6 +13,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -42,6 +44,36 @@ func (f *fakeNotifier) HostIncidentResolved(_ context.Context, in host.Incident,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolved = append(f.resolved, in)
+	return f.err
+}
+
+// NotifyStep/NotifyRecovery (B4, T7) — реролл: Evaluator больше не зовёт
+// HostIncidentOpened/Resolved напрямую, а шлёт ступень лесенки/адресный
+// recovery через эти методы (см. host.Evaluator.notifyOpen/notifyClose).
+// Копят в те же opened/resolved слайсы, что и раньше — openedCount()/
+// resolvedCount() остаются верным сигналом «нотифаер позван на открытии/
+// закрытии» для существующих тестов, которым несущественно, каким именно
+// методом интерфейса это случилось.
+//
+// NotifyStep возвращает переданные channelIDs как реально «заенкенные» (T7-
+// fix): лог incident_escalations теперь пишет оркестрация (escalation.
+// SendStepIfDue) по этому возврату, а не сам нотифаер — без него мок не мог
+// бы участвовать в цепочке «open логирует → close находит лог и шлёт
+// recovery», и resolvedCount() навсегда оставался бы нулём.
+func (f *fakeNotifier) NotifyStep(_ context.Context, incidentID int64, channelIDs []int64, _ int) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opened = append(f.opened, host.Incident{ID: incidentID})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return channelIDs, nil
+}
+
+func (f *fakeNotifier) NotifyRecovery(_ context.Context, incidentID int64, _ []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolved = append(f.resolved, host.Incident{ID: incidentID})
 	return f.err
 }
 
@@ -75,6 +107,24 @@ func seedEvalProject(t *testing.T, pool *pgxpool.Pool) int64 {
 		t.Fatalf("project: %v", err)
 	}
 	return projectID
+}
+
+// seedAlertChannel заводит один включённый webhook-канал проекта. Нужен
+// тестам, проверяющим RECOVERY (resolvedCount): дефолт-лесенка эскалации
+// (escalation.PolicyStore.Ladder, B4) резолвится из РЕАЛЬНЫХ enabled-каналов
+// проекта — без единого канала её ChannelIDs пуст, notifyOpen нечего
+// логировать в incident_escalations, и notifyClose (RecoveryChannels) не
+// находит адресата вовсе. Тестам, которым важно только «нотифаер был позван
+// на открытии» (openedCount), канал не нужен — NotifyStep зовётся независимо
+// от того, есть ли что логировать.
+func seedAlertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) {
+	t.Helper()
+	asvc := alert.NewService(pool)
+	if _, err := asvc.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("seed alert channel: %v", err)
+	}
 }
 
 // seedEvalHost регистрирует хост проекта и возвращает его строку.
@@ -144,6 +194,8 @@ func newEvaluator(pool *pgxpool.Pool, ch driver.Conn, notifier host.Notifier) *h
 		Overrides: host.NewHostOverrideService(pool),
 		Groups:    host.NewGroupThresholdService(pool),
 		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
+		Pool:      pool,
 		Interval:  time.Hour, // тикер не используем — дёргаем Tick вручную
 		StartedAt: time.Now().UTC().Add(-24 * time.Hour),
 	}
@@ -232,6 +284,7 @@ func TestEvaluatorDiskRecoveryResolves(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 
@@ -388,6 +441,7 @@ func TestEvaluatorSilentOpensAndResolvesOnUpsert(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-01")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-10*time.Minute))
 
@@ -440,6 +494,7 @@ func TestEvaluatorSilentResolvesInsideHysteresisDeadZone(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-deadzone")
 
 	// Открываем: тишина 310с — заведомо выше порога 300с и выше верхней
@@ -888,13 +943,13 @@ type cancellingNotifier struct {
 	seenErrs []error
 }
 
-func (n *cancellingNotifier) HostIncidentOpened(ctx context.Context, in host.Incident, h host.Host, s host.Settings) error {
-	err := n.fakeNotifier.HostIncidentOpened(ctx, in, h, s)
+func (n *cancellingNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
+	enqueued, err := n.fakeNotifier.NotifyStep(ctx, incidentID, channelIDs, step)
 	n.mu.Lock()
 	n.seenErrs = append(n.seenErrs, ctx.Err())
 	n.mu.Unlock()
 	n.cancel()
-	return err
+	return enqueued, err
 }
 
 func (n *cancellingNotifier) notifierCtxErrs() []error {
@@ -1355,5 +1410,85 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	}
 	if notifier.resolvedCount() != 0 {
 		t.Errorf("resolved notifications = %d, want 0 (close by saved flag, not by current window)", notifier.resolvedCount())
+	}
+}
+
+// TestEvaluatorRecoveryReachesWokenChannelsAfterMaintenanceWindowEnds — M-7
+// (аудит B4, remediation A): инцидент открыт В окне обслуживания
+// (in_maintenance заморожен=true на инциденте, open-гейт не тронут — открытие
+// молчит), но за время жизни инцидента эскалация реально разбудила канал
+// (планировщик T8, здесь симулируем логом эскалации напрямую — вне этого
+// пакета). Окно кончается, инцидент резолвится ВНЕ окна: close ОБЯЗАН
+// прислать recovery разбуженному каналу, несмотря на замороженный
+// InMaintenance=true — старый гейт `!open.InMaintenance` на close-пути гасил
+// именно этот случай (M-7). Дискриминирует: падает, если гейт вернуть.
+func TestEvaluatorRecoveryReachesWokenChannelsAfterMaintenanceWindowEnds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedEvalProject(t, pool)
+	h := seedEvalHost(t, pool, pid, "web-01")
+	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
+
+	asvc := alert.NewService(pool)
+	chanID, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	eval := newEvaluator(pool, ch, notifier)
+	inWindow := true
+	eval.Maint = mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil })
+
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick open: %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	in, open, err := incidents.OpenFor(ctx, h.ID, "disk")
+	if err != nil {
+		t.Fatalf("OpenFor: %v", err)
+	}
+	if !open {
+		t.Fatal("disk incident must be open after 0.95 > 0.90 even in maintenance")
+	}
+	if !in.InMaintenance {
+		t.Fatal("Incident.InMaintenance = false, want true (open must persist the flag)")
+	}
+	if notifier.openedCount() != 0 {
+		t.Fatalf("opened notifications = %d, want 0 (open suppressed by maintenance, open-gate untouched)", notifier.openedCount())
+	}
+
+	// Планировщик (T8, вне этого пакета) реально эскалировал инцидент после
+	// открытия — разбудил канал. Симулируем это логом эскалации напрямую, как
+	// советует бриф remediation A, не поднимая живой планировщик в тесте.
+	if err := escalation.LogStep(ctx, pool, "host", in.ID, chanID, 0); err != nil {
+		t.Fatalf("log step: %v", err)
+	}
+
+	// Окно обслуживания закончилось.
+	inWindow = false
+
+	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.50, time.Minute)
+
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick resolve: %v", err)
+	}
+
+	if _, open, err := incidents.OpenFor(ctx, h.ID, "disk"); err != nil || open {
+		t.Fatalf("disk incident must be resolved after recovery to 0.50 (open=%v err=%v)", open, err)
+	}
+	if notifier.resolvedCount() != 1 {
+		t.Errorf("resolved notifications = %d, want 1 (M-7: recovery must reach woken channel despite frozen InMaintenance=true)", notifier.resolvedCount())
 	}
 }

@@ -8,36 +8,43 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 var ErrRegressionNotFound = errors.New("profile: regression not found")
 
 // Regression — строка profile_regressions (для оценщика и UI).
 type Regression struct {
-	ID            int64
-	ProjectID     int64
-	Service       string
-	ProfileType   string
-	Function      string
-	Status        string
-	BaselineShare float64
-	PeakShare     float64
-	CurrentShare  float64
-	StartedAt     time.Time
-	ResolvedAt    *time.Time
-	InMaintenance bool
-	NotifiedOpen  bool
-	NotifiedClose bool
+	ID             int64
+	ProjectID      int64
+	Service        string
+	ProfileType    string
+	Function       string
+	Status         string
+	BaselineShare  float64
+	PeakShare      float64
+	CurrentShare   float64
+	StartedAt      time.Time
+	ResolvedAt     *time.Time
+	InMaintenance  bool
+	NotifiedOpen   bool
+	NotifiedClose  bool
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
+	Severity       string
 }
 
 const regressionColumns = `id, project_id, service, profile_type, function, status,
-	baseline_share, peak_share, current_share, started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	baseline_share, peak_share, current_share, started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by, severity`
 
 func scanRegression(row pgx.Row) (Regression, error) {
 	var r Regression
 	err := row.Scan(&r.ID, &r.ProjectID, &r.Service, &r.ProfileType, &r.Function, &r.Status,
 		&r.BaselineShare, &r.PeakShare, &r.CurrentShare, &r.StartedAt, &r.ResolvedAt,
-		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose)
+		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose,
+		&r.AcknowledgedAt, &r.AcknowledgedBy, &r.Severity)
 	return r, err
 }
 
@@ -95,6 +102,21 @@ func (s *RegressionService) OpenFor(ctx context.Context, projectID int64, servic
 	return r, true, nil
 }
 
+// GetByID возвращает регрессию по id (любого статуса). Нужен эскалации (B4,
+// T6): планировщик и StepNotifier знают только incidentID, объект регрессии
+// приходится перегружать заново.
+func (s *RegressionService) GetByID(ctx context.Context, id int64) (Regression, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+regressionColumns+" FROM profile_regressions WHERE id=$1", id)
+	r, err := scanRegression(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Regression{}, false, nil
+	}
+	if err != nil {
+		return Regression{}, false, fmt.Errorf("profile: get regression by id: %w", err)
+	}
+	return r, true, nil
+}
+
 // Bump обновляет открытый инцидент: current_share=$2, peak_share=max(peak,$2).
 func (s *RegressionService) Bump(ctx context.Context, id int64, current float64) error {
 	tag, err := s.pool.Exec(ctx, `
@@ -140,6 +162,71 @@ func (s *RegressionService) MarkNotified(ctx context.Context, id int64, open boo
 		return ErrRegressionNotFound
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
+// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
+// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+func (s *RegressionService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE profile_regressions SET acknowledged_at=now(), acknowledged_by=$3
+		WHERE id=$1 AND project_id=$2 AND status='open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, projectID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("profile: acknowledge regression: %w", err)
+	}
+	return true, nil
+}
+
+// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
+// 'profile' в incident_escalations (0077).
+func (s *RegressionService) Name() string { return "profile" }
+
+// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
+// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
+// profile_regressions_esc_pending_idx (0077).
+func (s *RegressionService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, project_id, started_at, severity, escalation_level
+		FROM profile_regressions WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("profile: open unacked regressions: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("profile: open unacked regressions scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
+// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
+// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+func (s *RegressionService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE profile_regressions SET escalation_level = $2 + 1, last_escalated_at = now()
+		WHERE id = $1 AND escalation_level = $2
+		RETURNING id`, id, from)
+	var bumpedID int64
+	err := row.Scan(&bumpedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("profile: bump escalation: %w", err)
+	}
+	return true, nil
 }
 
 // List возвращает регрессии проекта, свежайшие первыми. status: ""/"all" — все,

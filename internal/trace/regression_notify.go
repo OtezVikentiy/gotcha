@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -52,6 +55,16 @@ type RegressionNotifier struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор (№133–136).
 	Locale i18n.Locale
+
+	// Regressions — источник перезагрузки регрессии по ID (B4, T6):
+	// планировщик эскалации (T8) хранит только incidentID, у NotifyStep/
+	// NotifyRecovery нет готового RegressionEvent на входе, как у Notify.
+	Regressions *RegressionService
+
+	// Pool — та же PG, что под Regressions/Alerts/Outbox: пишет лог эскалации
+	// incident_escalations (B4, T6, миграция 0077) после каждого успешного
+	// Enqueue в NotifyStep.
+	Pool *pgxpool.Pool
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -59,9 +72,98 @@ type RegressionNotifier struct {
 // ошибки логируются и собираются через errors.Join (как в uptime.OutboxNotifier).
 // Проект без включённых каналов — не ошибка: задач просто не будет.
 func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) error {
+	_, err := n.dispatch(ctx, ev, nil)
+	return err
+}
+
+// NotifyStep — эскалационное уведомление открытой регрессии (B4, T6): повтор
+// OPEN-текста в ЗАДАННЫЕ channelIDs. Возвращает каналы, в которые РЕАЛЬНО
+// поставлена задача (deliverable-подмножество channelIDs, прошедшее фильтры
+// dispatch) — лог incident_escalations пишет ОРКЕСТРАЦИЯ (escalation.
+// SendStepIfDue), не сам нотифаер (реролл B4, T7-fix): лог внутри NotifyStep
+// работал только с реальным нотифаером и молчал с мок-нотифаерами тестов, из-
+// за чего RecoveryChannels не находил ничего и recovery немел. Регрессия
+// грузится заново по ID — планировщик эскалации (T8) хранит только
+// incidentID. channelIDs nil/пусто — все deliverable-каналы проекта (как у
+// Notify).
+func (n *RegressionNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
+	r, ok, err := n.Regressions.GetByID(ctx, incidentID)
+	if err != nil {
+		return nil, fmt.Errorf("trace: notify step: load regression: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("trace: notify step: regression %d not found", incidentID)
+	}
+	ev := regressionOpenEvent(r)
+	return n.dispatch(ctx, ev, channelIDs)
+}
+
+// NotifyRecovery — CLOSE-уведомление регрессии (B4, T6) в ЗАДАННЫЕ
+// channelIDs (recovery не эскалирует — не логируется вообще). Регрессия
+// грузится заново по ID, как в NotifyStep. channelIDs nil/пусто — все
+// deliverable-каналы проекта.
+func (n *RegressionNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	r, ok, err := n.Regressions.GetByID(ctx, incidentID)
+	if err != nil {
+		return fmt.Errorf("trace: notify recovery: load regression: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("trace: notify recovery: regression %d not found", incidentID)
+	}
+	ev := regressionCloseEvent(r, time.Now())
+	_, err = n.dispatch(ctx, ev, channelIDs)
+	return err
+}
+
+// regressionOpenEvent / regressionCloseEvent собирают RegressionEvent из
+// перезагруженной по ID строки perf_regressions (B4, T6): PctIncrease
+// пересчитывается из baseline/current (не хранится в таблице), duration —
+// от StartedAt до ResolvedAt (уже закрыта к моменту вызова) либо now (ещё не
+// закрыта — recovery позвал раньше Resolve).
+func regressionOpenEvent(r Regression) RegressionEvent {
+	return RegressionEvent{
+		Kind:          "regression_open",
+		ProjectID:     r.ProjectID,
+		Target:        r.Target,
+		Metric:        r.Metric,
+		BaselineValue: r.BaselineValue,
+		CurrentValue:  r.CurrentValue,
+		PctIncrease:   pctIncrease(r.BaselineValue, r.CurrentValue),
+	}
+}
+
+func regressionCloseEvent(r Regression, now time.Time) RegressionEvent {
+	end := now
+	if r.ResolvedAt != nil {
+		end = *r.ResolvedAt
+	}
+	d := end.Sub(r.StartedAt)
+	if d < 0 {
+		d = 0
+	}
+	return RegressionEvent{
+		Kind:            "regression_close",
+		ProjectID:       r.ProjectID,
+		Target:          r.Target,
+		Metric:          r.Metric,
+		BaselineValue:   r.BaselineValue,
+		CurrentValue:    r.CurrentValue,
+		PctIncrease:     pctIncrease(r.BaselineValue, r.CurrentValue),
+		DurationSeconds: int64(d.Seconds()),
+	}
+}
+
+// dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
+// набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
+// (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
+// email-гейта (эскалация в конкретную ступень лесенки). Возвращает ID
+// каналов, в которые задача РЕАЛЬНО поставлена — логировать их в
+// incident_escalations или нет, решает вызывающий (эволюатор через
+// escalation.SendStepIfDue), не dispatch.
+func (n *RegressionNotifier) dispatch(ctx context.Context, ev RegressionEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.ProjectID)
 	if err != nil {
-		return fmt.Errorf("trace: regression notify: project channels: %w", err)
+		return nil, fmt.Errorf("trace: regression notify: project channels: %w", err)
 	}
 	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
 	// получатель, у которого нет своей локали.
@@ -72,8 +174,12 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 	body := regressionBody(ctx, ev, url)
 
 	var errs error
+	var enqueued []int64
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			continue
+		}
+		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -110,9 +216,11 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev RegressionEvent) err
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("trace: regression notify: enqueue failed", "channel_id", ch.ID, "error", err)
 			errs = errors.Join(errs, fmt.Errorf("trace: regression notify: enqueue channel %d: %w", ch.ID, err))
+			continue
 		}
+		enqueued = append(enqueued, ch.ID)
 	}
-	return errs
+	return enqueued, errs
 }
 
 // regressionSubject строит тему уведомления по виду события из каталога i18n

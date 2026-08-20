@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // maxName — максимум рун в имени SLO (капается по рунам, не по байтам).
@@ -160,12 +162,14 @@ func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
 }
 
 const incidentColumns = `id, slo_id, project_id, status, burn_rate, budget_remaining,
-	started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by, severity`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.SLOID, &in.ProjectID, &in.Status, &in.BurnRate, &in.BudgetRemaining,
-		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
+		&in.AcknowledgedAt, &in.AcknowledgedBy, &in.Severity)
 	return in, err
 }
 
@@ -179,6 +183,22 @@ func (s *Store) OpenIncidentFor(ctx context.Context, sloID int64) (Incident, boo
 	}
 	if err != nil {
 		return Incident{}, false, fmt.Errorf("slo: open incident for: %w", err)
+	}
+	return in, true, nil
+}
+
+// GetIncidentByID возвращает инцидент сжигания бюджета по id (любого
+// статуса). Нужен эскалации (B4, T6): планировщик и StepNotifier знают
+// только incidentID, объект инцидента приходится перегружать заново. Не
+// путать с Get — тот читает определение SLO (slos), а не инцидент.
+func (s *Store) GetIncidentByID(ctx context.Context, id int64) (Incident, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM slo_incidents WHERE id = $1", id)
+	in, err := scanIncident(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, false, nil
+	}
+	if err != nil {
+		return Incident{}, false, fmt.Errorf("slo: get incident by id: %w", err)
 	}
 	return in, true, nil
 }
@@ -265,6 +285,71 @@ func (s *Store) MarkNotified(ctx context.Context, incidentID int64, open bool) e
 		return fmt.Errorf("slo: mark notified: %w", err)
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
+// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
+// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+func (s *Store) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE slo_incidents SET acknowledged_at = now(), acknowledged_by = $3
+		WHERE id = $1 AND project_id = $2 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, projectID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("slo: acknowledge incident: %w", err)
+	}
+	return true, nil
+}
+
+// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
+// 'slo' в incident_escalations (0077).
+func (s *Store) Name() string { return "slo" }
+
+// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
+// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
+// slo_incidents_esc_pending_idx (0077).
+func (s *Store) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, project_id, started_at, severity, escalation_level
+		FROM slo_incidents WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("slo: open unacked incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("slo: open unacked incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
+// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
+// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+func (s *Store) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE slo_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
+		WHERE id = $1 AND escalation_level = $2
+		RETURNING id`, id, from)
+	var bumpedID int64
+	err := row.Scan(&bumpedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("slo: bump escalation: %w", err)
+	}
+	return true, nil
 }
 
 // Incidents возвращает инциденты SLO в проекте, свежайшие первыми.

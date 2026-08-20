@@ -167,7 +167,7 @@ func AreaForPath(path string) string {
 					return "logs"
 				case "monitors", "incidents", "maintenance", "statuspages":
 					return "uptime"
-				case "alerts", "slos":
+				case "alerts", "slos", "escalations":
 					return "alerts"
 				case "settings", "setup":
 					// Not a rail area (nothing lights up in the rail), but
@@ -239,6 +239,8 @@ func BackLabelKey(rawPath string) string {
 				return "nav.alerts"
 			case "slos":
 				return "nav.slo"
+			case "escalations":
+				return "nav.escalations"
 			case "settings", "setup":
 				return "nav.project_settings"
 			}
@@ -350,6 +352,9 @@ func Subsections(s Shell) []NavItem {
 			// сжигание бюджета шлют инциденты по тем же каналам проекта, что и
 			// остальные пункты этой области. Тот же гейт CanOperate.
 			{LabelKey: "nav.slo", Href: "/projects/" + effID + "/slos"},
+			// Эскалации (B4, задача 9) — лесенки critical/warning поверх тех же
+			// каналов проекта; операционная настройка, тот же гейт CanOperate.
+			{LabelKey: "nav.escalations", Href: "/projects/" + effID + "/escalations"},
 		}
 	case "docs":
 		// Doc page labels come from the markdown H1 (localized by

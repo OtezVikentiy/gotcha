@@ -51,11 +51,19 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 		h.notFound(w, r)
 		return
 	}
+	// CanOperate — read-only, тот же приём, что regressionsList/hostDetail:
+	// список открыт всем участникам проекта, ack-кнопка на открытой регрессии —
+	// только оператору.
+	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	filter := profileRegressionStatusFilter(r.URL.Query().Get("status"))
 	regs, err := h.ProfileRegressions.List(r.Context(), projectID, filter, 200)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	_ = templates.ProfileRegressionsList(projectID, regs, filter, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.ProfileRegressionsList(projectID, regs, filter, h.currentEmail(r), canOperate).Render(r.Context(), w)
 }

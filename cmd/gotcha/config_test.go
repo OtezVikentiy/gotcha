@@ -563,6 +563,19 @@ func TestLoadConfigHostEvalInterval(t *testing.T) {
 	}
 }
 
+func TestLoadConfigEscalationInterval(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.EscalationInterval != 60 {
+		t.Errorf("EscalationInterval = %d, want 60", cfg.EscalationInterval)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_ESCALATION_INTERVAL": "0"}), nil); err == nil {
+		t.Error("zero escalation interval must fail")
+	}
+}
+
 func TestLoadConfig_Registration(t *testing.T) {
 	// Дефолт — invite.
 	cfg, err := loadConfig(getenvFrom(nil), nil)

@@ -114,7 +114,7 @@ templ regressionStatusTab(projectID int64, value, label, active string) {
 // RegressionsList — GET /projects/{id}/regressions: таблица регрессий
 // производительности с вкладками фильтра по статусу. Только чтение, без JS
 // (обычные ссылки), визуально повторяет список инцидентов uptime.
-templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string, seasonal bool) {
+templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string, seasonal bool, canOperate bool) {
 	@layout(i18n.T(ctx, "nav.regressions"), userEmail) {
 		<div class="regressions">
 			<h1>
@@ -142,8 +142,10 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, deployAtt
 								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.increase") }</th>
 								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.range") }</th>
 								<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
+								<th scope="col">{ i18n.T(ctx, "incidents.table.severity") }</th>
 								<th scope="col">{ i18n.T(ctx, "perf.regressions.table.started") }</th>
 								<th scope="col" class="num">{ i18n.T(ctx, "perf.regressions.table.duration") }</th>
+								<th scope="col"></th>
 							</tr>
 						</thead>
 						<tbody>
@@ -154,6 +156,7 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, deployAtt
 									<td class="num">{ regressionIncreasePct(reg) }</td>
 									<td class="num">{ regressionValueRange(ctx, reg) }</td>
 									<td><span class={ regressionStatusBadgeClass(reg.Status) }>{ regressionStatusLabel(ctx, reg.Status) }</span></td>
+									<td>@incidentSeverityBadge(reg.Severity)</td>
 									<td>
 										@relativeTime(reg.StartedAt)
 										if i < len(deployAttr) && deployAttr[i] != "" {
@@ -161,6 +164,11 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, deployAtt
 										}
 									</td>
 									<td class="num">{ regressionDurationText(ctx, reg) }</td>
+									<td>
+										if reg.Status == "open" {
+											@ackControl(projectID, "trace", reg.ID, canOperate, reg.AcknowledgedAt)
+										}
+									</td>
 								</tr>
 							}
 						</tbody>

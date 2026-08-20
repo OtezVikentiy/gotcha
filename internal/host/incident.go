@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // Kinds — виды встроенных инцидентов хоста (host_incidents.kind, CHECK
@@ -20,29 +22,34 @@ var ErrIncidentNotFound = errors.New("host: incident not found")
 // Incident — открытый или закрытый инцидент встроенного порога хоста
 // (host_incidents): диск/память/нагрузка/тишина.
 type Incident struct {
-	ID            int64
-	ProjectID     int64
-	HostID        int64
-	Kind          string
-	Status        string
-	CurrentValue  float64
-	PeakValue     float64
-	Detail        string
-	StartedAt     time.Time
-	ResolvedAt    *time.Time
-	InMaintenance bool
-	NotifiedOpen  bool
-	NotifiedClose bool
+	ID             int64
+	ProjectID      int64
+	HostID         int64
+	Kind           string
+	Status         string
+	CurrentValue   float64
+	PeakValue      float64
+	Detail         string
+	StartedAt      time.Time
+	ResolvedAt     *time.Time
+	InMaintenance  bool
+	NotifiedOpen   bool
+	NotifiedClose  bool
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
+	Severity       string
 }
 
 const incidentColumns = `id, project_id, host_id, kind, status, current_value, peak_value,
-	detail, started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	detail, started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by, severity`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.ProjectID, &in.HostID, &in.Kind, &in.Status,
 		&in.CurrentValue, &in.PeakValue, &in.Detail,
-		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
+		&in.AcknowledgedAt, &in.AcknowledgedBy, &in.Severity)
 	return in, err
 }
 
@@ -100,6 +107,21 @@ func (s *IncidentService) OpenFor(ctx context.Context, hostID int64, kind string
 	}
 	if err != nil {
 		return Incident{}, false, fmt.Errorf("host: open incident for: %w", err)
+	}
+	return in, true, nil
+}
+
+// GetByID возвращает инцидент по id (любого статуса). Нужен эскалации (B4,
+// T6): планировщик и StepNotifier знают только incidentID, объект инцидента
+// приходится перегружать заново.
+func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM host_incidents WHERE id = $1", id)
+	in, err := scanIncident(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, false, nil
+	}
+	if err != nil {
+		return Incident{}, false, fmt.Errorf("host: get incident by id: %w", err)
 	}
 	return in, true, nil
 }
@@ -238,6 +260,74 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 		return ErrIncidentNotFound
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию (T4 читает
+// acknowledged_at IS NULL). ok=false, если инцидент уже подтверждён или закрыт
+// (идемпотентно: WHERE держит и status='open', и acknowledged_at IS NULL).
+// project_id в WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3):
+// оператор проекта A не подтвердит инцидент проекта B подобранным id, даже
+// если вызывающий код когда-нибудь забудет свериться заранее.
+func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE host_incidents SET acknowledged_at = now(), acknowledged_by = $3
+		WHERE id = $1 AND project_id = $2 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, projectID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("host: acknowledge incident: %w", err)
+	}
+	return true, nil
+}
+
+// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
+// 'host' в incident_escalations (0077).
+func (s *IncidentService) Name() string { return "host" }
+
+// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
+// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
+// host_incidents_esc_pending_idx (0077).
+func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, project_id, started_at, severity, escalation_level
+		FROM host_incidents WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("host: open unacked incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("host: open unacked incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
+// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
+// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE host_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
+		WHERE id = $1 AND escalation_level = $2
+		RETURNING id`, id, from)
+	var bumpedID int64
+	err := row.Scan(&bumpedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("host: bump escalation: %w", err)
+	}
+	return true, nil
 }
 
 // ListByProject возвращает инциденты проекта, свежайшие первыми (для UI).

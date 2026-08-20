@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Notification escalation: each project can define a ladder of steps per severity (critical/warning) — every step widens who gets notified after a configurable delay from when the incident opened, for host, metric, trace/profile regression, and SLO incidents alike. An operator can acknowledge an open incident from its screen to stop further escalation, and a severity badge now shows on every incident (metric alert rules can override their severity instead of inheriting the source's default). Recovery notifications go out only to the channels that actually received an escalation step. A new Escalations screen configures both ladders per project, with a dry-run preview of what each would actually send.
+
 ## [0.16.0] - 2026-08-20
 
 ### Added

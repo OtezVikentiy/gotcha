@@ -32,9 +32,9 @@ func TestRegressionEvaluatorTickCancelledCtx(t *testing.T) {
 }
 
 // TestRegressionEvaluatorNilNotifier: тот же сценарий пробоя, что и в
-// OpenCloseAlertOnce, но с Notifier==nil. Инцидент должен открыться, а notify()
-// обязана рано выйти (Notifier==nil), не паникуя и не трогая Outbox —
-// покрывает ветку `if e.Notifier == nil { return }`.
+// OpenCloseAlertOnce, но с Notifier==nil. Инцидент должен открыться, а
+// notifyOpen() обязана рано выйти (Notifier==nil), не паникуя и не трогая
+// Outbox — покрывает ветку `if e.Policy == nil || e.Notifier == nil { return }`.
 func TestRegressionEvaluatorNilNotifier(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")

@@ -8,7 +8,10 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -40,6 +43,19 @@ type HostNotifier struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
 	Locale i18n.Locale
+
+	// Incidents/Hosts/Settings — источники перезагрузки инцидента по ID (B4,
+	// T6): планировщик эскалации (T8) хранит только incidentID, у NotifyStep/
+	// NotifyRecovery нет готового Incident/Host/Settings на входе, как у
+	// HostIncidentOpened/Resolved.
+	Incidents *IncidentService
+	Hosts     *Store
+	Settings  *SettingsService
+
+	// Pool — та же PG, что под Incidents/Hosts/Alerts/Outbox: пишет лог
+	// эскалации incident_escalations (B4, T6, миграция 0077) после каждого
+	// успешного Enqueue в NotifyStep.
+	Pool *pgxpool.Pool
 }
 
 // HostIncidentOpened реализует host.Notifier: инцидент открыт, ставит задачу
@@ -87,11 +103,12 @@ func (n *HostNotifier) HostRetired(ctx context.Context, h Host, open []Incident)
 	for _, in := range open {
 		rawKinds = append(rawKinds, in.Kind)
 	}
-	return n.dispatch(ctx, h.ProjectID, hostRetiredKind, subject, body, link, map[string]any{
+	_, err := n.dispatch(ctx, h.ProjectID, hostRetiredKind, subject, body, link, map[string]any{
 		"host_id":    h.ID,
 		"host_name":  h.Name,
 		"host_kinds": rawKinds,
-	})
+	}, nil)
+	return err
 }
 
 // kindLabels — виды закрываемых инцидентов человекочитаемым перечислением
@@ -148,10 +165,105 @@ func (n *HostNotifier) send(ctx context.Context, in Incident, h Host, opened boo
 	if in.Detail != "" {
 		extra["detail"] = in.Detail
 	}
-	return n.dispatch(ctx, in.ProjectID, kind,
+	_, err := n.dispatch(ctx, in.ProjectID, kind,
 		hostSubject(ctx, in, h, opened),
 		hostBody(ctx, in, h, opened, threshold, hasThreshold, link),
-		link, extra)
+		link, extra, nil)
+	return err
+}
+
+// NotifyStep — эскалационное уведомление открытого инцидента хоста (B4, T6):
+// повтор OPEN-текста (эскалация — это повтор открывающего алерта, не новый
+// вид события) в ЗАДАННЫЕ channelIDs. Возвращает каналы, в которые РЕАЛЬНО
+// поставлена задача (deliverable-подмножество channelIDs, прошедшее фильтры
+// dispatch) — лог incident_escalations пишет ОРКЕСТРАЦИЯ (escalation.
+// SendStepIfDue), а не сам нотифаер (реролл B4, T7-fix): логирование внутри
+// NotifyStep работало только с реальным нотифаером и молчало с мок-
+// нотифаерами тестов, из-за чего RecoveryChannels (лог) не находил ничего и
+// recovery немо. Инцидент/хост/настройки грузятся заново по ID — планировщик
+// эскалации (T8) хранит только incidentID, не сам объект. channelIDs
+// nil/пусто — все deliverable-каналы проекта (как у HostIncidentOpened).
+func (n *HostNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
+	in, ok, err := n.Incidents.GetByID(ctx, incidentID)
+	if err != nil {
+		return nil, fmt.Errorf("host: notify step: load incident: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("host: notify step: incident %d not found", incidentID)
+	}
+	hosts, err := n.Hosts.ListByIDs(ctx, []int64{in.HostID})
+	if err != nil {
+		return nil, fmt.Errorf("host: notify step: load host: %w", err)
+	}
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("host: notify step: host %d not found", in.HostID)
+	}
+	h := hosts[0]
+	s, err := n.Settings.Get(ctx, in.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("host: notify step: load settings: %w", err)
+	}
+
+	ctx = i18n.WithLocale(ctx, n.Locale)
+	threshold, hasThreshold := thresholdFor(in.Kind, s)
+	link := n.cardLink(in.ProjectID, h.Name)
+	extra := map[string]any{
+		"host_id":       h.ID,
+		"host_name":     h.Name,
+		"host_kind":     in.Kind,
+		"current_value": in.CurrentValue,
+		"peak_value":    in.PeakValue,
+	}
+	if hasThreshold {
+		extra["threshold"] = threshold
+	}
+	if in.Detail != "" {
+		extra["detail"] = in.Detail
+	}
+	return n.dispatch(ctx, in.ProjectID, hostAlertOpenKind,
+		hostSubject(ctx, in, h, true),
+		hostBody(ctx, in, h, true, threshold, hasThreshold, link),
+		link, extra, channelIDs)
+}
+
+// NotifyRecovery — CLOSE-уведомление инцидента хоста (B4, T6) в ЗАДАННЫЕ
+// channelIDs (recovery не эскалирует — не логируется вообще, ни здесь, ни в
+// оркестрации). Инцидент/хост грузятся заново по ID, как в NotifyStep.
+// channelIDs nil/пусто — все deliverable-каналы проекта.
+func (n *HostNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	in, ok, err := n.Incidents.GetByID(ctx, incidentID)
+	if err != nil {
+		return fmt.Errorf("host: notify recovery: load incident: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("host: notify recovery: incident %d not found", incidentID)
+	}
+	hosts, err := n.Hosts.ListByIDs(ctx, []int64{in.HostID})
+	if err != nil {
+		return fmt.Errorf("host: notify recovery: load host: %w", err)
+	}
+	if len(hosts) == 0 {
+		return fmt.Errorf("host: notify recovery: host %d not found", in.HostID)
+	}
+	h := hosts[0]
+
+	ctx = i18n.WithLocale(ctx, n.Locale)
+	link := n.cardLink(in.ProjectID, h.Name)
+	extra := map[string]any{
+		"host_id":       h.ID,
+		"host_name":     h.Name,
+		"host_kind":     in.Kind,
+		"current_value": in.CurrentValue,
+		"peak_value":    in.PeakValue,
+	}
+	if in.Detail != "" {
+		extra["detail"] = in.Detail
+	}
+	_, err = n.dispatch(ctx, in.ProjectID, hostAlertResolvedKind,
+		hostSubject(ctx, in, h, false),
+		hostBody(ctx, in, h, false, 0, false, link),
+		link, extra, channelIDs)
+	return err
 }
 
 // cardLink / listLink — адреса карточки хоста и списка хостов проекта.
@@ -168,21 +280,35 @@ func (n *HostNotifier) listLink(projectID int64) string {
 // dispatch — постановка одной готовой задачи в Outbox на каждый deliverable-
 // канал проекта. Ошибка Enqueue по одному каналу не прерывает остальные
 // (errors.Join), но возвращается наверх — как в metric.MetricNotifier.Notify.
-// Проект без каналов — не ошибка.
+// Проект без каналов — не ошибка. Возвращает ID каналов, в которые задача
+// РЕАЛЬНО поставлена — эскалационный лог incident_escalations по ним пишет
+// вызывающая оркестрация (escalation.SendStepIfDue), не dispatch: тот же
+// enqueued-список нужен и NotifyStep (лог), и никому больше, поэтому решать
+// логировать или нет — дело ЗВОНЯЩЕГО (эволюатор vs Notify/NotifyRecovery,
+// которые лог не пишут вовсе), а не dispatch.
 //
 // extra — поля payload сверх маршрутного минимума (имя хоста, значения,
 // порог): именно они вырезаются гейтом трансграничной передачи, поэтому
 // собраны отдельным аргументом, а не размазаны по телу цикла.
-func (n *HostNotifier) dispatch(ctx context.Context, projectID int64, kind, subject, body, link string, extra map[string]any) error {
+//
+// channelIDs (B4, T6) — набор каналов, в которые слать: nil/пусто — все
+// deliverable-каналы проекта (старое поведение open/close/retired, см. send/
+// HostRetired), непустой — фильтр по членству ПОСЛЕ Deliverable/email-гейта
+// (эскалация в конкретную ступень лесенки, NotifyStep/NotifyRecovery).
+func (n *HostNotifier) dispatch(ctx context.Context, projectID int64, kind, subject, body, link string, extra map[string]any, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("host: notify: project channels: %w", err)
+		return nil, fmt.Errorf("host: notify: project channels: %w", err)
 	}
 	listLink := n.listLink(projectID)
 
 	var errs error
+	var enqueued []int64
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			continue
+		}
+		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -232,9 +358,11 @@ func (n *HostNotifier) dispatch(ctx context.Context, projectID int64, kind, subj
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("host: notify: enqueue failed", "channel_id", ch.ID, "error", err)
 			errs = errors.Join(errs, fmt.Errorf("host: notify: enqueue channel %d: %w", ch.ID, err))
+			continue
 		}
+		enqueued = append(enqueued, ch.ID)
 	}
-	return errs
+	return enqueued, errs
 }
 
 // hostSubject / hostBody строят тексты из каталога i18n — по локали, положенной

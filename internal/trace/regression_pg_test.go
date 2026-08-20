@@ -110,6 +110,98 @@ func TestRegressionOpenIdempotent(t *testing.T) {
 	}
 }
 
+// TestRegressionAcknowledge — B4: Acknowledge на открытом инциденте ставит
+// acknowledged_at/acknowledged_by и возвращает ok=true; повторный вызов и
+// вызов на закрытом инциденте — идемпотентно ok=false. scan (List) после ack
+// отдаёт заполненные поля, до ack — nil.
+func TestRegressionAcknowledge(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := trace.NewRegressionService(pool)
+	ctx := context.Background()
+	pid := newPerfProject(t, pool, "reg-ack")
+
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "trace-ack@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /ack", "duration", 100, 250, false)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	list, err := svc.List(ctx, pid, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil || list[0].AcknowledgedBy != nil {
+		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
+	}
+
+	ok, err := svc.Acknowledge(ctx, rec.ID, pid, userID)
+	if err != nil || !ok {
+		t.Fatalf("Acknowledge = (%v,%v), want (true,nil)", ok, err)
+	}
+
+	list, err = svc.List(ctx, pid, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt == nil {
+		t.Fatalf("после Acknowledge: list=%+v err=%v, want AcknowledgedAt заполнено", list, err)
+	}
+	if list[0].AcknowledgedBy == nil || *list[0].AcknowledgedBy != userID {
+		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
+	}
+
+	// Повторный ack — идемпотентно ok=false.
+	if ok2, err := svc.Acknowledge(ctx, rec.ID, pid, userID); err != nil || ok2 {
+		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
+	}
+
+	// Acknowledge закрытого инцидента — ok=false.
+	if _, err := svc.Resolve(ctx, rec.ID, 50); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	closedRec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /ack2", "duration", 100, 250, false)
+	if err != nil {
+		t.Fatalf("Open closedRec: %v", err)
+	}
+	if _, err := svc.Resolve(ctx, closedRec.ID, 10); err != nil {
+		t.Fatalf("resolve closedRec: %v", err)
+	}
+	if okClosed, err := svc.Acknowledge(ctx, closedRec.ID, pid, userID); err != nil || okClosed {
+		t.Fatalf("Acknowledge закрытого = (%v,%v), want (false,nil)", okClosed, err)
+	}
+}
+
+// TestRegressionAcknowledgeForeignProject — project_id — часть WHERE
+// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
+func TestRegressionAcknowledgeForeignProject(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := trace.NewRegressionService(pool)
+	ctx := context.Background()
+	pid := newPerfProject(t, pool, "reg-ack-foreign")
+	otherPID := newPerfProject(t, pool, "reg-ack-foreign-2")
+
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "trace-ack-foreign@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	rec, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /ack-foreign", "duration", 100, 250, false)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if ok, err := svc.Acknowledge(ctx, rec.ID, otherPID, userID); err != nil || ok {
+		t.Fatalf("Acknowledge с чужим project_id = (%v,%v), want (false,nil)", ok, err)
+	}
+
+	list, err := svc.List(ctx, pid, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil {
+		t.Fatalf("после чужого Acknowledge: list=%+v err=%v, want AcknowledgedAt nil", list, err)
+	}
+}
+
 // TestRegressionBump: current обновляется, peak = max(peak, current).
 func TestRegressionBump(t *testing.T) {
 	pool := testenv.MigratedPG(t)

@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
@@ -67,6 +70,13 @@ const notifyTimeout = 10 * time.Second
 type Notifier interface {
 	HostIncidentOpened(ctx context.Context, in Incident, h Host, s Settings) error
 	HostIncidentResolved(ctx context.Context, in Incident, h Host) error
+
+	// NotifyStep/NotifyRecovery (B4, T7) — реролл open/recovery на лесенку
+	// эскалации: Evaluator больше не зовёт HostIncidentOpened/Resolved
+	// напрямую (см. notifyOpen/notifyClose), а шлёт СТУПЕНЬ лесенки и
+	// адресованный recovery через них. Реализованы HostNotifier (T6).
+	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error)
+	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
 // Evaluator периодически считает диск/память/нагрузку/тишину каждого живого
@@ -96,6 +106,19 @@ type Evaluator struct {
 	// никогда не подавляет (inMaintenance всегда false), а не паникует. ПРОД
 	// (main.go, startEvaluators) обязан его заполнять.
 	Maint MaintenanceChecker
+
+	// Policy — политика эскалации (B4, T7): на открытии инцидента резолвит
+	// лесенку (project, severity) и решает, какая ступень уходит сейчас (см.
+	// notifyOpen). Nil-совместим, как Overrides/Groups/Maint: деградированная
+	// сборка без него просто не уведомляет об открытии, а не паникует. ПРОД
+	// (main.go, startEvaluators) обязан его заполнять.
+	Policy *escalation.PolicyStore
+
+	// Pool — та же PG, что под Store/Incidents: читает лог эскалации
+	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
+	// notifyClose, escalation.RecoveryChannels). Nil-совместим — деградированная
+	// сборка без него просто не уведомляет о закрытии.
+	Pool *pgxpool.Pool
 
 	// StartedAt — момент, с которого оценщик наблюдает за хостами. Тишина
 	// хоста, накопленная ДО него, ему не принадлежит: пока продукт стоял
@@ -446,7 +469,7 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			return
 		}
 		if created && !inMaint {
-			e.notify(ctx, in, h, s, true)
+			e.notifyOpen(ctx, in)
 		}
 	case opened && silence <= threshold:
 		resolved, err := e.Incidents.Resolve(ctx, open.ID, silence)
@@ -454,8 +477,8 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			slog.Warn("host evaluator: silent resolve failed", "host_id", h.ID, "error", err)
 			return
 		}
-		if resolved && !open.InMaintenance {
-			e.notify(ctx, open, h, s, false)
+		if resolved {
+			e.notifyClose(ctx, open)
 		}
 	case opened && silence >= open.PeakValue*silentBumpGrowth:
 		// Инцидент держим открытым, но НЕ переписываем на каждом тике: current
@@ -599,7 +622,7 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 			return
 		}
 		if created && !inMaint {
-			e.notify(ctx, in, h, s, true)
+			e.notifyOpen(ctx, in)
 		}
 	case d.Bump:
 		peak := open.PeakValue
@@ -615,8 +638,8 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 			slog.Warn("host evaluator: resolve failed", "host_id", h.ID, "kind", kind, "error", err)
 			return
 		}
-		if resolved && !open.InMaintenance {
-			e.notify(ctx, open, h, s, false)
+		if resolved {
+			e.notifyClose(ctx, open)
 		}
 	}
 }
@@ -650,44 +673,72 @@ func (e *Evaluator) worstMountpoint(ctx context.Context, q *metric.Query, h Host
 	return best
 }
 
-// notify шлёт событие и помечает инцидент, чтобы алерт ушёл ровно один раз.
+// notifyOpen — реролл (B4, T7): открытие инцидента больше не шлёт сразу всем
+// каналам проекта, а резолвит лесенку эскалации (project, severity) и шлёт
+// РОВНО СТУПЕНЬ 0, если её задержка (обычно 0) уже настала — остальные
+// ступени досылает планировщик (T8) по мере срабатывания таймеров. Severity
+// хостовых инцидентов не переопределяется (в отличие от metric_alert_rules,
+// T5) — всегда 'critical' (DEFAULT host_incidents.severity, 0077).
 //
-// Контекст ОТВЯЗАН от дедлайна тика (WithoutCancel + собственный таймаут). Это
-// не осторожность, а необходимость: у подсистемы хостов нет механизма досылки
-// по флагу (в отличие от uptime с его last_reminded_at), поэтому уведомление,
-// не поставленное в очередь из-за исчерпанного бюджета, не уйдёт НИКОГДА —
-// инцидент останется открытым с notified_open=false, и «сервер лёг» не узнает
-// никто. Инцидент к этому моменту уже создан в базе, то есть решение
-// уведомить принято; отменять по дороге нечего.
+// Контекст ОТВЯЗАН от дедлайна тика (WithoutCancel + собственный таймаут) — та
+// же необходимость, что была у старого notify: у подсистемы хостов нет
+// механизма досылки по флагу, и уведомление, не поставленное в очередь из-за
+// исчерпанного бюджета тика, не ушло бы НИКОГДА.
 //
-// Таймаут всё же есть: без него повисший PostgreSQL держал бы горутину
-// оценщика неограниченно долго — тик обязан заканчиваться при любом поведении
-// зависимостей.
-//
-// Провал нотификатора НЕ помечает инцидент уведомлённым (как uptime.Detector.
-// notify). Досылки это не даёт — её в подсистеме хостов нет вовсе: следующий
-// тик увидит инцидент уже открытым, Open вернёт created=false, и сюда мы
-// повторно не придём. Смысл в честности флага: уведомление всё равно потеряно,
-// и оператор, разбирающий «почему не пришло письмо», должен видеть
-// notified_open=false — то есть «не отправлено», а не «отправлено, ищите
-// проблему у себя».
-func (e *Evaluator) notify(ctx context.Context, in Incident, h Host, s Settings, opened bool) {
+// Ошибка политики/уведомления НЕ должна ронять оценку — залогирована и
+// оценщик идёт дальше (инцидент в базе уже открыт независимо от notify).
+func (e *Evaluator) notifyOpen(ctx context.Context, in Incident) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
 	defer cancel()
-	if e.Notifier != nil {
-		var err error
-		if opened {
-			err = e.Notifier.HostIncidentOpened(ctx, in, h, s)
-		} else {
-			err = e.Notifier.HostIncidentResolved(ctx, in, h)
-		}
-		if err != nil {
-			slog.Error("host evaluator: notify failed", "incident_id", in.ID,
-				"host_id", h.ID, "kind", in.Kind, "opened", opened, "error", err)
-			return
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
+		return
+	}
+	ladder, err := e.Policy.Ladder(ctx, in.ProjectID, escalation.SeverityCritical)
+	if err != nil {
+		slog.Error("host evaluator: escalation policy failed", "incident_id", in.ID, "error", err)
+		return
+	}
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "host", e.Pool, in.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, in.ID, chs, step) },
+		func(id int64, from int) (bool, error) { return e.Incidents.BumpEscalation(ctx, id, from) })
+	if err != nil {
+		slog.Error("host evaluator: notify step failed", "incident_id", in.ID, "error", err)
+		return
+	}
+	if sent {
+		if err := e.Incidents.MarkNotified(ctx, in.ID, true); err != nil {
+			slog.Warn("host evaluator: mark notified failed", "incident_id", in.ID, "error", err)
 		}
 	}
-	if err := e.Incidents.MarkNotified(ctx, in.ID, opened); err != nil {
+}
+
+// notifyClose — реролл (B4, T7): закрытие инцидента шлёт recovery АДРЕСНО, в
+// каналы, которые видели хотя бы одну ступень эскалации этого инцидента (лог
+// incident_escalations), а не всем каналам проекта заново — канал, ни разу не
+// получивший тревогу (лесенка с delay>0, ещё не дошедшая до него), не должен
+// первым увидеть «инцидент закрыт» (M-7 брифа Task 6). Пустой набор каналов —
+// молчание: ничего не отправлялось, отправлять «закрыт» нечего.
+//
+// Контекст отвязан от дедлайна тика по той же причине, что и notifyOpen.
+func (e *Evaluator) notifyClose(ctx context.Context, in Incident) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
+	defer cancel()
+	if e.Pool == nil || e.Notifier == nil {
+		return
+	}
+	chs, err := escalation.RecoveryChannels(ctx, e.Pool, "host", in.ID)
+	if err != nil {
+		slog.Error("host evaluator: recovery channels failed", "incident_id", in.ID, "error", err)
+		return
+	}
+	if len(chs) == 0 {
+		return
+	}
+	if err := e.Notifier.NotifyRecovery(ctx, in.ID, chs); err != nil {
+		slog.Error("host evaluator: notify recovery failed", "incident_id", in.ID, "error", err)
+		return
+	}
+	if err := e.Incidents.MarkNotified(ctx, in.ID, false); err != nil {
 		slog.Warn("host evaluator: mark notified failed", "incident_id", in.ID, "error", err)
 	}
 }

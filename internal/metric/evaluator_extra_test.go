@@ -102,7 +102,7 @@ func TestEvaluatorRunDefaultInterval(t *testing.T) {
 }
 
 // TestEvaluatorBumpAndNilNotifier: без Notifier открытие инцидента не должно
-// падать (notify() рано выходит при Notifier==nil), а повторный тик с более
+// падать (notifyOpen() рано выходит при Notifier==nil), а повторный тик с более
 // экстремальным значением при уже открытом инциденте идёт по ветке d.Bump —
 // обновляет current/peak, не открывая новый и не закрывая.
 func TestEvaluatorBumpAndNilNotifier(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -687,6 +688,13 @@ func run() error {
 						EmailEnabled: emailSender.Configured(),
 						Details:      detailPolicy(cfg),
 						Locale:       i18n.Locale{Code: cfg.Locale},
+						// Incidents/Hosts/Settings/Pool — эскалация (B4, T6):
+						// StepNotifier перезагружает инцидент по ID (см.
+						// HostNotifier.NotifyStep).
+						Incidents: host.NewIncidentService(pg),
+						Hosts:     host.NewStore(pg),
+						Settings:  host.NewSettingsService(pg),
+						Pool:      pg,
 					},
 				}).Retire,
 			},
@@ -978,6 +986,12 @@ func run() error {
 		// uptime из uptime.Query; окна обслуживания не жгут бюджет).
 		webHandler.SLO = slo.NewStore(pg)
 		webHandler.SLOProviders = slo.Providers(trace.NewQuery(ch), uptime.NewQuery(ch), uptime.NewService(pg), cfg.RetentionDays)
+		// Эскалации (B4, задача 9): /projects/{id}/escalations читает и правит
+		// ту же политику, что резолвят оценщики (startEvaluators заводит свой
+		// отдельный NewPolicyStore(pg) — это дешёвый объект без состояния
+		// поверх пула, плодить общий синглтон между стартом оценщиков и
+		// web-обвязкой не требуется).
+		webHandler.EscalationPolicy = escalation.NewPolicyStore(pg)
 		webHandler.Profiles = profile.NewQuery(ch)
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
@@ -1127,11 +1141,17 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	// тот же приём уже применён ниже для sloEval (:1216).
 	maint := uptime.NewService(pg)
 
+	// policyStore — политика эскалации (B4, T7): одна на процесс, передаётся во
+	// все 5 оценщиков ниже — каждый резолвит свою лесенку (project, severity)
+	// на открытии инцидента (см. Evaluator.notifyOpen каждого пакета).
+	policyStore := escalation.NewPolicyStore(pg)
+
 	evaluator := &trace.Evaluator{
 		Pool:        pg,
 		Query:       trace.NewQuery(ch),
 		Regressions: trace.NewRegressionService(pg),
 		Maint:       maint,
+		Policy:      policyStore,
 		Notifier: &trace.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1139,6 +1159,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Regressions/Pool — эскалация (B4, T6): StepNotifier перезагружает
+			// регрессию по ID (см. RegressionNotifier.NotifyStep).
+			Regressions: trace.NewRegressionService(pg),
+			Pool:        pg,
 		},
 	}
 	go evaluator.Run(ctx)
@@ -1152,6 +1176,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:     metric.NewQuery(ch),
 		Incidents: metric.NewIncidentService(pg),
 		Maint:     maint,
+		Policy:    policyStore,
+		Pool:      pg,
 		Notifier: &metric.MetricNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1159,6 +1185,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Incidents/Rules/Pool — эскалация (B4, T6): StepNotifier
+			// перезагружает инцидент+правило по ID (см. MetricNotifier.NotifyStep).
+			Incidents: metric.NewIncidentService(pg),
+			Rules:     metric.NewRuleService(pg),
+			Pool:      pg,
 		},
 		Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
 	}
@@ -1171,6 +1202,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pg),
 		Maint:       maint,
+		Policy:      policyStore,
+		Pool:        pg,
 		Notifier: &profile.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1178,6 +1211,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Regressions/Pool — эскалация (B4, T6): StepNotifier перезагружает
+			// регрессию по ID (см. RegressionNotifier.NotifyStep).
+			Regressions: profile.NewRegressionService(pg),
+			Pool:        pg,
 		},
 		Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
 		Config:   profile.DefaultProfileRegressionConfig(),
@@ -1195,6 +1232,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Overrides: host.NewHostOverrideService(pg),
 		Groups:    host.NewGroupThresholdService(pg),
 		Maint:     maint,
+		Policy:    policyStore,
+		Pool:      pg,
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1202,6 +1241,13 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Incidents/Hosts/Settings/Pool — эскалация (B4, T6): StepNotifier
+			// перезагружает инцидент/хост/настройки по ID (см.
+			// HostNotifier.NotifyStep).
+			Incidents: host.NewIncidentService(pg),
+			Hosts:     host.NewStore(pg),
+			Settings:  host.NewSettingsService(pg),
+			Pool:      pg,
 		},
 		Interval: time.Duration(cfg.HostEvalInterval) * time.Second,
 	}
@@ -1231,6 +1277,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		EmailEnabled: emailSender.Configured(),
 		Details:      detailPolicy(cfg),
 		Locale:       i18n.Locale{Code: cfg.Locale},
+		// Store/Pool — эскалация (B4, T6): StepNotifier перезагружает
+		// SLO+инцидент по ID (см. SLOBurnNotifier.NotifyStep).
+		Store: slo.NewStore(pg),
+		Pool:  pg,
 	}
 	sloEval := &slo.Evaluator{
 		Pool:      pg,
@@ -1239,6 +1289,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Notifier:  sloNotifier,
 		Interval:  time.Duration(cfg.SLOEvalInterval) * time.Second,
 		Maint:     maint,
+		Policy:    policyStore,
 	}
 	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_last_tick_timestamp_seconds",
 		"Unix time of the last completed SLO burn-rate evaluation pass. Stale value means SLO error-budget alerts are not being evaluated.",
@@ -1247,6 +1298,44 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		"Duration of the last SLO burn-rate evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, sloEval.LastTickSeconds)
 	go sloEval.Run(ctx)
+
+	// Централизованный планировщик эскалаций (B4, T8): один тикер вместо
+	// того, чтобы каждый из пяти оценщиков выше сам гонял свою лесенку —
+	// эскалация ортогональна открытию инцидента (оценщик открывает его один
+	// раз, а лесенка идёт своим шагом, пока инцидент открыт и не
+	// подтверждён). Src/Notifier каждого биндинга — те же объекты, что
+	// собраны выше для соответствующего оценщика (Regressions/Incidents/
+	// Store как Source (T4), Notifier как StepNotifier (T6)).
+	bindings := []escalation.Binding{
+		{Src: trace.NewRegressionService(pg), Notifier: evaluator.Notifier},
+		{Src: metric.NewIncidentService(pg), Notifier: metricEval.Notifier},
+		{Src: profile.NewRegressionService(pg), Notifier: profileRegEval.Notifier},
+		{Src: host.NewIncidentService(pg), Notifier: hostEval.Notifier},
+		{Src: slo.NewStore(pg), Notifier: sloNotifier},
+	}
+	sched := &escalation.Scheduler{
+		Bindings: bindings,
+		Policy:   policyStore,
+		Maint:    maint,
+		Pool:     pg,
+		Interval: time.Duration(cfg.EscalationInterval) * time.Second,
+		Now:      time.Now,
+	}
+	go sched.Run(ctx)
+
+	// Чистка incident_escalations (M-6): без ретенции лог эскалаций растёт
+	// бесконечно. Привязана к тому же сроку, что и сами инциденты
+	// (GOTCHA_INCIDENT_RETENTION_DAYS) — тот же образец, что outboxJanitor:641
+	// для GOTCHA_OUTBOX_RETENTION_DAYS. 0 означает «хранить вечно» (см.
+	// валидацию IncidentRetentionDays >= 0) — janitor тогда не запускаем,
+	// симметрично entityRetention.Any() ниже.
+	if cfg.IncidentRetentionDays > 0 {
+		escalationJanitor := &escalation.Janitor{
+			Pool:      pg,
+			Retention: time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+		}
+		go escalationJanitor.Run(ctx)
+	}
 }
 
 // detailPolicy — политика раскрытия деталей события получателю уведомления.

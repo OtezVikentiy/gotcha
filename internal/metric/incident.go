@@ -8,32 +8,39 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 var ErrIncidentNotFound = errors.New("metric: incident not found")
 
 // Incident — открытый или закрытый инцидент пробоя порога (metric_incidents).
 type Incident struct {
-	ID            int64
-	RuleID        int64
-	ProjectID     int64
-	Status        string
-	PeakValue     float64
-	CurrentValue  float64
-	StartedAt     time.Time
-	ResolvedAt    *time.Time
-	InMaintenance bool
-	NotifiedOpen  bool
-	NotifiedClose bool
+	ID             int64
+	RuleID         int64
+	ProjectID      int64
+	Status         string
+	PeakValue      float64
+	CurrentValue   float64
+	StartedAt      time.Time
+	ResolvedAt     *time.Time
+	InMaintenance  bool
+	NotifiedOpen   bool
+	NotifiedClose  bool
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
+	Severity       string
 }
 
 const incidentColumns = `id, rule_id, project_id, status, peak_value, current_value,
-	started_at, resolved_at, in_maintenance, notified_open, notified_close`
+	started_at, resolved_at, in_maintenance, notified_open, notified_close,
+	acknowledged_at, acknowledged_by, severity`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.RuleID, &in.ProjectID, &in.Status, &in.PeakValue, &in.CurrentValue,
-		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
+		&in.AcknowledgedAt, &in.AcknowledgedBy, &in.Severity)
 	return in, err
 }
 
@@ -53,14 +60,16 @@ func NewIncidentService(pool *pgxpool.Pool) *IncidentService {
 // индекс metric_incidents_one_open_idx (rule_id) WHERE status='open': из
 // параллельных вызовов ровно один INSERT проходит, остальные ловят конфликт
 // (DO NOTHING → нет RETURNING) и дочитывают победителя. peak=current на
-// вставке.
-func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64, inMaintenance bool) (Incident, bool, error) {
+// вставке. severity — override из правила (B4, T5): "" (нет override) даёт
+// table-DEFAULT 'warning' через COALESCE в INSERT, непустое значение идёт как
+// есть.
+func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64, inMaintenance bool, severity string) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value, in_maintenance)
-		VALUES ($1, $2, $3, $3, $4)
+		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value, in_maintenance, severity)
+		VALUES ($1, $2, $3, $3, $4, COALESCE(NULLIF($5,''), 'warning'))
 		ON CONFLICT (rule_id) WHERE status = 'open' DO NOTHING
 		RETURNING `+incidentColumns,
-		ruleID, projectID, current, inMaintenance)
+		ruleID, projectID, current, inMaintenance, severity)
 	in, err := scanIncident(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, found, err := s.OpenFor(ctx, ruleID)
@@ -88,6 +97,21 @@ func (s *IncidentService) OpenFor(ctx context.Context, ruleID int64) (Incident, 
 	}
 	if err != nil {
 		return Incident{}, false, fmt.Errorf("metric: open incident for: %w", err)
+	}
+	return in, true, nil
+}
+
+// GetByID возвращает инцидент по id (любого статуса). Нужен эскалации (B4,
+// T6): планировщик и StepNotifier знают только incidentID, объект инцидента
+// приходится перегружать заново.
+func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM metric_incidents WHERE id = $1", id)
+	in, err := scanIncident(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, false, nil
+	}
+	if err != nil {
+		return Incident{}, false, fmt.Errorf("metric: get incident by id: %w", err)
 	}
 	return in, true, nil
 }
@@ -140,6 +164,71 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 		return ErrIncidentNotFound
 	}
 	return nil
+}
+
+// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
+// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
+// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
+// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE metric_incidents SET acknowledged_at = now(), acknowledged_by = $3
+		WHERE id = $1 AND project_id = $2 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, projectID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("metric: acknowledge incident: %w", err)
+	}
+	return true, nil
+}
+
+// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
+// 'metric' в incident_escalations (0077).
+func (s *IncidentService) Name() string { return "metric" }
+
+// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
+// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
+// metric_incidents_esc_pending_idx (0077).
+func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, project_id, started_at, severity, escalation_level
+		FROM metric_incidents WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("metric: open unacked incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("metric: open unacked incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
+// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
+// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE metric_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
+		WHERE id = $1 AND escalation_level = $2
+		RETURNING id`, id, from)
+	var bumpedID int64
+	err := row.Scan(&bumpedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("metric: bump escalation: %w", err)
+	}
+	return true, nil
 }
 
 // List возвращает инциденты проекта, свежайшие первыми (для UI).

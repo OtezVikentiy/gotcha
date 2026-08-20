@@ -8,6 +8,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -52,7 +53,9 @@ func TestEvaluatorOpenCloseAlertOnce(t *testing.T) {
 
 	eval := &metric.Evaluator{
 		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
-		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Incidents: incidents, Rules: rules, Pool: pool},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour, // тикер не используем — дёргаем Tick вручную
 	}
 
@@ -136,7 +139,9 @@ func TestEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 
 	eval := &metric.Evaluator{
 		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
-		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Incidents: incidents, Rules: rules, Pool: pool},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour,
 		Maint:    mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
@@ -209,7 +214,9 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 
 	eval := &metric.Evaluator{
 		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
-		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Incidents: incidents, Rules: rules, Pool: pool},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour,
 		Maint:    mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
 	}
@@ -270,7 +277,9 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	inWindow := true
 	eval := &metric.Evaluator{
 		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
-		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Incidents: incidents, Rules: rules, Pool: pool},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour,
 		Maint:    mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
 	}

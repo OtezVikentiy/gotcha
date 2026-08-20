@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // evaluatorDefaultInterval/TopK/BaselineDays — дефолты пустых полей Evaluator
@@ -37,6 +39,13 @@ type RegressionStore interface {
 	Bump(ctx context.Context, id int64, current float64) error
 	Resolve(ctx context.Context, id int64, current float64) (bool, error)
 	MarkNotified(ctx context.Context, id int64, open bool) error
+
+	// BumpEscalation (B4, T7) — продвигает уровень эскалации после успешной
+	// отправки ступени лесенки (см. evalTarget/notifyOpen). Реализован
+	// RegressionService (T4); имя отличается от Bump — тот уже занят
+	// обновлением current/peak_value на тике, не связанным с эскалацией
+	// (см. escalation.Source).
+	BumpEscalation(ctx context.Context, id int64, from int) (bool, error)
 }
 
 // Evaluator — периодический оценщик регрессий производительности (план 4, §8).
@@ -61,6 +70,11 @@ type Evaluator struct {
 	// не подавляет сбор данных/открытие инцидента. nil (дефолт) — окна не
 	// подавляют ничего, обратная совместимость со сборками без maintenance.
 	Maint MaintenanceChecker
+
+	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
+	// severity) на открытии регрессии. Nil-совместим — деградированная сборка
+	// без него просто не уведомляет об открытии.
+	Policy *escalation.PolicyStore
 
 	Interval     time.Duration // период тика, дефолт 5 минут
 	TopK         int           // сколько верхних по трафику целей оценивать, дефолт 50
@@ -361,22 +375,8 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 			}
 			return
 		}
-		if e.Notifier != nil && !inMaint {
-			ev := RegressionEvent{
-				Kind:          "regression_open",
-				ProjectID:     projectID,
-				Target:        target,
-				Metric:        metric,
-				BaselineValue: base.Value,
-				CurrentValue:  recent.Value,
-				PctIncrease:   pctIncrease(base.Value, recent.Value),
-			}
-			if err := e.Notifier.Notify(ctx, ev); err != nil {
-				slog.Error("trace: evaluator: open notify failed", "project_id", projectID, "target", target, "metric", metric, "error", err)
-			}
-			if err := e.Regressions.MarkNotified(ctx, rec.ID, true); err != nil {
-				slog.Error("trace: evaluator: mark notified open failed", "id", rec.ID, "error", err)
-			}
+		if !inMaint {
+			e.notifyOpen(ctx, projectID, rec)
 		}
 
 	case DecisionResolve:
@@ -385,23 +385,8 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 			slog.Error("trace: evaluator: resolve regression failed", "id", open.ID, "error", err)
 			return
 		}
-		if closed && e.Notifier != nil && !open.InMaintenance {
-			ev := RegressionEvent{
-				Kind:            "regression_close",
-				ProjectID:       projectID,
-				Target:          target,
-				Metric:          metric,
-				BaselineValue:   base.Value,
-				CurrentValue:    recent.Value,
-				PctIncrease:     pctIncrease(base.Value, recent.Value),
-				DurationSeconds: int64(now.Sub(open.StartedAt).Seconds()),
-			}
-			if err := e.Notifier.Notify(ctx, ev); err != nil {
-				slog.Error("trace: evaluator: close notify failed", "project_id", projectID, "target", target, "metric", metric, "error", err)
-			}
-			if err := e.Regressions.MarkNotified(ctx, open.ID, false); err != nil {
-				slog.Error("trace: evaluator: mark notified close failed", "id", open.ID, "error", err)
-			}
+		if closed {
+			e.notifyClose(ctx, open)
 		}
 
 	case DecisionNone:
@@ -413,6 +398,60 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 				slog.Error("trace: evaluator: bump failed", "id", open.ID, "error", err)
 			}
 		}
+	}
+}
+
+// notifyOpen — реролл (B4, T7): открытие регрессии резолвит лесенку
+// эскалации (project, severity — регрессии производительности не имеют
+// per-цель override, всегда table-DEFAULT perf_regressions.severity,
+// 'warning', 0077) и шлёт РОВНО СТУПЕНЬ 0, если её задержка (обычно 0) уже
+// настала; остальные ступени досылает планировщик (T8). Ошибка политики/
+// уведомления не должна ронять оценку.
+func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, rec Regression) {
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
+		return
+	}
+	ladder, err := e.Policy.Ladder(ctx, projectID, escalation.SeverityWarning)
+	if err != nil {
+		slog.Error("trace: evaluator: escalation policy failed", "id", rec.ID, "error", err)
+		return
+	}
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "trace", e.Pool, rec.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, rec.ID, chs, step) },
+		func(id int64, from int) (bool, error) { return e.Regressions.BumpEscalation(ctx, id, from) })
+	if err != nil {
+		slog.Error("trace: evaluator: notify step failed", "id", rec.ID, "error", err)
+		return
+	}
+	if sent {
+		if err := e.Regressions.MarkNotified(ctx, rec.ID, true); err != nil {
+			slog.Error("trace: evaluator: mark notified open failed", "id", rec.ID, "error", err)
+		}
+	}
+}
+
+// notifyClose — реролл (B4, T7): закрытие регрессии шлёт recovery адресно, в
+// каналы из лога эскалации (escalation.RecoveryChannels); пустой набор —
+// молчание (M-7 брифа Task 6, ничего не отправлялось — отправлять «закрыт»
+// нечего).
+func (e *Evaluator) notifyClose(ctx context.Context, open Regression) {
+	if e.Pool == nil || e.Notifier == nil {
+		return
+	}
+	chs, err := escalation.RecoveryChannels(ctx, e.Pool, "trace", open.ID)
+	if err != nil {
+		slog.Error("trace: evaluator: recovery channels failed", "id", open.ID, "error", err)
+		return
+	}
+	if len(chs) == 0 {
+		return
+	}
+	if err := e.Notifier.NotifyRecovery(ctx, open.ID, chs); err != nil {
+		slog.Error("trace: evaluator: notify recovery failed", "id", open.ID, "error", err)
+		return
+	}
+	if err := e.Regressions.MarkNotified(ctx, open.ID, false); err != nil {
+		slog.Error("trace: evaluator: mark notified close failed", "id", open.ID, "error", err)
 	}
 }
 
