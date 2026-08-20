@@ -2,10 +2,12 @@ package depsuppress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -76,29 +78,79 @@ func (s *Suppressor) HasParent(ctx context.Context, kind string, nodeID int64) (
 	return len(matchingParents(snap, kind, nodeID)) > 0, nil
 }
 
-// ParentDown сообщает, упал ли хотя бы один ПРЯМОЙ (один уровень, БЕЗ
-// рекурсии — depth-cap) задекларированный родитель узла (kind, nodeID).
+// ParentDown сообщает, подавлен ли узел (kind, nodeID) упавшим родителем:
+// достижим ли от одного из его СЕЙЧАС упавших родителей down-КОРЕНЬ — упавший
+// узел, у которого самого нет ни одного упавшего родителя (его никто не
+// подавляет → он пейджит и якорит подавление всей ветки под ним).
+//
+// Обход идёт вверх по упавшим родителям (parentDownFromSnapshot) с visited-
+// множеством, поэтому цикло-устойчив: два reciprocal label-ребра
+// (A→role=web, B→role=web, оба хоста role=web и оба замолчали) НЕ образуют
+// «чёрную дыру» — наивный one-level резолвер счёл бы A подавленным (видит
+// упавшего родителя B) И B подавленным (видит упавшего родителя A), оба ушли
+// бы в suppressed_by_dep при открытых инцидентах, и никто бы не запейджил.
+// Обход же, встретив только зацикленные пути без down-корня, возвращает false
+// для обоих — оба пейджат, авария не молчит.
 //
 // Инциденты родителей НЕ фильтруются по suppressed_by_dep (MINOR-7,
-// инвариант транзитивности): если сам родитель — промежуточный узел
-// транзитивной цепочки A→B→C и уже помечен как подавленный (suppressed_by_
-// dep=true), его инцидент всё равно остаётся status='open' (host) /
-// resolved_at IS NULL (uptime) и ПРОДОЛЖАЕТ подавлять C — иначе цепочка
-// рвётся на втором звене, как только B подавляется. Рекурсии вверх по
-// цепочке здесь нет: каждый вызов ParentDown резолвит ровно один уровень
-// (родителей узла, не родителей родителя) — это же и страхует от зацикливания
-// на label-рёбрах, которые не участвуют в проверке циклов Store.checkCycle.
+// инвариант транзитивности): промежуточный узел B цепочки A→B→C, уже
+// помеченный подавленным, всё равно остаётся status='open' (host) /
+// resolved_at IS NULL (uptime) и ПРОДОЛЖАЕТ подавлять C — обход поднимается
+// сквозь B до реального down-корня A (у A нет упавшего родителя → он якорит
+// подавление). Если промежуточного звена нет и сам B без родителя — B и есть
+// down-корень, C подавлен.
+//
+// Устарелость снимка принята осознанно: перманентное решение (MarkSuppressed)
+// принимается по снимку возрастом до cacheTTL (5с); при тике планировщика 60с
+// снимок свеж на старте тика, окно устарелости ≤5с ≪ латентности детекции
+// молчания/uptime-инцидента — цена ложного подавления в этом окне пренебрежима.
 func (s *Suppressor) ParentDown(ctx context.Context, kind string, nodeID int64) (bool, error) {
 	snap, err := s.getSnapshot(ctx)
 	if err != nil {
 		return false, err
 	}
-	for _, e := range matchingParents(snap, kind, nodeID) {
-		if parentIsDown(e, snap) {
-			return true, nil
+	return parentDownFromSnapshot(snap, node{kind: kind, id: nodeID}), nil
+}
+
+// downParents возвращает родителей узла start (из рёбер снимка — та же логика,
+// что у matchingParents: self-match исключён, label-рёбра сверяют project_id),
+// которые СЕЙЧАС в состоянии «упал» (downHosts/downMonitors). Это один шаг
+// обхода вверх по дереву зависимостей в parentDownFromSnapshot.
+func downParents(snap *snapshot, start node) []node {
+	var out []node
+	for _, e := range matchingParents(snap, start.kind, start.id) {
+		if !parentIsDown(e, snap) {
+			continue
+		}
+		if p := parentNode(e); p != nil {
+			out = append(out, *p)
 		}
 	}
-	return false, nil
+	return out
+}
+
+// parentDownFromSnapshot решает, подавлен ли start: обходит вверх по СЕЙЧАС
+// упавшим родителям (итеративно, без рекурсии, на снимке в памяти) с visited-
+// множеством и возвращает true, только если достигнут down-корень — упавший
+// узел без единого упавшего родителя. Если все пути вверх зацикливаются и
+// реального корня нет, возвращает false: start не подавлен, пейджит.
+func parentDownFromSnapshot(snap *snapshot, start node) bool {
+	visited := map[node]bool{start: true}
+	stack := append([]node{}, downParents(snap, start)...)
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if visited[p] {
+			continue
+		}
+		visited[p] = true
+		pp := downParents(snap, p)
+		if len(pp) == 0 {
+			return true // p — down-корень, якорит подавление start
+		}
+		stack = append(stack, pp...)
+	}
+	return false // все пути вверх зациклились, реального корня нет → start пейджит
 }
 
 // CheckIncident отвечает на тот же вопрос, что и HasParent/ParentDown, но
@@ -115,6 +167,12 @@ func (s *Suppressor) CheckIncident(ctx context.Context, source string, incidentI
 	if err := s.pool.QueryRow(ctx,
 		`SELECT host_id FROM host_incidents WHERE id = $1`, incidentID,
 	).Scan(&hostID); err != nil {
+		// Инцидент мог закрыться между OpenUnacked и этим tickOne — строки уже
+		// нет. Узел исчез, подавлять нечего: это не сбой сервиса, а гонка с
+		// закрытием, поэтому (false, false, nil), а не ошибка.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false, nil
+		}
 		return false, false, fmt.Errorf("depsuppress: load host_id for host_incident %d: %w", incidentID, err)
 	}
 

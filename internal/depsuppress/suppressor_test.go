@@ -94,6 +94,68 @@ func TestTransitiveChainViaOpenIntermediate(t *testing.T) {
 	}
 }
 
+// TestParentDownReciprocalCycleNoBlackHole — находка аудита корректности
+// (P1, «чёрная дыра»): два reciprocal label-ребра (A→role=web, B→role=web),
+// A и B оба role=web, оба с открытым silent-инцидентом. Наивный one-level
+// резолвер счёл бы A подавленным (видит упавшего родителя B) И B подавленным
+// (видит упавшего родителя A): оба ушли бы в suppressed_by_dep при открытых
+// инцидентах, и НИКТО бы не запейджил — молчаливая авария. Цикло-устойчивый
+// обход до down-КОРНЯ обязан вернуть false для обоих (реального корня в цикле
+// нет, оба пейджат). Рёбра создаются прямым INSERT: Store.Create отверг бы
+// self-match, а тут проверяется рантайм-резолвер на строках, которые могли
+// оказаться в таблице после смены роли хоста.
+func TestParentDownReciprocalCycleNoBlackHole(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	pid, _, monID := seedProjectHostMonitor(t, pool)
+	a := seedHost(t, pool, pid, "a-web", "web", "prod")
+	b := seedHost(t, pool, pid, "b-web", "web", "prod")
+
+	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
+		VALUES ($1,$2,'role','web')`, pid, a)
+	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
+		VALUES ($1,$2,'role','web')`, pid, b)
+	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
+		VALUES ($1,$2,'silent','open',now())`, pid, a)
+	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
+		VALUES ($1,$2,'silent','open',now())`, pid, b)
+
+	sup := depsuppress.NewSuppressor(pool)
+	ctx := context.Background()
+	if down, err := sup.ParentDown(ctx, "host", a); err != nil || down {
+		t.Fatalf("A во взаимном цикле НЕ должен подавляться (чёрная дыра): ParentDown(A) = %v/%v, want false", down, err)
+	}
+	if down, err := sup.ParentDown(ctx, "host", b); err != nil || down {
+		t.Fatalf("B во взаимном цикле НЕ должен подавляться (чёрная дыра): ParentDown(B) = %v/%v, want false", down, err)
+	}
+
+	// Контроль: обычное explicit-ребро monitor→host с упавшим монитором
+	// по-прежнему подавляется — обход доходит до монитора-корня без родителя.
+	ctl := seedHost(t, pool, pid, "ctl", "db", "prod")
+	if _, err := depsuppress.NewStore(pool).Create(ctx, depsuppress.Edge{
+		ProjectID: pid, ParentMonitorID: &monID, ChildHostID: &ctl}); err != nil {
+		t.Fatalf("create control edge: %v", err)
+	}
+	mustExec(t, pool, `INSERT INTO incidents (monitor_id, started_at) VALUES ($1, now())`, monID)
+	sup2 := depsuppress.NewSuppressor(pool)
+	if down, err := sup2.ParentDown(ctx, "host", ctl); err != nil || !down {
+		t.Fatalf("контроль: explicit-цепочка обязана подавляться: ParentDown(ctl) = %v/%v, want true", down, err)
+	}
+}
+
+// TestCheckIncidentHostVanished — FIX 2: инцидент закрылся между OpenUnacked
+// и tickOne, строки host_incidents уже нет → pgx.ErrNoRows. Это не сбой
+// сервиса, а гонка с закрытием: CheckIncident обязан вернуть (false, false,
+// nil), чтобы планировщик просто пропустил исчезнувший инцидент, а не ронял
+// тик ошибкой.
+func TestCheckIncidentHostVanished(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	sup := depsuppress.NewSuppressor(pool)
+	ctx := context.Background()
+	if hasParent, parentDown, err := sup.CheckIncident(ctx, "host", 987654321); err != nil || hasParent || parentDown {
+		t.Fatalf("CheckIncident для несуществующего инцидента = %v/%v/%v, want false/false/nil", hasParent, parentDown, err)
+	}
+}
+
 // TestMarkSuppressed проверяет единственного писателя флага для host-
 // инцидентов: source="host" ставит suppressed_by_dep, прочие source — no-op.
 func TestMarkSuppressed(t *testing.T) {

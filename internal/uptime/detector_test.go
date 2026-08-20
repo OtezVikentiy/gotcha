@@ -52,27 +52,35 @@ func (f *fakeNotifier) kindEvents(kind string) []uptime.Event {
 // ParentDown settable mid-test to simulate a parent going down between two
 // detector ticks.
 type fakeDepChecker struct {
-	mu         sync.Mutex
-	hasParent  bool
-	parentDown bool
+	mu            sync.Mutex
+	hasParent     bool
+	parentDown    bool
+	hasParentErr  error
+	parentDownErr error
 }
 
 func (f *fakeDepChecker) HasParent(_ context.Context, _ string, _ int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.hasParent, nil
+	return f.hasParent, f.hasParentErr
 }
 
 func (f *fakeDepChecker) ParentDown(_ context.Context, _ string, _ int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.parentDown, nil
+	return f.parentDown, f.parentDownErr
 }
 
 func (f *fakeDepChecker) setParentDown(v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.parentDown = v
+}
+
+func (f *fakeDepChecker) setParentDownErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.parentDownErr = err
 }
 
 // backdateIncidentStart pushes the currently open incident's started_at
@@ -664,6 +672,81 @@ func TestUptimeNoParentNotifiesImmediately(t *testing.T) {
 	downEvents := notifier.kindEvents("down")
 	if len(downEvents) != 1 {
 		t.Fatalf("down events = %d, want 1: %+v", len(downEvents), notifier.Events())
+	}
+}
+
+// TestUptimeHasParentErrorNotifiesImmediately — fail-safe (аудит
+// корректности): если HasParent на открытии инцидента вернул ошибку (dep-БД
+// недоступна), детектор трактует узел как БЕЗ родителя и уведомляет
+// немедленно, а не глушит "down" из-за сбоя резолвера зависимостей. Молчать
+// про реальное падение, потому что не удалось спросить о родителе, — хуже
+// лишнего уведомления.
+func TestUptimeHasParentErrorNotifiesImmediately(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	// hasParent=true (без ошибки удержал бы "down"), но HasParent падает —
+	// fail-safe обязан всё равно уведомить.
+	dep := &fakeDepChecker{hasParent: true, hasParentErr: errors.New("dep db down")}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: ошибка HasParent должна fail-safe уведомлять сразу")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 1 {
+		t.Fatalf("down events = %d, want 1 (fail-safe notify): %+v", len(got), notifier.Events())
+	}
+}
+
+// TestUptimeParentDownErrorNotifiesAfterGrace — fail-safe (аудит
+// корректности): инцидент-ребёнок придержан на открытии (родитель
+// задекларирован). На следующем тике ParentDown падает И грейс уже истёк —
+// детектор НЕ подавляет (ошибка резолвера не приравнивается к «родитель
+// упал»), а отправляет отложенный "down".
+func TestUptimeParentDownErrorNotifiesAfterGrace(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	assertOpenIncident(t, ctx, svc, mon.ID)
+	if len(notifier.Events()) != 0 {
+		t.Fatalf("notified synchronously despite a declared parent: %+v", notifier.Events())
+	}
+
+	// ParentDown падает, а грейс уже прошёл → fail-safe: не подавляем, шлём.
+	dep.setParentDownErr(errors.New("dep db down"))
+	backdateIncidentStart(t, ctx, pool, mon.ID)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = true, want false: ошибка ParentDown не должна подавлять")
+	}
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: грейс истёк при ошибке ParentDown → fail-safe notify")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 1 {
+		t.Fatalf("down events = %d, want 1 (fail-safe notify after grace): %+v", len(got), notifier.Events())
 	}
 }
 
