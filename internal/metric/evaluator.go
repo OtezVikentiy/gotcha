@@ -164,7 +164,7 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 // 0, если её задержка (обычно 0) уже настала; остальные ступени досылает
 // планировщик (T8). Ошибка политики/уведомления не должна ронять оценку.
 func (e *Evaluator) notifyOpen(ctx context.Context, r Rule, in Incident) {
-	if e.Policy == nil || e.Notifier == nil {
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
 	}
 	ladder, err := e.Policy.Ladder(ctx, r.ProjectID, ruleSeverity(r))
@@ -172,8 +172,8 @@ func (e *Evaluator) notifyOpen(ctx context.Context, r Rule, in Incident) {
 		slog.Error("metric evaluator: escalation policy failed", "incident_id", in.ID, "error", err)
 		return
 	}
-	sent, err := escalation.SendStepIfDue(ctx, ladder, in.ID, 0, 0,
-		func(chs []int64, step int) error { return e.Notifier.NotifyStep(ctx, in.ID, chs, step) },
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "metric", e.Pool, in.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, in.ID, chs, step) },
 		func(id int64, from int) (bool, error) { return e.Incidents.BumpEscalation(ctx, id, from) })
 	if err != nil {
 		slog.Error("metric evaluator: notify step failed", "incident_id", in.ID, "error", err)

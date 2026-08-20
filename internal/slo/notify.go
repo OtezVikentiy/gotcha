@@ -58,35 +58,38 @@ type SLOBurnNotifier struct {
 func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
 	// dispatch логирует каждую ошибку (channels/enqueue) сама — здесь её
 	// достаточно отбросить, Notifier контрактом не возвращает ошибку.
-	_ = n.dispatch(ctx, ev, nil, nil)
+	_, _ = n.dispatch(ctx, ev, nil)
 }
 
 // NotifyStep — эскалационное уведомление открытого инцидента сжигания
-// бюджета (B4, T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs, с логом
-// incident_escalations после каждого успешного Enqueue. SLO+инцидент
-// грузятся заново по ID — планировщик эскалации (T8) хранит только
-// incidentID. channelIDs nil/пусто — все deliverable-каналы проекта (как у
-// Notify).
-func (n *SLOBurnNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
+// бюджета (B4, T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs. Возвращает
+// каналы, в которые РЕАЛЬНО поставлена задача (deliverable-подмножество
+// channelIDs, прошедшее фильтры dispatch) — лог incident_escalations пишет
+// ОРКЕСТРАЦИЯ (escalation.SendStepIfDue), не сам нотифаер (реролл B4,
+// T7-fix): лог внутри NotifyStep работал только с реальным нотифаером и
+// молчал с мок-нотифаерами тестов, из-за чего RecoveryChannels не находил
+// ничего и recovery немел. SLO+инцидент грузятся заново по ID — планировщик
+// эскалации (T8) хранит только incidentID. channelIDs nil/пусто — все
+// deliverable-каналы проекта (как у Notify).
+func (n *SLOBurnNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
 	ev, err := n.reloadEvent(ctx, incidentID, true)
 	if err != nil {
-		return fmt.Errorf("slo: notify step: %w", err)
+		return nil, fmt.Errorf("slo: notify step: %w", err)
 	}
-	return n.dispatch(ctx, ev, channelIDs, func(channelID int64) error {
-		return escalation.LogStep(ctx, n.Pool, "slo", incidentID, channelID, step)
-	})
+	return n.dispatch(ctx, ev, channelIDs)
 }
 
 // NotifyRecovery — CLOSE-уведомление инцидента сжигания бюджета (B4, T6) в
-// ЗАДАННЫЕ channelIDs, БЕЗ лога incident_escalations (recovery не эскалирует
-// — гасит). SLO+инцидент грузятся заново по ID, как в NotifyStep. channelIDs
-// nil/пусто — все deliverable-каналы проекта.
+// ЗАДАННЫЕ channelIDs (recovery не эскалирует — не логируется вообще).
+// SLO+инцидент грузятся заново по ID, как в NotifyStep. channelIDs nil/пусто
+// — все deliverable-каналы проекта.
 func (n *SLOBurnNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
 	ev, err := n.reloadEvent(ctx, incidentID, false)
 	if err != nil {
 		return fmt.Errorf("slo: notify recovery: %w", err)
 	}
-	return n.dispatch(ctx, ev, channelIDs, nil)
+	_, err = n.dispatch(ctx, ev, channelIDs)
+	return err
 }
 
 // reloadEvent перегружает инцидент+SLO по ID и собирает из них SLOEvent
@@ -129,14 +132,15 @@ func (n *SLOBurnNotifier) reloadEvent(ctx context.Context, incidentID int64, ope
 // dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
 // набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
 // (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
-// email-гейта (эскалация в конкретную ступень лесенки). onEnqueued — если
-// задан, дёргается после каждого успешного Enqueue с ID канала (NotifyStep
-// пишет им лог incident_escalations); nil — без лога, как раньше.
-func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs []int64, onEnqueued func(channelID int64) error) error {
+// email-гейта (эскалация в конкретную ступень лесенки). Возвращает ID
+// каналов, в которые задача РЕАЛЬНО поставлена — логировать их в
+// incident_escalations или нет, решает вызывающий (эволюатор через
+// escalation.SendStepIfDue), не dispatch.
+func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.SLO.ProjectID)
 	if err != nil {
 		slog.Error("slo: burn notify: project channels", "project_id", ev.SLO.ProjectID, "error", err)
-		return fmt.Errorf("slo: burn notify: project channels: %w", err)
+		return nil, fmt.Errorf("slo: burn notify: project channels: %w", err)
 	}
 	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
 	// получатель, у которого нет своей локали.
@@ -156,6 +160,7 @@ func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs 
 	}
 
 	var errs error
+	var enqueued []int64
 	for _, ch := range channels {
 		if !ch.Deliverable() {
 			continue
@@ -198,13 +203,9 @@ func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs 
 			errs = errors.Join(errs, fmt.Errorf("slo: burn notify: enqueue channel %d: %w", ch.ID, err))
 			continue
 		}
-		if onEnqueued != nil {
-			if err := onEnqueued(ch.ID); err != nil {
-				errs = errors.Join(errs, err)
-			}
-		}
+		enqueued = append(enqueued, ch.ID)
 	}
-	return errs
+	return enqueued, errs
 }
 
 // sloSubject строит тему уведомления по виду перехода (открытие/закрытие) из

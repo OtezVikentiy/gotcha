@@ -63,34 +63,39 @@ type MetricNotifier struct {
 // Ошибка Enqueue по одному каналу не прерывает остальные (errors.Join). Проект
 // без каналов — не ошибка.
 func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
-	return n.dispatch(ctx, ev, nil, nil)
+	_, err := n.dispatch(ctx, ev, nil)
+	return err
 }
 
 // NotifyStep — эскалационное уведомление открытого инцидента метрики (B4,
-// T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs, с логом incident_escalations
-// после каждого успешного Enqueue. Инцидент/правило грузятся заново по ID —
-// планировщик эскалации (T8) хранит только incidentID. channelIDs nil/пусто —
-// все deliverable-каналы проекта (как у Notify).
-func (n *MetricNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
+// T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs. Возвращает каналы, в которые
+// РЕАЛЬНО поставлена задача (deliverable-подмножество channelIDs, прошедшее
+// фильтры dispatch) — лог incident_escalations пишет ОРКЕСТРАЦИЯ
+// (escalation.SendStepIfDue), не сам нотифаер (реролл B4, T7-fix): лог внутри
+// NotifyStep работал только с реальным нотифаером и молчал с мок-нотифаерами
+// тестов, из-за чего RecoveryChannels не находил ничего и recovery немел.
+// Инцидент/правило грузятся заново по ID — планировщик эскалации (T8) хранит
+// только incidentID. channelIDs nil/пусто — все deliverable-каналы проекта
+// (как у Notify).
+func (n *MetricNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
 	ev, err := n.reloadEvent(ctx, incidentID, true)
 	if err != nil {
-		return fmt.Errorf("metric: notify step: %w", err)
+		return nil, fmt.Errorf("metric: notify step: %w", err)
 	}
-	return n.dispatch(ctx, ev, channelIDs, func(channelID int64) error {
-		return escalation.LogStep(ctx, n.Pool, "metric", incidentID, channelID, step)
-	})
+	return n.dispatch(ctx, ev, channelIDs)
 }
 
 // NotifyRecovery — CLOSE-уведомление инцидента метрики (B4, T6) в ЗАДАННЫЕ
-// channelIDs, БЕЗ лога incident_escalations (recovery не эскалирует — гасит).
-// Инцидент/правило грузятся заново по ID, как в NotifyStep. channelIDs
-// nil/пусто — все deliverable-каналы проекта.
+// channelIDs (recovery не эскалирует — не логируется вообще). Инцидент/
+// правило грузятся заново по ID, как в NotifyStep. channelIDs nil/пусто —
+// все deliverable-каналы проекта.
 func (n *MetricNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
 	ev, err := n.reloadEvent(ctx, incidentID, false)
 	if err != nil {
 		return fmt.Errorf("metric: notify recovery: %w", err)
 	}
-	return n.dispatch(ctx, ev, channelIDs, nil)
+	_, err = n.dispatch(ctx, ev, channelIDs)
+	return err
 }
 
 // reloadEvent перегружает инцидент+правило по ID и собирает из них
@@ -129,13 +134,14 @@ func (n *MetricNotifier) reloadEvent(ctx context.Context, incidentID int64, open
 // dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
 // набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
 // (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
-// email-гейта (эскалация в конкретную ступень лесенки). onEnqueued — если
-// задан, дёргается после каждого успешного Enqueue с ID канала (NotifyStep
-// пишет им лог incident_escalations); nil — без лога, как раньше.
-func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelIDs []int64, onEnqueued func(channelID int64) error) error {
+// email-гейта (эскалация в конкретную ступень лесенки). Возвращает ID
+// каналов, в которые задача РЕАЛЬНО поставлена — логировать их в
+// incident_escalations или нет, решает вызывающий (эволюатор через
+// escalation.SendStepIfDue), не dispatch.
+func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.ProjectID)
 	if err != nil {
-		return fmt.Errorf("metric: notify: project channels: %w", err)
+		return nil, fmt.Errorf("metric: notify: project channels: %w", err)
 	}
 	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
 	// получатель, у которого нет своей локали.
@@ -145,6 +151,7 @@ func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelID
 	body := metricBody(ctx, ev, url)
 
 	var errs error
+	var enqueued []int64
 	for _, ch := range channels {
 		if !ch.Deliverable() {
 			continue
@@ -188,13 +195,9 @@ func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelID
 			errs = errors.Join(errs, fmt.Errorf("metric: notify: enqueue channel %d: %w", ch.ID, err))
 			continue
 		}
-		if onEnqueued != nil {
-			if err := onEnqueued(ch.ID); err != nil {
-				errs = errors.Join(errs, err)
-			}
-		}
+		enqueued = append(enqueued, ch.ID)
 	}
-	return errs
+	return enqueued, errs
 }
 
 func metricEventKind(ev MetricEvent) string {

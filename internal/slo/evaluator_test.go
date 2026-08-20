@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -37,8 +38,16 @@ func (c *capturingNotifier) Notify(_ context.Context, ev slo.SLOEvent) {
 	c.events = append(c.events, ev)
 }
 
-func (c *capturingNotifier) NotifyStep(ctx context.Context, incidentID int64, _ []int64, _ int) error {
-	return c.capture(ctx, incidentID, true)
+// NotifyStep возвращает переданные channelIDs как реально «заенкенные» (T7-
+// fix): лог incident_escalations теперь пишет оркестрация (escalation.
+// SendStepIfDue) по этому возврату, а не сам нотифаер — без него мок не мог
+// бы участвовать в цепочке «open логирует → close находит лог и шлёт
+// recovery».
+func (c *capturingNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, _ int) ([]int64, error) {
+	if err := c.capture(ctx, incidentID, true); err != nil {
+		return nil, err
+	}
+	return channelIDs, nil
 }
 
 func (c *capturingNotifier) NotifyRecovery(ctx context.Context, incidentID int64, _ []int64) error {
@@ -111,6 +120,15 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool)
 	st := slo.NewStore(pool)
+	// Дефолт-лесенка эскалации (escalation.PolicyStore.Ladder, B4) резолвится
+	// из РЕАЛЬНЫХ enabled-каналов проекта — без единого канала её ChannelIDs
+	// пуст, notifyOpen нечего логировать в incident_escalations, и
+	// notifyClose (RecoveryChannels) не находит адресата для recovery.
+	if _, err := alert.NewService(pool).CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
 
 	s, err := st.Create(ctx, slo.SLO{
 		ProjectID: pid, Name: "checkout", Kind: slo.SLIAvailability,

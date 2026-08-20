@@ -185,7 +185,7 @@ func (e *RegressionEvaluator) inMaintenance(ctx context.Context, projectID int64
 // остальные ступени досылает планировщик (T8). Ошибка политики/уведомления
 // не должна ронять оценку.
 func (e *RegressionEvaluator) notifyOpen(ctx context.Context, projectID int64, rec Regression) {
-	if e.Policy == nil || e.Notifier == nil {
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
 	}
 	ladder, err := e.Policy.Ladder(ctx, projectID, escalation.SeverityWarning)
@@ -193,8 +193,8 @@ func (e *RegressionEvaluator) notifyOpen(ctx context.Context, projectID int64, r
 		slog.Error("profile evaluator: escalation policy failed", "id", rec.ID, "error", err)
 		return
 	}
-	sent, err := escalation.SendStepIfDue(ctx, ladder, rec.ID, 0, 0,
-		func(chs []int64, step int) error { return e.Notifier.NotifyStep(ctx, rec.ID, chs, step) },
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "profile", e.Pool, rec.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, rec.ID, chs, step) },
 		func(id int64, from int) (bool, error) { return e.Regressions.BumpEscalation(ctx, id, from) })
 	if err != nil {
 		slog.Error("profile evaluator: notify step failed", "id", rec.ID, "error", err)

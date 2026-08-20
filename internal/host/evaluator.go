@@ -75,7 +75,7 @@ type Notifier interface {
 	// эскалации: Evaluator больше не зовёт HostIncidentOpened/Resolved
 	// напрямую (см. notifyOpen/notifyClose), а шлёт СТУПЕНЬ лесенки и
 	// адресованный recovery через них. Реализованы HostNotifier (T6).
-	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error
+	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error)
 	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
@@ -690,7 +690,7 @@ func (e *Evaluator) worstMountpoint(ctx context.Context, q *metric.Query, h Host
 func (e *Evaluator) notifyOpen(ctx context.Context, in Incident) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
 	defer cancel()
-	if e.Policy == nil || e.Notifier == nil {
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
 	}
 	ladder, err := e.Policy.Ladder(ctx, in.ProjectID, escalation.SeverityCritical)
@@ -698,8 +698,8 @@ func (e *Evaluator) notifyOpen(ctx context.Context, in Incident) {
 		slog.Error("host evaluator: escalation policy failed", "incident_id", in.ID, "error", err)
 		return
 	}
-	sent, err := escalation.SendStepIfDue(ctx, ladder, in.ID, 0, 0,
-		func(chs []int64, step int) error { return e.Notifier.NotifyStep(ctx, in.ID, chs, step) },
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "host", e.Pool, in.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, in.ID, chs, step) },
 		func(id int64, from int) (bool, error) { return e.Incidents.BumpEscalation(ctx, id, from) })
 	if err != nil {
 		slog.Error("host evaluator: notify step failed", "incident_id", in.ID, "error", err)

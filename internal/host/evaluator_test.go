@@ -13,6 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
@@ -53,11 +54,20 @@ func (f *fakeNotifier) HostIncidentResolved(_ context.Context, in host.Incident,
 // resolvedCount() остаются верным сигналом «нотифаер позван на открытии/
 // закрытии» для существующих тестов, которым несущественно, каким именно
 // методом интерфейса это случилось.
-func (f *fakeNotifier) NotifyStep(_ context.Context, incidentID int64, _ []int64, _ int) error {
+//
+// NotifyStep возвращает переданные channelIDs как реально «заенкенные» (T7-
+// fix): лог incident_escalations теперь пишет оркестрация (escalation.
+// SendStepIfDue) по этому возврату, а не сам нотифаер — без него мок не мог
+// бы участвовать в цепочке «open логирует → close находит лог и шлёт
+// recovery», и resolvedCount() навсегда оставался бы нулём.
+func (f *fakeNotifier) NotifyStep(_ context.Context, incidentID int64, channelIDs []int64, _ int) ([]int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opened = append(f.opened, host.Incident{ID: incidentID})
-	return f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	return channelIDs, nil
 }
 
 func (f *fakeNotifier) NotifyRecovery(_ context.Context, incidentID int64, _ []int64) error {
@@ -97,6 +107,24 @@ func seedEvalProject(t *testing.T, pool *pgxpool.Pool) int64 {
 		t.Fatalf("project: %v", err)
 	}
 	return projectID
+}
+
+// seedAlertChannel заводит один включённый webhook-канал проекта. Нужен
+// тестам, проверяющим RECOVERY (resolvedCount): дефолт-лесенка эскалации
+// (escalation.PolicyStore.Ladder, B4) резолвится из РЕАЛЬНЫХ enabled-каналов
+// проекта — без единого канала её ChannelIDs пуст, notifyOpen нечего
+// логировать в incident_escalations, и notifyClose (RecoveryChannels) не
+// находит адресата вовсе. Тестам, которым важно только «нотифаер был позван
+// на открытии» (openedCount), канал не нужен — NotifyStep зовётся независимо
+// от того, есть ли что логировать.
+func seedAlertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) {
+	t.Helper()
+	asvc := alert.NewService(pool)
+	if _, err := asvc.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("seed alert channel: %v", err)
+	}
 }
 
 // seedEvalHost регистрирует хост проекта и возвращает его строку.
@@ -256,6 +284,7 @@ func TestEvaluatorDiskRecoveryResolves(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 
@@ -412,6 +441,7 @@ func TestEvaluatorSilentOpensAndResolvesOnUpsert(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-01")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-10*time.Minute))
 
@@ -464,6 +494,7 @@ func TestEvaluatorSilentResolvesInsideHysteresisDeadZone(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-deadzone")
 
 	// Открываем: тишина 310с — заведомо выше порога 300с и выше верхней
@@ -912,13 +943,13 @@ type cancellingNotifier struct {
 	seenErrs []error
 }
 
-func (n *cancellingNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
-	err := n.fakeNotifier.NotifyStep(ctx, incidentID, channelIDs, step)
+func (n *cancellingNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
+	enqueued, err := n.fakeNotifier.NotifyStep(ctx, incidentID, channelIDs, step)
 	n.mu.Lock()
 	n.seenErrs = append(n.seenErrs, ctx.Err())
 	n.mu.Unlock()
 	n.cancel()
-	return err
+	return enqueued, err
 }
 
 func (n *cancellingNotifier) notifierCtxErrs() []error {

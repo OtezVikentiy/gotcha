@@ -51,7 +51,7 @@ type Notifier interface {
 	// эскалации: Evaluator больше не зовёт Notify напрямую на открытии/
 	// закрытии (см. notifyOpen/notifyClose), а шлёт СТУПЕНЬ лесенки и
 	// адресованный recovery через них. Реализованы SLOBurnNotifier (T6).
-	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error
+	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error)
 	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
@@ -297,7 +297,7 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 // досылает планировщик (T8). Ошибка политики/уведомления не должна ронять
 // оценку.
 func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, inc Incident) {
-	if e.Policy == nil || e.Notifier == nil {
+	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
 	}
 	ladder, err := e.Policy.Ladder(ctx, projectID, escalation.SeverityCritical)
@@ -305,8 +305,8 @@ func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, inc Inciden
 		slog.Error("slo evaluator: escalation policy failed", "incident_id", inc.ID, "error", err)
 		return
 	}
-	sent, err := escalation.SendStepIfDue(ctx, ladder, inc.ID, 0, 0,
-		func(chs []int64, step int) error { return e.Notifier.NotifyStep(ctx, inc.ID, chs, step) },
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "slo", e.Pool, inc.ID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return e.Notifier.NotifyStep(ctx, inc.ID, chs, step) },
 		func(id int64, from int) (bool, error) { return e.Store.BumpEscalation(ctx, id, from) })
 	if err != nil {
 		slog.Error("slo evaluator: notify step failed", "incident_id", inc.ID, "error", err)
