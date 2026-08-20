@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -1134,11 +1135,17 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	// тот же приём уже применён ниже для sloEval (:1216).
 	maint := uptime.NewService(pg)
 
+	// policyStore — политика эскалации (B4, T7): одна на процесс, передаётся во
+	// все 5 оценщиков ниже — каждый резолвит свою лесенку (project, severity)
+	// на открытии инцидента (см. Evaluator.notifyOpen каждого пакета).
+	policyStore := escalation.NewPolicyStore(pg)
+
 	evaluator := &trace.Evaluator{
 		Pool:        pg,
 		Query:       trace.NewQuery(ch),
 		Regressions: trace.NewRegressionService(pg),
 		Maint:       maint,
+		Policy:      policyStore,
 		Notifier: &trace.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1163,6 +1170,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:     metric.NewQuery(ch),
 		Incidents: metric.NewIncidentService(pg),
 		Maint:     maint,
+		Policy:    policyStore,
+		Pool:      pg,
 		Notifier: &metric.MetricNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1187,6 +1196,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Query:       profile.NewQuery(ch),
 		Regressions: profile.NewRegressionService(pg),
 		Maint:       maint,
+		Policy:      policyStore,
+		Pool:        pg,
 		Notifier: &profile.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1215,6 +1226,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Overrides: host.NewHostOverrideService(pg),
 		Groups:    host.NewGroupThresholdService(pg),
 		Maint:     maint,
+		Policy:    policyStore,
+		Pool:      pg,
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1270,6 +1283,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Notifier:  sloNotifier,
 		Interval:  time.Duration(cfg.SLOEvalInterval) * time.Second,
 		Maint:     maint,
+		Policy:    policyStore,
 	}
 	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_last_tick_timestamp_seconds",
 		"Unix time of the last completed SLO burn-rate evaluation pass. Stale value means SLO error-budget alerts are not being evaluated.",

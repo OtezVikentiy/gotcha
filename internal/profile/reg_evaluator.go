@@ -4,6 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 const evaluatorDefaultInterval = 5 * time.Minute
@@ -31,6 +35,16 @@ type RegressionEvaluator struct {
 	Interval    time.Duration
 	Config      RegressionConfig
 	Maint       MaintenanceChecker
+
+	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
+	// severity) на открытии регрессии. Nil-совместим — деградированная сборка
+	// без него просто не уведомляет об открытии.
+	Policy *escalation.PolicyStore
+
+	// Pool — та же PG, что под Regressions: читает лог эскалации
+	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
+	// notifyClose, escalation.RecoveryChannels). Nil-совместим.
+	Pool *pgxpool.Pool
 }
 
 func (e *RegressionEvaluator) Run(ctx context.Context) {
@@ -127,7 +141,7 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 			return
 		}
 		if !inMaint {
-			e.notify(ctx, projectID, service, profileType, function, base, recent, true, rec.ID)
+			e.notifyOpen(ctx, projectID, rec)
 		}
 	case DecisionBump:
 		if err := e.Regressions.Bump(ctx, open.ID, recent); err != nil {
@@ -140,7 +154,7 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 			return
 		}
 		if closed && !open.InMaintenance {
-			e.notify(ctx, projectID, service, profileType, function, base, recent, false, open.ID)
+			e.notifyClose(ctx, open)
 		}
 	}
 }
@@ -164,19 +178,57 @@ func (e *RegressionEvaluator) inMaintenance(ctx context.Context, projectID int64
 	return v
 }
 
-func (e *RegressionEvaluator) notify(ctx context.Context, projectID int64, service, profileType, function string, base, recent float64, opened bool, id int64) {
-	if e.Notifier == nil {
+// notifyOpen — реролл (B4, T7): открытие регрессии резолвит лесенку
+// эскалации (project, severity — регрессии профиля не имеют per-функцию
+// override, всегда table-DEFAULT profile_regressions.severity, 'warning',
+// 0077) и шлёт РОВНО СТУПЕНЬ 0, если её задержка (обычно 0) уже настала;
+// остальные ступени досылает планировщик (T8). Ошибка политики/уведомления
+// не должна ронять оценку.
+func (e *RegressionEvaluator) notifyOpen(ctx context.Context, projectID int64, rec Regression) {
+	if e.Policy == nil || e.Notifier == nil {
 		return
 	}
-	ev := ProfileRegressionEvent{
-		ProjectID: projectID, Service: service, ProfileType: profileType, Function: function,
-		BaselineShare: base, CurrentShare: recent, PctIncrease: pctIncrease(base, recent), Opened: opened,
+	ladder, err := e.Policy.Ladder(ctx, projectID, escalation.SeverityWarning)
+	if err != nil {
+		slog.Error("profile evaluator: escalation policy failed", "id", rec.ID, "error", err)
+		return
 	}
-	if err := e.Notifier.Notify(ctx, ev); err != nil {
-		slog.Error("profile evaluator: notify failed", "project_id", projectID, "function", function, "error", err)
+	sent, err := escalation.SendStepIfDue(ctx, ladder, rec.ID, 0, 0,
+		func(chs []int64, step int) error { return e.Notifier.NotifyStep(ctx, rec.ID, chs, step) },
+		func(id int64, from int) (bool, error) { return e.Regressions.BumpEscalation(ctx, id, from) })
+	if err != nil {
+		slog.Error("profile evaluator: notify step failed", "id", rec.ID, "error", err)
+		return
 	}
-	if err := e.Regressions.MarkNotified(ctx, id, opened); err != nil {
-		slog.Error("profile evaluator: mark notified failed", "id", id, "error", err)
+	if sent {
+		if err := e.Regressions.MarkNotified(ctx, rec.ID, true); err != nil {
+			slog.Error("profile evaluator: mark notified failed", "id", rec.ID, "error", err)
+		}
+	}
+}
+
+// notifyClose — реролл (B4, T7): закрытие регрессии шлёт recovery адресно, в
+// каналы из лога эскалации (escalation.RecoveryChannels); пустой набор —
+// молчание (M-7 брифа Task 6, ничего не отправлялось — отправлять «закрыт»
+// нечего).
+func (e *RegressionEvaluator) notifyClose(ctx context.Context, open Regression) {
+	if e.Pool == nil || e.Notifier == nil {
+		return
+	}
+	chs, err := escalation.RecoveryChannels(ctx, e.Pool, "profile", open.ID)
+	if err != nil {
+		slog.Error("profile evaluator: recovery channels failed", "id", open.ID, "error", err)
+		return
+	}
+	if len(chs) == 0 {
+		return
+	}
+	if err := e.Notifier.NotifyRecovery(ctx, open.ID, chs); err != nil {
+		slog.Error("profile evaluator: notify recovery failed", "id", open.ID, "error", err)
+		return
+	}
+	if err := e.Regressions.MarkNotified(ctx, open.ID, false); err != nil {
+		slog.Error("profile evaluator: mark notified close failed", "id", open.ID, "error", err)
 	}
 }
 

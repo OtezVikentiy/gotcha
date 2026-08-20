@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
@@ -30,12 +31,16 @@ func TestEvaluatorLifecycle(t *testing.T) {
 
 	asvc := alert.NewService(pool)
 	ob := notify.NewOutbox(pool)
-	notifier := &RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	notifier := &RegressionNotifier{
+		Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+		Regressions: NewRegressionService(pool), Pool: pool,
+	}
 	ev := &Evaluator{
 		Pool:         pool,
 		Query:        NewQuery(conn),
 		Regressions:  NewRegressionService(pool),
 		Notifier:     notifier,
+		Policy:       escalation.NewPolicyStore(pool),
 		TopK:         50,
 		BaselineDays: 7,
 	}
@@ -394,10 +399,11 @@ func TestEvaluatorMaintenanceSuppressesRegressionNotify(t *testing.T) {
 	asvc := alert.NewService(pool)
 	notifier := &RegressionNotifier{
 		Alerts: asvc, Outbox: notify.NewOutbox(pool), BaseURL: "https://gotcha.example",
+		Regressions: NewRegressionService(pool), Pool: pool,
 	}
 	ev := &Evaluator{
 		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
-		Notifier: notifier, TopK: 50, BaselineDays: 7,
+		Notifier: notifier, Policy: escalation.NewPolicyStore(pool), TopK: 50, BaselineDays: 7,
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
 
@@ -470,10 +476,11 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	asvc := alert.NewService(pool)
 	notifier := &RegressionNotifier{
 		Alerts: asvc, Outbox: notify.NewOutbox(pool), BaseURL: "https://gotcha.example",
+		Regressions: NewRegressionService(pool), Pool: pool,
 	}
 	ev := &Evaluator{
 		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
-		Notifier: notifier, TopK: 50, BaselineDays: 7,
+		Notifier: notifier, Policy: escalation.NewPolicyStore(pool), TopK: 50, BaselineDays: 7,
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
 	}
 
@@ -524,11 +531,12 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	asvc := alert.NewService(pool)
 	notifier := &RegressionNotifier{
 		Alerts: asvc, Outbox: notify.NewOutbox(pool), BaseURL: "https://gotcha.example",
+		Regressions: NewRegressionService(pool), Pool: pool,
 	}
 	inWindow := true
 	ev := &Evaluator{
 		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
-		Notifier: notifier, TopK: 50, BaselineDays: 7,
+		Notifier: notifier, Policy: escalation.NewPolicyStore(pool), TopK: 50, BaselineDays: 7,
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
 	}
 

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // defaultSLOInterval — период тика оценщика по умолчанию. SLO живут на скользящих
@@ -44,6 +46,13 @@ type SLOEvent struct {
 // оценщик работает и без нотифаера (тесты, инсталляции без каналов).
 type Notifier interface {
 	Notify(ctx context.Context, ev SLOEvent)
+
+	// NotifyStep/NotifyRecovery (B4, T7) — реролл open/recovery на лесенку
+	// эскалации: Evaluator больше не зовёт Notify напрямую на открытии/
+	// закрытии (см. notifyOpen/notifyClose), а шлёт СТУПЕНЬ лесенки и
+	// адресованный recovery через них. Реализованы SLOBurnNotifier (T6).
+	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error
+	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
 // Evaluator периодически считает burn rate каждого включённого SLO по двум окнам
@@ -58,6 +67,11 @@ type Evaluator struct {
 	Notifier  Notifier
 	Interval  time.Duration
 	Maint     MaintenanceChecker
+
+	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
+	// severity) на открытии инцидента сжигания бюджета. Nil-совместим —
+	// деградированная сборка без него просто не уведомляет об открытии.
+	Policy *escalation.PolicyStore
 
 	// closeStreak — счётчик подряд идущих «остывших» тиков на SLO (гистерезис
 	// флапа). Ленивая инициализация в Tick: структуру собирают литералом без
@@ -148,7 +162,7 @@ func (e *Evaluator) evalSLO(ctx context.Context, s SLO, now time.Time) bool {
 			return false // рано: короткое окно должно остыть N тиков подряд
 		}
 		e.closeStreak[s.ID] = 0
-		return e.close(ctx, p, s, now, d)
+		return e.close(ctx, s)
 	default:
 		// Короткое окно ещё горит, но длинное не подтвердило (или наоборот) —
 		// инцидент, если открыт, держим; счётчик остывания сбрасываем.
@@ -192,7 +206,12 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 	} else if already {
 		return false // инцидент уже открыт — прожог продолжается, ничего нового
 	}
-	budget, attainment, remaining := e.fullWindowBudget(ctx, p, s, now)
+	// attainment/remaining игнорируются: реролл (B4, T7) больше не собирает
+	// SLOEvent здесь напрямую — notifyOpen шлёт ступень лесенки по incidentID,
+	// а StepNotifier перечитывает инцидент и сам восстанавливает эти поля
+	// (см. SLOBurnNotifier.reloadEvent). budget — единственное, что реально
+	// нужно ниже: он персистится в slo_incidents.budget_remaining.
+	budget, _, _ := e.fullWindowBudget(ctx, p, s, now)
 	inMaint := e.inMaintenance(ctx, s.ProjectID, now)
 	inc, created, err := e.Store.OpenIncident(ctx, s.ID, s.ProjectID, d.BurnShort, budget, inMaint)
 	if err != nil {
@@ -203,14 +222,17 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 		return false // гонка: параллельный тик успел открыть — не дублируем уведомление
 	}
 	if !inMaint {
-		e.notify(ctx, s, inc, true, attainment, remaining, d.BurnShort)
+		e.notifyOpen(ctx, s.ProjectID, inc)
 	}
 	return true
 }
 
-// close закрывает открытый инцидент. Бюджет за полное окно считается только по
-// факту закрытия (перехода) — не каждый тик.
-func (e *Evaluator) close(ctx context.Context, p Provider, s SLO, now time.Time, d BurnDecision) bool {
+// close закрывает открытый инцидент. Бюджет за полное окно больше не
+// пересчитывается на закрытии (реролл B4, T7): recovery шлётся адресно через
+// notifyClose, который перечитывает инцидент по ID и не нуждается в
+// attainment/remaining, посчитанных здесь заново — в отличие от старого
+// SLOEvent, собираемого evalSLO напрямую.
+func (e *Evaluator) close(ctx context.Context, s SLO) bool {
 	inc, resolved, err := e.Store.ResolveIncident(ctx, s.ID)
 	if err != nil {
 		slog.Error("slo evaluator: resolve incident failed", "slo_id", s.ID, "error", err)
@@ -219,9 +241,8 @@ func (e *Evaluator) close(ctx context.Context, p Provider, s SLO, now time.Time,
 	if !resolved {
 		return false // открытого не было — закрывать нечего
 	}
-	_, attainment, remaining := e.fullWindowBudget(ctx, p, s, now)
 	if !inc.InMaintenance {
-		e.notify(ctx, s, inc, false, attainment, remaining, d.BurnShort)
+		e.notifyClose(ctx, inc)
 	}
 	return true
 }
@@ -269,21 +290,56 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 	return v
 }
 
-// notify рассылает событие (если нотифаер задан) и помечает инцидент, чтобы алерт
-// ушёл ровно один раз на открытие и закрытие. nil-гвард: T5 подставит реальный
-// нотифаер, а до того (и в тестах) оценщик обязан работать со stub/nil.
-func (e *Evaluator) notify(ctx context.Context, s SLO, inc Incident, opened bool, attainment, remaining, burn float64) {
-	if e.Notifier != nil {
-		e.Notifier.Notify(ctx, SLOEvent{
-			SLO:             s,
-			Incident:        inc,
-			Opened:          opened,
-			Attainment:      attainment,
-			BudgetRemaining: remaining,
-			BurnRate:        burn,
-		})
+// notifyOpen — реролл (B4, T7): открытие инцидента сжигания бюджета резолвит
+// лесенку эскалации (project, severity — SLO не имеют per-цель override,
+// всегда table-DEFAULT slo_incidents.severity, 'critical', 0077) и шлёт РОВНО
+// СТУПЕНЬ 0, если её задержка (обычно 0) уже настала; остальные ступени
+// досылает планировщик (T8). Ошибка политики/уведомления не должна ронять
+// оценку.
+func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, inc Incident) {
+	if e.Policy == nil || e.Notifier == nil {
+		return
 	}
-	if err := e.Store.MarkNotified(ctx, inc.ID, opened); err != nil {
+	ladder, err := e.Policy.Ladder(ctx, projectID, escalation.SeverityCritical)
+	if err != nil {
+		slog.Error("slo evaluator: escalation policy failed", "incident_id", inc.ID, "error", err)
+		return
+	}
+	sent, err := escalation.SendStepIfDue(ctx, ladder, inc.ID, 0, 0,
+		func(chs []int64, step int) error { return e.Notifier.NotifyStep(ctx, inc.ID, chs, step) },
+		func(id int64, from int) (bool, error) { return e.Store.BumpEscalation(ctx, id, from) })
+	if err != nil {
+		slog.Error("slo evaluator: notify step failed", "incident_id", inc.ID, "error", err)
+		return
+	}
+	if sent {
+		if err := e.Store.MarkNotified(ctx, inc.ID, true); err != nil {
+			slog.Error("slo evaluator: mark notified failed", "incident_id", inc.ID, "error", err)
+		}
+	}
+}
+
+// notifyClose — реролл (B4, T7): закрытие инцидента сжигания бюджета шлёт
+// recovery адресно, в каналы из лога эскалации (escalation.RecoveryChannels);
+// пустой набор — молчание (M-7 брифа Task 6, ничего не отправлялось —
+// отправлять «закрыт» нечего).
+func (e *Evaluator) notifyClose(ctx context.Context, inc Incident) {
+	if e.Pool == nil || e.Notifier == nil {
+		return
+	}
+	chs, err := escalation.RecoveryChannels(ctx, e.Pool, "slo", inc.ID)
+	if err != nil {
+		slog.Error("slo evaluator: recovery channels failed", "incident_id", inc.ID, "error", err)
+		return
+	}
+	if len(chs) == 0 {
+		return
+	}
+	if err := e.Notifier.NotifyRecovery(ctx, inc.ID, chs); err != nil {
+		slog.Error("slo evaluator: notify recovery failed", "incident_id", inc.ID, "error", err)
+		return
+	}
+	if err := e.Store.MarkNotified(ctx, inc.ID, false); err != nil {
 		slog.Error("slo evaluator: mark notified failed", "incident_id", inc.ID, "error", err)
 	}
 }

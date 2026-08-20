@@ -10,6 +10,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -122,9 +123,15 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 	}
 
 	cfg := profile.DefaultProfileRegressionConfig() // Threshold 0.5, MinSamples 100, ShareFloor 0.05, BaselineDays 7
+	regressions := profile.NewRegressionService(pool)
 	eval := &profile.RegressionEvaluator{
-		Query: profile.NewQuery(ch), Regressions: profile.NewRegressionService(pool),
-		Notifier: &profile.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Query: profile.NewQuery(ch), Regressions: regressions,
+		Notifier: &profile.RegressionNotifier{
+			Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+			Regressions: regressions, Pool: pool,
+		},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
 		Interval: time.Hour, Config: cfg,
 	}
 

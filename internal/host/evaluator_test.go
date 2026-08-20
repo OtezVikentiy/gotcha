@@ -13,6 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -42,6 +43,27 @@ func (f *fakeNotifier) HostIncidentResolved(_ context.Context, in host.Incident,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolved = append(f.resolved, in)
+	return f.err
+}
+
+// NotifyStep/NotifyRecovery (B4, T7) — реролл: Evaluator больше не зовёт
+// HostIncidentOpened/Resolved напрямую, а шлёт ступень лесенки/адресный
+// recovery через эти методы (см. host.Evaluator.notifyOpen/notifyClose).
+// Копят в те же opened/resolved слайсы, что и раньше — openedCount()/
+// resolvedCount() остаются верным сигналом «нотифаер позван на открытии/
+// закрытии» для существующих тестов, которым несущественно, каким именно
+// методом интерфейса это случилось.
+func (f *fakeNotifier) NotifyStep(_ context.Context, incidentID int64, _ []int64, _ int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opened = append(f.opened, host.Incident{ID: incidentID})
+	return f.err
+}
+
+func (f *fakeNotifier) NotifyRecovery(_ context.Context, incidentID int64, _ []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolved = append(f.resolved, host.Incident{ID: incidentID})
 	return f.err
 }
 
@@ -144,6 +166,8 @@ func newEvaluator(pool *pgxpool.Pool, ch driver.Conn, notifier host.Notifier) *h
 		Overrides: host.NewHostOverrideService(pool),
 		Groups:    host.NewGroupThresholdService(pool),
 		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
+		Pool:      pool,
 		Interval:  time.Hour, // тикер не используем — дёргаем Tick вручную
 		StartedAt: time.Now().UTC().Add(-24 * time.Hour),
 	}
@@ -888,8 +912,8 @@ type cancellingNotifier struct {
 	seenErrs []error
 }
 
-func (n *cancellingNotifier) HostIncidentOpened(ctx context.Context, in host.Incident, h host.Host, s host.Settings) error {
-	err := n.fakeNotifier.HostIncidentOpened(ctx, in, h, s)
+func (n *cancellingNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
+	err := n.fakeNotifier.NotifyStep(ctx, incidentID, channelIDs, step)
 	n.mu.Lock()
 	n.seenErrs = append(n.seenErrs, ctx.Err())
 	n.mu.Unlock()

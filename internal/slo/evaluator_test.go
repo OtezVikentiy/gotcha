@@ -2,10 +2,12 @@ package slo_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -13,7 +15,18 @@ import (
 
 // capturingNotifier копит SLOEvent, чтобы тест проверил, что уведомление ушло
 // ровно один раз на открытие и один раз на закрытие.
+//
+// store — те же PG-данные, что видит реальный SLOBurnNotifier.NotifyStep/
+// NotifyRecovery (B4, T6): планировщик эскалации и Evaluator.notifyOpen/
+// notifyClose (B4, T7) знают только incidentID, поэтому реролл зовёт
+// NotifyStep/NotifyRecovery вместо Notify — capturingNotifier перечитывает
+// SLO+инцидент по ID тем же способом, что и продовый нотифаер (см.
+// SLOBurnNotifier.reloadEvent), чтобы существующие тесты на полях SLOEvent
+// (Opened/BurnRate/...) остались верны независимо от того, каким методом
+// интерфейса событие пришло.
 type capturingNotifier struct {
+	store *slo.Store
+
 	mu     sync.Mutex
 	events []slo.SLOEvent
 }
@@ -22,6 +35,46 @@ func (c *capturingNotifier) Notify(_ context.Context, ev slo.SLOEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, ev)
+}
+
+func (c *capturingNotifier) NotifyStep(ctx context.Context, incidentID int64, _ []int64, _ int) error {
+	return c.capture(ctx, incidentID, true)
+}
+
+func (c *capturingNotifier) NotifyRecovery(ctx context.Context, incidentID int64, _ []int64) error {
+	return c.capture(ctx, incidentID, false)
+}
+
+// capture перегружает SLO+инцидент по ID и собирает из них SLOEvent — калька
+// SLOBurnNotifier.reloadEvent (notify.go), только пишет в events вместо
+// постановки задачи в Outbox.
+func (c *capturingNotifier) capture(ctx context.Context, incidentID int64, opened bool) error {
+	in, ok, err := c.store.GetIncidentByID(ctx, incidentID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("capturingNotifier: incident %d not found", incidentID)
+	}
+	s, ok, err := c.store.Get(ctx, in.ProjectID, in.SLOID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("capturingNotifier: slo %d not found", in.SLOID)
+	}
+	remaining := 0.0
+	if in.BudgetRemaining != nil {
+		remaining = *in.BudgetRemaining
+	}
+	attainment := 1 - (1-remaining)*(1-s.Target)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, slo.SLOEvent{
+		SLO: s, Incident: in, Opened: opened,
+		Attainment: attainment, BudgetRemaining: remaining, BurnRate: in.BurnRate,
+	})
+	return nil
 }
 
 func (c *capturingNotifier) snapshot() []slo.SLOEvent {
@@ -72,12 +125,13 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 	// burn 0.2/(1-0.99)=20× > порог 14.4.
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
 
-	notifier := &capturingNotifier{}
+	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
 		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
 	}
 
 	// Открытие.

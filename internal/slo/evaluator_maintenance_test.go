@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
@@ -48,12 +49,13 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	// burn 0.2/(1-0.99)=20× > порог 14.4.
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
 
-	notifier := &capturingNotifier{}
+	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
 		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
 		Maint:     mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
 
@@ -130,12 +132,13 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
 
-	notifier := &capturingNotifier{}
+	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
 		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
 		Maint:     mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
 	}
 
@@ -185,13 +188,14 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
 
-	notifier := &capturingNotifier{}
+	notifier := &capturingNotifier{store: st}
 	inWindow := true
 	e := &slo.Evaluator{
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
 		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
 		Maint:     mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
 	}
 
