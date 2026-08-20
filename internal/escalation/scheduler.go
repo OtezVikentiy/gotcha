@@ -17,6 +17,16 @@ type MaintenanceChecker interface {
 	InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error)
 }
 
+// DepChecker — гейт зависимостей (B5/T3, depsuppress.Suppressor): узнаёт,
+// есть ли у инцидента родитель в графе зависимостей и упал ли он, и умеет
+// пометить инцидент подавленным зависимостью. Локальный duck-typing
+// интерфейс — escalation НЕ импортирует пакет depsuppress, как и
+// MaintenanceChecker не импортирует пакет maintenance.
+type DepChecker interface {
+	CheckIncident(ctx context.Context, source string, incidentID int64) (hasParent, parentDown bool, err error)
+	MarkSuppressed(ctx context.Context, source string, incidentID int64) error
+}
+
 // StepNotifier — общий интерфейс пяти product-нотифаеров (T6): шлёт ступень
 // эскалации [step] инцидента incidentID в channelIDs и возвращает КАНАЛЫ,
 // реально поставленные в очередь (см. SendStepIfDue) — не факт намерения.
@@ -42,8 +52,17 @@ type Scheduler struct {
 	Bindings []Binding
 	Policy   *PolicyStore
 	Maint    MaintenanceChecker
-	Pool     *pgxpool.Pool
-	Interval time.Duration
+	// Dep — гейт зависимостей (B5): опционален (nil в тестах/сборках, не
+	// подключивших depsuppress) — тогда гейт полностью пропускается, как
+	// будто у всех инцидентов нет родителя.
+	Dep DepChecker
+	// SettleGrace — сколько держать ступень 0, пока у инцидента есть живой
+	// (не упавший) родитель: даёт родителю время либо упасть следом (тогда
+	// подавление сработает раньше, чем уйдёт первое уведомление), либо
+	// остаться живым — тогда после грейса ступень 0 всё равно уходит.
+	SettleGrace time.Duration
+	Pool        *pgxpool.Pool
+	Interval    time.Duration
 	// Now — источник текущего времени; в проде time.Now, в тестах
 	// фиксируется, чтобы детерминированно управлять elapsed.
 	Now func() time.Time
@@ -79,6 +98,43 @@ func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, n
 	}
 	if inMaint {
 		return
+	}
+
+	// Гейт зависимостей (B5) стоит ПОСЛЕ maintenance и ПЕРЕД резолвом лесенки:
+	// maintenance — более сильная и явная причина молчать (владелец сам
+	// объявил окно), проверяется первой и без исключений; зависимость —
+	// продуктовая эвристика (граф из client-op спанов), поэтому не должна
+	// маскировать окно обслуживания, но должна отсечь эскалацию раньше, чем
+	// тратится время на резолв лесенки, которая всё равно не понадобится.
+	if s.Dep != nil {
+		hasParent, parentDown, err := s.Dep.CheckIncident(ctx, b.Src.Name(), p.ID)
+		if err != nil {
+			slog.Error("escalation scheduler: dep check failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
+			// fail-safe: ошибка проверки зависимости — не подавляем, идём
+			// дальше как обычно (ложная эскалация лучше молчания о реальном
+			// инциденте, чей родитель на самом деле жив).
+		} else {
+			if parentDown {
+				// Родитель упал: подавляем инцидент навсегда, на ЛЮБОЙ
+				// ступени эскалации (не только step0) — если родитель упал
+				// уже после того, как ребёнок начал эскалировать, дальнейшие
+				// ступени всё равно шумят тем же самым сбоем зависимости.
+				if err := s.Dep.MarkSuppressed(ctx, b.Src.Name(), p.ID); err != nil {
+					slog.Error("escalation scheduler: mark suppressed failed", "incident_id", p.ID, "error", err)
+				} else {
+					slog.Info("escalation scheduler: incident suppressed by dependency", "source", b.Src.Name(), "incident_id", p.ID)
+				}
+				return // подавлено навсегда; со следующего тика инцидент выпадет из OpenUnacked
+			}
+			// Родитель жив: держим ТОЛЬКО ступень 0 и ТОЛЬКО в течение
+			// SettleGrace — даём родителю время либо упасть следом (тогда
+			// ветка выше подавит раньше первого уведомления), либо
+			// стабилизироваться. Ступени выше 0 уже сигнализировали и не
+			// откладываются повторно; после грейса ступень 0 уходит штатно.
+			if hasParent && p.EscalationLevel == 0 && now.Sub(p.StartedAt) < s.SettleGrace {
+				return // держим step0 до конца грейса
+			}
+		}
 	}
 
 	ladder, err := s.Policy.Ladder(ctx, p.ProjectID, p.Severity)
