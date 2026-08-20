@@ -120,7 +120,10 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	// (Europe/Moscow)» — число одного пояса под именем другого. Соседняя
 	// функция этого же файла переводила время честно.
 	loc := humanize.LocationOrUTC(w.Timezone)
-	starts, ends := "?", "?"
+	// EndsAt == nil — не «неизвестно», а «бессрочно» (validateWindow требует
+	// StartsAt всегда, так что "?" у начала — чисто defensive и на практике
+	// у сохранённых окон не встречается).
+	starts, ends := "?", i18n.T(ctx, "uptime.maintenance.indefinite")
 	if w.StartsAt != nil {
 		starts = humanize.Time(ctx, *w.StartsAt, loc)
 	}
@@ -179,7 +182,7 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 				<p class="error" id={ errID }>{ errMsg }</p>
 			}
 			<input type="hidden" name="window_id" value={ strconv.FormatInt(w.ID, 10) }/>
-			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit", errID)
+			@maintenanceFields(windowFormValues(form, open, windowFieldDefaults(w)), "uptime.maintenance.edit.submit", errID, EditWindowModalID(w.ID))
 		</form>
 	}
 }
@@ -196,7 +199,13 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 // errID — id блока ошибки валидации в вызывающей модалке (пустой, если
 // ошибки нет): первое текстовое поле получает aria-invalid/aria-describedby,
 // чтобы скринридер связал сообщение с полем (№80).
-templ maintenanceFields(values FormState, submitKey string, errID string) {
+//
+// idPrefix — модалка создания и модалка правки каждого окна рендерят этот
+// фрагмент на одной странице ("new-maintenance-window" / EditWindowModalID),
+// поэтому статичные id полей (сейчас — подсказки под ends_at) собираются из
+// него, а не зашиты в разметке: иначе на странице с несколькими окнами id
+// задвоились бы.
+templ maintenanceFields(values FormState, submitKey string, errID string, idPrefix string) {
 	<div class="field">
 		<label>
 			{ i18n.T(ctx, "uptime.maintenance.field.name") }
@@ -252,8 +261,10 @@ templ maintenanceFields(values FormState, submitKey string, errID string) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "uptime.maintenance.oneoff.end") }
-					<input type="datetime-local" name="ends_at" class="input" value={ values.Get("ends_at", "") }/>
+					<input type="datetime-local" name="ends_at" class="input" value={ values.Get("ends_at", "") } aria-describedby={ idPrefix + "-ends-hint " + idPrefix + "-ends-slo-warning" }/>
 				</label>
+				<p class="hint" id={ idPrefix + "-ends-hint" }>{ i18n.T(ctx, "uptime.maintenance.oneoff.end_hint") }</p>
+				<p class="hint hint--warn" id={ idPrefix + "-ends-slo-warning" }>{ i18n.T(ctx, "uptime.maintenance.indefinite_slo_warning") }</p>
 			</div>
 		</div>
 	</div>
@@ -361,7 +372,7 @@ templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errM
 				if createErrID != "" {
 					<p class="error" id={ createErrID }>{ errMsg }</p>
 				}
-				@maintenanceFields(form, "uptime.maintenance.submit", createErrID)
+				@maintenanceFields(form, "uptime.maintenance.submit", createErrID, "new-maintenance-window")
 			</form>
 			}
 		</div>
