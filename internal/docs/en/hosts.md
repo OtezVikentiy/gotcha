@@ -233,6 +233,31 @@ Incident evaluation (open/escalate/resolve) runs on a background loop every `GOT
 
 A disabled threshold is not evaluated at all, so saving the settings also resolves its **already open** incidents right away: otherwise nothing could clear the red badge off the host — host incidents cannot be closed by hand. No notification is sent for such a resolve: the operator disabled the threshold themselves, and there is no news in reporting the consequence of their own action back to them.
 
+## Thresholds: cascade and overrides
+
+The project-wide thresholds above aren't the only level. Each of the 4 kinds (disk/memory/load/silence) can be overridden more narrowly, at the level of a single host or a group of hosts sharing an environment or role label (see [Host labels](#host-labels-environment-role-filter-grouping)). The cascade's priority, from most specific to most general:
+
+**host → role → environment → project → default value**
+
+The resolver works out each threshold kind **independently** of the other three, and within a kind, **enabled and value are resolved separately**: the on/off state and the number can come from different cascade levels — a host can inherit its number from the role level while deciding for itself whether the threshold is on.
+
+At each level (host, role, environment), every kind has three states (tri-state):
+
+- **Inherit** — take the value from the next cascade level;
+- **Override** — set your own value (a percentage threshold / a per-core multiplier / minutes of silence);
+- **Turn off** — don't evaluate the threshold at this level, regardless of what's set above it; a turned-off threshold still holds the inherited number underneath — so there's nothing stale to show if it's turned back on later.
+
+Role outranks environment: if a host carries both labels and both have a group rule with an explicit value for the same kind, the role's rule wins. A host missing the corresponding label (an empty environment or role) simply skips that cascade level, as if no group rule existed for it.
+
+**Where to set it:**
+
+- **Thresholds for this host** — a block on the host's card (`/projects/{id}/hosts/{name}`), one tri-state per kind, for a project operator. Next to each kind is what's in effect right now and where it came from: "In effect on this host: 85%", "Inherited from role \"db\": 90%", "Inherited from environment \"prod\": 2.0", "Inherited from project settings: 90%", or "Default value: 90%". A member without operator rights sees the same values and sources, but read-only — no form.
+- **Thresholds by environment/role** — a block on `/projects/{id}/hosts/settings` (for operators). One rule is one pair (an "Environment"/"Role" scope plus a label). The label is picked from values already seen in the project — the same ones the host-list filter's facets use — freeform entry isn't supported: until some host in the project carries the environment or role you want, there's nothing to attach a rule to. Saving the same (scope, label) pair again edits the existing rule instead of creating a second one.
+
+Changing the scope (environment/role) or the label on save creates a separate rule — the original stays in place; delete it from the table to remove it.
+
+The effective value is the same one the background incident evaluator uses (`GOTCHA_HOST_EVAL_INTERVAL`) and the one shown in the UI with its source. An override that turns a kind off resolves the host's already-open incidents for that kind right away — the same rule, and the same lack of notification, as changing the project-wide settings (see above).
+
 ## Notification privacy
 
 Host incident notifications follow the product's general [privacy](/docs/privacy) rule: a recipient outside your perimeter gets no metric values, no `detail` (the worst mount point, for instance) and no free text — just a redacted message with a link.
@@ -287,7 +312,7 @@ The names `.` and `..` are never registered: a host card's address is `/projects
 ## Limitations
 
 - A host literally named `settings` isn't reachable through its card: `/projects/{id}/hosts/settings` is the threshold settings page, and that literal route segment wins over the `{name}` wildcard. The same accepted limitation already exists for a metric literally named `alerts` under "Metrics".
-- There's no per-host threshold override — the settings on `/hosts/settings` apply to every host in the project at once. Per-host thresholds and status-aware auto-registration aren't part of this version.
+- Status-aware host auto-registration isn't part of this version.
 - Environment and role labels are read-only and come only from telemetry (see [Host labels](#host-labels-environment-role-filter-grouping) above) — the UI doesn't offer freeform labels of its own, unmoored from a resource attribute.
 - Per-process metrics aren't collected — only the `system.processes.count` aggregate broken down by status.
 

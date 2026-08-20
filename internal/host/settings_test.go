@@ -78,6 +78,39 @@ func TestSettingsServiceSaveThenGetRoundTrips(t *testing.T) {
 	}
 }
 
+// TestSettingsServiceGetWithExists — признак наличия строки (M2): без Save
+// exists=false и DefaultSettings(), после Save — exists=true и сохранённые
+// значения (даже если они совпадают с дефолтом).
+func TestSettingsServiceGetWithExists(t *testing.T) {
+	svc, projectID := setupSettingsProject(t)
+	ctx := context.Background()
+
+	got, exists, err := svc.GetWithExists(ctx, projectID)
+	if err != nil {
+		t.Fatalf("GetWithExists без строки: %v", err)
+	}
+	if exists {
+		t.Fatalf("GetWithExists без строки: exists = true, want false")
+	}
+	if got != host.DefaultSettings() {
+		t.Fatalf("GetWithExists без строки = %+v, want DefaultSettings()", got)
+	}
+
+	if err := svc.Save(ctx, projectID, host.DefaultSettings()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, exists, err = svc.GetWithExists(ctx, projectID)
+	if err != nil {
+		t.Fatalf("GetWithExists после Save: %v", err)
+	}
+	if !exists {
+		t.Fatalf("GetWithExists после Save: exists = false, want true")
+	}
+	if got != host.DefaultSettings() {
+		t.Fatalf("GetWithExists после Save = %+v, want DefaultSettings()", got)
+	}
+}
+
 // TestSettingsServiceSaveUpsertsOnSecondCall — повторный Save того же
 // проекта обновляет строку (ON CONFLICT DO UPDATE), а не плодит вторую и не
 // падает на PK-конфликте.

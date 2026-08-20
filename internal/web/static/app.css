@@ -4260,6 +4260,77 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	padding: 0;
 }
 
+/* ===== Пороги хоста (B2, T6) ===== */
+
+.host-thresholds {
+	margin-top: 1.5rem;
+}
+
+/* .th-kind — тот же .card, что у фильдсетов HostSettings (hostsettings.templ),
+   плюс межблочный отступ: у HostSettings это единственная форма страницы,
+   здесь — секция внутри карточки хоста среди других (графики/инциденты). */
+.th-kind {
+	margin-bottom: 1rem;
+}
+
+/* Числовое поле нужно только в режиме "Переопределить" — в "Наследовать" и
+   "Выключить" значение не читается (hostThresholdsSave/ValidateOverride).
+   Скрытие — тот же приём :has() по radio, без JS, что у .maintenance-form
+   выше: поле всё равно уходит в POST скрытым, но хендлер его тогда не
+   парсит. */
+.host-thresholds-form .th-disk-value,
+.host-thresholds-form .th-memory-value,
+.host-thresholds-form .th-load-value,
+.host-thresholds-form .th-silent-value,
+.host-group-threshold-form .th-disk-value,
+.host-group-threshold-form .th-memory-value,
+.host-group-threshold-form .th-load-value,
+.host-group-threshold-form .th-silent-value {
+	display: none;
+}
+.host-thresholds-form:has(input[name="disk_mode"][value="override"]:checked) .th-disk-value,
+.host-thresholds-form:has(input[name="memory_mode"][value="override"]:checked) .th-memory-value,
+.host-thresholds-form:has(input[name="load_mode"][value="override"]:checked) .th-load-value,
+.host-thresholds-form:has(input[name="silent_mode"][value="override"]:checked) .th-silent-value,
+.host-group-threshold-form:has(input[name="disk_mode"][value="override"]:checked) .th-disk-value,
+.host-group-threshold-form:has(input[name="memory_mode"][value="override"]:checked) .th-memory-value,
+.host-group-threshold-form:has(input[name="load_mode"][value="override"]:checked) .th-load-value,
+.host-group-threshold-form:has(input[name="silent_mode"][value="override"]:checked) .th-silent-value {
+	display: block;
+}
+.host-thresholds-readonly {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+	display: grid;
+	gap: 0.5rem;
+}
+
+/* ===== Групповые пороги по окружению/роли (B2, T7) ===== */
+
+.host-group-thresholds {
+	margin-top: 1.5rem;
+}
+
+/* Метка формы добавления/редактирования — тот же приём :has(), что у
+   значения вида выше: select привязан к scope, отправлять оба сразу не
+   нужно, второй скрыт целиком (остаётся в DOM и в POST, но handler читает
+   только тот, что соответствует отправленному scope, hostGroupThresholdSave). */
+.host-group-threshold-form .gt-label-env,
+.host-group-threshold-form .gt-label-role {
+	display: none;
+}
+.host-group-threshold-form:has(input[name="scope"][value="env"]:checked) .gt-label-env,
+.host-group-threshold-form:has(input[name="scope"][value="role"]:checked) .gt-label-role {
+	display: block;
+}
+
+.gt-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
 /* Сегмент-контрол «Разовое / Еженедельное» — две склеенные кнопки, как у
    переключателя языка/темы: сразу читается как выбор одного из двух, а не
    как флажок-опция. Радио скрыты, подсвечивается активная подпись. */
@@ -4302,6 +4373,19 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .segmented label:has(input:focus-visible) {
 	outline: 2px solid var(--accent);
 	outline-offset: -2px;
+}
+/* Пороги хоста/группы (B2) держат три ДЛИННЫЕ подписи в одном сегмент-
+   контроле ("Наследовать"/"Переопределить"/"Выключить") — на узком экране
+   (~360px) четыре таких контрола в карточке хоста не помещаются в строку и
+   раздвигают всю страницу вбок (та же природа page-overflow, что уже
+   чинилась в B2). Перенос вместо горизонтального раздвижения: у самого
+   .segmented — inline-flex без wrap по умолчанию, оставлен как есть для
+   короткого maintenance-контрола ("Разовое"/"Еженедельное" — двух подписей
+   ширина экрана хватает всегда), а wrap включён точечно только там, где
+   подписи длинные. */
+.host-thresholds .segmented,
+.host-group-threshold-form .segmented {
+	flex-wrap: wrap;
 }
 /* Подпись сегмента набирается как обычная подпись поля. */
 .field > .field-label {

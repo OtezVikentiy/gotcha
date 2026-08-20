@@ -82,6 +82,15 @@ type Evaluator struct {
 	Notifier  Notifier
 	Interval  time.Duration
 
+	// Overrides/Groups — источники host- и group-уровней каскада порогов
+	// (Task 3/4, resolve.go: ThresholdResolver/Effective). Nil-совместимы
+	// (см. Tick): деградированная сборка без них просто резолвит на уровне
+	// project/default, не паникует — но ПРОД и тестовый хелпер (newEvaluator)
+	// обязаны их заполнять, иначе оценка молча вернётся к устаревшему
+	// project-only поведению.
+	Overrides *HostOverrideService
+	Groups    *GroupThresholdService
+
 	// StartedAt — момент, с которого оценщик наблюдает за хостами. Тишина
 	// хоста, накопленная ДО него, ему не принадлежит: пока продукт стоял
 	// (рестарт, недоступность PostgreSQL, разворачивание раздела на живой
@@ -171,13 +180,113 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 	}
 	now := time.Now().UTC()
 
-	// Ленивый кеш настроек на тик: у хостов одного проекта (частый случай —
-	// кластер из нескольких машин) нет смысла спрашивать SettingsService на
-	// каждый хост отдельно.
-	settingsCache := map[int64]Settings{}
+	hostIDs := make([]int64, len(hosts))
+	for i, h := range hosts {
+		hostIDs[i] = h.ID
+	}
 
-	// Проход 1 — тишина. Только PostgreSQL: настройки проекта + last_seen из
-	// уже выбранной строки.
+	// Overrides — один батч-запрос на ВСЕ хосты тика вместо N+1 (M1 брифа
+	// Task 5): у хостов одного проекта host-override отдельный per-host, но
+	// сам запрос один. e.Overrides==nil (деградированная сборка) и провал
+	// запроса (M-1) ведут к одному и тому же — overrides остаётся nil-картой:
+	// r.Overrides[id] на nil-карте безопасно возвращает нулевое значение
+	// («наследовать всё»), паники нет.
+	var overrides map[int64]ThresholdOverride
+	if e.Overrides != nil {
+		loaded, err := e.Overrides.GetForHosts(ctx, hostIDs)
+		if err != nil {
+			slog.Warn("host evaluator: load overrides failed", "error", err)
+		} else {
+			overrides = loaded
+		}
+	}
+
+	// openKinds — какие (host_id, kind) сейчас держат открытый инцидент,
+	// один батч-запрос на ВЕСЬ тик (M-A ремедиации Task 5): раньше
+	// evalOrCloseKind при выключенном виде звал ResolveOpenByHostKind (UPDATE)
+	// для КАЖДОГО хоста на КАЖДОМ тике, даже когда закрывать нечего — на парке
+	// в тысячи хостов это worst-case тысячи пустых UPDATE за тик. nil-карта
+	// (провал запроса) — сознательная деградация до старого поведения:
+	// evalOrCloseKind тогда снова зовёт ResolveOpenByHostKind безусловно, чтобы
+	// временная недоступность PostgreSQL не оставила выключенный вид с реально
+	// открытым инцидентом висеть вечно.
+	openKinds, err := e.Incidents.ListOpenKindsForHosts(ctx, hostIDs)
+	if err != nil {
+		slog.Warn("host evaluator: load open incident kinds failed", "error", err)
+		openKinds = nil
+	}
+
+	// Кеши на тик для резолвера (resolve.go): у хостов одного проекта
+	// (частый случай — кластер из нескольких машин) нет смысла спрашивать
+	// SettingsService/GroupThresholdService на каждый хост отдельно.
+	// project.ok=false метит провал загрузки (M-2): проход 2 не повторяет
+	// запрос и не удваивает Warn — ровно как раньше settingsCache отсеивал
+	// хосты «непрочитанного» проекта во втором проходе.
+	type project struct {
+		settings Settings
+		exists   bool
+		ok       bool
+	}
+	projCache := map[int64]project{}
+	groupsCache := map[int64][]GroupThreshold{}
+	groupsFailed := map[int64]bool{}
+
+	// effFor — эффективные пороги хоста по каскаду host → role/env-группа →
+	// project → default (Task 4: ThresholdResolver.Effective). ok=false —
+	// project-настройки этого хоста не читаются (провал залогирован здесь же,
+	// один раз на проект): хост пропускается целиком, как раньше при провале
+	// settingsCache.
+	effFor := func(h Host) (EffectiveSettings, bool) {
+		p, cached := projCache[h.ProjectID]
+		if !cached {
+			s, exists, err := e.Settings.GetWithExists(ctx, h.ProjectID)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("host evaluator: settings failed", "project_id", h.ProjectID, "error", err)
+				}
+				p = project{ok: false}
+			} else {
+				p = project{settings: s, exists: exists, ok: true}
+			}
+			projCache[h.ProjectID] = p
+		}
+		if !p.ok {
+			return EffectiveSettings{}, false
+		}
+
+		var groups []GroupThreshold
+		if e.Groups != nil {
+			g, cached := groupsCache[h.ProjectID]
+			switch {
+			case cached:
+				groups = g
+			case groupsFailed[h.ProjectID]:
+				// уже провалилось в этом тике — не повторяем запрос/лог.
+			default:
+				loaded, err := e.Groups.List(ctx, h.ProjectID)
+				if err != nil {
+					if ctx.Err() == nil {
+						slog.Warn("host evaluator: group thresholds failed", "project_id", h.ProjectID, "error", err)
+					}
+					groupsFailed[h.ProjectID] = true
+				} else {
+					groups = loaded
+					groupsCache[h.ProjectID] = groups
+				}
+			}
+		}
+
+		r := ThresholdResolver{
+			Project:       p.settings,
+			ProjectExists: p.exists,
+			Groups:        groups,
+			Overrides:     overrides,
+		}
+		return r.Effective(h), true
+	}
+
+	// Проход 1 — тишина. Только PostgreSQL: настройки/каскад проекта +
+	// last_seen из уже выбранной строки.
 	for i, h := range hosts {
 		if ctx.Err() != nil {
 			// Бюджет кончился. Выходим сразу и жалуемся ОДНОЙ строкой: раньше
@@ -188,19 +297,13 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 				"skipped_hosts", len(hosts)-i, "budget", e.tickBudget())
 			break
 		}
-		s, ok := settingsCache[h.ProjectID]
+		eff, ok := effFor(h)
 		if !ok {
-			loaded, err := e.Settings.Get(ctx, h.ProjectID)
-			if err != nil {
-				if ctx.Err() == nil {
-					slog.Warn("host evaluator: settings failed", "project_id", h.ProjectID, "error", err)
-				}
-				continue
-			}
-			s = loaded
-			settingsCache[h.ProjectID] = s
+			continue
 		}
-		e.evalSilent(ctx, h, s, now)
+		e.evalOrCloseKind(ctx, h, "silent", eff.Settings.SilentEnabled, openKinds, func() {
+			e.evalSilent(ctx, h, eff.Settings, now)
+		})
 	}
 
 	// Проход 2 — пороги по метрикам (ClickHouse). Кеш типов метрик живёт ровно
@@ -214,21 +317,21 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 					"skipped_hosts", len(hosts)-i, "budget", e.tickBudget())
 				break
 			}
-			// Настройки уже в кеше: проект, чей Get провалился в проходе 1,
+			// Каскад уже в кеше: проект, чей резолв провалился в проходе 1,
 			// сюда не попадает — повторять запрос незачем.
-			s, ok := settingsCache[h.ProjectID]
+			eff, ok := effFor(h)
 			if !ok {
 				continue
 			}
-			if s.DiskEnabled {
-				e.evalDisk(ctx, q, h, s, now)
-			}
-			if s.MemoryEnabled {
-				e.evalMemory(ctx, q, h, s, now)
-			}
-			if s.LoadEnabled {
-				e.evalLoad(ctx, q, h, s, now)
-			}
+			e.evalOrCloseKind(ctx, h, "disk", eff.Settings.DiskEnabled, openKinds, func() {
+				e.evalDisk(ctx, q, h, eff.Settings, now)
+			})
+			e.evalOrCloseKind(ctx, h, "memory", eff.Settings.MemoryEnabled, openKinds, func() {
+				e.evalMemory(ctx, q, h, eff.Settings, now)
+			})
+			e.evalOrCloseKind(ctx, h, "load", eff.Settings.LoadEnabled, openKinds, func() {
+				e.evalLoad(ctx, q, h, eff.Settings, now)
+			})
 		}
 	}
 
@@ -255,6 +358,34 @@ func (e *Evaluator) tickBudget() time.Duration {
 		return minTickBudget
 	}
 	return budget
+}
+
+// evalOrCloseKind — общий гейт «вид включён → оценить, иначе → закрыть уже
+// открытый инцидент этого вида» для всех четырёх видов (silent/disk/memory/
+// load). Используется обоими проходами Tick.
+//
+// M-A брифа Task 5: эффективный порог (host/group-override) может выключить
+// вид точечно на одном хосте, не трогая проект целиком — раньше это делал
+// только project-уровень (ResolveOpenByProjectKind, вызывался вручную со
+// страницы настроек). Без этого гейта инцидент выключенного на хосте вида
+// висел бы открытым вечно: ручного закрытия в интерфейсе нет.
+//
+// openKinds — префетч Tick (ListOpenKindsForHosts): non-nil карта позволяет
+// пропустить ResolveOpenByHostKind вовсе, когда для (h.ID, kind) открытого
+// инцидента заведомо нет — иначе выключенный вид на живом парке давал бы
+// пустой UPDATE на КАЖДОМ тике (M-A ремедиации). nil-карта (провал префетча в
+// Tick) — деградация до безусловного вызова, как до этой оптимизации.
+func (e *Evaluator) evalOrCloseKind(ctx context.Context, h Host, kind string, enabled bool, openKinds map[int64]map[string]bool, eval func()) {
+	if enabled {
+		eval()
+		return
+	}
+	if openKinds != nil && !openKinds[h.ID][kind] {
+		return
+	}
+	if _, err := e.Incidents.ResolveOpenByHostKind(ctx, h.ID, kind); err != nil {
+		slog.Warn("host evaluator: resolve disabled incident failed", "host_id", h.ID, "kind", kind, "error", err)
+	}
 }
 
 // evalSilent — тишина хоста: секунды с last_seen против SilentAfter.

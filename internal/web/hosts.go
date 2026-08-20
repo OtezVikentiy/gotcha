@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
@@ -676,8 +677,111 @@ func parseHostSettingsForm(r *http.Request) (host.Settings, error) {
 	}, nil
 }
 
+// hostThresholdsFormState — то же самое для формы «Пороги этого хоста»
+// (hostThresholdsSave): режим (inherit/override/off) и введённое значение по
+// каждому из 4 видов, для переотрисовки карточки после ошибки валидации.
+func hostThresholdsFormState(r *http.Request) templates.FormState {
+	return templates.FormState{
+		"disk_mode":    r.FormValue("disk_mode"),
+		"disk_value":   r.FormValue("disk_value"),
+		"memory_mode":  r.FormValue("memory_mode"),
+		"memory_value": r.FormValue("memory_value"),
+		"load_mode":    r.FormValue("load_mode"),
+		"load_value":   r.FormValue("load_value"),
+		"silent_mode":  r.FormValue("silent_mode"),
+		"silent_value": r.FormValue("silent_value"),
+	}
+}
+
+// parseHostThresholdsForm разбирает форму «Пороги этого хоста» в
+// ThresholdOverride (B2, T6): по каждому виду один из трёх режимов —
+// "inherit" (оба указателя остаются nil — резолвер идёт дальше по каскаду),
+// "override" (Enabled=true + распарсенное значение) или "off" (Enabled=false,
+// значение не нужно — тот же контракт, что у ValidateOverride/host.Save).
+// Любой другой/пустой режим трактуется как "inherit" (значение по умолчанию
+// radio-группы при первом открытии формы). Числа проценты диска/памяти
+// конвертируются в доли на этой же границе, что и parseHostSettingsForm;
+// переполнение минут тишины отсекается тем же приёмом (граница ДО перевода в
+// Duration).
+func parseHostThresholdsForm(r *http.Request) (host.ThresholdOverride, error) {
+	var ov host.ThresholdOverride
+
+	switch r.FormValue("disk_mode") {
+	case "override":
+		pct, err := strconv.ParseFloat(r.FormValue("disk_value"), 64)
+		if err != nil {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: %v", host.ErrInvalidDiskThreshold, err)
+		}
+		if invalidThresholdFloat(pct) {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: got %v", host.ErrInvalidDiskThreshold, pct)
+		}
+		frac := pct / 100
+		enabled := true
+		ov.DiskEnabled, ov.DiskThreshold = &enabled, &frac
+	case "off":
+		enabled := false
+		ov.DiskEnabled = &enabled
+	}
+
+	switch r.FormValue("memory_mode") {
+	case "override":
+		pct, err := strconv.ParseFloat(r.FormValue("memory_value"), 64)
+		if err != nil {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: %v", host.ErrInvalidMemoryThreshold, err)
+		}
+		if invalidThresholdFloat(pct) {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: got %v", host.ErrInvalidMemoryThreshold, pct)
+		}
+		frac := pct / 100
+		enabled := true
+		ov.MemoryEnabled, ov.MemoryThreshold = &enabled, &frac
+	case "off":
+		enabled := false
+		ov.MemoryEnabled = &enabled
+	}
+
+	switch r.FormValue("load_mode") {
+	case "override":
+		v, err := strconv.ParseFloat(r.FormValue("load_value"), 64)
+		if err != nil {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: %v", host.ErrInvalidLoadThreshold, err)
+		}
+		if invalidThresholdFloat(v) {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: got %v", host.ErrInvalidLoadThreshold, v)
+		}
+		enabled := true
+		ov.LoadEnabled, ov.LoadThreshold = &enabled, &v
+	case "off":
+		enabled := false
+		ov.LoadEnabled = &enabled
+	}
+
+	switch r.FormValue("silent_mode") {
+	case "override":
+		mins, err := strconv.Atoi(r.FormValue("silent_value"))
+		if err != nil {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: %v", host.ErrInvalidSilentAfter, err)
+		}
+		// Та же граница ДО перевода в Duration, что у parseHostSettingsForm
+		// (переполнение int64 наносекунд на огромном числе минут).
+		if mins < 0 || mins > int(host.MaxSilentAfter/time.Minute) {
+			return host.ThresholdOverride{}, fmt.Errorf("%w: got %d minutes", host.ErrInvalidSilentAfter, mins)
+		}
+		d := time.Duration(mins) * time.Minute
+		enabled := true
+		ov.SilentEnabled, ov.SilentAfter = &enabled, &d
+	case "off":
+		enabled := false
+		ov.SilentEnabled = &enabled
+	}
+
+	return ov, nil
+}
+
 // hostSettingsErrorMessage переводит сентинел-ошибки host.Validate (и
-// parseHostSettingsForm) в понятное сообщение — тот же приём, что
+// parseHostSettingsForm/parseHostThresholdsForm/ValidateOverride — тот же
+// набор сентинелов host.ErrInvalid*, см. hostThresholdsSave) в понятное
+// сообщение — тот же приём, что
 // maintenanceErrorMessage: errors.Is по каждому сентинелу вместо показа
 // err.Error() (Go-текста "host: disk threshold must be in (0, 1]: got 1.5")
 // пользователю.
@@ -698,18 +802,76 @@ func hostSettingsErrorMessage(ctx context.Context, err error) string {
 
 // renderHostSettings отрисовывает страницу настроек: текущие пороги
 // (h.HostSettings.Get — DefaultSettings, если строка ещё не сохранялась) +
-// команда установки агента и конфиг коллектора под свёрнутыми блоками.
-// form/errMsg — введённые пользователем значения при ошибке валидации (см.
-// FormState).
-func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
+// команда установки агента и конфиг коллектора под свёрнутыми блоками, плюс
+// блок «Пороги по окружению/роли» (B2, T7) — список групповых правил проекта
+// + форма добавления/редактирования. form/errMsg — введённые пользователем
+// значения формы ПРОЕКТНЫХ порогов при ошибке валидации (см. FormState);
+// groupForm/groupErrMsg — то же самое, но для формы ГРУППОВОГО правила (два
+// независимых блока на одной странице, ошибка одного не трогает другой).
+func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string, groupForm templates.FormState, groupErrMsg string) {
 	settings, err := h.HostSettings.Get(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Групповые пороги — nil-safe, тем же приёмом, что GroupThresholds в
+	// renderHostDetail (T6): main.go всегда проводит Hosts/GroupThresholds
+	// вместе с HostSettings, но частично собранный Handler (тесты) не должен
+	// падать — секция просто не покажет ни правил, ни формы добавления.
+	var groups []host.GroupThreshold
+	var envValues, roleValues []string
+	if h.Hosts != nil && h.GroupThresholds != nil {
+		groups, err = h.GroupThresholds.List(r.Context(), projectID)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		envValues, roleValues, err = h.Hosts.FacetValues(r.Context(), projectID)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+	}
+	// EditScope/EditLabel — какое существующее правило форма редактирует:
+	// на первом открытии (groupForm == nil) — из query-параметров ссылки
+	// «Редактировать» (?gt_scope=...&gt_label=...), на переотрисовке после
+	// ошибки (groupForm != nil) — из только что отправленных полей формы
+	// (сама форма уже "знает", что редактирует, ошибка не должна это терять).
+	editScope := r.URL.Query().Get("gt_scope")
+	editLabel := r.URL.Query().Get("gt_label")
+	if groupForm != nil {
+		editScope = groupForm.Get("scope", editScope)
+		if editScope == "role" {
+			editLabel = groupForm.Get("label_role", editLabel)
+		} else {
+			editLabel = groupForm.Get("label_env", editLabel)
+		}
+	}
 	installCmd, config, agentReason := h.hostInstallBlocks(r.Context(), projectID)
 	w.WriteHeader(status)
-	_ = templates.HostSettings(projectID, settings, installCmd, config, agentReason, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.HostSettings(projectID, settings, installCmd, config, agentReason, form, errMsg,
+		templates.HostGroupThresholdsVM{
+			Groups:    groups,
+			Envs:      envValues,
+			Roles:     roleValues,
+			EditScope: editScope,
+			EditLabel: editLabel,
+			Form:      groupForm,
+			ErrMsg:    groupErrMsg,
+		}, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// groupThresholdFormState — как hostThresholdsFormState (переиспользует те
+// же 8 полей per-вид disk/memory/load/silent), плюс scope/метка группового
+// правила — для переотрисовки формы «Пороги по окружению/роли» после ошибки
+// валидации (422) с теми же введёнными значениями (тот же приём FormState,
+// что у hostSettingsFormState/hostThresholdsFormState).
+func groupThresholdFormState(r *http.Request) templates.FormState {
+	form := hostThresholdsFormState(r)
+	form["scope"] = r.FormValue("scope")
+	form["label_env"] = r.FormValue("label_env")
+	form["label_role"] = r.FormValue("label_role")
+	return form
 }
 
 // hostSettingsPage — GET /projects/{id}/hosts/settings: форма порогов
@@ -732,7 +894,7 @@ func (h *Handler) hostSettingsPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	h.renderHostSettings(w, r, http.StatusOK, projectID, nil, "")
+	h.renderHostSettings(w, r, http.StatusOK, projectID, nil, "", nil, "")
 }
 
 // hostSettingsSave — POST /projects/{id}/hosts/settings: сохранить пороги.
@@ -766,13 +928,13 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := parseHostSettingsForm(r)
 	if err != nil {
-		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err))
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
 		return
 	}
 	if err := h.HostSettings.Save(r.Context(), projectID, settings); err != nil {
 		if errors.Is(err, host.ErrInvalidDiskThreshold) || errors.Is(err, host.ErrInvalidMemoryThreshold) ||
 			errors.Is(err, host.ErrInvalidLoadThreshold) || errors.Is(err, host.ErrInvalidSilentAfter) {
-			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err))
+			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -783,6 +945,128 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// введены, — без flash сохранение выглядело как «ничего не произошло»
 	// (UX-аудит A1, P1-5). Тот же приём, что у maintenance.go и alerts.go.
 	h.flashOK(w, "flash.saved", 0)
+	http.Redirect(w, r, hostSettingsPath(projectID), http.StatusSeeOther)
+}
+
+// maxGroupThresholdLabelLen — верхняя граница длины label группового порога
+// (it-sec P2-1 ремедиации): без неё оператор мог создать орфан-правило со
+// сколь угодно длинной меткой — GroupThresholdService.List читает ВСЕ
+// групповые пороги проекта на каждом тике оценщика (evaluator.go), и такая
+// строка грузилась бы из PostgreSQL заново каждый Interval. Значение с
+// большим запасом над любой реальной меткой окружения/роли из телеметрии.
+const maxGroupThresholdLabelLen = 256
+
+// hostGroupThresholdSave — POST /projects/{id}/hosts/settings/groups:
+// сохранить групповой порог по scope (env/role) + label (значение метки из
+// host.Store.FacetValues, B1). GroupThresholdService.Upsert идемпотентен по
+// (project_id, scope, label) — сохранение под уже существующей парой
+// scope+label ЗАМЕЩАЕТ её целиком (все 4 вида берутся из отправленной формы,
+// как и per-host override, T6): это и есть «редактирование» — отдельного
+// действия для него нет, форма добавления и форма редактирования — одна и та
+// же (см. HostGroupThresholdsVM.EditScope/EditLabel, renderHostSettings).
+// Гейт — оператор + sameOrigin, тот же приём, что hostSettingsSave/
+// hostThresholdsSave.
+func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.Metrics == nil || h.HostSettings == nil || h.Hosts == nil || h.GroupThresholds == nil {
+		h.notFound(w, r)
+		return
+	}
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	scope := r.FormValue("scope")
+	label := r.FormValue("label_env")
+	if scope == "role" {
+		label = r.FormValue("label_role")
+	}
+	// scope/label не проверяются на членство в текущих FacetValues (метка
+	// могла исчезнуть между отрисовкой формы и отправкой) — орфан-правило
+	// безвредно, резолвер просто не находит хостов с такой меткой (спека
+	// §host_group_thresholds). Проверяется только форма: scope — одно из
+	// двух известных значений, label — непусто (иначе UNIQUE-ключ (project_id,
+	// scope, '') собирал бы несвязанные правила в одну строку).
+	if (scope != "env" && scope != "role") || label == "" || utf8.RuneCountInString(label) > maxGroupThresholdLabelLen {
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
+			groupThresholdFormState(r), i18n.T(r.Context(), "error.hostsettings.group_scope_label"))
+		return
+	}
+	ov, err := parseHostThresholdsForm(r)
+	if err != nil {
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
+			groupThresholdFormState(r), hostSettingsErrorMessage(r.Context(), err))
+		return
+	}
+	if err := h.GroupThresholds.Upsert(r.Context(), projectID, scope, label, ov); err != nil {
+		if errors.Is(err, host.ErrInvalidDiskThreshold) || errors.Is(err, host.ErrInvalidMemoryThreshold) ||
+			errors.Is(err, host.ErrInvalidLoadThreshold) || errors.Is(err, host.ErrInvalidSilentAfter) {
+			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
+				groupThresholdFormState(r), hostSettingsErrorMessage(r.Context(), err))
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	h.flashOK(w, "flash.saved", 0)
+	http.Redirect(w, r, hostSettingsPath(projectID), http.StatusSeeOther)
+}
+
+// hostGroupThresholdDelete — POST /projects/{id}/hosts/settings/groups/delete:
+// удалить групповое правило по scope+label (hidden-поля в форме строки
+// таблицы, groupThresholdRow). Delete идемпотентен (GroupThresholdService.
+// Delete, как и остальные стораджи продукта) — отсутствие строки не ошибка,
+// flash не показывается (нечего было удалять, тот же приём, что hostDelete
+// при deleted=false). Гейт — оператор + sameOrigin.
+func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.Metrics == nil || h.HostSettings == nil || h.GroupThresholds == nil {
+		h.notFound(w, r)
+		return
+	}
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	scope := r.FormValue("scope")
+	label := r.FormValue("label")
+	if scope != "" && label != "" {
+		if err := h.GroupThresholds.Delete(r.Context(), projectID, scope, label); err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.flashOK(w, "flash.deleted", 0)
+	}
 	http.Redirect(w, r, hostSettingsPath(projectID), http.StatusSeeOther)
 }
 
@@ -825,12 +1109,18 @@ func (h *Handler) resolveDisabledKindIncidents(ctx context.Context, projectID in
 
 // hostDetail — GET /projects/{id}/hosts/{name}: карточка хоста (§5.3
 // дизайна) — семь графиков (CPU/RAM/диск-занятость/диск-IO/сеть/load/
-// процессы), открытые инциденты + недавняя история, кнопка удаления (только
-// оператору). Гейт — CanAccessProject, как у списка: карточку смотрит любой
-// с доступом к проекту, действие удаления требует оператора отдельно (ниже,
-// на кнопке — CanOperate вычисляется здесь read-only, без гейта всей
-// страницы). Несуществующее имя хоста → 404 (существование — часть
+// процессы), открытые инциденты + недавняя история, блок «Пороги этого
+// хоста» (B2, T6) и кнопка удаления (только оператору). Гейт —
+// CanAccessProject, как у списка: карточку смотрит любой с доступом к
+// проекту, мутирующие действия (пороги, удаление) требуют оператора отдельно
+// (ниже, на кнопке/форме — CanOperate вычисляется здесь read-only, без гейта
+// всей страницы). Несуществующее имя хоста → 404 (существование — часть
 // проверки, чтобы страница не отдавала 200 на произвольный путь).
+//
+// Само построение VM вынесено в renderHostDetail — hostThresholdsSave
+// переиспользует его для переотрисовки той же карточки с 422 и введённой
+// формой при ошибке валидации (тот же приём, что renderHostSettings у
+// hostSettingsSave).
 func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -841,7 +1131,7 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.Metrics == nil || h.Hosts == nil || h.HostIncidents == nil || h.HostSettings == nil {
+	if h.Metrics == nil || h.Hosts == nil || h.HostIncidents == nil || h.HostSettings == nil || h.HostOverrides == nil {
 		h.notFound(w, r)
 		return
 	}
@@ -864,12 +1154,53 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
+	h.renderHostDetail(w, r, http.StatusOK, projectID, uid, hst, nil, "")
+}
 
-	settings, err := h.HostSettings.Get(r.Context(), projectID)
+// renderHostDetail строит VM карточки хоста и рендерит её со статусом status
+// (200 у hostDetail, 422 у hostThresholdsSave при ошибке валидации формы
+// порогов — thresholdForm/thresholdErr тогда непустые, см.
+// hostSettingsFormState/renderHostSettings за тем же приёмом). uid уже
+// проверен вызывающим (auth.UserID/requireProjectOperator) — здесь читается
+// только для read-only CanOperate.
+//
+// eff — эффективные пороги ЭТОГО хоста (host.ThresholdResolver.Effective,
+// каскад host-override → role-group → env-group → project → default,
+// T3-T5): используются и в статус-бейдже/линиях графиков (hostRowStatus/
+// hostDetailCharts — раньше брали только settings проекта, теперь честно
+// учитывают per-host override), и в блоке «Пороги этого хоста» (показ
+// текущего override + эффективного значения с источником).
+func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, status int, projectID, uid int64, hst host.Host, thresholdForm templates.FormState, thresholdErr string) {
+	name := hst.Name
+
+	projSettings, projExists, err := h.HostSettings.GetWithExists(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// GroupThresholds — nil-safe (T7 групповых порогов может ещё не быть
+	// проведён вместе с HostOverrides, см. комментарий поля в web.go):
+	// пустой список групп резолвер трактует как «групповых порогов нет»,
+	// каскад просто идёт дальше к project/default.
+	var groups []host.GroupThreshold
+	if h.GroupThresholds != nil {
+		groups, err = h.GroupThresholds.List(r.Context(), projectID)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+	}
+	hostOverride, err := h.HostOverrides.Get(r.Context(), hst.ID)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	eff := host.ThresholdResolver{
+		Project:       projSettings,
+		ProjectExists: projExists,
+		Groups:        groups,
+		Overrides:     map[int64]host.ThresholdOverride{hst.ID: hostOverride},
+	}.Effective(hst)
 
 	tr := h.resolveTimeRange(w, r, "24h")
 	from, to := tr.From, tr.To
@@ -889,9 +1220,9 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 	for _, inc := range openIncidents {
 		openKinds = append(openKinds, inc.Kind)
 	}
-	statusKind, problemKinds := hostRowStatus(openKinds, hst.LastSeen, time.Now(), settings)
+	statusKind, problemKinds := hostRowStatus(openKinds, hst.LastSeen, time.Now(), eff.Settings)
 
-	charts, err := h.hostDetailCharts(r.Context(), projectID, name, from, to, step, settings)
+	charts, err := h.hostDetailCharts(r.Context(), projectID, name, from, to, step, eff.Settings)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -916,8 +1247,8 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 
 	// CanOperate — read-only: считаем прямо здесь (не через requireProjectOperator,
 	// который на отказе рендерит 404 всей странице) ровно как canManage у
-	// MonitorDetail — просмотр карточки доступен всем с доступом к проекту,
-	// кнопка удаления просто скрыта у не-оператора.
+	// MonitorDetail — просмотр карточки доступна всем с доступом к проекту,
+	// кнопка удаления и форма порогов просто скрыты у не-оператора.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -955,8 +1286,79 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 		AgentUpdateCmd:       agentUpdateCmd,
 		ServerVersion:        serverVersion,
 		IsNew:                now.Sub(hst.FirstSeen) < hostNewWindow,
+		Override:             hostOverride,
+		Effective:            eff,
+		ThresholdsForm:       thresholdForm,
+		ThresholdsErr:        thresholdErr,
 	}
+	w.WriteHeader(status)
 	_ = templates.HostDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// hostThresholdsSave — POST /projects/{id}/hosts/{name}/thresholds:
+// сохранить per-host override порогов инцидентов (B2, T6) поверх каскада
+// host→role→env→project→default (ThresholdResolver, resolve.go). Гейт —
+// оператор + sameOrigin, тот же приём, что hostSettingsSave. Ошибка
+// валидации (значение вне границы, нечисловой ввод ИЛИ "override" без
+// значения/"выключено" с числом вне границ — ValidateOverride) → 422 с
+// переотрисовкой карточки хоста и введёнными значениями формы
+// (hostThresholdsFormState), как у hostSettingsSave/renderHostSettings.
+func (h *Handler) hostThresholdsSave(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	projectID, ok := h.parsePathProjectID(w, r)
+	if !ok {
+		return
+	}
+	if h.Metrics == nil || h.Hosts == nil || h.HostIncidents == nil || h.HostSettings == nil || h.HostOverrides == nil {
+		h.notFound(w, r)
+		return
+	}
+	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+		return
+	}
+	name := r.PathValue("name")
+	hst, found, err := h.Hosts.Get(r.Context(), projectID, name)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if !found {
+		h.notFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	ov, err := parseHostThresholdsForm(r)
+	if err != nil {
+		h.renderHostDetail(w, r, http.StatusUnprocessableEntity, projectID, uid, hst, hostThresholdsFormState(r), hostSettingsErrorMessage(r.Context(), err))
+		return
+	}
+	// HostOverrideService.Save зовёт ValidateOverride сам (override.go) —
+	// отдельного вызова здесь не нужно; ошибка — тот же набор сентинелов
+	// host.ErrInvalid*, что у parseHostThresholdsForm/parseHostSettingsForm.
+	if err := h.HostOverrides.Save(r.Context(), hst.ID, ov); err != nil {
+		if errors.Is(err, host.ErrInvalidDiskThreshold) || errors.Is(err, host.ErrInvalidMemoryThreshold) ||
+			errors.Is(err, host.ErrInvalidLoadThreshold) || errors.Is(err, host.ErrInvalidSilentAfter) {
+			h.renderHostDetail(w, r, http.StatusUnprocessableEntity, projectID, uid, hst, hostThresholdsFormState(r), hostSettingsErrorMessage(r.Context(), err))
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	// Карточка возвращается на саму себя — без flash сохранение выглядело бы
+	// как «ничего не произошло» (тот же UX-урок P1-5, что у hostSettingsSave).
+	h.flashOK(w, "flash.saved", 0)
+	http.Redirect(w, r, hostDetailPath(projectID, name), http.StatusSeeOther)
 }
 
 // hostRecentIncidentsScan — сколько последних инцидентов ПРОЕКТА просматривать

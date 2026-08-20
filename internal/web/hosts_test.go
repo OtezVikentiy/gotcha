@@ -729,7 +729,7 @@ func renderHostSettingsPage(t *testing.T, installCmd, config, agentReason string
 	t.Helper()
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := templates.HostSettings(1, host.DefaultSettings(), installCmd, config, agentReason, nil, "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostSettings(1, host.DefaultSettings(), installCmd, config, agentReason, nil, "", templates.HostGroupThresholdsVM{}, "").Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
