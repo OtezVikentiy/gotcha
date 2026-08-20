@@ -217,7 +217,16 @@ func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time
 		slog.Error("uptime: detector: resolve incident failed", "monitor_id", m.ID, "error", err)
 		return
 	}
-	if !resolved || inc.InMaintenance || d.Notifier == nil {
+	// !inc.NotifiedOpen — recovery ("up") is only sent to incidents whose
+	// opening ("down") actually went out. This is a single reliable gate for
+	// two cases where it didn't: an incident suppressed_by_dep (B5, T7) never
+	// gets its "down" sent — see openIncident, which would need the same
+	// dependency check duplicated here without this gate — and an incident
+	// held open by notify-grace that recovers before the delayed "down" ever
+	// fires. Both leave NotifiedOpen=false, and both must stay silent on
+	// resolve: sending "up" with no matching "down" is a confusing recovery
+	// notification for an outage the recipient was never told about.
+	if !resolved || inc.InMaintenance || !inc.NotifiedOpen || d.Notifier == nil {
 		return
 	}
 

@@ -371,6 +371,67 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 	}
 }
 
+// TestUptimeResolveGatedByNotifiedOpen: resolveIncident must not send "up"
+// for an incident whose "down" never went out (NotifiedOpen=false) — sending
+// a recovery notification for an outage nobody was told about is confusing.
+// The false case here mimics both real causes of NotifiedOpen=false left
+// open by openIncident: a suppressed_by_dep incident (T7, not this task) and
+// a Notify failure on open (exercised directly, same as
+// TestNotifyErrorDoesNotBreakDetection). Once NotifiedOpen=true, "up" must
+// still be sent as before (control case).
+func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	t.Run("notified_open=false: up not sent", func(t *testing.T) {
+		mon := createMonitor(t, svc, pid, 1, 2) // fail_threshold=1, recovery_threshold=2
+		notifier := &fakeNotifier{err: errors.New("smtp down")}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		now := time.Now().UTC()
+
+		applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
+		inc := assertOpenIncident(t, ctx, svc, mon.ID)
+		if inc.NotifiedOpen {
+			t.Fatalf("NotifiedOpen = true, want false (open notify failed)")
+		}
+
+		// Clear the error so a real Notify call, if the gate were missing,
+		// would succeed and be observable as an "up" event below.
+		notifier.err = nil
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
+		assertNoOpenIncident(t, ctx, svc, mon.ID)
+
+		if got := notifier.kindEvents("up"); len(got) != 0 {
+			t.Fatalf("up events = %d, want 0: incident's down was never notified", len(got))
+		}
+	})
+
+	t.Run("notified_open=true: up sent", func(t *testing.T) {
+		mon := createMonitor(t, svc, pid, 1, 2)
+		notifier := &fakeNotifier{}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		now := time.Now().UTC()
+
+		applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
+		inc := assertOpenIncident(t, ctx, svc, mon.ID)
+		if !inc.NotifiedOpen {
+			t.Fatalf("NotifiedOpen = false, want true")
+		}
+
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
+		assertNoOpenIncident(t, ctx, svc, mon.ID)
+
+		if got := notifier.kindEvents("up"); len(got) != 1 {
+			t.Fatalf("up events = %d, want 1", len(got))
+		}
+	})
+}
+
 func TestOnResultNilNotifierOnlyTracksIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
