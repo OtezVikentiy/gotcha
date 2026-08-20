@@ -1,5 +1,6 @@
--- backward-compatible: no (down деструктивен — DROP TABLE/DROP COLUMN; консервативно
--- запрещаем откат релиза сквозь эту версию, хотя сам up только добавляет)
+-- backward-compatible: yes (ADD COLUMN с дефолтами + новые таблицы/индексы; up чисто
+-- аддитивен, старый бинарь переживёт схему-вперёд — как 0072-0075. Маркер про forward-compat
+-- up, не про деструктивность down)
 -- B4: эскалации. Источник инцидентов зафиксирован строкой incident_source, консистентно
 -- с планировщиком (T4) и recovery (T6): host_incidents→'host', metric_incidents→'metric',
 -- perf_regressions→'trace', profile_regressions→'profile', slo_incidents→'slo'.
