@@ -92,3 +92,144 @@ func TestEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		t.Fatalf("close jobs = %d, want 1", len(jobs3))
 	}
 }
+
+// mockMaint — metric.MaintenanceChecker для тестов: func-обёртка вместо
+// полноценного uptime.Service (интерфейс здесь в один метод — реальный
+// сервис с окнами обслуживания и своей БД тестам этого пакета не нужен).
+// Зеркало host.mockMaint (internal/host/evaluator_test.go).
+type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
+
+func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
+	return m(ctx, projectID, at)
+}
+
+// TestEvaluatorMaintenanceSuppressesNotify — B3: открытие инцидента в окне
+// обслуживания пишет инцидент в БД с in_maintenance=true, но НЕ уведомляет;
+// закрытие того же инцидента (ещё внутри окна) тоже не уведомляет. Зеркало
+// host.TestEvaluatorMaintenanceSuppressesThresholdNotify.
+func TestEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	rules := metric.NewRuleService(pool)
+	incidents := metric.NewIncidentService(pool)
+	projectID := seedProject(t, pool)
+
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("channel: %v", err)
+	}
+	rule, err := rules.Create(ctx, metric.Rule{
+		ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt",
+		Threshold: 100, WindowSeconds: 300, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("rule: %v", err)
+	}
+
+	eval := &metric.Evaluator{
+		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Interval: time.Hour,
+		Maint:    mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
+	}
+
+	seedMetricGauge(t, ch, projectID, "cpu", 140, time.Minute)
+	seedMetricGauge(t, ch, projectID, "cpu", 160, 2*time.Minute)
+	eval.Tick(ctx)
+
+	in, open, err := incidents.OpenFor(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("OpenFor: %v", err)
+	}
+	if !open {
+		t.Fatal("incident must be open after breach even in maintenance")
+	}
+	if !in.InMaintenance {
+		t.Error("Incident.InMaintenance = false, want true")
+	}
+	jobs, _ := ob.Claim(ctx, 10)
+	if len(jobs) != 0 {
+		t.Errorf("open jobs = %d, want 0 (suppressed by maintenance)", len(jobs))
+	}
+
+	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	seedMetricGauge(t, ch, projectID, "cpu", 50, time.Minute)
+	eval.Tick(ctx)
+
+	if _, open, _ := incidents.OpenFor(ctx, rule.ID); open {
+		t.Error("incident must be resolved after recovery")
+	}
+	jobs2, _ := ob.Claim(ctx, 10)
+	if len(jobs2) != 0 {
+		t.Errorf("close jobs = %d, want 0 (suppressed by maintenance)", len(jobs2))
+	}
+}
+
+// TestEvaluatorMaintenanceFalseStillNotifies — Maint заполнен (не nil), но
+// вне окна (InMaintenance→false): поведение обычное, уведомление уходит.
+// Отличает «MaintenanceChecker сконфигурирован и говорит false» от
+// «MaintenanceChecker==nil» (последнее уже покрыто TestEvaluatorOpenCloseAlertOnce).
+// Зеркало host.TestEvaluatorMaintenanceFalseStillNotifies.
+func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	rules := metric.NewRuleService(pool)
+	incidents := metric.NewIncidentService(pool)
+	projectID := seedProject(t, pool)
+
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("channel: %v", err)
+	}
+	rule, err := rules.Create(ctx, metric.Rule{
+		ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt",
+		Threshold: 100, WindowSeconds: 300, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("rule: %v", err)
+	}
+
+	eval := &metric.Evaluator{
+		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example"},
+		Interval: time.Hour,
+		Maint:    mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
+	}
+
+	seedMetricGauge(t, ch, projectID, "cpu", 140, time.Minute)
+	seedMetricGauge(t, ch, projectID, "cpu", 160, 2*time.Minute)
+	eval.Tick(ctx)
+
+	in, open, err := incidents.OpenFor(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("OpenFor: %v", err)
+	}
+	if !open {
+		t.Fatal("incident must be open after breach")
+	}
+	if in.InMaintenance {
+		t.Error("Incident.InMaintenance = true, want false (outside window)")
+	}
+	jobs, _ := ob.Claim(ctx, 10)
+	if len(jobs) != 1 {
+		t.Errorf("open jobs = %d, want 1 (not suppressed outside maintenance)", len(jobs))
+	}
+}

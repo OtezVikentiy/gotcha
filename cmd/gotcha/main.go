@@ -1140,6 +1140,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Rules:     metric.NewRuleService(pg),
 		Query:     metric.NewQuery(ch),
 		Incidents: metric.NewIncidentService(pg),
+		Maint:     maint,
 		Notifier: &metric.MetricNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,

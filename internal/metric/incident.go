@@ -22,17 +22,18 @@ type Incident struct {
 	CurrentValue  float64
 	StartedAt     time.Time
 	ResolvedAt    *time.Time
+	InMaintenance bool
 	NotifiedOpen  bool
 	NotifiedClose bool
 }
 
 const incidentColumns = `id, rule_id, project_id, status, peak_value, current_value,
-	started_at, resolved_at, notified_open, notified_close`
+	started_at, resolved_at, in_maintenance, notified_open, notified_close`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.RuleID, &in.ProjectID, &in.Status, &in.PeakValue, &in.CurrentValue,
-		&in.StartedAt, &in.ResolvedAt, &in.NotifiedOpen, &in.NotifiedClose)
+		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose)
 	return in, err
 }
 
@@ -45,18 +46,21 @@ func NewIncidentService(pool *pgxpool.Pool) *IncidentService {
 	return &IncidentService{pool: pool}
 }
 
-// Open открывает инцидент по правилу, если открытого ещё нет. Гонко-безопасно
-// через частичный уникальный индекс metric_incidents_one_open_idx (rule_id)
-// WHERE status='open': из параллельных вызовов ровно один INSERT проходит,
-// остальные ловят конфликт (DO NOTHING → нет RETURNING) и дочитывают
-// победителя. peak=current на вставке.
-func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64) (Incident, bool, error) {
+// Open открывает инцидент по правилу, если открытого ещё нет. inMaintenance
+// фиксируется на инциденте на всё его время (B3): вызывающий решает по
+// MaintenanceChecker в момент открытия, гейт notify — на нём же, а не на
+// состоянии окна в момент закрытия. Гонко-безопасно через частичный уникальный
+// индекс metric_incidents_one_open_idx (rule_id) WHERE status='open': из
+// параллельных вызовов ровно один INSERT проходит, остальные ловят конфликт
+// (DO NOTHING → нет RETURNING) и дочитывают победителя. peak=current на
+// вставке.
+func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64, inMaintenance bool) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value)
-		VALUES ($1, $2, $3, $3)
+		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value, in_maintenance)
+		VALUES ($1, $2, $3, $3, $4)
 		ON CONFLICT (rule_id) WHERE status = 'open' DO NOTHING
 		RETURNING `+incidentColumns,
-		ruleID, projectID, current)
+		ruleID, projectID, current, inMaintenance)
 	in, err := scanIncident(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, found, err := s.OpenFor(ctx, ruleID)

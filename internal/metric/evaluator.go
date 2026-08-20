@@ -25,6 +25,12 @@ type Evaluator struct {
 	Incidents *IncidentService
 	Notifier  *MetricNotifier
 	Interval  time.Duration
+
+	// Maint — окна обслуживания проекта (B3: подавление уведомлений). Nil-
+	// совместим: деградированная сборка без него просто никогда не подавляет
+	// (inMaintenance всегда false), а не паникует. ПРОД (main.go,
+	// startEvaluators) обязан его заполнять.
+	Maint MaintenanceChecker
 }
 
 // Run тикает каждый Interval, пока не отменят ctx.
@@ -83,12 +89,13 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 	d := Decide(current, r.Comparator, r.Threshold, opened)
 	switch {
 	case d.Open:
-		in, created, err := e.Incidents.Open(ctx, r.ID, r.ProjectID, current)
+		inMaint := e.inMaintenance(ctx, r.ProjectID, now)
+		in, created, err := e.Incidents.Open(ctx, r.ID, r.ProjectID, current, inMaint)
 		if err != nil {
 			slog.Error("metric evaluator: open failed", "rule_id", r.ID, "error", err)
 			return
 		}
-		if created {
+		if created && !inMaint {
 			e.notify(ctx, r, in, current, current, true)
 		}
 	case d.Bump:
@@ -102,10 +109,29 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 			slog.Error("metric evaluator: resolve failed", "rule_id", r.ID, "error", err)
 			return
 		}
-		if ok {
+		if ok && !open.InMaintenance {
 			e.notify(ctx, r, open, current, open.PeakValue, false)
 		}
 	}
+}
+
+// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта
+// open-notify в evalRule. Ошибка проверки НЕ отменяет открытие инцидента: она
+// лишь означает, что не удалось выяснить, плановые ли это работы, и
+// трактуется как «не в окне» — молчать о реальном инциденте дороже, чем
+// уведомить лишний раз (то же решение, что host.Evaluator.inMaintenance).
+// Maint==nil (деградированная сборка) — тот же результат.
+func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
+	if e.Maint == nil {
+		return false
+	}
+	v, err := e.Maint.InMaintenance(ctx, projectID, now)
+	if err != nil {
+		slog.Error("metric evaluator: maintenance check failed, treating as not in maintenance",
+			"project_id", projectID, "error", err)
+		return false
+	}
+	return v
 }
 
 // notify шлёт событие и помечает инцидент, чтобы алерт ушёл ровно один раз.
