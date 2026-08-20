@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-20
+
 ### Added
 - Node dependency suppression: declare host/monitor dependencies so a failed parent silences its children's alerts (one notification instead of a storm), with a settling grace and storm-free recovery.
 
