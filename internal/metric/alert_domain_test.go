@@ -157,7 +157,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
 	}
 
-	ok, err := inc.Acknowledge(ctx, in.ID, userID)
+	ok, err := inc.Acknowledge(ctx, in.ID, projectID, userID)
 	if err != nil || !ok {
 		t.Fatalf("Acknowledge = (%v,%v), want (true,nil)", ok, err)
 	}
@@ -171,7 +171,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	}
 
 	// Повторный ack — идемпотентно ok=false.
-	if ok2, err := inc.Acknowledge(ctx, in.ID, userID); err != nil || ok2 {
+	if ok2, err := inc.Acknowledge(ctx, in.ID, projectID, userID); err != nil || ok2 {
 		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
 	}
 
@@ -190,8 +190,54 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	if _, err := inc.Resolve(ctx, closedIn.ID, 10); err != nil {
 		t.Fatalf("resolve closedIn: %v", err)
 	}
-	if okClosed, err := inc.Acknowledge(ctx, closedIn.ID, userID); err != nil || okClosed {
+	if okClosed, err := inc.Acknowledge(ctx, closedIn.ID, projectID, userID); err != nil || okClosed {
 		t.Fatalf("Acknowledge закрытого = (%v,%v), want (false,nil)", okClosed, err)
+	}
+}
+
+// TestIncidentServiceAcknowledgeForeignProject — project_id — часть WHERE
+// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
+func TestIncidentServiceAcknowledgeForeignProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	rules := metric.NewRuleService(pool)
+	inc := metric.NewIncidentService(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	// Второй проект — руками, а не вторым seedProject(t, pool): seedProject
+	// ключует email/org/project по t.Name(), одинаковому оба раза — второй
+	// вызов упёрся бы в users_email_key. Тот же org_id вполне подходит: нужен
+	// просто ДРУГОЙ project_id.
+	var otherProjectID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name, platform) SELECT org_id, $2, $2, 'go' FROM projects WHERE id = $1 RETURNING id",
+		projectID, t.Name()+"-other").Scan(&otherProjectID); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	rule, err := rules.Create(ctx, metric.Rule{ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt", Threshold: 90, WindowSeconds: 300, Enabled: true})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "metric-ack-foreign@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false, "")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if ok, err := inc.Acknowledge(ctx, in.ID, otherProjectID, userID); err != nil || ok {
+		t.Fatalf("Acknowledge с чужим project_id = (%v,%v), want (false,nil)", ok, err)
+	}
+
+	list, err := inc.List(ctx, projectID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil {
+		t.Fatalf("после чужого Acknowledge: list=%+v err=%v, want AcknowledgedAt nil", list, err)
 	}
 }
 

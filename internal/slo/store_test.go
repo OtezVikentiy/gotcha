@@ -175,7 +175,7 @@ func TestSLOStoreAcknowledge(t *testing.T) {
 		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
 	}
 
-	ok, err := st.Acknowledge(ctx, inc.ID, userID)
+	ok, err := st.Acknowledge(ctx, inc.ID, pid, userID)
 	if err != nil || !ok {
 		t.Fatalf("Acknowledge = (%v,%v), want (true,nil)", ok, err)
 	}
@@ -189,7 +189,7 @@ func TestSLOStoreAcknowledge(t *testing.T) {
 	}
 
 	// Повторный ack — идемпотентно ok=false.
-	if ok2, err := st.Acknowledge(ctx, inc.ID, userID); err != nil || ok2 {
+	if ok2, err := st.Acknowledge(ctx, inc.ID, pid, userID); err != nil || ok2 {
 		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
 	}
 
@@ -197,7 +197,59 @@ func TestSLOStoreAcknowledge(t *testing.T) {
 	if _, resolved, err := st.ResolveIncident(ctx, def.ID); err != nil || !resolved {
 		t.Fatalf("ResolveIncident = (%v,%v)", resolved, err)
 	}
-	if okClosed, err := st.Acknowledge(ctx, inc.ID, userID); err != nil || okClosed {
+	if okClosed, err := st.Acknowledge(ctx, inc.ID, pid, userID); err != nil || okClosed {
 		t.Fatalf("Acknowledge закрытого = (%v,%v), want (false,nil)", okClosed, err)
+	}
+}
+
+// TestSLOStoreAcknowledgeForeignProject — project_id — часть WHERE
+// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
+func TestSLOStoreAcknowledgeForeignProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	// Второй проект — руками, а не вторым seedProject(t, pool): seedProject
+	// здесь заводит org с ФИКСИРОВАННЫМ slug 'slo-test' — второй вызов упёрся
+	// бы в organizations_slug_key. Тот же org_id вполне подходит: нужен просто
+	// ДРУГОЙ project_id.
+	var otherPID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) SELECT org_id, 'slo-test-2', 'SLO Test 2' FROM projects WHERE id = $1 RETURNING id",
+		pid).Scan(&otherPID); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	st := slo.NewStore(pool)
+
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "slo-ack-foreign@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	def, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "ack slo foreign", Kind: slo.SLIAvailability, Target: 0.99,
+		WindowDays: 30, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rem := 0.5
+	inc, created, err := st.OpenIncident(ctx, def.ID, pid, 20.0, &rem, false)
+	if err != nil || !created {
+		t.Fatalf("OpenIncident = (%+v,%v,%v)", inc, created, err)
+	}
+
+	if ok, err := st.Acknowledge(ctx, inc.ID, otherPID, userID); err != nil || ok {
+		t.Fatalf("Acknowledge с чужим project_id = (%v,%v), want (false,nil)", ok, err)
+	}
+
+	list, err := st.Incidents(ctx, pid, def.ID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil {
+		t.Fatalf("после чужого Acknowledge: list=%+v err=%v, want AcknowledgedAt nil", list, err)
 	}
 }

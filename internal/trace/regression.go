@@ -98,16 +98,17 @@ type Regression struct {
 	NotifiedClose  bool
 	AcknowledgedAt *time.Time
 	AcknowledgedBy *int64
+	Severity       string
 }
 
-const regressionColumns = `id, project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value, started_at, resolved_at, in_maintenance, notified_open, notified_close, acknowledged_at, acknowledged_by`
+const regressionColumns = `id, project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value, started_at, resolved_at, in_maintenance, notified_open, notified_close, acknowledged_at, acknowledged_by, severity`
 
 func scanRegression(row pgx.Row) (Regression, error) {
 	var r Regression
 	if err := row.Scan(&r.ID, &r.ProjectID, &r.TargetKind, &r.Target, &r.Metric, &r.Status,
 		&r.BaselineValue, &r.PeakValue, &r.CurrentValue, &r.StartedAt, &r.ResolvedAt,
 		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose,
-		&r.AcknowledgedAt, &r.AcknowledgedBy); err != nil {
+		&r.AcknowledgedAt, &r.AcknowledgedBy, &r.Severity); err != nil {
 		return Regression{}, err
 	}
 	return r, nil
@@ -297,12 +298,13 @@ func (s *RegressionService) MarkNotified(ctx context.Context, id int64, open boo
 
 // Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
 // acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
-// если инцидент уже подтверждён или закрыт (идемпотентно).
-func (s *RegressionService) Acknowledge(ctx context.Context, incidentID, userID int64) (bool, error) {
+// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
+// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+func (s *RegressionService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE perf_regressions SET acknowledged_at = now(), acknowledged_by = $2
-		WHERE id = $1 AND status = 'open' AND acknowledged_at IS NULL
-		RETURNING id`, incidentID, userID)
+		UPDATE perf_regressions SET acknowledged_at = now(), acknowledged_by = $3
+		WHERE id = $1 AND project_id = $2 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, projectID, userID)
 	var ackedID int64
 	err := row.Scan(&ackedID)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -2342,6 +2342,15 @@ th {
 .host-actions {
 	margin: 16px 0;
 }
+/* Ack-кнопка/статус инцидента (B4, T10): переиспользуются во всех 5 экранов
+   инцидентов (host/metric/trace/profile/slo) через @ackControl. */
+.incident-ack-form {
+	display: inline;
+}
+.incident-ack-status {
+	color: var(--text-dim);
+	white-space: nowrap;
+}
 .latency-chart {
 	display: block;
 	width: 100%;

@@ -83,10 +83,13 @@ func (h *Handler) sloDetail(w http.ResponseWriter, r *http.Request) {
 		vm.Incidents = make([]templates.SLOIncidentRow, 0, len(incs))
 		for _, inc := range incs {
 			row := templates.SLOIncidentRow{
-				Open:       inc.Status == "open",
-				StartedAt:  inc.StartedAt,
-				ResolvedAt: inc.ResolvedAt,
-				BurnRate:   inc.BurnRate,
+				ID:             inc.ID,
+				Open:           inc.Status == "open",
+				Severity:       inc.Severity,
+				AcknowledgedAt: inc.AcknowledgedAt,
+				StartedAt:      inc.StartedAt,
+				ResolvedAt:     inc.ResolvedAt,
+				BurnRate:       inc.BurnRate,
 			}
 			if inc.BudgetRemaining != nil {
 				row.HasBudget = true

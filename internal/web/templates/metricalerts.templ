@@ -95,6 +95,7 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.condition") }</th>
 										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.window") }</th>
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.scope") }</th>
+										<th scope="col">{ i18n.T(ctx, "incidents.table.severity") }</th>
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
 										<th scope="col"></th>
 									</tr>
@@ -110,6 +111,13 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 											// что и остальные длительности в интерфейсе.
 											<td class="num">{ humanize.Duration(ctx, time.Duration(rule.WindowSeconds)*time.Second) }</td>
 											<td>{ ruleScope(ctx, rule) }</td>
+											<td>
+												if rule.Severity != "" {
+													@incidentSeverityBadge(rule.Severity)
+												} else {
+													<span class="hint">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</span>
+												}
+											</td>
 											<td>@ruleEnabledBadge(rule.Enabled)</td>
 											<td>
 												<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
@@ -134,18 +142,26 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 								<thead>
 									<tr>
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
+										<th scope="col">{ i18n.T(ctx, "incidents.table.severity") }</th>
 										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.peak") }</th>
 										<th scope="col" class="num">{ i18n.T(ctx, "metrics.alerts.table.current") }</th>
 										<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
+										<th scope="col"></th>
 									</tr>
 								</thead>
 								<tbody>
 									for _, in := range incidents {
 										<tr>
 											<td>@incidentStatusBadge(in.Status)</td>
+											<td>@incidentSeverityBadge(in.Severity)</td>
 											<td class="num">{ fmtFloat(in.PeakValue) }</td>
 											<td class="num">{ fmtFloat(in.CurrentValue) }</td>
 											<td>@relativeTime(in.StartedAt)</td>
+											<td>
+												if in.Status == "open" {
+													@ackControl(projectID, "metric", in.ID, true, in.AcknowledgedAt)
+												}
+											</td>
 										</tr>
 									}
 								</tbody>
@@ -243,6 +259,26 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 						<label>
 							{ i18n.T(ctx, "metrics.alerts.form.label_value") }
 							<input type="text" name="label_value" class="input" value={ form.Get("label_value", "") }/>
+						</label>
+					</div>
+					<div class="field">
+						<label>
+							{ i18n.T(ctx, "metrics.alerts.form.severity") }
+							<select name="severity" class="select">
+								if form.Selected("severity", "critical", "") {
+									<option value="">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
+									<option value="critical" selected>{ i18n.T(ctx, "severity.critical") }</option>
+									<option value="warning">{ i18n.T(ctx, "severity.warning") }</option>
+								} else if form.Selected("severity", "warning", "") {
+									<option value="">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
+									<option value="critical">{ i18n.T(ctx, "severity.critical") }</option>
+									<option value="warning" selected>{ i18n.T(ctx, "severity.warning") }</option>
+								} else {
+									<option value="" selected>{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
+									<option value="critical">{ i18n.T(ctx, "severity.critical") }</option>
+									<option value="warning">{ i18n.T(ctx, "severity.warning") }</option>
+								}
+							</select>
 						</label>
 					</div>
 					</div>

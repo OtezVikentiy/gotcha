@@ -29,17 +29,18 @@ type Incident struct {
 	NotifiedClose  bool
 	AcknowledgedAt *time.Time
 	AcknowledgedBy *int64
+	Severity       string
 }
 
 const incidentColumns = `id, rule_id, project_id, status, peak_value, current_value,
 	started_at, resolved_at, in_maintenance, notified_open, notified_close,
-	acknowledged_at, acknowledged_by`
+	acknowledged_at, acknowledged_by, severity`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.RuleID, &in.ProjectID, &in.Status, &in.PeakValue, &in.CurrentValue,
 		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
-		&in.AcknowledgedAt, &in.AcknowledgedBy)
+		&in.AcknowledgedAt, &in.AcknowledgedBy, &in.Severity)
 	return in, err
 }
 
@@ -167,12 +168,13 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 
 // Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
 // acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
-// если инцидент уже подтверждён или закрыт (идемпотентно).
-func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, userID int64) (bool, error) {
+// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
+// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE metric_incidents SET acknowledged_at = now(), acknowledged_by = $2
-		WHERE id = $1 AND status = 'open' AND acknowledged_at IS NULL
-		RETURNING id`, incidentID, userID)
+		UPDATE metric_incidents SET acknowledged_at = now(), acknowledged_by = $3
+		WHERE id = $1 AND project_id = $2 AND status = 'open' AND acknowledged_at IS NULL
+		RETURNING id`, incidentID, projectID, userID)
 	var ackedID int64
 	err := row.Scan(&ackedID)
 	if errors.Is(err, pgx.ErrNoRows) {

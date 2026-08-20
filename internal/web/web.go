@@ -625,6 +625,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/escalations", h.requireUser(http.HandlerFunc(h.escalationsPage)))
 	inner.Handle("POST /projects/{id}/escalations", h.requireUser(http.HandlerFunc(h.escalationsSave)))
 
+	// Ack инцидентов (B4, задача 10): один эндпоинт на все 5 источников
+	// (host/metric/trace/profile/slo), диспатч по {source} — см.
+	// incidents_ack.go. Доступ — оператор проекта, как у escalations выше.
+	inner.Handle("POST /projects/{id}/incidents/{source}/{incident_id}/ack", h.requireUser(http.HandlerFunc(h.incidentAck)))
+
 	inner.Handle("POST /orgs/{id}/settings/quota", h.requireUser(http.HandlerFunc(h.orgSettingsQuota)))
 
 	// Мониторы доступности (план 4, задача 2): список и страница монитора —

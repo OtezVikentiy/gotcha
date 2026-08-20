@@ -476,7 +476,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
 	}
 
-	ok, err := svc.Acknowledge(ctx, in.ID, userID)
+	ok, err := svc.Acknowledge(ctx, in.ID, projectID, userID)
 	if err != nil {
 		t.Fatalf("Acknowledge: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	}
 
 	// Повторный ack — идемпотентно ok=false.
-	ok2, err := svc.Acknowledge(ctx, in.ID, userID)
+	ok2, err := svc.Acknowledge(ctx, in.ID, projectID, userID)
 	if err != nil {
 		t.Fatalf("повторный Acknowledge: %v", err)
 	}
@@ -512,12 +512,48 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	if _, err := svc.Resolve(ctx, other.ID, 0.1); err != nil {
 		t.Fatalf("Resolve memory: %v", err)
 	}
-	okClosed, err := svc.Acknowledge(ctx, other.ID, userID)
+	okClosed, err := svc.Acknowledge(ctx, other.ID, projectID, userID)
 	if err != nil {
 		t.Fatalf("Acknowledge closed: %v", err)
 	}
 	if okClosed {
 		t.Fatal("Acknowledge закрытого инцидента: ok = true, want false")
+	}
+}
+
+// TestIncidentServiceAcknowledgeForeignProject — project_id — часть WHERE
+// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3): оператор
+// проекта B не подтвердит инцидент проекта A подобранным id, даже если
+// вызывающий хендлер когда-нибудь забудет свериться заранее.
+func TestIncidentServiceAcknowledgeForeignProject(t *testing.T) {
+	pool, svc, projectID, hostID := setupIncidentHost(t)
+	ctx := context.Background()
+
+	var userID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "host-ack-foreign@e.com").
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var otherProjectID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) SELECT org_id, 'host-ack-foreign', 'other' FROM projects WHERE id = $1 RETURNING id",
+		projectID).Scan(&otherProjectID); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+
+	in, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var full", false)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if ok, err := svc.Acknowledge(ctx, in.ID, otherProjectID, userID); err != nil || ok {
+		t.Fatalf("Acknowledge с чужим project_id: (%v,%v), want (false,nil)", ok, err)
+	}
+
+	list, err := svc.ListByProject(ctx, projectID, 10)
+	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil {
+		t.Fatalf("после чужого Acknowledge: list=%+v err=%v, want AcknowledgedAt nil", list, err)
 	}
 }
 

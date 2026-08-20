@@ -1,0 +1,70 @@
+// incidentack.templ — общие для всех 5 источников инцидентов (host/metric/
+// trace/profile/slo, B4 T10) компоненты: бейдж severity и элемент
+// подтверждения (кнопка «Подтвердить» / статус «Подтверждён {время}»).
+// Один хендлер incidentAck (web/incidents_ack.go) обслуживает все источники —
+// разметка формы здесь тоже одна, различается только source в пути.
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// incidentAckPath — POST-адрес подтверждения инцидента источника source
+// (host/metric/trace/profile/slo), должен совпадать с роутом web.go
+// (POST /projects/{id}/incidents/{source}/{incident_id}/ack).
+func incidentAckPath(projectID int64, source string, incidentID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) +
+		"/incidents/" + source + "/" + strconv.FormatInt(incidentID, 10) + "/ack"
+}
+
+// incidentSeverityBadgeClass — critical=danger, warning=warn (токены темы, брифинг
+// T10 §3), тот же набор классов дизайн-системы, что у прочих бейджей
+// (hostStatusBadgeClass/incidentBadgeClass).
+func incidentSeverityBadgeClass(severity string) string {
+	if severity == "critical" {
+		return "badge badge-danger"
+	}
+	return "badge badge-warn"
+}
+
+func severityLabelKey(severity string) string {
+	if severity == "critical" {
+		return "severity.critical"
+	}
+	return "severity.warning"
+}
+
+// incidentSeverityBadge — маленький бейдж critical/warning на отображении инцидента.
+// Пустой severity (в принципе недостижимо — все 5 таблиц несут NOT NULL
+// DEFAULT, миграция 0077 — но домен читает строку без дополнительной
+// валидации) не рисует бейдж вовсе, а не подписывает "warning" наугад.
+templ incidentSeverityBadge(severity string) {
+	if severity != "" {
+		<span class={ incidentSeverityBadgeClass(severity) }>{ i18n.T(ctx, severityLabelKey(severity)) }</span>
+	}
+}
+
+// ackControl — кнопка «Подтвердить» (POST на incidentAckPath, sameOrigin через
+// обычную форму) для оператора, пока инцидент не подтверждён; статус
+// «Подтверждён {время}», когда acknowledgedAt уже заполнено. Без canOperate и
+// без acknowledgedAt — ничего не рисует (не-оператор на экране, открытом
+// всем участникам проекта — hosts/regressions — просто не видит действия).
+//
+// Email подтвердившего (acknowledged_by) не резолвится здесь: отдельный
+// запрос к users на каждую строку списка инцидентов — N+1, которого эти
+// экраны избегают везде (см. hostRecentIncidents/regressionsList). Время
+// подтверждения — достаточный сигнал (см. brief T10 §2, "email опционально").
+templ ackControl(projectID int64, source string, incidentID int64, canOperate bool, acknowledgedAt *time.Time) {
+	if acknowledgedAt != nil {
+		<span class="hint incident-ack-status">
+			{ i18n.T(ctx, "incidents.ack.confirmed") } @relativeTime(*acknowledgedAt)
+		</span>
+	} else if canOperate {
+		<form method="post" action={ templ.URL(incidentAckPath(projectID, source, incidentID)) } class="inline incident-ack-form">
+			<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "incidents.ack.button") }</button>
+		</form>
+	}
+}

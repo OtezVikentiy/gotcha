@@ -71,7 +71,7 @@ func TestRegressionServiceOpenUnacked(t *testing.T) {
 		Scan(&userID); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
-	if ok, err := svc.Acknowledge(ctx, rec.ID, userID); err != nil || !ok {
+	if ok, err := svc.Acknowledge(ctx, rec.ID, pid, userID); err != nil || !ok {
 		t.Fatalf("Acknowledge: (%v,%v), want (true,nil)", ok, err)
 	}
 	if list, err = svc.OpenUnacked(ctx); err != nil || len(list) != 0 {

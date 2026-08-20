@@ -17,7 +17,10 @@ func sloDetailPath(projectID, sloID int64) string {
 
 // SLOIncidentRow — строка истории инцидентов сжигания бюджета SLO.
 type SLOIncidentRow struct {
+	ID                 int64
 	Open               bool
+	Severity           string
+	AcknowledgedAt     *time.Time
 	StartedAt          time.Time
 	ResolvedAt         *time.Time
 	BurnRate           float64
@@ -138,6 +141,7 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 					<h2>{ i18n.T(ctx, "slo.detail.incident_open_title") }</h2>
 					<p>
 						<span class="badge badge-danger">{ i18n.T(ctx, "slo.detail.incident_open") }</span>
+						@incidentSeverityBadge(vm.OpenIncident.Severity)
 						{ i18n.T(ctx, "slo.detail.started") }:
 						@relativeTime(vm.OpenIncident.StartedAt)
 					</p>
@@ -145,6 +149,7 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 					if vm.OpenIncident.HasBudget {
 						<p>{ i18n.T(ctx, "slo.detail.budget") }: { fmtPct(vm.OpenIncident.BudgetRemainingPct) }</p>
 					}
+					@ackControl(vm.ProjectID, "slo", vm.OpenIncident.ID, true, vm.OpenIncident.AcknowledgedAt)
 				</div>
 			}
 

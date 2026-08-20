@@ -87,7 +87,7 @@ func TestStoreOpenUnacked(t *testing.T) {
 		Scan(&userID); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
-	if ok, err := st.Acknowledge(ctx, in.ID, userID); err != nil || !ok {
+	if ok, err := st.Acknowledge(ctx, in.ID, pid, userID); err != nil || !ok {
 		t.Fatalf("Acknowledge: (%v,%v), want (true,nil)", ok, err)
 	}
 	if list, err = st.OpenUnacked(ctx); err != nil || len(list) != 0 {

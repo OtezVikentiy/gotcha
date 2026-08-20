@@ -56,4 +56,5 @@ type Incident struct {
 	NotifiedClose   bool
 	AcknowledgedAt  *time.Time
 	AcknowledgedBy  *int64
+	Severity        string
 }
