@@ -91,17 +91,18 @@ type Regression struct {
 	StartedAt  time.Time
 	ResolvedAt *time.Time
 
+	InMaintenance bool
 	NotifiedOpen  bool
 	NotifiedClose bool
 }
 
-const regressionColumns = `id, project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value, started_at, resolved_at, notified_open, notified_close`
+const regressionColumns = `id, project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value, started_at, resolved_at, in_maintenance, notified_open, notified_close`
 
 func scanRegression(row pgx.Row) (Regression, error) {
 	var r Regression
 	if err := row.Scan(&r.ID, &r.ProjectID, &r.TargetKind, &r.Target, &r.Metric, &r.Status,
 		&r.BaselineValue, &r.PeakValue, &r.CurrentValue, &r.StartedAt, &r.ResolvedAt,
-		&r.NotifiedOpen, &r.NotifiedClose); err != nil {
+		&r.InMaintenance, &r.NotifiedOpen, &r.NotifiedClose); err != nil {
 		return Regression{}, err
 	}
 	return r, nil
@@ -124,14 +125,17 @@ func NewRegressionService(pool *pgxpool.Pool) *RegressionService {
 // вызовов ровно один INSERT проходит, а второй ловит конфликт (DO NOTHING →
 // RETURNING не отдаёт строки) — окна read-then-write нет. Проигравший дочитывает
 // строку победителя и возвращает created=false. baseline_value=base,
-// peak_value=current, current_value=current на вставке.
-func (s *RegressionService) Open(ctx context.Context, projectID int64, targetKind, target, metric string, base, current float64) (Regression, bool, error) {
+// peak_value=current, current_value=current на вставке. inMaintenance (B3)
+// фиксируется на инциденте на всё его время: вызывающий решает по
+// MaintenanceChecker в момент открытия, гейт notify — на нём же, а не на
+// состоянии окна в момент закрытия (см. host.IncidentService.Open).
+func (s *RegressionService) Open(ctx context.Context, projectID int64, targetKind, target, metric string, base, current float64, inMaintenance bool) (Regression, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO perf_regressions (project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		INSERT INTO perf_regressions (project_id, target_kind, target, metric, baseline_value, peak_value, current_value, in_maintenance)
+		VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
 		ON CONFLICT (project_id, target, metric) WHERE status = 'open' DO NOTHING
 		RETURNING `+regressionColumns,
-		projectID, targetKind, target, metric, base, current)
+		projectID, targetKind, target, metric, base, current, inMaintenance)
 	r, err := scanRegression(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, found, err := s.OpenFor(ctx, projectID, target, metric)

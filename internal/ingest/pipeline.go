@@ -64,6 +64,17 @@ type PerfNotifier interface {
 	NotifyRegression(ctx context.Context, projectID int64, iss trace.PerfIssue) error
 }
 
+// MaintenanceChecker — проверка «проект сейчас в окне обслуживания» (B3),
+// нужная recordFinding для гейта perf-issue notify. Определён локально в
+// ingest (не переиспользует trace.MaintenanceChecker/host.MaintenanceChecker):
+// perf_issues — throttle-детектор без жизненного цикла инцидента (нет колонки
+// in_maintenance, нет close-notify), гейт здесь ДО notify по текущему окну, а
+// не флаг на записи — общий интерфейс с trace/host добавил бы зависимость
+// ради формы, не разделяемой семантики. Циклов импорта нет — проверено.
+type MaintenanceChecker interface {
+	InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error)
+}
+
 // issueUpserter — то, что нужно пайплайну от issue.Service: апсерт группы и
 // чтение (для times_seen в алерте). *issue.Service ему удовлетворяет.
 // Отдельный интерфейс (а не прямая зависимость от *issue.Service) держит
@@ -119,6 +130,11 @@ type Pipeline struct {
 	// PerfAlerts — алерт при первом обнаружении проблемы; nil выключает алерты
 	// (детекция при этом продолжает работать).
 	PerfAlerts PerfNotifier
+
+	// Maint — окна обслуживания проекта (B3): подавляет только notify в
+	// recordFinding, Record в perf_issues (сбор данных) продолжает работать
+	// как обычно. nil (дефолт) → окна не подавляют perf-алерты.
+	Maint MaintenanceChecker
 
 	// Projects — источник настроек проекта, из которого детекция берёт пороги
 	// (projects.perf_detector_config); nil означает «на дефолтах».
@@ -907,6 +923,17 @@ func (p *Pipeline) recordFinding(ctx context.Context, projectID int64, tx trace.
 	// каждом запросе к эндпойнту, и алерт на каждое повторение был бы лавиной.
 	if p.PerfAlerts == nil || (!res.Created && !res.Regression) {
 		return
+	}
+	// Гейт окна обслуживания (B3) — ДО notify, по текущему моменту: у
+	// perf_issues нет жизненного цикла инцидента и флага на записи (см.
+	// MaintenanceChecker), поэтому подавляется само уведомление, а не факт
+	// открытия — Record выше уже отработал, находка в perf_issues есть.
+	if p.Maint != nil {
+		if inMaint, err := p.Maint.InMaintenance(ctx, projectID, time.Now()); err != nil {
+			slog.Error("perf issue maintenance check failed", "project_id", projectID, "error", err)
+		} else if inMaint {
+			return
+		}
 	}
 	notify := p.PerfAlerts.NotifyNew
 	if res.Regression {

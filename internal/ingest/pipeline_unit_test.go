@@ -261,6 +261,66 @@ func TestTransactionWithoutPerfSinkStillWrites(t *testing.T) {
 	}
 }
 
+// fakeMaint — MaintenanceChecker для тестов: func-обёртка вместо полноценного
+// uptime.Service (интерфейс в один метод — реальный сервис с окнами
+// обслуживания и своей БД тестам этого пакета не нужен). Калька
+// host.mockMaint/trace.mockMaint (Task 3/5, Путь A).
+type fakeMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
+
+func (f fakeMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
+	return f(ctx, projectID, at)
+}
+
+// TestPerfIssueMaintenanceSuppressesNotify — B3 Task 5, Путь B: находка в окне
+// обслуживания (Maint→true) по-прежнему пишется в perf_issues (Record
+// вызывается), но NotifyNew НЕ уходит. perf_issues — throttle-детектор без
+// жизненного цикла инцидента, поэтому гейт стоит в recordFinding ДО notify, а
+// не флагом на записи (см. Pipeline.Maint).
+func TestPerfIssueMaintenanceSuppressesNotify(t *testing.T) {
+	spans := &fakeSpanSink{}
+	perf := &fakePerfSink{created: []bool{true}}
+	notifier := &fakePerfNotifier{}
+
+	p := NewPipeline(nil, nil)
+	p.Spans = spans
+	p.Perf = perf
+	p.PerfAlerts = notifier
+	p.Maint = fakeMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil })
+	p.Start()
+	p.EnqueueTransaction(1, 1, nPlusOneTx())
+	p.Close(context.Background())
+
+	if perf.calls != 1 {
+		t.Fatalf("Record calls = %d, want 1 (сбор данных продолжается в окне обслуживания)", perf.calls)
+	}
+	if got := notifier.count(); got != 0 {
+		t.Errorf("alerts = %d, want 0 (suppressed by maintenance)", got)
+	}
+}
+
+// TestPerfIssueMaintenanceFalseStillNotifies — Maint заполнен (не nil), но вне
+// окна (InMaintenance→false): поведение обычное, NotifyNew уходит. Отличает
+// «MaintenanceChecker сконфигурирован и говорит false» от «MaintenanceChecker
+// ==nil» (последнее уже покрыто TestTransactionDetectionAlertsOnlyOnFirstDetection).
+func TestPerfIssueMaintenanceFalseStillNotifies(t *testing.T) {
+	spans := &fakeSpanSink{}
+	perf := &fakePerfSink{created: []bool{true}}
+	notifier := &fakePerfNotifier{}
+
+	p := NewPipeline(nil, nil)
+	p.Spans = spans
+	p.Perf = perf
+	p.PerfAlerts = notifier
+	p.Maint = fakeMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil })
+	p.Start()
+	p.EnqueueTransaction(1, 1, nPlusOneTx())
+	p.Close(context.Background())
+
+	if got := notifier.count(); got != 1 {
+		t.Errorf("alerts = %d, want 1 (not suppressed outside maintenance)", got)
+	}
+}
+
 // twoFindingTx — транзакция, дающая ДВЕ находки: N+1 и медленный запрос.
 func twoFindingTx() trace.Transaction {
 	tx := nPlusOneTx()

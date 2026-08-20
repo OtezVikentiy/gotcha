@@ -819,6 +819,12 @@ func run() error {
 		pipeline.Spans = spanWriter
 		pipeline.Perf = trace.NewIssueService(pg)
 		pipeline.PerfAlerts = perfNotifier
+		// Maint (B3) — окна обслуживания проекта: подавляет только notify в
+		// recordFinding, детекция/Record в perf_issues продолжает работать как
+		// обычно. startEvaluators строит свой отдельный maint (не в scope
+		// здесь, другая функция) тем же приёмом — uptime.NewService(pg)
+		// требует только пул.
+		pipeline.Maint = uptime.NewService(pg)
 		pipeline.Projects = projectCache
 		scrubber := ingest.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
 		scrubber.ScrubFreeText = cfg.ScrubFreeText // RA-L10: opt-in маскирование email в свободном тексте
@@ -1121,6 +1127,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Pool:        pg,
 		Query:       trace.NewQuery(ch),
 		Regressions: trace.NewRegressionService(pg),
+		Maint:       maint,
 		Notifier: &trace.RegressionNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
