@@ -225,6 +225,39 @@ func TestRecipeChartsQueryError(t *testing.T) {
 	}
 }
 
+// TestRecipeChartVMEmptySeriesGuard — гвард синтетического Chart без Series:
+// честный Empty до первого обращения к h.Metrics (без него Series[0] в
+// recipeExplorerURL паниковала бы). Чистый unit — контейнер не нужен.
+func TestRecipeChartVMEmptySeriesGuard(t *testing.T) {
+	rec := recipes.Recipe{ID: "synth"}
+	now := time.Now()
+	vm := (&Handler{}).recipeChartVM(context.Background(), 1, rec,
+		recipes.Chart{Key: "hollow"}, nil, now.Add(-time.Hour), now, time.Minute)
+	if !vm.Empty {
+		t.Error("Chart без Series должен давать Empty VM, а не панику/запрос")
+	}
+	if vm.Key != "hollow" || vm.TitleKey != "recipes.synth.chart.hollow" {
+		t.Errorf("Empty VM должен сохранять Key/TitleKey, got %q/%q", vm.Key, vm.TitleKey)
+	}
+	if vm.ExplorerURL != "" {
+		t.Errorf("у Chart без Series нет первой метрики — ExplorerURL должен быть пуст, got %q", vm.ExplorerURL)
+	}
+}
+
+// TestRecipeExplorerURL — ссылка «открыть в метриках»: с агрегацией — хвост
+// ?agg=, без неё (в реестре таких сегодня нет — ветка для синтетики) — чистый
+// адрес метрики.
+func TestRecipeExplorerURL(t *testing.T) {
+	chart := recipes.Chart{Series: []recipes.ChartSeries{{Metric: "redis.memory.used"}}, Agg: "avg"}
+	if got, want := recipeExplorerURL(7, chart), "/projects/7/metrics/redis.memory.used?agg=avg"; got != want {
+		t.Errorf("recipeExplorerURL c Agg = %q, want %q", got, want)
+	}
+	chart.Agg = ""
+	if got, want := recipeExplorerURL(7, chart), "/projects/7/metrics/redis.memory.used"; got != want {
+		t.Errorf("recipeExplorerURL без Agg = %q, want %q", got, want)
+	}
+}
+
 // TestRecipeChartsDataArrives — детекция «данные приходят» (§7.3): true при
 // свежей сигнатурной метрике, false без неё и false вовсе без h.Metrics.
 func TestRecipeChartsDataArrives(t *testing.T) {
