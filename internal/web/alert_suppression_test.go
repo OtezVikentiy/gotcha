@@ -33,6 +33,24 @@ func suppressionSeedHost(t *testing.T, s *stack, projectID int64, name string) i
 	return id
 }
 
+// suppressionSeedHostRole — как suppressionSeedHost, но с явной ролью:
+// нужна TestWebAlertSuppressionPreview для label-ребра, где парент и
+// раскрываемый ребёнок должны быть в РАЗНЫХ ролях (иначе
+// depsuppress.Store.Create сам отвергнет ребро как ErrSelfMatch — self-match
+// уже не даёт создать такое ребро через настоящий Create, поэтому его
+// исключение проверено отдельно в internal/depsuppress/preview_test.go на
+// самой чистой функции, где Edge собирается напрямую в обход валидации Store).
+func suppressionSeedHostRole(t *testing.T, s *stack, projectID int64, name, role string) int64 {
+	t.Helper()
+	var id int64
+	if err := s.pool.QueryRow(context.Background(),
+		`INSERT INTO hosts (project_id, name, environment, role) VALUES ($1,$2,'prod',$3) RETURNING id`,
+		projectID, name, role).Scan(&id); err != nil {
+		t.Fatalf("seed host: %v", err)
+	}
+	return id
+}
+
 func suppressionSeedMonitor(t *testing.T, s *stack, projectID int64, name string) int64 {
 	t.Helper()
 	var id int64
@@ -215,6 +233,96 @@ func TestWebAlertSuppressionCrossTenant(t *testing.T) {
 	}
 	if len(edges) != 0 {
 		t.Fatalf("List(mine) after rejected cross-tenant save = %+v, want empty", edges)
+	}
+}
+
+// TestWebAlertSuppressionPreview — Task 9b: экран реально рендерит текст
+// dry-run предпросмотра «если бы <родитель> сейчас упал, подавились бы:
+// <дети>» (а не просто не падает, как проверяют остальные тесты этого
+// файла). Локаль стенда по умолчанию — ru (i18n.Default, нет
+// Accept-Language в запросе, см. internal/i18n/match.go) — ожидаемый текст
+// сверен с internal/i18n/locales/ru.json дословно.
+func TestWebAlertSuppressionPreview(t *testing.T) {
+	s := newStack(t)
+	wireAlertSuppression(s)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "dep-preview-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "dep-preview-co", "Dep Preview Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "dep-preview-proj", "Dep Preview Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alert-suppression"
+
+	// Без единого ребра шаблон вообще не рендерит секцию предпросмотра
+	// (AlertSuppression: `if len(edges) > 0 { @suppressionPreview(...) }`) —
+	// проверяем это ДО того, как заводим первое ребро ниже.
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (no edges) status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "preview-list") || strings.Contains(string(body), "Предпросмотр подавления") {
+		t.Fatalf("GET %s (no edges) unexpectedly rendered preview section: %s", path, body)
+	}
+
+	// Explicit-ребро: монитор-родитель -> хост-ребёнок. Роль "app" (а не
+	// дефолтная "web" из suppressionSeedHost) нарочно отличается от роли
+	// в label-ребре ниже — иначе этот же хост попал бы ЕЩЁ и в
+	// label-раскрытие role=web, и строку предпросмотра пришлось бы
+	// сверять с двумя детьми вместо одного.
+	monID := suppressionSeedMonitor(t, s, proj.ID, "ping-gw")
+	hostChild := suppressionSeedHostRole(t, s, proj.ID, "web-child", "app")
+	if _, err := s.h.AlertDeps.Create(context.Background(), depsuppress.Edge{
+		ProjectID: proj.ID, ParentMonitorID: &monID, ChildHostID: &hostChild,
+	}); err != nil {
+		t.Fatalf("seed explicit edge: %v", err)
+	}
+
+	// Label-ребро: хост-родитель роли "lb" -> селектор role=web,
+	// раскрывается в хост роли "web". Родитель и раскрываемая роль
+	// нарочно разные: Store.Create сам отвергает ребро с ErrSelfMatch,
+	// если бы родитель совпадал с собственным селектором (MAJOR-5) — то
+	// исключение проверено на чистой функции в preview_test.go, здесь же
+	// цель — конец-в-конец убедиться, что раскрытие label в реальный
+	// найденный хост доходит до HTML.
+	hostParent := suppressionSeedHostRole(t, s, proj.ID, "gw-parent", "lb")
+	suppressionSeedHostRole(t, s, proj.ID, "web-sibling", "web")
+	scope, value := "role", "web"
+	if _, err := s.h.AlertDeps.Create(context.Background(), depsuppress.Edge{
+		ProjectID: proj.ID, ParentHostID: &hostParent, ChildLabelScope: &scope, ChildLabelValue: &value,
+	}); err != nil {
+		t.Fatalf("seed label edge: %v", err)
+	}
+
+	resp = getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (with edges) status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	bodyStr := string(body)
+
+	// Explicit-ребро: точная строка предпросмотра целиком (родитель И
+	// ребёнок в одном "если бы...подавились бы" блоке).
+	wantExplicit := "Если бы Монитор: ping-gw сейчас упал, подавились бы: Хост: web-child"
+	if !strings.Contains(bodyStr, wantExplicit) {
+		t.Fatalf("GET %s missing explicit-edge preview row %q: %s", path, wantExplicit, bodyStr)
+	}
+
+	// Label-ребро: role=web раскрылось РОВНО в web-sibling (родитель
+	// gw-parent — роли "lb", в раскрытие не попадает никак). Строка
+	// целиком, а не раздельные Contains — фиксирует и парента, и
+	// единственного раскрытого ребёнка в одном блоке.
+	wantLabel := "Если бы Хост: gw-parent сейчас упал, подавились бы: Хост: web-sibling"
+	if !strings.Contains(bodyStr, wantLabel) {
+		t.Fatalf("GET %s missing label-edge preview row %q: %s", path, wantLabel, bodyStr)
 	}
 }
 

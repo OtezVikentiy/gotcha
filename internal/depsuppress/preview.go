@@ -42,6 +42,20 @@ type HostLite struct {
 // (deleted since the edge was created) is silently dropped — the same
 // "vanished node" handling as suppressionHostLabel/suppressionMonitorLabel
 // use for the edge list itself, so the preview never names a ghost.
+//
+// NOT project-scoped: this function does not know about project_id at all —
+// it trusts edges/hosts/monitors as given and expands every label selector
+// against every host in the hosts slice. The caller MUST pass edges, hosts,
+// and monitors belonging to EXACTLY ONE project (the same project whose
+// screen renders the preview). Pass multi-project data and a label edge from
+// project A will silently expand into project B's hosts — there is no
+// project_id field on HostLite/NodeRef to catch this here. This differs from
+// the runtime Suppressor.ParentDown path, which scopes its own queries by
+// project_id at the SQL layer; PreviewSuppression has no such backstop
+// because it is deliberately DB-free. The current call site
+// (suppressionPreviewRows in internal/web/alert_suppression.go) is safe
+// because it only ever loads the single project's hosts/monitors/edges — any
+// future caller must preserve that invariant itself.
 func PreviewSuppression(edges []Edge, hosts []HostLite, monitors []NodeRef) map[NodeRef][]NodeRef {
 	hostByID := make(map[int64]HostLite, len(hosts))
 	for _, h := range hosts {
