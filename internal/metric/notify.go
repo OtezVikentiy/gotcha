@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -43,12 +46,93 @@ type MetricNotifier struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
 	Locale i18n.Locale
+
+	// Incidents/Rules — источники перезагрузки инцидента по ID (B4, T6):
+	// планировщик эскалации (T8) хранит только incidentID, у NotifyStep/
+	// NotifyRecovery нет готового MetricEvent на входе, как у Notify.
+	Incidents *IncidentService
+	Rules     *RuleService
+
+	// Pool — та же PG, что под Incidents/Rules/Alerts/Outbox: пишет лог
+	// эскалации incident_escalations (B4, T6, миграция 0077) после каждого
+	// успешного Enqueue в NotifyStep.
+	Pool *pgxpool.Pool
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
 // Ошибка Enqueue по одному каналу не прерывает остальные (errors.Join). Проект
 // без каналов — не ошибка.
 func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
+	return n.dispatch(ctx, ev, nil, nil)
+}
+
+// NotifyStep — эскалационное уведомление открытого инцидента метрики (B4,
+// T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs, с логом incident_escalations
+// после каждого успешного Enqueue. Инцидент/правило грузятся заново по ID —
+// планировщик эскалации (T8) хранит только incidentID. channelIDs nil/пусто —
+// все deliverable-каналы проекта (как у Notify).
+func (n *MetricNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
+	ev, err := n.reloadEvent(ctx, incidentID, true)
+	if err != nil {
+		return fmt.Errorf("metric: notify step: %w", err)
+	}
+	return n.dispatch(ctx, ev, channelIDs, func(channelID int64) error {
+		return escalation.LogStep(ctx, n.Pool, "metric", incidentID, channelID, step)
+	})
+}
+
+// NotifyRecovery — CLOSE-уведомление инцидента метрики (B4, T6) в ЗАДАННЫЕ
+// channelIDs, БЕЗ лога incident_escalations (recovery не эскалирует — гасит).
+// Инцидент/правило грузятся заново по ID, как в NotifyStep. channelIDs
+// nil/пусто — все deliverable-каналы проекта.
+func (n *MetricNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	ev, err := n.reloadEvent(ctx, incidentID, false)
+	if err != nil {
+		return fmt.Errorf("metric: notify recovery: %w", err)
+	}
+	return n.dispatch(ctx, ev, channelIDs, nil)
+}
+
+// reloadEvent перегружает инцидент+правило по ID и собирает из них
+// MetricEvent — общая часть NotifyStep/NotifyRecovery (B4, T6).
+func (n *MetricNotifier) reloadEvent(ctx context.Context, incidentID int64, opened bool) (MetricEvent, error) {
+	in, ok, err := n.Incidents.GetByID(ctx, incidentID)
+	if err != nil {
+		return MetricEvent{}, fmt.Errorf("load incident: %w", err)
+	}
+	if !ok {
+		return MetricEvent{}, fmt.Errorf("incident %d not found", incidentID)
+	}
+	rule, ok, err := n.Rules.Get(ctx, in.RuleID)
+	if err != nil {
+		return MetricEvent{}, fmt.Errorf("load rule: %w", err)
+	}
+	if !ok {
+		return MetricEvent{}, fmt.Errorf("rule %d not found", in.RuleID)
+	}
+	return MetricEvent{
+		ProjectID:   in.ProjectID,
+		RuleID:      rule.ID,
+		MetricName:  rule.MetricName,
+		Aggregation: rule.Aggregation,
+		Comparator:  rule.Comparator,
+		Threshold:   rule.Threshold,
+		Current:     in.CurrentValue,
+		Peak:        in.PeakValue,
+		Environment: rule.Environment,
+		LabelKey:    rule.LabelKey,
+		LabelValue:  rule.LabelValue,
+		Opened:      opened,
+	}, nil
+}
+
+// dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
+// набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
+// (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
+// email-гейта (эскалация в конкретную ступень лесенки). onEnqueued — если
+// задан, дёргается после каждого успешного Enqueue с ID канала (NotifyStep
+// пишет им лог incident_escalations); nil — без лога, как раньше.
+func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelIDs []int64, onEnqueued func(channelID int64) error) error {
 	channels, err := n.Alerts.Channels(ctx, ev.ProjectID)
 	if err != nil {
 		return fmt.Errorf("metric: notify: project channels: %w", err)
@@ -63,6 +147,9 @@ func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 	var errs error
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			continue
+		}
+		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -99,6 +186,12 @@ func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("metric: notify enqueue failed", "channel_id", ch.ID, "error", err)
 			errs = errors.Join(errs, fmt.Errorf("metric: notify: enqueue channel %d: %w", ch.ID, err))
+			continue
+		}
+		if onEnqueued != nil {
+			if err := onEnqueued(ch.ID); err != nil {
+				errs = errors.Join(errs, err)
+			}
 		}
 	}
 	return errs

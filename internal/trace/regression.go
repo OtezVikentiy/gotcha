@@ -226,6 +226,21 @@ func (s *RegressionService) OpenForProject(ctx context.Context, projectID int64)
 	return out, rows.Err()
 }
 
+// GetByID возвращает регрессию по id (любого статуса). Нужен эскалации (B4,
+// T6): планировщик и StepNotifier знают только incidentID, объект регрессии
+// приходится перегружать заново.
+func (s *RegressionService) GetByID(ctx context.Context, id int64) (Regression, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+regressionColumns+" FROM perf_regressions WHERE id = $1", id)
+	r, err := scanRegression(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Regression{}, false, nil
+	}
+	if err != nil {
+		return Regression{}, false, fmt.Errorf("trace: get regression by id: %w", err)
+	}
+	return r, true, nil
+}
+
 // Bump обновляет метрику открытого инцидента: current_value=$2,
 // peak_value=max(peak_value,$2). По закрытому/несуществующему id → ErrNotFound.
 func (s *RegressionService) Bump(ctx context.Context, id int64, current float64) error {

@@ -687,6 +687,13 @@ func run() error {
 						EmailEnabled: emailSender.Configured(),
 						Details:      detailPolicy(cfg),
 						Locale:       i18n.Locale{Code: cfg.Locale},
+						// Incidents/Hosts/Settings/Pool — эскалация (B4, T6):
+						// StepNotifier перезагружает инцидент по ID (см.
+						// HostNotifier.NotifyStep).
+						Incidents: host.NewIncidentService(pg),
+						Hosts:     host.NewStore(pg),
+						Settings:  host.NewSettingsService(pg),
+						Pool:      pg,
 					},
 				}).Retire,
 			},
@@ -1139,6 +1146,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Regressions/Pool — эскалация (B4, T6): StepNotifier перезагружает
+			// регрессию по ID (см. RegressionNotifier.NotifyStep).
+			Regressions: trace.NewRegressionService(pg),
+			Pool:        pg,
 		},
 	}
 	go evaluator.Run(ctx)
@@ -1159,6 +1170,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Incidents/Rules/Pool — эскалация (B4, T6): StepNotifier
+			// перезагружает инцидент+правило по ID (см. MetricNotifier.NotifyStep).
+			Incidents: metric.NewIncidentService(pg),
+			Rules:     metric.NewRuleService(pg),
+			Pool:      pg,
 		},
 		Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
 	}
@@ -1178,6 +1194,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Regressions/Pool — эскалация (B4, T6): StepNotifier перезагружает
+			// регрессию по ID (см. RegressionNotifier.NotifyStep).
+			Regressions: profile.NewRegressionService(pg),
+			Pool:        pg,
 		},
 		Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
 		Config:   profile.DefaultProfileRegressionConfig(),
@@ -1202,6 +1222,13 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// Incidents/Hosts/Settings/Pool — эскалация (B4, T6): StepNotifier
+			// перезагружает инцидент/хост/настройки по ID (см.
+			// HostNotifier.NotifyStep).
+			Incidents: host.NewIncidentService(pg),
+			Hosts:     host.NewStore(pg),
+			Settings:  host.NewSettingsService(pg),
+			Pool:      pg,
 		},
 		Interval: time.Duration(cfg.HostEvalInterval) * time.Second,
 	}
@@ -1231,6 +1258,10 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		EmailEnabled: emailSender.Configured(),
 		Details:      detailPolicy(cfg),
 		Locale:       i18n.Locale{Code: cfg.Locale},
+		// Store/Pool — эскалация (B4, T6): StepNotifier перезагружает
+		// SLO+инцидент по ID (см. SLOBurnNotifier.NotifyStep).
+		Store: slo.NewStore(pg),
+		Pool:  pg,
 	}
 	sloEval := &slo.Evaluator{
 		Pool:      pg,

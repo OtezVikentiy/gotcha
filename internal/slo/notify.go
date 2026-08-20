@@ -2,10 +2,14 @@ package slo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -35,6 +39,16 @@ type SLOBurnNotifier struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор.
 	Locale i18n.Locale
+
+	// Store — источник перезагрузки SLO+инцидента по ID (B4, T6): планировщик
+	// эскалации (T8) хранит только incidentID, у NotifyStep/NotifyRecovery нет
+	// готового SLOEvent на входе, как у Notify.
+	Store *Store
+
+	// Pool — та же PG, что под Store/Alerts/Outbox: пишет лог эскалации
+	// incident_escalations (B4, T6, миграция 0077) после каждого успешного
+	// Enqueue в NotifyStep.
+	Pool *pgxpool.Pool
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -42,10 +56,87 @@ type SLOBurnNotifier struct {
 // инцидента в оценщике): все ошибки логируются, постановка по остальным каналам
 // продолжается. Проект без включённых каналов — не ошибка: задач просто не будет.
 func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
+	// dispatch логирует каждую ошибку (channels/enqueue) сама — здесь её
+	// достаточно отбросить, Notifier контрактом не возвращает ошибку.
+	_ = n.dispatch(ctx, ev, nil, nil)
+}
+
+// NotifyStep — эскалационное уведомление открытого инцидента сжигания
+// бюджета (B4, T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs, с логом
+// incident_escalations после каждого успешного Enqueue. SLO+инцидент
+// грузятся заново по ID — планировщик эскалации (T8) хранит только
+// incidentID. channelIDs nil/пусто — все deliverable-каналы проекта (как у
+// Notify).
+func (n *SLOBurnNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
+	ev, err := n.reloadEvent(ctx, incidentID, true)
+	if err != nil {
+		return fmt.Errorf("slo: notify step: %w", err)
+	}
+	return n.dispatch(ctx, ev, channelIDs, func(channelID int64) error {
+		return escalation.LogStep(ctx, n.Pool, "slo", incidentID, channelID, step)
+	})
+}
+
+// NotifyRecovery — CLOSE-уведомление инцидента сжигания бюджета (B4, T6) в
+// ЗАДАННЫЕ channelIDs, БЕЗ лога incident_escalations (recovery не эскалирует
+// — гасит). SLO+инцидент грузятся заново по ID, как в NotifyStep. channelIDs
+// nil/пусто — все deliverable-каналы проекта.
+func (n *SLOBurnNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	ev, err := n.reloadEvent(ctx, incidentID, false)
+	if err != nil {
+		return fmt.Errorf("slo: notify recovery: %w", err)
+	}
+	return n.dispatch(ctx, ev, channelIDs, nil)
+}
+
+// reloadEvent перегружает инцидент+SLO по ID и собирает из них SLOEvent
+// (B4, T6). Attainment не хранится в slo_incidents — восстанавливается из
+// budget_remaining инверсией формулы бюджета (см. budget.go:
+// remaining = 1 - (1-attainment)/(1-target)), budget_remaining=nil (бюджет
+// не считался на момент открытия) трактуется как «бюджет полностью
+// израсходован» (remaining=0) — консервативная нижняя оценка для повторного
+// уведомления, не участвующая в решениях оценщика.
+func (n *SLOBurnNotifier) reloadEvent(ctx context.Context, incidentID int64, opened bool) (SLOEvent, error) {
+	in, ok, err := n.Store.GetIncidentByID(ctx, incidentID)
+	if err != nil {
+		return SLOEvent{}, fmt.Errorf("load incident: %w", err)
+	}
+	if !ok {
+		return SLOEvent{}, fmt.Errorf("incident %d not found", incidentID)
+	}
+	s, ok, err := n.Store.Get(ctx, in.ProjectID, in.SLOID)
+	if err != nil {
+		return SLOEvent{}, fmt.Errorf("load slo: %w", err)
+	}
+	if !ok {
+		return SLOEvent{}, fmt.Errorf("slo %d not found", in.SLOID)
+	}
+	remaining := 0.0
+	if in.BudgetRemaining != nil {
+		remaining = *in.BudgetRemaining
+	}
+	attainment := 1 - (1-remaining)*(1-s.Target)
+	return SLOEvent{
+		SLO:             s,
+		Incident:        in,
+		Opened:          opened,
+		Attainment:      attainment,
+		BudgetRemaining: remaining,
+		BurnRate:        in.BurnRate,
+	}, nil
+}
+
+// dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
+// набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
+// (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
+// email-гейта (эскалация в конкретную ступень лесенки). onEnqueued — если
+// задан, дёргается после каждого успешного Enqueue с ID канала (NotifyStep
+// пишет им лог incident_escalations); nil — без лога, как раньше.
+func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs []int64, onEnqueued func(channelID int64) error) error {
 	channels, err := n.Alerts.Channels(ctx, ev.SLO.ProjectID)
 	if err != nil {
 		slog.Error("slo: burn notify: project channels", "project_id", ev.SLO.ProjectID, "error", err)
-		return
+		return fmt.Errorf("slo: burn notify: project channels: %w", err)
 	}
 	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
 	// получатель, у которого нет своей локали.
@@ -64,8 +155,12 @@ func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
 		kind = "slo_burn_close"
 	}
 
+	var errs error
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			continue
+		}
+		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -100,8 +195,16 @@ func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
 		}
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("slo: burn notify: enqueue failed", "channel_id", ch.ID, "error", err)
+			errs = errors.Join(errs, fmt.Errorf("slo: burn notify: enqueue channel %d: %w", ch.ID, err))
+			continue
+		}
+		if onEnqueued != nil {
+			if err := onEnqueued(ch.ID); err != nil {
+				errs = errors.Join(errs, err)
+			}
 		}
 	}
+	return errs
 }
 
 // sloSubject строит тему уведомления по виду перехода (открытие/закрытие) из

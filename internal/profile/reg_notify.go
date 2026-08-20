@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -39,11 +42,83 @@ type RegressionNotifier struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
 	Locale i18n.Locale
+
+	// Regressions — источник перезагрузки регрессии по ID (B4, T6):
+	// планировщик эскалации (T8) хранит только incidentID, у NotifyStep/
+	// NotifyRecovery нет готового ProfileRegressionEvent на входе, как у Notify.
+	Regressions *RegressionService
+
+	// Pool — та же PG, что под Regressions/Alerts/Outbox: пишет лог эскалации
+	// incident_escalations (B4, T6, миграция 0077) после каждого успешного
+	// Enqueue в NotifyStep.
+	Pool *pgxpool.Pool
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
 // Ошибка Enqueue по одному каналу не прерывает остальные (errors.Join).
 func (n *RegressionNotifier) Notify(ctx context.Context, ev ProfileRegressionEvent) error {
+	return n.dispatch(ctx, ev, nil, nil)
+}
+
+// NotifyStep — эскалационное уведомление открытой регрессии профиля (B4,
+// T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs, с логом incident_escalations
+// после каждого успешного Enqueue. Регрессия грузится заново по ID —
+// планировщик эскалации (T8) хранит только incidentID. channelIDs nil/пусто —
+// все deliverable-каналы проекта (как у Notify).
+func (n *RegressionNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) error {
+	r, ok, err := n.Regressions.GetByID(ctx, incidentID)
+	if err != nil {
+		return fmt.Errorf("profile: notify step: load regression: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("profile: notify step: regression %d not found", incidentID)
+	}
+	ev := profileRegressionEvent(r, true)
+	return n.dispatch(ctx, ev, channelIDs, func(channelID int64) error {
+		return escalation.LogStep(ctx, n.Pool, "profile", incidentID, channelID, step)
+	})
+}
+
+// NotifyRecovery — CLOSE-уведомление регрессии профиля (B4, T6) в ЗАДАННЫЕ
+// channelIDs, БЕЗ лога incident_escalations (recovery не эскалирует — гасит).
+// Регрессия грузится заново по ID, как в NotifyStep. channelIDs nil/пусто —
+// все deliverable-каналы проекта.
+func (n *RegressionNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	r, ok, err := n.Regressions.GetByID(ctx, incidentID)
+	if err != nil {
+		return fmt.Errorf("profile: notify recovery: load regression: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("profile: notify recovery: regression %d not found", incidentID)
+	}
+	ev := profileRegressionEvent(r, false)
+	return n.dispatch(ctx, ev, channelIDs, nil)
+}
+
+// profileRegressionEvent собирает ProfileRegressionEvent из перезагруженной
+// по ID строки profile_regressions (B4, T6): PctIncrease пересчитывается из
+// baseline/current долей тем же pctIncrease, что использует оценщик
+// (reg_evaluator.go), а не хранится в таблице отдельно.
+func profileRegressionEvent(r Regression, opened bool) ProfileRegressionEvent {
+	return ProfileRegressionEvent{
+		ProjectID:     r.ProjectID,
+		Service:       r.Service,
+		ProfileType:   r.ProfileType,
+		Function:      r.Function,
+		BaselineShare: r.BaselineShare,
+		CurrentShare:  r.CurrentShare,
+		PctIncrease:   pctIncrease(r.BaselineShare, r.CurrentShare),
+		Opened:        opened,
+	}
+}
+
+// dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
+// набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
+// (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
+// email-гейта (эскалация в конкретную ступень лесенки). onEnqueued — если
+// задан, дёргается после каждого успешного Enqueue с ID канала (NotifyStep
+// пишет им лог incident_escalations); nil — без лога, как раньше.
+func (n *RegressionNotifier) dispatch(ctx context.Context, ev ProfileRegressionEvent, channelIDs []int64, onEnqueued func(channelID int64) error) error {
 	channels, err := n.Alerts.Channels(ctx, ev.ProjectID)
 	if err != nil {
 		return fmt.Errorf("profile: regression notify: project channels: %w", err)
@@ -58,6 +133,9 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev ProfileRegressionEve
 	var errs error
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			continue
+		}
+		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -92,6 +170,12 @@ func (n *RegressionNotifier) Notify(ctx context.Context, ev ProfileRegressionEve
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("profile: regression notify: enqueue failed", "channel_id", ch.ID, "error", err)
 			errs = errors.Join(errs, fmt.Errorf("profile: regression notify: enqueue channel %d: %w", ch.ID, err))
+			continue
+		}
+		if onEnqueued != nil {
+			if err := onEnqueued(ch.ID); err != nil {
+				errs = errors.Join(errs, err)
+			}
 		}
 	}
 	return errs

@@ -110,6 +110,21 @@ func (s *IncidentService) OpenFor(ctx context.Context, hostID int64, kind string
 	return in, true, nil
 }
 
+// GetByID возвращает инцидент по id (любого статуса). Нужен эскалации (B4,
+// T6): планировщик и StepNotifier знают только incidentID, объект инцидента
+// приходится перегружать заново.
+func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM host_incidents WHERE id = $1", id)
+	in, err := scanIncident(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, false, nil
+	}
+	if err != nil {
+		return Incident{}, false, fmt.Errorf("host: get incident by id: %w", err)
+	}
+	return in, true, nil
+}
+
 // Bump обновляет открытый инцидент: current_value=$2, peak_value=$3 (peak
 // вычисляет вызывающий — экстремум в сторону нарушения). Закрытый/нет →
 // ErrIncidentNotFound.

@@ -187,6 +187,22 @@ func (s *Store) OpenIncidentFor(ctx context.Context, sloID int64) (Incident, boo
 	return in, true, nil
 }
 
+// GetIncidentByID возвращает инцидент сжигания бюджета по id (любого
+// статуса). Нужен эскалации (B4, T6): планировщик и StepNotifier знают
+// только incidentID, объект инцидента приходится перегружать заново. Не
+// путать с Get — тот читает определение SLO (slos), а не инцидент.
+func (s *Store) GetIncidentByID(ctx context.Context, id int64) (Incident, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM slo_incidents WHERE id = $1", id)
+	in, err := scanIncident(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, false, nil
+	}
+	if err != nil {
+		return Incident{}, false, fmt.Errorf("slo: get incident by id: %w", err)
+	}
+	return in, true, nil
+}
+
 // OpenIncident открывает инцидент сжигания бюджета, если открытого ещё нет
 // (модель one-open через частичный уникальный индекс slo_incidents_one_open_idx).
 // created=true — вставлен новый; created=false — уже был открытый (вернётся он).

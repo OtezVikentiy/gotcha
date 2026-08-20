@@ -124,6 +124,22 @@ func (s *RuleService) ListEnabled(ctx context.Context) ([]Rule, error) {
 	return out, rows.Err()
 }
 
+// Get возвращает правило по id (без скоупинга по проекту — вызывающий, B4
+// T6 StepNotifier, уже держит projectID из перезагруженного инцидента, и
+// правило, на которое тот ссылается, по построению принадлежит тому же
+// проекту).
+func (s *RuleService) Get(ctx context.Context, id int64) (Rule, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+ruleColumns+" FROM metric_alert_rules WHERE id = $1", id)
+	r, err := scanRule(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Rule{}, false, nil
+	}
+	if err != nil {
+		return Rule{}, false, fmt.Errorf("metric: get rule: %w", err)
+	}
+	return r, true, nil
+}
+
 // Delete удаляет правило проекта (scoped по projectID — чужое правило не удалить).
 func (s *RuleService) Delete(ctx context.Context, id, projectID int64) error {
 	_, err := s.pool.Exec(ctx,
