@@ -1292,6 +1292,44 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		"Duration of the last SLO burn-rate evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, sloEval.LastTickSeconds)
 	go sloEval.Run(ctx)
+
+	// Централизованный планировщик эскалаций (B4, T8): один тикер вместо
+	// того, чтобы каждый из пяти оценщиков выше сам гонял свою лесенку —
+	// эскалация ортогональна открытию инцидента (оценщик открывает его один
+	// раз, а лесенка идёт своим шагом, пока инцидент открыт и не
+	// подтверждён). Src/Notifier каждого биндинга — те же объекты, что
+	// собраны выше для соответствующего оценщика (Regressions/Incidents/
+	// Store как Source (T4), Notifier как StepNotifier (T6)).
+	bindings := []escalation.Binding{
+		{Src: trace.NewRegressionService(pg), Notifier: evaluator.Notifier},
+		{Src: metric.NewIncidentService(pg), Notifier: metricEval.Notifier},
+		{Src: profile.NewRegressionService(pg), Notifier: profileRegEval.Notifier},
+		{Src: host.NewIncidentService(pg), Notifier: hostEval.Notifier},
+		{Src: slo.NewStore(pg), Notifier: sloNotifier},
+	}
+	sched := &escalation.Scheduler{
+		Bindings: bindings,
+		Policy:   policyStore,
+		Maint:    maint,
+		Pool:     pg,
+		Interval: time.Duration(cfg.EscalationInterval) * time.Second,
+		Now:      time.Now,
+	}
+	go sched.Run(ctx)
+
+	// Чистка incident_escalations (M-6): без ретенции лог эскалаций растёт
+	// бесконечно. Привязана к тому же сроку, что и сами инциденты
+	// (GOTCHA_INCIDENT_RETENTION_DAYS) — тот же образец, что outboxJanitor:641
+	// для GOTCHA_OUTBOX_RETENTION_DAYS. 0 означает «хранить вечно» (см.
+	// валидацию IncidentRetentionDays >= 0) — janitor тогда не запускаем,
+	// симметрично entityRetention.Any() ниже.
+	if cfg.IncidentRetentionDays > 0 {
+		escalationJanitor := &escalation.Janitor{
+			Pool:      pg,
+			Retention: time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+		}
+		go escalationJanitor.Run(ctx)
+	}
 }
 
 // detailPolicy — политика раскрытия деталей события получателю уведомления.
