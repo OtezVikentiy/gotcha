@@ -16,9 +16,9 @@ The recipe page walks you through the steps:
 
 1. **Install `otelcol-contrib`** on the server next to the service. It is the same [OpenTelemetry Collector Contrib](https://github.com/open-telemetry/opentelemetry-collector-releases) as in the [hosts](/docs/hosts) connection guide — the official `.deb`/`.rpm` packages install the `otelcol-contrib` systemd unit and a config at `/etc/otelcol-contrib/config.yaml`.
 2. **Copy the config from the recipe page** (the "Copy config" button) and replace the contents of `/etc/otelcol-contrib/config.yaml` with it. The instance address and an active public project key are already filled in; replace the `CHANGE_ME` values with your own (see the per-service requirements below). If the project has no active public key, the page shows a hint to issue one in the project settings instead of the config. The exporter `endpoint` is the instance's **base** URL, without `/v1/metrics`: the `otlphttp` exporter appends the path itself (the same rule as in [Hosts](/docs/hosts)).
-3. **Restart the collector** (`sudo systemctl restart otelcol-contrib`). Within a minute or two the badge on the page flips from "Waiting for data" to "Data arrives".
+3. **Restart the collector** (`sudo systemctl restart otelcol-contrib`). Within a minute or two the badge on the page flips from "Waiting for data" to "Receiving data".
 
-**How detection works.** The "Data arrives" badge means the recipe's signature metric (e.g. `postgresql.backends` for PostgreSQL) has data points within the last **15 minutes**. Detection is live: if the service or the collector goes silent for longer than that window, the badge flips back to "Waiting for data" — and during first-time setup that same badge is an honest signal that the export has not landed yet.
+**How detection works.** The "Receiving data" badge means the recipe's signature metric (e.g. `postgresql.backends` for PostgreSQL) has data points within the last **15 minutes**. Detection is live: if the service or the collector goes silent for longer than that window, the badge flips back to "Waiting for data" — and during first-time setup that same badge is an honest signal that the export has not landed yet.
 
 One config — one receiver: if a server runs several services from the recipes (or the collector already ships host metrics), merge the `receivers`/`processors` sections and pipelines into a single `config.yaml` rather than running several collectors.
 
@@ -28,6 +28,7 @@ One config — one receiver: if a server runs several services from the recipes 
 
 - The config's `username`/`password` is a PostgreSQL monitoring user. It needs no access to your data, only statistics reads: create a dedicated user and grant it the `pg_monitor` role.
 - The receiver's `postgresql.deadlocks` metric is **disabled by default**, so the snippet enables it explicitly (`postgresql.deadlocks: {enabled: true}`). Do not remove that line: without it the recommended critical deadlock threshold would never fire — the metric simply would not arrive.
+- The snippet's `tls: {insecure: true}` assumes a local connection on the same host. For a remote database, set up TLS on the receiver instead of keeping `insecure: true`.
 
 ### nginx
 
@@ -60,6 +61,8 @@ nginx and Redis need no transform: everything their charts group by (e.g. `state
 ## Assumption: one service instance per project
 
 A recipe assumes **one instance of the service per project**: metrics from two PostgreSQL servers (or two nginx, Redis…) arriving into one project without distinct `deployment.environment` values merge into a single series — charts and thresholds would compute over intermingled data. Spread multiple instances of the same service across environments (`resourcedetection`/`OTEL_RESOURCE_ATTRIBUTES` with distinct `deployment.environment`) or across separate projects.
+
+The same applies to sub-resources within a single instance, not just to instances. One PostgreSQL server usually hosts **several databases**: the charts split them apart (per-database grouping), but a recommended threshold is a single rule over the metric — the deadlock threshold, for example, effectively tracks the database with the largest accumulated counter. For a precise per-database threshold, uncomment the `databases:` line in the receiver config and narrow it to a single database, or split the databases across projects. Docker is per-container in the same way: that is exactly why the recipe ships no default thresholds at all.
 
 ## Charts
 
