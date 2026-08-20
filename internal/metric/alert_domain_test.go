@@ -94,12 +94,12 @@ func TestIncidentServiceOpenClose(t *testing.T) {
 		t.Fatalf("create rule: %v", err)
 	}
 
-	in, created, err := inc.Open(ctx, rule.ID, projectID, 150, false)
+	in, created, err := inc.Open(ctx, rule.ID, projectID, 150, false, "")
 	if err != nil || !created {
 		t.Fatalf("open = (%+v,%v,%v)", in, created, err)
 	}
 	// Повторный Open → created=false.
-	if _, created2, _ := inc.Open(ctx, rule.ID, projectID, 160, false); created2 {
+	if _, created2, _ := inc.Open(ctx, rule.ID, projectID, 160, false, ""); created2 {
 		t.Fatalf("second open must be created=false")
 	}
 	// Bump.
@@ -114,7 +114,7 @@ func TestIncidentServiceOpenClose(t *testing.T) {
 		t.Fatalf("second resolve must be ok=false")
 	}
 	// После закрытия новый Open создаёт (created=true).
-	if _, created3, _ := inc.Open(ctx, rule.ID, projectID, 200, false); !created3 {
+	if _, created3, _ := inc.Open(ctx, rule.ID, projectID, 200, false, ""); !created3 {
 		t.Fatalf("open after resolve must be created=true")
 	}
 	// List.
@@ -147,7 +147,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 
-	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false)
+	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false, "")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create rule2: %v", err)
 	}
-	closedIn, _, err := inc.Open(ctx, rule2.ID, projectID, 100, false)
+	closedIn, _, err := inc.Open(ctx, rule2.ID, projectID, 100, false, "")
 	if err != nil {
 		t.Fatalf("open closedIn: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestIncidentOpenConcurrentOnlyOneWins(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			_, c, err := inc.Open(ctx, rule.ID, projectID, 100+float64(i), false)
+			_, c, err := inc.Open(ctx, rule.ID, projectID, 100+float64(i), false, "")
 			if err != nil {
 				t.Errorf("open %d: %v", i, err)
 			}

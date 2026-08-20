@@ -38,7 +38,7 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 		t.Fatalf("create rule2: %v", err)
 	}
 
-	in, _, err := inc.Open(ctx, rule1.ID, projectID, 150, false)
+	in, _, err := inc.Open(ctx, rule1.ID, projectID, 150, false, "")
 	if err != nil {
 		t.Fatalf("open rule1: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 		t.Fatalf("OpenUnacked[0].EscalationLevel = %d, want 0", got.EscalationLevel)
 	}
 
-	in2, _, err := inc.Open(ctx, rule2.ID, projectID, 95, false)
+	in2, _, err := inc.Open(ctx, rule2.ID, projectID, 95, false, "")
 	if err != nil {
 		t.Fatalf("open rule2: %v", err)
 	}
@@ -89,6 +89,39 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 	}
 }
 
+// TestIncidentServiceOpenSeverityOverride — B4 T5: Open проставляет severity
+// инцидента из override правила, а не table-DEFAULT, когда override задан;
+// дискриминирует override='critical' от отсутствия override (""→'warning',
+// уже покрыто TestIncidentServiceOpenUnacked).
+func TestIncidentServiceOpenSeverityOverride(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	rules := metric.NewRuleService(pool)
+	inc := metric.NewIncidentService(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+
+	rule, err := rules.Create(ctx, metric.Rule{ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt", Threshold: 90, WindowSeconds: 300, Enabled: true, Severity: "critical"})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	if rule.Severity != "critical" {
+		t.Fatalf("rule.Severity после Create = %q, want %q", rule.Severity, "critical")
+	}
+
+	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false, rule.Severity)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var severity string
+	if err := pool.QueryRow(ctx, "SELECT severity FROM metric_incidents WHERE id = $1", in.ID).Scan(&severity); err != nil {
+		t.Fatalf("select severity: %v", err)
+	}
+	if severity != "critical" {
+		t.Fatalf("metric_incidents.severity = %q, want %q (override из правила)", severity, "critical")
+	}
+}
+
 // TestIncidentServiceBumpEscalation проверяет атомарность продвижения
 // escalation_level: успешный бамп двигает level и last_escalated_at,
 // повторный бамп с устаревшим from — идемпотентный no-op (ok=false).
@@ -103,7 +136,7 @@ func TestIncidentServiceBumpEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create rule: %v", err)
 	}
-	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false)
+	in, _, err := inc.Open(ctx, rule.ID, projectID, 150, false, "")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

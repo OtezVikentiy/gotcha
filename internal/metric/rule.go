@@ -41,17 +41,18 @@ type Rule struct {
 	LabelKey      string // "" → без матчера
 	LabelValue    string
 	Enabled       bool
+	Severity      string // "" → нет override (дефолт источника 'warning')
 	CreatedAt     time.Time
 }
 
 const ruleColumns = `id, project_id, metric_name, aggregation, comparator, threshold,
 	window_seconds, COALESCE(environment,''), COALESCE(label_key,''), COALESCE(label_value,''),
-	enabled, created_at`
+	enabled, COALESCE(severity,''), created_at`
 
 func scanRule(row pgx.Row) (Rule, error) {
 	var r Rule
 	err := row.Scan(&r.ID, &r.ProjectID, &r.MetricName, &r.Aggregation, &r.Comparator, &r.Threshold,
-		&r.WindowSeconds, &r.Environment, &r.LabelKey, &r.LabelValue, &r.Enabled, &r.CreatedAt)
+		&r.WindowSeconds, &r.Environment, &r.LabelKey, &r.LabelValue, &r.Enabled, &r.Severity, &r.CreatedAt)
 	return r, err
 }
 
@@ -73,11 +74,11 @@ func (s *RuleService) Create(ctx context.Context, r Rule) (Rule, error) {
 	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO metric_alert_rules
-			(project_id, metric_name, aggregation, comparator, threshold, window_seconds, environment, label_key, label_value, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),$10)
+			(project_id, metric_name, aggregation, comparator, threshold, window_seconds, environment, label_key, label_value, enabled, severity)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),$10,NULLIF($11,''))
 		RETURNING `+ruleColumns,
 		r.ProjectID, r.MetricName, r.Aggregation, r.Comparator, r.Threshold, r.WindowSeconds,
-		r.Environment, r.LabelKey, r.LabelValue, r.Enabled)
+		r.Environment, r.LabelKey, r.LabelValue, r.Enabled, r.Severity)
 	out, err := scanRule(row)
 	if err != nil {
 		return Rule{}, fmt.Errorf("metric: create rule: %w", err)

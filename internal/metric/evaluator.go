@@ -90,7 +90,7 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 	switch {
 	case d.Open:
 		inMaint := e.inMaintenance(ctx, r.ProjectID, now)
-		in, created, err := e.Incidents.Open(ctx, r.ID, r.ProjectID, current, inMaint)
+		in, created, err := e.Incidents.Open(ctx, r.ID, r.ProjectID, current, inMaint, r.Severity)
 		if err != nil {
 			slog.Error("metric evaluator: open failed", "rule_id", r.ID, "error", err)
 			return

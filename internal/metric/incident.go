@@ -59,14 +59,16 @@ func NewIncidentService(pool *pgxpool.Pool) *IncidentService {
 // индекс metric_incidents_one_open_idx (rule_id) WHERE status='open': из
 // параллельных вызовов ровно один INSERT проходит, остальные ловят конфликт
 // (DO NOTHING → нет RETURNING) и дочитывают победителя. peak=current на
-// вставке.
-func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64, inMaintenance bool) (Incident, bool, error) {
+// вставке. severity — override из правила (B4, T5): "" (нет override) даёт
+// table-DEFAULT 'warning' через COALESCE в INSERT, непустое значение идёт как
+// есть.
+func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64, inMaintenance bool, severity string) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value, in_maintenance)
-		VALUES ($1, $2, $3, $3, $4)
+		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value, in_maintenance, severity)
+		VALUES ($1, $2, $3, $3, $4, COALESCE(NULLIF($5,''), 'warning'))
 		ON CONFLICT (rule_id) WHERE status = 'open' DO NOTHING
 		RETURNING `+incidentColumns,
-		ruleID, projectID, current, inMaintenance)
+		ruleID, projectID, current, inMaintenance, severity)
 	in, err := scanIncident(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, found, err := s.OpenFor(ctx, ruleID)
