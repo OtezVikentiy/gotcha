@@ -1,0 +1,257 @@
+package templates
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// AlertSuppressionPath — адрес редактора рёбер зависимостей проекта (B5,
+// задача 9). Экспортирован для nav (nav.go добавляет пункт меню рядом с
+// escalations).
+func AlertSuppressionPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/alert-suppression"
+}
+
+func alertSuppressionDeletePath(projectID, depID int64) string {
+	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10) + "/delete"
+}
+
+// SuppressionEdgeView — одна строка списка: родитель/ребёнок уже сведены в
+// человекочитаемую подпись (host.name/monitor.name резолвлены в web-слое,
+// см. alert_suppression.go:suppressionParentLabel/suppressionChildLabel).
+type SuppressionEdgeView struct {
+	ID          int64
+	ParentLabel string
+	ChildLabel  string
+}
+
+// SuppressionNodeOption — один <option> селектора хоста/монитора формы
+// добавления.
+type SuppressionNodeOption struct {
+	ID   int64
+	Name string
+}
+
+// SuppressionPreviewView — одна строка dry-run предпросмотра (Task 9b): «Если
+// бы ParentLabel сейчас упал, подавились бы: Children». Родитель/дети уже
+// сведены в человекочитаемые подписи в web-слое (см.
+// alert_suppression.go:suppressionPreviewRows), тем же приёмом, что и
+// SuppressionEdgeView.
+type SuppressionPreviewView struct {
+	ParentLabel string
+	Children    []string
+}
+
+templ suppressionNodeOptions(opts []SuppressionNodeOption) {
+	for _, o := range opts {
+		<option value={ strconv.FormatInt(o.ID, 10) }>{ o.Name }</option>
+	}
+}
+
+templ suppressionEdgeRow(projectID int64, e SuppressionEdgeView) {
+	<tr>
+		<td>{ e.ParentLabel }</td>
+		<td>{ e.ChildLabel }</td>
+		<td>
+			<form method="post" action={ templ.URL(alertSuppressionDeletePath(projectID, e.ID)) }>
+				<button
+					type="submit"
+					class="btn btn-danger-ghost"
+					aria-label={ i18n.Tf(ctx, "alert_suppression.action.delete_aria", "parent", e.ParentLabel, "child", e.ChildLabel) }
+				>
+					{ i18n.T(ctx, "alert_suppression.action.delete") }
+				</button>
+			</form>
+		</td>
+	</tr>
+}
+
+// suppressionForm — форма добавления ребра. Родитель — ровно один узел
+// (radio parent_kind выбирает, какой из двух селектов читает хендлер);
+// ребёнок — узел ЛИБО метка (radio child_kind выбирает узел/узел/пара
+// scope+value). Оба селекта родителя/ребёнка показаны всегда (без JS,
+// принцип продукта) — хендлер читает только выбранную radio-ветку, лишний
+// ввод в невыбранных полях игнорируется.
+templ suppressionForm(projectID int64, hosts, monitors []SuppressionNodeOption) {
+	<form method="post" action={ templ.URL(AlertSuppressionPath(projectID)) }>
+		<fieldset class="field">
+			<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.parent_kind") }</legend>
+			<div class="segmented">
+				<label>
+					<input type="radio" name="parent_kind" value="host" checked/>
+					{ i18n.T(ctx, "alert_suppression.kind.host") }
+				</label>
+				<label>
+					<input type="radio" name="parent_kind" value="monitor"/>
+					{ i18n.T(ctx, "alert_suppression.kind.monitor") }
+				</label>
+			</div>
+		</fieldset>
+		<div class="form-grid">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alert_suppression.field.parent_host") }
+					<select name="parent_host_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.parent_host") }>
+						@suppressionNodeOptions(hosts)
+					</select>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alert_suppression.field.parent_monitor") }
+					<select name="parent_monitor_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.parent_monitor") }>
+						@suppressionNodeOptions(monitors)
+					</select>
+				</label>
+			</div>
+		</div>
+		<fieldset class="field">
+			<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.child_kind") }</legend>
+			<div class="segmented">
+				<label>
+					<input type="radio" name="child_kind" value="host" checked/>
+					{ i18n.T(ctx, "alert_suppression.kind.host") }
+				</label>
+				<label>
+					<input type="radio" name="child_kind" value="monitor"/>
+					{ i18n.T(ctx, "alert_suppression.kind.monitor") }
+				</label>
+				<label>
+					<input type="radio" name="child_kind" value="label"/>
+					{ i18n.T(ctx, "alert_suppression.kind.label") }
+				</label>
+			</div>
+		</fieldset>
+		<div class="form-grid">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alert_suppression.field.child_host") }
+					<select name="child_host_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_host") }>
+						@suppressionNodeOptions(hosts)
+					</select>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alert_suppression.field.child_monitor") }
+					<select name="child_monitor_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_monitor") }>
+						@suppressionNodeOptions(monitors)
+					</select>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alert_suppression.field.child_label_scope") }
+					<select name="child_label_scope" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_label_scope") }>
+						<option value="env">{ i18n.T(ctx, "alert_suppression.scope.env") }</option>
+						<option value="role">{ i18n.T(ctx, "alert_suppression.scope.role") }</option>
+					</select>
+				</label>
+			</div>
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "alert_suppression.field.child_label_value") }
+					<input
+						type="text"
+						name="child_label_value"
+						class="input"
+						placeholder={ i18n.T(ctx, "alert_suppression.field.child_label_value_placeholder") }
+						aria-label={ i18n.T(ctx, "alert_suppression.field.child_label_value") }
+					/>
+				</label>
+			</div>
+		</div>
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.form.hint") }</p>
+		<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alert_suppression.form.submit") }</button>
+	</form>
+}
+
+// suppressionPreviewRow — одна строка dry-run: «Если бы <родитель> сейчас
+// упал, подавились бы: <дети>». aria-label дублирует видимый текст явно (как
+// у suppressionEdgeRow:delete_aria) — список не интерактивен, но повтор в
+// aria-label ничего не стоит и держит и голос, и текст в одном ключе.
+templ suppressionPreviewRow(p SuppressionPreviewView) {
+	<li aria-label={ i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")) }>
+		{ i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")) }
+	</li>
+}
+
+// suppressionPreview — карточка dry-run предпросмотра (Task 9b): для каждого
+// родителя с рёбрами показывает, что подавилось бы прямо сейчас, если бы он
+// упал (без БД — чистая depsuppress.PreviewSuppression, посчитанная заранее
+// в web-слое). Секция всегда показана, если у проекта есть хоть одно ребро —
+// пустой preview (все дети — label-селекторы без совпадений) отдельным
+// текстом, не молчаливым исчезновением карточки.
+templ suppressionPreview(preview []SuppressionPreviewView) {
+	<section class="card">
+		<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.preview.title") }</h2>
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.preview.intro") }</p>
+		if len(preview) == 0 {
+			<p class="hint">{ i18n.T(ctx, "alert_suppression.preview.empty") }</p>
+		} else {
+			<ul class="preview-list">
+				for _, p := range preview {
+					@suppressionPreviewRow(p)
+				}
+			</ul>
+		}
+	</section>
+}
+
+// AlertSuppression — GET/POST /projects/{id}/alert-suppression: список рёбер
+// зависимостей проекта + форма добавления. Доступ — оператор проекта
+// (requireProjectOperator, как Escalations/SLOsScreen). grace — h.SuppressionGrace
+// (задержка первого уведомления, GOTCHA_DEPENDENCY_SETTLE_SECONDS): значение и
+// предупреждение про silent_after показываются, только когда оно положительное
+// (P2-1 устранения аудита B5) — нулевое означает, что грейс выключен либо
+// экран собран на узком тестовом стенде без main.go, где показывать
+// конкретную цифру нечего.
+templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, grace time.Duration, errMsg, userEmail string) {
+	@layout(i18n.T(ctx, "alert_suppression.title"), userEmail) {
+		<h1>{ i18n.T(ctx, "alert_suppression.title") }</h1>
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.model") }</p>
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro") }</p>
+		if grace > 0 {
+			<p class="hint">{ i18n.Tf(ctx, "alert_suppression.intro.grace", "grace", humanize.Duration(ctx, grace)) }</p>
+			<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.grace_warning") }</p>
+		}
+		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.scope") }</p>
+		if errMsg != "" {
+			<p class="error">{ errMsg }</p>
+		}
+		<section class="card">
+			<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.list.title") }</h2>
+			if len(edges) == 0 {
+				@emptyState("bell", "alert_suppression.empty.title", "alert_suppression.empty.body", "", "", 3)
+			} else {
+				@scrollRegion("table-scroll", "alert_suppression.list.title") {
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th scope="col">{ i18n.T(ctx, "alert_suppression.table.parent") }</th>
+								<th scope="col">{ i18n.T(ctx, "alert_suppression.table.child") }</th>
+								<th scope="col"></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, e := range edges {
+								@suppressionEdgeRow(projectID, e)
+							}
+						</tbody>
+					</table>
+				}
+			}
+		</section>
+		if len(edges) > 0 {
+			@suppressionPreview(preview)
+		}
+		<section class="card">
+			<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.form.title") }</h2>
+			@suppressionForm(projectID, hosts, monitors)
+		</section>
+	}
+}

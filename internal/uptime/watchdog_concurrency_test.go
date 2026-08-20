@@ -169,6 +169,13 @@ func TestCheckRemindersConcurrentTicksNotifyExactlyOnce(t *testing.T) {
 	if !openedNow {
 		t.Fatalf("OpenIncident: created = false, want true")
 	}
+	// OpenIncident alone leaves notified_open=false (MarkNotified is the
+	// detector's job after a successful "down" notify) — IncidentsDueForReminder
+	// (B5, задача 6) now gates on notified_open=true, and this test is about
+	// the reminder claim race, not that gate.
+	if err := svc.MarkNotified(ctx, inc.ID, true); err != nil {
+		t.Fatalf("MarkNotified: %v", err)
+	}
 	if _, err := pool.Exec(ctx,
 		"UPDATE incidents SET started_at = started_at - interval '30 minutes' WHERE id = $1", inc.ID); err != nil {
 		t.Fatalf("backdate incident: %v", err)

@@ -47,6 +47,55 @@ func (f *fakeNotifier) kindEvents(kind string) []uptime.Event {
 	return out
 }
 
+// fakeDepChecker is a configurable depChecker double for the T7
+// deferred-notification FSM: fixed HasParent/ParentDown answers, with
+// ParentDown settable mid-test to simulate a parent going down between two
+// detector ticks.
+type fakeDepChecker struct {
+	mu            sync.Mutex
+	hasParent     bool
+	parentDown    bool
+	hasParentErr  error
+	parentDownErr error
+}
+
+func (f *fakeDepChecker) HasParent(_ context.Context, _ string, _ int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hasParent, f.hasParentErr
+}
+
+func (f *fakeDepChecker) ParentDown(_ context.Context, _ string, _ int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.parentDown, f.parentDownErr
+}
+
+func (f *fakeDepChecker) setParentDown(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.parentDown = v
+}
+
+func (f *fakeDepChecker) setParentDownErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.parentDownErr = err
+}
+
+// backdateIncidentStart pushes the currently open incident's started_at
+// back by 30s — enough to clear the 20s SettleGrace the T7 tests below use,
+// deterministically instead of relying on real sleep (same trick
+// TestOnResultResolvesIncidentWithPositiveDuration uses for duration).
+func backdateIncidentStart(t *testing.T, ctx context.Context, pool *pgxpool.Pool, monitorID int64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx,
+		"UPDATE incidents SET started_at = started_at - interval '30 seconds' WHERE monitor_id = $1 AND resolved_at IS NULL",
+		monitorID); err != nil {
+		t.Fatalf("backdate incident: %v", err)
+	}
+}
+
 // createMonitorWith creates an http monitor with explicit regions and
 // consensus policy — shared by detector tests that need multi-region setups
 // (createMonitor in state_test.go always creates a single "local" region
@@ -371,6 +420,67 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 	}
 }
 
+// TestUptimeResolveGatedByNotifiedOpen: resolveIncident must not send "up"
+// for an incident whose "down" never went out (NotifiedOpen=false) — sending
+// a recovery notification for an outage nobody was told about is confusing.
+// The false case here mimics both real causes of NotifiedOpen=false left
+// open by openIncident: a suppressed_by_dep incident (T7, not this task) and
+// a Notify failure on open (exercised directly, same as
+// TestNotifyErrorDoesNotBreakDetection). Once NotifiedOpen=true, "up" must
+// still be sent as before (control case).
+func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	t.Run("notified_open=false: up not sent", func(t *testing.T) {
+		mon := createMonitor(t, svc, pid, 1, 2) // fail_threshold=1, recovery_threshold=2
+		notifier := &fakeNotifier{err: errors.New("smtp down")}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		now := time.Now().UTC()
+
+		applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
+		inc := assertOpenIncident(t, ctx, svc, mon.ID)
+		if inc.NotifiedOpen {
+			t.Fatalf("NotifiedOpen = true, want false (open notify failed)")
+		}
+
+		// Clear the error so a real Notify call, if the gate were missing,
+		// would succeed and be observable as an "up" event below.
+		notifier.err = nil
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
+		assertNoOpenIncident(t, ctx, svc, mon.ID)
+
+		if got := notifier.kindEvents("up"); len(got) != 0 {
+			t.Fatalf("up events = %d, want 0: incident's down was never notified", len(got))
+		}
+	})
+
+	t.Run("notified_open=true: up sent", func(t *testing.T) {
+		mon := createMonitor(t, svc, pid, 1, 2)
+		notifier := &fakeNotifier{}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		now := time.Now().UTC()
+
+		applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
+		inc := assertOpenIncident(t, ctx, svc, mon.ID)
+		if !inc.NotifiedOpen {
+			t.Fatalf("NotifiedOpen = false, want true")
+		}
+
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
+		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
+		assertNoOpenIncident(t, ctx, svc, mon.ID)
+
+		if got := notifier.kindEvents("up"); len(got) != 1 {
+			t.Fatalf("up events = %d, want 1", len(got))
+		}
+	})
+}
+
 func TestOnResultNilNotifierOnlyTracksIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -447,5 +557,247 @@ func TestOnResultTracksSSLExpiry(t *testing.T) {
 	}
 	if len(alerted) != 0 {
 		t.Fatalf("ssl_alerted_days not cleared after later expiry: %v", alerted)
+	}
+}
+
+// TestUptimeChildHeldThenSuppressed covers the T7 deferred-notification FSM:
+// a monitor-child (declared parent, Dep.HasParent=true) does not get a
+// synchronous "down" on open — the notification is held. Once the parent is
+// observed down (Dep.ParentDown=true) on a later tick, the incident is
+// suppressed for good and "down" is never sent.
+func TestUptimeChildHeldThenSuppressed(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1) // fail_threshold=1: opens on first fail
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: monitor has a declared parent, notify must be held")
+	}
+	if len(notifier.Events()) != 0 {
+		t.Fatalf("notified synchronously on open despite a declared parent: %+v", notifier.Events())
+	}
+
+	// Parent goes down: the next tick must suppress the incident, not notify.
+	dep.setParentDown(true)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+	inc = assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
+	}
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: incident was suppressed, never notified")
+	}
+	if len(notifier.kindEvents("down")) != 0 {
+		t.Fatalf("down event sent despite dependency suppression: %+v", notifier.Events())
+	}
+}
+
+// TestUptimeChildNotifiesAfterGrace: a monitor-child whose parent stays up
+// through the settling grace gets its "down" sent late, once
+// now-StartedAt >= SettleGrace — the outage turned out real, not a
+// parent-caused blip.
+func TestUptimeChildNotifiesAfterGrace(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	assertOpenIncident(t, ctx, svc, mon.ID)
+	if len(notifier.Events()) != 0 {
+		t.Fatalf("notified synchronously on open despite a declared parent: %+v", notifier.Events())
+	}
+
+	backdateIncidentStart(t, ctx, pool, mon.ID) // clear the 20s grace
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: settling grace elapsed with the parent still up")
+	}
+	if inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = true, want false: parent stayed up throughout")
+	}
+	downEvents := notifier.kindEvents("down")
+	if len(downEvents) != 1 {
+		t.Fatalf("down events = %d, want 1: %+v", len(downEvents), notifier.Events())
+	}
+	if downEvents[0].Incident.ID != inc.ID || downEvents[0].Cause != "boom" {
+		t.Fatalf("down event = %+v, want incident %d cause boom", downEvents[0], inc.ID)
+	}
+}
+
+// TestUptimeNoParentNotifiesImmediately is the regression guard for
+// MINOR-5/the pre-T7 behavior: a monitor with no declared parent
+// (Dep.HasParent=false) still notifies synchronously on open, exactly as
+// before this task, even with Dep/SettleGrace configured.
+func TestUptimeNoParentNotifiesImmediately(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: monitor has no parent, notify must stay synchronous")
+	}
+	downEvents := notifier.kindEvents("down")
+	if len(downEvents) != 1 {
+		t.Fatalf("down events = %d, want 1: %+v", len(downEvents), notifier.Events())
+	}
+}
+
+// TestUptimeHasParentErrorNotifiesImmediately — fail-safe (аудит
+// корректности): если HasParent на открытии инцидента вернул ошибку (dep-БД
+// недоступна), детектор трактует узел как БЕЗ родителя и уведомляет
+// немедленно, а не глушит "down" из-за сбоя резолвера зависимостей. Молчать
+// про реальное падение, потому что не удалось спросить о родителе, — хуже
+// лишнего уведомления.
+func TestUptimeHasParentErrorNotifiesImmediately(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	// hasParent=true (без ошибки удержал бы "down"), но HasParent падает —
+	// fail-safe обязан всё равно уведомить.
+	dep := &fakeDepChecker{hasParent: true, hasParentErr: errors.New("dep db down")}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: ошибка HasParent должна fail-safe уведомлять сразу")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 1 {
+		t.Fatalf("down events = %d, want 1 (fail-safe notify): %+v", len(got), notifier.Events())
+	}
+}
+
+// TestUptimeParentDownErrorNotifiesAfterGrace — fail-safe (аудит
+// корректности): инцидент-ребёнок придержан на открытии (родитель
+// задекларирован). На следующем тике ParentDown падает И грейс уже истёк —
+// детектор НЕ подавляет (ошибка резолвера не приравнивается к «родитель
+// упал»), а отправляет отложенный "down".
+func TestUptimeParentDownErrorNotifiesAfterGrace(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	assertOpenIncident(t, ctx, svc, mon.ID)
+	if len(notifier.Events()) != 0 {
+		t.Fatalf("notified synchronously despite a declared parent: %+v", notifier.Events())
+	}
+
+	// ParentDown падает, а грейс уже прошёл → fail-safe: не подавляем, шлём.
+	dep.setParentDownErr(errors.New("dep db down"))
+	backdateIncidentStart(t, ctx, pool, mon.ID)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = true, want false: ошибка ParentDown не должна подавлять")
+	}
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: грейс истёк при ошибке ParentDown → fail-safe notify")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 1 {
+		t.Fatalf("down events = %d, want 1 (fail-safe notify after grace): %+v", len(got), notifier.Events())
+	}
+}
+
+// TestUptimeMaintenanceNotResurrected is BLOCKER-1 from the plan review: an
+// incident opened inside a maintenance window (in_maintenance=true,
+// notified_open=false, B3 suppression) must stay silent forever even once
+// the T7 settling grace elapses with a live parent — the FSM must not
+// resurrect a maintenance-suppressed "down".
+func TestUptimeMaintenanceNotResurrected(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	start := time.Now().UTC().Add(-time.Hour)
+	end := time.Now().UTC().Add(time.Hour)
+	if _, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid,
+		Name:      "maintenance",
+		StartsAt:  &start,
+		EndsAt:    &end,
+		Timezone:  "UTC",
+	}); err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false} // parent stays up
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.InMaintenance {
+		t.Fatalf("InMaintenance = false, want true")
+	}
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false")
+	}
+
+	backdateIncidentStart(t, ctx, pool, mon.ID) // clear the 20s grace
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+
+	inc = assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: maintenance suppression must not be resurrected")
+	}
+	if len(notifier.Events()) != 0 {
+		t.Fatalf("Notify called despite maintenance window: %+v", notifier.Events())
 	}
 }

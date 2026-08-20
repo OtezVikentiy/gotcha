@@ -79,6 +79,16 @@ type Notifier interface {
 	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
+// depChecker — проверка «у узла дерева зависимостей есть родитель» (B5:
+// подавление уведомлений по дереву зависимостей). Локальный duck-typed
+// интерфейс, как MaintenanceChecker (maintenance.go): пакет host не должен
+// импортировать depsuppress, только знать о факте. В проде реализует
+// *depsuppress.Suppressor (main.go, startEvaluators), структурно — без
+// явного приведения типов.
+type depChecker interface {
+	HasParent(ctx context.Context, kind string, nodeID int64) (bool, error)
+}
+
 // Evaluator периодически считает диск/память/нагрузку/тишину каждого живого
 // хоста и открывает/закрывает встроенные инциденты (host_incidents) — калька
 // metric.Evaluator и trace.Evaluator, только источник правил не БД, а
@@ -106,6 +116,14 @@ type Evaluator struct {
 	// никогда не подавляет (inMaintenance всегда false), а не паникует. ПРОД
 	// (main.go, startEvaluators) обязан его заполнять.
 	Maint MaintenanceChecker
+
+	// Dep — проверка «у хоста есть задекларированный родитель» (B5: подавление
+	// уведомлений по дереву зависимостей). Локальный duck-typed интерфейс, как
+	// MaintenanceChecker: пакет host не должен знать о depsuppress.Suppressor,
+	// только о факте наличия родителя. Nil-совместим — деградированная сборка
+	// без него считает hasParent=false везде (поведение как до B5). ПРОД
+	// (main.go, startEvaluators) обязан его заполнять.
+	Dep depChecker
 
 	// Policy — политика эскалации (B4, T7): на открытии инцидента резолвит
 	// лесенку (project, severity) и решает, какая ступень уходит сейчас (см.
@@ -469,7 +487,29 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			return
 		}
 		if created && !inMaint {
-			e.notifyOpen(ctx, in)
+			// B5: хост с задекларированным родителем не получает синхронную
+			// ступень 0 здесь — её досылает планировщик деп-подавления (T5)
+			// после грейса и живой проверки родителя (тот мог и не открыть
+			// инцидент, например уже в maintenance). Без родителя поведение
+			// не меняется — уведомляем сразу, как раньше. Гейт общий для
+			// silent (эта ветка) и disk/memory/load (applyDecision) — именно
+			// silent-каскад «родитель недоступен → дети молчат» и есть
+			// основной сценарий подавления.
+			hasParent := false
+			if e.Dep != nil {
+				hp, err := e.Dep.HasParent(ctx, "host", h.ID)
+				if err != nil {
+					slog.Error("host evaluator: dep HasParent failed", "host_id", h.ID, "error", err)
+					// fail-safe: ошибка проверки родителя не должна глушить
+					// уведомление — считаем, что родителя нет и шлём сейчас,
+					// лучше лишний раз уведомить, чем пропустить инцидент.
+				} else {
+					hasParent = hp
+				}
+			}
+			if !hasParent {
+				e.notifyOpen(ctx, in)
+			}
 		}
 	case opened && silence <= threshold:
 		resolved, err := e.Incidents.Resolve(ctx, open.ID, silence)
@@ -622,7 +662,29 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 			return
 		}
 		if created && !inMaint {
-			e.notifyOpen(ctx, in)
+			// B5: хост с задекларированным родителем не получает синхронную
+			// ступень 0 здесь — её досылает планировщик деп-подавления (T5)
+			// после грейса и живой проверки родителя (тот мог и не открыть
+			// инцидент, например уже в maintenance). Без родителя поведение
+			// не меняется — уведомляем сразу, как раньше. Гейт общий для
+			// silent (эта ветка) и disk/memory/load (applyDecision) — именно
+			// silent-каскад «родитель недоступен → дети молчат» и есть
+			// основной сценарий подавления.
+			hasParent := false
+			if e.Dep != nil {
+				hp, err := e.Dep.HasParent(ctx, "host", h.ID)
+				if err != nil {
+					slog.Error("host evaluator: dep HasParent failed", "host_id", h.ID, "error", err)
+					// fail-safe: ошибка проверки родителя не должна глушить
+					// уведомление — считаем, что родителя нет и шлём сейчас,
+					// лучше лишний раз уведомить, чем пропустить инцидент.
+				} else {
+					hasParent = hp
+				}
+			}
+			if !hasParent {
+				e.notifyOpen(ctx, in)
+			}
 		}
 	case d.Bump:
 		peak := open.PeakValue

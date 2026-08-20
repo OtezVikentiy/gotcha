@@ -292,10 +292,18 @@ func (s *IncidentService) Name() string { return "host" }
 // OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
 // планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
 // host_incidents_esc_pending_idx (0077).
+//
+// suppressed_by_dep = false (B5, T4/T5): инцидент, у чьего хоста есть
+// задекларированный родитель, эскалацию не продвигает — планировщик деп-
+// подавления (T5) сам решает, когда его разбудить (грейс + живая проверка
+// родителя), обычному тику эскалации сюда лезть незачем. Флаг ставит
+// Suppressor.MarkSuppressed, а не этот пакет (см. depChecker в evaluator.go).
 func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, started_at, severity, escalation_level
-		FROM host_incidents WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+		FROM host_incidents
+		WHERE status = 'open' AND acknowledged_at IS NULL AND suppressed_by_dep = false
+		ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("host: open unacked incidents: %w", err)
 	}

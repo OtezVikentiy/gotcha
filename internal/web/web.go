@@ -26,6 +26,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/depsuppress"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
@@ -242,6 +243,23 @@ type Handler struct {
 	// стором, что резолвят все пять оценщиков на открытии инцидента (T2). nil →
 	// маршруты эскалаций отвечают 404, тот же nil-guard, что и у SLO/Alerts.
 	EscalationPolicy *escalation.PolicyStore
+
+	// AlertDeps — рёбра зависимостей между узлами проекта для подавления
+	// шторма алертов (B5, задача 9): раздел /projects/{id}/alert-suppression
+	// читает/правит их тем же Store, что резолвят оценщики при подавлении
+	// дочернего инцидента. nil → маршруты отвечают 404, тот же nil-guard, что
+	// и у EscalationPolicy/SLO выше.
+	AlertDeps *depsuppress.Store
+
+	// SuppressionGrace — задержка первого уведомления узла с
+	// задекларированным родителем (GOTCHA_DEPENDENCY_SETTLE_SECONDS, та же
+	// величина, что settleGrace у depSuppressor/uptime.Detector/
+	// escalation.Scheduler в cmd/gotcha/main.go): экран подавления шторма
+	// показывает её оператору, а не оставляет догадываться (устранение
+	// аудита B5, P2-1). Нулевое значение (main.go не проведён / узкий
+	// тестовый стенд) — подсказка про грейс молча не показывается, тот же
+	// nil-safe принцип, что и у Hosts/Uptime в suppressionNodes.
+	SuppressionGrace time.Duration
 
 	// Hosts/HostIncidents/HostSettings — реестр хостов, их встроенные
 	// инциденты (диск/память/нагрузка/тишина) и пороги (план A1): страницы
@@ -624,6 +642,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// alerts/slos/metric-alerts выше.
 	inner.Handle("GET /projects/{id}/escalations", h.requireUser(http.HandlerFunc(h.escalationsPage)))
 	inner.Handle("POST /projects/{id}/escalations", h.requireUser(http.HandlerFunc(h.escalationsSave)))
+
+	// Подавление шторма (B5, задача 9): редактор рёбер зависимостей между
+	// узлами проекта. Доступ — оператор проекта (requireProjectOperator), как
+	// у escalations выше.
+	inner.Handle("GET /projects/{id}/alert-suppression", h.requireUser(http.HandlerFunc(h.alertSuppressionPage)))
+	inner.Handle("POST /projects/{id}/alert-suppression", h.requireUser(http.HandlerFunc(h.alertSuppressionSave)))
+	inner.Handle("POST /projects/{id}/alert-suppression/{depID}/delete", h.requireUser(http.HandlerFunc(h.alertSuppressionDelete)))
 
 	// Ack инцидентов (B4, задача 10): один эндпоинт на все 5 источников
 	// (host/metric/trace/profile/slo), диспатч по {source} — см.

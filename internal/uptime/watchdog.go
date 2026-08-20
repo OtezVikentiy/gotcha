@@ -429,14 +429,19 @@ func (s *Service) ClaimSSLAlert(ctx context.Context, monitorID int64, thresholds
 }
 
 // IncidentsDueForReminder returns (incident, monitor) pairs for every open,
-// non-maintenance incident whose monitor wants periodic reminders
-// (remind_every_minutes > 0) and hasn't had one recently enough:
+// non-maintenance, non-suppressed incident whose monitor wants periodic
+// reminders (remind_every_minutes > 0) and hasn't had one recently enough:
 // coalesce(last_reminded_at, started_at) + remind_every_minutes is in the
-// past.
+// past. Two extra gates (B5): suppressed_by_dep = false — an incident
+// suppressed because its declared parent is down gets no reminders either,
+// same as it gets no open/close notification (see resolveIncident's gate in
+// detector.go); notified_open = true — an incident whose "down" was never
+// sent (suppressed, or held back by grace and already recovering) has
+// nothing to remind about yet.
 func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
-			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at,
+			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
 			m.id, m.project_id, m.name, m.kind, m.enabled, m.interval_seconds, m.timeout_seconds,
 			m.config, m.fail_threshold, m.recovery_threshold, m.consensus, m.remind_every_minutes,
 			m.ssl_alert_days, m.ssl_expires_at, m.last_beat_at, m.created_at, m.retries
@@ -444,6 +449,8 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 		JOIN monitors m ON m.id = i.monitor_id
 		WHERE i.resolved_at IS NULL
 		  AND i.in_maintenance = false
+		  AND i.suppressed_by_dep = false
+		  AND i.notified_open = true
 		  AND m.remind_every_minutes > 0
 		  AND COALESCE(i.last_reminded_at, i.started_at)
 		      + make_interval(mins => m.remind_every_minutes)
@@ -458,7 +465,7 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 		var inc Incident
 		var m Monitor
 		if err := rows.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause, &inc.Regions,
-			&inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
+			&inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt, &inc.SuppressedByDep,
 			&m.ID, &m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 			&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
 			&m.SSLAlertDays, &m.SSLExpiresAt, &m.LastBeatAt, &m.CreatedAt, &m.Retries); err != nil {

@@ -29,6 +29,29 @@ type Notifier interface {
 type Detector struct {
 	Svc      *Service
 	Notifier Notifier // может быть nil — тогда только инциденты, без уведомлений
+
+	// Dep резолвит состояние задекларированного родителя (alert_dependencies,
+	// B5) для монитора. nil-безопасно: nil означает «графа зависимостей нет» —
+	// поведение в точности как до B5 (openIncident всегда уведомляет
+	// синхронно). Конкретная реализация — depsuppress.Suppressor; здесь
+	// потребляется через локальный duck-typed интерфейс, чтобы пакет uptime
+	// не импортировал depsuppress (тот же приём, что MaintenanceChecker).
+	Dep depChecker
+
+	// SettleGrace — сколько держать без уведомления открытый инцидент
+	// монитора-ребёнка (Dep.HasParent=true), прежде чем всё равно отправить
+	// отложенный "down", если к этому моменту падение родителя не
+	// подтвердилось. Не используется, если Dep == nil.
+	SettleGrace time.Duration
+}
+
+// depChecker — подмножество depsuppress.Suppressor, нужное детектору uptime
+// для откладывания/подавления "down"-уведомлений монитора с задекларированным
+// родителем (B5). Duck-typed локально, чтобы пакет uptime не импортировал
+// depsuppress — тот же приём, что MaintenanceChecker.
+type depChecker interface {
+	HasParent(ctx context.Context, kind string, nodeID int64) (bool, error)
+	ParentDown(ctx context.Context, kind string, nodeID int64) (bool, error)
 }
 
 // aggStatus — агрегированный по регионам статус монитора.
@@ -162,7 +185,7 @@ func (d *Detector) detectIncident(ctx context.Context, m Monitor, st State) {
 		return
 	}
 
-	_, open, err := d.Svc.OpenIncidentFor(ctx, m.ID)
+	inc, open, err := d.Svc.OpenIncidentFor(ctx, m.ID)
 	if err != nil {
 		slog.Error("uptime: detector: open incident for failed", "monitor_id", m.ID, "error", err)
 		return
@@ -172,6 +195,8 @@ func (d *Detector) detectIncident(ctx context.Context, m Monitor, st State) {
 	switch {
 	case agg == aggDown && !open:
 		d.openIncident(ctx, m, states, st, now)
+	case agg == aggDown && open:
+		d.settleHeldIncident(ctx, m, inc, states, st, now)
 	case agg == aggUp && open:
 		d.resolveIncident(ctx, m, now)
 	}
@@ -202,13 +227,77 @@ func (d *Detector) openIncident(ctx context.Context, m Monitor, states []State, 
 	if !created || inMaintenance || d.Notifier == nil {
 		return
 	}
-	d.notify(ctx, inc.ID, true, Event{
+
+	// A monitor with a declared parent (alert_dependencies, B5) gets its
+	// "down" held back instead of sent synchronously: settleHeldIncident
+	// (via detectIncident, on the next tick) decides whether to suppress it
+	// for good (parent confirmed down) or send it late once SettleGrace
+	// elapses with the parent still up. Fail-safe: HasParent error → treat
+	// as "no parent", notify immediately, same as before B5.
+	hasParent := false
+	if d.Dep != nil {
+		if hp, err := d.Dep.HasParent(ctx, "monitor", m.ID); err != nil {
+			slog.Error("uptime: detector: dep HasParent failed", "monitor_id", m.ID, "error", err)
+		} else {
+			hasParent = hp
+		}
+	}
+	if hasParent {
+		return
+	}
+	d.notify(ctx, inc.ID, true, downEvent(m, inc, downRegions, cause))
+}
+
+// downEvent строит "down"-Event, общий для синхронного пути (openIncident,
+// нет задекларированного родителя) и отложенного (settleHeldIncident, B5
+// T7), чтобы не дублировать сборку Regions/Cause в двух местах.
+func downEvent(m Monitor, inc Incident, downRegions []string, cause string) Event {
+	return Event{
 		Kind:     "down",
 		Monitor:  m,
 		Incident: inc,
 		Regions:  downRegions,
 		Cause:    cause,
-	})
+	}
+}
+
+// settleHeldIncident переоценивает уже открытый инцидент на каждом
+// следующем «всё ещё down» тике. Не-операция для подавляющего большинства
+// инцидентов (уже уведомлён, уже подавлен, открыт в окне обслуживания, нет
+// dep-сервиса) — единственный путь, который что-то делает, это
+// монитор-ребёнок, чьё "down" придержал openIncident (задекларированный
+// родитель, отложенный автомат B5 T7): здесь решается, упал ли сам родитель
+// (подавить навсегда) или истёк грейс отстаивания с живым родителем (отправить
+// отложенный "down").
+func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incident, states []State, st State, now time.Time) {
+	if inc.NotifiedOpen || inc.SuppressedByDep || inc.InMaintenance || d.Dep == nil {
+		// уже уведомлён / уже подавлен / подавлен окном обслуживания (B3,
+		// BLOCKER-1: не воскрешать) / нет dep-сервиса — ничего не делаем.
+		return
+	}
+	down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
+	if err != nil {
+		slog.Error("uptime: detector: dep ParentDown failed", "monitor_id", m.ID, "incident_id", inc.ID, "error", err)
+		// fail-safe: не подавляем; если грейс уже истёк — уведомим ниже,
+		// как если бы ParentDown вернул false.
+	}
+	switch {
+	case down:
+		if err := d.Svc.MarkSuppressedByDep(ctx, inc.ID); err != nil {
+			slog.Error("uptime: detector: mark suppressed by dep failed", "monitor_id", m.ID, "incident_id", inc.ID, "error", err)
+			return
+		}
+		slog.Info("uptime: detector: incident suppressed by dependency", "monitor_id", m.ID, "incident_id", inc.ID)
+	case now.Sub(inc.StartedAt) >= d.SettleGrace:
+		if d.Notifier == nil {
+			return
+		}
+		downRegions := regionsWithStatus(states, "down")
+		cause := causeFrom(st, states)
+		d.notify(ctx, inc.ID, true, downEvent(m, inc, downRegions, cause))
+	default:
+		// В грейсе, родитель пока жив (или ParentDown ошибся) — держим.
+	}
 }
 
 func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time) {
@@ -217,7 +306,16 @@ func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time
 		slog.Error("uptime: detector: resolve incident failed", "monitor_id", m.ID, "error", err)
 		return
 	}
-	if !resolved || inc.InMaintenance || d.Notifier == nil {
+	// !inc.NotifiedOpen — recovery ("up") is only sent to incidents whose
+	// opening ("down") actually went out. This is a single reliable gate for
+	// two cases where it didn't: an incident suppressed_by_dep (B5, T7) never
+	// gets its "down" sent — see openIncident, which would need the same
+	// dependency check duplicated here without this gate — and an incident
+	// held open by notify-grace that recovers before the delayed "down" ever
+	// fires. Both leave NotifiedOpen=false, and both must stay silent on
+	// resolve: sending "up" with no matching "down" is a confusing recovery
+	// notification for an outage the recipient was never told about.
+	if !resolved || inc.InMaintenance || !inc.NotifiedOpen || d.Notifier == nil {
 		return
 	}
 

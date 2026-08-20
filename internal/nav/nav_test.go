@@ -351,8 +351,8 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 	// alerts area: вся область гейтится целиком.
 	operator.Area, operator.Path = "alerts", "/projects/7/alerts"
 	viewer.Area, viewer.Path = "alerts", "/projects/7/alerts"
-	if got := Subsections(operator); len(got) != 4 {
-		t.Errorf("alerts/оператор: len = %d, want 4 (alerts+deliveries+slo+escalations), got %+v", len(got), got)
+	if got := Subsections(operator); len(got) != 5 {
+		t.Errorf("alerts/оператор: len = %d, want 5 (alerts+deliveries+slo+escalations+alert_suppression), got %+v", len(got), got)
 	}
 	if got := Subsections(viewer); got != nil {
 		t.Errorf("alerts/зритель: got %+v, want nil", got)
@@ -532,7 +532,7 @@ func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
 	hiddenFromViewer := map[string][]string{
 		"metrics": {"nav.metric_alerts"},
 		"uptime":  {"nav.maintenance", "nav.status_pages"},
-		"alerts":  {"nav.alerts", "nav.alert_deliveries", "nav.slo", "nav.escalations"},
+		"alerts":  {"nav.alerts", "nav.alert_deliveries", "nav.slo", "nav.escalations", "nav.alert_suppression"},
 	}
 	for area, hidden := range hiddenFromViewer {
 		got := viewer(area)

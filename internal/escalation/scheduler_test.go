@@ -2,6 +2,7 @@ package escalation_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -93,6 +94,39 @@ type fakeMaint struct {
 
 func (m *fakeMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m.inMaint, m.err
+}
+
+// fakeDep — DepChecker (B5) с настраиваемым ответом CheckIncident и
+// фиксацией вызовов MarkSuppressed.
+type fakeDep struct {
+	mu         sync.Mutex
+	hasParent  bool
+	parentDown bool
+	checkErr   error
+	markErr    error
+	markCalls  []fakeMarkCall
+}
+
+type fakeMarkCall struct {
+	source     string
+	incidentID int64
+}
+
+func (d *fakeDep) CheckIncident(ctx context.Context, source string, incidentID int64) (bool, bool, error) {
+	return d.hasParent, d.parentDown, d.checkErr
+}
+
+func (d *fakeDep) MarkSuppressed(ctx context.Context, source string, incidentID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.markCalls = append(d.markCalls, fakeMarkCall{source: source, incidentID: incidentID})
+	return d.markErr
+}
+
+func (d *fakeDep) markCallCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.markCalls)
 }
 
 // fakeNotifier — StepNotifier, фиксирующий вызовы и возвращающий переданные
@@ -496,5 +530,251 @@ func TestPurgeOldEscalations(t *testing.T) {
 	}
 	if freshCount != 1 {
 		t.Errorf("fresh row purged: count=%d, want 1", freshCount)
+	}
+}
+
+// TestTickSuppressesWhenParentDown (B5/T5, §7.4/MINOR-6): DepChecker сообщает
+// parentDown=true — Tick подавляет инцидент навсегда (MarkSuppressed для
+// ("host", id)) и НЕ шлёт ступень, причём на ЛЮБОМ уровне эскалации, а не
+// только на step0 — гейт душит продолжение эскалации, даже если ребёнок уже
+// эскалировал до того, как родитель упал.
+func TestTickSuppressesWhenParentDown(t *testing.T) {
+	for _, level := range []int{0, 2} {
+		t.Run(map[int]string{0: "level0", 2: "level2"}[level], func(t *testing.T) {
+			pool := testenv.MigratedPG(t)
+			ctx := context.Background()
+			pid := newProject(t, pool)
+			c1 := newChannel(t, pool, pid, true)
+
+			policy := escalation.NewPolicyStore(pool)
+			setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+				{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+				{StepNo: 1, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+				{StepNo: 2, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+			})
+
+			now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+			src := newFakeSource("host")
+			incidentID := int64(1000 + level)
+			src.add(escalation.PendingIncident{
+				ID: incidentID, ProjectID: pid, StartedAt: now,
+				Severity: escalation.SeverityWarning, EscalationLevel: level,
+			})
+			notifier := &fakeNotifier{}
+			dep := &fakeDep{hasParent: true, parentDown: true}
+
+			sched := &escalation.Scheduler{
+				Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+				Policy:   policy,
+				Maint:    &fakeMaint{inMaint: false},
+				Dep:      dep,
+				Pool:     pool,
+				Now:      func() time.Time { return now },
+			}
+			sched.Tick(ctx)
+
+			if notifier.callCount() != 0 {
+				t.Fatalf("NotifyStep calls = %d, want 0 (родитель упал — подавлен)", notifier.callCount())
+			}
+			if dep.markCallCount() != 1 {
+				t.Fatalf("MarkSuppressed calls = %d, want 1", dep.markCallCount())
+			}
+			call := dep.markCalls[0]
+			if call.source != "host" || call.incidentID != incidentID {
+				t.Fatalf("MarkSuppressed call = %+v, want source=host incident=%d", call, incidentID)
+			}
+		})
+	}
+}
+
+// TestTickCheckErrorEscalatesFailSafe — fail-safe (аудит корректности):
+// CheckIncident вернул ошибку (dep-БД недоступна) — гейт зависимостей
+// пропускается целиком, эскалация продолжается штатно (ступень уходит,
+// MarkSuppressed не вызывается). parentDown=true в фейке доказывает, что при
+// ошибке ответ резолвера НЕ читается: будь fail-safe сломан и прочитай он
+// parentDown, инцидент бы подавился (0 отправок, 1 пометка).
+func TestTickCheckErrorEscalatesFailSafe(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := newFakeSource("host")
+	const incidentID = int64(4000)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: true, checkErr: errors.New("dep db down")}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      func() time.Time { return now },
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 1 {
+		t.Fatalf("NotifyStep calls = %d, want 1 (ошибка dep-проверки → fail-safe эскалация)", notifier.callCount())
+	}
+	if dep.markCallCount() != 0 {
+		t.Fatalf("MarkSuppressed calls = %d, want 0 (ошибка не подавляет)", dep.markCallCount())
+	}
+	if got := src.level(incidentID); got != 1 {
+		t.Fatalf("EscalationLevel = %d, want 1 (эскалация прошла)", got)
+	}
+}
+
+// TestTickMarkSuppressedErrorStillSuppressesThisTick — fail-safe (аудит
+// корректности): родитель упал (parentDown=true), но MarkSuppressed падает.
+// tickOne всё равно возвращается, НЕ отправив ступень (ступень при упавшем
+// родителе — шум тем же сбоем). Инцидент остаётся в OpenUnacked, и следующий
+// тик повторяет попытку пометки.
+func TestTickMarkSuppressedErrorStillSuppressesThisTick(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := newFakeSource("host")
+	const incidentID = int64(5000)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: true, markErr: errors.New("mark db down")}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      func() time.Time { return now },
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (родитель упал — ступень не шлём даже при ошибке пометки)", notifier.callCount())
+	}
+	if dep.markCallCount() != 1 {
+		t.Fatalf("MarkSuppressed calls = %d, want 1", dep.markCallCount())
+	}
+
+	// Инцидент не помечен (ошибка) → ещё в OpenUnacked → следующий тик повторит.
+	sched.Tick(ctx)
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (повтор тика по-прежнему подавляет)", notifier.callCount())
+	}
+	if dep.markCallCount() != 2 {
+		t.Fatalf("MarkSuppressed calls = %d, want 2 (следующий тик повторяет пометку)", dep.markCallCount())
+	}
+}
+
+// TestTickHoldsStep0DuringGrace: родитель жив (parentDown=false), но у
+// инцидента есть родитель — ступень 0 придерживается в течение SettleGrace:
+// ни NotifyStep, ни MarkSuppressed не вызываются, инцидент просто ждёт
+// следующих тиков.
+func TestTickHoldsStep0DuringGrace(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := newFakeSource("host")
+	const incidentID = int64(2000)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-100 * time.Second),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: false}
+
+	sched := &escalation.Scheduler{
+		Bindings:    []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:      policy,
+		Maint:       &fakeMaint{inMaint: false},
+		Dep:         dep,
+		SettleGrace: 300 * time.Second,
+		Pool:        pool,
+		Now:         func() time.Time { return now },
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (в грейсе)", notifier.callCount())
+	}
+	if dep.markCallCount() != 0 {
+		t.Fatalf("MarkSuppressed calls = %d, want 0 (родитель жив)", dep.markCallCount())
+	}
+}
+
+// TestTickSendsAfterGrace: тот же сценарий, что и грейс, но elapsed уже
+// превысил SettleGrace — ступень 0 уходит штатно, несмотря на живого
+// родителя (грейс — не бесконечное молчание).
+func TestTickSendsAfterGrace(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	src := newFakeSource("host")
+	const incidentID = int64(3000)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-301 * time.Second),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: false}
+
+	sched := &escalation.Scheduler{
+		Bindings:    []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:      policy,
+		Maint:       &fakeMaint{inMaint: false},
+		Dep:         dep,
+		SettleGrace: 300 * time.Second,
+		Pool:        pool,
+		Now:         func() time.Time { return now },
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 1 {
+		t.Fatalf("NotifyStep calls = %d, want 1 (грейс истёк)", notifier.callCount())
+	}
+	call := notifier.last()
+	if call.incidentID != incidentID || call.step != 0 {
+		t.Fatalf("NotifyStep call = %+v, want incident=%d step=0", call, incidentID)
+	}
+	if dep.markCallCount() != 0 {
+		t.Fatalf("MarkSuppressed calls = %d, want 0 (родитель жив)", dep.markCallCount())
 	}
 }

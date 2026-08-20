@@ -22,14 +22,20 @@ type Incident struct {
 	NotifiedOpen   bool
 	NotifiedClose  bool
 	LastRemindedAt *time.Time
+	// SuppressedByDep — инцидент подавлен, потому что у него есть упавший
+	// задекларированный родитель (alert_dependencies, B5). Единственный
+	// писатель — Service.MarkSuppressedByDep, вызываемый depsuppress.Suppressor
+	// (source="uptime" резолвится в самом uptime, не в Suppressor — см. T7).
+	SuppressedByDep bool
 }
 
-const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at`
+const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at, suppressed_by_dep`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var inc Incident
 	if err := row.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
-		&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt); err != nil {
+		&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
+		&inc.SuppressedByDep); err != nil {
 		return Incident{}, err
 	}
 	return inc, nil
@@ -125,7 +131,7 @@ func queryIncidents(ctx context.Context, pool *pgxpool.Pool, query string, args 
 func (s *Service) Incidents(ctx context.Context, projectID int64, limit int) ([]Incident, error) {
 	return queryIncidents(ctx, s.pool, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
-			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at
+			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
 		WHERE m.project_id = $1
@@ -203,7 +209,8 @@ func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, query string, 
 	for rows.Next() {
 		var inc Incident
 		if err := rows.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
-			&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt, &total); err != nil {
+			&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
+			&inc.SuppressedByDep, &total); err != nil {
 			return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
 		}
 		out = append(out, inc)
@@ -216,7 +223,7 @@ func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, query string, 
 func (s *Service) IncidentsPaged(ctx context.Context, projectID int64, limit, offset int) ([]Incident, int64, error) {
 	return queryIncidentsPaged(ctx, s.pool, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
-			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at,
+			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
 			count(*) OVER() AS total
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
@@ -245,6 +252,23 @@ func (s *Service) MarkNotified(ctx context.Context, incidentID int64, open bool)
 	tag, err := s.pool.Exec(ctx, "UPDATE incidents SET "+column+" = true WHERE id = $1", incidentID)
 	if err != nil {
 		return fmt.Errorf("uptime: mark notified: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkSuppressedByDep records that incidentID was suppressed because a
+// declared parent (alert_dependencies, B5) is itself down: source="uptime"
+// resolution lives in this package (T7), unlike host incidents, whose sole
+// writer for suppressed_by_dep is depsuppress.Suppressor.MarkSuppressed —
+// see that method's doc comment for why the flag has exactly one writer per
+// table.
+func (s *Service) MarkSuppressedByDep(ctx context.Context, incidentID int64) error {
+	tag, err := s.pool.Exec(ctx, "UPDATE incidents SET suppressed_by_dep = true WHERE id = $1", incidentID)
+	if err != nil {
+		return fmt.Errorf("uptime: mark suppressed by dep: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
