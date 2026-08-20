@@ -105,6 +105,43 @@ func TestFlashPluralCarriesCount(t *testing.T) {
 	}
 }
 
+// TestFlashPairCarriesBothCounts — парный флеш (B6, «создано N, пропущено M»)
+// доносит через cookie ОБА счётчика: setFlash кодирует kind|key|n|m,
+// parseFlash восстанавливает N/M и помечает ключ Pair (по белому списку
+// flashPairKeys, не по содержимому cookie) — по этой отметке flashView
+// уходит в Tf-ветку с {n}/{m} вместо плюрального Tn.
+func TestFlashPairCarriesBothCounts(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := &Handler{BaseURL: "http://localhost:59080"}
+	h.flashOKPair(rec, "flash.recipes_applied", 3, 2)
+
+	c := rec.Result().Cookies()[0]
+	f := parseFlash(c.Value)
+	if f == nil || !f.Pair || f.N != 3 || f.M != 2 || f.Kind != "ok" {
+		t.Fatalf("парный флеш не доехал: %+v", f)
+	}
+
+	// Краевой случай повторного POST: created=0, skipped=M — нулевой N обязан
+	// кодироваться позиционно (kind|key|0|m), иначе M съехал бы на место N.
+	rec = httptest.NewRecorder()
+	h.flashOKPair(rec, "flash.recipes_applied", 0, 3)
+	f = parseFlash(rec.Result().Cookies()[0].Value)
+	if f == nil || !f.Pair || f.N != 0 || f.M != 3 {
+		t.Fatalf("нулевой created сдвинул счётчики: %+v", f)
+	}
+
+	// Отрицательный M (подделка cookie) отбрасывается, как и отрицательный N.
+	if f := parseFlash("ok|flash.recipes_applied|2|-7"); f == nil || f.M != 0 || f.N != 2 {
+		t.Errorf("отрицательный M должен игнорироваться: %+v", f)
+	}
+
+	// Старый однокоследный формат по-прежнему парсится и Pair НЕ ставит:
+	// плюральные ключи рендерятся прежней Tn-веткой.
+	if f := parseFlash("ok|flash.issues_resolved|5"); f == nil || f.Pair || f.N != 5 || f.M != 0 {
+		t.Errorf("старый формат сломан или ошибочно помечен Pair: %+v", f)
+	}
+}
+
 // TestFlashSkipsStatic — на статику middleware не тратится и, что важнее, не
 // гасит cookie: иначе сообщение съедалось бы параллельным запросом за app.css
 // раньше, чем отрисуется страница.

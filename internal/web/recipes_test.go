@@ -179,12 +179,23 @@ func TestWebRecipesThresholdsCreate(t *testing.T) {
 	resp = postForm(t, s.srv, path, url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	loc := resp.Header.Get("Location")
+	flashVal := ""
+	for _, c := range resp.Cookies() {
+		if c.Name == "flash" {
+			flashVal = c.Value
+		}
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s (owner) status = %d, want 303", path, resp.StatusCode)
 	}
 	if loc != base {
 		t.Errorf("POST %s Location = %q, want %q", path, loc, base)
+	}
+	// Флеш «создано N, пропущено M» уехал в redirect-cookie: created=3,
+	// skipped=0 кодируется без хвоста |m (см. setFlash, парный формат).
+	if got, err := url.QueryUnescape(flashVal); err != nil || got != "ok|flash.recipes_applied|3" {
+		t.Errorf("flash-cookie после POST = %q (%v), want ok|flash.recipes_applied|3", got, err)
 	}
 	rules, err = s.h.MetricRules.List(context.Background(), proj.ID)
 	if err != nil {

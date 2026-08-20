@@ -8,8 +8,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// flashCallRe находит вызовы flashOK/flashWarn с ЛИТЕРАЛЬНЫМ ключом вторым
-// аргументом: h.flashOK(w, "flash.saved", 0). Первый аргумент не требуется
+// flashCallRe находит вызовы flashOK/flashOKPair/flashWarn с ЛИТЕРАЛЬНЫМ
+// ключом вторым аргументом: h.flashOK(w, "flash.saved", 0). flashOKPair
+// (парный флеш с двумя счётчиками, B6) включён явно — фикс-раунд 1 ревью T4:
+// регулярка без него молча пропускала h.flashOKPair(w, "flash.recipes_applied",
+// ...), и выпавший из каталога перевод доехал бы до прода сырым ключом.
+// Первый аргумент не требуется
 // быть ровно "w" — [^,]+? допускает любое выражение получателя (в тестах это
 // httptest.Recorder, здесь `rec`), тем же приёмом, что и literalKeyRe в
 // i18n_keys_test.go для первого аргумента i18n.T/Tf/Tn.
@@ -42,7 +46,7 @@ import (
 // ОТДЕЛЬНО, через экспортированный срез web.BulkActionFlashKeys, тем же
 // приёмом, каким TestDynamicKeysResolve (i18n_dynamic_test.go) читает
 // uptime.Kinds/org.Platforms из кода-владельца, а не копирует их литералом.
-var flashCallRe = regexp.MustCompile(`\.(flashOK|flashWarn)\(\s*[^,]+?\s*,\s*"([^"]+)"`)
+var flashCallRe = regexp.MustCompile(`\.(flashOK(?:Pair)?|flashWarn)\(\s*[^,]+?\s*,\s*"([^"]+)"`)
 
 // minFlashCallsFound — порог защиты от слепоты: сканер обязан найти хотя бы
 // столько вызовов, сколько их заведомо есть в дереве на момент написания
@@ -56,11 +60,18 @@ var flashCallRe = regexp.MustCompile(`\.(flashOK|flashWarn)\(\s*[^,]+?\s*,\s*"([
 // flash.channel_created, flash.channel_updated, flash.deleted), teams.go:224
 // (flash.saved). issues.go:318 (динамический ключ через bulkActionFlashKey,
 // см. flashCallRe) в это число не входит — регулярка его не видит.
+// Перечень выше — снимок на момент написания теста; дерево с тех пор ушло
+// вперёд (сейчас вызовов больше двух десятков), но порог — floor, а не
+// точный счётчик, и за фактом не гонится. Фикс-раунд 1 ревью T4 (B6)
+// добавил вызов нового вида — h.flashOKPair(w, "flash.recipes_applied", ...)
+// в recipes.go — и включил flashOKPair в регулярку; порог поднят 8→9 как
+// зарубка того же раунда: обвал обхода по-прежнему ловится, а сам вызов
+// Pair-варианта проверен зелёным прогоном после расширения регулярки.
 // Порог поставлен с запасом вниз тем же приёмом, что minKeysFound в
 // i18n_keys_test.go: множество мало и меняется редко (новый вызов flashOK/
 // flashWarn — по коммиту), поэтому запас в одну единицу достаточен, чтобы не
 // дёргать тест на каждой мелкой правке, и при этом ловит обвал обхода.
-const minFlashCallsFound = 8
+const minFlashCallsFound = 9
 
 // flashKeysBlockRe вырезает тело `var flashKeys = map[string]bool{...}` из
 // исходника internal/web/flash.go, flashKeyEntryRe — literal-записи внутри
