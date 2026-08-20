@@ -54,6 +54,11 @@ func windowFieldDefaults(w uptime.Window) FormState {
 		}
 		if w.EndsAt != nil {
 			f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04")
+		} else {
+			// Бессрочное окно (EndsAt == nil) — чекбокс «без даты окончания»
+			// предотмечен при открытии формы правки, иначе сохранение без
+			// изменений тут же упёрлось бы в oneOffEndRequired.
+			f["indefinite"] = "1"
 		}
 	}
 	if !knownTimezone(w.Timezone) {
@@ -107,6 +112,9 @@ func weekdayLabelKey(d int) string {
 func windowKindTextKey(w uptime.Window) string {
 	if w.Weekly {
 		return "uptime.maintenance.kind.weekly"
+	}
+	if w.EndsAt == nil {
+		return "uptime.maintenance.indefinite"
 	}
 	return "uptime.maintenance.kind.oneoff"
 }
@@ -251,6 +259,24 @@ templ maintenanceFields(values FormState, submitKey string, errID string, idPref
 	// блок при активном первом только сбивал бы с толку. Скрытие — чистый CSS
 	// через :has() по radio, без JS (см. .maintenance-form в app.css).
 	<div class="mw-oneoff">
+		// Чекбокс явного выбора «бессрочно» стоит ПЕРЕД полем конца: пустой
+		// ends_at раньше молча значил то же самое (T2 смягчил validateWindow),
+		// а забытая дата тихо глушила весь проект навсегда вместо ошибки —
+		// см. oneOffEndRequired в web/maintenance.go. Предупреждение о
+		// последствии бессрочного окна для SLO живёт прямо под чекбоксом
+		// (aria-describedby на нём же), а не постоянным жёлтым баннером под
+		// ends_at для ЛЮБОГО разового окна.
+		<div class="checkbox-field">
+			<label class="checkbox-inline">
+				if values.Checked("indefinite", false) {
+					<input type="checkbox" name="indefinite" checked aria-describedby={ idPrefix + "-indefinite-warning" }/>
+				} else {
+					<input type="checkbox" name="indefinite" aria-describedby={ idPrefix + "-indefinite-warning" }/>
+				}
+				{ i18n.T(ctx, "uptime.maintenance.oneoff.indefinite") }
+			</label>
+			<p class="hint hint--warn" id={ idPrefix + "-indefinite-warning" }>{ i18n.T(ctx, "uptime.maintenance.indefinite_slo_warning") }</p>
+		</div>
 		<div class="form-grid">
 			<div class="field">
 				<label>
@@ -261,10 +287,8 @@ templ maintenanceFields(values FormState, submitKey string, errID string, idPref
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "uptime.maintenance.oneoff.end") }
-					<input type="datetime-local" name="ends_at" class="input" value={ values.Get("ends_at", "") } aria-describedby={ idPrefix + "-ends-hint " + idPrefix + "-ends-slo-warning" }/>
+					<input type="datetime-local" name="ends_at" class="input" value={ values.Get("ends_at", "") }/>
 				</label>
-				<p class="hint" id={ idPrefix + "-ends-hint" }>{ i18n.T(ctx, "uptime.maintenance.oneoff.end_hint") }</p>
-				<p class="hint hint--warn" id={ idPrefix + "-ends-slo-warning" }>{ i18n.T(ctx, "uptime.maintenance.indefinite_slo_warning") }</p>
 			</div>
 		</div>
 	</div>

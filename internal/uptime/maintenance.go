@@ -191,9 +191,13 @@ func (s *Service) UpdateWindow(ctx context.Context, w Window) error {
 	return nil
 }
 
-// DeleteWindow deletes a maintenance window by id.
-func (s *Service) DeleteWindow(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM maintenance_windows WHERE id = $1", id)
+// DeleteWindow deletes a maintenance window by id, scoped to projectID —
+// same defense-in-depth as UpdateWindow's WHERE clause: the caller already
+// checks windowBelongsToProject before this is reached, but a bare id would
+// let one project's owner delete another project's window by a guessed id
+// if that upstream check ever slipped.
+func (s *Service) DeleteWindow(ctx context.Context, id, projectID int64) error {
+	tag, err := s.pool.Exec(ctx, "DELETE FROM maintenance_windows WHERE id = $1 AND project_id = $2", id, projectID)
 	if err != nil {
 		return fmt.Errorf("uptime: delete window: %w", err)
 	}

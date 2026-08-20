@@ -73,6 +73,39 @@ func TestWebMaintenanceUpdate(t *testing.T) {
 	}
 }
 
+// TestWebMaintenanceEditIndefiniteWindowChecksBox — окно, созданное без
+// ends_at (бессрочное), открывает форму правки с уже отмеченным чекбоксом
+// «indefinite» — иначе сохранение формы без изменений тут же упёрлось бы в
+// end_required (windowFieldDefaults должен предзаполнить чекбокс).
+func TestWebMaintenanceEditIndefiniteWindowChecksBox(t *testing.T) {
+	s := newMaintenanceStack(t)
+	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintedgeindef")
+
+	start := time.Date(2026, 8, 1, 2, 0, 0, 0, time.UTC)
+	w, err := s.uptime.CreateWindow(context.Background(), uptime.Window{
+		ProjectID: proj.ID, Name: "Ongoing freeze", StartsAt: &start, EndsAt: nil, Timezone: "UTC",
+	})
+	if err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	page := string(body)
+	anchor := "edit-window-" + strconv.FormatInt(w.ID, 10)
+	if !strings.Contains(page, anchor) {
+		t.Fatalf("page has no edit modal anchor %q:\n%s", anchor, page)
+	}
+	if !strings.Contains(page, `name="indefinite" checked`) {
+		t.Fatalf("edit modal for indefinite window %d does not pre-check the indefinite box:\n%s", w.ID, page)
+	}
+}
+
 // TestWebMaintenanceUpdateInvalidReopensModal — на 422 страница возвращается с
 // открытой модалкой ИМЕННО этого окна и с введёнными значениями. Раньше
 // признаком «открыть модалку» служил сам факт непустого состояния формы, и с
