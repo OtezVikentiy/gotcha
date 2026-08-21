@@ -59,6 +59,36 @@ service:
       exporters: [otlphttp]
 `
 
+// mariadbConfigTmpl: mysql-ресивер (README ресивера заявляет поддержку и
+// MySQL 5.7–9.x, и MariaDB 10.5.x–11.x, LTS 11.4/11.8 — сверка Step 1 B6-2).
+// mysql.query.slow.count по умолчанию ВЫКЛЮЧЕНА в metadata.yaml — включаем
+// явно (прецедент postgresql.deadlocks), иначе рекомендованный порог по
+// slow queries был бы мёртвым. TLS не задаём: у ресивера «tls not set» и есть
+// подключение без TLS (локальный сокет/порт на том же сервере); transform не
+// нужен — все ключи группировок (kind/operation) — родные datapoint-атрибуты.
+const mariadbConfigTmpl = `receivers:
+  mysql:
+    endpoint: localhost:3306
+    username: CHANGE_ME
+    password: CHANGE_ME
+    collection_interval: 30s
+    metrics:
+      mysql.query.slow.count: {enabled: true}
+processors:
+  batch: {}
+exporters:
+  otlphttp:
+    endpoint: %s
+    headers:
+      Authorization: "Bearer %s"
+service:
+  pipelines:
+    metrics:
+      receivers: [mysql]
+      processors: [batch]
+      exporters: [otlphttp]
+`
+
 // nginxConfigTmpl: nginx-ресивер поверх stub_status (модуль надо включить в
 // nginx: location /status { stub_status; }). Transform не нужен: state —
 // родной datapoint-атрибут nginx.connections_current.
@@ -188,6 +218,65 @@ var registry = []Recipe{
 		},
 		Config: func(baseURL, apiKey string) string {
 			return fmt.Sprintf(postgresConfigTmpl, baseURL, apiKey)
+		},
+	},
+	{
+		// mariadb — первый рецепт поверх обкатанного реестра (B6-2):
+		// ресивер называется mysql (совместим с MariaDB, см. mariadbConfigTmpl),
+		// продуктовое имя рецепта — MariaDB. Сверка с metadata.yaml
+		// mysqlreceiver (main, 2026-08-21): все метрики ниже — default-enabled
+		// cumulative sum'ы, КРОМЕ mysql.query.slow.count (default=off,
+		// включается сниппетом); kind/operation — datapoint-атрибуты,
+		// resource-атрибуты не нужны → PromotedAttrs пуст, transform не нужен.
+		ID:        "mariadb",
+		Signature: "mysql.threads", // не-monotonic sum: скалярный путь, детекция с первого скрейпа
+		Metrics: []string{
+			"mysql.threads", "mysql.operations", "mysql.buffer_pool.pages",
+			"mysql.row_operations", "mysql.locks", "mysql.query.slow.count",
+		},
+		Charts: []Chart{
+			// threads — не-monotonic sum по kind (cached/connected/created/
+			// running); kind=created — накопленное число созданных тредов,
+			// его линия заметно выше остальных, но групп всего 4 — top-N
+			// никого не прячет.
+			{Key: "threads", Series: []ChartSeries{{Metric: "mysql.threads"}},
+				GroupKey: "kind", Agg: "avg"},
+			// operations — monotonic cumulative InnoDB-операции файлов
+			// (fsyncs/reads/writes), rate по operation.
+			{Key: "operations", Unit: "1/s", Agg: "avg",
+				Series:   []ChartSeries{{Metric: "mysql.operations", Rate: true}},
+				GroupKey: "operation"},
+			// buffer_pool.pages — не-monotonic sum; атрибут страниц — kind
+			// (data/free/misc), а не status: status живёт у
+			// mysql.buffer_pool.data_pages (dirty/clean) — сверка Step 1.
+			{Key: "buffer_pool_pages", Series: []ChartSeries{{Metric: "mysql.buffer_pool.pages"}},
+				GroupKey: "kind", Agg: "avg"},
+			// row_operations — monotonic cumulative, rate по operation
+			// (deleted/inserted/read/updated).
+			{Key: "row_operations", Unit: "1/s", Agg: "avg",
+				Series:   []ChartSeries{{Metric: "mysql.row_operations", Rate: true}},
+				GroupKey: "operation"},
+			// locks — monotonic cumulative запросы блокировок таблиц, rate по
+			// kind (immediate/waited): рост waited — ранний сигнал контеншена.
+			{Key: "locks", Unit: "1/s", Agg: "avg",
+				Series:   []ChartSeries{{Metric: "mysql.locks", Rate: true}},
+				GroupKey: "kind"},
+		},
+		Rules: []RuleSpec{
+			// 120 ≈ 80% дефолтного max_connections=151; матчер kind=connected —
+			// прецедент nginx state=active. NoteKey велит подстроить под свой
+			// max_connections.
+			{Metric: "mysql.threads", Agg: "avg", Comparator: "gt", Threshold: 120,
+				WindowSeconds: 300, LabelKey: "kind", LabelValue: "connected", NoteKey: "threads_connected"},
+			// sum по monotonic cumulative = прирост за окно: «появились новые
+			// медленные запросы за 5 минут». Метрика default=off — сниппет
+			// включает её явно. warning, не critical: slow query — повод
+			// разобраться, а не однозначная авария (в отличие от дедлока).
+			{Metric: "mysql.query.slow.count", Agg: "sum", Comparator: "gt", Threshold: 0,
+				WindowSeconds: 300, NoteKey: "slow_queries"},
+		},
+		Config: func(baseURL, apiKey string) string {
+			return fmt.Sprintf(mariadbConfigTmpl, baseURL, apiKey)
 		},
 	},
 	{
