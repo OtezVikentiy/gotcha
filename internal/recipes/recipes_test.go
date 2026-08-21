@@ -82,12 +82,17 @@ func TestRegistryInvariants(t *testing.T) {
 			if len(c.Series) == 0 {
 				t.Fatalf("recipe %q chart %q: нет рядов", r.ID, c.Key)
 			}
-			// Пара рядов без различимых LabelSuffix — легенда из двух
-			// одинаковых (или пустых) подписей, нечитаемая по построению.
-			if len(c.Series) == 2 {
-				a, b := c.Series[0].LabelSuffix, c.Series[1].LabelSuffix
-				if a == "" || b == "" || a == b {
-					t.Fatalf("recipe %q chart %q: у пары рядов LabelSuffix должны быть непустыми и различными (%q, %q)", r.ID, c.Key, a, b)
+			// Несколько рядов без различимых LabelSuffix — легенда из
+			// одинаковых (или пустых) подписей, нечитаемая по построению;
+			// проверка на ЛЮБОЕ число рядов ≥2 (ревью MIN-2: трёхрядный
+			// threads у mariadb обязан попадать под инвариант).
+			if len(c.Series) >= 2 {
+				suffixes := map[string]bool{}
+				for _, s := range c.Series {
+					if s.LabelSuffix == "" || suffixes[s.LabelSuffix] {
+						t.Fatalf("recipe %q chart %q: LabelSuffix рядов должны быть непустыми и попарно различными (%q)", r.ID, c.Key, s.LabelSuffix)
+					}
+					suffixes[s.LabelSuffix] = true
 				}
 			}
 			if !validAgg(c.Agg) {

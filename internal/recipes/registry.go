@@ -1,6 +1,10 @@
 package recipes
 
-import "fmt"
+import (
+	"fmt"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+)
 
 // Конфиг-сниппеты собираются fmt.Sprintf-строкой, а не YAML-маршалингом
 // структуры, — по тем же соображениям, что collectorConfigTmpl (hosts.go):
@@ -235,12 +239,21 @@ var registry = []Recipe{
 			"mysql.row_operations", "mysql.locks", "mysql.query.slow.count",
 		},
 		Charts: []Chart{
-			// threads — не-monotonic sum по kind (cached/connected/created/
-			// running); kind=created — накопленное число созданных тредов,
-			// его линия заметно выше остальных, но групп всего 4 — top-N
-			// никого не прячет.
-			{Key: "threads", Series: []ChartSeries{{Metric: "mysql.threads"}},
-				GroupKey: "kind", Agg: "avg"},
+			// threads — не-monotonic sum по kind; НЕ GroupKey, а три ряда с
+			// пер-серийными матчерами (ревью IMP-1): kind=created —
+			// накопленный с рестарта счётчик созданных тредов, на порядки
+			// выше остальных — в группировке он задавал бы масштаб оси и
+			// прижимал connected/running/cached к нулю. Цена — захардкоженный
+			// енум kind (сверен с metadata.yaml, Step 1): новое значение у
+			// ресивера само на график не попадёт.
+			{Key: "threads", Agg: "avg", Series: []ChartSeries{
+				{Metric: "mysql.threads", LabelSuffix: "connected",
+					Matchers: []metric.LabelMatcher{{Key: "kind", Value: "connected"}}},
+				{Metric: "mysql.threads", LabelSuffix: "running",
+					Matchers: []metric.LabelMatcher{{Key: "kind", Value: "running"}}},
+				{Metric: "mysql.threads", LabelSuffix: "cached",
+					Matchers: []metric.LabelMatcher{{Key: "kind", Value: "cached"}}},
+			}},
 			// operations — monotonic cumulative InnoDB-операции файлов
 			// (fsyncs/reads/writes), rate по operation.
 			{Key: "operations", Unit: "1/s", Agg: "avg",

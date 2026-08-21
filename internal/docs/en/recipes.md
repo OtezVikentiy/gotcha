@@ -72,7 +72,7 @@ The same applies to sub-resources within a single instance, not just to instance
 
 ## Charts
 
-As soon as data arrives, the recipe page shows preconfigured charts — each service has its own set: for PostgreSQL it is connections per database, commit/rollback transactions, database sizes, block reads, deadlocks and live/dead rows; for MariaDB — threads by kind, InnoDB file operations, buffer pool pages, row operations and table locks; for nginx — requests per second and connections; for Redis — memory, clients, cache hit rate, commands and fragmentation; for Docker — CPU, memory and network per container.
+As soon as data arrives, the recipe page shows preconfigured charts — each service has its own set: for PostgreSQL it is connections per database, commit/rollback transactions, database sizes, block reads, deadlocks and live/dead rows; for MariaDB — threads (connected/running/cached), InnoDB file operations, buffer pool pages, row operations and table locks; for nginx — requests per second and connections; for Redis — memory, clients, cache hit rate, commands and fragmentation; for Docker — CPU, memory and network per container.
 
 The chart window is fixed to the **last 24 hours**; the global time-range picker does not affect these charts. Grouped charts show the largest groups and hide the rest with a hint. The "Open in metrics" link under a chart leads to the same metric in the [Metrics](/docs/metrics) section — with arbitrary time ranges, aggregations and labels available there.
 
