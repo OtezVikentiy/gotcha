@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-21
+
 ### Added
 - Service monitoring recipes: ready-made OTel collector configs, live data detection, preconfigured charts and one-click recommended thresholds for PostgreSQL, nginx, Redis and Docker.
 

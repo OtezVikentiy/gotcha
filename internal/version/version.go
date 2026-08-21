@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const base = "0.18.0"
+const base = "0.19.0"
 
 var (
 	version = "" // git describe --tags --always --dirty (через ldflags)
