@@ -29,6 +29,21 @@
 		if (!input || !list || !keysURL || !baseHref) {
 			return;
 		}
+		// Санитизация baseHref (CodeQL #20, js/xss-through-dom): значение приходит
+		// из DOM-атрибута, и прямое присваивание в a.href позволило бы схему вроде
+		// javascript:, окажись атрибут под контролем атакующего. Нормализуем через
+		// URL API относительно текущего origin и принимаем только same-origin;
+		// дальше ссылки собираются как pathname+search (см. facetHref) — относительный
+		// путь, в котором чужая схема невозможна по построению.
+		var baseURL;
+		try {
+			baseURL = new URL(baseHref, window.location.origin);
+		} catch (e) {
+			return;
+		}
+		if (baseURL.origin !== window.location.origin) {
+			return;
+		}
 
 		var debounceTimer = null;
 		var hideTimer = null;
@@ -40,8 +55,9 @@
 		}
 
 		function facetHref(key) {
-			var sep = baseHref.indexOf("?") === -1 ? "?" : "&";
-			return baseHref + sep + "facet=" + encodeURIComponent(key);
+			var u = new URL(baseURL);
+			u.searchParams.set("facet", key);
+			return u.pathname + u.search;
 		}
 
 		// windowRangeQuery — текущее окно фильтра страницы (period=/start=/end=
