@@ -25,6 +25,9 @@ func TestCanonFromText(t *testing.T) {
 		"ERROR": SevError, "error": SevError, "err": SevError, "critical": SevFatal,
 		"warn": SevWarn, "warning": SevWarn, "info": SevInfo, "debug": SevDebug,
 		"trace": SevTrace, "fatal": SevFatal, "17": SevError, "": SevInfo, "zzz": SevInfo,
+		// Переполнение int32 — не SeverityNumber: ParseInt(,,32) отвергает, падаем
+		// в словарь → SevInfo (раньше Atoi+каст молча заворачивал: 4294967297→1→SevTrace).
+		"4294967297": SevInfo, "2147483648": SevInfo,
 	}
 	for in, want := range cases {
 		if got := CanonFromText(in); got != want {
