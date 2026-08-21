@@ -1,6 +1,6 @@
 # Monitoring Recipes
 
-The "Recipes" section is ready-made monitoring for common services: **PostgreSQL, nginx, Redis and Docker**. A recipe is a single page with everything needed to get a service under observation in a few minutes: a ready OpenTelemetry Collector config with your project key already filled in, a live "data arrives" indicator, preconfigured charts over the receiver's metrics, and recommended thresholds created with one click as ordinary [metric alert rules](/docs/metric-alerts).
+The "Recipes" section is ready-made monitoring for common services: **PostgreSQL, MariaDB, nginx, Redis and Docker**. A recipe is a single page with everything needed to get a service under observation in a few minutes: a ready OpenTelemetry Collector config with your project key already filled in, a live "data arrives" indicator, preconfigured charts over the receiver's metrics, and recommended thresholds created with one click as ordinary [metric alert rules](/docs/metric-alerts).
 
 Recipes introduce no new entities or ingest channels: service metrics travel over the same OTLP ingest as [Metrics](/docs/metrics), the thresholds are regular alert rules, and notifications go to the same project channels as [Alerts](/docs/alerts).
 
@@ -30,6 +30,12 @@ One config — one receiver: if a server runs several services from the recipes 
 - The receiver's `postgresql.deadlocks` metric is **disabled by default**, so the snippet enables it explicitly (`postgresql.deadlocks: {enabled: true}`). Do not remove that line: without it the recommended critical deadlock threshold would never fire — the metric simply would not arrive.
 - The snippet's `tls: {insecure: true}` assumes a local connection on the same host. For a remote database, set up TLS on the receiver instead of keeping `insecure: true`.
 
+### MariaDB
+
+- The recipe uses the collector's `mysql` receiver — it officially supports both MySQL (5.7–9.x) and MariaDB (10.5.x–11.x, LTS 11.4 and 11.8), so the recipe works for either.
+- The config's `username`/`password` is a MariaDB monitoring user. It needs no access to your data, only statistics reads: most metrics come from `SHOW GLOBAL STATUS`, and the performance-schema-based metrics need `GRANT SELECT ON performance_schema.*`.
+- The receiver's `mysql.query.slow.count` metric is **disabled by default**, so the snippet enables it explicitly (`mysql.query.slow.count: {enabled: true}`). Do not remove that line: without it the recommended slow-queries threshold would never fire — the metric simply would not arrive.
+
 ### nginx
 
 - The receiver reads the `stub_status` page — enable it in your nginx config:
@@ -56,7 +62,7 @@ The PostgreSQL and Docker snippets contain a `transform/recipe` processor — it
 
 The reason: Gotcha's ingest keeps only `service.name`, `deployment.environment` and `host.name` out of the resource attributes and drops the rest (cardinality protection — see [Cardinality](/docs/cardinality)). But the receivers put the grouping keys exactly there, in resource attributes: the `postgresql` receiver puts the database name (`postgresql.database.name`), and `docker_stats` puts the container name (`container.name`; each container is a separate Resource for it). The `transform` processor promotes these attributes into datapoint attributes while still inside the collector, before export — and that is the only reason the "per database" and "per container" charts split into series. Remove the transform and those charts collapse into a single unnamed series.
 
-nginx and Redis need no transform: everything their charts group by (e.g. `state` on nginx connections) are native datapoint attributes of the metrics themselves.
+MariaDB, nginx and Redis need no transform: everything their charts group by (e.g. `state` on nginx connections, or `kind`/`operation` on MariaDB metrics) are native datapoint attributes of the metrics themselves.
 
 ## Assumption: one service instance per project
 
@@ -66,7 +72,7 @@ The same applies to sub-resources within a single instance, not just to instance
 
 ## Charts
 
-As soon as data arrives, the recipe page shows preconfigured charts — each service has its own set: for PostgreSQL it is connections per database, commit/rollback transactions, database sizes, block reads, deadlocks and live/dead rows; for nginx — requests per second and connections; for Redis — memory, clients, cache hit rate, commands and fragmentation; for Docker — CPU, memory and network per container.
+As soon as data arrives, the recipe page shows preconfigured charts — each service has its own set: for PostgreSQL it is connections per database, commit/rollback transactions, database sizes, block reads, deadlocks and live/dead rows; for MariaDB — threads (connected/running/cached), InnoDB file operations, buffer pool pages, row operations and table locks; for nginx — requests per second and connections; for Redis — memory, clients, cache hit rate, commands and fragmentation; for Docker — CPU, memory and network per container.
 
 The chart window is fixed to the **last 24 hours**; the global time-range picker does not affect these charts. Grouped charts show the largest groups and hide the rest with a hint. The "Open in metrics" link under a chart leads to the same metric in the [Metrics](/docs/metrics) section — with arbitrary time ranges, aggregations and labels available there.
 
@@ -80,6 +86,8 @@ At the bottom of the page is the recipe's recommended thresholds table: metric, 
 |---|---|---|---|---|
 | PostgreSQL | Deadlocks | new deadlocks appeared (increase > 0) | 5 min | critical |
 | PostgreSQL | Connections | more than 80 backends on average | 5 min | warning |
+| MariaDB | Connected threads | more than 120 on average (`kind=connected`) | 5 min | warning |
+| MariaDB | Slow queries | new slow queries appeared (increase > 0) | 5 min | warning |
 | nginx | Active connections | more than 1000 on average (`state=active`) | 5 min | warning |
 | Redis | Rejected connections | rejections appeared (increase > 0) | 5 min | critical |
 | Redis | Fragmentation | ratio above 1.5 on average | 10 min | warning |
@@ -88,7 +96,7 @@ At the bottom of the page is the recipe's recommended thresholds table: metric, 
 What matters here:
 
 - **Thresholds on counters mean "increase over the window"**, not a total count: "new deadlocks appeared within 5 minutes", not "total deadlocks above zero". The defaults with a 0 threshold catch every new occurrence.
-- **The numeric defaults are a starting point**: tune the 80 PostgreSQL connections to your `max_connections`, and the 1000 nginx connections to your server's capacity. The explanation next to each threshold in the table says exactly what to adjust.
+- **The numeric defaults are a starting point**: tune the 80 PostgreSQL connections and the 120 MariaDB threads to your `max_connections`, and the 1000 nginx connections to your server's capacity. The explanation next to each threshold in the table says exactly what to adjust.
 - **Creation is idempotent.** A rule with the same metric, aggregation, condition and label counts as "the same one" even if you have already tuned its threshold or window — pressing the button again neither overwrites nor duplicates it, it is simply skipped. Rules are created for all environments at once (the "Environment" field is empty); your own rule scoped to a specific environment does not block the default.
 - **Docker has no recommended thresholds** — its metrics are per-container, and no sensible one-size-fits-all default over "all containers at once" exists. Configure rules for your own containers manually on the metric alerts page; the recipe page says so openly.
 

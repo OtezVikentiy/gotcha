@@ -158,6 +158,8 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 								<p class="hint">{ i18n.T(ctx, "recipes.nginx.stub_note") }</p>
 							case "postgres":
 								<p class="hint">{ i18n.T(ctx, "recipes.postgres.user_note") }</p>
+							case "mariadb":
+								<p class="hint">{ i18n.T(ctx, "recipes.mariadb.user_note") }</p>
 							case "docker":
 								<p class="hint">{ i18n.T(ctx, "recipes.docker.socket_note") }</p>
 						}

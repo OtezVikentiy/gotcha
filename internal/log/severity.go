@@ -57,7 +57,11 @@ func CanonFromText(s string) string {
 	if s == "" {
 		return SevInfo
 	}
-	if n, err := strconv.Atoi(s); err == nil {
+	// ParseInt с bitSize=32 вместо Atoi+каста: Atoi возвращает int (64 бита на
+	// проде), и int32(n) молча заворачивал бы значения вне диапазона int32
+	// (CodeQL #19, incorrect integer conversion). Не влезло в int32 — это не
+	// SeverityNumber, падаем в текстовый словарь ниже (итог — SevInfo).
+	if n, err := strconv.ParseInt(s, 10, 32); err == nil {
 		return CanonFromNumber(int32(n))
 	}
 	switch s {
