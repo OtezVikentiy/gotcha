@@ -12,6 +12,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
@@ -93,6 +94,7 @@ func TestDynamicKeysResolve(t *testing.T) {
 		"metrics.type.":        metric.MetricTypes,
 		"hosts.kind.":          host.Kinds,
 		"logs.severity.":       log.Severities,
+		"recipes.":             recipeDynamicKeys(),
 	}
 	// Пустая группа — не "нечего проверять", а сигнал, что сборка САМОЙ группы
 	// сломана (баг в quotaKindShortKeys/rangePresetKeys или опустевший
@@ -153,6 +155,38 @@ func quotaKindShortKeys() []string {
 	out := make([]string, 0, len(org.QuotaKinds))
 	for _, k := range org.QuotaKinds {
 		out = append(out, k+".short")
+	}
+	return out
+}
+
+// recipeDynamicKeys — суффиксы группы "recipes.": страницы рецептов (B6)
+// собирают конкатенацией четыре формы ключей на каждый рецепт реестра —
+// "recipes.<id>.title"/".desc" (карточка и заголовок), ".chart.<key>"
+// (заголовок преднастроенного графика), ".series.<suffix>" (подпись ряда в
+// легенде; пуст у одиночных рядов — тогда ключа нет) и ".rule.<notekey>"
+// (пояснение рекомендованного порога в таблице). Источник истины —
+// recipes.All() (приоритет №2: существующий экспорт пакета-владельца):
+// новый рецепт/график/порог в реестре без перевода в ОБОИХ каталогах валит
+// тест, а не доезжает до страницы сырым ключом.
+//
+// Статические ключи страниц ("recipes.list.title", "recipes.assumption",
+// "recipes.docker.no_rules" и т.д.) сюда сознательно не входят: они зовутся
+// литералами и уже покрыты общим сканером каталога (i18n_keys_test.go).
+func recipeDynamicKeys() []string {
+	var out []string
+	for _, r := range recipes.All() {
+		out = append(out, r.ID+".title", r.ID+".desc")
+		for _, c := range r.Charts {
+			out = append(out, r.ID+".chart."+c.Key)
+			for _, s := range c.Series {
+				if s.LabelSuffix != "" {
+					out = append(out, r.ID+".series."+s.LabelSuffix)
+				}
+			}
+		}
+		for _, rule := range r.Rules {
+			out = append(out, r.ID+".rule."+rule.NoteKey)
+		}
 	}
 	return out
 }

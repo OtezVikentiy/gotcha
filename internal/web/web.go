@@ -580,6 +580,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/metrics/alerts/delete", h.requireUser(http.HandlerFunc(h.metricAlertDelete)))
 	inner.Handle("GET /projects/{id}/metrics/{name}", h.requireUser(http.HandlerFunc(h.metricDetail)))
 
+	// Рецепты мониторинга (B6): страницы подключения типовых сервисов
+	// (postgres/nginx/redis/docker). Просмотр — любой с доступом к проекту
+	// (как /metrics); создание рекомендованных порогов — оператор проекта
+	// (см. recipes.go, тот же гейт, что у мутаций metric alerts).
+	inner.Handle("GET /projects/{id}/recipes", h.requireUser(http.HandlerFunc(h.recipesListPage)))
+	inner.Handle("GET /projects/{id}/recipes/{slug}", h.requireUser(http.HandlerFunc(h.recipeDetailPage)))
+	inner.Handle("POST /projects/{id}/recipes/{slug}/thresholds", h.requireUser(http.HandlerFunc(h.recipeThresholdsCreate)))
+
 	// SLO (план D1): список определений + форма создания + удаление. Гейт всех
 	// трёх — оператор проекта (см. slos.go, зеркало metric-alerts).
 	inner.Handle("GET /projects/{id}/slos", h.requireUser(http.HandlerFunc(h.slosPage)))

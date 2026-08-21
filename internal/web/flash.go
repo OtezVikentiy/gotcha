@@ -44,6 +44,16 @@ var flashKeys = map[string]bool{
 	// повторить исходный дефект — страница успеха при невыполненной работе.
 	"flash.project_delete_queued": true,
 	"flash.org_delete_queued":     true,
+	"flash.recipes_applied":       true,
+}
+
+// flashPairKeys — подмножество flashKeys с ДВУМЯ числами в сообщении
+// («создано N, пропущено M»): плюральный Tn несёт только одно {n}, поэтому
+// такие ключи рендерятся плоским переводом с подстановкой {n}/{m} через Tf
+// (см. flashView). Ключ обязан состоять и в flashKeys: этот список только
+// выбирает способ рендера, белый список — один.
+var flashPairKeys = map[string]bool{
+	"flash.recipes_applied": true,
 }
 
 // setFlash кладёт сообщение в cookie перед редиректом. Path=/ — сообщение может
@@ -56,14 +66,19 @@ var flashKeys = map[string]bool{
 // забытый в списке ключ: сообщение просто не появится, и отличить это от
 // несработавшей формы будет нечем — ровно так годами жила находка про отзыв
 // приглашения (flash.invite.revoked не было в списке).
-func setFlash(w http.ResponseWriter, secure bool, kind, key string, n int) {
+func setFlash(w http.ResponseWriter, secure bool, kind, key string, n, m int) {
 	if !flashKeys[key] {
 		slog.Error("setFlash: ключ не найден в белом списке", "key", key)
 		return
 	}
 	v := kind + "|" + key
-	if n != 0 {
+	// Для парного ключа с m != 0 значение n пишется даже нулевым — позиция
+	// в cookie важна (kind|key|n|m), parseFlash разбирает по индексам.
+	if n != 0 || m != 0 {
 		v += "|" + strconv.Itoa(n)
+	}
+	if m != 0 {
+		v += "|" + strconv.Itoa(m)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     flashCookie,
@@ -109,10 +124,15 @@ func parseFlash(raw string) *flashctx.Flash {
 	if !flashKeys[key] {
 		return nil
 	}
-	f := &flashctx.Flash{Kind: kind, Key: key}
+	f := &flashctx.Flash{Kind: kind, Key: key, Pair: flashPairKeys[key]}
 	if len(parts) > 2 {
 		if n, err := strconv.Atoi(parts[2]); err == nil && n >= 0 {
 			f.N = n
+		}
+	}
+	if len(parts) > 3 {
+		if m, err := strconv.Atoi(parts[3]); err == nil && m >= 0 {
+			f.M = m
 		}
 	}
 	return f
@@ -153,9 +173,16 @@ func (h *Handler) secureCookies() bool {
 
 // flashOK/flashWarn — сокращения для обработчиков.
 func (h *Handler) flashOK(w http.ResponseWriter, key string, n int) {
-	setFlash(w, h.secureCookies(), "ok", key, n)
+	setFlash(w, h.secureCookies(), "ok", key, n, 0)
 }
 
 func (h *Handler) flashWarn(w http.ResponseWriter, key string, n int) {
-	setFlash(w, h.secureCookies(), "warn", key, n)
+	setFlash(w, h.secureCookies(), "warn", key, n, 0)
+}
+
+// flashOKPair — сообщение с двумя счётчиками («создано N, пропущено M»):
+// key обязан состоять в flashPairKeys, иначе рендер уйдёт в плюральную
+// ветку и второе число потеряется.
+func (h *Handler) flashOKPair(w http.ResponseWriter, key string, n, m int) {
+	setFlash(w, h.secureCookies(), "ok", key, n, m)
 }

@@ -133,12 +133,16 @@ func (q *Query) SeriesGrouped(ctx context.Context, projectID int64, name, host, 
 	if err != nil {
 		return GroupedSeriesResult{}, err
 	}
+	// Пустой-байпас host — симметрия с Series (scalarSeries, query.go): host==""
+	// означает «все хосты», а не «строки с буквально пустым host». Нужно
+	// рецептам сервисов B6 — их метрики приходят без resourcedetection, host у
+	// точек пуст, и жёсткий `host = ?` оставлял бы график рецепта пустым.
 	sqlText := fmt.Sprintf(`
 		SELECT attributes[?] AS g, toStartOfInterval(ts, INTERVAL %d second) AS b, %s
 		FROM metric_points
-		WHERE project_id = ? AND name = ? AND host = ? AND ts >= ? AND ts < ?
+		WHERE project_id = ? AND name = ? AND (? = '' OR host = ?) AND ts >= ? AND ts < ?
 		GROUP BY g, b ORDER BY g, b`, stepSec, scalarAggExpr(typ, agg))
-	rows, err := q.conn.Query(ctx, sqlText, groupKey, projectID, name, host, from, to)
+	rows, err := q.conn.Query(ctx, sqlText, groupKey, projectID, name, host, host, from, to)
 	if err != nil {
 		return GroupedSeriesResult{}, fmt.Errorf("metric: series grouped: %w", err)
 	}
@@ -186,13 +190,15 @@ func (q *Query) SeriesGroupedRate(ctx context.Context, projectID int64, name, ho
 		step = time.Second
 	}
 	stepSec := int64(step.Seconds())
+	// Пустой-байпас host — та же симметрия с Series, что и в SeriesGrouped выше
+	// (см. комментарий там): host=="" = «все хосты», нужно рецептам B6.
 	sqlText := fmt.Sprintf(`
 		SELECT attributes[?] AS g, attributes[?] AS d,
 		       toStartOfInterval(ts, INTERVAL %d second) AS b, max(value) AS v
 		FROM metric_points
-		WHERE project_id = ? AND name = ? AND host = ? AND ts >= ? AND ts < ?
+		WHERE project_id = ? AND name = ? AND (? = '' OR host = ?) AND ts >= ? AND ts < ?
 		GROUP BY g, d, b ORDER BY g, d, b`, stepSec)
-	rows, err := q.conn.Query(ctx, sqlText, groupKey, deviceKey, projectID, name, host, from, to)
+	rows, err := q.conn.Query(ctx, sqlText, groupKey, deviceKey, projectID, name, host, host, from, to)
 	if err != nil {
 		return GroupedSeriesResult{}, fmt.Errorf("metric: series grouped rate: %w", err)
 	}

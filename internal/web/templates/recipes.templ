@@ -1,0 +1,285 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
+)
+
+// RecipeChartVM — один преднастроенный график страницы рецепта (контракт для
+// билдера T5; тип объявляет T4, чтобы рендер-блок и хендлер сошлись на одной
+// форме). Поля повторяют HostChartVM (hostdetail.templ): Empty — «данных по
+// метрикам графика нет совсем», Legend обязательна для пар рядов
+// (commits+rollbacks и т.п. без неё нечитаемы, ревью MAJOR-2), Truncated —
+// групповые ряды порезаны top-N (topNSeriesGroups, прецедент A1) и об этом
+// обязана быть подпись. Сверх HostChartVM: TitleKey — готовый i18n-ключ
+// заголовка (recipes.<id>.chart.<key> собирает билдер, а не шаблон);
+// ExplorerURL — ссылка «открыть в метриках» на /projects/{id}/metrics/{name}.
+type RecipeChartVM struct {
+	Key         string
+	TitleKey    string
+	Chart       templ.Component
+	Empty       bool
+	Legend      []LegendItem
+	Truncated   bool
+	ExplorerURL string
+}
+
+// RecipeCardVM — карточка списка рецептов: бейдж «данные приходят/ждём» по
+// сигнатурной метрике и счётчик созданных рекомендованных порогов
+// (CreatedRules из TotalRules; TotalRules == 0 — рецепт без порогов, docker).
+type RecipeCardVM struct {
+	ID           string
+	DataArrives  bool
+	CreatedRules int
+	TotalRules   int
+}
+
+// RecipeDetailVM — страница рецепта. Config == "" — в проекте нет живого
+// ключа (или чтение ключей упало): сниппет скрыт, вместо него подсказка со
+// ссылкой на настройки проекта (контракт hostInstallBlocks). Charts == nil —
+// данные ещё не приходят (recipeDataArrives=false): блок графиков не
+// рендерится вовсе, страница остаётся инструкцией подключения.
+type RecipeDetailVM struct {
+	ProjectID   int64
+	Recipe      recipes.Recipe
+	DataArrives bool
+	Config      string
+	Statuses    []recipes.RuleStatus
+	Charts      []RecipeChartVM
+	// CanOperate — оператор ли смотрящий (то же поле, что у HostDetailVM):
+	// кнопка «Создать рекомендованные пороги» POST'ит в
+	// requireProjectOperator-гейт, зрителю вместо неё — подсказка, а не
+	// кнопка, ведущая в 404.
+	CanOperate bool
+}
+
+func recipesBasePath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/recipes"
+}
+
+// recipeDataBadge — статус сигнатурной метрики: данные уже приходят или ещё
+// ждём первый скрейп. Те же классы бейджей, что у статусов правил/инцидентов.
+templ recipeDataBadge(arrives bool) {
+	if arrives {
+		<span class="badge badge-good">{ i18n.T(ctx, "recipes.badge.data") }</span>
+	} else {
+		<span class="badge badge-neutral">{ i18n.T(ctx, "recipes.badge.waiting") }</span>
+	}
+}
+
+// RecipesList — GET /projects/{id}/recipes: по карточке на рецепт реестра.
+// data-recipe — маркер для тестов (TestWebRecipesListPage), как data-chart
+// у графиков хоста.
+templ RecipesList(projectID int64, cards []RecipeCardVM, userEmail string) {
+	@layout(i18n.T(ctx, "recipes.list.title"), userEmail) {
+		<h1>{ i18n.T(ctx, "recipes.list.title") }</h1>
+		@helpPanel("recipes", "recipes")
+		<p class="hint">{ i18n.T(ctx, "recipes.list.lead") }</p>
+		for _, card := range cards {
+			<section class="card" data-recipe={ card.ID }>
+				<h2 class="card-header">
+					<a href={ templ.URL(recipesBasePath(projectID) + "/" + card.ID) }>{ i18n.T(ctx, "recipes." + card.ID + ".title") }</a>
+					@recipeDataBadge(card.DataArrives)
+				</h2>
+				<p>{ i18n.T(ctx, "recipes." + card.ID + ".desc") }</p>
+				if card.TotalRules > 0 {
+					<p class="hint">{ i18n.Tf(ctx, "recipes.card.rules_count", "created", strconv.Itoa(card.CreatedRules), "total", strconv.Itoa(card.TotalRules)) }</p>
+				} else {
+					<p class="hint">{ i18n.T(ctx, "recipes.card.no_rules") }</p>
+				}
+			</section>
+		}
+	}
+}
+
+// recipeSeverityKey — подпись severity порога: пустое значение RuleSpec
+// наследует дефолт источника metric-инцидентов — warning (см. ruleSeverity,
+// escalation/evaluator).
+func recipeSeverityKey(severity string) string {
+	if severity == "critical" {
+		return "severity.critical"
+	}
+	return "severity.warning"
+}
+
+// recipeRuleCondition — условие порога в нотации страницы алертов метрик:
+// «agg > 80» (fmtFloat/comparatorSymbol — те же, что в metricalerts.templ).
+func recipeRuleCondition(s recipes.RuleSpec) string {
+	return s.Agg + " " + comparatorSymbol(s.Comparator) + " " + fmtFloat(s.Threshold)
+}
+
+// recipeRuleMetricLabel — имя метрики порога с опциональным матчером
+// («nginx.connections_current{state=active}»).
+func recipeRuleMetricLabel(s recipes.RuleSpec) string {
+	if s.LabelKey == "" {
+		return s.Metric
+	}
+	return s.Metric + "{" + s.LabelKey + "=" + s.LabelValue + "}"
+}
+
+// RecipeDetail — GET /projects/{id}/recipes/{slug}: шаги подключения со
+// сниппетом, статус данных, преднастроенные графики (T5) и таблица
+// рекомендованных порогов с POST создания.
+templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
+	@layout(i18n.T(ctx, "recipes."+vm.Recipe.ID+".title"), userEmail) {
+		<h1>
+			{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".title") }
+			@recipeDataBadge(vm.DataArrives)
+		</h1>
+		<p>{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".desc") }</p>
+		<p class="hint">{ i18n.T(ctx, "recipes.assumption") }</p>
+		// Ссылка на гайд — тем же приёмом, что hosts.onboarding.docs_link
+		// (hosts.templ): вся фраза кликабельна, ведёт на /docs/recipes.
+		<p class="hint"><a href="/docs/recipes">{ i18n.T(ctx, "recipes.docs_link") }</a></p>
+		<section class="card">
+			<h2 class="card-header">{ i18n.T(ctx, "recipes.steps.title") }</h2>
+			<ol>
+				<li>
+					<p>{ i18n.T(ctx, "recipes.steps.install") }</p>
+				</li>
+				<li>
+					<p>{ i18n.T(ctx, "recipes.steps.config") }</p>
+					if vm.Config != "" {
+						@copyBlock("recipe-config", "recipes.copy.config", vm.Config)
+						// Пер-рецептная подсказка о предусловии, без которого
+						// сниппет не заработает (аудит UX P1-2): требования у
+						// сервисов разные, а до этого подсказка была только у
+						// redis (ревью T1 minor: без requirepass строку password
+						// надо убрать, иначе ресивер не подключится).
+						switch vm.Recipe.ID {
+							case "redis":
+								<p class="hint">{ i18n.T(ctx, "recipes.redis.password_note") }</p>
+							case "nginx":
+								<p class="hint">{ i18n.T(ctx, "recipes.nginx.stub_note") }</p>
+							case "postgres":
+								<p class="hint">{ i18n.T(ctx, "recipes.postgres.user_note") }</p>
+							case "docker":
+								<p class="hint">{ i18n.T(ctx, "recipes.docker.socket_note") }</p>
+						}
+					} else {
+						<p class="hint">
+							{ i18n.T(ctx, "recipes.no_key") }
+							<a href={ templ.URL(projectSettingsPath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.no_key_link") }</a>
+						</p>
+					}
+				</li>
+				<li>
+					<p>{ i18n.T(ctx, "recipes.steps.restart") }</p>
+				</li>
+			</ol>
+		</section>
+		// Блок графиков: пока данные не приходят, хендлер передаёт
+		// Charts == nil — секция не рендерится вовсе (см. RecipeDetailVM).
+		if len(vm.Charts) > 0 {
+			<h2>{ i18n.T(ctx, "recipes.charts.title") }</h2>
+			for _, c := range vm.Charts {
+				@recipeChartCard(c)
+			}
+		}
+		<section class="card">
+			<h2 class="card-header">{ i18n.T(ctx, "recipes.thresholds.title") }</h2>
+			if len(vm.Statuses) == 0 {
+				// Единственный рецепт без порогов — docker (реестр, развилка
+				// F1): пер-контейнерные метрики без разумного общего дефолта.
+				// Упомянутая страница правил — рабочей ссылкой (приём
+				// no_key/no_key_link), а не голым названием.
+				<p>
+					{ i18n.T(ctx, "recipes.docker.no_rules") }
+					<a href={ templ.URL(metricAlertsBasePath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.docker.no_rules_link") }</a>
+				</p>
+			} else {
+				@scrollRegion("table-scroll", "recipes.thresholds.title") {
+					<table>
+						<thead>
+							<tr>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.metric") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.condition") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.window") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.severity") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.note") }</th>
+								<th scope="col">{ i18n.T(ctx, "recipes.table.status") }</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, st := range vm.Statuses {
+								<tr>
+									<td><code>{ recipeRuleMetricLabel(st.Spec) }</code></td>
+									<td class="num">{ recipeRuleCondition(st.Spec) }</td>
+									<td class="num">{ humanize.Duration(ctx, time.Duration(st.Spec.WindowSeconds)*time.Second) }</td>
+									<td>{ i18n.T(ctx, recipeSeverityKey(st.Spec.Severity)) }</td>
+									<td>{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".rule." + st.Spec.NoteKey) }</td>
+									<td>
+										if st.Exists {
+											<span class="badge badge-good">{ i18n.T(ctx, "recipes.rule_status.exists") }</span>
+										} else {
+											<span class="badge badge-neutral">{ i18n.T(ctx, "recipes.rule_status.pending") }</span>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				}
+				if recipeHasPending(vm.Statuses) {
+					if vm.CanOperate {
+						<form method="post" action={ templ.URL(recipesBasePath(vm.ProjectID) + "/" + vm.Recipe.ID + "/thresholds") }>
+							<button type="submit" class="btn btn-primary" aria-label={ i18n.T(ctx, "recipes.create_rules") }>{ i18n.T(ctx, "recipes.create_rules") }</button>
+						</form>
+					} else {
+						// Зрителю кнопка вела бы в 404 requireProjectOperator
+						// (аудит UX/QA P1): вместо мёртвого контрола — честная
+						// подсказка, кому доступно создание.
+						<p class="hint">{ i18n.T(ctx, "recipes.operator_only") }</p>
+					}
+				} else {
+					<p class="hint">{ i18n.T(ctx, "recipes.all_created") }</p>
+				}
+			}
+		</section>
+	}
+}
+
+// recipeHasPending — остались ли пороги, которые POST ещё создаст; когда все
+// уже существуют, вместо кнопки — честное «все созданы» (повторный POST и так
+// идемпотентен, но мёртвая кнопка хуже подписи).
+func recipeHasPending(statuses []recipes.RuleStatus) bool {
+	for _, st := range statuses {
+		if !st.Exists {
+			return true
+		}
+	}
+	return false
+}
+
+// recipeChartCard — карточка одного преднастроенного графика: зеркало
+// hostChartCard (hostdetail.templ) плюс ссылка «открыть в метриках».
+// data-chart — маркер для тестов T5.
+templ recipeChartCard(c RecipeChartVM) {
+	<div class="card host-chart-card" data-chart={ c.Key }>
+		<h2>{ i18n.T(ctx, c.TitleKey) }</h2>
+		if c.Empty {
+			<div class="empty-state">
+				@icon("chart")
+				<p>{ i18n.T(ctx, "recipes.chart.empty") }</p>
+			</div>
+		} else {
+			@scrollRegion("metric-chart-wrap", c.TitleKey) {
+				@c.Chart
+			}
+			if len(c.Legend) > 0 {
+				@chartLegend(c.Legend)
+			}
+			if c.Truncated {
+				<p class="hint">{ i18n.Tf(ctx, "recipes.chart.top_groups", "n", strconv.Itoa(metric.MaxSeriesGroups)) }</p>
+			}
+		}
+		if c.ExplorerURL != "" {
+			<p class="hint"><a href={ templ.URL(c.ExplorerURL) }>{ i18n.T(ctx, "recipes.chart.explorer") }</a></p>
+		}
+	</div>
+}

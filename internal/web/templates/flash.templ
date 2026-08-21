@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"strconv"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/flashctx"
 )
@@ -17,7 +19,11 @@ import (
 templ flashView() {
 	if f := flashctx.FromContext(ctx); f != nil {
 		<div class={ "flash", templ.KV("flash--warn", f.Kind == "warn") } role="status" aria-live="polite">
-			if f.N > 0 {
+			// Парный ключ (Pair, web/flash.go) несёт два счётчика — плоский
+			// перевод с {n}/{m}; плюральный Tn с одним {n} его не выразит.
+			if f.Pair {
+				{ i18n.Tf(ctx, f.Key, "n", strconv.Itoa(f.N), "m", strconv.Itoa(f.M)) }
+			} else if f.N > 0 {
 				{ i18n.Tn(ctx, f.Key, f.N) }
 			} else {
 				{ i18n.T(ctx, f.Key) }

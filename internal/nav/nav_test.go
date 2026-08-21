@@ -19,6 +19,8 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/7/web-vitals", "performance"},
 		{"/traces/abc", "performance"},
 		{"/projects/7/metrics/alerts", "metrics"},
+		{"/projects/7/recipes", "metrics"},
+		{"/projects/7/recipes/redis", "metrics"},
 		{"/projects/5/hosts", "hosts"},
 		{"/projects/5/hosts/settings", "hosts"},
 		{"/projects/5/hosts/web-1", "hosts"},
@@ -57,6 +59,8 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/deployments", "nav.deployments"},
 		{"/projects/7/metrics", "nav.metrics"},
 		{"/projects/7/metrics/alerts", "nav.metric_alerts"},
+		{"/projects/7/recipes", "nav.recipes"},
+		{"/projects/7/recipes/redis", "nav.recipes"},
 		{"/projects/5/hosts", "nav.hosts"},
 		{"/projects/5/hosts/web-1", "nav.hosts"},
 		{"/projects/5/hosts/settings", "nav.host_thresholds"},
@@ -179,21 +183,28 @@ func TestSubsectionsPerformance(t *testing.T) {
 }
 
 func TestSubsectionsMetricsVsMetricAlertsActive(t *testing.T) {
-	// Plain metrics path activates Metrics, not Metric Alerts.
+	// Plain metrics path activates Metrics, not Recipes/Metric Alerts.
 	s := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics", CanOperate: true}
 	items := Subsections(s)
-	if len(items) != 2 {
-		t.Fatalf("Subsections(metrics) len = %d, want 2", len(items))
+	if len(items) != 3 {
+		t.Fatalf("Subsections(metrics) len = %d, want 3 (metrics + recipes + metric_alerts)", len(items))
 	}
-	if !items[0].Active || items[1].Active {
-		t.Errorf("metrics path: items = %+v, want [Metrics active, MetricAlerts inactive]", items)
+	if !items[0].Active || items[1].Active || items[2].Active {
+		t.Errorf("metrics path: items = %+v, want [Metrics active, Recipes inactive, MetricAlerts inactive]", items)
 	}
 
 	// Metric alerts sub-path activates Metric Alerts, not Metrics.
 	s2 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics/alerts", CanOperate: true}
 	items2 := Subsections(s2)
-	if items2[0].Active || !items2[1].Active {
-		t.Errorf("metrics/alerts path: items = %+v, want [Metrics inactive, MetricAlerts active]", items2)
+	if items2[0].Active || items2[1].Active || !items2[2].Active {
+		t.Errorf("metrics/alerts path: items = %+v, want [Metrics inactive, Recipes inactive, MetricAlerts active]", items2)
+	}
+
+	// Recipes path (и детальная страница рецепта) activates Recipes.
+	s3 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/recipes/redis", CanOperate: true}
+	items3 := Subsections(s3)
+	if items3[0].Active || !items3[1].Active || items3[2].Active {
+		t.Errorf("recipes path: items = %+v, want [Metrics inactive, Recipes active, MetricAlerts inactive]", items3)
 	}
 }
 
@@ -320,11 +331,11 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 	// metrics area: metric_alerts — доступен оператору, не зрителю.
 	operator.Area, operator.Path = "metrics", "/projects/7/metrics"
 	viewer.Area, viewer.Path = "metrics", "/projects/7/metrics"
-	if got := Subsections(operator); len(got) != 2 {
-		t.Errorf("metrics/оператор: len = %d, want 2 (metrics + metric_alerts), got %+v", len(got), got)
+	if got := Subsections(operator); len(got) != 3 {
+		t.Errorf("metrics/оператор: len = %d, want 3 (metrics + recipes + metric_alerts), got %+v", len(got), got)
 	}
-	if got := Subsections(viewer); len(got) != 1 {
-		t.Errorf("metrics/зритель: len = %d, want 1 (только metrics), got %+v", len(got), got)
+	if got := Subsections(viewer); len(got) != 2 {
+		t.Errorf("metrics/зритель: len = %d, want 2 (metrics + recipes), got %+v", len(got), got)
 	}
 
 	// uptime area: maintenance + status_pages — доступны оператору, не зрителю.
