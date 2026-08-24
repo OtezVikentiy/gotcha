@@ -89,6 +89,16 @@ type depChecker interface {
 	HasParent(ctx context.Context, kind string, nodeID int64) (bool, error)
 }
 
+// groupHook — членство/корни групп инцидентов (D3, incidentgroup.Grouper).
+// Duck-typed локально, как depChecker: пакет host не импортирует
+// incidentgroup. Nil-совместим — деградированная сборка без групп ведёт
+// себя как до D3.
+type groupHook interface {
+	Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error)
+	OnRootOpened(ctx context.Context, rootSource string, rootIncidentID int64, rootNodeKind string, rootNodeID, projectID int64) error
+	OnRootClosed(ctx context.Context, rootSource string, rootIncidentID int64) error
+}
+
 // Evaluator периодически считает диск/память/нагрузку/тишину каждого живого
 // хоста и открывает/закрывает встроенные инциденты (host_incidents) — калька
 // metric.Evaluator и trace.Evaluator, только источник правил не БД, а
@@ -124,6 +134,14 @@ type Evaluator struct {
 	// без него считает hasParent=false везде (поведение как до B5). ПРОД
 	// (main.go, startEvaluators) обязан его заполнять.
 	Dep depChecker
+
+	// IncidentGroups — группы инцидентов (D3, incidentgroup.Grouper): членство
+	// свежеоткрытого инцидента, ретро-перебор при открытии silent-корня и
+	// закрытие группы при закрытии корня. Порядок гейтов уведомления:
+	// maintenance → dep (B5) → группа (D3) → notify. Nil-совместим, как Dep.
+	// Имя поля НЕ Groups — оно занято пороговым сервисом B2
+	// (Groups *GroupThresholdService, см. выше).
+	IncidentGroups groupHook
 
 	// Policy — политика эскалации (B4, T7): на открытии инцидента резолвит
 	// лесенку (project, severity) и решает, какая ступень уходит сейчас (см.
@@ -486,29 +504,36 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			slog.Warn("host evaluator: silent open failed", "host_id", h.ID, "error", err)
 			return
 		}
-		if created && !inMaint {
-			// B5: хост с задекларированным родителем не получает синхронную
-			// ступень 0 здесь — её досылает планировщик деп-подавления (T5)
-			// после грейса и живой проверки родителя (тот мог и не открыть
-			// инцидент, например уже в maintenance). Без родителя поведение
-			// не меняется — уведомляем сразу, как раньше. Гейт общий для
-			// silent (эта ветка) и disk/memory/load (applyDecision) — именно
-			// silent-каскад «родитель недоступен → дети молчат» и есть
-			// основной сценарий подавления.
-			hasParent := false
-			if e.Dep != nil {
-				hp, err := e.Dep.HasParent(ctx, "host", h.ID)
-				if err != nil {
-					slog.Error("host evaluator: dep HasParent failed", "host_id", h.ID, "error", err)
-					// fail-safe: ошибка проверки родителя не должна глушить
-					// уведомление — считаем, что родителя нет и шлём сейчас,
-					// лучше лишний раз уведомить, чем пропустить инцидент.
-				} else {
-					hasParent = hp
+		if created {
+			// D3: членство/корень решаются и для инцидента, открытого в
+			// maintenance, — состав группы собирается всегда, гейтится
+			// только уведомление.
+			attached, grouped := e.groupGate(ctx, in, h)
+			e.groupRootOpened(ctx, in, h, attached)
+			if !inMaint && !grouped {
+				// B5: хост с задекларированным родителем не получает синхронную
+				// ступень 0 здесь — её досылает планировщик деп-подавления (T5)
+				// после грейса и живой проверки родителя (тот мог и не открыть
+				// инцидент, например уже в maintenance). Без родителя поведение
+				// не меняется — уведомляем сразу, как раньше. Гейт общий для
+				// silent (эта ветка) и disk/memory/load (applyDecision) — именно
+				// silent-каскад «родитель недоступен → дети молчат» и есть
+				// основной сценарий подавления.
+				hasParent := false
+				if e.Dep != nil {
+					hp, err := e.Dep.HasParent(ctx, "host", h.ID)
+					if err != nil {
+						slog.Error("host evaluator: dep HasParent failed", "host_id", h.ID, "error", err)
+						// fail-safe: ошибка проверки родителя не должна глушить
+						// уведомление — считаем, что родителя нет и шлём сейчас,
+						// лучше лишний раз уведомить, чем пропустить инцидент.
+					} else {
+						hasParent = hp
+					}
 				}
-			}
-			if !hasParent {
-				e.notifyOpen(ctx, in)
+				if !hasParent {
+					e.notifyOpen(ctx, in)
+				}
 			}
 		}
 	case opened && silence <= threshold:
@@ -518,6 +543,7 @@ func (e *Evaluator) evalSilent(ctx context.Context, h Host, s Settings, now time
 			return
 		}
 		if resolved {
+			e.groupRootClosed(ctx, open)
 			e.notifyClose(ctx, open)
 		}
 	case opened && silence >= open.PeakValue*silentBumpGrowth:
@@ -661,29 +687,35 @@ func (e *Evaluator) applyDecision(ctx context.Context, q *metric.Query, h Host, 
 			slog.Warn("host evaluator: open failed", "host_id", h.ID, "kind", kind, "error", err)
 			return
 		}
-		if created && !inMaint {
-			// B5: хост с задекларированным родителем не получает синхронную
-			// ступень 0 здесь — её досылает планировщик деп-подавления (T5)
-			// после грейса и живой проверки родителя (тот мог и не открыть
-			// инцидент, например уже в maintenance). Без родителя поведение
-			// не меняется — уведомляем сразу, как раньше. Гейт общий для
-			// silent (эта ветка) и disk/memory/load (applyDecision) — именно
-			// silent-каскад «родитель недоступен → дети молчат» и есть
-			// основной сценарий подавления.
-			hasParent := false
-			if e.Dep != nil {
-				hp, err := e.Dep.HasParent(ctx, "host", h.ID)
-				if err != nil {
-					slog.Error("host evaluator: dep HasParent failed", "host_id", h.ID, "error", err)
-					// fail-safe: ошибка проверки родителя не должна глушить
-					// уведомление — считаем, что родителя нет и шлём сейчас,
-					// лучше лишний раз уведомить, чем пропустить инцидент.
-				} else {
-					hasParent = hp
+		if created {
+			// D3: только членство — корнем ресурсный инцидент не становится
+			// (Р3: корень — исключительно silent), groupRootOpened не зовётся.
+			// Состав собирается и в maintenance, гейтится только уведомление.
+			_, grouped := e.groupGate(ctx, in, h)
+			if !inMaint && !grouped {
+				// B5: хост с задекларированным родителем не получает синхронную
+				// ступень 0 здесь — её досылает планировщик деп-подавления (T5)
+				// после грейса и живой проверки родителя (тот мог и не открыть
+				// инцидент, например уже в maintenance). Без родителя поведение
+				// не меняется — уведомляем сразу, как раньше. Гейт общий для
+				// silent (эта ветка) и disk/memory/load (applyDecision) — именно
+				// silent-каскад «родитель недоступен → дети молчат» и есть
+				// основной сценарий подавления.
+				hasParent := false
+				if e.Dep != nil {
+					hp, err := e.Dep.HasParent(ctx, "host", h.ID)
+					if err != nil {
+						slog.Error("host evaluator: dep HasParent failed", "host_id", h.ID, "error", err)
+						// fail-safe: ошибка проверки родителя не должна глушить
+						// уведомление — считаем, что родителя нет и шлём сейчас,
+						// лучше лишний раз уведомить, чем пропустить инцидент.
+					} else {
+						hasParent = hp
+					}
 				}
-			}
-			if !hasParent {
-				e.notifyOpen(ctx, in)
+				if !hasParent {
+					e.notifyOpen(ctx, in)
+				}
 			}
 		}
 	case d.Bump:
@@ -802,5 +834,47 @@ func (e *Evaluator) notifyClose(ctx context.Context, in Incident) {
 	}
 	if err := e.Incidents.MarkNotified(ctx, in.ID, false); err != nil {
 		slog.Warn("host evaluator: mark notified failed", "incident_id", in.ID, "error", err)
+	}
+}
+
+// groupGate — D3-гейт открытия: присоединяет свежесозданный инцидент к
+// группе его down-корня. suppressNotify=true ТОЛЬКО под «информирующим»
+// корнем (Р4, root.notified_open на момент attach) — тогда step0 не
+// зовётся, информирует корень. Немой корень — attach только для состава,
+// уведомление штатно. Fail-safe: ошибка → ведём себя как без D3 (шумим).
+func (e *Evaluator) groupGate(ctx context.Context, in Incident, h Host) (attached, suppressNotify bool) {
+	if e.IncidentGroups == nil {
+		return false, false
+	}
+	attached, informing, err := e.IncidentGroups.Attach(ctx, "host", in.ID, "host", h.ID)
+	if err != nil {
+		slog.Error("host evaluator: group attach failed", "incident_id", in.ID, "error", err)
+		return false, false
+	}
+	return attached, attached && informing
+}
+
+// groupRootOpened — silent-инцидент, НЕ присоединившийся членом (нет
+// упавшего предка), — кандидат в корни собственной группы: ретро-перебор
+// уже открытых инцидентов проекта (Р7). Зовётся и для инцидента, открытого
+// в maintenance: немой корень собирает состав, гейт уведомлений членов
+// решает notified_open (Р4).
+func (e *Evaluator) groupRootOpened(ctx context.Context, in Incident, h Host, attachedAsMember bool) {
+	if e.IncidentGroups == nil || in.Kind != "silent" || attachedAsMember {
+		return
+	}
+	if err := e.IncidentGroups.OnRootOpened(ctx, "host", in.ID, "host", h.ID, h.ProjectID); err != nil {
+		slog.Error("host evaluator: group root opened failed", "incident_id", in.ID, "error", err)
+	}
+}
+
+// groupRootClosed — закрытие silent-инцидента закрывает его группу (Р5);
+// страховка от пропущенного вызова — sweep (§4.4).
+func (e *Evaluator) groupRootClosed(ctx context.Context, in Incident) {
+	if e.IncidentGroups == nil || in.Kind != "silent" {
+		return
+	}
+	if err := e.IncidentGroups.OnRootClosed(ctx, "host", in.ID); err != nil {
+		slog.Error("host evaluator: group root closed failed", "incident_id", in.ID, "error", err)
 	}
 }
