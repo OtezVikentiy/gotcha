@@ -307,9 +307,13 @@ func optionalBoolEnv(getenv func(string) string, name string) *bool {
 }
 
 // defaultScrubKeys — denylist ключей для PII-scrubbing по умолчанию (PRIV-H1).
+// Матчинг — по подстроке нормализованного имени поля (см. Scrubber.denied),
+// поэтому "pass" покрывает и password/passphrase, а "pwd" — поле логин-формы
+// WordPress и mysql_pwd: без него пароль из тела POST /wp-login.php уходил
+// в событие в открытом виде (аудит 2026-08-21).
 func defaultScrubKeys() []string {
 	return []string{
-		"password", "passwd", "token", "secret", "authorization", "auth",
+		"password", "passwd", "pwd", "pass", "token", "secret", "authorization", "auth",
 		"cookie", "api_key", "apikey", "access_token", "refresh_token",
 		"session", "credit_card", "card_number", "cvv",
 	}
