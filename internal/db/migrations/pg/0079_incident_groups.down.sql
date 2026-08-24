@@ -1,0 +1,11 @@
+DROP INDEX IF EXISTS slo_incidents_group_idx;
+DROP INDEX IF EXISTS metric_incidents_group_idx;
+DROP INDEX IF EXISTS incidents_group_idx;
+DROP INDEX IF EXISTS host_incidents_group_idx;
+ALTER TABLE slo_incidents    DROP COLUMN IF EXISTS group_id;
+ALTER TABLE metric_incidents DROP COLUMN IF EXISTS group_id;
+ALTER TABLE incidents        DROP COLUMN IF EXISTS group_id;
+ALTER TABLE host_incidents   DROP COLUMN IF EXISTS group_id;
+DROP INDEX IF EXISTS incident_groups_project_id_idx;
+DROP INDEX IF EXISTS incident_groups_open_idx;
+DROP TABLE IF EXISTS incident_groups;
