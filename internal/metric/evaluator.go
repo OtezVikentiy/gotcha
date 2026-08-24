@@ -23,6 +23,15 @@ type ruleLister interface {
 	ListEnabled(ctx context.Context) ([]Rule, error)
 }
 
+// metricGroupHook — членство в группах инцидентов (D3, incidentgroup.Grouper)
+// для правил с label_key='host': узел резолвится по hosts.name = label_value
+// того же проекта (Р1). Duck-typed локально, как MaintenanceChecker: пакет
+// metric не импортирует incidentgroup. Nil-совместим — деградированная сборка
+// без групп ведёт себя как до D3.
+type metricGroupHook interface {
+	AttachMetric(ctx context.Context, incidentID, projectID int64, hostName string) (attached, rootInforming bool, err error)
+}
+
 type Evaluator struct {
 	Rules     ruleLister
 	Query     *Query
@@ -45,6 +54,13 @@ type Evaluator struct {
 	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
 	// notifyClose, escalation.RecoveryChannels). Nil-совместим.
 	Pool *pgxpool.Pool
+
+	// IncidentGroups — группы инцидентов (D3, incidentgroup.Grouper): членство
+	// свежеоткрытого инцидента правила label_key='host' в группе его
+	// down-корня. Уведомление уходит только при конъюнкции гейтов
+	// «не maintenance И не grouped» (исход от порядка проверок не зависит).
+	// Nil-совместим, как Maint.
+	IncidentGroups metricGroupHook
 }
 
 // Run тикает каждый Interval, пока не отменят ctx.
@@ -109,8 +125,13 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 			slog.Error("metric evaluator: open failed", "rule_id", r.ID, "error", err)
 			return
 		}
-		if created && !inMaint {
-			e.notifyOpen(ctx, r, in)
+		if created {
+			// D3: членство решается и для инцидента, открытого в maintenance,
+			// — состав группы собирается всегда, гейтится только уведомление.
+			grouped := e.groupGate(ctx, r, in)
+			if !inMaint && !grouped {
+				e.notifyOpen(ctx, r, in)
+			}
 		}
 	case d.Bump:
 		peak := worse(r.Comparator, open.PeakValue, current)
@@ -157,6 +178,25 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 		return false
 	}
 	return v
+}
+
+// groupGate — D3-гейт открытия: только правила label_key='host' (у прочих
+// правил нет узла дерева зависимостей, Р1) — их инциденты присоединяются к
+// группе down-корня своего хоста. true — член ИНФОРМИРУЮЩЕЙ группы (Р4,
+// root.notified_open на момент attach): step0 не зовётся, информирует
+// корень. Немой корень / неизвестный хост — attach только для состава или
+// вовсе без attach, уведомление штатно. Fail-safe (fail-noisy): ошибка →
+// шумим как без D3 — лучше лишний алерт, чем пропущенный.
+func (e *Evaluator) groupGate(ctx context.Context, r Rule, in Incident) bool {
+	if e.IncidentGroups == nil || r.LabelKey != "host" || r.LabelValue == "" {
+		return false
+	}
+	attached, informing, err := e.IncidentGroups.AttachMetric(ctx, in.ID, r.ProjectID, r.LabelValue)
+	if err != nil {
+		slog.Error("metric evaluator: group attach failed", "incident_id", in.ID, "error", err)
+		return false
+	}
+	return attached && informing
 }
 
 // notifyOpen — реролл (B4, T7): открытие инцидента резолвит лесенку
