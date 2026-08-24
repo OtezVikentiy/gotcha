@@ -38,6 +38,11 @@ type Detector struct {
 	// не импортировал depsuppress (тот же приём, что MaintenanceChecker).
 	Dep depChecker
 
+	// IncidentGroups — группы инцидентов (D3, incidentgroup.Grouper): хуки
+	// корня (openIncident/resolveIncident) и членство B5-подавленных детей
+	// (settleHeldIncident). См. groupHook. Nil-совместим, как Dep.
+	IncidentGroups groupHook
+
 	// SettleGrace — сколько держать без уведомления открытый инцидент
 	// монитора-ребёнка (Dep.HasParent=true), прежде чем всё равно отправить
 	// отложенный "down", если к этому моменту падение родителя не
@@ -52,6 +57,16 @@ type Detector struct {
 type depChecker interface {
 	HasParent(ctx context.Context, kind string, nodeID int64) (bool, error)
 	ParentDown(ctx context.Context, kind string, nodeID int64) (bool, error)
+}
+
+// groupHook — группы инцидентов (D3, incidentgroup.Grouper). Duck-typed,
+// nil-совместим, как Dep. У uptime НЕТ форвард-гейта D3 (MAJOR-4): членство
+// возникает только через хук MarkSuppressedByDep (settleHeldIncident), а
+// открытие/закрытие инцидента монитора — события КОРНЯ группы.
+type groupHook interface {
+	Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error)
+	OnRootOpened(ctx context.Context, rootSource string, rootIncidentID int64, rootNodeKind string, rootNodeID, projectID int64) error
+	OnRootClosed(ctx context.Context, rootSource string, rootIncidentID int64) error
 }
 
 // aggStatus — агрегированный по регионам статус монитора.
@@ -224,6 +239,16 @@ func (d *Detector) openIncident(ctx context.Context, m Monitor, states []State, 
 		slog.Error("uptime: detector: open incident failed", "monitor_id", m.ID, "error", err)
 		return
 	}
+	// D3: открытие инцидента монитора — потенциальный корень группы: ретро-
+	// перебор уже открытых инцидентов проекта (Р7). Зовётся и в maintenance
+	// (немой корень собирает состав; уведомления членов гейтит notified_open
+	// корня, Р4). Если у монитора самого есть упавший предок, ретро-предикат
+	// никого к нему не приведёт (DownRoot ведёт к топ-корню) — вреда нет.
+	if created && d.IncidentGroups != nil {
+		if err := d.IncidentGroups.OnRootOpened(ctx, "uptime", inc.ID, "monitor", m.ID, m.ProjectID); err != nil {
+			slog.Error("uptime: detector: group root opened failed", "incident_id", inc.ID, "error", err)
+		}
+	}
 	if !created || inMaintenance || d.Notifier == nil {
 		return
 	}
@@ -288,6 +313,14 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 			return
 		}
 		slog.Info("uptime: detector: incident suppressed by dependency", "monitor_id", m.ID, "incident_id", inc.ID)
+		// D3: B5-подавленный uptime-ребёнок получает членство в группе
+		// своего down-корня — для видимости состава (§4.2). Гейт его
+		// уведомлений остаётся B5-шным навсегда (Р4: B5 строже D3).
+		if d.IncidentGroups != nil {
+			if _, _, err := d.IncidentGroups.Attach(ctx, "uptime", inc.ID, "monitor", m.ID); err != nil {
+				slog.Error("uptime: detector: group attach failed", "incident_id", inc.ID, "error", err)
+			}
+		}
 	case now.Sub(inc.StartedAt) >= d.SettleGrace:
 		if d.Notifier == nil {
 			return
@@ -305,6 +338,13 @@ func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time
 	if err != nil {
 		slog.Error("uptime: detector: resolve incident failed", "monitor_id", m.ID, "error", err)
 		return
+	}
+	// D3: закрытие инцидента монитора закрывает его группу (Р5), если она
+	// была; страховка от пропуска — sweep (§4.4).
+	if resolved && d.IncidentGroups != nil {
+		if err := d.IncidentGroups.OnRootClosed(ctx, "uptime", inc.ID); err != nil {
+			slog.Error("uptime: detector: group root closed failed", "incident_id", inc.ID, "error", err)
+		}
 	}
 	// !inc.NotifiedOpen — recovery ("up") is only sent to incidents whose
 	// opening ("down") actually went out. This is a single reliable gate for
