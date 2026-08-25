@@ -360,7 +360,7 @@ templ hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool) {
 		<span class={ hostStatusBadgeClass("problem") }>{ i18n.T(ctx, "hosts.kind."+inc.Kind) }</span>
 		@incidentSeverityBadge(inc.Severity)
 		if inc.SuppressedByDep {
-			<span class="badge">{ i18n.T(ctx, "feed.badge.suppressed_by_dep") }</span>
+			<span class="badge">{ i18n.T(ctx, "incident.badge.suppressed_by_dep") }</span>
 		}
 		{ host.ValueLabel(ctx, inc.Kind, inc.CurrentValue) }
 		if inc.Detail != "" {
@@ -376,7 +376,7 @@ templ hostIncidentRow(inc host.Incident) {
 		<td>
 			@incidentStatusBadge(inc.Status)
 			if inc.SuppressedByDep {
-				<span class="badge">{ i18n.T(ctx, "feed.badge.suppressed_by_dep") }</span>
+				<span class="badge">{ i18n.T(ctx, "incident.badge.suppressed_by_dep") }</span>
 			}
 		</td>
 		<td>{ i18n.T(ctx, "hosts.kind."+inc.Kind) }</td>

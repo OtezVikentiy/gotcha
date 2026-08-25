@@ -108,7 +108,7 @@ func TestGroupCardEmptyMembers(t *testing.T) {
 	if !strings.Contains(html, "host 0 · uptime 0 · metric 0 · slo 0") {
 		t.Errorf("empty group card composition hint wrong: %s", html)
 	}
-	if strings.Contains(html, "<tr>") {
+	if strings.Contains(html, "<tbody><tr>") {
 		t.Errorf("empty group card must not render any member row: %s", html)
 	}
 }
@@ -124,7 +124,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	if strings.Contains(plain, "·") {
 		t.Errorf("row without SubKind must not render the hint separator: %s", plain)
 	}
-	if strings.Contains(plain, "подавлен: родитель недоступен") || strings.Contains(plain, "подтверждён") {
+	if strings.Contains(plain, "подавлен: родитель недоступен") || strings.Contains(plain, "Подтверждён") {
 		t.Errorf("plain row must not show suppression/ack badges: %s", plain)
 	}
 
@@ -141,14 +141,14 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	if !strings.Contains(suppressedHTML, "подавлен: родитель недоступен") {
 		t.Errorf("suppressed row must show the badge: %s", suppressedHTML)
 	}
-	if strings.Contains(suppressedHTML, "подтверждён") {
+	if strings.Contains(suppressedHTML, "Подтверждён") {
 		t.Errorf("suppressed-only row must not show the ack badge: %s", suppressedHTML)
 	}
 
 	acked := base
 	acked.Acknowledged = true
 	ackedHTML := renderTo(t, feedItemRow(1, acked))
-	if !strings.Contains(ackedHTML, "подтверждён") {
+	if !strings.Contains(ackedHTML, "Подтверждён") {
 		t.Errorf("acked row must show the ack badge: %s", ackedHTML)
 	}
 	if strings.Contains(ackedHTML, "подавлен: родитель недоступен") {
@@ -159,7 +159,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	both.SuppressedByDep = true
 	both.Acknowledged = true
 	bothHTML := renderTo(t, feedItemRow(1, both))
-	if !strings.Contains(bothHTML, "подавлен: родитель недоступен") || !strings.Contains(bothHTML, "подтверждён") {
+	if !strings.Contains(bothHTML, "подавлен: родитель недоступен") || !strings.Contains(bothHTML, "Подтверждён") {
 		t.Errorf("row with both flags must show both badges: %s", bothHTML)
 	}
 }
@@ -193,10 +193,10 @@ func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 		t.Errorf("open group card must render its root label: %s", html)
 	}
 	// Остальные две секции по-прежнему пусты.
-	if !strings.Contains(html, "Открытых инцидентов вне групп нет.") {
+	if !strings.Contains(html, "Открытых инцидентов вне групп нет") {
 		t.Errorf("out-of-group section must still show its empty state: %s", html)
 	}
-	if !strings.Contains(html, "За последние сутки ничего не решалось.") {
+	if !strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("closed section must still show its empty state: %s", html)
 	}
 }
@@ -216,7 +216,7 @@ func TestIncidentFeedOutOfGroupAllSixSources(t *testing.T) {
 		})
 	}
 	html := renderTo(t, IncidentFeed(1, nil, items, nil, nil, ""))
-	if strings.Contains(html, "Открытых инцидентов вне групп нет.") {
+	if strings.Contains(html, "Открытых инцидентов вне групп нет") {
 		t.Errorf("non-empty outOfGroup must not render the empty-state message: %s", html)
 	}
 	for _, src := range sources {
@@ -240,7 +240,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 		[]incidentgroup.FeedItem{{Source: "metric"}},
 	)
 	html := renderTo(t, IncidentFeed(1, nil, nil, []GroupCard{closedGroup}, nil, ""))
-	if strings.Contains(html, "За последние сутки ничего не решалось.") {
+	if strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("closedGroups>0 must suppress the closed-empty message even though out-of-group closed items are empty: %s", html)
 	}
 	if !strings.Contains(html, "Монитор недоступен") {
@@ -257,7 +257,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 	closed := []incidentgroup.FeedItem{{Source: "host", Title: "closed-lone", StartedAt: time.Now()}}
 	html := renderTo(t, IncidentFeed(1, nil, nil, nil, closed, ""))
-	if strings.Contains(html, "За последние сутки ничего не решалось.") {
+	if strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("non-empty closed out-of-group items must suppress the empty message: %s", html)
 	}
 	if !strings.Contains(html, "closed-lone") {
@@ -277,5 +277,110 @@ func TestIncidentFeedProjectIDInLinks(t *testing.T) {
 	}
 	if strings.Contains(html, metricAlertsBasePath(projectID+1)) {
 		t.Errorf("row link must not use an unrelated projectID: %s", html)
+	}
+}
+
+// TestFeedItemHrefHostReusesHostLink — W23: ссылка на хост-источник обязана
+// приходить из hostLink (hosts.templ), а не из собственного дубля пути —
+// иначе побитовое совпадение с TestFeedItemHrefKnownSources было бы просто
+// совпадением значений, а не доказательством переиспользования.
+func TestFeedItemHrefHostReusesHostLink(t *testing.T) {
+	const projectID = int64(9)
+	item := incidentgroup.FeedItem{Source: "host", RefName: "db/replica 1"}
+	got := feedItemHref(projectID, item)
+	want := hostLink(projectID, item.RefName)
+	if got != want {
+		t.Errorf("feedItemHref(host) = %q, want hostLink() output %q", got, want)
+	}
+}
+
+// TestIncidentFeedHelpPanelAndBackLink — W16/W28: страница объясняет себя
+// (helpPanel со ссылкой на /docs/incident-groups) и ведёт обратно на
+// страницу аптайм-инцидентов (/projects/{id}/incidents), а не только
+// наоборот.
+func TestIncidentFeedHelpPanelAndBackLink(t *testing.T) {
+	const projectID = int64(5)
+	html := renderTo(t, IncidentFeed(projectID, nil, nil, nil, nil, ""))
+	if !strings.Contains(html, `class="help-panel"`) {
+		t.Errorf("page must render the help panel: %s", html)
+	}
+	if !strings.Contains(html, `href="/docs/incident-groups"`) {
+		t.Errorf("help panel must link to the incident-groups guide: %s", html)
+	}
+	wantBackHref := `href="` + incidentsPath(projectID) + `"`
+	if !strings.Contains(html, wantBackHref) {
+		t.Errorf("feed must link back to %s: missing %q in %s", incidentsPath(projectID), wantBackHref, html)
+	}
+	if !strings.Contains(html, "Инциденты</a>") {
+		t.Errorf("back link text must be the localized nav.incidents label: %s", html)
+	}
+}
+
+// TestIncidentFeedTableHeadColumns — W19: таблицы состава группы, вне групп
+// и закрытых внегрупповых обязаны нести подписи колонок (thead), а не
+// голые 4 колонки без заголовка.
+func TestIncidentFeedTableHeadColumns(t *testing.T) {
+	group := NewGroupCard(
+		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
+		[]incidentgroup.FeedItem{{Source: "host"}},
+	)
+	outOfGroup := []incidentgroup.FeedItem{{Source: "uptime", Title: "m1", StartedAt: time.Now()}}
+	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
+	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, ""))
+
+	wantHeaders := []string{"Источник", "Название", "Статус", "Начало"}
+	// 3 непустых таблицы (состав группы, вне групп, закрытые) — по одной
+	// шапке на каждую: считаем вхождения ровно 3 на колонку, не "хотя бы
+	// одна", иначе мутация, потерявшая @feedTableHead в одном из трёх мест,
+	// прошла бы незамеченной.
+	for _, h := range wantHeaders {
+		want := `<th scope="col">` + h + `</th>`
+		if got := strings.Count(html, want); got != 3 {
+			t.Errorf("column header %q: found %d times, want 3 (group/out-of-group/closed): %s", h, got, html)
+		}
+	}
+}
+
+// TestIncidentFeedDistinctAriaLabels — W20: скролл-регионы состава группы,
+// внегрупповых и закрытых обязаны иметь РАЗНЫЕ aria-label, иначе диктор не
+// отличает их друг от друга (раньше все три несли "Лента инцидентов").
+func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
+	group := NewGroupCard(
+		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
+		[]incidentgroup.FeedItem{{Source: "host"}},
+	)
+	outOfGroup := []incidentgroup.FeedItem{{Source: "uptime", Title: "m1", StartedAt: time.Now()}}
+	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
+	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, ""))
+
+	groupLabel := `aria-label="Состав группы"`
+	outLabel := `aria-label="Вне групп"`
+	closedLabelWanted := `aria-label="Недавно решённые"`
+	for _, want := range []string{groupLabel, outLabel, closedLabelWanted} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing scroll region %s: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `aria-label="Лента инцидентов"`) {
+		t.Errorf("no scroll region should still carry the old shared page-title label: %s", html)
+	}
+}
+
+// TestIncidentFeedEmptyStatesUseEmptyStateComponent — W18: пустые секции
+// рендерятся через @emptyState (иконка + заголовок + текст), а не голым
+// <p class="hint">.
+func TestIncidentFeedEmptyStatesUseEmptyStateComponent(t *testing.T) {
+	html := renderTo(t, IncidentFeed(1, nil, nil, nil, nil, ""))
+	if got := strings.Count(html, `class="empty-state"`); got != 3 {
+		t.Errorf("all 3 sections must render @emptyState when empty: got %d, want 3: %s", got, html)
+	}
+	if got := strings.Count(html, `href="#i-activity"`); got != 3 {
+		t.Errorf("empty states must use the activity icon: got %d uses, want 3: %s", got, html)
+	}
+	// Единственный оставшийся <p class="hint"> — ссылка назад на /incidents
+	// под <h1> (не относится к пустым состояниям); если бы эмпти-стейты
+	// откатились на старый голый абзац, счёт вырос бы до 4.
+	if got := strings.Count(html, `<p class="hint">`); got != 1 {
+		t.Errorf("only the back-link hint paragraph should remain, empty sections must use @emptyState: got %d <p class=\"hint\"> blocks, want 1: %s", got, html)
 	}
 }

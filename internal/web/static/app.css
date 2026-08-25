@@ -4669,3 +4669,59 @@ input[type="radio"]:focus-visible {
 .preview-list li {
 	color: var(--text-dim);
 }
+
+/* -- Incident feed (/projects/{id}/incident-feed, D3, §6.1) -- сводная
+   лента с корреляцией: открытые/закрытые группы — .card под <details>
+   (состав раскрывается на месте, без JS), внегрупповые и закрытые
+   инциденты — обычные .card/.table-scroll/.data-table, для которых
+   отдельных правил не нужно. Здесь — только раскладка summary группы и
+   зазор между стопкой карточек: .card сам по себе margin не даёт (см.
+   .settings-grid > .card { margin: 0 }), а несколько групп подряд иначе
+   слипаются без воздуха. */
+.incident-feed .feed-group {
+	margin-bottom: 12px;
+}
+.incident-feed .feed-group:last-child {
+	margin-bottom: 0;
+}
+/* Тот же приём, что у .assign-control: список раскрывается нативным
+   <details>, браузерный треугольник спрятан, свой — через ::after, потому
+   что summary — не одна текстовая строка (имя корня + счётчики состава +
+   время + бейдж «решена»), а flex-строка, и margin-left:auto (как у
+   .card-header-action) прижимает стрелку к правому краю независимо от
+   переноса. */
+.incident-feed .feed-group > summary {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 10px;
+	list-style: none;
+	cursor: pointer;
+	padding: 2px 6px;
+	margin: -2px -6px;
+	border-radius: var(--radius);
+}
+.incident-feed .feed-group > summary::-webkit-details-marker {
+	display: none;
+}
+.incident-feed .feed-group > summary:hover {
+	background: var(--surface-2);
+}
+.incident-feed .feed-group > summary::after {
+	content: "";
+	width: 0;
+	height: 0;
+	margin-left: auto;
+	align-self: center;
+	flex: 0 0 auto;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	border-top: 5px solid var(--text-dim);
+	transition: transform 0.15s ease;
+}
+.incident-feed .feed-group[open] > summary::after {
+	transform: rotate(180deg);
+}
+.incident-feed .feed-group .table-scroll {
+	margin-top: 10px;
+}

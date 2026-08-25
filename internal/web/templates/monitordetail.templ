@@ -145,7 +145,7 @@ templ incidentRow(inc uptime.Incident) {
 		<td>
 			<span class={ incidentStatusBadgeClass(inc) }>{ i18n.T(ctx, incidentStatusTextKey(inc)) }</span>
 			if inc.SuppressedByDep {
-				<span class="badge">{ i18n.T(ctx, "feed.badge.suppressed_by_dep") }</span>
+				<span class="badge">{ i18n.T(ctx, "incident.badge.suppressed_by_dep") }</span>
 			}
 		</td>
 		<td>@relativeTime(inc.StartedAt)</td>
