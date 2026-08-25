@@ -87,6 +87,14 @@ type Notifier interface {
 // явного приведения типов.
 type depChecker interface {
 	HasParent(ctx context.Context, kind string, nodeID int64) (bool, error)
+
+	// DownRoot — топовый упавший предок узла (тот же метод, каким
+	// incidentgroup.Grouper.Roots резолвит членство, — прод держит на нём
+	// ОДИН инстанс *depsuppress.Suppressor, см. main.go). Нужен
+	// groupRootOpened (Р3-каскад, W25): узнать ФАКТИЧЕСКИЙ down-корень,
+	// когда только что открывшийся инцидент сам присоединился членом чужой
+	// группы, а не считать корнем узел собственного инцидента.
+	DownRoot(ctx context.Context, kind string, nodeID int64) (rootKind string, rootID int64, found bool, err error)
 }
 
 // groupHook — членство/корни групп инцидентов (D3, incidentgroup.Grouper).
@@ -856,16 +864,60 @@ func (e *Evaluator) groupGate(ctx context.Context, in Incident, h Host) (attache
 	return attached, attached && informing
 }
 
-// groupRootOpened — silent-инцидент, НЕ присоединившийся членом (нет
-// упавшего предка), — кандидат в корни собственной группы: ретро-перебор
-// уже открытых инцидентов проекта (Р7). Зовётся и для инцидента, открытого
+// groupRootOpened — ретро-перебор уже открытых инцидентов проекта (Р7) при
+// появлении нового упавшего узла в графе. Зовётся и для инцидента, открытого
 // в maintenance: немой корень собирает состав, гейт уведомлений членов
 // решает notified_open (Р4).
+//
+// attachedAsMember различает ДВЕ причины запускать ретро-перебор, а не
+// повод его пропустить:
+//   - false — h сам корень собственной группы (нет упавшего предка):
+//     ретро-перебор по h.ID/in, как раньше;
+//   - true — h присоединился членом ЧУЖОЙ группы (W25, каскад сверху вниз).
+//     Раньше это было условием ВЫХОДА — из-за него при падении
+//     ПРОМЕЖУТОЧНОГО узла (h ушёл в silent под уже упавшим предком A)
+//     ретро-перебор не запускался вовсе, и дети h, чьи инциденты открылись
+//     ДО падения h, оставались вне группы навсегда: их собственный Attach
+//     уже отработал раньше (DownRoot тогда не находил down-предка через h,
+//     он ещё не упал), а OnRootOpened корня A был вызван ещё раньше, когда
+//     путь через h ещё не был «упавшим». Падение h — новое событие в графе
+//     down-путей, поэтому ретро-перебор обязан запуститься ЗАНОВО, но по
+//     ФАКТИЧЕСКОМУ корню каскада (A), не по h — иначе он не найдёт ни
+//     одного кандидата: их DownRoot резолвится в A, не в h.
 func (e *Evaluator) groupRootOpened(ctx context.Context, in Incident, h Host, attachedAsMember bool) {
-	if e.IncidentGroups == nil || in.Kind != "silent" || attachedAsMember {
+	if e.IncidentGroups == nil || in.Kind != "silent" {
 		return
 	}
-	if err := e.IncidentGroups.OnRootOpened(ctx, "host", in.ID, "host", h.ID, h.ProjectID); err != nil {
+	rootSource, rootIncidentID, rootKind, rootID := "host", in.ID, "host", h.ID
+	if attachedAsMember {
+		if e.Dep == nil {
+			return // без DownRoot фактический корень узнать нечем
+		}
+		rk, rid, found, err := e.Dep.DownRoot(ctx, "host", h.ID)
+		if err != nil {
+			slog.Error("host evaluator: down root lookup failed", "incident_id", in.ID, "error", err)
+			return
+		}
+		if !found || rk != "host" {
+			// Кросс-видовой корень (monitor) или гонка «корень уже
+			// закрылся» — вне охвата: у host.Evaluator нет доступа к
+			// uptime-инцидентам монитора, чтобы найти rootIncidentID
+			// (осознанно отложено, monitor-корень host-каскадов сюда не
+			// заходит и до этой правки).
+			return
+		}
+		rootIn, opened, err := e.Incidents.OpenFor(ctx, rid, "silent")
+		if err != nil {
+			slog.Warn("host evaluator: root incident lookup failed", "host_id", rid, "error", err)
+			return
+		}
+		if !opened {
+			return // корень успел закрыться — sweep уже закрыл группу
+		}
+		rootKind, rootID = rk, rid
+		rootIncidentID = rootIn.ID
+	}
+	if err := e.IncidentGroups.OnRootOpened(ctx, rootSource, rootIncidentID, rootKind, rootID, h.ProjectID); err != nil {
 		slog.Error("host evaluator: group root opened failed", "incident_id", in.ID, "error", err)
 	}
 }

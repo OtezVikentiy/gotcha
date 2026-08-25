@@ -26,6 +26,13 @@ func (m *mockDepChecker) HasParent(_ context.Context, _ string, _ int64) (bool, 
 	return m.hasParent, m.err
 }
 
+// DownRoot — заглушка (R3, W25): тесты этого файла бьют по HasParent/step0,
+// groupRootOpened их не касается (IncidentGroups не задан), но mockDepChecker
+// обязан структурно закрывать depChecker целиком.
+func (m *mockDepChecker) DownRoot(_ context.Context, _ string, _ int64) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
 // TestOpenUnackedExcludesSuppressed — планировщик эскалации (T7) не должен
 // видеть инциденты, подавленные деп-планировщиком (T5): OpenUnacked
 // фильтрует их по suppressed_by_dep, как требует Step 1 брифа Task 4.

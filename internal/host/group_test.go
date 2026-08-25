@@ -243,7 +243,7 @@ func TestOpenUnackedGreatestAfterGroupResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "host", member.ID, grp.ID); err != nil {
+	if _, err := store.SetGroup(ctx, pid, "host", member.ID, grp.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 	if ok, err := store.Resolve(ctx, "host", rootInc); err != nil || !ok {
@@ -290,7 +290,7 @@ func TestOpenUnackedExcludesOpenGroupMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "host", member.ID, grp.ID); err != nil {
+	if _, err := store.SetGroup(ctx, pid, "host", member.ID, grp.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
@@ -513,7 +513,7 @@ func TestSchedulerNoBurstAfterGroupResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "host", member.ID, grp.ID); err != nil {
+	if _, err := store.SetGroup(ctx, pid, "host", member.ID, grp.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 	// Корень восстановился: его инцидент закрыт (не мешает выборке
@@ -553,5 +553,82 @@ func TestSchedulerNoBurstAfterGroupResolve(t *testing.T) {
 	sched.Tick(ctx) // Tick №2 сразу следом: step1 (delay 10м) НЕ дью
 	if got := stepNotifier.sentSteps(); len(got) != 1 {
 		t.Fatalf("после Tick №2 ушли ступени %v, want по-прежнему [0]: step1 полетел очередью — elapsed считается от started_at, а не от resolved_at группы (залп BLOCKER-1)", got)
+	}
+}
+
+// TestEvaluatorCascadeIntermediateRetroAttachesGrandchild — «каскад сверху
+// вниз» (R3, W25): A — корень, уже упавший; B — dep-child A, падает
+// ПОЗЖЕ; C — dep-child B, чей disk-инцидент открылся ДО падения B. До этой
+// правки groupRootOpened выходила при attachedAsMember=true (B
+// присоединился членом группы A) и ретро-перебор не запускался вовсе — C
+// оставался вне группы навсегда: DownRoot(C) в момент открытия disk-
+// инцидента C ещё не находил down-предка (B тогда был жив), а
+// OnRootOpened(A) отработал ещё раньше, до падения B, и заново не звался.
+// Падение B обязано перезапустить ретро-перебор, но по ФАКТИЧЕСКОМУ корню
+// каскада (A), не по узлу B.
+func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedEvalProject(t, pool)
+	a := seedEvalHost(t, pool, pid, "gw-01")
+	b := seedEvalHost(t, pool, pid, "sw-01")
+	c := seedEvalHost(t, pool, pid, "web-01")
+	seedDepEdge(t, pool, pid, a.ID, b.ID)
+	seedDepEdge(t, pool, pid, b.ID, c.ID)
+
+	// C: disk-инцидент открыт ДО того, как B ушёл в silent.
+	memberInc := seedOpenDiskIncident(t, pool, pid, c.ID)
+
+	// Прод держит ОДИН Suppressor на процесс и для Grouper.Roots, и для
+	// Evaluator.Dep (см. main.go, depSuppressor) — общий 5с-кеш снимка;
+	// тест обязан воспроизвести то же разделение, иначе DownRoot внутри
+	// groupRootOpened не сможет узнать фактический корень каскада.
+	sup := depsuppress.NewSuppressor(pool)
+	notifier := &fakeNotifier{}
+	eval := newEvaluator(pool, ch, notifier)
+	eval.Dep = sup
+	eval.IncidentGroups = &incidentgroup.Grouper{
+		Pool:  pool,
+		Store: incidentgroup.NewStore(pool),
+		Roots: sup,
+	}
+
+	// Тик 1: A замолкает, становится корнем собственной группы.
+	setHostLastSeen(t, pool, a.ID, time.Now().UTC().Add(-10*time.Minute))
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick (A down): %v", err)
+	}
+	if gid := readGroupID(t, pool, memberInc); gid != nil {
+		t.Fatalf("до падения B C уже в группе (gid=%v) — сценарий теста сломан, B ещё жив", *gid)
+	}
+
+	// Тик 2: B тоже замолкает (падение ПРОМЕЖУТОЧНОГО узла).
+	setHostLastSeen(t, pool, b.ID, time.Now().UTC().Add(-10*time.Minute))
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick (B down): %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	rootIn, open, err := incidents.OpenFor(ctx, a.ID, "silent")
+	if err != nil || !open {
+		t.Fatalf("OpenFor A silent: open=%v err=%v", open, err)
+	}
+
+	gid := readGroupID(t, pool, memberInc)
+	if gid == nil {
+		t.Fatal("group_id IS NULL — падение промежуточного узла B не ретро-присоединило C, открытого до падения B")
+	}
+	var gotRootInc int64
+	if err := pool.QueryRow(ctx,
+		`SELECT root_incident_id FROM incident_groups WHERE id = $1`, *gid).Scan(&gotRootInc); err != nil {
+		t.Fatalf("read group root: %v", err)
+	}
+	if gotRootInc != rootIn.ID {
+		t.Errorf("группа якорится на инцидент %d, want фактический корень каскада — silent-инцидент A (%d)", gotRootInc, rootIn.ID)
 	}
 }
