@@ -101,8 +101,64 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		t.Fatalf("incident_groups after project delete = %d, want 0", left)
 	}
 
-	// 7) Down откатывается.
+	// Соседние данные для проверки шага 7: исходный проект уже удалён
+	// каскадом в шаге 6, поэтому заводим второй проект/хост/инцидент —
+	// они должны пережить откат down-миграции нетронутыми (DROP COLUMN /
+	// DROP TABLE не должны задеть ничего, кроме своих объектов).
+	var org2, projectID2, hostID2, incidentID2 int64
+	mustScan(t, pool, &org2,
+		"INSERT INTO organizations (slug,name,event_quota) VALUES ('m79b','M79b',0) RETURNING id")
+	mustScan(t, pool, &projectID2,
+		"INSERT INTO projects (org_id,slug,name) VALUES ($1,'m79b','M79b') RETURNING id", org2)
+	mustScan(t, pool, &hostID2,
+		"INSERT INTO hosts (project_id, name) VALUES ($1,'h2') RETURNING id", projectID2)
+	mustScan(t, pool, &incidentID2,
+		`INSERT INTO host_incidents (project_id, host_id, kind, status)
+		 VALUES ($1,$2,'silent','open') RETURNING id`, projectID2, hostID2)
+
+	// 7) Down откатывается — и не просто «без ошибки»: проверяем состояние
+	// схемы после отката (W36) и сохранность соседних данных.
 	if err := db.MigratePGTo(dsn, 78); err != nil {
 		t.Fatalf("migrate down to 78: %v", err)
+	}
+
+	if ok, err := tableExistsIn(ctx, pool, "public", "incident_groups"); err != nil {
+		t.Fatalf("check incident_groups table: %v", err)
+	} else if ok {
+		t.Fatal("таблица incident_groups должна исчезнуть после отката до 78")
+	}
+
+	for _, table := range []string{"host_incidents", "incidents", "metric_incidents", "slo_incidents"} {
+		ok, err := columnExistsIn(ctx, pool, "public", table, "group_id")
+		if err != nil {
+			t.Fatalf("check %s.group_id: %v", table, err)
+		}
+		if ok {
+			t.Errorf("колонка %s.group_id должна исчезнуть после отката до 78", table)
+		}
+	}
+
+	// Соседние данные (проект/хост/инцидент, заведённые непосредственно
+	// перед откатом) на месте и не пострадали.
+	var hostName string
+	if err := pool.QueryRow(ctx, "SELECT name FROM hosts WHERE id=$1", hostID2).Scan(&hostName); err != nil {
+		t.Fatalf("host не пережил откат: %v", err)
+	}
+	if hostName != "h2" {
+		t.Fatalf("hosts.name после отката = %q, want h2", hostName)
+	}
+	var incidentStatus string
+	if err := pool.QueryRow(ctx, "SELECT status FROM host_incidents WHERE id=$1", incidentID2).Scan(&incidentStatus); err != nil {
+		t.Fatalf("host_incidents не пережил откат: %v", err)
+	}
+	if incidentStatus != "open" {
+		t.Fatalf("host_incidents.status после отката = %q, want open", incidentStatus)
+	}
+	var projName string
+	if err := pool.QueryRow(ctx, "SELECT name FROM projects WHERE id=$1", projectID2).Scan(&projName); err != nil {
+		t.Fatalf("project не пережил откат: %v", err)
+	}
+	if projName != "M79b" {
+		t.Fatalf("projects.name после отката = %q, want M79b", projName)
 	}
 }
