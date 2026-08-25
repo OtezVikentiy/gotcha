@@ -95,19 +95,7 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 
 	url := fmt.Sprintf("%s/monitors/%d", n.BaseURL, ev.Monitor.ID)
 	subject := subjectFor(ctx, ev)
-	// Строка «Зависимых узлов: N» — только в down-событии корня (D3 Р9):
-	// N — задекларированные дети одного уровня (нейтральная формулировка
-	// MINOR-7). Пусто при N=0, ошибке или отсутствии счётчика — уведомление
-	// не должно зависеть от D3.
-	depsLine := ""
-	if n.DepCounts != nil && ev.Kind == "down" {
-		if cnt, err := n.DepCounts.DeclaredChildrenCount(ctx, "monitor", ev.Monitor.ID); err != nil {
-			slog.Warn("uptime: notify: declared children count failed", "monitor_id", ev.Monitor.ID, "error", err)
-		} else if cnt > 0 {
-			depsLine = i18n.Tf(ctx, "notify.uptime.deps_affected", "count", strconv.Itoa(cnt))
-		}
-	}
-	body := bodyFor(ctx, ev, url, depsLine)
+	body := bodyFor(ctx, ev, url, n.depsLine(ctx, ev))
 
 	var errs error
 	for _, ch := range channels {
@@ -146,6 +134,25 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 		}
 	}
 	return errs
+}
+
+// depsLine — строка «Зависимых узлов: N» для down-события монитора (D3 Р9):
+// N — число задекларированных детей одного уровня (нейтральная формулировка
+// MINOR-7). Пусто при N=0, ошибке или отсутствии счётчика — уведомление не
+// должно зависеть от D3. Зеркало host.HostNotifier.depsLine.
+func (n *OutboxNotifier) depsLine(ctx context.Context, ev Event) string {
+	if n.DepCounts == nil || ev.Kind != "down" {
+		return ""
+	}
+	cnt, err := n.DepCounts.DeclaredChildrenCount(ctx, "monitor", ev.Monitor.ID)
+	if err != nil {
+		slog.Warn("uptime: notify: declared children count failed", "monitor_id", ev.Monitor.ID, "error", err)
+		return ""
+	}
+	if cnt == 0 {
+		return ""
+	}
+	return i18n.Tf(ctx, "notify.uptime.deps_affected", "count", strconv.Itoa(cnt))
 }
 
 // subjectFor строит тему письма/сообщения по виду события из каталога i18n —

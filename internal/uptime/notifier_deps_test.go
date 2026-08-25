@@ -41,3 +41,51 @@ func TestBodyForDepsLine(t *testing.T) {
 		t.Fatalf("non-down body must ignore deps line, got %q", body)
 	}
 }
+
+// stubDepCounter — фиксированный ответ depsLine, запоминающий аргументы
+// вызова: без этого подмена kind/nodeID прошла бы мимо тестов.
+type stubDepCounter struct {
+	cnt     int
+	err     error
+	gotKind string
+	gotNode int64
+}
+
+func (s *stubDepCounter) DeclaredChildrenCount(_ context.Context, kind string, nodeID int64) (int, error) {
+	s.gotKind, s.gotNode = kind, nodeID
+	return s.cnt, s.err
+}
+
+// TestUptimeNotifierDepsLineGate — гейты depsLine монитора: строка есть
+// только у down-события с ненулевым счётчиком; nil-счётчик, иной вид
+// события, ноль детей и ошибка счётчика дают пустую строку (fail-open, Р9).
+// Отдельно пинуются аргументы счётчика — («monitor», ID монитора).
+func TestUptimeNotifierDepsLineGate(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	down := Event{Kind: "down", Monitor: Monitor{ID: 7, Name: "api-prod"}}
+
+	counter := &stubDepCounter{cnt: 2}
+	n := &OutboxNotifier{DepCounts: counter}
+	if got := n.depsLine(ctx, down); got != "\nЗависимых узлов: 2" {
+		t.Fatalf("down with 2 children: got %q", got)
+	}
+	if counter.gotKind != "monitor" || counter.gotNode != down.Monitor.ID {
+		t.Fatalf("counter must be asked about (monitor, %d), got (%q, %d)",
+			down.Monitor.ID, counter.gotKind, counter.gotNode)
+	}
+
+	up := down
+	up.Kind = "up"
+	if got := n.depsLine(ctx, up); got != "" {
+		t.Fatalf("non-down kind must not get deps line, got %q", got)
+	}
+	if got := (&OutboxNotifier{}).depsLine(ctx, down); got != "" {
+		t.Fatalf("nil DepCounts must be silent, got %q", got)
+	}
+	if got := (&OutboxNotifier{DepCounts: &stubDepCounter{cnt: 0}}).depsLine(ctx, down); got != "" {
+		t.Fatalf("zero children must be silent, got %q", got)
+	}
+	if got := (&OutboxNotifier{DepCounts: &stubDepCounter{err: context.DeadlineExceeded}}).depsLine(ctx, down); got != "" {
+		t.Fatalf("counter error must fail open with empty line, got %q", got)
+	}
+}

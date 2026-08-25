@@ -31,13 +31,17 @@ func TestHostBodyDepsLine(t *testing.T) {
 	}
 }
 
-// stubDepCounter — фиксированный ответ для depsLine.
+// stubDepCounter — фиксированный ответ для depsLine, запоминающий аргументы
+// вызова: без этого подмена kind/nodeID прошла бы мимо тестов.
 type stubDepCounter struct {
-	cnt int
-	err error
+	cnt     int
+	err     error
+	gotKind string
+	gotNode int64
 }
 
-func (s stubDepCounter) DeclaredChildrenCount(context.Context, string, int64) (int, error) {
+func (s *stubDepCounter) DeclaredChildrenCount(_ context.Context, kind string, nodeID int64) (int, error) {
+	s.gotKind, s.gotNode = kind, nodeID
 	return s.cnt, s.err
 }
 
@@ -49,9 +53,14 @@ func TestHostNotifierDepsLineGate(t *testing.T) {
 	h := Host{ID: 7, Name: "gw-1"}
 	silent := Incident{Kind: "silent"}
 
-	n := &HostNotifier{DepCounts: stubDepCounter{cnt: 3}}
+	counter := &stubDepCounter{cnt: 3}
+	n := &HostNotifier{DepCounts: counter}
 	if got := n.depsLine(ctx, silent, h); got != "\nЗависимых узлов: 3" {
 		t.Fatalf("silent with 3 children: got %q", got)
+	}
+	if counter.gotKind != "host" || counter.gotNode != h.ID {
+		t.Fatalf("counter must be asked about (host, %d), got (%q, %d)",
+			h.ID, counter.gotKind, counter.gotNode)
 	}
 	if got := n.depsLine(ctx, Incident{Kind: "disk"}, h); got != "" {
 		t.Fatalf("non-silent kind must not get deps line, got %q", got)
@@ -59,10 +68,10 @@ func TestHostNotifierDepsLineGate(t *testing.T) {
 	if got := (&HostNotifier{}).depsLine(ctx, silent, h); got != "" {
 		t.Fatalf("nil DepCounts must be silent, got %q", got)
 	}
-	if got := (&HostNotifier{DepCounts: stubDepCounter{cnt: 0}}).depsLine(ctx, silent, h); got != "" {
+	if got := (&HostNotifier{DepCounts: &stubDepCounter{cnt: 0}}).depsLine(ctx, silent, h); got != "" {
 		t.Fatalf("zero children must be silent, got %q", got)
 	}
-	if got := (&HostNotifier{DepCounts: stubDepCounter{err: context.DeadlineExceeded}}).depsLine(ctx, silent, h); got != "" {
+	if got := (&HostNotifier{DepCounts: &stubDepCounter{err: context.DeadlineExceeded}}).depsLine(ctx, silent, h); got != "" {
 		t.Fatalf("counter error must fail open with empty line, got %q", got)
 	}
 }
