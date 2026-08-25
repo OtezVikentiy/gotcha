@@ -453,8 +453,8 @@ func TestFeedItemRowHeldByGroupBadge(t *testing.T) {
 func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 	started := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	resolved := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	startedDT := `datetime="` + started.Format(time.RFC3339) + `"`
-	resolvedDT := `datetime="` + resolved.Format(time.RFC3339) + `"`
+	startedDT := `datetime="2026-01-01T10:00:00Z"`
+	resolvedDT := `datetime="2026-01-01T12:00:00Z"`
 
 	open := incidentgroup.FeedItem{Source: "host", StartedAt: started}
 	openHTML := renderTo(t, feedItemRow(1, open, nil, true))
@@ -545,8 +545,8 @@ func TestGroupCardRootSeverityBadge(t *testing.T) {
 func TestGroupCardShowsResolvedTimeNotStartedAt(t *testing.T) {
 	started := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	resolved := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	startedDT := `datetime="` + started.Format(time.RFC3339) + `"`
-	resolvedDT := `datetime="` + resolved.Format(time.RFC3339) + `"`
+	startedDT := `datetime="2026-01-01T10:00:00Z"`
+	resolvedDT := `datetime="2026-01-01T12:00:00Z"`
 
 	open := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: started}}, nil)
 	openHTML := renderTo(t, groupCard(1, open, true))
