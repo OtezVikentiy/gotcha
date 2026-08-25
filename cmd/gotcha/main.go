@@ -458,6 +458,9 @@ func run() error {
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// DepCounts — строка «Зависимых узлов: N» в down-уведомлении
+			// корня (D3 Р9); тот же единственный Suppressor, что и у гейтов.
+			DepCounts: depSuppressor,
 		}
 		uptimeDetector = &uptime.Detector{
 			Svc: uptimeSvc, Notifier: uptimeNotifier,
@@ -1292,6 +1295,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			Hosts:     host.NewStore(pg),
 			Settings:  host.NewSettingsService(pg),
 			Pool:      pg,
+			// DepCounts — строка «Зависимых узлов: N» в open-уведомлении
+			// silent-корня (D3 Р9); тот же единственный Suppressor, что и у
+			// Dep выше. У Retirer-экземпляра HostNotifier (entityJanitor)
+			// поле остаётся nil намеренно — он шлёт только retire/close.
+			DepCounts: dep,
 		},
 		Interval: time.Duration(cfg.HostEvalInterval) * time.Second,
 	}

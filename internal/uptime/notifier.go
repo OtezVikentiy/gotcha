@@ -14,6 +14,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
+// depCounter — счётчик задекларированных детей узла (D3 Р9,
+// depsuppress.Suppressor.DeclaredChildrenCount). Локальная duck-typed копия,
+// как depChecker в detector.go; nil-значение законно — уведомления не
+// зависят от D3.
+type depCounter interface {
+	DeclaredChildrenCount(ctx context.Context, kind string, nodeID int64) (int, error)
+}
+
 // OutboxNotifier — реализация Notifier поверх notify.Outbox: доставляет
 // Event, ставя по одной задаче на каждый включённый канал, точно так же,
 // как alert.Evaluator делает это для issue-алертов (см. evaluator.go —
@@ -39,6 +47,10 @@ type OutboxNotifier struct {
 	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
 	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
 	Locale i18n.Locale
+
+	// DepCounts — источник числа задекларированных детей монитора для строки
+	// «Зависимых узлов: N» в down-уведомлении (D3 Р9). nil — строки нет.
+	DepCounts depCounter
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал
@@ -83,7 +95,19 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 
 	url := fmt.Sprintf("%s/monitors/%d", n.BaseURL, ev.Monitor.ID)
 	subject := subjectFor(ctx, ev)
-	body := bodyFor(ctx, ev, url)
+	// Строка «Зависимых узлов: N» — только в down-событии корня (D3 Р9):
+	// N — задекларированные дети одного уровня (нейтральная формулировка
+	// MINOR-7). Пусто при N=0, ошибке или отсутствии счётчика — уведомление
+	// не должно зависеть от D3.
+	depsLine := ""
+	if n.DepCounts != nil && ev.Kind == "down" {
+		if cnt, err := n.DepCounts.DeclaredChildrenCount(ctx, "monitor", ev.Monitor.ID); err != nil {
+			slog.Warn("uptime: notify: declared children count failed", "monitor_id", ev.Monitor.ID, "error", err)
+		} else if cnt > 0 {
+			depsLine = i18n.Tf(ctx, "notify.uptime.deps_affected", "count", strconv.Itoa(cnt))
+		}
+	}
+	body := bodyFor(ctx, ev, url, depsLine)
 
 	var errs error
 	for _, ch := range channels {
@@ -148,13 +172,14 @@ func subjectFor(ctx context.Context, ev Event) string {
 
 // bodyFor строит человекочитаемый текст уведомления: причина, регионы,
 // время — плюс ссылка на монитор. Каталог и локаль — как у subjectFor.
-func bodyFor(ctx context.Context, ev Event, url string) string {
+func bodyFor(ctx context.Context, ev Event, url, depsLine string) string {
 	name := ev.Monitor.Name
 	regions := strings.Join(ev.Regions, ", ")
 	switch ev.Kind {
 	case "down":
 		return i18n.Tf(ctx, "notify.uptime.body.down",
-			"name", name, "cause", ev.Cause, "regions", regions, "url", url)
+			"name", name, "cause", ev.Cause, "regions", regions,
+			"deps_line", depsLine, "url", url)
 	case "up":
 		return i18n.Tf(ctx, "notify.uptime.body.up",
 			"name", name, "duration", formatDuration(ev.DurationSeconds), "url", url)
