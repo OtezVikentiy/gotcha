@@ -176,12 +176,76 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 		t.Fatalf("OpenOutOfGroup must NOT contain grouped member %d", groupedInc)
 	}
 	// Корень группы сам никогда не SetGroup'ится (только члены — см.
-	// Grouper.Attach): его собственная host_incidents-строка остаётся с
-	// group_id NULL и продолжает жить как обычный открытый инцидент (та же
-	// логика, что и видимость корня в host.OpenUnacked, см. janitor_test.go
-	// TestSweepClosesGroupWhenRootDeleted — прячутся только члены).
+	// Grouper.Attach), но во «Вне групп» его быть не должно: он уже показан
+	// в шапке карточки своей группы, иначе один инцидент виден дважды.
+	if haveRoot {
+		t.Fatalf("OpenOutOfGroup must NOT contain the group's own root incident %d (shown in the group card header)", rootInc)
+	}
+
+	// Осиротевшая группа удалена janitor'ом — карточки больше нет, и корень
+	// обязан вернуться во «Вне групп» обычной строкой.
+	if _, err := pool.Exec(ctx, `DELETE FROM incident_groups WHERE id = $1`, g.ID); err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+	items, err = store.OpenOutOfGroup(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenOutOfGroup after group purge: %v", err)
+	}
+	haveRoot = false
+	for _, it := range items {
+		if it.Source == "host" && it.IncidentID == rootInc {
+			haveRoot = true
+		}
+	}
 	if !haveRoot {
-		t.Fatalf("OpenOutOfGroup must contain the group's own root incident %d (root is never SetGroup'd)", rootInc)
+		t.Fatalf("OpenOutOfGroup must contain root incident %d once its group is purged", rootInc)
+	}
+}
+
+// TestFeedRootNotDuplicatedUptime — тот же запрет дубля для uptime-корня
+// (вторая ветка условия) и для закрытой ленты: корень закрытой группы виден
+// в свёрнутой карточке, во «Вне групп» его нет.
+func TestFeedRootNotDuplicatedUptime(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	var monitorID, rootInc int64
+	mustScan(t, pool, &monitorID, `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,'mon-`+randSlug(t)+`','http',60) RETURNING id`, projectID)
+	mustScan(t, pool, &rootInc, `
+		INSERT INTO incidents (monitor_id, notified_open) VALUES ($1,true) RETURNING id`, monitorID)
+	if _, err := store.EnsureGroup(ctx, projectID, "uptime", rootInc, "monitor", monitorID); err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+
+	items, err := store.OpenOutOfGroup(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenOutOfGroup: %v", err)
+	}
+	for _, it := range items {
+		if it.Source == "uptime" && it.IncidentID == rootInc {
+			t.Fatalf("OpenOutOfGroup must NOT contain uptime root incident %d", rootInc)
+		}
+	}
+
+	// Закрываем корень и группу — корень не должен всплыть в ClosedSince.
+	if _, err := pool.Exec(ctx, `UPDATE incidents SET resolved_at = now() WHERE id = $1`, rootInc); err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if _, err := store.Resolve(ctx, "uptime", rootInc); err != nil {
+		t.Fatalf("Resolve group: %v", err)
+	}
+	closed, err := store.ClosedSince(ctx, projectID, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ClosedSince: %v", err)
+	}
+	for _, it := range closed {
+		if it.Source == "uptime" && it.IncidentID == rootInc {
+			t.Fatalf("ClosedSince must NOT contain uptime root incident %d", rootInc)
+		}
 	}
 }
 
@@ -234,6 +298,24 @@ func TestFeedClosedSince(t *testing.T) {
 	}
 	if haveGrouped {
 		t.Fatalf("ClosedSince must NOT contain grouped closed member %d", groupedInc)
+	}
+
+	// Закрытый корень группы тоже не дублируется: он в шапке свёрнутой
+	// карточки, отдельной строкой в «закрытых» его быть не должно.
+	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc); err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if _, err := store.Resolve(ctx, "host", rootInc); err != nil {
+		t.Fatalf("Resolve group: %v", err)
+	}
+	items, err = store.ClosedSince(ctx, projectID, since, 50)
+	if err != nil {
+		t.Fatalf("ClosedSince after root resolve: %v", err)
+	}
+	for _, it := range items {
+		if it.Source == "host" && it.IncidentID == rootInc {
+			t.Fatalf("ClosedSince must NOT contain closed root incident %d", rootInc)
+		}
 	}
 }
 

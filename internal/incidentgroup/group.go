@@ -272,12 +272,25 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	WHERE pf.project_id = $1 AND ` + profileCond
 }
 
+// hostNotRoot/uptimeNotRoot — «инцидент не является корнем группы».
+// Корню group_id намеренно не проставляется (Grouper.Attach: корень не член
+// собственной группы), поэтому по одному `group_id IS NULL` он попадал бы и в
+// шапку карточки группы, и во «Вне групп» — один инцидент двумя строками.
+// Корнями бывают только host- и uptime-инциденты (rootIncident, §4.1),
+// остальным источникам условие не нужно. Отбор идёт по уникальному индексу
+// (root_source, root_incident_id); группа, удалённая как осиротевшая
+// (janitor purge), корень снова показывает — это верно, карточки уже нет.
+const (
+	hostNotRoot   = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'host' AND g.root_incident_id = hi.id)`
+	uptimeNotRoot = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'uptime' AND g.root_incident_id = i.id)`
+)
+
 // OpenOutOfGroup — открытые ВНЕгрупповые инциденты всех 6 источников
 // (§6.1/2): trace/profile всегда вне групп (Р2 — узла нет).
 func (s *Store) OpenOutOfGroup(ctx context.Context, projectID int64) ([]FeedItem, error) {
 	q := feedProjectQuery(
-		`hi.status = 'open' AND hi.group_id IS NULL`,
-		`i.resolved_at IS NULL AND i.group_id IS NULL`,
+		`hi.status = 'open' AND hi.group_id IS NULL AND `+hostNotRoot,
+		`i.resolved_at IS NULL AND i.group_id IS NULL AND `+uptimeNotRoot,
 		`mi.status = 'open' AND mi.group_id IS NULL`,
 		`si.status = 'open' AND si.group_id IS NULL`,
 		`pr.status = 'open'`,
@@ -295,8 +308,8 @@ func (s *Store) OpenOutOfGroup(ctx context.Context, projectID int64) ([]FeedItem
 // внутри свёрнутых групповых карточек и здесь не дублируются).
 func (s *Store) ClosedSince(ctx context.Context, projectID int64, since time.Time, limit int) ([]FeedItem, error) {
 	q := feedProjectQuery(
-		`hi.status = 'resolved' AND hi.resolved_at >= $2 AND hi.group_id IS NULL`,
-		`i.resolved_at IS NOT NULL AND i.resolved_at >= $2 AND i.group_id IS NULL`,
+		`hi.status = 'resolved' AND hi.resolved_at >= $2 AND hi.group_id IS NULL AND `+hostNotRoot,
+		`i.resolved_at IS NOT NULL AND i.resolved_at >= $2 AND i.group_id IS NULL AND `+uptimeNotRoot,
 		`mi.status = 'resolved' AND mi.resolved_at >= $2 AND mi.group_id IS NULL`,
 		`si.status = 'resolved' AND si.resolved_at >= $2 AND si.group_id IS NULL`,
 		`pr.status = 'resolved' AND pr.resolved_at >= $2`,
