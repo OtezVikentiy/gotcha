@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
@@ -322,8 +324,11 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 }
 
 // TestFeedRootNotDuplicatedUptime — тот же запрет дубля для uptime-корня
-// (вторая ветка условия) и для закрытой ленты: корень закрытой группы виден
-// в свёрнутой карточке, во «Вне групп» его нет.
+// (вторая ветка условия): пока группа открыта, корень во «Вне групп» не
+// показывается (он в шапке карточки открытой группы). Как только группа
+// закрывается, корень должен появиться в ClosedSince (R4, W7-warning) — это
+// уже не дубль с (возможно не отрисованной) карточкой закрытой группы, а
+// защита от исчезновения с ленты целиком.
 func TestFeedRootNotDuplicatedUptime(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -350,7 +355,15 @@ func TestFeedRootNotDuplicatedUptime(t *testing.T) {
 		}
 	}
 
-	// Закрываем корень и группу — корень не должен всплыть в ClosedSince.
+	// Закрываем корень и группу — теперь корень ОБЯЗАН всплыть в ClosedSince
+	// (R4, W7-warning): раньше uptimeNotRoot исключал корень безусловно,
+	// пока хоть какая-то (даже давно закрытая) группа на него ссылалась —
+	// резолвнутый корень резолвнутой группы был виден только в шапке
+	// свёрнутой карточки ClosedGroupsSince и пропадал с ленты целиком, если
+	// сама карточка не отрисовывалась (окно/потолок). uptimeNotRoot теперь
+	// исключает корень только пока его группа ЕЩЁ открыта (см. докблок
+	// hostNotRoot/uptimeNotRoot) — симметрично тому, как notOpenGroupMember
+	// уже трактует обычных членов.
 	if _, err := pool.Exec(ctx, `UPDATE incidents SET resolved_at = now() WHERE id = $1`, rootInc); err != nil {
 		t.Fatalf("resolve root: %v", err)
 	}
@@ -361,10 +374,14 @@ func TestFeedRootNotDuplicatedUptime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClosedSince: %v", err)
 	}
+	var haveRoot bool
 	for _, it := range closed {
 		if it.Source == "uptime" && it.IncidentID == rootInc {
-			t.Fatalf("ClosedSince must NOT contain uptime root incident %d", rootInc)
+			haveRoot = true
 		}
+	}
+	if !haveRoot {
+		t.Fatalf("ClosedSince must contain closed uptime root incident %d once its group is resolved (R4 fix)", rootInc)
 	}
 }
 
@@ -419,8 +436,13 @@ func TestFeedClosedSince(t *testing.T) {
 		t.Fatalf("ClosedSince must NOT contain grouped closed member %d", groupedInc)
 	}
 
-	// Закрытый корень группы тоже не дублируется: он в шапке свёрнутой
-	// карточки, отдельной строкой в «закрытых» его быть не должно.
+	// Закрытый корень группы (R4, W7-warning): раньше hostNotRoot исключал
+	// его из ClosedSince безусловно, пока хоть какая-то (даже давно
+	// закрытая) группа на него ссылалась — он был виден ТОЛЬКО в шапке
+	// свёрнутой карточки ClosedGroupsSince и пропадал с ленты целиком, если
+	// сама карточка не отрисовывалась. Теперь исключение снято, как только
+	// группа закрывается — root ведёт себя как обычный резолвнутый
+	// инцидент источника, симметрично членам (haveGrouped/haveLone выше).
 	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc); err != nil {
 		t.Fatalf("resolve root: %v", err)
 	}
@@ -431,10 +453,82 @@ func TestFeedClosedSince(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClosedSince after root resolve: %v", err)
 	}
+	var haveRoot bool
 	for _, it := range items {
 		if it.Source == "host" && it.IncidentID == rootInc {
-			t.Fatalf("ClosedSince must NOT contain closed root incident %d", rootInc)
+			haveRoot = true
 		}
+	}
+	if !haveRoot {
+		t.Fatalf("ClosedSince must contain closed root incident %d once its group is resolved (R4 fix)", rootInc)
+	}
+}
+
+// TestFeedClosedRootSurvivesCardLimitEviction — сценарий, явно
+// потребованный ревью R4 (W7-warning): ClosedGroupsSince и ClosedSince
+// теперь получают РАЗНЫЕ потолки (W8, incidentfeed.go), и если бы
+// hostNotRoot по-прежнему исключал резолвнутый корень безусловно, у группы,
+// чья карточка не поместилась в потолок ClosedGroupsSince, корень пропадал
+// бы с ленты насовсем — ни в (неотрисованной) карточке, ни в списке
+// закрытых. Заводим 2 закрытые группы, ClosedGroupsSince(..., limit=1)
+// отдаёт только САМУЮ свежую (карточка второй не отрисуется на странице) —
+// и всё равно требуем, чтобы корень ОБЕИХ групп присутствовал в
+// ClosedSince: лимит карточек не должен решать судьбу видимости корня.
+func TestFeedClosedRootSurvivesCardLimitEviction(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+	since := time.Now().Add(-time.Hour)
+
+	closeRootGroup := func(label string) int64 {
+		host := seedHost(t, pool, projectID, label+"-"+randSlug(t))
+		rootInc := seedSilent(t, pool, projectID, host, true)
+		if _, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", host); err != nil {
+			t.Fatalf("EnsureGroup %s: %v", label, err)
+		}
+		mustExec(t, pool, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc)
+		if _, err := store.Resolve(ctx, "host", rootInc); err != nil {
+			t.Fatalf("Resolve %s: %v", label, err)
+		}
+		return rootInc
+	}
+
+	olderRoot := closeRootGroup("evicted")
+	newerRoot := closeRootGroup("kept")
+
+	// Потолок карточек = 1: отрисуется только самая свежая группа (newerRoot).
+	cardGroups, err := store.ClosedGroupsSince(ctx, projectID, since, 1)
+	if err != nil {
+		t.Fatalf("ClosedGroupsSince: %v", err)
+	}
+	if len(cardGroups) != 1 || cardGroups[0].RootIncidentID != newerRoot {
+		t.Fatalf("ClosedGroupsSince(limit=1) = %+v, want exactly the newer group (root %d)", cardGroups, newerRoot)
+	}
+
+	// Лента (потолок отдельный, W8) обязана показать ОБА корня — включая
+	// тот, чья карточка только что была отрезана лимитом ClosedGroupsSince.
+	feedItems, err := store.ClosedSince(ctx, projectID, since, 50)
+	if err != nil {
+		t.Fatalf("ClosedSince: %v", err)
+	}
+	haveOlder, haveNewer := false, false
+	for _, it := range feedItems {
+		if it.Source != "host" {
+			continue
+		}
+		if it.IncidentID == olderRoot {
+			haveOlder = true
+		}
+		if it.IncidentID == newerRoot {
+			haveNewer = true
+		}
+	}
+	if !haveOlder {
+		t.Fatalf("ClosedSince must contain the root %d whose group card was evicted by ClosedGroupsSince's limit", olderRoot)
+	}
+	if !haveNewer {
+		t.Fatalf("ClosedSince must contain the root %d of the group whose card WAS rendered too (intentional dup, see ClosedSince docblock)", newerRoot)
 	}
 }
 
@@ -870,4 +964,192 @@ func TestFeedClosedMemberOfResolvedGroupVisible(t *testing.T) {
 	if !found {
 		t.Fatalf("closed member of a now-resolved group must appear in ClosedSince: %+v", items)
 	}
+}
+
+// TestFeedOpenGroupsLimit — W7: OpenGroups больше не идёт без LIMIT. Заводим
+// MaxOpenGroups+1 открытых групп в одном проекте и проверяем, что стор
+// отдаёт ровно MaxOpenGroups — на доступной ЛЮБОМУ участнику странице
+// (incident-feed, lvlAccess) неограниченная выборка была бы поводом для
+// шторма на большом проекте.
+func TestFeedOpenGroupsLimit(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	for i := 0; i < incidentgroup.MaxOpenGroups+1; i++ {
+		host := seedHost(t, pool, projectID, "og-"+randSlug(t))
+		rootInc := seedSilent(t, pool, projectID, host, true)
+		if _, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", host); err != nil {
+			t.Fatalf("EnsureGroup #%d: %v", i, err)
+		}
+	}
+
+	open, err := store.OpenGroups(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenGroups: %v", err)
+	}
+	if len(open) != incidentgroup.MaxOpenGroups {
+		t.Fatalf("OpenGroups len = %d, want exactly MaxOpenGroups (%d) even though %d groups exist",
+			len(open), incidentgroup.MaxOpenGroups, incidentgroup.MaxOpenGroups+1)
+	}
+}
+
+// TestFeedOpenOutOfGroupLimit — W7: тот же потолок у OpenOutOfGroup.
+// MaxOpenOutOfGroup+1 внегрупповых открытых perf-регрессий (самый дешёвый
+// источник для сидирования — не требует host/monitor), стор обязан отдать
+// не больше MaxOpenOutOfGroup строк.
+func TestFeedOpenOutOfGroupLimit(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	for i := 0; i < incidentgroup.MaxOpenOutOfGroup+1; i++ {
+		mustExec(t, pool, `
+			INSERT INTO perf_regressions (project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
+			VALUES ($1,'endpoint_p95',$2,'duration',100,500,500)`, projectID, "/api/"+randSlug(t))
+	}
+
+	items, err := store.OpenOutOfGroup(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenOutOfGroup: %v", err)
+	}
+	if len(items) != incidentgroup.MaxOpenOutOfGroup {
+		t.Fatalf("OpenOutOfGroup len = %d, want exactly MaxOpenOutOfGroup (%d) even though %d items exist",
+			len(items), incidentgroup.MaxOpenOutOfGroup, incidentgroup.MaxOpenOutOfGroup+1)
+	}
+}
+
+// TestFeedCompositionsBatch — W7: Compositions (group_id = ANY($2)) обязана
+// вернуть РОВНО тот же состав, что и Composition в цикле (старый путь
+// incidentfeed.go, N+1) — по группе на группу, без утечки строк между
+// группами через общий CTE grp (главный риск батч-версии: JOIN grp ON true
+// в одиночном запросе годился только потому что там была одна строка на
+// весь запрос; в батче тот же промах молча подмешал бы root_notified_open
+// чужой группы всем остальным).
+func TestFeedCompositionsBatch(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	// Группа A: host-корень НЕ информирующий (notified_open=false) — член
+	// не должен получить HeldByGroup=true.
+	hostA := seedHost(t, pool, projectID, "a-"+randSlug(t))
+	rootA := seedSilent(t, pool, projectID, hostA, false)
+	gA, err := store.EnsureGroup(ctx, projectID, "host", rootA, "host", hostA)
+	if err != nil {
+		t.Fatalf("EnsureGroup A: %v", err)
+	}
+	memberHostA := seedHost(t, pool, projectID, "a-member-"+randSlug(t))
+	memberA := seedFeedHostIncidentOpen(t, pool, projectID, memberHostA, "disk")
+	if _, err := store.SetGroup(ctx, projectID, "host", memberA, gA.ID); err != nil {
+		t.Fatalf("SetGroup A: %v", err)
+	}
+
+	// Группа B: host-корень информирующий (notified_open=true) — член
+	// должен получить HeldByGroup=true. Если grp CTE в батче перепутает
+	// группы, HeldByGroup у члена A и B тут же совпадут (оба true либо оба
+	// false) — тест это ловит сравнением обеих групп в одном ответе.
+	hostB := seedHost(t, pool, projectID, "b-"+randSlug(t))
+	rootB := seedSilent(t, pool, projectID, hostB, true)
+	gB, err := store.EnsureGroup(ctx, projectID, "host", rootB, "host", hostB)
+	if err != nil {
+		t.Fatalf("EnsureGroup B: %v", err)
+	}
+	memberHostB := seedHost(t, pool, projectID, "b-member-"+randSlug(t))
+	memberB := seedFeedHostIncidentOpen(t, pool, projectID, memberHostB, "memory")
+	if _, err := store.SetGroup(ctx, projectID, "host", memberB, gB.ID); err != nil {
+		t.Fatalf("SetGroup B: %v", err)
+	}
+
+	got, err := store.Compositions(ctx, projectID, []int64{gA.ID, gB.ID})
+	if err != nil {
+		t.Fatalf("Compositions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Compositions map len = %d, want 2 groups", len(got))
+	}
+	if len(got[gA.ID]) != 1 || got[gA.ID][0].IncidentID != memberA {
+		t.Fatalf("Compositions[gA] = %+v, want exactly member %d", got[gA.ID], memberA)
+	}
+	if len(got[gB.ID]) != 1 || got[gB.ID][0].IncidentID != memberB {
+		t.Fatalf("Compositions[gB] = %+v, want exactly member %d", got[gB.ID], memberB)
+	}
+	if got[gA.ID][0].HeldByGroup {
+		t.Fatalf("member of A (non-informing root) must have HeldByGroup=false, got true")
+	}
+	if !got[gB.ID][0].HeldByGroup {
+		t.Fatalf("member of B (informing root) must have HeldByGroup=true, got false")
+	}
+
+	// Сверка с одиночным Composition — тот же состав по каждой группе.
+	wantA, err := store.Composition(ctx, projectID, gA.ID)
+	if err != nil {
+		t.Fatalf("Composition gA: %v", err)
+	}
+	if len(wantA) != len(got[gA.ID]) || wantA[0].IncidentID != got[gA.ID][0].IncidentID {
+		t.Fatalf("Compositions[gA] = %+v, Composition(gA) = %+v, must match", got[gA.ID], wantA)
+	}
+}
+
+// TestFeedCompositionsEmptyGroupIDs — пустой список групп не должен ходить в
+// БД вовсе (частый случай: свежий проект без единой группы) и не должен
+// падать — просто пустая карта.
+func TestFeedCompositionsEmptyGroupIDs(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	got, err := store.Compositions(ctx, projectID, nil)
+	if err != nil {
+		t.Fatalf("Compositions(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Compositions(nil) = %+v, want empty map", got)
+	}
+}
+
+// TestFeedCompositionsTenantIsolation — W6: группа чужого проекта не должна
+// протечь в батче, той же гарантией, что и у Composition.
+func TestFeedCompositionsTenantIsolation(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	otherProjectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	host := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	rootInc := seedSilent(t, pool, projectID, host, true)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", host)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+	memberInc := seedFeedHostIncidentOpen(t, pool, projectID, memberHost, "disk")
+	if _, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil {
+		t.Fatalf("SetGroup: %v", err)
+	}
+
+	got, err := store.Compositions(ctx, otherProjectID, []int64{g.ID})
+	if err != nil {
+		t.Fatalf("Compositions(otherProject): %v", err)
+	}
+	if len(got[g.ID]) != 0 {
+		t.Fatalf("Compositions under the wrong project must not leak the group's members: %+v", got)
+	}
+}
+
+// seedFeedHostIncidentOpen — открытый host_incidents минимального вида, для
+// тестов Compositions выше (свой хелпер feedIncidentFeedStack недоступен
+// отсюда — internal/web, другой пакет).
+func seedFeedHostIncidentOpen(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, kind string) int64 {
+	t.Helper()
+	var id int64
+	mustScan(t, pool, &id, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,$3,'open',0,0,'') RETURNING id`, projectID, hostID, kind)
+	return id
 }

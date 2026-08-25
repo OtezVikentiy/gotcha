@@ -79,7 +79,7 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 		RootName: "gw-1",
 	}
 	open := NewGroupCard(base, []incidentgroup.FeedItem{{Source: "host"}, {Source: "uptime"}})
-	openHTML := renderTo(t, groupCard(1, open))
+	openHTML := renderTo(t, groupCard(1, open, true))
 	if strings.Contains(openHTML, "решена") {
 		t.Error("open group card must not show the resolved badge")
 	}
@@ -97,7 +97,7 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 	resolvedAt := time.Now()
 	closed := open
 	closed.Group.ResolvedAt = &resolvedAt
-	closedHTML := renderTo(t, groupCard(1, closed))
+	closedHTML := renderTo(t, groupCard(1, closed, true))
 	if !strings.Contains(closedHTML, "решена") {
 		t.Error("resolved group card must show the resolved badge")
 	}
@@ -108,7 +108,7 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 // строк.
 func TestGroupCardEmptyMembers(t *testing.T) {
 	c := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now()}}, nil)
-	html := renderTo(t, groupCard(1, c))
+	html := renderTo(t, groupCard(1, c, true))
 	if !strings.Contains(html, "всего 0 (—)") {
 		t.Errorf("empty group card composition hint wrong: %s", html)
 	}
@@ -124,7 +124,7 @@ func TestGroupCardEmptyMembers(t *testing.T) {
 func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	base := incidentgroup.FeedItem{Source: "host", Title: "web-1", StartedAt: time.Now()}
 
-	plain := renderTo(t, feedItemRow(1, base, nil))
+	plain := renderTo(t, feedItemRow(1, base, nil, true))
 	if strings.Contains(plain, "·") {
 		t.Errorf("row without SubKind must not render the hint separator: %s", plain)
 	}
@@ -134,7 +134,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 
 	withSubKind := base
 	withSubKind.SubKind = "disk"
-	subKindHTML := renderTo(t, feedItemRow(1, withSubKind, nil))
+	subKindHTML := renderTo(t, feedItemRow(1, withSubKind, nil, true))
 	// W13: SubKind рисуется переведённым (hosts.kind.disk), не сырым
 	// значением из БД.
 	if !strings.Contains(subKindHTML, "· Диск") {
@@ -146,7 +146,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 
 	suppressed := base
 	suppressed.SuppressedByDep = true
-	suppressedHTML := renderTo(t, feedItemRow(1, suppressed, nil))
+	suppressedHTML := renderTo(t, feedItemRow(1, suppressed, nil, true))
 	if !strings.Contains(suppressedHTML, "подавлен: родитель недоступен") {
 		t.Errorf("suppressed row must show the badge: %s", suppressedHTML)
 	}
@@ -156,7 +156,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 
 	acked := base
 	acked.Acknowledged = true
-	ackedHTML := renderTo(t, feedItemRow(1, acked, nil))
+	ackedHTML := renderTo(t, feedItemRow(1, acked, nil, true))
 	if !strings.Contains(ackedHTML, "Подтверждён") {
 		t.Errorf("acked row must show the ack badge: %s", ackedHTML)
 	}
@@ -167,7 +167,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	both := base
 	both.SuppressedByDep = true
 	both.Acknowledged = true
-	bothHTML := renderTo(t, feedItemRow(1, both, nil))
+	bothHTML := renderTo(t, feedItemRow(1, both, nil, true))
 	if !strings.Contains(bothHTML, "подавлен: родитель недоступен") || !strings.Contains(bothHTML, "Подтверждён") {
 		t.Errorf("row with both flags must show both badges: %s", bothHTML)
 	}
@@ -176,12 +176,12 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 // TestFeedItemRowSeverityBadge — Severity="" — бейдж severity не рисуется
 // вовсе; непустая Severity — рисуется (класс danger для critical).
 func TestFeedItemRowSeverityBadge(t *testing.T) {
-	noSeverity := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", StartedAt: time.Now()}, nil))
+	noSeverity := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", StartedAt: time.Now()}, nil, true))
 	if strings.Contains(noSeverity, "badge-danger") || strings.Contains(noSeverity, "badge-warn") {
 		t.Errorf("row without severity must not render a severity badge: %s", noSeverity)
 	}
 
-	critical := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", Severity: "critical", StartedAt: time.Now()}, nil))
+	critical := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", Severity: "critical", StartedAt: time.Now()}, nil, true))
 	if !strings.Contains(critical, "badge-danger") {
 		t.Errorf("critical severity must render the danger badge: %s", critical)
 	}
@@ -194,7 +194,7 @@ func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
 		[]incidentgroup.FeedItem{{Source: "host"}},
 	)
-	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, nil, nil, nil, ""))
+	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, nil, nil, nil, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Открытых групп нет") {
 		t.Errorf("non-empty openGroups must not render the empty-state message: %s", html)
 	}
@@ -224,7 +224,7 @@ func TestIncidentFeedOutOfGroupAllSixSources(t *testing.T) {
 			Source: src, IncidentID: int64(i + 1), Title: "item-" + src, StartedAt: time.Now(),
 		})
 	}
-	html := renderTo(t, IncidentFeed(1, nil, items, nil, nil, ""))
+	html := renderTo(t, IncidentFeed(1, nil, items, nil, nil, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Открытых инцидентов вне групп нет") {
 		t.Errorf("non-empty outOfGroup must not render the empty-state message: %s", html)
 	}
@@ -248,7 +248,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now(), ResolvedAt: &resolvedAt}},
 		[]incidentgroup.FeedItem{{Source: "metric"}},
 	)
-	html := renderTo(t, IncidentFeed(1, nil, nil, []GroupCard{closedGroup}, nil, ""))
+	html := renderTo(t, IncidentFeed(1, nil, nil, []GroupCard{closedGroup}, nil, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("closedGroups>0 must suppress the closed-empty message even though out-of-group closed items are empty: %s", html)
 	}
@@ -265,7 +265,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 // закрытых рисуется, заглушка отсутствует, карточек групп нет.
 func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 	closed := []incidentgroup.FeedItem{{Source: "host", Title: "closed-lone", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(1, nil, nil, nil, closed, ""))
+	html := renderTo(t, IncidentFeed(1, nil, nil, nil, closed, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("non-empty closed out-of-group items must suppress the empty message: %s", html)
 	}
@@ -279,7 +279,7 @@ func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 func TestIncidentFeedProjectIDInLinks(t *testing.T) {
 	const projectID = int64(777)
 	items := []incidentgroup.FeedItem{{Source: "metric", Title: "m1", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(projectID, nil, items, nil, nil, ""))
+	html := renderTo(t, IncidentFeed(projectID, nil, items, nil, nil, FeedCaps{}, true, ""))
 	want := metricAlertsBasePath(projectID)
 	if !strings.Contains(html, want) {
 		t.Errorf("row link must use the page's projectID (%d): missing %q in %s", projectID, want, html)
@@ -309,7 +309,7 @@ func TestFeedItemHrefHostReusesHostLink(t *testing.T) {
 // наоборот.
 func TestIncidentFeedHelpPanelAndBackLink(t *testing.T) {
 	const projectID = int64(5)
-	html := renderTo(t, IncidentFeed(projectID, nil, nil, nil, nil, ""))
+	html := renderTo(t, IncidentFeed(projectID, nil, nil, nil, nil, FeedCaps{}, true, ""))
 	if !strings.Contains(html, `class="help-panel"`) {
 		t.Errorf("page must render the help panel: %s", html)
 	}
@@ -335,7 +335,7 @@ func TestIncidentFeedTableHeadColumns(t *testing.T) {
 	)
 	outOfGroup := []incidentgroup.FeedItem{{Source: "uptime", Title: "m1", StartedAt: time.Now()}}
 	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, ""))
+	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, ""))
 
 	wantHeaders := []string{"Источник", "Название", "Статус", "Начало"}
 	// 3 непустых таблицы (состав группы, вне групп, закрытые) — по одной
@@ -360,7 +360,7 @@ func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
 	)
 	outOfGroup := []incidentgroup.FeedItem{{Source: "uptime", Title: "m1", StartedAt: time.Now()}}
 	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, ""))
+	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, ""))
 
 	groupLabel := `aria-label="Состав группы"`
 	outLabel := `aria-label="Вне групп"`
@@ -379,7 +379,7 @@ func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
 // рендерятся через @emptyState (иконка + заголовок + текст), а не голым
 // <p class="hint">.
 func TestIncidentFeedEmptyStatesUseEmptyStateComponent(t *testing.T) {
-	html := renderTo(t, IncidentFeed(1, nil, nil, nil, nil, ""))
+	html := renderTo(t, IncidentFeed(1, nil, nil, nil, nil, FeedCaps{}, true, ""))
 	if got := strings.Count(html, `class="empty-state"`); got != 3 {
 		t.Errorf("all 3 sections must render @emptyState when empty: got %d, want 3: %s", got, html)
 	}
@@ -399,7 +399,7 @@ func TestIncidentFeedEmptyStatesUseEmptyStateComponent(t *testing.T) {
 // не сырым значением metric.
 func TestFeedItemSubKindTranslatesTraceMetric(t *testing.T) {
 	item := incidentgroup.FeedItem{Source: "trace", Title: "t1", SubKind: "duration", StartedAt: time.Now()}
-	html := renderTo(t, feedItemRow(1, item, nil))
+	html := renderTo(t, feedItemRow(1, item, nil, true))
 	if !strings.Contains(html, "· p95 длительности") {
 		t.Errorf("trace SubKind must render via regressionMetricLabel: %s", html)
 	}
@@ -414,7 +414,7 @@ func TestFeedItemSubKindTranslatesTraceMetric(t *testing.T) {
 // которого нет на родной странице источника.
 func TestFeedItemSubKindProfilePassesThroughRaw(t *testing.T) {
 	item := incidentgroup.FeedItem{Source: "profile", Title: "svc", SubKind: "cpu", StartedAt: time.Now()}
-	html := renderTo(t, feedItemRow(1, item, nil))
+	html := renderTo(t, feedItemRow(1, item, nil, true))
 	if !strings.Contains(html, "· cpu") {
 		t.Errorf("profile SubKind must render as-is: %s", html)
 	}
@@ -426,21 +426,21 @@ func TestFeedItemSubKindProfilePassesThroughRaw(t *testing.T) {
 // ни один не подменяет другой.
 func TestFeedItemRowHeldByGroupBadge(t *testing.T) {
 	base := incidentgroup.FeedItem{Source: "metric", Title: "m1", StartedAt: time.Now()}
-	plainHTML := renderTo(t, feedItemRow(1, base, nil))
+	plainHTML := renderTo(t, feedItemRow(1, base, nil, true))
 	if strings.Contains(plainHTML, "молчит — уведомляет корень") {
 		t.Errorf("row without HeldByGroup must not render the badge: %s", plainHTML)
 	}
 
 	held := base
 	held.HeldByGroup = true
-	heldHTML := renderTo(t, feedItemRow(1, held, nil))
+	heldHTML := renderTo(t, feedItemRow(1, held, nil, true))
 	if !strings.Contains(heldHTML, "молчит — уведомляет корень") {
 		t.Errorf("HeldByGroup row must render the badge: %s", heldHTML)
 	}
 
 	both := held
 	both.SuppressedByDep = true
-	bothHTML := renderTo(t, feedItemRow(1, both, nil))
+	bothHTML := renderTo(t, feedItemRow(1, both, nil, true))
 	if !strings.Contains(bothHTML, "молчит — уведомляет корень") || !strings.Contains(bothHTML, "подавлен: родитель недоступен") {
 		t.Errorf("row with both HeldByGroup and SuppressedByDep must show both distinct badges: %s", bothHTML)
 	}
@@ -457,7 +457,7 @@ func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 	resolvedDT := `datetime="` + resolved.Format(time.RFC3339) + `"`
 
 	open := incidentgroup.FeedItem{Source: "host", StartedAt: started}
-	openHTML := renderTo(t, feedItemRow(1, open, nil))
+	openHTML := renderTo(t, feedItemRow(1, open, nil, true))
 	if !strings.Contains(openHTML, startedDT) {
 		t.Errorf("open member row must show its started time: %s", openHTML)
 	}
@@ -467,7 +467,7 @@ func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 
 	resolvedItem := open
 	resolvedItem.ResolvedAt = &resolved
-	resolvedHTML := renderTo(t, feedItemRow(1, resolvedItem, nil))
+	resolvedHTML := renderTo(t, feedItemRow(1, resolvedItem, nil, true))
 	if !strings.Contains(resolvedHTML, "Решён") {
 		t.Errorf("resolved member row must show the resolved badge: %s", resolvedHTML)
 	}
@@ -486,7 +486,7 @@ func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 // janitor'ом целиком) переиспользует тот же фолбэк, что и W22.
 func TestFeedItemRowWasGroupedBadge(t *testing.T) {
 	plain := incidentgroup.FeedItem{Source: "host", Title: "m1", StartedAt: time.Now()}
-	plainHTML := renderTo(t, feedItemRow(1, plain, nil))
+	plainHTML := renderTo(t, feedItemRow(1, plain, nil, true))
 	if strings.Contains(plainHTML, "ранее в группе") {
 		t.Errorf("row without FormerGroupID must not render the was_grouped badge: %s", plainHTML)
 	}
@@ -494,7 +494,7 @@ func TestFeedItemRowWasGroupedBadge(t *testing.T) {
 	former := plain
 	former.FormerGroupID = 7
 	former.FormerGroupRootName = "root-1"
-	htmlNoLink := renderTo(t, feedItemRow(1, former, nil))
+	htmlNoLink := renderTo(t, feedItemRow(1, former, nil, true))
 	if !strings.Contains(htmlNoLink, "ранее в группе — root-1") {
 		t.Errorf("row with FormerGroupID must render the was_grouped badge: %s", htmlNoLink)
 	}
@@ -502,7 +502,7 @@ func TestFeedItemRowWasGroupedBadge(t *testing.T) {
 		t.Errorf("badge must not link when the group card is not rendered on this page: %s", htmlNoLink)
 	}
 
-	htmlWithLink := renderTo(t, feedItemRow(1, former, map[int64]bool{7: true}))
+	htmlWithLink := renderTo(t, feedItemRow(1, former, map[int64]bool{7: true}, true))
 	if !strings.Contains(htmlWithLink, `href="#group-7"`) {
 		t.Errorf("badge must link to the rendered group card by anchor: %s", htmlWithLink)
 	}
@@ -510,7 +510,7 @@ func TestFeedItemRowWasGroupedBadge(t *testing.T) {
 	purged := plain
 	purged.FormerGroupID = 9
 	purged.FormerGroupRootName = ""
-	purgedHTML := renderTo(t, feedItemRow(1, purged, nil))
+	purgedHTML := renderTo(t, feedItemRow(1, purged, nil, true))
 	if !strings.Contains(purgedHTML, "ранее в группе — узел удалён") {
 		t.Errorf("a purged former group must fall back to the deleted-node label: %s", purgedHTML)
 	}
@@ -524,7 +524,7 @@ func TestGroupCardRootSeverityBadge(t *testing.T) {
 		Group:        incidentgroup.Group{RootSource: "host", StartedAt: time.Now()},
 		RootSeverity: "critical",
 	}, nil)
-	html := renderTo(t, groupCard(1, critical))
+	html := renderTo(t, groupCard(1, critical, true))
 	if !strings.Contains(html, "badge-danger") {
 		t.Errorf("group card must render the root severity badge: %s", html)
 	}
@@ -532,7 +532,7 @@ func TestGroupCardRootSeverityBadge(t *testing.T) {
 	noSeverity := NewGroupCard(incidentgroup.GroupRow{
 		Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now()},
 	}, nil)
-	htmlNoSeverity := renderTo(t, groupCard(1, noSeverity))
+	htmlNoSeverity := renderTo(t, groupCard(1, noSeverity, true))
 	if strings.Contains(htmlNoSeverity, "badge-danger") || strings.Contains(htmlNoSeverity, "badge-warn") {
 		t.Errorf("group card without root severity must not render a severity badge: %s", htmlNoSeverity)
 	}
@@ -549,13 +549,13 @@ func TestGroupCardShowsResolvedTimeNotStartedAt(t *testing.T) {
 	resolvedDT := `datetime="` + resolved.Format(time.RFC3339) + `"`
 
 	open := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: started}}, nil)
-	openHTML := renderTo(t, groupCard(1, open))
+	openHTML := renderTo(t, groupCard(1, open, true))
 	if !strings.Contains(openHTML, startedDT) {
 		t.Errorf("open group card header must show the started time: %s", openHTML)
 	}
 
 	closed := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: started, ResolvedAt: &resolved}}, nil)
-	closedHTML := renderTo(t, groupCard(1, closed))
+	closedHTML := renderTo(t, groupCard(1, closed, true))
 	if !strings.Contains(closedHTML, resolvedDT) {
 		t.Errorf("closed group card header must show the resolved time: %s", closedHTML)
 	}
@@ -573,7 +573,7 @@ func TestGroupCardDeletedRootFallback(t *testing.T) {
 		Group:    incidentgroup.Group{RootSource: "host", RootNodeKind: "host", StartedAt: time.Now()},
 		RootName: "",
 	}, nil)
-	html := renderTo(t, groupCard(1, c))
+	html := renderTo(t, groupCard(1, c, true))
 	if !strings.Contains(html, "узел удалён") {
 		t.Errorf("deleted root must show the fallback label: %s", html)
 	}
@@ -590,7 +590,7 @@ func TestGroupCardRootNameLinksToHostDetail(t *testing.T) {
 		Group:    incidentgroup.Group{RootSource: "host", RootNodeKind: "host", StartedAt: time.Now()},
 		RootName: "gw-1",
 	}, nil)
-	html := renderTo(t, groupCard(1, c))
+	html := renderTo(t, groupCard(1, c, true))
 	want := `href="` + hostLink(1, "gw-1") + `"`
 	if !strings.Contains(html, want) {
 		t.Errorf("group card root name must link via hostLink: missing %q in %s", want, html)
@@ -611,11 +611,71 @@ func TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup(t *testing.T) {
 		Source: "host", Title: "m1", StartedAt: time.Now(),
 		FormerGroupID: 42, FormerGroupRootName: "root-1",
 	}}
-	html := renderTo(t, IncidentFeed(1, nil, outOfGroup, []GroupCard{closedGroup}, nil, ""))
+	html := renderTo(t, IncidentFeed(1, nil, outOfGroup, []GroupCard{closedGroup}, nil, FeedCaps{}, true, ""))
 	if !strings.Contains(html, `id="group-42"`) {
 		t.Errorf("closed group card must carry the anchor id: %s", html)
 	}
 	if !strings.Contains(html, `href="#group-42"`) {
 		t.Errorf("was_grouped badge must link to the rendered closed group card: %s", html)
+	}
+}
+
+// TestFeedItemLinkable — W9: только metric/slo зависят от canOperate. Оба
+// источника ведут на lvlOperator-страницы (/projects/{id}/metrics/alerts,
+// /projects/{id}/slos — authz_map_test.go), лента же отдаётся любому
+// участнику проекта с доступом (lvlAccess) — без гейта рядовой участник
+// видел бы ссылку, закрывающуюся 404. Остальные 4 источника ведут на
+// lvlAccess-страницы и не зависят от canOperate вовсе.
+func TestFeedItemLinkable(t *testing.T) {
+	cases := []struct {
+		source              string
+		linkableOperator    bool
+		linkableNonOperator bool
+	}{
+		{"host", true, true},
+		{"uptime", true, true},
+		{"metric", true, false},
+		{"slo", true, false},
+		{"trace", true, true},
+		{"profile", true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.source, func(t *testing.T) {
+			it := incidentgroup.FeedItem{Source: c.source}
+			if got := feedItemLinkable(it, true); got != c.linkableOperator {
+				t.Errorf("feedItemLinkable(%s, canOperate=true) = %v, want %v", c.source, got, c.linkableOperator)
+			}
+			if got := feedItemLinkable(it, false); got != c.linkableNonOperator {
+				t.Errorf("feedItemLinkable(%s, canOperate=false) = %v, want %v", c.source, got, c.linkableNonOperator)
+			}
+		})
+	}
+}
+
+// TestFeedItemRowHidesOperatorOnlyLinkForNonOperator — рендер-уровень W9:
+// non-operator видит имя metric/slo-инцидента как голый текст, БЕЗ <a href>
+// на operator-страницу; host виден со ссылкой независимо от canOperate
+// (его родная страница — lvlAccess, canOperate её не касается).
+func TestFeedItemRowHidesOperatorOnlyLinkForNonOperator(t *testing.T) {
+	const projectID = int64(7)
+	metricItem := incidentgroup.FeedItem{Source: "metric", Title: "cpu.load rule", StartedAt: time.Now()}
+
+	nonOperatorHTML := renderTo(t, feedItemRow(projectID, metricItem, nil, false))
+	if strings.Contains(nonOperatorHTML, "<a href") {
+		t.Errorf("non-operator row for a metric incident must not render any link: %s", nonOperatorHTML)
+	}
+	if !strings.Contains(nonOperatorHTML, "cpu.load rule") {
+		t.Errorf("non-operator row must still show the incident title as plain text: %s", nonOperatorHTML)
+	}
+
+	operatorHTML := renderTo(t, feedItemRow(projectID, metricItem, nil, true))
+	if !strings.Contains(operatorHTML, `<a href="`+metricAlertsBasePath(projectID)+`"`) {
+		t.Errorf("operator row for a metric incident must link to the alerts page: %s", operatorHTML)
+	}
+
+	hostItem := incidentgroup.FeedItem{Source: "host", Title: "web-1", RefName: "web-1", StartedAt: time.Now()}
+	hostNonOperatorHTML := renderTo(t, feedItemRow(projectID, hostItem, nil, false))
+	if !strings.Contains(hostNonOperatorHTML, "<a href") {
+		t.Errorf("host row must keep its link regardless of canOperate (its own page is lvlAccess): %s", hostNonOperatorHTML)
 	}
 }

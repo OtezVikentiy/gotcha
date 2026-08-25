@@ -200,6 +200,18 @@ var routeAuthz = map[string]string{
 	// уровнем requireProjectRole (owner/admin) — это устарело, фактический
 	// гейт в коде обеих GET-ручек (statusPagesPage, maintenancePage) и всех
 	// их POST — requireProjectOperator; карта отражает код, а не комментарий.
+	// W9 (R4, incident-feed): /projects/{id}/incident-feed сама на lvlAccess
+	// и показывает metric/slo-инциденты (имя, severity, время) любому
+	// участнику проекта — сознательно, иначе лента D3 перестала бы быть
+	// единой картиной по всем 6 источникам ровно там, где это нужнее всего
+	// (шторм чаще всего смешивает источники). Но ССЫЛКУ на эти две
+	// lvlOperator-страницы лента рисует только оператору (canOperate,
+	// incidentfeed.go/incidentfeed.templ:feedItemLinkable) — рядовому
+	// участнику вместо неё показан только текст, без href на страницу,
+	// которая закроется 404. Сегодня canOperateProject предикатно совпадает
+	// с CanAccessProject (operate.go) — условие не меняет поведение прямо
+	// сейчас, но не потребует правки ленты, когда роли разъедутся (спека
+	// access-model-rework).
 	"GET /projects/{id}/metrics/alerts":    lvlOperator,
 	"GET /projects/{id}/slos":              lvlOperator,
 	"GET /projects/{id}/slos/{sloID}":      lvlOperator,

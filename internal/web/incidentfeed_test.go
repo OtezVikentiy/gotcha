@@ -314,16 +314,17 @@ func TestIncidentFeedOpenGroupsQueryError(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedCompositionQueryError — сбой Composition (состав ОДНОЙ из
-// открытых/закрытых групп) обязан отдать 500. Заводим ровно одну открытую
-// группу — иначе цикл по группам в incidentFeed вообще не вызовет
-// Composition. Ломаем ТИП host_incidents.group_id (bigint -> text): его
-// сравнивает С ПАРАМЕТРОМ ($1 = group ID) только feedMemberSelect
-// (group.go, WHERE hi.group_id = $1) — feedProjectQuery (OpenOutOfGroup/
-// ClosedSince) тот же столбец только проверяет на IS NULL, чему тип
-// безразличен, так что смена типа рвёт РОВНО Composition и никого из
-// соседей (обычный ALTER COLUMN … RENAME сломал бы саму SELECT-колонку и
-// задел бы оба запроса — здесь нужна асимметрия именно по сравнению типов).
+// TestIncidentFeedCompositionQueryError — сбой Compositions (состав ВСЕХ
+// открытых/закрытых групп разом, один батч-запрос, W7) обязан отдать 500.
+// Заводим ровно одну открытую группу — иначе incidentFeed вообще не собрал
+// бы непустой groupIDs и не позвал бы Compositions. Ломаем ТИП
+// host_incidents.group_id (bigint -> text): его сравнивает С ПАРАМЕТРОМ
+// ($1 = ANY(group IDs)) только feedMemberSelectBatch (group.go, WHERE
+// hi.group_id = ANY($1)) — feedProjectQuery (OpenOutOfGroup/ClosedSince)
+// тот же столбец только проверяет на IS NULL, чему тип безразличен, так что
+// смена типа рвёт РОВНО Compositions и никого из соседей (обычный
+// ALTER COLUMN … RENAME сломал бы саму SELECT-колонку и задел бы оба
+// запроса — здесь нужна асимметрия именно по сравнению типов).
 func TestIncidentFeedCompositionQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -389,5 +390,114 @@ func TestIncidentFeedOpenOutOfGroupQueryError(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("OpenOutOfGroup query error: status = %d, want 500: %s", resp.StatusCode, body)
+	}
+}
+
+// TestIncidentFeedMultipleGroupsCompositionNotCrossed — W7: incidentFeed
+// теперь собирает состав ВСЕХ карточек одним батч-запросом
+// (h.IncidentGroups.Compositions) вместо цикла Composition-по-группе.
+// Главный риск батча — перепутать member'ов между группами через общий
+// список groupIDs/map (см. ту же тревогу в feed_test.go:
+// TestFeedCompositionsBatch на уровне стора). Здесь та же проверка на
+// уровне HTTP-ответа: две открытые группы с РАЗНЫМИ по имени членами,
+// каждая карточка обязана показать ТОЛЬКО своего.
+func TestIncidentFeedMultipleGroupsCompositionNotCrossed(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner5@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co5", "Feed Co 5", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj5", "Feed Proj 5", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	makeGroup := func(rootName, memberName string) {
+		rootHost := s.seedFeedHost(t, project.ID, rootName)
+		var rootInc int64
+		if err := s.pool.QueryRow(ctx, `
+			INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
+			VALUES ($1,$2,'silent','open',0,0,'',true) RETURNING id`, project.ID, rootHost).Scan(&rootInc); err != nil {
+			t.Fatalf("seed root incident %s: %v", rootName, err)
+		}
+		g, err := s.groups.EnsureGroup(ctx, project.ID, "host", rootInc, "host", rootHost)
+		if err != nil {
+			t.Fatalf("EnsureGroup %s: %v", rootName, err)
+		}
+		memberHost := s.seedFeedHost(t, project.ID, memberName)
+		memberInc := s.seedFeedHostIncident(t, project.ID, memberHost, "disk")
+		if _, err := s.groups.SetGroup(ctx, project.ID, "host", memberInc, g.ID); err != nil {
+			t.Fatalf("SetGroup %s: %v", rootName, err)
+		}
+	}
+	makeGroup("root-alpha", "member-alpha")
+	makeGroup("root-beta", "member-beta")
+
+	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+
+	alphaIdx := strings.Index(text, "root-alpha")
+	betaIdx := strings.Index(text, "root-beta")
+	if alphaIdx < 0 || betaIdx < 0 {
+		t.Fatalf("both group root names must appear: %s", text)
+	}
+	// Каждая карточка — от своего заголовка до начала следующей (или конца
+	// секции) — обязана содержать СВОЕГО члена и не содержать чужого.
+	var alphaCard, betaCard string
+	if alphaIdx < betaIdx {
+		alphaCard, betaCard = text[alphaIdx:betaIdx], text[betaIdx:]
+	} else {
+		betaCard, alphaCard = text[betaIdx:alphaIdx], text[alphaIdx:]
+	}
+	if !strings.Contains(alphaCard, "member-alpha") {
+		t.Errorf("root-alpha card must contain its own member: %s", alphaCard)
+	}
+	if strings.Contains(alphaCard, "member-beta") {
+		t.Errorf("root-alpha card must NOT contain the other group's member: %s", alphaCard)
+	}
+	if !strings.Contains(betaCard, "member-beta") {
+		t.Errorf("root-beta card must contain its own member: %s", betaCard)
+	}
+}
+
+// TestIncidentFeedCapCaptions — W7/W8: подписи потолков рядом с
+// заголовками секций — реальные числа (incidentgroup.MaxOpenGroups/
+// MaxOpenOutOfGroup, feedClosedGroupsLimit/feedClosedOutOfGroupLimit), а не
+// нули FeedCaps{} и не единое (уже неверное) число на обе закрытые секции
+// разом (см. докблок feedClosedGroupsLimit/feedClosedOutOfGroupLimit).
+func TestIncidentFeedCapCaptions(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner6@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co6", "Feed Co 6", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj6", "Feed Proj 6", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"не больше 50",
+		"за последние сутки: групп не больше 50, отдельных инцидентов не больше 50",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("incident feed page missing cap caption %q: %s", want, text)
+		}
 	}
 }

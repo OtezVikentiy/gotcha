@@ -26,9 +26,15 @@ import (
 // закрытых — литералами, а не через i18n.T, иначе подмена значения ключа в
 // JSON не ловится тестом (см. регрессию feed.section.closed из ревью R7).
 func TestIncidentFeedSectionHeadingsAreLiteral(t *testing.T) {
+	// Значения — те же, что реально уходят из incidentfeed.go в проде
+	// (incidentgroup.MaxOpenGroups/MaxOpenOutOfGroup, feedClosedGroupsLimit/
+	// feedClosedOutOfGroupLimit — все 50 сегодня, R4 W7/W8): нулевой FeedCaps{}
+	// напечатал бы "не больше 0", это не защитило бы от регрессии текста на
+	// реалистичных числах.
+	caps := FeedCaps{OpenGroups: 50, OutOfGroup: 50, ClosedGroups: 50, ClosedItems: 50}
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := IncidentFeed(1, nil, nil, nil, nil, "u@example.com").Render(ctx, &sb); err != nil {
+	if err := IncidentFeed(1, nil, nil, nil, nil, caps, true, "u@example.com").Render(ctx, &sb); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	out := sb.String()
@@ -36,7 +42,8 @@ func TestIncidentFeedSectionHeadingsAreLiteral(t *testing.T) {
 		"Открытые группы",
 		"Вне групп",
 		"Недавно решённые",
-		"за последние сутки, не больше 50",
+		"не больше 50",
+		"за последние сутки: групп не больше 50, отдельных инцидентов не больше 50",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("IncidentFeed не содержит %q", want)
@@ -45,11 +52,15 @@ func TestIncidentFeedSectionHeadingsAreLiteral(t *testing.T) {
 
 	ctxEN := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	var sbEN strings.Builder
-	if err := IncidentFeed(1, nil, nil, nil, nil, "u@example.com").Render(ctxEN, &sbEN); err != nil {
+	if err := IncidentFeed(1, nil, nil, nil, nil, caps, true, "u@example.com").Render(ctxEN, &sbEN); err != nil {
 		t.Fatalf("Render en: %v", err)
 	}
 	outEN := sbEN.String()
-	for _, want := range []string{"Open groups", "Ungrouped", "Recently resolved"} {
+	for _, want := range []string{
+		"Open groups", "Ungrouped", "Recently resolved",
+		"up to 50",
+		"last 24 hours: groups up to 50, standalone incidents up to 50",
+	} {
 		if !strings.Contains(outEN, want) {
 			t.Errorf("IncidentFeed(en) не содержит %q", want)
 		}
@@ -63,7 +74,7 @@ func TestIncidentFeedSectionHeadingsAreLiteral(t *testing.T) {
 		RootName: "web-1",
 	}, nil)
 	var sb2 strings.Builder
-	if err := IncidentFeed(1, nil, nil, []GroupCard{group}, nil, "u@example.com").Render(ctx, &sb2); err != nil {
+	if err := IncidentFeed(1, nil, nil, []GroupCard{group}, nil, caps, true, "u@example.com").Render(ctx, &sb2); err != nil {
 		t.Fatalf("Render closed group: %v", err)
 	}
 	if !strings.Contains(sb2.String(), "решена") {

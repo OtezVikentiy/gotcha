@@ -200,11 +200,31 @@ func (s *Store) queryGroupRows(ctx context.Context, tail string, args ...any) ([
 	return out, rows.Err()
 }
 
-// OpenGroups — открытые группы проекта, свежайшие первыми (лента §6.1/1).
+// MaxOpenGroups/MaxOpenOutOfGroup — потолки открытых секций ленты (§6.1/1,
+// §6.1/2, W7). Раньше OpenGroups и OpenOutOfGroup шли вовсе без LIMIT — в
+// отличие от закрытых секций (ClosedGroupsSince/ClosedSince, свой лимит на
+// вызов), допущение «открытых инцидентов единицы-десятки» было гарантией
+// только пока не было проекта со штормом: без потолка одна отрисовка ленты
+// делала бы неограниченный SELECT на доступной ЛЮБОМУ участнику странице.
+// Потолок — экспортированные константы пакета, а не параметр метода: сигнатуры
+// OpenGroups/OpenOutOfGroup зовутся и вне web-слоя (grouper2_test.go), где
+// произвольный лимит не нужен и не должен становиться обязательным
+// параметром вызова; web-слой берёт те же константы для честной подписи
+// потолка рядом с заголовком секции, а не заводит собственное магическое
+// число. Значение то же, что и у соседней страницы /incidents
+// (incidentsPerPage) и у закрытых секций ленты — 50.
+const (
+	MaxOpenGroups     = 50
+	MaxOpenOutOfGroup = 50
+)
+
+// OpenGroups — открытые группы проекта, свежайшие первыми (лента §6.1/1),
+// не больше MaxOpenGroups (W7).
 func (s *Store) OpenGroups(ctx context.Context, projectID int64) ([]GroupRow, error) {
 	return s.queryGroupRows(ctx, `
 		WHERE g.project_id = $1 AND g.resolved_at IS NULL
-		ORDER BY g.started_at DESC`, projectID)
+		ORDER BY g.started_at DESC
+		LIMIT $2`, projectID, MaxOpenGroups)
 }
 
 // ClosedGroupsSince — группы, закрытые не раньше since (лента §6.1/3).
@@ -354,6 +374,106 @@ func (s *Store) Composition(ctx context.Context, projectID, groupID int64) ([]Fe
 	return scanFeedItems(rows)
 }
 
+// feedMemberSelectBatch — состав НЕСКОЛЬКИХ групп одним запросом (W7,
+// Compositions ниже): та же форма, что feedMemberSelect, с двумя отличиями.
+// (1) $1 — не id одной группы, а МАССИВ id (`= ANY($1)`), CTE grp несёт
+// group_id и отдаёт по строке на каждую запрошенную группу, а не одну
+// строку на весь запрос — поэтому `LEFT JOIN grp ON true` (годился, пока
+// grp был максимум одной строкой на весь список) заменён на явный
+// `grp.group_id = <alias>.group_id`. (2) первым столбцом каждой ветки идёт
+// сам group_id — Compositions группирует строки по нему в Go
+// (scanFeedItemsBatch), группировка на стороне SQL (array_agg/json)
+// усложнила бы запрос сильнее, чем экономит один проход по срезу. Остальные
+// 14 столбцов — ровно feedMemberSelect, тот же порядок.
+const feedMemberSelectBatch = `
+	WITH grp AS (
+		SELECT g.id AS group_id, g.resolved_at AS group_resolved_at,
+		       COALESCE(rh.notified_open, ri.notified_open, false) AS root_notified_open
+		FROM incident_groups g
+		LEFT JOIN host_incidents rh ON g.root_source = 'host'   AND rh.id = g.root_incident_id
+		LEFT JOIN incidents      ri ON g.root_source = 'uptime' AND ri.id = g.root_incident_id
+		WHERE g.id = ANY($1)
+	)
+	SELECT hi.group_id, 'host'::text, hi.id, COALESCE(h.name,''), hi.kind,
+	       hi.started_at, hi.resolved_at, hi.severity,
+	       hi.acknowledged_at IS NOT NULL, hi.suppressed_by_dep, 0::bigint, COALESCE(h.name,''),
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND hi.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM host_incidents hi
+	LEFT JOIN hosts h ON h.id = hi.host_id
+	LEFT JOIN grp ON grp.group_id = hi.group_id
+	WHERE hi.group_id = ANY($1) AND hi.project_id = $2
+	UNION ALL
+	SELECT i.group_id, 'uptime', i.id, COALESCE(m.name,''), '',
+	       i.started_at, i.resolved_at, '',
+	       false, i.suppressed_by_dep, i.monitor_id, '',
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND i.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM incidents i
+	LEFT JOIN monitors m ON m.id = i.monitor_id
+	LEFT JOIN grp ON grp.group_id = i.group_id
+	WHERE i.group_id = ANY($1) AND m.project_id = $2
+	UNION ALL
+	SELECT mi.group_id, 'metric', mi.id, COALESCE(r.metric_name,''), '',
+	       mi.started_at, mi.resolved_at, mi.severity,
+	       mi.acknowledged_at IS NOT NULL, false, mi.rule_id, '',
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND mi.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM metric_incidents mi
+	LEFT JOIN metric_alert_rules r ON r.id = mi.rule_id
+	LEFT JOIN grp ON grp.group_id = mi.group_id
+	WHERE mi.group_id = ANY($1) AND mi.project_id = $2
+	UNION ALL
+	SELECT si.group_id, 'slo', si.id, COALESCE(sl.name,''), '',
+	       si.started_at, si.resolved_at, si.severity,
+	       si.acknowledged_at IS NOT NULL, false, si.slo_id, '',
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND si.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM slo_incidents si
+	LEFT JOIN slos sl ON sl.id = si.slo_id
+	LEFT JOIN grp ON grp.group_id = si.group_id
+	WHERE si.group_id = ANY($1) AND si.project_id = $2`
+
+// scanFeedItemsBatch — как scanFeedItems, но первый столбец каждой строки —
+// group_id (feedMemberSelectBatch): группировка по группе в Go через map,
+// без array_agg/json на стороне БД.
+func scanFeedItemsBatch(rows pgx.Rows) (map[int64][]FeedItem, error) {
+	defer rows.Close()
+	out := map[int64][]FeedItem{}
+	for rows.Next() {
+		var groupID int64
+		var it FeedItem
+		if err := rows.Scan(&groupID, &it.Source, &it.IncidentID, &it.Title, &it.SubKind,
+			&it.StartedAt, &it.ResolvedAt, &it.Severity, &it.Acknowledged,
+			&it.SuppressedByDep, &it.RefID, &it.RefName,
+			&it.FormerGroupID, &it.FormerGroupRootName, &it.HeldByGroup); err != nil {
+			return nil, fmt.Errorf("incidentgroup: scan feed item batch: %w", err)
+		}
+		out[groupID] = append(out[groupID], it)
+	}
+	return out, rows.Err()
+}
+
+// Compositions — состав СРАЗУ нескольких групп одним запросом (W7):
+// incidentfeed.go раньше звал Composition в цикле по каждой группе ленты
+// (открытые + до MaxOpenGroups+2×feedClosedGroupsLimit закрытых) — на одну
+// отрисовку страницы уходили десятки round-trip, каждый — четырёхветвевой
+// UNION. group_id = ANY($2) заменяет цикл одним запросом; группировка по
+// группе — в Go (scanFeedItemsBatch). projectID (W6) — та же вторая линия
+// защиты, что у Composition: группа чужого проекта отдаст пустой список.
+// Пустой groupIDs — пустая карта без похода в БД (частый случай: свежий
+// проект без единой группы).
+func (s *Store) Compositions(ctx context.Context, projectID int64, groupIDs []int64) (map[int64][]FeedItem, error) {
+	if len(groupIDs) == 0 {
+		return map[int64][]FeedItem{}, nil
+	}
+	rows, err := s.pool.Query(ctx, feedMemberSelectBatch+` ORDER BY 1, 6`, groupIDs, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("incidentgroup: compositions: %w", err)
+	}
+	return scanFeedItemsBatch(rows)
+}
+
 // notOpenGroupMember — «инцидент не член ОТКРЫТОЙ группы» (W1/W2): group_id
 // колонки alias NULL, либо LEFT JOIN на incident_groups под алиасом wg не
 // нашёл строку (группа удалена janitor'ом), либо нашёл резолвнутую. Та же
@@ -443,7 +563,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	WHERE pf.project_id = $1 AND ` + profileCond
 }
 
-// hostNotRoot/uptimeNotRoot — «инцидент не является корнем группы».
+// hostNotRoot/uptimeNotRoot — «инцидент не является корнем ОТКРЫТОЙ группы».
 // Корню group_id намеренно не проставляется (Grouper.Attach: корень не член
 // собственной группы), поэтому по одному `group_id IS NULL` он попадал бы и в
 // шапку карточки группы, и во «Вне групп» — один инцидент двумя строками.
@@ -451,9 +571,28 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 // остальным источникам условие не нужно. Отбор идёт по уникальному индексу
 // (root_source, root_incident_id); группа, удалённая как осиротевшая
 // (janitor purge), корень снова показывает — это верно, карточки уже нет.
+//
+// `g.resolved_at IS NULL` (R4, W7-warning) — раньше условия не было вовсе,
+// и NOT EXISTS исключал корень безусловно, пока хоть какая-то группа (даже
+// давно закрытая) на него ссылалась. Резолвнутый корень резолвнутой группы
+// от этого не показывался НИГДЕ, кроме шапки карточки закрытой группы: не
+// в ClosedSince (условие исключало его навсегда), а если саму карточку
+// не отрисовать (ClosedGroupsSince ушла за потолок MaxOpenGroups+... или
+// вылетела за окно feedClosedWindow, см. ClosedGroupsSince/ClosedSince),
+// он пропадал с ленты целиком — ни в карточке, ни в списке. Пока потолок и
+// окно ClosedGroupsSince/ClosedSince совпадали, это было незаметно на глаз,
+// но структурная дыра существовала независимо от совпадения чисел. Условие
+// `g.resolved_at IS NULL` сужает исключение до «корень ЕЩЁ открытой группы»
+// — ровно то же деление, что notOpenGroupMember уже делает для членов
+// (сравни: `wg.resolved_at IS NOT NULL` там же означает «был в группе,
+// группа закрылась — больше не прячем»). Как только группа закрывается,
+// resolved-корень становится обычным резолвнутым инцидентом источника и
+// попадает в ClosedSince независимо от судьбы карточки его группы — тот же
+// намеренный дубль с (отрисованной) карточкой, что уже описан у ClosedSince
+// для обычных членов, просто симметрично распространённый на корень.
 const (
-	hostNotRoot   = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'host' AND g.root_incident_id = hi.id)`
-	uptimeNotRoot = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'uptime' AND g.root_incident_id = i.id)`
+	hostNotRoot   = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'host' AND g.root_incident_id = hi.id AND g.resolved_at IS NULL)`
+	uptimeNotRoot = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'uptime' AND g.root_incident_id = i.id AND g.resolved_at IS NULL)`
 )
 
 // OpenOutOfGroup — открытые ВНЕгрупповые инциденты всех 6 источников
@@ -462,6 +601,7 @@ const (
 // feedProjectQuery): открытый член резолвнутой или удалённой группы отсюда
 // не прячется — он «открытая работа» (сюда) и одновременно «упало вместе с
 // этим» (в свёрнутой карточке группы, Composition), это не дубль.
+// OpenOutOfGroup — не больше MaxOpenOutOfGroup (W7, см. докблок константы).
 func (s *Store) OpenOutOfGroup(ctx context.Context, projectID int64) ([]FeedItem, error) {
 	q := feedProjectQuery(
 		`hi.status = 'open' AND `+hostNotRoot,
@@ -470,8 +610,8 @@ func (s *Store) OpenOutOfGroup(ctx context.Context, projectID int64) ([]FeedItem
 		`si.status = 'open'`,
 		`pr.status = 'open'`,
 		`pf.status = 'open'`,
-	) + ` ORDER BY 5 DESC`
-	rows, err := s.pool.Query(ctx, q, projectID)
+	) + ` ORDER BY 5 DESC LIMIT $2`
+	rows, err := s.pool.Query(ctx, q, projectID, MaxOpenOutOfGroup)
 	if err != nil {
 		return nil, fmt.Errorf("incidentgroup: open out of group: %w", err)
 	}
