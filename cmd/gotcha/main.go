@@ -1023,6 +1023,11 @@ func run() error {
 		// depSuppressor выше (независимый объект без состояния поверх пула,
 		// тот же принцип, что и у EscalationPolicy).
 		webHandler.AlertDeps = depsuppress.NewStore(pg)
+		// Лента инцидентов (D3, задача 9): /projects/{id}/incident-feed читает
+		// те же группы, что пишет Grouper и подчищает janitor, — тем же
+		// groupStore выше, а не собственным экземпляром: один Store на
+		// подсистему, как у Uptime/SLO.
+		webHandler.IncidentGroups = groupStore
 		// SuppressionGrace — та же задержка первого уведомления
 		// (GOTCHA_DEPENDENCY_SETTLE_SECONDS), что задаёт settleGrace для
 		// depSuppressor/uptime.Detector/escalation.Scheduler выше: экран
