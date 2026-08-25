@@ -30,11 +30,18 @@ type Grouper struct {
 	Roots RootResolver
 }
 
-// rootIncident — открытый инцидент недоступности узла-корня: host →
+// RootIncident — открытый инцидент недоступности узла-корня: host →
 // host_incidents kind='silent', monitor → uptime incidents. found=false —
 // гонка «корень закрылся между снимком DownRoot и этим запросом» (группу
 // тогда не создаём: sweep, §4.4, закрыл бы её тут же).
-func (g *Grouper) rootIncident(ctx context.Context, rootKind string, rootID int64) (source string, incidentID, projectID int64, notified bool, found bool, err error) {
+//
+// Экспортирован (R3b, W25): host.Evaluator и uptime.Detector резолвят
+// ФАКТИЧЕСКИЙ down-корень каскада через depChecker.DownRoot, но у них нет
+// доступа к таблицам инцидентов чужого вида (host не знает про uptime-
+// incidents и наоборот) — им нужен способ превратить (rootKind, rootID) в
+// rootIncidentID для вызова OnRootOpened, не зная, что за вид у корня.
+// Тот же метод, каким пользуется Attach ниже.
+func (g *Grouper) RootIncident(ctx context.Context, rootKind string, rootID int64) (source string, incidentID, projectID int64, notified bool, found bool, err error) {
 	switch rootKind {
 	case "host":
 		source = "host"
@@ -77,7 +84,7 @@ func (g *Grouper) Attach(ctx context.Context, source string, incidentID int64, n
 	if err != nil || !found {
 		return false, false, err
 	}
-	rootSource, rootIncID, projectID, notified, ok, err := g.rootIncident(ctx, rootKind, rootID)
+	rootSource, rootIncID, projectID, notified, ok, err := g.RootIncident(ctx, rootKind, rootID)
 	if err != nil || !ok {
 		return false, false, err
 	}

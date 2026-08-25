@@ -39,6 +39,13 @@ func (h *erroringGroupHook) OnRootClosed(ctx context.Context, rootSource string,
 	return h.onRootClosedErr
 }
 
+// RootIncident — not exercised by these error-branch tests (none drive
+// groupRootOpened's attachedAsMember=true path); stubbed found=false so it
+// stays a safe no-op default.
+func (h *erroringGroupHook) RootIncident(ctx context.Context, rootKind string, rootID int64) (string, int64, int64, bool, bool, error) {
+	return "", 0, 0, false, false, nil
+}
+
 // captureErrorLog — подменяет slog.Default на текстовый handler уровня
 // ERROR и возвращает буфер + функцию восстановления (образец —
 // TestProfileDeleteLogsWhenEmailReadFails, cover_profile_delete_test.go).

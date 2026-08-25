@@ -105,6 +105,13 @@ type groupHook interface {
 	Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error)
 	OnRootOpened(ctx context.Context, rootSource string, rootIncidentID int64, rootNodeKind string, rootNodeID, projectID int64) error
 	OnRootClosed(ctx context.Context, rootSource string, rootIncidentID int64) error
+
+	// RootIncident — открытый инцидент узла-корня (host_incidents kind=
+	// 'silent' ИЛИ uptime incidents — резолвится по rootKind). Нужен
+	// groupRootOpened (R3b, W25): host.Evaluator не знает про
+	// uptime-инциденты, но каскад может фактически упираться в монитор —
+	// incidentgroup.Grouper.RootIncident умеет то и другое.
+	RootIncident(ctx context.Context, rootKind string, rootID int64) (source string, incidentID, projectID int64, notified bool, found bool, err error)
 }
 
 // Evaluator периодически считает диск/память/нагрузку/тишину каждого живого
@@ -898,24 +905,22 @@ func (e *Evaluator) groupRootOpened(ctx context.Context, in Incident, h Host, at
 			slog.Error("host evaluator: down root lookup failed", "incident_id", in.ID, "error", err)
 			return
 		}
-		if !found || rk != "host" {
-			// Кросс-видовой корень (monitor) или гонка «корень уже
-			// закрылся» — вне охвата: у host.Evaluator нет доступа к
-			// uptime-инцидентам монитора, чтобы найти rootIncidentID
-			// (осознанно отложено, monitor-корень host-каскадов сюда не
-			// заходит и до этой правки).
-			return
+		if !found {
+			return // гонка «корень уже закрылся» — sweep уже закрыл группу
 		}
-		rootIn, opened, err := e.Incidents.OpenFor(ctx, rid, "silent")
+		// Кросс-видовой корень (R3b, W25): фактический корень каскада может
+		// оказаться монитором — host.Evaluator не читает uptime-таблицы
+		// напрямую, но incidentgroup.Grouper.RootIncident резолвит корень
+		// любого вида по (rootKind, rootID).
+		src, incID, _, _, ok, err := e.IncidentGroups.RootIncident(ctx, rk, rid)
 		if err != nil {
-			slog.Warn("host evaluator: root incident lookup failed", "host_id", rid, "error", err)
+			slog.Warn("host evaluator: root incident lookup failed", "root_kind", rk, "root_id", rid, "error", err)
 			return
 		}
-		if !opened {
+		if !ok {
 			return // корень успел закрыться — sweep уже закрыл группу
 		}
-		rootKind, rootID = rk, rid
-		rootIncidentID = rootIn.ID
+		rootSource, rootIncidentID, rootKind, rootID = src, incID, rk, rid
 	}
 	if err := e.IncidentGroups.OnRootOpened(ctx, rootSource, rootIncidentID, rootKind, rootID, h.ProjectID); err != nil {
 		slog.Error("host evaluator: group root opened failed", "incident_id", in.ID, "error", err)

@@ -48,6 +48,33 @@ func seedMonitorHostEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentMoni
 	}
 }
 
+// seedHostMonitorEdge — явное ребро зависимости host(parent) ->
+// monitor(child) (B5, alert_dependencies): монитор — downstream-узел под
+// уже упавшим host-корнем (R3b, W25, обратный сценарий 2 брифа).
+func seedHostMonitorEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentHostID, childMonitorID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO alert_dependencies (project_id, parent_host_id, child_monitor_id)
+		VALUES ($1,$2,$3)`, projectID, parentHostID, childMonitorID); err != nil {
+		t.Fatalf("seed host->monitor edge: %v", err)
+	}
+}
+
+// seedOpenSilentIncident — уже открытый silent-инцидент хоста, минуя
+// host.Evaluator: host-корень кросс-видового каскада (R3b, W25) — пакет
+// uptime не заводит host.Evaluator, только знает таблицу.
+func seedOpenSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
+		VALUES ($1,$2,'silent','open',0,0,'',true) RETURNING id`,
+		projectID, hostID).Scan(&id); err != nil {
+		t.Fatalf("seed silent incident: %v", err)
+	}
+	return id
+}
+
 // seedGroupHost — хост проекта (пакет uptime своих host-хелперов не имеет;
 // образец internal/incidentgroup/group_test.go).
 func seedGroupHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) int64 {
@@ -242,5 +269,75 @@ func TestUptimeRootCloseResolvesGroup(t *testing.T) {
 	}
 	if resolvedAt == nil {
 		t.Fatalf("группа %d (корень uptime/%d) не закрыта: resolved_at IS NULL после resolveIncident", *gid, rootInc.ID)
+	}
+}
+
+// TestOpenIncidentCrossSpeciesRootAttachesGrandchild — кросс-видовой
+// каскад со стороны uptime (R3b, W25): A — host, УЖЕ упавший корень; M —
+// монитор, dep-child A (ребро host(parent)->monitor(child)); C — host,
+// dep-child M (ребро monitor(parent)->host(child)), чей disk-инцидент
+// открылся ДО того, как M сам упал. До этой правки openIncident безусловно
+// подставляла M как корень (rootKind="monitor", rootID=M.ID) — ретро-
+// перебор искал кандидатов с DownRoot == M и не находил НИКОГО (реальный
+// DownRoot(C) ведёт к A, не к M): каскад, проходящий через uptime-сторону,
+// не докрывался вовсе.
+func TestOpenIncidentCrossSpeciesRootAttachesGrandchild(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	a := seedGroupHost(t, pool, pid, "gw-01")
+	mon := createMonitor(t, svc, pid, 1, 1)
+	c := seedGroupHost(t, pool, pid, "web-01")
+	seedHostMonitorEdge(t, pool, pid, a, mon.ID)
+	seedMonitorHostEdge(t, pool, pid, mon.ID, c)
+
+	// A: host-инцидент уже открыт (down) — фактический корень каскада, вне
+	// прямого доступа uptime.Detector (у него нет host_incidents).
+	rootInc := seedOpenSilentIncident(t, pool, pid, a)
+
+	// C: disk-инцидент открыт ДО того, как M сам упал.
+	memberInc := seedOpenDiskIncident(t, pool, pid, c)
+
+	// ОДИН Suppressor и на Detector.Dep, и на Grouper.Roots (образец —
+	// host/group_test.go: прод держит на нём один инстанс, общий 5с-кеш
+	// снимка) — без этого DownRoot внутри openIncident не увидит A упавшим.
+	sup := depsuppress.NewSuppressor(pool)
+	notifier := &fakeNotifier{}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: sup}
+	d.IncidentGroups = &incidentgroup.Grouper{
+		Pool:  pool,
+		Store: incidentgroup.NewStore(pool),
+		Roots: sup,
+	}
+
+	// M замолкает (падение downstream-узла под host-корнем A).
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "conn refused", time.Now().UTC(), nil)
+	assertOpenIncident(t, ctx, svc, mon.ID)
+
+	gid := readHostGroupID(t, pool, memberInc)
+	if gid == nil {
+		t.Fatal("group_id IS NULL — падение M под host-корнем A не ретро-присоединило C")
+	}
+	source, gotRoot := readGroupRoot(t, pool, *gid)
+	if source != "host" || gotRoot != rootInc {
+		t.Errorf("группа якорится на %s/%d, want фактический корень каскада — host/%d (инцидент хоста A)", source, gotRoot, rootInc)
+	}
+
+	// Тик 2: M сам имеет задекларированного родителя A (down) — "down" M
+	// был придержан на тике 1, settleHeldIncident на тике 2 подавляет и
+	// присоединяет M к группе A (существующая механика Attach/DownRoot,
+	// не тронутая этой правкой) — M обязан оказаться членом ТОЙ ЖЕ группы,
+	// не корнем собственной.
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "conn refused", time.Now().UTC().Add(time.Second), nil)
+	monInc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !monInc.SuppressedByDep {
+		t.Fatal("SuppressedByDep(M) = false, want true: родитель A down на тике 2")
+	}
+	monGid := readUptimeGroupID(t, pool, monInc.ID)
+	if monGid == nil || *monGid != *gid {
+		t.Errorf("M.group_id = %v, want %d (та же группа host-корня A, что и у C)", monGid, *gid)
 	}
 }

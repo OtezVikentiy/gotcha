@@ -38,6 +38,45 @@ func seedDepEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentHostID, chil
 	}
 }
 
+// seedMonitorHostEdge — явное ребро зависимости monitor(parent) ->
+// host(child) (B5): образец для теста кросс-видового каскада (R3b, W25),
+// где корень цепочки — монитор, а не хост.
+func seedMonitorHostEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentMonitorID, childHostID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO alert_dependencies (project_id, parent_monitor_id, child_host_id)
+		VALUES ($1,$2,$3)`, projectID, parentMonitorID, childHostID); err != nil {
+		t.Fatalf("seed monitor->host dep edge: %v", err)
+	}
+}
+
+// seedGroupMonitor — минимальный монитор проекта, узел кросс-видового
+// каскада (host не имеет собственных хелперов uptime — образец
+// internal/uptime/group_test.go:seedGroupHost).
+func seedGroupMonitor(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,$2,'http',60) RETURNING id`, projectID, name).Scan(&id); err != nil {
+		t.Fatalf("seed monitor: %v", err)
+	}
+	return id
+}
+
+// seedOpenMonitorIncident — уже открытый (down) инцидент монитора, минуя
+// uptime.Detector: монитор-корень кросс-видового каскада (R3b, W25).
+func seedOpenMonitorIncident(t *testing.T, pool *pgxpool.Pool, monitorID int64) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO incidents (monitor_id, cause, notified_open)
+		VALUES ($1,'boom',true) RETURNING id`, monitorID).Scan(&id); err != nil {
+		t.Fatalf("seed monitor incident: %v", err)
+	}
+	return id
+}
+
 // seedOpenSilentIncident — уже открытый silent-инцидент хоста, минуя
 // оценщик; notified управляет гейтом «информирующего корня» (Р4).
 func seedOpenSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, notified bool) int64 {
@@ -630,5 +669,83 @@ func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
 	}
 	if gotRootInc != rootIn.ID {
 		t.Errorf("группа якорится на инцидент %d, want фактический корень каскада — silent-инцидент A (%d)", gotRootInc, rootIn.ID)
+	}
+}
+
+// TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild — кросс-видовой
+// каскад (R3b, W25): M — монитор, УЖЕ упавший корень; A — dep-child M
+// (ребро monitor(parent)->host(child)); C — dep-child A (host->host), чей
+// disk-инцидент открылся ДО того, как A ушёл в silent. До этой правки
+// groupRootOpened бейлилась на rootKind != "host" (не умела резолвить
+// rootIncidentID монитора) — ретро-перебор при падении A не запускался
+// вовсе, и C оставался вне группы монитора навсегда.
+func TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	pid := seedEvalProject(t, pool)
+	mon := seedGroupMonitor(t, pool, pid, "https-root")
+	a := seedEvalHost(t, pool, pid, "gw-01")
+	c := seedEvalHost(t, pool, pid, "web-01")
+	seedMonitorHostEdge(t, pool, pid, mon, a.ID)
+	seedDepEdge(t, pool, pid, a.ID, c.ID)
+
+	// M: инцидент монитора уже открыт (down) — корень каскада, вне охвата
+	// host.Evaluator (у него нет доступа к таблице incidents монитора).
+	monInc := seedOpenMonitorIncident(t, pool, mon)
+
+	// C: disk-инцидент открыт ДО того, как A ушёл в silent.
+	memberInc := seedOpenDiskIncident(t, pool, pid, c.ID)
+
+	// Тот же ОДИН Suppressor на процесс, что и в межхостовом сценарии выше
+	// (прод держит его один и на Grouper.Roots, и на Evaluator.Dep) — общий
+	// 5с-кеш снимка, иначе DownRoot внутри groupRootOpened не увидит M
+	// упавшим.
+	sup := depsuppress.NewSuppressor(pool)
+	notifier := &fakeNotifier{}
+	eval := newEvaluator(pool, ch, notifier)
+	eval.Dep = sup
+	eval.IncidentGroups = &incidentgroup.Grouper{
+		Pool:  pool,
+		Store: incidentgroup.NewStore(pool),
+		Roots: sup,
+	}
+
+	// A замолкает (падение ПРОМЕЖУТОЧНОГО узла, корень — монитор M).
+	setHostLastSeen(t, pool, a.ID, time.Now().UTC().Add(-10*time.Minute))
+	if err := eval.Tick(ctx); err != nil {
+		t.Fatalf("Tick (A down): %v", err)
+	}
+
+	gid := readGroupID(t, pool, memberInc)
+	if gid == nil {
+		t.Fatal("group_id IS NULL — падение A под монитором-корнем не ретро-присоединило C")
+	}
+	var rootSource, rootNodeKind string
+	var rootIncID, rootNodeID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT root_source, root_incident_id, root_node_kind, root_node_id FROM incident_groups WHERE id = $1`,
+		*gid).Scan(&rootSource, &rootIncID, &rootNodeKind, &rootNodeID); err != nil {
+		t.Fatalf("read group root: %v", err)
+	}
+	if rootSource != "uptime" || rootIncID != monInc || rootNodeKind != "monitor" || rootNodeID != mon {
+		t.Errorf("группа якорится на %s/%d (node %s/%d), want фактический корень каскада — монитор %d (инцидент %d)",
+			rootSource, rootIncID, rootNodeKind, rootNodeID, mon, monInc)
+	}
+
+	// A сам обязан оказаться членом ТОЙ ЖЕ группы монитора (Attach в
+	// groupGate резолвит его собственный DownRoot симметрично C).
+	incidents := host.NewIncidentService(pool)
+	aIn, open, err := incidents.OpenFor(ctx, a.ID, "silent")
+	if err != nil || !open {
+		t.Fatalf("OpenFor A silent: open=%v err=%v", open, err)
+	}
+	aGid := readGroupID(t, pool, aIn.ID)
+	if aGid == nil || *aGid != *gid {
+		t.Errorf("A.group_id = %v, want %d (та же группа монитора, что и у C)", aGid, *gid)
 	}
 }
