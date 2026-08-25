@@ -219,7 +219,6 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "escalations", Why: "маркер страницы на корневом <div> (лесенки эскалации, B4 T9), стиля нет по замыслу — визуал от @layout и вложенных .card/.field/.checkbox-field", Finding: "по замыслу"},
 	{Value: "hosts", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "host-settings", Why: "маркер под-страницы (настройки порогов хоста, T16) на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
-	{Value: "incident-feed", Why: "маркер страницы на корневом <div> (лента инцидентов, D3), стиля нет по замыслу — визуал от @layout и вложенных .card/.data-table", Finding: "по замыслу"},
 	{Value: "incidents", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "issues", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "logs", Why: "маркер страницы на корневом <div> (задача 2, C2), стиля нет по замыслу", Finding: "по замыслу"},
@@ -255,7 +254,6 @@ var permanentCSSClassExemptions = []Exemption{
 	// правок 1» — там же зафиксирована асимметрия между ними.
 	{Value: "alerts-section", Why: "семантический маркер секции внутри страницы alerts, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "escalations-section", Why: "семантический маркер секции внутри страницы escalations (B4 T9), стиля нет по замыслу — стоит в паре с .card (class=\"escalations-section card\")", Finding: "по замыслу"},
-	{Value: "feed-group", Why: "семантический маркер, стоит в паре с .card (class=\"card feed-group\", D3) — раскрываемая карточка группы инцидентов, визуал от .card, раскрытие — нативный <details>/<summary> без стиля", Finding: "по замыслу"},
 	{Value: "deps-map-card", Why: "семантический маркер, стоит в паре с .card (class=\"card deps-map-card\", C4)", Finding: "по замыслу"},
 	{Value: "deps-truncated", Why: "семантический маркер, стоит в паре с .hint (class=\"hint deps-truncated\", C4)", Finding: "по замыслу"},
 	{Value: "gdpr-block", Why: "семантический маркер секции (152-ФЗ экспорт/удаление ПДн), стиля нет по замыслу — внутри уже стилизованные .field/.hint/.btn-ghost", Finding: "по замыслу"},
@@ -315,12 +313,13 @@ var permanentCSSClassExemptions = []Exemption{
 // .escalation-dryrun-list) получили реальные правила в app.css, в список
 // исключений не попали.
 //
-// 84→86 (D3, задача 9): лента инцидентов добавила "incident-feed" — маркер
-// страницы на корневом <div> (та же семья, что "escalations"/"slos"), и
-// "feed-group" — маркер раскрываемой карточки группы в паре с .card (как
-// "escalations-section"), раскрытие — нативный <details>/<summary> без
-// своего стиля.
-const maxPermanentCSSClassExemptions = 86
+// 86→84 (D3, волна устранения): лента инцидентов сначала внесла
+// "incident-feed" и "feed-group" в исключения с обоснованием «раскрытие —
+// нативный <details>/<summary> без своего стиля». Аудит признал это
+// неверным: все прочие раскрываемые блоки продукта стилизованы, и страница
+// на их фоне читалась как чужая. Карточка группы получила реальные правила
+// в app.css, оба исключения сняты.
+const maxPermanentCSSClassExemptions = 84
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на
