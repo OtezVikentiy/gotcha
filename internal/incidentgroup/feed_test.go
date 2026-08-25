@@ -285,3 +285,171 @@ func TestFeedGroupsRootNameAndResolvedFilter(t *testing.T) {
 		t.Fatalf("ClosedGroupsSince RootName = %q, want %q", closed[0].RootName, rootHostName2)
 	}
 }
+
+// assertNoFeedLeak — ни один FeedItem из items не должен совпадать по
+// Source+IncidentID со значением из leaks (индексировано по Source):
+// сторож против того, что project_id-фильтр одной из веток feedProjectQuery
+// снят (см. TestFeedTenantIsolationSources).
+func assertNoFeedLeak(t *testing.T, label string, items []incidentgroup.FeedItem, leaks map[string]int64) {
+	t.Helper()
+	for _, it := range items {
+		if want, ok := leaks[it.Source]; ok && it.IncidentID == want {
+			t.Errorf("%s: утечка чужого проекта — %s инцидент %d виден в выдаче", label, it.Source, it.IncidentID)
+		}
+	}
+}
+
+// TestFeedTenantIsolationSources — OpenOutOfGroup/ClosedSince объединяют 6
+// источников через общую feedProjectQuery (host/uptime/metric/slo/trace/
+// profile), каждый со своей веткой WHERE ...project_id = $1 AND <cond>.
+// Тест сидирует по одному ОТКРЫТОМУ и одному ЗАКРЫТОМУ инциденту КАЖДОГО из
+// 6 источников в ЧУЖОМ проекте и проверяет, что ни один не просачивается в
+// выдачу для другого (своего) projectID — снятие тенант-фильтра в любой из
+// 6 веток (например trace/profile, у которых project_id хранится прямо на
+// таблице, а не через JOIN, как у host/metric/slo/uptime) должно быть
+// поймано именно здесь, а не только на host-ветке, которую уже покрывали
+// TestFeedOpenOutOfGroup/TestFeedClosedSince.
+func TestFeedTenantIsolationSources(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	otherProjectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	// host: чужой открытый + закрытый инцидент.
+	fHost := seedHost(t, pool, otherProjectID, "f-host-"+randSlug(t))
+	var fHostOpen, fHostClosed int64
+	mustScan(t, pool, &fHostOpen, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, otherProjectID, fHost)
+	mustScan(t, pool, &fHostClosed, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, resolved_at)
+		VALUES ($1,$2,'memory','resolved',0,0,'', now()) RETURNING id`, otherProjectID, fHost)
+
+	// uptime: чужой монитор, открытый + закрытый инцидент.
+	var fMonitorID, fUptimeOpen, fUptimeClosed int64
+	mustScan(t, pool, &fMonitorID, `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,'f-mon-`+randSlug(t)+`','http',60) RETURNING id`, otherProjectID)
+	mustScan(t, pool, &fUptimeOpen, `
+		INSERT INTO incidents (monitor_id, notified_open)
+		VALUES ($1,true) RETURNING id`, fMonitorID)
+	mustScan(t, pool, &fUptimeClosed, `
+		INSERT INTO incidents (monitor_id, notified_open, resolved_at)
+		VALUES ($1,true,now()) RETURNING id`, fMonitorID)
+
+	// metric: чужое правило, открытый + закрытый инцидент.
+	var fRuleID, fMetricOpen, fMetricClosed int64
+	mustScan(t, pool, &fRuleID, `
+		INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold)
+		VALUES ($1,'f.cpu.load','avg','gt',0.9) RETURNING id`, otherProjectID)
+	mustScan(t, pool, &fMetricOpen, `
+		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value)
+		VALUES ($1,$2,1,1) RETURNING id`, fRuleID, otherProjectID)
+	mustScan(t, pool, &fMetricClosed, `
+		INSERT INTO metric_incidents (rule_id, project_id, status, peak_value, current_value, resolved_at)
+		VALUES ($1,$2,'resolved',1,1,now()) RETURNING id`, fRuleID, otherProjectID)
+
+	// slo: чужой SLO, открытый + закрытый инцидент.
+	var fSloID, fSloOpen, fSloClosed int64
+	mustScan(t, pool, &fSloID, `
+		INSERT INTO slos (project_id, name, sli_kind, target, window_days)
+		VALUES ($1,'f-slo-`+randSlug(t)+`','availability',0.99,30) RETURNING id`, otherProjectID)
+	mustScan(t, pool, &fSloOpen, `
+		INSERT INTO slo_incidents (slo_id, project_id, burn_rate)
+		VALUES ($1,$2,20) RETURNING id`, fSloID, otherProjectID)
+	mustScan(t, pool, &fSloClosed, `
+		INSERT INTO slo_incidents (slo_id, project_id, status, burn_rate, resolved_at)
+		VALUES ($1,$2,'resolved',20,now()) RETURNING id`, fSloID, otherProjectID)
+
+	// trace (perf_regressions): открытый + закрытый, project_id прямо на таблице.
+	var fTraceOpen, fTraceClosed int64
+	mustScan(t, pool, &fTraceOpen, `
+		INSERT INTO perf_regressions (project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
+		VALUES ($1,'endpoint_p95','/api/f-open','duration',100,500,500) RETURNING id`, otherProjectID)
+	mustScan(t, pool, &fTraceClosed, `
+		INSERT INTO perf_regressions (project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value, resolved_at)
+		VALUES ($1,'endpoint_p95','/api/f-closed','duration','resolved',100,500,500,now()) RETURNING id`, otherProjectID)
+
+	// profile (profile_regressions): открытый + закрытый, project_id прямо на таблице.
+	var fProfileOpen, fProfileClosed int64
+	mustScan(t, pool, &fProfileOpen, `
+		INSERT INTO profile_regressions (project_id, service, profile_type, function, baseline_share, peak_share, current_share)
+		VALUES ($1,'svc','cpu','doFOpen',0.1,0.5,0.5) RETURNING id`, otherProjectID)
+	mustScan(t, pool, &fProfileClosed, `
+		INSERT INTO profile_regressions (project_id, service, profile_type, function, status, baseline_share, peak_share, current_share, resolved_at)
+		VALUES ($1,'svc','cpu','doFClosed','resolved',0.1,0.5,0.5,now()) RETURNING id`, otherProjectID)
+
+	openLeaks := map[string]int64{
+		"host": fHostOpen, "uptime": fUptimeOpen, "metric": fMetricOpen,
+		"slo": fSloOpen, "trace": fTraceOpen, "profile": fProfileOpen,
+	}
+	closedLeaks := map[string]int64{
+		"host": fHostClosed, "uptime": fUptimeClosed, "metric": fMetricClosed,
+		"slo": fSloClosed, "trace": fTraceClosed, "profile": fProfileClosed,
+	}
+
+	open, err := store.OpenOutOfGroup(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenOutOfGroup: %v", err)
+	}
+	assertNoFeedLeak(t, "OpenOutOfGroup", open, openLeaks)
+
+	since := time.Now().Add(-time.Hour)
+	closed, err := store.ClosedSince(ctx, projectID, since, 50)
+	if err != nil {
+		t.Fatalf("ClosedSince: %v", err)
+	}
+	assertNoFeedLeak(t, "ClosedSince", closed, closedLeaks)
+}
+
+// TestFeedTenantIsolationGroups — OpenGroups/ClosedGroupsSince фильтруют
+// incident_groups по одной колонке (g.project_id = $1), но покрытия на
+// два проекта не было ни у одного теста групп — закрываем тем же приёмом,
+// что и TestFeedTenantIsolationSources: чужая открытая и чужая закрытая
+// группа не должны попасть в выдачу для другого projectID.
+func TestFeedTenantIsolationGroups(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	otherProjectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	fOpenHost := seedHost(t, pool, otherProjectID, "f-open-"+randSlug(t))
+	fOpenInc := seedSilent(t, pool, otherProjectID, fOpenHost, true)
+	fOpenGroup, err := store.EnsureGroup(ctx, otherProjectID, "host", fOpenInc, "host", fOpenHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup open (чужой проект): %v", err)
+	}
+
+	fClosedHost := seedHost(t, pool, otherProjectID, "f-closed-"+randSlug(t))
+	fClosedInc := seedSilent(t, pool, otherProjectID, fClosedHost, true)
+	fClosedGroup, err := store.EnsureGroup(ctx, otherProjectID, "host", fClosedInc, "host", fClosedHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup closed (чужой проект): %v", err)
+	}
+	if ok, err := store.Resolve(ctx, "host", fClosedInc); err != nil || !ok {
+		t.Fatalf("Resolve (чужой проект): ok=%v err=%v", ok, err)
+	}
+
+	open, err := store.OpenGroups(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenGroups: %v", err)
+	}
+	for _, g := range open {
+		if g.ID == fOpenGroup.ID {
+			t.Errorf("OpenGroups: утечка чужой открытой группы %d", fOpenGroup.ID)
+		}
+	}
+
+	since := time.Now().Add(-time.Hour)
+	closed, err := store.ClosedGroupsSince(ctx, projectID, since, 50)
+	if err != nil {
+		t.Fatalf("ClosedGroupsSince: %v", err)
+	}
+	for _, g := range closed {
+		if g.ID == fClosedGroup.ID {
+			t.Errorf("ClosedGroupsSince: утечка чужой закрытой группы %d", fClosedGroup.ID)
+		}
+	}
+}
