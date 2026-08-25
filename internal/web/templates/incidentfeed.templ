@@ -1,7 +1,9 @@
 package templates
 
 import (
+	"context"
 	"strconv"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
@@ -32,6 +34,34 @@ func NewGroupCard(g incidentgroup.GroupRow, members []incidentgroup.FeedItem) Gr
 	return c
 }
 
+// groupCompositionHint — W12: подсказка состава карточки группы. Раньше
+// собиралась конкатенацией нетранслируемых литералов ("host " + N + " ·
+// uptime " + N + " · metric " + N + " · slo " + N) — в русском интерфейсе
+// печатала латиницу вперемешку с нулями незадействованных источников
+// ("host 2 · uptime 0 · metric 1 · slo 0") и не отвечала на вопрос «сколько
+// их всего». Теперь: только источники с ненулевым счётом, через feed.source.*
+// (тот же ключ, что и в шапке таблицы состава), плюс общее число членов.
+func groupCompositionHint(ctx context.Context, c GroupCard) string {
+	parts := make([]string, 0, 4)
+	if c.Hosts > 0 {
+		parts = append(parts, i18n.T(ctx, "feed.source.host")+" "+strconv.Itoa(c.Hosts))
+	}
+	if c.Uptime > 0 {
+		parts = append(parts, i18n.T(ctx, "feed.source.uptime")+" "+strconv.Itoa(c.Uptime))
+	}
+	if c.Metrics > 0 {
+		parts = append(parts, i18n.T(ctx, "feed.source.metric")+" "+strconv.Itoa(c.Metrics))
+	}
+	if c.SLOs > 0 {
+		parts = append(parts, i18n.T(ctx, "feed.source.slo")+" "+strconv.Itoa(c.SLOs))
+	}
+	partsStr := strings.Join(parts, " · ")
+	if partsStr == "" {
+		partsStr = "—" // защитный случай: группа без единого члена не должна встречаться в проде (W4), но не должна и падать
+	}
+	return i18n.Tf(ctx, "feed.group.composition", "total", strconv.Itoa(len(c.Members)), "parts", partsStr)
+}
+
 // feedItemHref — ссылка на родную страницу источника (§6.1): переиспользует
 // те же билдеры путей, что и родные списки/детали каждого источника.
 func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
@@ -57,13 +87,79 @@ func incidentFeedPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incident-feed"
 }
 
-templ feedItemRow(projectID int64, it incidentgroup.FeedItem) {
+// feedItemSubKind — человекочитаемый подвид инцидента (W13): раньше везде
+// печатался сырым значением из БД ("web-01 · silent"). host — переведённый
+// вид (hosts.kind.*, тот же ключ, что и hostdetail.templ:
+// hostOpenIncidentRow/hostIncidentRow), trace — человекочитаемое имя метрики
+// (regressionMetricLabel, тот же помощник, что и regressions.templ). У
+// uptime/metric/slo своего подвида нет (SubKind всегда ""). У profile
+// SubKind — profile_type, который нигде в продукте не переводится (см.
+// profileregressions.templ: r.Service + " · " + r.ProfileType, сырым) —
+// печатаем как есть, для единообразия с родной страницей источника.
+func feedItemSubKind(ctx context.Context, it incidentgroup.FeedItem) string {
+	if it.SubKind == "" {
+		return ""
+	}
+	switch it.Source {
+	case "host":
+		return i18n.T(ctx, "hosts.kind."+it.SubKind)
+	case "trace":
+		return regressionMetricLabel(ctx, it.SubKind)
+	default:
+		return it.SubKind
+	}
+}
+
+// resolvedBadgeClass — тот же класс, что incidentStatusBadgeClass рисует для
+// резолвнутого uptime-инцидента; своя копия, а не вызов оригинала — тот
+// принимает uptime.Incident, а строка ленты объединяет 6 источников в
+// incidentgroup.FeedItem, ничего похожего на uptime.Incident не несущий.
+func resolvedBadgeClass() string {
+	return "badge badge-good"
+}
+
+// groupAnchorID — id карточки группы для якорной ссылки бейджа «была в
+// группе» (см. wasGroupedLabel/feedItemRow) на соответствующую (свёрнутую)
+// карточку ниже по той же странице.
+func groupAnchorID(groupID int64) string {
+	return "group-" + strconv.FormatInt(groupID, 10)
+}
+
+// wasGroupedLabel — подпись бейджа «была в группе» (FormerGroupID/
+// FormerGroupRootName, заведены соседней задачей в incidentgroup.FeedItem):
+// открытый или закрытый инцидент, чья группа успела резолвнуться или была
+// удалена janitor'ом (W1), — не член ни одной ОТКРЫТОЙ группы сейчас, но
+// когда-то был. FormerGroupRootName пуст только когда сама группа удалена
+// (сведений о корне не осталось нигде) — переиспользуем тот же фолбэк, что
+// и пустое имя корня в шапке карточки (W22, feed.group.root_deleted).
+func wasGroupedLabel(ctx context.Context, it incidentgroup.FeedItem) string {
+	root := it.FormerGroupRootName
+	if root == "" {
+		root = i18n.T(ctx, "feed.group.root_deleted")
+	}
+	return i18n.Tf(ctx, "feed.badge.was_grouped", "root", root)
+}
+
+// closedGroupIDs — множество ID групп, чьи (свёрнутые) карточки отрендерены
+// на ЭТОЙ странице в секции «закрытые» (§6.1/3): бейдж «была в группе»
+// ссылается на карточку якорем, только когда она реально присутствует на
+// странице — иначе (группа резолвилась раньше окна суток, или её карточка
+// не рендерится вовсе) ссылка вела бы в никуда.
+func closedGroupIDSet(closedGroups []GroupCard) map[int64]bool {
+	out := make(map[int64]bool, len(closedGroups))
+	for _, c := range closedGroups {
+		out[c.Group.ID] = true
+	}
+	return out
+}
+
+templ feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[int64]bool) {
 	<tr>
 		<td>{ i18n.T(ctx, "feed.source."+it.Source) }</td>
 		<td>
 			<a href={ templ.URL(feedItemHref(projectID, it)) }>{ it.Title }</a>
-			if it.SubKind != "" {
-				<span class="hint">{ " · " + it.SubKind }</span>
+			if label := feedItemSubKind(ctx, it); label != "" {
+				<span class="hint">{ " · " + label }</span>
 			}
 		</td>
 		<td>
@@ -71,11 +167,31 @@ templ feedItemRow(projectID int64, it incidentgroup.FeedItem) {
 			if it.SuppressedByDep {
 				<span class="badge">{ i18n.T(ctx, "incident.badge.suppressed_by_dep") }</span>
 			}
+			if it.HeldByGroup {
+				<span class="badge">{ i18n.T(ctx, "feed.badge.held_by_group") }</span>
+			}
 			if it.Acknowledged {
 				<span class="badge">{ i18n.T(ctx, "incidents.ack.confirmed") }</span>
 			}
+			if it.FormerGroupID != 0 {
+				<span class="badge">
+					if closedGroupIDs[it.FormerGroupID] {
+						<a href={ templ.URL("#" + groupAnchorID(it.FormerGroupID)) }>{ wasGroupedLabel(ctx, it) }</a>
+					} else {
+						{ wasGroupedLabel(ctx, it) }
+					}
+				</span>
+			}
+			if it.ResolvedAt != nil {
+				<span class={ resolvedBadgeClass() }>{ i18n.T(ctx, "uptime.incident.status_resolved") }</span>
+			}
 		</td>
-		<td>@relativeTime(it.StartedAt)</td>
+		<td>
+			@relativeTime(it.StartedAt)
+			if it.ResolvedAt != nil {
+				@relativeTime(*it.ResolvedAt)
+			}
+		</td>
 	</tr>
 }
 
@@ -95,17 +211,38 @@ templ feedTableHead() {
 	</thead>
 }
 
+// groupRootHref — ссылка на родную страницу корневого узла группы (host —
+// hostLink по имени, monitor — monitorDetailPath по ID, не по имени: имя
+// монитора, в отличие от хоста, не участвует в его адресе). Зовётся только
+// когда RootName непуст (см. groupCard) — на пустом имени вызывать незачем:
+// у удалённого хоста ссылка по пустому имени выродилась бы в адрес списка
+// хостов целиком (W22), у удалённого монитора переход на несуществующую
+// карточку так же бессмыслен.
+func groupRootHref(projectID int64, g incidentgroup.GroupRow) string {
+	if g.RootNodeKind == "monitor" {
+		return monitorDetailPath(g.RootNodeID)
+	}
+	return hostLink(projectID, g.RootName)
+}
+
 templ groupCard(projectID int64, c GroupCard) {
-	<details class="card feed-group">
+	<details id={ groupAnchorID(c.Group.ID) } class="card feed-group">
 		<summary>
-			<strong>{ i18n.T(ctx, "feed.group.root."+c.Group.RootSource) }: { c.Group.RootName }</strong>
-			<span class="hint">
-				{ "host " + strconv.Itoa(c.Hosts) + " · uptime " + strconv.Itoa(c.Uptime) +
-					" · metric " + strconv.Itoa(c.Metrics) + " · slo " + strconv.Itoa(c.SLOs) }
-			</span>
-			@relativeTime(c.Group.StartedAt)
+			<strong>
+				{ i18n.T(ctx, "feed.group.root."+c.Group.RootSource) + ": " }
+				if c.Group.RootName != "" {
+					<a href={ templ.URL(groupRootHref(projectID, c.Group)) }>{ c.Group.RootName }</a>
+				} else {
+					{ i18n.T(ctx, "feed.group.root_deleted") }
+				}
+			</strong>
+			@incidentSeverityBadge(c.Group.RootSeverity)
+			<span class="hint">{ groupCompositionHint(ctx, c) }</span>
 			if c.Group.ResolvedAt != nil {
-				<span class="badge">{ i18n.T(ctx, "feed.group.resolved") }</span>
+				@relativeTime(*c.Group.ResolvedAt)
+				<span class={ resolvedBadgeClass() }>{ i18n.T(ctx, "feed.group.resolved") }</span>
+			} else {
+				@relativeTime(c.Group.StartedAt)
 			}
 		</summary>
 		@scrollRegion("table-scroll", "feed.aria.group_members") {
@@ -113,7 +250,7 @@ templ groupCard(projectID int64, c GroupCard) {
 				@feedTableHead()
 				<tbody>
 					for _, it := range c.Members {
-						@feedItemRow(projectID, it)
+						@feedItemRow(projectID, it, nil)
 					}
 				</tbody>
 			</table>
@@ -125,6 +262,7 @@ templ groupCard(projectID int64, c GroupCard) {
 // открытые группы с раскрываемым составом (details/summary, без JS),
 // внегрупповые открытые инциденты 6 источников, недавно закрытые.
 templ IncidentFeed(projectID int64, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, userEmail string) {
+	{{ closedIDs := closedGroupIDSet(closedGroups) }}
 	@layout(i18n.T(ctx, "feed.title"), userEmail) {
 		<div class="incident-feed">
 			<h1>{ i18n.T(ctx, "feed.title") }</h1>
@@ -148,7 +286,7 @@ templ IncidentFeed(projectID int64, openGroups []GroupCard, outOfGroup []inciden
 							@feedTableHead()
 							<tbody>
 								for _, it := range outOfGroup {
-									@feedItemRow(projectID, it)
+									@feedItemRow(projectID, it, closedIDs)
 								}
 							</tbody>
 						</table>
@@ -168,7 +306,7 @@ templ IncidentFeed(projectID int64, openGroups []GroupCard, outOfGroup []inciden
 							@feedTableHead()
 							<tbody>
 								for _, it := range closed {
-									@feedItemRow(projectID, it)
+									@feedItemRow(projectID, it, closedIDs)
 								}
 							</tbody>
 						</table>

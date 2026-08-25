@@ -88,6 +88,14 @@ func TestFeedComposition(t *testing.T) {
 		t.Fatalf("host member: IncidentID=%d Title=%q SuppressedByDep=%v, want %d/%q/false",
 			h.IncidentID, h.Title, h.SuppressedByDep, hostMemberInc, memberHostName)
 	}
+	// Корень (seedSilent ... true) информирующий, группа и сам член
+	// открыты — все 4 источника обязаны нести HeldByGroup=true (W15): это
+	// не то же самое, что SuppressedByDep (B5, независимый механизм) — тут
+	// корень как раз НЕ suppressed_by_dep, но host-член всё равно молчит,
+	// потому что уведомил корень.
+	if !h.HeldByGroup {
+		t.Fatalf("host member HeldByGroup = false, want true (informing root, open group, open member)")
+	}
 
 	u, ok := bySource["uptime"]
 	if !ok {
@@ -95,6 +103,12 @@ func TestFeedComposition(t *testing.T) {
 	}
 	if u.IncidentID != uptimeMemberInc || !u.SuppressedByDep {
 		t.Fatalf("uptime member: IncidentID=%d SuppressedByDep=%v, want %d/true", u.IncidentID, u.SuppressedByDep, uptimeMemberInc)
+	}
+	// SuppressedByDep и HeldByGroup — независимые механизмы (B5 vs D3
+	// groupGate): у uptime-члена здесь оба true одновременно, каждый по
+	// своей причине, ни один не подменяет другой.
+	if !u.HeldByGroup {
+		t.Fatalf("uptime member HeldByGroup = false, want true (independent of SuppressedByDep=true)")
 	}
 
 	mm, ok := bySource["metric"]
@@ -104,6 +118,12 @@ func TestFeedComposition(t *testing.T) {
 	if mm.IncidentID != metricMemberInc || mm.Title != "cpu.load" {
 		t.Fatalf("metric member: IncidentID=%d Title=%q, want %d/cpu.load", mm.IncidentID, mm.Title, metricMemberInc)
 	}
+	// metric_incidents не несёт своей колонки suppressed_by_dep (B5
+	// неприменим), но HeldByGroup обязан считаться так же, как для host —
+	// это и есть W15: до фикса он был захардкожен в false для metric/slo.
+	if !mm.HeldByGroup {
+		t.Fatalf("metric member HeldByGroup = false, want true (informing root, open group, open member)")
+	}
 
 	s, ok := bySource["slo"]
 	if !ok {
@@ -112,6 +132,105 @@ func TestFeedComposition(t *testing.T) {
 	if s.IncidentID != sloMemberInc {
 		t.Fatalf("slo member: IncidentID=%d, want %d", s.IncidentID, sloMemberInc)
 	}
+	if !s.HeldByGroup {
+		t.Fatalf("slo member HeldByGroup = false, want true (informing root, open group, open member)")
+	}
+}
+
+// TestFeedCompositionHeldByGroupGates — W15, три независимых гейта,
+// каждый способен в одиночку выключить HeldByGroup, несмотря на то, что
+// остальные условия выполнены: немой корень (notified_open=false), сам член
+// уже закрылся, группа уже закрыта (корень резолвнут). Каждый подтест валит
+// РОВНО одно условие — так мутация, вырезавшая одно `AND` в CTE grp
+// (feedMemberSelect), ловится конкретным подтестом, а не тонет в остальных.
+func TestFeedCompositionHeldByGroupGates(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	store := incidentgroup.NewStore(pool)
+
+	t.Run("silent root", func(t *testing.T) {
+		projectID := seedProject(t, pool)
+		rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+		rootInc := seedSilent(t, pool, projectID, rootHost, false) // notified_open=false — немой корень
+		g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+		if err != nil {
+			t.Fatalf("EnsureGroup: %v", err)
+		}
+		memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+		var memberInc int64
+		mustScan(t, pool, &memberInc, `
+			INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+			VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+		if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+			t.Fatalf("SetGroup: ok=%v err=%v", ok, err)
+		}
+		members, err := store.Composition(ctx, projectID, g.ID)
+		if err != nil {
+			t.Fatalf("Composition: %v", err)
+		}
+		for _, m := range members {
+			if m.IncidentID == memberInc && m.HeldByGroup {
+				t.Fatalf("member of a silent (notified_open=false) root must have HeldByGroup=false: %+v", m)
+			}
+		}
+	})
+
+	t.Run("member already resolved", func(t *testing.T) {
+		projectID := seedProject(t, pool)
+		rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+		rootInc := seedSilent(t, pool, projectID, rootHost, true) // информирующий корень
+		g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+		if err != nil {
+			t.Fatalf("EnsureGroup: %v", err)
+		}
+		memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+		var memberInc int64
+		mustScan(t, pool, &memberInc, `
+			INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, resolved_at)
+			VALUES ($1,$2,'disk','resolved',0,0,'', now()) RETURNING id`, projectID, memberHost)
+		if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+			t.Fatalf("SetGroup: ok=%v err=%v", ok, err)
+		}
+		members, err := store.Composition(ctx, projectID, g.ID)
+		if err != nil {
+			t.Fatalf("Composition: %v", err)
+		}
+		for _, m := range members {
+			if m.IncidentID == memberInc && m.HeldByGroup {
+				t.Fatalf("a member that has already resolved must have HeldByGroup=false (its notification silence is history, not current state): %+v", m)
+			}
+		}
+	})
+
+	t.Run("group resolved", func(t *testing.T) {
+		projectID := seedProject(t, pool)
+		rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+		rootInc := seedSilent(t, pool, projectID, rootHost, true) // информирующий корень
+		g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+		if err != nil {
+			t.Fatalf("EnsureGroup: %v", err)
+		}
+		memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+		var memberInc int64
+		mustScan(t, pool, &memberInc, `
+			INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+			VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+		if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+			t.Fatalf("SetGroup: ok=%v err=%v", ok, err)
+		}
+		if ok, err := store.Resolve(ctx, "host", rootInc); err != nil || !ok {
+			t.Fatalf("Resolve group: ok=%v err=%v", ok, err)
+		}
+		members, err := store.Composition(ctx, projectID, g.ID)
+		if err != nil {
+			t.Fatalf("Composition: %v", err)
+		}
+		for _, m := range members {
+			if m.IncidentID == memberInc && m.HeldByGroup {
+				t.Fatalf("a member of an already-resolved group must have HeldByGroup=false: %+v", m)
+			}
+		}
+	})
 }
 
 func TestFeedOpenOutOfGroup(t *testing.T) {
@@ -365,6 +484,64 @@ func TestFeedGroupsRootNameAndResolvedFilter(t *testing.T) {
 	}
 	if closed[0].RootName != rootHostName2 {
 		t.Fatalf("ClosedGroupsSince RootName = %q, want %q", closed[0].RootName, rootHostName2)
+	}
+}
+
+// TestFeedGroupRowRootSeverity — W24: GroupRow несёт RootSeverity корневого
+// инцидента (карточка ленты рисует по нему severity-бейдж, §6.1/1). Host-
+// корень несёт severity host_incidents (проверяем явный 'warning', чтобы не
+// спутать с молчаливым совпадением через DEFAULT 'critical'); uptime-корень
+// — всегда ” (таблица `incidents` вовсе не несёт колонки severity, сама
+// категория неприменима к даунтайму монитора).
+func TestFeedGroupRowRootSeverity(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	hostRoot := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	var hostRootInc int64
+	mustScan(t, pool, &hostRootInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open, severity)
+		VALUES ($1,$2,'silent','open',0,0,'',true,'warning') RETURNING id`, projectID, hostRoot)
+	gHost, err := store.EnsureGroup(ctx, projectID, "host", hostRootInc, "host", hostRoot)
+	if err != nil {
+		t.Fatalf("EnsureGroup host: %v", err)
+	}
+
+	var monitorID int64
+	mustScan(t, pool, &monitorID, `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,'mon-`+randSlug(t)+`','http',60) RETURNING id`, projectID)
+	var uptimeRootInc int64
+	mustScan(t, pool, &uptimeRootInc, `
+		INSERT INTO incidents (monitor_id, notified_open) VALUES ($1,true) RETURNING id`, monitorID)
+	gUptime, err := store.EnsureGroup(ctx, projectID, "uptime", uptimeRootInc, "monitor", monitorID)
+	if err != nil {
+		t.Fatalf("EnsureGroup uptime: %v", err)
+	}
+
+	open, err := store.OpenGroups(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenGroups: %v", err)
+	}
+	byID := map[int64]incidentgroup.GroupRow{}
+	for _, g := range open {
+		byID[g.ID] = g
+	}
+	gotHost, ok := byID[gHost.ID]
+	if !ok {
+		t.Fatalf("OpenGroups missing host-rooted group %d: %+v", gHost.ID, open)
+	}
+	if gotHost.RootSeverity != "warning" {
+		t.Fatalf("host-rooted group RootSeverity = %q, want %q", gotHost.RootSeverity, "warning")
+	}
+	gotUptime, ok := byID[gUptime.ID]
+	if !ok {
+		t.Fatalf("OpenGroups missing uptime-rooted group %d: %+v", gUptime.ID, open)
+	}
+	if gotUptime.RootSeverity != "" {
+		t.Fatalf("uptime-rooted group RootSeverity = %q, want empty (incidents table has no severity)", gotUptime.RootSeverity)
 	}
 }
 

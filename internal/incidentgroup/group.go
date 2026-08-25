@@ -162,14 +162,25 @@ func (s *Store) MemberEligible(ctx context.Context, projectID int64, source stri
 type GroupRow struct {
 	Group
 	RootName string
+	// RootSeverity — severity корневого инцидента (W24, R5): карточка группы
+	// сама не несёт бейджа severity, дизайн §6.1/1 требует его в шапке.
+	// Есть только у host-корня (host_incidents.severity) — у таблицы
+	// `incidents` (uptime) колонки severity вовсе нет (сама категория
+	// неприменима к даунтайму монитора), для root_source='uptime' всегда ''
+	// — тот же случай, что и пустая Severity строки-члена uptime в
+	// feedMemberSelect/feedProjectQuery ниже; incidentSeverityBadge не
+	// рисует бейдж на пустой строке.
+	RootSeverity string
 }
 
 const groupRowSelect = `
 	SELECT g.id, g.project_id, g.root_source, g.root_incident_id, g.root_node_kind, g.root_node_id, g.started_at, g.resolved_at,
-	       CASE WHEN g.root_node_kind = 'host' THEN COALESCE(h.name, '') ELSE COALESCE(m.name, '') END AS root_name
+	       CASE WHEN g.root_node_kind = 'host' THEN COALESCE(h.name, '') ELSE COALESCE(m.name, '') END AS root_name,
+	       COALESCE(rh.severity, '') AS root_severity
 	FROM incident_groups g
 	LEFT JOIN hosts h    ON g.root_node_kind = 'host'    AND h.id = g.root_node_id
-	LEFT JOIN monitors m ON g.root_node_kind = 'monitor' AND m.id = g.root_node_id`
+	LEFT JOIN monitors m ON g.root_node_kind = 'monitor' AND m.id = g.root_node_id
+	LEFT JOIN host_incidents rh ON g.root_source = 'host' AND rh.id = g.root_incident_id`
 
 func (s *Store) queryGroupRows(ctx context.Context, tail string, args ...any) ([]GroupRow, error) {
 	rows, err := s.pool.Query(ctx, groupRowSelect+tail, args...)
@@ -181,7 +192,7 @@ func (s *Store) queryGroupRows(ctx context.Context, tail string, args ...any) ([
 	for rows.Next() {
 		var g GroupRow
 		if err := rows.Scan(&g.ID, &g.ProjectID, &g.RootSource, &g.RootIncidentID,
-			&g.RootNodeKind, &g.RootNodeID, &g.StartedAt, &g.ResolvedAt, &g.RootName); err != nil {
+			&g.RootNodeKind, &g.RootNodeID, &g.StartedAt, &g.ResolvedAt, &g.RootName, &g.RootSeverity); err != nil {
 			return nil, fmt.Errorf("incidentgroup: scan group row: %w", err)
 		}
 		out = append(out, g)
@@ -225,6 +236,28 @@ type FeedItem struct {
 	// группу, даёт FormerGroupID=0 — сведений о ней не осталось нигде.
 	FormerGroupID       int64
 	FormerGroupRootName string
+	// HeldByGroup — true, если СЕЙЧАС член ОТКРЫТОЙ группы с ЕЩЁ открытым
+	// собственным инцидентом, чей корень на момент присоединения был
+	// «информирующим» (W15): такой член не шлёт своё open-уведомление —
+	// молчит, потому что вместо него уже проинформировал корень (Р4,
+	// groupGate в host/metric/slo Evaluator — attached && rootInforming,
+	// см. AttachMetric/Attach). Это НЕ suppressed_by_dep (B5, независимый
+	// механизм подавления эскалации по факту упавшего родителя, гейтится
+	// отдельно и совсем в другой момент — escalation.Scheduler, а не
+	// открытие инцидента) — оба поля могут быть true одновременно, каждое
+	// про свою причину молчания, путать их нельзя.
+	//
+	// «informing» не хранится персистентно нигде (транзитное решение
+	// groupGate в момент attach), поэтому здесь не читается напрямую, а
+	// восстанавливается по инварианту: notified_open корневого инцидента
+	// МОНОТОНЕН (host/incident.go, uptime/incident.go — MarkNotified
+	// выставляет true и никогда не сбрасывает обратно, пока инцидент
+	// открыт), а сам root успевает решить, уведомлять ли, ДО того как у
+	// него вообще может появиться член (DownRoot члена обязан сначала
+	// увидеть открытый корень) — так что текущее значение notified_open
+	// корня совпадает с его значением на момент attach члена в любом
+	// реальном сценарии. См. feedMemberSelect (CTE grp) ниже.
+	HeldByGroup bool
 }
 
 func scanFeedItems(rows pgx.Rows) ([]FeedItem, error) {
@@ -235,7 +268,7 @@ func scanFeedItems(rows pgx.Rows) ([]FeedItem, error) {
 		if err := rows.Scan(&it.Source, &it.IncidentID, &it.Title, &it.SubKind,
 			&it.StartedAt, &it.ResolvedAt, &it.Severity, &it.Acknowledged,
 			&it.SuppressedByDep, &it.RefID, &it.RefName,
-			&it.FormerGroupID, &it.FormerGroupRootName); err != nil {
+			&it.FormerGroupID, &it.FormerGroupRootName, &it.HeldByGroup); err != nil {
 			return nil, fmt.Errorf("incidentgroup: scan feed item: %w", err)
 		}
 		out = append(out, it)
@@ -252,35 +285,62 @@ func scanFeedItems(rows pgx.Rows) ([]FeedItem, error) {
 // m.project_id в WHERE станет NULL и строку отсеет, так что для uptime LEFT
 // JOIN monitors фактически ведёт себя как INNER; практического эффекта нет
 // (monitor_id — FK ON DELETE CASCADE, вместе со справочником каскадом уйдёт
-// и сам инцидент). Два последних столбца — заглушки под FormerGroup* (у
-// члена ТЕКУЩЕЙ группы бывшей группы, по определению, нет).
+// и сам инцидент). Два предпоследних столбца каждой ветки — заглушки под
+// FormerGroup* (у члена ТЕКУЩЕЙ группы бывшей группы, по определению, нет).
+// Последний — HeldByGroup (W15): вычисляется через CTE grp, общий на все 4
+// ветки (сама группа и её корень — одни и те же для всего состава, $1 не
+// меняется по веткам) — «группа ещё открыта, СВОЙ инцидент ещё открыт, а
+// корень на момент присоединения был информирующим» (инвариант монотонности
+// notified_open — см. докблок FeedItem.HeldByGroup). rh/ri резолвят корневой
+// инцидент по root_source тем же приёмом, что и groupRowSelect резолвит имя
+// корня, только по incident-таблицам, а не по узлам.
 const feedMemberSelect = `
+	WITH grp AS (
+		SELECT g.resolved_at AS group_resolved_at,
+		       COALESCE(rh.notified_open, ri.notified_open, false) AS root_notified_open
+		FROM incident_groups g
+		LEFT JOIN host_incidents rh ON g.root_source = 'host'   AND rh.id = g.root_incident_id
+		LEFT JOIN incidents      ri ON g.root_source = 'uptime' AND ri.id = g.root_incident_id
+		WHERE g.id = $1
+	)
 	SELECT 'host'::text, hi.id, COALESCE(h.name,''), hi.kind,
 	       hi.started_at, hi.resolved_at, hi.severity,
 	       hi.acknowledged_at IS NOT NULL, hi.suppressed_by_dep, 0::bigint, COALESCE(h.name,''),
-	       0::bigint, ''::text
-	FROM host_incidents hi LEFT JOIN hosts h ON h.id = hi.host_id
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND hi.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM host_incidents hi
+	LEFT JOIN hosts h ON h.id = hi.host_id
+	LEFT JOIN grp ON true
 	WHERE hi.group_id = $1 AND hi.project_id = $2
 	UNION ALL
 	SELECT 'uptime', i.id, COALESCE(m.name,''), '',
 	       i.started_at, i.resolved_at, '',
 	       false, i.suppressed_by_dep, i.monitor_id, '',
-	       0::bigint, ''::text
-	FROM incidents i LEFT JOIN monitors m ON m.id = i.monitor_id
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND i.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM incidents i
+	LEFT JOIN monitors m ON m.id = i.monitor_id
+	LEFT JOIN grp ON true
 	WHERE i.group_id = $1 AND m.project_id = $2
 	UNION ALL
 	SELECT 'metric', mi.id, COALESCE(r.metric_name,''), '',
 	       mi.started_at, mi.resolved_at, mi.severity,
 	       mi.acknowledged_at IS NOT NULL, false, mi.rule_id, '',
-	       0::bigint, ''::text
-	FROM metric_incidents mi LEFT JOIN metric_alert_rules r ON r.id = mi.rule_id
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND mi.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM metric_incidents mi
+	LEFT JOIN metric_alert_rules r ON r.id = mi.rule_id
+	LEFT JOIN grp ON true
 	WHERE mi.group_id = $1 AND mi.project_id = $2
 	UNION ALL
 	SELECT 'slo', si.id, COALESCE(sl.name,''), '',
 	       si.started_at, si.resolved_at, si.severity,
 	       si.acknowledged_at IS NOT NULL, false, si.slo_id, '',
-	       0::bigint, ''::text
-	FROM slo_incidents si LEFT JOIN slos sl ON sl.id = si.slo_id
+	       0::bigint, ''::text,
+	       COALESCE(grp.group_resolved_at IS NULL AND si.resolved_at IS NULL AND grp.root_notified_open, false)
+	FROM slo_incidents si
+	LEFT JOIN slos sl ON sl.id = si.slo_id
+	LEFT JOIN grp ON true
 	WHERE si.group_id = $1 AND si.project_id = $2`
 
 // Composition — состав группы: члены 4 источников, старейшие первыми.
@@ -314,6 +374,10 @@ func notOpenGroupMember(alias string) string {
 // бейджа feed.badge.was_grouped (W1) — id + имя корня, восстановленное тем
 // же способом, что groupRowSelect. trace/profile group_id не имеют
 // (Р2 — у них нет узла) — вне групп всегда, заглушки под FormerGroup*.
+// Последний столбец каждой ветки — HeldByGroup, всегда false: строки этого
+// запроса по определению не члены ОТКРЫТОЙ группы (notOpenGroupMember для
+// host/uptime/metric/slo, отсутствие узла для trace/profile) — «уведомление
+// идёт за корнем» неприменимо к тому, что уже показано отдельной строкой.
 // MINOR-10: все ветки ходят по project_id + status/resolved_at — у
 // host/metric/slo есть индексы по project_id (см. существующие
 // ListByProject), incident_groups_open_idx частичный по project_id;
@@ -323,7 +387,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	SELECT 'host'::text, hi.id, COALESCE(h.name,''), hi.kind,
 	       hi.started_at, hi.resolved_at, hi.severity,
 	       hi.acknowledged_at IS NOT NULL, hi.suppressed_by_dep, 0::bigint, COALESCE(h.name,''),
-	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
+	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, ''), false
 	FROM host_incidents hi
 	LEFT JOIN hosts h ON h.id = hi.host_id
 	LEFT JOIN incident_groups wg ON wg.id = hi.group_id AND wg.project_id = $1
@@ -334,7 +398,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	SELECT 'uptime', i.id, COALESCE(m.name,''), '',
 	       i.started_at, i.resolved_at, '',
 	       false, i.suppressed_by_dep, i.monitor_id, '',
-	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
+	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, ''), false
 	FROM incidents i
 	JOIN monitors m ON m.id = i.monitor_id
 	LEFT JOIN incident_groups wg ON wg.id = i.group_id AND wg.project_id = $1
@@ -345,7 +409,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	SELECT 'metric', mi.id, COALESCE(r.metric_name,''), '',
 	       mi.started_at, mi.resolved_at, mi.severity,
 	       mi.acknowledged_at IS NOT NULL, false, mi.rule_id, '',
-	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
+	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, ''), false
 	FROM metric_incidents mi
 	LEFT JOIN metric_alert_rules r ON r.id = mi.rule_id
 	LEFT JOIN incident_groups wg ON wg.id = mi.group_id AND wg.project_id = $1
@@ -356,7 +420,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	SELECT 'slo', si.id, COALESCE(sl.name,''), '',
 	       si.started_at, si.resolved_at, si.severity,
 	       si.acknowledged_at IS NOT NULL, false, si.slo_id, '',
-	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
+	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, ''), false
 	FROM slo_incidents si
 	LEFT JOIN slos sl ON sl.id = si.slo_id
 	LEFT JOIN incident_groups wg ON wg.id = si.group_id AND wg.project_id = $1
@@ -367,14 +431,14 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	SELECT 'trace', pr.id, pr.target, pr.metric,
 	       pr.started_at, pr.resolved_at, pr.severity,
 	       pr.acknowledged_at IS NOT NULL, false, pr.id, '',
-	       0::bigint, ''::text
+	       0::bigint, ''::text, false
 	FROM perf_regressions pr
 	WHERE pr.project_id = $1 AND ` + traceCond + `
 	UNION ALL
 	SELECT 'profile', pf.id, pf.function, pf.profile_type,
 	       pf.started_at, pf.resolved_at, pf.severity,
 	       pf.acknowledged_at IS NOT NULL, false, pf.id, '',
-	       0::bigint, ''::text
+	       0::bigint, ''::text, false
 	FROM profile_regressions pf
 	WHERE pf.project_id = $1 AND ` + profileCond
 }

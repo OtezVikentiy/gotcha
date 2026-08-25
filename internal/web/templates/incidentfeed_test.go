@@ -83,8 +83,12 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 	if strings.Contains(openHTML, "решена") {
 		t.Error("open group card must not show the resolved badge")
 	}
-	if !strings.Contains(openHTML, "host 1 · uptime 1 · metric 0 · slo 0") {
+	if !strings.Contains(openHTML, "всего 2 (Хост 1 · Аптайм 1)") {
 		t.Errorf("open group card missing composition hint: %s", openHTML)
+	}
+	// Нулевые источники (metric/slo) не должны попадать в подсказку (W12).
+	if strings.Contains(openHTML, "Метрика 0") || strings.Contains(openHTML, "SLO 0") {
+		t.Errorf("composition hint must omit zero-count sources: %s", openHTML)
 	}
 	if !strings.Contains(openHTML, "gw-1") {
 		t.Errorf("open group card missing root name: %s", openHTML)
@@ -105,7 +109,7 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 func TestGroupCardEmptyMembers(t *testing.T) {
 	c := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now()}}, nil)
 	html := renderTo(t, groupCard(1, c))
-	if !strings.Contains(html, "host 0 · uptime 0 · metric 0 · slo 0") {
+	if !strings.Contains(html, "всего 0 (—)") {
 		t.Errorf("empty group card composition hint wrong: %s", html)
 	}
 	if strings.Contains(html, "<tbody><tr>") {
@@ -120,7 +124,7 @@ func TestGroupCardEmptyMembers(t *testing.T) {
 func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	base := incidentgroup.FeedItem{Source: "host", Title: "web-1", StartedAt: time.Now()}
 
-	plain := renderTo(t, feedItemRow(1, base))
+	plain := renderTo(t, feedItemRow(1, base, nil))
 	if strings.Contains(plain, "·") {
 		t.Errorf("row without SubKind must not render the hint separator: %s", plain)
 	}
@@ -130,14 +134,19 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 
 	withSubKind := base
 	withSubKind.SubKind = "disk"
-	subKindHTML := renderTo(t, feedItemRow(1, withSubKind))
-	if !strings.Contains(subKindHTML, "· disk") {
-		t.Errorf("row with SubKind must render the hint: %s", subKindHTML)
+	subKindHTML := renderTo(t, feedItemRow(1, withSubKind, nil))
+	// W13: SubKind рисуется переведённым (hosts.kind.disk), не сырым
+	// значением из БД.
+	if !strings.Contains(subKindHTML, "· Диск") {
+		t.Errorf("row with SubKind must render the translated hint: %s", subKindHTML)
+	}
+	if strings.Contains(subKindHTML, "· disk") {
+		t.Errorf("row with SubKind must NOT render the raw untranslated value: %s", subKindHTML)
 	}
 
 	suppressed := base
 	suppressed.SuppressedByDep = true
-	suppressedHTML := renderTo(t, feedItemRow(1, suppressed))
+	suppressedHTML := renderTo(t, feedItemRow(1, suppressed, nil))
 	if !strings.Contains(suppressedHTML, "подавлен: родитель недоступен") {
 		t.Errorf("suppressed row must show the badge: %s", suppressedHTML)
 	}
@@ -147,7 +156,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 
 	acked := base
 	acked.Acknowledged = true
-	ackedHTML := renderTo(t, feedItemRow(1, acked))
+	ackedHTML := renderTo(t, feedItemRow(1, acked, nil))
 	if !strings.Contains(ackedHTML, "Подтверждён") {
 		t.Errorf("acked row must show the ack badge: %s", ackedHTML)
 	}
@@ -158,7 +167,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	both := base
 	both.SuppressedByDep = true
 	both.Acknowledged = true
-	bothHTML := renderTo(t, feedItemRow(1, both))
+	bothHTML := renderTo(t, feedItemRow(1, both, nil))
 	if !strings.Contains(bothHTML, "подавлен: родитель недоступен") || !strings.Contains(bothHTML, "Подтверждён") {
 		t.Errorf("row with both flags must show both badges: %s", bothHTML)
 	}
@@ -167,12 +176,12 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 // TestFeedItemRowSeverityBadge — Severity="" — бейдж severity не рисуется
 // вовсе; непустая Severity — рисуется (класс danger для critical).
 func TestFeedItemRowSeverityBadge(t *testing.T) {
-	noSeverity := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", StartedAt: time.Now()}))
+	noSeverity := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", StartedAt: time.Now()}, nil))
 	if strings.Contains(noSeverity, "badge-danger") || strings.Contains(noSeverity, "badge-warn") {
 		t.Errorf("row without severity must not render a severity badge: %s", noSeverity)
 	}
 
-	critical := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", Severity: "critical", StartedAt: time.Now()}))
+	critical := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", Severity: "critical", StartedAt: time.Now()}, nil))
 	if !strings.Contains(critical, "badge-danger") {
 		t.Errorf("critical severity must render the danger badge: %s", critical)
 	}
@@ -382,5 +391,231 @@ func TestIncidentFeedEmptyStatesUseEmptyStateComponent(t *testing.T) {
 	// откатились на старый голый абзац, счёт вырос бы до 4.
 	if got := strings.Count(html, `<p class="hint">`); got != 1 {
 		t.Errorf("only the back-link hint paragraph should remain, empty sections must use @emptyState: got %d <p class=\"hint\"> blocks, want 1: %s", got, html)
+	}
+}
+
+// TestFeedItemSubKindTranslatesTraceMetric — W13: trace-подвид (perf_regressions.metric)
+// рисуется через regressionMetricLabel (тот же помощник, что и regressions.templ),
+// не сырым значением metric.
+func TestFeedItemSubKindTranslatesTraceMetric(t *testing.T) {
+	item := incidentgroup.FeedItem{Source: "trace", Title: "t1", SubKind: "duration", StartedAt: time.Now()}
+	html := renderTo(t, feedItemRow(1, item, nil))
+	if !strings.Contains(html, "· p95 длительности") {
+		t.Errorf("trace SubKind must render via regressionMetricLabel: %s", html)
+	}
+	if strings.Contains(html, "· duration") {
+		t.Errorf("trace row must not render the raw untranslated metric key: %s", html)
+	}
+}
+
+// TestFeedItemSubKindProfilePassesThroughRaw — W13: profile_type нигде в
+// продукте не переводится (profileregressions.templ печатает его как есть)
+// — лента обязана быть с этим согласована, а не внезапно завести перевод,
+// которого нет на родной странице источника.
+func TestFeedItemSubKindProfilePassesThroughRaw(t *testing.T) {
+	item := incidentgroup.FeedItem{Source: "profile", Title: "svc", SubKind: "cpu", StartedAt: time.Now()}
+	html := renderTo(t, feedItemRow(1, item, nil))
+	if !strings.Contains(html, "· cpu") {
+		t.Errorf("profile SubKind must render as-is: %s", html)
+	}
+}
+
+// TestFeedItemRowHeldByGroupBadge — W15: бейдж «молчит — уведомляет корень»
+// рисуется только при HeldByGroup=true, независимо от SuppressedByDep (уже
+// покрыт TestFeedItemRowBadgesAndSubKind) — оба могут стоять одновременно,
+// ни один не подменяет другой.
+func TestFeedItemRowHeldByGroupBadge(t *testing.T) {
+	base := incidentgroup.FeedItem{Source: "metric", Title: "m1", StartedAt: time.Now()}
+	plainHTML := renderTo(t, feedItemRow(1, base, nil))
+	if strings.Contains(plainHTML, "молчит — уведомляет корень") {
+		t.Errorf("row without HeldByGroup must not render the badge: %s", plainHTML)
+	}
+
+	held := base
+	held.HeldByGroup = true
+	heldHTML := renderTo(t, feedItemRow(1, held, nil))
+	if !strings.Contains(heldHTML, "молчит — уведомляет корень") {
+		t.Errorf("HeldByGroup row must render the badge: %s", heldHTML)
+	}
+
+	both := held
+	both.SuppressedByDep = true
+	bothHTML := renderTo(t, feedItemRow(1, both, nil))
+	if !strings.Contains(bothHTML, "молчит — уведомляет корень") || !strings.Contains(bothHTML, "подавлен: родитель недоступен") {
+		t.Errorf("row with both HeldByGroup and SuppressedByDep must show both distinct badges: %s", bothHTML)
+	}
+}
+
+// TestFeedItemRowResolvedBadgeAndTime — W14: закрывшийся член ОТКРЫТОЙ
+// группы обязан нести и бейдж «Решён», и время закрытия — не только время
+// начала. Проверяем через datetime-атрибут relativeTime (детерминированный,
+// в отличие от "N часов назад").
+func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
+	started := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	resolved := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	startedDT := `datetime="` + started.Format(time.RFC3339) + `"`
+	resolvedDT := `datetime="` + resolved.Format(time.RFC3339) + `"`
+
+	open := incidentgroup.FeedItem{Source: "host", StartedAt: started}
+	openHTML := renderTo(t, feedItemRow(1, open, nil))
+	if !strings.Contains(openHTML, startedDT) {
+		t.Errorf("open member row must show its started time: %s", openHTML)
+	}
+	if strings.Contains(openHTML, "Решён") {
+		t.Errorf("open member row must not show the resolved badge: %s", openHTML)
+	}
+
+	resolvedItem := open
+	resolvedItem.ResolvedAt = &resolved
+	resolvedHTML := renderTo(t, feedItemRow(1, resolvedItem, nil))
+	if !strings.Contains(resolvedHTML, "Решён") {
+		t.Errorf("resolved member row must show the resolved badge: %s", resolvedHTML)
+	}
+	if !strings.Contains(resolvedHTML, startedDT) {
+		t.Errorf("resolved member row must still show its started time: %s", resolvedHTML)
+	}
+	if !strings.Contains(resolvedHTML, resolvedDT) {
+		t.Errorf("resolved member row must show its resolved time too, not just started: %s", resolvedHTML)
+	}
+}
+
+// TestFeedItemRowWasGroupedBadge — бейдж «была в группе» рисуется только
+// при FormerGroupID != 0; ссылка на якорь карточки — только когда её ID
+// входит в closedGroupIDs (карточка реально отрендерена на странице), иначе
+// голый текст без ссылки; пустое FormerGroupRootName (группа удалена
+// janitor'ом целиком) переиспользует тот же фолбэк, что и W22.
+func TestFeedItemRowWasGroupedBadge(t *testing.T) {
+	plain := incidentgroup.FeedItem{Source: "host", Title: "m1", StartedAt: time.Now()}
+	plainHTML := renderTo(t, feedItemRow(1, plain, nil))
+	if strings.Contains(plainHTML, "ранее в группе") {
+		t.Errorf("row without FormerGroupID must not render the was_grouped badge: %s", plainHTML)
+	}
+
+	former := plain
+	former.FormerGroupID = 7
+	former.FormerGroupRootName = "root-1"
+	htmlNoLink := renderTo(t, feedItemRow(1, former, nil))
+	if !strings.Contains(htmlNoLink, "ранее в группе — root-1") {
+		t.Errorf("row with FormerGroupID must render the was_grouped badge: %s", htmlNoLink)
+	}
+	if strings.Contains(htmlNoLink, `href="#group-7"`) {
+		t.Errorf("badge must not link when the group card is not rendered on this page: %s", htmlNoLink)
+	}
+
+	htmlWithLink := renderTo(t, feedItemRow(1, former, map[int64]bool{7: true}))
+	if !strings.Contains(htmlWithLink, `href="#group-7"`) {
+		t.Errorf("badge must link to the rendered group card by anchor: %s", htmlWithLink)
+	}
+
+	purged := plain
+	purged.FormerGroupID = 9
+	purged.FormerGroupRootName = ""
+	purgedHTML := renderTo(t, feedItemRow(1, purged, nil))
+	if !strings.Contains(purgedHTML, "ранее в группе — узел удалён") {
+		t.Errorf("a purged former group must fall back to the deleted-node label: %s", purgedHTML)
+	}
+}
+
+// TestGroupCardRootSeverityBadge — W24: severity-бейдж корня в шапке
+// карточки; пустая RootSeverity (uptime-корень, у incidents нет колонки
+// severity) бейдж не рисует вовсе.
+func TestGroupCardRootSeverityBadge(t *testing.T) {
+	critical := NewGroupCard(incidentgroup.GroupRow{
+		Group:        incidentgroup.Group{RootSource: "host", StartedAt: time.Now()},
+		RootSeverity: "critical",
+	}, nil)
+	html := renderTo(t, groupCard(1, critical))
+	if !strings.Contains(html, "badge-danger") {
+		t.Errorf("group card must render the root severity badge: %s", html)
+	}
+
+	noSeverity := NewGroupCard(incidentgroup.GroupRow{
+		Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now()},
+	}, nil)
+	htmlNoSeverity := renderTo(t, groupCard(1, noSeverity))
+	if strings.Contains(htmlNoSeverity, "badge-danger") || strings.Contains(htmlNoSeverity, "badge-warn") {
+		t.Errorf("group card without root severity must not render a severity badge: %s", htmlNoSeverity)
+	}
+}
+
+// TestGroupCardShowsResolvedTimeNotStartedAt — W21: закрытая группа
+// показывает в шапке время ЗАКРЫТИЯ (тот же ключ, по которому отсортирована
+// секция «закрытые» — ClosedGroupsSince ORDER BY resolved_at DESC), а не
+// время начала — иначе порядок карточек на странице выглядит случайным.
+func TestGroupCardShowsResolvedTimeNotStartedAt(t *testing.T) {
+	started := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	resolved := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	startedDT := `datetime="` + started.Format(time.RFC3339) + `"`
+	resolvedDT := `datetime="` + resolved.Format(time.RFC3339) + `"`
+
+	open := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: started}}, nil)
+	openHTML := renderTo(t, groupCard(1, open))
+	if !strings.Contains(openHTML, startedDT) {
+		t.Errorf("open group card header must show the started time: %s", openHTML)
+	}
+
+	closed := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: started, ResolvedAt: &resolved}}, nil)
+	closedHTML := renderTo(t, groupCard(1, closed))
+	if !strings.Contains(closedHTML, resolvedDT) {
+		t.Errorf("closed group card header must show the resolved time: %s", closedHTML)
+	}
+	if strings.Contains(closedHTML, startedDT) {
+		t.Errorf("closed group card header must NOT show the started time (sort key mismatch, W21): %s", closedHTML)
+	}
+}
+
+// TestGroupCardDeletedRootFallback — W22: корень с пустым RootName (узел
+// удалён) обязан показать текстовый фолбэк, а не пустую строку, и не
+// рисовать вырожденную ссылку (host — на /projects/{id}/hosts/, monitor —
+// на несуществующую карточку).
+func TestGroupCardDeletedRootFallback(t *testing.T) {
+	c := NewGroupCard(incidentgroup.GroupRow{
+		Group:    incidentgroup.Group{RootSource: "host", RootNodeKind: "host", StartedAt: time.Now()},
+		RootName: "",
+	}, nil)
+	html := renderTo(t, groupCard(1, c))
+	if !strings.Contains(html, "узел удалён") {
+		t.Errorf("deleted root must show the fallback label: %s", html)
+	}
+	if strings.Contains(html, `href="`+hostsBasePath(1)+`/"`) {
+		t.Errorf("deleted root must NOT render a degenerate empty-name link: %s", html)
+	}
+}
+
+// TestGroupCardRootNameLinksToHostDetail — W22 (positive case): непустое
+// имя корня — ссылка на родную страницу узла (hostLink, тот же билдер, что
+// и feedItemHref/hosts.templ), не голый текст.
+func TestGroupCardRootNameLinksToHostDetail(t *testing.T) {
+	c := NewGroupCard(incidentgroup.GroupRow{
+		Group:    incidentgroup.Group{RootSource: "host", RootNodeKind: "host", StartedAt: time.Now()},
+		RootName: "gw-1",
+	}, nil)
+	html := renderTo(t, groupCard(1, c))
+	want := `href="` + hostLink(1, "gw-1") + `"`
+	if !strings.Contains(html, want) {
+		t.Errorf("group card root name must link via hostLink: missing %q in %s", want, html)
+	}
+}
+
+// TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup — интеграционно
+// (уровень IncidentFeed, не голого feedItemRow): closedGroupIDSet реально
+// прокидывается из closedGroups в строки «вне групп», а не теряется по
+// дороге — иначе TestFeedItemRowWasGroupedBadge проверял бы helper в
+// вакууме, а не то, что видит пользователь на странице.
+func TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup(t *testing.T) {
+	closedGroup := NewGroupCard(
+		incidentgroup.GroupRow{Group: incidentgroup.Group{ID: 42, RootSource: "host", StartedAt: time.Now()}, RootName: "root-1"},
+		nil,
+	)
+	outOfGroup := []incidentgroup.FeedItem{{
+		Source: "host", Title: "m1", StartedAt: time.Now(),
+		FormerGroupID: 42, FormerGroupRootName: "root-1",
+	}}
+	html := renderTo(t, IncidentFeed(1, nil, outOfGroup, []GroupCard{closedGroup}, nil, ""))
+	if !strings.Contains(html, `id="group-42"`) {
+		t.Errorf("closed group card must carry the anchor id: %s", html)
+	}
+	if !strings.Contains(html, `href="#group-42"`) {
+		t.Errorf("was_grouped badge must link to the rendered closed group card: %s", html)
 	}
 }
