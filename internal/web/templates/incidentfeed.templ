@@ -63,7 +63,12 @@ func groupCompositionHint(ctx context.Context, c GroupCard) string {
 }
 
 // feedItemHref — ссылка на родную страницу источника (§6.1): переиспользует
-// те же билдеры путей, что и родные списки/детали каждого источника.
+// те же билдеры путей, что и родные списки/детали каждого источника. host/
+// uptime/slo ведут на карточку конкретного объекта (slo — sloDetailPath по
+// RefID = si.slo_id, W23). metric/trace/profile детальной страницы под
+// отдельный инцидент не имеют (алерты/регрессии/профили открываются только
+// списком в контексте правила/сервиса, а не по id инцидента) — для них ссылка
+// нарочно ведёт на список источника, это не недосмотр.
 func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
 	switch it.Source {
 	case "host":
@@ -73,7 +78,7 @@ func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
 	case "metric":
 		return metricAlertsBasePath(projectID)
 	case "slo":
-		return SLOsPath(projectID)
+		return sloDetailPath(projectID, it.RefID)
 	case "trace":
 		return regressionsPath(projectID)
 	case "profile":
@@ -168,14 +173,24 @@ func feedItemLinkable(it incidentgroup.FeedItem, canOperate bool) bool {
 	return it.Source != "metric" && it.Source != "slo"
 }
 
+// feedItemRow — строка состава/вне групп/закрытых. it.Title == "" на проде
+// недостижимо (у всех 4 источников-членов справочник — FK ON DELETE CASCADE,
+// см. докблок feedMemberSelect в group.go): исчезновение host/rule/slo уносит
+// каскадом и сам инцидент. Фолбэк ниже — тот же приём и тот же ключ
+// (feed.group.root_deleted), что и у корня группы (groupRootHref, W22): без
+// имени рисовать ссылку/пустой текст ссылки бессмысленно.
 templ feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[int64]bool, canOperate bool) {
 	<tr>
 		<td>{ i18n.T(ctx, "feed.source."+it.Source) }</td>
 		<td>
-			if feedItemLinkable(it, canOperate) {
-				<a href={ templ.URL(feedItemHref(projectID, it)) }>{ it.Title }</a>
+			if it.Title != "" {
+				if feedItemLinkable(it, canOperate) {
+					<a href={ templ.URL(feedItemHref(projectID, it)) }>{ it.Title }</a>
+				} else {
+					{ it.Title }
+				}
 			} else {
-				{ it.Title }
+				{ i18n.T(ctx, "feed.group.root_deleted") }
 			}
 			if label := feedItemSubKind(ctx, it); label != "" {
 				<span class="hint">{ " · " + label }</span>

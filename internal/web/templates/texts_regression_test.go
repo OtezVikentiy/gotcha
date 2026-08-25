@@ -183,3 +183,66 @@ func TestSLOHistoryResolvedLabelsSayResolvedNotClosed(t *testing.T) {
 		t.Errorf("SLODetailScreen всё ещё содержит устаревшую метку %q вместо «Решён»: %s", "Закрыт", out)
 	}
 }
+
+// TestIncidentFeedSeeIncidentsHintIsLiteral — хинт под <h1>Лента инцидентов
+// обязан описывать саму ленту (открытые группы + вне групп + недавно
+// решённые), а не лгать, что лента показывает "только решённые за последние
+// сутки" — старая формулировка была списана с зеркального хинта страницы
+// /incidents (uptime.incidents.see_feed_hint) и не подходила месту, где
+// реально стоит: страница выше всего показывает открытые группы и
+// внегрупповые открытые инциденты, не только закрытые. Литералом, а не
+// strings.Contains(out, i18n.T(...)), иначе подмена значения ключа в JSON не
+// ловится (см. докблок файла).
+func TestIncidentFeedSeeIncidentsHintIsLiteral(t *testing.T) {
+	caps := FeedCaps{OpenGroups: 50, OutOfGroup: 50, ClosedGroups: 50, ClosedItems: 50}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	var sb strings.Builder
+	if err := IncidentFeed(1, nil, nil, nil, nil, caps, true, "u@example.com").Render(ctx, &sb); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	out := sb.String()
+	if !strings.Contains(out, "Здесь открытые группы, внегрупповые открытые инциденты и то, что закрылось за последние сутки") {
+		t.Errorf("IncidentFeed не содержит начало подсказки feed.see_incidents_hint: %s", out)
+	}
+	if strings.Contains(out, "Здесь только решённые инциденты за последние сутки") {
+		t.Errorf("IncidentFeed всё ещё содержит старую лживую формулировку хинта: %s", out)
+	}
+	if !strings.Contains(out, "».") {
+		t.Errorf("IncidentFeed не содержит хвост подсказки feed.see_incidents_hint_suffix: %s", out)
+	}
+
+	ctxEN := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	var sbEN strings.Builder
+	if err := IncidentFeed(1, nil, nil, nil, nil, caps, true, "u@example.com").Render(ctxEN, &sbEN); err != nil {
+		t.Fatalf("Render en: %v", err)
+	}
+	outEN := sbEN.String()
+	if !strings.Contains(outEN, "This feed shows open groups, ungrouped open incidents, and what resolved in the last 24 hours") {
+		t.Errorf("IncidentFeed(en) не содержит начало подсказки feed.see_incidents_hint: %s", outEN)
+	}
+	if strings.Contains(outEN, "This feed only keeps the last 24 hours of resolved incidents") {
+		t.Errorf("IncidentFeed(en) всё ещё содержит старую лживую формулировку хинта: %s", outEN)
+	}
+}
+
+// TestIncidentFeedClosedEmptyBodyHasNoStaleCap — R9 хвост: feed.closed.empty.body
+// раньше хардкодил "(не больше 50)" отдельно от feed.closed.cap, который
+// печатает число из FeedCaps. При потолке 17 подпись секции сказала бы 17, а
+// пустое состояние продолжило бы обещать 50 — ровно та болезнь, что чинил W8
+// на соседнем ключе. Проверяем на нестандартном потолке (17, не 50), чтобы
+// совпадение с дефолтным числом не маскировало регрессию.
+func TestIncidentFeedClosedEmptyBodyHasNoStaleCap(t *testing.T) {
+	caps := FeedCaps{OpenGroups: 0, OutOfGroup: 0, ClosedGroups: 17, ClosedItems: 17}
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	var sb strings.Builder
+	if err := IncidentFeed(1, nil, nil, nil, nil, caps, true, "u@example.com").Render(ctx, &sb); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	out := sb.String()
+	if !strings.Contains(out, "групп не больше 17, отдельных инцидентов не больше 17") {
+		t.Errorf("IncidentFeed не отражает потолок 17 в подписи секции closed: %s", out)
+	}
+	if strings.Contains(out, "50") {
+		t.Errorf("IncidentFeed содержит устаревшее число потолка 50 (пустое состояние closed разъехалось с FeedCaps): %s", out)
+	}
+}

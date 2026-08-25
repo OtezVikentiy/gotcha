@@ -22,7 +22,7 @@ func TestFeedItemHrefKnownSources(t *testing.T) {
 		{"host escapes ref name", incidentgroup.FeedItem{Source: "host", RefName: "web/1"}, hostsBasePath(projectID) + "/web%2F1"},
 		{"uptime", incidentgroup.FeedItem{Source: "uptime", RefID: 7}, monitorDetailPath(7)},
 		{"metric", incidentgroup.FeedItem{Source: "metric"}, metricAlertsBasePath(projectID)},
-		{"slo", incidentgroup.FeedItem{Source: "slo"}, SLOsPath(projectID)},
+		{"slo", incidentgroup.FeedItem{Source: "slo", RefID: 9}, sloDetailPath(projectID, 9)},
 		{"trace", incidentgroup.FeedItem{Source: "trace"}, regressionsPath(projectID)},
 		{"profile", incidentgroup.FeedItem{Source: "profile"}, profileRegressionsBasePath(projectID)},
 	}
@@ -348,6 +348,14 @@ func TestIncidentFeedTableHeadColumns(t *testing.T) {
 			t.Errorf("column header %q: found %d times, want 3 (group/out-of-group/closed): %s", h, got, html)
 		}
 	}
+	// Мутация, снимающая контейнер <thead>/</thead> и оставляющая голые
+	// <th>, не должна проходить незамеченной: считаем сам контейнер отдельно
+	// от подписей колонок, ровно 3 раза (по таблице на секцию).
+	for _, tag := range []string{"<thead>", "</thead>"} {
+		if got := strings.Count(html, tag); got != 3 {
+			t.Errorf("%s: found %d times, want 3 (group/out-of-group/closed): %s", tag, got, html)
+		}
+	}
 }
 
 // TestIncidentFeedDistinctAriaLabels — W20: скролл-регионы состава группы,
@@ -579,6 +587,26 @@ func TestGroupCardDeletedRootFallback(t *testing.T) {
 	}
 	if strings.Contains(html, `href="`+hostsBasePath(1)+`/"`) {
 		t.Errorf("deleted root must NOT render a degenerate empty-name link: %s", html)
+	}
+}
+
+// TestFeedItemRowDeletedMemberFallback — W22 (симметрия для члена группы,
+// а не только корня): пустой it.Title обязан показать текстовый фолбэк
+// (тот же feed.group.root_deleted, что и у корня) и не рисовать вырожденную
+// ссылку с пустым текстом (<a href="...">< /a>). На проде недостижимо (FK
+// ON DELETE CASCADE у всех 4 источников-членов, см. докблок feedMemberSelect
+// в group.go), но рендер обязан оставаться защитным.
+func TestFeedItemRowDeletedMemberFallback(t *testing.T) {
+	it := incidentgroup.FeedItem{Source: "host", Title: "", RefName: "", StartedAt: time.Now()}
+	html := renderTo(t, feedItemRow(1, it, nil, true))
+	if !strings.Contains(html, "узел удалён") {
+		t.Errorf("deleted member must show the fallback label: %s", html)
+	}
+	if strings.Contains(html, `href="`+hostsBasePath(1)+`/"><`) {
+		t.Errorf("deleted member must NOT render a degenerate empty-name link: %s", html)
+	}
+	if strings.Contains(html, "<a ") {
+		t.Errorf("deleted member must not render a link at all: %s", html)
 	}
 }
 

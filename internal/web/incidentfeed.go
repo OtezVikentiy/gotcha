@@ -94,7 +94,7 @@ func (h *Handler) incidentFeed(w http.ResponseWriter, r *http.Request) {
 	// раньше на каждую карточку уходил отдельный Composition (четырёхветвевой
 	// UNION), десятки round-trip на одну отрисовку страницы, доступной
 	// любому участнику проекта. Compositions группирует по group_id в Go.
-	allGroups := append(open, closedGroups...) // open дальше не читается, безопасно переиспользовать его буфер
+	allGroups := append(open, closedGroups...) // len(open) читается ниже (openCards/closedCards), сам срез open — нет, поэтому безопасно дописывать в его буфер
 	groupIDs := make([]int64, len(allGroups))
 	for i, g := range allGroups {
 		groupIDs[i] = g.ID
