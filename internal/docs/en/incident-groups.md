@@ -19,7 +19,8 @@ edges are set on the "Alerts → Storm suppression" page).
 - While the root is open and its notification has gone out, members hold
   back their own open notifications and don't escalate — the root informs
   on their behalf. The root's notification gains a "Dependent nodes: N"
-  line.
+  line. The feed marks such a member with a "silent — root notifies"
+  badge.
 - Signals that fired before the root went down join retroactively —
   notifications they already sent are not recalled.
 - When the root closes, the group closes; members still open (disk still
@@ -34,10 +35,38 @@ edges are set on the "Alerts → Storm suppression" page).
 
 The "Alerts → Incident feed" section shows open groups with their
 composition (expand in place), open out-of-group incidents across all six
-sources, and what closed in the last day. A root shows in the header of its
-own group card and is not repeated under "Out of groups". Incidents
-suppressed by dependencies carry a "suppressed — parent down" badge — they
-show up in a group's composition even though they never sent notifications.
+sources, and what closed in the last day.
+
+A group card's header shows the root's type and name (linked to its own
+page; a node that has since been deleted is labeled "deleted node"), the
+root's severity, and a translated composition line with a total count. An
+open group shows how long ago it started; a closed one shows when it
+closed and carries a "resolved" badge instead. A root shows in the header
+of its own group card and is not repeated under "Out of groups". A member
+that closed before the group itself did (say, disk space freed up while
+the root is still down) is marked resolved in the composition, with its
+own close time.
+
+An open or recently closed incident outside any group, that used to
+belong to one whose group has since closed (or whose card has aged out
+under retention), carries a "previously grouped — <root>" badge — the
+link to its former group isn't lost even once the group itself is gone
+from the feed (the badge links to that group's card when it's still
+listed among the recently resolved).
+
+Two different badges in the feed explain why an incident may not have
+sent a notification, and they're not interchangeable — both can appear on
+the same card at once, each for its own reason:
+
+- "silent — root notifies" — an incident that's a member of an open
+  group, notified on its behalf by the root: it holds back its own open
+  notifications as long as the group and its own incident stay open.
+- "suppressed — parent down" — suppression driven by the dependency graph
+  (edges set on the "Alerts → Storm suppression" page), a mechanism
+  independent of grouping: the incident's escalation is suppressed
+  because its node depends on one that's already down. The absence of
+  this badge doesn't guarantee a notification actually went out — it may
+  have been held back for the other reason instead.
 
 ## Why transactions and profiling stay out of groups
 
