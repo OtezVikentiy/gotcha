@@ -359,14 +359,15 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 		t.Errorf("hosts/зритель: len = %d, want 1 (только hosts), got %+v", len(got), got)
 	}
 
-	// alerts area: вся область гейтится целиком.
+	// alerts area: лента инцидентов (D3) видна и зрителю (lvlAccess), только
+	// конфигурационные подпункты по-прежнему гейтятся CanOperate.
 	operator.Area, operator.Path = "alerts", "/projects/7/alerts"
 	viewer.Area, viewer.Path = "alerts", "/projects/7/alerts"
-	if got := Subsections(operator); len(got) != 5 {
-		t.Errorf("alerts/оператор: len = %d, want 5 (alerts+deliveries+slo+escalations+alert_suppression), got %+v", len(got), got)
+	if got := Subsections(operator); len(got) != 6 {
+		t.Errorf("alerts/оператор: len = %d, want 6 (incident_feed+alerts+deliveries+slo+escalations+alert_suppression), got %+v", len(got), got)
 	}
-	if got := Subsections(viewer); got != nil {
-		t.Errorf("alerts/зритель: got %+v, want nil", got)
+	if got := Subsections(viewer); len(got) != 1 || got[0].LabelKey != "nav.incident_feed" {
+		t.Errorf("alerts/зритель: got %+v, want ровно nav.incident_feed", got)
 	}
 
 	// org area: не затронута CanOperate, по-прежнему гейтится CanManage —
@@ -583,24 +584,42 @@ func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
 
 // TestAreasHideAreaWithNothingVisible — область рейла, у которой для этого
 // человека нет ни одного доступного подраздела, не показывается: иначе иконка
-// вела бы прямиком на 404. Сейчас это «Оповещения» для зрителя без доступа к
-// проекту (CanOperate=false).
+// вела бы прямиком на 404 (см. Areas: href == "" → continue). До D3 таким
+// примером была «Оповещения» для зрителя (вся область гейтилась целиком);
+// с лентой инцидентов (D3, lvlAccess) «Оповещения» видна всем — зритель
+// теперь идёт по этой иконке на incident-feed, а не проваливается в 404,
+// оператор — туда же (subs[0] — лента, см. Subsections case "alerts").
 func TestAreasHideAreaWithNothingVisible(t *testing.T) {
 	viewerAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues"})
+	var viewerHref string
+	var found bool
 	for _, a := range viewerAreas {
 		if a.ID == "alerts" {
-			t.Error("зритель видит область «Оповещения», все страницы которой отдают ему 404")
+			found = true
+			viewerHref = a.Href
 		}
 	}
+	if !found {
+		t.Fatal("зритель должен видеть область «Оповещения» — лента инцидентов доступна ему по lvlAccess")
+	}
+	if viewerHref != "/projects/7/incident-feed" {
+		t.Errorf("зритель: alerts.Href = %q, want /projects/7/incident-feed", viewerHref)
+	}
+
 	operatorAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues", CanOperate: true})
-	var found bool
+	found = false
+	var operatorHref string
 	for _, a := range operatorAreas {
 		if a.ID == "alerts" {
 			found = true
+			operatorHref = a.Href
 		}
 	}
 	if !found {
 		t.Error("оператор потерял область «Оповещения»")
+	}
+	if operatorHref != "/projects/7/incident-feed" {
+		t.Errorf("оператор: alerts.Href = %q, want /projects/7/incident-feed", operatorHref)
 	}
 }
 
@@ -619,8 +638,7 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("performance → %q, want /projects/2/performance", got)
 	}
 	// hosts: Subsections области непустой при любом CanOperate (пункт
-	// «Хосты» виден всем с доступом к проекту, в отличие от alerts, чья
-	// область целиком схлопывается для не-оператора) — переключатель может
+	// «Хосты» виден всем с доступом к проекту) — переключатель может
 	// безопасно остаться в разделе хостов, а не падать в issues-фолбэк.
 	shell.Area = "hosts"
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/hosts" {
@@ -646,23 +664,19 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("пустая область → %q, want issues-фолбэк", got)
 	}
 
-	// C1: CanOperate — флаг ТЕКУЩЕГО проекта (участник команды проекта),
-	// а не целевого. Переключаясь из «Оповещений» с CanOperate=true на
-	// проекте 1, наивная реализация переносит этот флаг в пробу для
-	// проекта 2 и получает /projects/2/alerts — хотя на проекте 2
-	// пользователь может не быть оператором вовсе, и ссылка 404-ит.
-	// nav — чистый слой без доступа к БД, пересчитать CanOperate для
-	// целевого проекта не может, поэтому единственный безопасный вариант —
-	// не доверять перенесённому флагу для «Оповещений» (единственная
-	// область, чей список подразделов целиком схлопывается в nil при
-	// !CanOperate) и уводить переключатель на посадочную область, которая
-	// валидна при любом доступе.
+	// C1 (обновлено D3): CanOperate — флаг ТЕКУЩЕГО проекта (участник
+	// команды проекта), а не целевого, и раньше это делало «Оповещения»
+	// небезопасными для per-project-переноса — item[0] мог оказаться
+	// operator-гейтнутой страницей /alerts, которая 404-ит на проекте, где
+	// пользователь не оператор. С лентой инцидентов (D3, lvlAccess) item[0]
+	// области "alerts" теперь всегда несёт incident-feed независимо от
+	// CanOperate (см. Subsections case "alerts"), так что перенесённый
+	// флаг больше не может увести на operator-гейтнутую первую ссылку —
+	// переключатель безопасно остаётся в «Оповещениях» вместо
+	// issues-фолбэка.
 	shell.Area = "alerts"
 	shell.CanOperate = true
-	if got := ProjectSwitchHref(shell, 2); got == "/projects/2/alerts" || strings.Contains(got, "404") {
-		t.Errorf("alerts с CanOperate=true текущего проекта → %q, не должно вести на /alerts целевого проекта", got)
-	}
-	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
-		t.Errorf("alerts → %q, want issues-фолбэк (безопасная посадочная область)", got)
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/incident-feed" {
+		t.Errorf("alerts с CanOperate=true текущего проекта → %q, want /projects/2/incident-feed", got)
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
@@ -250,6 +251,10 @@ type Handler struct {
 	// дочернего инцидента. nil → маршруты отвечают 404, тот же nil-guard, что
 	// и у EscalationPolicy/SLO выше.
 	AlertDeps *depsuppress.Store
+
+	// IncidentGroups — группы инцидентов (D3): сводная лента
+	// /projects/{id}/incident-feed. nil → 404 (стенд без подсистемы).
+	IncidentGroups *incidentgroup.Store
 
 	// SuppressionGrace — задержка первого уведомления узла с
 	// задекларированным родителем (GOTCHA_DEPENDENCY_SETTLE_SECONDS, та же
@@ -687,6 +692,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /monitors/{id}", h.requireUser(http.HandlerFunc(h.monitorUpdate)))
 
 	inner.Handle("GET /projects/{id}/incidents", h.requireUser(http.HandlerFunc(h.incidentsList)))
+	inner.Handle("GET /projects/{id}/incident-feed", h.requireUser(http.HandlerFunc(h.incidentFeed)))
 
 	// Производительность (этап 3, план 4, задача 2): список эндпойнтов и
 	// страница эндпойнта — только чтение, доступ открыт любому участнику

@@ -142,7 +142,12 @@ templ checkRow(c uptime.CheckRow) {
 
 templ incidentRow(inc uptime.Incident) {
 	<tr>
-		<td><span class={ incidentStatusBadgeClass(inc) }>{ i18n.T(ctx, incidentStatusTextKey(inc)) }</span></td>
+		<td>
+			<span class={ incidentStatusBadgeClass(inc) }>{ i18n.T(ctx, incidentStatusTextKey(inc)) }</span>
+			if inc.SuppressedByDep {
+				<span class="badge">{ i18n.T(ctx, "feed.badge.suppressed_by_dep") }</span>
+			}
+		</td>
 		<td>@relativeTime(inc.StartedAt)</td>
 		<td>{ incidentDurationText(ctx, inc) }</td>
 		<td>{ inc.Cause }</td>

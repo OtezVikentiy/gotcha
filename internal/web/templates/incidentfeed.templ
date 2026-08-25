@@ -1,0 +1,160 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
+)
+
+// GroupCard — группа с составом и посчитанными счётчиками по источникам.
+type GroupCard struct {
+	Group                        incidentgroup.GroupRow
+	Members                      []incidentgroup.FeedItem
+	Hosts, Uptime, Metrics, SLOs int
+}
+
+// NewGroupCard считает счётчики состава (host N · uptime N · metric N · slo N).
+func NewGroupCard(g incidentgroup.GroupRow, members []incidentgroup.FeedItem) GroupCard {
+	c := GroupCard{Group: g, Members: members}
+	for _, m := range members {
+		switch m.Source {
+		case "host":
+			c.Hosts++
+		case "uptime":
+			c.Uptime++
+		case "metric":
+			c.Metrics++
+		case "slo":
+			c.SLOs++
+		}
+	}
+	return c
+}
+
+// feedItemHref — ссылка на родную страницу источника (§6.1): переиспользует
+// те же билдеры путей, что и родные списки/детали каждого источника.
+func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
+	switch it.Source {
+	case "host":
+		return hostsBasePath(projectID) + "/" + url.PathEscape(it.RefName)
+	case "uptime":
+		return monitorDetailPath(it.RefID)
+	case "metric":
+		return metricAlertsBasePath(projectID)
+	case "slo":
+		return SLOsPath(projectID)
+	case "trace":
+		return regressionsPath(projectID)
+	case "profile":
+		return profileRegressionsBasePath(projectID)
+	default:
+		return incidentFeedPath(projectID)
+	}
+}
+
+func incidentFeedPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incident-feed"
+}
+
+templ feedItemRow(projectID int64, it incidentgroup.FeedItem) {
+	<tr>
+		<td>{ i18n.T(ctx, "feed.source."+it.Source) }</td>
+		<td>
+			<a href={ templ.URL(feedItemHref(projectID, it)) }>{ it.Title }</a>
+			if it.SubKind != "" {
+				<span class="hint">{ " · " + it.SubKind }</span>
+			}
+		</td>
+		<td>
+			@incidentSeverityBadge(it.Severity)
+			if it.SuppressedByDep {
+				<span class="badge">{ i18n.T(ctx, "feed.badge.suppressed_by_dep") }</span>
+			}
+			if it.Acknowledged {
+				<span class="badge">{ i18n.T(ctx, "feed.badge.acked") }</span>
+			}
+		</td>
+		<td>@relativeTime(it.StartedAt)</td>
+	</tr>
+}
+
+templ groupCard(projectID int64, c GroupCard) {
+	<details class="card feed-group">
+		<summary>
+			<strong>{ i18n.T(ctx, "feed.group.root."+c.Group.RootSource) }: { c.Group.RootName }</strong>
+			<span class="hint">
+				{ "host " + strconv.Itoa(c.Hosts) + " · uptime " + strconv.Itoa(c.Uptime) +
+					" · metric " + strconv.Itoa(c.Metrics) + " · slo " + strconv.Itoa(c.SLOs) }
+			</span>
+			@relativeTime(c.Group.StartedAt)
+			if c.Group.ResolvedAt != nil {
+				<span class="badge">{ i18n.T(ctx, "feed.group.resolved") }</span>
+			}
+		</summary>
+		@scrollRegion("table-scroll", "feed.title") {
+			<table class="data-table">
+				<tbody>
+					for _, it := range c.Members {
+						@feedItemRow(projectID, it)
+					}
+				</tbody>
+			</table>
+		}
+	</details>
+}
+
+// IncidentFeed — GET /projects/{id}/incident-feed: сводная лента (D3, §6.1):
+// открытые группы с раскрываемым составом (details/summary, без JS),
+// внегрупповые открытые инциденты 6 источников, недавно закрытые.
+templ IncidentFeed(projectID int64, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, userEmail string) {
+	@layout(i18n.T(ctx, "feed.title"), userEmail) {
+		<div class="incident-feed">
+			<h1>{ i18n.T(ctx, "feed.title") }</h1>
+			<h2>{ i18n.T(ctx, "feed.section.groups") }</h2>
+			if len(openGroups) == 0 {
+				<p class="hint">{ i18n.T(ctx, "feed.groups.empty") }</p>
+			} else {
+				for _, c := range openGroups {
+					@groupCard(projectID, c)
+				}
+			}
+			<h2>{ i18n.T(ctx, "feed.section.out_of_group") }</h2>
+			if len(outOfGroup) == 0 {
+				<p class="hint">{ i18n.T(ctx, "feed.out_of_group.empty") }</p>
+			} else {
+				<div class="card">
+					@scrollRegion("table-scroll", "feed.title") {
+						<table class="data-table">
+							<tbody>
+								for _, it := range outOfGroup {
+									@feedItemRow(projectID, it)
+								}
+							</tbody>
+						</table>
+					}
+				</div>
+			}
+			<h2>{ i18n.T(ctx, "feed.section.closed") } <span class="hint">{ i18n.T(ctx, "feed.closed.cap") }</span></h2>
+			for _, c := range closedGroups {
+				@groupCard(projectID, c)
+			}
+			if len(closed) == 0 && len(closedGroups) == 0 {
+				<p class="hint">{ i18n.T(ctx, "feed.closed.empty") }</p>
+			} else if len(closed) > 0 {
+				<div class="card">
+					@scrollRegion("table-scroll", "feed.title") {
+						<table class="data-table">
+							<tbody>
+								for _, it := range closed {
+									@feedItemRow(projectID, it)
+								}
+							</tbody>
+						</table>
+					}
+				</div>
+			}
+		</div>
+	}
+}
