@@ -27,7 +27,7 @@ func TestSweepClosesGroupWhenRootDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "host", memberInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 

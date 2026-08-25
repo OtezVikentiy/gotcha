@@ -29,7 +29,7 @@ func TestFeedComposition(t *testing.T) {
 	mustScan(t, pool, &hostMemberInc, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
 		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
-	if err := store.SetGroup(ctx, "host", hostMemberInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "host", hostMemberInc, g.ID); err != nil {
 		t.Fatalf("SetGroup host: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestFeedComposition(t *testing.T) {
 	mustScan(t, pool, &uptimeMemberInc, `
 		INSERT INTO incidents (monitor_id, notified_open, suppressed_by_dep)
 		VALUES ($1,true,true) RETURNING id`, monitorID)
-	if err := store.SetGroup(ctx, "uptime", uptimeMemberInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "uptime", uptimeMemberInc, g.ID); err != nil {
 		t.Fatalf("SetGroup uptime: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestFeedComposition(t *testing.T) {
 	mustScan(t, pool, &metricMemberInc, `
 		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value)
 		VALUES ($1,$2,1,1) RETURNING id`, ruleID, projectID)
-	if err := store.SetGroup(ctx, "metric", metricMemberInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "metric", metricMemberInc, g.ID); err != nil {
 		t.Fatalf("SetGroup metric: %v", err)
 	}
 
@@ -65,11 +65,11 @@ func TestFeedComposition(t *testing.T) {
 	mustScan(t, pool, &sloMemberInc, `
 		INSERT INTO slo_incidents (slo_id, project_id, burn_rate)
 		VALUES ($1,$2,20) RETURNING id`, sloID, projectID)
-	if err := store.SetGroup(ctx, "slo", sloMemberInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "slo", sloMemberInc, g.ID); err != nil {
 		t.Fatalf("SetGroup slo: %v", err)
 	}
 
-	members, err := store.Composition(ctx, g.ID)
+	members, err := store.Composition(ctx, projectID, g.ID)
 	if err != nil {
 		t.Fatalf("Composition: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 	mustScan(t, pool, &groupedInc, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
 		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, groupedHost)
-	if err := store.SetGroup(ctx, "host", groupedInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "host", groupedInc, g.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
@@ -268,7 +268,7 @@ func TestFeedClosedSince(t *testing.T) {
 	mustScan(t, pool, &groupedInc, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, resolved_at)
 		VALUES ($1,$2,'disk','resolved',0,0,'', now()) RETURNING id`, projectID, groupedHost)
-	if err := store.SetGroup(ctx, "host", groupedInc, g.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "host", groupedInc, g.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
@@ -533,5 +533,164 @@ func TestFeedTenantIsolationGroups(t *testing.T) {
 		if g.ID == fClosedGroup.ID {
 			t.Errorf("ClosedGroupsSince: утечка чужой закрытой группы %d", fClosedGroup.ID)
 		}
+	}
+}
+
+// TestFeedOpenMemberOfResolvedGroupVisible — W1: открытый член группы, чей
+// корень уже закрылся (группа резолвнута), обязан появиться во «Вне групп»
+// СРАЗУ, одновременно оставаясь в составе свёрнутой карточки закрытой
+// группы (Composition) — два разных смысла («открытая работа» vs «упало
+// вместе с этим»), не тот дубль, что чинили для корня. FormerGroup* несёт
+// данные для бейджа feed.badge.was_grouped (бейдж рисует R5).
+func TestFeedOpenMemberOfResolvedGroupVisible(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHostName := "root-" + randSlug(t)
+	rootHost := seedHost(t, pool, projectID, rootHostName)
+	rootInc := seedSilent(t, pool, projectID, rootHost, true)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+
+	memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+	if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup: ok=%v err=%v", ok, err)
+	}
+
+	if ok, err := store.Resolve(ctx, "host", rootInc); err != nil || !ok {
+		t.Fatalf("Resolve: ok=%v err=%v", ok, err)
+	}
+
+	items, err := store.OpenOutOfGroup(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenOutOfGroup: %v", err)
+	}
+	var found *incidentgroup.FeedItem
+	for i := range items {
+		if items[i].Source == "host" && items[i].IncidentID == memberInc {
+			found = &items[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("open member of a resolved group must appear in OpenOutOfGroup: %+v", items)
+	}
+	if found.FormerGroupID != g.ID {
+		t.Fatalf("FormerGroupID = %d, want %d", found.FormerGroupID, g.ID)
+	}
+	if found.FormerGroupRootName != rootHostName {
+		t.Fatalf("FormerGroupRootName = %q, want %q", found.FormerGroupRootName, rootHostName)
+	}
+
+	members, err := store.Composition(ctx, projectID, g.ID)
+	if err != nil {
+		t.Fatalf("Composition: %v", err)
+	}
+	var stillMember bool
+	for _, m := range members {
+		if m.Source == "host" && m.IncidentID == memberInc {
+			stillMember = true
+		}
+	}
+	if !stillMember {
+		t.Fatalf("member must remain in the closed group's composition: %+v", members)
+	}
+}
+
+// TestFeedMemberOfPurgedGroupVisible — W1: то же самое, но группа не
+// резолвнута, а УДАЛЕНА (janitor purge) — group_id члена висит на
+// несуществующую строку. Трактовка та же: член вне группы. FormerGroupID=0
+// — сведений о бывшей группе нигде не осталось (строка удалена).
+func TestFeedMemberOfPurgedGroupVisible(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	rootInc := seedSilent(t, pool, projectID, rootHost, true)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+	if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup: ok=%v err=%v", ok, err)
+	}
+
+	if _, err := pool.Exec(ctx, `DELETE FROM incident_groups WHERE id = $1`, g.ID); err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+
+	items, err := store.OpenOutOfGroup(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenOutOfGroup: %v", err)
+	}
+	var found *incidentgroup.FeedItem
+	for i := range items {
+		if items[i].Source == "host" && items[i].IncidentID == memberInc {
+			found = &items[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("member of a purged group must appear in OpenOutOfGroup: %+v", items)
+	}
+	if found.FormerGroupID != 0 {
+		t.Fatalf("FormerGroupID of a purged group must be 0, got %d", found.FormerGroupID)
+	}
+}
+
+// TestFeedClosedMemberOfResolvedGroupVisible — W1, симметрия с
+// OpenOutOfGroup: закрывшийся член ЗАКРЫТОЙ группы попадает в ClosedSince —
+// «член резолвнутой группы = вне группы» применяется одинаково к открытым
+// и закрытым членам, не только к открытым.
+func TestFeedClosedMemberOfResolvedGroupVisible(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	rootInc := seedSilent(t, pool, projectID, rootHost, true)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	memberHost := seedHost(t, pool, projectID, "member-"+randSlug(t))
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, resolved_at)
+		VALUES ($1,$2,'disk','resolved',0,0,'', now()) RETURNING id`, projectID, memberHost)
+	if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup: ok=%v err=%v", ok, err)
+	}
+
+	if ok, err := store.Resolve(ctx, "host", rootInc); err != nil || !ok {
+		t.Fatalf("Resolve: ok=%v err=%v", ok, err)
+	}
+
+	items, err := store.ClosedSince(ctx, projectID, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ClosedSince: %v", err)
+	}
+	var found bool
+	for _, it := range items {
+		if it.Source == "host" && it.IncidentID == memberInc {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("closed member of a now-resolved group must appear in ClosedSince: %+v", items)
 	}
 }

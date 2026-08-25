@@ -256,7 +256,7 @@ func TestMetricOpenUnackedGroupGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "metric", member.ID, grp.ID); err != nil {
+	if _, err := store.SetGroup(ctx, pid, "metric", member.ID, grp.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 

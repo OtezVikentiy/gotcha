@@ -68,7 +68,10 @@ func (g *Grouper) rootIncident(ctx context.Context, rootKind string, rootID int6
 // член может ТОЛЬКО при attached && rootInforming. Немые корни (открытый в
 // maintenance uptime-корень, B5-подавленный host-корень, корень в грейсе
 // B5) дают attach «только для состава» — член уведомляет сам (fail-noisy).
-// Группа, успевшая закрыться, — attach не делается вовсе.
+// Группа, успевшая закрыться, — attach не делается вовсе. Группа корня
+// создаётся ЛЕНИВО (W4): MemberEligible проверяется ДО EnsureGroup, иначе
+// член, уже сгруппированный под другим ОТКРЫТЫМ корнем (SetGroup — no-op),
+// оставлял бы пустую группу нового корня висеть на карточке навсегда.
 func (g *Grouper) Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error) {
 	rootKind, rootID, found, err := g.Roots.DownRoot(ctx, nodeKind, nodeID)
 	if err != nil || !found {
@@ -81,6 +84,10 @@ func (g *Grouper) Attach(ctx context.Context, source string, incidentID int64, n
 	if rootSource == source && rootIncID == incidentID {
 		return false, false, nil // сам корень — не член собственной группы
 	}
+	eligible, err := g.Store.MemberEligible(ctx, projectID, source, incidentID)
+	if err != nil || !eligible {
+		return false, false, err
+	}
 	grp, err := g.Store.EnsureGroup(ctx, projectID, rootSource, rootIncID, rootKind, rootID)
 	if err != nil {
 		return false, false, err
@@ -88,10 +95,11 @@ func (g *Grouper) Attach(ctx context.Context, source string, incidentID int64, n
 	if grp.ResolvedAt != nil {
 		return false, false, nil // группа уже закрыта — ведём себя как без группы
 	}
-	if err := g.Store.SetGroup(ctx, source, incidentID, grp.ID); err != nil {
+	attached, err = g.Store.SetGroup(ctx, projectID, source, incidentID, grp.ID)
+	if err != nil {
 		return false, false, err
 	}
-	return true, notified, nil
+	return attached, attached && notified, nil
 }
 
 // AttachMetric — Attach для metric-инцидента правила с label_key='host':
@@ -126,23 +134,33 @@ type candidate struct {
 // uptime-членство возникает только через хук MarkSuppressedByDep. Metric —
 // только правила label_key='host' с хостом того же проекта; slo — только
 // sli_kind='uptime' с monitor_id (Р1). Ретро по env/role-селекторам метрик
-// не делается (осознанно отложено, §10).
+// не делается (осознанно отложено, §10). «Внегрупповой» — не член ОТКРЫТОЙ
+// группы (W2, LEFT JOIN incident_groups wg, та же трактовка, что в SetGroup
+// и feedProjectQuery): инцидент, однажды побывавший в группе, которая с тех
+// пор резолвнулась или удалена, — кандидат перекорреляции при повторном
+// открытии флапающего корня, не выпадает из перебора навсегда.
 func (g *Grouper) openCandidates(ctx context.Context, projectID int64) ([]candidate, error) {
 	rows, err := g.Pool.Query(ctx, `
 		SELECT 'host'::text, hi.id, 'host'::text, hi.host_id
 		FROM host_incidents hi
-		WHERE hi.project_id = $1 AND hi.status = 'open' AND hi.group_id IS NULL
+		LEFT JOIN incident_groups wg ON wg.id = hi.group_id
+		WHERE hi.project_id = $1 AND hi.status = 'open'
+		  AND (hi.group_id IS NULL OR wg.id IS NULL OR wg.resolved_at IS NOT NULL)
 		UNION ALL
 		SELECT 'metric', mi.id, 'host', h.id
 		FROM metric_incidents mi
 		JOIN metric_alert_rules r ON r.id = mi.rule_id AND r.label_key = 'host'
 		JOIN hosts h ON h.project_id = mi.project_id AND h.name = r.label_value
-		WHERE mi.project_id = $1 AND mi.status = 'open' AND mi.group_id IS NULL
+		LEFT JOIN incident_groups wg ON wg.id = mi.group_id
+		WHERE mi.project_id = $1 AND mi.status = 'open'
+		  AND (mi.group_id IS NULL OR wg.id IS NULL OR wg.resolved_at IS NOT NULL)
 		UNION ALL
 		SELECT 'slo', si.id, 'monitor', s.monitor_id
 		FROM slo_incidents si
 		JOIN slos s ON s.id = si.slo_id AND s.sli_kind = 'uptime' AND s.monitor_id IS NOT NULL
-		WHERE si.project_id = $1 AND si.status = 'open' AND si.group_id IS NULL`,
+		LEFT JOIN incident_groups wg ON wg.id = si.group_id
+		WHERE si.project_id = $1 AND si.status = 'open'
+		  AND (si.group_id IS NULL OR wg.id IS NULL OR wg.resolved_at IS NOT NULL)`,
 		projectID)
 	if err != nil {
 		return nil, fmt.Errorf("incidentgroup: open candidates: %w", err)
@@ -200,7 +218,7 @@ func (g *Grouper) OnRootOpened(ctx context.Context, rootSource string, rootIncid
 			}
 			grp = &gg
 		}
-		if err := g.Store.SetGroup(ctx, c.source, c.incidentID, grp.ID); err != nil {
+		if _, err := g.Store.SetGroup(ctx, projectID, c.source, c.incidentID, grp.ID); err != nil {
 			return err
 		}
 	}

@@ -241,7 +241,7 @@ func TestSLOOpenUnackedGroupGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "slo", member.ID, grp.ID); err != nil {
+	if _, err := store.SetGroup(ctx, pid, "slo", member.ID, grp.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 

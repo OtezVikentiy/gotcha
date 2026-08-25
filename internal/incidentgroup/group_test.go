@@ -113,11 +113,11 @@ func TestSetGroupFirstWriteWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	if err := store.SetGroup(ctx, "host", memberInc, g1.ID); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "host", memberInc, g1.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
 	// Повторный attach к другой группе — no-op (первый выигрывает).
-	if err := store.SetGroup(ctx, "host", memberInc, g1.ID+1000); err != nil {
+	if _, err := store.SetGroup(ctx, projectID, "host", memberInc, g1.ID+1000); err != nil {
 		t.Fatalf("SetGroup 2nd: %v", err)
 	}
 	var got int64
@@ -125,7 +125,151 @@ func TestSetGroupFirstWriteWins(t *testing.T) {
 	if got != g1.ID {
 		t.Fatalf("first attach must win: got group_id=%d want %d", got, g1.ID)
 	}
-	if err := store.SetGroup(ctx, "trace", memberInc, g1.ID); err == nil {
+	if _, err := store.SetGroup(ctx, projectID, "trace", memberInc, g1.ID); err == nil {
 		t.Fatalf("unknown source must error")
+	}
+}
+
+// TestSetGroupDoesNotOverwriteOpenMembership — W2: инцидент уже член
+// ОТКРЫТОЙ группы g1; SetGroup к РЕАЛЬНОЙ (не рандомной) открытой группе g2
+// другого корня — no-op (ok=false), членство в g1 не меняется. Отличие от
+// TestSetGroupFirstWriteWins: там g1.ID+1000 — заведомо несуществующая
+// группа; здесь g2 реальна и открыта, проверяет именно ветку «старая группа
+// ещё открыта — не перезаписывать».
+func TestSetGroupDoesNotOverwriteOpenMembership(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHost1 := seedHost(t, pool, projectID, "root1-"+randSlug(t))
+	rootInc1 := seedSilent(t, pool, projectID, rootHost1, true)
+	g1, err := store.EnsureGroup(ctx, projectID, "host", rootInc1, "host", rootHost1)
+	if err != nil {
+		t.Fatalf("EnsureGroup g1: %v", err)
+	}
+	rootHost2 := seedHost(t, pool, projectID, "root2-"+randSlug(t))
+	rootInc2 := seedSilent(t, pool, projectID, rootHost2, true)
+	g2, err := store.EnsureGroup(ctx, projectID, "host", rootInc2, "host", rootHost2)
+	if err != nil {
+		t.Fatalf("EnsureGroup g2: %v", err)
+	}
+
+	memberHost := seedHost(t, pool, projectID, "m-"+randSlug(t))
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+
+	if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g1.ID); err != nil || !ok {
+		t.Fatalf("SetGroup g1: ok=%v err=%v", ok, err)
+	}
+	ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g2.ID)
+	if err != nil {
+		t.Fatalf("SetGroup g2: %v", err)
+	}
+	if ok {
+		t.Fatalf("SetGroup must not overwrite membership in an OPEN group (g2=%d)", g2.ID)
+	}
+	var got int64
+	mustScan(t, pool, &got, `SELECT group_id FROM host_incidents WHERE id = $1`, memberInc)
+	if got != g1.ID {
+		t.Fatalf("member must stay in g1 (%d), got %d", g1.ID, got)
+	}
+}
+
+// TestSetGroupCompositionCrossProjectNoop — W6: SetGroup с project_id
+// чужого проекта не присоединяет чужой инцидент (WHERE не матчит строку);
+// Composition с project_id чужого проекта отдаёт пустой список, хотя группа
+// реальна и с членом — обе функции проверяют tenant-изоляцию прямо в
+// запросе, не полагаясь только на инварианты вызывающих.
+func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	otherProjectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	rootInc := seedSilent(t, pool, projectID, rootHost, true)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	memberHost := seedHost(t, pool, projectID, "m-"+randSlug(t))
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+
+	ok, err := store.SetGroup(ctx, otherProjectID, "host", memberInc, g.ID)
+	if err != nil {
+		t.Fatalf("SetGroup cross-project: %v", err)
+	}
+	if ok {
+		t.Fatal("SetGroup with a foreign project_id must be a no-op")
+	}
+	var groupID *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM host_incidents WHERE id = $1`, memberInc).Scan(&groupID); err != nil {
+		t.Fatalf("read group_id: %v", err)
+	}
+	if groupID != nil {
+		t.Fatalf("cross-project SetGroup must not attach, got group_id=%d", *groupID)
+	}
+
+	if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup own project: ok=%v err=%v", ok, err)
+	}
+
+	members, err := store.Composition(ctx, otherProjectID, g.ID)
+	if err != nil {
+		t.Fatalf("Composition cross-project: %v", err)
+	}
+	if len(members) != 0 {
+		t.Fatalf("Composition with a foreign project_id must return nothing, got %d members", len(members))
+	}
+}
+
+// TestSetGroupCrossProjectUptime — W6: `incidents` (uptime) не имеет своей
+// колонки project_id — sourceProjectCond идёт через monitors (EXISTS); та же
+// проверка, что TestSetGroupCompositionCrossProjectNoop, но для ветки,
+// которую легко сломать по-другому (забыть JOIN на monitors).
+func TestSetGroupCrossProjectUptime(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	otherProjectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	rootInc := seedSilent(t, pool, projectID, rootHost, true)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	var monitorID, uptimeInc int64
+	mustScan(t, pool, &monitorID, `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,'mon-`+randSlug(t)+`','http',60) RETURNING id`, projectID)
+	mustScan(t, pool, &uptimeInc, `
+		INSERT INTO incidents (monitor_id, notified_open) VALUES ($1,true) RETURNING id`, monitorID)
+
+	ok, err := store.SetGroup(ctx, otherProjectID, "uptime", uptimeInc, g.ID)
+	if err != nil {
+		t.Fatalf("SetGroup cross-project uptime: %v", err)
+	}
+	if ok {
+		t.Fatal("SetGroup(uptime) with a foreign project_id must be a no-op")
+	}
+	var groupID *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM incidents WHERE id = $1`, uptimeInc).Scan(&groupID); err != nil {
+		t.Fatalf("read group_id: %v", err)
+	}
+	if groupID != nil {
+		t.Fatalf("cross-project SetGroup(uptime) must not attach, got group_id=%d", *groupID)
+	}
+
+	if ok, err := store.SetGroup(ctx, projectID, "uptime", uptimeInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup(uptime) own project: ok=%v err=%v", ok, err)
 	}
 }

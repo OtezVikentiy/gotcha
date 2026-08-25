@@ -407,3 +407,127 @@ func mustScanBool(t *testing.T, pool *pgxpool.Pool, dst *bool, sql string, args 
 		t.Fatalf("scan %q: %v", sql, err)
 	}
 }
+
+// TestAttachAlreadyGroupedSkipsEmptyGroup — W4: инцидент уже член ОТКРЫТОЙ
+// группы g1 (root1); Attach резолвит down-корень в ДРУГОЙ root2 (fixedRoot-
+// Resolver имитирует смену родителя между тиками) — SetGroup будет no-op
+// (член уже в открытой группе), и группа root2 не должна создаваться вовсе:
+// MemberEligible проверяется ДО EnsureGroup. Мутация (вернуть EnsureGroup
+// перед проверкой) даёт лишнюю пустую группу — ловится сравнением
+// len(before)/len(after) по OpenGroups, не только по attached.
+func TestAttachAlreadyGroupedSkipsEmptyGroup(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	store := incidentgroup.NewStore(pool)
+
+	rootHost1 := seedHost(t, pool, projectID, "root1-"+randSlug(t))
+	rootInc1 := seedSilent(t, pool, projectID, rootHost1, true)
+	g1, err := store.EnsureGroup(ctx, projectID, "host", rootInc1, "host", rootHost1)
+	if err != nil {
+		t.Fatalf("EnsureGroup g1: %v", err)
+	}
+
+	memberHost := seedHost(t, pool, projectID, "m-"+randSlug(t))
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
+		VALUES ($1,$2,'disk','open',0,0,'') RETURNING id`, projectID, memberHost)
+	if ok, err := store.SetGroup(ctx, projectID, "host", memberInc, g1.ID); err != nil || !ok {
+		t.Fatalf("SetGroup g1: ok=%v err=%v", ok, err)
+	}
+
+	rootHost2 := seedHost(t, pool, projectID, "root2-"+randSlug(t))
+	rootInc2 := seedSilent(t, pool, projectID, rootHost2, true)
+
+	before, err := store.OpenGroups(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenGroups before: %v", err)
+	}
+
+	g := &incidentgroup.Grouper{
+		Pool:  pool,
+		Store: store,
+		Roots: &fixedRootResolver{rootKind: "host", rootID: rootHost2, found: true},
+	}
+	attached, _, err := g.Attach(ctx, "host", memberInc, "host", memberHost)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if attached {
+		t.Fatal("Attach must not report attached: member already in an open group")
+	}
+
+	after, err := store.OpenGroups(ctx, projectID)
+	if err != nil {
+		t.Fatalf("OpenGroups after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("Attach on an already-grouped member must not create an empty group for root2 (rootInc2=%d): before=%d after=%d",
+			rootInc2, len(before), len(after))
+	}
+
+	var got int64
+	mustScan(t, pool, &got, `SELECT group_id FROM host_incidents WHERE id = $1`, memberInc)
+	if got != g1.ID {
+		t.Fatalf("member must stay in g1 (%d), got %d", g1.ID, got)
+	}
+}
+
+// TestOnRootOpenedReattachesFormerMember — W2: флапающий корень. Первое
+// открытие присоединяет члена к группе g1; корень закрывается (g1
+// резолвится, group_id члена НЕ сбрасывается — единственная запись о том,
+// что упало вместе); корень открывается заново НОВЫМ инцидентом — ретро-
+// перебор обязан подхватить того же члена (его group_id указывает на уже
+// резолвнутую g1, значит он снова «внегрупповой» кандидат) и присоединить
+// его к НОВОЙ группе g2, а не пропустить навсегда.
+func TestOnRootOpenedReattachesFormerMember(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	childHost := seedHost(t, pool, projectID, "child-"+randSlug(t))
+	seedEdgeHH(t, pool, projectID, rootHost, childHost)
+
+	store := incidentgroup.NewStore(pool)
+	g, _ := newGrouper(pool)
+
+	rootInc1 := seedSilent(t, pool, projectID, rootHost, true)
+	var memberInc int64
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
+		VALUES ($1,$2,'disk','open',0,0,'',true) RETURNING id`, projectID, childHost)
+
+	if err := g.OnRootOpened(ctx, "host", rootInc1, "host", rootHost, projectID); err != nil {
+		t.Fatalf("OnRootOpened 1st: %v", err)
+	}
+	var group1 *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM host_incidents WHERE id = $1`, memberInc).Scan(&group1); err != nil {
+		t.Fatalf("read group_id 1: %v", err)
+	}
+	if group1 == nil {
+		t.Fatalf("member must be attached after 1st OnRootOpened")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc1); err != nil {
+		t.Fatalf("resolve root1: %v", err)
+	}
+	if ok, err := store.Resolve(ctx, "host", rootInc1); err != nil || !ok {
+		t.Fatalf("Resolve group1: ok=%v err=%v", ok, err)
+	}
+
+	rootInc2 := seedSilent(t, pool, projectID, rootHost, true)
+	if err := g.OnRootOpened(ctx, "host", rootInc2, "host", rootHost, projectID); err != nil {
+		t.Fatalf("OnRootOpened 2nd: %v", err)
+	}
+	var group2 *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM host_incidents WHERE id = $1`, memberInc).Scan(&group2); err != nil {
+		t.Fatalf("read group_id 2: %v", err)
+	}
+	if group2 == nil {
+		t.Fatal("member must be re-attached to the new group after the root re-opened")
+	}
+	if *group2 == *group1 {
+		t.Fatalf("member must move to the NEW group, not stay pinned to the resolved one: got %d want != %d", *group2, *group1)
+	}
+}
