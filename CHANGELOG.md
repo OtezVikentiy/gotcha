@@ -17,10 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovery re-notify and escalate again — the ladder restarts from the
   moment the group closed. Root notifications carry a "Dependent nodes: N"
   line.
+- Groups form around the actual root of a cascade, including failures that
+  travel top-down: when a node goes silent under an already-down parent, its
+  children's earlier incidents still join the top root's group — even when
+  that root is a monitor.
 - Incident feed (`/projects/{id}/incident-feed`): open groups with expandable
   composition, out-of-group incidents across all six sources, and a
-  recently-resolved section (last 24h). Dependency-suppressed incidents are
-  badged on the feed and native pages.
+  recently-resolved section (last 24h). The composition shows who is quiet
+  because the root notifies, who is suppressed by an unreachable parent
+  (two distinct states that can coincide), and who has already resolved.
+  An incident that outlives its group appears among ungrouped ones right
+  away, pointing back to the group it came from.
 
 ## [0.20.0] - 2026-08-21
 
