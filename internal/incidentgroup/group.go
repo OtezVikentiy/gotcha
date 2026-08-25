@@ -86,24 +86,23 @@ func (s *Store) Resolve(ctx context.Context, rootSource string, rootIncidentID i
 	return tag.RowsAffected() > 0, nil
 }
 
-// sourceTables — таблица инцидентов каждого источника-члена. trace/profile
-// в группы не входят (Р2 — у них нет узла).
-var sourceTables = map[string]string{
-	"host":   "host_incidents",
-	"uptime": "incidents",
-	"metric": "metric_incidents",
-	"slo":    "slo_incidents",
-}
-
-// sourceProjectCond — предикат «инцидент источника принадлежит project_id
-// $2» (W6): у host/metric/slo есть своя колонка project_id, у uptime
-// (таблица `incidents`) её нет — фильтр идёт через monitors, тем же путём,
-// что и в feedProjectQuery.
-var sourceProjectCond = map[string]string{
-	"host":   `x.project_id = $2`,
-	"uptime": `EXISTS (SELECT 1 FROM monitors mm WHERE mm.id = x.monitor_id AND mm.project_id = $2)`,
-	"metric": `x.project_id = $2`,
-	"slo":    `x.project_id = $2`,
+// sourceMeta — таблица инцидентов и предикат «инцидент источника принадлежит
+// project_id $2» (W6) для каждого источника-члена, одной картой (MINOR-4):
+// раньше это были две раздельные карты (sourceTables/sourceProjectCond) с
+// одной ok-проверкой на двоих — источник, добавленный в одну и забытый в
+// другой, давал бы пустую строку условия и синтаксическую ошибку SQL в
+// рантайме вместо отказа на этапе поиска ключа. trace/profile в группы не
+// входят (Р2 — у них нет узла), в карте их нет. У host/metric/slo есть своя
+// колонка project_id, у uptime (таблица `incidents`) её нет — фильтр идёт
+// через monitors, тем же путём, что и в feedProjectQuery.
+var sourceMeta = map[string]struct {
+	table       string
+	projectCond string
+}{
+	"host":   {"host_incidents", `x.project_id = $2`},
+	"uptime": {"incidents", `EXISTS (SELECT 1 FROM monitors mm WHERE mm.id = x.monitor_id AND mm.project_id = $2)`},
+	"metric": {"metric_incidents", `x.project_id = $2`},
+	"slo":    {"slo_incidents", `x.project_id = $2`},
 }
 
 // SetGroup присоединяет инцидент к группе, если он ещё не член ОТКРЫТОЙ
@@ -116,13 +115,13 @@ var sourceProjectCond = map[string]string{
 // состоялось (RowsAffected > 0) — Attach решает по этому факту, создавать
 // ли пустую группу (W4).
 func (s *Store) SetGroup(ctx context.Context, projectID int64, source string, incidentID, groupID int64) (bool, error) {
-	table, ok := sourceTables[source]
+	meta, ok := sourceMeta[source]
 	if !ok {
 		return false, fmt.Errorf("incidentgroup: set group: unknown source %q", source)
 	}
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE `+table+` x SET group_id = $3
-		WHERE x.id = $1 AND `+sourceProjectCond[source]+`
+		`UPDATE `+meta.table+` x SET group_id = $3
+		WHERE x.id = $1 AND `+meta.projectCond+`
 		  AND (x.group_id IS NULL OR NOT EXISTS (
 		        SELECT 1 FROM incident_groups g WHERE g.id = x.group_id AND g.resolved_at IS NULL))`,
 		incidentID, projectID, groupID)
@@ -140,7 +139,7 @@ func (s *Store) SetGroup(ctx context.Context, projectID int64, source string, in
 // открыт). Несуществующий (чужой проект/удалённый) инцидент — не
 // присоединяем.
 func (s *Store) MemberEligible(ctx context.Context, projectID int64, source string, incidentID int64) (bool, error) {
-	table, ok := sourceTables[source]
+	meta, ok := sourceMeta[source]
 	if !ok {
 		return false, fmt.Errorf("incidentgroup: member eligible: unknown source %q", source)
 	}
@@ -148,7 +147,7 @@ func (s *Store) MemberEligible(ctx context.Context, projectID int64, source stri
 	err := s.pool.QueryRow(ctx, `
 		SELECT x.group_id IS NULL OR NOT EXISTS (
 		        SELECT 1 FROM incident_groups g WHERE g.id = x.group_id AND g.resolved_at IS NULL)
-		FROM `+table+` x WHERE x.id = $1 AND `+sourceProjectCond[source],
+		FROM `+meta.table+` x WHERE x.id = $1 AND `+meta.projectCond,
 		incidentID, projectID).Scan(&eligible)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -246,11 +245,15 @@ func scanFeedItems(rows pgx.Rows) ([]FeedItem, error) {
 
 // feedMemberSelect — 4 источника-члена по group_id (состав группы, Р6:
 // выборка по колонке, без таблицы членов). LEFT JOIN + COALESCE — исчезнувший
-// справочник (правило/SLO удалены) не прячет члена из состава. project_id в
-// WHERE (W6, тем же путём, что sourceProjectCond у SetGroup — у `incidents`
-// своей колонки нет, фильтр через monitors) — защита от кросс-проектной
-// выдачи прямо в запросе. Два последних столбца — заглушки под FormerGroup*
-// (у члена ТЕКУЩЕЙ группы бывшей группы, по определению, нет).
+// справочник (правило/SLO удалены) не прячет члена из состава для host/
+// metric/slo. У uptime это не так: своей колонки project_id у `incidents`
+// нет, фильтр W6 идёт через `m.project_id = $2` (тем же путём, что
+// sourceMeta.projectCond у SetGroup) — если monitors-справочник исчез,
+// m.project_id в WHERE станет NULL и строку отсеет, так что для uptime LEFT
+// JOIN monitors фактически ведёт себя как INNER; практического эффекта нет
+// (monitor_id — FK ON DELETE CASCADE, вместе со справочником каскадом уйдёт
+// и сам инцидент). Два последних столбца — заглушки под FormerGroup* (у
+// члена ТЕКУЩЕЙ группы бывшей группы, по определению, нет).
 const feedMemberSelect = `
 	SELECT 'host'::text, hi.id, COALESCE(h.name,''), hi.kind,
 	       hi.started_at, hi.resolved_at, hi.severity,
@@ -323,7 +326,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
 	FROM host_incidents hi
 	LEFT JOIN hosts h ON h.id = hi.host_id
-	LEFT JOIN incident_groups wg ON wg.id = hi.group_id
+	LEFT JOIN incident_groups wg ON wg.id = hi.group_id AND wg.project_id = $1
 	LEFT JOIN hosts wgh ON wg.root_node_kind = 'host' AND wgh.id = wg.root_node_id
 	LEFT JOIN monitors wgm ON wg.root_node_kind = 'monitor' AND wgm.id = wg.root_node_id
 	WHERE hi.project_id = $1 AND ` + notOpenGroupMember("hi") + ` AND ` + hostCond + `
@@ -334,7 +337,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
 	FROM incidents i
 	JOIN monitors m ON m.id = i.monitor_id
-	LEFT JOIN incident_groups wg ON wg.id = i.group_id
+	LEFT JOIN incident_groups wg ON wg.id = i.group_id AND wg.project_id = $1
 	LEFT JOIN hosts wgh ON wg.root_node_kind = 'host' AND wgh.id = wg.root_node_id
 	LEFT JOIN monitors wgm ON wg.root_node_kind = 'monitor' AND wgm.id = wg.root_node_id
 	WHERE m.project_id = $1 AND ` + notOpenGroupMember("i") + ` AND ` + uptimeCond + `
@@ -345,7 +348,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
 	FROM metric_incidents mi
 	LEFT JOIN metric_alert_rules r ON r.id = mi.rule_id
-	LEFT JOIN incident_groups wg ON wg.id = mi.group_id
+	LEFT JOIN incident_groups wg ON wg.id = mi.group_id AND wg.project_id = $1
 	LEFT JOIN hosts wgh ON wg.root_node_kind = 'host' AND wgh.id = wg.root_node_id
 	LEFT JOIN monitors wgm ON wg.root_node_kind = 'monitor' AND wgm.id = wg.root_node_id
 	WHERE mi.project_id = $1 AND ` + notOpenGroupMember("mi") + ` AND ` + metricCond + `
@@ -356,7 +359,7 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	       COALESCE(wg.id, 0::bigint), COALESCE(wgh.name, wgm.name, '')
 	FROM slo_incidents si
 	LEFT JOIN slos sl ON sl.id = si.slo_id
-	LEFT JOIN incident_groups wg ON wg.id = si.group_id
+	LEFT JOIN incident_groups wg ON wg.id = si.group_id AND wg.project_id = $1
 	LEFT JOIN hosts wgh ON wg.root_node_kind = 'host' AND wgh.id = wg.root_node_id
 	LEFT JOIN monitors wgm ON wg.root_node_kind = 'monitor' AND wgm.id = wg.root_node_id
 	WHERE si.project_id = $1 AND ` + notOpenGroupMember("si") + ` AND ` + sloCond + `

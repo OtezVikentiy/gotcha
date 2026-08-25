@@ -58,7 +58,7 @@ func (h *Handler) incidentFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	groups := make([]templates.GroupCard, 0, len(open)+len(closedGroups))
 	for _, g := range append(open, closedGroups...) {
-		members, err := h.IncidentGroups.Composition(r.Context(), g.ProjectID, g.ID)
+		members, err := h.IncidentGroups.Composition(r.Context(), projectID, g.ID)
 		if err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return

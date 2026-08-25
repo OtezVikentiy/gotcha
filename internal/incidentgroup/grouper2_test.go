@@ -187,7 +187,7 @@ func TestAttachSkipsAlreadyResolvedGroup(t *testing.T) {
 }
 
 // TestAttachUnknownSourceErrors — SetGroup отвергает неизвестный source
-// (см. group.go sourceTables); Attach обязан прокинуть эту ошибку, а не
+// (см. group.go sourceMeta); Attach обязан прокинуть эту ошибку, а не
 // молчаливо считать член присоединённым.
 func TestAttachUnknownSourceErrors(t *testing.T) {
 	pool := testenv.MigratedPG(t)
@@ -529,5 +529,134 @@ func TestOnRootOpenedReattachesFormerMember(t *testing.T) {
 	}
 	if *group2 == *group1 {
 		t.Fatalf("member must move to the NEW group, not stay pinned to the resolved one: got %d want != %d", *group2, *group1)
+	}
+}
+
+// TestOnRootOpenedReattachesFormerMetricMember — то же W2-сценарие
+// (флапающий корень), что TestOnRootOpenedReattachesFormerMember, но для
+// metric-ветки openCandidates (фикс-раунд R1b, MAJOR-1): ревьюер откатил
+// `mi.group_id IS NULL` в WHERE обратно на голое условие без wg.resolved_at
+// — весь пакет остался зелёным, потому что host-ветка та же мутация ловит, а
+// metric никто не проверял. Правило с label_key='host' резолвит childHost по
+// имени (Р1); ребро rootHost -> childHost даёт DownRoot == rootHost.
+func TestOnRootOpenedReattachesFormerMetricMember(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	childName := "child-" + randSlug(t)
+	childHost := seedHost(t, pool, projectID, childName)
+	seedEdgeHH(t, pool, projectID, rootHost, childHost)
+
+	store := incidentgroup.NewStore(pool)
+	g, _ := newGrouper(pool)
+
+	var ruleID, memberInc int64
+	mustScan(t, pool, &ruleID, `
+		INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold, label_key, label_value)
+		VALUES ($1,'cpu.load','avg','gt',0.9,'host',$2) RETURNING id`, projectID, childName)
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value)
+		VALUES ($1,$2,1,1) RETURNING id`, ruleID, projectID)
+
+	rootInc1 := seedSilent(t, pool, projectID, rootHost, true)
+	if err := g.OnRootOpened(ctx, "host", rootInc1, "host", rootHost, projectID); err != nil {
+		t.Fatalf("OnRootOpened 1st: %v", err)
+	}
+	var group1 *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM metric_incidents WHERE id = $1`, memberInc).Scan(&group1); err != nil {
+		t.Fatalf("read group_id 1: %v", err)
+	}
+	if group1 == nil {
+		t.Fatalf("metric member must be attached after 1st OnRootOpened")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc1); err != nil {
+		t.Fatalf("resolve root1: %v", err)
+	}
+	if ok, err := store.Resolve(ctx, "host", rootInc1); err != nil || !ok {
+		t.Fatalf("Resolve group1: ok=%v err=%v", ok, err)
+	}
+
+	rootInc2 := seedSilent(t, pool, projectID, rootHost, true)
+	if err := g.OnRootOpened(ctx, "host", rootInc2, "host", rootHost, projectID); err != nil {
+		t.Fatalf("OnRootOpened 2nd: %v", err)
+	}
+	var group2 *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM metric_incidents WHERE id = $1`, memberInc).Scan(&group2); err != nil {
+		t.Fatalf("read group_id 2: %v", err)
+	}
+	if group2 == nil {
+		t.Fatal("metric member must be re-attached to the new group after the root re-opened")
+	}
+	if *group2 == *group1 {
+		t.Fatalf("metric member must move to the NEW group, not stay pinned to the resolved one: got %d want != %d", *group2, *group1)
+	}
+}
+
+// TestOnRootOpenedReattachesFormerSLOMember — то же W2-сценарие, что
+// TestOnRootOpenedReattachesFormerMember, но для slo-ветки openCandidates
+// (фикс-раунд R1b, MAJOR-1): та же выжившая мутация, что и у metric-ветки,
+// в третьей ветке того же UNION ALL, которую тоже никто не гонял отдельно.
+// SLO с sli_kind='uptime' + monitor_id резолвится по узлу 'monitor'; ребро
+// rootHost -> monitorID (parent_host_id/child_monitor_id) даёт
+// DownRoot("monitor", monitorID) == rootHost.
+func TestOnRootOpenedReattachesFormerSLOMember(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	projectID := seedProject(t, pool)
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+
+	var monitorID int64
+	mustScan(t, pool, &monitorID, `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,'mon-`+randSlug(t)+`','http',60) RETURNING id`, projectID)
+	mustExec(t, pool, `
+		INSERT INTO alert_dependencies (project_id, parent_host_id, child_monitor_id)
+		VALUES ($1,$2,$3)`, projectID, rootHost, monitorID)
+
+	store := incidentgroup.NewStore(pool)
+	g, _ := newGrouper(pool)
+
+	var sloID, memberInc int64
+	mustScan(t, pool, &sloID, `
+		INSERT INTO slos (project_id, name, sli_kind, target, window_days, monitor_id)
+		VALUES ($1,'slo-`+randSlug(t)+`','uptime',0.99,30,$2) RETURNING id`, projectID, monitorID)
+	mustScan(t, pool, &memberInc, `
+		INSERT INTO slo_incidents (slo_id, project_id, burn_rate)
+		VALUES ($1,$2,20) RETURNING id`, sloID, projectID)
+
+	rootInc1 := seedSilent(t, pool, projectID, rootHost, true)
+	if err := g.OnRootOpened(ctx, "host", rootInc1, "host", rootHost, projectID); err != nil {
+		t.Fatalf("OnRootOpened 1st: %v", err)
+	}
+	var group1 *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM slo_incidents WHERE id = $1`, memberInc).Scan(&group1); err != nil {
+		t.Fatalf("read group_id 1: %v", err)
+	}
+	if group1 == nil {
+		t.Fatalf("slo member must be attached after 1st OnRootOpened")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc1); err != nil {
+		t.Fatalf("resolve root1: %v", err)
+	}
+	if ok, err := store.Resolve(ctx, "host", rootInc1); err != nil || !ok {
+		t.Fatalf("Resolve group1: ok=%v err=%v", ok, err)
+	}
+
+	rootInc2 := seedSilent(t, pool, projectID, rootHost, true)
+	if err := g.OnRootOpened(ctx, "host", rootInc2, "host", rootHost, projectID); err != nil {
+		t.Fatalf("OnRootOpened 2nd: %v", err)
+	}
+	var group2 *int64
+	if err := pool.QueryRow(ctx, `SELECT group_id FROM slo_incidents WHERE id = $1`, memberInc).Scan(&group2); err != nil {
+		t.Fatalf("read group_id 2: %v", err)
+	}
+	if group2 == nil {
+		t.Fatal("slo member must be re-attached to the new group after the root re-opened")
+	}
+	if *group2 == *group1 {
+		t.Fatalf("slo member must move to the NEW group, not stay pinned to the resolved one: got %d want != %d", *group2, *group1)
 	}
 }

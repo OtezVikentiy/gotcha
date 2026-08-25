@@ -182,7 +182,12 @@ func TestSetGroupDoesNotOverwriteOpenMembership(t *testing.T) {
 // чужого проекта не присоединяет чужой инцидент (WHERE не матчит строку);
 // Composition с project_id чужого проекта отдаёт пустой список, хотя группа
 // реальна и с членом — обе функции проверяют tenant-изоляцию прямо в
-// запросе, не полагаясь только на инварианты вызывающих.
+// запросе, не полагаясь только на инварианты вызывающих. Группа собрана из
+// членов ВСЕХ ЧЕТЫРЁХ источников (фикс-раунд R1b, MAJOR-2): ревьюер снял
+// фильтр project_id разом в ветках uptime/metric/slo у feedMemberSelect, а
+// прежняя версия теста держала в группе только host-члена — мутация осталась
+// незамеченной. Одного host-члена мало: он единственный источник, чья
+// project_id-ветка и так была покрыта.
 func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -221,6 +226,41 @@ func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 		t.Fatalf("SetGroup own project: ok=%v err=%v", ok, err)
 	}
 
+	// uptime-член.
+	var monitorID, uptimeMemberInc int64
+	mustScan(t, pool, &monitorID, `
+		INSERT INTO monitors (project_id, name, kind, interval_seconds)
+		VALUES ($1,'mon-`+randSlug(t)+`','http',60) RETURNING id`, projectID)
+	mustScan(t, pool, &uptimeMemberInc, `
+		INSERT INTO incidents (monitor_id, notified_open) VALUES ($1,true) RETURNING id`, monitorID)
+	if ok, err := store.SetGroup(ctx, projectID, "uptime", uptimeMemberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup uptime own project: ok=%v err=%v", ok, err)
+	}
+
+	// metric-член.
+	var ruleID, metricMemberInc int64
+	mustScan(t, pool, &ruleID, `
+		INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold)
+		VALUES ($1,'cpu.load','avg','gt',0.9) RETURNING id`, projectID)
+	mustScan(t, pool, &metricMemberInc, `
+		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value)
+		VALUES ($1,$2,1,1) RETURNING id`, ruleID, projectID)
+	if ok, err := store.SetGroup(ctx, projectID, "metric", metricMemberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup metric own project: ok=%v err=%v", ok, err)
+	}
+
+	// slo-член.
+	var sloID, sloMemberInc int64
+	mustScan(t, pool, &sloID, `
+		INSERT INTO slos (project_id, name, sli_kind, target, window_days)
+		VALUES ($1,'slo-`+randSlug(t)+`','availability',0.99,30) RETURNING id`, projectID)
+	mustScan(t, pool, &sloMemberInc, `
+		INSERT INTO slo_incidents (slo_id, project_id, burn_rate)
+		VALUES ($1,$2,20) RETURNING id`, sloID, projectID)
+	if ok, err := store.SetGroup(ctx, projectID, "slo", sloMemberInc, g.ID); err != nil || !ok {
+		t.Fatalf("SetGroup slo own project: ok=%v err=%v", ok, err)
+	}
+
 	members, err := store.Composition(ctx, otherProjectID, g.ID)
 	if err != nil {
 		t.Fatalf("Composition cross-project: %v", err)
@@ -228,10 +268,18 @@ func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 	if len(members) != 0 {
 		t.Fatalf("Composition with a foreign project_id must return nothing, got %d members", len(members))
 	}
+
+	members, err = store.Composition(ctx, projectID, g.ID)
+	if err != nil {
+		t.Fatalf("Composition own project: %v", err)
+	}
+	if len(members) != 4 {
+		t.Fatalf("Composition own project must return all 4 members, got %d", len(members))
+	}
 }
 
 // TestSetGroupCrossProjectUptime — W6: `incidents` (uptime) не имеет своей
-// колонки project_id — sourceProjectCond идёт через monitors (EXISTS); та же
+// колонки project_id — sourceMeta.projectCond идёт через monitors (EXISTS); та же
 // проверка, что TestSetGroupCompositionCrossProjectNoop, но для ветки,
 // которую легко сломать по-другому (забыть JOIN на monitors).
 func TestSetGroupCrossProjectUptime(t *testing.T) {
