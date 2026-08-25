@@ -224,3 +224,170 @@ func TestIncidentFeedNilStore(t *testing.T) {
 		t.Fatalf("h.IncidentGroups == nil: status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// TestIncidentFeedInvalidProjectID — {id} в пути не парсится как int64:
+// parsePathProjectID отдаёт 404 тем же путём, что и остальные ручки проекта
+// (projsettings.go), а не 500/панику на мусорном сегменте URL. Тело страницы
+// проверяем на ОДНОКРАТНОЕ вхождение текста 404 — если бы ручка не
+// прервалась сразу после parsePathProjectID (return по !ok), выполнение
+// продолжилось бы с нулевым projectID и дошло бы до собственного notFound
+// ручки ещё раз: тот же статус 404 замаскировал бы пропавший return, а
+// задвоенное тело — нет.
+func TestIncidentFeedInvalidProjectID(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	_, ownerCookie := orgSettingsRegister(t, s.auth, "feed-badid@example.com")
+
+	resp := getWithCookie(t, s.srv, "/projects/not-a-number/incident-feed", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("invalid project id in path: status = %d, want 404: %s", resp.StatusCode, body)
+	}
+	// ErrorPage сама повторяет текст дважды (заголовок h1 + тело p) — один
+	// рендер даёт 2 вхождения; удвоение (return пропал) даёт 4.
+	if n := strings.Count(string(body), "Страница не найдена"); n != 2 {
+		t.Fatalf("404 body must render exactly once (return after parsePathProjectID failure), got %d occurrences of the message (want 2, one render): %s", n, body)
+	}
+}
+
+// TestIncidentFeedCanAccessProjectQueryError — сбой самого запроса
+// CanAccessProject (не «доступа нет», а поломка БД) обязан отдать 500, а не
+// молча отрендерить 404 (это была бы неразличимая с «нет доступа» тишина —
+// ровно то, чего инженерные правила требуют избегать). Ломаем role — из неё
+// целиком строится org_members-ветка accessCondition (см. org/project.go),
+// БД для теста изолирована (testenv.MigratedPG(t) выдаёт свою t_<hash> на
+// тест), так что ALTER TABLE не аукается соседям — тот же приём, что и
+// TestProfileDeleteLogsWhenEmailReadFails (cover_profile_delete_test.go).
+func TestIncidentFeedCanAccessProjectQueryError(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-accesserr@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co-accesserr", "Feed Co AccessErr", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj-accesserr", "Feed Proj AccessErr", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	if _, err := s.pool.Exec(ctx, "ALTER TABLE org_members RENAME COLUMN role TO role_broken_for_test"); err != nil {
+		t.Fatalf("break org_members.role: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("CanAccessProject query error: status = %d, want 500: %s", resp.StatusCode, body)
+	}
+}
+
+// TestIncidentFeedOpenGroupsQueryError — сбой OpenGroups (queryGroupRows)
+// обязан отдать 500. Ломаем root_node_kind — колонку groupRowSelect'а
+// (group.go), которую feedMemberSelect/feedProjectQuery (Composition,
+// OpenOutOfGroup, ClosedSince) не используют вовсе — обломка бьёт ровно по
+// OpenGroups/ClosedGroupsSince, ничего больше в ручке задеть не может.
+func TestIncidentFeedOpenGroupsQueryError(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-opengroupserr@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co-opengroupserr", "Feed Co OpenGroupsErr", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj-opengroupserr", "Feed Proj OpenGroupsErr", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	if _, err := s.pool.Exec(ctx,
+		"ALTER TABLE incident_groups RENAME COLUMN root_node_kind TO root_node_kind_broken_for_test"); err != nil {
+		t.Fatalf("break incident_groups.root_node_kind: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("OpenGroups query error: status = %d, want 500: %s", resp.StatusCode, body)
+	}
+}
+
+// TestIncidentFeedCompositionQueryError — сбой Composition (состав ОДНОЙ из
+// открытых/закрытых групп) обязан отдать 500. Заводим ровно одну открытую
+// группу — иначе цикл по группам в incidentFeed вообще не вызовет
+// Composition. Ломаем ТИП host_incidents.group_id (bigint -> text): его
+// сравнивает С ПАРАМЕТРОМ ($1 = group ID) только feedMemberSelect
+// (group.go, WHERE hi.group_id = $1) — feedProjectQuery (OpenOutOfGroup/
+// ClosedSince) тот же столбец только проверяет на IS NULL, чему тип
+// безразличен, так что смена типа рвёт РОВНО Composition и никого из
+// соседей (обычный ALTER COLUMN … RENAME сломал бы саму SELECT-колонку и
+// задел бы оба запроса — здесь нужна асимметрия именно по сравнению типов).
+func TestIncidentFeedCompositionQueryError(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-compositionerr@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co-compositionerr", "Feed Co CompositionErr", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj-compositionerr", "Feed Proj CompositionErr", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	rootHost := s.seedFeedHost(t, project.ID, "root-compositionerr")
+	var rootInc int64
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
+		VALUES ($1,$2,'silent','open',0,0,'',true) RETURNING id`, project.ID, rootHost).Scan(&rootInc); err != nil {
+		t.Fatalf("seed root incident: %v", err)
+	}
+	if _, err := s.groups.EnsureGroup(ctx, project.ID, "host", rootInc, "host", rootHost); err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+
+	if _, err := s.pool.Exec(ctx,
+		"ALTER TABLE host_incidents ALTER COLUMN group_id TYPE text"); err != nil {
+		t.Fatalf("break host_incidents.group_id type: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("Composition query error: status = %d, want 500: %s", resp.StatusCode, body)
+	}
+}
+
+// TestIncidentFeedOpenOutOfGroupQueryError — сбой OpenOutOfGroup (6-источник-
+// ный feedProjectQuery) обязан отдать 500. Групп в проекте нет (иначе
+// Composition сработал бы раньше и замаскировал бы именно эту ветку), ломаем
+// perf_regressions.metric — колонку trace-ветки feedProjectQuery, которую ни
+// groupRowSelect, ни feedMemberSelect не используют.
+func TestIncidentFeedOpenOutOfGroupQueryError(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-outofgrouperr@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co-outofgrouperr", "Feed Co OutOfGroupErr", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj-outofgrouperr", "Feed Proj OutOfGroupErr", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	if _, err := s.pool.Exec(ctx,
+		"ALTER TABLE perf_regressions RENAME COLUMN metric TO metric_broken_for_test"); err != nil {
+		t.Fatalf("break perf_regressions.metric: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("OpenOutOfGroup query error: status = %d, want 500: %s", resp.StatusCode, body)
+	}
+}

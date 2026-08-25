@@ -155,6 +155,45 @@ func TestSweepClosesGroupWhenUptimeRootResolved(t *testing.T) {
 	}
 }
 
+// TestJanitorRunSweepsOrphanGroups — Janitor.Run тикает и на каждом тике
+// гоняет SweepOrphanGroups (§4.3: fail-noisy, работает всегда). Мимикрируем
+// escalation.Janitor'овский образец теста (retention_test.go): короткий
+// SweepInterval + поллинг до дедлайна вместо синхронного ожидания тика.
+func TestJanitorRunSweepsOrphanGroups(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	projectID := seedProject(t, pool)
+	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
+	rootInc := seedSilent(t, pool, projectID, rootHost, true)
+	store := incidentgroup.NewStore(pool)
+	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
+	if err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	// Осиротить группу мимо хука закрытия — ровно то, что должен подхватить sweep-тик.
+	mustExec(t, pool, `DELETE FROM hosts WHERE id = $1`, rootHost)
+
+	j := &incidentgroup.Janitor{Pool: pool, SweepInterval: 10 * time.Millisecond}
+	go j.Run(ctx)
+
+	deadline := time.Now().Add(3 * time.Second)
+	var resolved *time.Time
+	for time.Now().Before(deadline) {
+		if err := pool.QueryRow(ctx, `SELECT resolved_at FROM incident_groups WHERE id = $1`, g.ID).Scan(&resolved); err != nil {
+			t.Fatalf("read group: %v", err)
+		}
+		if resolved != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if resolved == nil {
+		t.Fatalf("Janitor.Run must sweep the orphan group via its ticker within the deadline")
+	}
+}
+
 func TestPurgeOldGroups(t *testing.T) {
 	// resolved-группа старше ретеншена удаляется, открытая — не тронута.
 	pool := testenv.MigratedPG(t)
