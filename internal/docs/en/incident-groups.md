@@ -5,8 +5,8 @@ database — signals fire from every direction: hosts behind the gateway go
 silent, metric thresholds trip, an SLO monitor turns red. Incident groups
 fold that fan-out into a single card: a **root availability incident**
 (a silent host or a down uptime monitor) plus its **composition** — incidents
-of nodes chained to the root through declared dependencies (see "Alert storm
-suppression").
+of nodes chained to the root through declared dependencies (dependency
+edges are set on the "Alerts → Storm suppression" page).
 
 ## How a group is built
 
@@ -24,7 +24,11 @@ suppression").
   notifications they already sent are not recalled.
 - When the root closes, the group closes; members still open (disk still
   full) notify and escalate again — the ladder restarts from the moment the
-  group closed.
+  group closed. A former member like this shows up in "Out of groups"
+  immediately: the incident's link to the closed group (`group_id`) isn't
+  cleared, but the feed filters on whether the group has resolved, not on
+  an empty `group_id` — a problem that outlived its neighbor doesn't drop
+  out of sight.
 
 ## Incident feed
 
@@ -32,9 +36,8 @@ The "Alerts → Incident feed" section shows open groups with their
 composition (expand in place), open out-of-group incidents across all six
 sources, and what closed in the last day. A root shows in the header of its
 own group card and is not repeated under "Out of groups". Incidents
-suppressed by
-dependencies carry a "suppressed by dependency" badge — they show up in a
-group's composition even though they never sent notifications.
+suppressed by dependencies carry a "suppressed — parent down" badge — they
+show up in a group's composition even though they never sent notifications.
 
 ## Why transactions and profiling stay out of groups
 

@@ -108,7 +108,7 @@ func TestIncidentFeedEmptyState(t *testing.T) {
 		"Лента инцидентов",
 		"Открытых групп нет — связанные сбои не обнаружены.",
 		"Открытых инцидентов вне групп нет.",
-		"За последние сутки ничего не закрывалось.",
+		"За последние сутки ничего не решалось.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("пустая лента не содержит %q: %s", want, text)
@@ -144,7 +144,7 @@ func TestIncidentFeedGroupWithComposition(t *testing.T) {
 
 	memberHost := s.seedFeedHost(t, project.ID, "member-web")
 	memberInc := s.seedFeedHostIncident(t, project.ID, memberHost, "disk")
-	if err := s.groups.SetGroup(ctx, "host", memberInc, group.ID); err != nil {
+	if _, err := s.groups.SetGroup(ctx, project.ID, "host", memberInc, group.ID); err != nil {
 		t.Fatalf("SetGroup host: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestIncidentFeedGroupWithComposition(t *testing.T) {
 		VALUES ($1,true,true) RETURNING id`, monitorID).Scan(&uptimeMemberInc); err != nil {
 		t.Fatalf("seed uptime incident: %v", err)
 	}
-	if err := s.groups.SetGroup(ctx, "uptime", uptimeMemberInc, group.ID); err != nil {
+	if _, err := s.groups.SetGroup(ctx, project.ID, "uptime", uptimeMemberInc, group.ID); err != nil {
 		t.Fatalf("SetGroup uptime: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestIncidentFeedGroupWithComposition(t *testing.T) {
 		"Хост недоступен",
 		rootHostName,
 		"host 1 · uptime 1 · metric 0 · slo 0",
-		"подавлен зависимостью",
+		"подавлен: родитель недоступен",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("карточка группы не содержит %q: %s", want, text)

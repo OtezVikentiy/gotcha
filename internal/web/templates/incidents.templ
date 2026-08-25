@@ -23,8 +23,10 @@ func incidentsTotalPages(total int64) int64 {
 	return (total + incidentsPerPage - 1) / incidentsPerPage
 }
 
-// incidentsPageURL — ссылка на страницу ленты инцидентов (page>1 добавляет
-// ?page=N, первая страница — чистый путь).
+// incidentsPageURL — ссылка на страницу аптайм-инцидентов (page>1 добавляет
+// ?page=N, первая страница — чистый путь). Не путать с лентой инцидентов
+// (D3, incidentfeed.templ) — она сводит все 6 источников и живёт по
+// отдельному пути /incident-feed, см. хинт на IncidentsList.
 func incidentsPageURL(projectID int64, page int) string {
 	if page > 1 {
 		return incidentsPath(projectID) + "?page=" + strconv.Itoa(page)
@@ -69,6 +71,7 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 		<div class="incidents">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
+			<p class="hint">{ i18n.T(ctx, "uptime.incidents.see_feed_hint") }<a href={ templ.URL(incidentFeedPath(projectID)) }>{ i18n.T(ctx, "nav.incident_feed") }</a>{ i18n.T(ctx, "uptime.incidents.see_feed_hint_suffix") }</p>
 			@helpPanel("incidents", "uptime")
 			if len(rows) == 0 {
 				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "", 2)

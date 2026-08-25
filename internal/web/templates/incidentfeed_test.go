@@ -71,7 +71,7 @@ func TestNewGroupCardCounts(t *testing.T) {
 	}
 }
 
-// TestGroupCardResolvedBadge — бейдж «закрыта» рисуется только когда у
+// TestGroupCardResolvedBadge — бейдж «решена» рисуется только когда у
 // группы проставлен ResolvedAt; счётчики состава попадают в подсказку.
 func TestGroupCardResolvedBadge(t *testing.T) {
 	base := incidentgroup.GroupRow{
@@ -80,7 +80,7 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 	}
 	open := NewGroupCard(base, []incidentgroup.FeedItem{{Source: "host"}, {Source: "uptime"}})
 	openHTML := renderTo(t, groupCard(1, open))
-	if strings.Contains(openHTML, "закрыта") {
+	if strings.Contains(openHTML, "решена") {
 		t.Error("open group card must not show the resolved badge")
 	}
 	if !strings.Contains(openHTML, "host 1 · uptime 1 · metric 0 · slo 0") {
@@ -94,7 +94,7 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 	closed := open
 	closed.Group.ResolvedAt = &resolvedAt
 	closedHTML := renderTo(t, groupCard(1, closed))
-	if !strings.Contains(closedHTML, "закрыта") {
+	if !strings.Contains(closedHTML, "решена") {
 		t.Error("resolved group card must show the resolved badge")
 	}
 }
@@ -124,7 +124,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	if strings.Contains(plain, "·") {
 		t.Errorf("row without SubKind must not render the hint separator: %s", plain)
 	}
-	if strings.Contains(plain, "подавлен зависимостью") || strings.Contains(plain, "подтверждён") {
+	if strings.Contains(plain, "подавлен: родитель недоступен") || strings.Contains(plain, "подтверждён") {
 		t.Errorf("plain row must not show suppression/ack badges: %s", plain)
 	}
 
@@ -138,7 +138,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	suppressed := base
 	suppressed.SuppressedByDep = true
 	suppressedHTML := renderTo(t, feedItemRow(1, suppressed))
-	if !strings.Contains(suppressedHTML, "подавлен зависимостью") {
+	if !strings.Contains(suppressedHTML, "подавлен: родитель недоступен") {
 		t.Errorf("suppressed row must show the badge: %s", suppressedHTML)
 	}
 	if strings.Contains(suppressedHTML, "подтверждён") {
@@ -151,7 +151,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	if !strings.Contains(ackedHTML, "подтверждён") {
 		t.Errorf("acked row must show the ack badge: %s", ackedHTML)
 	}
-	if strings.Contains(ackedHTML, "подавлен зависимостью") {
+	if strings.Contains(ackedHTML, "подавлен: родитель недоступен") {
 		t.Errorf("acked-only row must not show the suppression badge: %s", ackedHTML)
 	}
 
@@ -159,7 +159,7 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	both.SuppressedByDep = true
 	both.Acknowledged = true
 	bothHTML := renderTo(t, feedItemRow(1, both))
-	if !strings.Contains(bothHTML, "подавлен зависимостью") || !strings.Contains(bothHTML, "подтверждён") {
+	if !strings.Contains(bothHTML, "подавлен: родитель недоступен") || !strings.Contains(bothHTML, "подтверждён") {
 		t.Errorf("row with both flags must show both badges: %s", bothHTML)
 	}
 }
@@ -196,7 +196,7 @@ func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 	if !strings.Contains(html, "Открытых инцидентов вне групп нет.") {
 		t.Errorf("out-of-group section must still show its empty state: %s", html)
 	}
-	if !strings.Contains(html, "За последние сутки ничего не закрывалось.") {
+	if !strings.Contains(html, "За последние сутки ничего не решалось.") {
 		t.Errorf("closed section must still show its empty state: %s", html)
 	}
 }
@@ -231,7 +231,7 @@ func TestIncidentFeedOutOfGroupAllSixSources(t *testing.T) {
 
 // TestIncidentFeedClosedGroupsWithoutOutOfGroupItems — closedGroups непуст,
 // но closed (внегрупповые закрытые) пуст: карточки закрытых групп рисуются,
-// но НИ заглушка «ничего не закрывалось», НИ отдельная таблица внегрупповых
+// но НИ заглушка «ничего не решалось», НИ отдельная таблица внегрупповых
 // закрытых не рисуются (ветка else-if len(closed)>0 не срабатывает).
 func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 	resolvedAt := time.Now()
@@ -240,13 +240,13 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 		[]incidentgroup.FeedItem{{Source: "metric"}},
 	)
 	html := renderTo(t, IncidentFeed(1, nil, nil, []GroupCard{closedGroup}, nil, ""))
-	if strings.Contains(html, "За последние сутки ничего не закрывалось.") {
+	if strings.Contains(html, "За последние сутки ничего не решалось.") {
 		t.Errorf("closedGroups>0 must suppress the closed-empty message even though out-of-group closed items are empty: %s", html)
 	}
 	if !strings.Contains(html, "Монитор недоступен") {
 		t.Errorf("closed group card must render: %s", html)
 	}
-	if !strings.Contains(html, "закрыта") {
+	if !strings.Contains(html, "решена") {
 		t.Errorf("closed group card must show the resolved badge: %s", html)
 	}
 }
@@ -257,7 +257,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 	closed := []incidentgroup.FeedItem{{Source: "host", Title: "closed-lone", StartedAt: time.Now()}}
 	html := renderTo(t, IncidentFeed(1, nil, nil, nil, closed, ""))
-	if strings.Contains(html, "За последние сутки ничего не закрывалось.") {
+	if strings.Contains(html, "За последние сутки ничего не решалось.") {
 		t.Errorf("non-empty closed out-of-group items must suppress the empty message: %s", html)
 	}
 	if !strings.Contains(html, "closed-lone") {

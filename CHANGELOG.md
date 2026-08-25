@@ -14,12 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (silent host / down monitor) now anchors a group; incidents of dependent
   nodes (hosts, monitors, host-scoped metric alerts, uptime SLOs) join it
   and stay quiet while the root is informing. Members released by the root's
-  recovery re-notify without a burst. Root notifications carry a
-  "Dependent nodes: N" line.
+  recovery re-notify and escalate again — the ladder restarts from the
+  moment the group closed. Root notifications carry a "Dependent nodes: N"
+  line.
 - Incident feed (`/projects/{id}/incident-feed`): open groups with expandable
-  composition, out-of-group incidents across all six sources, and a 24h
-  recently-closed section. Dependency-suppressed incidents are badged on the
-  feed and native pages.
+  composition, out-of-group incidents across all six sources, and a
+  recently-resolved section (last 24h). Dependency-suppressed incidents are
+  badged on the feed and native pages.
 
 ## [0.20.0] - 2026-08-21
 
