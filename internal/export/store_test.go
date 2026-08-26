@@ -567,10 +567,11 @@ func TestDoneSetsExpiryFromFinish(t *testing.T) {
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 	id := mustEnqueue(t, st, projectID, userID)
-	if _, _, err := st.Claim(ctx); err != nil {
+	claim, _, err := st.Claim(ctx)
+	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := st.Done(ctx, id, 42, 4096, true, 48*time.Hour); err != nil {
+	if err := st.Done(ctx, id, claim.Attempts, 42, 4096, true, 48*time.Hour); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	got, err := st.Get(ctx, id)
@@ -596,10 +597,11 @@ func TestFailRetriesThenGivesUp(t *testing.T) {
 	id := mustEnqueue(t, st, projectID, userID)
 
 	for i := 1; i <= maxAttempts; i++ {
-		if _, _, err := st.Claim(ctx); err != nil {
+		claim, _, err := st.Claim(ctx)
+		if err != nil {
 			t.Fatalf("Claim %d: %v", i, err)
 		}
-		if err := st.Fail(ctx, id, "ClickHouse недоступен"); err != nil {
+		if err := st.Fail(ctx, id, claim.Attempts, "ClickHouse недоступен"); err != nil {
 			t.Fatalf("Fail %d: %v", i, err)
 		}
 		got, err := st.Get(ctx, id)
@@ -618,8 +620,10 @@ func TestFailRetriesThenGivesUp(t *testing.T) {
 
 // TestDoneIgnoresAlreadyFinalizedJob — Done не должен воскрешать заявку,
 // которую тем временем уже закрыл SweepStale (протухшая лиза, попытки
-// исчерпаны): «застрявший» вызов Done из зомби-воркера не имеет права
-// откатить финальный статус обратно на 'done'.
+// исчерпаны): «застрявший» вызов Done из зомби-воркера получает
+// ErrStaleClaim и не имеет права откатить финальный статус обратно на
+// 'done', даже если номер попытки совпадает — status='running' в связке
+// с attempts защищает и от этого случая.
 func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -634,8 +638,8 @@ func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 	if n, err := st.SweepStale(ctx); err != nil || n != 1 {
 		t.Fatalf("SweepStale: n=%d err=%v", n, err)
 	}
-	if err := st.Done(ctx, id, 1, 1, false, time.Hour); err != nil {
-		t.Fatalf("Done: %v", err)
+	if err := st.Done(ctx, id, 3, 1, 1, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("Done: err=%v, ожидали ErrStaleClaim", err)
 	}
 	got, err := st.Get(ctx, id)
 	if err != nil {
@@ -647,21 +651,23 @@ func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 }
 
 // TestFailIgnoresAlreadyDoneJob — симметричный случай: Fail из зомби-вызова
-// не должен откатывать уже успешно досчитанную заявку в очередь.
+// получает ErrStaleClaim и не откатывает уже успешно досчитанную заявку в
+// очередь.
 func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 	id := mustEnqueue(t, st, projectID, userID)
-	if _, _, err := st.Claim(ctx); err != nil {
+	claim, _, err := st.Claim(ctx)
+	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := st.Done(ctx, id, 1, 1, false, time.Hour); err != nil {
+	if err := st.Done(ctx, id, claim.Attempts, 1, 1, false, time.Hour); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
-	if err := st.Fail(ctx, id, "запоздавшая ошибка зомби-воркера"); err != nil {
-		t.Fatalf("Fail: %v", err)
+	if err := st.Fail(ctx, id, claim.Attempts, "запоздавшая ошибка зомби-воркера"); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("Fail: err=%v, ожидали ErrStaleClaim", err)
 	}
 	got, err := st.Get(ctx, id)
 	if err != nil {
@@ -672,55 +678,168 @@ func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
 	}
 }
 
+// TestDoneRejectsStaleClaimAfterReclaim — подтверждённый сценарий гонки:
+// A клеймит заявку, лиза протухает, её подбирает B (attempts вырос), и
+// запоздавший Done от A обязан получить ErrStaleClaim и не тронуть строку —
+// иначе заявка финализировалась бы устаревшими данными A, а Done от B, у
+// которого строка увести уже некому, тихо потерял бы результат.
+func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+
+	claimA, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim A: %v ok=%v", err, ok)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE export_jobs SET claimed_at = now() - interval '21 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatalf("протухание лизы A: %v", err)
+	}
+	claimB, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim B (переклейм): %v ok=%v", err, ok)
+	}
+	if claimB.Attempts != claimA.Attempts+1 {
+		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
+	}
+
+	// A не знает о перехвате и дописывает СВОИ (устаревшие) результаты.
+	if err := st.Done(ctx, id, claimA.Attempts, 111, 222, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("Done от A: err=%v, ожидали ErrStaleClaim", err)
+	}
+	afterA, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get после Done A: %v", err)
+	}
+	if afterA.Status != StatusRunning || afterA.RowsWritten != 0 {
+		t.Fatalf("устаревший Done от A изменил заявку: %+v", afterA)
+	}
+
+	// B ведёт актуальную попытку — его Done обязан пройти и записать его данные.
+	if err := st.Done(ctx, id, claimB.Attempts, 999, 888, true, time.Hour); err != nil {
+		t.Fatalf("Done от B: %v", err)
+	}
+	final, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get после Done B: %v", err)
+	}
+	if final.Status != StatusDone || final.RowsWritten != 999 || final.Bytes != 888 || !final.Truncated {
+		t.Fatalf("итог заявки не соответствует данным B: %+v", final)
+	}
+}
+
+// TestFailRejectsStaleClaimAfterReclaim — та же гонка со стороны Fail:
+// запоздавшая неудача от A не должна откатывать попытку, которую уже
+// ведёт B.
+func TestFailRejectsStaleClaimAfterReclaim(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+
+	claimA, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim A: %v ok=%v", err, ok)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE export_jobs SET claimed_at = now() - interval '21 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatalf("протухание лизы A: %v", err)
+	}
+	claimB, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim B (переклейм): %v ok=%v", err, ok)
+	}
+
+	if err := st.Fail(ctx, id, claimA.Attempts, "устаревшая ошибка A"); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("Fail от A: err=%v, ожидали ErrStaleClaim", err)
+	}
+	afterA, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get после Fail A: %v", err)
+	}
+	if afterA.Status != StatusRunning || afterA.Attempts != claimB.Attempts {
+		t.Fatalf("устаревший Fail от A изменил заявку: %+v", afterA)
+	}
+
+	if err := st.Fail(ctx, id, claimB.Attempts, "реальная ошибка B"); err != nil {
+		t.Fatalf("Fail от B: %v", err)
+	}
+	final, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get после Fail B: %v", err)
+	}
+	if final.Status != StatusQueued || final.LastError != "реальная ошибка B" {
+		t.Fatalf("итог заявки не соответствует Fail от B: %+v", final)
+	}
+}
+
 // TestClaimConcurrentDoesNotDoubleAssign — настоящая конкурентность: несколько
 // горутин со своими соединениями одновременно бьются за пул заявок. Без
 // корректной блокировки строки (FOR UPDATE SKIP LOCKED) два клейма могли бы
 // увидеть одну и ту же «самую старую» заявку в своих снапшотах и оба её
 // забрать.
+// Раунды и высокое соотношение воркеров к заявкам — не украшение: без
+// FOR UPDATE SKIP LOCKED окно гонки между чтением «самой старой заявки» и
+// её захватом узкое, и один раунд с малым числом участников ловит поломку
+// не всегда (наблюдалось ~3 из 10 прогонов при 12 воркерах на 6 заявок).
+// Барьер запускает все горутины раунда одновременно, а несколько раундов
+// подряд убирают зависимость результата от разового везения планировщика.
 func TestClaimConcurrentDoesNotDoubleAssign(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 
-	const jobs = 6
-	const workers = 12
-	ids := make(map[int64]bool, jobs)
-	for i := 0; i < jobs; i++ {
-		ids[mustEnqueue(t, st, projectID, userID)] = true
-	}
+	const rounds = 8
+	const jobsPerRound = 3
+	const workersPerRound = 20
 
-	var mu sync.Mutex
-	claimed := make(map[int64]int)
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for i := 0; i < workers; i++ {
-		go func() {
-			defer wg.Done()
-			got, ok, err := st.Claim(ctx)
-			if err != nil {
-				t.Errorf("Claim: %v", err)
-				return
-			}
-			if !ok {
-				return
-			}
-			mu.Lock()
-			claimed[got.ID]++
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	if len(claimed) != jobs {
-		t.Fatalf("забрано %d уникальных заявок из %d, ожидали все", len(claimed), jobs)
-	}
-	for id, n := range claimed {
-		if n != 1 {
-			t.Errorf("заявка %d выдана %d раз(а), ожидали ровно один", id, n)
+	for round := 0; round < rounds; round++ {
+		ids := make(map[int64]bool, jobsPerRound)
+		for i := 0; i < jobsPerRound; i++ {
+			ids[mustEnqueue(t, st, projectID, userID)] = true
 		}
-		if !ids[id] {
-			t.Errorf("забрана неизвестная заявка %d", id)
+
+		start := make(chan struct{})
+		var mu sync.Mutex
+		claimed := make(map[int64]int)
+		var wg sync.WaitGroup
+		wg.Add(workersPerRound)
+		for i := 0; i < workersPerRound; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				got, ok, err := st.Claim(ctx)
+				if err != nil {
+					t.Errorf("раунд %d: Claim: %v", round, err)
+					return
+				}
+				if !ok {
+					return
+				}
+				mu.Lock()
+				claimed[got.ID]++
+				mu.Unlock()
+			}()
+		}
+		close(start) // отпускает все горутины раунда одним махом
+		wg.Wait()
+
+		if len(claimed) != jobsPerRound {
+			t.Fatalf("раунд %d: забрано %d уникальных заявок из %d, ожидали все",
+				round, len(claimed), jobsPerRound)
+		}
+		for id, n := range claimed {
+			if n != 1 {
+				t.Errorf("раунд %d: заявка %d выдана %d раз(а), ожидали ровно один", round, id, n)
+			}
+			if !ids[id] {
+				t.Errorf("раунд %d: забрана неизвестная заявка %d", round, id)
+			}
 		}
 	}
 }

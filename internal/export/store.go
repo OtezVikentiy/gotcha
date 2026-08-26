@@ -29,6 +29,11 @@ var (
 	// ErrNotDeletable — заявка ещё не досчитана (queued/running) либо уже
 	// удалена: удалять можно только терминальные заявки.
 	ErrNotDeletable = errors.New("export: заявка ещё выполняется")
+	// ErrStaleClaim — вызывающий пишет результат уже не своей попытки:
+	// заявку успели переклеймить (Claim увеличил attempts) или её уже
+	// финализировал другой вызов Done/Fail. Воркер, поймавший эту ошибку,
+	// обязан молча остановиться — дописывать поверх чужой попытки нельзя.
+	ErrStaleClaim = errors.New("export: заявка перехвачена другой попыткой")
 )
 
 // Store — очередь заявок на выгрузку поверх таблицы export_jobs.
@@ -203,18 +208,27 @@ func (s *Store) SweepStale(ctx context.Context) (int, error) {
 
 // Fail возвращает заявку в очередь, пока попытки не исчерпаны: ждать
 // протухания лизы незачем — причина неудачи уже известна здесь и сейчас.
-// Условие status='running' — защита от зомби-вызова: если заявку уже забрал
-// SweepStale (лиза протухла, попытки кончились, статус стал failed) или её
-// же самой уже отчитался Done, запоздавший Fail не должен откатывать финал.
-func (s *Store) Fail(ctx context.Context, id int64, cause string) error {
-	_, err := s.pool.Exec(ctx, `
+//
+// attempt — номер попытки, с которым вызывающий получил заявку от Claim.
+// status='running' один не различает ВЛАДЕЛЬЦА текущего running-статуса:
+// если лиза протухла и заявку успел переклеймить кто-то другой, статус
+// остаётся 'running', но это уже чужая попытка. attempts растёт только в
+// Claim, поэтому связка status='running' AND attempts=$attempt однозначно
+// подтверждает, что вызывающий всё ещё держит именно ту попытку, что забрал.
+// Ноль затронутых строк — не ошибка выполнения, а сигнал ErrStaleClaim:
+// заявку либо переклеймили, либо её уже финализировал кто-то другой.
+func (s *Store) Fail(ctx context.Context, id int64, attempt int, cause string) error {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
 		SET status = CASE WHEN attempts >= $2 THEN 'failed' ELSE 'queued' END,
 		    finished_at = CASE WHEN attempts >= $2 THEN now() ELSE NULL END,
 		    claimed_at = NULL, last_error = $3
-		WHERE id = $1 AND status = 'running'`, id, maxAttempts, cause)
+		WHERE id = $1 AND status = 'running' AND attempts = $4`, id, maxAttempts, cause, attempt)
 	if err != nil {
 		return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStaleClaim
 	}
 	return nil
 }
@@ -222,16 +236,23 @@ func (s *Store) Fail(ctx context.Context, id int64, cause string) error {
 // Done завершает заявку успехом и назначает срок хранения файла от момента
 // завершения, а не от постановки в очередь: заявка, простоявшая в очереди
 // час, обязана хранить файл столько же, сколько исполненная мгновенно.
-// Условие status='running' — та же защита от зомби-вызова, что и в Fail: уже
-// закрытую SweepStale или другим Done заявку запоздавший вызов не воскрешает.
-func (s *Store) Done(ctx context.Context, id, rows, bytes int64, truncated bool, ttl time.Duration) error {
-	_, err := s.pool.Exec(ctx, `
+//
+// attempt фенсит владение попыткой той же связкой status='running' AND
+// attempts=$attempt, что и Fail (см. её комментарий) — без этого запоздавший
+// Done от воркера, потерявшего лизу, дописал бы свои устаревшие rows/bytes
+// поверх заявки, которую уже ведёт следующая попытка.
+func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int64, truncated bool, ttl time.Duration) error {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
 		SET status = 'done', rows_written = $2, bytes = $3, truncated = $4, last_error = '',
 		    finished_at = now(), expires_at = now() + $5::interval
-		WHERE id = $1 AND status = 'running'`, id, rows, bytes, truncated, ttl.String())
+		WHERE id = $1 AND status = 'running' AND attempts = $6`,
+		id, rows, bytes, truncated, ttl.String(), attempt)
 	if err != nil {
 		return fmt.Errorf("export: завершение заявки %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStaleClaim
 	}
 	return nil
 }
