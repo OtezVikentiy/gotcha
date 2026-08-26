@@ -26,7 +26,7 @@ func randSlug(t *testing.T) string {
 }
 
 // seedUser заводит пользователя без привязки к проекту — второй участник
-// теста изоляции по пользователю (см. TestActiveCountsSeparatesUserAndProject).
+// теста изоляции по пользователю (см. TestEnqueueLimitedRefusesAtUserLimit).
 func seedUser(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	var id int64

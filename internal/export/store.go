@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,20 @@ const (
 	// нужным значением поля. Не приходит от вызывающего извне и не
 	// конфигурируется из env/Config — это внутренняя деталь стора.
 	janitorBatchSize = 500
+	// enqueueLockClass — classID двухаргументной формы advisory-лока
+	// постановки заявки (EnqueueLimited): pg_advisory_xact_lock(int,int) —
+	// СТРУКТУРНО отдельное от pg_advisory_lock/pg_try_advisory_lock(bigint)
+	// keyspace (однопараметрическая форма, которой пользуются воркер и
+	// джанитор — advisoryLockKey=0x6578706F в worker.go, janitorLockKey в
+	// janitor.go): PostgreSQL хранит их под разными тегами лока независимо
+	// от числовых значений, поэтому пересечение исключено ГАРАНТИРОВАННО, а
+	// не потому что диапазоны project_id и констант воркера/джанитора пока
+	// не пересекаются (при project_id, доросшем до ~1.7 млрд, старая
+	// однопараметрическая форма начала бы конфликтовать с воркером —
+	// находка ре-ревью задачи 10, P3). Сам classID здесь не обязан быть
+	// уникальным вовне пакета — он лишь отделяет ключи EnqueueLimited друг
+	// от друга, если в пакете появится ещё один двухаргументный лок.
+	enqueueLockClass = 1
 )
 
 var (
@@ -169,13 +184,32 @@ func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
 // 3 до 6 успешных вставок). Просто обернуть счёт и вставку в одну транзакцию
 // НЕДОСТАТОЧНО — SELECT count(*) не блокирует конкурирующий INSERT в ту же
 // таблицу, гонка осталась бы той же. Транзакция берёт xact-scoped advisory
-// lock по project_id (pg_advisory_xact_lock — снимается сам на COMMIT/
-// ROLLBACK, в отличие от сессионного pg_advisory_lock воркера/джанитора,
-// которому нужен ручной unlock) ДО подсчёта: все конкурентные постановки
-// ОДНОГО проекта сериализуются в критической секции «посчитать → сравнить с
-// лимитом → вставить», и per-user предел проверяется внутри неё же —
-// отдельный лок по паре (project,user) не нужен, лок по project уже её
-// накрывает. Разные проекты друг друга не блокируют (разные ключи лока).
+// lock — снимается сам на COMMIT/ROLLBACK, в отличие от сессионного
+// pg_advisory_lock воркера/джанитора, которому нужен ручной unlock — ДО
+// подсчёта: все конкурентные постановки ОДНОГО проекта сериализуются в
+// критической секции «посчитать → сравнить с лимитом → вставить», и
+// per-user предел проверяется внутри неё же — отдельный лок по паре
+// (project,user) не нужен, лок по project уже её накрывает. Разные проекты
+// друг друга не блокируют (project_id — часть ключа лока, см. hashtext ниже).
+//
+// Ключ — ДВУХаргументная форма pg_advisory_xact_lock(classid, objid), не
+// pg_advisory_xact_lock(bigint): однопараметрическую форму по константным
+// ключам уже держат воркер (advisoryLockKey, worker.go) и джанитор
+// (janitorLockKey, janitor.go), и это ОДНО 64-битное пространство — лок по
+// сырому project_id делил бы его с ними, а project_id, доросший до значения
+// их констант (~1.7 млрд), начал бы блокировать воркер/джанитор (находка
+// ре-ревью задачи 10, P3). Двухаргументная форма — СТРУКТУРНО отдельное
+// keyspace в PostgreSQL (свой тег лока независимо от чисел), поэтому
+// пересечение исключено гарантированно, а не диапазоном значений; objid —
+// hashtext(project_id) вместо прямого project_id::int, потому что objid
+// физически int4, а project_id — bigint (IDENTITY), и не влезающий в int4
+// id обязан не падать и не давать двум разным проектам один и тот же лок
+// по случайности усечения. project_id передаётся уже строкой
+// (strconv.FormatInt), а не $N::text в самом SQL: pgx на extended-протоколе
+// узнаёт тип параметра из Describe-ответа Postgres и при инлайновом ::text
+// в тексте запроса пытается закодировать Go int64 как text напрямую, что не
+// умеет (ловится этой же правкой — без неё Exec падает с "unable to encode
+// ... into text format").
 //
 // ErrActiveLimitReached — лимит исчерпан, id не выдан.
 func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLimit int) (int64, error) {
@@ -185,7 +219,8 @@ func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLim
 	}
 	defer tx.Rollback(ctx) // no-op после успешного Commit
 
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", j.ProjectID); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+		enqueueLockClass, strconv.FormatInt(j.ProjectID, 10)); err != nil {
 		return 0, fmt.Errorf("export: постановка заявки: advisory lock: %w", err)
 	}
 

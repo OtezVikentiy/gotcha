@@ -548,7 +548,11 @@ func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 }
 
 // TestExportsDownloadInvalidJobIDIs404 — нечисловой jobID в пути обязан
-// давать 404 через strconv.ParseInt, а не паниковать/500.
+// давать 404, а не паниковать/500. Проверяет только код ответа: конкретная
+// ветка не различима снаружи и не гарантирована этим тестом — strconv.ParseInt
+// отсекает такой jobID сама, но даже без этой проверки jobID=0 ушёл бы в
+// Store.Get(0) и получил бы тот же 404 через ErrNotFound (двух путей к
+// одному ответу достаточно, различать их снаружи незачем).
 func TestExportsDownloadInvalidJobIDIs404(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.getAs(t, s.operatorUID, s.path("/exports/not-a-number/download"))
