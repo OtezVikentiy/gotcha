@@ -78,11 +78,15 @@ export changes nothing.
 
 ## Retention and cleanup
 
-A finished file and its job row live for `GOTCHA_EXPORT_TTL_HOURS` hours from
-completion (168 by default — seven days), then a background janitor removes
-both the file and the row without a trace. If mail is configured (see
-[Configuration](/docs/configuration)), the author gets an email when the job
-finishes or fails — download before the deadline.
+A finished file lives for `GOTCHA_EXPORT_TTL_HOURS` hours from completion (168
+by default — seven days): once that expires, the janitor removes the file
+from disk and marks the job "expired". The job's row in the history outlives
+the file — it's kept for at least 30 days from completion, or exactly
+`GOTCHA_EXPORT_TTL_HOURS` if that's set above 30 days (the row's retention
+grows with the file's TTL but never falls below it), and only then does the
+janitor remove it from the history without a trace. If mail is configured
+(see [Configuration](/docs/configuration)), the author gets an email when the
+job finishes or fails — download the file before its own deadline.
 
 ## Single-instance limitation
 

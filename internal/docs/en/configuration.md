@@ -278,7 +278,7 @@ Feature details and limits are in [Exports](/docs/exports).
 | Variable | Default | Description |
 |---|---|---|
 | `GOTCHA_EXPORT_DIR` | `/var/lib/gotcha/exports` | Directory on the instance's disk where the worker writes export files. In the standard `docker-compose.yml` this is the named volume `exportdata`, which survives container re-creation. If the directory can't be created on startup (no permissions, path taken by a non-directory) the application doesn't fail — the exports section is silently disabled (the page returns `404`), and a warning is logged. |
-| `GOTCHA_EXPORT_TTL_HOURS` | `168` | How many hours after a job finishes its file and row are removed by the background janitor. `168` is seven days. |
+| `GOTCHA_EXPORT_TTL_HOURS` | `168` | How many hours after a job finishes its file is removed by the background janitor (the job is marked "expired"). `168` is seven days. The job's history row lives longer — at least 30 days from completion, see [Exports](/docs/exports) for details. |
 | `GOTCHA_EXPORT_MAX_ROWS` | `200000` | Row cap for one export: on reaching it the job is marked "truncated" (`Truncated`) and the build stops deterministically, instead of silently returning an incomplete file with no indication. |
 | `GOTCHA_EXPORT_MAX_BYTES` | `268435456` | File size cap for one export, in bytes (256 MiB). Same idea as `GOTCHA_EXPORT_MAX_ROWS`, but by size instead of row count. |
 | `GOTCHA_EXPORT_DISK_BUDGET_BYTES` | `5368709120` | Total budget for the `GOTCHA_EXPORT_DIR` directory, in bytes (5 GiB). Checked before a file starts writing: exceeding it is a permanent failure of the new job, not a partially-written file. |
