@@ -2,7 +2,9 @@ package export
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -112,4 +114,32 @@ func TestMaskJSONCoversRequestAndContexts(t *testing.T) {
 			t.Errorf("не замаскировано %q: %s", secret, got)
 		}
 	}
+}
+
+// TestMaskJSONConcurrentUseIsRace-free — jsonScrubber теперь один общий
+// *ingest.Scrubber на весь пакет (см. её докблок в pii.go), а не новый на
+// каждый вызов MaskJSON: eventSource.toRecord зовёт её из воркера, который в
+// проде обрабатывает заявки одну за другой, но тест не должен опираться на
+// это — сама смена «новый Scrubber на вызов» → «общий на пакет» обязана быть
+// безопасной при параллельном вызове из нескольких горутин НЕЗАВИСИМО от
+// того, использует ли её в проде сейчас больше одной. Гоняется с -race.
+func TestMaskJSONConcurrentUseIsRaceFree(t *testing.T) {
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			raw := `{"headers":{"Authorization":"Bearer ` + strconv.Itoa(i) + `"},"n":` + strconv.Itoa(i) + `}`
+			got := MaskJSON(raw)
+			if strings.Contains(got, "Bearer "+strconv.Itoa(i)) {
+				t.Errorf("goroutine %d: секрет не замаскирован: %s", i, got)
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(got), &m); err != nil {
+				t.Errorf("goroutine %d: MaskJSON вернул невалидный JSON: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

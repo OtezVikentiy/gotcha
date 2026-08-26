@@ -25,12 +25,28 @@ func MaskUser(ip, email string) (string, string) {
 	return ip, email
 }
 
+// jsonScrubber — один общий *ingest.Scrubber на весь пакет, а не новый на
+// каждый вызов MaskJSON: денилист константен (ingest.DefaultDenyKeys), и
+// eventSource.toRecord зовёт MaskJSON дважды на КАЖДОЕ событие выгрузки
+// (request и contexts, source_events.go) — до 400 000 конструирований
+// Scrubber на заявку с потолком в 200k строк, каждое заново компилирует
+// нормализованный денилист.
+//
+// Безопасен для конкурентного использования: ScrubJSON (и весь путь
+// walk/scrubValue под ней) читает поля Scrubber (ScrubIP/ScrubEmail/
+// denyNorm/allowNorm), но ни разу их не пишет — единственные мутации полей
+// во всём internal/ingest/scrub.go происходят в NewScrubber (конструктор,
+// однократно, до публикации переменной) и в SetAllowKeys, которую MaskJSON
+// не зовёт. Мутирует ScrubJSON только ЛОКАЛЬНУЮ декодированную копию JSON
+// каждого вызова (v, распакованный из raw), а не сам Scrubber, — конкурентные
+// вызовы не делят это состояние между собой.
+var jsonScrubber = ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
+
 // MaskJSON проходит по объекту и маскирует значения ключей из денилиста приёма
 // (Authorization, Cookie, X-Api-Key и прочее — internal/ingest.DefaultDenyKeys).
 // Тот же денилист, что и на приёме: список не дублируется, поведение не
 // расходится. Битый или пустой вход возвращается как есть — выгрузка не должна
 // молча терять то, что не смогла разобрать.
 func MaskJSON(raw string) string {
-	scrub := ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
-	return scrub.ScrubJSON(raw)
+	return jsonScrubber.ScrubJSON(raw)
 }
