@@ -721,3 +721,80 @@ func TestStreamForExportSurvivesMutationBetweenPages(t *testing.T) {
 		t.Fatalf("выгружено %d групп, want %d", len(seen), wantTotal)
 	}
 }
+
+// TestIDsForFilterReportsOverflow — упор в потолок id групп обязан дать
+// отказ (overflow=true), а не тихую обрезку: источник выгрузки событий
+// (kind=events, область «проект с фильтрами») не может сказать пользователю,
+// какие именно группы выпали бы из списка, поэтому решение — отказать и
+// попросить сузить фильтр (§8 спеки экспорта), а не отдать неполный список.
+func TestIDsForFilterReportsOverflow(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+	for i := 0; i < 7; i++ {
+		mustUpsert(t, svc, pid, fmt.Sprintf("fp-of-%d", i), time.Now().UTC())
+	}
+
+	ids, overflow, err := svc.IDsForFilter(ctx, pid, issue.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("IDsForFilter: %v", err)
+	}
+	if !overflow {
+		t.Fatal("потолок пройден молча — выгрузка окажется неполной без предупреждения")
+	}
+	if len(ids) != 5 {
+		t.Errorf("вернулось %d id при потолке 5, want 5", len(ids))
+	}
+}
+
+// TestIDsForFilterNoOverflowReturnsExactMatch — без упора в потолок
+// возвращается ровно то, что подходит под фильтр (не хвост списка).
+func TestIDsForFilterNoOverflowReturnsExactMatch(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+	now := time.Now().UTC()
+	want := mustUpsert(t, svc, pid, "fp-match", now)
+	if err := svc.SetStatus(ctx, want, "resolved"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	mustUpsert(t, svc, pid, "fp-nomatch", now.Add(time.Second)) // остаётся unresolved
+
+	ids, overflow, err := svc.IDsForFilter(ctx, pid, issue.Filter{Status: "resolved"}, 100)
+	if err != nil {
+		t.Fatalf("IDsForFilter: %v", err)
+	}
+	if overflow {
+		t.Fatal("overflow = true при наборе меньше потолка")
+	}
+	if len(ids) != 1 || ids[0] != want {
+		t.Fatalf("IDsForFilter = %v, want [%d]", ids, want)
+	}
+}
+
+// TestIDsForFilterIsolatedByProject — чужой project_id не должен утекать в
+// список ни при каких параметрах фильтра: id групп уходят прямо в
+// ClickHouse-фильтр IN (…), и утечка здесь означала бы утечку чужих событий.
+func TestIDsForFilterIsolatedByProject(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+	other := newOtherProject(t, pool)
+	now := time.Now().UTC()
+	want := mustUpsert(t, svc, pid, "own", now)
+	mustUpsert(t, svc, other, "foreign", now.Add(time.Second))
+
+	ids, overflow, err := svc.IDsForFilter(ctx, pid, issue.Filter{}, 100)
+	if err != nil {
+		t.Fatalf("IDsForFilter: %v", err)
+	}
+	if overflow {
+		t.Fatal("overflow = true неожиданно")
+	}
+	if len(ids) != 1 || ids[0] != want {
+		t.Fatalf("IDsForFilter(pid) = %v, want [%d] — чужая группа утекла", ids, want)
+	}
+}

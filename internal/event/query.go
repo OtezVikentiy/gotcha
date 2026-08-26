@@ -16,6 +16,7 @@ import (
 // вида {"values":[...]}.
 type Stored struct {
 	ID        string
+	IssueID   int64 // группа события; нужна выгрузке событий (kind=events) для колонки issue_id
 	Timestamp time.Time
 	Level     string
 	Message   string
@@ -60,7 +61,7 @@ func NewQuery(conn driver.Conn) *Query {
 	return &Query{conn: conn}
 }
 
-const storedColumns = `event_id, timestamp, level, message, exception_type, exception_value, stacktrace,
+const storedColumns = `event_id, issue_id, timestamp, level, message, exception_type, exception_value, stacktrace,
 	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id, breadcrumbs, request`
 
 // scanner — общая часть driver.Row и driver.Rows, достаточная для Scan.
@@ -71,8 +72,9 @@ type scanner interface {
 func scanStored(s scanner) (Stored, error) {
 	var out Stored
 	var id uuid.UUID
+	var issueID uint64
 	if err := s.Scan(
-		&id, &out.Timestamp, &out.Level, &out.Message,
+		&id, &issueID, &out.Timestamp, &out.Level, &out.Message,
 		&out.ExceptionType, &out.ExceptionValue, &out.Stacktrace,
 		&out.Environment, &out.Release, &out.ServerName, &out.SDK,
 		&out.UserID, &out.UserIP, &out.UserEmail,
@@ -81,6 +83,7 @@ func scanStored(s scanner) (Stored, error) {
 		return Stored{}, err
 	}
 	out.ID = id.String()
+	out.IssueID = int64(issueID)
 	return out, nil
 }
 
@@ -359,4 +362,64 @@ func (q *Query) Sparklines(ctx context.Context, projectID int64, issueIDs []int6
 		return nil, fmt.Errorf("query sparklines: %w", err)
 	}
 	return out, nil
+}
+
+// StreamForExport читает события выгрузки (internal/export, kind=events) в
+// порядке первичного ключа таблицы — (project_id, issue_id, timestamp): любая
+// другая сортировка на выгрузке в сотни тысяч строк заставила бы ClickHouse
+// материализовать и сортировать разом весь набор, вместо того чтобы отдавать
+// его по мере готовности кусков (см. миграцию 0018_events_timestamp_skip_index —
+// без ограничения по issue_id время в первичном ключе вообще не отсекает).
+//
+// since/until нулевые — граница не задаётся: источник выгрузки строит их из
+// Params, где нулевое значение уже значит «без границы» (issue.Filter следует
+// тому же соглашению).
+//
+// limit — защитный потолок строк одного запроса; обрезку по бюджету заявки
+// (GOTCHA_EXPORT_MAX_ROWS/MAX_BYTES) делает вызывающий раннер, останавливая
+// обход возвратом ошибки из fn, а не эта функция.
+func (q *Query) StreamForExport(ctx context.Context, projectID int64, issueIDs []int64,
+	since, until time.Time, limit int, fn func(Stored) error) error {
+	if len(issueIDs) == 0 {
+		return nil
+	}
+	ids := make([]uint64, len(issueIDs))
+	for i, id := range issueIDs {
+		ids[i] = uint64(id)
+	}
+
+	query := `SELECT ` + storedColumns + `
+		FROM events
+		WHERE project_id = ? AND issue_id IN (?)`
+	args := []any{uint64(projectID), ids}
+	if !since.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, since)
+	}
+	if !until.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, until)
+	}
+	query += ` ORDER BY issue_id, timestamp DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := q.conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("stream for export: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		s, err := scanStored(rows)
+		if err != nil {
+			return fmt.Errorf("stream for export scan: %w", err)
+		}
+		if err := fn(s); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("stream for export: %w", err)
+	}
+	return nil
 }

@@ -306,6 +306,49 @@ func (s *Service) StreamForExport(ctx context.Context, projectID int64, f Filter
 	}
 }
 
+// IDsForFilter резолвит фильтр списка issues в список id — источнику
+// выгрузки событий (kind=events, область «проект с фильтрами») он нужен,
+// чтобы ограничить обход ClickHouse тем же набором групп, которые человек
+// видел на экране: WHERE строится buildIssueFilter, общим кодом с List и
+// StreamForExport, а не отдельной копией условий.
+//
+// overflow=true — резолвится больше limit групп: обрезать список молча
+// нельзя, какие именно группы выпали бы, вызывающая сторона узнать не
+// может (см. §8 спеки экспорта), поэтому она обязана вернуть отказ с
+// просьбой сузить фильтр вместо тихо неполной выгрузки.
+//
+// Один запрос с LIMIT limit+1, а не курсорный обход постранично, как в
+// StreamForExport: здесь нужен только список id, а не поток строк, и
+// ORDER BY last_seen DESC, id DESC уже даёт полный порядок без OFFSET.
+func (s *Service) IDsForFilter(ctx context.Context, projectID int64, f Filter, limit int) ([]int64, bool, error) {
+	where, args := buildIssueFilter(projectID, f)
+	q := fmt.Sprintf("SELECT issues.id FROM issues WHERE %s ORDER BY issues.last_seen DESC, issues.id DESC LIMIT %d",
+		where, limit+1)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("issue: ids for filter: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, false, fmt.Errorf("issue: ids for filter scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("issue: ids for filter: %w", err)
+	}
+
+	if len(ids) > limit {
+		return ids[:limit], true, nil
+	}
+	return ids, false, nil
+}
+
 // environmentsForIssues возвращает окружения набора групп одним запросом —
 // вместо N+1 похода в issue_environments на каждую строку страницы.
 func (s *Service) environmentsForIssues(ctx context.Context, ids []int64) (map[int64][]string, error) {
