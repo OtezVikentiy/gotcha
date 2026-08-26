@@ -35,6 +35,13 @@ const eventStreamSafetyLimit = 1_000_000
 // неполная выгрузка хуже отсутствующей (см. §8 спеки).
 var ErrTooManyIssues = errors.New("экспорт: фильтр резолвится в слишком много групп, сузьте условия")
 
+// ErrMaxIssueIDsNotConfigured возвращается, если eventSource собран в обход
+// NewEventSource с нулевым или отрицательным maxIssueIDs. Без этой проверки
+// IDsForFilter(..., 0) уходит в LIMIT 1, и любой непустой результат тут же
+// читался бы как overflow=true — ошибка конструирования маскировалась бы
+// под настоящий ErrTooManyIssues, хотя дело не в фильтре, а в забытом потолке.
+var ErrMaxIssueIDsNotConfigured = errors.New("экспорт: eventSource собран без потолка id групп (используйте NewEventSource)")
+
 // EventSource — источник строк выгрузки kind=events.
 type EventSource interface {
 	Stream(ctx context.Context, projectID, scopeIssueID int64, p Params, fn func(Record) error) error
@@ -89,6 +96,9 @@ func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64,
 func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssueID int64, p Params) ([]int64, error) {
 	if scopeIssueID != 0 {
 		return []int64{scopeIssueID}, nil
+	}
+	if s.maxIssueIDs <= 0 {
+		return nil, ErrMaxIssueIDsNotConfigured
 	}
 
 	f := issue.Filter{

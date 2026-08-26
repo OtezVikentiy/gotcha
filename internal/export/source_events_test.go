@@ -342,6 +342,38 @@ func TestEventSourceTooManyIssuesReturnsError(t *testing.T) {
 	}
 }
 
+// TestEventSourceZeroMaxIssueIDsFailsCleanly — eventSource, собранный в
+// обход NewEventSource с нулевым maxIssueIDs, обязан отказать явной ошибкой
+// конструирования, а не молча выдать её за ErrTooManyIssues: без guard'а
+// IDsForFilter(..., 0) уходит в LIMIT 1, и ЛЮБОЙ непустой результат тут же
+// читается как overflow=true — «есть хотя бы одна группа» превращается в
+// «слишком много групп», хотя дело в забытом потолке, а не в фильтре.
+func TestEventSourceZeroMaxIssueIDsFailsCleanly(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	svc := issue.NewService(pool)
+	projectID, _ := seedProjectAndUser(t, pool)
+	if _, err := svc.Upsert(ctx, projectID, "fp-zero", "t", "", issue.LevelError, "", time.Now().UTC()); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	src := &eventSource{q: event.NewQuery(ch), issues: svc, includePII: true} // maxIssueIDs не задан — 0
+	err := src.Stream(ctx, projectID, 0, Params{}, func(Record) error {
+		t.Fatal("колбэк не должен вызываться при незаданном потолке")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Stream не вернул ошибку при нулевом maxIssueIDs")
+	}
+	if errors.Is(err, ErrTooManyIssues) {
+		t.Fatalf("err = %v — ошибка конструирования замаскирована под ErrTooManyIssues", err)
+	}
+	if !errors.Is(err, ErrMaxIssueIDsNotConfigured) {
+		t.Fatalf("err = %v, want ErrMaxIssueIDsNotConfigured", err)
+	}
+}
+
 // TestNewEventSourceDefaultsMaxIssueIDs — NewEventSource обязан проставлять
 // потолок по умолчанию (§8 спеки: 20 000), а не оставлять поле нулевым:
 // нулевой maxIssueIDs означал бы, что любой непустой список групп сразу
