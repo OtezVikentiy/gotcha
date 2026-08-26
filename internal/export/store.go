@@ -102,6 +102,9 @@ func (s *Store) Get(ctx context.Context, id int64) (Job, error) {
 
 // ByProject возвращает заявки проекта, новые сверху, не больше limit штук —
 // страница «Выгрузки» списком без пагинации со сдвигом.
+//
+// limit — забота вызывающей стороны, стор его не подменяет: 0 даёт пустой
+// список (валидный SQL LIMIT 0), отрицательное значение — ошибку PostgreSQL.
 func (s *Store) ByProject(ctx context.Context, projectID int64, limit int) ([]Job, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
 		FROM export_jobs WHERE project_id = $1

@@ -180,6 +180,46 @@ func TestEnqueueWithoutScopeStoresNull(t *testing.T) {
 	}
 }
 
+// TestEnqueueScopeColumnNullVsZero — проверяет саму колонку scope_issue_id
+// напрямую SQL-запросом, а не через Get: jobColumns читает
+// coalesce(scope_issue_id, 0), поэтому round-trip через Get не отличает NULL
+// от буквального нуля и не заметил бы потерю guard'а на j.ScopeIssueID == 0
+// в Enqueue.
+func TestEnqueueScopeColumnNullVsZero(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	withoutScope := mustEnqueue(t, st, projectID, userID)
+	withScope, err := st.Enqueue(ctx, Job{
+		ProjectID: projectID, CreatedBy: userID,
+		Kind: KindIssues, Format: FormatCSV, ScopeIssueID: 7,
+		Params: Params{Since: time.Now(), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	var isNull bool
+	if err := pool.QueryRow(ctx,
+		`SELECT scope_issue_id IS NULL FROM export_jobs WHERE id = $1`, withoutScope).Scan(&isNull); err != nil {
+		t.Fatalf("проверка колонки (без области): %v", err)
+	}
+	if !isNull {
+		t.Error("scope_issue_id без области должен быть NULL, а не 0")
+	}
+
+	var scope int64
+	if err := pool.QueryRow(ctx,
+		`SELECT scope_issue_id FROM export_jobs WHERE id = $1`, withScope).Scan(&scope); err != nil {
+		t.Fatalf("проверка колонки (с областью): %v", err)
+	}
+	if scope != 7 {
+		t.Errorf("scope_issue_id = %d, ожидали 7", scope)
+	}
+}
+
 func TestGetUnknownIDReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -236,6 +276,32 @@ func TestByProjectOrdersNewestFirstAndLimits(t *testing.T) {
 	}
 	if len(limited) != 2 || limited[0].ID != newID || limited[1].ID != midID {
 		t.Fatalf("ByProject(limit=2) = %+v, ожидали [new,mid]", ids(limited))
+	}
+}
+
+// TestByProjectNonPositiveLimit фиксирует контракт ByProject на границах,
+// которые сама сигнатура не запрещает: limit — забота вызывающей стороны
+// (страница «Выгрузки» задаёт его константой пакета web, как issueEventsLimit
+// у EventsForIssue), стор её не подменяет. limit=0 — валидный SQL LIMIT 0,
+// пустой список без ошибки; отрицательный — ошибка PostgreSQL ("LIMIT must
+// not be negative"), которую ByProject не глотает молча.
+func TestByProjectNonPositiveLimit(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	mustEnqueue(t, st, projectID, userID)
+
+	zero, err := st.ByProject(ctx, projectID, 0)
+	if err != nil {
+		t.Fatalf("ByProject(limit=0): err = %v, ожидали nil", err)
+	}
+	if len(zero) != 0 {
+		t.Errorf("ByProject(limit=0) = %+v, ожидали пустой список", ids(zero))
+	}
+
+	if _, err := st.ByProject(ctx, projectID, -1); err == nil {
+		t.Fatal("ByProject(limit=-1) вернул nil, ожидали ошибку")
 	}
 }
 
