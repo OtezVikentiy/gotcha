@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
@@ -41,7 +42,7 @@ func TestMailNotifierReportsSuccessWithLink(t *testing.T) {
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	notifyFn(ctx, Job{
 		ID: 1, ProjectID: projectID, CreatedBy: userID,
 		Status: StatusDone, RowsWritten: 10, Bytes: 1000,
@@ -76,7 +77,7 @@ func TestMailNotifierMentionsTruncation(t *testing.T) {
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	notifyFn(ctx, Job{
 		ID: 2, ProjectID: projectID, CreatedBy: userID,
 		Status: StatusDone, RowsWritten: 100, Bytes: 1 << 20, Truncated: true,
@@ -97,7 +98,7 @@ func TestMailNotifierDoesNotMentionTruncationWhenNotTruncated(t *testing.T) {
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	notifyFn(ctx, Job{
 		ID: 3, ProjectID: projectID, CreatedBy: userID,
 		Status: StatusDone, RowsWritten: 1, Bytes: 10, Truncated: false,
@@ -115,7 +116,7 @@ func TestMailNotifierReportsFailureCause(t *testing.T) {
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	const cause = "источник событий недоступен: контекст истёк"
 	notifyFn(ctx, Job{
 		ID: 4, ProjectID: projectID, CreatedBy: userID,
@@ -139,7 +140,7 @@ func TestMailNotifierSilentWhenMailerNil(t *testing.T) {
 
 	// Почта не настроена — заявка всё равно считается успешной: файл уже
 	// на диске. NewMailNotifier(nil, ...) не должен паниковать.
-	notifyFn := NewMailNotifier(nil, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(nil, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	notifyFn(ctx, Job{ID: 5, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
 }
 
@@ -150,7 +151,7 @@ func TestMailNotifierSkipsUnknownAuthor(t *testing.T) {
 	projectID, _ := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	// CreatedBy указывает на несуществующего пользователя (аккаунт мог быть
 	// удалён между постановкой заявки и её завершением): AuthorEmail не
 	// находит адрес, письмо тихо не уходит, паники нет.
@@ -168,7 +169,7 @@ func TestMailNotifierIgnoresNonTerminalStatus(t *testing.T) {
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	// Воркер зовёт Notify только при завершении заявки; queued/running сюда
 	// в проде не долетают, но notify.go не должен упасть или отправить
 	// письмо не по адресу, если снимок заявки всё же не терминальный.
@@ -186,8 +187,59 @@ func TestMailNotifierSendErrorDoesNotPanic(t *testing.T) {
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	sent := &fakeMailer{err: fmt.Errorf("smtp: connection refused")}
-	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example")
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	// Ошибка отправки — best-effort: файл уже собран, письмо вторично, и
 	// её сбой не должен всплыть наружу как паника или "перезаявка".
 	notifyFn(ctx, Job{ID: 8, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
+}
+
+// TestMailNotifierUsesConfiguredLocale — язык письма берётся из locale,
+// переданной в NewMailNotifier (локаль ИНСТАНСА, как у Digester.Locale в
+// internal/alert/digest.go), а не из того, что случайно лежит в ctx
+// вызова: у Worker.Run в проде locale в ctx нет вовсе (см. комментарий
+// NewMailNotifier). Здесь же нарочно кладём в ctx ДРУГУЮ локаль, чтобы
+// доказать, что notify.go её игнорирует и переопределяет своей.
+func TestMailNotifierUsesConfiguredLocale(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	// ctx несёт "en" — locale, переданная в NewMailNotifier, несёт "ru".
+	// Победить обязана configured-локаль.
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{ID: 9, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
+
+	if len(sent.calls) != 1 {
+		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
+	}
+	subject := fmt.Sprint(sent.calls[0].payload["subject"])
+	if subject != "[Gotcha] Выгрузка готова" {
+		t.Errorf("тема письма не на configured-локали (ru): %q", subject)
+	}
+}
+
+// TestMailNotifierUsesConfiguredLocaleEmptyContext — тот же контракт, но
+// с "пустым" ctx (как реально приходит в проде из Worker.Run): без явной
+// locale i18n.FromContext молча откатился бы на i18n.Default ("ru"),
+// поэтому этот тест дублирует смысл предыдущего только частично — берём EN,
+// чтобы отличить "сработала configured-локаль" от "совпало с дефолтом".
+func TestMailNotifierUsesConfiguredLocaleEmptyContext(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "en"})
+	notifyFn(context.Background(), Job{ID: 10, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
+
+	if len(sent.calls) != 1 {
+		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
+	}
+	subject := fmt.Sprint(sent.calls[0].payload["subject"])
+	if subject != "[Gotcha] Export is ready" {
+		t.Errorf("тема письма не на configured-локали (en): %q", subject)
+	}
 }

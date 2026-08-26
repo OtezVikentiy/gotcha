@@ -509,11 +509,12 @@ func (s *Store) PurgeRows(ctx context.Context, olderThan time.Duration) (int, er
 
 // AuthorEmail возвращает адрес пользователя по его id — письмо об итоге
 // заявки (internal/export/notify.go) шлётся автору, известному стору только
-// как Job.CreatedBy, а воркер не имеет доступа к internal/auth (цикл
-// импорта: auth уже опирается на web-уровень выше export). Запрос дублирует
-// auth.Service.UserEmail нарочно — тем же способом, каким страница
-// «Выгрузки» уже показывает автора (internal/web/exports.go,
-// exportViewRow), только без зависимости на auth.Service.
+// как Job.CreatedBy. Запрос дублирует auth.Service.UserEmail нарочно, а не
+// заводит зависимость Store → auth.Service: воркеру export не нужен весь
+// контур auth (пароли, сессии, идентити-провайдеры) ради одного email по
+// id, тот же приём, что уже применён у Mailer (см. NewMailNotifier) — не
+// тянуть чужой пакет ради одной сигнатуры. Тот же SQL, что и в
+// auth.Service.UserEmail и в web.exportViewRow (internal/web/exports.go).
 func (s *Store) AuthorEmail(ctx context.Context, id int64) (string, error) {
 	var email string
 	err := s.pool.QueryRow(ctx, "SELECT email FROM users WHERE id = $1", id).Scan(&email)

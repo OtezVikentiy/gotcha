@@ -24,17 +24,21 @@ type Mailer interface {
 // (почта не настроена) — тихо ничего не делать: файл уже на диске, письмо
 // вторично, заявка остаётся успешной без него.
 //
-// Локаль письма — из ctx, тем же способом, что и остальные фоновые
-// нотифаеры продукта (internal/alert/digest.go, Digester.Locale): у
-// воркера нет запроса, а значит нет и языка получателя — ctx несёт
-// локаль ИНСТАНСА (GOTCHA_LOCALE), которую выставляет вызывающая сторона
-// перед тем, как отдать ctx воркеру. Второй способ (угадывать язык по
-// адресату) развёл бы язык этого письма с языком остальных писем продукта.
-func NewMailNotifier(m Mailer, st *Store, baseURL string) func(context.Context, Job) {
+// locale — тем же способом, что и остальные фоновые нотифаеры продукта
+// (internal/alert/digest.go, Digester.Locale): у воркера нет запроса, а
+// значит нет и языка получателя, поэтому язык письма — локаль ИНСТАНСА
+// (GOTCHA_LOCALE), переданная явным полем, а не прочитанная из ctx вызова.
+// ctx, который Worker передаёт в Notify, — это ctx фонового цикла (в
+// проде — тот, что main.go отдаёт Worker.Run), и локали не несёт; читать
+// её оттуда означало бы тихо всегда попадать на i18n.Default. Второй способ
+// (угадывать язык по адресату) развёл бы язык этого письма с языком
+// остальных писем продукта.
+func NewMailNotifier(m Mailer, st *Store, baseURL string, locale i18n.Locale) func(context.Context, Job) {
 	return func(ctx context.Context, job Job) {
 		if m == nil {
 			return
 		}
+		ctx = i18n.WithLocale(ctx, locale)
 		payload, ok := mailPayload(ctx, job, baseURL)
 		if !ok {
 			// Статус не терминальный — Worker такой снимок в проде не
