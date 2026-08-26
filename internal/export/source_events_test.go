@@ -312,10 +312,10 @@ func TestEventSourceIsolatedByProject(t *testing.T) {
 }
 
 // TestEventSourceTooManyIssuesReturnsError — упор в потолок числа групп
-// даёт отказ (ErrTooManyIssues), а не тихую обрезку выгрузки. Потолок
-// временно занижается (maxIssueIDsForEventExport — var именно для этого,
-// см. комментарий в source_events.go), чтобы не заводить в PG 20 000
-// живых групп ради одного теста.
+// даёт отказ (ErrTooManyIssues), а не тихую обрезку выгрузки. Тест собирает
+// eventSource напрямую (пакет export общий с неэкспортируемым типом) с
+// заниженным maxIssueIDs — заводить в PG 20 000 живых групп ради потолка
+// по умолчанию незачем, сама величина дефолта проверяется отдельным тестом.
 func TestEventSourceTooManyIssuesReturnsError(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -323,17 +323,13 @@ func TestEventSourceTooManyIssuesReturnsError(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	orig := maxIssueIDsForEventExport
-	maxIssueIDsForEventExport = 2
-	t.Cleanup(func() { maxIssueIDsForEventExport = orig })
-
 	for i := 0; i < 3; i++ {
 		if _, err := svc.Upsert(ctx, projectID, "fp-of-"+string(rune('a'+i)), "t", "", issue.LevelError, "", time.Now().UTC()); err != nil {
 			t.Fatalf("upsert %d: %v", i, err)
 		}
 	}
 
-	src := NewEventSource(event.NewQuery(ch), svc, true)
+	src := &eventSource{q: event.NewQuery(ch), issues: svc, includePII: true, maxIssueIDs: 2}
 	err := src.Stream(ctx, projectID, 0, Params{}, func(Record) error {
 		t.Fatal("колбэк не должен вызываться при отказе на потолке")
 		return nil
@@ -343,5 +339,19 @@ func TestEventSourceTooManyIssuesReturnsError(t *testing.T) {
 	}
 	if !errors.Is(err, ErrTooManyIssues) {
 		t.Fatalf("err = %v, want ErrTooManyIssues", err)
+	}
+}
+
+// TestNewEventSourceDefaultsMaxIssueIDs — NewEventSource обязан проставлять
+// потолок по умолчанию (§8 спеки: 20 000), а не оставлять поле нулевым:
+// нулевой maxIssueIDs означал бы, что любой непустой список групп сразу
+// считается переполнением.
+func TestNewEventSourceDefaultsMaxIssueIDs(t *testing.T) {
+	src, ok := NewEventSource(nil, nil, false).(*eventSource)
+	if !ok {
+		t.Fatalf("NewEventSource вернул %T, want *eventSource", src)
+	}
+	if src.maxIssueIDs != defaultMaxIssueIDsForEventExport {
+		t.Fatalf("maxIssueIDs = %d, want %d (дефолт из NewEventSource)", src.maxIssueIDs, defaultMaxIssueIDsForEventExport)
 	}
 }

@@ -12,15 +12,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// maxIssueIDsForEventExport — потолок числа групп, резолвящихся из фильтра
-// PostgreSQL перед выгрузкой событий по проекту (§8 спеки: 20 000 id).
-//
-// var, а не const: юнит-тест перегружает его вниз, чтобы проверить отказ на
-// потолке без необходимости заводить 20 000 живых групп в PG — сама логика
-// отказа при упоре в потолок уже покрыта дешёвым тестом issue.IDsForFilter
-// с явным limit, здесь проверяется только то, что источник событий
-// правильно превращает overflow в ErrTooManyIssues.
-var maxIssueIDsForEventExport = 20000
+// defaultMaxIssueIDsForEventExport — потолок числа групп, резолвящихся из
+// фильтра PostgreSQL перед выгрузкой событий по проекту (§8 спеки: 20 000
+// id). Значение по умолчанию для поля eventSource.maxIssueIDs, проставляемое
+// в NewEventSource: потолок — поле структуры, а не пакетная переменная,
+// чтобы тест на отказ не делил изменяемое глобальное состояние с остальными
+// тестами пакета (мина под будущий t.Parallel()) — вместо этого тест
+// собирает eventSource напрямую с нужным значением поля.
+const defaultMaxIssueIDsForEventExport = 20000
 
 // eventStreamSafetyLimit — защитный потолок числа строк одного обхода CH,
 // независимый от настраиваемого GOTCHA_EXPORT_MAX_ROWS: тот применяет
@@ -31,9 +30,9 @@ var maxIssueIDsForEventExport = 20000
 const eventStreamSafetyLimit = 1_000_000
 
 // ErrTooManyIssues возвращается, когда фильтр выгрузки событий резолвится в
-// число групп больше maxIssueIDsForEventExport. Обрезать список молча
-// нельзя: какие именно группы выпали бы, пользователь узнать не может, а
-// молча неполная выгрузка хуже отсутствующей (см. §8 спеки).
+// число групп больше eventSource.maxIssueIDs. Обрезать список молча нельзя:
+// какие именно группы выпали бы, пользователь узнать не может, а молча
+// неполная выгрузка хуже отсутствующей (см. §8 спеки).
 var ErrTooManyIssues = errors.New("экспорт: фильтр резолвится в слишком много групп, сузьте условия")
 
 // EventSource — источник строк выгрузки kind=events.
@@ -54,16 +53,17 @@ func EventColumns() []string {
 }
 
 type eventSource struct {
-	q          *event.Query
-	issues     *issue.Service
-	includePII bool
+	q           *event.Query
+	issues      *issue.Service
+	includePII  bool
+	maxIssueIDs int
 }
 
 // NewEventSource создаёт источник событий. includePII — снимок галки заявки
 // «выгрузить как есть» (job.IncludePII, доступна только админу/владельцу
 // орга — это проверяется на постановке заявки, веб-слоем, не здесь).
 func NewEventSource(q *event.Query, issues *issue.Service, includePII bool) EventSource {
-	return &eventSource{q: q, issues: issues, includePII: includePII}
+	return &eventSource{q: q, issues: issues, includePII: includePII, maxIssueIDs: defaultMaxIssueIDsForEventExport}
 }
 
 // Stream резолвит область выгрузки в список issue_id и стримит события
@@ -100,7 +100,7 @@ func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssue
 		Since:       p.Since,
 		Until:       p.Until,
 	}
-	ids, overflow, err := s.issues.IDsForFilter(ctx, projectID, f, maxIssueIDsForEventExport)
+	ids, overflow, err := s.issues.IDsForFilter(ctx, projectID, f, s.maxIssueIDs)
 	if err != nil {
 		return nil, fmt.Errorf("экспорт событий: резолв групп: %w", err)
 	}
