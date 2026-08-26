@@ -1283,7 +1283,7 @@
     "exports.summary.period": "{from} – {to}",
     "exports.summary.no_filters": "no filters",
     "exports.mail.done.subject": "[Gotcha] Export is ready",
-    "exports.mail.done.body": "The export you requested is ready to download. Project exports page: {link}",
+    "exports.mail.done.body": "The export you requested is ready to download: {rows}, {size}. Project exports page: {link}",
     "exports.mail.failed.subject": "[Gotcha] Export failed",
     "exports.mail.failed.body": "The export you requested failed: {cause}. Project exports page: {link}",
     "exports.mail.failed.reason.disk_full": "there is not enough disk space for exports",
@@ -1831,6 +1831,10 @@
     "unit.seconds": {
       "one": "{n} second",
       "other": "{n} seconds"
+    },
+    "exports.mail.done.rows": {
+      "one": "{n} row",
+      "other": "{n} rows"
     }
   }
 }

@@ -59,6 +59,14 @@ func TestMailNotifierReportsSuccessWithLink(t *testing.T) {
 	if !strings.Contains(body, wantLink) {
 		t.Errorf("в письме нет ссылки на страницу выгрузок: %q", body)
 	}
+	// §9 спеки: письмо об успехе несёт число строк и размер файла, не
+	// только ссылку — RowsWritten=10, Bytes=1000 в снимке заявки выше.
+	if !strings.Contains(body, "10 строк") {
+		t.Errorf("в письме нет числа строк выгрузки: %q", body)
+	}
+	if !strings.Contains(body, "1000B") {
+		t.Errorf("в письме нет размера файла выгрузки: %q", body)
+	}
 	// Ссылки на сам файл в письме быть не должно: данные по почтовой
 	// ссылке не отдаём, только через авторизованное скачивание со страницы.
 	if strings.Contains(body, "/download") {

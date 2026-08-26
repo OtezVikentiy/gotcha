@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
@@ -77,7 +78,7 @@ templ exportRow(projectID int64, e ExportView) {
 			}
 		</td>
 		<td class="num">{ strconv.FormatInt(e.Rows, 10) }</td>
-		<td>{ formatProfileBytes(uint64(e.Size)) }</td>
+		<td>{ humanize.Bytes(e.Size) }</td>
 		<td>
 			if e.IncludePII {
 				{ i18n.T(ctx, "exports.pii.column_included") }

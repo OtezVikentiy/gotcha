@@ -1283,7 +1283,7 @@
     "exports.summary.period": "{from} – {to}",
     "exports.summary.no_filters": "без фильтров",
     "exports.mail.done.subject": "[Gotcha] Выгрузка готова",
-    "exports.mail.done.body": "Выгрузка, которую вы заказали, готова к скачиванию. Страница выгрузок проекта: {link}",
+    "exports.mail.done.body": "Выгрузка, которую вы заказали, готова к скачиванию: {rows}, {size}. Страница выгрузок проекта: {link}",
     "exports.mail.failed.subject": "[Gotcha] Выгрузка не удалась",
     "exports.mail.failed.body": "Выгрузка, которую вы заказали, не удалась: {cause}. Страница выгрузок проекта: {link}",
     "exports.mail.failed.reason.disk_full": "на диске выгрузок закончилось место",
@@ -1867,6 +1867,12 @@
       "few": "{n} секунды",
       "many": "{n} секунд",
       "other": "{n} секунды"
+    },
+    "exports.mail.done.rows": {
+      "one": "{n} строка",
+      "few": "{n} строки",
+      "many": "{n} строк",
+      "other": "{n} строки"
     }
   }
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -67,7 +68,14 @@ func mailPayload(ctx context.Context, job Job, baseURL string) (map[string]any, 
 	link := fmt.Sprintf("%s/projects/%d/exports", baseURL, job.ProjectID)
 	switch job.Status {
 	case StatusDone:
-		body := i18n.Tf(ctx, "exports.mail.done.body", "link", link)
+		// {rows}/{size} — §9 спеки: письмо об успехе обязано нести число строк
+		// и размер файла, не только ссылку. Job.RowsWritten/Bytes — снимок,
+		// который process() проставляет из writeResult ПЕРЕД вызовом Notify
+		// (см. worker.go), значит здесь они уже готовы.
+		body := i18n.Tf(ctx, "exports.mail.done.body",
+			"link", link,
+			"rows", i18n.Tn(ctx, "exports.mail.done.rows", int(job.RowsWritten)),
+			"size", humanize.Bytes(job.Bytes))
 		if job.Truncated {
 			body += " " + i18n.T(ctx, "exports.mail.truncated_note")
 		}

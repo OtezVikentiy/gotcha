@@ -251,3 +251,37 @@ func MetricValue(ctx context.Context, metric string, v float64) string {
 		return strconv.FormatFloat(v/1000, 'f', 2, 64) + "s"
 	}
 }
+
+// Bytes — размер в человекочитаемом виде (B/KB/MB/GB, шаг 1024). Не
+// локализуется намеренно — те же единицы, что и у CompactNumber: суффиксы
+// СИ-подобные и едины для обеих локалей.
+//
+// Отрицательное значение — не смысловой случай для размера файла/объёма
+// сэмплов (b всегда приходит из счётчика байт), но защищаемся тем же приёмом,
+// что и MetricValue/Duration выше: клэмп к нулю, а не отрицательный вывод
+// вроде «-1.0MB».
+//
+// Объединяет две прежние независимые копии: formatProfileBytes
+// (templates/profiles.templ — вес профилей pprof с unit=bytes) и
+// formatFileSize (internal/export/notify.go — размер файла выгрузки в
+// письме об успехе). Обе печатали size одной и той же величины (например,
+// колонка размера страницы «Выгрузки», exports.templ, зовёт первую копию,
+// а письмо об итоге заявки — вторую) буквально одинаковым кодом; расхождись
+// они правкой одной копии без другой — письмо и страница молча показали бы
+// разный размер одного и того же файла.
+func Bytes(b int64) string {
+	if b < 0 {
+		b = 0
+	}
+	const unit = 1024
+	switch {
+	case b >= unit*unit*unit:
+		return strconv.FormatFloat(float64(b)/(unit*unit*unit), 'f', 2, 64) + "GB"
+	case b >= unit*unit:
+		return strconv.FormatFloat(float64(b)/(unit*unit), 'f', 1, 64) + "MB"
+	case b >= unit:
+		return strconv.FormatFloat(float64(b)/unit, 'f', 1, 64) + "KB"
+	default:
+		return strconv.FormatInt(b, 10) + "B"
+	}
+}
