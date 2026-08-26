@@ -46,6 +46,10 @@ var (
 	// финализировал другой вызов Done/Fail. Воркер, поймавший эту ошибку,
 	// обязан молча остановиться — дописывать поверх чужой попытки нельзя.
 	ErrStaleClaim = errors.New("export: заявка перехвачена другой попыткой")
+	// ErrActiveLimitReached — у пользователя или у проекта уже нет
+	// свободного места среди активных (queued+running) заявок; см.
+	// EnqueueLimited.
+	ErrActiveLimitReached = errors.New("export: лимит активных заявок исчерпан")
 )
 
 // Store — очередь заявок на выгрузку поверх таблицы export_jobs.
@@ -112,8 +116,17 @@ func scanJob(row rowScanner) (Job, error) {
 	return j, nil
 }
 
-// Enqueue ставит заявку в очередь и возвращает id новой строки.
-func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
+// queryRower — общий интерфейс *pgxpool.Pool и pgx.Tx, достаточный для
+// insertJob: Enqueue вставляет строку прямо через пул, EnqueueLimited — тем
+// же кодом, но внутри своей транзакции (см. её комментарий).
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// insertJob — общая вставка строки export_jobs для Enqueue/EnqueueLimited:
+// одна точка правды для сериализации Params и NULL-подстановки scope_issue_id,
+// чтобы у двух методов постановки не разъехалась запись одного и того же.
+func insertJob(ctx context.Context, q queryRower, j Job) (int64, error) {
 	raw, err := json.Marshal(j.Params)
 	if err != nil {
 		return 0, fmt.Errorf("export: сериализация params: %w", err)
@@ -126,7 +139,7 @@ func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
 		scope = j.ScopeIssueID
 	}
 	var id int64
-	err = s.pool.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		INSERT INTO export_jobs (project_id, created_by, kind, format, scope_issue_id,
 		                         params, include_pii, file_ext)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -134,6 +147,66 @@ func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
 		raw, j.IncludePII, j.Format.Ext()).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("export: постановка заявки: %w", err)
+	}
+	return id, nil
+}
+
+// Enqueue ставит заявку в очередь и возвращает id новой строки — БЕЗ проверки
+// лимитов активных заявок. Вызывающие, которым нужен гейт (веб-слой), обязаны
+// звать EnqueueLimited; Enqueue остаётся для мест, где лимит неуместен или уже
+// проверен иначе (сиды тестов, будущие служебные постановки).
+func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
+	return insertJob(ctx, s.pool, j)
+}
+
+// EnqueueLimited — как Enqueue, но проверяет лимиты активных (queued+
+// running) заявок на пользователя (userLimit) и на проект (projectLimit)
+// АТОМАРНО вместе со вставкой строки.
+//
+// Раздельные «посчитать (ActiveCounts) → вставить (Enqueue)», как раньше
+// делал веб-слой, — классический check-then-act под READ COMMITTED: гонка
+// подтверждена эмпирически (8 параллельных постановок при лимите 3 давали от
+// 3 до 6 успешных вставок). Просто обернуть счёт и вставку в одну транзакцию
+// НЕДОСТАТОЧНО — SELECT count(*) не блокирует конкурирующий INSERT в ту же
+// таблицу, гонка осталась бы той же. Транзакция берёт xact-scoped advisory
+// lock по project_id (pg_advisory_xact_lock — снимается сам на COMMIT/
+// ROLLBACK, в отличие от сессионного pg_advisory_lock воркера/джанитора,
+// которому нужен ручной unlock) ДО подсчёта: все конкурентные постановки
+// ОДНОГО проекта сериализуются в критической секции «посчитать → сравнить с
+// лимитом → вставить», и per-user предел проверяется внутри неё же —
+// отдельный лок по паре (project,user) не нужен, лок по project уже её
+// накрывает. Разные проекты друг друга не блокируют (разные ключи лока).
+//
+// ErrActiveLimitReached — лимит исчерпан, id не выдан.
+func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLimit int) (int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("export: постановка заявки: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op после успешного Commit
+
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", j.ProjectID); err != nil {
+		return 0, fmt.Errorf("export: постановка заявки: advisory lock: %w", err)
+	}
+
+	var proj, user int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE created_by = $2)
+		FROM export_jobs
+		WHERE project_id = $1 AND status IN ('queued','running')`,
+		j.ProjectID, j.CreatedBy).Scan(&proj, &user); err != nil {
+		return 0, fmt.Errorf("export: постановка заявки: подсчёт активных: %w", err)
+	}
+	if proj >= projectLimit || user >= userLimit {
+		return 0, ErrActiveLimitReached
+	}
+
+	id, err := insertJob(ctx, tx, j)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("export: постановка заявки: commit: %w", err)
 	}
 	return id, nil
 }
@@ -177,22 +250,6 @@ func (s *Store) ByProject(ctx context.Context, projectID int64, limit int) ([]Jo
 		return nil, fmt.Errorf("export: список заявок проекта %d: %w", projectID, err)
 	}
 	return out, nil
-}
-
-// ActiveCounts считает незавершённые заявки одним проходом: два счётчика из
-// одной выборки дешевле двух запросов и не расходятся между собой во
-// времени. proj — все активные заявки проекта, user — из них принадлежащие
-// userID (лимиты «на проект» и «на пользователя» проверяются одновременно).
-func (s *Store) ActiveCounts(ctx context.Context, projectID, userID int64) (proj int, user int, err error) {
-	err = s.pool.QueryRow(ctx, `
-		SELECT count(*), count(*) FILTER (WHERE created_by = $2)
-		FROM export_jobs
-		WHERE project_id = $1 AND status IN ('queued','running')`,
-		projectID, userID).Scan(&proj, &user)
-	if err != nil {
-		return 0, 0, fmt.Errorf("export: подсчёт активных заявок проекта %d: %w", projectID, err)
-	}
-	return proj, user, nil
 }
 
 // Claim берёт в работу самую старую доступную заявку: свежую из очереди либо

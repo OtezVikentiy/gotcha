@@ -288,6 +288,26 @@ func (s *exportsStack) enqueueDone(t *testing.T, uid int64) int64 {
 	return id
 }
 
+// enqueueDoneWithoutFile — заявка done, но БЕЗ файла на диске: имитирует
+// расхождение строки и файла (джанитор не туда смотрел, файл снесли руками) —
+// exportsDownload обязана отказать 404 и залогировать предупреждение, а не
+// упасть при os.Open.
+func (s *exportsStack) enqueueDoneWithoutFile(t *testing.T, uid int64) int64 {
+	t.Helper()
+	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID,
+		CreatedBy: uid,
+		Kind:      export.KindIssues,
+		Format:    export.FormatCSV,
+		Params:    export.Params{Since: time.Now().Add(-24 * time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueueDoneWithoutFile: enqueue: %v", err)
+	}
+	s.markDone(t, id)
+	return id
+}
+
 func (s *exportsStack) revokeProjectAccess(t *testing.T, uid int64) {
 	t.Helper()
 	if err := s.org.RemoveTeamMember(context.Background(), s.teamID, uid); err != nil {
@@ -524,5 +544,41 @@ func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	}
 	if resp := s.postForm(t, s.path("/exports/1/delete"), url.Values{}); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST delete = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestExportsDownloadInvalidJobIDIs404 — нечисловой jobID в пути обязан
+// давать 404 через strconv.ParseInt, а не паниковать/500.
+func TestExportsDownloadInvalidJobIDIs404(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.getAs(t, s.operatorUID, s.path("/exports/not-a-number/download"))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("код %d, ожидали 404: %s", resp.StatusCode, body)
+	}
+}
+
+// TestExportsDeleteInvalidJobIDIs404 — тот же разбор пути, что и у download,
+// в exportsDelete.
+func TestExportsDeleteInvalidJobIDIs404(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports/not-a-number/delete"), url.Values{})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("код %d, ожидали 404: %s", resp.StatusCode, body)
+	}
+}
+
+// TestExportsDownloadMissingFileIs404 — строка done есть, файла на диске
+// нет (расхождение с уборкой/ручным вмешательством): 404, не 500 и не паника
+// на os.Open.
+func TestExportsDownloadMissingFileIs404(t *testing.T) {
+	s := newExportsStack(t)
+	id := s.enqueueDoneWithoutFile(t, s.operatorUID)
+
+	resp := s.getAs(t, s.operatorUID, s.path(fmt.Sprintf("/exports/%d/download", id)))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("код %d, ожидали 404: %s", resp.StatusCode, body)
 	}
 }

@@ -336,69 +336,140 @@ func TestByProjectIsolatesOtherProjects(t *testing.T) {
 	}
 }
 
-func TestActiveCountsSeparatesUserAndProject(t *testing.T) {
+// testJob — минимальная валидная заявка для EnqueueLimited/Enqueue-тестов
+// гонки/лимитов: конкретный Kind/Format здесь не важен, важны только
+// ProjectID/CreatedBy.
+func testJob(projectID, userID int64) Job {
+	now := time.Now().UTC()
+	return Job{
+		ProjectID: projectID, CreatedBy: userID,
+		Kind: KindIssues, Format: FormatCSV,
+		Params: Params{Since: now.Add(-time.Hour), Until: now},
+	}
+}
+
+// TestEnqueueLimitedRefusesAtUserLimit — предел персональный: у userB своя
+// квота, отказ userA его не касается.
+func TestEnqueueLimitedRefusesAtUserLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
 	projectID, userA := seedProjectAndUser(t, pool)
 	userB := seedUser(t, pool)
 
-	for i := 0; i < 2; i++ {
-		mustEnqueue(t, st, projectID, userA)
-	}
-	mustEnqueue(t, st, projectID, userB)
+	const userLimit, projectLimit = 2, 10
 
-	proj, user, err := st.ActiveCounts(ctx, projectID, userA)
-	if err != nil {
-		t.Fatalf("ActiveCounts: %v", err)
+	for i := 0; i < userLimit; i++ {
+		if _, err := st.EnqueueLimited(ctx, testJob(projectID, userA), userLimit, projectLimit); err != nil {
+			t.Fatalf("заявка %d от userA: %v", i, err)
+		}
 	}
-	if proj != 3 {
-		t.Errorf("активных на проект = %d, ожидали 3", proj)
+	if _, err := st.EnqueueLimited(ctx, testJob(projectID, userA), userLimit, projectLimit); !errors.Is(err, ErrActiveLimitReached) {
+		t.Fatalf("3-я заявка userA = %v, ожидали ErrActiveLimitReached", err)
 	}
-	if user != 2 {
-		t.Errorf("активных на пользователя = %d, ожидали 2", user)
+	if _, err := st.EnqueueLimited(ctx, testJob(projectID, userB), userLimit, projectLimit); err != nil {
+		t.Fatalf("заявка userB отказана лимитом userA: %v", err)
 	}
 }
 
-// TestActiveCountsExcludesTerminalStatuses — досчитанная заявка не должна
+// TestEnqueueLimitedRefusesAtProjectLimit — третья заявка снова от userA (его
+// персональный лимит 10, далеко не исчерпан) обязана упереться именно в
+// проектный предел, а не быть пропущена по ошибке смешения условий.
+func TestEnqueueLimitedRefusesAtProjectLimit(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userA := seedProjectAndUser(t, pool)
+	userB := seedUser(t, pool)
+
+	const userLimit, projectLimit = 10, 2
+
+	if _, err := st.EnqueueLimited(ctx, testJob(projectID, userA), userLimit, projectLimit); err != nil {
+		t.Fatalf("заявка userA: %v", err)
+	}
+	if _, err := st.EnqueueLimited(ctx, testJob(projectID, userB), userLimit, projectLimit); err != nil {
+		t.Fatalf("заявка userB: %v", err)
+	}
+	if _, err := st.EnqueueLimited(ctx, testJob(projectID, userA), userLimit, projectLimit); !errors.Is(err, ErrActiveLimitReached) {
+		t.Fatalf("3-я заявка проекта = %v, ожидали ErrActiveLimitReached (проектный лимит)", err)
+	}
+}
+
+// TestEnqueueLimitedExcludesTerminalStatuses — досчитанная заявка не должна
 // занимать место в лимите одновременных выгрузок: иначе автор упрётся в
 // потолок из-за заявок, которые давно отработали.
-func TestActiveCountsExcludesTerminalStatuses(t *testing.T) {
+func TestEnqueueLimitedExcludesTerminalStatuses(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 
-	activeID := mustEnqueue(t, st, projectID, userID)
-	doneID := mustEnqueue(t, st, projectID, userID)
+	const userLimit, projectLimit = 1, 10
+
+	doneID, err := st.EnqueueLimited(ctx, testJob(projectID, userID), userLimit, projectLimit)
+	if err != nil {
+		t.Fatalf("первая заявка: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done' WHERE id=$1`, doneID); err != nil {
 		t.Fatalf("подготовка: %v", err)
 	}
 
-	proj, user, err := st.ActiveCounts(ctx, projectID, userID)
-	if err != nil {
-		t.Fatalf("ActiveCounts: %v", err)
-	}
-	if proj != 1 || user != 1 {
-		t.Fatalf("ActiveCounts после завершения одной заявки = (%d,%d), ожидали (1,1); активная = %d", proj, user, activeID)
+	if _, err := st.EnqueueLimited(ctx, testJob(projectID, userID), userLimit, projectLimit); err != nil {
+		t.Fatalf("вторая заявка после завершения первой: %v", err)
 	}
 }
 
-// TestActiveCountsEmptyProject — на проекте без единой заявки нет строки, по
-// которой можно было бы неудачно сматчить агрегат: count(*) обязан дать
-// (0,0), а не ошибку/ноль строк.
-func TestActiveCountsEmptyProject(t *testing.T) {
+// TestEnqueueLimitedConcurrentRespectsLimit — обязательная проверка гонки
+// check-then-act (находка ревью задачи 10, P2): N параллельных постановок
+// при лимите M обязаны дать РОВНО M успехов, остальные — ErrActiveLimitReached.
+// На раздельных ActiveCounts+Enqueue этот тест падал в 5 прогонах из 8 (8
+// параллельных заявок, лимит 3 → от 3 до 6 успешных постановок, эмпирика
+// ревьюера). rounds раз подряд на СВЕЖЕМ проекте каждый раз: advisory lock
+// в EnqueueLimited ключуется по project_id, кросс-раундовая интерференция
+// исключена без нужды делить состояние между раундами.
+func TestEnqueueLimitedConcurrentRespectsLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
-	projectID, userID := seedProjectAndUser(t, pool)
 
-	proj, user, err := st.ActiveCounts(ctx, projectID, userID)
-	if err != nil {
-		t.Fatalf("ActiveCounts: %v", err)
-	}
-	if proj != 0 || user != 0 {
-		t.Fatalf("ActiveCounts на пустом проекте = (%d,%d), ожидали (0,0)", proj, user)
+	const rounds = 10
+	const workers = 8
+	const limit = 3
+
+	for round := 0; round < rounds; round++ {
+		projectID, userID := seedProjectAndUser(t, pool)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var succeeded, limited int
+		wg.Add(workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := st.EnqueueLimited(ctx, testJob(projectID, userID), limit, limit)
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err == nil:
+					succeeded++
+				case errors.Is(err, ErrActiveLimitReached):
+					limited++
+				default:
+					t.Errorf("раунд %d: неожиданная ошибка: %v", round, err)
+				}
+			}()
+		}
+		close(start) // отпускает все горутины раунда одним махом
+		wg.Wait()
+
+		if succeeded != limit {
+			t.Fatalf("раунд %d: успешных постановок %d, ожидали ровно %d", round, succeeded, limit)
+		}
+		if limited != workers-limit {
+			t.Fatalf("раунд %d: отказов по лимиту %d, ожидали %d", round, limited, workers-limit)
+		}
 	}
 }
 

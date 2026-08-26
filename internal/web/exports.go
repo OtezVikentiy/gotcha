@@ -125,15 +125,6 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	tr := h.resolveTimeRange(w, r, "24h")
 
-	projCount, userCount, err := h.Exports.ActiveCounts(r.Context(), projectID, uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if projCount >= maxActivePerProject || userCount >= maxActivePerUser {
-		h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.limit_reached"))
-		return
-	}
 	if !h.exportLimiter.Allow(exportRateLimitKey(uid, projectID)) {
 		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "err.export.rate_limited"))
 		return
@@ -166,7 +157,16 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 		// умолчанию безопасна, отказывать здесь нечем не помогает.
 		IncludePII: authz.CanManage && r.PostFormValue("include_pii") != "",
 	}
-	if _, err := h.Exports.Enqueue(r.Context(), job); err != nil {
+	// EnqueueLimited проверяет лимиты активных заявок и вставляет строку
+	// атомарно (internal/export/store.go) — раздельные «посчитать → вставить»
+	// здесь были гонкой check-then-act под конкурентными запросами (P2,
+	// ревью задачи 10): подтверждено эмпирически, 8 параллельных постановок
+	// при лимите 3 давали от 3 до 6 успешных вставок.
+	if _, err := h.Exports.EnqueueLimited(r.Context(), job, maxActivePerUser, maxActivePerProject); err != nil {
+		if errors.Is(err, export.ErrActiveLimitReached) {
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.limit_reached"))
+			return
+		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
