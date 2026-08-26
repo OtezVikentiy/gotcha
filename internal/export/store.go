@@ -507,6 +507,25 @@ func (s *Store) PurgeRows(ctx context.Context, olderThan time.Duration) (int, er
 	}
 }
 
+// AuthorEmail возвращает адрес пользователя по его id — письмо об итоге
+// заявки (internal/export/notify.go) шлётся автору, известному стору только
+// как Job.CreatedBy, а воркер не имеет доступа к internal/auth (цикл
+// импорта: auth уже опирается на web-уровень выше export). Запрос дублирует
+// auth.Service.UserEmail нарочно — тем же способом, каким страница
+// «Выгрузки» уже показывает автора (internal/web/exports.go,
+// exportViewRow), только без зависимости на auth.Service.
+func (s *Store) AuthorEmail(ctx context.Context, id int64) (string, error) {
+	var email string
+	err := s.pool.QueryRow(ctx, "SELECT email FROM users WHERE id = $1", id).Scan(&email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("export: пользователь %d не найден", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("export: адрес автора %d: %w", id, err)
+	}
+	return email, nil
+}
+
 // ExistingIDs возвращает подмножество ids, для которых в export_jobs ещё
 // есть строка — джанитор сверяет по нему файлы каталога с базой, чтобы
 // найти сирот (файл остался, а строку снесли PurgeRows или каскад проекта).

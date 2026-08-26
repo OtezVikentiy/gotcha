@@ -261,10 +261,23 @@ func (w *Worker) process(ctx context.Context, job Job) {
 // fail помечает заявку временным отказом: попытки ещё есть — вернётся в
 // очередь, исчерпаны — станет failed сама Store.Fail. ErrStaleClaim не
 // логируется как сбой воркера: лизу потеряли, и это уже не наша забота.
+//
+// Notify зовётся, только когда попытки исчерпаны (job.Attempts достиг
+// maxAttempts — того же порога, что Store.Fail применяет в SQL): автору
+// заявки, упавшей временно, письмо на КАЖДОЙ из трёх попыток было бы спамом
+// по поводу состояния, которое воркер ещё может исправить сам следующим
+// тиком.
 func (w *Worker) fail(ctx context.Context, job Job, cause error) {
-	if err := w.Store.Fail(ctx, job.ID, job.Attempts, cause.Error()); err != nil && !errors.Is(err, ErrStaleClaim) {
-		slog.Warn("export: воркер: запись неудачи", "job_id", job.ID, "err", err)
+	if err := w.Store.Fail(ctx, job.ID, job.Attempts, cause.Error()); err != nil {
+		if !errors.Is(err, ErrStaleClaim) {
+			slog.Warn("export: воркер: запись неудачи", "job_id", job.ID, "err", err)
+		}
+		return
 	}
+	if job.Attempts < maxAttempts {
+		return
+	}
+	w.notifyFailed(ctx, job, cause.Error())
 }
 
 // failPermanent закрывает заявку без права на повтор — причина не устранится
@@ -273,10 +286,31 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error) {
 // зомби-вызова закрыл бы заявку поверх активной попытки, которая её уже
 // переклеймила и продолжает работать. ErrStaleClaim по той же причине не
 // логируется как сбой воркера — лизу потеряли, и это уже не наша забота.
+//
+// Notify зовётся сразу — в отличие от fail(), FailPermanent не оставляет
+// заявке права на повтор ни на какой попытке, значит первая же и есть
+// последняя.
 func (w *Worker) failPermanent(ctx context.Context, job Job, cause string) {
-	if err := w.Store.FailPermanent(ctx, job.ID, job.Attempts, cause); err != nil && !errors.Is(err, ErrStaleClaim) {
-		slog.Warn("export: воркер: постоянный отказ", "job_id", job.ID, "err", err)
+	if err := w.Store.FailPermanent(ctx, job.ID, job.Attempts, cause); err != nil {
+		if !errors.Is(err, ErrStaleClaim) {
+			slog.Warn("export: воркер: постоянный отказ", "job_id", job.ID, "err", err)
+		}
+		return
 	}
+	w.notifyFailed(ctx, job, cause)
+}
+
+// notifyFailed собирает снимок терминально упавшей заявки для w.Notify —
+// общая часть fail()/failPermanent(): оба доводят Job до статуса failed с
+// причиной, различается только источник cause (error против string).
+func (w *Worker) notifyFailed(ctx context.Context, job Job, cause string) {
+	if w.Notify == nil {
+		return
+	}
+	failed := job
+	failed.Status = StatusFailed
+	failed.LastError = cause
+	w.Notify(ctx, failed)
 }
 
 // writeResult — что вынесено из-под временного файла для Done.

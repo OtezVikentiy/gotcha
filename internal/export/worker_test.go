@@ -202,6 +202,36 @@ func TestWorkerFailsPermanentlyOverDiskBudget(t *testing.T) {
 	}
 }
 
+// TestWorkerNotifiesOnPermanentFailure — failPermanent не оставляет заявке
+// права на повтор, значит первая же попытка уже терминальна: Notify обязан
+// сработать сразу, не дожидаясь maxAttempts.
+func TestWorkerNotifiesOnPermanentFailure(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+	writeFiller(t, dir, 5<<20)
+
+	notified := make(chan Job, 1)
+	w := &Worker{Store: st, Pool: pool, Issues: fakeIssues(100), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 20,
+	}, Notify: func(ctx context.Context, j Job) { notified <- j }}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	select {
+	case j := <-notified:
+		if j.ID != id || j.Status != StatusFailed || j.LastError == "" {
+			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", j)
+		}
+	default:
+		t.Fatal("Notify не вызван после постоянного отказа")
+	}
+}
+
 func TestWorkerLeavesNoPartFileOnFailure(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -230,6 +260,76 @@ func TestWorkerLeavesNoPartFileOnFailure(t *testing.T) {
 	// осесть в failed после единственной попытки.
 	if j.Status != StatusQueued || j.Attempts != 1 {
 		t.Fatalf("временный отказ обработан как окончательный: %+v", j)
+	}
+}
+
+// TestWorkerDoesNotNotifyOnRetryableFailure — временный отказ первой
+// попытки не сообщает автору: заявка ещё может досчитаться со следующего
+// тика, письмо о ней было бы преждевременным.
+func TestWorkerDoesNotNotifyOnRetryableFailure(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	notified := make(chan Job, 1)
+	w := &Worker{Store: st, Pool: pool, Issues: failingSource(errors.New("ClickHouse недоступен")), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+	}, Notify: func(ctx context.Context, j Job) { notified <- j }}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	select {
+	case j := <-notified:
+		t.Fatalf("Notify вызван на первой (retryable) попытке: %+v", j)
+	default:
+	}
+}
+
+// TestWorkerNotifiesOnFinalRetryableFailure — та же временная причина
+// отказа, но заявка исчерпала все maxAttempts попыток: Store.Fail сама
+// переводит её в failed, и это тот самый момент, когда автору наконец стоит
+// написать (ровно один раз, не на каждой из промежуточных попыток).
+func TestWorkerNotifiesOnFinalRetryableFailure(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	notified := make(chan Job, maxAttempts)
+	w := &Worker{Store: st, Pool: pool, Issues: failingSource(errors.New("ClickHouse недоступен")), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+	}, Notify: func(ctx context.Context, j Job) { notified <- j }}
+
+	for i := 0; i < maxAttempts; i++ {
+		if err := w.Tick(ctx); err != nil {
+			t.Fatalf("Tick #%d: %v", i+1, err)
+		}
+	}
+
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != StatusFailed || j.Attempts != maxAttempts {
+		t.Fatalf("заявка не дошла до окончательного отказа: %+v", j)
+	}
+
+	select {
+	case notifiedJob := <-notified:
+		if notifiedJob.ID != id || notifiedJob.Status != StatusFailed {
+			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", notifiedJob)
+		}
+	default:
+		t.Fatal("Notify не вызван после исчерпания попыток")
+	}
+	if len(notified) != 0 {
+		t.Fatalf("Notify вызван более одного раза: ещё %d в очереди", len(notified))
 	}
 }
 
