@@ -676,3 +676,30 @@ func TestScrubProfileMetadata(t *testing.T) {
 		t.Errorf("без скрубера значение изменено: %q", p2.Transaction)
 	}
 }
+
+// DefaultDenyKeys отдаёт непустой денилист (иначе весь скрабинг PII молча
+// выключается) и защитную копию: правка результата не должна портить
+// пакетный список, которым пользуются и приём, и выгрузка (internal/export).
+func TestDefaultDenyKeysReturnsCopy(t *testing.T) {
+	keys := DefaultDenyKeys()
+	if len(keys) == 0 {
+		t.Fatal("DefaultDenyKeys вернул пустой список")
+	}
+	want := "password"
+	found := false
+	for _, k := range keys {
+		if k == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("DefaultDenyKeys не содержит %q: %v", want, keys)
+	}
+
+	keys[0] = "испорчено"
+	again := DefaultDenyKeys()
+	if again[0] == "испорчено" {
+		t.Error("DefaultDenyKeys не защищает пакетный список от изменений через срез")
+	}
+}
