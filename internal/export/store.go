@@ -260,16 +260,25 @@ func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int
 // FailPermanent закрывает заявку без права на повтор: причина не устранится
 // следующей попыткой (бюджет диска исчерпан, фильтр резолвится в слишком
 // много групп) — три бессмысленных повтора только оттянут момент, когда
-// человек увидит внятную причину. В отличие от Fail, attempts не участвует в
-// условии: вызывающий держит заявку по факту собственного успешного Claim в
-// этом же тике, и ждать протухания лизы, чтобы её потом добил SweepStale,
-// незачем — отказ известен здесь и сейчас.
-func (s *Store) FailPermanent(ctx context.Context, id int64, cause string) error {
-	if _, err := s.pool.Exec(ctx, `
+// человек увидит внятную причину.
+//
+// attempt фенсит владение попыткой той же связкой status='running' AND
+// attempts=$attempt, что и Fail/Done (см. их комментарии): без этого
+// запоздавший постоянный отказ от зомби-вызова (лиза протухла, заявку
+// переклеймили) закрыл бы заявку поверх активной попытки, которая её уже
+// подхватила и продолжает работать, — дыра шире обычного зомби-Done, потому
+// что FailPermanent не ждёт даже исчерпания попыток. Ноль затронутых строк —
+// тот же сигнал ErrStaleClaim, что и у Fail/Done, а не ошибка выполнения.
+func (s *Store) FailPermanent(ctx context.Context, id int64, attempt int, cause string) error {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
-		SET status = 'failed', finished_at = now(), last_error = $2
-		WHERE id = $1`, id, cause); err != nil {
+		SET status = 'failed', finished_at = now(), last_error = $3
+		WHERE id = $1 AND status = 'running' AND attempts = $2`, id, attempt, cause)
+	if err != nil {
 		return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStaleClaim
 	}
 	return nil
 }

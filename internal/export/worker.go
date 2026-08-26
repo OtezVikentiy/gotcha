@@ -14,15 +14,19 @@ import (
 )
 
 const (
-	// tickInterval — период опроса очереди. Раз в 5 секунд, как у остальных
-	// фоновых воркеров проекта (notify/worker, uptime/scheduler).
-	tickInterval = 5 * time.Second
-	// jobTimeout — потолок сборки одного файла. Строго меньше leaseTTL
-	// (store.go, 20 минут): иначе второй инстанс переклеймит заявку, которую
-	// первый ещё пишет, и оба одновременно запишут результат в один и тот же
-	// путь. Инвариант проверяется в init(): развести константы правкой в
-	// будущем не должно быть незаметно.
-	jobTimeout = 15 * time.Minute
+	// defaultTickInterval — период опроса очереди, если Config.TickInterval
+	// не задан. Раз в 5 секунд, как у остальных фоновых воркеров проекта
+	// (notify/worker, uptime/scheduler).
+	defaultTickInterval = 5 * time.Second
+	// defaultJobTimeout — потолок сборки одного файла, если Config.JobTimeout
+	// не задан. Строго меньше leaseTTL (store.go, 20 минут): иначе второй
+	// инстанс переклеймит заявку, которую первый ещё пишет, и оба
+	// одновременно запишут результат в один и тот же путь. Инвариант для
+	// этого значения по умолчанию проверяется в init(); для значения,
+	// заданного через Config, — в Config.Validate(), которую зовёт каждый
+	// Tick: конфигурация приходит из окружения (§10 спеки) и может развести
+	// числа так же легко, как правка констант.
+	defaultJobTimeout = 15 * time.Minute
 	// advisoryLockKey — произвольный, но постоянный ключ сессионного лока:
 	// "expo" в ASCII. Один воркер под локом — вторая реплика молча уступает
 	// проход, а не пишет тот же файл параллельно.
@@ -30,8 +34,8 @@ const (
 )
 
 func init() {
-	if jobTimeout >= leaseTTL {
-		panic("export: jobTimeout обязан быть строго меньше leaseTTL")
+	if defaultJobTimeout >= leaseTTL {
+		panic("export: defaultJobTimeout обязан быть строго меньше leaseTTL")
 	}
 }
 
@@ -61,6 +65,51 @@ type Config struct {
 	// DiskBudget — суммарный бюджет каталога Dir: проверяется до начала
 	// записи, переполнение — постоянный отказ, а не частично записанный файл.
 	DiskBudget int64
+	// TickInterval — период опроса очереди; 0 — defaultTickInterval.
+	// Полю, а не константе, живёт ради тестируемости Run() без ожидания
+	// боевых 5 секунд (по образцу internal/notify/worker.go: Worker.Interval).
+	TickInterval time.Duration
+	// JobTimeout — потолок сборки одного файла; 0 — defaultJobTimeout.
+	// Инъекция в тестах позволяет проверить, что деградация ctx (истёк
+	// дедлайн тика) действительно останавливает финализацию заявки, а не
+	// ждать боевых 15 минут. Validate() отдельно следит, чтобы инъекция не
+	// нарушила JobTimeout < leaseTTL.
+	JobTimeout time.Duration
+}
+
+// tickInterval — период опроса очереди с учётом Config.TickInterval.
+func (c Config) tickInterval() time.Duration {
+	if c.TickInterval > 0 {
+		return c.TickInterval
+	}
+	return defaultTickInterval
+}
+
+// jobTimeout — потолок сборки одного файла с учётом Config.JobTimeout.
+func (c Config) jobTimeout() time.Duration {
+	if c.JobTimeout > 0 {
+		return c.JobTimeout
+	}
+	return defaultJobTimeout
+}
+
+// Validate проверяет конфигурацию на нарушения, которые нельзя пропустить
+// тихо. MaxRows на уровне или выше eventStreamSafetyLimit (source_events.go)
+// обесценивает Truncated: источник событий физически не отдаст больше
+// eventStreamSafetyLimit строк, поток закончится «естественно» раньше, чем
+// счётчик заявки дойдёт до своего потолка, и Truncated останется false —
+// ровно то самое «молча неполная выгрузка», которое запрещает §8 спеки.
+// JobTimeout не строже leaseTTL воскрешает зомби-переклейм, ради которого
+// заведён init()-сторож для значения по умолчанию.
+func (c Config) Validate() error {
+	if c.MaxRows >= eventStreamSafetyLimit {
+		return fmt.Errorf("export: конфигурация: MaxRows (%d) обязан быть строго меньше защитного предела потока событий (%d) — иначе усечение по этому пределу проходит без Truncated=true",
+			c.MaxRows, eventStreamSafetyLimit)
+	}
+	if jt := c.jobTimeout(); jt >= leaseTTL {
+		return fmt.Errorf("export: конфигурация: JobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", jt, leaseTTL)
+	}
+	return nil
 }
 
 // Worker — единственный (per-инстанс, под advisory lock) исполнитель очереди
@@ -81,7 +130,7 @@ type Worker struct {
 // воркер — она уже осела в заявке (Fail/FailPermanent) либо в логе, следующий
 // тик просто попробует снова.
 func (w *Worker) Run(ctx context.Context) {
-	ticker := time.NewTicker(tickInterval)
+	ticker := time.NewTicker(w.Cfg.tickInterval())
 	defer ticker.Stop()
 	for {
 		select {
@@ -100,6 +149,10 @@ func (w *Worker) Run(ctx context.Context) {
 // сборки конкретной заявки уже записана в неё Fail/FailPermanent и наружу
 // как error не всплывает: воркер продолжает крутиться дальше.
 func (w *Worker) Tick(ctx context.Context) error {
+	if err := w.Cfg.Validate(); err != nil {
+		return fmt.Errorf("export: воркер: %w", err)
+	}
+
 	conn, err := w.Pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("export: воркер: получение соединения: %w", err)
@@ -125,7 +178,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	// Ctx с дедлайном покрывает все шаги тика вплоть до Done/Fail включительно:
 	// context.Background() здесь означал бы зомби-воркер, который дописывает
 	// файл уже после того, как процесс должен был остановиться.
-	jobCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+	jobCtx, cancel := context.WithTimeout(ctx, w.Cfg.jobTimeout())
 	defer cancel()
 
 	if _, err := w.Store.SweepStale(jobCtx); err != nil {
@@ -147,7 +200,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 // process собирает файл по одной уже заклеймленной заявке и переводит её в
 // терминальный статус. Порядок шагов зеркалит §5/§10 спеки: бюджет диска —
 // до записи, временный файл — во время, атомарный rename — только после
-// успешного закрытия и повторной проверки, что заявку не удалили.
+// успешного закрытия писателя.
 func (w *Worker) process(ctx context.Context, job Job) {
 	partPath := filepath.Join(w.Cfg.Dir, fmt.Sprintf("%d.part", job.ID))
 	finalPath := filepath.Join(w.Cfg.Dir, fmt.Sprintf("%d.%s", job.ID, job.Format.Ext()))
@@ -173,16 +226,12 @@ func (w *Worker) process(ctx context.Context, job Job) {
 		return
 	}
 
-	// Заявку могли удалить, пока писался файл: переименовывать в этом случае
-	// нечего, а оставленный .part на диске — мусор без хозяина.
-	if _, err := w.Store.Get(ctx, job.ID); err != nil {
-		_ = os.Remove(partPath)
-		if !errors.Is(err, ErrNotFound) {
-			slog.Warn("export: воркер: перечитывание заявки перед rename", "job_id", job.ID, "err", err)
-		}
-		return
-	}
-
+	// Заявку могли удалить, пока писался файл: отдельного перечитывания
+	// перед rename нет — Done ниже фенсит владение по id+status='running'+
+	// attempts тем же способом, что и Fail (см. их комментарии в store.go),
+	// и при удалённой строке получит те же 0 затронутых строк → ErrStaleClaim,
+	// что и при переклейме. Разводить эти два случая незачем: оба ведут к
+	// одному и тому же — файл убирается, заявка Done не считается.
 	if err := os.Rename(partPath, finalPath); err != nil {
 		_ = os.Remove(partPath)
 		w.fail(ctx, job, fmt.Errorf("переименование файла выгрузки: %w", err))
@@ -219,9 +268,13 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error) {
 }
 
 // failPermanent закрывает заявку без права на повтор — причина не устранится
-// следующей попыткой (см. ErrPermanent).
+// следующей попыткой (см. ErrPermanent). attempt фенсит владение попыткой
+// так же, как в fail/Store.Fail: без него запоздавший постоянный отказ от
+// зомби-вызова закрыл бы заявку поверх активной попытки, которая её уже
+// переклеймила и продолжает работать. ErrStaleClaim по той же причине не
+// логируется как сбой воркера — лизу потеряли, и это уже не наша забота.
 func (w *Worker) failPermanent(ctx context.Context, job Job, cause string) {
-	if err := w.Store.FailPermanent(ctx, job.ID, cause); err != nil {
+	if err := w.Store.FailPermanent(ctx, job.ID, job.Attempts, cause); err != nil && !errors.Is(err, ErrStaleClaim) {
 		slog.Warn("export: воркер: постоянный отказ", "job_id", job.ID, "err", err)
 	}
 }

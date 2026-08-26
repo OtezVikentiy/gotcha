@@ -422,15 +422,10 @@ func TestWorkerSkipsWhenAnotherInstanceHoldsLock(t *testing.T) {
 	}
 }
 
-// TestJobTimeoutBelowLeaseTTL фиксирует инвариант, который иначе живёт только
-// в комментарии рядом с константами: jobTimeout обязан быть строго меньше
-// leaseTTL, иначе второй инстанс переклеймит заявку, которую первый ещё
-// пишет. init() пакета уже паникует при нарушении — тест делает то же самое
-// явным ассертом, который виден в отчёте прогона, а не только при падении.
+// TestWorkerFailsPermanentlyWhenSourceNotConfigured — воркер, собранный без
+// нужного источника (ошибка связки в cmd/, а не временный сбой) — заявка не
+// должна биться о ретраи: причина не изменится сама собой.
 func TestWorkerFailsPermanentlyWhenSourceNotConfigured(t *testing.T) {
-	// Воркер, собранный без нужного источника (ошибка связки в cmd/, а не
-	// временный сбой) — заявка не должна биться о ретраи: причина не
-	// изменится сама собой.
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -449,6 +444,283 @@ func TestWorkerFailsPermanentlyWhenSourceNotConfigured(t *testing.T) {
 	}
 	if j.Status != StatusFailed || j.Attempts != 1 {
 		t.Fatalf("отсутствие источника не привело к постоянному отказу: %+v", j)
+	}
+}
+
+// TestWorkerFailsPermanentlyWhenIssueSourceNotConfigured — симметричный
+// случай для groups: до сих пор был покрыт только KindEvents/Events==nil.
+func TestWorkerFailsPermanentlyWhenIssueSourceNotConfigured(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	w := &Worker{Store: st, Pool: pool, Cfg: Config{ // Issues не задан
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != StatusFailed || j.Attempts != 1 {
+		t.Fatalf("отсутствие источника групп не привело к постоянному отказу: %+v", j)
+	}
+}
+
+// TestTickReturnsNilWhenQueueEmpty — очередь пуста, Claim отдаёт ok=false:
+// Tick обязан молча выйти, не тронув ничего и не вернув ошибку.
+func TestTickReturnsNilWhenQueueEmpty(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	w := &Worker{Store: st, Pool: pool, Cfg: Config{
+		Dir: t.TempDir(), TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick по пустой очереди: %v", err)
+	}
+}
+
+// TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit — P1: GOTCHA_EXPORT_MAX_ROWS
+// на уровне защитного предела потока событий (eventStreamSafetyLimit)
+// обесценивает Truncated — источник событий физически не отдаст больше
+// eventStreamSafetyLimit строк, поток кончится «естественно» раньше, чем
+// счётчик заявки дойдёт до своего потолка, и пользователь получит молча
+// усечённую выгрузку. Config.Validate (вызывается из Tick) обязан упасть
+// внятной ошибкой конфигурации ДО клейма заявки, а не тихо продолжить.
+func TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindEvents, FormatNDJSON)
+
+	w := &Worker{Store: st, Pool: pool, Events: fakeEvents(3), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: eventStreamSafetyLimit, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+	err := w.Tick(ctx)
+	if err == nil {
+		t.Fatal("MaxRows на уровне защитного предела — ожидали ошибку конфигурации")
+	}
+	if !strings.Contains(err.Error(), "Truncated") {
+		t.Errorf("причина невнятна: %v", err)
+	}
+
+	// Заявка не тронута вовсе: конфигурация проверяется раньше клейма.
+	j, getErr := st.Get(ctx, id)
+	if getErr != nil {
+		t.Fatalf("Get: %v", getErr)
+	}
+	if j.Status != StatusQueued || j.Attempts != 0 {
+		t.Fatalf("заявку тронули при неверной конфигурации: %+v", j)
+	}
+}
+
+// TestWorkerAcceptsMaxRowsBelowSafetyLimit — симметричный положительный
+// случай: значение строго ниже предела не мешает обычной сборке файла.
+func TestWorkerAcceptsMaxRowsBelowSafetyLimit(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindEvents, FormatNDJSON)
+
+	w := &Worker{Store: st, Pool: pool, Events: fakeEvents(3), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: eventStreamSafetyLimit - 1, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != StatusDone {
+		t.Fatalf("итог заявки: %+v", j)
+	}
+}
+
+// TestWorkerTruncatesAtByteCapIndependentlyOfRowCap — потолок байт должен
+// сработать сам по себе, а не только как побочный эффект потолка строк: до
+// сих пор все тесты держали MaxBytes заведомо просторным.
+func TestWorkerTruncatesAtByteCapIndependentlyOfRowCap(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	w := &Worker{Store: st, Pool: pool, Issues: fakeIssues(50), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 1000, MaxBytes: 200, DiskBudget: 1 << 30}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !j.Truncated || j.RowsWritten == 0 || j.RowsWritten >= 50 {
+		t.Fatalf("потолок байт не сработал независимо от потолка строк: %+v", j)
+	}
+}
+
+// badRecordSource отдаёт запись, которую JSON-писатель не может
+// сериализовать (канал — не JSON-тип), — источник ошибки внутри самой
+// записи строки, а не чтения источника.
+type badRecordSource struct{}
+
+func (badRecordSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+	return fn(Record{"bad": make(chan int)})
+}
+
+func TestWorkerLeavesNoPartFileOnSerializationFailure(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatJSON)
+
+	w := &Worker{Store: st, Pool: pool, Issues: badRecordSource{}, Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != StatusQueued || j.Attempts != 1 || j.LastError == "" {
+		t.Fatalf("ошибка сериализации не довелась до заявки: %+v", j)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("после ошибки сериализации в каталоге остались файлы: %v", entries)
+	}
+}
+
+// staleningFailingSource симулирует потерю лизы, совпавшую с транзитным
+// отказом: пока источник ещё «читается», кто-то другой успевает
+// переклеймить эту же заявку (attempts растёт в обход текущего вызова), а
+// сам источник в довершение возвращает обычную (не постоянную) ошибку.
+// worker.fail обязан получить ErrStaleClaim от Store.Fail и проглотить её
+// молча — активная попытка чужого клейма не должна быть задета отказом
+// зомби-вызова.
+type staleningFailingSource struct {
+	pool *pgxpool.Pool
+	id   int64
+}
+
+func (s *staleningFailingSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+	if _, err := s.pool.Exec(ctx, "UPDATE export_jobs SET attempts = attempts + 1 WHERE id = $1", s.id); err != nil {
+		return err
+	}
+	return errors.New("сеть моргнула")
+}
+
+func TestWorkerFailSuppressesStaleClaim(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	w := &Worker{Store: st, Pool: pool, Issues: &staleningFailingSource{pool: pool, id: id}, Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != StatusRunning || j.Attempts != 2 {
+		t.Fatalf("Fail задел чужую попытку при протухшей лизе: %+v", j)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".part") {
+			t.Fatalf("после потери лизы в fail-ветке остался %s", e.Name())
+		}
+	}
+}
+
+// slowAfterWriteSource пишет одну запись сразу (пока ctx ещё жив), затем
+// ждёт истечения ctx.Done() (гарантированно совпадает с дедлайном тика,
+// сколько бы Claim/SweepStale/открытие файла ни заняли на медленном
+// раннере) плюс небольшой запас и только потом возвращается. Запись успевает
+// пройти ДО истечения дедлайна, поэтому writeFile завершается успешно и
+// process доходит до Store.Done — с уже просроченным ctx. Если бы Done
+// вызывался с context.Background() вместо этого ctx, отказ бы не наступил и
+// заявка стала бы done несмотря на истёкший тайм-аут тика.
+type slowAfterWriteSource struct{}
+
+func (s *slowAfterWriteSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+	if err := fn(Record{"id": int64(1), "title": "x", "culprit": "", "level": "error",
+		"status": "unresolved", "times_seen": int64(1), "environments": "", "assignee_email": "", "url": ""}); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	time.Sleep(20 * time.Millisecond)
+	return nil
+}
+
+func TestWorkerDoesNotFinalizeAfterJobTimeoutExpiresBeforeDone(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	w := &Worker{Store: st, Pool: pool, Issues: &slowAfterWriteSource{}, Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+		JobTimeout: time.Second, // с запасом над Claim/SweepStale/открытием файла
+	}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status == StatusDone {
+		t.Fatal("заявка завершилась успехом ПОСЛЕ истечения JobTimeout — Done вызван с неограниченным ctx вместо контекста тика")
+	}
+}
+
+// TestWorkerRunProcessesJobOnTicker — достигает ветку <-ticker.C в Run
+// (до сих пор все тесты били по Tick напрямую) и заодно w.Notify — тоже не
+// вызывавшийся ни в одном тесте.
+func TestWorkerRunProcessesJobOnTicker(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	notified := make(chan Job, 1)
+	w := &Worker{Store: st, Pool: pool, Issues: fakeIssues(2), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+		TickInterval: 10 * time.Millisecond,
+	}, Notify: func(ctx context.Context, j Job) { notified <- j }}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(runCtx)
+
+	select {
+	case j := <-notified:
+		if j.ID != id || j.Status != StatusDone || j.RowsWritten != 2 {
+			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", j)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run не обработал заявку по тикеру за отведённое время")
 	}
 }
 
@@ -476,9 +748,28 @@ func TestWorkerRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestJobTimeoutBelowLeaseTTL фиксирует инвариант, который иначе живёт
+// только в комментарии рядом с константами: defaultJobTimeout обязан быть
+// строго меньше leaseTTL, иначе второй инстанс переклеймит заявку, которую
+// первый ещё пишет. init() пакета уже паникует при нарушении — тест делает
+// то же самое явным ассертом, который виден в отчёте прогона, а не только
+// при падении. Инвариант для значения, заданного через Config (а не
+// дефолтного), проверяет Config.Validate — см. TestWorkerDoesNotFinalize...
+// и TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit для JobTimeout из Tick.
 func TestJobTimeoutBelowLeaseTTL(t *testing.T) {
-	if jobTimeout >= leaseTTL {
-		t.Fatalf("jobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", jobTimeout, leaseTTL)
+	if defaultJobTimeout >= leaseTTL {
+		t.Fatalf("defaultJobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", defaultJobTimeout, leaseTTL)
+	}
+}
+
+// TestConfigValidateRejectsJobTimeoutAtOrAboveLeaseTTL — инъекция
+// Config.JobTimeout не должна обходить инвариант, который для дефолтного
+// значения держит init()-паника: значение из окружения (§10 спеки) так же
+// легко развести с leaseTTL, как и константы кода.
+func TestConfigValidateRejectsJobTimeoutAtOrAboveLeaseTTL(t *testing.T) {
+	cfg := Config{MaxRows: 100, JobTimeout: leaseTTL}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("JobTimeout == leaseTTL — ожидали ошибку конфигурации")
 	}
 }
 

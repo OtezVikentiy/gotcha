@@ -893,22 +893,25 @@ func TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestFailPermanentIgnoresAttempts — в отличие от Fail, FailPermanent обязан
-// закрыть заявку сразу, а не вернуть её в очередь: первая попытка (attempts=1,
-// меньше maxAttempts=3) через обычный Fail ушла бы обратно в 'queued', и
-// именно поэтому воркер зовёт FailPermanent для причин, которые повтор не
-// исправит.
-func TestFailPermanentIgnoresAttempts(t *testing.T) {
+// TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence — в отличие от
+// Fail, FailPermanent обязан закрыть заявку сразу при СОВПАДАЮЩЕМ attempt, а
+// не вернуть её в очередь: первая попытка (attempts=1, меньше maxAttempts=3)
+// через обычный Fail ушла бы обратно в 'queued', и именно поэтому воркер
+// зовёт FailPermanent для причин, которые повтор не исправит. Игнорируется
+// только потолок попыток — не сам номер попытки (см.
+// TestFailPermanentRejectsStaleClaimAfterReclaim).
+func TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 	id := mustEnqueue(t, st, projectID, userID)
-	if _, ok, err := st.Claim(ctx); err != nil || !ok {
+	claim, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
 		t.Fatalf("Claim: ok=%v err=%v", ok, err)
 	}
 
-	if err := st.FailPermanent(ctx, id, "на диске не осталось места"); err != nil {
+	if err := st.FailPermanent(ctx, id, claim.Attempts, "на диске не осталось места"); err != nil {
 		t.Fatalf("FailPermanent: %v", err)
 	}
 
@@ -930,14 +933,59 @@ func TestFailPermanentIgnoresAttempts(t *testing.T) {
 	}
 }
 
-// TestFailPermanentUnknownIDIsNoop — постоянный отказ заявки, которую успели
-// удалить, не должен считаться ошибкой воркера: заявки уже нет, беспокоиться
-// не о чем.
-func TestFailPermanentUnknownIDIsNoop(t *testing.T) {
+// TestFailPermanentRejectsStaleClaimAfterReclaim — тот же сценарий гонки, что
+// у Done/Fail: A клеймит заявку, лиза протухает, её подбирает B (attempts
+// вырос и B активно работает), и запоздавший постоянный отказ от A обязан
+// получить ErrStaleClaim и не тронуть строку. Без фенсинга по attempt
+// FailPermanent закрыл бы заявку как failed поверх активной попытки B — дыра
+// шире обычного зомби-Done, потому что FailPermanent не ждёт даже исчерпания
+// попыток.
+func TestFailPermanentRejectsStaleClaimAfterReclaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
-	if err := st.FailPermanent(ctx, 0, "не важно"); err != nil {
-		t.Fatalf("FailPermanent по несуществующему id вернул ошибку: %v", err)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+
+	claimA, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim A: %v ok=%v", err, ok)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE export_jobs SET claimed_at = now() - interval '21 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatalf("протухание лизы A: %v", err)
+	}
+	claimB, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim B (переклейм): %v ok=%v", err, ok)
+	}
+	if claimB.Attempts != claimA.Attempts+1 {
+		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
+	}
+
+	// A не знает о перехвате и зовёт постоянный отказ по СВОЕЙ (устаревшей) попытке.
+	if err := st.FailPermanent(ctx, id, claimA.Attempts, "диск переполнен"); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("FailPermanent от A: err=%v, ожидали ErrStaleClaim", err)
+	}
+
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusRunning || got.Attempts != claimB.Attempts {
+		t.Fatalf("постоянный отказ A закрыл активную попытку B: %+v", got)
+	}
+}
+
+// TestFailPermanentUnknownIDReturnsStaleClaim — постоянный отказ заявки,
+// которую успели удалить, неотличим по фенсингу от переклейма (0 затронутых
+// строк в обоих случаях) — тот же ErrStaleClaim, что и у Fail/Done для того
+// же входа.
+func TestFailPermanentUnknownIDReturnsStaleClaim(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	if err := st.FailPermanent(ctx, 0, 1, "не важно"); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("FailPermanent по несуществующему id: err=%v, ожидали ErrStaleClaim", err)
 	}
 }
