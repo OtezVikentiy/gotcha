@@ -287,6 +287,35 @@ func (s *Store) ByProject(ctx context.Context, projectID int64, limit int) ([]Jo
 	return out, nil
 }
 
+// ByProjectForUser — тот же список, что и ByProject, но только заявки
+// одного автора (uid): §3 спеки — свои заявки видит автор, все заявки
+// проекта видят только админ/владелец орга (см. её вызов под authz.CanManage
+// в web/exports.go). Предикат по автору — в самом SQL, а не фильтром поверх
+// ByProject в Go: иначе limit съедался бы чужими строками раньше, чем
+// автор увидел свои собственные.
+func (s *Store) ByProjectForUser(ctx context.Context, projectID, uid int64, limit int) ([]Job, error) {
+	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
+		FROM export_jobs WHERE project_id = $1 AND created_by = $2
+		ORDER BY created_at DESC LIMIT $3`, projectID, uid, limit)
+	if err != nil {
+		return nil, fmt.Errorf("export: список заявок проекта %d автора %d: %w", projectID, uid, err)
+	}
+	defer rows.Close()
+
+	var out []Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("export: разбор заявки проекта %d автора %d: %w", projectID, uid, err)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("export: список заявок проекта %d автора %d: %w", projectID, uid, err)
+	}
+	return out, nil
+}
+
 // Claim берёт в работу самую старую доступную заявку: свежую из очереди либо
 // «running» с протухшей лизой, у которой ещё остались попытки. SELECT ... FOR
 // UPDATE SKIP LOCKED внутри одного UPDATE — атомарная операция: две
@@ -318,17 +347,38 @@ func (s *Store) Claim(ctx context.Context) (Job, bool, error) {
 // упавшая вместе с инстансом на последней попытке, вечно показывала бы
 // «выполняется» — Claim её больше не тронет (attempts >= maxAttempts), а
 // статус сам себя не поменяет.
-func (s *Store) SweepStale(ctx context.Context) (int, error) {
-	tag, err := s.pool.Exec(ctx, `
+//
+// Возвращает добитые заявки, а не только их число: это единственный
+// терминальный исход фичи, до которого воркер не доходит через
+// fail()/failPermanent() (заявку добивает сам SweepStale, а не Worker.process
+// упавшего вызова) — без снимков здесь автору неоткуда узнать о провале
+// иначе как ручной перезагрузкой страницы выгрузок. Вызывающий (worker.go,
+// Tick) заводит по ним w.notifyFailed так же, как fail()/failPermanent().
+func (s *Store) SweepStale(ctx context.Context) ([]Job, error) {
+	rows, err := s.pool.Query(ctx, `
 		UPDATE export_jobs
 		SET status = 'failed', finished_at = now(),
 		    last_error = 'сборка выгрузки не завершилась за отведённое число попыток'
-		WHERE status = 'running' AND claimed_at < now() - $1::interval AND attempts >= $2`,
+		WHERE status = 'running' AND claimed_at < now() - $1::interval AND attempts >= $2
+		RETURNING `+jobColumns,
 		leaseTTL.String(), maxAttempts)
 	if err != nil {
-		return 0, fmt.Errorf("export: снятие зависших заявок: %w", err)
+		return nil, fmt.Errorf("export: снятие зависших заявок: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	defer rows.Close()
+
+	var out []Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("export: разбор зависшей заявки: %w", err)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("export: снятие зависших заявок: %w", err)
+	}
+	return out, nil
 }
 
 // Fail возвращает заявку в очередь, пока попытки не исчерпаны: ждать

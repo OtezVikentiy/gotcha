@@ -189,8 +189,11 @@ var legitExemptions = []Exemption{
 	{Value: `return Job{}, fmt.Errorf("export: чтение заявки %d: %w", id, err)`, Why: "Get: та же категория — web/exports.go разбирает только errors.Is(ErrNotFound), иначе generic error.internal", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: список заявок проекта %d: %w", projectID, err)`, Why: "ByProject: та же категория, читает страница списка через generic error.internal", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: разбор заявки проекта %d: %w", projectID, err)`, Why: "ByProject: та же категория", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: список заявок проекта %d автора %d: %w", projectID, uid, err)`, Why: "ByProjectForUser: та же категория, что ByProject — читает страница списка через generic error.internal", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: разбор заявки проекта %d автора %d: %w", projectID, uid, err)`, Why: "ByProjectForUser: та же категория, что ByProject", Finding: "по замыслу"},
 	{Value: `return Job{}, false, fmt.Errorf("export: клейм заявки: %w", err)`, Why: "Claim: та же категория, читает только worker.go (Tick → slog.Warn)", Finding: "по замыслу"},
-	{Value: `return 0, fmt.Errorf("export: снятие зависших заявок: %w", err)`, Why: "SweepStale: та же категория, читает только worker.go (Tick → slog.Warn)", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: снятие зависших заявок: %w", err)`, Why: "SweepStale: та же категория, читает только worker.go (Tick → slog.Warn); RETURNING добавлен задачей 2 фикса P0 (письмо на зависших заявках), сигнатура сменилась на []Job — текст обёртки не изменился", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: разбор зависшей заявки: %w", err)`, Why: "SweepStale: разбор строки RETURNING (scanJob) — та же категория, что и у остальных Store-методов со списком (см. DueForExpiry/ByProject выше)", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)`, Why: "Fail: ошибка САМОГО SQL UPDATE (не cause попытки) — читает worker.fail через slog.Warn, в письмо/last_error не попадает", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: завершение заявки %d: %w", id, err)`, Why: "Done: та же категория", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)`, Why: "FailPermanent: та же категория", Finding: "по замыслу"},
@@ -258,7 +261,18 @@ var legitExemptions = []Exemption{
 // Job.FailureReasonKey — ни одна не долетает до посетителя буквально; одна
 // настоящая утечка (сырой job.LastError в {cause} письма) найдена этим же
 // прогоном и починена кодом, а не занесена в исключения.
-const maxLegitExemptions = 94
+//
+// С 94 до 95 финревью фичи E1 (устранение находки P0 «SweepStale добивает
+// заявки мимо Worker.fail — письмо автору не уходит»): SweepStale стала
+// возвращать []Job (RETURNING), у обёртки ошибки Query сменился только тип
+// нулевого значения (0 → nil, текст тот же), плюс одна новая строка на
+// разбор строки RETURNING (scanJob) — та же категория, что и у остальных
+// Store-методов со списком.
+//
+// С 95 до 97 той же волной финревью (находка P2-1, часть в сторе): новый
+// Store.ByProjectForUser — точная копия ByProject с предикатом по автору,
+// две новые строки обёрток ошибок той же категории.
+const maxLegitExemptions = 97
 
 // leakDebtExemptions — временный долг правила: настоящие утечки, найденные
 // первым прогоном на расширенном охвате (восемь записей, находки №132–137

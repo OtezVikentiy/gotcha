@@ -479,6 +479,52 @@ func TestWorkerNotifiesOnFinalRetryableFailure(t *testing.T) {
 	}
 }
 
+// TestWorkerNotifiesOnSweepStale — заявка, зависшая вместе с погибшим
+// инстансом на последней попытке (running, attempts=maxAttempts, лиза
+// протухла), добивается не через fail()/failPermanent() воркера, а через
+// Store.SweepStale в начале Tick — это единственный терминальный исход
+// фичи, о котором Worker.process не узнаёт вовсе. Раньше Tick вызывал
+// SweepStale только ради счётчика и никого не уведомлял: автор заявки не
+// получал письма и не мог узнать об отказе иначе как перезагрузкой страницы
+// выгрузок (см. §9 спеки — письмо обязательно на КАЖДОМ терминальном
+// исходе).
+func TestWorkerNotifiesOnSweepStale(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs
+		SET status='running', attempts=$2, claimed_at = now() - interval '21 minutes'
+		WHERE id=$1`, id, maxAttempts); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	notified := make(chan Job, 1)
+	w := &Worker{Store: st, Pool: pool, Issues: fakeIssues(3), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+	}, Notify: func(ctx context.Context, j Job) { notified <- j }}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	select {
+	case j := <-notified:
+		if j.ID != id || j.Status != StatusFailed {
+			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", j)
+		}
+		if j.FailureReasonKey != reasonInternal {
+			t.Fatalf("FailureReasonKey = %q, want %q", j.FailureReasonKey, reasonInternal)
+		}
+	default:
+		t.Fatal("Notify не вызван после SweepStale")
+	}
+	if len(notified) != 0 {
+		t.Fatalf("Notify вызван более одного раза: ещё %d в очереди", len(notified))
+	}
+}
+
 func TestWorkerLeavesNoPartFileOnPartialWriteFailure(t *testing.T) {
 	// Источник падает НЕ на первой записи — .part к моменту ошибки уже
 	// непустой; проверка, что удаление .part не завязано на «файл пуст».
@@ -937,6 +983,46 @@ func TestWorkerDoesNotFinalizeAfterJobTimeoutExpiresBeforeDone(t *testing.T) {
 	}
 	if j.Status == StatusDone {
 		t.Fatal("заявка завершилась успехом ПОСЛЕ истечения JobTimeout — Done вызван с неограниченным ctx вместо контекста тика")
+	}
+}
+
+// TestWorkerRemovesFileWhenDoneFailsNotStaleClaim воспроизводит ту же гонку,
+// что и TestWorkerDoesNotFinalizeAfterJobTimeoutExpiresBeforeDone (jobCtx
+// истёк между rename и Store.Done), но проверяет другую половину дефекта:
+// Store.Done с уже истёкшим ctx возвращает ошибку контекста, а не
+// ErrStaleClaim (ноль строк там не при чём — pgx не успевает даже уйти в
+// сеть). Раньше уборка finalPath была только в ветке ErrStaleClaim — эта
+// ошибка утекала мимо неё, и файл навсегда оставался на диске при заявке,
+// которую позже добьёт SweepStale в failed (заявка недостижима для
+// скачивания, но место на диске не освобождается вплоть до PurgeRows).
+func TestWorkerRemovesFileWhenDoneFailsNotStaleClaim(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	w := &Worker{Store: st, Pool: pool, Issues: &slowAfterWriteSource{}, Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+		JobTimeout: time.Second, // с запасом над Claim/SweepStale/открытием файла
+	}}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status == StatusDone {
+		t.Fatal("заявка неожиданно завершилась успехом")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("после отказа Done (не ErrStaleClaim) в каталоге выгрузок остался %s", e.Name())
 	}
 }
 

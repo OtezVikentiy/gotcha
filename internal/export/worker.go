@@ -206,8 +206,22 @@ func (w *Worker) Tick(ctx context.Context) error {
 	jobCtx, cancel := context.WithTimeout(ctx, w.Cfg.jobTimeout())
 	defer cancel()
 
-	if _, err := w.Store.SweepStale(jobCtx); err != nil {
+	swept, err := w.Store.SweepStale(jobCtx)
+	if err != nil {
 		slog.Warn("export: воркер: sweep stale", "err", err)
+	}
+	// SweepStale добивает заявки мимо fail()/failPermanent() — это
+	// единственный терминальный исход, о котором Worker.process не узнаёт
+	// (заявку с последней попытки уже никто не финализирует, кроме самого
+	// SweepStale). Без явного оповещения здесь автор не получил бы письма
+	// вовсе, хотя §9 спеки требует его на КАЖДОМ терминальном исходе.
+	// job.LastError уже несёт технический текст причины — SweepStale
+	// проставляет его той же UPDATE, что переводит заявку в failed (см. её
+	// докблок в store.go), отдельная строка здесь не нужна. reasonInternal —
+	// для автора инстанс упал посреди работы, различимого повода нет (то же
+	// обоснование, что у reasonKey == "" в mailPayload, notify.go).
+	for _, job := range swept {
+		w.notifyFailed(jobCtx, job, job.LastError, reasonInternal)
 	}
 
 	job, ok, err := w.Store.Claim(jobCtx)
@@ -271,14 +285,25 @@ func (w *Worker) process(ctx context.Context, job Job) {
 	}
 
 	if err := w.Store.Done(ctx, job.ID, job.Attempts, res.rows, res.bytes, res.truncated, w.Cfg.TTL); err != nil {
-		if errors.Is(err, ErrStaleClaim) {
-			// Лизу потеряли уже после того, как файл лёг на диск: заявка
-			// теперь чужая (или уже кем-то финализирована), а файл без
-			// подтверждённого владельца скачиваемым оставаться не должен.
-			_ = os.Remove(finalPath)
-			return
+		// Файл убирается при ЛЮБОЙ ошибке Done, не только ErrStaleClaim:
+		// строка так и не станет status='done' (эта попытка либо чужая, либо
+		// подтвердить успех не вышло из-за обрыва/таймаута похода в PG), а
+		// скачивание требует именно этот статус (internal/web/exports.go) —
+		// файл недостижим для автора уже сейчас. И ничто не подберёт его
+		// позже: DueForExpiry берёт только status='done' (см. её докблок
+		// выше), removeOrphans джанитора считает сиротой файл БЕЗ строки
+		// (janitor.go), а строка у этого файла есть — просто не в том
+		// статусе. Без явного удаления файл лежит до PurgeRows (30 суток) и
+		// всё это время ест GOTCHA_EXPORT_DISK_BUDGET_BYTES. Повторная
+		// попытка (если она случится) перепишет файл заново через partPath.
+		_ = os.Remove(finalPath)
+		if !errors.Is(err, ErrStaleClaim) {
+			// ErrStaleClaim — ожидаемая гонка (см. комментарий выше по коду,
+			// «Заявку могли удалить...») и не сбой воркера. Любая другая
+			// ошибка (обрыв соединения с PG, таймаут пула, истёкший jobCtx)
+			// — да, логируем её.
+			slog.Warn("export: воркер: завершение заявки", "job_id", job.ID, "err", err)
 		}
-		slog.Warn("export: воркер: завершение заявки", "job_id", job.ID, "err", err)
 		return
 	}
 

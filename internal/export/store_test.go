@@ -336,6 +336,63 @@ func TestByProjectIsolatesOtherProjects(t *testing.T) {
 	}
 }
 
+// TestByProjectForUserIsolatesOtherAuthors — §3 спеки: свои заявки видит
+// автор, а не все заявки проекта. Две заявки одного проекта, разные
+// авторы — выдача несёт только заявку своего автора.
+func TestByProjectForUserIsolatesOtherAuthors(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userA := seedProjectAndUser(t, pool)
+	userB := seedUser(t, pool)
+
+	idA := mustEnqueue(t, st, projectID, userA)
+	mustEnqueueKind(t, st, projectID, userB, KindIssues, FormatCSV)
+
+	got, err := st.ByProjectForUser(ctx, projectID, userA, 50)
+	if err != nil {
+		t.Fatalf("ByProjectForUser: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != idA {
+		t.Fatalf("ByProjectForUser(userA) = %+v, ожидали только заявку %d", ids(got), idA)
+	}
+}
+
+// TestByProjectForUserLimitNotEatenByOthers — фильтр по автору обязан
+// сидеть в самом SQL, а не быть Go-фильтром поверх ByProject: иначе limit
+// съедался бы чужими строками раньше, чем автор увидел бы свою собственную
+// (N чужих заявок новее своей + limit=N вернул бы автору пустую страницу).
+func TestByProjectForUserLimitNotEatenByOthers(t *testing.T) {
+	const n = 5
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, own := seedProjectAndUser(t, pool)
+
+	ownID := mustEnqueue(t, st, projectID, own)
+	other := seedUser(t, pool)
+	for i := 0; i < n+1; i++ {
+		mustEnqueueKind(t, st, projectID, other, KindIssues, FormatCSV)
+	}
+
+	got, err := st.ByProjectForUser(ctx, projectID, own, n)
+	if err != nil {
+		t.Fatalf("ByProjectForUser: %v", err)
+	}
+	found := false
+	for _, j := range got {
+		if j.ID == ownID {
+			found = true
+		}
+		if j.CreatedBy != own {
+			t.Fatalf("ByProjectForUser(own, limit=%d) вернул чужую заявку %d автора %d", n, j.ID, j.CreatedBy)
+		}
+	}
+	if !found {
+		t.Fatalf("ByProjectForUser(own, limit=%d) = %+v, своей заявки %d в выдаче нет — лимит съеден чужими", n, ids(got), ownID)
+	}
+}
+
 // testJob — минимальная валидная заявка для EnqueueLimited/Enqueue-тестов
 // гонки/лимитов: конкретный Kind/Format здесь не важен, важны только
 // ProjectID/CreatedBy.
@@ -612,12 +669,15 @@ func TestSweepStaleFailsExhaustedJob(t *testing.T) {
 		WHERE id=$1`, id); err != nil {
 		t.Fatalf("подготовка: %v", err)
 	}
-	n, err := st.SweepStale(ctx)
+	swept, err := st.SweepStale(ctx)
 	if err != nil {
 		t.Fatalf("SweepStale: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("SweepStale обработал %d заявок, ожидали 1", n)
+	if len(swept) != 1 {
+		t.Fatalf("SweepStale обработал %d заявок, ожидали 1", len(swept))
+	}
+	if swept[0].ID != id || swept[0].Status != StatusFailed || swept[0].LastError == "" {
+		t.Errorf("SweepStale вернул не тот снимок: %+v", swept[0])
 	}
 	got, err := st.Get(ctx, id)
 	if err != nil {
@@ -706,8 +766,8 @@ func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 		WHERE id=$1`, id); err != nil {
 		t.Fatalf("подготовка: %v", err)
 	}
-	if n, err := st.SweepStale(ctx); err != nil || n != 1 {
-		t.Fatalf("SweepStale: n=%d err=%v", n, err)
+	if swept, err := st.SweepStale(ctx); err != nil || len(swept) != 1 {
+		t.Fatalf("SweepStale: len=%d err=%v", len(swept), err)
 	}
 	if err := st.Done(ctx, id, 3, 1, 1, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Done: err=%v, ожидали ErrStaleClaim", err)
