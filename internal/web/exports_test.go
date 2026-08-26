@@ -179,11 +179,6 @@ func (s *exportsStack) getAs(t *testing.T, uid int64, path string) *http.Respons
 	return getWithCookie(t, s.srv, path, s.cookie(t, uid))
 }
 
-func (s *exportsStack) getBody(t *testing.T, uid int64, path string) string {
-	t.Helper()
-	return readAll(t, s.getAs(t, uid, path))
-}
-
 func (s *exportsStack) lastJobID(t *testing.T) int64 {
 	t.Helper()
 	var id int64
@@ -514,15 +509,13 @@ func TestExportsDeleteRemovesFileThenRow(t *testing.T) {
 }
 
 // TestExportsRoutesDisabledWhenExportsNil — h.Exports == nil (выгрузки
-// выключены на инстансе) обязан давать 404 на всех четырёх маршрутах, а не
-// панику разыменования nil-стора.
+// выключены на инстансе) обязан давать 404 на всех трёх маршрутах этой
+// задачи, а не панику разыменования nil-стора. Страница списка
+// (GET /projects/{id}/exports) сюда не входит — она заводится в задаче 11.
 func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	s := newExportsStack(t)
 	s.h.Exports = nil
 
-	if resp := s.getAs(t, s.operatorUID, s.path("/exports")); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("GET /exports = %d, want 404", resp.StatusCode)
-	}
 	if resp := s.postForm(t, s.path("/exports"), okForm); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST /exports = %d, want 404", resp.StatusCode)
 	}

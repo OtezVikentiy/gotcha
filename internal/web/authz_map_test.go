@@ -219,15 +219,16 @@ var routeAuthz = map[string]string{
 	// с CanAccessProject (operate.go) — условие не меняет поведение прямо
 	// сейчас, но не потребует правки ленты, когда роли разъедутся (спека
 	// access-model-rework).
-	"GET /projects/{id}/metrics/alerts":           lvlOperator,
-	"GET /projects/{id}/slos":                     lvlOperator,
-	"GET /projects/{id}/slos/{sloID}":             lvlOperator,
-	"GET /projects/{id}/hosts/settings":           lvlOperator,
-	"GET /projects/{id}/alerts":                   lvlOperator,
-	"GET /projects/{id}/alerts/deliveries":        lvlOperator,
-	"GET /projects/{id}/escalations":              lvlOperator,
-	"GET /projects/{id}/alert-suppression":        lvlOperator,
-	"GET /projects/{id}/exports":                  lvlOperator,
+	"GET /projects/{id}/metrics/alerts":    lvlOperator,
+	"GET /projects/{id}/slos":              lvlOperator,
+	"GET /projects/{id}/slos/{sloID}":      lvlOperator,
+	"GET /projects/{id}/hosts/settings":    lvlOperator,
+	"GET /projects/{id}/alerts":            lvlOperator,
+	"GET /projects/{id}/alerts/deliveries": lvlOperator,
+	"GET /projects/{id}/escalations":       lvlOperator,
+	"GET /projects/{id}/alert-suppression": lvlOperator,
+	// GET /projects/{id}/exports (страница списка) — задача 11: страница,
+	// templ-шаблон и эта запись карты появятся вместе.
 	"GET /projects/{id}/exports/{jobID}/download": lvlOperator,
 	"GET /projects/{id}/monitors/new":             lvlOperator,
 	"GET /monitors/{id}/edit":                     lvlOperator,

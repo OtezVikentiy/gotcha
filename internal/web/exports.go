@@ -3,7 +3,6 @@ package web
 import (
 	"errors"
 	"fmt"
-	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,13 +16,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
-
-// exportsListLimit — потолок списка заявок на странице выгрузок: свежие
-// сверху, без пагинации со сдвигом (тот же приём, что issueEventsLimit,
-// internal/web/issuedetail.go:27). ByProject НЕ санитизирует limit — сюда
-// обязана приходить только эта константа, никогда значение из запроса
-// (отрицательное всплывает сырой ошибкой PostgreSQL).
-const exportsListLimit = 50
 
 // maxActivePerUser/maxActivePerProject — потолки незавершённых (queued+
 // running) заявок: тяжёлая выборка по ClickHouse не должна копиться
@@ -338,98 +330,4 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, exportsPath(projectID), http.StatusSeeOther)
-}
-
-// exportsPage — GET /projects/{id}/exports: список заявок проекта + форма
-// постановки.
-func (h *Handler) exportsPage(w http.ResponseWriter, r *http.Request) {
-	uid, ok := auth.UserID(r.Context())
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	projectID, ok := h.parsePathProjectID(w, r)
-	if !ok {
-		return
-	}
-	if h.Exports == nil {
-		h.notFound(w, r)
-		return
-	}
-	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
-	if !ok {
-		return
-	}
-	jobs, err := h.Exports.ByProject(r.Context(), projectID, exportsListLimit)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	h.renderExportsPage(w, uid, projectID, authz.CanManage, jobs)
-}
-
-// exportRow — заявка, подготовленная для рендера: права на конкретную
-// строку посчитаны один раз здесь, а не в шаблоне.
-type exportRow struct {
-	export.Job
-	CanDownload  bool
-	CanDelete    bool
-	DownloadPath string
-	DeletePath   string
-}
-
-// exportsPageView — данные шаблона exportsPageTemplate.
-type exportsPageView struct {
-	CreatePath string
-	CanManage  bool
-	Jobs       []exportRow
-}
-
-// exportsPageTemplate — временный неоформленный рендер страницы выгрузок:
-// список заявок и форма постановки, без i18n и дизайн-системы проекта.
-// Полноценная страница (templ, кнопки на issues/issuedetail, i18n-ключи
-// exports.*) — задача 11 плана E1 («Страница «Выгрузки», кнопки и i18n»),
-// тем же приёмом, что и заглушки host detail/settings в web.go (план A1,
-// задача 14 → 15/16): здесь — рабочий, но неоформленный код, а не TODO.
-var exportsPageTemplate = template.Must(template.New("exports").Parse(`<!doctype html>
-<title>Exports</title>
-<h1>Exports</h1>
-<form method="post" action="{{.CreatePath}}">
-<select name="kind"><option value="issues">issues</option><option value="events">events</option></select>
-<select name="format"><option value="csv">csv</option><option value="json">json</option><option value="ndjson">ndjson</option></select>
-{{if .CanManage}}<label><input type="checkbox" name="include_pii"> include PII</label>{{end}}
-<button type="submit">Create</button>
-</form>
-<table>
-<thead><tr><th>ID</th><th>Kind</th><th>Format</th><th>Status</th><th>Rows</th><th>Truncated</th><th>Actions</th></tr></thead>
-<tbody>
-{{range .Jobs}}<tr>
-<td>{{.ID}}</td><td>{{.Kind}}</td><td>{{.Format}}</td><td>{{.Status}}</td><td>{{.RowsWritten}}</td><td>{{if .Truncated}}truncated{{end}}</td>
-<td>{{if .CanDownload}}<a href="{{.DownloadPath}}">download</a>{{end}} {{if .CanDelete}}<form method="post" action="{{.DeletePath}}"><button type="submit">delete</button></form>{{end}}</td>
-</tr>{{else}}<tr><td colspan="7">no exports yet</td></tr>{{end}}
-</tbody>
-</table>
-`))
-
-// renderExportsPage выполняет exportsPageTemplate — единственное место, где
-// считаются CanDownload/CanDelete построчно (owns = автор либо CanManage,
-// тот же критерий, что и в exportsDownload/exportsDelete).
-func (h *Handler) renderExportsPage(w http.ResponseWriter, uid, projectID int64, canManage bool, jobs []export.Job) {
-	rows := make([]exportRow, 0, len(jobs))
-	for _, j := range jobs {
-		owns := j.CreatedBy == uid || canManage
-		rows = append(rows, exportRow{
-			Job:          j,
-			CanDownload:  owns && j.Status == export.StatusDone,
-			CanDelete:    owns && j.Status.Terminal(),
-			DownloadPath: fmt.Sprintf("%s/%d/download", exportsPath(projectID), j.ID),
-			DeletePath:   fmt.Sprintf("%s/%d/delete", exportsPath(projectID), j.ID),
-		})
-	}
-	view := exportsPageView{CreatePath: exportsPath(projectID), CanManage: canManage, Jobs: rows}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := exportsPageTemplate.Execute(w, view); err != nil {
-		slog.Error("exportsPage: render", "err", err)
-	}
 }

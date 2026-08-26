@@ -685,8 +685,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Выгрузки ошибок/событий (E1, задача 10): постановка заявки, скачивание
 	// готового файла, удаление терминальной заявки — тот же оператор-гейт,
 	// что у alert-suppression выше, с дополнительной проверкой авторства/
-	// CanManage внутри download/delete (exports.go).
-	inner.Handle("GET /projects/{id}/exports", h.requireUser(http.HandlerFunc(h.exportsPage)))
+	// CanManage внутри download/delete (exports.go). Страница списка
+	// (GET /projects/{id}/exports, exportsPage) — задача 11, вместе с
+	// templ-шаблоном и i18n; здесь её нет намеренно.
 	inner.Handle("POST /projects/{id}/exports", h.requireUser(http.HandlerFunc(h.exportsCreate)))
 	inner.Handle("GET /projects/{id}/exports/{jobID}/download", h.requireUser(http.HandlerFunc(h.exportsDownload)))
 	inner.Handle("POST /projects/{id}/exports/{jobID}/delete", h.requireUser(http.HandlerFunc(h.exportsDelete)))
