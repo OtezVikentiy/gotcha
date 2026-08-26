@@ -63,16 +63,16 @@ func seedProjectAndUser(t *testing.T, pool *pgxpool.Pool) (projectID, userID int
 // тестов, которым важен только факт наличия заявки, а не её содержимое.
 func mustEnqueue(t *testing.T, st *Store, projectID, userID int64) int64 {
 	t.Helper()
-	return mustEnqueueKind(t, st, projectID, userID, KindIssues)
+	return mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
 }
 
-// mustEnqueueKind — как mustEnqueue, но с явным видом выгрузки.
-func mustEnqueueKind(t *testing.T, st *Store, projectID, userID int64, kind Kind) int64 {
+// mustEnqueueKind — как mustEnqueue, но с явным видом и форматом выгрузки.
+func mustEnqueueKind(t *testing.T, st *Store, projectID, userID int64, kind Kind, format Format) int64 {
 	t.Helper()
 	now := time.Now().UTC()
 	id, err := st.Enqueue(context.Background(), Job{
 		ProjectID: projectID, CreatedBy: userID,
-		Kind: kind, Format: FormatCSV,
+		Kind: kind, Format: format,
 		Params: Params{Since: now.Add(-time.Hour), Until: now},
 	})
 	if err != nil {
@@ -890,5 +890,54 @@ func TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce(t *testing.T) {
 	}
 	if got.Attempts != 2 {
 		t.Errorf("после единственного переклейма attempts=%d, ожидали 2", got.Attempts)
+	}
+}
+
+// TestFailPermanentIgnoresAttempts — в отличие от Fail, FailPermanent обязан
+// закрыть заявку сразу, а не вернуть её в очередь: первая попытка (attempts=1,
+// меньше maxAttempts=3) через обычный Fail ушла бы обратно в 'queued', и
+// именно поэтому воркер зовёт FailPermanent для причин, которые повтор не
+// исправит.
+func TestFailPermanentIgnoresAttempts(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, ok, err := st.Claim(ctx); err != nil || !ok {
+		t.Fatalf("Claim: ok=%v err=%v", ok, err)
+	}
+
+	if err := st.FailPermanent(ctx, id, "на диске не осталось места"); err != nil {
+		t.Fatalf("FailPermanent: %v", err)
+	}
+
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusFailed {
+		t.Fatalf("статус %q, ожидали failed невзирая на attempts=%d < maxAttempts", got.Status, got.Attempts)
+	}
+	if got.Attempts != 1 {
+		t.Errorf("FailPermanent не должен трогать attempts: %d", got.Attempts)
+	}
+	if got.LastError != "на диске не осталось места" {
+		t.Errorf("last_error = %q", got.LastError)
+	}
+	if got.FinishedAt == nil {
+		t.Error("finished_at не выставлен")
+	}
+}
+
+// TestFailPermanentUnknownIDIsNoop — постоянный отказ заявки, которую успели
+// удалить, не должен считаться ошибкой воркера: заявки уже нет, беспокоиться
+// не о чем.
+func TestFailPermanentUnknownIDIsNoop(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	if err := st.FailPermanent(ctx, 0, "не важно"); err != nil {
+		t.Fatalf("FailPermanent по несуществующему id вернул ошибку: %v", err)
 	}
 }

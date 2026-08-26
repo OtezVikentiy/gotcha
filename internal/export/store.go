@@ -257,6 +257,23 @@ func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int
 	return nil
 }
 
+// FailPermanent закрывает заявку без права на повтор: причина не устранится
+// следующей попыткой (бюджет диска исчерпан, фильтр резолвится в слишком
+// много групп) — три бессмысленных повтора только оттянут момент, когда
+// человек увидит внятную причину. В отличие от Fail, attempts не участвует в
+// условии: вызывающий держит заявку по факту собственного успешного Claim в
+// этом же тике, и ждать протухания лизы, чтобы её потом добил SweepStale,
+// незачем — отказ известен здесь и сейчас.
+func (s *Store) FailPermanent(ctx context.Context, id int64, cause string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE export_jobs
+		SET status = 'failed', finished_at = now(), last_error = $2
+		WHERE id = $1`, id, cause); err != nil {
+		return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)
+	}
+	return nil
+}
+
 // Delete сносит только досчитанную заявку: у queued/running в этот момент
 // может писаться файл, и удаление строки разъехалось бы с воркером. Тот же
 // ErrNotDeletable возвращается и для несуществующего id — с точки зрения
