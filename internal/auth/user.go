@@ -167,6 +167,39 @@ func (s *Service) UserEmail(ctx context.Context, userID int64) (string, error) {
 	return email, nil
 }
 
+// UserEmails — то же, что UserEmail, но батчем по нескольким id одним
+// запросом (WHERE id = ANY($1)): для страниц-списков, где email нужен на
+// каждую строку (напр. автор заявки на странице выгрузок), — иначе N строк
+// дают N запросов в PG на один рендер (ревью веб-части E1, п.5). Не
+// найденные id в возвращаемой карте просто отсутствуют — вызывающий решает
+// сам, как показывать «неизвестного» автора (тот же принцип, что и
+// UserEmail: ошибка/отсутствие строки не паникует и не роняет страницу).
+// Пустой ids возвращает пустую карту без похода в БД.
+func (s *Service) UserEmails(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		"SELECT id, email FROM users WHERE id = ANY($1)", ids)
+	if err != nil {
+		return nil, fmt.Errorf("auth: user emails: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var email string
+		if err := rows.Scan(&id, &email); err != nil {
+			return nil, fmt.Errorf("auth: user emails: scan: %w", err)
+		}
+		out[id] = email
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: user emails: %w", err)
+	}
+	return out, nil
+}
+
 // ChangePassword проверяет старый пароль, валидирует новый по тем же
 // правилам, что и Register, и обновляет хеш. Удаляет ВСЕ сессии
 // пользователя (включая ту, из которой пришёл запрос) — вызывающий хендлер
