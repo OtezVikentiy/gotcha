@@ -21,18 +21,19 @@ const (
 	// недоступен, диск полон), а не о случайный сбой — дальше её добивает
 	// SweepStale, а не бесконечный переклейм.
 	maxAttempts = 3
+	// janitorBatchSize — потолок строк на один SQL-проход джанитора
+	// (выборка/удаление пачками): один оператор на весь накопленный хвост
+	// держал бы блокировку на таблице, по которой в это же время идёт приём
+	// новых заявок. Значение по умолчанию для поля Store.batchSize,
+	// проставляемое в NewStore: лимит — поле структуры, а не пакетная
+	// переменная (тот же паттерн, что у eventSource.maxIssueIDs в
+	// source_events.go), чтобы тест на переход через границу батча не делил
+	// изменяемое глобальное состояние с остальными тестами пакета (мина под
+	// будущий t.Parallel()) — вместо этого тест собирает Store напрямую с
+	// нужным значением поля. Не приходит от вызывающего извне и не
+	// конфигурируется из env/Config — это внутренняя деталь стора.
+	janitorBatchSize = 500
 )
-
-// janitorBatchSize — лимит на один SQL-проход джанитора (выборка/удаление
-// пачками). Значение всегда берётся из переменной пакета, а не извне:
-// вызывающий не должен иметь возможности запросить неограниченный проход,
-// который надолго заблокирует таблицу под приёмом заявок.
-//
-// Оформлен как var, а не const: тесту многобатчевого прохода
-// (TestPurgeRowsContinuesBeyondBatch) нужно временно занизить его, чтобы
-// пройти границу батча без заведения тысяч тестовых строк. На проде значение
-// не меняется.
-var janitorBatchSize = 500
 
 var (
 	// ErrNotFound — заявки с таким id нет в таблице.
@@ -50,10 +51,31 @@ var (
 // Store — очередь заявок на выгрузку поверх таблицы export_jobs.
 type Store struct {
 	pool *pgxpool.Pool
+	// batchSize — лимит пачки для DueForExpiry/PurgeRows (см. комментарий
+	// к janitorBatchSize). Тест переприсваивает поле напрямую при сборке
+	// Store, боевой код — всегда дефолт из NewStore. Читать не напрямую, а
+	// через batch(): нулевое (или отрицательное) значение — не валидный
+	// лимит, а признак стора, собранного в обход NewStore, и трактуется как
+	// "используй дефолт".
+	batchSize int
 }
 
 // NewStore создаёт стор поверх пула PostgreSQL.
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool, batchSize: janitorBatchSize} }
+
+// batch возвращает действующий лимит пачки: batchSize<=0 (стор собран
+// литералом &Store{pool: pool} в обход NewStore — так делает, например,
+// TestPurgeRowsContinuesBeyondBatch с другим значением) трактуется как
+// "дефолт", а не как "нуль". Без этой защиты DueForExpiry/PurgeRows ушли бы
+// в LIMIT 0: PurgeRows зациклился бы навечно (0 удалённых строк никогда не
+// меньше нулевого предела), а DueForExpiry молча перестал бы что-либо
+// находить.
+func (s *Store) batch() int {
+	if s.batchSize <= 0 {
+		return janitorBatchSize
+	}
+	return s.batchSize
+}
 
 // jobColumns — общий порядок колонок для Get/ByProject; scanJob разбирает
 // строку строго в этом порядке.
@@ -321,7 +343,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 func (s *Store) DueForExpiry(ctx context.Context) ([]Job, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
 		FROM export_jobs WHERE status = 'done' AND expires_at < now()
-		ORDER BY expires_at LIMIT $1`, janitorBatchSize)
+		ORDER BY expires_at LIMIT $1`, s.batch())
 	if err != nil {
 		return nil, fmt.Errorf("export: заявки на истечение срока: %w", err)
 	}
@@ -375,13 +397,13 @@ func (s *Store) PurgeRows(ctx context.Context, olderThan time.Duration) (int, er
 				SELECT id FROM export_jobs
 				WHERE status IN ('done','failed','expired') AND finished_at < $1
 				LIMIT $2
-			)`, cutoff, janitorBatchSize)
+			)`, cutoff, s.batch())
 		if err != nil {
 			return total, fmt.Errorf("export: чистка старых заявок: %w", err)
 		}
 		n := int(tag.RowsAffected())
 		total += n
-		if n < janitorBatchSize {
+		if n < s.batch() {
 			return total, nil
 		}
 		// Между пачками уступаем: проход не должен монополизировать базу.

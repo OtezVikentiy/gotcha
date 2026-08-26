@@ -1119,16 +1119,15 @@ func TestPurgeRowsRemovesOnlyOldTerminal(t *testing.T) {
 }
 
 // TestPurgeRowsContinuesBeyondBatch — цикл обязан пройти больше одного
-// батча: janitorBatchSize временно занижается до 2, строк — пять, значит без
-// продолжения цикла после первого батча часть строк осталась бы жить.
+// батча: Store собирается напрямую с заниженным batchSize=2, строк — пять,
+// значит без продолжения цикла после первого батча часть строк осталась бы
+// жить. Store собран как литерал структуры (тот же приём, что у
+// eventSource в source_events_test.go), а не через NewStore — так тест не
+// делит изменяемое глобальное состояние с остальными тестами пакета.
 func TestPurgeRowsContinuesBeyondBatch(t *testing.T) {
-	origBatch := janitorBatchSize
-	janitorBatchSize = 2
-	defer func() { janitorBatchSize = origBatch }()
-
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
-	st := NewStore(pool)
+	st := &Store{pool: pool, batchSize: 2}
 	projectID, userID := seedProjectAndUser(t, pool)
 
 	const total = 5
@@ -1147,12 +1146,56 @@ func TestPurgeRowsContinuesBeyondBatch(t *testing.T) {
 		t.Fatalf("PurgeRows: %v", err)
 	}
 	if n != total {
-		t.Fatalf("PurgeRows удалил %d из %d — цикл остановился на первом батче (лимит %d)", n, total, janitorBatchSize)
+		t.Fatalf("PurgeRows удалил %d из %d — цикл остановился на первом батче (лимит %d)", n, total, st.batchSize)
 	}
 	for _, id := range ids {
 		if _, err := st.Get(ctx, id); err != ErrNotFound {
 			t.Errorf("строка %d не вычищена: err=%v", id, err)
 		}
+	}
+}
+
+// TestPurgeRowsZeroBatchSizeUsesDefault — Store, собранный литералом в обход
+// NewStore (batchSize остаётся нулевым значением поля), не должен превращать
+// PurgeRows в вечный цикл: DELETE ... LIMIT 0 всегда удаляет 0 строк, и без
+// защиты `0 < 0` никогда не становится истиной — цикл продолжался бы,
+// молотя базу впустую, пока не отменят ctx. Тест ограничивает ctx коротким
+// дедлайном и требует, чтобы вызов гарантированно завершился в разумное
+// время: зависание здесь означает регрессию guard'а в batch(), а не просто
+// медленный проход.
+func TestPurgeRowsZeroBatchSizeUsesDefault(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pool := testenv.MigratedPG(t)
+	st := &Store{pool: pool} // batchSize не задан — нулевое значение поля
+
+	projectID, userID := seedProjectAndUser(t, pool)
+	oldID := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='failed',
+		finished_at = now() - interval '40 days' WHERE id = $1`, oldID); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		n, err := st.PurgeRows(ctx, 30*24*time.Hour)
+		done <- result{n: n, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("PurgeRows: %v", r.err)
+		}
+		if r.n != 1 {
+			t.Fatalf("PurgeRows(batchSize=0) удалил %d строк, ожидали 1 — дефолт из batch() не подхватился", r.n)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("PurgeRows с нулевым batchSize не завершился за 8с — похоже на вечный цикл (LIMIT 0)")
 	}
 }
 
