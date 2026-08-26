@@ -38,18 +38,23 @@ type Incident struct {
 	AcknowledgedAt *time.Time
 	AcknowledgedBy *int64
 	Severity       string
+	// SuppressedByDep — инцидент подавлен упавшим задекларированным
+	// родителем (B5, флаг ставит depsuppress.Suppressor.MarkSuppressed).
+	// До D3 поле не читалось UI и в структуру не поднималось; теперь его
+	// показывает бейдж «подавлен зависимостью» (лента/карточка хоста).
+	SuppressedByDep bool
 }
 
 const incidentColumns = `id, project_id, host_id, kind, status, current_value, peak_value,
 	detail, started_at, resolved_at, in_maintenance, notified_open, notified_close,
-	acknowledged_at, acknowledged_by, severity`
+	acknowledged_at, acknowledged_by, severity, suppressed_by_dep`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var in Incident
 	err := row.Scan(&in.ID, &in.ProjectID, &in.HostID, &in.Kind, &in.Status,
 		&in.CurrentValue, &in.PeakValue, &in.Detail,
 		&in.StartedAt, &in.ResolvedAt, &in.InMaintenance, &in.NotifiedOpen, &in.NotifiedClose,
-		&in.AcknowledgedAt, &in.AcknowledgedBy, &in.Severity)
+		&in.AcknowledgedAt, &in.AcknowledgedBy, &in.Severity, &in.SuppressedByDep)
 	return in, err
 }
 
@@ -290,8 +295,18 @@ func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID
 func (s *IncidentService) Name() string { return "host" }
 
 // OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
-// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
-// host_incidents_esc_pending_idx (0077).
+// планировщика эскалации (T7). suppressed_by_dep=false (B5). Члены ОТКРЫТЫХ
+// групп исключаются (D3 Р5): информирование берёт на себя корень; удалённая
+// группа (висячий group_id, LEFT JOIN даёт NULL) ≡ закрытая. Для бывшего
+// члена закрытой группы база отсчёта лесенки — момент освобождения:
+// StartedAt = GREATEST(started_at, g.resolved_at) (анти-залп BLOCKER-1:
+// elapsed планировщика считается от StartedAt, и член, просидевший в группе
+// часы, иначе получил бы всю лесенку очередью за 2-3 тика).
+// Осознанно (фикс ревью плана m-1): фильтр не различает informing/немой
+// корень — член НЕМОГО корня уведомил сам (step0 из оценщика), но step1+
+// через планировщик пойдут только после закрытия группы. На практике окно
+// сужено: немой uptime-корень в maintenance ⇒ tickOne и так гейтит проект;
+// host-члены немых корней обычно на B5-гейте. Не баг — буква спеки §4.2.
 //
 // suppressed_by_dep = false (B5, T4/T5): инцидент, у чьего хоста есть
 // задекларированный родитель, эскалацию не продвигает — планировщик деп-
@@ -300,10 +315,14 @@ func (s *IncidentService) Name() string { return "host" }
 // Suppressor.MarkSuppressed, а не этот пакет (см. depChecker в evaluator.go).
 func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, project_id, started_at, severity, escalation_level
-		FROM host_incidents
-		WHERE status = 'open' AND acknowledged_at IS NULL AND suppressed_by_dep = false
-		ORDER BY id`)
+		SELECT i.id, i.project_id,
+		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at)) AS started_at,
+		       i.severity, i.escalation_level
+		FROM host_incidents i
+		LEFT JOIN incident_groups g ON g.id = i.group_id
+		WHERE i.status = 'open' AND i.acknowledged_at IS NULL AND i.suppressed_by_dep = false
+		  AND (i.group_id IS NULL OR g.id IS NULL OR g.resolved_at IS NOT NULL)
+		ORDER BY i.id`)
 	if err != nil {
 		return nil, fmt.Errorf("host: open unacked incidents: %w", err)
 	}

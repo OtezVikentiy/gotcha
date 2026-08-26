@@ -312,6 +312,13 @@ var permanentCSSClassExemptions = []Exemption{
 // ступенями и dry-run-блок (.escalation-step, .escalation-dryrun,
 // .escalation-dryrun-list) получили реальные правила в app.css, в список
 // исключений не попали.
+//
+// 86→84 (D3, волна устранения): лента инцидентов сначала внесла
+// "incident-feed" и "feed-group" в исключения с обоснованием «раскрытие —
+// нативный <details>/<summary> без своего стиля». Аудит признал это
+// неверным: все прочие раскрываемые блоки продукта стилизованы, и страница
+// на их фоне читалась как чужая. Карточка группы получила реальные правила
+// в app.css, оба исключения сняты.
 const maxPermanentCSSClassExemptions = 84
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего

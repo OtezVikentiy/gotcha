@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +27,14 @@ const (
 	// HostNotifier.HostRetired и Retirer).
 	hostRetiredKind = "host_retired"
 )
+
+// depCounter — счётчик задекларированных детей узла (D3 Р9,
+// depsuppress.Suppressor.DeclaredChildrenCount). Duck-typed, как Notifier у
+// Evaluator: пакету host не нужен весь Suppressor, а nil-значение законно —
+// уведомления не зависят от D3.
+type depCounter interface {
+	DeclaredChildrenCount(ctx context.Context, kind string, nodeID int64) (int, error)
+}
 
 // HostNotifier рассылает уведомления об открытии/закрытии встроенных
 // инцидентов хоста (диск/память/нагрузка/тишина) через общий outbox по
@@ -56,6 +65,12 @@ type HostNotifier struct {
 	// эскалации incident_escalations (B4, T6, миграция 0077) после каждого
 	// успешного Enqueue в NotifyStep.
 	Pool *pgxpool.Pool
+
+	// DepCounts — источник числа задекларированных детей хоста для строки
+	// «Зависимых узлов: N» в open-уведомлении инцидента недоступности (D3
+	// Р9, см. depsLine). nil — строки нет; Retirer-экземпляр в main.go
+	// оставляет поле пустым намеренно (он шлёт только retire/close).
+	DepCounts depCounter
 }
 
 // HostIncidentOpened реализует host.Notifier: инцидент открыт, ставит задачу
@@ -167,9 +182,28 @@ func (n *HostNotifier) send(ctx context.Context, in Incident, h Host, opened boo
 	}
 	_, err := n.dispatch(ctx, in.ProjectID, kind,
 		hostSubject(ctx, in, h, opened),
-		hostBody(ctx, in, h, opened, threshold, hasThreshold, link),
+		hostBody(ctx, in, h, opened, threshold, hasThreshold, link, n.depsLine(ctx, in, h)),
 		link, extra, nil)
 	return err
+}
+
+// depsLine — строка «Зависимых узлов: N» для open-уведомления инцидента
+// НЕДОСТУПНОСТИ (kind='silent', Р9): N — число задекларированных детей
+// одного уровня (нейтральная формулировка MINOR-7). Пусто при N=0, ошибке
+// или отсутствии счётчика — уведомление не должно зависеть от D3.
+func (n *HostNotifier) depsLine(ctx context.Context, in Incident, h Host) string {
+	if n.DepCounts == nil || in.Kind != "silent" {
+		return ""
+	}
+	cnt, err := n.DepCounts.DeclaredChildrenCount(ctx, "host", h.ID)
+	if err != nil {
+		slog.Warn("host: notify: declared children count failed", "host_id", h.ID, "error", err)
+		return ""
+	}
+	if cnt == 0 {
+		return ""
+	}
+	return i18n.Tf(ctx, "notify.host.deps_affected", "count", strconv.Itoa(cnt))
 }
 
 // NotifyStep — эскалационное уведомление открытого инцидента хоста (B4, T6):
@@ -222,7 +256,7 @@ func (n *HostNotifier) NotifyStep(ctx context.Context, incidentID int64, channel
 	}
 	return n.dispatch(ctx, in.ProjectID, hostAlertOpenKind,
 		hostSubject(ctx, in, h, true),
-		hostBody(ctx, in, h, true, threshold, hasThreshold, link),
+		hostBody(ctx, in, h, true, threshold, hasThreshold, link, n.depsLine(ctx, in, h)),
 		link, extra, channelIDs)
 }
 
@@ -261,7 +295,7 @@ func (n *HostNotifier) NotifyRecovery(ctx context.Context, incidentID int64, cha
 	}
 	_, err = n.dispatch(ctx, in.ProjectID, hostAlertResolvedKind,
 		hostSubject(ctx, in, h, false),
-		hostBody(ctx, in, h, false, 0, false, link),
+		hostBody(ctx, in, h, false, 0, false, link, ""),
 		link, extra, channelIDs)
 	return err
 }
@@ -386,7 +420,7 @@ func hostSubject(ctx context.Context, in Incident, h Host, opened bool) string {
 	return i18n.Tf(ctx, key, "host", h.Name, "kind", i18n.T(ctx, "hosts.kind."+in.Kind))
 }
 
-func hostBody(ctx context.Context, in Incident, h Host, opened bool, threshold float64, hasThreshold bool, link string) string {
+func hostBody(ctx context.Context, in Incident, h Host, opened bool, threshold float64, hasThreshold bool, link, depsLine string) string {
 	kindLabel := i18n.T(ctx, "hosts.kind."+in.Kind)
 	value := ValueLabel(ctx, in.Kind, in.CurrentValue)
 
@@ -406,7 +440,8 @@ func hostBody(ctx context.Context, in Incident, h Host, opened bool, threshold f
 		}
 		return i18n.Tf(ctx, "notify.host_alert_open.body",
 			"host", h.Name, "kind", kindLabel, "value", value,
-			"threshold_line", thresholdLine, "detail_line", detailLine, "url", link)
+			"threshold_line", thresholdLine, "detail_line", detailLine,
+			"deps_line", depsLine, "url", link)
 	}
 	return i18n.Tf(ctx, "notify.host_alert_resolved.body",
 		"host", h.Name, "kind", kindLabel, "value", value,

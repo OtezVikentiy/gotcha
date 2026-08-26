@@ -71,6 +71,13 @@ func (f *fakeDepChecker) ParentDown(_ context.Context, _ string, _ int64) (bool,
 	return f.parentDown, f.parentDownErr
 }
 
+// DownRoot — not exercised by the T7 FSM tests in this file (none set
+// IncidentGroups, so openIncident's DownRoot branch is never reached);
+// stubbed found=false so it stays a safe no-op default.
+func (f *fakeDepChecker) DownRoot(_ context.Context, _ string, _ int64) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
 func (f *fakeDepChecker) setParentDown(v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

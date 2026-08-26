@@ -191,12 +191,27 @@ func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID
 func (s *IncidentService) Name() string { return "metric" }
 
 // OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
-// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
-// metric_incidents_esc_pending_idx (0077).
+// планировщика эскалации (T7). Члены ОТКРЫТЫХ групп исключаются (D3 Р5):
+// информирование берёт на себя корень; удалённая группа (висячий group_id,
+// LEFT JOIN даёт NULL) ≡ закрытая. Для бывшего члена закрытой группы база
+// отсчёта лесенки — момент освобождения: StartedAt = GREATEST(started_at,
+// g.resolved_at) (анти-залп BLOCKER-1: elapsed планировщика считается от
+// StartedAt, и член, просидевший в группе часы, иначе получил бы всю
+// лесенку очередью за 2-3 тика).
+// Осознанно (фикс ревью плана m-1): фильтр не различает informing/немой
+// корень — член НЕМОГО корня уведомил сам (step0 из оценщика), но step1+
+// через планировщик пойдут только после закрытия группы. Не баг — буква
+// спеки §4.2.
 func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, project_id, started_at, severity, escalation_level
-		FROM metric_incidents WHERE status = 'open' AND acknowledged_at IS NULL ORDER BY id`)
+		SELECT i.id, i.project_id,
+		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at)) AS started_at,
+		       i.severity, i.escalation_level
+		FROM metric_incidents i
+		LEFT JOIN incident_groups g ON g.id = i.group_id
+		WHERE i.status = 'open' AND i.acknowledged_at IS NULL
+		  AND (i.group_id IS NULL OR g.id IS NULL OR g.resolved_at IS NOT NULL)
+		ORDER BY i.id`)
 	if err != nil {
 		return nil, fmt.Errorf("metric: open unacked incidents: %w", err)
 	}

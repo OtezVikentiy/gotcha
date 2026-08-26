@@ -46,7 +46,7 @@ func TestHostNotifyRussianTextsQuoteEveryKind(t *testing.T) {
 		for _, key := range keys {
 			got := i18n.Tf(ctx, key, "host", "web-01", "kind", label,
 				"value", "95.0%", "threshold_line", "", "detail_line", "",
-				"url", "https://gotcha.example/x")
+				"deps_line", "", "url", "https://gotcha.example/x")
 			if !strings.Contains(got, "«"+label+"»") {
 				t.Errorf("[%s] вид %q подставлен без кавычек-ёлочек: %q", key, kind, got)
 			}

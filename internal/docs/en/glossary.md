@@ -34,6 +34,10 @@ A short dictionary of Gotcha's terms — from organizations and projects to prof
 
 **Incident** — a period during which a monitor or a regression signal is considered "down": it has a start, an optional end, and a history of checks/events within it. An incident can trigger an alert and update a public status page.
 
+**Incident group** — incidents from several sources (hosts, uptime, `host`-labeled metric thresholds, uptime-type SLOs) whose nodes are chained through downed dependencies to one root incident. While the root is open and informing, group members hold back their own notifications — the on-call engineer sees one message instead of a storm. More: [Incident groups](/docs/incident-groups).
+
+**Root incident** — an availability incident of a node (a silent host or a down uptime monitor) that an incident group is built around; threshold incidents of a host (disk/memory/load) never become roots. More: [Incident groups](/docs/incident-groups).
+
 **Alert channel** — a delivery method for notifications: email, webhook, or a Telegram bot. Configured once per project and reused across multiple rules.
 
 **Alert rule** — a condition to react to: a new issue, a regression (an issue reopening), a spike in errors over a time window, or a metric crossing a threshold. Attached to one or more delivery channels; a given rule's firings are throttled so the team isn't flooded with duplicates. More: [Alerts](/docs/alerts).

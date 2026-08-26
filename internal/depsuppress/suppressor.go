@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -435,4 +436,149 @@ func parentIsDown(e Edge, snap *snapshot) bool {
 		return snap.downMonitors[*e.ParentMonitorID]
 	}
 	return false
+}
+
+// DownRoot возвращает down-корень узла (kind, nodeID) — топового упавшего
+// предка, якорящего подавление ветки (D3, единый предикат членства групп):
+// упавший узел без единого упавшего родителя, достижимый от узла по СЕЙЧАС
+// упавшим родителям. Если сам узел упал, а упавших предков у него нет —
+// корень он сам — в том числе когда узел состоит в цикле упавших: член
+// цикла пейджит (ParentDown у него false), значит он же и якорит свою
+// группу. found=false — упавшего корня нет: узел ЖИВ, и все пути вверх
+// либо обрываются на живых, либо зациклились без упавшего корня (то же
+// поведение, что у ParentDown: цикл сам по себе не назначается корнем).
+// Детерминизм при нескольких верхних корнях: host прежде monitor, затем
+// меньший id. Тот же 5с-кеш снимка, что у HasParent/ParentDown.
+func (s *Suppressor) DownRoot(ctx context.Context, kind string, nodeID int64) (rootKind string, rootID int64, found bool, err error) {
+	snap, err := s.getSnapshot(ctx)
+	if err != nil {
+		return "", 0, false, err
+	}
+	root, ok := downRootFromSnapshot(snap, node{kind: kind, id: nodeID})
+	if !ok {
+		return "", 0, false, nil
+	}
+	return root.kind, root.id, true, nil
+}
+
+// downRootFromSnapshot — чистая часть DownRoot: обход вверх по упавшим
+// родителям (та же машинерия, что parentDownFromSnapshot — итеративно,
+// visited-множество, цикло-устойчиво), но с СБОРОМ всех достижимых
+// down-корней и детерминированным выбором одного.
+func downRootFromSnapshot(snap *snapshot, start node) (node, bool) {
+	var roots []node
+	visited := map[node]bool{start: true}
+	stack := append([]node{}, downParents(snap, start)...)
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if visited[p] {
+			continue
+		}
+		visited[p] = true
+		pp := downParents(snap, p)
+		if len(pp) == 0 {
+			roots = append(roots, p) // p — down-корень
+			continue
+		}
+		stack = append(stack, pp...)
+	}
+	if len(roots) == 0 {
+		if nodeIsDown(snap, start) {
+			return start, true // сам узел упал, упавших предков нет — корень он
+		}
+		return node{}, false
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		if roots[i].kind != roots[j].kind {
+			return roots[i].kind < roots[j].kind // "host" < "monitor"
+		}
+		return roots[i].id < roots[j].id
+	})
+	return roots[0], true
+}
+
+// nodeIsDown — узел в состоянии «упал» по снимку.
+func nodeIsDown(snap *snapshot, n node) bool {
+	switch n.kind {
+	case "host":
+		return snap.downHosts[n.id]
+	case "monitor":
+		return snap.downMonitors[n.id]
+	default:
+		return false
+	}
+}
+
+// Invalidate сбрасывает кеш-на-тик: следующий getSnapshot перезагрузит
+// снимок целиком. Нужен ретро-присоединению (D3, Grouper.OnRootOpened):
+// только что открытый корневой инцидент ещё не виден снимку возрастом до
+// cacheTTL, и перебор кандидатов по устаревшему снимку молча пропустил бы
+// всех членов.
+func (s *Suppressor) Invalidate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache = nil
+}
+
+// DeclaredChildrenCount — число задекларированных детей ОДНОГО уровня узла
+// (kind, nodeID) по рёбрам/label-селекторам: строка «Зависимых узлов: N» в
+// уведомлении корня (D3 Р9, нейтральная формулировка MINOR-7 — именно
+// декларированные дети, не «затронутые», без транзитивности и без учёта
+// фактического состояния). Данные — тот же снимок (паттерн загрузчиков
+// snapshot'а, уточнение MINOR-7).
+func (s *Suppressor) DeclaredChildrenCount(ctx context.Context, kind string, nodeID int64) (int, error) {
+	snap, err := s.getSnapshot(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return declaredChildrenFromSnapshot(snap, node{kind: kind, id: nodeID}), nil
+}
+
+// declaredChildrenFromSnapshot — чистая часть DeclaredChildrenCount: дедуп
+// по узлам (несколько рёбер/селекторов на один узел — один ребёнок),
+// label-селекторы разворачиваются по хостам ТОГО ЖЕ проекта, что и ребро
+// (та же тенант-изоляция, что в edgeMatchesChild), self исключается
+// (симметрия previewExpandLabel, MAJOR-5).
+func declaredChildrenFromSnapshot(snap *snapshot, self node) int {
+	seen := map[node]bool{}
+	for _, e := range snap.edges {
+		p := parentNode(e)
+		if p == nil || *p != self {
+			continue
+		}
+		switch {
+		case e.ChildHostID != nil:
+			c := node{kind: "host", id: *e.ChildHostID}
+			if c != self {
+				seen[c] = true
+			}
+		case e.ChildMonitorID != nil:
+			c := node{kind: "monitor", id: *e.ChildMonitorID}
+			if c != self {
+				seen[c] = true
+			}
+		case e.ChildLabelScope != nil && e.ChildLabelValue != nil:
+			for hid, lbl := range snap.hostLabels {
+				if lbl.projectID != e.ProjectID {
+					continue
+				}
+				var v string
+				switch *e.ChildLabelScope {
+				case "env":
+					v = lbl.env
+				case "role":
+					v = lbl.role
+				}
+				if v != *e.ChildLabelValue {
+					continue
+				}
+				c := node{kind: "host", id: hid}
+				if c != self {
+					seen[c] = true
+				}
+			}
+		}
+	}
+	return len(seen)
 }

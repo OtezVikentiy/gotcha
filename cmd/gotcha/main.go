@@ -25,6 +25,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
@@ -381,6 +382,11 @@ func run() error {
 	depSuppressor := depsuppress.NewSuppressor(pg)
 	settleGrace := time.Duration(cfg.DependencySettleSeconds) * time.Second
 
+	// Группы инцидентов (D3): один Grouper на процесс поверх того же
+	// depSuppressor — DownRoot ходит по общему 5с-кешу снимка B5.
+	groupStore := incidentgroup.NewStore(pg)
+	grouper := &incidentgroup.Grouper{Pool: pg, Store: groupStore, Roots: depSuppressor}
+
 	// uptimeSvc/uptimeWriter — как и orgSvc/issueSvc выше, общие для любого
 	// активного режима, которому они нужны: web монтирует героя этой задачи,
 	// публичный heartbeat-роут (webHandler.Uptime/UptimeWriter), даже когда
@@ -452,10 +458,16 @@ func run() error {
 			EmailEnabled: emailSender.Configured(),
 			Details:      detailPolicy(cfg),
 			Locale:       i18n.Locale{Code: cfg.Locale},
+			// DepCounts — строка «Зависимых узлов: N» в down-уведомлении
+			// корня (D3 Р9); тот же единственный Suppressor, что и у гейтов.
+			DepCounts: depSuppressor,
 		}
 		uptimeDetector = &uptime.Detector{
 			Svc: uptimeSvc, Notifier: uptimeNotifier,
 			Dep: depSuppressor, SettleGrace: settleGrace,
+			// IncidentGroups — группы инцидентов (D3): хуки корня down-инцидента
+			// монитора + членство uptime-детей через MarkSuppressedByDep.
+			IncidentGroups: grouper,
 		}
 		// Ingestor нужен и режиму web (через него /probe/results проводит
 		// результаты выносных проб), и режиму uptime (тот же хвост у
@@ -532,7 +544,7 @@ func run() error {
 		// оставлен прежним намеренно: включать их автоматически везде значило бы
 		// в связке web+uptime гонять двойную оценку.
 		if runEvaluators(cfg) {
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, settleGrace)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace)
 		}
 
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
@@ -542,7 +554,7 @@ func run() error {
 	if cfg.Mode != "uptime" && cfg.Mode != "all" && cfg.Mode != "probe" {
 		switch {
 		case runEvaluatorsExplicit(cfg):
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, settleGrace)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace)
 			slog.Info("evaluators enabled by GOTCHA_RUN_EVALUATORS", "mode", cfg.Mode)
 		default:
 			// Молчать здесь нельзя: правило по метрике в интерфейсе выглядит
@@ -1011,6 +1023,11 @@ func run() error {
 		// depSuppressor выше (независимый объект без состояния поверх пула,
 		// тот же принцип, что и у EscalationPolicy).
 		webHandler.AlertDeps = depsuppress.NewStore(pg)
+		// Лента инцидентов (D3, задача 9): /projects/{id}/incident-feed читает
+		// те же группы, что пишет Grouper и подчищает janitor, — тем же
+		// groupStore выше, а не собственным экземпляром: один Store на
+		// подсистему, как у Uptime/SLO.
+		webHandler.IncidentGroups = groupStore
 		// SuppressionGrace — та же задержка первого уведомления
 		// (GOTCHA_DEPENDENCY_SETTLE_SECONDS), что задаёт settleGrace для
 		// depSuppressor/uptime.Detector/escalation.Scheduler выше: экран
@@ -1157,7 +1174,8 @@ func run() error {
 // явного GOTCHA_RUN_EVALUATORS в прочих режимах с БД.
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
 	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
-	selfMetrics *selfmetrics.Registry, dep *depsuppress.Suppressor, settleGrace time.Duration) {
+	selfMetrics *selfmetrics.Registry, dep *depsuppress.Suppressor, grouper *incidentgroup.Grouper,
+	settleGrace time.Duration) {
 	// maint — окна обслуживания проекта (план B3): подавляет open/close-
 	// уведомления инцидентов всех источников оценщиков ниже (host сейчас,
 	// metric/trace/profile/slo следом). uptimeSvc:385 здесь НЕ переиспользуем —
@@ -1203,6 +1221,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Maint:     maint,
 		Policy:    policyStore,
 		Pool:      pg,
+		// IncidentGroups — группы инцидентов (D3): членство metric-инцидента
+		// правила label_key='host' в группе down-корня его хоста.
+		IncidentGroups: grouper,
 		Notifier: &metric.MetricNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1262,6 +1283,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		// Dep — гейт зависимостей (B5, T8): подавляет инцидент хоста, пока у
 		// его задекларированного родителя открыт свой.
 		Dep: dep,
+		// IncidentGroups — группы инцидентов (D3): членство host-инцидентов +
+		// хуки silent-корня (открытие/ретро/закрытие группы).
+		IncidentGroups: grouper,
 		Notifier: &host.HostNotifier{
 			Alerts:       alertSvc,
 			Outbox:       outbox,
@@ -1276,6 +1300,11 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			Hosts:     host.NewStore(pg),
 			Settings:  host.NewSettingsService(pg),
 			Pool:      pg,
+			// DepCounts — строка «Зависимых узлов: N» в open-уведомлении
+			// silent-корня (D3 Р9); тот же единственный Suppressor, что и у
+			// Dep выше. У Retirer-экземпляра HostNotifier (entityJanitor)
+			// поле остаётся nil намеренно — он шлёт только retire/close.
+			DepCounts: dep,
 		},
 		Interval: time.Duration(cfg.HostEvalInterval) * time.Second,
 	}
@@ -1318,6 +1347,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Interval:  time.Duration(cfg.SLOEvalInterval) * time.Second,
 		Maint:     maint,
 		Policy:    policyStore,
+		// IncidentGroups — группы инцидентов (D3): членство uptime-SLO-инцидента
+		// в группе down-корня его монитора.
+		IncidentGroups: grouper,
 	}
 	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_last_tick_timestamp_seconds",
 		"Unix time of the last completed SLO burn-rate evaluation pass. Stale value means SLO error-budget alerts are not being evaluated.",
@@ -1348,9 +1380,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Pool:     pg,
 		Interval: time.Duration(cfg.EscalationInterval) * time.Second,
 		Now:      time.Now,
-		// Dep/SettleGrace — гейт зависимостей (B5, T8): придерживает ступень 0
-		// лесенки, пока у инцидента есть живой задекларированный родитель.
-		Dep:         dep,
+		// Dep — B5-гейт c D3-хуком (DepGate): host-инцидент, подавленный
+		// планировщиком, тем же вызовом попадает в состав группы.
+		Dep:         &incidentgroup.DepGate{Dep: dep, Grouper: grouper},
 		SettleGrace: settleGrace,
 	}
 	go sched.Run(ctx)
@@ -1368,6 +1400,15 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		}
 		go escalationJanitor.Run(ctx)
 	}
+
+	// Уборка групп инцидентов (D3, §4.3): sweep вечно-открытых групп — каждый
+	// тик (fail-noisy, работает независимо от ретеншена), ретеншен resolved-
+	// групп — тем же сроком, что инциденты (0 — хранить вечно).
+	groupJanitor := &incidentgroup.Janitor{
+		Pool:      pg,
+		Retention: time.Duration(cfg.IncidentRetentionDays) * 24 * time.Hour,
+	}
+	go groupJanitor.Run(ctx)
 }
 
 // detailPolicy — политика раскрытия деталей события получателю уведомления.

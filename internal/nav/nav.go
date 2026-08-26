@@ -167,7 +167,7 @@ func AreaForPath(path string) string {
 					return "logs"
 				case "monitors", "incidents", "maintenance", "statuspages":
 					return "uptime"
-				case "alerts", "slos", "escalations", "alert-suppression":
+				case "alerts", "slos", "escalations", "alert-suppression", "incident-feed":
 					return "alerts"
 				case "settings", "setup":
 					// Not a rail area (nothing lights up in the rail), but
@@ -245,6 +245,8 @@ func BackLabelKey(rawPath string) string {
 				return "nav.escalations"
 			case "alert-suppression":
 				return "nav.alert_suppression"
+			case "incident-feed":
+				return "nav.incident_feed"
 			case "settings", "setup":
 				return "nav.project_settings"
 			}
@@ -348,24 +350,27 @@ func Subsections(s Shell) []NavItem {
 			)
 		}
 	case "alerts":
-		// Обе страницы оповещений — оператор проекта (requireProjectOperator);
-		// зрителю без доступа к проекту показывать нечего.
-		if !s.CanOperate {
-			return nil
-		}
+		// Лента инцидентов (D3) — чтение, доступна любому с доступом к
+		// проекту (lvlAccess), поэтому секция больше не прячется целиком;
+		// конфигурационные подпункты по-прежнему только оператору.
 		items = []NavItem{
-			{LabelKey: "nav.alerts", Href: "/projects/" + effID + "/alerts"},
-			{LabelKey: "nav.alert_deliveries", Href: "/projects/" + effID + "/alerts/deliveries"},
-			// SLO (план D1) — управленческий слой алертинга: цели качества и
-			// сжигание бюджета шлют инциденты по тем же каналам проекта, что и
-			// остальные пункты этой области. Тот же гейт CanOperate.
-			{LabelKey: "nav.slo", Href: "/projects/" + effID + "/slos"},
-			// Эскалации (B4, задача 9) — лесенки critical/warning поверх тех же
-			// каналов проекта; операционная настройка, тот же гейт CanOperate.
-			{LabelKey: "nav.escalations", Href: "/projects/" + effID + "/escalations"},
-			// Подавление шторма (B5, задача 9) — рёбра зависимостей между
-			// узлами проекта; операционная настройка, тот же гейт CanOperate.
-			{LabelKey: "nav.alert_suppression", Href: "/projects/" + effID + "/alert-suppression"},
+			{LabelKey: "nav.incident_feed", Href: "/projects/" + effID + "/incident-feed"},
+		}
+		if s.CanOperate {
+			items = append(items,
+				NavItem{LabelKey: "nav.alerts", Href: "/projects/" + effID + "/alerts"},
+				NavItem{LabelKey: "nav.alert_deliveries", Href: "/projects/" + effID + "/alerts/deliveries"},
+				// SLO (план D1) — управленческий слой алертинга: цели качества и
+				// сжигание бюджета шлют инциденты по тем же каналам проекта, что и
+				// остальные пункты этой области. Тот же гейт CanOperate.
+				NavItem{LabelKey: "nav.slo", Href: "/projects/" + effID + "/slos"},
+				// Эскалации (B4, задача 9) — лесенки critical/warning поверх тех же
+				// каналов проекта; операционная настройка, тот же гейт CanOperate.
+				NavItem{LabelKey: "nav.escalations", Href: "/projects/" + effID + "/escalations"},
+				// Подавление шторма (B5, задача 9) — рёбра зависимостей между
+				// узлами проекта; операционная настройка, тот же гейт CanOperate.
+				NavItem{LabelKey: "nav.alert_suppression", Href: "/projects/" + effID + "/alert-suppression"},
+			)
 		}
 	case "docs":
 		// Doc page labels come from the markdown H1 (localized by
@@ -554,19 +559,18 @@ func firstSubsectionHref(s Shell, area string) string {
 // keeps the shell's CanManage and CanOperate as-is (not re-resolved for the
 // target project): CanManage is per-organization so this is mostly right,
 // and for a CanOperate that does not hold on the target project (team
-// membership is per-project) — the fallback below stays the safe door,
-// EXCEPT for "alerts": its subsection list collapses entirely to nil when
-// !CanOperate (см. Subsections), так что перенесённый CanOperate=true с
-// текущего проекта заставил бы firstSubsectionHref вернуть /alerts и для
-// целевого проекта, где пользователь оператором может не быть — а nav,
-// будучи чистым слоем без доступа к БД, пересчитать CanOperate для
-// целевого проекта не может. Поэтому «Оповещения» исключены из
-// per-project-переноса и всегда уводят на issues-фолбэк — единственную
-// посадочную область, валидную при любом уровне доступа.
+// membership is per-project) — the fallback below stays the safe door for
+// any area whose FIRST subsection is operator-gated (item[0] could then
+// point at a page 404ing on the target project). "alerts" used to be such
+// an area (its whole subsection list collapsed to nil for !CanOperate) but
+// isn't anymore: the incident feed (D3, lvlAccess) is unconditionally
+// item[0] regardless of CanOperate (см. Subsections case "alerts"), so
+// transferring CanOperate as-is can no longer produce a wrong first href —
+// "alerts" is per-project again.
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,
-		"hosts": true, "logs": true, "uptime": true,
+		"hosts": true, "logs": true, "uptime": true, "alerts": true,
 	}
 	if perProject[s.Area] {
 		target := s

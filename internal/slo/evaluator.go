@@ -55,6 +55,15 @@ type Notifier interface {
 	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
+// sloGroupHook — членство в группах инцидентов (D3, incidentgroup.Grouper)
+// для SLO с sli_kind='uptime': узел — привязанный монитор (slos.monitor_id,
+// Р1). Duck-typed локально, как MaintenanceChecker: пакет slo не импортирует
+// incidentgroup. Nil-совместим — деградированная сборка без групп ведёт себя
+// как до D3.
+type sloGroupHook interface {
+	Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error)
+}
+
 // Evaluator периодически считает burn rate каждого включённого SLO по двум окнам
 // (длинное slow + короткое fast) и открывает/закрывает инцидент сжигания бюджета,
 // рассылая уведомление ровно один раз на открытие и закрытие. Та же ниша, что
@@ -72,6 +81,13 @@ type Evaluator struct {
 	// severity) на открытии инцидента сжигания бюджета. Nil-совместим —
 	// деградированная сборка без него просто не уведомляет об открытии.
 	Policy *escalation.PolicyStore
+
+	// IncidentGroups — группы инцидентов (D3, incidentgroup.Grouper):
+	// членство свежеоткрытого инцидента uptime-SLO в группе down-корня его
+	// монитора. Уведомление уходит только при конъюнкции гейтов
+	// «не maintenance И не grouped» (исход от порядка проверок не зависит).
+	// Nil-совместим, как Maint.
+	IncidentGroups sloGroupHook
 
 	// closeStreak — счётчик подряд идущих «остывших» тиков на SLO (гистерезис
 	// флапа). Ленивая инициализация в Tick: структуру собирают литералом без
@@ -221,10 +237,31 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 	if !created {
 		return false // гонка: параллельный тик успел открыть — не дублируем уведомление
 	}
-	if !inMaint {
+	// D3: членство решается и для инцидента, открытого в maintenance, —
+	// состав группы собирается всегда, гейтится только уведомление.
+	grouped := e.groupGate(ctx, s, inc)
+	if !inMaint && !grouped {
 		e.notifyOpen(ctx, s.ProjectID, inc)
 	}
 	return true
+}
+
+// groupGate — D3-гейт открытия SLO-инцидента: только uptime-SLI с привязанным
+// монитором (у availability/latency нет узла дерева зависимостей, Р1). true —
+// член ИНФОРМИРУЮЩЕЙ группы (Р4, root.notified_open на момент attach): step0
+// не зовётся, информирует корень. Немой корень — attach только для состава,
+// уведомление штатно. Fail-safe (fail-noisy): ошибка → шумим как без D3 —
+// лучше лишний алерт, чем пропущенный.
+func (e *Evaluator) groupGate(ctx context.Context, s SLO, inc Incident) bool {
+	if e.IncidentGroups == nil || s.Kind != SLIUptime || s.MonitorID == nil {
+		return false
+	}
+	attached, informing, err := e.IncidentGroups.Attach(ctx, "slo", inc.ID, "monitor", *s.MonitorID)
+	if err != nil {
+		slog.Error("slo evaluator: group attach failed", "incident_id", inc.ID, "error", err)
+		return false
+	}
+	return attached && informing
 }
 
 // close закрывает открытый инцидент. Бюджет за полное окно больше не
