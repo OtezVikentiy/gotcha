@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -432,5 +433,343 @@ func TestDeleteUnknownIDReturnsNotDeletable(t *testing.T) {
 
 	if err := st.Delete(ctx, 999999999); !errors.Is(err, ErrNotDeletable) {
 		t.Fatalf("Delete(несуществующий id): err = %v, ожидали ErrNotDeletable", err)
+	}
+}
+
+func TestClaimTakesOldestQueuedOnce(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	first := mustEnqueue(t, st, projectID, userID)
+	mustEnqueue(t, st, projectID, userID)
+
+	got, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	if got.ID != first {
+		t.Errorf("Claim взял заявку %d, ожидали самую старую %d", got.ID, first)
+	}
+	if got.Status != StatusRunning || got.Attempts != 1 {
+		t.Errorf("после клейма статус=%q attempts=%d", got.Status, got.Attempts)
+	}
+	again, ok, err := st.Claim(ctx)
+	if err != nil {
+		t.Fatalf("второй Claim: %v", err)
+	}
+	if ok && again.ID == first {
+		t.Error("одна и та же заявка выдана дважды")
+	}
+}
+
+func TestClaimReclaimsExpiredLease(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, _, err := st.Claim(ctx); err != nil {
+		t.Fatalf("первый Claim: %v", err)
+	}
+	// Инстанс «упал»: лиза протухла, заявка обязана вернуться в работу.
+	if _, err := pool.Exec(ctx,
+		`UPDATE export_jobs SET claimed_at = now() - interval '21 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	got, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("переклейм: %v ok=%v", err, ok)
+	}
+	if got.ID != id || got.Attempts != 2 {
+		t.Errorf("переклейм вернул id=%d attempts=%d, ожидали %d и 2", got.ID, got.Attempts, id)
+	}
+}
+
+// TestClaimDoesNotReclaimExhaustedRunningJob — граница attempts == maxAttempts:
+// заявка с протухшей лизой, но без оставшихся попыток, не должна снова уйти в
+// работу. Её судьба — SweepStale, а не ещё один клейм.
+func TestClaimDoesNotReclaimExhaustedRunningJob(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs
+		SET status='running', attempts=$2, claimed_at = now() - interval '21 minutes'
+		WHERE id=$1`, id, maxAttempts); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	if _, ok, err := st.Claim(ctx); err != nil {
+		t.Fatalf("Claim: %v", err)
+	} else if ok {
+		t.Error("Claim переклеймил заявку с исчерпанными попытками")
+	}
+}
+
+// TestClaimReclaimsJustBelowMaxAttempts — симметричная граница: одной попытки
+// в запасе достаточно, чтобы протухшая лиза вернула заявку в работу.
+func TestClaimReclaimsJustBelowMaxAttempts(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs
+		SET status='running', attempts=$2, claimed_at = now() - interval '21 minutes'
+		WHERE id=$1`, id, maxAttempts-1); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	got, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("переклейм на границе: %v ok=%v", err, ok)
+	}
+	if got.ID != id || got.Attempts != maxAttempts {
+		t.Errorf("переклейм на границе вернул id=%d attempts=%d, ожидали %d и %d",
+			got.ID, got.Attempts, id, maxAttempts)
+	}
+}
+
+func TestSweepStaleFailsExhaustedJob(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs
+		SET status='running', attempts=3, claimed_at = now() - interval '21 minutes'
+		WHERE id=$1`, id); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	n, err := st.SweepStale(ctx)
+	if err != nil {
+		t.Fatalf("SweepStale: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("SweepStale обработал %d заявок, ожидали 1", n)
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusFailed || got.LastError == "" {
+		t.Errorf("зависшая заявка осталась в статусе %q, причина %q", got.Status, got.LastError)
+	}
+	// Заявка с исчерпанными попытками не должна больше выдаваться в работу.
+	if _, ok, _ := st.Claim(ctx); ok {
+		t.Error("Claim выдал заявку с исчерпанными попытками")
+	}
+}
+
+func TestDoneSetsExpiryFromFinish(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, _, err := st.Claim(ctx); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := st.Done(ctx, id, 42, 4096, true, 48*time.Hour); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusDone || got.RowsWritten != 42 || got.Bytes != 4096 || !got.Truncated {
+		t.Errorf("итог заявки: %+v", got)
+	}
+	if got.FinishedAt == nil || got.ExpiresAt == nil {
+		t.Fatal("Done не проставил finished_at/expires_at")
+	}
+	if d := got.ExpiresAt.Sub(*got.FinishedAt); d < 47*time.Hour || d > 49*time.Hour {
+		t.Errorf("срок хранения отсчитан не от завершения: разница %v", d)
+	}
+}
+
+func TestFailRetriesThenGivesUp(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+
+	for i := 1; i <= maxAttempts; i++ {
+		if _, _, err := st.Claim(ctx); err != nil {
+			t.Fatalf("Claim %d: %v", i, err)
+		}
+		if err := st.Fail(ctx, id, "ClickHouse недоступен"); err != nil {
+			t.Fatalf("Fail %d: %v", i, err)
+		}
+		got, err := st.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %d: %v", i, err)
+		}
+		want := StatusQueued
+		if i == maxAttempts {
+			want = StatusFailed
+		}
+		if got.Status != want {
+			t.Errorf("после %d-й неудачи статус %q, ожидали %q", i, got.Status, want)
+		}
+	}
+}
+
+// TestDoneIgnoresAlreadyFinalizedJob — Done не должен воскрешать заявку,
+// которую тем временем уже закрыл SweepStale (протухшая лиза, попытки
+// исчерпаны): «застрявший» вызов Done из зомби-воркера не имеет права
+// откатить финальный статус обратно на 'done'.
+func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs
+		SET status='running', attempts=3, claimed_at = now() - interval '21 minutes'
+		WHERE id=$1`, id); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	if n, err := st.SweepStale(ctx); err != nil || n != 1 {
+		t.Fatalf("SweepStale: n=%d err=%v", n, err)
+	}
+	if err := st.Done(ctx, id, 1, 1, false, time.Hour); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusFailed {
+		t.Errorf("Done воскресил заявку из failed в %q", got.Status)
+	}
+}
+
+// TestFailIgnoresAlreadyDoneJob — симметричный случай: Fail из зомби-вызова
+// не должен откатывать уже успешно досчитанную заявку в очередь.
+func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, _, err := st.Claim(ctx); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if err := st.Done(ctx, id, 1, 1, false, time.Hour); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	if err := st.Fail(ctx, id, "запоздавшая ошибка зомби-воркера"); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusDone {
+		t.Errorf("Fail откатил уже завершённую заявку в %q", got.Status)
+	}
+}
+
+// TestClaimConcurrentDoesNotDoubleAssign — настоящая конкурентность: несколько
+// горутин со своими соединениями одновременно бьются за пул заявок. Без
+// корректной блокировки строки (FOR UPDATE SKIP LOCKED) два клейма могли бы
+// увидеть одну и ту же «самую старую» заявку в своих снапшотах и оба её
+// забрать.
+func TestClaimConcurrentDoesNotDoubleAssign(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	const jobs = 6
+	const workers = 12
+	ids := make(map[int64]bool, jobs)
+	for i := 0; i < jobs; i++ {
+		ids[mustEnqueue(t, st, projectID, userID)] = true
+	}
+
+	var mu sync.Mutex
+	claimed := make(map[int64]int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			got, ok, err := st.Claim(ctx)
+			if err != nil {
+				t.Errorf("Claim: %v", err)
+				return
+			}
+			if !ok {
+				return
+			}
+			mu.Lock()
+			claimed[got.ID]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(claimed) != jobs {
+		t.Fatalf("забрано %d уникальных заявок из %d, ожидали все", len(claimed), jobs)
+	}
+	for id, n := range claimed {
+		if n != 1 {
+			t.Errorf("заявка %d выдана %d раз(а), ожидали ровно один", id, n)
+		}
+		if !ids[id] {
+			t.Errorf("забрана неизвестная заявка %d", id)
+		}
+	}
+}
+
+// TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce — та же гарантия для
+// переклейма: параллельные попытки подобрать одну просроченную лизу обязаны
+// отдать её ровно одному вызову, остальные — уйти с ok=false.
+func TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs
+		SET status='running', attempts=1, claimed_at = now() - interval '21 minutes'
+		WHERE id=$1`, id); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	const workers = 10
+	var mu sync.Mutex
+	wins := 0
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			got, ok, err := st.Claim(ctx)
+			if err != nil {
+				t.Errorf("Claim: %v", err)
+				return
+			}
+			if ok && got.ID == id {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if wins != 1 {
+		t.Fatalf("протухшую лизу забрали %d раз(а), ожидали ровно один", wins)
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Attempts != 2 {
+		t.Errorf("после единственного переклейма attempts=%d, ожидали 2", got.Attempts)
 	}
 }

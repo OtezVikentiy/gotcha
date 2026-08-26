@@ -5,9 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	// leaseTTL строго больше таймаута сборки файла (jobTimeout воркера):
+	// иначе второй инстанс переклеймит заявку, которую первый ещё пишет,
+	// и оба одновременно запишут результат.
+	leaseTTL = 20 * time.Minute
+	// maxAttempts — потолок попыток одной заявки. Заявка, упавшая столько
+	// раз подряд, скорее всего бьётся о системную проблему (ClickHouse
+	// недоступен, диск полон), а не о случайный сбой — дальше её добивает
+	// SweepStale, а не бесконечный переклейм.
+	maxAttempts = 3
 )
 
 var (
@@ -142,6 +155,85 @@ func (s *Store) ActiveCounts(ctx context.Context, projectID, userID int64) (proj
 		return 0, 0, fmt.Errorf("export: подсчёт активных заявок проекта %d: %w", projectID, err)
 	}
 	return proj, user, nil
+}
+
+// Claim берёт в работу самую старую доступную заявку: свежую из очереди либо
+// «running» с протухшей лизой, у которой ещё остались попытки. SELECT ... FOR
+// UPDATE SKIP LOCKED внутри одного UPDATE — атомарная операция: две
+// параллельные попытки клейма физически не могут захватить одну и ту же
+// строку, второй достанется следующая свободная либо ok=false.
+func (s *Store) Claim(ctx context.Context) (Job, bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE export_jobs SET status = 'running', attempts = attempts + 1, claimed_at = now()
+		WHERE id = (
+			SELECT id FROM export_jobs
+			WHERE status = 'queued'
+			   OR (status = 'running' AND claimed_at < now() - $1::interval AND attempts < $2)
+			ORDER BY created_at
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING `+jobColumns, leaseTTL.String(), maxAttempts)
+	j, err := scanJob(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Job{}, false, nil
+	}
+	if err != nil {
+		return Job{}, false, fmt.Errorf("export: клейм заявки: %w", err)
+	}
+	return j, true, nil
+}
+
+// SweepStale закрывает заявки, пережившие все попытки: без этого заявка,
+// упавшая вместе с инстансом на последней попытке, вечно показывала бы
+// «выполняется» — Claim её больше не тронет (attempts >= maxAttempts), а
+// статус сам себя не поменяет.
+func (s *Store) SweepStale(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE export_jobs
+		SET status = 'failed', finished_at = now(),
+		    last_error = 'сборка выгрузки не завершилась за отведённое число попыток'
+		WHERE status = 'running' AND claimed_at < now() - $1::interval AND attempts >= $2`,
+		leaseTTL.String(), maxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("export: снятие зависших заявок: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// Fail возвращает заявку в очередь, пока попытки не исчерпаны: ждать
+// протухания лизы незачем — причина неудачи уже известна здесь и сейчас.
+// Условие status='running' — защита от зомби-вызова: если заявку уже забрал
+// SweepStale (лиза протухла, попытки кончились, статус стал failed) или её
+// же самой уже отчитался Done, запоздавший Fail не должен откатывать финал.
+func (s *Store) Fail(ctx context.Context, id int64, cause string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE export_jobs
+		SET status = CASE WHEN attempts >= $2 THEN 'failed' ELSE 'queued' END,
+		    finished_at = CASE WHEN attempts >= $2 THEN now() ELSE NULL END,
+		    claimed_at = NULL, last_error = $3
+		WHERE id = $1 AND status = 'running'`, id, maxAttempts, cause)
+	if err != nil {
+		return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)
+	}
+	return nil
+}
+
+// Done завершает заявку успехом и назначает срок хранения файла от момента
+// завершения, а не от постановки в очередь: заявка, простоявшая в очереди
+// час, обязана хранить файл столько же, сколько исполненная мгновенно.
+// Условие status='running' — та же защита от зомби-вызова, что и в Fail: уже
+// закрытую SweepStale или другим Done заявку запоздавший вызов не воскрешает.
+func (s *Store) Done(ctx context.Context, id, rows, bytes int64, truncated bool, ttl time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE export_jobs
+		SET status = 'done', rows_written = $2, bytes = $3, truncated = $4, last_error = '',
+		    finished_at = now(), expires_at = now() + $5::interval
+		WHERE id = $1 AND status = 'running'`, id, rows, bytes, truncated, ttl.String())
+	if err != nil {
+		return fmt.Errorf("export: завершение заявки %d: %w", id, err)
+	}
+	return nil
 }
 
 // Delete сносит только досчитанную заявку: у queued/running в этот момент
