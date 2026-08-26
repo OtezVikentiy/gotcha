@@ -51,6 +51,31 @@ var ErrPermanent = errors.New("export: постоянный отказ сбор�
 // разбирает его сам и не отдаёт вызывающему как настоящую ошибку.
 var errLimitReached = errors.New("export: достигнут потолок заявки")
 
+// reasonDiskFull/reasonTooManyGroups/reasonInternal — ключи i18n.T() причины
+// отказа для письма автору (Job.FailureReasonKey, см. её докблок и
+// mailPayload в notify.go).
+//
+// Технические cause-строки, которые process()/writeFile() заворачивают в
+// fail()/failPermanent() (например "подсчёт занятого места в каталоге
+// выгрузок: %w" или "создание временного файла выгрузки: %w"), остаются
+// техническим текстом last_error для БД и лога — это внутренняя диагностика
+// для оператора, разбирающего инцидент по базе, не для автора заявки.
+// Письмо же обязано быть переведено (спека фичи, §9: «Письмо о неудаче —
+// тоже, с причиной», «Все тексты — ключи exports.* … тест паритета
+// зелёный») — раньше notifyFailed передавала в письмо ЭТУ ЖЕ техническую
+// русскую строку напрямую (см. её докблок в задаче 14 report — было
+// найдено гейтом TestNoCyrillicUserFacingLiterals: письмо на английской
+// локали получало необъяснённый русский обрывок вперемешку с переводом).
+// Три ключа — все различимые для автора причины: нехватка места (можно
+// подождать), слишком широкий фильтр (можно сузить самому) и всё
+// остальное — внутренняя ошибка сборки, requires no action от автора кроме
+// повторной попытки/обращения в поддержку.
+const (
+	reasonDiskFull      = "exports.mail.failed.reason.disk_full"
+	reasonTooManyGroups = "exports.mail.failed.reason.too_many_groups"
+	reasonInternal      = "exports.mail.failed.reason.internal"
+)
+
 // Config — параметры воркера, приходящие из окружения (§10 спеки).
 type Config struct {
 	// Dir — каталог, куда пишутся файлы выгрузки и временные .part.
@@ -207,21 +232,28 @@ func (w *Worker) process(ctx context.Context, job Job) {
 
 	used, err := dirSize(w.Cfg.Dir)
 	if err != nil {
-		w.fail(ctx, job, fmt.Errorf("подсчёт занятого места в каталоге выгрузок: %w", err))
+		w.fail(ctx, job, fmt.Errorf("подсчёт занятого места в каталоге выгрузок: %w", err), reasonInternal)
 		return
 	}
 	if used >= w.Cfg.DiskBudget {
-		w.failPermanent(ctx, job, "на диске не осталось места под выгрузку: исчерпан общий бюджет каталога")
+		w.failPermanent(ctx, job, "на диске не осталось места под выгрузку: исчерпан общий бюджет каталога", reasonDiskFull)
 		return
 	}
 
 	res, err := w.writeFile(ctx, job, partPath)
 	if err != nil {
 		_ = os.Remove(partPath)
-		if errors.Is(err, ErrPermanent) || errors.Is(err, ErrTooManyIssues) || errors.Is(err, ErrMaxIssueIDsNotConfigured) {
-			w.failPermanent(ctx, job, err.Error())
-		} else {
-			w.fail(ctx, job, err)
+		switch {
+		case errors.Is(err, ErrTooManyIssues):
+			// Единственная постоянная причина, которую автор может
+			// устранить сам (сузить фильтр) — отдельный ключ письма, а не
+			// общий "внутренняя ошибка" (см. §8 спеки: «Упор в потолок id
+			// групп даёт отказ с просьбой сузить фильтр»).
+			w.failPermanent(ctx, job, err.Error(), reasonTooManyGroups)
+		case errors.Is(err, ErrPermanent) || errors.Is(err, ErrMaxIssueIDsNotConfigured):
+			w.failPermanent(ctx, job, err.Error(), reasonInternal)
+		default:
+			w.fail(ctx, job, err, reasonInternal)
 		}
 		return
 	}
@@ -234,7 +266,7 @@ func (w *Worker) process(ctx context.Context, job Job) {
 	// одному и тому же — файл убирается, заявка Done не считается.
 	if err := os.Rename(partPath, finalPath); err != nil {
 		_ = os.Remove(partPath)
-		w.fail(ctx, job, fmt.Errorf("переименование файла выгрузки: %w", err))
+		w.fail(ctx, job, fmt.Errorf("переименование файла выгрузки: %w", err), reasonInternal)
 		return
 	}
 
@@ -267,7 +299,11 @@ func (w *Worker) process(ctx context.Context, job Job) {
 // заявки, упавшей временно, письмо на КАЖДОЙ из трёх попыток было бы спамом
 // по поводу состояния, которое воркер ещё может исправить сам следующим
 // тиком.
-func (w *Worker) fail(ctx context.Context, job Job, cause error) {
+//
+// reasonKey — ключ i18n.T() для письма (см. reasonDiskFull и соседние
+// константы), отдельно от cause: cause.Error() остаётся техническим
+// текстом last_error (лог/БД), reasonKey — переведённая причина для автора.
+func (w *Worker) fail(ctx context.Context, job Job, cause error, reasonKey string) {
 	if err := w.Store.Fail(ctx, job.ID, job.Attempts, cause.Error()); err != nil {
 		if !errors.Is(err, ErrStaleClaim) {
 			slog.Warn("export: воркер: запись неудачи", "job_id", job.ID, "err", err)
@@ -277,7 +313,7 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error) {
 	if job.Attempts < maxAttempts {
 		return
 	}
-	w.notifyFailed(ctx, job, cause.Error())
+	w.notifyFailed(ctx, job, cause.Error(), reasonKey)
 }
 
 // failPermanent закрывает заявку без права на повтор — причина не устранится
@@ -290,25 +326,32 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error) {
 // Notify зовётся сразу — в отличие от fail(), FailPermanent не оставляет
 // заявке права на повтор ни на какой попытке, значит первая же и есть
 // последняя.
-func (w *Worker) failPermanent(ctx context.Context, job Job, cause string) {
+//
+// reasonKey — см. докблок fail() выше: тот же смысл, cause здесь уже string,
+// а не error.
+func (w *Worker) failPermanent(ctx context.Context, job Job, cause string, reasonKey string) {
 	if err := w.Store.FailPermanent(ctx, job.ID, job.Attempts, cause); err != nil {
 		if !errors.Is(err, ErrStaleClaim) {
 			slog.Warn("export: воркер: постоянный отказ", "job_id", job.ID, "err", err)
 		}
 		return
 	}
-	w.notifyFailed(ctx, job, cause)
+	w.notifyFailed(ctx, job, cause, reasonKey)
 }
 
 // notifyFailed собирает снимок терминально упавшей заявки для w.Notify —
 // общая часть fail()/failPermanent(): оба доводят Job до статуса failed с
 // причиной, различается только источник cause (error против string).
-func (w *Worker) notifyFailed(ctx context.Context, job Job, cause string) {
+// FailureReasonKey — единственное поле Job, которое пишет notifyFailed, а не
+// process()/store.go: не персистится, нужно только этому снимку (см. её
+// докблок в job.go).
+func (w *Worker) notifyFailed(ctx context.Context, job Job, cause, reasonKey string) {
 	if w.Notify == nil {
 		return
 	}
 	failed := job
 	failed.Status = StatusFailed
+	failed.FailureReasonKey = reasonKey
 	failed.LastError = cause
 	w.Notify(ctx, failed)
 }

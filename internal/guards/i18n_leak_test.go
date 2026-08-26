@@ -114,6 +114,131 @@ var legitExemptions = []Exemption{
 	// guards-тест (или любой другой в пакете) — не посетитель сайта: пакет
 	// guards не участвует в обслуживании HTTP-запросов вообще.
 	{Value: `return "", fmt.Errorf("go.mod не найден ни в одном из родительских каталогов от %s", dir)`, Why: "ошибка инструментария тестов (findRoot) — читает разработчик, запустивший go test, пакет guards HTTP не обслуживает", Finding: "по замыслу"},
+
+	// Фича E1 (выгрузки), задача 14 (долг гейтов): весь internal/export —
+	// технические ошибки обвязки (БД, advisory-лок, файловая система,
+	// сериализация), которые НИКОГДА не долетают до посетителя буквально.
+	// Проверено по всем трём путям, которыми что-либо из этого пакета может
+	// добраться до человека:
+	//  1. internal/web/exports.go — единственный вызывающий с HTTP-ответом.
+	//     Каждый обработчик сверяет ошибку ТОЛЬКО через errors.Is с
+	//     сентинелом (ErrActiveLimitReached/ErrNotFound/ErrNotDeletable) и
+	//     отвечает готовым ключом i18n.T(...) — сырой err.Error() в ответ
+	//     не попадает НИ РАЗУ (см. exportsCreate/exportsDownload/exportsDelete).
+	//  2. Страница «Выгрузки» (templates/exports.templ) не показывает
+	//     Job.LastError вообще — только статус, переведённый через
+	//     "exports.status."+Status.
+	//  3. Письмо о неудаче (internal/export/notify.go, mailPayload) раньше
+	//     подставляло job.LastError в {cause} НАПРЯМУЮ — вот это была
+	//     настоящая утечка (англоязычный автор получал русский обрывок),
+	//     найденная этим же прогоном гейта. Починено тем же коммитом: письмо
+	//     теперь берёт Job.FailureReasonKey — три новых переведённых ключа
+	//     exports.mail.failed.reason.{disk_full,too_many_groups,internal},
+	//     которые Worker.fail/failPermanent проставляют ПО ТИПУ ошибки (см.
+	//     reasonDiskFull/reasonTooManyGroups/reasonInternal и их докблок в
+	//     worker.go). Job.LastError остался тем, чем был всегда для этого
+	//     пакета — технический текст для БД (last_error) и лога, читает
+	//     оператор, разбирающий инцидент, не автор письма.
+	// Без этой переклассификации из четырёх сентинелов internal/export
+	// (ErrNotFound/ErrNotDeletable/ErrActiveLimitReached — путь 1;
+	// ErrStaleClaim нигде дальше worker.go не покидает пакет вовсе) и всех
+	// error-обёрток store.go/janitor.go/worker.go/source_events.go/writer.go
+	// ни один не проходит дальше error-значения, которое разбирает Go-код,
+	// либо строки last_error/slog, которую видит только оператор.
+
+	// internal/export/janitor.go: Tick — все семь ошибок возвращаются в
+	// Run(), который зовёт только slog.Warn("export: джанитор: тик", ...) —
+	// фоновый цикл без HTTP, без Notify, без записи в last_error заявки.
+	{Value: `return fmt.Errorf("export: джанитор: получение соединения: %w", err)`, Why: "Janitor.Tick: ошибка инфраструктуры, наружу — только slog.Warn в Run(), фоновый цикл без HTTP/email", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: джанитор: advisory lock: %w", err)`, Why: "Janitor.Tick: та же категория (см. комментарий выше группы)", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: джанитор: чистка старых заявок: %w", err)`, Why: "Janitor.Tick: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: джанитор: заявки на истечение срока: %w", err)`, Why: "Janitor.expireDue: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: джанитор: пометка истёкших заявок: %w", err)`, Why: "Janitor.expireDue: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: джанитор: чтение каталога выгрузок: %w", err)`, Why: "Janitor.removeOrphans: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: джанитор: проверка сирот: %w", err)`, Why: "Janitor.removeOrphans: та же категория", Finding: "по замыслу"},
+
+	// internal/export/source_events.go: ErrTooManyIssues/ErrMaxIssueIDsNotConfigured
+	// — сентинелы, которых web/exports.go НЕ знает (единственный потребитель
+	// с HTTP — воркер, worker.go:238 сравнивает их errors.Is и переводит в
+	// reasonTooManyGroups/reasonInternal ДО письма, см. группу выше).
+	// resolveIssueIDs (строка 118) — обёртка ошибки резолва, тем же путём.
+	{Value: `var ErrTooManyIssues = errors.New("экспорт: фильтр резолвится в слишком много групп, сузьте условия")`, Why: "сентинел: единственный потребитель — worker.go (errors.Is), не HTTP; текст в письмо не идёт — идёт reasonTooManyGroups", Finding: "по замыслу"},
+	{Value: `var ErrMaxIssueIDsNotConfigured = errors.New("экспорт: eventSource собран без потолка id групп (используйте NewEventSource)")`, Why: "сентинел программной ошибки конфигурации (обход NewEventSource) — тот же путь, что ErrTooManyIssues, в проде недостижим при штатной сборке", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("экспорт событий: резолв групп: %w", err)`, Why: "eventSource.Stream: обёртка ошибки резолва, доезжает только до worker.go (errors.Is/reasonKey), не до письма/страницы", Finding: "по замыслу"},
+
+	// internal/export/store.go: четыре сентинела и ~30 error-обёрток SQL.
+	// ErrNotFound/ErrNotDeletable/ErrActiveLimitReached — единственные,
+	// которые видит web/exports.go, и там они ТОЛЬКО errors.Is + i18n.T
+	// (см. группу выше). ErrStaleClaim читает исключительно worker.go
+	// (errors.Is в fail/failPermanent/process) — из пакета export наружу не
+	// выходит вовсе. Остальные — обёртки ошибок SQL/сериализации, каждая
+	// либо возвращается вызывающему Go-коду (worker.go/web/exports.go — тот
+	// же путь sentinel-проверки/generic error.internal), либо утекает в
+	// last_error (см. общий разбор выше).
+	{Value: `ErrNotFound = errors.New("export: заявка не найдена")`, Why: "сентинел: web/exports.go — errors.Is → notFound (404), текст ErrNotFound.Error() в ответ не идёт", Finding: "по замыслу"},
+	{Value: `ErrNotDeletable = errors.New("export: заявка ещё выполняется")`, Why: "сентинел: web/exports.go — errors.Is → err.export.not_deletable, текст в ответ не идёт", Finding: "по замыслу"},
+	{Value: `ErrStaleClaim = errors.New("export: заявка перехвачена другой попыткой")`, Why: "сентинел: читает только worker.go (errors.Is), из пакета export наружу к посетителю не выходит", Finding: "по замыслу"},
+	{Value: `ErrActiveLimitReached = errors.New("export: лимит активных заявок исчерпан")`, Why: "сентинел: web/exports.go — errors.Is → err.export.limit_reached, текст в ответ не идёт", Finding: "по замыслу"},
+	{Value: `return Job{}, fmt.Errorf("разбор params: %w", err)`, Why: "scanJob: ошибка десериализации jsonb, возвращается вызывающему Go-коду (Store-методы), не пользователю", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: сериализация params: %w", err)`, Why: "insertJob: та же категория (см. комментарий к группе store.go)", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: %w", err)`, Why: "insertJob: та же категория", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: begin: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: advisory lock: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: подсчёт активных: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: commit: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
+	{Value: `return Job{}, fmt.Errorf("export: чтение заявки %d: %w", id, err)`, Why: "Get: та же категория — web/exports.go разбирает только errors.Is(ErrNotFound), иначе generic error.internal", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: список заявок проекта %d: %w", projectID, err)`, Why: "ByProject: та же категория, читает страница списка через generic error.internal", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: разбор заявки проекта %d: %w", projectID, err)`, Why: "ByProject: та же категория", Finding: "по замыслу"},
+	{Value: `return Job{}, false, fmt.Errorf("export: клейм заявки: %w", err)`, Why: "Claim: та же категория, читает только worker.go (Tick → slog.Warn)", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: снятие зависших заявок: %w", err)`, Why: "SweepStale: та же категория, читает только worker.go (Tick → slog.Warn)", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)`, Why: "Fail: ошибка САМОГО SQL UPDATE (не cause попытки) — читает worker.fail через slog.Warn, в письмо/last_error не попадает", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: завершение заявки %d: %w", id, err)`, Why: "Done: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)`, Why: "FailPermanent: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: удаление заявки %d: %w", id, err)`, Why: "Delete: та же категория, web/exports.go — только errors.Is(ErrNotDeletable), иначе generic error.internal", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: заявки на истечение срока: %w", err)`, Why: "DueForExpiry: та же категория, читает только Janitor (Tick → slog.Warn)", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: разбор заявки на истечение срока: %w", err)`, Why: "DueForExpiry: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: пометка истёкших заявок: %w", err)`, Why: "MarkExpired: та же категория, читает только Janitor", Finding: "по замыслу"},
+	{Value: `return total, fmt.Errorf("export: чистка старых заявок: %w", err)`, Why: "PurgeRows: та же категория, читает только Janitor", Finding: "по замыслу"},
+	{Value: `return "", fmt.Errorf("export: пользователь %d не найден", id)`, Why: "AuthorEmail: читает только notify.go, где ошибка ЛОГИРУЕТСЯ (slog.Warn) и письмо тихо не отправляется — текст в письмо не попадает никогда", Finding: "по замыслу"},
+	{Value: `return "", fmt.Errorf("export: адрес автора %d: %w", id, err)`, Why: "AuthorEmail: та же категория", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: проверка существующих заявок: %w", err)`, Why: "ExistingIDs: та же категория, читает только Janitor.removeOrphans", Finding: "по замыслу"},
+	{Value: `return nil, fmt.Errorf("export: разбор существующих заявок: %w", err)`, Why: "ExistingIDs: та же категория", Finding: "по замыслу"},
+
+	// internal/export/worker.go: конфигурация/инфраструктура тика (Tick,
+	// Validate) — читает main.go через slog.Warn, HTTP не поднят на этом
+	// пути. process()/writeFile()/stream() — источник cause для
+	// fail()/failPermanent(): попадает в last_error (техника для БД/лога) и
+	// в reasonKey письма (уже переведённый — см. группу выше), сам текст
+	// cause.Error() в письмо не идёт. ErrPermanent/errLimitReached —
+	// внутренние сентинелы (errLimitReached наружу не выходит вовсе, см. её
+	// докблок).
+	{Value: `panic("export: defaultJobTimeout обязан быть строго меньше leaseTTL")`, Why: "init(): паника при старте бинаря на неверной константе — читает разработчик/CI, посетителя ещё нет", Finding: "по замыслу"},
+	{Value: `var ErrPermanent = errors.New("export: постоянный отказ сборки выгрузки")`, Why: "сентинел: errors.Is в process(), текст ErrPermanent.Error() сам по себе в письмо не идёт (обёртки ниже дают reasonInternal/reasonTooManyGroups)", Finding: "по замыслу"},
+	{Value: `var errLimitReached = errors.New("export: достигнут потолок заявки")`, Why: "внутренний сентинел остановки потока (см. её докблок): writeFile разбирает его сам, наружу как error не возвращает", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: конфигурация: MaxRows (%d) обязан быть строго меньше защитного предела потока событий (%d) — иначе усечение по этому пределу проходит без Truncated=true",`, Why: "Config.Validate: ошибка конфигурации из окружения (GOTCHA_*), читает оператор при старте/в логе Tick, не посетитель", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: конфигурация: JobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", jt, leaseTTL)`, Why: "Config.Validate: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: воркер: %w", err)`, Why: "Tick: обёртка Config.Validate, читает main.go через slog.Warn", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: воркер: получение соединения: %w", err)`, Why: "Tick: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: воркер: advisory lock: %w", err)`, Why: "Tick: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: воркер: клейм заявки: %w", err)`, Why: "Tick: та же категория", Finding: "по замыслу"},
+	{Value: `w.fail(ctx, job, fmt.Errorf("подсчёт занятого места в каталоге выгрузок: %w", err), reasonInternal)`, Why: "process(): cause попадает в last_error (техника для БД/лога); письмо получает reasonInternal — уже переведённый текст, см. группу выше", Finding: "по замыслу"},
+	{Value: `w.failPermanent(ctx, job, "на диске не осталось места под выгрузку: исчерпан общий бюджет каталога", reasonDiskFull)`, Why: "process(): та же категория, письмо получает reasonDiskFull", Finding: "по замыслу"},
+	{Value: `w.fail(ctx, job, fmt.Errorf("переименование файла выгрузки: %w", err), reasonInternal)`, Why: "process(): та же категория, письмо получает reasonInternal", Finding: "по замыслу"},
+	{Value: `return writeResult{}, fmt.Errorf("создание временного файла выгрузки: %w", err)`, Why: "writeFile: та же категория — доезжает до last_error/reasonInternal через process(), не до письма дословно", Finding: "по замыслу"},
+	{Value: `return writeResult{}, fmt.Errorf("создание писателя выгрузки: %w", err)`, Why: "writeFile: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("запись строки выгрузки: %w", err)`, Why: "writeFile (замыкание Write): та же категория", Finding: "по замыслу"},
+	{Value: `return writeResult{}, fmt.Errorf("чтение источника выгрузки: %w", streamErr)`, Why: "writeFile: та же категория", Finding: "по замыслу"},
+	{Value: `return writeResult{}, fmt.Errorf("закрытие писателя выгрузки: %w", err)`, Why: "writeFile: та же категория", Finding: "по замыслу"},
+	{Value: `return writeResult{}, fmt.Errorf("fsync временного файла выгрузки: %w", err)`, Why: "writeFile: та же категория", Finding: "по замыслу"},
+	{Value: `return writeResult{}, fmt.Errorf("закрытие временного файла выгрузки: %w", err)`, Why: "writeFile: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("%w: источник групп не настроен", ErrPermanent)`, Why: "stream(): ошибка связки cmd/ (Issues не задан) — та же категория, доходит до reasonInternal, не до письма дословно", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("%w: источник событий не настроен", ErrPermanent)`, Why: "stream(): та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("%w: неизвестный вид выгрузки %q", ErrPermanent, job.Kind)`, Why: "stream(): та же категория", Finding: "по замыслу"},
+
+	// internal/export/writer.go: единственный вызывающий NewWriter —
+	// writeFile (см. группу worker.go выше), та же цепочка last_error/
+	// reasonInternal.
+	{Value: `return nil, fmt.Errorf("экспорт: неизвестный формат %q", f)`, Why: "NewWriter: доезжает до last_error/reasonInternal через writeFile/process(), не до письма дословно", Finding: "по замыслу"},
 }
 
 // maxLegitExemptions — потолок списка исключений «по замыслу»: 33 записи
@@ -124,7 +249,16 @@ var legitExemptions = []Exemption{
 // инструментария самого пакета guards (1 строка). Список постоянный, а не
 // долг — расти он должен только если появится ещё один законный по замыслу
 // случай, и осознанной правкой числа, а не сам по себе.
-const maxLegitExemptions = 33
+//
+// С 33 до 94 задачей 14 фичи E1 (выгрузки): весь internal/export — долг
+// T1/T7, не разобранный на своих задачах (см. групповой комментарий над
+// записями). Каждая строка — техническая ошибка обвязки (БД/файл/лок),
+// либо сентинел, проверяемый только errors.Is (web/exports.go), либо
+// причина, отправляемая в письмо уже ПЕРЕВЕДЁННОЙ через новый
+// Job.FailureReasonKey — ни одна не долетает до посетителя буквально; одна
+// настоящая утечка (сырой job.LastError в {cause} письма) найдена этим же
+// прогоном и починена кодом, а не занесена в исключения.
+const maxLegitExemptions = 94
 
 // leakDebtExemptions — временный долг правила: настоящие утечки, найденные
 // первым прогоном на расширенном охвате (восемь записей, находки №132–137

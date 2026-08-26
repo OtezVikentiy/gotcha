@@ -321,8 +321,54 @@ func TestWorkerNotifiesOnPermanentFailure(t *testing.T) {
 		if j.ID != id || j.Status != StatusFailed || j.LastError == "" {
 			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", j)
 		}
+		// reasonDiskFull, не reasonInternal: автору письма нужна ИМЕННО эта
+		// причина (она даёт понятное действие — подождать), не общий
+		// "внутренняя ошибка" — мутация switch на reasonInternal здесь
+		// осталась бы незамеченной без этой проверки.
+		if j.FailureReasonKey != reasonDiskFull {
+			t.Fatalf("FailureReasonKey = %q, want %q", j.FailureReasonKey, reasonDiskFull)
+		}
 	default:
 		t.Fatal("Notify не вызван после постоянного отказа")
+	}
+}
+
+// TestWorkerNotifiesTooManyGroupsReason — ErrTooManyIssues от источника
+// (фильтр резолвится в слишком много групп) обязан дать письму СВОЙ ключ
+// причины (reasonTooManyGroups, «сузьте условия»), а не общий
+// reasonInternal: это единственная постоянная причина, которую автор может
+// устранить сам (§8 спеки).
+func TestWorkerNotifiesTooManyGroupsReason(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+
+	notified := make(chan Job, 1)
+	w := &Worker{Store: st, Pool: pool, Issues: failingSource(ErrTooManyIssues), Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30,
+	}, Notify: func(ctx context.Context, j Job) { notified <- j }}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	j, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != StatusFailed || j.Attempts != 1 {
+		t.Fatalf("ErrTooManyIssues обязан быть постоянным отказом с первой попытки: %+v", j)
+	}
+
+	select {
+	case notifiedJob := <-notified:
+		if notifiedJob.FailureReasonKey != reasonTooManyGroups {
+			t.Fatalf("FailureReasonKey = %q, want %q", notifiedJob.FailureReasonKey, reasonTooManyGroups)
+		}
+	default:
+		t.Fatal("Notify не вызван после постоянного отказа ErrTooManyIssues")
 	}
 }
 
@@ -418,6 +464,12 @@ func TestWorkerNotifiesOnFinalRetryableFailure(t *testing.T) {
 	case notifiedJob := <-notified:
 		if notifiedJob.ID != id || notifiedJob.Status != StatusFailed {
 			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", notifiedJob)
+		}
+		// Транзитная инфраструктурная причина ("ClickHouse недоступен") не
+		// даёт автору вменяемого действия — общий reasonInternal, не
+		// reasonDiskFull/reasonTooManyGroups.
+		if notifiedJob.FailureReasonKey != reasonInternal {
+			t.Fatalf("FailureReasonKey = %q, want %q", notifiedJob.FailureReasonKey, reasonInternal)
 		}
 	default:
 		t.Fatal("Notify не вызван после исчерпания попыток")

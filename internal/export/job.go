@@ -96,12 +96,19 @@ type Job struct {
 	Status       Status
 	Attempts     int
 	LastError    string
-	RowsWritten  int64
-	Bytes        int64
-	Truncated    bool
-	FileExt      string
-	ClaimedAt    *time.Time
-	CreatedAt    time.Time
-	FinishedAt   *time.Time
-	ExpiresAt    *time.Time
+	// FailureReasonKey — ключ i18n.T() переведённой причины отказа для
+	// письма автору (см. failureReason* в worker.go, mailPayload в
+	// notify.go). Заполняется ТОЛЬКО Worker.notifyFailed на снимке, который
+	// уходит в Notify — не персистится в export_jobs (last_error там
+	// остаётся техническим текстом для лога/отладки, см. её докблок) и
+	// потому не участвует в scanJob/jobColumns.
+	FailureReasonKey string
+	RowsWritten      int64
+	Bytes            int64
+	Truncated        bool
+	FileExt          string
+	ClaimedAt        *time.Time
+	CreatedAt        time.Time
+	FinishedAt       *time.Time
+	ExpiresAt        *time.Time
 }

@@ -76,9 +76,23 @@ func mailPayload(ctx context.Context, job Job, baseURL string) (map[string]any, 
 			"body":    body,
 		}, true
 	case StatusFailed:
+		// job.LastError — техническая диагностика (обход бага драйвера,
+		// путь на диске, текст стандартной библиотеки) для БД и лога, не
+		// для письма: раньше сюда шла она напрямую, и англоязычный автор
+		// получал русский обрывок вперемешку с переводом (находка задачи 14
+		// «долг гейтов E1», TestNoCyrillicUserFacingLiterals). {cause}
+		// собирается из FailureReasonKey — переведённой причины, которую
+		// расставляет Worker.notifyFailed (см. reasonDiskFull и соседние
+		// константы в worker.go); пустой ключ — защита на случай снимка,
+		// собранного не через fail()/failPermanent (в проде такого не
+		// бывает, см. их докблоки), а не ожидаемый путь.
+		reasonKey := job.FailureReasonKey
+		if reasonKey == "" {
+			reasonKey = reasonInternal
+		}
 		return map[string]any{
 			"subject": i18n.T(ctx, "exports.mail.failed.subject"),
-			"body":    i18n.Tf(ctx, "exports.mail.failed.body", "cause", job.LastError, "link", link),
+			"body":    i18n.Tf(ctx, "exports.mail.failed.body", "cause", i18n.T(ctx, reasonKey), "link", link),
 		}, true
 	default:
 		return nil, false

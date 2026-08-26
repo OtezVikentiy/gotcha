@@ -15,6 +15,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -442,9 +443,13 @@ func exportFilterSummary(ctx context.Context, j export.Job) string {
 		parts = append(parts, i18n.Tf(ctx, "exports.summary.query", "query", j.Params.Query))
 	}
 	if !j.Params.Since.IsZero() && !j.Params.Until.IsZero() {
+		// humanize.Time, не сырой Format: страница списка не знает пояса
+		// зрителя (сводка строится в exportViewRow без параметра loc, тот же
+		// случай, что humanize.Time(ctx, t, time.UTC) в svg.go/svg_slo.go) —
+		// UTC с явной подписью пояса, а не голое число без метки.
 		parts = append(parts, i18n.Tf(ctx, "exports.summary.period",
-			"from", j.Params.Since.UTC().Format("02.01 15:04"),
-			"to", j.Params.Until.UTC().Format("02.01 15:04")))
+			"from", humanize.Time(ctx, j.Params.Since, time.UTC),
+			"to", humanize.Time(ctx, j.Params.Until, time.UTC)))
 	}
 	if len(parts) == 0 {
 		return i18n.T(ctx, "exports.summary.no_filters")

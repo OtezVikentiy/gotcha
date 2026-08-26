@@ -109,6 +109,14 @@ func TestMailNotifierDoesNotMentionTruncationWhenNotTruncated(t *testing.T) {
 	}
 }
 
+// TestMailNotifierReportsFailureCause — письмо о неудаче показывает
+// ПЕРЕВЕДЁННУЮ причину (FailureReasonKey), а не техническую строку
+// LastError дословно: до задачи 14 «долг гейтов E1» тело письма собиралось
+// прямо из job.LastError — русский текст попадал в письмо даже на
+// английской локали (находка TestNoCyrillicUserFacingLiterals). LastError
+// здесь намеренно НЕ входит в переведённую причину (реалистичная
+// диагностика: путь на диске, код ошибки ОС), чтобы мутация "тело
+// собирается из LastError, а не из FailureReasonKey" ловилась явно.
 func TestMailNotifierReportsFailureCause(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -117,18 +125,44 @@ func TestMailNotifierReportsFailureCause(t *testing.T) {
 
 	sent := &fakeMailer{}
 	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
-	const cause = "источник событий недоступен: контекст истёк"
+	const technicalDiagnostic = "open /var/lib/gotcha/exports/4.part: no space left on device"
 	notifyFn(ctx, Job{
 		ID: 4, ProjectID: projectID, CreatedBy: userID,
-		Status: StatusFailed, LastError: cause,
+		Status: StatusFailed, LastError: technicalDiagnostic, FailureReasonKey: reasonDiskFull,
 	})
 
 	if len(sent.calls) != 1 {
 		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
 	}
 	body := mailBody(sent.calls[0])
-	if !strings.Contains(body, cause) {
-		t.Errorf("причина отказа не попала в письмо: %q", body)
+	if !strings.Contains(body, "на диске выгрузок закончилось место") {
+		t.Errorf("переведённая причина (reasonDiskFull) не попала в письмо: %q", body)
+	}
+	if strings.Contains(body, technicalDiagnostic) {
+		t.Errorf("техническая диагностика LastError утекла в письмо дословно: %q", body)
+	}
+}
+
+// TestMailNotifierFallsBackToInternalReasonWhenKeyMissing — снимок Job без
+// FailureReasonKey (в проде такого не бывает: notifyFailed в worker.go
+// всегда его проставляет, см. её докблок) не должен собрать пустую причину
+// в письме — mailPayload обязана подставить reasonInternal защитно.
+func TestMailNotifierFallsBackToInternalReasonWhenKeyMissing(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{
+		ID: 8, ProjectID: projectID, CreatedBy: userID,
+		Status: StatusFailed, LastError: "что угодно",
+	})
+
+	body := mailBody(sent.calls[0])
+	if !strings.Contains(body, "внутренняя ошибка при сборке файла") {
+		t.Errorf("пустой FailureReasonKey не подменён reasonInternal: %q", body)
 	}
 }
 
