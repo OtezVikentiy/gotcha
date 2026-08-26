@@ -205,3 +205,32 @@ func TestExportRowRetention(t *testing.T) {
 		})
 	}
 }
+
+// TestExportsWiringEnabled: --mode=uptime поднимает outbox (нужен
+// уведомителю детектора аптайма), но НЕ строит issueSvc — воркер выгрузок,
+// поднятый на одном "outbox != nil", разыменовывал бы nil *issue.Service на
+// первой же заявке issues/events и ронял процесс паникой. Гейт обязан
+// требовать И режим с issueSvc (ingest|web|all), И доступный каталог разом.
+func TestExportsWiringEnabled(t *testing.T) {
+	cases := []struct {
+		name   string
+		mode   string
+		dirOK  bool
+		enable bool
+	}{
+		{"ingest + каталог доступен — включено", "ingest", true, true},
+		{"web + каталог доступен — включено", "web", true, true},
+		{"all + каталог доступен — включено", "all", true, true},
+		{"uptime + каталог доступен — issueSvc нет, выключено", "uptime", true, false},
+		{"probe + каталог доступен — issueSvc нет, выключено", "probe", true, false},
+		{"ingest + каталог недоступен — выключено", "ingest", false, false},
+		{"uptime + каталог недоступен — выключено", "uptime", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := exportsWiringEnabled(c.mode, c.dirOK); got != c.enable {
+				t.Errorf("exportsWiringEnabled(%q, %v) = %v, want %v", c.mode, c.dirOK, got, c.enable)
+			}
+		})
+	}
+}

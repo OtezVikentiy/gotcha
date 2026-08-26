@@ -205,6 +205,31 @@ func exportRowRetention(ttl time.Duration) time.Duration {
 	return exportMinRowRetention
 }
 
+// commonServicesEnabled — режимы, в которых run() строит общие сервисы
+// (orgSvc/issueSvc/alertSvc/emailSender/outbox, см. блок "Общие сервисы").
+// Единственный источник истины для этой тройки: список литералов существует
+// в коде ровно один раз, а не дублируется текстом по разным местам — именно
+// такое молчаливое дублирование ("тот же гейт ingest|web|all" в комментарии,
+// не подкреплённое общим кодом) и породило панику при --mode=uptime, которую
+// чинит exportsWiringEnabled ниже.
+func commonServicesEnabled(mode string) bool {
+	return mode == "ingest" || mode == "web" || mode == "all"
+}
+
+// exportsWiringEnabled решает, поднимать ли обработчик выгрузок ошибок/
+// событий (E1) в этом процессе. Два независимых условия: issueSvc строится
+// только там, где включены общие сервисы (commonServicesEnabled), а каталог
+// выгрузок (dirOK) может быть недоступен независимо от режима. Оба обязаны
+// выполниться разом — гейта "outbox != nil" на вызывающей стороне
+// недостаточно: --mode=uptime тоже поднимает outbox (нужен уведомителю
+// детектора аптайма), но issueSvc там остаётся nil, и export.NewIssueSource/
+// NewEventSource, получив nil *issue.Service, всё равно возвращают НЕ-nil
+// интерфейсы — воркер выгрузок стартует и на первой же заявке issues/events
+// падает паникой (issueSource.Stream разыменовывает nil *issue.Service).
+func exportsWiringEnabled(mode string, dirOK bool) bool {
+	return dirOK && commonServicesEnabled(mode)
+}
+
 // applyMemoryLimit приводит потолок кучи к лимиту контейнера и сообщает
 // результат. Отсутствие лимита — не ошибка: продукт не выдумывает потолок за
 // оператора, но и не молчит об этом.
@@ -367,7 +392,7 @@ func run() error {
 	var alertSvc *alert.Service
 	var emailSender *notify.EmailSender
 	var outbox *notify.Outbox
-	if cfg.Mode == "ingest" || cfg.Mode == "web" || cfg.Mode == "all" {
+	if commonServicesEnabled(cfg.Mode) {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
 		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 		// SSO client_secret шифруется этим мастер-ключом at-rest. С публично
@@ -698,16 +723,29 @@ func run() error {
 		}
 		go outboxJanitor.Run(ctx)
 
-		// Выгрузки ошибок/событий (E1). Гейт запуска — наличие ресурса (каталог
-		// на диске ЭТОГО процесса), а не режим: заявку ставит веб, а собирает
-		// тот процесс, у которого есть каталог (см. GOTCHA_EXPORT_DIR,
-		// docs/exports). issueSvc/emailSender доступны здесь по тому же
-		// поводу, что alertSvc/notifyDirect выше — тот же гейт "ingest|web|all".
-		if err := os.MkdirAll(cfg.ExportDir, 0o755); err != nil {
-			// Не фатально: продукт работает дальше без раздела выгрузок,
-			// страница отвечает 404 (webHandler.Exports остаётся nil ниже).
-			slog.Warn("export: export directory is unavailable, the exports section is disabled", "dir", cfg.ExportDir, "err", err)
-		} else {
+		// Выгрузки ошибок/событий (E1). Гейт запуска — ДВА условия разом:
+		// наличие ресурса (каталог на диске ЭТОГО процесса) И режим, в котором
+		// собирается issueSvc (commonServicesEnabled) — заявку ставит веб, а
+		// собирает тот процесс, у которого есть каталог (см. GOTCHA_EXPORT_DIR,
+		// docs/exports), но воркеру нужен живой issueSvc, а он строится не в
+		// каждом режиме, что доходит досюда (ниже, в блоке uptime, outbox
+		// поднимается и для --mode=uptime — там issueSvc остаётся nil).
+		// exportsWiringEnabled формализует оба условия и покрыта тестом.
+		// Каталог трогаем только когда режим вообще может им воспользоваться:
+		// иначе на uptime/probe-реплике без тома exportdata (в compose она
+		// read_only) это давало бы бесполезный warn на каждый старт про раздел,
+		// которого в этом режиме нет вовсе.
+		exportDirOK := false
+		if commonServicesEnabled(cfg.Mode) {
+			if err := os.MkdirAll(cfg.ExportDir, 0o755); err != nil {
+				// Не фатально: продукт работает дальше без раздела выгрузок,
+				// страница отвечает 404 (webHandler.Exports остаётся nil ниже).
+				slog.Warn("export: export directory is unavailable, the exports section is disabled", "dir", cfg.ExportDir, "err", err)
+			} else {
+				exportDirOK = true
+			}
+		}
+		if exportsWiringEnabled(cfg.Mode, exportDirOK) {
 			exportStore = export.NewStore(pg)
 			exportCfg := export.Config{
 				Dir:        cfg.ExportDir,
