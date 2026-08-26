@@ -989,3 +989,205 @@ func TestFailPermanentUnknownIDReturnsStaleClaim(t *testing.T) {
 		t.Fatalf("FailPermanent по несуществующему id: err=%v, ожидали ErrStaleClaim", err)
 	}
 }
+
+// TestDueForExpiryReturnsOnlyExpiredDone — выборка обязана видеть только
+// done-заявки с просроченным expires_at: живой done (срок ещё не наступил) и
+// queued (даже с NULL expires_at) не должны попасть в проход джанитора.
+func TestDueForExpiryReturnsOnlyExpiredDone(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	expiredID := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done', finished_at = now(),
+		expires_at = now() - interval '1 hour' WHERE id = $1`, expiredID); err != nil {
+		t.Fatalf("подготовка истёкшей заявки: %v", err)
+	}
+
+	liveID := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done', finished_at = now(),
+		expires_at = now() + interval '1 hour' WHERE id = $1`, liveID); err != nil {
+		t.Fatalf("подготовка живой заявки: %v", err)
+	}
+
+	_ = mustEnqueue(t, st, projectID, userID) // queued, expires_at NULL — не наш случай
+
+	jobs, err := st.DueForExpiry(ctx)
+	if err != nil {
+		t.Fatalf("DueForExpiry: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != expiredID {
+		t.Fatalf("DueForExpiry вернул %+v, ожидали только заявку %d", jobs, expiredID)
+	}
+}
+
+// TestMarkExpiredGuardsStatus — MarkExpired обязан трогать только заявки в
+// статусе done: заявку, ещё стоящую в очереди (queued), пометить expired
+// нельзя — файл по ней ещё не создавался и удалять нечего.
+func TestMarkExpiredGuardsStatus(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID) // остаётся queued
+
+	if err := st.MarkExpired(ctx, []int64{id}); err != nil {
+		t.Fatalf("MarkExpired: %v", err)
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Fatalf("MarkExpired тронул queued-заявку: статус стал %q", got.Status)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done' WHERE id=$1`, id); err != nil {
+		t.Fatalf("подготовка done: %v", err)
+	}
+	if err := st.MarkExpired(ctx, []int64{id}); err != nil {
+		t.Fatalf("MarkExpired: %v", err)
+	}
+	got, err = st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusExpired {
+		t.Fatalf("MarkExpired не перевёл done-заявку в expired: статус %q", got.Status)
+	}
+}
+
+// TestMarkExpiredEmptyIDsIsNoop — пустой список id не должен бить по базе
+// SQL-запросом с пустым ANY($1): вызывающая сторона (Janitor) собирает список
+// из циклa, который на пустых входных данных может дать nil-срез.
+func TestMarkExpiredEmptyIDsIsNoop(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	if err := st.MarkExpired(ctx, nil); err != nil {
+		t.Fatalf("MarkExpired(nil): %v", err)
+	}
+}
+
+// TestPurgeRowsRemovesOnlyOldTerminal — история чистится по finished_at и
+// только у терминальных статусов: свежая терминальная заявка и активная
+// (queued/running), сколько бы она ни висела, остаются нетронутыми.
+func TestPurgeRowsRemovesOnlyOldTerminal(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	oldID := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='failed',
+		finished_at = now() - interval '40 days' WHERE id = $1`, oldID); err != nil {
+		t.Fatalf("подготовка старой заявки: %v", err)
+	}
+
+	freshID := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done',
+		finished_at = now() - interval '1 hour' WHERE id = $1`, freshID); err != nil {
+		t.Fatalf("подготовка свежей заявки: %v", err)
+	}
+
+	// Активная заявка без finished_at, "состаренная" по created_at — Purge
+	// не должен цепляться за created_at вовсе, только за finished_at
+	// терминальных статусов.
+	activeID := mustEnqueue(t, st, projectID, userID)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET created_at = now() - interval '40 days'
+		WHERE id = $1`, activeID); err != nil {
+		t.Fatalf("подготовка активной заявки: %v", err)
+	}
+
+	n, err := st.PurgeRows(ctx, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeRows: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("PurgeRows удалил %d строк, ожидали 1", n)
+	}
+	if _, err := st.Get(ctx, oldID); err != ErrNotFound {
+		t.Errorf("старая терминальная строка не вычищена: err=%v", err)
+	}
+	if _, err := st.Get(ctx, freshID); err != nil {
+		t.Errorf("свежая терминальная строка ошибочно удалена: %v", err)
+	}
+	if _, err := st.Get(ctx, activeID); err != nil {
+		t.Errorf("активная заявка ошибочно удалена: %v", err)
+	}
+}
+
+// TestPurgeRowsContinuesBeyondBatch — цикл обязан пройти больше одного
+// батча: janitorBatchSize временно занижается до 2, строк — пять, значит без
+// продолжения цикла после первого батча часть строк осталась бы жить.
+func TestPurgeRowsContinuesBeyondBatch(t *testing.T) {
+	origBatch := janitorBatchSize
+	janitorBatchSize = 2
+	defer func() { janitorBatchSize = origBatch }()
+
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	const total = 5
+	ids := make([]int64, total)
+	for i := range ids {
+		id := mustEnqueue(t, st, projectID, userID)
+		if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='failed',
+			finished_at = now() - interval '40 days' WHERE id = $1`, id); err != nil {
+			t.Fatalf("подготовка заявки %d: %v", i, err)
+		}
+		ids[i] = id
+	}
+
+	n, err := st.PurgeRows(ctx, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeRows: %v", err)
+	}
+	if n != total {
+		t.Fatalf("PurgeRows удалил %d из %d — цикл остановился на первом батче (лимит %d)", n, total, janitorBatchSize)
+	}
+	for _, id := range ids {
+		if _, err := st.Get(ctx, id); err != ErrNotFound {
+			t.Errorf("строка %d не вычищена: err=%v", id, err)
+		}
+	}
+}
+
+// TestExistingIDsReturnsSubset — джанитор сверяет файлы каталога со строками
+// именно так: из произвольного набора id возвращаются только реально
+// существующие, несуществующие тихо выпадают, а не превращаются в ошибку.
+func TestExistingIDsReturnsSubset(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	id1 := mustEnqueue(t, st, projectID, userID)
+	id2 := mustEnqueue(t, st, projectID, userID)
+
+	got, err := st.ExistingIDs(ctx, []int64{id1, id2, 999999999})
+	if err != nil {
+		t.Fatalf("ExistingIDs: %v", err)
+	}
+	if !got[id1] || !got[id2] || got[999999999] {
+		t.Fatalf("ExistingIDs вернул %v, ожидали {%d:true, %d:true}", got, id1, id2)
+	}
+}
+
+// TestExistingIDsEmptyInput — пустой список на входе не должен бить по базе
+// SQL-запросом с пустым ANY($1) — тот же случай, что и MarkExpired.
+func TestExistingIDsEmptyInput(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	got, err := st.ExistingIDs(ctx, nil)
+	if err != nil {
+		t.Fatalf("ExistingIDs(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ExistingIDs(nil) = %v, ожидали пустую карту", got)
+	}
+}
