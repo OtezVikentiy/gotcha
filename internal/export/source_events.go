@@ -44,7 +44,7 @@ var ErrMaxIssueIDsNotConfigured = errors.New("экспорт: eventSource соб
 
 // EventSource — источник строк выгрузки kind=events.
 type EventSource interface {
-	Stream(ctx context.Context, projectID, scopeIssueID int64, p Params, fn func(Record) error) error
+	Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error
 }
 
 // EventColumns — колонки CSV для событий (§6 спеки), в порядке, ожидаемом
@@ -62,21 +62,24 @@ func EventColumns() []string {
 type eventSource struct {
 	q           *event.Query
 	issues      *issue.Service
-	includePII  bool
 	maxIssueIDs int
 }
 
-// NewEventSource создаёт источник событий. includePII — снимок галки заявки
-// «выгрузить как есть» (job.IncludePII, доступна только админу/владельцу
-// орга — это проверяется на постановке заявки, веб-слоем, не здесь).
-func NewEventSource(q *event.Query, issues *issue.Service, includePII bool) EventSource {
-	return &eventSource{q: q, issues: issues, includePII: includePII, maxIssueIDs: defaultMaxIssueIDsForEventExport}
+// NewEventSource создаёт источник событий. includePII заявки Stream берёт
+// параметром при каждом вызове (не полем конструктора): заявка — не
+// свойство источника, а снимок галки КОНКРЕТНОЙ заявки («выгрузить как
+// есть», доступна только админу/владельцу орга — проверяется на постановке
+// заявки веб-слоем, не здесь), и один и тот же источник, живущий в Worker
+// весь процесс (worker.go: Worker.Events), обслуживает заявки с разным
+// значением галки одну за другой.
+func NewEventSource(q *event.Query, issues *issue.Service) EventSource {
+	return &eventSource{q: q, issues: issues, maxIssueIDs: defaultMaxIssueIDsForEventExport}
 }
 
 // Stream резолвит область выгрузки в список issue_id и стримит события
 // дальше как Record. Порядок строк — по StreamForExport (issue_id,
 // timestamp DESC), тот же, что и в источнике CH.
-func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64, p Params, fn func(Record) error) error {
+func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error {
 	issueIDs, err := s.resolveIssueIDs(ctx, projectID, scopeIssueID, p)
 	if err != nil {
 		return err
@@ -85,7 +88,7 @@ func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64,
 		return nil
 	}
 	return s.q.StreamForExport(ctx, projectID, issueIDs, p.Since, p.Until, eventStreamSafetyLimit, func(ev event.Stored) error {
-		return fn(s.toRecord(ev))
+		return fn(s.toRecord(ev, includePII))
 	})
 }
 
@@ -123,10 +126,10 @@ func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssue
 // toRecord превращает событие CH в Record. При includePII == false прямые
 // идентификаторы пользователя и запрос/контексты маскируются тем же
 // денилистом, что и приём (MaskUser/MaskJSON, internal/export/pii.go).
-func (s *eventSource) toRecord(ev event.Stored) Record {
+func (s *eventSource) toRecord(ev event.Stored, includePII bool) Record {
 	userIP, userEmail := ev.UserIP, ev.UserEmail
 	request, contexts := ev.Request, ev.Contexts
-	if !s.includePII {
+	if !includePII {
 		userIP, userEmail = MaskUser(userIP, userEmail)
 		request = MaskJSON(request)
 		contexts = MaskJSON(contexts)

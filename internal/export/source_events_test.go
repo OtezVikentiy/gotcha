@@ -67,13 +67,13 @@ func TestEventSourcePipelineThroughWriter(t *testing.T) {
 	}
 
 	t.Run("маска включена по умолчанию", func(t *testing.T) {
-		src := NewEventSource(event.NewQuery(ch), svc, false /*includePII*/)
+		src := NewEventSource(event.NewQuery(ch), svc)
 		var buf bytes.Buffer
 		w, err := NewWriter(&buf, FormatNDJSON, EventColumns())
 		if err != nil {
 			t.Fatalf("NewWriter: %v", err)
 		}
-		if err := src.Stream(ctx, projectID, 0, Params{}, func(r Record) error {
+		if err := src.Stream(ctx, projectID, 0, false /*includePII*/, Params{}, func(r Record) error {
 			return w.Write(r)
 		}); err != nil {
 			t.Fatalf("Stream: %v", err)
@@ -114,13 +114,13 @@ func TestEventSourcePipelineThroughWriter(t *testing.T) {
 	})
 
 	t.Run("включить как есть — includePII", func(t *testing.T) {
-		src := NewEventSource(event.NewQuery(ch), svc, true /*includePII*/)
+		src := NewEventSource(event.NewQuery(ch), svc)
 		var buf bytes.Buffer
 		w, err := NewWriter(&buf, FormatNDJSON, EventColumns())
 		if err != nil {
 			t.Fatalf("NewWriter: %v", err)
 		}
-		if err := src.Stream(ctx, projectID, 0, Params{}, func(r Record) error {
+		if err := src.Stream(ctx, projectID, 0, true /*includePII*/, Params{}, func(r Record) error {
 			return w.Write(r)
 		}); err != nil {
 			t.Fatalf("Stream: %v", err)
@@ -162,13 +162,13 @@ func TestEventSourceCSVOmitsRawFields(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	src := NewEventSource(event.NewQuery(ch), svc, true)
+	src := NewEventSource(event.NewQuery(ch), svc)
 	var buf bytes.Buffer
 	w, err := NewWriter(&buf, FormatCSV, EventColumns())
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := src.Stream(ctx, projectID, 0, Params{}, func(r Record) error { return w.Write(r) }); err != nil {
+	if err := src.Stream(ctx, projectID, 0, true, Params{}, func(r Record) error { return w.Write(r) }); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -206,9 +206,9 @@ func TestEventSourceScopeSingleIssue(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	src := NewEventSource(event.NewQuery(ch), svc, true)
+	src := NewEventSource(event.NewQuery(ch), svc)
 	var messages []string
-	err = src.Stream(ctx, projectID, target.IssueID, Params{}, func(r Record) error {
+	err = src.Stream(ctx, projectID, target.IssueID, true, Params{}, func(r Record) error {
 		messages = append(messages, r["message"].(string))
 		return nil
 	})
@@ -235,9 +235,9 @@ func TestEventSourceEmptyFilterYieldsNoRecordsWithoutError(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	src := NewEventSource(event.NewQuery(ch), svc, true)
+	src := NewEventSource(event.NewQuery(ch), svc)
 	calls := 0
-	err := src.Stream(ctx, projectID, 0, Params{Status: "resolved"}, func(Record) error {
+	err := src.Stream(ctx, projectID, 0, true, Params{Status: "resolved"}, func(Record) error {
 		calls++
 		return nil
 	})
@@ -279,11 +279,11 @@ func TestEventSourceIsolatedByProject(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	src := NewEventSource(event.NewQuery(ch), svc, true)
+	src := NewEventSource(event.NewQuery(ch), svc)
 
 	t.Run("фильтр по проекту", func(t *testing.T) {
 		var messages []string
-		if err := src.Stream(ctx, projectA, 0, Params{}, func(r Record) error {
+		if err := src.Stream(ctx, projectA, 0, true, Params{}, func(r Record) error {
 			messages = append(messages, r["message"].(string))
 			return nil
 		}); err != nil {
@@ -299,7 +299,7 @@ func TestEventSourceIsolatedByProject(t *testing.T) {
 		// projectA запрашивает выгрузку с ScopeIssueID группы проекта B:
 		// WHERE project_id = ? в StreamForExport обязан отсечь эту группу,
 		// даже если id формально существует (в другом проекте).
-		if err := src.Stream(ctx, projectA, issueB.IssueID, Params{}, func(r Record) error {
+		if err := src.Stream(ctx, projectA, issueB.IssueID, true, Params{}, func(r Record) error {
 			messages = append(messages, r["message"].(string))
 			return nil
 		}); err != nil {
@@ -329,8 +329,8 @@ func TestEventSourceTooManyIssuesReturnsError(t *testing.T) {
 		}
 	}
 
-	src := &eventSource{q: event.NewQuery(ch), issues: svc, includePII: true, maxIssueIDs: 2}
-	err := src.Stream(ctx, projectID, 0, Params{}, func(Record) error {
+	src := &eventSource{q: event.NewQuery(ch), issues: svc, maxIssueIDs: 2}
+	err := src.Stream(ctx, projectID, 0, true, Params{}, func(Record) error {
 		t.Fatal("колбэк не должен вызываться при отказе на потолке")
 		return nil
 	})
@@ -358,8 +358,8 @@ func TestEventSourceZeroMaxIssueIDsFailsCleanly(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	src := &eventSource{q: event.NewQuery(ch), issues: svc, includePII: true} // maxIssueIDs не задан — 0
-	err := src.Stream(ctx, projectID, 0, Params{}, func(Record) error {
+	src := &eventSource{q: event.NewQuery(ch), issues: svc} // maxIssueIDs не задан — 0
+	err := src.Stream(ctx, projectID, 0, true, Params{}, func(Record) error {
 		t.Fatal("колбэк не должен вызываться при незаданном потолке")
 		return nil
 	})
@@ -379,7 +379,7 @@ func TestEventSourceZeroMaxIssueIDsFailsCleanly(t *testing.T) {
 // нулевой maxIssueIDs означал бы, что любой непустой список групп сразу
 // считается переполнением.
 func TestNewEventSourceDefaultsMaxIssueIDs(t *testing.T) {
-	src, ok := NewEventSource(nil, nil, false).(*eventSource)
+	src, ok := NewEventSource(nil, nil).(*eventSource)
 	if !ok {
 		t.Fatalf("NewEventSource вернул %T, want *eventSource", src)
 	}

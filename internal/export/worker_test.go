@@ -60,7 +60,7 @@ type fakeEventSource struct{ n int }
 
 func fakeEvents(n int) EventSource { return &fakeEventSource{n: n} }
 
-func (s *fakeEventSource) Stream(ctx context.Context, projectID, scopeIssueID int64, p Params, fn func(Record) error) error {
+func (s *fakeEventSource) Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error {
 	for i := 0; i < s.n; i++ {
 		if err := fn(Record{
 			"timestamp": time.Now().UTC(), "event_id": fmt.Sprintf("ev%d", i+1), "issue_id": int64(1),
@@ -145,6 +145,84 @@ func TestWorkerWritesEventsFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("%d.ndjson", id))); err != nil {
 		t.Fatalf("файл выгрузки не создан: %v", err)
+	}
+}
+
+// includePIICapturingSource — фиктивный EventSource, который запоминает
+// значение includePII, полученное на каждом вызове Stream. w.Events — ОДИН
+// экземпляр на весь процесс (см. NewEventSource), а заявки с разным
+// значением галки «выгрузить как есть» идут через него одна за другой:
+// includePII обязан приходить параметром КАЖДОГО вызова (job.IncludePII), а
+// не быть свойством самого источника.
+type includePIICapturingSource struct{ got []bool }
+
+func (s *includePIICapturingSource) Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error {
+	s.got = append(s.got, includePII)
+	return fn(Record{
+		"timestamp": time.Now().UTC(), "event_id": "ev1", "issue_id": int64(1),
+		"level": "error", "message": "boom", "exception_type": "", "exception_value": "",
+		"environment": "", "release": "", "server_name": "", "sdk": "", "trace_id": "",
+		"user_id": "", "user_ip": "", "user_email": "", "tags": "",
+	})
+}
+
+// TestWorkerPassesJobIncludePIIToEventSource — мутационная проверка врезки
+// worker.go:stream(): includePII, дошедший до EventSource.Stream, обязан
+// быть galочкой ИМЕННО этой заявки (job.IncludePII), а не константой,
+// зашитой в момент постройки w.Events. Две заявки с разным значением галки
+// собираются одним и тем же Worker.Events одна за другой — если бы стрим
+// вызывался с захардкоженным true/false (или с полем самого источника, как
+// было до фикса), одна из двух заявок ниже получила бы чужое значение.
+func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	now := time.Now().UTC()
+
+	maskedID, err := st.Enqueue(ctx, Job{
+		ProjectID: projectID, CreatedBy: userID, Kind: KindEvents, Format: FormatNDJSON,
+		Params: Params{Since: now.Add(-time.Hour), Until: now}, IncludePII: false,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue (masked): %v", err)
+	}
+	rawID, err := st.Enqueue(ctx, Job{
+		ProjectID: projectID, CreatedBy: userID, Kind: KindEvents, Format: FormatNDJSON,
+		Params: Params{Since: now.Add(-time.Hour), Until: now}, IncludePII: true,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue (raw): %v", err)
+	}
+
+	src := &includePIICapturingSource{}
+	w := &Worker{Store: st, Pool: pool, Events: src, Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+
+	// Claim берёт по ORDER BY created_at — сначала masked, потом raw.
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick 1: %v", err)
+	}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick 2: %v", err)
+	}
+
+	if maskedJob, err := st.Get(ctx, maskedID); err != nil || maskedJob.Status != StatusDone {
+		t.Fatalf("masked job: status=%+v err=%v", maskedJob, err)
+	}
+	if rawJob, err := st.Get(ctx, rawID); err != nil || rawJob.Status != StatusDone {
+		t.Fatalf("raw job: status=%+v err=%v", rawJob, err)
+	}
+
+	if len(src.got) != 2 {
+		t.Fatalf("Stream вызван %d раз(а), want 2: %v", len(src.got), src.got)
+	}
+	if src.got[0] != false {
+		t.Errorf("первая заявка (IncludePII=false): Stream получил includePII=%v", src.got[0])
+	}
+	if src.got[1] != true {
+		t.Errorf("вторая заявка (IncludePII=true): Stream получил includePII=%v", src.got[1])
 	}
 }
 

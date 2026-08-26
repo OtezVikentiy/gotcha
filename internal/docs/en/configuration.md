@@ -271,6 +271,18 @@ Detail level and format of the instance's own logs.
 | `GOTCHA_AGENT_DIST_DIR` | `/opt/gotcha/agent-dist` | Directory with `install.sh` and the built `gotcha-agent` binaries (`gotcha-agent-linux-amd64`, `gotcha-agent-linux-arm64`, `SHA256SUMS`) that the instance serves at `GET /install.sh` and `GET /agent/{file}` — the exact path the agent's install command pulls from (see [Hosts](/docs/hosts)). The default matches where the Docker build places the binaries in the image — a standard `docker-compose` deployment doesn't need to set this. This directory doesn't physically exist in dev mode (`go run` without Docker) or on a build that skipped the Docker image — both routes then answer `404` with a hint instead of failing. This variable only controls the serving directory: the `install.sh` script itself is embedded in the `gotcha` binary and is identical across every instance and product version. |
 | `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `120` | Per-IP rate limit on `GET /agent/{file}` (agent binary and `SHA256SUMS` downloads). One install/update costs 2 requests, so the default allows ~60 hosts/minute from one IP — enough headroom for a mass rollout (Ansible/Terraform) or a fleet-wide update behind one NAT/egress address. Raise it if your fleet behind one IP is larger. `0` (or negative) removes the rate limit entirely — `GET /agent/{file}` stops being throttled, the same "0 = unbounded" convention used by `*_RETENTION_DAYS`. |
 
+## Exports
+
+Feature details and limits are in [Exports](/docs/exports).
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_EXPORT_DIR` | `/var/lib/gotcha/exports` | Directory on the instance's disk where the worker writes export files. In the standard `docker-compose.yml` this is the named volume `exportdata`, which survives container re-creation. If the directory can't be created on startup (no permissions, path taken by a non-directory) the application doesn't fail — the exports section is silently disabled (the page returns `404`), and a warning is logged. |
+| `GOTCHA_EXPORT_TTL_HOURS` | `168` | How many hours after a job finishes its file and row are removed by the background janitor. `168` is seven days. |
+| `GOTCHA_EXPORT_MAX_ROWS` | `200000` | Row cap for one export: on reaching it the job is marked "truncated" (`Truncated`) and the build stops deterministically, instead of silently returning an incomplete file with no indication. |
+| `GOTCHA_EXPORT_MAX_BYTES` | `268435456` | File size cap for one export, in bytes (256 MiB). Same idea as `GOTCHA_EXPORT_MAX_ROWS`, but by size instead of row count. |
+| `GOTCHA_EXPORT_DISK_BUDGET_BYTES` | `5368709120` | Total budget for the `GOTCHA_EXPORT_DIR` directory, in bytes (5 GiB). Checked before a file starts writing: exceeding it is a permanent failure of the new job, not a partially-written file. |
+
 ## OAuth / SSO
 
 Each login provider is enabled independently. Enabling a provider without setting its required secrets makes the app refuse to start.

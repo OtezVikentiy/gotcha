@@ -23,6 +23,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/depsuppress"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
@@ -583,6 +584,13 @@ func run() error {
 	// по кускам мимо каждого блока.
 	var ingestHandler *ingest.Handler
 	var webHandler *web.Handler
+	// exportStore — очередь заявок на выгрузку (E1); объявлен здесь по тому же
+	// поводу, что webHandler: конструируется ниже, в блоке `if outbox != nil`
+	// (гейт по наличию ресурса — каталога выгрузок, а не по режиму процесса),
+	// а используется дальше, в web-блоке, где строится webHandler.Exports.
+	// nil остаётся, если каталог не удалось создать (см. ниже) — тогда раздел
+	// выгрузок выключен, а не фатален для процесса.
+	var exportStore *export.Store
 	// cardinality — ограничитель кардинальности; нужен и приёму (схлопывание),
 	// и веб-слою (диагностика: что схлопнуто и примеры значений).
 	var cardinality *ingest.CardinalityGuard
@@ -670,6 +678,70 @@ func run() error {
 			Retention: time.Duration(cfg.OutboxRetentionDays) * 24 * time.Hour,
 		}
 		go outboxJanitor.Run(ctx)
+
+		// Выгрузки ошибок/событий (E1). Гейт запуска — наличие ресурса (каталог
+		// на диске ЭТОГО процесса), а не режим: заявку ставит веб, а собирает
+		// тот процесс, у которого есть каталог (см. GOTCHA_EXPORT_DIR,
+		// docs/exports). issueSvc/emailSender доступны здесь по тому же
+		// поводу, что alertSvc/notifyDirect выше — тот же гейт "ingest|web|all".
+		if err := os.MkdirAll(cfg.ExportDir, 0o755); err != nil {
+			// Не фатально: продукт работает дальше без раздела выгрузок,
+			// страница отвечает 404 (webHandler.Exports остаётся nil ниже).
+			slog.Warn("export: export directory is unavailable, the exports section is disabled", "dir", cfg.ExportDir, "err", err)
+		} else {
+			exportStore = export.NewStore(pg)
+			exportCfg := export.Config{
+				Dir:        cfg.ExportDir,
+				TTL:        time.Duration(cfg.ExportTTLHours) * time.Hour,
+				MaxRows:    cfg.ExportMaxRows,
+				MaxBytes:   cfg.ExportMaxBytes,
+				DiskBudget: cfg.ExportDiskBudgetBytes,
+			}
+			// В отличие от каталога (недоступность диска — условие среды, а не
+			// ошибка оператора), кривая конфигурация — отказ старта: молчаливо
+			// работающий воркер с MaxRows не строже защитного предела потока
+			// событий теряет Truncated=true (см. Config.Validate).
+			if err := exportCfg.Validate(); err != nil {
+				return fmt.Errorf("export: configuration: %w", err)
+			}
+			// Как EmailEnabled у digester'а выше: nil вместо отправителя, если
+			// почта не настроена — иначе EmailSender.Send диалит пустой
+			// host:port на каждой терминальной заявке.
+			var exportMailer export.Mailer
+			if emailSender != nil && emailSender.Configured() {
+				exportMailer = emailSender
+			}
+			exportWorker := &export.Worker{
+				Store:  exportStore,
+				Pool:   pg,
+				Issues: export.NewIssueSource(issueSvc, cfg.BaseURL),
+				Events: export.NewEventSource(event.NewQuery(ch), issueSvc),
+				Cfg:    exportCfg,
+				Notify: export.NewMailNotifier(exportMailer, exportStore, cfg.BaseURL, i18n.Locale{Code: cfg.Locale}),
+			}
+			go exportWorker.Run(ctx)
+
+			// RowRetention — история заявок хранится дольше самого файла (TTL):
+			// статус "истекла" должен успеть побыть видимым на странице, а не
+			// исчезнуть в тот же тик, что и файл. 30 суток — фиксированное
+			// значение по умолчанию (не GOTCHA_EXPORT_*, план §9 задачи 9),
+			// отдельное от настраиваемого TTL файла — но не короче него:
+			// PurgeRows чистит по finished_at независимо от expires_at, и при
+			// GOTCHA_EXPORT_TTL_HOURS больше 30 суток фиксированные 30 снесли
+			// бы строку ЖИВОЙ (ещё не истёкшей) заявки раньше её собственного
+			// срока.
+			rowRetention := 30 * 24 * time.Hour
+			if exportCfg.TTL > rowRetention {
+				rowRetention = exportCfg.TTL
+			}
+			exportJanitor := &export.Janitor{
+				Store:        exportStore,
+				Pool:         pg,
+				Dir:          cfg.ExportDir,
+				RowRetention: rowRetention,
+			}
+			go exportJanitor.Run(ctx)
+		}
 	}
 
 	// Ретенция сущностей PostgreSQL. GOTCHA_RETENTION_DAYS вытеснял только
@@ -955,6 +1027,11 @@ func run() error {
 		// при включённом скрубинге поиск субъекта по ним не найдёт ничего.
 		webHandler.ScrubIP = cfg.ScrubIP
 		webHandler.ScrubEmail = cfg.ScrubEmail
+		// exportStore остаётся nil, если каталог выгрузок недоступен (см. блок
+		// export.Worker/Janitor выше) — тогда webHandler.Exports тоже nil, и
+		// страница выгрузок отвечает 404, а не падает.
+		webHandler.Exports = exportStore
+		webHandler.ExportDir = cfg.ExportDir
 		// Диагностика кардинальности: в режиме all это тот же экземпляр, что у
 		// приёма. В раздельном развёртывании веб-узел его не видит — тогда
 		// предупреждения доступны через /metrics и логи ingest-узла.

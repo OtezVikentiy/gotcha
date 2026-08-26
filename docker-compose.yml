@@ -45,6 +45,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    # Именованный том, а не bind/tmpfs: файлы выгрузок (E1) обязаны пережить
+    # пересоздание контейнера — TTL хранения по умолчанию семь суток
+    # (GOTCHA_EXPORT_TTL_HOURS=168), дольше типичного цикла обновления образа.
+    volumes:
+      - exportdata:/var/lib/gotcha/exports
     pids_limit: 512
     # Остальное — из .env рядом с файлом. Без env_file Compose читает .env только для
     # подстановки ${...} в YAML, в контейнер не передавая (SMTP/ретенция не применялись).
@@ -167,3 +172,4 @@ networks:
 volumes:
   pgdata:
   chdata:
+  exportdata:

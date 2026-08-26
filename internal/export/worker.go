@@ -396,7 +396,10 @@ func (w *Worker) stream(ctx context.Context, job Job, fn func(Record) error) err
 		if w.Events == nil {
 			return fmt.Errorf("%w: источник событий не настроен", ErrPermanent)
 		}
-		return w.Events.Stream(ctx, job.ProjectID, job.ScopeIssueID, job.Params, fn)
+		// job.IncludePII — снимок галки ЭТОЙ заявки, а не свойство w.Events
+		// (тот один и тот же на весь процесс, см. NewEventSource): заявки с
+		// разным значением галки идут через один источник одна за другой.
+		return w.Events.Stream(ctx, job.ProjectID, job.ScopeIssueID, job.IncludePII, job.Params, fn)
 	default:
 		return fmt.Errorf("%w: неизвестный вид выгрузки %q", ErrPermanent, job.Kind)
 	}

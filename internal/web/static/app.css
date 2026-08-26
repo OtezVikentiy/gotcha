@@ -1702,6 +1702,18 @@ th {
 	gap: 8px;
 	margin: 0;
 }
+/* Кнопки постановки заявки на выгрузку (issues.templ:253, E1) — рядом с
+   фильтрами списка ошибок. Каждая кнопка — отдельная форма (POST со своим
+   набором hidden-полей), без обёртки они разъехались бы вертикально: form
+   по умолчанию block. Тот же приём, что .issue-actions/.row-actions выше. */
+.issues-export-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.issues-export-actions form {
+	margin: 0;
+}
 /* Рамку и фон селекту назначения даёт база .select (разметка несёт
    class="select"). Базовое .select даёт width:100% для вертикальных форм;
    в строке действий assign-form контрол живёт по содержимому. */
