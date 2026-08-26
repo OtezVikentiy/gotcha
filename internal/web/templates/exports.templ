@@ -1,0 +1,205 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+)
+
+// ExportsPath — адрес страницы выгрузок проекта (E1, задача 11). Экспортирован
+// для nav (nav.go добавляет пункт меню рядом с issues) и для форм экспорта на
+// issues/issuedetail.
+func ExportsPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/exports"
+}
+
+func exportsDownloadPath(projectID, jobID int64) string {
+	return ExportsPath(projectID) + "/" + strconv.FormatInt(jobID, 10) + "/download"
+}
+
+func exportsDeletePath(projectID, jobID int64) string {
+	return ExportsPath(projectID) + "/" + strconv.FormatInt(jobID, 10) + "/delete"
+}
+
+// ExportView — одна строка списка заявок: домен уже переведён в
+// человекочитаемые подписи и видимость кнопок в web-слое (см.
+// internal/web/exports.go:exportViewRow) — тот же приём, что и
+// SuppressionEdgeView в alert_suppression.templ. CanDownload/CanDelete
+// повторяют гейты exportsDownload/exportsDelete (автор заявки либо
+// CanManage, плюс терминальность для удаления): показывать кнопку, которая
+// поведёт на 404, хуже, чем не показывать её вовсе.
+type ExportView struct {
+	ID            int64
+	KindLabel     string
+	FormatLabel   string
+	FilterSummary string
+	// Status — сырой код (queued/running/done/failed/expired), перевод —
+	// i18n-ключом "exports.status."+Status внутри exportRow, тем же приёмом,
+	// что issueStatusLabel для issues.
+	Status      string
+	Rows        int64
+	Size        int64
+	Truncated   bool
+	IncludePII  bool
+	CreatedAt   time.Time
+	ExpiresAt   time.Time // нулевое — заявка ещё не терминальна, срок не назначен
+	Author      string
+	CanDownload bool
+	CanDelete   bool
+}
+
+// exportStatusBadgeClass — тот же принцип, что statusBadgeClass у issues:
+// готово — good, ошибка/протухла — тревожный/нейтральный цвет, очередь и
+// работа — нейтральный "в процессе".
+func exportStatusBadgeClass(status string) string {
+	switch status {
+	case "done":
+		return "badge badge-good"
+	case "failed":
+		return "badge badge-danger"
+	case "expired":
+		return "badge badge-neutral"
+	default: // queued, running
+		return "badge badge-warn"
+	}
+}
+
+templ exportRow(projectID int64, e ExportView) {
+	<tr>
+		<td>{ e.KindLabel }</td>
+		<td>{ e.FormatLabel }</td>
+		<td>{ e.FilterSummary }</td>
+		<td>
+			<span class={ exportStatusBadgeClass(e.Status) }>{ i18n.T(ctx, "exports.status."+e.Status) }</span>
+			if e.Truncated {
+				<div class="hint">{ i18n.T(ctx, "exports.truncated") }</div>
+			}
+		</td>
+		<td class="num">{ strconv.FormatInt(e.Rows, 10) }</td>
+		<td>{ formatProfileBytes(uint64(e.Size)) }</td>
+		<td>
+			if e.IncludePII {
+				{ i18n.T(ctx, "exports.pii.column_included") }
+			} else {
+				{ i18n.T(ctx, "exports.pii.column_masked") }
+			}
+		</td>
+		<td>@relativeTime(e.CreatedAt)</td>
+		<td>
+			if e.ExpiresAt.IsZero() {
+				{ "—" }
+			} else {
+				@relativeTime(e.ExpiresAt)
+			}
+		</td>
+		<td>{ assigneeDisplay(e.Author) }</td>
+		<td>
+			if e.CanDownload {
+				<a class="btn btn-ghost" href={ templ.URL(exportsDownloadPath(projectID, e.ID)) }>{ i18n.T(ctx, "exports.download") }</a>
+			}
+		</td>
+		<td>
+			if e.CanDelete {
+				<form method="post" action={ templ.URL(exportsDeletePath(projectID, e.ID)) }>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "exports.delete") }</button>
+				</form>
+			} else {
+				<span class="hint">{ i18n.T(ctx, "exports.delete_disabled") }</span>
+			}
+		</td>
+	</tr>
+}
+
+// exportsForm — форма постановки заявки: вид, формат и, для CanManage,
+// галка PII с подсказкой о необратимости маскирования (см. докблок
+// ExportView.IncludePII/PLAN задачи 11 — маска на приёме зануляет PII
+// безвозвратно, повторная выгрузка без маски требует новой заявки).
+// Период не выбирается здесь отдельным полем: постановка использует то же
+// окно, что и последняя страница с селектором времени (rangeCookie,
+// internal/web/rangecookie.go) либо дефолт 24ч (h.resolveTimeRange) —
+// third отдельный виджет на форме дублировал бы уже существующий выбор.
+templ exportsForm(projectID int64, canManagePII bool) {
+	<details class="card">
+		<summary class="card-header">{ i18n.T(ctx, "exports.create") }</summary>
+		<form method="post" action={ templ.URL(ExportsPath(projectID)) }>
+			<div class="form-grid">
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "exports.field.kind") }
+						<select name="kind" class="select" aria-label={ i18n.T(ctx, "exports.field.kind") }>
+							<option value="issues">{ i18n.T(ctx, "exports.kind.issues") }</option>
+							<option value="events">{ i18n.T(ctx, "exports.kind.events") }</option>
+						</select>
+					</label>
+				</div>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "exports.field.format") }
+						<select name="format" class="select" aria-label={ i18n.T(ctx, "exports.field.format") }>
+							<option value="csv">{ i18n.T(ctx, "exports.format.csv") }</option>
+							<option value="json">{ i18n.T(ctx, "exports.format.json") }</option>
+							<option value="ndjson">{ i18n.T(ctx, "exports.format.ndjson") }</option>
+						</select>
+					</label>
+				</div>
+			</div>
+			if canManagePII {
+				<div class="field">
+					<label>
+						<input type="checkbox" name="include_pii" value="1"/>
+						{ i18n.T(ctx, "exports.pii.label") }
+					</label>
+					<p class="hint">{ i18n.T(ctx, "exports.pii.hint") }</p>
+				</div>
+			}
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
+		</form>
+	</details>
+}
+
+// Exports — GET /projects/{id}/exports: список заявок проекта (новые сверху,
+// см. Store.ByProject) + форма постановки. Доступ — оператор проекта
+// (requireProjectOperator), как у alert-suppression/escalations.
+// canManagePII гейтит и галку include_pii формы (только автор/владелец
+// организации ставит выгрузку без маски — оператору она молча игнорируется,
+// см. exports.go:exportsCreate), она же приходит из authz.CanManage.
+templ Exports(projectID int64, rows []ExportView, canManagePII bool, userEmail string) {
+	@layout(i18n.T(ctx, "exports.title"), userEmail) {
+		<h1>{ i18n.T(ctx, "exports.title") }</h1>
+		<p class="hint">{ i18n.T(ctx, "exports.intro") }</p>
+		<section class="card">
+			<h2 class="card-header">{ i18n.T(ctx, "exports.list.title") }</h2>
+			if len(rows) == 0 {
+				@emptyState("file-text", "exports.empty.title", "exports.empty.body", "", "", 3)
+			} else {
+				@scrollRegion("table-scroll", "exports.list.title") {
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th scope="col">{ i18n.T(ctx, "exports.table.kind") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.table.format") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.table.filters") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.table.status") }</th>
+								<th scope="col" class="num">{ i18n.T(ctx, "exports.rows") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.size") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.table.pii") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.table.created") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.expires") }</th>
+								<th scope="col">{ i18n.T(ctx, "exports.author") }</th>
+								<th scope="col"></th>
+								<th scope="col"></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, e := range rows {
+								@exportRow(projectID, e)
+							}
+						</tbody>
+					</table>
+				}
+			}
+		</section>
+		@exportsForm(projectID, canManagePII)
+	}
+}

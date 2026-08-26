@@ -15,6 +15,7 @@ func TestAreaForPath(t *testing.T) {
 		want string
 	}{
 		{"/projects/7/issues", "issues"},
+		{"/projects/7/exports", "issues"},
 		{"/issues/9", "issues"},
 		{"/projects/7/web-vitals", "performance"},
 		{"/traces/abc", "performance"},
@@ -52,6 +53,7 @@ func TestBackLabelKey(t *testing.T) {
 		want string
 	}{
 		{"/projects/7/issues?status=resolved", "nav.issues"},
+		{"/projects/7/exports", "nav.exports"},
 		{"/issues/9", "nav.issues"},
 		{"/projects/7/web-vitals", "nav.webvitals"},
 		{"/projects/7/dependencies", "nav.dependencies"},
@@ -375,6 +377,28 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 	operator.Area, operator.Path = "org", "/orgs/5/teams"
 	if got := Subsections(operator); len(got) != 1 {
 		t.Errorf("org/оператор(CanManage=false): len = %d, want 1 (только /projects), got %+v", len(got), got)
+	}
+}
+
+// TestSubsectionsIssuesExportsGatedByCanOperate — «Выгрузки» (E1, задача 11)
+// висят в области issues рядом со списком проблем, но требуют CanOperate —
+// той же границы, что и хендлеры создания/скачивания/удаления заявки
+// (requireProjectOperator в internal/web/exports.go).
+func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
+	base := Shell{ProjectID: 7, Area: "issues", Path: "/projects/7/issues"}
+
+	viewer := Subsections(base)
+	if len(viewer) != 1 {
+		t.Errorf("зритель: len(Subsections) = %d, want 1 (без exports), got %+v", len(viewer), viewer)
+	}
+
+	base.CanOperate = true
+	operator := Subsections(base)
+	if len(operator) != 2 {
+		t.Fatalf("оператор: len(Subsections) = %d, want 2 (issues+exports), got %+v", len(operator), operator)
+	}
+	if operator[1].LabelKey != "nav.exports" || operator[1].Href != "/projects/7/exports" {
+		t.Errorf("оператор: exports item = %+v", operator[1])
 	}
 }
 

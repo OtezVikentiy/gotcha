@@ -146,7 +146,12 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage, canAccess)
 	// canManage больше не передаётся (№117): шаблон его не использовал —
 	// роль питает QuotaBanner и GettingStartedVM выше.
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs).Render(r.Context(), w)
+	//
+	// canAccess как canOperate (E1, задача 11): гейтит кнопки экспорта на
+	// списке — тот же predicate, что canOperateProject использует для
+	// requireProjectOperator (см. её докблок в operate.go и комментарий выше
+	// про canAccess/gettingStarted).
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canAccess).Render(r.Context(), w)
 }
 
 // gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,

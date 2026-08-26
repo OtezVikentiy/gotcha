@@ -48,7 +48,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		{Issue: issue.Issue{ID: 2, Title: "minor warn", Level: "warning", Status: "resolved", TimesSeen: 3, LastSeen: time.Now().Add(-24 * time.Hour), AssigneeEmail: "dev@x.io"}, Sparkline: stub()},
 	}
 	gs := GettingStartedVM{ProjectID: 7, OrgID: 1, Done: 3, Step2Done: true}
-	out := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 2, "u@e.com", []string{"production", "staging"}, &QuotaBanner{Text: "почти лимит", Href: "/x"}, gs))
+	out := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 2, "u@e.com", []string{"production", "staging"}, &QuotaBanner{Text: "почти лимит", Href: "/x"}, gs, true))
 	if !strings.Contains(out, "boom error") || !strings.Contains(out, "badge-danger") {
 		t.Error("список issue должен содержать заголовок и бейдж уровня")
 	}
@@ -56,7 +56,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		t.Error("баннер квоты должен отрендериться")
 	}
 
-	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}))
+	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false))
 	if strings.Contains(empty, "boom error") {
 		t.Error("пустой список не должен содержать строк")
 	}
@@ -72,7 +72,7 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 	// Оператор без CanManage: карточка видна, операторские шаги 2/3/4b —
 	// рабочие ссылки, шаг 4a — без ссылки (иначе оператор упрётся в 403).
 	opGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, CanManage: false}
-	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, opGS))
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, opGS, false))
 	if !strings.Contains(out, `class="card getting-started"`) {
 		t.Fatal("оператор (CanOperate=true) должен видеть чек-лист «Первые шаги»")
 	}
@@ -92,7 +92,7 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 	// именно гейт карточки): чек-лист больше не показывается — раньше он
 	// показывался бы именно так, это и была находка C5.
 	adminOnlyGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, CanManage: true}
-	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, adminOnlyGS))
+	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, adminOnlyGS, false))
 	if strings.Contains(out2, `class="card getting-started"`) {
 		t.Error("CanManage без CanOperate не должен показывать чек-лист — гейт карточки теперь CanOperate, а не CanManage")
 	}

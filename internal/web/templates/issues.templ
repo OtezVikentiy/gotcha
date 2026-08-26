@@ -201,7 +201,11 @@ templ environmentOption(value, label string, selected string) {
 // оставила бы счётчики/пагинацию рассинхронизированными с выборкой, а полная
 // перерисовка страницы браузером и проще, и всегда согласована. htmx из
 // продукта удалён (не использовался ни на одной странице).
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM) {
+// canOperate гейтит кнопки экспорта (E1, задача 11): ставит заявку тот же
+// requireProjectOperator, что и остальные lvlOperator-хендлеры проекта —
+// показывать форму, которая поведёт на 404, хуже, чем не показывать её
+// вовсе (тот же принцип, что ExportView.CanDownload/CanDelete в exports.templ).
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool) {
 	@layout(i18n.T(ctx, "issues.title"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
@@ -238,6 +242,37 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				@timeRangeFields(filter.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
+			if canOperate {
+				// Две отдельные формы (группы/события), не один селект: клик по
+				// кнопке сразу ставит заявку с текущими фильтрами списка — без
+				// промежуточного шага «сначала выбери вид». Полноценная форма с
+				// выбором формата и (для CanManage) PII — на самой странице
+				// «Выгрузки» (exports.templ:exportsForm). Период отдельным полем
+				// не передаётся: постановка берёт то же окно, что и rangeCookie/
+				// дефолт (см. докблок exportsForm).
+				<div class="issues-export-actions">
+					<form method="post" action={ templ.URL(ExportsPath(projectID)) }>
+						<input type="hidden" name="kind" value="issues"/>
+						<input type="hidden" name="format" value="csv"/>
+						<input type="hidden" name="status" value={ filter.Status }/>
+						<input type="hidden" name="level" value={ filter.Level }/>
+						<input type="hidden" name="query" value={ filter.Query }/>
+						<input type="hidden" name="environment" value={ filter.Environment }/>
+						<input type="hidden" name="sort" value={ filter.Sort }/>
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.export.groups") }</button>
+					</form>
+					<form method="post" action={ templ.URL(ExportsPath(projectID)) }>
+						<input type="hidden" name="kind" value="events"/>
+						<input type="hidden" name="format" value="ndjson"/>
+						<input type="hidden" name="status" value={ filter.Status }/>
+						<input type="hidden" name="level" value={ filter.Level }/>
+						<input type="hidden" name="query" value={ filter.Query }/>
+						<input type="hidden" name="environment" value={ filter.Environment }/>
+						<input type="hidden" name="sort" value={ filter.Sort }/>
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.export.events") }</button>
+					</form>
+				</div>
+			}
 			<div id="issues-table">
 				if len(rows) == 0 && filter.Active {
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)

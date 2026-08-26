@@ -155,7 +155,7 @@ func AreaForPath(path string) string {
 		if len(parts) >= 2 {
 			if _, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
 				switch parts[1] {
-				case "issues":
+				case "issues", "exports":
 					return "issues"
 				case "performance", "web-vitals", "profiles", "profile-regressions", "perf-issues", "regressions", "dependencies", "deployments":
 					return "performance"
@@ -198,6 +198,8 @@ func BackLabelKey(rawPath string) string {
 			switch parts[1] {
 			case "issues":
 				return "nav.issues"
+			case "exports":
+				return "nav.exports"
 			case "performance":
 				return "nav.transactions"
 			case "web-vitals":
@@ -285,6 +287,16 @@ func Subsections(s Shell) []NavItem {
 	case "issues":
 		items = []NavItem{
 			{LabelKey: "nav.issues", Href: "/projects/" + effID + "/issues"},
+		}
+		// Выгрузки ошибок (E1, задача 11) — та же граница CanOperate, что и
+		// у остальных мутирующих подразделов (metric_alerts, maintenance,
+		// exports сама по себе GET, но встаёт в очередь тяжёлой выборки по
+		// ClickHouse — то же требование requireProjectOperator, что у
+		// хендлеров создания/скачивания/удаления заявки).
+		if s.CanOperate {
+			items = append(items,
+				NavItem{LabelKey: "nav.exports", Href: "/projects/" + effID + "/exports"},
+			)
 		}
 	case "performance":
 		items = []NavItem{

@@ -645,6 +645,17 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 					}
 				</form>
 				@assignControl(it, members)
+				// Экспорт событий этой issue (E1, задача 11): без явного
+				// canOperate-параметра — loadAccessibleIssue уже потребовал
+				// CanAccessProject, а он сегодня буквально canOperateProject
+				// (см. её докблок в operate.go), так что дошедший досюда
+				// пользователь уже прошёл бы requireProjectOperator постановки.
+				<form method="post" action={ templ.URL(ExportsPath(it.ProjectID)) }>
+					<input type="hidden" name="kind" value="events"/>
+					<input type="hidden" name="format" value="csv"/>
+					<input type="hidden" name="scope_issue_id" value={ strconv.FormatInt(it.ID, 10) }/>
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issuedetail.export") }</button>
+				</form>
 			</div>
 
 			<form method="get" action={ templ.URL(issueDetailPath(it.ID)) } class="performance-filters">

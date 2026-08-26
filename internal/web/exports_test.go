@@ -179,6 +179,18 @@ func (s *exportsStack) getAs(t *testing.T, uid int64, path string) *http.Respons
 	return getWithCookie(t, s.srv, path, s.cookie(t, uid))
 }
 
+// getBody — GET, ожидающий 200, тело для strings.Contains-проверок разметки
+// (страница «Выгрузки» и её кнопки на issues/issuedetail).
+func (s *exportsStack) getBody(t *testing.T, uid int64, path string) string {
+	t.Helper()
+	resp := s.getAs(t, uid, path)
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	return body
+}
+
 func (s *exportsStack) lastJobID(t *testing.T) int64 {
 	t.Helper()
 	var id int64
@@ -215,6 +227,30 @@ func (s *exportsStack) markDone(t *testing.T, id int64) {
 	if _, err := s.pool.Exec(context.Background(),
 		`UPDATE export_jobs SET status='done', finished_at=now(), expires_at=now()+interval '7 days' WHERE id=$1`, id); err != nil {
 		t.Fatalf("markDone: %v", err)
+	}
+}
+
+// markStatus — выставляет статус заявки напрямую через SQL, в обход
+// Store.Claim/Done/Fail (которые фенсят под status='running' AND attempts=N)
+// — странице списка (задача 11) нужен только конечный статус на экране, а
+// не реальный цикл воркера (тот же приём, что markDone выше).
+func (s *exportsStack) markStatus(t *testing.T, id int64, status string) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(),
+		`UPDATE export_jobs SET status=$2 WHERE id=$1`, id, status); err != nil {
+		t.Fatalf("markStatus: %v", err)
+	}
+}
+
+// markDoneTruncated — как markDone, но с truncated=true и ненулевыми
+// rows/bytes — для проверки отметки «обрезана» на странице списка.
+func (s *exportsStack) markDoneTruncated(t *testing.T, id int64, rows, bytes int64) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(),
+		`UPDATE export_jobs SET status='done', rows_written=$2, bytes=$3, truncated=true,
+			finished_at=now(), expires_at=now()+interval '7 days' WHERE id=$1`,
+		id, rows, bytes); err != nil {
+		t.Fatalf("markDoneTruncated: %v", err)
 	}
 }
 
@@ -536,6 +572,9 @@ func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	s := newExportsStack(t)
 	s.h.Exports = nil
 
+	if resp := s.getAs(t, s.operatorUID, s.path("/exports")); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /exports = %d, want 404", resp.StatusCode)
+	}
 	if resp := s.postForm(t, s.path("/exports"), okForm); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST /exports = %d, want 404", resp.StatusCode)
 	}
@@ -584,5 +623,147 @@ func TestExportsDownloadMissingFileIs404(t *testing.T) {
 	body := readAll(t, resp)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("код %d, ожидали 404: %s", resp.StatusCode, body)
+	}
+}
+
+// --- Задача 11: страница «Выгрузки», кнопки и i18n ---
+
+// TestExportsPageShowsStatusesAndTruncation — заголовок, перевод статуса
+// running и отметка «обрезана» — на экране (см. exports.templ:exportRow).
+func TestExportsPageShowsStatusesAndTruncation(t *testing.T) {
+	s := newExportsStack(t)
+	runningID, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID, Kind: export.KindIssues, Format: export.FormatCSV,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueue running: %v", err)
+	}
+	s.markStatus(t, runningID, "running")
+
+	truncatedID, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID, Kind: export.KindEvents, Format: export.FormatNDJSON,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueue truncated: %v", err)
+	}
+	s.markDoneTruncated(t, truncatedID, 1000, 2048)
+
+	body := s.getBody(t, s.operatorUID, s.path("/exports"))
+	for _, want := range []string{"Выгрузки", "выполняется", "обрезана"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("на странице нет %q", want)
+		}
+	}
+}
+
+// TestExportsPageHidesDeleteForRunningJob — у queued/running кнопки удаления
+// быть не должно: она разъедется с воркером, который ещё пишет файл.
+func TestExportsPageHidesDeleteForRunningJob(t *testing.T) {
+	s := newExportsStack(t)
+	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID, Kind: export.KindIssues, Format: export.FormatCSV,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	s.markStatus(t, id, "running")
+
+	body := s.getBody(t, s.operatorUID, s.path("/exports"))
+	if strings.Contains(body, fmt.Sprintf("/exports/%d/delete", id)) {
+		t.Error("кнопка удаления показана для выполняющейся заявки")
+	}
+}
+
+// TestExportsPageEmptyState — пустой список объясняет, что делать, а не
+// рисует голую таблицу без строк.
+func TestExportsPageEmptyState(t *testing.T) {
+	s := newExportsStack(t)
+	body := s.getBody(t, s.operatorUID, s.path("/exports"))
+	if !strings.Contains(body, "Заявок ещё нет") {
+		t.Error("нет пустого состояния списка заявок")
+	}
+	if strings.Contains(body, "data-table") {
+		t.Error("таблица отрисована при пустом списке заявок")
+	}
+}
+
+// TestIssuesPageHasExportButtons — на списке ошибок есть форма постановки
+// заявки (кнопки экспорта групп/событий с текущими фильтрами).
+func TestIssuesPageHasExportButtons(t *testing.T) {
+	s := newExportsStack(t)
+	body := s.getBody(t, s.operatorUID, s.path("/issues"))
+	if !strings.Contains(body, `action="`+s.path("/exports")+`"`) {
+		t.Error("на списке ошибок нет формы выгрузки")
+	}
+}
+
+// TestExportsPagePIIHintPresent — подсказка про необратимость маскирования
+// PII обязана быть видна тому, кому вообще доступна галка include_pii:
+// иначе админ примет занулённые на приёме адреса за баг.
+func TestExportsPagePIIHintPresent(t *testing.T) {
+	s := newExportsStack(t)
+	body := s.getBody(t, s.adminUID, s.path("/exports"))
+	if !strings.Contains(body, "Маскирование необратимо") {
+		t.Error("нет подсказки про скрабинг на приёме")
+	}
+}
+
+// TestExportsPageIgnoresLimitQueryParam — Store.ByProject НЕ санитизирует
+// limit (отрицательное значение — сырая ошибка PostgreSQL, см. её докблок);
+// exportsPage обязана звать её с фиксированной exportsListLimit, а не со
+// значением из query. ?limit=-1, доехавший до SQL, дал бы 500 — мутация,
+// подменяющая константу на query-параметр, обязана уронить этот тест.
+func TestExportsPageIgnoresLimitQueryParam(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.getAs(t, s.operatorUID, s.path("/exports?limit=-1"))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("код %d при ?limit=-1, ожидали 200 (limit — константа пакета): %s", resp.StatusCode, body)
+	}
+}
+
+// TestExportsPageDeniedForNonOperator — тот же гейт, что у create/download/
+// delete: массовый список заявок проекта не должен быть виден кому попало.
+func TestExportsPageDeniedForNonOperator(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.getAs(t, s.viewerUID, s.path("/exports"))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("код %d, ожидали 404 (не 403): %s", resp.StatusCode, body)
+	}
+}
+
+// TestExportsPageHidesActionsForForeignJobWhenNotManager — оператор без
+// CanManage видит в списке чужую (не свою) заявку, но не должен видеть у неё
+// кнопки скачивания/удаления — они поведут на 404 (exportsDownload/Delete
+// проверяют job.CreatedBy==uid || authz.CanManage). Админу (CanManage) те же
+// кнопки обязаны быть видны.
+func TestExportsPageHidesActionsForForeignJobWhenNotManager(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postFormAs(t, s.adminUID, s.path("/exports"), okForm)
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("постановка админом: код %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	adminJobID := s.lastJobID(t)
+	s.markDone(t, adminJobID)
+
+	operatorView := s.getBody(t, s.operatorUID, s.path("/exports"))
+	if strings.Contains(operatorView, fmt.Sprintf("/exports/%d/download", adminJobID)) {
+		t.Error("оператор без CanManage видит скачивание чужой заявки")
+	}
+	if strings.Contains(operatorView, fmt.Sprintf("/exports/%d/delete", adminJobID)) {
+		t.Error("оператор без CanManage видит удаление чужой заявки")
+	}
+
+	adminView := s.getBody(t, s.adminUID, s.path("/exports"))
+	if !strings.Contains(adminView, fmt.Sprintf("/exports/%d/download", adminJobID)) {
+		t.Error("админ (CanManage) не видит скачивание своей же заявки")
+	}
+	if !strings.Contains(adminView, fmt.Sprintf("/exports/%d/delete", adminJobID)) {
+		t.Error("админ (CanManage) не видит удаление своей же заявки")
 	}
 }

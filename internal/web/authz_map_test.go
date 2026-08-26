@@ -82,10 +82,10 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/alert-suppression":                lvlOperator,
 	"POST /projects/{id}/alert-suppression/{depID}/delete": lvlOperator,
 	// exports: create/delete гейтятся requireProjectOperator, как соседи
-	// выше; download/delete ДОПОЛНИТЕЛЬНО проверяют авторство/CanManage
-	// внутри хендлера (exports.go) — карта отслеживает базовый уровень, не
-	// поведенческую доп.проверку, тот же принцип, что у channel_id/edge
-	// ownership на escalations/alert-suppression.
+	// выше; download/delete/список ДОПОЛНИТЕЛЬНО проверяют авторство/
+	// CanManage внутри хендлера (exports.go) — карта отслеживает базовый
+	// уровень, не поведенческую доп.проверку, тот же принцип, что у
+	// channel_id/edge ownership на escalations/alert-suppression.
 	"POST /projects/{id}/exports":                              lvlOperator,
 	"POST /projects/{id}/exports/{jobID}/delete":               lvlOperator,
 	"POST /projects/{id}/incidents/{source}/{incident_id}/ack": lvlOperator,
@@ -227,8 +227,11 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/alerts/deliveries": lvlOperator,
 	"GET /projects/{id}/escalations":       lvlOperator,
 	"GET /projects/{id}/alert-suppression": lvlOperator,
-	// GET /projects/{id}/exports (страница списка) — задача 11: страница,
-	// templ-шаблон и эта запись карты появятся вместе.
+	// GET /projects/{id}/exports (страница списка, задача 11) — тот же
+	// оператор-гейт, что и у download/delete ниже; список показывает только
+	// доступные автору/CanManage кнопки (ExportView.CanDownload/CanDelete,
+	// exports.go:exportViewRow), но саму страницу видит любой оператор.
+	"GET /projects/{id}/exports":                  lvlOperator,
 	"GET /projects/{id}/exports/{jobID}/download": lvlOperator,
 	"GET /projects/{id}/monitors/new":             lvlOperator,
 	"GET /monitors/{id}/edit":                     lvlOperator,
