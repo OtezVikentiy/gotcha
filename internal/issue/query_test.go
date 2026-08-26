@@ -558,3 +558,166 @@ func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 		t.Fatalf("страница за пределами данных: total=%d len=%d, want 0 и 0", total, len(outOfRange))
 	}
 }
+
+// mustUpsert — обёртка Upsert для тестов StreamForExport, где сам факт
+// создания группы важен, а результат upsert (New/Regression) — нет.
+func mustUpsert(t *testing.T, svc *issue.Service, projectID int64, fingerprint string, seenAt time.Time) int64 {
+	t.Helper()
+	r, err := svc.Upsert(context.Background(), projectID, fingerprint, "t", "c", "error", "", seenAt)
+	if err != nil {
+		t.Fatalf("upsert %s: %v", fingerprint, err)
+	}
+	return r.IssueID
+}
+
+// TestStreamForExportNoGapsOnEqualLastSeen — худший случай для курсора
+// (last_seen, id): все группы с ОДИНАКОВЫМ last_seen. Без id вторым ключом
+// курсора сравнение "< curSeen" отбросило бы все строки с тем же last_seen,
+// что и последняя строка предыдущей страницы, — целую пачку сразу.
+// n больше exportPageSize (500 в internal/issue/query.go), иначе весь набор
+// читается одной страницей и граница вообще не проверяется.
+func TestStreamForExportNoGapsOnEqualLastSeen(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+
+	same := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	const n = 600
+	for i := 0; i < n; i++ {
+		mustUpsert(t, svc, pid, fmt.Sprintf("fp-%03d", i), same)
+	}
+
+	seen := map[int64]int{}
+	err := svc.StreamForExport(ctx, pid, issue.Filter{Status: "unresolved"}, func(it issue.Issue) error {
+		seen[it.ID]++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if len(seen) != n {
+		t.Fatalf("выгружено %d групп из %d — курсор теряет строки на стыке страниц", len(seen), n)
+	}
+	for id, c := range seen {
+		if c != 1 {
+			t.Errorf("группа %d выдана %d раз", id, c)
+		}
+	}
+}
+
+// TestStreamForExportStopsOnCallbackError — потолок строк реализуется
+// остановкой обхода снаружи (в источнике выгрузки): StreamForExport обязан
+// прекратить читать страницы, как только колбэк вернул ошибку, а не
+// дочитать текущую выборку до конца.
+func TestStreamForExportStopsOnCallbackError(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+	for i := 0; i < 10; i++ {
+		mustUpsert(t, svc, pid, fmt.Sprintf("fp-%d", i), time.Now().UTC())
+	}
+	stop := errors.New("хватит")
+	got := 0
+	err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(issue.Issue) error {
+		got++
+		if got == 3 {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("StreamForExport вернул %v, ожидали ошибку колбэка", err)
+	}
+	if got != 3 {
+		t.Errorf("обход продолжился после отказа: %d строк", got)
+	}
+}
+
+// TestStreamForExportIgnoresOtherProject — фильтр keyset-обхода обязан
+// содержать project_id, как и обычный List: без него курсор по (last_seen,id)
+// свободно перетекал бы в чужие группы, если их id/last_seen попадают в тот
+// же диапазон.
+func TestStreamForExportIgnoresOtherProject(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+	other := newOtherProject(t, pool)
+
+	now := time.Now().UTC()
+	want := mustUpsert(t, svc, pid, "own", now)
+	mustUpsert(t, svc, other, "foreign", now.Add(time.Second))
+
+	var got []int64
+	if err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(it issue.Issue) error {
+		got = append(got, it.ID)
+		return nil
+	}); err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("StreamForExport(pid) = %v, want [%d] — чужая группа утекла", got, want)
+	}
+}
+
+// TestStreamForExportSurvivesMutationBetweenPages — вставка и удаление строк
+// между чтением страниц не должны приводить ни к дублю, ни к панике/ошибке.
+// Группы заведены с РАЗНЫМ last_seen (по возрастанию i), поэтому при
+// ORDER BY last_seen DESC первая страница (500 строк) захватывает группы с
+// НАИБОЛЬШИМ last_seen (i от 599 до 100), вторая — оставшиеся (i от 99 до 0).
+// Прямо на границе (после 500-й отданной строки, i=100) тест:
+//   - удаляет ещё не прочитанную группу (i=0, самый ранний last_seen —
+//     будет прочитана последней) — она не должна попасть в выдачу;
+//   - вставляет новую группу с last_seen МЕНЬШЕ курсора (i.е. в ещё не
+//     прочитанной части набора) — она обязана попасть в выдачу ровно один раз.
+func TestStreamForExportSurvivesMutationBetweenPages(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+
+	const n = 600
+	base := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	ids := make([]int64, n)
+	for i := 0; i < n; i++ {
+		ids[i] = mustUpsert(t, svc, pid, fmt.Sprintf("fp-%04d", i), base.Add(time.Duration(i)*time.Second))
+	}
+	deletedID := ids[0] // last_seen самый ранний — читается последним
+
+	var insertedID int64
+	count := 0
+	seen := map[int64]int{}
+	err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(it issue.Issue) error {
+		seen[it.ID]++
+		count++
+		if count == 500 {
+			if _, err := pool.Exec(ctx, "DELETE FROM issues WHERE id = $1", deletedID); err != nil {
+				t.Fatalf("delete between pages: %v", err)
+			}
+			// last_seen раньше самой ранней уже заведённой группы — попадёт
+			// в хвост второй страницы, обгоняя оставшиеся i=99..0.
+			insertedID = mustUpsert(t, svc, pid, "fp-inserted-late", base.Add(-time.Hour))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if seen[deletedID] != 0 {
+		t.Errorf("удалённая между страницами группа попала в выдачу")
+	}
+	if seen[insertedID] != 1 {
+		t.Errorf("вставленная между страницами группа выдана %d раз, want 1", seen[insertedID])
+	}
+	for id, c := range seen {
+		if c > 1 {
+			t.Errorf("группа %d выдана %d раз", id, c)
+		}
+	}
+	wantTotal := n - 1 + 1 // минус удалённая, плюс вставленная
+	if len(seen) != wantTotal {
+		t.Fatalf("выгружено %d групп, want %d", len(seen), wantTotal)
+	}
+}
