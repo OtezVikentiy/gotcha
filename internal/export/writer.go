@@ -100,6 +100,11 @@ func (c *csvWriter) Write(rec Record) error {
 	for i, col := range c.columns {
 		row[i] = csvSafe(cell(rec[col]))
 	}
+	// Ранний возврат экономит холостой Flush, но не является единственной
+	// защитой: у bufio.Writer внутри encoding/csv ошибка "липкая" — раз
+	// возникнув, она всплывёт и через Flush()+Error() ниже, даже если этот
+	// return убрать. Оставлен ради ясности кода, а не потому что без него
+	// ошибка потеряется.
 	if err := c.cw.Write(row); err != nil {
 		return err
 	}
@@ -107,6 +112,12 @@ func (c *csvWriter) Write(rec Record) error {
 	return c.cw.Error()
 }
 
+// Close дублирует Flush()+Error() из Write: каждая строка (и заголовок в
+// конструкторе) уже сброшена сразу после записи, поэтому к моменту Close
+// буферу обычно нечего отдавать. Проверка оставлена как рубеж на случай,
+// если схему буферизации в Write однажды изменят и уберут промежуточный
+// Flush — тогда Close останется последним местом, где ошибка ещё может
+// всплыть.
 func (c *csvWriter) Close() error {
 	c.cw.Flush()
 	return c.cw.Error()

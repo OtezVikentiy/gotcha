@@ -427,6 +427,22 @@ func TestCSVWriterConstructorErrorPropagates(t *testing.T) {
 	}
 }
 
+// Длинное значение (100КБ) не помещается в буфер encoding/csv целиком:
+// ошибка нижележащего writer'а всплывает прямо из c.cw.Write(row), а не
+// только из Flush()+Error() — маленький бюджет (20 байт) пропускает
+// BOM и заголовок, а на самой длинной строке отказ происходит сразу.
+func TestCSVWriterRowWriteErrorOnLargeField(t *testing.T) {
+	fw := &failingWriter{budget: 20}
+	w, err := NewWriter(fw, FormatCSV, []string{"message"})
+	if err != nil {
+		t.Fatalf("NewWriter в пределах бюджета не должен падать: %v", err)
+	}
+	long := strings.Repeat("x", 100_000)
+	if err := w.Write(Record{"message": long}); err == nil {
+		t.Error("ожидали ошибку записи длинной строки, получили nil — ошибка c.cw.Write(row) проглочена")
+	}
+}
+
 func TestJSONWriterWriteErrorPropagates(t *testing.T) {
 	fw := &failingWriter{budget: 1} // ровно на "["
 	w, err := NewWriter(fw, FormatJSON, nil)
