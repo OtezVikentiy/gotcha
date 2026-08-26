@@ -21,6 +21,11 @@ const (
 	// недоступен, диск полон), а не о случайный сбой — дальше её добивает
 	// SweepStale, а не бесконечный переклейм.
 	maxAttempts = 3
+	// janitorBatchSize — лимит на один SQL-проход джанитора (выборка/удаление
+	// пачками). Значение всегда берётся из константы пакета, а не извне:
+	// вызывающий не должен иметь возможность запросить неограниченный проход,
+	// который надолго заблокирует таблицу под приёмом заявок.
+	janitorBatchSize = 500
 )
 
 var (
@@ -297,4 +302,114 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 		return ErrNotDeletable
 	}
 	return nil
+}
+
+// DueForExpiry возвращает заявки, чей срок хранения файла истёк: status='done'
+// и expires_at уже в прошлом. Джанитор удаляет файл каждой из них и переводит
+// строку в expired через MarkExpired — здесь только выборка, без побочных
+// эффектов, чтобы вызывающий сам решал, в каком порядке убирать файл и
+// строку.
+//
+// Пачка ограничена janitorBatchSize: проход джанитора не должен захватывать
+// произвольно много строк за один тик.
+func (s *Store) DueForExpiry(ctx context.Context) ([]Job, error) {
+	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
+		FROM export_jobs WHERE status = 'done' AND expires_at < now()
+		ORDER BY expires_at LIMIT $1`, janitorBatchSize)
+	if err != nil {
+		return nil, fmt.Errorf("export: заявки на истечение срока: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("export: разбор заявки на истечение срока: %w", err)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("export: заявки на истечение срока: %w", err)
+	}
+	return out, nil
+}
+
+// MarkExpired переводит перечисленные заявки из done в expired одной пачкой —
+// вызывается уже после того, как их файлы удалены с диска. Условие
+// status='done' делает вызов идемпотентным: заявка, уже переведённая другим
+// проходом (или переклеймленная заново — впрочем, done заявки не клеймятся),
+// повторно не тронется.
+func (s *Store) MarkExpired(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE export_jobs SET status = 'expired' WHERE id = ANY($1) AND status = 'done'`, ids); err != nil {
+		return fmt.Errorf("export: пометка истёкших заявок: %w", err)
+	}
+	return nil
+}
+
+// PurgeRows удаляет терминальные заявки (done/failed/expired), завершившиеся
+// раньше olderThan назад — история очереди, а не сама очередь: queued/running
+// не трогаются никогда, сколько бы ни висели. Возраст считается от
+// finished_at, а не created_at: заявка, час простоявшая в очереди, не должна
+// вычищаться раньше той, что исполнилась мгновенно.
+//
+// Удаление идёт пачками по janitorBatchSize — один оператор на весь
+// накопленный хвост держал бы блокировку на таблице, по которой в это же
+// время идёт постановка новых заявок.
+func (s *Store) PurgeRows(ctx context.Context, olderThan time.Duration) (int, error) {
+	cutoff := time.Now().Add(-olderThan)
+	var total int
+	for {
+		tag, err := s.pool.Exec(ctx, `
+			DELETE FROM export_jobs WHERE id IN (
+				SELECT id FROM export_jobs
+				WHERE status IN ('done','failed','expired') AND finished_at < $1
+				LIMIT $2
+			)`, cutoff, janitorBatchSize)
+		if err != nil {
+			return total, fmt.Errorf("export: чистка старых заявок: %w", err)
+		}
+		n := int(tag.RowsAffected())
+		total += n
+		if n < janitorBatchSize {
+			return total, nil
+		}
+		// Между пачками уступаем: проход не должен монополизировать базу.
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		default:
+		}
+	}
+}
+
+// ExistingIDs возвращает подмножество ids, для которых в export_jobs ещё
+// есть строка — джанитор сверяет по нему файлы каталога с базой, чтобы
+// найти сирот (файл остался, а строку снесли PurgeRows или каскад проекта).
+func (s *Store) ExistingIDs(ctx context.Context, ids []int64) (map[int64]bool, error) {
+	out := make(map[int64]bool, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id FROM export_jobs WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("export: проверка существующих заявок: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("export: разбор существующих заявок: %w", err)
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("export: проверка существующих заявок: %w", err)
+	}
+	return out, nil
 }
