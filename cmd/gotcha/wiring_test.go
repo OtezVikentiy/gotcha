@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 )
@@ -178,4 +179,29 @@ func TestVersionRequestedForms(t *testing.T) {
 		}
 	}
 	_ = strings.TrimSpace("")
+}
+
+// TestExportRowRetention: Store.PurgeRows чистит терминальные строки заявок
+// на выгрузку по finished_at независимо от expires_at (janitor.go). Если бы
+// retention был жёстко зафиксирован на 30 сутках, оператор, поднявший
+// GOTCHA_EXPORT_TTL_HOURS выше 720 (30 суток), получил бы удаление строки
+// ЖИВОЙ (ещё не истёкшей по собственному TTL) заявки раньше её срока —
+// retention обязан расти вместе с TTL, а не оставаться позади него.
+func TestExportRowRetention(t *testing.T) {
+	cases := []struct {
+		name string
+		ttl  time.Duration
+		want time.Duration
+	}{
+		{"дефолтный TTL (7 суток) короче минимума — минимум", 7 * 24 * time.Hour, exportMinRowRetention},
+		{"TTL ровно на минимуме — минимум", exportMinRowRetention, exportMinRowRetention},
+		{"TTL длиннее минимума (60 суток) — растёт вместе с TTL", 60 * 24 * time.Hour, 60 * 24 * time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := exportRowRetention(c.ttl); got != c.want {
+				t.Errorf("exportRowRetention(%s) = %s, want %s", c.ttl, got, c.want)
+			}
+		})
+	}
 }

@@ -10,8 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
@@ -148,59 +151,66 @@ func TestWorkerWritesEventsFile(t *testing.T) {
 	}
 }
 
-// includePIICapturingSource — фиктивный EventSource, который запоминает
-// значение includePII, полученное на каждом вызове Stream. w.Events — ОДИН
-// экземпляр на весь процесс (см. NewEventSource), а заявки с разным
-// значением галки «выгрузить как есть» идут через него одна за другой:
-// includePII обязан приходить параметром КАЖДОГО вызова (job.IncludePII), а
-// не быть свойством самого источника.
-type includePIICapturingSource struct{ got []bool }
-
-func (s *includePIICapturingSource) Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error {
-	s.got = append(s.got, includePII)
-	return fn(Record{
-		"timestamp": time.Now().UTC(), "event_id": "ev1", "issue_id": int64(1),
-		"level": "error", "message": "boom", "exception_type": "", "exception_value": "",
-		"environment": "", "release": "", "server_name": "", "sdk": "", "trace_id": "",
-		"user_id": "", "user_ip": "", "user_email": "", "tags": "",
-	})
-}
-
 // TestWorkerPassesJobIncludePIIToEventSource — мутационная проверка врезки
 // worker.go:stream(): includePII, дошедший до EventSource.Stream, обязан
-// быть galочкой ИМЕННО этой заявки (job.IncludePII), а не константой,
-// зашитой в момент постройки w.Events. Две заявки с разным значением галки
-// собираются одним и тем же Worker.Events одна за другой — если бы стрим
-// вызывался с захардкоженным true/false (или с полем самого источника, как
-// было до фикса), одна из двух заявок ниже получила бы чужое значение.
+// быть галочкой ИМЕННО этой заявки (job.IncludePII), а не константой,
+// зашитой в момент постройки w.Events. Источник — НАСТОЯЩИЙ eventSource
+// (не фиктивный), заявки собираются одним и тем же Worker.Events одна за
+// другой, а проверка идёт по РЕАЛЬНОМУ содержимому файлов на диске: если
+// бы стрим вызывался с захардкоженным true/false (или с полем самого
+// источника, как было до фикса), одна из двух заявок ниже либо унесла бы
+// PII под маской «отфильтровано», либо отдала бы маску там, где заявка
+// просила «выгрузить как есть». Проверка по именам ключей здесь недостаточна
+// — только по фактическим секретным значениям в байтах файла.
 func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
 	st := NewStore(pool)
+	svc := issue.NewService(pool)
 	dir := t.TempDir()
 	projectID, userID := seedProjectAndUser(t, pool)
 	now := time.Now().UTC()
 
+	const leakEmail = "leak-worker-pii@example.com"
+	const leakIP = "203.0.113.42"
+
+	res, err := svc.Upsert(ctx, projectID, "fp-worker-pii", "boom", "app.worker", issue.LevelError, "prod", now)
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	b := event.NewBatcher(ch)
+	go b.Run()
+	b.Add(event.Event{
+		ID: uuid.NewString(), ProjectID: projectID, IssueID: res.IssueID, Timestamp: now,
+		Message: "boom", Level: issue.LevelError, Environment: "prod",
+		UserIP: leakIP, UserEmail: leakEmail,
+	})
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	since, until := now.Add(-time.Hour), now.Add(time.Hour)
 	maskedID, err := st.Enqueue(ctx, Job{
 		ProjectID: projectID, CreatedBy: userID, Kind: KindEvents, Format: FormatNDJSON,
-		Params: Params{Since: now.Add(-time.Hour), Until: now}, IncludePII: false,
+		Params: Params{Since: since, Until: until}, IncludePII: false,
 	})
 	if err != nil {
 		t.Fatalf("Enqueue (masked): %v", err)
 	}
 	rawID, err := st.Enqueue(ctx, Job{
 		ProjectID: projectID, CreatedBy: userID, Kind: KindEvents, Format: FormatNDJSON,
-		Params: Params{Since: now.Add(-time.Hour), Until: now}, IncludePII: true,
+		Params: Params{Since: since, Until: until}, IncludePII: true,
 	})
 	if err != nil {
 		t.Fatalf("Enqueue (raw): %v", err)
 	}
 
-	src := &includePIICapturingSource{}
-	w := &Worker{Store: st, Pool: pool, Events: src, Cfg: Config{
+	w := &Worker{Store: st, Pool: pool, Events: NewEventSource(event.NewQuery(ch), svc), Cfg: Config{
 		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
 
-	// Claim берёт по ORDER BY created_at — сначала masked, потом raw.
+	// Claim берёт по ORDER BY created_at — сначала masked, потом raw, один
+	// и тот же w.Events на оба тика.
 	if err := w.Tick(ctx); err != nil {
 		t.Fatalf("Tick 1: %v", err)
 	}
@@ -215,14 +225,20 @@ func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
 		t.Fatalf("raw job: status=%+v err=%v", rawJob, err)
 	}
 
-	if len(src.got) != 2 {
-		t.Fatalf("Stream вызван %d раз(а), want 2: %v", len(src.got), src.got)
+	maskedOut, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.ndjson", maskedID)))
+	if err != nil {
+		t.Fatalf("чтение файла masked-заявки: %v", err)
 	}
-	if src.got[0] != false {
-		t.Errorf("первая заявка (IncludePII=false): Stream получил includePII=%v", src.got[0])
+	if strings.Contains(string(maskedOut), leakEmail) || strings.Contains(string(maskedOut), leakIP) {
+		t.Errorf("PII утекло в выгрузку заявки с IncludePII=false: %s", maskedOut)
 	}
-	if src.got[1] != true {
-		t.Errorf("вторая заявка (IncludePII=true): Stream получил includePII=%v", src.got[1])
+
+	rawOut, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.ndjson", rawID)))
+	if err != nil {
+		t.Fatalf("чтение файла raw-заявки: %v", err)
+	}
+	if !strings.Contains(string(rawOut), leakEmail) || !strings.Contains(string(rawOut), leakIP) {
+		t.Errorf("реальные значения отсутствуют в выгрузке заявки с IncludePII=true (галка проигнорирована): %s", rawOut)
 	}
 }
 

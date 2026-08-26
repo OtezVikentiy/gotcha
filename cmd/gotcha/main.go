@@ -186,6 +186,25 @@ func effectiveMaxBufferBytes(cfgMaxBufferBytes, heapLimitBytes int64) int64 {
 	return autoMaxBufferBytes(heapLimitBytes)
 }
 
+// exportMinRowRetention — минимальный срок хранения строки завершённой
+// заявки на выгрузку (export.Janitor.RowRetention), не завязанный на
+// GOTCHA_EXPORT_TTL_HOURS: статус "истекла" должен успеть побыть видимым на
+// странице, а не исчезнуть в тот же тик, что и файл.
+const exportMinRowRetention = 30 * 24 * time.Hour
+
+// exportRowRetention возвращает срок хранения истории заявок на выгрузку —
+// не короче TTL самого файла (ttl): Store.PurgeRows чистит терминальные
+// строки по finished_at независимо от expires_at, и если бы retention был
+// зафиксирован на exportMinRowRetention, при GOTCHA_EXPORT_TTL_HOURS больше
+// 30 суток он снёс бы строку ЖИВОЙ (ещё не истёкшей по собственному TTL)
+// заявки раньше её собственного срока.
+func exportRowRetention(ttl time.Duration) time.Duration {
+	if ttl > exportMinRowRetention {
+		return ttl
+	}
+	return exportMinRowRetention
+}
+
 // applyMemoryLimit приводит потолок кучи к лимиту контейнера и сообщает
 // результат. Отсутствие лимита — не ошибка: продукт не выдумывает потолок за
 // оператора, но и не молчит об этом.
@@ -721,24 +740,11 @@ func run() error {
 			}
 			go exportWorker.Run(ctx)
 
-			// RowRetention — история заявок хранится дольше самого файла (TTL):
-			// статус "истекла" должен успеть побыть видимым на странице, а не
-			// исчезнуть в тот же тик, что и файл. 30 суток — фиксированное
-			// значение по умолчанию (не GOTCHA_EXPORT_*, план §9 задачи 9),
-			// отдельное от настраиваемого TTL файла — но не короче него:
-			// PurgeRows чистит по finished_at независимо от expires_at, и при
-			// GOTCHA_EXPORT_TTL_HOURS больше 30 суток фиксированные 30 снесли
-			// бы строку ЖИВОЙ (ещё не истёкшей) заявки раньше её собственного
-			// срока.
-			rowRetention := 30 * 24 * time.Hour
-			if exportCfg.TTL > rowRetention {
-				rowRetention = exportCfg.TTL
-			}
 			exportJanitor := &export.Janitor{
 				Store:        exportStore,
 				Pool:         pg,
 				Dir:          cfg.ExportDir,
-				RowRetention: rowRetention,
+				RowRetention: exportRowRetention(exportCfg.TTL),
 			}
 			go exportJanitor.Run(ctx)
 		}
