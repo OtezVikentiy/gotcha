@@ -161,7 +161,11 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		copyTXT = renderEventForLLM(it, *selected, dumpPlain)
 	}
 
-	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT).Render(r.Context(), w)
+	// exportsEnabled — h.Exports != nil: на инстансе без каталога выгрузок
+	// воркер не стартует, форма экспорта событий issue поведёт на 404
+	// (ревью веб-части E1, п.3; та же граница, что canExport на issues.go).
+	exportsEnabled := h.Exports != nil
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled).Render(r.Context(), w)
 }
 
 // issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored

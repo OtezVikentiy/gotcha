@@ -23,7 +23,7 @@ func TestExportsListShowsStatusTruncationAndActions(t *testing.T) {
 		{ID: 4, KindLabel: "events", FormatLabel: "json", Status: "failed", CanDownload: false, CanDelete: true},
 		{ID: 5, KindLabel: "issues", FormatLabel: "csv", Status: "expired", CanDownload: false, CanDelete: true},
 	}
-	out := renderTo(t, Exports(7, rows, false, "u@e.com"))
+	out := renderTo(t, Exports(7, rows, false, "u@e.com", true))
 
 	for _, want := range []string{"в очереди", "выполняется", "готово", "ошибка", "истекла", "обрезана"} {
 		if !strings.Contains(out, want) {
@@ -53,7 +53,7 @@ func TestExportsListShowsStatusTruncationAndActions(t *testing.T) {
 // TestExportsListEmptyState — пустой список даёт объяснение, а не голую
 // таблицу без строк (тот же принцип, что и у issues/alert-suppression).
 func TestExportsListEmptyState(t *testing.T) {
-	out := renderTo(t, Exports(7, nil, false, "u@e.com"))
+	out := renderTo(t, Exports(7, nil, false, "u@e.com", true))
 	if !strings.Contains(out, i18nT(t, "exports.empty.title")) {
 		t.Error("нет пустого состояния")
 	}
@@ -62,12 +62,32 @@ func TestExportsListEmptyState(t *testing.T) {
 	}
 }
 
+// TestExportsPageDisabledShowsExplanationNotEmptyList — enabled=false
+// (h.Exports == nil на инстансе) обязана показывать объяснение, а не
+// пустую таблицу заявок или форму постановки, которая всё равно вела бы на
+// 404 (спека E1 §10; ревью веб-части, п.3). rows здесь непустой намеренно:
+// проверяет, что ветка гейтится по enabled, а не молча по len(rows)==0.
+func TestExportsPageDisabledShowsExplanationNotEmptyList(t *testing.T) {
+	rows := []ExportView{{ID: 1, KindLabel: "issues", FormatLabel: "csv", Status: "done"}}
+	out := renderTo(t, Exports(7, rows, true, "u@e.com", false))
+
+	if !strings.Contains(out, i18nT(t, "exports.disabled.title")) {
+		t.Error("нет объяснения о выключенной фиче")
+	}
+	if strings.Contains(out, "data-table") {
+		t.Error("таблица заявок отрисована при выключенной фиче")
+	}
+	if strings.Contains(out, `<form method="post" action="/projects/7/exports"`) {
+		t.Error("форма постановки заявки отрисована при выключенной фиче")
+	}
+}
+
 // TestExportsFormPIIHintGatedByCanManage — подсказка про необратимость
 // маскирования показывается только тому, кому вообще доступна галка
 // include_pii (CanManage) — оператору она молча игнорируется на бэкенде
 // (exports.go:exportsCreate), значит и предлагать её незачем.
 func TestExportsFormPIIHintGatedByCanManage(t *testing.T) {
-	admin := renderTo(t, Exports(7, nil, true, "u@e.com"))
+	admin := renderTo(t, Exports(7, nil, true, "u@e.com", true))
 	if !strings.Contains(admin, i18nT(t, "exports.pii.hint")) {
 		t.Error("админу не показана подсказка про необратимость маскирования")
 	}
@@ -75,7 +95,7 @@ func TestExportsFormPIIHintGatedByCanManage(t *testing.T) {
 		t.Error("админу не показана галка include_pii")
 	}
 
-	operator := renderTo(t, Exports(7, nil, false, "u@e.com"))
+	operator := renderTo(t, Exports(7, nil, false, "u@e.com", true))
 	if strings.Contains(operator, `name="include_pii"`) {
 		t.Error("оператору показана галка include_pii — на бэкенде она для него не действует")
 	}
@@ -102,19 +122,59 @@ func TestIssuesListExportButtonsGatedByCanOperate(t *testing.T) {
 	}
 }
 
+// TestIssuesListExportFormsCarryTimeRange — период текущего списка обязан
+// доехать до action формы экспорта query-параметром: hidden-поле POST-тела
+// resolveTimeRange не видит (она читает только r.URL.Query()), без query
+// заявка молча ставится по cookie/дефолту хендлера, а не по тому окну, что
+// видит пользователь (ревью веб-части E1, п.1).
+func TestIssuesListExportFormsCarryTimeRange(t *testing.T) {
+	preset := IssuesFilter{Range: TimeRangeVM{Key: "7d"}}
+	out := renderTo(t, IssuesList(7, nil, preset, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true))
+	if n := strings.Count(out, `action="/projects/7/exports?period=7d"`); n != 2 {
+		t.Errorf("форм с action=...?period=7d = %d, want 2 (группы + события)", n)
+	}
+
+	all := IssuesFilter{Range: TimeRangeVM{Key: "all", AllowAll: true}}
+	outAll := renderTo(t, IssuesList(7, nil, all, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true))
+	if n := strings.Count(outAll, `action="/projects/7/exports?period=all"`); n != 2 {
+		t.Errorf("форм с action=...?period=all = %d, want 2", n)
+	}
+
+	custom := IssuesFilter{Range: TimeRangeVM{Key: "custom", Custom: true, Start: "2026-08-01T00:00", End: "2026-08-02T00:00"}}
+	outCustom := renderTo(t, IssuesList(7, nil, custom, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true))
+	// url.Values.Encode() сортирует ключи по алфавиту: end < period < start.
+	if n := strings.Count(outCustom, `action="/projects/7/exports?end=2026-08-02T00%3A00&amp;period=custom&amp;start=2026-08-01T00%3A00"`); n != 2 {
+		t.Errorf("форм с action=...?period=custom&start=...&end=... = %d, want 2: %s", n, outCustom)
+	}
+}
+
 // TestIssueDetailHasExportForm — на детали issue есть форма экспорта её
 // событий со скрытым scope_issue_id: без него постановка выгрузит события
 // всего проекта, а не только этой issue.
 func TestIssueDetailHasExportForm(t *testing.T) {
 	it := issue.Issue{ID: 5, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved"}
 	stubC := templ.Raw("<svg data-c></svg>")
-	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", ""))
+	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true))
 
-	if !strings.Contains(out, `action="/projects/7/exports"`) {
-		t.Error("нет формы экспорта событий issue")
+	if !strings.Contains(out, `action="/projects/7/exports?period=24h"`) {
+		t.Error("нет формы экспорта событий issue или период страницы не проброшен в action")
 	}
 	if !strings.Contains(out, `name="scope_issue_id" value="5"`) {
 		t.Error("scope_issue_id не проброшен — выгрузка не будет ограничена этой issue")
+	}
+}
+
+// TestIssueDetailHidesExportFormWhenExportsDisabled — на инстансе без
+// каталога выгрузок (h.Exports == nil в web-слое, exportsEnabled=false)
+// форма экспорта событий issue не должна рендериться вовсе: она вела бы на
+// 404 (ревью веб-части E1, п.3).
+func TestIssueDetailHidesExportFormWhenExportsDisabled(t *testing.T) {
+	it := issue.Issue{ID: 5, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved"}
+	stubC := templ.Raw("<svg data-c></svg>")
+	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", false))
+
+	if strings.Contains(out, "/exports?period=24h") {
+		t.Error("форма экспорта показана при выключенной фиче (exportsEnabled=false)")
 	}
 }
 

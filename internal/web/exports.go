@@ -40,9 +40,10 @@ const (
 // exportsListLimit — сколько заявок проекта показывается на странице
 // «Выгрузки» списком без пагинации со сдвигом (тот же приём, что
 // issueEventsLimit в issuedetail.go): фиксированная константа пакета,
-// НИКОГДА значение из query-параметра — Store.ByProject не санитизирует
-// limit, отрицательное значение всплывает сырой ошибкой PostgreSQL (см.
-// докблок ByProject в internal/export/store.go).
+// НИКОГДА значение из query-параметра — ни Store.ByProject, ни
+// Store.ByProjectForUser не санитизируют limit, отрицательное значение
+// всплывает сырой ошибкой PostgreSQL (см. их докблоки в
+// internal/export/store.go).
 const exportsListLimit = 50
 
 // exportsPath — адрес страницы выгрузок проекта: локальный алиас в пакете
@@ -96,7 +97,19 @@ func exportDownloadFilename(job export.Job, projectName string) string {
 // kind/format (неизвестное значение — 422, не паника) → относительный
 // период разворачивается В АБСОЛЮТНЫЕ границы ЗДЕСЬ и сейчас (заявка «за
 // последние 24 часа», исполненная позже, обязана дать тот же файл, что и
-// сразу) → лимит активных заявок → лимит частоты → постановка.
+// сразу) → лимит частоты → лимит активных заявок → постановка.
+//
+// Лимит частоты — ПЕРЕД лимитом активных, а не наоборот: EnqueueLimited
+// проверяет лимит активных заявок и вставляет строку ОДНИМ атомарным SQL-
+// запросом (см. её докблок ниже) — это и есть чинка check-then-act, которую
+// нашло ревью задачи 10 (раздельные «посчитать → вставить» давали гонку под
+// конкурентными запросами). Разнести проверку активных заявок на отдельный
+// SELECT ДО лимитера значило бы читать её отдельно от INSERT — вернуть тот
+// самый check-then-act. Поставить лимитер ПОСЛЕ EnqueueLimited тоже нельзя:
+// строка к этому моменту уже вставлена, откатывать её отдельной транзакцией
+// ради лимита частоты — накладнее, чем цена нынешнего порядка. Цена: кто
+// упёрся в лимит активных заявок (3 на пользователя), всё равно жжёт слот
+// из лимита частоты (10/час) — осознанный компромисс, не забытая мелочь.
 func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -134,7 +147,18 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.invalid_format"))
 		return
 	}
-	tr := h.resolveTimeRange(w, r, "24h")
+	// Дефолт — «за всё время» (RangeAll), как у списка issues (issues.go),
+	// НЕ 24ч: список issues по умолчанию живёт на RangeAll и никогда не
+	// пишет "all" в rangeCookie (rangecookie.go — в куку попадают только
+	// TimeRangePresets), так что заявка, поставленная с этого экрана без
+	// query-параметра периода, обязана видеть то же «без границ», что видел
+	// пользователь, а не тихо сужаться до последних суток (ревью веб-части
+	// E1, п.1). Формы issues/issuedetail сами несут явный ?period=... в
+	// action (exportsPathWithRange, templates/exports.templ) — этот дефолт
+	// работает лишь для запроса без query вовсе: ручной формы на самой
+	// странице «Выгрузки» (exports.templ:exportsForm, у неё нет своего
+	// селектора окна) и любого прямого POST в обход форм.
+	tr := h.resolveTimeRange(w, r, RangeAll)
 
 	if !h.exportLimiter.Allow(exportRateLimitKey(uid, projectID)) {
 		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "err.export.rate_limited"))
@@ -347,9 +371,24 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 // сверху, exportsListLimit штук) + форма постановки. Доступ — оператор
 // проекта (requireProjectOperator), как у alert-suppression/escalations
 // выше (задача 9/10). limit — ВСЕГДА exportsListLimit, константа пакета:
-// Store.ByProject не санитизирует его, отрицательное значение отдало бы
-// сырую ошибку PostgreSQL (500) — звать со значением из query здесь нельзя
-// (см. докблок exportsListLimit).
+// Store.ByProject/ByProjectForUser не санитизируют его, отрицательное
+// значение отдало бы сырую ошибку PostgreSQL (500) — звать со значением из
+// query здесь нельзя (см. докблок exportsListLimit).
+//
+// Видимость строк — по спеке §3: свои заявки видит автор, все заявки
+// проекта — только админ/владелец орга (authz.CanManage). Фильтр — в SQL
+// (Store.ByProjectForUser), не постфильтром в Go: иначе exportsListLimit
+// съедался бы чужими строками раньше, чем оператор увидел бы свои
+// собственные (ревью веб-части E1, п.2) — та же строка заявки несёт email
+// автора и включённость PII, а это ровно тот аудит-сигнал, который спека
+// оставляет админу, а не любому оператору проекта.
+//
+// h.Exports == nil (фича не сконфигурирована на инстансе) проверяется ПОСЛЕ
+// requireProjectOperator, не до — саму страницу-объяснение видит только
+// оператор проекта, как и рабочую версию (спека E1 §10: «на странице
+// выгрузок — объяснение, а не пустая таблица», не «страница видна кому
+// попало»); create/download/delete по-прежнему проверяют h.Exports первыми
+// и отдают 404 — это не UI, там объяснять нечего (ревью веб-части E1, п.3).
 func (h *Handler) exportsPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -360,16 +399,42 @@ func (h *Handler) exportsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.Exports == nil {
-		h.notFound(w, r)
-		return
-	}
 	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
 	if !ok {
 		return
 	}
+	if h.Exports == nil {
+		_ = templates.Exports(projectID, nil, authz.CanManage, h.currentEmail(r), false).Render(r.Context(), w)
+		return
+	}
 
-	jobs, err := h.Exports.ByProject(r.Context(), projectID, exportsListLimit)
+	var jobs []export.Job
+	var err error
+	if authz.CanManage {
+		jobs, err = h.Exports.ByProject(r.Context(), projectID, exportsListLimit)
+	} else {
+		jobs, err = h.Exports.ByProjectForUser(r.Context(), projectID, uid, exportsListLimit)
+	}
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
+	// Email автора — батчем ОДНИМ запросом на все строки (ревью веб-части
+	// E1, п.5): раньше exportViewRow звала h.Auth.UserEmail на КАЖДУЮ
+	// строку — до exportsListLimit (50) запросов в PG на один рендер
+	// страницы. authorIDs собирается без дублей: у не-CanManage все строки
+	// и так одного автора (ByProjectForUser), но у админа (ByProject)
+	// авторов может быть много разных — дублировать их id в запросе незачем.
+	authorIDs := make([]int64, 0, len(jobs))
+	seenAuthor := make(map[int64]bool, len(jobs))
+	for _, j := range jobs {
+		if !seenAuthor[j.CreatedBy] {
+			seenAuthor[j.CreatedBy] = true
+			authorIDs = append(authorIDs, j.CreatedBy)
+		}
+	}
+	authorEmails, err := h.Auth.UserEmails(r.Context(), authorIDs)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -377,24 +442,24 @@ func (h *Handler) exportsPage(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]templates.ExportView, len(jobs))
 	for i, j := range jobs {
-		rows[i] = h.exportViewRow(r.Context(), j, uid, authz)
+		rows[i] = h.exportViewRow(r.Context(), j, uid, authz, authorEmails[j.CreatedBy])
 	}
-	_ = templates.Exports(projectID, rows, authz.CanManage, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Exports(projectID, rows, authz.CanManage, h.currentEmail(r), true).Render(r.Context(), w)
 }
 
 // exportViewRow — Job → ExportView: домен переводится в человекочитаемые
 // подписи и видимость кнопок ЗДЕСЬ, не в templ (тот же приём, что
 // suppressionParentLabel/suppressionChildLabel в alert_suppression.go).
+// author приходит готовым из батч-выборки exportsPage (h.Auth.UserEmails) —
+// не найденный в карте id (отсутствующий пользователь либо ошибка выборки
+// молча пропущена вызывающим) отдаёт пустую строку, тот же контракт, что и
+// раньше был у прямого h.Auth.UserEmail здесь.
 //
 // CanDownload/CanDelete повторяют гейты exportsDownload/exportsDelete
 // буква в букву: автор заявки либо CanManage, плюс — для удаления —
 // терминальный статус (queued/running ещё пишутся воркером). Показывать
 // кнопку, которая поведёт на 404, хуже, чем не показывать её вовсе.
-func (h *Handler) exportViewRow(ctx context.Context, j export.Job, uid int64, authz projectAuthz) templates.ExportView {
-	var author string
-	if email, err := h.Auth.UserEmail(ctx, j.CreatedBy); err == nil {
-		author = email
-	}
+func (h *Handler) exportViewRow(ctx context.Context, j export.Job, uid int64, authz projectAuthz, author string) templates.ExportView {
 	ownOrManaged := j.CreatedBy == uid || authz.CanManage
 
 	var expiresAt time.Time

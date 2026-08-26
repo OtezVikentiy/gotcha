@@ -228,9 +228,13 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/escalations":       lvlOperator,
 	"GET /projects/{id}/alert-suppression": lvlOperator,
 	// GET /projects/{id}/exports (страница списка, задача 11) — тот же
-	// оператор-гейт, что и у download/delete ниже; список показывает только
-	// доступные автору/CanManage кнопки (ExportView.CanDownload/CanDelete,
-	// exports.go:exportViewRow), но саму страницу видит любой оператор.
+	// оператор-гейт, что и у download/delete ниже; саму страницу видит любой
+	// оператор, но НЕ все её строки (спека §3): без CanManage exportsPage
+	// зовёт Store.ByProjectForUser, а не ByProject — оператор без CanManage
+	// вообще не получает чужие заявки в выборке (не только скрытые кнопки
+	// download/delete, ExportView.CanDownload/CanDelete, exports.go:
+	// exportViewRow, — сама строка с email автора и колонкой PII не
+	// рендерится, ревью веб-части E1, п.2).
 	"GET /projects/{id}/exports":                  lvlOperator,
 	"GET /projects/{id}/exports/{jobID}/download": lvlOperator,
 	"GET /projects/{id}/monitors/new":             lvlOperator,

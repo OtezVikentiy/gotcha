@@ -607,7 +607,7 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 // selectedID — id события из query (для подсветки строки в таблице), может
 // не совпадать ни с одним из events, если событие устарело/удалено — тогда
 // selected/frames приходят пустыми и блок деталей просто не рендерится.
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string) {
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
 			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
@@ -650,12 +650,23 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				// CanAccessProject, а он сегодня буквально canOperateProject
 				// (см. её докблок в operate.go), так что дошедший досюда
 				// пользователь уже прошёл бы requireProjectOperator постановки.
-				<form method="post" action={ templ.URL(ExportsPath(it.ProjectID)) }>
-					<input type="hidden" name="kind" value="events"/>
-					<input type="hidden" name="format" value="csv"/>
-					<input type="hidden" name="scope_issue_id" value={ strconv.FormatInt(it.ID, 10) }/>
-					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issuedetail.export") }</button>
-				</form>
+				// exportsEnabled — сверх этого: на инстансе без каталога
+				// выгрузок (h.Exports == nil) форма поведёт на 404, поэтому
+				// не рендерится вовсе (ревью веб-части E1, п.3).
+				//
+				// Период — тем же окном, что сейчас выбрано графиком частоты
+				// (rng, дефолт 7д — issuedetail.go), переносится в action
+				// query-параметром (exportsPathWithRange), тем же приёмом, что
+				// и формы issues.templ: hidden-поле сюда не годится, POST-тело
+				// не долетает до resolveTimeRange (ревью веб-части E1, п.1).
+				if exportsEnabled {
+					<form method="post" action={ templ.URL(exportsPathWithRange(it.ProjectID, rng)) }>
+						<input type="hidden" name="kind" value="events"/>
+						<input type="hidden" name="format" value="csv"/>
+						<input type="hidden" name="scope_issue_id" value={ strconv.FormatInt(it.ID, 10) }/>
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issuedetail.export") }</button>
+					</form>
+				}
 			</div>
 
 			<form method="get" action={ templ.URL(issueDetailPath(it.ID)) } class="performance-filters">

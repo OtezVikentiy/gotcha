@@ -120,10 +120,11 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			// are localized markdown H1s, resolved via internal/docs).
 			// withShell runs inside withLocale (see web.go mount line),
 			// so the locale is already resolved in ctx by this point.
-			Locale:     i18n.FromContext(ctx).Code,
-			CanManage:  canManage,
-			CanOperate: canOperate,
-			Back:       backOrigin(r, h.BaseURL, path),
+			Locale:         i18n.FromContext(ctx).Code,
+			CanManage:      canManage,
+			CanOperate:     canOperate,
+			ExportsEnabled: h.Exports != nil,
+			Back:           backOrigin(r, h.BaseURL, path),
 		}
 		next.ServeHTTP(w, r.WithContext(nav.WithShell(ctx, sh)))
 	})

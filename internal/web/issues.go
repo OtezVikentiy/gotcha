@@ -150,8 +150,11 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// canAccess как canOperate (E1, задача 11): гейтит кнопки экспорта на
 	// списке — тот же predicate, что canOperateProject использует для
 	// requireProjectOperator (см. её докблок в operate.go и комментарий выше
-	// про canAccess/gettingStarted).
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canAccess).Render(r.Context(), w)
+	// про canAccess/gettingStarted). Дополнительно — h.Exports != nil: на
+	// инстансе без каталога выгрузок воркер не стартует, кнопка «Выгрузить»
+	// поведёт на 404 (ревью веб-части E1, п.3).
+	canExport := canAccess && h.Exports != nil
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canExport).Render(r.Context(), w)
 }
 
 // gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,

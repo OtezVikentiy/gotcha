@@ -17,6 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -30,6 +31,7 @@ import (
 type issuesStack struct {
 	pool    *pgxpool.Pool
 	srv     *httptest.Server
+	h       *web.Handler
 	org     *org.Service
 	auth    *auth.Service
 	issues  *issue.Service
@@ -71,7 +73,7 @@ func newIssuesStack(t *testing.T) *issuesStack {
 	h.Uptime = uptimeSvc
 	h.Register(mux)
 
-	return &issuesStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
+	return &issuesStack{pool: pool, srv: srv, h: h, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
 }
 
 // addEvent кладёт событие в батчер; для попадания в спарклайн теста нужен
@@ -294,6 +296,36 @@ func TestWebIssuesList(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("POST %s (outsider) status = %d, want 404", bulkPath, resp.StatusCode)
+	}
+}
+
+// TestWebIssuesListHidesExportButtonsWhenExportsDisabled — на инстансе без
+// каталога выгрузок (h.Exports == nil, дефолт newIssuesStack) кнопки
+// «Выгрузить» на списке ошибок не должны рендериться вовсе: они вели бы на
+// 404 (ревью веб-части E1, п.3). Включаем h.Exports обратно и проверяем, что
+// кнопки появляются — гейт именно по h.Exports, не по чему-то ещё.
+func TestWebIssuesListHidesExportButtonsWhenExportsDisabled(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-exports-owner@example.com")
+	project := createProject(t, s, ownerID, "issues-exports-org", "issues-exports-proj")
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), `action="/projects/`+strconv.FormatInt(project.ID, 10)+`/exports`) {
+		t.Error("кнопки экспорта показаны при h.Exports == nil")
+	}
+
+	s.h.Exports = export.NewStore(s.pool)
+	t.Cleanup(func() { s.h.Exports = nil })
+
+	resp2 := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if !strings.Contains(string(body2), `action="/projects/`+strconv.FormatInt(project.ID, 10)+`/exports`) {
+		t.Error("кнопки экспорта не показаны при включённом h.Exports")
 	}
 }
 

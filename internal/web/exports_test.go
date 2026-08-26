@@ -375,6 +375,84 @@ func TestExportsCreateFreezesRelativePeriod(t *testing.T) {
 	}
 }
 
+// TestExportsCreateDefaultsToAllTimeWithoutPeriod — POST без query-параметра
+// периода (кнопки на issues/issuedetail до правки слали именно так) обязан
+// ставить заявку «за всё время», а не молча урезать её до 24ч: список issues,
+// с которого ставится большинство заявок, сам по умолчанию живёт на «за всё
+// время» (RangeAll) и никогда не пишет "all" в rangeCookie. Мутация: вернуть
+// дефолт resolveTimeRange в exportsCreate на "24h" — тест обязан упасть.
+func TestExportsCreateDefaultsToAllTimeWithoutPeriod(t *testing.T) {
+	s := newExportsStack(t)
+
+	resp := s.postForm(t, s.path("/exports"), okForm)
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код ответа %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	j := s.lastJob(t)
+	if !j.Params.Since.IsZero() {
+		t.Errorf("Since = %v, ожидали нулевое (без нижней границы)", j.Params.Since)
+	}
+	if !j.Params.Until.IsZero() {
+		t.Errorf("Until = %v, ожидали нулевое (без верхней границы)", j.Params.Until)
+	}
+}
+
+// TestExportsCreateHonorsExplicitPeriodQuery — период, переданный
+// query-параметром на action формы (exportsPathWithRange), обязан дойти до
+// Params: это то, что теперь реально шлют формы issues/issuedetail вместо
+// бесполезного hidden-поля. Мутация: убрать period из action формы (то есть
+// не передать его в запросе) — тест обязан упасть, откатившись на дефолт
+// «за всё время» из предыдущего теста.
+func TestExportsCreateHonorsExplicitPeriodQuery(t *testing.T) {
+	s := newExportsStack(t)
+	before := time.Now().UTC()
+
+	resp := s.postForm(t, s.path("/exports?period=7d"), okForm)
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код ответа %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	j := s.lastJob(t)
+	if j.Params.Since.IsZero() || j.Params.Until.IsZero() {
+		t.Fatal("период не развёрнут в абсолютный")
+	}
+	if j.Params.Until.Before(before) {
+		t.Errorf("верхняя граница %v раньше момента постановки %v", j.Params.Until, before)
+	}
+	if got := j.Params.Until.Sub(j.Params.Since); got < 6*24*time.Hour || got > 8*24*time.Hour {
+		t.Errorf("окно = %v, ожидали ~7 суток", got)
+	}
+}
+
+// TestExportsCreateHonorsCustomRangeQuery — произвольный диапазон, который
+// TimeRangeVM.apply переносит в поля "start"/"end" query (не "cstart"/"cend"
+// — те лишь для переноса custom между страницами при смене прочих фильтров),
+// обязан дойти до Params ровно теми границами, что были заданы.
+func TestExportsCreateHonorsCustomRangeQuery(t *testing.T) {
+	s := newExportsStack(t)
+	start := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Minute)
+	end := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Minute)
+	q := url.Values{
+		"period": {"custom"},
+		"start":  {start.Format("2006-01-02T15:04")},
+		"end":    {end.Format("2006-01-02T15:04")},
+	}
+
+	resp := s.postForm(t, s.path("/exports?"+q.Encode()), okForm)
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код ответа %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	j := s.lastJob(t)
+	if !j.Params.Since.Equal(start) {
+		t.Errorf("Since = %v, ожидали %v", j.Params.Since, start)
+	}
+	if !j.Params.Until.Equal(end) {
+		t.Errorf("Until = %v, ожидали %v", j.Params.Until, end)
+	}
+}
+
 // TestExportsCreateDeniedForNonOperator — участник без доступа к проекту не
 // выгружает: массовый вынос данных не должен быть доступен кому попало.
 // 404, не 403 — существование проекта не раскрываем (тот же принцип, что у
@@ -565,16 +643,15 @@ func TestExportsDeleteRemovesFileThenRow(t *testing.T) {
 }
 
 // TestExportsRoutesDisabledWhenExportsNil — h.Exports == nil (выгрузки
-// выключены на инстансе) обязан давать 404 на всех трёх маршрутах этой
-// задачи, а не панику разыменования nil-стора. Страница списка
-// (GET /projects/{id}/exports) сюда не входит — она заводится в задаче 11.
+// выключены на инстансе) обязан давать 404 на create/download/delete —
+// это не UI, объяснять там нечего (ревью веб-части E1, п.3). Страница
+// списка (GET /projects/{id}/exports) — исключение: спека E1 §10 требует
+// на ней объяснение вместо пустой таблицы, а не 404, см.
+// TestExportsPageShowsExplanationWhenExportsNil ниже.
 func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	s := newExportsStack(t)
 	s.h.Exports = nil
 
-	if resp := s.getAs(t, s.operatorUID, s.path("/exports")); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("GET /exports = %d, want 404", resp.StatusCode)
-	}
 	if resp := s.postForm(t, s.path("/exports"), okForm); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST /exports = %d, want 404", resp.StatusCode)
 	}
@@ -583,6 +660,36 @@ func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	}
 	if resp := s.postForm(t, s.path("/exports/1/delete"), url.Values{}); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST delete = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestExportsPageShowsExplanationWhenExportsNil — h.Exports == nil обязан
+// давать 200 с объяснением на странице списка, а не 404 и не пустую
+// таблицу с рабочей формой постановки (спека E1 §10; ревью веб-части, п.3).
+// Доступ по-прежнему только оператору проекта — не-оператор получает
+// обычный 404 (TestExportsPageDeniedForNonOperator покрывает общий случай,
+// здесь — что порядок гейтов не сломан при отключённой фиче).
+func TestExportsPageShowsExplanationWhenExportsNil(t *testing.T) {
+	s := newExportsStack(t)
+	s.h.Exports = nil
+
+	resp := s.getAs(t, s.operatorUID, s.path("/exports"))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Выгрузки выключены на этом инстансе") {
+		t.Errorf("нет объяснения о выключенной фиче: %s", body)
+	}
+	if strings.Contains(body, "data-table") {
+		t.Error("таблица заявок отрисована при выключенной фиче")
+	}
+	if strings.Contains(body, `name="kind"`) {
+		t.Error("форма постановки заявки отрисована при выключенной фиче")
+	}
+
+	if resp := s.getAs(t, s.viewerUID, s.path("/exports")); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /exports (не-оператор) = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -736,12 +843,18 @@ func TestExportsPageDeniedForNonOperator(t *testing.T) {
 	}
 }
 
-// TestExportsPageHidesActionsForForeignJobWhenNotManager — оператор без
-// CanManage видит в списке чужую (не свою) заявку, но не должен видеть у неё
-// кнопки скачивания/удаления — они поведут на 404 (exportsDownload/Delete
-// проверяют job.CreatedBy==uid || authz.CanManage). Админу (CanManage) те же
-// кнопки обязаны быть видны.
-func TestExportsPageHidesActionsForForeignJobWhenNotManager(t *testing.T) {
+// TestExportsPageHidesForeignJobWhenNotManager — оператор без CanManage не
+// должен видеть чужую (не свою) заявку на странице выгрузок вовсе — ни
+// строки, ни email автора, ни колонки PII (спека §3: «свои заявки видит
+// автор; админ и владелец орга видят все заявки проекта» — эта строка несёт
+// тот самый аудит-сигнал «кто и когда выгружал непомаскированные данные»,
+// который спека оставляет админу). Админу (CanManage) чужая заявка обязана
+// быть видна целиком, включая кнопки download/delete.
+//
+// До ревью веб-части E1 (п.2) чужая заявка оператору БЫЛА видна строкой
+// (kind/format/статус/email автора/PII), только кнопки download/delete были
+// спрятаны — это и было дефектом: сама видимость строки утекала.
+func TestExportsPageHidesForeignJobWhenNotManager(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postFormAs(t, s.adminUID, s.path("/exports"), okForm)
 	body := readAll(t, resp)
@@ -758,6 +871,11 @@ func TestExportsPageHidesActionsForForeignJobWhenNotManager(t *testing.T) {
 	if strings.Contains(operatorView, fmt.Sprintf("/exports/%d/delete", adminJobID)) {
 		t.Error("оператор без CanManage видит удаление чужой заявки")
 	}
+	// register() в newExportsStack заводит админа с этим email — строка чужой
+	// заявки не должна рендериться вовсе, а не просто прятать кнопки.
+	if strings.Contains(operatorView, "exports-admin@example.com") {
+		t.Error("оператор без CanManage видит email автора чужой заявки — строка не должна рендериться вовсе")
+	}
 
 	adminView := s.getBody(t, s.adminUID, s.path("/exports"))
 	if !strings.Contains(adminView, fmt.Sprintf("/exports/%d/download", adminJobID)) {
@@ -766,4 +884,52 @@ func TestExportsPageHidesActionsForForeignJobWhenNotManager(t *testing.T) {
 	if !strings.Contains(adminView, fmt.Sprintf("/exports/%d/delete", adminJobID)) {
 		t.Error("админ (CanManage) не видит удаление своей же заявки")
 	}
+}
+
+// TestExportsPageBatchesAuthorEmailsAcrossDistinctAuthors — email автора
+// собирается батчем через Auth.UserEmails (ревью веб-части E1, п.5: раньше
+// exportViewRow звала h.Auth.UserEmail на КАЖДУЮ строку — N+1 к PG на
+// рендер). Правильность батча проверяем напрямую: две заявки РАЗНЫХ
+// авторов в одном проекте, админ (CanManage) видит обе через ByProject —
+// оба email обязаны дойти до страницы, каждый ровно на свою строку, не
+// перепутанные и не потерянные при разрешении по карте authorEmails.
+func TestExportsPageBatchesAuthorEmailsAcrossDistinctAuthors(t *testing.T) {
+	s := newExportsStack(t)
+	adminJobID := s.enqueueDone(t, s.adminUID)
+	operatorJobID := s.enqueueDone(t, s.operatorUID)
+
+	body := s.getBody(t, s.adminUID, s.path("/exports"))
+
+	adminRow := rowContaining(t, body, fmt.Sprintf("/exports/%d/download", adminJobID))
+	if !strings.Contains(adminRow, "exports-admin@example.com") {
+		t.Errorf("строка заявки %d (автор admin) не содержит email админа: %s", adminJobID, adminRow)
+	}
+	if strings.Contains(adminRow, "exports-operator@example.com") {
+		t.Errorf("строка заявки %d (автор admin) содержит email оператора — email перепутан между строками: %s", adminJobID, adminRow)
+	}
+
+	operatorRow := rowContaining(t, body, fmt.Sprintf("/exports/%d/download", operatorJobID))
+	if !strings.Contains(operatorRow, "exports-operator@example.com") {
+		t.Errorf("строка заявки %d (автор operator) не содержит email оператора: %s", operatorJobID, operatorRow)
+	}
+	if strings.Contains(operatorRow, "exports-admin@example.com") {
+		t.Errorf("строка заявки %d (автор operator) содержит email админа — email перепутан между строками: %s", operatorJobID, operatorRow)
+	}
+}
+
+// rowContaining вырезает содержимое ближайшего <tr>…</tr>, несущего marker
+// (ссылку на конкретную заявку), — чтобы сравнивать email не по всей
+// странице целиком (там оба присутствуют), а по конкретной строке таблицы.
+func rowContaining(t *testing.T, body, marker string) string {
+	t.Helper()
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("маркер %q не найден на странице: %s", marker, body)
+	}
+	start := strings.LastIndex(body[:i], "<tr>")
+	end := strings.Index(body[i:], "</tr>")
+	if start < 0 || end < 0 {
+		t.Fatalf("не удалось выделить <tr> вокруг маркера %q", marker)
+	}
+	return body[start : i+end]
 }

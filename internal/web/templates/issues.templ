@@ -247,11 +247,14 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				// кнопке сразу ставит заявку с текущими фильтрами списка — без
 				// промежуточного шага «сначала выбери вид». Полноценная форма с
 				// выбором формата и (для CanManage) PII — на самой странице
-				// «Выгрузки» (exports.templ:exportsForm). Период отдельным полем
-				// не передаётся: постановка берёт то же окно, что и rangeCookie/
-				// дефолт (см. докблок exportsForm).
+				// «Выгрузки» (exports.templ:exportsForm). Период — тем же окном,
+				// что сейчас видит пользователь на списке (filter.Range),
+				// переносится в action query-параметром (exportsPathWithRange):
+				// hidden-поле для него не годится, POST-тело не долетает до
+				// resolveTimeRange (она читает только r.URL.Query()) — молча
+				// усечённая выгрузка (ревью веб-части E1, п.1).
 				<div class="issues-export-actions">
-					<form method="post" action={ templ.URL(ExportsPath(projectID)) }>
+					<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) }>
 						<input type="hidden" name="kind" value="issues"/>
 						<input type="hidden" name="format" value="csv"/>
 						<input type="hidden" name="status" value={ filter.Status }/>
@@ -261,7 +264,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 						<input type="hidden" name="sort" value={ filter.Sort }/>
 						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.export.groups") }</button>
 					</form>
-					<form method="post" action={ templ.URL(ExportsPath(projectID)) }>
+					<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) }>
 						<input type="hidden" name="kind" value="events"/>
 						<input type="hidden" name="format" value="ndjson"/>
 						<input type="hidden" name="status" value={ filter.Status }/>

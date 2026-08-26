@@ -383,9 +383,11 @@ func TestSubsectionsOperatorGating(t *testing.T) {
 // TestSubsectionsIssuesExportsGatedByCanOperate — «Выгрузки» (E1, задача 11)
 // висят в области issues рядом со списком проблем, но требуют CanOperate —
 // той же границы, что и хендлеры создания/скачивания/удаления заявки
-// (requireProjectOperator в internal/web/exports.go).
+// (requireProjectOperator в internal/web/exports.go) — И ExportsEnabled:
+// на инстансе без каталога выгрузок (h.Exports == nil) пункт меню не
+// показывается вовсе, даже оператору (ревью веб-части E1, п.3).
 func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
-	base := Shell{ProjectID: 7, Area: "issues", Path: "/projects/7/issues"}
+	base := Shell{ProjectID: 7, Area: "issues", Path: "/projects/7/issues", ExportsEnabled: true}
 
 	viewer := Subsections(base)
 	if len(viewer) != 1 {
@@ -399,6 +401,12 @@ func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
 	}
 	if operator[1].LabelKey != "nav.exports" || operator[1].Href != "/projects/7/exports" {
 		t.Errorf("оператор: exports item = %+v", operator[1])
+	}
+
+	base.ExportsEnabled = false
+	disabled := Subsections(base)
+	if len(disabled) != 1 {
+		t.Errorf("оператор без ExportsEnabled: len(Subsections) = %d, want 1 (без exports), got %+v", len(disabled), disabled)
 	}
 }
 

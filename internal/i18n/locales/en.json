@@ -1243,6 +1243,8 @@
     "err.export.not_deletable": "The export is still running, only a finished one can be deleted",
     "exports.title": "Exports",
     "exports.intro": "Requests to export issues and events: groups or raw project events as CSV/JSON/NDJSON. The heavy query runs in the background — the request is queued, the finished file is kept for a limited time and downloads right from this page.",
+    "exports.disabled.title": "Exports are disabled on this instance",
+    "exports.disabled.body": "The export file directory is unavailable or not configured — the background worker isn't running, and no request will be processed. Contact whoever administers this gotcha instance.",
     "exports.list.title": "Requests",
     "exports.empty.title": "No requests yet",
     "exports.empty.body": "Order an export with the form below, or with the \"Export\" button on the issue list — its status and a download link will show up here once it's ready.",

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"strconv"
 	"time"
 
@@ -13,6 +14,25 @@ import (
 // issues/issuedetail.
 func ExportsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/exports"
+}
+
+// exportsPathWithRange — ExportsPath с текущим окном времени, перенесённым
+// в query тем же приёмом, что и остальная навигация (TimeRangeVM.apply,
+// см. issueEventPath). Без этого POST-форма ставит заявку по cookie/дефолту
+// хендлера, а не по тому окну, что видит пользователь на экране — заявка
+// «за всё время» на списке issues молча ставилась бы за последние сутки
+// (ревью веб-части E1, п.1). apply пишет произвольный диапазон в поля
+// "start"/"end" (не "cstart"/"cend" — те лишь переносят custom между
+// страницами при смене прочих фильтров, см. её докблок в timerange.templ),
+// и resolveTimeRange читает именно "start"/"end" в первую очередь
+// (internal/web/timerange.go:parseTimeRange, шаг 1).
+func exportsPathWithRange(projectID int64, rng TimeRangeVM) string {
+	q := url.Values{}
+	rng.apply(q)
+	if len(q) == 0 {
+		return ExportsPath(projectID)
+	}
+	return ExportsPath(projectID) + "?" + q.Encode()
 }
 
 func exportsDownloadPath(projectID, jobID int64) string {
@@ -106,6 +126,20 @@ templ exportRow(projectID int64, e ExportView) {
 					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "exports.delete") }</button>
 				</form>
 			} else {
+				// exports.delete_disabled («заявка ещё выполняется») — ветка
+				// однозначна и ПОСЛЕ ревью веб-части E1 (п.2): CanDelete =
+				// ownOrManaged && Terminal() (exports.go:exportViewRow), а
+				// ownOrManaged = CreatedBy==uid || CanManage. Оператору без
+				// CanManage строка с чужим CreatedBy сюда вообще не доедет —
+				// exportsPage зовёт ByProjectForUser, а не ByProject, значит
+				// CreatedBy==uid для КАЖДОЙ его строки. Админу (CanManage)
+				// ownOrManaged истинно для любой строки безусловно. В обоих
+				// случаях единственная причина, по которой CanDelete=false, —
+				// !Terminal(): текст «ещё выполняется» не может соврать про
+				// чужую завершённую заявку — такой строки в этой ветке не
+				// бывает. До фикса п.2 это было не так: оператор без CanManage
+				// видел ЧУЖУЮ строку (просто без кнопок), и на ней тот же
+				// текст был бы неточен для завершённой чужой заявки.
 				<span class="hint">{ i18n.T(ctx, "exports.delete_disabled") }</span>
 			}
 		</td>
@@ -118,8 +152,11 @@ templ exportRow(projectID int64, e ExportView) {
 // безвозвратно, повторная выгрузка без маски требует новой заявки).
 // Период не выбирается здесь отдельным полем: постановка использует то же
 // окно, что и последняя страница с селектором времени (rangeCookie,
-// internal/web/rangecookie.go) либо дефолт 24ч (h.resolveTimeRange) —
-// third отдельный виджет на форме дублировал бы уже существующий выбор.
+// internal/web/rangecookie.go) либо дефолт «за всё время» (h.resolveTimeRange,
+// exports.go:exportsCreate) — third отдельный виджет на форме дублировал бы
+// уже существующий выбор. У этой формы (в отличие от форм на issues/
+// issuedetail) нет своего окна времени для переноса в action — страница
+// «Выгрузки» его не показывает.
 templ exportsForm(projectID int64, canManagePII bool) {
 	<details class="card">
 		<summary class="card-header">{ i18n.T(ctx, "exports.create") }</summary>
@@ -160,47 +197,64 @@ templ exportsForm(projectID int64, canManagePII bool) {
 }
 
 // Exports — GET /projects/{id}/exports: список заявок проекта (новые сверху,
-// см. Store.ByProject) + форма постановки. Доступ — оператор проекта
-// (requireProjectOperator), как у alert-suppression/escalations.
-// canManagePII гейтит и галку include_pii формы (только автор/владелец
-// организации ставит выгрузку без маски — оператору она молча игнорируется,
-// см. exports.go:exportsCreate), она же приходит из authz.CanManage.
-templ Exports(projectID int64, rows []ExportView, canManagePII bool, userEmail string) {
+// см. Store.ByProject/ByProjectForUser) + форма постановки. Доступ —
+// оператор проекта (requireProjectOperator), как у alert-suppression/
+// escalations. canManagePII гейтит и галку include_pii формы (только автор/
+// владелец организации ставит выгрузку без маски — оператору она молча
+// игнорируется, см. exports.go:exportsCreate), она же приходит из
+// authz.CanManage.
+//
+// enabled — фича сконфигурирована на инстансе (h.Exports != nil). false —
+// каталог выгрузок недоступен/несоздаваем: воркер не стартует, ни одна
+// заявка не досчитается, и вместо пустой таблицы с рабочей формой (которая
+// поставила бы заявку, обречённую висеть в queued вечно) страница
+// объясняет, почему раздел не работает (спека E1 §10; ревью веб-части,
+// п.3). Список/форма постановки в этом случае не рендерятся вовсе — rows
+// на false-ветке всё равно приходит пустым (exportsPage не ходит в Store,
+// когда h.Exports == nil), но полагаться на пустоту rows здесь неверно:
+// enabled — источник истины, а не побочный эффект пустого списка (иначе
+// проект без единой заявки показывал бы то же «объяснение», что выключенная
+// фича, — два разных состояния схлопнулись бы в одно).
+templ Exports(projectID int64, rows []ExportView, canManagePII bool, userEmail string, enabled bool) {
 	@layout(i18n.T(ctx, "exports.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "exports.title") }</h1>
-		<p class="hint">{ i18n.T(ctx, "exports.intro") }</p>
-		<section class="card">
-			<h2 class="card-header">{ i18n.T(ctx, "exports.list.title") }</h2>
-			if len(rows) == 0 {
-				@emptyState("file-text", "exports.empty.title", "exports.empty.body", "", "", 3)
-			} else {
-				@scrollRegion("table-scroll", "exports.list.title") {
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th scope="col">{ i18n.T(ctx, "exports.table.kind") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.table.format") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.table.filters") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.table.status") }</th>
-								<th scope="col" class="num">{ i18n.T(ctx, "exports.rows") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.size") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.table.pii") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.table.created") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.expires") }</th>
-								<th scope="col">{ i18n.T(ctx, "exports.author") }</th>
-								<th scope="col"></th>
-								<th scope="col"></th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, e := range rows {
-								@exportRow(projectID, e)
-							}
-						</tbody>
-					</table>
+		if !enabled {
+			@emptyState("file-text", "exports.disabled.title", "exports.disabled.body", "", "", 2)
+		} else {
+			<p class="hint">{ i18n.T(ctx, "exports.intro") }</p>
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "exports.list.title") }</h2>
+				if len(rows) == 0 {
+					@emptyState("file-text", "exports.empty.title", "exports.empty.body", "", "", 3)
+				} else {
+					@scrollRegion("table-scroll", "exports.list.title") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "exports.table.kind") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.table.format") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.table.filters") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.table.status") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "exports.rows") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.size") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.table.pii") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.table.created") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.expires") }</th>
+									<th scope="col">{ i18n.T(ctx, "exports.author") }</th>
+									<th scope="col"></th>
+									<th scope="col"></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, e := range rows {
+									@exportRow(projectID, e)
+								}
+							</tbody>
+						</table>
+					}
 				}
-			}
-		</section>
-		@exportsForm(projectID, canManagePII)
+			</section>
+			@exportsForm(projectID, canManagePII)
+		}
 	}
 }
