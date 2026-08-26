@@ -65,22 +65,29 @@ var routeAuthz = map[string]string{
 	// --- Оператор мониторинга (requireProjectOperator, спека 2026-08-08):
 	// мутации монитора, окон обслуживания, статус-страниц, alert rules и
 	// metric alerts. ---
-	"POST /monitors/{id}/pause":                                lvlOperator,
-	"POST /monitors/{id}/resume":                               lvlOperator,
-	"POST /monitors/{id}/delete":                               lvlOperator,
-	"POST /monitors/{id}/heartbeat/regenerate":                 lvlOperator,
-	"POST /monitors/{id}":                                      lvlOperator,
-	"POST /projects/{id}/monitors":                             lvlOperator,
-	"POST /projects/{id}/maintenance":                          lvlOperator,
-	"POST /projects/{id}/maintenance/update":                   lvlOperator,
-	"POST /projects/{id}/maintenance/delete":                   lvlOperator,
-	"POST /projects/{id}/statuspages":                          lvlOperator,
-	"POST /statuspages/{id}":                                   lvlOperator,
-	"POST /statuspages/{id}/delete":                            lvlOperator,
-	"POST /projects/{id}/alerts/rules":                         lvlOperator,
-	"POST /projects/{id}/escalations":                          lvlOperator,
-	"POST /projects/{id}/alert-suppression":                    lvlOperator,
-	"POST /projects/{id}/alert-suppression/{depID}/delete":     lvlOperator,
+	"POST /monitors/{id}/pause":                            lvlOperator,
+	"POST /monitors/{id}/resume":                           lvlOperator,
+	"POST /monitors/{id}/delete":                           lvlOperator,
+	"POST /monitors/{id}/heartbeat/regenerate":             lvlOperator,
+	"POST /monitors/{id}":                                  lvlOperator,
+	"POST /projects/{id}/monitors":                         lvlOperator,
+	"POST /projects/{id}/maintenance":                      lvlOperator,
+	"POST /projects/{id}/maintenance/update":               lvlOperator,
+	"POST /projects/{id}/maintenance/delete":               lvlOperator,
+	"POST /projects/{id}/statuspages":                      lvlOperator,
+	"POST /statuspages/{id}":                               lvlOperator,
+	"POST /statuspages/{id}/delete":                        lvlOperator,
+	"POST /projects/{id}/alerts/rules":                     lvlOperator,
+	"POST /projects/{id}/escalations":                      lvlOperator,
+	"POST /projects/{id}/alert-suppression":                lvlOperator,
+	"POST /projects/{id}/alert-suppression/{depID}/delete": lvlOperator,
+	// exports: create/delete гейтятся requireProjectOperator, как соседи
+	// выше; download/delete ДОПОЛНИТЕЛЬНО проверяют авторство/CanManage
+	// внутри хендлера (exports.go) — карта отслеживает базовый уровень, не
+	// поведенческую доп.проверку, тот же принцип, что у channel_id/edge
+	// ownership на escalations/alert-suppression.
+	"POST /projects/{id}/exports":                              lvlOperator,
+	"POST /projects/{id}/exports/{jobID}/delete":               lvlOperator,
 	"POST /projects/{id}/incidents/{source}/{incident_id}/ack": lvlOperator,
 	"POST /projects/{id}/metrics/alerts":                       lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete":                lvlOperator,
@@ -212,18 +219,20 @@ var routeAuthz = map[string]string{
 	// с CanAccessProject (operate.go) — условие не меняет поведение прямо
 	// сейчас, но не потребует правки ленты, когда роли разъедутся (спека
 	// access-model-rework).
-	"GET /projects/{id}/metrics/alerts":    lvlOperator,
-	"GET /projects/{id}/slos":              lvlOperator,
-	"GET /projects/{id}/slos/{sloID}":      lvlOperator,
-	"GET /projects/{id}/hosts/settings":    lvlOperator,
-	"GET /projects/{id}/alerts":            lvlOperator,
-	"GET /projects/{id}/alerts/deliveries": lvlOperator,
-	"GET /projects/{id}/escalations":       lvlOperator,
-	"GET /projects/{id}/alert-suppression": lvlOperator,
-	"GET /projects/{id}/monitors/new":      lvlOperator,
-	"GET /monitors/{id}/edit":              lvlOperator,
-	"GET /projects/{id}/statuspages":       lvlOperator,
-	"GET /projects/{id}/maintenance":       lvlOperator,
+	"GET /projects/{id}/metrics/alerts":           lvlOperator,
+	"GET /projects/{id}/slos":                     lvlOperator,
+	"GET /projects/{id}/slos/{sloID}":             lvlOperator,
+	"GET /projects/{id}/hosts/settings":           lvlOperator,
+	"GET /projects/{id}/alerts":                   lvlOperator,
+	"GET /projects/{id}/alerts/deliveries":        lvlOperator,
+	"GET /projects/{id}/escalations":              lvlOperator,
+	"GET /projects/{id}/alert-suppression":        lvlOperator,
+	"GET /projects/{id}/exports":                  lvlOperator,
+	"GET /projects/{id}/exports/{jobID}/download": lvlOperator,
+	"GET /projects/{id}/monitors/new":             lvlOperator,
+	"GET /monitors/{id}/edit":                     lvlOperator,
+	"GET /projects/{id}/statuspages":              lvlOperator,
+	"GET /projects/{id}/maintenance":              lvlOperator,
 
 	// --- Org admin/owner (requireOrgRole/requireProjectRole): настройки
 	// организации/проекта и производные разделы (пробы, команды) — та же
