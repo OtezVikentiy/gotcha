@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // Incident — период недоступности монитора.
@@ -27,15 +29,47 @@ type Incident struct {
 	// писатель — Service.MarkSuppressedByDep, вызываемый depsuppress.Suppressor
 	// (source="uptime" резолвится в самом uptime, не в Suppressor — см. T7).
 	SuppressedByDep bool
+	// AcknowledgedAt/AcknowledgedBy — подтверждение оператором (B4-паритет,
+	// W2-C находка 2, миграция 0084): те же поля, что у остальных 5
+	// инцидент-таблиц (0077).
+	AcknowledgedAt *time.Time
+	AcknowledgedBy *int64
+	// Severity/EscalationLevel/LastEscalatedAt — лесенка эскалации (B4,
+	// миграция 0084 добавляет их incidents наравне с остальными пятью).
+	Severity        string
+	EscalationLevel int
+	LastEscalatedAt *time.Time
+	// NotifyOpenFailed/NotifyOpenAttempts — явный признак неудачной попытки
+	// доставки "down" (W2-C находка 1, миграция 0084): отделяет "пытались,
+	// канал упал" от "сознательно не уведомляли" (suppressed_by_dep/
+	// in_maintenance/B5-грейс) — см. Detector.notify и
+	// Detector.settleHeldIncident.
+	NotifyOpenFailed   bool
+	NotifyOpenAttempts int
 }
 
-const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at, suppressed_by_dep`
+// DeliveryExhausted сообщает, исчерпаны ли попытки доставить "down" (W2-C
+// находка 1, усиление ревью аудита 2026-08-27): NotifyOpenFailed=true само
+// по себе значит "ретрай ещё идёт" (settleHeldIncident продолжит пытаться на
+// следующих тиках) — это отдельный, куда более тревожный случай: канал
+// доставки мёртв ПО-НАСТОЯЩЕМУ (сломанный вебхук, отозванный токен), retry
+// исчерпан (см. maxNotifyOpenAttempts), и без явного сигнала в интерфейсе
+// открытый неподтверждённый инцидент выглядит НЕОТЛИЧИМО от обычного — ровно
+// тот случай, ради которого заводилась находка 1: человек об аварии не
+// узнаёт. UI (incidents.templ) показывает по этому предикату бейдж, тем же
+// образом, что incident.badge.suppressed_by_dep.
+func (inc Incident) DeliveryExhausted() bool {
+	return inc.NotifyOpenFailed && inc.NotifyOpenAttempts >= maxNotifyOpenAttempts
+}
+
+const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at, suppressed_by_dep, acknowledged_at, acknowledged_by, severity, escalation_level, last_escalated_at, notify_open_failed, notify_open_attempts`
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var inc Incident
 	if err := row.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
 		&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
-		&inc.SuppressedByDep); err != nil {
+		&inc.SuppressedByDep, &inc.AcknowledgedAt, &inc.AcknowledgedBy, &inc.Severity,
+		&inc.EscalationLevel, &inc.LastEscalatedAt, &inc.NotifyOpenFailed, &inc.NotifyOpenAttempts); err != nil {
 		return Incident{}, err
 	}
 	return inc, nil
@@ -94,6 +128,22 @@ func (s *Service) ResolveIncident(ctx context.Context, monitorID int64, at time.
 	return inc, true, nil
 }
 
+// IncidentByID returns a single incident by its ID (found=false if it
+// doesn't exist) — needed by escalation.StepNotifier.NotifyStep (W2-C
+// находка 2, зеркало host.IncidentService.GetByID): the scheduler only knows
+// incidentID, not the full Event, so the notifier reloads it here.
+func (s *Service) IncidentByID(ctx context.Context, id int64) (Incident, bool, error) {
+	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM incidents WHERE id = $1", id)
+	inc, err := scanIncident(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, false, nil
+	}
+	if err != nil {
+		return Incident{}, false, fmt.Errorf("uptime: incident by id: %w", err)
+	}
+	return inc, true, nil
+}
+
 // OpenIncidentFor returns the currently open incident for monitorID, if any.
 func (s *Service) OpenIncidentFor(ctx context.Context, monitorID int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
@@ -131,7 +181,9 @@ func queryIncidents(ctx context.Context, pool *pgxpool.Pool, query string, args 
 func (s *Service) Incidents(ctx context.Context, projectID int64, limit int) ([]Incident, error) {
 	return queryIncidents(ctx, s.pool, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
-			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep
+			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
+			i.acknowledged_at, i.acknowledged_by, i.severity, i.escalation_level, i.last_escalated_at,
+			i.notify_open_failed, i.notify_open_attempts
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
 		WHERE m.project_id = $1
@@ -210,7 +262,9 @@ func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, query string, 
 		var inc Incident
 		if err := rows.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
 			&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
-			&inc.SuppressedByDep, &total); err != nil {
+			&inc.SuppressedByDep, &inc.AcknowledgedAt, &inc.AcknowledgedBy, &inc.Severity,
+			&inc.EscalationLevel, &inc.LastEscalatedAt, &inc.NotifyOpenFailed, &inc.NotifyOpenAttempts,
+			&total); err != nil {
 			return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
 		}
 		out = append(out, inc)
@@ -224,6 +278,8 @@ func (s *Service) IncidentsPaged(ctx context.Context, projectID int64, limit, of
 	return queryIncidentsPaged(ctx, s.pool, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
 			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
+			i.acknowledged_at, i.acknowledged_by, i.severity, i.escalation_level, i.last_escalated_at,
+			i.notify_open_failed, i.notify_open_attempts,
 			count(*) OVER() AS total
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
@@ -244,12 +300,26 @@ func (s *Service) IncidentsForMonitorPaged(ctx context.Context, monitorID int64,
 
 // MarkNotified records that an open/close notification was sent for an
 // incident: open=true sets notified_open, otherwise notified_close.
+//
+// open=true also: (a) clears notify_open_failed — a successful delivery ends
+// any retry sequence started by MarkNotifyOpenFailed, the flag exists only
+// to drive retries while delivery hasn't gone through yet (see
+// Detector.notify / Detector.settleHeldIncident); (b) raises escalation_level
+// to at least 1 — this is what hands the incident off from Detector (sole
+// owner of the FIRST "down" delivery, including its own B5 hold/grace/retry
+// state machine) to escalation.Scheduler (owner of every ESCALATION step
+// after the first) — see the long comment on OpenUnacked for why this
+// handoff exists and why the two must not overlap on level 0. GREATEST, not
+// a plain assignment: idempotent against a hypothetical second MarkNotified
+// call on an incident already escalated past 1.
 func (s *Service) MarkNotified(ctx context.Context, incidentID int64, open bool) error {
 	column := "notified_close"
+	extra := ""
 	if open {
 		column = "notified_open"
+		extra = ", notify_open_failed = false, escalation_level = GREATEST(escalation_level, 1)"
 	}
-	tag, err := s.pool.Exec(ctx, "UPDATE incidents SET "+column+" = true WHERE id = $1", incidentID)
+	tag, err := s.pool.Exec(ctx, "UPDATE incidents SET "+column+" = true"+extra+" WHERE id = $1", incidentID)
 	if err != nil {
 		return fmt.Errorf("uptime: mark notified: %w", err)
 	}
@@ -257,6 +327,134 @@ func (s *Service) MarkNotified(ctx context.Context, incidentID int64, open bool)
 		return ErrNotFound
 	}
 	return nil
+}
+
+// MarkNotifyOpenFailed records a failed attempt to deliver the "down"
+// notification: sets notify_open_failed and bumps notify_open_attempts (W2-C
+// находка 1, миграция 0084). Unlike suppressed_by_dep/in_maintenance — which
+// mean "consciously not notifying" — this means "tried and the channel
+// failed", and is the signal that lets settleHeldIncident retry on the very
+// next tick instead of waiting SettleGrace or requiring d.Dep != nil.
+func (s *Service) MarkNotifyOpenFailed(ctx context.Context, incidentID int64) error {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE incidents SET notify_open_failed = true, notify_open_attempts = notify_open_attempts + 1 WHERE id = $1",
+		incidentID)
+	if err != nil {
+		return fmt.Errorf("uptime: mark notify open failed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Acknowledge — подтверждение uptime-инцидента оператором (B4-паритет, W2-C
+// находка 2): та же семантика, что у остальных 5 источников (см.
+// host.IncidentService.Acknowledge), project_id проверяется через JOIN на
+// monitors — у incidents нет собственной колонки project_id. ok=false —
+// инцидент уже подтверждён/закрыт, или incidentID не принадлежит projectID
+// (кросс-тенант) — идемпотентно, не ошибка.
+func (s *Service) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE incidents SET acknowledged_at = now(), acknowledged_by = $3
+		WHERE id = $1 AND resolved_at IS NULL AND acknowledged_at IS NULL
+		  AND monitor_id IN (SELECT id FROM monitors WHERE project_id = $2)
+		RETURNING id`, incidentID, projectID, userID)
+	var ackedID int64
+	err := row.Scan(&ackedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("uptime: acknowledge incident: %w", err)
+	}
+	return true, nil
+}
+
+// Name — ключ источника для эскалации (B4, escalation.Source): совпадает с
+// incident_source 'uptime' в incident_escalations (0077/0084).
+func (s *Service) Name() string { return "uptime" }
+
+// OpenUnacked возвращает открытые неподтверждённые uptime-инциденты —
+// кандидаты на эскалацию (escalation.Source, W2-C находка 2). Зеркало
+// host.IncidentService.OpenUnacked с ОДНИМ намеренным отличием:
+// `escalation_level > 0`.
+//
+// Почему: у host/metric/trace/profile/slo ступень 0 лесенки — ЕДИНСТВЕННЫЙ
+// механизм первой доставки "down" (см. host.Evaluator.notifyOpen), и весь
+// B5-гейт (задержать/подавить/отправить после грейса) живёт целиком в
+// escalation.Scheduler.tickOne — у эволюаторов своей копии этого гейта нет.
+// У uptime.Detector, напротив, УЖЕ ЕСТЬ полноценный, отдельно оттестированный
+// B5-автомат первой доставки (openIncident: держит "down", если у монитора
+// задекларированный родитель; settleHeldIncident: подавляет навсегда, если
+// родитель упал, иначе отправляет по истечении SettleGrace) и ретрай провала
+// доставки (W2-C находка 1, Detector.notify/MarkNotifyOpenFailed) — тот же
+// класс решений, что и Scheduler.tickOne, но с собственным состоянием
+// (notified_open, notify_open_failed), не совпадающим с escalation_level.
+//
+// Если бы Scheduler ТОЖЕ видел эти инциденты на escalation_level=0, он
+// применил бы СВОЙ независимый B5-гейт (incidentgroup.DepGate) к тем же
+// строкам — два гейта решали бы одну и ту же задачу над одними и теми же
+// данными на разных тикерах, и держащийся родитель мог получить "down"
+// ДВАЖДЫ: один раз от Detector.settleHeldIncident по истечении ЕГО грейса,
+// второй — от Scheduler по истечении ЕГО (Scheduler не знает про
+// notified_open и не выставляет его — BumpEscalation трогает только
+// escalation_level).
+//
+// Фильтр `escalation_level > 0` делает Detector ЕДИНСТВЕННЫМ владельцем
+// первой доставки: инцидент становится видимым планировщику эскалации
+// только ПОСЛЕ того, как Detector успешно отправил "down" (MarkNotified
+// поднимает escalation_level до 1 — см. её докблок) — с этого момента
+// escalation.Scheduler подхватывает ДАЛЬНЕЙШИЕ ступени лесенки (1, 2, ...)
+// без пересечения с уже завершённой первой доставкой. group_id/
+// incident_groups LEFT JOIN сдвигает точку отсчёта задержки на момент
+// выхода из группы (та же логика D3, см. комментарий host); suppressed_by_dep
+// исключён — подавленный B5 инцидент эскалацию дальше не получает никогда.
+func (s *Service) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT i.id, m.project_id,
+		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at)) AS started_at,
+		       i.severity, i.escalation_level
+		FROM incidents i
+		JOIN monitors m ON m.id = i.monitor_id
+		LEFT JOIN incident_groups g ON g.id = i.group_id
+		WHERE i.resolved_at IS NULL AND i.acknowledged_at IS NULL AND i.suppressed_by_dep = false
+		  AND i.escalation_level > 0
+		  AND (i.group_id IS NULL OR g.id IS NULL OR g.resolved_at IS NOT NULL)
+		ORDER BY i.id`)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: open unacked incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("uptime: open unacked incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
+// from+1 и фиксирует last_escalated_at (B4, escalation.Source). ok=false,
+// если level уже не равен from — планировщик проиграл гонку другому тику
+// (идемпотентно). Зеркало host.IncidentService.BumpEscalation.
+func (s *Service) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE incidents SET escalation_level = $2 + 1, last_escalated_at = now()
+		WHERE id = $1 AND escalation_level = $2
+		RETURNING id`, id, from)
+	var bumpedID int64
+	err := row.Scan(&bumpedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("uptime: bump escalation: %w", err)
+	}
+	return true, nil
 }
 
 // MarkSuppressedByDep records that incidentID was suppressed because a

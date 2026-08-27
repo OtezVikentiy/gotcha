@@ -17,15 +17,19 @@ func sloDetailPath(projectID, sloID int64) string {
 
 // SLOIncidentRow — строка истории инцидентов сжигания бюджета SLO.
 type SLOIncidentRow struct {
-	ID                 int64
-	Open               bool
-	Severity           string
-	AcknowledgedAt     *time.Time
-	StartedAt          time.Time
-	ResolvedAt         *time.Time
-	BurnRate           float64
-	HasBudget          bool
-	BudgetRemainingPct float64
+	ID             int64
+	Open           bool
+	Severity       string
+	AcknowledgedAt *time.Time
+	// AcknowledgedByEmail — W2-C находка 4: email подтвердившего, уже
+	// резолвлен вызывающей стороной (web.Handler.ackedByEmails), пустая
+	// строка — не подтверждён или пользователь с тех пор удалён.
+	AcknowledgedByEmail string
+	StartedAt           time.Time
+	ResolvedAt          *time.Time
+	BurnRate            float64
+	HasBudget           bool
+	BudgetRemainingPct  float64
 }
 
 // SLODetailVM — вью-модель экрана деталей одного SLO. HasData=false — за окно
@@ -149,7 +153,7 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 					if vm.OpenIncident.HasBudget {
 						<p>{ i18n.T(ctx, "slo.detail.budget") }: { fmtPct(vm.OpenIncident.BudgetRemainingPct) }</p>
 					}
-					@ackControl(vm.ProjectID, "slo", vm.OpenIncident.ID, true, vm.OpenIncident.AcknowledgedAt)
+					@ackControl(vm.ProjectID, "slo", vm.OpenIncident.ID, true, vm.OpenIncident.AcknowledgedAt, vm.OpenIncident.AcknowledgedByEmail)
 				</div>
 			}
 

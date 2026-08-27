@@ -65,5 +65,17 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	_ = templates.ProfileRegressionsList(projectID, regs, filter, h.currentEmail(r), canOperate).Render(r.Context(), w)
+	// ackedBy — W2-C находка 4: email подтвердившего, батчем (см. ackedByEmails).
+	ackedByIDs := make([]int64, 0, len(regs))
+	for _, reg := range regs {
+		if reg.AcknowledgedBy != nil {
+			ackedByIDs = append(ackedByIDs, *reg.AcknowledgedBy)
+		}
+	}
+	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	_ = templates.ProfileRegressionsList(projectID, regs, filter, h.currentEmail(r), canOperate, ackedBy).Render(r.Context(), w)
 }

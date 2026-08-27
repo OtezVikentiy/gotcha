@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -59,16 +60,52 @@ type OutboxNotifier struct {
 // постановку остальных: все такие ошибки логируются и собираются через
 // errors.Join в возвращаемое значение.
 func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
+	_, err := n.dispatch(ctx, ev, nil)
+	return err
+}
+
+// NotifyStep — StepNotifier для лесенки эскалации (B4, W2-C находка 2):
+// шлёт ступень [step] uptime-инцидента incidentID в channelIDs и возвращает
+// каналы, реально поставленные в очередь (см. escalation.SendStepIfDue) — не
+// факт намерения. Инцидент+монитор перезагружаются по ID здесь: планировщик
+// (escalation.Scheduler) знает только incidentID, не готовый Event — тот же
+// приём, что у остальных 5 нотифаеров (см. SLOBurnNotifier.reloadEvent).
+// Только "down": уровни лесенки эскалируют открытый инцидент, "up"/
+// "ssl_expiring"/"reminder" идут вне лесенки (Detector.notify/reminder-сторож
+// — не через escalation).
+func (n *OutboxNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
+	inc, ok, err := n.Uptime.IncidentByID(ctx, incidentID)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: notify step: load incident: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("uptime: notify step: incident %d not found", incidentID)
+	}
+	mon, err := n.Uptime.Get(ctx, inc.MonitorID)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: notify step: load monitor: %w", err)
+	}
+	ev := downEvent(mon, inc, inc.Regions, inc.Cause)
+	return n.dispatch(ctx, ev, channelIDs)
+}
+
+// dispatch — общая постановка одной готовой задачи в Outbox, используемая и
+// синхронным Notify (channelIDs=nil, все включённые каналы), и NotifyStep
+// (channelIDs — набор ступени эскалации, ContainsID-фильтр ПОСЛЕ
+// Deliverable-гейта, см. escalation.ContainsID). Возвращает каналы, реально
+// поставленные в очередь — NotifyStep отдаёт их SendStepIfDue для логирования
+// (incident_escalations), Notify их игнорирует.
+func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []int64) ([]int64, error) {
 	own, err := n.Uptime.MonitorChannelIDs(ctx, ev.Monitor.ID)
 	if err != nil {
-		return fmt.Errorf("uptime: notify: monitor channels: %w", err)
+		return nil, fmt.Errorf("uptime: notify: monitor channels: %w", err)
 	}
 	// Тела каналов всегда берём у alert.Service: только он держит мастер-ключ
 	// и умеет расшифровать secret (и он же поканально пропускает каналы с
 	// испорченным секретом, залогировав их).
 	channels, err := n.Alerts.Channels(ctx, ev.Monitor.ProjectID)
 	if err != nil {
-		return fmt.Errorf("uptime: notify: project channels: %w", err)
+		return nil, fmt.Errorf("uptime: notify: project channels: %w", err)
 	}
 	if len(own) > 0 {
 		// У монитора есть свои каналы — сужаем до них. Именно до
@@ -98,8 +135,12 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 	body := bodyFor(ctx, ev, url, n.depsLine(ctx, ev))
 
 	var errs error
+	var enqueued []int64
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			continue
+		}
+		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -131,9 +172,11 @@ func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error("uptime: notify: enqueue failed", "channel_id", ch.ID, "error", err)
 			errs = errors.Join(errs, fmt.Errorf("uptime: notify: enqueue channel %d: %w", ch.ID, err))
+			continue
 		}
+		enqueued = append(enqueued, ch.ID)
 	}
-	return errs
+	return enqueued, errs
 }
 
 // depsLine — строка «Зависимых узлов: N» для down-события монитора (D3 Р9):

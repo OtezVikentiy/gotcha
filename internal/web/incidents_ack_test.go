@@ -19,6 +19,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -38,6 +39,22 @@ type ackStack struct {
 	traceR  *trace.RegressionService
 	profR   *profile.RegressionService
 	sloSt   *slo.Store
+	uptimeS *uptime.Service
+}
+
+// seedMonitor — заводит монитор напрямую SQL (не через uptime.Service.Create):
+// ack-стенду не нужны ни валидные HTTP/DNS/TCP-настройки, ни шифрование
+// заголовков — только строка в monitors, на которую можно повесить инцидент
+// через uptime.Service.OpenIncident (FK monitor_id).
+func (s *ackStack) seedMonitor(t *testing.T, projectID int64, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := s.pool.QueryRow(context.Background(),
+		`INSERT INTO monitors (project_id, name, kind, interval_seconds) VALUES ($1,$2,'heartbeat',60) RETURNING id`,
+		projectID, name).Scan(&id); err != nil {
+		t.Fatalf("seed monitor: %v", err)
+	}
+	return id
 }
 
 func newAckStack(t *testing.T) *ackStack {
@@ -59,16 +76,18 @@ func newAckStack(t *testing.T) *ackStack {
 	traceR := trace.NewRegressionService(pool)
 	profR := profile.NewRegressionService(pool)
 	sloSt := slo.NewStore(pool)
+	uptimeS := uptime.NewService(pool)
 	h.Hosts = hostsStore
 	h.HostIncidents = hostInc
 	h.MetricIncidents = metInc
 	h.Regressions = traceR
 	h.ProfileRegressions = profR
 	h.SLO = sloSt
+	h.Uptime = uptimeS
 	h.Register(mux)
 
 	return &ackStack{pool: pool, srv: srv, h: h, org: orgSvc, auth: authSvc,
-		hosts: hostsStore, hostInc: hostInc, metInc: metInc, traceR: traceR, profR: profR, sloSt: sloSt}
+		hosts: hostsStore, hostInc: hostInc, metInc: metInc, traceR: traceR, profR: profR, sloSt: sloSt, uptimeS: uptimeS}
 }
 
 // seedHost — заводит хост через host.Store.Upsert (как остальные web-тесты
@@ -155,6 +174,13 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 		t.Fatalf("open slo incident: %v", err)
 	}
 
+	// uptime (W2-C находка 2)
+	monID := s.seedMonitor(t, project.ID, "m1")
+	uptimeInc, _, err := s.uptimeS.OpenIncident(ctx, monID, "connection refused", []string{"eu"}, false)
+	if err != nil {
+		t.Fatalf("open uptime incident: %v", err)
+	}
+
 	cases := []struct {
 		source string
 		id     int64
@@ -164,6 +190,7 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 		{"trace", traceReg.ID},
 		{"profile", profReg.ID},
 		{"slo", sloInc.ID},
+		{"uptime", uptimeInc.ID},
 	}
 	for _, c := range cases {
 		form := url.Values{}
@@ -189,6 +216,9 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 	}
 	if got, _, err := s.sloSt.GetIncidentByID(ctx, sloInc.ID); err != nil || got.AcknowledgedAt == nil {
 		t.Errorf("slo incident not acked: %+v err=%v", got, err)
+	}
+	if got, _, err := s.uptimeS.IncidentByID(ctx, uptimeInc.ID); err != nil || got.AcknowledgedAt == nil {
+		t.Errorf("uptime incident not acked: %+v err=%v", got, err)
 	}
 
 	// Повторный ack — идемпотентно, тот же редирект, без ошибки (T10 §1).

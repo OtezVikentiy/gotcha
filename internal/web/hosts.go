@@ -1270,6 +1270,20 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 	// бейдж "Есть обновление" сам не называл, до какой версии.
 	serverVersion := version.Version()
 
+	// ackedBy — W2-C находка 4: email подтвердившего, батчем по открытым
+	// инцидентам (см. ackedByEmails).
+	ackedByIDs := make([]int64, 0, len(openIncidents))
+	for _, inc := range openIncidents {
+		if inc.AcknowledgedBy != nil {
+			ackedByIDs = append(ackedByIDs, *inc.AcknowledgedBy)
+		}
+	}
+	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
 	vm := templates.HostDetailVM{
 		ProjectID:            projectID,
 		Host:                 hst,
@@ -1278,6 +1292,7 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 		ProblemKinds:         problemKinds,
 		OpenIncidents:        openIncidents,
 		RecentIncidents:      recentIncidents,
+		AckedBy:              ackedBy,
 		Charts:               charts,
 		CanOperate:           canOperate,
 		Uptime:               uptimeStr,

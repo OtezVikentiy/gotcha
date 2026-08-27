@@ -1638,12 +1638,41 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	// подтверждён). Src/Notifier каждого биндинга — те же объекты, что
 	// собраны выше для соответствующего оценщика (Regressions/Incidents/
 	// Store как Source (T4), Notifier как StepNotifier (T6)).
+	// uptime — W2-C находка 2 (аудит 2026-08-27): раньше единственный из 6
+	// источников инцидентов вне контура эскалации. Src=maint (uptime.Service,
+	// уже построен выше для окон обслуживания) — тот же приём, что и sloEval
+	// делает для своих провайдеров: startEvaluators не переиспользует
+	// uptimeSvc/uptimeNotifier из run() (другая функция, другая область
+	// видимости, см. её комментарий про uptimeSvc:385), строит свой
+	// экземпляр. Notifier — uptime.OutboxNotifier.NotifyStep: ОДНАКО первую
+	// доставку "down" (уровень 0) ступени по-прежнему шлёт Detector
+	// (uptime.Detector.notify, свой B5-автомат held/grace/ретрай — W2-C
+	// находка 1), а не эта лесенка — uptime.Service.OpenUnacked нарочно не
+	// отдаёт планировщику инциденты на escalation_level=0, чтобы два гейта
+	// (Detector.settleHeldIncident и Scheduler.tickOne) не решали одну и ту
+	// же задачу над одной и той же строкой на разных тикерах и не отправили
+	// "down" дважды — см. докблок uptime.Service.OpenUnacked. С уровня 1 эта
+	// лесенка эскалирует дальше как обычно.
+	uptimeEscNotifier := &uptime.OutboxNotifier{
+		Alerts:       alertSvc,
+		Uptime:       maint,
+		Outbox:       outbox,
+		BaseURL:      cfg.BaseURL,
+		EmailEnabled: emailSender.Configured(),
+		Details:      detailPolicy(cfg),
+		Locale:       i18n.Locale{Code: cfg.Locale},
+		// DepCounts — строка «Зависимых узлов: N» в эскалированном
+		// уведомлении (D3 Р9), тот же единственный Suppressor, что и Dep
+		// ниже.
+		DepCounts: dep,
+	}
 	bindings := []escalation.Binding{
 		{Src: trace.NewRegressionService(pg), Notifier: evaluator.Notifier},
 		{Src: metric.NewIncidentService(pg), Notifier: metricEval.Notifier},
 		{Src: profile.NewRegressionService(pg), Notifier: profileRegEval.Notifier},
 		{Src: host.NewIncidentService(pg), Notifier: hostEval.Notifier},
 		{Src: slo.NewStore(pg), Notifier: sloNotifier},
+		{Src: maint, Notifier: uptimeEscNotifier},
 	}
 	sched := &escalation.Scheduler{
 		Bindings: bindings,

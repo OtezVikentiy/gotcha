@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -9,12 +10,15 @@ import (
 )
 
 // incidentAck — POST /projects/{id}/incidents/{source}/{incident_id}/ack:
-// единый ack-эндпоинт пяти источников инцидентов (B4, T10). Диспатч по
-// {source} на Acknowledge нужного стора — сигнатуры сторов зеркальны
-// (incidentID, projectID, userID), project_id в WHERE каждого — defense-in-
-// depth (см. host.IncidentService.Acknowledge и его аналоги): оператор
-// проекта A не подтвердит инцидент проекта B подобранным id, даже если этот
-// хендлер когда-нибудь ошибётся в маршрутизации.
+// единый ack-эндпоинт ШЕСТИ источников инцидентов (B4, T10; uptime добавлен
+// W2-C находка 2 — раньше был единственным источником без подтверждения).
+// Диспатч по {source} на Acknowledge нужного стора — сигнатуры сторов
+// зеркальны (incidentID, projectID, userID), project_id в WHERE каждого —
+// defense-in-depth (см. host.IncidentService.Acknowledge и его аналоги,
+// uptime.Service.Acknowledge проверяет project_id через JOIN на monitors —
+// у incidents нет своей колонки project_id): оператор проекта A не
+// подтвердит инцидент проекта B подобранным id, даже если этот хендлер
+// когда-нибудь ошибётся в маршрутизации.
 //
 // Доступ — оператор проекта (requireProjectOperator), как у остальных
 // мутаций инцидентов/окон/правил. Успех и «уже подтверждён» (ok=false —
@@ -81,6 +85,12 @@ func (h *Handler) incidentAck(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, err = h.SLO.Acknowledge(r.Context(), incidentID, projectID, uid)
+	case "uptime":
+		if h.Uptime == nil {
+			h.notFound(w, r)
+			return
+		}
+		_, err = h.Uptime.Acknowledge(r.Context(), incidentID, projectID, uid)
 	default:
 		h.notFound(w, r)
 		return
@@ -90,4 +100,27 @@ func (h *Handler) incidentAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
+}
+
+// ackedByEmails — W2-C находка 4: резолвит acknowledged_by (id пользователя)
+// в email ОДНИМ батч-запросом на всю страницу вместо запроса на строку —
+// тот же приём, что incidentfeed.go:102 (h.IncidentGroups.Compositions)
+// применяет для состава групп. Общий хелпер для всех 6 экранов, что зовут
+// ackControl (hostdetail/metricalerts/profileregressions/regressions/
+// slodetail/incidents.templ): каждый собирает свой список ненулевых
+// AcknowledgedBy и передаёт сюда, эта функция сама дедуплицирует. Отсутствие
+// email в результирующей карте (удалённый пользователь, ON DELETE SET NULL
+// на самом acknowledged_by — сюда такое не дойдёт, но auth.UserEmails тоже
+// nil-safe) — не ошибка, ackControl рисует только время.
+func (h *Handler) ackedByEmails(ctx context.Context, ids []int64) (map[int64]string, error) {
+	seen := make(map[int64]struct{}, len(ids))
+	uniq := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	return h.Auth.UserEmails(ctx, uniq)
 }

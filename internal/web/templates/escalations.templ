@@ -104,13 +104,36 @@ templ escalationDryRun(ladder escalation.Ladder, channels []alert.Channel) {
 	</div>
 }
 
+// escalationUndeliverableReasonKey — почему канал недоставляем: отключён
+// оператором или сломан секрет (единственные два случая в
+// alert.Channel.Deliverable, см. её докблок). W2-C находка 5.
+func escalationUndeliverableReasonKey(c alert.Channel) string {
+	if !c.Enabled {
+		return "escalations.field.channel_disabled"
+	}
+	return "escalations.field.channel_broken"
+}
+
 // escalationStepFields — одна строка редактора: задержка + чекбоксы каналов.
-// Показываются только Deliverable-каналы (брифинг: только deliverable/enabled) —
-// канал, который нельзя доставить, всё равно не отправит уведомление, и
-// выбирать его в новой ступени незачем; уже сохранённый выбор такого канала
-// (если он стал недоступен ПОСЛЕ настройки ступени) просто перестаёт
-// отображаться отмеченным — при следующем сохранении ступень тихо потеряет
-// этот id, что и требуется, раз канал больше не доставляем.
+//
+// W2-C находка 5: раньше рисовались ТОЛЬКО Deliverable-каналы — сохранённый
+// в ступени канал, переставший быть доставляемым МЕЖДУ настройкой ступени и
+// открытием формы (например, у вебхука сломался секрет), просто пропадал из
+// списка; следующее «Сохранить» отправляло форму БЕЗ его id и молча стирало
+// настройку — ни строчки предупреждения. Теперь строка рисуется, если канал
+// доставляем ИЛИ уже выбран в этой ступени (step.Selected[c.ID]) — второе
+// условие как раз ловит ровно тот случай: сохранённый выбор канала,
+// сломавшегося уже ПОСЛЕ настройки. Чекбокс остаётся АКТИВНЫМ (не disabled):
+// disabled-инпут браузер не включает в POST вовсе, а тогда "просто открыть и
+// нажать Сохранить, не трогая ничего" тем же образом бы потерял канал — чек-
+// бокс обязан оставаться отмечаемым/снимаемым и участвовать в отправке формы
+// как обычный. Единственное отличие недоставляемого канала — бейдж с
+// причиной (выключен / секрет сломан), сигнал человеку, что канал стоит
+// поправить или сознательно убрать самому, а не то, что он тихо исчезнет.
+//
+// Каналы для ВЫБОРА В НОВУЮ ступень (Selected[c.ID]=false) по-прежнему
+// предлагаются только доставляемые — see condition ниже: добавлять в ступень
+// заведомо недоставляемый канал по-прежнему незачем.
 templ escalationStepFields(step EscalationStepForm, channels []alert.Channel) {
 	<fieldset class="escalation-step card">
 		<legend class="card-header">{ i18n.Tf(ctx, "escalations.step.legend", "no", strconv.Itoa(step.StepNo)) }</legend>
@@ -123,10 +146,13 @@ templ escalationStepFields(step EscalationStepForm, channels []alert.Channel) {
 		<div class="field checkbox-field" role="group" aria-label={ i18n.T(ctx, "escalations.field.channels") }>
 			<span class="field-label" aria-hidden="true">{ i18n.T(ctx, "escalations.field.channels") }</span>
 			for _, c := range channels {
-				if c.Deliverable() {
+				if c.Deliverable() || step.Selected[c.ID] {
 					<label class="checkbox-inline">
 						<input type="checkbox" name={ stepChannelsField(step.StepNo) } value={ strconv.FormatInt(c.ID, 10) } checked?={ step.Selected[c.ID] }/>
 						{ channelKindLabel(ctx, c.Kind) }: { c.Target }
+						if !c.Deliverable() {
+							<span class="badge badge-warn">{ i18n.T(ctx, escalationUndeliverableReasonKey(c)) }</span>
+						}
 					</label>
 				}
 			}
@@ -171,6 +197,7 @@ templ Escalations(projectID int64, channels []alert.Channel, critical, warning E
 		<div class="escalations">
 			<h1>{ i18n.T(ctx, "escalations.title") }</h1>
 			<p class="hint">{ i18n.T(ctx, "escalations.intro") }</p>
+			<p class="hint">{ i18n.T(ctx, "escalations.uptime_note") }</p>
 			@escalationSeveritySection(projectID, critical, channels, ladders[escalation.SeverityCritical], failedSeverity == escalation.SeverityCritical, errMsg)
 			@escalationSeveritySection(projectID, warning, channels, ladders[escalation.SeverityWarning], failedSeverity == escalation.SeverityWarning, errMsg)
 		</div>

@@ -88,6 +88,17 @@ type groupHook interface {
 	RootIncident(ctx context.Context, rootKind string, rootID int64) (source string, incidentID, projectID int64, notified bool, found bool, err error)
 }
 
+// maxNotifyOpenAttempts — верхняя граница попыток доставки "down" после
+// первого провала (W2-C находка 1). Догоняющий ретрай идёт на КАЖДОМ
+// следующем тике detectIncident, а не раз в SettleGrace — интервал проверки
+// монитора обычно секунды-минуты, поэтому 5 попыток дают каналу минуты на
+// восстановление после короткого сбоя (SMTP/webhook-таймаут), не пейджируя
+// в мёртвый канал бесконечно. После исчерпания попыток инцидент остаётся
+// NotifiedOpen=false навсегда — тот же осознанный молчаливый эффект,
+// что и у suppressed_by_dep/in_maintenance: "up" тоже не уйдёт (resolveIncident
+// гейтит на NotifiedOpen), потому что "down" в итоге так и не был доставлен.
+const maxNotifyOpenAttempts = 5
+
 // aggStatus — агрегированный по регионам статус монитора.
 type aggStatus int
 
@@ -329,15 +340,37 @@ func downEvent(m Monitor, inc Incident, downRegions []string, cause string) Even
 // settleHeldIncident переоценивает уже открытый инцидент на каждом
 // следующем «всё ещё down» тике. Не-операция для подавляющего большинства
 // инцидентов (уже уведомлён, уже подавлен, открыт в окне обслуживания, нет
-// dep-сервиса) — единственный путь, который что-то делает, это
-// монитор-ребёнок, чьё "down" придержал openIncident (задекларированный
-// родитель, отложенный автомат B5 T7): здесь решается, упал ли сам родитель
-// (подавить навсегда) или истёк грейс отстаивания с живым родителем (отправить
-// отложенный "down").
+// dep-сервиса) — единственный путь, который что-то делает при "живом"
+// B5-родителе, это монитор-ребёнок, чьё "down" придержал openIncident
+// (задекларированный родитель, отложенный автомат B5 T7): здесь решается,
+// упал ли сам родитель (подавить навсегда) или истёк грейс отстаивания с
+// живым родителем (отправить отложенный "down"). Отдельная и более ранняя
+// ветка — NotifyOpenFailed (W2-C находка 1): провалившаяся попытка доставки
+// ретраится немедленно, минуя весь B5-гейт.
 func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incident, states []State, st State, now time.Time) {
-	if inc.NotifiedOpen || inc.SuppressedByDep || inc.InMaintenance || d.Dep == nil {
-		// уже уведомлён / уже подавлен / подавлен окном обслуживания (B3,
-		// BLOCKER-1: не воскрешать) / нет dep-сервиса — ничего не делаем.
+	if inc.NotifiedOpen {
+		return // уже уведомлён — ничего не делаем
+	}
+	if inc.NotifyOpenFailed {
+		// Попытка доставки УЖЕ БЫЛА и провалилась — это НЕ "сознательно не
+		// уведомляли" (тот случай остаётся в ветке ниже: suppressed_by_dep/
+		// in_maintenance/B5-грейс), а сбой канала доставки. Ретраим на
+		// КАЖДОМ следующем тике, без ожидания SettleGrace и без завязки на
+		// d.Dep != nil — иначе авария короче SettleGrace, или процесс без
+		// поднятого dep-сервиса, не получает уведомления НИКОГДА (то, что
+		// нашёл аудит). Граница попыток — maxNotifyOpenAttempts, см. её
+		// докблок про то, почему не бесконечный ретрай.
+		if inc.NotifyOpenAttempts >= maxNotifyOpenAttempts || d.Notifier == nil {
+			return
+		}
+		downRegions := regionsWithStatus(states, "down")
+		cause := causeFrom(st, states)
+		d.notify(ctx, inc.ID, true, downEvent(m, inc, downRegions, cause))
+		return
+	}
+	if inc.SuppressedByDep || inc.InMaintenance || d.Dep == nil {
+		// уже подавлен / подавлен окном обслуживания (B3, BLOCKER-1: не
+		// воскрешать) / нет dep-сервиса — ничего не делаем.
 		return
 	}
 	down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
@@ -417,6 +450,19 @@ func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time
 func (d *Detector) notify(ctx context.Context, incidentID int64, open bool, ev Event) {
 	if err := d.Notifier.Notify(ctx, ev); err != nil {
 		slog.Error("uptime: detector: notify failed", "incident_id", incidentID, "kind", ev.Kind, "error", err)
+		// open=true (W2-C находка 1): провал доставки "down" помечается
+		// явно, отдельно от notified_open — settleHeldIncident увидит
+		// NotifyOpenFailed и ретраит на следующем тике, не дожидаясь
+		// SettleGrace. open=false (закрытие) такого ретрая не имеет: "up"
+		// шлётся один раз при разрешении инцидента, повторный тик его уже
+		// не позовёт (resolveIncident срабатывает единожды, на переходе
+		// down->up) — провал доставки "up" остаётся тем, чем был раньше:
+		// залогированным и молчаливым, вне охвата этой находки.
+		if open {
+			if merr := d.Svc.MarkNotifyOpenFailed(ctx, incidentID); merr != nil {
+				slog.Error("uptime: detector: mark notify open failed failed", "incident_id", incidentID, "error", merr)
+			}
+		}
 		return
 	}
 	if err := d.Svc.MarkNotified(ctx, incidentID, open); err != nil {

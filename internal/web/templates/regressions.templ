@@ -114,7 +114,8 @@ templ regressionStatusTab(projectID int64, value, label, active string) {
 // RegressionsList — GET /projects/{id}/regressions: таблица регрессий
 // производительности с вкладками фильтра по статусу. Только чтение, без JS
 // (обычные ссылки), визуально повторяет список инцидентов uptime.
-templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string, seasonal bool, canOperate bool) {
+templ RegressionsList(projectID int64, regressions []trace.Regression, deployAttr []string, filter string, userEmail string, seasonal bool, canOperate bool, ackedByOpt ...map[int64]string) {
+	{{ ackedBy := firstAckedByMap(ackedByOpt) }}
 	@layout(i18n.T(ctx, "nav.regressions"), userEmail) {
 		<div class="regressions">
 			<h1>
@@ -166,7 +167,7 @@ templ RegressionsList(projectID int64, regressions []trace.Regression, deployAtt
 									<td class="num">{ regressionDurationText(ctx, reg) }</td>
 									<td>
 										if reg.Status == "open" {
-											@ackControl(projectID, "trace", reg.ID, canOperate, reg.AcknowledgedAt)
+											@ackControl(projectID, "trace", reg.ID, canOperate, reg.AcknowledgedAt, ackedByEmailOf(reg.AcknowledgedBy, ackedBy))
 										}
 									</td>
 								</tr>

@@ -73,6 +73,18 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// ackedBy — W2-C находка 4: email подтвердившего, батчем (см. ackedByEmails).
+	ackedByIDs := make([]int64, 0, len(incidents))
+	for _, in := range incidents {
+		if in.AcknowledgedBy != nil {
+			ackedByIDs = append(ackedByIDs, *in.AcknowledgedBy)
+		}
+	}
+	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	// Имена уже приходивших метрик — для выбора в форме вместо ввода руками.
 	// Опечатка в свободном поле создавала правило, которое выглядит рабочим и не
 	// срабатывает никогда: молчаливый отказ, о котором узнаёшь во время инцидента.
@@ -89,7 +101,7 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 		}
 	}
 	w.WriteHeader(status)
-	_ = templates.MetricAlerts(projectID, rules, incidents, known, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MetricAlerts(projectID, rules, incidents, known, form, errMsg, h.currentEmail(r), ackedBy).Render(r.Context(), w)
 }
 
 // metricAlertCreate — POST /projects/{id}/metrics/alerts: создать правило.

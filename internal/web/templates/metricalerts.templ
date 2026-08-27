@@ -70,7 +70,8 @@ func ruleScope(ctx context.Context, r metric.Rule) string {
 }
 
 // MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
-templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, form FormState, errMsg, userEmail string) {
+templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, form FormState, errMsg, userEmail string, ackedByOpt ...map[int64]string) {
+	{{ ackedBy := firstAckedByMap(ackedByOpt) }}
 	@layout(i18n.T(ctx, "metrics.alerts.title"), userEmail) {
 		<div class="metric-alerts">
 			<h1>{ i18n.T(ctx, "metrics.alerts.title") }</h1>
@@ -159,7 +160,7 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 											<td>@relativeTime(in.StartedAt)</td>
 											<td>
 												if in.Status == "open" {
-													@ackControl(projectID, "metric", in.ID, true, in.AcknowledgedAt)
+													@ackControl(projectID, "metric", in.ID, true, in.AcknowledgedAt, ackedByEmailOf(in.AcknowledgedBy, ackedBy))
 												}
 											</td>
 										</tr>

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -80,16 +81,35 @@ func (h *Handler) sloDetail(w http.ResponseWriter, r *http.Request) {
 	// История инцидентов SLO (свежайшие первыми). Ошибка чтения не должна ронять
 	// экран — тогда просто нет истории.
 	if incs, err := h.SLO.Incidents(ctx, projectID, sloID, sloDetailIncidentsLimit); err == nil {
+		// ackedBy — W2-C находка 4: email подтвердившего, батчем (см.
+		// ackedByEmails). Как и остальное в этом блоке — ошибка не должна
+		// ронять экран, тогда строки просто не несут email.
+		ackedByIDs := make([]int64, 0, len(incs))
+		for _, inc := range incs {
+			if inc.AcknowledgedBy != nil {
+				ackedByIDs = append(ackedByIDs, *inc.AcknowledgedBy)
+			}
+		}
+		ackedBy, ackErr := h.ackedByEmails(ctx, ackedByIDs)
+		if ackErr != nil {
+			slog.Warn("slo detail: resolve acknowledged_by emails failed", "project_id", projectID, "slo_id", sloID, "error", ackErr)
+		}
+
 		vm.Incidents = make([]templates.SLOIncidentRow, 0, len(incs))
 		for _, inc := range incs {
+			var ackedByEmail string
+			if inc.AcknowledgedBy != nil {
+				ackedByEmail = ackedBy[*inc.AcknowledgedBy]
+			}
 			row := templates.SLOIncidentRow{
-				ID:             inc.ID,
-				Open:           inc.Status == "open",
-				Severity:       inc.Severity,
-				AcknowledgedAt: inc.AcknowledgedAt,
-				StartedAt:      inc.StartedAt,
-				ResolvedAt:     inc.ResolvedAt,
-				BurnRate:       inc.BurnRate,
+				ID:                  inc.ID,
+				Open:                inc.Status == "open",
+				Severity:            inc.Severity,
+				AcknowledgedAt:      inc.AcknowledgedAt,
+				AcknowledgedByEmail: ackedByEmail,
+				StartedAt:           inc.StartedAt,
+				ResolvedAt:          inc.ResolvedAt,
+				BurnRate:            inc.BurnRate,
 			}
 			if inc.BudgetRemaining != nil {
 				row.HasBudget = true

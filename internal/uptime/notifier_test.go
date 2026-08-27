@@ -520,3 +520,79 @@ func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 		t.Fatalf("ChannelSecret = %q, want расшифрованный %q (шифротекст в доставке = канал не работает никогда)", secret, botToken)
 	}
 }
+
+// TestOutboxNotifierNotifyStepFiltersAndReturnsEnqueued — W2-C находка 2:
+// NotifyStep перезагружает инцидент+монитор по ID (Scheduler знает только
+// incidentID), фильтрует каналы по ladder[level].ChannelIDs ПОСЛЕ
+// Deliverable-гейта (как остальные 5 нотифаеров) и возвращает РЕАЛЬНО
+// заенкенные каналы, не полный список каналов монитора.
+func TestOutboxNotifierNotifyStepFiltersAndReturnsEnqueued(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	usvc := uptime.NewService(pool)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	ch1, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook1",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel ch1: %v", err)
+	}
+	ch2, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook2",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel ch2: %v", err)
+	}
+	m := newNotifierMonitor(t, usvc, pid, []int64{ch1, ch2})
+
+	inc, created, err := usvc.OpenIncident(ctx, m.ID, "connection refused", []string{"eu"}, false)
+	if err != nil || !created {
+		t.Fatalf("OpenIncident: (%+v,%v,%v)", inc, created, err)
+	}
+
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
+
+	enqueued, err := n.NotifyStep(ctx, inc.ID, []int64{ch1}, 1)
+	if err != nil {
+		t.Fatalf("NotifyStep: %v", err)
+	}
+	if len(enqueued) != 1 || enqueued[0] != ch1 {
+		t.Fatalf("enqueued = %v, want [%d]", enqueued, ch1)
+	}
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1 (только ch1, ch2 отфильтрован лесенкой)", len(jobs))
+	}
+	if jobs[0].ChannelID != ch1 {
+		t.Fatalf("job.ChannelID = %d, want %d", jobs[0].ChannelID, ch1)
+	}
+	if jobs[0].Payload["kind"] != "down" || jobs[0].Payload["cause"] != "connection refused" {
+		t.Fatalf("job payload = %+v, want kind=down cause=connection refused (перезагружено из инцидента по ID)", jobs[0].Payload)
+	}
+}
+
+// TestOutboxNotifierNotifyStepUnknownIncidentErrors — NotifyStep обязан
+// вернуть ошибку, а не молча ничего не сделать, если incidentID не
+// резолвится (например, инцидент был удалён между постановкой шага в
+// планировщике и его исполнением).
+func TestOutboxNotifierNotifyStepUnknownIncidentErrors(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	usvc := uptime.NewService(pool)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
+	if _, err := n.NotifyStep(ctx, 999999999, nil, 0); err == nil {
+		t.Fatalf("NotifyStep(несуществующий incidentID) = nil error, want ошибку")
+	}
+}

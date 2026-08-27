@@ -116,7 +116,20 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r), seasonal, canOperate).Render(r.Context(), w)
+	// ackedBy — W2-C находка 4: email подтвердившего, батчем (см. ackedByEmails).
+	ackedByIDs := make([]int64, 0, len(items))
+	for _, reg := range items {
+		if reg.AcknowledgedBy != nil {
+			ackedByIDs = append(ackedByIDs, *reg.AcknowledgedBy)
+		}
+	}
+	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
+	_ = templates.RegressionsList(projectID, items, deployAttr, filterName, h.currentEmail(r), seasonal, canOperate, ackedBy).Render(r.Context(), w)
 }
 
 // regressionDeployAttribution для каждой регрессии из items возвращает текст

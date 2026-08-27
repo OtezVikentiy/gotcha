@@ -43,21 +43,50 @@ type IncidentRow struct {
 	MonitorName string
 }
 
-templ incidentListRow(row IncidentRow) {
+templ incidentListRow(row IncidentRow, projectID int64, canOperate bool, ackedBy map[int64]string) {
 	<tr>
 		<td>
 			<span class={ incidentStatusBadgeClass(row.Incident) }>{ i18n.T(ctx, incidentStatusTextKey(row.Incident)) }</span>
 			if row.Incident.SuppressedByDep {
 				<span class="badge">{ i18n.T(ctx, "incident.badge.suppressed_by_dep") }</span>
 			}
+			if row.Incident.DeliveryExhausted() {
+				<span class="badge badge-danger" title={ i18n.T(ctx, "incident.badge.delivery_failed.hint") }>{ i18n.T(ctx, "incident.badge.delivery_failed") }</span>
+			}
 		</td>
 		<td><a href={ templ.URL(monitorDetailPath(row.Incident.MonitorID)) }>{ row.MonitorName }</a></td>
+		<td>@incidentSeverityBadge(row.Incident.Severity)</td>
 		<td>@relativeTime(row.Incident.StartedAt)</td>
 		<td>{ incidentDurationText(ctx, row.Incident) }</td>
 		<td>{ row.Incident.Cause }</td>
 		<td>{ strings.Join(row.Incident.Regions, ", ") }</td>
 		<td>{ yesNo(ctx, row.Incident.InMaintenance) }</td>
+		<td>
+			if row.Incident.ResolvedAt == nil {
+				@ackControl(projectID, "uptime", row.Incident.ID, canOperate, row.Incident.AcknowledgedAt, ackedByEmailOf(row.Incident.AcknowledgedBy, ackedBy))
+			}
+		</td>
 	</tr>
+}
+
+// IncidentsListOpts — подтверждение (W2-C находка 2/4): canOperate/ackedBy
+// упакованы в структуру и переданы ОДНИМ вариадик-параметром, а не двумя
+// обычными, по той же причине, что и firstAckedByMap — IncidentsList зовут
+// напрямую тесты пакета templates, которые не мои (см. CLAUDE.md запрет
+// трогать internal/web/templates/*_test.go), и сдвигать позиции их
+// существующих аргументов нельзя. Опущенный opts эквивалентен
+// CanOperate=false/AckedBy=nil — ack-кнопка не рисуется, email не резолвится,
+// то же поведение, что было у страницы до этой находки.
+type IncidentsListOpts struct {
+	CanOperate bool
+	AckedBy    map[int64]string
+}
+
+func firstIncidentsListOpts(opts []IncidentsListOpts) IncidentsListOpts {
+	if len(opts) > 0 {
+		return opts[0]
+	}
+	return IncidentsListOpts{}
 }
 
 // IncidentsList — GET /projects/{id}/incidents: инциденты по всем мониторам
@@ -66,7 +95,8 @@ templ incidentListRow(row IncidentRow) {
 // MonitorsList. Breadcrumb "← Monitors" ведёт к родительскому списку (тот же
 // паттерн, что у MonitorDetail), боковая панель app-shell уже даёт прямую
 // ссылку на "Incidents" из любого раздела uptime — здесь не дублируется.
-templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, userEmail string) {
+templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, userEmail string, incOpts ...IncidentsListOpts) {
+	{{ opts := firstIncidentsListOpts(incOpts) }}
 	@layout(i18n.T(ctx, "nav.incidents"), userEmail) {
 		<div class="incidents">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
@@ -83,16 +113,18 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 								<tr>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.status") }</th>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.monitor") }</th>
+									<th scope="col">{ i18n.T(ctx, "incidents.table.severity") }</th>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.started") }</th>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.duration") }</th>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.cause") }</th>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.regions") }</th>
 									<th scope="col">{ i18n.T(ctx, "uptime.incidents.table.maintenance") }</th>
+									<th scope="col">{ i18n.T(ctx, "incidents.ack.button") }</th>
 								</tr>
 							</thead>
 							<tbody>
 								for _, row := range rows {
-									@incidentListRow(row)
+									@incidentListRow(row, projectID, opts.CanOperate, opts.AckedBy)
 								}
 							</tbody>
 						</table>

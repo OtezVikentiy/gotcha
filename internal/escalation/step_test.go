@@ -244,3 +244,86 @@ func TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps(t *testing.T) {
 		t.Errorf("incident_escalations rows for c2 = %d, want 0 (не заенкенился — не должен быть залогирован)", count)
 	}
 }
+
+// TestSendStepIfDueLogFailureBlocksBump — W2-C находка 3: провал LogStep для
+// реально заенкененного канала обязан блокировать bump — иначе
+// escalation_level обгоняет incident_escalations (дыра в логе, которую
+// раньше молча проглатывал slog.Error внутри цикла). Провал LogStep
+// симулируется отменённым контекстом: notifyStep (плоская функция без ctx,
+// как в реальной сигнатуре) успешно "отправляет", а pool.Exec внутри
+// LogStep получает уже отменённый ctx и падает.
+func TestSendStepIfDueLogFailureBlocksBump(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	ladder := escalation.Ladder{{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}}}
+	const incidentID = int64(9001)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var bumpCalled bool
+	sent, err := escalation.SendStepIfDue(cancelledCtx, ladder, "metric", pool, incidentID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) {
+			return chs, nil // notifyStep "успешен" — канал реально заенкенился
+		},
+		func(id int64, from int) (bool, error) {
+			bumpCalled = true
+			return true, nil
+		})
+	if err == nil {
+		t.Fatal("SendStepIfDue err = nil, want ошибку записи лога (отменённый ctx)")
+	}
+	if sent {
+		t.Error("sent = true, want false: лог не записан полностью, bump не должен применяться")
+	}
+	if bumpCalled {
+		t.Error("bump вызван, несмотря на провал LogStep — находка 3: дыра между уровнем и логом")
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND channel_id=$2 AND step=0",
+		incidentID, c1).Scan(&count); err != nil {
+		t.Fatalf("select escalation log: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("incident_escalations rows = %d, want 0: LogStep должен был провалиться", count)
+	}
+}
+
+// TestLogStepIdempotentOnRetry — W2-C находка 3 (миграция 0085): повторный
+// LogStep той же (source, incident, channel, step) — как это делает
+// SendStepIfDue на следующем тике после краха между логом и бампом — не
+// падает ошибкой уникальности и не создаёт вторую строку.
+func TestLogStepIdempotentOnRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+	const incidentID = int64(9002)
+
+	if err := escalation.LogStep(ctx, pool, "metric", incidentID, c1, 0); err != nil {
+		t.Fatalf("LogStep (1st): %v", err)
+	}
+	if err := escalation.LogStep(ctx, pool, "metric", incidentID, c1, 0); err != nil {
+		t.Fatalf("LogStep (2nd, retry) = %v, want nil (idempotent)", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND channel_id=$2 AND step=0",
+		incidentID, c1).Scan(&count); err != nil {
+		t.Fatalf("select escalation log: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("incident_escalations rows = %d, want 1 (повтор — no-op, не дубль)", count)
+	}
+}

@@ -597,3 +597,85 @@ func TestWebIncidentsList(t *testing.T) {
 		t.Fatalf("GET %s (outsider) status = %d, want 404", path, resp.StatusCode)
 	}
 }
+
+// TestWebIncidentsListShowsDeliveryFailedBadge — ревью аудита 2026-08-27
+// (усиление находки 1): исчерпавший retry-бюджет (NotifyOpenFailed &&
+// NotifyOpenAttempts >= maxNotifyOpenAttempts) инцидент обязан показывать
+// явный бейдж — иначе он неотличим от обычного открытого неподтверждённого
+// на экране, а ровно этот случай (канал доставки мёртв по-настоящему) и
+// есть тот, ради которого заводилась находка: человек об аварии не узнаёт.
+// Инцидент с попытками ниже границы бейдж НЕ показывает — ретрай ещё идёт,
+// showing тревогу раньше срока хуже, чем не показать вовсе.
+func TestWebIncidentsListShowsDeliveryFailedBadge(t *testing.T) {
+	s := newMonitorFormStack(t)
+	proj, ownerCookie, _ := ownerAndMember(t, s, "monincidentdlv")
+
+	exhausted := baseMonitor(proj.ID, "Dead Webhook API")
+	exhausted.Config = monHTTPConfig(t, "https://example.com/health")
+	createdExhausted, err := s.uptime.Create(context.Background(), exhausted, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create monitor (exhausted): %v", err)
+	}
+	incExhausted, _, err := s.uptime.OpenIncident(context.Background(), createdExhausted.ID, "connection refused", []string{"local"}, false)
+	if err != nil {
+		t.Fatalf("open incident (exhausted): %v", err)
+	}
+	if _, err := s.pool.Exec(context.Background(),
+		"UPDATE incidents SET notify_open_failed = true, notify_open_attempts = 5 WHERE id = $1", incExhausted.ID); err != nil {
+		t.Fatalf("mark delivery exhausted: %v", err)
+	}
+
+	retrying := baseMonitor(proj.ID, "Retrying API")
+	retrying.Config = monHTTPConfig(t, "https://example.com/health2")
+	createdRetrying, err := s.uptime.Create(context.Background(), retrying, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create monitor (retrying): %v", err)
+	}
+	incRetrying, _, err := s.uptime.OpenIncident(context.Background(), createdRetrying.ID, "connection refused", []string{"local"}, false)
+	if err != nil {
+		t.Fatalf("open incident (retrying): %v", err)
+	}
+	if _, err := s.pool.Exec(context.Background(),
+		"UPDATE incidents SET notify_open_failed = true, notify_open_attempts = 2 WHERE id = $1", incRetrying.ID); err != nil {
+		t.Fatalf("mark delivery retrying: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/incidents"
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+
+	badgeText := "уведомление не доставлено"
+	deadRow := tableRowContaining(t, string(body), "Dead Webhook API")
+	retryRow := tableRowContaining(t, string(body), "Retrying API")
+	if !strings.Contains(deadRow, badgeText) {
+		t.Fatalf("исчерпавший retry-бюджет инцидент не показывает бейдж %q в своей строке: %s", badgeText, deadRow)
+	}
+	if strings.Contains(retryRow, badgeText) {
+		t.Fatalf("инцидент, который ещё ретраит (attempts=2 < 5), не должен показывать бейдж %q: %s", badgeText, retryRow)
+	}
+}
+
+// tableRowContaining возвращает содержимое одного <tr>...</tr>, несущего
+// needle — используется, чтобы проверять бейджи/текст СТРОГО в границах
+// своей строки таблицы, а не где-то ещё на странице (соседняя строка,
+// dry-run-блок и т.п.).
+func tableRowContaining(t *testing.T, html, needle string) string {
+	t.Helper()
+	idx := strings.Index(html, needle)
+	if idx == -1 {
+		t.Fatalf("html не содержит %q", needle)
+	}
+	start := strings.LastIndex(html[:idx], "<tr>")
+	if start == -1 {
+		t.Fatalf("не найден открывающий <tr> перед %q", needle)
+	}
+	end := strings.Index(html[idx:], "</tr>")
+	if end == -1 {
+		t.Fatalf("не найден закрывающий </tr> после %q", needle)
+	}
+	return html[start : idx+end+len("</tr>")]
+}

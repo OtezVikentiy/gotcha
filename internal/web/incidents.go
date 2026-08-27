@@ -47,6 +47,15 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CanOperate — read-only, тем же приёмом, что HostDetail/incidentFeed:
+	// подтверждение (W2-C находка 2) доступно оператору, просмотр — любому с
+	// доступом к проекту, отказ не должен ронять всю страницу 404.
+	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
 	page := parsePage(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -70,10 +79,25 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 		names[m.ID] = m.Name
 	}
 
+	// ackedBy — W2-C находка 4: email подтвердившего, батчем на всю
+	// страницу (см. ackedByEmails).
+	ackedByIDs := make([]int64, 0, len(incidents))
+	for _, inc := range incidents {
+		if inc.AcknowledgedBy != nil {
+			ackedByIDs = append(ackedByIDs, *inc.AcknowledgedBy)
+		}
+	}
+	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
 	rows := make([]templates.IncidentRow, len(incidents))
 	for i, inc := range incidents {
 		rows[i] = templates.IncidentRow{Incident: inc, MonitorName: names[inc.MonitorID]}
 	}
 
-	_ = templates.IncidentsList(projectID, rows, page, total, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.IncidentsList(projectID, rows, page, total, h.currentEmail(r),
+		templates.IncidentsListOpts{CanOperate: canOperate, AckedBy: ackedBy}).Render(r.Context(), w)
 }

@@ -1,8 +1,9 @@
-// incidentack.templ — общие для всех 5 источников инцидентов (host/metric/
-// trace/profile/slo, B4 T10) компоненты: бейдж severity и элемент
-// подтверждения (кнопка «Подтвердить» / статус «Подтверждён {время}»).
-// Один хендлер incidentAck (web/incidents_ack.go) обслуживает все источники —
-// разметка формы здесь тоже одна, различается только source в пути.
+// incidentack.templ — общие для всех 6 источников инцидентов (host/metric/
+// trace/profile/slo/uptime, B4 T10 + W2-C находка 2) компоненты: бейдж
+// severity и элемент подтверждения (кнопка «Подтвердить» / статус
+// «Подтверждён {время}[ пользователем {email}]»). Один хендлер incidentAck
+// (web/incidents_ack.go) обслуживает все источники — разметка формы здесь
+// тоже одна, различается только source в пути.
 package templates
 
 import (
@@ -13,11 +14,41 @@ import (
 )
 
 // incidentAckPath — POST-адрес подтверждения инцидента источника source
-// (host/metric/trace/profile/slo), должен совпадать с роутом web.go
+// (host/metric/trace/profile/slo/uptime), должен совпадать с роутом web.go
 // (POST /projects/{id}/incidents/{source}/{incident_id}/ack).
 func incidentAckPath(projectID int64, source string, incidentID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) +
 		"/incidents/" + source + "/" + strconv.FormatInt(incidentID, 10) + "/ack"
+}
+
+// firstAckedByMap — читает единственный элемент вариадика ackedBy
+// ...map[int64]string (W2-C находка 4). Вариадик, а не обычный параметр:
+// несколько уже опубликованных шаблонных функций (ProfileRegressionsList,
+// RegressionsList, MetricAlerts, IncidentsList) зовутся напрямую из тестов
+// пакета templates, которые не мои (см. CLAUDE.md запрет трогать
+// internal/web/templates/*_test.go) — добавление обычного обязательного
+// параметра сдвинуло бы позиции существующих аргументов и уронило бы их
+// компиляцию. Вариадик в конце сигнатуры принимает 0 аргументов от старых
+// вызовов (map остаётся nil — тот же эффект, что раньше, ack-имя просто не
+// резолвится) и ровно 1 — от новых.
+func firstAckedByMap(opts []map[int64]string) map[int64]string {
+	if len(opts) > 0 {
+		return opts[0]
+	}
+	return nil
+}
+
+// ackedByEmailOf — читает email подтвердившего из батч-карты, собранной
+// вызывающей стороной (web.Handler.ackedByEmails, W2-C находка 4). ackedBy
+// nil (страница ещё не резолвит имена — переходный случай, если он вообще
+// нужен) или acknowledgedBy nil (инцидент не подтверждён, или подтвердивший
+// пользователь с тех пор удалён — acknowledged_by ON DELETE SET NULL) —
+// пустая строка, ackControl рисует только время, как раньше.
+func ackedByEmailOf(acknowledgedBy *int64, ackedBy map[int64]string) string {
+	if acknowledgedBy == nil || ackedBy == nil {
+		return ""
+	}
+	return ackedBy[*acknowledgedBy]
 }
 
 // incidentSeverityBadgeClass — critical=danger, warning=warn (токены темы, брифинг
@@ -49,18 +80,26 @@ templ incidentSeverityBadge(severity string) {
 
 // ackControl — кнопка «Подтвердить» (POST на incidentAckPath, sameOrigin через
 // обычную форму) для оператора, пока инцидент не подтверждён; статус
-// «Подтверждён {время}», когда acknowledgedAt уже заполнено. Без canOperate и
-// без acknowledgedAt — ничего не рисует (не-оператор на экране, открытом
-// всем участникам проекта — hosts/regressions — просто не видит действия).
+// «Подтверждён {время}[ пользователем {email}]», когда acknowledgedAt уже
+// заполнено. Без canOperate и без acknowledgedAt — ничего не рисует
+// (не-оператор на экране, открытом всем участникам проекта — hosts/
+// regressions — просто не видит действия).
 //
-// Email подтвердившего (acknowledged_by) не резолвится здесь: отдельный
-// запрос к users на каждую строку списка инцидентов — N+1, которого эти
-// экраны избегают везде (см. hostRecentIncidents/regressionsList). Время
-// подтверждения — достаточный сигнал (см. brief T10 §2, "email опционально").
-templ ackControl(projectID int64, source string, incidentID int64, canOperate bool, acknowledgedAt *time.Time) {
+// ackedByEmail — W2-C находка 4: email подтвердившего, резолвится ОДНИМ
+// батч-запросом на всю страницу вызывающей стороной (auth.Service.UserEmails
+// по собранным acknowledged_by, тот же приём, что уже применяет
+// incidentfeed.go:102 для состава групп) — НЕ отдельным запросом на строку,
+// того N+1, которого раньше избегали ЦЕНОЙ полного отсутствия email в UI.
+// Пустая строка — не ошибка: пользователь мог быть удалён (acknowledged_by
+// зануляется ON DELETE SET NULL) или вызывающая сторона ещё не резолвит имя
+// для этого экрана — тогда рисуется только время, как раньше.
+templ ackControl(projectID int64, source string, incidentID int64, canOperate bool, acknowledgedAt *time.Time, ackedByEmail string) {
 	if acknowledgedAt != nil {
 		<span class="hint incident-ack-status">
 			{ i18n.T(ctx, "incidents.ack.confirmed") } @relativeTime(*acknowledgedAt)
+			if ackedByEmail != "" {
+				{ " " }{ i18n.Tf(ctx, "incidents.ack.confirmed_by", "email", ackedByEmail) }
+			}
 		</span>
 	} else if canOperate {
 		<form method="post" action={ templ.URL(incidentAckPath(projectID, source, incidentID)) } class="inline incident-ack-form">

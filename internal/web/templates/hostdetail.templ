@@ -36,6 +36,10 @@ type HostDetailVM struct {
 	RecentIncidents []host.Incident
 	Charts          []HostChartVM
 	CanOperate      bool
+	// AckedBy — email подтвердившего, батчем по OpenIncidents (W2-C находка
+	// 4, см. web.Handler.ackedByEmails). Ключ — id пользователя
+	// (host.Incident.AcknowledgedBy).
+	AckedBy map[int64]string
 	// Uptime — гуманизированное «сколько хост живёт» (humanize.Duration),
 	// последнее значение system.uptime за hostsListWindow. Пустая строка —
 	// хост ещё не отчитался этой метрикой (агент/коллектор не настроены или
@@ -355,7 +359,7 @@ templ hostStatusText(kind string, problemKinds []string) {
 // выглядел как «0.93» при «93%» в списке строкой выше, а тишина — как «3.6K»
 // (секунды без единицы). Таблица «вид → формат» одна на карточку и на текст
 // уведомления, см. докблок host.ValueLabel.
-templ hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool) {
+templ hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool, ackedBy map[int64]string) {
 	<li class="host-incident-open">
 		<span class={ hostStatusBadgeClass("problem") }>{ i18n.T(ctx, "hosts.kind."+inc.Kind) }</span>
 		@incidentSeverityBadge(inc.Severity)
@@ -367,7 +371,7 @@ templ hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool) {
 			<span class="hint">({ inc.Detail })</span>
 		}
 		@relativeTime(inc.StartedAt)
-		@ackControl(projectID, "host", inc.ID, canOperate, inc.AcknowledgedAt)
+		@ackControl(projectID, "host", inc.ID, canOperate, inc.AcknowledgedAt, ackedByEmailOf(inc.AcknowledgedBy, ackedBy))
 	</li>
 }
 
@@ -454,7 +458,7 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 				} else {
 					<ul class="host-incident-list">
 						for _, inc := range vm.OpenIncidents {
-							@hostOpenIncidentRow(inc, vm.ProjectID, vm.CanOperate)
+							@hostOpenIncidentRow(inc, vm.ProjectID, vm.CanOperate, vm.AckedBy)
 						}
 					</ul>
 				}

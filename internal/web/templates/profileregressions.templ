@@ -68,7 +68,8 @@ templ profileRegStatusTab(projectID int64, value, label, active string) {
 
 // ProfileRegressionsList — GET /projects/{id}/profile-regressions: таблица
 // регрессий self-CPU функций с фильтром по статусу. Только чтение, без JS.
-templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string, canOperate bool) {
+templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string, canOperate bool, ackedByOpt ...map[int64]string) {
+	{{ ackedBy := firstAckedByMap(ackedByOpt) }}
 	@layout(i18n.T(ctx, "profiles.regressions.title"), userEmail) {
 		<div class="profile-regressions">
 			@breadcrumbBackTo(templ.URL(profilesBasePath(projectID)), i18n.T(ctx, "nav.profiles"))
@@ -111,7 +112,7 @@ templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, 
 									<td class="num">{ profileRegDuration(ctx, reg) }</td>
 									<td>
 										if reg.Status == "open" {
-											@ackControl(projectID, "profile", reg.ID, canOperate, reg.AcknowledgedAt)
+											@ackControl(projectID, "profile", reg.ID, canOperate, reg.AcknowledgedAt, ackedByEmailOf(reg.AcknowledgedBy, ackedBy))
 										}
 									</td>
 								</tr>

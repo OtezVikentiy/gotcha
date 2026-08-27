@@ -430,11 +430,14 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 // TestUptimeResolveGatedByNotifiedOpen: resolveIncident must not send "up"
 // for an incident whose "down" never went out (NotifiedOpen=false) — sending
 // a recovery notification for an outage nobody was told about is confusing.
-// The false case here mimics both real causes of NotifiedOpen=false left
-// open by openIncident: a suppressed_by_dep incident (T7, not this task) and
-// a Notify failure on open (exercised directly, same as
-// TestNotifyErrorDoesNotBreakDetection). Once NotifiedOpen=true, "up" must
-// still be sent as before (control case).
+// The false case here drives the retry introduced by W2-C находка 1 all the
+// way to exhaustion (Notify errors on every attempt, including every retry
+// settleHeldIncident makes on the intervening "still down" ticks) so
+// NotifiedOpen genuinely never becomes true — see
+// TestUptimeNotifyOpenFailedRetriesUntilDelivered below for the case where a
+// retry succeeds (there "up" correctly DOES go out, because "down" ends up
+// delivered). Once NotifiedOpen=true, "up" must still be sent as before
+// (control case).
 func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -454,9 +457,9 @@ func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 			t.Fatalf("NotifiedOpen = true, want false (open notify failed)")
 		}
 
-		// Clear the error so a real Notify call, if the gate were missing,
-		// would succeed and be observable as an "up" event below.
-		notifier.err = nil
+		// Notify keeps failing (err stays set) — the "still down" tick below
+		// retries (W2-C находка 1) and fails again, so NotifiedOpen genuinely
+		// never becomes true, same as before the retry existed.
 		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
 		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
 		assertNoOpenIncident(t, ctx, svc, mon.ID)
@@ -607,6 +610,15 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 	}
 	if len(notifier.kindEvents("down")) != 0 {
 		t.Fatalf("down event sent despite dependency suppression: %+v", notifier.Events())
+	}
+
+	// W2-C находка 1 regression: suppressed_by_dep is "consciously not
+	// notified" (not a delivery failure) — recovery must stay silent too,
+	// the same NotifiedOpen gate resolveIncident already applies.
+	applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
+	assertNoOpenIncident(t, ctx, svc, mon.ID)
+	if got := notifier.kindEvents("up"); len(got) != 0 {
+		t.Fatalf("up events = %d, want 0: down was suppressed by dependency, never delivered", len(got))
 	}
 }
 

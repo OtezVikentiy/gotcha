@@ -231,3 +231,102 @@ func TestWebEscalationsNilService(t *testing.T) {
 		t.Fatalf("nil EscalationPolicy status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// TestWebEscalationsUndeliverableChannelSurvivesResave — W2-C находка 5:
+// канал, сохранённый в ступени, ломается ПОСЛЕ настройки (здесь — оператор
+// его выключает; у сломанного секрета Deliverable() тот же false) — форма
+// обязана продолжать его показывать, отмеченным и с пометкой причины, а
+// повторное «Сохранить» (форма отправляется буквально как отрендерена,
+// ничего руками не трогаем) не должно тихо потерять его из лесенки.
+func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
+	s := newStack(t)
+	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "esc-undeliv-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "esc-undeliv-co", "Esc Undeliv Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "esc-undeliv-proj", "Esc Undeliv Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/escalations"
+
+	chID, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/flaky-hook",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	form := url.Values{
+		"severity":       {"critical"},
+		"step0_delay":    {"0"},
+		"step0_channels": {strconv.FormatInt(chID, 10)},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("save initial ladder status = %d, want 303", resp.StatusCode)
+	}
+
+	// Канал ломается ПОСЛЕ настройки ступени: оператор его выключил (тот же
+	// эффект недоставляемости, что и у сломанного секрета — Deliverable()
+	// смотрит на Enabled ИЛИ SecretBroken).
+	if err := s.h.Alerts.UpdateChannel(context.Background(), alert.Channel{
+		ID: chID, ProjectID: proj.ID, Kind: alert.ChannelWebhook, Target: "https://example.com/flaky-hook", Enabled: false,
+	}); err != nil {
+		t.Fatalf("UpdateChannel (disable): %v", err)
+	}
+
+	resp = getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET after disabling channel status = %d, want 200", resp.StatusCode)
+	}
+	html := string(body)
+	chVal := `value="` + strconv.FormatInt(chID, 10) + `"`
+	if !strings.Contains(html, chVal) {
+		t.Fatalf("недоставляемый, но выбранный канал пропал из формы: %s", html)
+	}
+	// Чекбокс обязан остаться АКТИВНЫМ (не disabled) — иначе браузер не
+	// пошлёт его value при отправке формы, и следующее "Сохранить" потеряет
+	// канал так же тихо, как до фикса.
+	checkboxStart := strings.Index(html, `<input type="checkbox" name="step0_channels" `+chVal)
+	if checkboxStart == -1 {
+		t.Fatalf("чекбокс канала не найден в ожидаемой форме: %s", html)
+	}
+	checkboxEnd := strings.Index(html[checkboxStart:], ">")
+	if checkboxEnd == -1 {
+		t.Fatalf("не удалось выделить тег чекбокса: %s", html)
+	}
+	checkboxTag := html[checkboxStart : checkboxStart+checkboxEnd]
+	if strings.Contains(checkboxTag, "disabled") {
+		t.Fatalf("чекбокс недоставляемого канала disabled — его value не уйдёт при отправке формы: %s", checkboxTag)
+	}
+	if !strings.Contains(checkboxTag, "checked") {
+		t.Fatalf("чекбокс недоставляемого, но сохранённого канала не отмечен: %s", checkboxTag)
+	}
+
+	// Повторное "Сохранить" — форма отправляется буквально как отрендерена
+	// (тот же набор полей, что и в исходном form выше): канал должен
+	// пережить пересохранение, а не исчезнуть из лесенки.
+	resp = postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("re-save ladder status = %d, want 303", resp.StatusCode)
+	}
+	ladder, err := s.h.EscalationPolicy.Ladder(context.Background(), proj.ID, escalation.SeverityCritical)
+	if err != nil {
+		t.Fatalf("Ladder: %v", err)
+	}
+	if len(ladder) != 1 || len(ladder[0].ChannelIDs) != 1 || ladder[0].ChannelIDs[0] != chID {
+		t.Fatalf("Ladder(critical) после пересохранения = %+v, канал %d потерян", ladder, chID)
+	}
+}
