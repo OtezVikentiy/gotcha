@@ -98,15 +98,23 @@ var flashKeyEntryRe = regexp.MustCompile(`"([^"]+)":\s*true`)
 // TestEveryKeyInCodeExistsInCatalog ловит забытый i18n-ключ раньше, чем его
 // увидит посетитель.
 //
-// Ключ проверяется на перевод в messages ИЛИ plurals той же локали, а не
-// только в messages: flashView (internal/web/templates/flash.templ) сама
-// выбирает каталог по числу — i18n.Tn(ctx, f.Key, f.N) при N>0, иначе
-// i18n.T(ctx, f.Key), — и какая ветка сработает в проде, решает рантайм-
-// значение n, переданное в flashOK/flashWarn (например int(res.Total())),
-// а не то, что видно на месте статического вызова. Проверено по факту:
-// flash.subject_purged и вся тройка flash.issues_* переведены ТОЛЬКО как
-// формы множественного числа (в messages их нет вовсе) — требование "быть
-// обязательно в messages" завалило бы тест на чистом дереве.
+// Ключ обязан иметь перевод в messages, а не только в plurals: flashView
+// (internal/web/templates/flash.templ) сама выбирает каталог по числу —
+// i18n.Tn(ctx, f.Key, f.N) при N>0, иначе i18n.T(ctx, f.Key), — и какая
+// ветка сработает в проде, решает рантайм-значение n, переданное в
+// flashOK/flashWarn (например int(res.Total()) в issuesBulk, где n — реально
+// изменённые строки, а не размер выбора), а не то, что видно на месте
+// статического вызова. N==0 — достижимое состояние (повторное действие над
+// уже находящимися в целевом статусе записями: «удалено 0 записей»,
+// «отмечено решённой 0 проблем»), и на нём flashView зовёт i18n.T, которая
+// на ключе без messages вернёт сам ключ — пользователь увидел бы техническую
+// строку вида "flash.subject_purged" вместо сообщения. Тест раньше требовал
+// перевод в messages ИЛИ plurals и потому не ловил именно эту дыру:
+// flash.subject_purged и вся тройка flash.issues_* были переведены ТОЛЬКО
+// как формы множественного числа — эта дыра и была найдена волной 2 полного
+// аудита (кластер 8/10 DEDUP-P1.md) и закрыта переводом всех четырёх ключей
+// в messages обеих локалей (plurals у них остаются — i18n.Tn для N>0 по-
+// прежнему нужен).
 func TestFlashCallKeysAreWhitelistedAndTranslated(t *testing.T) {
 	tree := Load(t)
 	whitelist := flashWhitelist(t, tree)
@@ -179,11 +187,12 @@ func TestFlashCallKeysAreWhitelistedAndTranslated(t *testing.T) {
 }
 
 // checkFlashKey — общая проверка одного ключа flash-сообщения: обязан быть в
-// белом списке flashKeys и иметь перевод (в messages ИЛИ plurals, см.
-// докблок TestFlashCallKeysAreWhitelistedAndTranslated) в обеих локалях.
-// Используется и для ключей, найденных по месту вызова (со строкой), и для
-// ключей, прочитанных из динамической карты (line=0 — своей строки в файле у
-// значения карты нет, сообщение об ошибке называет карту, а не строку).
+// белом списке flashKeys и иметь перевод в messages (см. докблок
+// TestFlashCallKeysAreWhitelistedAndTranslated про то, почему именно
+// messages, а не messages-ИЛИ-plurals) в обеих локалях. Используется и для
+// ключей, найденных по месту вызова (со строкой), и для ключей, прочитанных
+// из динамической карты (line=0 — своей строки в файле у значения карты
+// нет, сообщение об ошибке называет карту, а не строку).
 func checkFlashKey(t *testing.T, tree *Tree, whitelist map[string]bool, path string, line int, key string) {
 	t.Helper()
 	if !whitelist[key] {
@@ -199,14 +208,11 @@ func checkFlashKey(t *testing.T, tree *Tree, whitelist map[string]bool, path str
 		if _, ok := tree.Catalogs[lang][key]; ok {
 			continue
 		}
-		if _, ok := tree.Plurals[lang][key]; ok {
-			continue
-		}
 		if line > 0 {
-			t.Errorf("%s:%d: [%s] ключ %q есть в flashKeys, но перевода нет ни в messages, ни в plurals каталога",
+			t.Errorf("%s:%d: [%s] ключ %q есть в flashKeys, но перевода нет в messages каталога — на N==0 (повторное действие) flashView зовёт i18n.T и покажет сырой ключ",
 				path, line, lang, key)
 		} else {
-			t.Errorf("%s: [%s] ключ %q есть в flashKeys, но перевода нет ни в messages, ни в plurals каталога",
+			t.Errorf("%s: [%s] ключ %q есть в flashKeys, но перевода нет в messages каталога — на N==0 (повторное действие) flashView зовёт i18n.T и покажет сырой ключ",
 				path, lang, key)
 		}
 	}

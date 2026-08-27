@@ -14,15 +14,21 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/docs"
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
+	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
 // TestMain уменьшает внутренний буфер templ до 1 байта на весь прогон пакета.
@@ -82,6 +88,8 @@ func (f *failAfter) Write(p []byte) (int, error) {
 func pageComponents() map[string]templ.Component {
 	now := time.Now()
 	stubC := templ.Raw("<svg data-c></svg>")
+	cpu04 := 0.4
+	recipe := recipes.All()[0]
 
 	issueRows := []IssueRow{
 		{Issue: issue.Issue{ID: 1, Title: "boom", Level: "error", Status: "unresolved", TimesSeen: 9, LastSeen: now, AssigneeEmail: "a@b.c"}, Sparkline: stubC},
@@ -102,6 +110,10 @@ func pageComponents() map[string]templ.Component {
 	}
 	members := []org.Member{{UserID: 1, Email: "o@x.io", Role: org.RoleOwner}, {UserID: 2, Email: "m@x.io", Role: org.RoleMember}}
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme", EventQuota: 1000}
+	group := incidentgroup.GroupRow{
+		Group:    incidentgroup.Group{ID: 1, ProjectID: 7, RootSource: "host", RootNodeKind: "host", StartedAt: now},
+		RootName: "web-1",
+	}
 
 	m := map[string]templ.Component{
 		"IssuesList":           IssuesList(7, issueRows, IssuesFilter{Status: "unresolved"}, 1, 2, "u@e.com", []string{"production"}, &QuotaBanner{Text: "лимит", Href: "/x"}, GettingStartedVM{ProjectID: 7, Done: 2, Step2Done: true}, true, true),
@@ -116,7 +128,7 @@ func pageComponents() map[string]templ.Component {
 		"OrgSettings":          OrgSettings(o, members, 1, []QuotaVM{{Kind: "События", Field: "event_quota", Usage: 50, Limit: 1000}, {Kind: "Транзакции", Field: "transaction_quota", Usage: 0, Limit: 0}}, true, "err", "https://g/invite/t", SSOSettings{IsOwner: true, CanConfigure: true, Configured: true, Issuer: "https://idp", ClientID: "c", Domain: "x.io", DefaultRole: "member", Enforced: true, RedirectURI: "https://g/sso"}, "o@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil, nil),
 		"Teams":                Teams(o, []TeamView{{Team: org.Team{ID: 100, Slug: "core", Name: "Core"}, Members: []org.Member{{UserID: 1, Email: "o@x.io", Role: org.RoleOwner}}, Projects: []org.Project{{ID: 10, Name: "web"}}}}, members, []org.Project{{ID: 10, Name: "web"}, {ID: 20, Name: "api"}}, nil, "err", "u@e.com"),
 		"ProfilesList":         ProfilesList(7, []profile.ServiceInfo{{Service: "web", Type: "cpu", Transaction: "GET /", Weight: 2_000_000_000, Unit: "nanoseconds", Samples: 100, Environments: []string{"production"}}, {Service: "api", Type: "alloc_space", Transaction: "POST /", Weight: 5 * 1024 * 1024, Unit: "bytes", Samples: 50}}, TimeRangeVM{Key: "24h"}, "production", "u@e.com"),
-		"ProfileRegList":       ProfileRegressionsList(7, []profile.Regression{{ID: 1, Service: "web", ProfileType: "cpu", Function: "hot()", Status: "open", BaselineShare: 0.1, PeakShare: 0.3, StartedAt: now}, {ID: 2, Service: "api", ProfileType: "heap", Function: "leak()", Status: "resolved", StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, "open", "u@e.com", true),
+		"ProfileRegList":       ProfileRegressionsList(7, []profile.Regression{{ID: 1, Service: "web", ProfileType: "cpu", Function: "hot()", Status: "open", BaselineShare: 0.1, PeakShare: 0.3, StartedAt: now}, {ID: 2, Service: "api", ProfileType: "heap", Function: "leak()", Status: "resolved", StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, "open", "u@e.com", true, map[int64]string{1: "u@e.com"}),
 		"MetricsList":          MetricsList(7, []metric.MetricInfo{{Name: "http.rps", Type: "gauge", Unit: "1/s"}, {Name: "q.depth", Type: "histogram"}}, "production", "u@e.com", false, 2),
 		"MetricDetail":         MetricDetail(MetricDetailVM{ProjectID: 7, Info: metric.MetricInfo{Name: "http.rps", Type: "histogram", Unit: "ms"}, Range: TimeRangeVM{Key: "24h"}, Agg: "avg", Environment: "production", Environments: []string{"production", "staging"}, Labels: map[string][]string{"route": {"/a", "/b"}}, LabelKey: "route", LabelValue: "/a", Chart: stubC, Percentiles: true}, "u@e.com"),
 		"MetricAlerts":         MetricAlerts(7, []metric.Rule{{ID: 1, MetricName: "http.rps", Aggregation: "avg", Comparator: "gt", Threshold: 100, WindowSeconds: 300, Enabled: true}, {ID: 2, MetricName: "err", Aggregation: "max", Comparator: "lt", Threshold: 0.5, WindowSeconds: 60, Environment: "production", LabelKey: "route", LabelValue: "/a"}}, []metric.Incident{{ID: 1, RuleID: 1, Status: "open", PeakValue: 150, CurrentValue: 120, StartedAt: now}, {ID: 2, RuleID: 2, Status: "resolved", StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, []string{"http.rps", "http.server.duration"}, FormState{"metric_name": "http.rps"}, "err", "u@e.com"),
@@ -124,7 +136,7 @@ func pageComponents() map[string]templ.Component {
 		"PerfIssuesList":       PerfIssuesList(7, []trace.PerfIssue{{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Culprit: "db", Status: "unresolved", Count: 12, FirstSeen: now, LastSeen: now, SampleTraceID: "t1"}, {ID: 2, Kind: trace.KindSlowDBQuery, Title: "slow", Status: "resolved", SampleTraceID: "t2"}}, "unresolved", "u@e.com"),
 		"PerfIssueDetail":      PerfIssueDetail(PerfIssueDetailData{Issue: trace.PerfIssue{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Culprit: "db", Status: "unresolved", Count: 12, SampleTraceID: "t1"}, Evidence: PerfEvidence{Count: 12, TotalUS: 1000, MaxUS: 300, ParentOp: "http", SequentialPct: 80, MaxConcurrency: 1, URLs: []string{"/a"}, HasTotal: true, HasMax: true, HasSequential: true}, Query: "SELECT * FROM line_items WHERE order_id = $1", QueryOp: "db.sql.query", SpanDurationUS: 6000, DBSystem: "postgresql", Code: &PerfCodeLoc{File: "app/reports/orders.py", Line: "88", Function: "build_report_rows"}}, "u@e.com"),
 		"IncidentsList":        IncidentsList(7, []IncidentRow{{Incident: uptime.Incident{ID: 1, StartedAt: now.Add(-time.Hour), Cause: "t"}, MonitorName: "web"}, {Incident: uptime.Incident{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: &now, Cause: "5xx"}, MonitorName: "api"}}, 2, 120, "u@e.com"),
-		"RegressionsList":      RegressionsList(7, []trace.Regression{{ID: 1, TargetKind: "endpoint_p95", Target: "GET /", Metric: "duration", Status: "open", BaselineValue: 100, PeakValue: 300, StartedAt: now}, {ID: 2, TargetKind: "webvital_p75", Target: "/home", Metric: "lcp", Status: "resolved", BaselineValue: 2000, PeakValue: 4000, StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, []string{"после деплоя v1.2.3 (5 минут назад)", ""}, "open", "u@e.com", false, true),
+		"RegressionsList":      RegressionsList(7, []trace.Regression{{ID: 1, TargetKind: "endpoint_p95", Target: "GET /", Metric: "duration", Status: "open", BaselineValue: 100, PeakValue: 300, StartedAt: now}, {ID: 2, TargetKind: "webvital_p75", Target: "/home", Metric: "lcp", Status: "resolved", BaselineValue: 2000, PeakValue: 4000, StartedAt: now.Add(-2 * time.Hour), ResolvedAt: &now}}, []string{"после деплоя v1.2.3 (5 минут назад)", ""}, "open", "u@e.com", false, true, map[int64]string{1: "u@e.com"}),
 		"Probes":               Probes(o, []ProbeRow{{Probe: uptime.Probe{ID: 1, Region: "eu", Name: "eu-1", LastSeenAt: &now}, Status: "online"}, {Probe: uptime.Probe{ID: 2, Region: "us", Name: "us-1"}, Status: "offline"}}, "tok", "run", "", "u@e.com"),
 		"ProjectSettings":      ProjectSettings(org.Project{ID: 7, OrgID: 1, Slug: "web", Name: "Web", Platform: "go"}, []org.Key{{ID: 1, PublicKey: "pk", Revoked: false}, {ID: 2, PublicKey: "old", Revoked: true}}, "https://dsn", "", "u@e.com", PerfSettingsForm{SampleRate: "1", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}, RegressionSettingsForm{ThresholdPct: "20", RecoveryPct: "10", WindowMinutes: "60", MinSamples: "100", Enabled: true}, 30),
 		"ProjectsList":         ProjectsList([]ProjectListItem{{Project: org.Project{ID: 1, Name: "web", Slug: "web", Platform: "go"}, CanManage: true}, {Project: org.Project{ID: 2, Name: "api", Slug: "api", Platform: "php"}, CanManage: false}}, []OrgOption{{ID: 1, Name: "Acme"}}, nil, "", "u@e.com"),
@@ -147,6 +159,30 @@ func pageComponents() map[string]templ.Component {
 		"RegisterStub":         RegisterStub("", "closed", "", nil),
 		"SSOLogin":             SSOLogin("err"),
 		"InviteAccept":         InviteAccept("tok", "err", "u@e.com", org.InviteInfo{}),
+
+		// Волна 2 полного аудита (кластер 8/10 DEDUP-P1.md): эти 17
+		// страничных компонентов отсутствовали здесь — TestRenderPropagatesWriteErrors
+		// и TestRenderRespectsCancelledContext их вовсе не касались, хотя
+		// выглядели проверенными по всему дереву. Полный список 59 страничных
+		// компонентов и сверку с этой картой держит сторож
+		// guards.TestPageComponentsMapComplete (internal/guards/page_components_test.go).
+		"About":              About(version.Info{Version: "v0.22.1", Commit: "abcdef1", Date: "2026-08-01", Go: "go1.26", Stamped: true}, "u@e.com"),
+		"AlertSuppression":   AlertSuppression(7, []SuppressionEdgeView{{ID: 1, ParentLabel: "хост: web-1", ChildLabel: "монитор: api"}}, []SuppressionNodeOption{{ID: 1, Name: "web-1"}}, []SuppressionNodeOption{{ID: 2, Name: "api"}}, []SuppressionPreviewView{{ParentLabel: "web-1", Children: []string{"api"}}}, 5*time.Minute, "", "u@e.com"),
+		"DependenciesScreen": DependenciesScreen(7, []DependencyRow{{Kind: "postgres", Target: "db", Calls: 100, P50US: 1000, P95US: 5000, ErrorRate: 0.01}}, DepsFilter{Range: TimeRangeVM{Key: "24h"}, Active: true}, stubC, false, false, "u@e.com"),
+		"DeploymentsScreen":  DeploymentsScreen(7, []DeploymentRow{{Version: "v1.2.3", Environment: "production", URL: "https://ci/1", LinkURL: "https://ci/1", IsLink: true, Changelog: "fix bug", DeployedAt: now}}, "u@e.com"),
+		"Escalations":        Escalations(7, []alert.Channel{{ID: 1, Kind: "email", Enabled: true, Target: "a@b.c"}}, EscalationLadderForm{Severity: "critical", Steps: []EscalationStepForm{{StepNo: 1, DelayMinutes: "5", Selected: map[int64]bool{1: true}}}}, EscalationLadderForm{Severity: "warning"}, map[string]escalation.Ladder{}, "", "", "u@e.com"),
+		"Exports":            Exports(7, []ExportView{{ID: 1, KindLabel: "issues", FormatLabel: "csv", Status: "done", Rows: 100, Size: 2048, CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour), Author: "u@e.com", CanDownload: true, CanDelete: true}}, true, "u@e.com", true, "", nil),
+		"HostDetail":         HostDetail(HostDetailVM{ProjectID: 7, Host: host.Host{ID: 1, ProjectID: 7, Name: "web-1", FirstSeen: now, LastSeen: now, Environment: "production", Role: "web"}, Range: TimeRangeVM{Key: "24h"}, StatusKind: "ok", CanOperate: true, ServerVersion: "v0.22.1"}, "u@e.com"),
+		"HostSettings":       HostSettings(7, host.DefaultSettings(), "curl https://x/install.sh | sh", "cfg", "", nil, "", HostGroupThresholdsVM{}, "u@e.com"),
+		"HostsList":          HostsList(7, []HostRowVM{{Name: "web-1", StatusKind: "ok", CPU: &cpu04, LastSeen: now}}, false, 100, HostsFilterVM{}, HostsFacets{}, nil, "curl https://x/install.sh | sh", "cfg", "", "u@e.com"),
+		"IncidentFeed":       IncidentFeed(7, []GroupCard{NewGroupCard(group, []incidentgroup.FeedItem{{Source: "host", IncidentID: 1, Title: "disk", StartedAt: now, Severity: "critical"}})}, []incidentgroup.FeedItem{{Source: "uptime", IncidentID: 2, Title: "down", StartedAt: now}}, nil, nil, FeedCaps{OpenGroups: 20, OutOfGroup: 20, ClosedGroups: 10, ClosedItems: 10}, true, "u@e.com"),
+		"LogsScreen":         LogsScreen(7, []LogRow{NewLogRow(log.LogRow{Timestamp: now, Severity: "ERROR", Body: "boom", Service: "web", Environment: "production"})}, LogsFilter{Range: TimeRangeVM{Key: "24h"}}, false, "", LogsHistogram{Empty: true}, LogFacets{}, "u@e.com"),
+		"NoProjects":         NoProjects(true, "u@e.com"),
+		"RecipesList":        RecipesList(7, []RecipeCardVM{{ID: recipe.ID, DataArrives: true, CreatedRules: 1, TotalRules: 3}}, "u@e.com"),
+		"RecipeDetail":       RecipeDetail(RecipeDetailVM{ProjectID: 7, Recipe: recipe, DataArrives: false, CanOperate: true}, "u@e.com"),
+		"SLODetailScreen":    SLODetailScreen(SLODetailVM{ProjectID: 7, ID: 1, Name: "availability", Kind: "availability", TargetPct: 99.9, WindowDays: 30, HasData: true, AttainmentPct: 99.95, BudgetRemainingPct: 50, Status: "healthy", Chart: stubC}, "u@e.com"),
+		"SLOsScreen":         SLOsScreen(7, []SLORow{{ID: 1, Name: "availability", Kind: "availability", TargetPct: 99.9, AttainmentPct: 99.95, BudgetRemainingPct: 50, HasData: true, Status: "healthy"}}, []SLOMonitorOption{{ID: 1, Name: "web"}}, nil, "", "u@e.com"),
+		"TraceExpired":       TraceExpired(TraceExpiredData{ProjectID: 7, TraceID: "tr1", RetentionDays: 90, From: "endpoint", FromTransaction: "GET /"}, "u@e.com"),
 	}
 	return m
 }

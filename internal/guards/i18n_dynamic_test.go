@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
@@ -310,6 +311,65 @@ func TestMonitorErrorCodesResolve(t *testing.T) {
 			key := "error.monitor." + code
 			if got := i18n.T(ctx, key); got == key {
 				t.Errorf("[%s] код валидации %q без сообщения (%s)", lang, code, key)
+			}
+		}
+	}
+}
+
+// TestExportFailureReasonKeysResolve — E1 P2-UX-2: причина отказа выгрузки
+// (Job.FailureReasonKey) приходит и на страницу «Выгрузки»
+// (i18n.T(ctx, e.FailureReasonKey) в exports.templ), и в письмо автору
+// (i18n.T(ctx, reasonKey) в export/notify.go) готовой СТРОКОЙ из БД — не
+// литералом и не идентификатором, поэтому её не видит ни общий сканер
+// каталога (i18n_keys_test.go: literalKeyRe требует литеральную кавычку
+// вторым аргументом), ни группы TestDynamicKeysResolve выше (там ключ
+// СОБИРАЕТСЯ конкатенацией по известному префиксу, а здесь три готовых
+// значения целиком). export.FailureReasonKeys — тот же список, что проверяет
+// export.KnownFailureReasonKey (приоритет №3 докблока TestDynamicKeysResolve:
+// новая константа в пакете-владельце) — ключ без перевода в любом языке
+// показал бы пользователю сырой exports.mail.failed.reason.* вместо причины
+// отказа (находка волны 2 полного аудита, кластер 8/10 DEDUP-P1.md).
+//
+// Раньше единственной подстраховкой был рендер-ассерт
+// TestExportsListShowsFailureReasonHintForKnownKey
+// (internal/web/templates/exports_test.go) — он сравнивал вывод i18n.T с
+// выводом ТОЙ ЖЕ i18n.T на том же ключе и оставался зелёным даже при
+// отсутствующем переводе (i18n.T на промахе возвращает сам ключ, и обе
+// стороны сравнения совпадали на этом сыром ключе). Тест починен отдельно
+// (сравнение с пинованным ожидаемым текстом), а это правило — независимая
+// проверка каталога, не завязанная на конкретный рендер одной страницы.
+//
+// Честно о границе гарантии (тот же класс вопроса, что уже раз был найден
+// в этой самой задаче — докблок flash_test.go признавал дыру вместо того,
+// чтобы её закрыть): цикл ниже надёжно ловит ключ, ОТСУТСТВУЮЩИЙ В ОБОИХ
+// каталогах (по любому языку — got==key). Ключ, забытый ТОЛЬКО в en.json
+// (RU при этом переведён), эта проверка не поймает: i18n.lookup (catalog.go)
+// на промахе в запрошенной locale молча фолбэчит на Default ("ru") и
+// возвращает РУССКИЙ перевод, а не сам ключ — got != key, ассерт зелёный.
+// Тот же приём (и то же ограничение), что и у соседнего
+// TestMonitorErrorCodesResolve этого файла — не изолированная недоработка
+// именно этого правила, а сознательное разделение труда: односторонний
+// пропуск (ключ есть в одном каталоге, забыт в другом) надёжно и НЕ через
+// fallback ловит internal/i18n/catalog_test.go:TestCatalogsHaveIdenticalKeys
+// (обязателен, часть общего гейта) — он сравнивает множества ключей
+// каталогов напрямую, минуя i18n.T и её фолбэк. Разделение то же, что уже
+// описано докблоком TestDynamicKeysResolve выше ("Проверяются ОБА языка:
+// ключ, забытый только в одном каталоге, ловится паритетом... но ключ,
+// забытый в обоих, — только этим тестом").
+func TestExportFailureReasonKeysResolve(t *testing.T) {
+	keys := export.FailureReasonKeys
+	// Пустой список — не "нечего проверять", а сигнал, что сборка среза в
+	// worker.go сломана (тот же приём, что у groups в TestDynamicKeysResolve
+	// выше): KnownFailureReasonKey с пустым списком не подтверждал бы вообще
+	// ничего, такой код не мог бы существовать в проде.
+	if len(keys) == 0 {
+		t.Fatal("export.FailureReasonKeys пуст — сборка списка в worker.go сломана, а не множество причин опустело по замыслу")
+	}
+	for _, lang := range []string{"ru", "en"} {
+		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
+		for _, key := range keys {
+			if got := i18n.T(ctx, key); got == key {
+				t.Errorf("[%s] причина отказа выгрузки %q без перевода — на странице «Выгрузки» и в письме автору будет сырой ключ", lang, key)
 			}
 		}
 	}

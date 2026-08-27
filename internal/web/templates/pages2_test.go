@@ -26,9 +26,15 @@ func TestAuthPages(t *testing.T) {
 	if !strings.Contains(reg, "GitHub") {
 		t.Error("регистрация должна показать OAuth-кнопки")
 	}
+	// Мутационную проверку самих веток (заголовок/текст закрытой регистрации,
+	// отсутствие формы) держит TestRegisterClosed (variants_test.go) — здесь
+	// нужен только заголовок, чтобы не вернуть тавтологичный len(out)==0: он
+	// не ловил мутацию «перепутать ветки closed/invite» — RegisterStub
+	// рендерит непустой HTML независимо от того, какая ветка сработала.
 	regClosed := renderTo(t, RegisterStub("", "closed", "", nil))
-	if len(regClosed) == 0 {
-		t.Error("закрытая регистрация всё равно рендерится")
+	wantClosedTitle := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "auth.register.closed_title")
+	if !strings.Contains(regClosed, wantClosedTitle) {
+		t.Errorf("закрытая регистрация: нет заголовка закрытой регистрации %q", wantClosedTitle)
 	}
 	sso := renderTo(t, SSOLogin("домен не настроен"))
 	if !strings.Contains(sso, "домен не настроен") {

@@ -1,12 +1,14 @@
 package templates
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -113,16 +115,50 @@ func TestMonitorDetailPausedDisabled(t *testing.T) {
 }
 
 // TestRegisterClosed — регистрация в закрытом режиме прячет форму (ветка
-// closed=true).
+// closed=true) и показывает именно сообщение о закрытой регистрации, а не
+// приглашение зарегистрироваться по инвайту (соседняя ветка mode!="closed").
+//
+// Мутация — поменять местами ветки `if mode == "closed"` на `<h1>`/абзаце в
+// auth.templ (RegisterStub) — обязана уронить проверку заголовка и/или тела:
+// на выходе окажется auth.register.invite_title/invite_required вместо
+// closed_title/closed_body. Прежний ассерт (`len(out) == 0`) такую мутацию
+// не ловил вовсе: RegisterStub всегда рендерит непустой HTML независимо от
+// того, какая ветка сработала.
 func TestRegisterClosed(t *testing.T) {
 	out := renderTo(t, RegisterStub("", "closed", "", nil))
-	if len(out) == 0 {
-		t.Error("закрытая регистрация должна что-то рендерить")
+
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	wantTitle := i18n.T(ctx, "auth.register.closed_title")
+	wantBody := i18n.T(ctx, "auth.register.closed_body")
+	if !strings.Contains(out, wantTitle) {
+		t.Errorf("закрытая регистрация: нет заголовка закрытой регистрации %q", wantTitle)
+	}
+	if !strings.Contains(out, wantBody) {
+		t.Errorf("закрытая регистрация: нет сообщения о закрытой регистрации %q", wantBody)
+	}
+	// action="/register" — маркер именно формы регистрации (RegisterForm,
+	// auth.templ), а не chromeless-обвязки: та сама рисует свои формы
+	// (переключатель языка/темы, /logout), и голая проверка на "<form"
+	// ловила бы их вместо интересующей.
+	if strings.Contains(out, `action="/register"`) {
+		t.Error("закрытая регистрация не должна показывать форму регистрации")
 	}
 }
 
+// emptyStateMarker — разметка, которую рисует единый компонент пустого
+// состояния (emptyState, emptystate.templ). Проверка именно по нему, а не по
+// длине вывода: страница рендерит layout и навигацию независимо от того,
+// показано ли пустое состояние или список строк данных, поэтому
+// `len(out) != 0` истинно в обоих случаях и не различает их вовсе.
+const emptyStateMarker = `class="empty-state"`
+
 // TestEmptyStates — пустые списки во всех разделах показывают пустое состояние,
 // а не строки данных.
+//
+// Мутация — убрать `@emptyState(...)` из ЛЮБОГО одного из шаблонов ниже —
+// обязана уронить ровно ту запись map'ы и назвать её по ключу: страница
+// по-прежнему рендерит непустой HTML (layout, навигация), но без
+// class="empty-state". Прежний ассерт (`len(out) == 0`) эту мутацию не ловил.
 func TestEmptyStates(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
 	empties := map[string]string{
@@ -145,8 +181,8 @@ func TestEmptyStates(t *testing.T) {
 		"statuspages":  renderTo(t, StatusPagesSettings(7, "https://x", nil, StatusPageForm{}, true, "", "u@e.com")),
 	}
 	for name, out := range empties {
-		if len(out) == 0 {
-			t.Errorf("%s: пустой раздел должен что-то рендерить", name)
+		if !strings.Contains(out, emptyStateMarker) {
+			t.Errorf("%s: пустой раздел не показывает единое пустое состояние (%s) — удалили @emptyState или сменили класс", name, emptyStateMarker)
 		}
 	}
 }

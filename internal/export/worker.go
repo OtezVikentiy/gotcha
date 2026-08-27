@@ -98,6 +98,17 @@ func KnownFailureReasonKey(key string) bool {
 	return false
 }
 
+// FailureReasonKeys — то же множество, что проверяет KnownFailureReasonKey,
+// экспортированное для guards.TestExportFailureReasonKeysResolve
+// (internal/guards/i18n_dynamic_test.go). Оба места, где ключ реально уходит
+// в i18n.T (страница «Выгрузки», exports.templ:115, и письмо автору,
+// notify.go:111), принимают готовую СТРОКУ из Job.FailureReasonKey, а не
+// литерал и не идентификатор — общий сканер каталога (i18n_keys_test.go)
+// такой вызов не видит в принципе, и без отдельной проверки ключ без
+// перевода доехал бы до пользователя сырым текстом молча (находка волны 2
+// полного аудита, кластер 8/10 DEDUP-P1.md).
+var FailureReasonKeys = []string{reasonDiskFull, reasonTooManyGroups, reasonInternal}
+
 // Config — параметры воркера, приходящие из окружения (§10 спеки).
 type Config struct {
 	// Dir — каталог, куда пишутся файлы выгрузки и временные .part.

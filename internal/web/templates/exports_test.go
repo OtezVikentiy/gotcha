@@ -470,6 +470,16 @@ func i18nT(t *testing.T, key string) string {
 // без миграции). Мутация — убрать блок `if e.FailureReasonKey != ""` в
 // exports.templ (оставить только Truncated) — обязана уронить первую
 // проверку (текст причины пропадёт со страницы).
+//
+// want ниже — ПИНОВАННЫЙ русский текст перевода disk_full, а не
+// i18nT(t, "exports.mail.failed.reason.disk_full"): тот вызов зовёт ТУ ЖЕ
+// i18n.T, что и сама страница, и на промахе перевода обе стороны сравнения
+// одинаково падают на сыром ключе — ассерт был зелёным и без перевода в
+// каталоге (находка волны 2 полного аудита, кластер 8/10 DEDUP-P1.md).
+// Покрытие каталога на этот ключ отдельно проверяет
+// guards.TestExportFailureReasonKeysResolve (i18n_dynamic_test.go) — этому
+// тесту отвечать за него ещё раз не нужно, только за то, что подсказка
+// реально попадает на страницу.
 func TestExportsListShowsFailureReasonHintForKnownKey(t *testing.T) {
 	rows := []ExportView{
 		{ID: 1, KindLabel: "issues", FormatLabel: "csv", Status: "failed", FailureReasonKey: "exports.mail.failed.reason.disk_full", CanDelete: true},
@@ -478,7 +488,7 @@ func TestExportsListShowsFailureReasonHintForKnownKey(t *testing.T) {
 	out := renderTo(t, Exports(7, rows, false, "u@e.com", true, "", nil))
 
 	want := i18n.Tf(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}),
-		"exports.failed.reason", "reason", i18nT(t, "exports.mail.failed.reason.disk_full"))
+		"exports.failed.reason", "reason", "на диске выгрузок закончилось место")
 	if !strings.Contains(out, want) {
 		t.Errorf("на странице нет подсказки причины %q: %s", want, out)
 	}
