@@ -630,6 +630,152 @@ func TestWebOrgSettingsRateGuard(t *testing.T) {
 	}
 }
 
+// TestWebOrgSettingsLogQuota — волна 3, задача H: квота логов управляется
+// формой квот организации по образцу остальных квот rate-guard (см.
+// TestWebOrgSettingsRateGuard). Сохранение идёт через org.SetLogQuota
+// (отдельный вызов после атомарного SetQuotas — см. orgSettingsQuota),
+// валидация и права — общие с остальными полями формы.
+func TestWebOrgSettingsLogQuota(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	ctx := context.Background()
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "logquota-owner@example.com")
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "logquota-member@example.com")
+
+	o, err := orgSvc.CreateOrg(ctx, "logquota-co", "LogQuota Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	// Два принятых лога -> logs_count=2 (usage, независимый от events_count и
+	// остальных счётчиков).
+	if granted, err := orgSvc.CheckAndCountLogs(ctx, o.ID, time.Now(), 1_000_000, 2); err != nil || granted != 2 {
+		t.Fatalf("seed logs usage: granted=%v err=%v, want (2,nil)", granted, err)
+	}
+
+	settingsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
+	quotaPath := settingsPath + "/quota"
+
+	// GET показывает строку логов: заголовок вида приёма, имя поля формы и
+	// текущее использование (2).
+	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", settingsPath, resp.StatusCode, body)
+	}
+	for _, marker := range []string{"log_quota", "Логи"} {
+		if !strings.Contains(string(body), marker) {
+			t.Fatalf("GET %s missing log quota marker %q: %s", settingsPath, marker, body)
+		}
+	}
+
+	// POST log_quota member -> 403 (requireOrgRole — та же граница, что у
+	// остальных квот, №72).
+	resp = postForm(t, s.srv, quotaPath, url.Values{"log_quota": {"500"}}, s.srv.URL, memberCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s log_quota (member) status = %d, want 403", quotaPath, resp.StatusCode)
+	}
+	if got, err := orgSvc.Get(ctx, o.ID); err != nil || got.LogQuota != 0 {
+		t.Fatalf("log quota after member POST = %+v, err=%v, want 0 (untouched)", got, err)
+	}
+
+	// POST log_quota мусор -> 422, значение не изменилось.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"log_quota": {"not-a-number"}}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s log_quota (garbage) status = %d, want 422: %s", quotaPath, resp.StatusCode, body)
+	}
+	if got, err := orgSvc.Get(ctx, o.ID); err != nil || got.LogQuota != 0 {
+		t.Fatalf("log quota after garbage POST = %+v, err=%v, want 0", got, err)
+	}
+
+	// POST log_quota отрицательная -> 422, значение не изменилось.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"log_quota": {"-1"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s log_quota (negative) status = %d, want 422", quotaPath, resp.StatusCode)
+	}
+	if got, err := orgSvc.Get(ctx, o.ID); err != nil || got.LogQuota != 0 {
+		t.Fatalf("log quota after negative POST = %+v, err=%v, want 0", got, err)
+	}
+
+	// POST log_quota валидная -> 303, значение доехало до хранилища и
+	// читается обратно; остальные четыре квоты не тронуты формой, несущей
+	// только log_quota.
+	resp = postForm(t, s.srv, quotaPath, url.Values{"log_quota": {"777"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s log_quota status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	got, err := orgSvc.Get(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	if got.LogQuota != 777 {
+		t.Fatalf("LogQuota after POST = %d, want 777", got.LogQuota)
+	}
+	if got.EventQuota != 1_000_000 || got.TransactionQuota != 0 || got.MetricQuota != 0 || got.ProfileQuota != 0 {
+		t.Fatalf("other quotas changed by log-only POST: %+v", got)
+	}
+	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "777") {
+		t.Fatalf("GET %s missing updated log quota 777: %s", settingsPath, body)
+	}
+
+	// POST log_quota вместе с event_quota -> оба применяются одним атомарным
+	// UPDATE внутри org.SetQuotas (пять полей, не только исходные четыре).
+	resp = postForm(t, s.srv, quotaPath, url.Values{"log_quota": {"0"}, "event_quota": {"42"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s log+event status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	got, err = orgSvc.Get(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	if got.LogQuota != 0 || got.EventQuota != 42 {
+		t.Fatalf("quotas after combined POST = %+v, want log=0 event=42", got)
+	}
+
+	// Атомарность (P2-8, теперь и для логов): валидные event/transaction/
+	// metric/profile вместе с мусорным log_quota -> 422, и НИ ОДНА из пяти
+	// квот не применяется (единый UPDATE в org.SetQuotas валидирует все поля
+	// до записи — частичное применение с "четыре сохранились, log_quota нет"
+	// было бы обманом пользователя, увидевшего 422).
+	resp = postForm(t, s.srv, quotaPath, url.Values{
+		"event_quota":       {"111"},
+		"transaction_quota": {"222"},
+		"metric_quota":      {"333"},
+		"profile_quota":     {"444"},
+		"log_quota":         {"not-a-number"},
+	}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (valid four + garbage log) status = %d, want 422: %s", quotaPath, resp.StatusCode, body)
+	}
+	got, err = orgSvc.Get(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	if got.EventQuota != 42 || got.TransactionQuota != 0 || got.MetricQuota != 0 || got.ProfileQuota != 0 || got.LogQuota != 0 {
+		t.Fatalf("quotas after rejected mixed POST = %+v, want unchanged (event=42 tx=0 metric=0 profile=0 log=0)", got)
+	}
+}
+
 func TestWebOrgSettingsSSO(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

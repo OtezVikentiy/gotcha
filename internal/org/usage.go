@@ -160,6 +160,24 @@ func (s *Service) IncProfileUsage(ctx context.Context, orgID int64, month time.T
 	return n, nil
 }
 
+// LogUsage возвращает счётчик логов организации за месяц (0, если нет
+// записи). Отдельный счётчик (org_usage.logs_count) — используется формой
+// настроек организации (см. web.orgSettingsQuota) наравне с
+// Usage/TransactionUsage/MetricUsage/ProfileUsage.
+func (s *Service) LogUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		"SELECT logs_count FROM org_usage WHERE org_id = $1 AND period_month = $2",
+		orgID, monthStart(month)).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("org: log usage: %w", err)
+	}
+	return n, nil
+}
+
 // Dropped — счётчики ОТКЛОНЁННЫХ (drop) единиц организации за месяц: сколько
 // событий/транзакций/метрик/профилей приём отбросил (исчерпана квота и т.п.).
 // Отдельны от принятых счётчиков (events_count и др.) — это реальные потери,
@@ -364,8 +382,10 @@ func (s *Service) SetMetricQuota(ctx context.Context, orgID, quota int64) error 
 }
 
 // SetLogQuota меняет месячную квоту логов организации. Quota >= 0 required
-// (0 means unlimited). Точечный сеттер для bootstrap/тестов — форма настроек
-// организации в C1 не трогается (см. SetQuotas).
+// (0 means unlimited). Точечный сеттер для тестов (дефолт для новых
+// организаций задаёт bootstrap через SetQuotaDefaults+CreateOrg, этот метод
+// он не вызывает); форма настроек организации сохраняет квоту логов вместе
+// с остальными четырьмя одним атомарным вызовом SetQuotas (см. ниже).
 func (s *Service) SetLogQuota(ctx context.Context, orgID, quota int64) error {
 	if quota < 0 {
 		return ErrInvalidQuota
@@ -398,17 +418,20 @@ func (s *Service) SetTransactionQuota(ctx context.Context, orgID, quota int64) e
 	return nil
 }
 
-// SetQuotas атомарно применяет любое подмножество из четырёх квот организации
-// одним UPDATE (COALESCE оставляет непереданные поля нетронутыми): nil-поле —
-// эту квоту не трогаем, как и у отдельных Set*Quota ниже. В отличие от
-// последовательных вызовов Set*Quota в цикле, здесь либо применяются все
-// переданные поля, либо ни одно — сбой БД на третьем из четырёх Set*Quota-
-// вызовов не оставит квоты частично изменёнными. Используется формой настроек
-// организации, где за один POST может поменяться несколько квот сразу; сами
-// Set*Quota ниже остаются для точечных мест (bootstrap, тесты), где хватает
-// одной квоты.
-func (s *Service) SetQuotas(ctx context.Context, orgID int64, event, transaction, metric, profile *int64) error {
-	for _, v := range []*int64{event, transaction, metric, profile} {
+// SetQuotas атомарно применяет любое подмножество из пяти квот организации
+// (события/транзакции/метрики/профили/логи) одним UPDATE (COALESCE оставляет
+// непереданные поля нетронутыми): nil-поле — эту квоту не трогаем, как и у
+// отдельных Set*Quota ниже. В отличие от последовательных вызовов Set*Quota
+// в цикле, здесь либо применяются все переданные поля, либо ни одно — сбой
+// БД посреди применения не оставит квоты частично изменёнными (важно и для
+// log_quota: до этой правки форма сохраняла её отдельным вызовом
+// SetLogQuota ПОСЛЕ SetQuotas, и обрыв между двумя вызовами коммитил бы
+// четыре квоты, оставив пятую несохранённой при показанном пользователю
+// 422). Используется формой настроек организации, где за один POST может
+// поменяться несколько квот сразу; сами Set*Quota (включая SetLogQuota)
+// остаются для точечных мест (bootstrap, тесты), где хватает одной квоты.
+func (s *Service) SetQuotas(ctx context.Context, orgID int64, event, transaction, metric, profile, log *int64) error {
+	for _, v := range []*int64{event, transaction, metric, profile, log} {
 		if v != nil && *v < 0 {
 			return ErrInvalidQuota
 		}
@@ -418,9 +441,10 @@ func (s *Service) SetQuotas(ctx context.Context, orgID int64, event, transaction
 			event_quota = COALESCE($2, event_quota),
 			transaction_quota = COALESCE($3, transaction_quota),
 			metric_quota = COALESCE($4, metric_quota),
-			profile_quota = COALESCE($5, profile_quota)
+			profile_quota = COALESCE($5, profile_quota),
+			log_quota = COALESCE($6, log_quota)
 		WHERE id = $1`,
-		orgID, event, transaction, metric, profile)
+		orgID, event, transaction, metric, profile, log)
 	if err != nil {
 		return fmt.Errorf("org: set quotas: %w", err)
 	}

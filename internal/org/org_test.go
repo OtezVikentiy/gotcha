@@ -414,10 +414,12 @@ func TestSetQuotaNegative(t *testing.T) {
 	}
 }
 
-// TestSetQuotas — P2-8: SetQuotas применяет любое подмножество из четырёх
-// квот одним UPDATE. Непереданные (nil) поля не трогает, а на невалидном
-// значении не применяет ничего (в отличие от цикла отдельных Set*Quota,
-// который мог оставить квоты частично изменёнными на сбое посреди цикла).
+// TestSetQuotas — P2-8 (+ волна 3 задача H): SetQuotas применяет любое
+// подмножество из пяти квот (событий/транзакций/метрик/профилей/логов)
+// одним UPDATE. Непереданные (nil) поля не трогает — COALESCE сохраняет
+// прежнее значение, а не сбрасывает его в 0/NULL, — а на невалидном значении
+// не применяет ничего (в отличие от цикла отдельных Set*Quota, который мог
+// оставить квоты частично изменёнными на сбое посреди цикла).
 func TestSetQuotas(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -430,37 +432,58 @@ func TestSetQuotas(t *testing.T) {
 		t.Fatalf("CreateOrg: %v", err)
 	}
 
-	// Меняем только два поля из четырёх — остальные два должны остаться
-	// дефолтными (event=1_000_000 задан CreateOrg, tx/metric/profile=0).
-	event, metric := int64(700), int64(200)
-	if err := svc.SetQuotas(ctx, o.ID, &event, nil, &metric, nil); err != nil {
-		t.Fatalf("SetQuotas(event, nil, metric, nil): %v", err)
+	// Меняем три поля из пяти (включая log) — остальные два должны остаться
+	// дефолтными (event=1_000_000 задан CreateOrg, tx/profile=0).
+	event, metric, log := int64(700), int64(200), int64(300)
+	if err := svc.SetQuotas(ctx, o.ID, &event, nil, &metric, nil, &log); err != nil {
+		t.Fatalf("SetQuotas(event, nil, metric, nil, log): %v", err)
 	}
 	got, err := svc.Get(ctx, o.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.EventQuota != 700 || got.MetricQuota != 200 || got.TransactionQuota != 0 || got.ProfileQuota != 0 {
-		t.Fatalf("Get after partial SetQuotas = %+v, want event=700 metric=200 tx=0(unchanged) profile=0(unchanged)", got)
+	if got.EventQuota != 700 || got.MetricQuota != 200 || got.LogQuota != 300 || got.TransactionQuota != 0 || got.ProfileQuota != 0 {
+		t.Fatalf("Get after partial SetQuotas = %+v, want event=700 metric=200 log=300 tx=0(unchanged) profile=0(unchanged)", got)
 	}
 
-	// Невалидное значение (отрицательное) в одном из четырёх полей → ничего
-	// не применяется, даже прочие валидные поля того же вызова.
+	// Ещё один частичный вызов, log_quota в нём nil: уже заданное значение
+	// (300) обязано сохраниться через COALESCE, а не сброситься нулём —
+	// та же проверка, что выше для tx/profile, но теперь на поле, которое
+	// уже было ненулевым перед вызовом (иначе "не тронуто" и "сброшено в 0"
+	// неотличимы).
+	profile := int64(150)
+	if err := svc.SetQuotas(ctx, o.ID, nil, nil, nil, &profile, nil); err != nil {
+		t.Fatalf("SetQuotas(nil, nil, nil, profile, nil): %v", err)
+	}
+	afterNilLog, err := svc.Get(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("Get after nil-log SetQuotas: %v", err)
+	}
+	if afterNilLog.LogQuota != 300 {
+		t.Fatalf("LogQuota after nil-log SetQuotas = %d, want 300 (COALESCE must keep prior value)", afterNilLog.LogQuota)
+	}
+	if afterNilLog.ProfileQuota != 150 {
+		t.Fatalf("ProfileQuota after SetQuotas = %d, want 150", afterNilLog.ProfileQuota)
+	}
+
+	// Невалидное значение (отрицательное) в одном из пяти полей → ничего не
+	// применяется, даже прочие валидные поля того же вызова — включая log.
 	badTx := int64(-1)
 	newEvent := int64(999)
-	if err := svc.SetQuotas(ctx, o.ID, &newEvent, &badTx, nil, nil); !errors.Is(err, org.ErrInvalidQuota) {
+	newLog := int64(9999)
+	if err := svc.SetQuotas(ctx, o.ID, &newEvent, &badTx, nil, nil, &newLog); !errors.Is(err, org.ErrInvalidQuota) {
 		t.Fatalf("SetQuotas with negative tx: got %v, want ErrInvalidQuota", err)
 	}
 	afterReject, err := svc.Get(ctx, o.ID)
 	if err != nil {
 		t.Fatalf("Get after rejected SetQuotas: %v", err)
 	}
-	if afterReject.EventQuota != 700 {
-		t.Fatalf("Get after rejected SetQuotas = %+v, want event still 700 (nothing applied)", afterReject)
+	if afterReject.EventQuota != 700 || afterReject.LogQuota != 300 {
+		t.Fatalf("Get after rejected SetQuotas = %+v, want event still 700 and log still 300 (nothing applied)", afterReject)
 	}
 
 	// Неизвестная организация → ErrNotFound.
-	if err := svc.SetQuotas(ctx, 999999, &event, nil, nil, nil); !errors.Is(err, org.ErrNotFound) {
+	if err := svc.SetQuotas(ctx, 999999, &event, nil, nil, nil, nil); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("SetQuotas(unknown org): got %v, want ErrNotFound", err)
 	}
 }

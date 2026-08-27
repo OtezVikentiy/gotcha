@@ -271,11 +271,17 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	logUsage, err := h.Org.LogUsage(r.Context(), orgID, now)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	quotas := []templates.QuotaVM{
 		{Kind: i18n.T(r.Context(), "org.quota.kind.events"), Field: "event_quota", Usage: usage, Limit: o.EventQuota},
 		{Kind: i18n.T(r.Context(), "org.quota.kind.transactions"), Field: "transaction_quota", Usage: txUsage, Limit: o.TransactionQuota},
 		{Kind: i18n.T(r.Context(), "org.quota.kind.metrics"), Field: "metric_quota", Usage: metricUsage, Limit: o.MetricQuota},
 		{Kind: i18n.T(r.Context(), "org.quota.kind.profiles"), Field: "profile_quota", Usage: profileUsage, Limit: o.ProfileQuota},
+		{Kind: i18n.T(r.Context(), "org.quota.kind.logs"), Field: "log_quota", Usage: logUsage, Limit: o.LogQuota},
 	}
 	banner := h.quotaBanner(r.Context(), orgID, true)
 	// Выписанные приглашения. Ошибка чтения не должна ронять всю страницу
@@ -714,15 +720,19 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 }
 
 // orgSettingsQuota — POST /orgs/{id}/settings/quota: единый защитный лимит
-// приёма (rate-guard). Форма несёт четыре поля — event_quota /
-// transaction_quota / metric_quota / profile_quota (каждое: событий/транзакций/
-// метрик/профилей в месяц). Доступ только owner/admin (requireOrgRole — та же
-// граница, что и у остальных настроек организации). Отрицательное или
-// нечисловое значение любого поля → 422 (ErrInvalidQuota), причём ДО применения
-// каких-либо изменений (сначала полностью валидируем все поля, потом сохраняем
-// их ОДНИМ вызовом org.SetQuotas — единый UPDATE, а не цикл отдельных Set*Quota,
-// так что сбой БД на применении не может оставить квоты частично изменёнными).
-// Пустое/отсутствующее поле пропускается (эту квоту не трогаем); 0 = безлимит.
+// приёма (rate-guard). Форма несёт пять полей — event_quota /
+// transaction_quota / metric_quota / profile_quota / log_quota (каждое:
+// событий/транзакций/метрик/профилей/логов в месяц). Доступ только owner/admin
+// (requireOrgRole — та же граница, что и у остальных настроек организации).
+// Отрицательное или нечисловое значение любого поля → 422 (ErrInvalidQuota),
+// причём ДО применения каких-либо изменений (сначала полностью валидируем все
+// поля, потом сохраняем). Все пять применяются ОДНИМ вызовом org.SetQuotas —
+// единый UPDATE, а не цикл отдельных Set*Quota/SetLogQuota, так что сбой БД
+// на применении не может оставить квоты частично изменёнными (если бы форма
+// сохраняла log_quota отдельным вызовом после SetQuotas, обрыв между двумя
+// вызовами закоммитил бы четыре квоты и показал пользователю 422, будто не
+// сохранилось ничего). Пустое/отсутствующее поле пропускается (эту квоту не
+// трогаем); 0 = безлимит.
 func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -746,7 +756,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	}
 	// Поля rate-guard и указатели, куда положить распарсенное значение.
 	// Порядок фиксирован; nil-поле после парсинга = не прислано = не трогаем.
-	var event, transaction, metric, profile *int64
+	var event, transaction, metric, profile, log *int64
 	fields := []struct {
 		name string
 		dst  **int64
@@ -755,6 +765,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 		{"transaction_quota", &transaction},
 		{"metric_quota", &metric},
 		{"profile_quota", &profile},
+		{"log_quota", &log},
 	}
 	for _, f := range fields {
 		raw := strings.TrimSpace(r.FormValue(f.name))
@@ -768,7 +779,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 		}
 		*f.dst = &v
 	}
-	if err := h.Org.SetQuotas(r.Context(), orgID, event, transaction, metric, profile); err != nil {
+	if err := h.Org.SetQuotas(r.Context(), orgID, event, transaction, metric, profile, log); err != nil {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}

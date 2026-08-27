@@ -2,11 +2,8 @@ package org_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -43,8 +40,8 @@ func TestMetricUsage(t *testing.T) {
 }
 
 // TestLogUsage — CheckAndCountLogs/SetLogQuota по образцу TestMetricUsage.
-// LogUsage-геттера у сервиса нет (C1 не заводит его — Dropped/DroppedUsage
-// тоже не трогаем), поэтому logs_count читается напрямую из org_usage.
+// logs_count читается через LogUsage (org_usage.logs_count), как и у
+// остальных классов (Usage/TransactionUsage/MetricUsage/ProfileUsage).
 func TestLogUsage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -59,22 +56,8 @@ func TestLogUsage(t *testing.T) {
 	}
 	now := time.Now()
 
-	logsCount := func() int64 {
-		var n int64
-		err := pool.QueryRow(ctx,
-			"SELECT logs_count FROM org_usage WHERE org_id = $1 AND period_month = $2",
-			o.ID, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)).Scan(&n)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0
-		}
-		if err != nil {
-			t.Fatalf("select logs_count: %v", err)
-		}
-		return n
-	}
-
-	if n := logsCount(); n != 0 {
-		t.Fatalf("initial logs_count = %d, want 0", n)
+	if n, err := svc.LogUsage(ctx, o.ID, now); err != nil || n != 0 {
+		t.Fatalf("initial LogUsage = (%d,%v), want (0,nil)", n, err)
 	}
 	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
 		t.Fatalf("1st: granted=%v err=%v, want (1,nil)", granted, err)
@@ -82,15 +65,15 @@ func TestLogUsage(t *testing.T) {
 	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
 		t.Fatalf("2nd: granted=%v err=%v, want (1,nil)", granted, err)
 	}
-	if n := logsCount(); n != 2 {
-		t.Fatalf("logs_count after 2 accepted = %d, want 2", n)
+	if n, err := svc.LogUsage(ctx, o.ID, now); err != nil || n != 2 {
+		t.Fatalf("LogUsage after 2 accepted = (%d,%v), want (2,nil)", n, err)
 	}
 	// Квота исчерпана: третья попытка отклоняется, счётчик не растёт.
 	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 0 {
 		t.Fatalf("3rd (over quota): granted=%v err=%v, want (0,nil)", granted, err)
 	}
-	if n := logsCount(); n != 2 {
-		t.Fatalf("logs_count after rejected = %d, want 2 (rejected must not count)", n)
+	if n, err := svc.LogUsage(ctx, o.ID, now); err != nil || n != 2 {
+		t.Fatalf("LogUsage after rejected = (%d,%v), want (2,nil) (rejected must not count)", n, err)
 	}
 
 	if err := svc.SetLogQuota(ctx, o.ID, 500); err != nil {
