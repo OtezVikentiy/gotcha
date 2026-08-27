@@ -384,16 +384,6 @@ func TestProfileWeightByType(t *testing.T) {
 	}
 }
 
-// TestFormatProfileBytesGB — гигабайтная ветка (в profiles_test не покрыта).
-func TestFormatProfileBytesGB(t *testing.T) {
-	if got := formatProfileBytes(3 * 1024 * 1024 * 1024); got != "3.00GB" {
-		t.Errorf("formatProfileBytes GB = %q", got)
-	}
-	if got := formatProfileBytes(512); got != "512B" {
-		t.Errorf("formatProfileBytes B = %q", got)
-	}
-}
-
 // TestFormatProfileNanosNs — суб-микросекундная ветка (голые ns).
 func TestFormatProfileNanosNs(t *testing.T) {
 	if got := formatProfileNanos(500); got != "500ns" {

@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 )
 
 // devSecretKey — публично известный дефолт GOTCHA_SECRET_KEY для localhost-стендов.
@@ -274,6 +276,30 @@ type Config struct {
 	// оператор с ещё большим парком за одним IP может поднять порог на время операции.
 	AgentDistRatePerMin int
 
+	// ExportDir — каталог файлов выгрузки ошибок/событий (E1, GOTCHA_EXPORT_DIR).
+	// Каталог должен пережить пересоздание контейнера — в docker-compose.yml это
+	// именованный том exportdata. Если каталог не удаётся создать на старте,
+	// выгрузки не фатальны для процесса: раздел выключается (main.go), продукт
+	// работает дальше без него.
+	ExportDir string
+	// ExportTTLHours — срок хранения готового файла выгрузки от завершения
+	// заявки, в часах (GOTCHA_EXPORT_TTL_HOURS). Дефолт 168 — семь суток.
+	ExportTTLHours int
+	// ExportMaxRows — потолок строк одной выгрузки (GOTCHA_EXPORT_MAX_ROWS):
+	// при достижении заявка помечается Truncated, а не растёт неограниченно.
+	// Обязан быть строго меньше защитного предела потока событий
+	// (export.eventStreamSafetyLimit, 1 000 000) — это проверяет
+	// export.Config.Validate() при построении воркера, не здесь.
+	ExportMaxRows int64
+	// ExportMaxBytes — потолок размера файла одной выгрузки в байтах
+	// (GOTCHA_EXPORT_MAX_BYTES).
+	ExportMaxBytes int64
+	// ExportDiskBudgetBytes — суммарный бюджет каталога ExportDir
+	// (GOTCHA_EXPORT_DISK_BUDGET_BYTES): переполнение — ВРЕМЕННЫЙ отказ новой
+	// заявки (до трёх попыток, пока джанитор не освободит место истёкшими
+	// файлами), а не частично записанный файл.
+	ExportDiskBudgetBytes int64
+
 	// OAuth/social login (этап 5). Каждый провайдер включается независимо;
 	// включённый без обязательных секретов → отказ на старте. Секреты живут
 	// только в памяти процесса.
@@ -307,16 +333,11 @@ func optionalBoolEnv(getenv func(string) string, name string) *bool {
 }
 
 // defaultScrubKeys — denylist ключей для PII-scrubbing по умолчанию (PRIV-H1).
-// Матчинг — по подстроке нормализованного имени поля (см. Scrubber.denied),
-// поэтому "pass" покрывает и password/passphrase, а "pwd" — поле логин-формы
-// WordPress и mysql_pwd: без него пароль из тела POST /wp-login.php уходил
-// в событие в открытом виде (аудит 2026-08-21).
+// Список живёт в internal/ingest (ingest.DefaultDenyKeys), а не здесь: та же
+// маска применяется в internal/export к выгрузкам, и два независимых списка
+// разъехались бы при первой же правке одного из них.
 func defaultScrubKeys() []string {
-	return []string{
-		"password", "passwd", "pwd", "pass", "token", "secret", "authorization", "auth",
-		"cookie", "api_key", "apikey", "access_token", "refresh_token",
-		"session", "credit_card", "card_number", "cvv",
-	}
+	return ingest.DefaultDenyKeys()
 }
 
 // isLocalBaseURL — BaseURL указывает на локальную разработку (localhost/loopback).
@@ -521,6 +542,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ServerURL:                str("GOTCHA_SERVER_URL", ""),
 		AgentDistDir:             str("GOTCHA_AGENT_DIST_DIR", "/opt/gotcha/agent-dist"),
 		AgentDistRatePerMin:      intNum("GOTCHA_AGENT_DIST_RATE_PER_MIN", 120),
+		ExportDir:                str("GOTCHA_EXPORT_DIR", "/var/lib/gotcha/exports"),
+		ExportTTLHours:           intNum("GOTCHA_EXPORT_TTL_HOURS", 168),
+		ExportMaxRows:            num("GOTCHA_EXPORT_MAX_ROWS", 200_000),
+		ExportMaxBytes:           num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
+		ExportDiskBudgetBytes:    num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
 	}
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")

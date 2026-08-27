@@ -70,6 +70,51 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.AgentDistRatePerMin != 120 {
 		t.Errorf("AgentDistRatePerMin = %d, want 120", cfg.AgentDistRatePerMin)
 	}
+	if cfg.ExportDir != "/var/lib/gotcha/exports" {
+		t.Errorf("ExportDir = %q, want /var/lib/gotcha/exports", cfg.ExportDir)
+	}
+	if cfg.ExportTTLHours != 168 {
+		t.Errorf("ExportTTLHours = %d, want 168", cfg.ExportTTLHours)
+	}
+	if cfg.ExportMaxRows != 200_000 {
+		t.Errorf("ExportMaxRows = %d, want 200000", cfg.ExportMaxRows)
+	}
+	if cfg.ExportMaxBytes != 268_435_456 {
+		t.Errorf("ExportMaxBytes = %d, want 268435456", cfg.ExportMaxBytes)
+	}
+	if cfg.ExportDiskBudgetBytes != 5_368_709_120 {
+		t.Errorf("ExportDiskBudgetBytes = %d, want 5368709120", cfg.ExportDiskBudgetBytes)
+	}
+}
+
+// TestLoadConfig_ExportOverrides — все пять переменных выгрузок читаются
+// обычными str/intNum/num, каждая независимо переопределяется своим env.
+func TestLoadConfig_ExportOverrides(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_EXPORT_DIR":               "/data/exports",
+		"GOTCHA_EXPORT_TTL_HOURS":         "24",
+		"GOTCHA_EXPORT_MAX_ROWS":          "1000",
+		"GOTCHA_EXPORT_MAX_BYTES":         "1048576",
+		"GOTCHA_EXPORT_DISK_BUDGET_BYTES": "2097152",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.ExportDir != "/data/exports" {
+		t.Errorf("ExportDir = %q, want /data/exports", cfg.ExportDir)
+	}
+	if cfg.ExportTTLHours != 24 {
+		t.Errorf("ExportTTLHours = %d, want 24", cfg.ExportTTLHours)
+	}
+	if cfg.ExportMaxRows != 1000 {
+		t.Errorf("ExportMaxRows = %d, want 1000", cfg.ExportMaxRows)
+	}
+	if cfg.ExportMaxBytes != 1048576 {
+		t.Errorf("ExportMaxBytes = %d, want 1048576", cfg.ExportMaxBytes)
+	}
+	if cfg.ExportDiskBudgetBytes != 2097152 {
+		t.Errorf("ExportDiskBudgetBytes = %d, want 2097152", cfg.ExportDiskBudgetBytes)
+	}
 }
 
 // TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault — rem-A ops-H1: явно

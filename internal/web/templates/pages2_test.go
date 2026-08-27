@@ -329,7 +329,7 @@ func TestLayoutShellRendersRail(t *testing.T) {
 		ProjectID: 7, OrgID: 1, Area: "issues", Path: "/p/7/issues", CanManage: true,
 	})
 	var sb strings.Builder
-	if err := IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}).Render(ctx, &sb); err != nil {
+	if err := IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	out := sb.String()

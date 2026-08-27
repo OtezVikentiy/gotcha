@@ -29,6 +29,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/depsuppress"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
@@ -256,6 +257,17 @@ type Handler struct {
 	// /projects/{id}/incident-feed. nil → 404 (стенд без подсистемы).
 	IncidentGroups *incidentgroup.Store
 
+	// Exports — очередь заявок на выгрузку ошибок/событий (E1): раздел
+	// /projects/{id}/exports читает/ставит заявки тем же Store, что и
+	// воркер/джанитор фичи. nil → маршруты отвечают 404, тот же nil-guard,
+	// что и у AlertDeps/IncidentGroups выше (фича выключена — каталог
+	// выгрузок недоступен на этом инстансе).
+	Exports *export.Store
+	// ExportDir — каталог файлов выгрузки на диске (GOTCHA_EXPORT_DIR),
+	// нужен отдельно от Exports: скачивание отдаёт файл по id заявки, не
+	// проходя через воркер/конфиг сборки.
+	ExportDir string
+
 	// SuppressionGrace — задержка первого уведомления узла с
 	// задекларированным родителем (GOTCHA_DEPENDENCY_SETTLE_SECONDS, та же
 	// величина, что settleGrace у depSuppressor/uptime.Detector/
@@ -397,6 +409,12 @@ type Handler struct {
 	// оператору (страницы создают штучно). Ключ — uid: создатель всегда
 	// аутентифицирован.
 	statusPageLimiter *rateLimiter
+	// exportLimiter — per-«uid|projectID» лимитер частоты постановки заявок
+	// на выгрузку (E1, спека §8): лимит активных заявок (maxActivePerUser/
+	// maxActivePerProject, exports.go) не ловит того, кто ставит заявку и
+	// тут же удаляет её — от этого защищает именно ограничение частоты
+	// тяжёлой выборки по ClickHouse.
+	exportLimiter *rateLimiter
 	// statusCache — 30-секундный кеш публичных статус-страниц по slug'у
 	// (см. statuspage.go). Нулевое значение готово к работе, поэтому поле не
 	// требует инициализации в New.
@@ -439,6 +457,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute),
 		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute),
 		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute),
+		exportLimiter:     newRateLimiter(time.Now, createRateLimit, createRateWindow),
 		attrKeysCache:     newAttrKeysCache(),
 	}
 }
@@ -662,6 +681,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/alert-suppression", h.requireUser(http.HandlerFunc(h.alertSuppressionPage)))
 	inner.Handle("POST /projects/{id}/alert-suppression", h.requireUser(http.HandlerFunc(h.alertSuppressionSave)))
 	inner.Handle("POST /projects/{id}/alert-suppression/{depID}/delete", h.requireUser(http.HandlerFunc(h.alertSuppressionDelete)))
+
+	// Выгрузки ошибок/событий (E1, задачи 10/11): список заявок + постановка,
+	// скачивание готового файла, удаление терминальной заявки — тот же
+	// оператор-гейт, что у alert-suppression выше, с дополнительной проверкой
+	// авторства/CanManage внутри download/delete/списка (exports.go).
+	inner.Handle("GET /projects/{id}/exports", h.requireUser(http.HandlerFunc(h.exportsPage)))
+	inner.Handle("POST /projects/{id}/exports", h.requireUser(http.HandlerFunc(h.exportsCreate)))
+	inner.Handle("GET /projects/{id}/exports/{jobID}/download", h.requireUser(http.HandlerFunc(h.exportsDownload)))
+	inner.Handle("POST /projects/{id}/exports/{jobID}/delete", h.requireUser(http.HandlerFunc(h.exportsDelete)))
 
 	// Ack инцидентов (B4, задача 10): один эндпоинт на все 5 источников
 	// (host/metric/trace/profile/slo), диспатч по {source} — см.

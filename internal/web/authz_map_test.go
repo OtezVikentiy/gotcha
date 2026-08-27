@@ -65,22 +65,29 @@ var routeAuthz = map[string]string{
 	// --- Оператор мониторинга (requireProjectOperator, спека 2026-08-08):
 	// мутации монитора, окон обслуживания, статус-страниц, alert rules и
 	// metric alerts. ---
-	"POST /monitors/{id}/pause":                                lvlOperator,
-	"POST /monitors/{id}/resume":                               lvlOperator,
-	"POST /monitors/{id}/delete":                               lvlOperator,
-	"POST /monitors/{id}/heartbeat/regenerate":                 lvlOperator,
-	"POST /monitors/{id}":                                      lvlOperator,
-	"POST /projects/{id}/monitors":                             lvlOperator,
-	"POST /projects/{id}/maintenance":                          lvlOperator,
-	"POST /projects/{id}/maintenance/update":                   lvlOperator,
-	"POST /projects/{id}/maintenance/delete":                   lvlOperator,
-	"POST /projects/{id}/statuspages":                          lvlOperator,
-	"POST /statuspages/{id}":                                   lvlOperator,
-	"POST /statuspages/{id}/delete":                            lvlOperator,
-	"POST /projects/{id}/alerts/rules":                         lvlOperator,
-	"POST /projects/{id}/escalations":                          lvlOperator,
-	"POST /projects/{id}/alert-suppression":                    lvlOperator,
-	"POST /projects/{id}/alert-suppression/{depID}/delete":     lvlOperator,
+	"POST /monitors/{id}/pause":                            lvlOperator,
+	"POST /monitors/{id}/resume":                           lvlOperator,
+	"POST /monitors/{id}/delete":                           lvlOperator,
+	"POST /monitors/{id}/heartbeat/regenerate":             lvlOperator,
+	"POST /monitors/{id}":                                  lvlOperator,
+	"POST /projects/{id}/monitors":                         lvlOperator,
+	"POST /projects/{id}/maintenance":                      lvlOperator,
+	"POST /projects/{id}/maintenance/update":               lvlOperator,
+	"POST /projects/{id}/maintenance/delete":               lvlOperator,
+	"POST /projects/{id}/statuspages":                      lvlOperator,
+	"POST /statuspages/{id}":                               lvlOperator,
+	"POST /statuspages/{id}/delete":                        lvlOperator,
+	"POST /projects/{id}/alerts/rules":                     lvlOperator,
+	"POST /projects/{id}/escalations":                      lvlOperator,
+	"POST /projects/{id}/alert-suppression":                lvlOperator,
+	"POST /projects/{id}/alert-suppression/{depID}/delete": lvlOperator,
+	// exports: create/delete гейтятся requireProjectOperator, как соседи
+	// выше; download/delete/список ДОПОЛНИТЕЛЬНО проверяют авторство/
+	// CanManage внутри хендлера (exports.go) — карта отслеживает базовый
+	// уровень, не поведенческую доп.проверку, тот же принцип, что у
+	// channel_id/edge ownership на escalations/alert-suppression.
+	"POST /projects/{id}/exports":                              lvlOperator,
+	"POST /projects/{id}/exports/{jobID}/delete":               lvlOperator,
 	"POST /projects/{id}/incidents/{source}/{incident_id}/ack": lvlOperator,
 	"POST /projects/{id}/metrics/alerts":                       lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete":                lvlOperator,
@@ -220,10 +227,20 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/alerts/deliveries": lvlOperator,
 	"GET /projects/{id}/escalations":       lvlOperator,
 	"GET /projects/{id}/alert-suppression": lvlOperator,
-	"GET /projects/{id}/monitors/new":      lvlOperator,
-	"GET /monitors/{id}/edit":              lvlOperator,
-	"GET /projects/{id}/statuspages":       lvlOperator,
-	"GET /projects/{id}/maintenance":       lvlOperator,
+	// GET /projects/{id}/exports (страница списка, задача 11) — тот же
+	// оператор-гейт, что и у download/delete ниже; саму страницу видит любой
+	// оператор, но НЕ все её строки (спека §3): без CanManage exportsPage
+	// зовёт Store.ByProjectForUser, а не ByProject — оператор без CanManage
+	// вообще не получает чужие заявки в выборке (не только скрытые кнопки
+	// download/delete, ExportView.CanDownload/CanDelete, exports.go:
+	// exportViewRow, — сама строка с email автора и колонкой PII не
+	// рендерится, ревью веб-части E1, п.2).
+	"GET /projects/{id}/exports":                  lvlOperator,
+	"GET /projects/{id}/exports/{jobID}/download": lvlOperator,
+	"GET /projects/{id}/monitors/new":             lvlOperator,
+	"GET /monitors/{id}/edit":                     lvlOperator,
+	"GET /projects/{id}/statuspages":              lvlOperator,
+	"GET /projects/{id}/maintenance":              lvlOperator,
 
 	// --- Org admin/owner (requireOrgRole/requireProjectRole): настройки
 	// организации/проекта и производные разделы (пробы, команды) — та же

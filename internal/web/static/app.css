@@ -1702,6 +1702,16 @@ th {
 	gap: 8px;
 	margin: 0;
 }
+/* Кнопки постановки заявки на выгрузку (issues.templ, E1) — рядом с
+   фильтрами списка ошибок. Каждая кнопка — раскрывающийся <details
+   class="dropdown-control"> (см. блок .dropdown-control выше): без обёртки
+   они разъехались бы вертикально, block по умолчанию. <details> в отличие
+   от <form> не несёт браузерного margin, отдельный сброс не нужен. */
+.issues-export-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
 /* Рамку и фон селекту назначения даёт база .select (разметка несёт
    class="select"). Базовое .select даёт width:100% для вертикальных форм;
    в строке действий assign-form контрол живёт по содержимому. */
@@ -4098,7 +4108,14 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 /* Приглушённый цвет здесь читался как «кнопка выключена»: контрол доступен
    всегда, а выглядел неактивным. Обычный цвет текста плюс явный маркер
    раскрытия — теперь видно, что это раскрывающийся блок, а не disabled. */
-.assign-control > summary {
+/* .dropdown-control — общий каркас «кнопка, раскрывающая форму» на нативном
+   <details> (без JS): раньше это был .assign-control только под смену
+   ответственного, теперь тем же классом рисуются и точки входа экспорта на
+   issues.templ/issuedetail.templ (E1, находка аудита P2-UX-3) — форма внутри
+   у каждого своя (.assign-form — однострочная select+кнопка,
+   .export-control-form — вертикальный список полей ниже), а раскрытие и вид
+   summary одни на всех. */
+.dropdown-control > summary {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
@@ -4110,7 +4127,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	color: var(--text);
 	font-weight: 500;
 }
-.assign-control > summary::after {
+.dropdown-control > summary::after {
 	content: "";
 	width: 0;
 	height: 0;
@@ -4120,17 +4137,17 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	border-top: 5px solid currentColor;
 	transition: transform 0.15s ease;
 }
-.assign-control[open] > summary::after {
+.dropdown-control[open] > summary::after {
 	transform: rotate(180deg);
 }
-.assign-control > summary::-webkit-details-marker {
+.dropdown-control > summary::-webkit-details-marker {
 	display: none;
 }
-.assign-control > summary:hover {
+.dropdown-control > summary:hover {
 	border-color: var(--text-dim);
 	background: var(--surface-2);
 }
-.assign-control .assign-form {
+.dropdown-control .assign-form {
 	display: flex;
 	align-items: center;
 	gap: 8px;
@@ -4138,12 +4155,23 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	/* См. .team-member-add-form: кнопка «Назначить» уезжала за край на 375px. */
 	flex-wrap: wrap;
 }
-.assign-control .assign-form .select {
+.dropdown-control .assign-form .select {
 	width: auto;
 	min-width: 200px;
 	/* min-width в 200px шире, чем колонка на телефоне: без max-width селект
 	   сам распирает форму и возвращает ту же горизонтальную прокрутку. */
 	max-width: 100%;
+}
+/* .export-control-form — тело точек входа экспорта: формат, опционально
+   PII-галка с подсказкой, кнопка отправки — то же наполнение, что у большой
+   формы страницы «Выгрузки» (exportsForm), но компактнее и с уже впечатанным
+   в hidden-поля контекстом точки входа (текущие фильтры списка либо
+   scope_issue_id). .field/.select внутри — обычные вертикальные поля (база
+   в .field/.input,.select чуть ниже), max-width не даёт попапу растянуться
+   на всю ширину контейнера-обёртки (.issues-export-actions/.issue-actions). */
+.export-control-form {
+	margin-top: 8px;
+	max-width: 280px;
 }
 
 /* Ответственный — отдельной строкой под бейджами уровня и статуса: в одной
@@ -4684,7 +4712,7 @@ input[type="radio"]:focus-visible {
 .incident-feed .feed-group:last-child {
 	margin-bottom: 0;
 }
-/* Тот же приём, что у .assign-control: список раскрывается нативным
+/* Тот же приём, что у .dropdown-control: список раскрывается нативным
    <details>, браузерный треугольник спрятан, свой — через ::after, потому
    что summary — не одна текстовая строка (имя корня + счётчики состава +
    время + бейдж «решена»), а flex-строка, и margin-left:auto (как у

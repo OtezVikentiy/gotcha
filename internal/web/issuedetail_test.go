@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
 // logsLinkStartRe/logsLinkEndRe — проверяют, что ссылка «Логи вокруг события»
@@ -375,5 +377,75 @@ func TestWebIssueDetailLogsLink(t *testing.T) {
 	}
 	if strings.Contains(string(body), "trace_id=") {
 		t.Fatalf("GET %s (no trace) unexpectedly has trace_id= in logs link: %s", noTracePath, body)
+	}
+}
+
+// TestWebIssueDetailExportButtonShowsPIIOnlyForOwner — та же боевая
+// проводка, что TestWebIssuesListExportButtonsShowPIIOnlyForOwner
+// (issues_test.go), только для третьей точки входа — карточки issue
+// (issuedetail.go). До находки аудита P2-UX-3 галки include_pii здесь не
+// было вовсе: владелец не мог выгрузить события ОДНОЙ issue без маски,
+// только весь проект целиком с генерической формы страницы «Выгрузки».
+// Владелец (CanManage) видит галку, оператор без CanManage (доступ только
+// через команду) — нет; scope_issue_id и выбор формата остаются у обоих.
+func TestWebIssueDetailExportButtonShowsPIIOnlyForOwner(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issuedetail-pii-owner@example.com")
+	project := createProject(t, s, ownerID, "issuedetail-pii-org", "issuedetail-pii-proj")
+
+	operatorID, operatorCookie := registerAndLogin(t, s, "issuedetail-pii-operator@example.com")
+	if err := s.org.AddMember(context.Background(), project.OrgID, operatorID, org.RoleMember); err != nil {
+		t.Fatalf("add operator as member: %v", err)
+	}
+	team, err := s.org.CreateTeam(context.Background(), project.OrgID, "issuedetail-pii-team", "issuedetail-pii-team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := s.org.AddTeamMember(context.Background(), team.ID, operatorID); err != nil {
+		t.Fatalf("add team member: %v", err)
+	}
+	if err := s.org.AttachTeam(context.Background(), project.ID, team.ID); err != nil {
+		t.Fatalf("attach team: %v", err)
+	}
+
+	s.h.Exports = export.NewStore(s.pool)
+	t.Cleanup(func() { s.h.Exports = nil })
+
+	now := time.Now().UTC()
+	r, err := s.issues.Upsert(context.Background(), project.ID, "fp-pii-detail", "NullPointerException", "pkg/a.go:1", "error", "", now)
+	if err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
+	s.batcher.Add(event.Event{
+		ID:        uuid.NewString(),
+		ProjectID: project.ID,
+		IssueID:   r.IssueID,
+		Timestamp: now,
+		Level:     "error",
+		Message:   "boom",
+		Tags:      map[string]string{},
+	})
+	s.flushEvents(t)
+
+	issuePath := "/issues/" + strconv.FormatInt(r.IssueID, 10)
+
+	ownerBody := readAll(t, getWithCookie(t, s.srv, issuePath, ownerCookie))
+	if !strings.Contains(ownerBody, `name="include_pii"`) {
+		t.Errorf("владельцу не показана галка include_pii на карточке issue: %s", ownerBody)
+	}
+	if !strings.Contains(ownerBody, `<select name="format"`) {
+		t.Error("владельцу не показан выбор формата на карточке issue")
+	}
+	if !strings.Contains(ownerBody, `name="scope_issue_id" value="`+strconv.FormatInt(r.IssueID, 10)+`"`) {
+		t.Error("scope_issue_id потерян на карточке issue")
+	}
+
+	operatorBody := readAll(t, getWithCookie(t, s.srv, issuePath, operatorCookie))
+	if strings.Contains(operatorBody, `name="include_pii"`) {
+		t.Error("оператору без CanManage показана галка include_pii на карточке issue")
+	}
+	if !strings.Contains(operatorBody, `<select name="format"`) {
+		t.Error("оператору должен остаться выбор формата на карточке issue")
 	}
 }

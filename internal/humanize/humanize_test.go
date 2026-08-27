@@ -274,3 +274,28 @@ func TestCompactNumber(t *testing.T) {
 		}
 	}
 }
+
+func TestBytes(t *testing.T) {
+	cases := []struct {
+		b    int64
+		want string
+	}{
+		{0, "0B"},
+		{-1, "0B"},
+		{-1 << 20, "0B"},
+		{1, "1B"},
+		{1023, "1023B"},
+		{1024, "1.0KB"},
+		{1536, "1.5KB"},
+		{1024*1024 - 1, "1024.0KB"},
+		{1024 * 1024, "1.0MB"},
+		{10 * 1024 * 1024, "10.0MB"},
+		{1024 * 1024 * 1024, "1.00GB"},
+		{5 * 1024 * 1024 * 1024, "5.00GB"},
+	}
+	for _, c := range cases {
+		if got := humanize.Bytes(c.b); got != c.want {
+			t.Errorf("Bytes(%d) = %q, want %q", c.b, got, c.want)
+		}
+	}
+}

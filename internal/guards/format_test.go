@@ -105,6 +105,8 @@ var permanentFormatExemptions = []Exemption{
 	{Value: exemptLoc("internal/web/timerange_test.go", 179), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/timerange_test.go", 192), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseTimeRangeCustomEndDefaultsToNow)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/performance_test.go", 415), Why: `start := now.Add(-45 * 24 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра ?start= тем же машинным форматом, что и сама форма (TestWebEndpointDetailSlowestExpiryConfigurable нужен custom-диапазон на 45 дней назад, дефолтные 24ч не захватили бы старые трейсы)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/exports_test.go", 458), Why: `"start": {start.Format("2006-01-02T15:04")} — сборка входного параметра start= тем же машинным форматом, что и TimeRangeVM.apply/<input type="datetime-local"> (TestExportsCreateHonorsCustomRangeQuery)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/exports_test.go", 459), Why: `"end": {end.Format("2006-01-02T15:04")} — тот же входной параметр end=, вторая граница диапазона`, Finding: "по замыслу"},
 
 	// internal/uptime/window_dst_test.go: пять мест — все аргументы
 	// многострочных t.Errorf/t.Fatalf в тесте перевода часов через DST, но на
@@ -173,6 +175,35 @@ var permanentFormatExemptions = []Exemption{
 	// миллисекундами — SQL-параметр для toDateTime64(?, 3), не текст для
 	// человека, см. докблок chTimeArg.
 	{Value: exemptLoc("internal/log/query.go", 668), Why: `t.UTC().Format("2006-01-02 15:04:05.000") — SQL-параметр toDateTime64(?, 3), обход бага биндинга clickhouse-go (TimeUnit=Seconds по умолчанию у позиционных "?"), не человекочитаемый вывод`, Finding: "по замыслу"},
+
+	// Фича E1 (выгрузки ошибок/событий), задача 14 (долг гейтов): три
+	// категории, все — машинный формат, не дублирование человекочитаемого.
+	//
+	// internal/export/writer.go: cell() — значение ячейки CSV/JSON/NDJSON
+	// файла выгрузки. Файл читает внешний инструмент (Excel, jq, скрипт
+	// импорта), не человек с экрана продукта — та же категория, что
+	// otlp.go:1301 (поле экспортируемого JSON-события) выше.
+	{Value: exemptLoc("internal/export/writer.go", 67), Why: `x.UTC().Format(time.RFC3339) — значение time.Time в ячейке файла выгрузки (cell), формат для внешнего парсера файла, не для чтения с экрана`, Finding: "по замыслу"},
+
+	// internal/web/exports.go: exportDownloadFilename — имя файла при
+	// скачивании, gotcha-<kind>-<project>-<YYYYMMDD-HHMM>.<ext>, фиксированный
+	// технический конвент по спеке фичи (§10), тот же класс решения, что
+	// statusPageTimeLayout (statuspage.go выше): не текст интерфейса, а
+	// протокол имени файла, где нет места разделителям ":"/" ", которые ОС
+	// либо запрещает в имени файла (Windows — ":"), либо экранирует.
+	{Value: exemptLoc("internal/web/exports.go", 90), Why: `at.Format("20060102-1504") — компонент имени скачиваемого файла (спека §10), протокол именования, не текст на странице`, Finding: "по замыслу"},
+
+	// internal/event/query_test.go: TestQueryStreamForExportOrdersByIssueThenTime
+	// (или соседний тест того же файла) сравнивает строки экспорта событий по
+	// стабильному ключу "issueID@RFC3339" — RFC3339 тут инструмент сравнения
+	// (объединяет ID и момент в одну сравнимую строку для slices.Equal), не
+	// текст для человека; та же природа, что RFC3339-payload'ы
+	// sentry_test.go/parse_ndjson_test.go выше — тестовые данные, не UI.
+	{Value: exemptLoc("internal/event/query_test.go", 331), Why: `ev.Timestamp.UTC().Format(time.RFC3339) — ключ сравнения "issueID@RFC3339" в срезе got, машинный формат для slices.Equal, не человекочитаемый вывод`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/event/query_test.go", 338), Why: `t3.Format(time.RFC3339) — тот же ключ сравнения в срезе want, первая строка`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/event/query_test.go", 339), Why: `t1.Format(time.RFC3339) — тот же ключ сравнения в срезе want, вторая строка`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/event/query_test.go", 340), Why: `t2.Format(time.RFC3339) — тот же ключ сравнения в срезе want, третья строка`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/event/query_test.go", 341), Why: `t1.Format(time.RFC3339) — тот же ключ сравнения в срезе want, четвёртая строка`, Finding: "по замыслу"},
 }
 
 // maxPermanentFormatExemptions — потолок сознательно поднят с 21 до 22
@@ -188,8 +219,20 @@ var permanentFormatExemptions = []Exemption{
 // payload'ы sentry_test.go/transaction_test.go выше, литералом не заменить.
 // Затем с 26 до 27 задачей 2 подпроекта C2 (просмотрщик логов): chTimeArg в
 // internal/log/query.go — SQL-параметр toDateTime64(?, 3), обход бага
-// биндинга clickhouse-go (см. запись в permanentFormatExemptions).
-const maxPermanentFormatExemptions = 27
+// биндинга clickhouse-go (см. запись в permanentFormatExemptions). Затем с 27
+// до 34 задачей 14 фичи E1 (выгрузки): cell() в internal/export/writer.go
+// (значение времени в файле выгрузки, читает внешний инструмент, не экран
+// продукта), exportDownloadFilename в internal/web/exports.go (протокол
+// имени скачиваемого файла по спеке §10) и пять сравнений в
+// internal/event/query_test.go (RFC3339 как ключ сравнения слайсов в тесте
+// StreamForExport, не UI) — все семь машинного формата, ни одного
+// человекочитаемого дублирования. Затем с 34 до 36 ревью веб-части E1:
+// TestExportsCreateHonorsCustomRangeQuery (exports_test.go) собирает
+// query-параметры start=/end= тем же машинным форматом datetime-local, что
+// и остальные восемь мест выше (TimeRangeVM.apply/<input
+// type="datetime-local">) — девятое и десятое такое место, не
+// человекочитаемое дублирование.
+const maxPermanentFormatExemptions = 36
 
 // debtFormatExemptions — человекочитаемые макеты времени вне
 // internal/humanize: настоящие копии форматирования, ради поиска которых и

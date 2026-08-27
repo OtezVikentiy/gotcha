@@ -75,6 +75,13 @@ type Shell struct {
 	// (metric_alerts, maintenance, status_pages, область alerts), которые
 	// требуют requireProjectOperator, а не requireProjectRole.
 	CanOperate bool
+	// ExportsEnabled — фича выгрузок ошибок сконфигурирована на инстансе
+	// (h.Exports != nil в web-слое: каталог выгрузок доступен и создаваем,
+	// см. web.go/withShell). Гейтит пункт «Выгрузки» рядом с CanOperate: на
+	// инстансе без каталога воркер не стартует, и пункт меню, ведущий на
+	// страницу заявок, которые никогда не досчитаются, — введение в
+	// заблуждение, а не полезная ссылка (спека E1 §10: «кнопки скрыты»).
+	ExportsEnabled bool
 	// Back — валидированный same-origin относительный путь «откуда пришёл»
 	// (из заголовка Referer, посчитан в web-слое). Пустой, если Referer
 	// отсутствует, ведёт на текущую же страницу (перезагрузка) или на чужой
@@ -155,7 +162,7 @@ func AreaForPath(path string) string {
 		if len(parts) >= 2 {
 			if _, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
 				switch parts[1] {
-				case "issues":
+				case "issues", "exports":
 					return "issues"
 				case "performance", "web-vitals", "profiles", "profile-regressions", "perf-issues", "regressions", "dependencies", "deployments":
 					return "performance"
@@ -198,6 +205,8 @@ func BackLabelKey(rawPath string) string {
 			switch parts[1] {
 			case "issues":
 				return "nav.issues"
+			case "exports":
+				return "nav.exports"
 			case "performance":
 				return "nav.transactions"
 			case "web-vitals":
@@ -285,6 +294,19 @@ func Subsections(s Shell) []NavItem {
 	case "issues":
 		items = []NavItem{
 			{LabelKey: "nav.issues", Href: "/projects/" + effID + "/issues"},
+		}
+		// Выгрузки ошибок (E1, задача 11) — та же граница CanOperate, что и
+		// у остальных мутирующих подразделов (metric_alerts, maintenance,
+		// exports сама по себе GET, но встаёт в очередь тяжёлой выборки по
+		// ClickHouse — то же требование requireProjectOperator, что у
+		// хендлеров создания/скачивания/удаления заявки). ExportsEnabled —
+		// сверх CanOperate: на инстансе без каталога выгрузок (h.Exports ==
+		// nil) пункт меню не показывается вовсе, а не ведёт на
+		// страницу-объяснение (ревью веб-части E1, п.3).
+		if s.CanOperate && s.ExportsEnabled {
+			items = append(items,
+				NavItem{LabelKey: "nav.exports", Href: "/projects/" + effID + "/exports"},
+			)
 		}
 	case "performance":
 		items = []NavItem{

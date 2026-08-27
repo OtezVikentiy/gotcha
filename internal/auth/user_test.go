@@ -69,3 +69,54 @@ func TestRegister_DuplicateEmailStillErrEmailTaken(t *testing.T) {
 		t.Fatalf("duplicate email err = %v, want ErrEmailTaken", err)
 	}
 }
+
+// TestUserEmailsBatchMatchesIndividualLookups — UserEmails (батч-версия
+// UserEmail для страниц-списков, напр. страницы выгрузок ошибок, ревью
+// веб-части E1 п.5) обязана вернуть ровно те же email, что и по одному
+// UserEmail на каждый id, плюс: несуществующий id молча отсутствует в
+// карте (не ошибка, тот же контракт немолчания, что и у UserEmail), а
+// пустой список id не ходит в БД и отдаёт пустую карту.
+func TestUserEmailsBatchMatchesIndividualLookups(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := auth.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	id1, err := svc.Register(ctx, "batch-one@example.com", "password12")
+	if err != nil {
+		t.Fatalf("Register first: %v", err)
+	}
+	id2, err := svc.Register(ctx, "batch-two@example.com", "password12")
+	if err != nil {
+		t.Fatalf("Register second: %v", err)
+	}
+	const missingID = int64(999_999_999)
+
+	got, err := svc.UserEmails(ctx, []int64{id1, id2, missingID})
+	if err != nil {
+		t.Fatalf("UserEmails: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("UserEmails вернул %d записей, want 2 (missingID не должен попасть в карту): %v", len(got), got)
+	}
+	if got[id1] != "batch-one@example.com" {
+		t.Errorf("UserEmails[id1] = %q, want batch-one@example.com", got[id1])
+	}
+	if got[id2] != "batch-two@example.com" {
+		t.Errorf("UserEmails[id2] = %q, want batch-two@example.com", got[id2])
+	}
+	if _, ok := got[missingID]; ok {
+		t.Error("UserEmails содержит запись для несуществующего id")
+	}
+
+	empty, err := svc.UserEmails(ctx, nil)
+	if err != nil {
+		t.Fatalf("UserEmails(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("UserEmails(nil) = %v, want пустую карту", empty)
+	}
+}

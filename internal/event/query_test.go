@@ -2,8 +2,12 @@ package event_test
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -293,4 +297,124 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("sumB = %d, want 2", sumB)
 		}
 	})
+}
+
+// TestStreamForExportOrdersByIssueThenTime — обход выгрузки обязан идти по
+// (issue_id, timestamp DESC), ровно по первичному ключу CH: сортировка по
+// одному времени без ограничения по issue_id заставила бы ClickHouse читать
+// партицию целиком (см. комментарий StreamForExport).
+func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
+	ctx := context.Background()
+	conn := testenv.MigratedCH(t)
+	const projectID = int64(51001)
+	const issue1 = int64(910001)
+	const issue2 = int64(910002)
+
+	t0 := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(1 * time.Minute)
+	t2 := t0.Add(2 * time.Minute)
+	t3 := t0.Add(3 * time.Minute)
+
+	b := event.NewBatcher(conn)
+	go b.Run()
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issue2, Timestamp: t2, Level: "error", Message: "2a"})
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issue1, Timestamp: t1, Level: "error", Message: "1a"})
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issue1, Timestamp: t3, Level: "error", Message: "1b"})
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issue2, Timestamp: t1, Level: "error", Message: "2b"})
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	q := event.NewQuery(conn)
+	var got []string
+	err := q.StreamForExport(ctx, projectID, []int64{issue1, issue2}, t0, t0.Add(time.Hour), 100, func(ev event.Stored) error {
+		got = append(got, fmt.Sprintf("%d@%s", ev.IssueID, ev.Timestamp.UTC().Format(time.RFC3339)))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	want := []string{
+		fmt.Sprintf("%d@%s", issue1, t3.Format(time.RFC3339)),
+		fmt.Sprintf("%d@%s", issue1, t1.Format(time.RFC3339)),
+		fmt.Sprintf("%d@%s", issue2, t2.Format(time.RFC3339)),
+		fmt.Sprintf("%d@%s", issue2, t1.Format(time.RFC3339)),
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("порядок строк = %v, want %v", got, want)
+	}
+}
+
+// TestStreamForExportRespectsLimit — LIMIT в запросе обязан реально
+// ограничивать число строк, а не быть декоративным параметром.
+func TestStreamForExportRespectsLimit(t *testing.T) {
+	ctx := context.Background()
+	conn := testenv.MigratedCH(t)
+	const projectID = int64(51002)
+	const issueID = int64(920001)
+	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+
+	b := event.NewBatcher(conn)
+	go b.Run()
+	for i := 0; i < 5; i++ {
+		b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueID,
+			Timestamp: t0.Add(time.Duration(i) * time.Minute), Level: "error", Message: "m"})
+	}
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	q := event.NewQuery(conn)
+	var n int
+	err := q.StreamForExport(ctx, projectID, []int64{issueID}, t0, t0.Add(time.Hour), 2, func(event.Stored) error {
+		n++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("получено %d строк, want ровно 2 (limit)", n)
+	}
+}
+
+// TestStreamForExportTiedTimestampsNoLossOrDuplication — несколько событий
+// одной группы с ОДИНАКОВЫМ timestamp: ORDER BY issue_id, timestamp DESC не
+// уникален внутри такой группы, но обход не должен ни терять, ни задваивать
+// строки, пока LIMIT не отсекает часть связки.
+func TestStreamForExportTiedTimestampsNoLossOrDuplication(t *testing.T) {
+	ctx := context.Background()
+	conn := testenv.MigratedCH(t)
+	const projectID = int64(51003)
+	const issueID = int64(930001)
+	tied := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+
+	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
+	b := event.NewBatcher(conn)
+	go b.Run()
+	for _, id := range ids {
+		b.Add(event.Event{ID: id, ProjectID: projectID, IssueID: issueID, Timestamp: tied, Level: "error", Message: "m"})
+	}
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	q := event.NewQuery(conn)
+	seen := map[string]int{}
+	err := q.StreamForExport(ctx, projectID, []int64{issueID}, tied.Add(-time.Minute), tied.Add(time.Minute), len(ids),
+		func(ev event.Stored) error {
+			seen[ev.ID]++
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if len(seen) != len(ids) {
+		t.Fatalf("получено %d уникальных id при одинаковом timestamp, want %d: %v", len(seen), len(ids), seen)
+	}
+	for id, c := range seen {
+		if c != 1 {
+			t.Errorf("id %s встретился %d раз, want 1 (дубликат)", id, c)
+		}
+	}
 }

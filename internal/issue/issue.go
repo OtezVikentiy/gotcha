@@ -25,6 +25,12 @@ type Issue struct {
 	// AssigneeEmail — email назначенного пользователя (coalesce(u.email,'')),
 	// заполняется List/Get через LEFT JOIN users; пусто без назначения.
 	AssigneeEmail string
+	// Environments — окружения группы (issue_environments), отсортированные
+	// по имени. Заполняется только StreamForExport батчем на страницу —
+	// List/Get его не трогают: обычный список рендерит фильтр окружений
+	// отдельным запросом (h.Issues.Environments), а тянуть его на каждую
+	// из 25 строк ради колонки, которой в UI нет, незачем.
+	Environments []string
 }
 
 // UpsertResult — что произошло с группой при поступлении события.

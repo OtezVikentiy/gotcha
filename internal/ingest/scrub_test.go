@@ -676,3 +676,65 @@ func TestScrubProfileMetadata(t *testing.T) {
 		t.Errorf("без скрубера значение изменено: %q", p2.Transaction)
 	}
 }
+
+// DefaultDenyKeys отдаёт непустой денилист (иначе весь скрабинг PII молча
+// выключается) и защитную копию: правка результата не должна портить
+// пакетный список, которым пользуются и приём, и выгрузка (internal/export).
+func TestDefaultDenyKeysReturnsCopy(t *testing.T) {
+	keys := DefaultDenyKeys()
+	if len(keys) == 0 {
+		t.Fatal("DefaultDenyKeys вернул пустой список")
+	}
+	want := "password"
+	found := false
+	for _, k := range keys {
+		if k == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("DefaultDenyKeys не содержит %q: %v", want, keys)
+	}
+
+	keys[0] = "испорчено"
+	again := DefaultDenyKeys()
+	if again[0] == "испорчено" {
+		t.Error("DefaultDenyKeys не защищает пакетный список от изменений через срез")
+	}
+}
+
+// Скраббер, построенный НЕПОСРЕДСТВЕННО на DefaultDenyKeys (а не на
+// литеральном списке ключей теста), реально скрабит характерные
+// чувствительные поля. Без этого теста регресс дефолтного денилиста не
+// поймал бы ни один тест приёма: везде выше денилист передаётся литералом.
+// TestLoadConfig_Scrub в cmd/gotcha сравнивает cfg.ScrubKeys с тем же
+// defaultScrubKeys() и потому не считается — тавтология не может обнаружить
+// регресс в общем источнике.
+//
+// Поля выбраны так, чтобы каждое ловилось РОВНО одним словом денилиста, а не
+// случайно перекрывалось соседним: denied() матчит подстрочно (см. комментарий
+// над denied), поэтому поле "password" осталось бы замаскированным даже без
+// отдельной записи "password" — его всё равно ловит "pass". "auth" не
+// перекрывается словом "authorization" (оно длиннее и не является подстрокой
+// "auth"), "pwd" не перекрывается "pass"/"password"/"passwd", "token" не
+// перекрывается "access_token"/"refresh_token" (те длиннее). Это и делает поля
+// пригодными для мутационной проверки конкретных записей списка.
+func TestDefaultDenyKeysScrubsRealPayload(t *testing.T) {
+	s := NewScrubber(true, true, DefaultDenyKeys())
+	m := map[string]any{
+		"pwd":    "hunter2",
+		"auth":   "Bearer abc",
+		"token":  "xyz",
+		"method": "GET",
+	}
+	s.ScrubData(m)
+	for _, key := range []string{"pwd", "auth", "token"} {
+		if m[key] != scrubMask {
+			t.Errorf("%s не отредактирован дефолтным денилистом: %v", key, m[key])
+		}
+	}
+	if m["method"] != "GET" {
+		t.Errorf("безобидное поле method задето: %v", m["method"])
+	}
+}

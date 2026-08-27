@@ -17,6 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -30,6 +31,7 @@ import (
 type issuesStack struct {
 	pool    *pgxpool.Pool
 	srv     *httptest.Server
+	h       *web.Handler
 	org     *org.Service
 	auth    *auth.Service
 	issues  *issue.Service
@@ -71,7 +73,7 @@ func newIssuesStack(t *testing.T) *issuesStack {
 	h.Uptime = uptimeSvc
 	h.Register(mux)
 
-	return &issuesStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
+	return &issuesStack{pool: pool, srv: srv, h: h, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
 }
 
 // addEvent кладёт событие в батчер; для попадания в спарклайн теста нужен
@@ -294,6 +296,36 @@ func TestWebIssuesList(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("POST %s (outsider) status = %d, want 404", bulkPath, resp.StatusCode)
+	}
+}
+
+// TestWebIssuesListHidesExportButtonsWhenExportsDisabled — на инстансе без
+// каталога выгрузок (h.Exports == nil, дефолт newIssuesStack) кнопки
+// «Выгрузить» на списке ошибок не должны рендериться вовсе: они вели бы на
+// 404 (ревью веб-части E1, п.3). Включаем h.Exports обратно и проверяем, что
+// кнопки появляются — гейт именно по h.Exports, не по чему-то ещё.
+func TestWebIssuesListHidesExportButtonsWhenExportsDisabled(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-exports-owner@example.com")
+	project := createProject(t, s, ownerID, "issues-exports-org", "issues-exports-proj")
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), `action="/projects/`+strconv.FormatInt(project.ID, 10)+`/exports`) {
+		t.Error("кнопки экспорта показаны при h.Exports == nil")
+	}
+
+	s.h.Exports = export.NewStore(s.pool)
+	t.Cleanup(func() { s.h.Exports = nil })
+
+	resp2 := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if !strings.Contains(string(body2), `action="/projects/`+strconv.FormatInt(project.ID, 10)+`/exports`) {
+		t.Error("кнопки экспорта не показаны при включённом h.Exports")
 	}
 }
 
@@ -737,5 +769,55 @@ func TestWebGettingStartedHide(t *testing.T) {
 	resp.Body.Close()
 	if strings.Contains(string(body), "getting-started") {
 		t.Fatalf("чек-лист виден после скрытия: %s", body)
+	}
+}
+
+// TestWebIssuesListExportButtonsShowPIIOnlyForOwner — проверка боевой
+// проводки issues.go (не только рендера templ, который уже покрыт
+// TestIssuesListExportFormsGatePIIByCanManage в internal/web/templates):
+// canManagePII, переданный в IssuesList, обязан быть настоящей ролью
+// (owner/admin), а не, например, тем же значением, что canOperate (это и
+// была бы незамеченная регрессия — оператор увидел бы галку include_pii,
+// хотя бэкенд её для него игнорирует, exports.go:exportsCreate). Владелец
+// (CanManage) видит галку include_pii на кнопках экспорта списка ошибок,
+// оператор без CanManage (доступ только через команду) — нет, но сами
+// кнопки (выбор формата) у него остаются.
+func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "pii-owner@example.com")
+	project := createProject(t, s, ownerID, "pii-org", "pii-proj")
+
+	operatorID, operatorCookie := registerAndLogin(t, s, "pii-operator@example.com")
+	if err := s.org.AddMember(context.Background(), project.OrgID, operatorID, org.RoleMember); err != nil {
+		t.Fatalf("add operator as member: %v", err)
+	}
+	team, err := s.org.CreateTeam(context.Background(), project.OrgID, "pii-team", "pii-team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := s.org.AddTeamMember(context.Background(), team.ID, operatorID); err != nil {
+		t.Fatalf("add team member: %v", err)
+	}
+	if err := s.org.AttachTeam(context.Background(), project.ID, team.ID); err != nil {
+		t.Fatalf("attach team: %v", err)
+	}
+
+	s.h.Exports = export.NewStore(s.pool)
+	t.Cleanup(func() { s.h.Exports = nil })
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	ownerBody := readAll(t, getWithCookie(t, s.srv, issuesPath, ownerCookie))
+	if n := strings.Count(ownerBody, `name="include_pii"`); n != 2 {
+		t.Errorf("владельцу показано %d галок include_pii, want 2 (группы + события): %s", n, ownerBody)
+	}
+
+	operatorBody := readAll(t, getWithCookie(t, s.srv, issuesPath, operatorCookie))
+	if strings.Contains(operatorBody, `name="include_pii"`) {
+		t.Error("оператору без CanManage показана галка include_pii на списке ошибок")
+	}
+	if n := strings.Count(operatorBody, `<select name="format"`); n != 2 {
+		t.Errorf("оператору должны остаться обе кнопки экспорта с выбором формата, селекторов format = %d, want 2", n)
 	}
 }

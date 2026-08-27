@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
@@ -99,7 +100,7 @@ func profileWeightText(profileType, unit string, weight uint64) string {
 	case "seconds":
 		return formatProfileNanos(weight * 1_000_000_000)
 	case "bytes":
-		return formatProfileBytes(weight)
+		return humanize.Bytes(int64(weight))
 	case "count":
 		// Величина без единицы: число сэмплов, объектов, вызовов.
 		return strconv.FormatUint(weight, 10)
@@ -121,7 +122,7 @@ func profileWeightByType(profileType string, weight uint64) string {
 	case "cpu", "wall", "block", "mutex":
 		return formatProfileNanos(weight)
 	case "alloc_space", "inuse_space", "heap":
-		return formatProfileBytes(weight)
+		return humanize.Bytes(int64(weight))
 	default:
 		return strconv.FormatUint(weight, 10)
 	}
@@ -137,20 +138,6 @@ func formatProfileNanos(ns uint64) string {
 		return strconv.FormatFloat(float64(ns)/1e3, 'f', 0, 64) + "µs"
 	default:
 		return strconv.FormatUint(ns, 10) + "ns"
-	}
-}
-
-func formatProfileBytes(b uint64) string {
-	const unit = 1024
-	switch {
-	case b >= unit*unit*unit:
-		return strconv.FormatFloat(float64(b)/(unit*unit*unit), 'f', 2, 64) + "GB"
-	case b >= unit*unit:
-		return strconv.FormatFloat(float64(b)/(unit*unit), 'f', 1, 64) + "MB"
-	case b >= unit:
-		return strconv.FormatFloat(float64(b)/unit, 'f', 1, 64) + "KB"
-	default:
-		return strconv.FormatUint(b, 10) + "B"
 	}
 }
 

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Error and event exports (`/projects/{id}/exports`): queue a background job for a
+  CSV/JSON/NDJSON file of a project's error groups or raw events, filtered by time
+  range/environment, with download and delete on the page. PII (email/IP) is
+  masked by default; raw exports are available only to org admins/owners.
+  Finished files email the author and are kept for a limited time (seven days by
+  default), then cleaned up by a background janitor.
+
 ## [0.21.0] - 2026-08-26
 
 ### Added

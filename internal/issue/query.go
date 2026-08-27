@@ -228,6 +228,152 @@ func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue,
 	return items, total, nil
 }
 
+const exportPageSize = 500
+
+// StreamForExport отдаёт группы проекта постранично по курсору
+// (last_seen, id) — без OFFSET, который на многотысячной выгрузке заставлял
+// бы базу перечитывать уже отданные строки на каждой следующей странице.
+// id обязателен вторым ключом курсора: last_seen массово совпадает у групп,
+// пришедших одной пачкой событий, и сравнение только по нему потеряло бы или
+// задвоило бы строки на границе страницы.
+//
+// WHERE строится buildIssueFilter — тем же кодом, что и List: файл выгрузки
+// обязан ограничиваться ровно тем же фильтром, что человек видел на экране,
+// а не отдельной, потенциально разъехавшейся копией условий.
+//
+// Обход останавливается на первой ошибке fn: источник выгрузки использует её,
+// чтобы прервать поток на потолке строк, не дочитывая выборку до конца.
+func (s *Service) StreamForExport(ctx context.Context, projectID int64, f Filter, fn func(Issue) error) error {
+	where, args := buildIssueFilter(projectID, f)
+
+	var curSeen time.Time
+	var curID int64
+	first := true
+	for {
+		q := "SELECT " + issueColumnsJoined + " FROM " + issueFromJoined + " WHERE " + where
+		pageArgs := args
+		if !first {
+			pageArgs = append(append([]any(nil), args...), curSeen, curID)
+			q += fmt.Sprintf(" AND (issues.last_seen, issues.id) < ($%d, $%d)", len(pageArgs)-1, len(pageArgs))
+		}
+		q += fmt.Sprintf(" ORDER BY issues.last_seen DESC, issues.id DESC LIMIT %d", exportPageSize)
+
+		rows, err := s.pool.Query(ctx, q, pageArgs...)
+		if err != nil {
+			return fmt.Errorf("issue: stream for export: %w", err)
+		}
+		var batch []Issue
+		for rows.Next() {
+			var it Issue
+			if err := scanIssueWithAssignee(rows, &it); err != nil {
+				rows.Close()
+				return fmt.Errorf("issue: stream for export scan: %w", err)
+			}
+			batch = append(batch, it)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("issue: stream for export: %w", err)
+		}
+
+		if len(batch) > 0 {
+			ids := make([]int64, len(batch))
+			for i, it := range batch {
+				ids[i] = it.ID
+			}
+			envs, err := s.environmentsForIssues(ctx, ids)
+			if err != nil {
+				return err
+			}
+			for i := range batch {
+				batch[i].Environments = envs[batch[i].ID]
+			}
+		}
+
+		// Колбэк вызывается после закрытия rows: он может ходить в ту же базу
+		// (источник выгрузки пишет в файл, не в БД, но держать курсор открытым
+		// на всю выгрузку всё равно незачем), курсор двигается по факту отдачи.
+		for _, it := range batch {
+			if err := fn(it); err != nil {
+				return err
+			}
+			curSeen, curID = it.LastSeen, it.ID
+		}
+		if len(batch) < exportPageSize {
+			return nil
+		}
+		first = false
+	}
+}
+
+// IDsForFilter резолвит фильтр списка issues в список id — источнику
+// выгрузки событий (kind=events, область «проект с фильтрами») он нужен,
+// чтобы ограничить обход ClickHouse тем же набором групп, которые человек
+// видел на экране: WHERE строится buildIssueFilter, общим кодом с List и
+// StreamForExport, а не отдельной копией условий.
+//
+// overflow=true — резолвится больше limit групп: обрезать список молча
+// нельзя, какие именно группы выпали бы, вызывающая сторона узнать не
+// может (см. §8 спеки экспорта), поэтому она обязана вернуть отказ с
+// просьбой сузить фильтр вместо тихо неполной выгрузки.
+//
+// Один запрос с LIMIT limit+1, а не курсорный обход постранично, как в
+// StreamForExport: здесь нужен только список id, а не поток строк, и
+// ORDER BY last_seen DESC, id DESC уже даёт полный порядок без OFFSET.
+func (s *Service) IDsForFilter(ctx context.Context, projectID int64, f Filter, limit int) ([]int64, bool, error) {
+	where, args := buildIssueFilter(projectID, f)
+	q := fmt.Sprintf("SELECT issues.id FROM issues WHERE %s ORDER BY issues.last_seen DESC, issues.id DESC LIMIT %d",
+		where, limit+1)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("issue: ids for filter: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, false, fmt.Errorf("issue: ids for filter scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("issue: ids for filter: %w", err)
+	}
+
+	if len(ids) > limit {
+		return ids[:limit], true, nil
+	}
+	return ids, false, nil
+}
+
+// environmentsForIssues возвращает окружения набора групп одним запросом —
+// вместо N+1 похода в issue_environments на каждую строку страницы.
+func (s *Service) environmentsForIssues(ctx context.Context, ids []int64) (map[int64][]string, error) {
+	rows, err := s.pool.Query(ctx,
+		"SELECT issue_id, environment FROM issue_environments WHERE issue_id = ANY($1) ORDER BY issue_id, environment", ids)
+	if err != nil {
+		return nil, fmt.Errorf("issue: environments for issues: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64][]string{}
+	for rows.Next() {
+		var id int64
+		var env string
+		if err := rows.Scan(&id, &env); err != nil {
+			return nil, fmt.Errorf("issue: environments for issues scan: %w", err)
+		}
+		out[id] = append(out[id], env)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("issue: environments for issues: %w", err)
+	}
+	return out, nil
+}
+
 // ActiveSince возвращает issue проекта, у которых last_seen >= since —
 // используется spike-воркером алертинга, чтобы ограничить сканирование окна
 // правила только недавно активными issue, а не всеми issue проекта.

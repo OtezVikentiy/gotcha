@@ -1,8 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 )
@@ -178,4 +182,245 @@ func TestVersionRequestedForms(t *testing.T) {
 		}
 	}
 	_ = strings.TrimSpace("")
+}
+
+// TestExportRowRetention: Store.PurgeRows чистит терминальные строки заявок
+// на выгрузку по finished_at независимо от expires_at (janitor.go). Если бы
+// retention был жёстко зафиксирован на 30 сутках, оператор, поднявший
+// GOTCHA_EXPORT_TTL_HOURS выше 720 (30 суток), получил бы удаление строки
+// ЖИВОЙ (ещё не истёкшей по собственному TTL) заявки раньше её срока —
+// retention обязан расти вместе с TTL, а не оставаться позади него.
+func TestExportRowRetention(t *testing.T) {
+	cases := []struct {
+		name string
+		ttl  time.Duration
+		want time.Duration
+	}{
+		{"дефолтный TTL (7 суток) короче минимума — минимум", 7 * 24 * time.Hour, exportMinRowRetention},
+		{"TTL ровно на минимуме — минимум", exportMinRowRetention, exportMinRowRetention},
+		{"TTL длиннее минимума (60 суток) — растёт вместе с TTL", 60 * 24 * time.Hour, 60 * 24 * time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := exportRowRetention(c.ttl); got != c.want {
+				t.Errorf("exportRowRetention(%s) = %s, want %s", c.ttl, got, c.want)
+			}
+		})
+	}
+}
+
+// TestExportsWiringEnabled: --mode=uptime поднимает outbox (нужен
+// уведомителю детектора аптайма), но НЕ строит issueSvc — воркер выгрузок,
+// поднятый на одном "outbox != nil", разыменовывал бы nil *issue.Service на
+// первой же заявке issues/events и ронял процесс паникой. --mode=ingest тоже
+// строит issueSvc, но webHandler там не строится никогда — раздать файл
+// некому, а джанитор чужой реплики топит заявку в expired раньше срока
+// (P1-OPS-2). Гейт обязан требовать И режим, который отдаёт файл
+// (exportModeServesFiles: web|all), И доступный каталог разом.
+func TestExportsWiringEnabled(t *testing.T) {
+	cases := []struct {
+		name   string
+		mode   string
+		dirOK  bool
+		enable bool
+	}{
+		{"web + каталог доступен — включено", "web", true, true},
+		{"all + каталог доступен — включено", "all", true, true},
+		{"ingest + каталог доступен — файл отдавать некому, выключено", "ingest", true, false},
+		{"uptime + каталог доступен — issueSvc нет, выключено", "uptime", true, false},
+		{"probe + каталог доступен — issueSvc нет, выключено", "probe", true, false},
+		{"web + каталог недоступен — выключено", "web", false, false},
+		{"ingest + каталог недоступен — выключено", "ingest", false, false},
+		{"uptime + каталог недоступен — выключено", "uptime", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := exportsWiringEnabled(c.mode, c.dirOK); got != c.enable {
+				t.Errorf("exportsWiringEnabled(%q, %v) = %v, want %v", c.mode, c.dirOK, got, c.enable)
+			}
+		})
+	}
+}
+
+// TestExportModeServesFiles: единственный источник истины для "кто отдаёт
+// файл выгрузки" — этот список литералов, тот же, что гейтит построение
+// webHandler в run(). ingest намеренно снаружи (P1-OPS-2): issueSvc там
+// есть, маршрутов /projects/{id}/exports — нет.
+func TestExportModeServesFiles(t *testing.T) {
+	for _, mode := range []string{"web", "all"} {
+		if !exportModeServesFiles(mode) {
+			t.Errorf("exportModeServesFiles(%q) = false, want true", mode)
+		}
+	}
+	for _, mode := range []string{"ingest", "uptime", "probe", ""} {
+		if exportModeServesFiles(mode) {
+			t.Errorf("exportModeServesFiles(%q) = true, want false", mode)
+		}
+	}
+}
+
+// TestExportDirWritable_WritableDir: каталог, реально доступный на запись
+// этому процессу, проходит пробу — обычный случай (каталог создан этим же
+// MkdirAll с нужным владельцем).
+func TestExportDirWritable_WritableDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := exportDirWritable(dir); err != nil {
+		t.Fatalf("exportDirWritable(%q) = %v, want nil на каталоге с правами на запись", dir, err)
+	}
+	// Проба не должна оставлять файл после себя — иначе каждый старт плодит
+	// мусор в каталоге выгрузок.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("после exportDirWritable в каталоге осталось %d файлов, want 0: %v", len(entries), entries)
+	}
+}
+
+// TestExportDirWritable_ReadOnlyDir: находка P0-OPS-1 — MkdirAll на
+// каталоге, который Docker создал root:root при монтировании свежего тома,
+// возвращает nil (каталог уже существует), хотя писать в него процесс не
+// может. exportDirWritable обязан поймать именно этот случай мутацией
+// врезки: каталог 0o555 (только чтение+исполнение, без записи) существует,
+// но проба обязана вернуть ошибку.
+func TestExportDirWritable_ReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root игнорирует биты записи — проба не сработает под root")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("Chmod(%q, 0o555): %v", dir, err)
+	}
+	defer os.Chmod(dir, 0o755) // иначе t.TempDir() не сможет убрать за собой
+	if err := exportDirWritable(dir); err == nil {
+		t.Errorf("exportDirWritable(%q) = nil на read-only каталоге, want ошибку (P0-OPS-1: MkdirAll молчит, писать некому)", dir)
+	}
+}
+
+// TestExportDirWritable_ConcurrentReplicas: несколько web-реплик за
+// балансировщиком на общем томе выгрузок (internal/docs/{ru,en}/exports.md
+// признаёт это поддерживаемым сценарием) стартуют и зовут exportDirWritable
+// параллельно. С фиксированным именем ".probe" одна реплика удаляла файл,
+// который параллельно создала и уже удалила другая, и ловила на своём
+// os.Remove ENOENT — раздел выгрузок ложно выключался на проигравшей
+// реплике до рестарта, хотя каталог доступен на запись. Имя пробы обязано
+// быть уникальным на каждый вызов, поэтому все N конкурентных вызовов на
+// одном каталоге обязаны вернуть nil.
+func TestExportDirWritable_ConcurrentReplicas(t *testing.T) {
+	dir := t.TempDir()
+	const n = 100
+
+	var ready sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+
+	ready.Add(n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			errs[i] = exportDirWritable(dir)
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	failed := 0
+	for i, err := range errs {
+		if err != nil {
+			failed++
+			if failed <= 3 {
+				t.Logf("вызов %d: %v", i, err)
+			}
+		}
+	}
+	if failed != 0 {
+		t.Errorf("exportDirWritable: %d/%d конкурентных вызовов на общем каталоге вернули ошибку, want 0 (гонка на имени пробы)", failed, n)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("после %d конкурентных вызовов в каталоге осталось %d файлов, want 0: %v", n, len(entries), entries)
+	}
+}
+
+// TestEnsureExportDirCreatesWithMode0700: каталог выгрузок — единственное
+// место продукта, где ПДн (см. worker.go, файлы внутри уже 0600) ложатся на
+// диск целым каталогом, а не файлом. Остаток P3-SEC-1: 0755 отдавал листинг
+// каталога и содержимое файлов любому, кто читает с этого же хоста; сосед по
+// процессу не должен иметь права даже на чтение листинга.
+func TestEnsureExportDirCreatesWithMode0700(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "exports")
+
+	if err := ensureExportDir(dir); err != nil {
+		t.Fatalf("ensureExportDir(%q): %v", dir, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", dir, err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o700 {
+		t.Errorf("режим каталога выгрузок = %o, want 0700", mode)
+	}
+}
+
+// TestWaitGroupWithTimeoutReturnsTrueWhenGoroutinesFinish (P2-OPS-5):
+// воркер/джанитор выгрузок, отпущенные отменой ctx, обязаны дать drain()
+// увидеть их завершение — a не всегда упираться в таймаут окна, иначе
+// каждый деплой ждал бы полные 5с зря.
+func TestWaitGroupWithTimeoutReturnsTrueWhenGoroutinesFinish(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(5 * time.Millisecond)
+	}()
+
+	start := time.Now()
+	ok := waitGroupWithTimeout(&wg, time.Second)
+	elapsed := time.Since(start)
+
+	if !ok {
+		t.Fatal("waitGroupWithTimeout = false, хотя горутина завершилась в срок")
+	}
+	if elapsed >= time.Second {
+		t.Errorf("waitGroupWithTimeout дождался всего окна (%s) вместо возврата сразу после Done()", elapsed)
+	}
+}
+
+// TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow (P2-OPS-5):
+// зависшая горутина (не отвечает на отмену ctx) не имеет права держать
+// drain() дольше окна — это ровно тот сценарий, ради которого в main.go
+// стоит select с time.After, а не голый wg.Wait(). Мутация — заменить тело
+// на голый wg.Wait() (без select/timeout) — обязана уронить этот тест
+// таймаутом самого теста (goroutine leak detector) или зависанием.
+func TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	release := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		<-release
+	}()
+	t.Cleanup(func() { close(release) })
+
+	start := time.Now()
+	ok := waitGroupWithTimeout(&wg, 30*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("waitGroupWithTimeout = true, хотя горутина не завершилась")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("waitGroupWithTimeout ждал %s — окно (30ms) не ограничило ожидание", elapsed)
+	}
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -140,5 +142,74 @@ func TestStorageSourcesAgainstRealDatabases(t *testing.T) {
 	// что запрос ушёл не в ту базу или вернул не то поле.
 	if used == 0 {
 		t.Fatal("postgres: pg_database_size вернул 0 на свежемигрированной базе")
+	}
+}
+
+// TestExportDirUsedBytesSourceReflectsRealFiles: каталог выгрузок — единственный
+// кусок диска, которым распоряжается само приложение, и до P1-OPS-1 он был
+// единственным неизмеряемым (gotcha_storage_used_bytes был зарегистрирован
+// только под store="postgres"). Значение обязано меняться вместе с реальным
+// содержимым каталога, а не быть заглушкой.
+func TestExportDirUsedBytesSourceReflectsRealFiles(t *testing.T) {
+	dir := t.TempDir()
+	src := exportDirUsedBytesSource{dir: dir}
+
+	used, err := src.stat(context.Background())
+	if err != nil {
+		t.Fatalf("stat на пустом каталоге: %v", err)
+	}
+	if used != 0 {
+		t.Errorf("used = %d на пустом каталоге, want 0", used)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "1.csv"), make([]byte, 500), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "2.csv.part"), make([]byte, 250), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	used, err = src.stat(context.Background())
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if used != 750 {
+		t.Errorf("used = %d, want 750 (500 + 250 — сумма файлов каталога)", used)
+	}
+}
+
+// TestExportDirUsedBytesSourceStatMissingDir: каталог выгрузок отсутствует —
+// stat обязан вернуть ошибку, а не молча подменить её нулём. Если бы отсутствие
+// каталога читалось как used=0, поллер (usedBytesPoller.poll) увидел бы это как
+// успешный опрос и никогда не оставил бы метрику в NaN — а NaN здесь ровно то,
+// что отличает «данных 0 байт» от «каталог недоступен» (см. docstring
+// diskPoller.snap про тот же приём для free/total).
+func TestExportDirUsedBytesSourceStatMissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist")
+	src := exportDirUsedBytesSource{dir: dir}
+
+	if _, err := src.stat(context.Background()); err == nil {
+		t.Fatal("stat на отсутствующем каталоге = nil, want ошибку")
+	}
+}
+
+// TestExportDirUsedBytesSourceStatUnreadableDir: тот же случай, но каталог
+// есть, а прав на чтение нет (например, смонтирован с чужим владельцем) — та
+// же находка P0-OPS-1, что и у exportDirWritable
+// (TestExportDirWritable_ReadOnlyDir в wiring_test.go), только для соседнего
+// источника метрик.
+func TestExportDirUsedBytesSourceStatUnreadableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root игнорирует биты доступа — проба не сработает под root")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatalf("Chmod(%q, 0o000): %v", dir, err)
+	}
+	defer os.Chmod(dir, 0o755) // иначе t.TempDir() не сможет убрать за собой
+
+	src := exportDirUsedBytesSource{dir: dir}
+	if _, err := src.stat(context.Background()); err == nil {
+		t.Fatal("stat на недоступном каталоге = nil, want ошибку")
 	}
 }

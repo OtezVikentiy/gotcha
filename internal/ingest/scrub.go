@@ -16,6 +16,25 @@ const scrubMask = "[scrubbed]"
 // заголовок X-Api-Key и ключ api_key должны совпасть, хотя дефис ≠ подчёркивание.
 var sepReplacer = strings.NewReplacer("-", "", "_", "", " ", "", ".", "")
 
+// defaultDenyKeys — denylist ключей для PII-scrubbing по умолчанию (PRIV-H1).
+// Матчинг — по подстроке нормализованного имени поля (см. Scrubber.denied),
+// поэтому "pass" покрывает и password/passphrase, а "pwd" — поле логин-формы
+// WordPress и mysql_pwd: без него пароль из тела POST /wp-login.php уходил
+// в событие в открытом виде (аудит 2026-08-21). Живёт здесь, а не в
+// cmd/gotcha/config.go, чтобы выгрузка (internal/export) маскировала те же
+// ключи теми же правилами — два независимых списка разъехались бы при
+// первой же правке одного из них.
+var defaultDenyKeys = []string{
+	"password", "passwd", "pwd", "pass", "token", "secret", "authorization", "auth",
+	"cookie", "api_key", "apikey", "access_token", "refresh_token",
+	"session", "credit_card", "card_number", "cvv",
+}
+
+// DefaultDenyKeys возвращает копию дефолтного denylist-а приёма. Копия — чтобы
+// вызывающий код (например, export.MaskJSON) не мог случайно испортить
+// пакетный список через срез.
+func DefaultDenyKeys() []string { return append([]string(nil), defaultDenyKeys...) }
+
 func normKey(s string) string { return sepReplacer.Replace(strings.ToLower(s)) }
 
 // emailTextMask — маска для email, найденного в СВОБОДНОМ тексте (RA-L10).

@@ -38,6 +38,7 @@ var flashKeys = map[string]bool{
 	"flash.escalations_saved": true,
 	"flash.subject_purged":    true,
 	"flash.invite_revoked":    true,
+	"flash.export_requested":  true,
 	// Удаление проекта и организации сообщает про ОЧЕРЕДЬ, а не про
 	// выполненную очистку: телеметрия в ClickHouse на момент ответа ещё жива,
 	// её удаляет фоновый исполнитель. Сказать «удалено» здесь означало бы
