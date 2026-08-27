@@ -38,7 +38,14 @@ func (rl *rateLimiter) Allow(key string) bool {
 
 	now := rl.now()
 
-	// Sweep expired entries if map grows too large
+	// Порог считает КОЛИЧЕСТВО ключей в карте, а не занимаемую ими память —
+	// это корректно ТОЛЬКО пока каждый вызывающий код строит ограниченный по
+	// длине ключ; сам rateLimiter это не проверяет и не может проверить.
+	// Для email-based ключей (per-account и per-email лимитеры логина/
+	// регистрации) граница обеспечена limiterEmailKeyPart и константами
+	// maxEmailKeyBytes/oversizedEmailBucket ниже — без неё ключ мог бы
+	// весить мегабайты, и порог не сработал бы раньше, чем карта раздулась
+	// бы до десятков гигабайт.
 	if len(rl.hits) > 10000 {
 		rl.sweepExpired(now)
 	}
@@ -195,7 +202,40 @@ func ipInNets(ip net.IP, nets []*net.IPNet) bool {
 	return false
 }
 
-// rateLimitKey строит ключ ip|email для per-account лимитера логина/регистрации.
+// maxEmailKeyBytes — верхняя граница длины email по RFC 5321 (максимум пути
+// в конверте — 254 байта, включая локальную часть, @ и домен). Всё длиннее
+// в принципе не может быть валидным адресом и логин по нему не пройдёт.
+const maxEmailKeyBytes = 254
+
+// oversizedEmailBucket — общий ключ-«ведро» для полей email длиннее
+// maxEmailKeyBytes, см. limiterEmailKeyPart.
+const oversizedEmailBucket = "oversized"
+
+// limiterEmailKeyPart — email-часть ключа рейт-лимитера: нижний регистр,
+// обрезанные пробелы, длина ограничена maxEmailKeyBytes. Поле email
+// приходит из формы логина/регистрации без ограничения размера, а
+// вызывающая сторона кладёт результат в rl.hits ДО того, как успевает
+// отработать per-IP лимитер, и не освобождает ключ при отказе
+// (rl.hits[key] = fresh сохраняет саму строку) — поэтому длина должна быть
+// ограничена здесь, в ЕДИНСТВЕННОМ месте, где строится email-часть ключа
+// (используется и per-account rateLimitKey ниже, и напрямую для
+// h.emailLimiter в auth.go), а не по счастливой случайности одного из двух
+// путей. Любой email длиннее maxEmailKeyBytes схлопывается в общий ключ
+// (oversizedEmailBucket), а не получает по ключу на попытку.
+//
+// Не путать с normalizeEmail (auth.go): та нормализация используется и там,
+// где кап по длине недопустим — сравнение/поиск аккаунта, — обрезка иначе
+// схлопнула бы разные адреса в один и тот же аккаунт.
+func limiterEmailKeyPart(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if len(email) > maxEmailKeyBytes {
+		return oversizedEmailBucket
+	}
+	return email
+}
+
+// rateLimitKey строит ключ ip|email для per-account лимитера логина/
+// регистрации, см. limiterEmailKeyPart про кап длины email-части.
 func (h *Handler) rateLimitKey(r *http.Request, email string) string {
-	return h.clientIP(r) + "|" + strings.ToLower(strings.TrimSpace(email))
+	return h.clientIP(r) + "|" + limiterEmailKeyPart(email)
 }

@@ -14,6 +14,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
+// authFormMaxBodyBytes — потолок тела POST для форм логина, регистрации и
+// выбора SSO. Полям формы (email, пароль, next) с большим запасом хватает
+// нескольких сотен байт; значение взято на порядки ниже дефолтного потолка
+// net/http на форму (10 МиБ) — без явного лимита это тело доходит до
+// rateLimitKey (см. ratelimit.go) целиком, каким бы большим оно ни было.
+const authFormMaxBodyBytes = 8 << 10 // 8 KiB
+
 // providerLabel — подпись OAuth-провайдера по локали зрителя (№137): у
 // известных провайдеров ключ oauth.provider.<name> в каталоге, у generic
 // OIDC с произвольным именем из конфига ключа нет (T возвращает сам ключ) —
@@ -203,6 +210,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		h.denyCrossOrigin(w, r)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, authFormMaxBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -214,7 +222,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// per-email (без IP) — против распределённого перебора одного аккаунта с пула
 	// IP. Любое превышение → 429. Порядок важен: короткое замыкание || не
 	// расходует последующие бакеты, если ранний уже отказал.
-	emailKey := strings.ToLower(strings.TrimSpace(email))
+	emailKey := limiterEmailKeyPart(email)
 	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
 		!h.emailLimiter.Allow(emailKey) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -261,6 +269,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		h.denyCrossOrigin(w, r)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, authFormMaxBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -275,7 +284,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	// без него распределённый перебор одного приглашённого адреса с пула IP не
 	// ограничивался ничем.
 	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
-		!h.emailLimiter.Allow(normalizeEmail(email)) {
+		!h.emailLimiter.Allow(limiterEmailKeyPart(email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
@@ -396,6 +405,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 		h.denyCrossOrigin(w, r)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, authFormMaxBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
