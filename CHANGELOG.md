@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-27
+
 ### Added
 - Error and event exports (`/projects/{id}/exports`): queue a background job for a
   CSV/JSON/NDJSON file of a project's error groups or raw events, filtered by time
