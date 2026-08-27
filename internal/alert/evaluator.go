@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
@@ -59,6 +60,11 @@ type Evaluator struct {
 	// таблицы инцидентов и флага (они throttle+budget-based), поэтому гейт
 	// стоит ДО claimThrottle/claimBudget в OnIssue, а не флагом на записи.
 	Maint MaintenanceChecker
+
+	// Projects — источник имени проекта для темы/тела/webhook-payload
+	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
+	// уведомления идут без имени проекта, как до этой правки.
+	Projects escalation.ProjectNamer
 }
 
 // issueAlertKindLabel — человекочитаемое имя вида алерта для темы письма.
@@ -137,49 +143,60 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		"title", ev.Title, "culprit", ev.Culprit, "level", ev.Level,
 		"count", strconv.FormatInt(ev.TimesSeen, 10), "url", url)
 
-	// deliverableCount/enqueued отслеживают, был ли хоть один УСПЕШНЫЙ
-	// Enqueue среди каналов, куда вообще стоило слать: см. откат claim'ов
-	// после цикла.
+	// deliverableCount — сколько каналов ВООБЩЕ стоило слать (Deliverable +
+	// email-fallback), независимо от исхода доставки: нужен только для
+	// решения об откате claim'ов ниже (deliverableCount>0 && enqueued==0 —
+	// полный провал). Сама доставка — общий контур (escalation.Dispatch,
+	// W3-E): гейт доставляемости, email-fallback, имя проекта, редакция ПДн —
+	// раньше был переписан здесь же (седьмая копия из семи, см. отчёт W3-E).
 	deliverableCount := 0
-	enqueued := 0
 	for _, ch := range channels {
 		if !ch.Deliverable() {
 			continue
 		}
 		if ch.Kind == ChannelEmail && !e.EmailEnabled {
-			slog.Warn("alert: email channel skipped, SMTP not configured",
-				"project_id", ev.ProjectID, "channel_id", ch.ID)
 			continue
 		}
 		deliverableCount++
-
-		payload := map[string]any{
-			"kind":         ev.Kind,
-			"project_id":   ev.ProjectID,
-			"issue_id":     ev.IssueID,
-			"title":        ev.Title,
-			"culprit":      ev.Culprit,
-			"level":        ev.Level,
-			"times_seen":   ev.TimesSeen,
-			"url":          url,
-			"subject":      subject,
-			"body":         body,
-			"channel_kind": ch.Kind,
-			"target":       ch.Target,
-		}
-		if !e.Details.AllowsDetails(ch) {
-			// Обезличиваем payload для внешних каналов: без title/culprit/
-			// level и без текста ошибки в теле/subject — только маршрутные
-			// поля, ссылка на issue и вид алерта (см. Evaluator.Details
-			// и notify.RedactExternalPayload — тот же гейт во всех нотифаерах).
-			payload = notify.RedactExternalPayload(lctx, payload)
-		}
-		if err := e.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
-			slog.Error("alert: enqueue failed", "channel_id", ch.ID, "error", err)
-			continue
-		}
-		enqueued++
 	}
+
+	dchans := make([]escalation.DispatchChannel, 0, len(channels))
+	for _, ch := range channels {
+		dchans = append(dchans, escalation.DispatchChannel{
+			ID: ch.ID, Kind: ch.Kind, Target: ch.Target,
+			IsEmail:       ch.Kind == ChannelEmail,
+			Deliverable:   ch.Deliverable(),
+			AllowsDetails: e.Details.AllowsDetails(ch),
+		})
+	}
+
+	// lctx, не ctx: Dispatch зовёт notify.WithProjectSubject/WithProjectBody и
+	// (на обезличенном пути) notify.RedactExternalPayload, оба берут локаль
+	// уведомления из ctx — тем же lctx уже построены subject/body выше
+	// (класс №133–136, см. её комментарий). База ctx дала бы им дефолтную
+	// локаль i18n, расходящуюся с уже локализованным текстом, если
+	// GOTCHA_LOCALE отличается от дефолта.
+	enqueuedIDs, err := escalation.Dispatch(lctx,
+		escalation.DispatchDeps{Outbox: e.Outbox, EmailEnabled: e.EmailEnabled, Projects: e.Projects, LogTag: "alert"},
+		escalation.DispatchInput{
+			ProjectID: ev.ProjectID, Kind: ev.Kind, Subject: subject, Body: body,
+			URL: url,
+			Extra: map[string]any{
+				"issue_id":   ev.IssueID,
+				"title":      ev.Title,
+				"culprit":    ev.Culprit,
+				"level":      ev.Level,
+				"times_seen": ev.TimesSeen,
+			},
+			Channels: dchans,
+		})
+	if err != nil {
+		// OnIssue контрактом не возвращает ошибку (алертинг не должен ронять
+		// приём событий/spike-тик) — Dispatch уже залогировал каждый
+		// провалившийся канал по отдельности, здесь достаточно отбросить.
+		slog.Error("alert: dispatch failed", "project_id", ev.ProjectID, "issue_id", ev.IssueID, "error", err)
+	}
+	enqueued := len(enqueuedIDs)
 
 	// claimThrottle/claimBudget заняты ДО этого цикла ради дедупа (см. их
 	// комментарии): два конкурентных OnIssue для одного issue+rule не должны

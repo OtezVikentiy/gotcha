@@ -41,6 +41,19 @@ func (n *countingNotifier) Notify(_ context.Context, ev Event) error {
 	return nil
 }
 
+// NotifyOpenStep0/NotifyRecovery — not exercised by these SSL/reminder races
+// (they never open an incident), kept minimal to satisfy Notifier.
+func (n *countingNotifier) NotifyOpenStep0(_ context.Context, ev Event) ([]int64, error) {
+	if err := n.Notify(context.Background(), ev); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (n *countingNotifier) NotifyRecovery(context.Context, int64, []int64) error {
+	return n.Notify(context.Background(), Event{Kind: "up"})
+}
+
 func (n *countingNotifier) count(kind string) int {
 	n.mu.Lock()
 	defer n.mu.Unlock()

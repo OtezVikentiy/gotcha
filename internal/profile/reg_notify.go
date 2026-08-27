@@ -2,9 +2,7 @@ package profile
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -52,6 +50,11 @@ type RegressionNotifier struct {
 	// incident_escalations (B4, T6, миграция 0077) после каждого успешного
 	// Enqueue в NotifyStep.
 	Pool *pgxpool.Pool
+
+	// Projects — источник имени проекта для темы/тела/webhook-payload
+	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
+	// уведомления идут без имени проекта, как до этой правки.
+	Projects escalation.ProjectNamer
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -117,13 +120,15 @@ func profileRegressionEvent(r Regression, opened bool) ProfileRegressionEvent {
 	}
 }
 
-// dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
-// набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
-// (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
-// email-гейта (эскалация в конкретную ступень лесенки). Возвращает ID
-// каналов, в которые задача РЕАЛЬНО поставлена — логировать их в
-// incident_escalations или нет, решает вызывающий (эволюатор через
-// escalation.SendStepIfDue), не dispatch.
+// dispatch — сборка списка каналов проекта и передача готового уведомления в
+// общий контур доставки (escalation.Dispatch, W3-E): гейт доставляемости,
+// фильтр channelIDs, email-fallback, имя проекта, редакция ПДн. channelIDs
+// (B4, T6) — набор каналов, в которые слать: nil/пусто — все
+// deliverable-каналы проекта (старое поведение Notify), непустой — фильтр по
+// членству ПОСЛЕ Deliverable/email-гейта (эскалация в конкретную ступень
+// лесенки). Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена —
+// логировать их в incident_escalations или нет, решает вызывающий (эволюатор
+// через escalation.SendStepIfDue), не dispatch.
 func (n *RegressionNotifier) dispatch(ctx context.Context, ev ProfileRegressionEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.ProjectID)
 	if err != nil {
@@ -136,52 +141,31 @@ func (n *RegressionNotifier) dispatch(ctx context.Context, ev ProfileRegressionE
 	subject := regressionSubject(ctx, ev)
 	body := regressionBody(ctx, ev, url)
 
-	var errs error
-	var enqueued []int64
+	dchans := make([]escalation.DispatchChannel, 0, len(channels))
 	for _, ch := range channels {
-		if !ch.Deliverable() {
-			continue
-		}
-		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
-			continue
-		}
-		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
-			slog.Warn("profile: regression email channel skipped, SMTP not configured",
-				"project_id", ev.ProjectID, "channel_id", ch.ID)
-			continue
-		}
-		payload := map[string]any{
-			"kind":           regressionKind(ev),
-			"project_id":     ev.ProjectID,
-			"service":        ev.Service,
-			"profile_type":   ev.ProfileType,
-			"function":       ev.Function,
-			"baseline_share": ev.BaselineShare,
-			"current_share":  ev.CurrentShare,
-			"pct_increase":   ev.PctIncrease,
-			"url":            url,
-			"subject":        subject,
-			"body":           body,
-			"channel_kind":   ch.Kind,
-			"target":         ch.Target,
-			// Секрета в payload нет намеренно: notification_outbox.payload —
-			// обычный jsonb, и bot-токен в нём обесценил бы шифрование
-			// alert_channels.secret. notify.Worker достаёт секрет по
-			// channel_id в момент отправки (см. notify.SecretResolver).
-		}
-		// Гейт трансграничной передачи: получателю вне контура оператора
-		// уходит обезличенный payload (см. notify.RedactExternalPayload).
-		if !n.Details.AllowsDetails(ch) {
-			payload = notify.RedactExternalPayload(ctx, payload)
-		}
-		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
-			slog.Error("profile: regression notify: enqueue failed", "channel_id", ch.ID, "error", err)
-			errs = errors.Join(errs, fmt.Errorf("profile: regression notify: enqueue channel %d: %w", ch.ID, err))
-			continue
-		}
-		enqueued = append(enqueued, ch.ID)
+		dchans = append(dchans, escalation.DispatchChannel{
+			ID: ch.ID, Kind: ch.Kind, Target: ch.Target,
+			IsEmail:       ch.Kind == alert.ChannelEmail,
+			Deliverable:   ch.Deliverable(),
+			AllowsDetails: n.Details.AllowsDetails(ch),
+		})
 	}
-	return enqueued, errs
+
+	return escalation.Dispatch(ctx,
+		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "profile"},
+		escalation.DispatchInput{
+			ProjectID: ev.ProjectID, Kind: regressionKind(ev), Subject: subject, Body: body,
+			URL: url,
+			Extra: map[string]any{
+				"service":        ev.Service,
+				"profile_type":   ev.ProfileType,
+				"function":       ev.Function,
+				"baseline_share": ev.BaselineShare,
+				"current_share":  ev.CurrentShare,
+				"pct_increase":   ev.PctIncrease,
+			},
+			ChannelIDs: channelIDs, Channels: dchans,
+		})
 }
 
 func regressionKind(ev ProfileRegressionEvent) string {

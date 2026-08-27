@@ -48,6 +48,23 @@ var externalSafeKeys = map[string]struct{}{
 	// RedactExternalPayload).
 	"kind": {},
 	"url":  {},
+	// Имя проекта (W3-E) — ПРИНЯТЫЙ РИСК, не "не несёт ПДн": оператор задаёт
+	// его свободным текстом при создании проекта и теоретически МОЖЕТ вписать
+	// туда то же чувствительное, что и в monitor_name/target_name/host_name
+	// (те как раз НЕ в этом списке ровно по этой причине — см. предупреждение
+	// выше про title/culprit/... /monitor_name/target_name). Отличие, из-за
+	// которого решение здесь другое: (а) project_name — граница
+	// аренды/маршрута, того же уровня, что уже белый числовой project_id
+	// (эта запись делает его человекочитаемым, не заводит новую категорию
+	// данных, которой не было в списке); (б) DetailPolicy держит Telegram
+	// внешним ВСЕГДА (chat_id не разобрать как получателя), то есть это
+	// самый частый потребитель обезличенного payload — и без project_name он
+	// не отличил бы канал на несколько проектов иначе как по голому числу.
+	// Риск того, что оператор всё же впишет чувствительное в имя проекта,
+	// остаётся МЕНЬШЕ, чем цена его полного сокрытия (проект неопознаваем
+	// именно там, где отличить его нужнее всего) — решение сознательное, не
+	// заявление о безопасности поля.
+	"project_name": {},
 	// Числовые идентификаторы и счётчики: маршрутные, не несут текста ошибки.
 	"project_id":       {},
 	"issue_id":         {},
@@ -148,7 +165,17 @@ func RedactExternalPayload(ctx context.Context, payload map[string]any) map[stri
 		out["url"] = short
 	}
 	label := redactedKindLabel(ctx, kind)
-	out["subject"] = i18n.Tf(ctx, "notify.redacted.subject", "kind", label)
-	out["body"] = i18n.Tf(ctx, "notify.redacted.body", "kind", label, "url", url)
+	subject := i18n.Tf(ctx, "notify.redacted.subject", "kind", label)
+	body := i18n.Tf(ctx, "notify.redacted.body", "kind", label, "url", url)
+	// Имя проекта переживает редакцию (project_name — в externalSafeKeys
+	// выше): обезличенный путь — как раз тот случай, где оно нужнее всего
+	// (см. WithProjectSubject/WithProjectBody) — один и тот же внешний канал
+	// на несколько проектов иначе неотличим по голому "[Gotcha] {kind}".
+	if name, _ := out["project_name"].(string); name != "" {
+		subject = WithProjectSubject(ctx, subject, name)
+		body = WithProjectBody(ctx, body, name)
+	}
+	out["subject"] = subject
+	out["body"] = body
 	return out
 }

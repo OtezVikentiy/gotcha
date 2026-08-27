@@ -4,6 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
 // Event — что случилось с монитором (вход для системы уведомлений, task 2).
@@ -18,9 +22,25 @@ type Event struct {
 }
 
 // Notifier доставляет Event во внешний мир (email/slack/webhook/...).
-// Реализация — задача 2 этого плана.
 type Notifier interface {
+	// Notify — разовая доставка события вне лесенки эскалации: ssl_expiring/
+	// reminder (Watchdog) — у них нет открытого инцидента, и адресовать
+	// recovery попросту некому.
 	Notify(ctx context.Context, ev Event) error
+
+	// NotifyOpenStep0 — "down" уровня 0 (Detector, свой B5 hold/grace/ретрай
+	// — W2-C находка 1): не идёт через escalation.SendStepIfDue (см. её
+	// комментарий про OpenUnacked), поэтому возвращает РЕАЛЬНО заенкененные
+	// каналы — Detector логирует их в incident_escalations как шаг 0 сам
+	// (W3-E), иначе RecoveryChannels не находил бы их для инцидента, не
+	// дошедшего до эскалации уровня 1 (большинство), и адресный "up" не
+	// уходил бы им никогда.
+	NotifyOpenStep0(ctx context.Context, ev Event) ([]int64, error)
+
+	// NotifyRecovery — CLOSE-уведомление в ЗАДАННЫЕ channelIDs (B4, T6; W3-E:
+	// аптайм заведён в общий адресный контур recovery, как у остальных пяти
+	// источников инцидентов).
+	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
 // Detector — детекция инцидентов по региональному консенсусу, поверх
@@ -48,6 +68,14 @@ type Detector struct {
 	// отложенный "down", если к этому моменту падение родителя не
 	// подтвердилось. Не используется, если Dep == nil.
 	SettleGrace time.Duration
+
+	// Pool — PG для incident_escalations (W3-E): notifyOpen логирует туда
+	// шаг 0 сам (см. Notifier.NotifyOpenStep0), resolveIncident читает оттуда
+	// адресатов recovery (escalation.RecoveryChannels). nil — то же самое, что
+	// Notifier == nil: без пула логировать/адресовать нечем, и оба этапа
+	// молча пропускаются (тот же nil-совместимый приём, что у Dep/
+	// IncidentGroups выше).
+	Pool *pgxpool.Pool
 }
 
 // depChecker — подмножество depsuppress.Suppressor, нужное детектору uptime
@@ -321,7 +349,7 @@ func (d *Detector) openIncident(ctx context.Context, m Monitor, states []State, 
 	if hasParent {
 		return
 	}
-	d.notify(ctx, inc.ID, true, downEvent(m, inc, downRegions, cause))
+	d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 }
 
 // downEvent строит "down"-Event, общий для синхронного пути (openIncident,
@@ -349,7 +377,11 @@ func downEvent(m Monitor, inc Incident, downRegions []string, cause string) Even
 // ретраится немедленно, минуя весь B5-гейт.
 func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incident, states []State, st State, now time.Time) {
 	if inc.NotifiedOpen {
-		return // уже уведомлён — ничего не делаем
+		// Уже уведомлён — доставку повторять не за чем, но лог шага 0 мог
+		// не дописаться с первой попытки (W3-E, миграция 0086) — доберём его
+		// здесь же, на следующих тиках, пока инцидент открыт.
+		d.retryStepZeroLog(ctx, inc)
+		return
 	}
 	if inc.NotifyOpenFailed {
 		// Попытка доставки УЖЕ БЫЛА и провалилась — это НЕ "сознательно не
@@ -365,7 +397,7 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 		}
 		downRegions := regionsWithStatus(states, "down")
 		cause := causeFrom(st, states)
-		d.notify(ctx, inc.ID, true, downEvent(m, inc, downRegions, cause))
+		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 		return
 	}
 	if inc.SuppressedByDep || inc.InMaintenance || d.Dep == nil {
@@ -400,7 +432,7 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 		}
 		downRegions := regionsWithStatus(states, "down")
 		cause := causeFrom(st, states)
-		d.notify(ctx, inc.ID, true, downEvent(m, inc, downRegions, cause))
+		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 	default:
 		// В грейсе, родитель пока жив (или ParentDown ошибся) — держим.
 	}
@@ -428,45 +460,133 @@ func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time
 	// fires. Both leave NotifiedOpen=false, and both must stay silent on
 	// resolve: sending "up" with no matching "down" is a confusing recovery
 	// notification for an outage the recipient was never told about.
-	if !resolved || inc.InMaintenance || !inc.NotifiedOpen || d.Notifier == nil {
+	if !resolved || inc.InMaintenance || !inc.NotifiedOpen || d.Notifier == nil || d.Pool == nil {
 		return
 	}
 
-	var duration int64
-	if inc.ResolvedAt != nil {
-		duration = int64(inc.ResolvedAt.Sub(inc.StartedAt).Seconds())
+	// Последний шанс добрать лог шага 0 ПЕРЕД тем, как читать
+	// RecoveryChannels ниже (W3-E, миграция 0086): если монитор ушёл в
+	// recovery раньше, чем settleHeldIncident успел заметить незалогированный
+	// шаг (инцидент мог ни разу не пройти через неё — "down" сразу сменился
+	// "up"), это последняя точка, где его можно дописать до того, как
+	// RecoveryChannels посчитает набор адресатов.
+	d.retryStepZeroLog(ctx, inc)
+
+	// W3-E (кластер 4, находка «аптайм ходит мимо адресного контура»):
+	// recovery адресуется каналам, которые реально видели хотя бы одну
+	// ступень эскалации этого инцидента (RecoveryChannels) — тем же приёмом,
+	// что и у остальных пяти источников (host/metric/slo/profile/trace,
+	// notifyClose), а не всем каналам монитора/проекта заново. Раньше "up"
+	// шёл тем же путём, что и "down" уровня 0 (Notify с channelIDs=nil), и
+	// канал, ни разу не увидевший тревогу (лесенка с delay>0, ещё не
+	// дошедшая до него), мог первым увидеть «инцидент закрыт». Пустой набор
+	// каналов — молчание: ничего не отправлялось, отправлять «закрыт» нечего
+	// (M-7 брифа Task 6). Это работает только потому, что notifyOpen сама
+	// логирует шаг 0 в incident_escalations (см. её докблок) — без этого
+	// RecoveryChannels был бы пуст для КАЖДОГО инцидента, не дошедшего до
+	// эскалации уровня 1, и "up" не уходил бы почти никогда.
+	//
+	// ВИДИМОЕ ИЗМЕНЕНИЕ ПОВЕДЕНИЯ: если набор каналов монитора/проекта менялся
+	// после открытия инцидента (канал добавили/выключили между "down" и
+	// "up"), recovery теперь уходит РОВНО туда, куда реально ушла хотя бы
+	// одна ступень, а не всем ТЕКУЩИМ каналам заново. Для типичной настройки
+	// (набор каналов не меняется за время жизни инцидента) видимой разницы
+	// нет.
+	chs, err := escalation.RecoveryChannels(ctx, d.Pool, "uptime", inc.ID)
+	if err != nil {
+		slog.Error("uptime: detector: recovery channels failed", "incident_id", inc.ID, "error", err)
+		return
 	}
-	d.notify(ctx, inc.ID, false, Event{
-		Kind:            "up",
-		Monitor:         m,
-		Incident:        inc,
-		DurationSeconds: duration,
-	})
+	if len(chs) == 0 {
+		return
+	}
+	if err := d.Notifier.NotifyRecovery(ctx, inc.ID, chs); err != nil {
+		slog.Error("uptime: detector: notify recovery failed", "incident_id", inc.ID, "error", err)
+		return
+	}
+	if err := d.Svc.MarkNotified(ctx, inc.ID, false); err != nil {
+		slog.Error("uptime: detector: mark notified failed", "incident_id", inc.ID, "error", err)
+	}
 }
 
-// notify отправляет ev через Notifier и, только при успехе, помечает
-// инцидент как уведомлённый. Ошибка Notify логируется и проглатывается —
-// см. комментарий OnResult.
-func (d *Detector) notify(ctx context.Context, incidentID int64, open bool, ev Event) {
-	if err := d.Notifier.Notify(ctx, ev); err != nil {
-		slog.Error("uptime: detector: notify failed", "incident_id", incidentID, "kind", ev.Kind, "error", err)
-		// open=true (W2-C находка 1): провал доставки "down" помечается
-		// явно, отдельно от notified_open — settleHeldIncident увидит
-		// NotifyOpenFailed и ретраит на следующем тике, не дожидаясь
-		// SettleGrace. open=false (закрытие) такого ретрая не имеет: "up"
-		// шлётся один раз при разрешении инцидента, повторный тик его уже
-		// не позовёт (resolveIncident срабатывает единожды, на переходе
-		// down->up) — провал доставки "up" остаётся тем, чем был раньше:
-		// залогированным и молчаливым, вне охвата этой находки.
-		if open {
-			if merr := d.Svc.MarkNotifyOpenFailed(ctx, incidentID); merr != nil {
-				slog.Error("uptime: detector: mark notify open failed failed", "incident_id", incidentID, "error", merr)
+// notifyOpen отправляет "down"-событие уровня 0 через Notifier.
+// NotifyOpenStep0 и, только при успехе, помечает инцидент уведомлённым
+// (notified_open); каналы, в которые задача РЕАЛЬНО поставлена, логируются в
+// incident_escalations как шаг 0 (W3-E) через escalation.LogStepChannels —
+// ДАЖЕ при ошибке Notify (то же правило, что у escalation.SendStepIfDue: уже
+// заенкененные каналы должны знать об этом для последующего recovery, даже
+// если ДРУГИЕ каналы в этой же попытке провалились). Ошибка Notify
+// логируется и проглатывается — см. комментарий OnResult.
+//
+// Снимок каналов (Incident.NotifyOpenChannels, миграция 0086) пишется В
+// incident СРАЗУ, ДО попытки LogStepChannels: LogStepChannels может не
+// закрыть логирование с первой попытки (граница попыток не исчерпана,
+// см. её докблок) — снимок переживает и эту незавершённость, и крах
+// процесса между доставкой и логом, и остаётся источником для
+// retryStepZeroLog на следующих тиках. Очищается ТОЛЬКО когда
+// LogStepChannels сообщает done=true (успех или принудительный прогресс
+// после потолка попыток) — до этого момента retryStepZeroLog обязан видеть
+// непустой список.
+func (d *Detector) notifyOpen(ctx context.Context, incidentID int64, ev Event) {
+	enqueued, err := d.Notifier.NotifyOpenStep0(ctx, ev)
+	// Не задваивает запись шага 0 со Scheduler'ом: OpenUnacked фильтрует
+	// escalation_level > 0, а MarkNotified ниже — единственный писатель,
+	// поднимающий его до 1, синхронно с этим же вызовом — значит Scheduler
+	// физически не может увидеть этот инцидент раньше, чем шаг 0 отработает
+	// здесь. LogStep(...ON CONFLICT DO NOTHING) — вторая, независимая линия
+	// защиты на случай повторного вызова (ретрай, гонка).
+	if d.Pool != nil && len(enqueued) > 0 {
+		if serr := d.Svc.SetNotifyOpenChannels(ctx, incidentID, enqueued); serr != nil {
+			slog.Error("uptime: detector: set notify open channels failed", "incident_id", incidentID, "error", serr)
+		}
+		if done, _ := escalation.LogStepChannels(ctx, d.Pool, "uptime", incidentID, 0, enqueued); done {
+			if cerr := d.Svc.ClearNotifyOpenChannels(ctx, incidentID); cerr != nil {
+				slog.Error("uptime: detector: clear notify open channels failed", "incident_id", incidentID, "error", cerr)
 			}
+		}
+		// done=false: снимок остаётся в БД как есть — retryStepZeroLog
+		// (settleHeldIncident/resolveIncident) повторит попытку на следующем
+		// тике теми же каналами, не переотправляя "down".
+	}
+	if err != nil {
+		slog.Error("uptime: detector: notify failed", "incident_id", incidentID, "kind", ev.Kind, "error", err)
+		// W2-C находка 1: провал доставки "down" помечается явно, отдельно от
+		// notified_open — settleHeldIncident увидит NotifyOpenFailed и
+		// ретраит на следующем тике, не дожидаясь SettleGrace.
+		if merr := d.Svc.MarkNotifyOpenFailed(ctx, incidentID); merr != nil {
+			slog.Error("uptime: detector: mark notify open failed failed", "incident_id", incidentID, "error", merr)
 		}
 		return
 	}
-	if err := d.Svc.MarkNotified(ctx, incidentID, open); err != nil {
+	if err := d.Svc.MarkNotified(ctx, incidentID, true); err != nil {
 		slog.Error("uptime: detector: mark notified failed", "incident_id", incidentID, "error", err)
+	}
+}
+
+// retryStepZeroLog добирает логирование шага 0 (W3-E, миграция 0086) для
+// инцидента, у которого "down" реально доставлен (notifyOpen отработала), но
+// escalation.LogStepChannels не смогла закрыть лог с первой попытки —
+// Incident.NotifyOpenChannels хранит ИМЕННО список каналов, которым "down"
+// был поставлен, не флаг "что-то не так". Ретраится СТРОГО лог: notify не
+// повторяется, "down" уже ушёл, и повторная отправка была бы дублем пейджа
+// — в отличие от лесенки (SendStepIfDue), где повтор ступени естественно
+// совпадает с повторной отправкой по замыслу самой лесенки. Тот же потолок
+// попыток (maxLogFailureAttempts), что у остальных пяти источников — общий
+// механизм, не вторая копия (см. докблок LogStepChannels). Пустой
+// NotifyOpenChannels — ретраить нечего: либо лог уже завершён (успешно или
+// принудительно), либо инцидент старше миграции 0086.
+func (d *Detector) retryStepZeroLog(ctx context.Context, inc Incident) {
+	if d.Pool == nil || len(inc.NotifyOpenChannels) == 0 {
+		return
+	}
+	done, err := escalation.LogStepChannels(ctx, d.Pool, "uptime", inc.ID, 0, inc.NotifyOpenChannels)
+	if err != nil {
+		slog.Error("uptime: detector: retry step 0 log failed", "incident_id", inc.ID, "error", err)
+	}
+	if done {
+		if cerr := d.Svc.ClearNotifyOpenChannels(ctx, inc.ID); cerr != nil {
+			slog.Error("uptime: detector: clear notify open channels failed", "incident_id", inc.ID, "error", cerr)
+		}
 	}
 }
 

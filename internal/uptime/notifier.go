@@ -2,7 +2,6 @@ package uptime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -52,15 +51,64 @@ type OutboxNotifier struct {
 	// DepCounts — источник числа задекларированных детей монитора для строки
 	// «Зависимых узлов: N» в down-уведомлении (D3 Р9). nil — строки нет.
 	DepCounts depCounter
+
+	// Projects — источник имени проекта для темы/тела/webhook-payload
+	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
+	// уведомления идут без имени проекта, как до этой правки.
+	Projects escalation.ProjectNamer
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал
 // монитора — если у монитора нет своих каналов, используются все
 // включённые каналы проекта. Ошибка Enqueue по одному каналу не прерывает
 // постановку остальных: все такие ошибки логируются и собираются через
-// errors.Join в возвращаемое значение.
+// errors.Join в возвращаемое значение. Используется вне лесенки эскалации
+// (Watchdog: ssl_expiring/reminder — у них нет открытого инцидента и
+// адресовать recovery некому); "down" уровня 0 идёт через NotifyOpenStep0
+// (см. её докблок).
 func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
 	_, err := n.dispatch(ctx, ev, nil)
+	return err
+}
+
+// NotifyOpenStep0 — доставка "down" уровня 0 (Detector, свой B5 hold/grace/
+// ретрай — W2-C находка 1): не проходит через escalation.SendStepIfDue (см.
+// её комментарий про OpenUnacked — тот же приём избегания двойной отправки
+// уровня 0 и Detector'ом, и Scheduler'ом), поэтому возвращает РЕАЛЬНО
+// заенкененные каналы сама — Detector логирует их в incident_escalations как
+// шаг 0 (W3-E). Без этого лога RecoveryChannels не находил бы каналы
+// инцидента, ни разу не дошедшего до эскалации уровня 1 (а таких
+// большинство — лесенка чаще всего не успевает сработать до восстановления),
+// и адресный "up" не уходил бы им НИКОГДА.
+func (n *OutboxNotifier) NotifyOpenStep0(ctx context.Context, ev Event) ([]int64, error) {
+	return n.dispatch(ctx, ev, nil)
+}
+
+// NotifyRecovery — CLOSE-уведомление инцидента монитора (B4, T6; W3-E:
+// аптайм заведён в общий адресный контур recovery, как и остальные пять
+// источников — раньше "up" уходил тем же путём, что и "down" уровня 0, всем
+// каналам монитора/проекта заново, а не только тем, кто реально видел
+// тревогу) в ЗАДАННЫЕ channelIDs. Инцидент/монитор грузятся заново по ID, как
+// в NotifyStep: вызывающий (Detector.resolveIncident) знает только
+// incidentID.
+func (n *OutboxNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	inc, ok, err := n.Uptime.IncidentByID(ctx, incidentID)
+	if err != nil {
+		return fmt.Errorf("uptime: notify recovery: load incident: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("uptime: notify recovery: incident %d not found", incidentID)
+	}
+	mon, err := n.Uptime.Get(ctx, inc.MonitorID)
+	if err != nil {
+		return fmt.Errorf("uptime: notify recovery: load monitor: %w", err)
+	}
+	var duration int64
+	if inc.ResolvedAt != nil {
+		duration = int64(inc.ResolvedAt.Sub(inc.StartedAt).Seconds())
+	}
+	ev := Event{Kind: "up", Monitor: mon, Incident: inc, DurationSeconds: duration}
+	_, err = n.dispatch(ctx, ev, channelIDs)
 	return err
 }
 
@@ -89,12 +137,13 @@ func (n *OutboxNotifier) NotifyStep(ctx context.Context, incidentID int64, chann
 	return n.dispatch(ctx, ev, channelIDs)
 }
 
-// dispatch — общая постановка одной готовой задачи в Outbox, используемая и
-// синхронным Notify (channelIDs=nil, все включённые каналы), и NotifyStep
-// (channelIDs — набор ступени эскалации, ContainsID-фильтр ПОСЛЕ
-// Deliverable-гейта, см. escalation.ContainsID). Возвращает каналы, реально
-// поставленные в очередь — NotifyStep отдаёт их SendStepIfDue для логирования
-// (incident_escalations), Notify их игнорирует.
+// dispatch — сужение до каналов монитора (own, если заданы) и передача
+// готового уведомления в общий контур доставки (escalation.Dispatch, W3-E):
+// гейт доставляемости, фильтр channelIDs, email-fallback, имя проекта,
+// редакция ПДн. Используется и синхронным Notify/NotifyOpenStep0
+// (channelIDs=nil, все каналы монитора/проекта), и NotifyStep/NotifyRecovery
+// (channelIDs — набор ступени эскалации/recovery). Возвращает каналы, реально
+// поставленные в очередь — вызывающие решают, логировать ли их.
 func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []int64) ([]int64, error) {
 	own, err := n.Uptime.MonitorChannelIDs(ctx, ev.Monitor.ID)
 	if err != nil {
@@ -134,49 +183,31 @@ func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []in
 	subject := subjectFor(ctx, ev)
 	body := bodyFor(ctx, ev, url, n.depsLine(ctx, ev))
 
-	var errs error
-	var enqueued []int64
+	dchans := make([]escalation.DispatchChannel, 0, len(channels))
 	for _, ch := range channels {
-		if !ch.Deliverable() {
-			continue
-		}
-		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
-			continue
-		}
-		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
-			slog.Warn("uptime: email channel skipped, SMTP not configured",
-				"monitor_id", ev.Monitor.ID, "channel_id", ch.ID)
-			continue
-		}
-
-		payload := map[string]any{
-			"kind":             ev.Kind,
-			"monitor_id":       ev.Monitor.ID,
-			"monitor_name":     ev.Monitor.Name,
-			"project_id":       ev.Monitor.ProjectID,
-			"regions":          ev.Regions,
-			"cause":            ev.Cause,
-			"duration_seconds": ev.DurationSeconds,
-			"days_left":        ev.DaysLeft,
-			"url":              url,
-			"subject":          subject,
-			"body":             body,
-			"channel_kind":     ch.Kind,
-			"target":           ch.Target,
-		}
-		// Гейт трансграничной передачи: получателю вне контура оператора
-		// уходит обезличенный payload (см. notify.RedactExternalPayload).
-		if !n.Details.AllowsDetails(ch) {
-			payload = notify.RedactExternalPayload(ctx, payload)
-		}
-		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
-			slog.Error("uptime: notify: enqueue failed", "channel_id", ch.ID, "error", err)
-			errs = errors.Join(errs, fmt.Errorf("uptime: notify: enqueue channel %d: %w", ch.ID, err))
-			continue
-		}
-		enqueued = append(enqueued, ch.ID)
+		dchans = append(dchans, escalation.DispatchChannel{
+			ID: ch.ID, Kind: ch.Kind, Target: ch.Target,
+			IsEmail:       ch.Kind == alert.ChannelEmail,
+			Deliverable:   ch.Deliverable(),
+			AllowsDetails: n.Details.AllowsDetails(ch),
+		})
 	}
-	return enqueued, errs
+
+	return escalation.Dispatch(ctx,
+		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "uptime"},
+		escalation.DispatchInput{
+			ProjectID: ev.Monitor.ProjectID, Kind: ev.Kind, Subject: subject, Body: body,
+			URL: url,
+			Extra: map[string]any{
+				"monitor_id":       ev.Monitor.ID,
+				"monitor_name":     ev.Monitor.Name,
+				"regions":          ev.Regions,
+				"cause":            ev.Cause,
+				"duration_seconds": ev.DurationSeconds,
+				"days_left":        ev.DaysLeft,
+			},
+			ChannelIDs: channelIDs, Channels: dchans,
+		})
 }
 
 // depsLine — строка «Зависимых узлов: N» для down-события монитора (D3 Р9):

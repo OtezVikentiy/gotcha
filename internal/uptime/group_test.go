@@ -163,7 +163,7 @@ func TestSettleHeldAttachesSuppressedChild(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: true}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	d.IncidentGroups = newUptimeGrouper(pool)
 	now := time.Now().UTC()
 
@@ -210,7 +210,7 @@ func TestUptimeRootRetroAttachesHostMember(t *testing.T) {
 	memberInc := seedOpenDiskIncident(t, pool, pid, childHost)
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	d.IncidentGroups = newUptimeGrouper(pool)
 
 	// Монитор-родитель падает ПОСЛЕ того, как disk-инцидент ребёнка открыт.
@@ -247,7 +247,7 @@ func TestUptimeRootCloseResolvesGroup(t *testing.T) {
 	memberInc := seedOpenDiskIncident(t, pool, pid, childHost)
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	d.IncidentGroups = newUptimeGrouper(pool)
 	now := time.Now().UTC()
 
@@ -306,7 +306,7 @@ func TestOpenIncidentCrossSpeciesRootAttachesGrandchild(t *testing.T) {
 	// снимка) — без этого DownRoot внутри openIncident не увидит A упавшим.
 	sup := depsuppress.NewSuppressor(pool)
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: sup}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: sup, Pool: pool}
 	d.IncidentGroups = &incidentgroup.Grouper{
 		Pool:  pool,
 		Store: incidentgroup.NewStore(pool),

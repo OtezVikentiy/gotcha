@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -71,6 +70,11 @@ type HostNotifier struct {
 	// Р9, см. depsLine). nil — строки нет; Retirer-экземпляр в main.go
 	// оставляет поле пустым намеренно (он шлёт только retire/close).
 	DepCounts depCounter
+
+	// Projects — источник имени проекта для темы/тела/webhook-payload
+	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
+	// уведомления идут без имени проекта, как до этой правки.
+	Projects escalation.ProjectNamer
 }
 
 // HostIncidentOpened реализует host.Notifier: инцидент открыт, ставит задачу
@@ -311,92 +315,52 @@ func (n *HostNotifier) listLink(projectID int64) string {
 	return fmt.Sprintf("%s/projects/%d/hosts", n.BaseURL, projectID)
 }
 
-// dispatch — постановка одной готовой задачи в Outbox на каждый deliverable-
-// канал проекта. Ошибка Enqueue по одному каналу не прерывает остальные
-// (errors.Join), но возвращается наверх — как в metric.MetricNotifier.Notify.
-// Проект без каналов — не ошибка. Возвращает ID каналов, в которые задача
-// РЕАЛЬНО поставлена — эскалационный лог incident_escalations по ним пишет
-// вызывающая оркестрация (escalation.SendStepIfDue), не dispatch: тот же
-// enqueued-список нужен и NotifyStep (лог), и никому больше, поэтому решать
-// логировать или нет — дело ЗВОНЯЩЕГО (эволюатор vs Notify/NotifyRecovery,
-// которые лог не пишут вовсе), а не dispatch.
+// dispatch — сборка списка каналов проекта и передача готового уведомления в
+// общий контур доставки (escalation.Dispatch, W3-E): гейт доставляемости,
+// фильтр channelIDs, email-fallback, имя проекта, редакция ПДн — всё это
+// раньше было переписано здесь же (седьмая копия из семи, см. отчёт W3-E) и
+// уже успело разойтись с остальными шестью (ContainsID, адресность
+// recovery). Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена —
+// логировать их в incident_escalations или нет, решает вызывающая
+// оркестрация (escalation.SendStepIfDue), не dispatch: тот же enqueued-
+// список нужен и NotifyStep (лог), и никому больше.
 //
 // extra — поля payload сверх маршрутного минимума (имя хоста, значения,
-// порог): именно они вырезаются гейтом трансграничной передачи, поэтому
-// собраны отдельным аргументом, а не размазаны по телу цикла.
+// порог): доменная специфика host, контур сам их не строит, только
+// подмешивает и вырезает гейтом трансграничной передачи при обезличивании.
 //
 // channelIDs (B4, T6) — набор каналов, в которые слать: nil/пусто — все
 // deliverable-каналы проекта (старое поведение open/close/retired, см. send/
 // HostRetired), непустой — фильтр по членству ПОСЛЕ Deliverable/email-гейта
 // (эскалация в конкретную ступень лесенки, NotifyStep/NotifyRecovery).
+//
+// listLink как RedactedURL — карточка хоста адресуется именем машины
+// (/projects/{id}/hosts/{name}, id-адресации у хоста нет), и полная ссылка
+// унесла бы имя в Telegram даже при выключенных деталях; список хостов
+// проекта такой детали не несёт.
 func (n *HostNotifier) dispatch(ctx context.Context, projectID int64, kind, subject, body, link string, extra map[string]any, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("host: notify: project channels: %w", err)
 	}
-	listLink := n.listLink(projectID)
 
-	var errs error
-	var enqueued []int64
+	dchans := make([]escalation.DispatchChannel, 0, len(channels))
 	for _, ch := range channels {
-		if !ch.Deliverable() {
-			continue
-		}
-		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
-			continue
-		}
-		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
-			slog.Warn("host: notify: email channel skipped, SMTP not configured",
-				"project_id", projectID, "channel_id", ch.ID)
-			continue
-		}
-		payload := map[string]any{
-			"kind":       kind,
-			"project_id": projectID,
-			"url":        link,
-			"subject":    subject,
-			"body":       body,
-			// Адрес/секрет канала — их читает notify.Worker (та же «ловушка
-			// имён», что в trace.RegressionNotifier).
-			"channel_kind": ch.Kind,
-			"target":       ch.Target,
-			// Секрета в payload нет намеренно: notification_outbox.payload —
-			// обычный jsonb, и bot-токен в нём обесценил бы шифрование
-			// alert_channels.secret. notify.Worker достаёт секрет по
-			// channel_id в момент отправки (см. notify.SecretResolver).
-		}
-		// Копия на каждый канал: обезличивание ниже отдаёт новую map, но
-		// поля extra общие для всех каналов, и класть их в одну map значило бы
-		// делить её между задачами очереди.
-		for k, v := range extra {
-			payload[k] = v
-		}
-		// Гейт трансграничной передачи: получателю вне контура оператора
-		// уходит обезличенный payload (см. notify.RedactExternalPayload) —
-		// значения метрик, detail и тексты за пределы РФ по умолчанию не
-		// уедут.
-		//
-		// Ссылка тоже уходит наружу («url» в белом списке), а карточка хоста
-		// адресуется именем машины: маршрут — /projects/{id}/hosts/{name},
-		// id-адресации у хоста нет, и полная ссылка унесла бы имя в Telegram
-		// даже при выключенных деталях. Поэтому редакции подкладывается
-		// url_redacted — список хостов проекта, которым она заменит ссылку.
-		// Кладётся оно ровно на этой ветке: доставленный payload — что
-		// обезличенный, что полный — лишнего поля не несёт (url_redacted не в
-		// externalSafeKeys, а получателю с разрешёнными деталями достаётся
-		// полная ссылка на карточку).
-		if !n.Details.AllowsDetails(ch) {
-			payload["url_redacted"] = listLink
-			payload = notify.RedactExternalPayload(ctx, payload)
-		}
-		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
-			slog.Error("host: notify: enqueue failed", "channel_id", ch.ID, "error", err)
-			errs = errors.Join(errs, fmt.Errorf("host: notify: enqueue channel %d: %w", ch.ID, err))
-			continue
-		}
-		enqueued = append(enqueued, ch.ID)
+		dchans = append(dchans, escalation.DispatchChannel{
+			ID: ch.ID, Kind: ch.Kind, Target: ch.Target,
+			IsEmail:       ch.Kind == alert.ChannelEmail,
+			Deliverable:   ch.Deliverable(),
+			AllowsDetails: n.Details.AllowsDetails(ch),
+		})
 	}
-	return enqueued, errs
+
+	return escalation.Dispatch(ctx,
+		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "host"},
+		escalation.DispatchInput{
+			ProjectID: projectID, Kind: kind, Subject: subject, Body: body,
+			URL: link, RedactedURL: n.listLink(projectID), Extra: extra,
+			ChannelIDs: channelIDs, Channels: dchans,
+		})
 }
 
 // hostSubject / hostBody строят тексты из каталога i18n — по локали, положенной

@@ -17,9 +17,17 @@ import (
 // a fixed err (still recording the event first) to exercise the "notify
 // failed" path.
 type fakeNotifier struct {
-	mu     sync.Mutex
-	events []uptime.Event
-	err    error
+	mu         sync.Mutex
+	events     []uptime.Event
+	recoveries []recoveryCall
+	err        error
+
+	// svc — optional: when set, NotifyRecovery reloads the real incident (as
+	// the production OutboxNotifier.NotifyRecovery does) to compute a
+	// faithful DurationSeconds instead of recording a zero-value Event. Tests
+	// that only care WHETHER/WHERE recovery fired (most of them) can leave
+	// this nil.
+	svc *uptime.Service
 }
 
 func (f *fakeNotifier) Notify(_ context.Context, ev uptime.Event) error {
@@ -29,11 +37,66 @@ func (f *fakeNotifier) Notify(_ context.Context, ev uptime.Event) error {
 	return f.err
 }
 
+// NotifyOpenStep0 — records ev like Notify, and reports a single fake
+// "enqueued" channel (1) on success so callers relying on Detector logging
+// step 0 (escalation.RecoveryChannels) have something to find; f.err makes
+// it report nothing enqueued, matching a real total dispatch failure.
+func (f *fakeNotifier) NotifyOpenStep0(_ context.Context, ev uptime.Event) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, ev)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []int64{1}, nil
+}
+
+// NotifyRecovery — records the call (Recoveries()) and a matching "up" event
+// so kindEvents("up") keeps working for tests written against the old
+// Notify-based recovery path. With svc set, reloads the real incident to
+// compute DurationSeconds the same way the production OutboxNotifier.
+// NotifyRecovery does; without it, the event's DurationSeconds is 0.
+func (f *fakeNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	ev := uptime.Event{Kind: "up"}
+	if f.svc != nil {
+		if inc, ok, err := f.svc.IncidentByID(ctx, incidentID); err == nil && ok {
+			ev.Incident = inc
+			if inc.ResolvedAt != nil {
+				ev.DurationSeconds = int64(inc.ResolvedAt.Sub(inc.StartedAt).Seconds())
+			}
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recoveries = append(f.recoveries, recoveryCall{incidentID: incidentID, channelIDs: channelIDs})
+	f.events = append(f.events, ev)
+	return f.err
+}
+
+// recoveryCall records one NotifyRecovery invocation — used by tests that
+// check WHICH channels recovery was addressed to (W3-E), not just whether it
+// fired.
+type recoveryCall struct {
+	incidentID int64
+	channelIDs []int64
+}
+
 func (f *fakeNotifier) Events() []uptime.Event {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]uptime.Event, len(f.events))
 	copy(out, f.events)
+	return out
+}
+
+// Recoveries returns every NotifyRecovery call recorded so far — used by
+// tests asserting WHICH channels recovery was addressed to (W3-E), not just
+// whether "up" fired at all (see kindEvents("up") for that).
+func (f *fakeNotifier) Recoveries() []recoveryCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]recoveryCall, len(f.recoveries))
+	copy(out, f.recoveries)
 	return out
 }
 
@@ -164,7 +227,7 @@ func TestOnResultSingleRegionOpensIncidentOnceAndDedups(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 3, 2) // fail_threshold=3, single "local" region
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	// Two fails: below fail_threshold, no incident yet.
@@ -217,8 +280,11 @@ func TestOnResultResolvesIncidentWithPositiveDuration(t *testing.T) {
 	pid := newProject(t, pool)
 	mon := createMonitor(t, svc, pid, 1, 2) // fail_threshold=1 to open quickly, recovery_threshold=2
 
-	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	// svc: set so NotifyRecovery reloads the real incident and computes a
+	// faithful DurationSeconds (W3-E — recovery no longer carries a
+	// pre-built Event, see fakeNotifier.NotifyRecovery).
+	notifier := &fakeNotifier{svc: svc}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
@@ -258,7 +324,7 @@ func TestConsensusMajority(t *testing.T) {
 	pid := newProject(t, pool)
 	mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	// Baseline: all three regions decided and up.
@@ -285,7 +351,7 @@ func TestConsensusAny(t *testing.T) {
 	pid := newProject(t, pool)
 	mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "r1", true, "", now, nil)
@@ -307,7 +373,7 @@ func TestConsensusAll(t *testing.T) {
 	pid := newProject(t, pool)
 	mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAll, 1, 1)
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "r1", true, "", now, nil)
@@ -340,7 +406,7 @@ func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 	t.Run("any", func(t *testing.T) {
 		mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
 		notifier := &fakeNotifier{}
-		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 		// Only r1 is ever checked; r2/r3 remain "unknown".
 		applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", time.Now().UTC(), nil)
 		assertOpenIncident(t, ctx, svc, mon.ID)
@@ -349,7 +415,7 @@ func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 	t.Run("majority", func(t *testing.T) {
 		mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusMajority, 1, 1)
 		notifier := &fakeNotifier{}
-		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 		now := time.Now().UTC()
 		// 1 из 3 настроенных регионов — не большинство, даже если остальные молчат.
 		applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", now, nil)
@@ -382,7 +448,7 @@ func TestOnResultInMaintenanceSuppressesNotify(t *testing.T) {
 	}
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -411,7 +477,7 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{err: errors.New("smtp down")}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	// Must not panic, and the incident must still be recorded even though
@@ -448,7 +514,7 @@ func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 	t.Run("notified_open=false: up not sent", func(t *testing.T) {
 		mon := createMonitor(t, svc, pid, 1, 2) // fail_threshold=1, recovery_threshold=2
 		notifier := &fakeNotifier{err: errors.New("smtp down")}
-		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 		now := time.Now().UTC()
 
 		applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
@@ -472,7 +538,7 @@ func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 	t.Run("notified_open=true: up sent", func(t *testing.T) {
 		mon := createMonitor(t, svc, pid, 1, 2)
 		notifier := &fakeNotifier{}
-		d := &uptime.Detector{Svc: svc, Notifier: notifier}
+		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 		now := time.Now().UTC()
 
 		applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
@@ -518,7 +584,7 @@ func TestOnResultTracksSSLExpiry(t *testing.T) {
 	pid := newProject(t, pool)
 	mon := createMonitor(t, svc, pid, 3, 2)
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	expires1 := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -586,7 +652,7 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: false}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -637,7 +703,7 @@ func TestUptimeChildNotifiesAfterGrace(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: false}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -680,7 +746,7 @@ func TestUptimeNoParentNotifiesImmediately(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: false}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -713,7 +779,7 @@ func TestUptimeHasParentErrorNotifiesImmediately(t *testing.T) {
 	// hasParent=true (без ошибки удержал бы "down"), но HasParent падает —
 	// fail-safe обязан всё равно уведомить.
 	dep := &fakeDepChecker{hasParent: true, hasParentErr: errors.New("dep db down")}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -743,7 +809,7 @@ func TestUptimeParentDownErrorNotifiesAfterGrace(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: false}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -797,7 +863,7 @@ func TestUptimeMaintenanceNotResurrected(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: false} // parent stays up
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)

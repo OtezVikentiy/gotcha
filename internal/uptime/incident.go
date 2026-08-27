@@ -46,6 +46,13 @@ type Incident struct {
 	// Detector.settleHeldIncident.
 	NotifyOpenFailed   bool
 	NotifyOpenAttempts int
+	// NotifyOpenChannels — снимок каналов, в которые Detector.notifyOpen
+	// реально поставил задачу для шага 0 этого инцидента (W3-E, миграция
+	// 0086, см. её докблок). nil — ретраить логирование шага 0 нечего:
+	// либо оно уже завершено (успешно или принудительно после потолка
+	// попыток — см. Detector.retryStepZeroLog), либо инцидент старше этой
+	// колонки.
+	NotifyOpenChannels []int64
 }
 
 // DeliveryExhausted сообщает, исчерпаны ли попытки доставить "down" (W2-C
@@ -62,14 +69,28 @@ func (inc Incident) DeliveryExhausted() bool {
 	return inc.NotifyOpenFailed && inc.NotifyOpenAttempts >= maxNotifyOpenAttempts
 }
 
-const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at, suppressed_by_dep, acknowledged_at, acknowledged_by, severity, escalation_level, last_escalated_at, notify_open_failed, notify_open_attempts`
+const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at, suppressed_by_dep, acknowledged_at, acknowledged_by, severity, escalation_level, last_escalated_at, notify_open_failed, notify_open_attempts, notify_open_channels`
+
+// incidentScanDest — ЕДИНСТВЕННЫЙ список приёмников под incidentColumns, в
+// том же порядке. Оба разборщика строк инцидента (scanIncident и
+// queryIncidentsPaged, у которого в конце добавляется ещё count(*) OVER())
+// берут приёмники отсюда: два независимых Scan-списка на одну строку колонок
+// уже разъезжались — notify_open_channels (миграция 0086) доехала до
+// incidentColumns и scanIncident, но не до ручного Scan в queryIncidentsPaged,
+// и обе постраничные выборки инцидентов начали отдавать 500 «number of field
+// descriptions must equal number of destinations». Новая колонка теперь
+// правится в двух местах рядом (константа и этот список), а не в трёх врозь.
+func incidentScanDest(inc *Incident) []any {
+	return []any{&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
+		&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
+		&inc.SuppressedByDep, &inc.AcknowledgedAt, &inc.AcknowledgedBy, &inc.Severity,
+		&inc.EscalationLevel, &inc.LastEscalatedAt, &inc.NotifyOpenFailed, &inc.NotifyOpenAttempts,
+		&inc.NotifyOpenChannels}
+}
 
 func scanIncident(row pgx.Row) (Incident, error) {
 	var inc Incident
-	if err := row.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
-		&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
-		&inc.SuppressedByDep, &inc.AcknowledgedAt, &inc.AcknowledgedBy, &inc.Severity,
-		&inc.EscalationLevel, &inc.LastEscalatedAt, &inc.NotifyOpenFailed, &inc.NotifyOpenAttempts); err != nil {
+	if err := row.Scan(incidentScanDest(&inc)...); err != nil {
 		return Incident{}, err
 	}
 	return inc, nil
@@ -183,7 +204,7 @@ func (s *Service) Incidents(ctx context.Context, projectID int64, limit int) ([]
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
 			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
 			i.acknowledged_at, i.acknowledged_by, i.severity, i.escalation_level, i.last_escalated_at,
-			i.notify_open_failed, i.notify_open_attempts
+			i.notify_open_failed, i.notify_open_attempts, i.notify_open_channels
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
 		WHERE m.project_id = $1
@@ -260,11 +281,7 @@ func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, query string, 
 	var total int64
 	for rows.Next() {
 		var inc Incident
-		if err := rows.Scan(&inc.ID, &inc.MonitorID, &inc.StartedAt, &inc.ResolvedAt, &inc.Cause,
-			&inc.Regions, &inc.InMaintenance, &inc.NotifiedOpen, &inc.NotifiedClose, &inc.LastRemindedAt,
-			&inc.SuppressedByDep, &inc.AcknowledgedAt, &inc.AcknowledgedBy, &inc.Severity,
-			&inc.EscalationLevel, &inc.LastEscalatedAt, &inc.NotifyOpenFailed, &inc.NotifyOpenAttempts,
-			&total); err != nil {
+		if err := rows.Scan(append(incidentScanDest(&inc), &total)...); err != nil {
 			return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
 		}
 		out = append(out, inc)
@@ -279,7 +296,7 @@ func (s *Service) IncidentsPaged(ctx context.Context, projectID int64, limit, of
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
 			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
 			i.acknowledged_at, i.acknowledged_by, i.severity, i.escalation_level, i.last_escalated_at,
-			i.notify_open_failed, i.notify_open_attempts,
+			i.notify_open_failed, i.notify_open_attempts, i.notify_open_channels,
 			count(*) OVER() AS total
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
@@ -341,6 +358,39 @@ func (s *Service) MarkNotifyOpenFailed(ctx context.Context, incidentID int64) er
 		incidentID)
 	if err != nil {
 		return fmt.Errorf("uptime: mark notify open failed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetNotifyOpenChannels снимает notify_open_channels сразу после доставки
+// шага 0 (W3-E, миграция 0086, см. её докблок): каналы, в которые
+// Notifier.NotifyOpenStep0 реально поставил задачу, записываются НЕЗАВИСИМО
+// от исхода последующего логирования (Detector.notifyOpen зовёт это ДО
+// попытки LogStep) — иначе процесс, упавший между доставкой и записью
+// снимка, потерял бы список безвозвратно, и ретраить лог было бы нечем.
+func (s *Service) SetNotifyOpenChannels(ctx context.Context, incidentID int64, channelIDs []int64) error {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE incidents SET notify_open_channels = $2 WHERE id = $1", incidentID, channelIDs)
+	if err != nil {
+		return fmt.Errorf("uptime: set notify open channels: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearNotifyOpenChannels сбрасывает notify_open_channels в NULL — логирование
+// шага 0 разрешилось (успешно или принудительно после потолка попыток, см.
+// Detector.retryStepZeroLog), больше ретраить нечего.
+func (s *Service) ClearNotifyOpenChannels(ctx context.Context, incidentID int64) error {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE incidents SET notify_open_channels = NULL WHERE id = $1", incidentID)
+	if err != nil {
+		return fmt.Errorf("uptime: clear notify open channels: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

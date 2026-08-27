@@ -124,7 +124,7 @@ func TestOpenIncidentGroupRootOpenedErrorLoggedNotFatal(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	d.IncidentGroups = &erroringGroupHook{onRootOpenedErr: errors.New("retro boom")}
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", time.Now().UTC(), nil)
@@ -156,7 +156,7 @@ func TestSettleHeldAttachErrorLeavesGroupIDNull(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: true}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	d.IncidentGroups = &erroringGroupHook{attachErr: errors.New("attach boom")}
 	now := time.Now().UTC()
 
@@ -191,7 +191,7 @@ func TestResolveIncidentGroupRootClosedErrorLoggedNotFatal(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1) // recovery_threshold=1 — один "ok" уже разрешает
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	d.IncidentGroups = &erroringGroupHook{}
 	now := time.Now().UTC()
 
@@ -230,7 +230,7 @@ func TestOpenIncidentDownRootErrorFallsBackToSelfAndNotifies(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: &downRootStubChecker{err: errors.New("downroot boom")}}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: &downRootStubChecker{err: errors.New("downroot boom")}, Pool: pool}
 	hook := &erroringGroupHook{}
 	d.IncidentGroups = hook
 
@@ -268,7 +268,7 @@ func TestOpenIncidentRootIncidentErrorFallsBackToSelfAndNotifies(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: &downRootStubChecker{rootKind: "host", rootID: 777, found: true}}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: &downRootStubChecker{rootKind: "host", rootID: 777, found: true}, Pool: pool}
 	hook := &erroringGroupHook{rootIncidentErr: errors.New("rootinc boom")}
 	d.IncidentGroups = hook
 

@@ -2,7 +2,6 @@ package slo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -49,6 +48,11 @@ type SLOBurnNotifier struct {
 	// incident_escalations (B4, T6, миграция 0077) после каждого успешного
 	// Enqueue в NotifyStep.
 	Pool *pgxpool.Pool
+
+	// Projects — источник имени проекта для темы/тела/webhook-payload
+	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
+	// уведомления идут без имени проекта, как до этой правки.
+	Projects escalation.ProjectNamer
 }
 
 // Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
@@ -129,13 +133,15 @@ func (n *SLOBurnNotifier) reloadEvent(ctx context.Context, incidentID int64, ope
 	}, nil
 }
 
-// dispatch — постановка одной готовой задачи в Outbox. channelIDs (B4, T6) —
-// набор каналов, в которые слать: nil/пусто — все deliverable-каналы проекта
-// (старое поведение Notify), непустой — фильтр по членству ПОСЛЕ Deliverable/
-// email-гейта (эскалация в конкретную ступень лесенки). Возвращает ID
-// каналов, в которые задача РЕАЛЬНО поставлена — логировать их в
-// incident_escalations или нет, решает вызывающий (эволюатор через
-// escalation.SendStepIfDue), не dispatch.
+// dispatch — сборка списка каналов проекта и передача готового уведомления в
+// общий контур доставки (escalation.Dispatch, W3-E): гейт доставляемости,
+// фильтр channelIDs, email-fallback, имя проекта, редакция ПДн. channelIDs
+// (B4, T6) — набор каналов, в которые слать: nil/пусто — все
+// deliverable-каналы проекта (старое поведение Notify), непустой — фильтр по
+// членству ПОСЛЕ Deliverable/email-гейта (эскалация в конкретную ступень
+// лесенки). Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена —
+// логировать их в incident_escalations или нет, решает вызывающий (эволюатор
+// через escalation.SendStepIfDue), не dispatch.
 func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.SLO.ProjectID)
 	if err != nil {
@@ -151,61 +157,44 @@ func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs 
 	body := sloBody(ctx, ev, url)
 
 	// Два вида вместо одного: на обезличенном (трансграничном) пути поле "opened"
-	// вырезается, поэтому открытие и закрытие инцидента различает только сам kind
-	// (иначе получатель не отличит тревогу от отбоя). Оба зарегистрированы в
-	// notify.redactedKindKeys — иначе наружу ушёл бы сырой enum.
+	// вырезается (уходит через Extra — контур редактирует его так же, как
+	// любое доменное поле, не входящее в externalSafeKeys), поэтому открытие и
+	// закрытие инцидента различает только сам kind (иначе получатель не
+	// отличит тревогу от отбоя). Оба зарегистрированы в notify.redactedKindKeys
+	// — иначе наружу ушёл бы сырой enum.
 	kind := "slo_burn_open"
 	if !ev.Opened {
 		kind = "slo_burn_close"
 	}
 
-	var errs error
-	var enqueued []int64
+	dchans := make([]escalation.DispatchChannel, 0, len(channels))
 	for _, ch := range channels {
-		if !ch.Deliverable() {
-			continue
-		}
-		if len(channelIDs) > 0 && !escalation.ContainsID(channelIDs, ch.ID) {
-			continue
-		}
-		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
-			slog.Warn("slo: burn email channel skipped, SMTP not configured",
-				"project_id", ev.SLO.ProjectID, "channel_id", ch.ID)
-			continue
-		}
-
-		// Ловушка имён: адрес канала (webhook URL / chat_id) кладём под "target"
-		// — его читает notify.Worker; имя SLO — под "target_name".
-		payload := map[string]any{
-			"kind":             kind,
-			"project_id":       ev.SLO.ProjectID,
-			"target_name":      ev.SLO.Name,
-			"sli_kind":         string(ev.SLO.Kind),
-			"opened":           ev.Opened,
-			"attainment":       ev.Attainment,
-			"budget_remaining": ev.BudgetRemaining,
-			"burn_rate":        ev.BurnRate,
-			"url":              url,
-			"subject":          subject,
-			"body":             body,
-			"channel_kind":     ch.Kind,
-			"target":           ch.Target,
-			// Секрета в payload нет намеренно: notify.Worker достаёт секрет по
-			// channel_id в момент отправки (см. notify.SecretResolver).
-		}
-		// Гейт трансграничной передачи: получателю вне контура оператора уходит
-		// обезличенный payload (см. notify.RedactExternalPayload).
-		if !n.Details.AllowsDetails(ch) {
-			payload = notify.RedactExternalPayload(ctx, payload)
-		}
-		if err := n.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
-			slog.Error("slo: burn notify: enqueue failed", "channel_id", ch.ID, "error", err)
-			errs = errors.Join(errs, fmt.Errorf("slo: burn notify: enqueue channel %d: %w", ch.ID, err))
-			continue
-		}
-		enqueued = append(enqueued, ch.ID)
+		dchans = append(dchans, escalation.DispatchChannel{
+			ID: ch.ID, Kind: ch.Kind, Target: ch.Target,
+			IsEmail:       ch.Kind == alert.ChannelEmail,
+			Deliverable:   ch.Deliverable(),
+			AllowsDetails: n.Details.AllowsDetails(ch),
+		})
 	}
-	return enqueued, errs
+
+	return escalation.Dispatch(ctx,
+		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "slo"},
+		escalation.DispatchInput{
+			ProjectID: ev.SLO.ProjectID, Kind: kind, Subject: subject, Body: body,
+			URL: url,
+			// Ловушка имён: адрес канала (webhook URL / chat_id) кладём под
+			// "target" (собирает сам Dispatch) — его читает notify.Worker;
+			// имя SLO — под "target_name".
+			Extra: map[string]any{
+				"target_name":      ev.SLO.Name,
+				"sli_kind":         string(ev.SLO.Kind),
+				"opened":           ev.Opened,
+				"attainment":       ev.Attainment,
+				"budget_remaining": ev.BudgetRemaining,
+				"burn_rate":        ev.BurnRate,
+			},
+			ChannelIDs: channelIDs, Channels: dchans,
+		})
 }
 
 // sloSubject строит тему уведомления по виду перехода (открытие/закрытие) из

@@ -91,19 +91,6 @@ func SendStepIfDue(ctx context.Context, ladder Ladder, source string, pool *pgxp
 		return false, nil
 	}
 	enqueued, notifyErr := notifyStep(ladder[level].ChannelIDs, level)
-	// Логируем РЕАЛЬНО заенкенные каналы ДАЖЕ при ошибке notifyStep — они уже
-	// в очереди, и recovery должен про них знать (иначе пробел отбоя для тех,
-	// кого реально запейджило). QA P2-3. Ошибки логирования СОБИРАЮТСЯ (не
-	// только логируются) — находка 3: провал хотя бы одного лога блокирует
-	// bump ниже (в пределах maxLogFailureAttempts), вместо того чтобы молча
-	// продвинуть уровень мимо дыры.
-	var logErr error
-	for _, ch := range enqueued {
-		if err := LogStep(ctx, pool, source, incidentID, ch, level); err != nil {
-			slog.Error("escalation: log step failed", "source", source, "incident_id", incidentID, "channel_id", ch, "error", err)
-			logErr = errors.Join(logErr, err)
-		}
-	}
 	if notifyErr != nil && len(enqueued) == 0 {
 		// ТОТАЛЬНЫЙ сбой: notifyStep вернул ошибку И ни один канал не
 		// заенкенился — не бампим, следующий тик повторит эту же ступень
@@ -112,43 +99,87 @@ func SendStepIfDue(ctx context.Context, ladder Ladder, source string, pool *pgxp
 		// провалился, бампить дальше можно и нужно, как и раньше.
 		return false, notifyErr
 	}
-	if logErr != nil {
-		// Находка 3: хотя бы один реально заенкененный канал не залогирован —
-		// не бампим, чтобы escalation_level не обогнал incident_escalations,
-		// ПОКА не исчерпана граница попыток (см. maxLogFailureAttempts) —
-		// иначе устойчиво падающий LogStep даёт бесконечный пейджинг-шторм
-		// вместо исходной молчаливой дыры.
-		attempts, trackErr := recordLogFailure(ctx, pool, source, incidentID, level)
-		if trackErr != nil {
-			slog.Error("escalation: record log failure failed", "source", source, "incident_id", incidentID, "step", level, "error", trackErr)
-			return false, errors.Join(notifyErr, logErr, trackErr)
-		}
-		if attempts < maxLogFailureAttempts {
-			return false, errors.Join(notifyErr, logErr)
-		}
-		slog.Error("escalation: log kept failing after max attempts, forcing bump anyway",
-			"source", source, "incident_id", incidentID, "step", level, "attempts", attempts, "error", logErr)
-		if err := clearLogFailure(ctx, pool, source, incidentID, level); err != nil {
-			slog.Error("escalation: clear log failure after forced bump failed", "source", source, "incident_id", incidentID, "step", level, "error", err)
-		}
-		// Продавливаем bump ниже принудительно — не return: тот же путь, что
-		// у обычного успеха, логи выше уже сделали провал ГРОМКИМ. logErr
-		// остаётся ненулевым и обязан попасть в возвращаемую ошибку ниже —
-		// принудительный прогресс не значит, что провала не было.
-	} else if err := clearLogFailure(ctx, pool, source, incidentID, level); err != nil {
-		// Best-effort: неудача сброса не должна ронять успешный путь — см.
-		// докблок clearLogFailure.
-		slog.Warn("escalation: clear log failure after success failed", "source", source, "incident_id", incidentID, "step", level, "error", err)
+	// Логируем РЕАЛЬНО заенкенные каналы ДАЖЕ при ошибке notifyStep — они уже
+	// в очереди, и recovery должен про них знать (иначе пробел отбоя для тех,
+	// кого реально запейджило). QA P2-3. LogStepChannels — общая точка
+	// логирования+ретрая (W3-E: вынесена из этой функции, чтобы
+	// uptime.Detector.notifyOpen могла ретраить лог шага 0 ТЕМ ЖЕ
+	// механизмом/потолком попыток, минуя саму лесенку, не заводя вторую
+	// копию).
+	done, logErr := LogStepChannels(ctx, pool, source, incidentID, level, enqueued)
+	if !done {
+		// Находка 3: хотя бы один реально заенкененный канал не залогирован,
+		// граница попыток ещё не исчерпана — не бампим, чтобы
+		// escalation_level не обогнал incident_escalations. Следующий тик
+		// повторит эту же ступень целиком (и лог, и notifyStep — здесь это
+		// нормально: повторная отправка ступени лесенки ЕСТЬ её замысел, в
+		// отличие от uptime-шага 0, см. LogStepChannels).
+		return false, errors.Join(notifyErr, logErr)
 	}
 	// Либо notifyStep не ошибся (обычный путь, enqueued может быть и пуст —
 	// каналов в лесенке просто не было), либо хотя бы один канал реально
 	// получил ступень при частичном сбое, либо граница попыток логирования
-	// продавила принудительный прогресс — продвигаем уровень, чтобы плохой
-	// канал/лог не клинил лесенку бесконечным пере-пейджем/пере-логом
-	// здоровых. Каналы, не попавшие в enqueued при частичном сбое, пропустят
-	// эту ступень — осознанный компромисс: прогресс важнее стагнации.
+	// продавила принудительный прогресс (LogStepChannels done=true с
+	// logErr!=nil) — продвигаем уровень, чтобы плохой канал/лог не клинил
+	// лесенку бесконечным пере-пейджем/пере-логом здоровых. Каналы, не
+	// попавшие в enqueued при частичном сбое, пропустят эту ступень —
+	// осознанный компромисс: прогресс важнее стагнации.
 	ok, bumpErr := bump(incidentID, level)
 	return ok, errors.Join(notifyErr, logErr, bumpErr)
+}
+
+// LogStepChannels логирует шаг [step] инцидента для каждого канала в chs
+// (LogStep — идемпотентно, ON CONFLICT DO NOTHING, UNIQUE(incident_source,
+// incident_id, channel_id, step), миграция 0085) и следит за повторными
+// провалами через escalation_step_log_failures (W2-C находка 3) — единый
+// механизм для ЛЮБОГО источника, которому нужно залогировать шаг, а не
+// только для лесенки внутри SendStepIfDue. Второй вызывающий — W3-E,
+// uptime.Detector.notifyOpen: шаг 0 доставляет сам Detector, минуя эту
+// лесенку (см. Service.OpenUnacked), но лог обязан подчиняться тому же
+// потолку попыток, что и у остальных пяти источников, — не второй похожий
+// механизм.
+//
+// done=true — логирование шага разрешилось: либо КАЖДЫЙ канал в chs
+// залогирован чисто, либо maxLogFailureAttempts исчерпан и прогресс
+// продавлен принудительно (громкий лог; err при этом остаётся ненулевым —
+// вызывающий обязан вернуть его наверх, принудительный прогресс не значит,
+// что провала не было). done=false — не всё залогировано, граница попыток
+// ещё не исчерпана: вызывающий обязан повторить ИМЕННО ЭТОТ вызов на
+// следующем цикле с ТЕМИ ЖЕ chs, не переотправляя доставку — правило чтения
+// зависит от источника: у лесенки (SendStepIfDue) повтор естественно
+// совпадает с повторной отправкой ступени, у uptime-шага-0 — нет, поэтому
+// canal-список ретраится сохранённым, а не пересчитанным заново (см.
+// Incident.NotifyOpenChannels, миграция 0086).
+func LogStepChannels(ctx context.Context, pool *pgxpool.Pool, source string, incidentID int64, step int, chs []int64) (done bool, err error) {
+	var logErr error
+	for _, ch := range chs {
+		if e := LogStep(ctx, pool, source, incidentID, ch, step); e != nil {
+			slog.Error("escalation: log step failed", "source", source, "incident_id", incidentID, "channel_id", ch, "step", step, "error", e)
+			logErr = errors.Join(logErr, e)
+		}
+	}
+	if logErr == nil {
+		if err := clearLogFailure(ctx, pool, source, incidentID, step); err != nil {
+			// Best-effort: неудача сброса не должна ронять успешный путь —
+			// см. докблок clearLogFailure.
+			slog.Warn("escalation: clear log failure after success failed", "source", source, "incident_id", incidentID, "step", step, "error", err)
+		}
+		return true, nil
+	}
+	attempts, trackErr := recordLogFailure(ctx, pool, source, incidentID, step)
+	if trackErr != nil {
+		slog.Error("escalation: record log failure failed", "source", source, "incident_id", incidentID, "step", step, "error", trackErr)
+		return false, errors.Join(logErr, trackErr)
+	}
+	if attempts < maxLogFailureAttempts {
+		return false, logErr
+	}
+	slog.Error("escalation: log kept failing after max attempts, forcing progress anyway",
+		"source", source, "incident_id", incidentID, "step", step, "attempts", attempts, "error", logErr)
+	if err := clearLogFailure(ctx, pool, source, incidentID, step); err != nil {
+		slog.Error("escalation: clear log failure after forced progress failed", "source", source, "incident_id", incidentID, "step", step, "error", err)
+	}
+	return true, logErr
 }
 
 // RecoveryChannels возвращает каналы, в которые за время жизни инцидента

@@ -29,7 +29,7 @@ func TestUptimeNotifyOpenFailedRetriesUntilDelivered(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1) // fail_threshold=1, recovery_threshold=1
 
 	notifier := &fakeNotifier{err: errors.New("smtp down")}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier, SettleGrace: time.Hour}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, SettleGrace: time.Hour, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -90,7 +90,7 @@ func TestUptimeNotifyOpenFailedRetriesWithoutDep(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{err: errors.New("smtp down")}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier} // Dep left nil, SettleGrace left zero
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool} // Dep left nil, SettleGrace left zero
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
@@ -119,7 +119,7 @@ func TestUptimeNotifyOpenFailedRetryBoundStopsRetrying(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{err: errors.New("smtp permanently down")}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil) // attempt 1 (openIncident)
