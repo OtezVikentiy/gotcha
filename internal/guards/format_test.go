@@ -105,8 +105,8 @@ var permanentFormatExemptions = []Exemption{
 	{Value: exemptLoc("internal/web/timerange_test.go", 179), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseCustomRangeClampsFutureEnd)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/timerange_test.go", 192), Why: `start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра start= (TestParseTimeRangeCustomEndDefaultsToNow)`, Finding: "по замыслу"},
 	{Value: exemptLoc("internal/web/performance_test.go", 415), Why: `start := now.Add(-45 * 24 * time.Hour).Format("2006-01-02T15:04") — сборка входного параметра ?start= тем же машинным форматом, что и сама форма (TestWebEndpointDetailSlowestExpiryConfigurable нужен custom-диапазон на 45 дней назад, дефолтные 24ч не захватили бы старые трейсы)`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/exports_test.go", 458), Why: `"start": {start.Format("2006-01-02T15:04")} — сборка входного параметра start= тем же машинным форматом, что и TimeRangeVM.apply/<input type="datetime-local"> (TestExportsCreateHonorsCustomRangeQuery)`, Finding: "по замыслу"},
-	{Value: exemptLoc("internal/web/exports_test.go", 459), Why: `"end": {end.Format("2006-01-02T15:04")} — тот же входной параметр end=, вторая граница диапазона`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/exports_test.go", 505), Why: `"start": {start.Format("2006-01-02T15:04")} — сборка входного параметра start= тем же машинным форматом, что и TimeRangeVM.apply/<input type="datetime-local"> (TestExportsCreateHonorsCustomRangeQuery)`, Finding: "по замыслу"},
+	{Value: exemptLoc("internal/web/exports_test.go", 506), Why: `"end": {end.Format("2006-01-02T15:04")} — тот же входной параметр end=, вторая граница диапазона`, Finding: "по замыслу"},
 
 	// internal/uptime/window_dst_test.go: пять мест — все аргументы
 	// многострочных t.Errorf/t.Fatalf в тесте перевода часов через DST, но на

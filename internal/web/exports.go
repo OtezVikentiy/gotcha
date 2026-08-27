@@ -185,18 +185,26 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Дефолт — «за всё время» (RangeAll), как у списка issues (issues.go),
-	// НЕ 24ч: список issues по умолчанию живёт на RangeAll и никогда не
-	// пишет "all" в rangeCookie (rangecookie.go — в куку попадают только
-	// TimeRangePresets), так что заявка, поставленная с этого экрана без
-	// query-параметра периода, обязана видеть то же «без границ», что видел
-	// пользователь, а не тихо сужаться до последних суток (ревью веб-части
-	// E1, п.1). Формы issues/issuedetail сами несут явный ?period=... в
-	// action (exportsPathWithRange, templates/exports.templ) — этот дефолт
-	// работает лишь для запроса без query вовсе: ручной формы на самой
-	// странице «Выгрузки» (exports.templ:exportsForm, у неё нет своего
-	// селектора окна) и любого прямого POST в обход форм.
-	tr := h.resolveTimeRange(w, r, RangeAll)
+	// Дефолт — «за всё время» (RangeAll), как у списка issues (issues.go).
+	// Формы issues/issuedetail сами несут явный ?period=/?start=... в action
+	// (exportsPathWithRange, templates/exports.templ) — для них резолв идёт
+	// через h.resolveTimeRange как обычно. Ручная форма на самой странице
+	// «Выгрузки» (exports.templ:exportsForm) своего селектора периода не
+	// несёт и явного query не даёт — и здесь h.resolveTimeRange НЕ годится:
+	// при отсутствии query она подставляет вместо RangeAll значение из
+	// ЧУЖОЙ cookie rangeCookie (её выставляет ЛЮБОЙ другой экран с явным
+	// периодом — logs/hosts/metrics/issues), и заявка «за всё время» молча
+	// уезжала в «последние 24 часа», потому что час назад пользователь
+	// смотрел графики хостов (аудит 2026-08-27, DEDUP-P1 кластер 5). Поэтому
+	// без query период резолвится напрямую через parseTimeRange, БЕЗ похода
+	// в cookie; при query — тем же resolveTimeRange, что и раньше.
+	q := r.URL.Query()
+	var tr TimeRange
+	if q.Get("period") != "" || q.Get("start") != "" {
+		tr = h.resolveTimeRange(w, r, RangeAll)
+	} else {
+		tr = parseTimeRange(q, RangeAll)
+	}
 
 	if !h.exportLimiter.Allow(exportRateLimitKey(uid, projectID)) {
 		h.renderExportsPage(w, r, http.StatusTooManyRequests, projectID, uid, authz,
@@ -596,9 +604,17 @@ func (h *Handler) exportViewRow(ctx context.Context, j export.Job, uid int64, au
 // exportFilterSummary — человекочитаемая сводка того, что реально сузило
 // выборку на момент постановки заявки (пустые Params молча пропускаются, а
 // не показываются как «все») — колонка «Фильтры» страницы списка. Период
-// показывается всегда: Since/Until разворачиваются из относительного окна
-// уже на постановке (exportsCreate), без него заявка «за последние 24 часа»
-// была бы неотличима на вид от заявки за всё время.
+// показывается ВСЕГДА, включая «за всё время» (P4 аудита 2026-08-27,
+// DEDUP-P1 кластер 5): Since/Until разворачиваются из относительного окна
+// уже на постановке (exportsCreate) и без явного показа периода пользователь
+// не может отличить на глаз заявку «за последние 24 часа» от заявки «за всё
+// время» — то есть узнать, за какой период файл, ему было попросту негде.
+// Since==Until==zero — сигнал именно RangeAll (см. parseTimeRange,
+// internal/web/timerange.go: единственный путь получить нулевые границы —
+// TimeRange{Key: RangeAll}, у любого пресета/custom-диапазона From/To
+// заведомо не нулевые), поэтому отдельного поля в Params под флаг «период не
+// задан» заводить не пришлось — Since/Until, уже хранящиеся в params jsonb
+// (export.Params, internal/export/job.go), несут это различие сами.
 func exportFilterSummary(ctx context.Context, j export.Job) string {
 	var parts []string
 	if j.ScopeIssueID != 0 {
@@ -616,7 +632,8 @@ func exportFilterSummary(ctx context.Context, j export.Job) string {
 	if j.Params.Query != "" {
 		parts = append(parts, i18n.Tf(ctx, "exports.summary.query", "query", j.Params.Query))
 	}
-	if !j.Params.Since.IsZero() && !j.Params.Until.IsZero() {
+	switch {
+	case !j.Params.Since.IsZero() && !j.Params.Until.IsZero():
 		// humanize.Time, не сырой Format: страница списка не знает пояса
 		// зрителя (сводка строится в exportViewRow без параметра loc, тот же
 		// случай, что humanize.Time(ctx, t, time.UTC) в svg.go/svg_slo.go) —
@@ -624,6 +641,16 @@ func exportFilterSummary(ctx context.Context, j export.Job) string {
 		parts = append(parts, i18n.Tf(ctx, "exports.summary.period",
 			"from", humanize.Time(ctx, j.Params.Since, time.UTC),
 			"to", humanize.Time(ctx, j.Params.Until, time.UTC)))
+	case j.Params.Since.IsZero() && j.Params.Until.IsZero():
+		// ОБЕ границы нулевые — это RangeAll (см. докблок функции), а не
+		// «период не задан»: показываем явно, а не молчим.
+		parts = append(parts, i18n.T(ctx, "exports.summary.period_all"))
+	default:
+		// Развёрнут только один конец периода — заявка ещё не прошла
+		// exportsCreate целиком, либо баг постановки. Показывать половину
+		// диапазона как «за всё время» было бы неверно, а как обычный
+		// период — нечем (второй границы нет): период не показываем вовсе,
+		// как и раньше до этой правки.
 	}
 	if len(parts) == 0 {
 		return i18n.T(ctx, "exports.summary.no_filters")

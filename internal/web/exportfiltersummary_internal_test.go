@@ -7,23 +7,25 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 )
 
-// TestExportFilterSummaryNoFilters — пустые Params и ScopeIssueID=0 дают
-// «без фильтров», а не пустую строку и не список из запятых.
+// TestExportFilterSummaryNoFilters — пустые Params и ScopeIssueID=0 (Since и
+// Until нулевые — RangeAll, см. докблок exportFilterSummary) дают «за всё
+// время», а не пустую строку и не «без фильтров»: период — не «фильтр»,
+// который можно пропустить молча, пользователь обязан видеть его всегда.
 func TestExportFilterSummaryNoFilters(t *testing.T) {
 	ctx := ruTestCtx()
 	got := exportFilterSummary(ctx, export.Job{})
-	if want := "без фильтров"; got != want {
+	if want := "за всё время"; got != want {
 		t.Errorf("exportFilterSummary(пусто) = %q, want %q", got, want)
 	}
 }
 
 // TestExportFilterSummaryIssueScope — заявка, ограниченная одной группой
-// (ScopeIssueID != 0), показывает «issue #N» — единственная ветка, которая
-// не читает j.Params.
+// (ScopeIssueID != 0), показывает «issue #N», а период (Since/Until
+// нулевые — RangeAll) добавляется следом тем же приёмом, что и везде.
 func TestExportFilterSummaryIssueScope(t *testing.T) {
 	ctx := ruTestCtx()
 	got := exportFilterSummary(ctx, export.Job{ScopeIssueID: 42})
-	if want := "issue #42"; got != want {
+	if want := "issue #42, за всё время"; got != want {
 		t.Errorf("exportFilterSummary(issue) = %q, want %q", got, want)
 	}
 }
@@ -34,7 +36,7 @@ func TestExportFilterSummaryStatusLevel(t *testing.T) {
 	ctx := ruTestCtx()
 	j := export.Job{Params: export.Params{Status: "resolved", Level: "error"}}
 	got := exportFilterSummary(ctx, j)
-	if want := "Решено, Ошибка"; got != want {
+	if want := "Решено, Ошибка, за всё время"; got != want {
 		t.Errorf("exportFilterSummary(status+level) = %q, want %q", got, want)
 	}
 }
@@ -45,7 +47,7 @@ func TestExportFilterSummaryEnvironmentQuery(t *testing.T) {
 	ctx := ruTestCtx()
 	j := export.Job{Params: export.Params{Environment: "production", Query: "timeout"}}
 	got := exportFilterSummary(ctx, j)
-	if want := "env production, «timeout»"; got != want {
+	if want := "env production, «timeout», за всё время"; got != want {
 		t.Errorf("exportFilterSummary(env+query) = %q, want %q", got, want)
 	}
 }
@@ -95,7 +97,9 @@ func TestExportFilterSummaryAllPartsJoined(t *testing.T) {
 // TestExportFilterSummaryPeriodRequiresBothBounds — если развёрнут только
 // один конец периода (второй остался нулевым — заявка ещё не прошла
 // exportsCreate или это баг постановки), период в сводке не появляется:
-// показывать половину диапазона хуже, чем не показывать его вовсе.
+// показывать половину диапазона хуже, чем не показывать его вовсе, а
+// показать её как «за всё время» было бы прямой ложью — период не пуст,
+// просто одна из границ ещё не развёрнута.
 func TestExportFilterSummaryPeriodRequiresBothBounds(t *testing.T) {
 	ctx := ruTestCtx()
 	onlySince := export.Job{Params: export.Params{Since: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}

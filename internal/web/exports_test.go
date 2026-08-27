@@ -418,6 +418,53 @@ func TestExportsCreateDefaultsToAllTimeWithoutPeriod(t *testing.T) {
 	}
 }
 
+// TestExportsCreateIgnoresRangeCookieWithoutExplicitPeriod — волна 2, аудит
+// 2026-08-27, DEDUP-P1 кластер 5: POST без query-периода (ручная форма самой
+// страницы «Выгрузки», exports.templ:exportsForm — своего селектора периода
+// у неё нет) обязан ставить RangeAll ДАЖЕ когда в cookie rangeCookie лежит
+// чужой пресет — её выставляет ЛЮБОЙ другой экран с явным периодом (logs/
+// hosts/metrics/issues с ?period=), а не эта форма. Раньше exportsCreate звал
+// h.resolveTimeRange(w, r, RangeAll) без разбора: при отсутствии query та
+// молча подставляла cookie вместо RangeAll — «выгрузка» превращалась в
+// «последние 24 часа», потому что час назад пользователь смотрел графики
+// хостов, и нигде не было сказано, за какой период файл.
+//
+// "range" — литерал имени cookie (internal/web/rangecookie.go:
+// const rangeCookie = "range"): пакет здесь web_test (чёрный ящик снаружи),
+// неэкспортированная константа недоступна — тот же приём, что и зеркала
+// exportsMaxActivePerUser/exportsCreateRateLimit наверху файла.
+//
+// Мутация: в exportsCreate (internal/web/exports.go) заменить ветку без
+// query обратно на h.resolveTimeRange(w, r, RangeAll) — тест обязан упасть.
+func TestExportsCreateIgnoresRangeCookieWithoutExplicitPeriod(t *testing.T) {
+	s := newExportsStack(t)
+
+	req, err := http.NewRequest(http.MethodPost, s.srv.URL+s.path("/exports"), strings.NewReader(okForm.Encode()))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", s.srv.URL)
+	req.AddCookie(s.cookie(t, s.operatorUID))
+	req.AddCookie(&http.Cookie{Name: "range", Value: "24h"})
+
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код ответа %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	j := s.lastJob(t)
+	if !j.Params.Since.IsZero() {
+		t.Errorf("Since = %v, ожидали нулевое (без нижней границы) — период уехал из cookie rangeCookie=24h вместо RangeAll", j.Params.Since)
+	}
+	if !j.Params.Until.IsZero() {
+		t.Errorf("Until = %v, ожидали нулевое (без верхней границы) — период уехал из cookie rangeCookie=24h вместо RangeAll", j.Params.Until)
+	}
+}
+
 // TestExportsCreateHonorsExplicitPeriodQuery — период, переданный
 // query-параметром на action формы (exportsPathWithRange), обязан дойти до
 // Params: это то, что теперь реально шлют формы issues/issuedetail вместо

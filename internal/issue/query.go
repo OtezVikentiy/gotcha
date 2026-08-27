@@ -230,80 +230,193 @@ func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue,
 
 const exportPageSize = 500
 
-// StreamForExport отдаёт группы проекта постранично по курсору
-// (last_seen, id) — без OFFSET, который на многотысячной выгрузке заставлял
-// бы базу перечитывать уже отданные строки на каждой следующей странице.
-// id обязателен вторым ключом курсора: last_seen массово совпадает у групп,
-// пришедших одной пачкой событий, и сравнение только по нему потеряло бы или
-// задвоило бы строки на границе страницы.
+// issueExportSnapshotSafetyLimit — защитный потолок числа групп в снимке id
+// StreamForExport (см. её докблок про снимок) — НЕ настраиваемый
+// GOTCHA_EXPORT_MAX_ROWS: тот применяет worker.go СНАРУЖИ, останавливая
+// обход возвратом ошибки из fn при достижении лимита заявки (тот же путь,
+// что и для kind=events, где worker.go на старте проверяет
+// MaxRows < eventStreamSafetyLimit=1_000_000, internal/export/worker.go) —
+// эта проверка распространяется на ЛЮБОЙ источник, включая issues, так как
+// worker оборачивает fn одинаково независимо от Kind. issueExportSnapshotSafetyLimit
+// взят РАВНЫМ eventStreamSafetyLimit намеренно: раз MaxRows у ЛЮБОЙ заявки
+// уже гарантированно меньше eventStreamSafetyLimit, он тем самым всегда
+// меньше и этого потолка — снимок в норме никогда не упрётся в него первым,
+// он успевает остановиться по MaxRows (Truncated=true) раньше. Это чистая
+// подстраховка на случай аномально большого проекта или неисправности
+// внешнего лимита — без верхней границы снимок материализовал бы id ВСЕХ
+// подходящих групп разом, прежде чем прочитать хоть одну страницу.
+const issueExportSnapshotSafetyLimit = 1_000_000
+
+// ErrExportSnapshotTooLarge возвращается, когда фильтр StreamForExport
+// резолвится в больше issueExportSnapshotSafetyLimit групп. Отказ, а не
+// тихая обрезка снимка: обрезанный по ЭТОЙ границе (а не по MaxRows заявки,
+// который её в норме не достигает — см. докблок issueExportSnapshotSafetyLimit)
+// снимок выглядел бы как «выгрузка полна», хотя часть групп в неё не вошла
+// бы — тот же принцип, что у ErrTooManyIssues в internal/export.
+var ErrExportSnapshotTooLarge = errors.New("issue: export snapshot exceeds safety limit")
+
+// StreamForExport отдаёт группы проекта по снимку их id, постранично, без
+// OFFSET, который на многотысячной выгрузке заставлял бы базу перечитывать
+// уже отданные строки на каждой следующей странице.
 //
-// WHERE строится buildIssueFilter — тем же кодом, что и List: файл выгрузки
-// обязан ограничиваться ровно тем же фильтром, что человек видел на экране,
-// а не отдельной, потенциально разъехавшейся копией условий.
+// Снимок — id ВСЕХ подходящих фильтру групп резолвится ОДНИМ запросом до
+// начала обхода, в порядке last_seen DESC, id DESC (тот же порядок, что и у
+// List и раньше был у самого обхода), и этот порядок фиксируется: обход идёт
+// строго по накопленному списку id, а НЕ переспрашивает базу постранично по
+// last_seen. Так решены сразу два свойства разом:
+//
+//   - последующая мутация last_seen группы (приём события ПРЯМО ВО ВРЕМЯ
+//     обхода) не может ни вытолкнуть её из уже зафиксированного списка, ни
+//     задвоить: id в снимке — то же самое множество и тот же порядок, что
+//     на момент постановки, поэтому группа, чей last_seen поменялся после
+//     снимка, всё равно попадёт в выгрузку ровно один раз, на прежнем месте
+//     (аудит 2026-08-27, DEDUP-P1 кластер 5: раньше курсор шёл постранично
+//     ПО last_seen, и такая группа уезжала выше курсора и терялась молча,
+//     Truncated при этом оставался false);
+//   - группа, СОЗДАННАЯ уже ПОСЛЕ снимка, в выгрузку заведомо не попадёт —
+//     её id в снимке нет и не может быть. Это осознанная, документированная
+//     граница снимка (как у любого моментального среза растущей выборки), а
+//     не случайность: экспорт — это состояние на момент постановки, а не
+//     живой отчёт, продолжающий расти по мере своего выполнения;
+//   - симметрично: группа, УЖЕ бывшая в снимке (её id уже попал в список),
+//     чьё поле фильтра (например status) изменится между снимком и чтением
+//     ЕЁ страницы, из выгрузки не исчезнет — членство решает id = ANY($1),
+//     который WHERE фильтра целиком не переприменяет. Строка при этом придёт
+//     с ТЕКУЩИМИ (на момент чтения страницы, не на момент снимка) значениями
+//     остальных полей — так что запись может показать, например, статус
+//     resolved у группы, отфильтрованной по status=unresolved на постановке.
+//     Так и должно быть: снимок фиксирует РЕШЕНИЕ О ЧЛЕНСТВЕ (какие группы
+//     войдут в файл и в каком порядке), а не замороженные значения полей
+//     каждой из них — иначе, например, ссылка url и title в файле были бы
+//     устаревшими уже на момент открытия. Фраза «ровно тем же фильтром, что
+//     человек видел на экране» ниже верна для МНОЖЕСТВА групп на момент
+//     постановки заявки, а не для каждого поля каждой строки к моменту,
+//     когда до неё дошла своя страница.
+//
+// Ранняя версия этой правки пробовала курсор по issues.id вместо снимка
+// (тот тоже не мутирует и решает первый пункт) — но ORDER BY issues.id DESC
+// меняет НЕ порядок строк, а их СОСТАВ при усечении по MaxRows заявки: id
+// растёт вместе с first_seen, то есть «id DESC» — это «недавно СОЗДАННЫЕ
+// группы первыми», и на упирающейся в MaxRows выгрузке (многотысячные
+// проекты упираются в неё реально) в файл уезжали самые новые группы вместо
+// самых активных — старая группа с большим times_seen и маленьким id из
+// усечённого файла пропадала целиком. Снимок этой цены не имеет: он
+// упорядочен по last_seen DESC, как и раньше, поэтому усечение по MaxRows
+// по-прежнему оставляет в файле самые недавно активные группы.
+//
+// Цена снимка — фиксированный набор id в памяти на всё время обхода (при
+// потолке issueExportSnapshotSafetyLimit — до 8 МБ, int64×1_000_000), а не
+// открытая транзакция БД на всю выгрузку (минуты на сотнях тысяч строк, с
+// давлением на vacuum самой нагруженной таблицы под REPEATABLE READ) — тот
+// более очевидный на первый взгляд вариант сюда осознанно не пошёл.
+//
+// WHERE снимка строится buildIssueFilter — тем же кодом, что и List: НАБОР
+// групп, вошедших в выгрузку, обязан быть ровно тем же, что человек видел на
+// экране НА МОМЕНТ ПОСТАНОВКИ заявки (см. третий пункт выше про членство), а
+// не отдельной, потенциально разъехавшейся копией условий фильтра.
 //
 // Обход останавливается на первой ошибке fn: источник выгрузки использует её,
 // чтобы прервать поток на потолке строк, не дочитывая выборку до конца.
 func (s *Service) StreamForExport(ctx context.Context, projectID int64, f Filter, fn func(Issue) error) error {
+	return s.streamForExport(ctx, projectID, f, issueExportSnapshotSafetyLimit, fn)
+}
+
+// streamForExport — реализация StreamForExport с потолком снимка ПАРАМЕТРОМ,
+// а не жёстко зашитой issueExportSnapshotSafetyLimit: тест на переполнение
+// снимка (ErrExportSnapshotTooLarge) иначе стоил бы вставки 1 000 001 строки
+// в тестовую БД на каждый прогон — с параметром достаточно нескольких строк
+// и маленького лимита (см. internal/issue/streamforexport_internal_test.go,
+// package issue, у неё есть доступ к этому неэкспортированному методу).
+func (s *Service) streamForExport(ctx context.Context, projectID int64, f Filter, snapshotLimit int, fn func(Issue) error) error {
 	where, args := buildIssueFilter(projectID, f)
 
-	var curSeen time.Time
-	var curID int64
-	first := true
-	for {
-		q := "SELECT " + issueColumnsJoined + " FROM " + issueFromJoined + " WHERE " + where
-		pageArgs := args
-		if !first {
-			pageArgs = append(append([]any(nil), args...), curSeen, curID)
-			q += fmt.Sprintf(" AND (issues.last_seen, issues.id) < ($%d, $%d)", len(pageArgs)-1, len(pageArgs))
+	snapQ := fmt.Sprintf("SELECT issues.id FROM issues WHERE %s ORDER BY issues.last_seen DESC, issues.id DESC LIMIT %d",
+		where, snapshotLimit+1)
+	rows, err := s.pool.Query(ctx, snapQ, args...)
+	if err != nil {
+		return fmt.Errorf("issue: stream for export snapshot: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("issue: stream for export snapshot scan: %w", err)
 		}
-		q += fmt.Sprintf(" ORDER BY issues.last_seen DESC, issues.id DESC LIMIT %d", exportPageSize)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("issue: stream for export snapshot: %w", err)
+	}
+	if len(ids) > snapshotLimit {
+		return ErrExportSnapshotTooLarge
+	}
 
-		rows, err := s.pool.Query(ctx, q, pageArgs...)
-		if err != nil {
-			return fmt.Errorf("issue: stream for export: %w", err)
+	for start := 0; start < len(ids); start += exportPageSize {
+		end := start + exportPageSize
+		if end > len(ids) {
+			end = len(ids)
 		}
-		var batch []Issue
-		for rows.Next() {
+		page := ids[start:end]
+
+		// project_id в условии — та же конвенция, что и у ByIDs (query.go):
+		// сегодня id в page рождаются из снимка ЭТОЙ ЖЕ функции, отфильтрованного
+		// buildIssueFilter по тому же projectID, так что примесь чужого проекта
+		// здесь неоткуда взяться — но это единственное место в файле с голым
+		// id = ANY без project_id, и полагаться на «id пришли из своего же
+		// снимка, честное слово» дороже одного лишнего параметра.
+		q := "SELECT " + issueColumnsJoined + " FROM " + issueFromJoined + " WHERE issues.project_id = $1 AND issues.id = ANY($2)"
+		pageRows, err := s.pool.Query(ctx, q, projectID, page)
+		if err != nil {
+			return fmt.Errorf("issue: stream for export page: %w", err)
+		}
+		byID := make(map[int64]Issue, len(page))
+		for pageRows.Next() {
 			var it Issue
-			if err := scanIssueWithAssignee(rows, &it); err != nil {
-				rows.Close()
+			if err := scanIssueWithAssignee(pageRows, &it); err != nil {
+				pageRows.Close()
 				return fmt.Errorf("issue: stream for export scan: %w", err)
 			}
-			batch = append(batch, it)
+			byID[it.ID] = it
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("issue: stream for export: %w", err)
+		pageRows.Close()
+		if err := pageRows.Err(); err != nil {
+			return fmt.Errorf("issue: stream for export page: %w", err)
 		}
 
-		if len(batch) > 0 {
-			ids := make([]int64, len(batch))
-			for i, it := range batch {
-				ids[i] = it.ID
+		// Порядок отдачи — порядок СНИМКА (page), не порядок, в котором
+		// Postgres вернул строки по id = ANY($1) (он его не гарантирует).
+		// Группа, удалённая между снимком и этой страницей, просто
+		// отсутствует в byID — пропускаем, не ошибка.
+		var batchIDs []int64
+		for _, id := range page {
+			if _, ok := byID[id]; ok {
+				batchIDs = append(batchIDs, id)
 			}
-			envs, err := s.environmentsForIssues(ctx, ids)
+		}
+		if len(batchIDs) > 0 {
+			envs, err := s.environmentsForIssues(ctx, batchIDs)
 			if err != nil {
 				return err
 			}
-			for i := range batch {
-				batch[i].Environments = envs[batch[i].ID]
+			for _, id := range batchIDs {
+				it := byID[id]
+				it.Environments = envs[id]
+				byID[id] = it
 			}
 		}
 
 		// Колбэк вызывается после закрытия rows: он может ходить в ту же базу
 		// (источник выгрузки пишет в файл, не в БД, но держать курсор открытым
-		// на всю выгрузку всё равно незачем), курсор двигается по факту отдачи.
-		for _, it := range batch {
-			if err := fn(it); err != nil {
+		// на всю выгрузку всё равно незачем).
+		for _, id := range batchIDs {
+			if err := fn(byID[id]); err != nil {
 				return err
 			}
-			curSeen, curID = it.LastSeen, it.ID
 		}
-		if len(batch) < exportPageSize {
-			return nil
-		}
-		first = false
 	}
+	return nil
 }
 
 // IDsForFilter резолвит фильтр списка issues в список id — источнику

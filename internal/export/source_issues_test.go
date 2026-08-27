@@ -13,6 +13,35 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
+// TestIssueColumnsContractPin — заголовок CSV выгрузки issues это ПУБЛИЧНЫЙ
+// контракт: после 1.0 переименование колонки ломает чужие парсеры (аудит
+// 2026-08-27, DEDUP-P1 кластер 5). Список ниже — ЛИТЕРАЛ, набранный руками,
+// а НЕ вызов IssueColumns() — раньше единственная проверка контракта
+// (TestIssueSourceRecordHasAbsoluteURL ниже) сверяла Record с тем же самым
+// IssueColumns(), из которого код и берёт колонки: переименование колонки
+// в IssueColumns() проходило тест зелёным, потому что «ожидание» менялось
+// вместе с «реализацией» одним и тем же изменением одной строки.
+//
+// Порядок ТОЖЕ часть контракта: CSV-писатель кладёт значения по порядку
+// этого среза (см. docblock IssueColumns), поэтому сравнение — поэлементное,
+// не через множество.
+//
+// Менять этот литерал можно только осознанно, вместе с записью в CHANGELOG —
+// это предупреждение потребителям файла, а не деталь реализации.
+func TestIssueColumnsContractPin(t *testing.T) {
+	want := []string{"id", "title", "culprit", "level", "status", "times_seen",
+		"first_seen", "last_seen", "environments", "assignee_email", "url"}
+	got := IssueColumns()
+	if len(got) != len(want) {
+		t.Fatalf("IssueColumns() = %v (%d колонок), want %v (%d) — контракт CSV изменился без записи в CHANGELOG?", got, len(got), want, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("IssueColumns()[%d] = %q, want %q — переименование/перестановка публичной колонки требует записи в CHANGELOG", i, got[i], want[i])
+		}
+	}
+}
+
 // TestIssueSourceRecordHasAbsoluteURL проверяет, что Stream отдаёт Record
 // с ровно набором колонок §6 спеки и что url — абсолютная ссылка на группу,
 // а не относительный путь: файл открывают в почте и в таблице, где

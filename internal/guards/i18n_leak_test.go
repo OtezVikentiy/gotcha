@@ -256,6 +256,19 @@ var legitExemptions = []Exemption{
 	// store.go выше: читает только Stats.refresh (RunSnapshots → slog.Warn),
 	// к посетителю не идёт вовсе.
 	{Value: `return QueueSnapshot{}, fmt.Errorf("export: снимок очереди: %w", err)`, Why: "Store.QueueSnapshot: обёртка ошибки SQL, читает только Stats.refresh (RunSnapshots → slog.Warn) — та же категория, что у остальных Store-методов в группе store.go выше", Finding: "по замыслу"},
+
+	// internal/export/pii.go: NewExportSalt — паника на отказе
+	// crypto/rand.Read при постановке псевдонима user_id (волна 2
+	// устранения находок аудита 2026-08-27, DEDUP-P1 кластер 5). Отказ
+	// системного источника энтропии на исправной ОС не бывает практически
+	// никогда — тот же класс, что и panic() в worker.go:init() выше
+	// (проверка инварианта, а не путь, которым что-либо доходит до
+	// посетителя): recover() в пакете export нет нигде, поэтому паника
+	// убивает процесс целиком, а не превращается в HTTP-ответ — текст читает
+	// оператор в стектрейсе/логе процесса при перезапуске, и к этому моменту
+	// crypto/rand уже сломан для ВСЕГО процесса (TLS, токены сессий), не
+	// только для этой строки.
+	{Value: `panic("export: crypto/rand недоступен: " + err.Error())`, Why: "NewExportSalt: паника на отказе crypto/rand.Read — та же категория, что panic() в worker.go:init() (проверка инварианта), recover() в пакете нет, наружу как HTTP-ответ не идёт никогда", Finding: "по замыслу"},
 }
 
 // maxLegitExemptions — потолок списка исключений «по замыслу»: 33 записи
@@ -306,7 +319,12 @@ var legitExemptions = []Exemption{
 // после деплоя): новый Store.Release — та же категория, что Fail/Done/
 // FailPermanent рядом (ошибка САМОГО SQL UPDATE, читает worker.release
 // через slog.Warn, автору письмо не идёт — release не отказ).
-const maxLegitExemptions = 106
+//
+// С 106 до 107 волной 2 устранения находок аудита 2026-08-27 (DEDUP-P1
+// кластер 5, маска ПДн выгрузки событий): новая NewExportSalt (pii.go)
+// паникует на отказе crypto/rand.Read при постановке псевдонима user_id —
+// та же категория, что panic() в worker.go:init() выше.
+const maxLegitExemptions = 107
 
 // leakDebtExemptions — временный долг правила: настоящие утечки, найденные
 // первым прогоном на расширенном охвате (восемь записей, находки №132–137

@@ -1,6 +1,13 @@
 package export
 
-import "gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+)
 
 // maskedValue — заменитель прямых идентификаторов пользователя в выгрузке.
 // Одна константа на весь пакет: одинаковая маска в CSV-колонках и в JSON —
@@ -8,8 +15,16 @@ import "gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 // повод гадать, что означает конкретное значение.
 const maskedValue = "[masked]"
 
-// MaskUser прячет прямые идентификаторы пользователя. user_id остаётся: он
-// внутренний и нужен, чтобы посчитать «сколько пользователей задело».
+// MaskUser прячет прямые идентификаторы пользователя — IP и email. Для
+// user_id используется PseudonymizeUserID (см. ниже), не эта функция:
+// раньше user_id вовсе не маскировался, а докблок объяснял это тем, что
+// «user_id внутренний и нужен, чтобы посчитать, сколько пользователей
+// задело» — это было неверно. SDK кладёт в user.id ровно то, что передал
+// клиент (Sentry envelope user.id), и на практике это сплошь и рядом логин
+// или email, а не суррогатный внутренний идентификатор, — то есть поле
+// годами уезжало сырым именно из-за этого объяснения. Посчитать «сколько
+// пользователей задело» можно по стабильному псевдониму
+// (PseudonymizeUserID), не храня исходное значение в файле выгрузки.
 //
 // Пустая строка не превращается в маску: пустая колонка честнее ложного
 // «данные скрыты» там, где данных не было — иначе по выгрузке нельзя было бы
@@ -23,6 +38,60 @@ func MaskUser(ip, email string) (string, string) {
 		email = maskedValue
 	}
 	return ip, email
+}
+
+// userIDPseudonymHexLen — длина псевдонима user_id в hex-символах (8 байт
+// HMAC-SHA256, усечённых). Полных 64 hex-символов SHA-256 для колонки CSV
+// не нужно: псевдоним не хранится и не сверяется вручную, а нужен только
+// для группировки строк одного пользователя внутри одной выгрузки — 8 байт
+// с огромным запасом достаточно, чтобы не столкнуть два разных user_id
+// в пределах одной заявки (счётные тысячи-десятки тысяч строк, не миллиарды).
+const userIDPseudonymHexLen = 16
+
+// PseudonymizeUserID заменяет user_id стабильным псевдонимом:
+// HMAC-SHA256(salt, userID), усечённым до userIDPseudonymHexLen hex-символов.
+// Псевдоним, а не статичная маска [masked] (как MaskUser для IP/email) —
+// user_id используется, чтобы посчитать «сколько уникальных пользователей
+// задело» (см. переписанный докблок MaskUser выше), и статичная маска убила
+// бы эту возможность: все строки схлопнулись бы в одно значение.
+//
+// salt — одноразовый, генерируется NewExportSalt() ОДИН раз на заявку
+// (internal/export/source_events.go: eventSource.Stream), не хранится и не
+// переиспользуется между заявками. Это даёт ровно нужное свойство:
+// одинаковый user_id → одинаковый псевдоним ВНУТРИ одной выгрузки (можно
+// посчитать уникальных пользователей), а по значению нельзя ни восстановить
+// исходный user_id (HMAC необратим без salt), ни сопоставить одного и того
+// же пользователя МЕЖДУ разными выгрузками (salt в каждой свой) — лишняя
+// корреляция между файлами, которую никто не просил и которая сама по себе
+// была бы утечкой (получатель двух выгрузок мог бы сшить активность
+// пользователя по псевдониму, если бы он был одинаков всегда).
+//
+// Пустая строка не превращается в псевдоним — тот же принцип, что и в
+// MaskUser: пустая колонка честнее «псевдонима пустого значения».
+func PseudonymizeUserID(userID string, salt []byte) string {
+	if userID == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, salt)
+	mac.Write([]byte(userID))
+	sum := mac.Sum(nil)
+	return hex.EncodeToString(sum)[:userIDPseudonymHexLen]
+}
+
+// NewExportSalt генерирует одноразовый salt для PseudonymizeUserID: 16
+// случайных байт из crypto/rand, ровно на одну заявку выгрузки — см.
+// докблок PseudonymizeUserID про то, почему salt не хранится и не
+// переиспользуется.
+func NewExportSalt() []byte {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		// crypto/rand.Read не возвращает ошибку на исправной ОС (поверх
+		// /dev/urandom или эквивалента) — паника здесь означает отказ
+		// системного источника энтропии при старте выгрузки, а не молчаливую
+		// деградацию псевдонима до предсказуемого значения.
+		panic("export: crypto/rand недоступен: " + err.Error())
+	}
+	return salt
 }
 
 // jsonScrubber — один общий *ingest.Scrubber на весь пакет, а не новый на
@@ -40,7 +109,23 @@ func MaskUser(ip, email string) (string, string) {
 // не зовёт. Мутирует ScrubJSON только ЛОКАЛЬНУЮ декодированную копию JSON
 // каждого вызова (v, распакованный из raw), а не сам Scrubber, — конкурентные
 // вызовы не делят это состояние между собой.
-var jsonScrubber = ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
+//
+// ScrubFreeText выставлен в true ПОСЛЕ конструктора (мутация происходит
+// однократно, до публикации переменной, — см. абзац выше про безопасность
+// конкурентного доступа): выгрузка «без ПДн» — свой, более строгий контур,
+// не зависящий от GOTCHA_SCRUB_FREETEXT конкретного инстанса. Без этого
+// email, попавший в свободный текст (message, локальные переменные фрейма
+// в stacktrace, breadcrumbs) на инстансе, где вольный скраб при приёме
+// выключен, доехал бы до выгрузки открытым текстом даже при includePII=false
+// — MaskJSON/MaskMessage полагаются на ScrubText (internal/ingest/scrub.go),
+// а тот no-op при ScrubFreeText=false.
+var jsonScrubber = newJSONScrubber()
+
+func newJSONScrubber() *ingest.Scrubber {
+	s := ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
+	s.ScrubFreeText = true
+	return s
+}
 
 // MaskJSON проходит по объекту и маскирует значения ключей из денилиста приёма
 // (Authorization, Cookie, X-Api-Key и прочее — internal/ingest.DefaultDenyKeys).
@@ -49,6 +134,17 @@ var jsonScrubber = ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
 // молча терять то, что не смогла разобрать.
 func MaskJSON(raw string) string {
 	return jsonScrubber.ScrubJSON(raw)
+}
+
+// MaskMessage прогоняет человеко-читаемое свободнотекстовое поле события
+// (message, exception_value) через тот же скрабер, что и приём
+// (Scrubber.ScrubMessage, internal/ingest/scrub.go): email в тексте (RA-L10,
+// при ScrubFreeText — см. newJSONScrubber выше, для выгрузки он всегда
+// включён) и query-токены во встроенных URL ("GET https://api/x?token=…",
+// вычищаются безусловно). Второго денилиста/регэкспа для выгрузки заводить
+// незачем — поведение обязано совпадать с приёмом дословно.
+func MaskMessage(text string) string {
+	return jsonScrubber.ScrubMessage(text)
 }
 
 // MaskTags возвращает КОПИЮ карты тегов события с денилист-ключами

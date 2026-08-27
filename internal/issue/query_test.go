@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -570,10 +571,14 @@ func mustUpsert(t *testing.T, svc *issue.Service, projectID int64, fingerprint s
 	return r.IssueID
 }
 
-// TestStreamForExportNoGapsOnEqualLastSeen — худший случай для курсора
-// (last_seen, id): все группы с ОДИНАКОВЫМ last_seen. Без id вторым ключом
-// курсора сравнение "< curSeen" отбросило бы все строки с тем же last_seen,
-// что и последняя строка предыдущей страницы, — целую пачку сразу.
+// TestStreamForExportNoGapsOnEqualLastSeen — регресс на границу страницы:
+// все группы с ОДИНАКОВЫМ last_seen (частый случай — пачка событий, пришедшая
+// разом). Обход теперь идёт по снимку id, зафиксированному ОДНИМ запросом
+// ORDER BY last_seen DESC, id DESC (см. докблок StreamForExport) — id
+// тай-брейкает совпадающий last_seen уже в самом снимке, а страницы — это
+// просто срезы уже готового списка в памяти, так что совпадающий last_seen
+// сам по себе не может дать пропуск/дубль — тест фиксирует это как
+// регресс-гарантию.
 // n больше exportPageSize (500 в internal/issue/query.go), иначе весь набор
 // читается одной страницей и граница вообще не проверяется.
 func TestStreamForExportNoGapsOnEqualLastSeen(t *testing.T) {
@@ -635,10 +640,9 @@ func TestStreamForExportStopsOnCallbackError(t *testing.T) {
 	}
 }
 
-// TestStreamForExportIgnoresOtherProject — фильтр keyset-обхода обязан
-// содержать project_id, как и обычный List: без него курсор по (last_seen,id)
-// свободно перетекал бы в чужие группы, если их id/last_seen попадают в тот
-// же диапазон.
+// TestStreamForExportIgnoresOtherProject — фильтр снимка id обязан содержать
+// project_id, как и обычный List: без него снимок свободно резолвился бы в
+// id чужих групп, попавших в тот же диапазон last_seen/id.
 func TestStreamForExportIgnoresOtherProject(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -662,17 +666,26 @@ func TestStreamForExportIgnoresOtherProject(t *testing.T) {
 	}
 }
 
-// TestStreamForExportSurvivesMutationBetweenPages — вставка и удаление строк
-// между чтением страниц не должны приводить ни к дублю, ни к панике/ошибке.
-// Группы заведены с РАЗНЫМ last_seen (по возрастанию i), поэтому при
-// ORDER BY last_seen DESC первая страница (500 строк) захватывает группы с
-// НАИБОЛЬШИМ last_seen (i от 599 до 100), вторая — оставшиеся (i от 99 до 0).
-// Прямо на границе (после 500-й отданной строки, i=100) тест:
-//   - удаляет ещё не прочитанную группу (i=0, самый ранний last_seen —
-//     будет прочитана последней) — она не должна попасть в выдачу;
-//   - вставляет новую группу с last_seen МЕНЬШЕ курсора (i.е. в ещё не
-//     прочитанной части набора) — она обязана попасть в выдачу ровно один раз.
-func TestStreamForExportSurvivesMutationBetweenPages(t *testing.T) {
+// TestStreamForExportSurvivesLastSeenMutationBetweenPages — волна 2, аудит
+// W2-A, DEDUP-P1 кластер 5: обход идёт по снимку id, зафиксированному ОДНИМ
+// запросом (ORDER BY last_seen DESC, id DESC) ДО начала постраничного чтения
+// (см. докблок StreamForExport), а не постранично ПО last_seen. Раньше
+// группа, ещё не дошедшая до курсора, получавшая новый last_seen между
+// страницами, уезжала выше курсора (ORDER BY last_seen DESC на каждой
+// странице заново) и в выгрузку не попадала — молча, без Truncated=true.
+// Активные группы — ровно те, ради которых выгрузку и делают.
+//
+// n больше exportPageSize (500), группы заведены с last_seen по возрастанию
+// i (last_seen = base + i секунд), снимок (last_seen DESC) отдаёт страницу 1
+// = i599..i100, страницу 2 = i99..i0. Прямо на границе (после 500-й отданной
+// строки, ещё не прочитанные — i99..i0) тест ОБНОВЛЯЕТ last_seen ещё не
+// прочитанной группы через тот же Upsert, что зовёт приём событий (ON
+// CONFLICT (project_id, fingerprint) — тот же id, id и место в уже
+// зафиксированном снимке не меняются, last_seen в БД мутирует). Группа
+// обязана попасть в выдачу РОВНО ОДИН раз — со снимком id это гарантировано
+// по построению (её место в списке уже зафиксировано до мутации), со старым
+// last_seen-курсором строка терялась бы.
+func TestStreamForExportSurvivesLastSeenMutationBetweenPages(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	svc := issue.NewService(pool)
@@ -680,45 +693,223 @@ func TestStreamForExportSurvivesMutationBetweenPages(t *testing.T) {
 
 	const n = 600
 	base := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	fps := make([]string, n)
 	ids := make([]int64, n)
 	for i := 0; i < n; i++ {
-		ids[i] = mustUpsert(t, svc, pid, fmt.Sprintf("fp-%04d", i), base.Add(time.Duration(i)*time.Second))
+		fps[i] = fmt.Sprintf("fp-%04d", i)
+		ids[i] = mustUpsert(t, svc, pid, fps[i], base.Add(time.Duration(i)*time.Second))
 	}
-	deletedID := ids[0] // last_seen самый ранний — читается последним
+	// Ещё не прочитанная на границе 500-й строки (снимок — last_seen DESC,
+	// эта группа в хвосте набора по last_seen) — её last_seen обновится
+	// мид-обхода.
+	mutatedID := ids[50]
+	mutatedFP := fps[50]
+	// Ещё не прочитанная, которую вместо этого удалят между страницами —
+	// не должна попасть в выдачу, обход не должен упасть/зациклиться.
+	deletedID := ids[10]
 
-	var insertedID int64
 	count := 0
 	seen := map[int64]int{}
 	err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(it issue.Issue) error {
 		seen[it.ID]++
 		count++
 		if count == 500 {
-			if _, err := pool.Exec(ctx, "DELETE FROM issues WHERE id = $1", deletedID); err != nil {
-				t.Fatalf("delete between pages: %v", err)
+			// Тот же Upsert, что и приём события: last_seen группы, которую
+			// обход ещё не дочитал, обновляется ПРЯМО СЕЙЧАС, между страницами.
+			if _, err := svc.Upsert(ctx, pid, mutatedFP, "t", "c", "error", "", base.Add(24*time.Hour)); err != nil {
+				t.Fatalf("upsert между страницами (мутация last_seen): %v", err)
 			}
-			// last_seen раньше самой ранней уже заведённой группы — попадёт
-			// в хвост второй страницы, обгоняя оставшиеся i=99..0.
-			insertedID = mustUpsert(t, svc, pid, "fp-inserted-late", base.Add(-time.Hour))
+			if _, err := pool.Exec(ctx, "DELETE FROM issues WHERE id = $1", deletedID); err != nil {
+				t.Fatalf("delete между страницами: %v", err)
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("StreamForExport: %v", err)
 	}
+	if seen[mutatedID] != 1 {
+		t.Errorf("группа с изменённым мид-обхода last_seen выдана %d раз, want 1 (%d)", seen[mutatedID], mutatedID)
+	}
 	if seen[deletedID] != 0 {
 		t.Errorf("удалённая между страницами группа попала в выдачу")
-	}
-	if seen[insertedID] != 1 {
-		t.Errorf("вставленная между страницами группа выдана %d раз, want 1", seen[insertedID])
 	}
 	for id, c := range seen {
 		if c > 1 {
 			t.Errorf("группа %d выдана %d раз", id, c)
 		}
 	}
-	wantTotal := n - 1 + 1 // минус удалённая, плюс вставленная
+	wantTotal := n - 1 // минус удалённая; мутация last_seen количество не меняет
 	if len(seen) != wantTotal {
 		t.Fatalf("выгружено %d групп, want %d", len(seen), wantTotal)
+	}
+}
+
+// TestStreamForExportMultiPageOrderMatchesLastSeenDesc — волна 2, второй
+// круг ревью доработки: центральный механизм снимка — восстановление
+// порядка отдачи ИЗ СНИМКА (см. комментарий в streamForExport «Порядок
+// отдачи — порядок СНИМКА (page), не порядок, в котором Postgres вернул
+// строки по id = ANY($1)») — до этого теста мутационно не был защищён.
+// Ревьюер снял это восстановление (эмиссия пошла в физическом порядке
+// возврата id = ANY($1)), и ни один существующий тест не упал
+// ДЕТЕРМИНИРОВАННО: в конкретном прогоне план вернул нужные две строки в
+// обратном порядке и TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated
+// поймал не ту группу, но id = ANY($1) без ORDER BY не даёт вообще никакого
+// контракта на порядок возврата — на другом плане/версии PG/фикстуре та же
+// поломка прошла бы зелёной.
+//
+// n=700 (2 страницы: 500 + 200) — тест обязан пройти границу exportPageSize,
+// иначе восстановление порядка внутри многостраничного обхода не
+// проверяется вовсе. last_seen КАЖДОЙ группы — по перестановке индекса
+// создания ((i*131) % n; 131 и 700 взаимно просты, значит это перестановка
+// БЕЗ совпадений и без монотонной связи с i), а НЕ по возрастанию/убыванию i:
+// id растёт вместе с i (группы создаются по порядку), поэтому без перетасовки
+// last_seen DESC совпал бы с id DESC (и, скорее всего, с физическим порядком
+// возврата id = ANY($1) — тот на PK-based плане часто идёт по id) — и тест
+// на восстановление порядка проходил бы «по совпадению», а не потому что
+// реализация действительно сортирует по last_seen. Ожидание строится
+// НЕЗАВИСИМО от кода реализации — сортировкой локальной копии по
+// (last_seen DESC, id DESC), а не вызовом какой-либо функции пакета issue.
+//
+// Мутация: убрать восстановление порядка из снимка (эмитировать byID в
+// порядке возврата pageRows.Next(), как сделал ревьюер) — тест обязан упасть
+// детерминированно на reflect.DeepEqual(gotOrder, wantOrder) ниже.
+func TestStreamForExportMultiPageOrderMatchesLastSeenDesc(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+
+	const n = 700
+	base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+
+	type seeded struct {
+		id       int64
+		lastSeen time.Time
+	}
+	rows := make([]seeded, n)
+	for i := 0; i < n; i++ {
+		lastSeen := base.Add(time.Duration((i*131)%n) * time.Second)
+		id := mustUpsert(t, svc, pid, fmt.Sprintf("fp-order-%04d", i), lastSeen)
+		rows[i] = seeded{id: id, lastSeen: lastSeen}
+	}
+
+	// Ожидание — сортировка ЛОКАЛЬНОЙ копии, независимая от реализации.
+	wantRows := append([]seeded(nil), rows...)
+	sort.Slice(wantRows, func(a, b int) bool {
+		if !wantRows[a].lastSeen.Equal(wantRows[b].lastSeen) {
+			return wantRows[a].lastSeen.After(wantRows[b].lastSeen)
+		}
+		return wantRows[a].id > wantRows[b].id
+	})
+	wantOrder := make([]int64, n)
+	for i, r := range wantRows {
+		wantOrder[i] = r.id
+	}
+
+	var gotOrder []int64
+	err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(it issue.Issue) error {
+		gotOrder = append(gotOrder, it.ID)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if !reflect.DeepEqual(gotOrder, wantOrder) {
+		t.Fatalf("порядок выдачи по %d группам (больше одной страницы по 500) не совпал с ожидаемым last_seen DESC, id DESC:\ngot:  %v\nwant: %v",
+			n, gotOrder, wantOrder)
+	}
+}
+
+// TestStreamForExportExcludesGroupCreatedDuringScan — волна 2, ревью
+// доработки: снимок id фиксируется ОДНИМ запросом ДО начала обхода (см.
+// докблок StreamForExport), поэтому группа, СОЗДАННАЯ уже после снимка —
+// прямо во время активного экспорта, что происходит регулярно на реальном
+// инстансе, — в выгрузку заведомо не попадёт. Это документированная граница
+// снимка (как у любого моментального среза растущей выборки), а не
+// случайность, и тест фиксирует её как гарантию, а не как баг.
+//
+// last_seen новой группы поставлен ЗАВЕДОМО позже всех существующих — если
+// бы обход всё-таки увидел её, она сортировалась бы самой первой строкой
+// файла (last_seen DESC). Тест проверяет, что она отсутствует ВООБЩЕ, не
+// «стоит не на первом месте».
+func TestStreamForExportExcludesGroupCreatedDuringScan(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+
+	const n = 600
+	base := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		mustUpsert(t, svc, pid, fmt.Sprintf("fp-new-%04d", i), base.Add(time.Duration(i)*time.Second))
+	}
+
+	var newID int64
+	count := 0
+	seen := map[int64]int{}
+	err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(it issue.Issue) error {
+		seen[it.ID]++
+		count++
+		if count == 500 {
+			newID = mustUpsert(t, svc, pid, "fp-created-mid-scan", base.Add(48*time.Hour))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if seen[newID] != 0 {
+		t.Errorf("группа, созданная во время обхода (id=%d), попала в выгрузку — снимок обязан фиксировать состав ДО начала обхода", newID)
+	}
+	if len(seen) != n {
+		t.Fatalf("выгружено %d групп, want %d (без группы, созданной мид-обхода)", len(seen), n)
+	}
+}
+
+// TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated —
+// волна 2, ревью доработки: усечение выгрузки по потолку строк заявки
+// (GOTCHA_EXPORT_MAX_ROWS, worker.go останавливает обход возвратом ошибки из
+// fn — см. докблок StreamForExport «Обход останавливается на первой ошибке
+// fn») обязано оставлять в файле самые НЕДАВНО АКТИВНЫЕ группы, а не самые
+// недавно СОЗДАННЫЕ: ранняя версия этой правки пробовала курсор по
+// issues.id, у которого прямо противоположная семантика (id растёт с
+// first_seen), и на усечённой выгрузке в файл уезжали новые группы вместо
+// активных.
+//
+// oldID создана ПЕРВОЙ (меньший id), но получает новое событие ПОЗЖЕ и
+// становится самой активной по last_seen; newID создана ПОСЛЕ oldID (больший
+// id), но с этого момента больше не оживает — активность старше. Усечение
+// до 1 строки обязано вернуть oldID: последняя активность важнее возраста id.
+func TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+
+	t0 := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	oldID := mustUpsert(t, svc, pid, "long-lived-active", t0)                      // создана первой — id меньше
+	newID := mustUpsert(t, svc, pid, "recently-created-idle", t0.Add(time.Minute)) // создана позже — id больше
+
+	// oldID «оживает» позже: получает новое событие и обгоняет newID по
+	// last_seen, id при этом (Upsert по тому же fingerprint) не меняется.
+	recent := t0.Add(24 * time.Hour)
+	if _, err := svc.Upsert(ctx, pid, "long-lived-active", "t", "c", "error", "", recent); err != nil {
+		t.Fatalf("upsert (обновление last_seen): %v", err)
+	}
+
+	var got []int64
+	stop := errors.New("MaxRows")
+	err := svc.StreamForExport(ctx, pid, issue.Filter{}, func(it issue.Issue) error {
+		got = append(got, it.ID)
+		return stop
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if len(got) != 1 || got[0] != oldID {
+		t.Fatalf("усечённая до 1 строки выгрузка = %v, want [%d] (недавно АКТИВНАЯ группа, не %d — недавно СОЗДАННАЯ, но давно неактивная)",
+			got, oldID, newID)
 	}
 }
 

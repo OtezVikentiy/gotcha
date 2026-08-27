@@ -23,12 +23,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not cover logs.
 - The backup instructions did not include the logs table. Restoring from a backup
   by the book silently lost the entire log history, with no error to notice it by.
+- The issue export could silently skip active groups: it paged through results
+  ordered by "last seen", a column that keeps changing while the export is
+  still running, so a group that received a new event mid-export could jump
+  ahead of the page already read and never get read at all — while the export
+  still reported itself complete. The export now takes a fixed snapshot of
+  which groups match the filter, in the same "most recently active" order,
+  before it starts reading rows, so a group's activity changing mid-export can
+  no longer make it disappear. A group created after the export started is not
+  included, by design — the file reflects the state at the moment the request
+  was made, not a moving target. Row order in the file is unchanged.
+- Submitting the "Exports" page's own request form (the one with no period
+  selector of its own) silently inherited whatever time window was last set on
+  an unrelated screen (logs/hosts/metrics/issues), through a cookie those pages
+  share — instead of the "all time" default the page claimed. It now always
+  defaults to "all time" unless a period is passed explicitly, and the period a
+  request was made for is now shown in the request list.
+- Retrying a bulk issue action or a subject data erasure request that ended up
+  affecting nothing (e.g. the selected issues were already in the target
+  status, or a repeated erasure request) showed the raw, untranslated message
+  key (e.g. `flash.subject_purged`) instead of a readable confirmation.
+- A monitor's "down" notification that failed to send (a dead email/webhook
+  channel) had no real retry: the only retry path was tied to a 5-minute
+  dependency-suppression grace period, so an outage shorter than that got no
+  notification at all, ever — neither the "down" nor, since it was never sent,
+  the eventual "up". A failed delivery is now retried on the very next check,
+  independent of that grace period, up to 5 attempts. If the channel is truly
+  dead and every attempt is exhausted, the incident now carries a visible
+  "notification not delivered" badge in the interface — previously it looked
+  exactly like any other open, unacknowledged incident, so a permanently
+  broken channel meant nobody found out even by looking.
+- Uptime monitors were the only incident source not covered by escalation
+  policies or acknowledgment: a site going down could not be escalated to
+  further channels over time, and there was no way to acknowledge it to stop
+  paging. Both now work the same as for hosts, metrics, traces, profiles, and
+  SLOs.
+- Escalation-step logging and level advancement could disagree if the process
+  died between the two, in either direction (a duplicate page on the next
+  attempt, or a silent gap in the escalation log with the level advanced past
+  it). Logging is now safe to retry, and a logging failure no longer lets the
+  level advance past it.
+- Who acknowledged an incident was recorded but never shown anywhere in the
+  interface.
+- The escalation ladder editor silently dropped a channel from a step the next
+  time the form was saved if that channel had stopped being deliverable in the
+  meantime (e.g. a webhook's secret broke), with no warning at all. It now
+  stays visible in the form, marked as undeliverable and why, and survives
+  being saved as-is.
 
 ### Security
 - An unauthenticated request to the login/signup forms could make the rate
   limiter remember keys that grew with the size of a submitted field, with no
   bound on the resulting memory use. Rate-limiter key length is now capped, and
   the authentication forms' request bodies are now capped in size as well.
+- The rate limiters had no ceiling on the number of distinct keys they could
+  accumulate: a flood of requests with distinct keys could grow a limiter's
+  map without bound. Worse, all three password/SSO login entry points
+  (login, registration, and SSO login forms) checked the shared per-account
+  limiter before its much cheaper per-IP limiter, so a single IP submitting a
+  stream of made-up email addresses to any one of them could fill that map
+  in seconds — after which every real login attempt on the installation was
+  denied outright once the map was full. All three now check the per-IP
+  limiter first, closing that path; every limiter also enforces its own hard
+  cap on distinct keys (sized to what it protects) and denies
+  previously-unseen keys once at capacity, logging the event, rather than
+  growing forever or silently dropping protection. Cleanup — both the
+  routine kind and the one triggered by hitting capacity — is rate-limited
+  to at most once per window, so it can no longer be turned into a
+  full-map scan on every request once an attacker holds a limiter at its
+  cap.
+- Exporting events with "include PII" turned off still leaked personal data
+  through fields the mask never reached: `stacktrace` (local frame variables)
+  and `breadcrumbs` (URLs with query strings, HTTP crumbs) were not scrubbed at
+  all, `user_id` was written out raw even though SDKs commonly put a login or
+  an email address in it, and `message`/`exception_value` skipped the same
+  free-text scrubber already used at ingest. All of these now go through the
+  same masking as `request`/`contexts`; `user_id` is replaced by a stable
+  per-export pseudonym rather than a fixed placeholder, so the file still
+  supports counting unique affected users without exposing who they are.
 
 ### Documentation
 - The privacy page did not mention logs anywhere — not among the personal data

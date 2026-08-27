@@ -87,8 +87,13 @@ func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64,
 	if len(issueIDs) == 0 {
 		return nil
 	}
+	// Salt на ЭТОТ вызов Stream, то есть ровно на одну заявку: PseudonymizeUserID
+	// в toRecord (см. её докблок в pii.go) даёт «одинаковый user_id — одинаковый
+	// псевдоним» ВНУТРИ файла и разный псевдоним между разными выгрузками —
+	// свойство держится только если salt не переживает один вызов Stream.
+	salt := NewExportSalt()
 	return s.q.StreamForExport(ctx, projectID, issueIDs, p.Since, p.Until, eventStreamSafetyLimit, func(ev event.Stored) error {
-		return fn(s.toRecord(ev, includePII))
+		return fn(s.toRecord(ev, includePII, salt))
 	})
 }
 
@@ -124,18 +129,39 @@ func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssue
 }
 
 // toRecord превращает событие CH в Record. При includePII == false прямые
-// идентификаторы пользователя, запрос/контексты И теги маскируются тем же
-// денилистом, что и приём (MaskUser/MaskJSON/MaskTags, internal/export/pii.go)
-// — иначе email/IP, пришедший тегом (user.email, user_ip и т.п.), утекал бы
-// в колонку tags мимо маски отдельных полей UserIP/UserEmail.
-func (s *eventSource) toRecord(ev event.Stored, includePII bool) Record {
+// идентификаторы пользователя, свободный текст, стектрейс/breadcrumbs,
+// запрос/контексты и теги маскируются тем же денилистом/скрабером, что и
+// приём (MaskUser/PseudonymizeUserID/MaskMessage/MaskJSON/MaskTags,
+// internal/export/pii.go):
+//   - user_ip/user_email — статичная маска [masked] (MaskUser);
+//   - user_id — стабильный внутри ЭТОЙ выгрузки псевдоним, не статичная
+//     маска (PseudonymizeUserID; salt — на весь Stream, см. выше), иначе
+//     терялась бы возможность посчитать «сколько пользователей задело»;
+//   - message/exception_value — свободный текст, тот же скраб, что на
+//     приёме (MaskMessage);
+//   - stacktrace/breadcrumbs — ОБЯЗАНЫ идти через MaskJSON, как
+//     request/contexts: breadcrumbs штатно несут URL с query-параметрами и
+//     http-крошки, stacktrace — локальные переменные фрейма (frame-vars,
+//     фича продукта). Раньше эти два поля маску не проходили вовсе — в
+//     выгрузке «без ПДн» ПДн уезжали целиком именно через них;
+//   - tags — email/IP, пришедший тегом (user.email, user_ip и т.п.), иначе
+//     утекал бы мимо маски отдельных полей UserIP/UserEmail.
+func (s *eventSource) toRecord(ev event.Stored, includePII bool, salt []byte) Record {
 	userIP, userEmail := ev.UserIP, ev.UserEmail
+	userID := ev.UserID
+	message, exceptionValue := ev.Message, ev.ExceptionValue
 	request, contexts := ev.Request, ev.Contexts
+	stacktrace, breadcrumbs := ev.Stacktrace, ev.Breadcrumbs
 	tags := ev.Tags
 	if !includePII {
 		userIP, userEmail = MaskUser(userIP, userEmail)
+		userID = PseudonymizeUserID(userID, salt)
+		message = MaskMessage(message)
+		exceptionValue = MaskMessage(exceptionValue)
 		request = MaskJSON(request)
 		contexts = MaskJSON(contexts)
+		stacktrace = MaskJSON(stacktrace)
+		breadcrumbs = MaskJSON(breadcrumbs)
 		tags = MaskTags(tags)
 	}
 	return Record{
@@ -143,21 +169,21 @@ func (s *eventSource) toRecord(ev event.Stored, includePII bool) Record {
 		"event_id":        ev.ID,
 		"issue_id":        ev.IssueID,
 		"level":           ev.Level,
-		"message":         ev.Message,
+		"message":         message,
 		"exception_type":  ev.ExceptionType,
-		"exception_value": ev.ExceptionValue,
+		"exception_value": exceptionValue,
 		"environment":     ev.Environment,
 		"release":         ev.Release,
 		"server_name":     ev.ServerName,
 		"sdk":             ev.SDK,
 		"trace_id":        ev.TraceID,
-		"user_id":         ev.UserID,
+		"user_id":         userID,
 		"user_ip":         userIP,
 		"user_email":      userEmail,
 		"tags":            flattenTags(tags),
-		"stacktrace":      rawJSON(ev.Stacktrace),
+		"stacktrace":      rawJSON(stacktrace),
 		"contexts":        rawJSON(contexts),
-		"breadcrumbs":     rawJSON(ev.Breadcrumbs),
+		"breadcrumbs":     rawJSON(breadcrumbs),
 		"request":         rawJSON(request),
 	}
 }
