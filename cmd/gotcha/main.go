@@ -175,7 +175,7 @@ func autoMaxBufferBytes(heapLimitBytes int64) int64 {
 }
 
 // effectiveMaxBufferBytes решает, какой per-writer байтовый потолок ставить
-// каждому из четырёх писателей. Явный GOTCHA_MAX_BUFFER_BYTES (cfgMaxBufferBytes
+// каждому писателю. Явный GOTCHA_MAX_BUFFER_BYTES (cfgMaxBufferBytes
 // != 0) всегда побеждает — оператор, написавший число руками, имел в виду
 // именно его. Иначе — авто-дефолт от обнаруженного потолка кучи
 // (autoMaxBufferBytes); если и его вывести не из чего — 0, что для
@@ -1015,11 +1015,12 @@ func run() error {
 	}
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
-		// maxBufBytes — per-writer байтовый потолок для всех четырёх писателей.
+		// maxBufBytes — per-writer байтовый потолок, один на всех писателей.
 		// GOTCHA_MAX_BUFFER_BYTES побеждает, если задан; иначе выводится из
 		// обнаруженного потолка кучи (memLimitBytes), чтобы дефолтная поставка
-		// без ручной настройки не могла сложить пять буферов в объём больше
-		// heap-потолка — см. effectiveMaxBufferBytes.
+		// без ручной настройки не могла сложить буферы в объём больше
+		// heap-потолка — см. effectiveMaxBufferBytes. Сколько их, знает
+		// autoBufferCapUnits, и это число под сторожем (internal/guards).
 		maxBufBytes := effectiveMaxBufferBytes(cfg.MaxBufferBytes, memLimitBytes)
 		if cfg.MaxBufferBytes == 0 && maxBufBytes > 0 {
 			slog.Info("writer buffer cap auto-derived from detected heap ceiling",
