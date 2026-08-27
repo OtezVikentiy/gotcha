@@ -45,9 +45,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    # Именованный том, а не bind/tmpfs: файлы выгрузок (E1) обязаны пережить
-    # пересоздание контейнера — TTL хранения по умолчанию семь суток
-    # (GOTCHA_EXPORT_TTL_HOURS=168), дольше типичного цикла обновления образа.
+    # Именованный том, а не bind/tmpfs: файлы выгрузок переживают пересоздание
+    # контейнера (TTL по умолчанию семь суток). Подробнее — /docs/exports.
     volumes:
       - exportdata:/var/lib/gotcha/exports
     pids_limit: 512
@@ -60,10 +59,8 @@ services:
     # Значения ниже заданы явно и ПЕРЕКРЫВАЮТ .env: DSN указывают на соседние
     # сервисы этого же compose-файла, и подменять их через .env нечего.
     environment:
-      # Пароли баз — из GOTCHA_PG_PASSWORD/GOTCHA_CH_PASSWORD. Оговорки: (1) переменная
-      # действует только при инициализации тома, смена на живой установке — через
-      # ALTER USER (см. /docs/configuration); (2) в DSN-URL без символов @:#%;
-      # (3) дефолт «gotcha» — только для локального квикстарта.
+      # Пароли баз — из GOTCHA_PG_PASSWORD/GOTCHA_CH_PASSWORD; дефолт «gotcha» годится
+      # только для квикстарта. Смена, ограничения символов — /docs/configuration.
       GOTCHA_PG_DSN: postgres://gotcha:${GOTCHA_PG_PASSWORD:-gotcha}@postgres:5432/gotcha?sslmode=disable
       GOTCHA_CH_DSN: clickhouse://gotcha:${GOTCHA_CH_PASSWORD:-gotcha}@clickhouse:9000/gotcha
       # BaseURL обязан совпадать с внешним портом: из него строятся DSN проекта,
@@ -161,12 +158,8 @@ services:
 networks:
   default:
     driver_opts:
-      # MTU сети контейнеров. Docker берёт 1500 и не смотрит на аплинк хоста; за
-      # туннелем VPS (GRE/VXLAN/OpenVZ) он часто 1450 — крупные пакеты (TLS-цепочка,
-      # вебхуки, OAuth, HTTP-проверки) пропадают молча, наружу это таймаут на живом
-      # соединении. Проверить: `ip -o link show`; при MTU<1500 поставить его и поднять
-      # стек ЗАНОВО (down+up, не up: смена требует пересоздания сети):
-      # GOTCHA_NET_MTU=1450 docker compose down && docker compose up -d.
+      # MTU сети контейнеров: Docker берёт 1500, не глядя на аплинк хоста. Трогать
+      # только по симптому — /docs/configuration разбирает, по какому именно.
       com.docker.network.driver.mtu: "${GOTCHA_NET_MTU:-1500}"
 
 volumes:
