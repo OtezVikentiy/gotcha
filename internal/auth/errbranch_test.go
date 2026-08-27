@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,11 @@ func TestAuthErrorBranches(t *testing.T) {
 	}
 	if err := svc.SetPassword(dead, uid, "brandnewpass1"); err == nil {
 		t.Error("SetPassword на отменённом ctx должна вернуть ошибку")
+	}
+	if _, err := svc.UserEmails(dead, []int64{uid}); err == nil {
+		t.Error("UserEmails на отменённом ctx должна вернуть ошибку")
+	} else if !strings.Contains(err.Error(), "auth: user emails") {
+		t.Errorf("UserEmails на отменённом ctx: err = %v, want содержащую %q", err, "auth: user emails")
 	}
 }
 
