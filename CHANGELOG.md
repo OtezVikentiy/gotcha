@@ -9,11 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The log quota is now configurable in organisation settings alongside the other
+  quotas. The documentation described this setting, but the form had no row for
+  it: the quota was set once at organisation creation and could not be raised for
+  an existing organisation afterwards.
+- Notifications now name the project — in the email subject, in the body and in
+  the webhook payload. Previously the project was identified only by a numeric
+  id, which made an alert unrecognisable when one channel served several
+  projects.
+- New metrics in `/metrics`: `gotcha_ingest_key_rejections_total{reason}`, plus
+  liveness and tick-duration metrics for the metric, trace and profile
+  evaluators, the escalation scheduler and the uptime monitoring loops.
+
 ### Changed
 - The constrained profile (`docker-compose.small.yml`) no longer pins `GOMEMLIMIT`.
   The application derives its heap ceiling from the container's cgroup limit on its
   own (80% of `mem_limit`), and the pinned value only overrode that mechanism —
   it predates it. The effective ceiling goes from 200 MiB to 204.8 MiB.
+- `docker-compose.yml` no longer publishes the application port on every network
+  interface: by default it listens on `127.0.0.1` only. Without this, plain HTTP
+  and an open `/metrics` (unauthenticated telemetry) stayed reachable from
+  outside, bypassing the HTTPS proxy. **Who is affected:** installations with no
+  reverse proxy that opened the interface directly at the server's address — that
+  access disappears. **What to do:** the recommended path is a reverse proxy on
+  the same host — a loopback bind is enough for it, and
+  `proxy_pass http://127.0.0.1:59080` keeps working unchanged; the quick path is
+  to add `GOTCHA_BIND=0.0.0.0` to `.env`, which restores the previous behaviour,
+  remembering that plain HTTP and `/metrics` then face outwards again.
+- Uptime recovery notifications now go only to the channels that received the
+  alert for that incident, matching every other incident source. Previously they
+  went to every channel deliverable to the monitor or the project at closing
+  time, so a channel added after an incident had started could see "incident
+  closed" without ever having seen "incident opened".
 
 ### Fixed
 - Deleting a project left its logs behind in ClickHouse indefinitely (until they
@@ -70,6 +98,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meantime (e.g. a webhook's secret broke), with no warning at all. It now
   stays visible in the form, marked as undeliverable and why, and survives
   being saved as-is.
+- On the dependency map, an edge label slid under the node rectangle: the text
+  was drawn with no anchor and was then painted over by the node drawn next. It
+  hit the busiest dependency deterministically.
+- The Y-axis label on charts was clipped by the left edge of the image. It is now
+  pinned so that it neither runs past the boundary nor intrudes into the plot
+  area; with a very long label in a narrow field the plot area wins and the label
+  is clipped on the left rather than overlapping the chart.
+- The first and second X-axis labels could overlap: switching the anchor on the
+  outermost tick shifted that label, and tick spacing did not account for it.
+- Date labels on the event-frequency chart could overlap when the observation
+  window began shortly before UTC midnight (the "24 hours" preset). The second
+  label is now dropped entirely in that case — one date on the axis is better
+  than two unreadable ones on top of each other.
+- The availability bar on the public status page was drawn at its own 192 pixels
+  and centred in the card instead of filling its width.
+- The page title in the top bar was cut off hard, with no ellipsis — every title
+  without exception on a 360px-wide screen.
+- The event-frequency chart on the issue card was an unreadable smudge at 360px:
+  the promised horizontal scrolling never engaged and the axis labels piled up on
+  top of each other.
+- Event context cards pushed the page wider than a phone screen, taking the whole
+  page sideways with them.
+- The public status page — the only page outsiders see — had no protection
+  against wide content: a long monitor name (an FQDN) stretched the incident and
+  maintenance-window tables, and the page with them.
+- The code sample on the SDK setup page — the first screen a new user sees —
+  wrapped in the middle of a token instead of scrolling horizontally.
+- Expanding the export form on an issue card tore the page apart: the form stood
+  in the flow behind the last button of its row, leaving a hole and pushing
+  everything below it down.
+- A failed ClickHouse migration alongside a successful PostgreSQL one no longer
+  makes rolling the version back impossible. PostgreSQL compatibility markers are
+  now written right after its own migration rather than in a common tail after
+  both schemas — previously this scenario required restoring the database from a
+  backup, even though the PostgreSQL changes themselves were safely additive.
+- Ingest rejections caused by a wrong or missing key no longer pass without a
+  trace: they are counted in a metric labelled by reason and written to the log.
+  An instance could previously turn away thousands of events while the interface
+  showed nothing wrong.
+- A trailing slash in `GOTCHA_BASE_URL` no longer ends up in generated links
+  (invitations, the OAuth return address, the uptime check command).
+- Stale-data cleanup now also runs at startup, not only an hour in: with frequent
+  restarts, exports, delivery logs, sessions and escalation history were never
+  cleaned up at all and the disk budget was never released.
+- The PostgreSQL connection pool now has explicit bounds (connection count and a
+  statement timeout) — it had none at all.
+- The startup warning about running without background evaluators named four
+  loops out of six: the SLO check and the escalation scheduler went unmentioned,
+  although the flag gates them too.
+- Issue alerts were assembled in two different locales at once: the subject and
+  the body were built in the instance locale, while the project name and the
+  anonymised text for external channels were built in the default one.
+- For uptime monitoring, a failure to record which channels had received the
+  alert (escalation step 0) was not retried: a channel that genuinely got the
+  alert could permanently lose its recovery notification because of a single
+  write failure. That record is now retried by the same mechanism as for every
+  other incident source, without re-sending the alert itself.
+- `install.sh` did not apply `GOTCHA_AGENT_ENVIRONMENT` or `GOTCHA_AGENT_ROLE`:
+  the documentation described them alongside the other install-time variables,
+  but the script never read them or wrote them into the agent's configuration —
+  exporting one before running the installer silently did nothing.
 
 ### Security
 - An unauthenticated request to the login/signup forms could make the rate
@@ -106,6 +195,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The privacy page did not mention logs anywhere — not among the personal data
   processed, and not in the description of what the subject data export/deletion
   right covers. Both are now documented.
+- Added documentation pages for escalation ladders and dependency-based alert
+  suppression — both features shipped without any documentation.
+- `GOTCHA_RUN_EVALUATORS` was described as the gate for four background loops
+  when it gates six: the SLO evaluator and the escalation scheduler were not
+  named. With `web` and `ingest` deployed separately and the flag left off, SLO
+  alerts and escalation never fired at all.
+- The feature list in the README did not mention logs, SLOs, deploy markers,
+  exports, escalations, maintenance windows, service recipes, incident groups or
+  the dependency map.
+- The permission table in "Teams" and the "operator" entry in the glossary lagged
+  behind the role's actual permissions.
+- The glossary claimed an alert rule is bound to the channels selected for it; in
+  fact a rule notifies every enabled channel of the project.
+- Two previously undocumented environment variables are now described:
+  `GOTCHA_ESCALATION_INTERVAL` and `GOTCHA_DEPENDENCY_SETTLE_SECONDS`.
+- The `GOTCHA_MAX_BUFFER_BYTES` comment in `.env.example` gave the wrong numbers:
+  five writers totalling 1.25 GiB at a 256 MiB default. There are six buffers
+  (the span writer holds two), and the default is derived from the container's
+  cgroup limit rather than being fixed.
 
 ## [0.22.1] - 2026-08-27
 
