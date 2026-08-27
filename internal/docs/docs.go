@@ -62,6 +62,8 @@ var registry = []struct{ Slug, Group string }{
 	{"maintenance", "docs.group.sections"},
 	{"probes", "docs.group.sections"},
 	{"alerts", "docs.group.sections"},
+	{"escalations", "docs.group.sections"},
+	{"alert-suppression", "docs.group.sections"},
 	{"incident-groups", "docs.group.sections"},
 	// Администрирование
 	{"teams", "docs.group.admin"},

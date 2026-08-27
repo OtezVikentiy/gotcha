@@ -8,7 +8,7 @@ A short dictionary of Gotcha's terms — from organizations and projects to prof
 
 **Team** — a group of organization members sharing access to a subset of projects. Used so you don't have to grant organization-wide access to everyone who only needs a couple of projects.
 
-**Operator** — a member on a team attached to a project (an org owner/admin qualifies too, automatically). An operator can run that project's day-to-day monitoring — monitors, maintenance windows, status-page content, issue and metric alert rules — without being promoted to organization admin. Alert channels, status-page publication, and project/organization settings stay owner/admin only; an operator who isn't owner/admin sees alert-channel recipients masked. More: [Teams and roles](/docs/teams).
+**Operator** — a member on a team attached to a project (an org owner/admin qualifies too, automatically). An operator can run that project's day-to-day monitoring — monitors, maintenance windows, status-page content, issue and metric alert rules, escalations, dependency-based storm suppression, SLOs, service recipes, host thresholds and groups, incident acknowledgment, exports (their own only) — without being promoted to organization admin. Alert channels, status-page publication, and project/organization settings stay owner/admin only; an operator who isn't owner/admin sees alert-channel recipients masked. Full action table: [Teams and roles](/docs/teams).
 
 **DSN** — a project's connection string, shaped like `https://<public_key>@<your-gotcha-host>/<project_id>`, which you pass to the SDK at init time. It carries a public key (Gotcha resolves the project and organization from it) and the ingest address; unlike the older Sentry DSN format, there's no secret component. You can find and reissue a DSN under "Project settings" or on the "Setup" page — see [SDK & Integrations](/docs/sdk).
 
@@ -40,7 +40,7 @@ A short dictionary of Gotcha's terms — from organizations and projects to prof
 
 **Alert channel** — a delivery method for notifications: email, webhook, or a Telegram bot. Configured once per project and reused across multiple rules.
 
-**Alert rule** — a condition to react to: a new issue, a regression (an issue reopening), a spike in errors over a time window, or a metric crossing a threshold. Attached to one or more delivery channels; a given rule's firings are throttled so the team isn't flooded with duplicates. More: [Alerts](/docs/alerts).
+**Alert rule** — a condition to react to: a new issue, a regression (an issue reopening), a spike in errors over a time window, or a metric crossing a threshold. There's no separate step to "attach a channel to a rule" — an enabled rule notifies **every enabled channel of the project** at once; a given rule's firings are throttled so the team isn't flooded with duplicates. More: [Alerts](/docs/alerts).
 
 **Regression** — a statistically significant degradation of a metric (endpoint latency, Web Vitals, time spent in a profile) relative to a baseline from a prior period, detected automatically. Performance regressions show up as issues under [Performance](/docs/performance).
 

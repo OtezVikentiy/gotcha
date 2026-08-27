@@ -16,10 +16,19 @@ works.
 - **Issues / error tracking** — event ingestion via the Sentry protocol, automatic grouping into issues, stack traces, breadcrumbs, tags/contexts.
 - **Performance / tracing** — distributed traces and transactions, Web Vitals, performance-issue detection, regression detection.
 - **Metrics** — ingestion via OTLP, metric queries, threshold-based alert rules and incidents.
+- **Logs** — OTLP and NDJSON log ingest, canonical severity levels, full-text search, cross-linked with errors, traces, and hosts.
+- **Dependency map** — a service's external dependencies (databases, caches, outbound HTTP calls), derived from traces with no extra setup, showing call volume, latency, and error rate.
+- **Deployment markers** — CI reports each release with a single request; deploys show up as markers on performance/metrics/host/uptime charts and are flagged against regressions that started shortly after.
 - **Profiling** — CPU/flamegraph profiles from Sentry profiling payloads and pprof, with regression detection.
 - **Uptime monitoring** — HTTP checks from a built-in local region or remote probes, incident detection, public status pages.
 - **Hosts** — system metrics for your servers (CPU, memory, disk, network, load average, processes) via the native `gotcha-agent` (installed with one command straight from the instance) or an OpenTelemetry Collector; built-in thresholds and incidents.
+- **SLOs and error budgets** — availability/latency/uptime objectives with two-window burn-rate alerting and an attainment/budget dashboard.
+- **Service monitoring recipes** — ready-made OTel collector configs, live-data detection, prebuilt charts and one-click recommended thresholds for common services (PostgreSQL, nginx, Redis, Docker, MariaDB).
 - **Alerting** — delivery via email, webhook, and Telegram; rules for new issues, spikes, metric thresholds, and performance/uptime regressions.
+- **Escalation** — per-severity ladders that widen who gets notified the longer an incident stays open, with acknowledgment to stop paging.
+- **Incident groups** — a cascading outage (a downed node and everything that depends on it) collapses into a single card instead of a storm of separate alerts.
+- **Maintenance windows** — silence notifications from every source for a scheduled or open-ended window without pausing data collection.
+- **Exports** — background CSV/JSON/NDJSON exports of a project's error groups or raw events, filtered by time range/environment and PII-masked by default.
 - **Organizations, teams and RBAC** — multi-tenant organizations, projects, membership roles.
 - **SSO** — OIDC (generic), Yandex ID, and VK ID login, each independently configurable.
 - **Privacy by default** — server-side PII scrubbing (IP/email zeroing, key-based redaction) and SSRF protection for outbound webhook/uptime requests, both on by default.

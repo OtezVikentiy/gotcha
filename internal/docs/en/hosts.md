@@ -229,7 +229,7 @@ CPU utilization is deliberately left out of the built-in set: a brief spike to 1
 
 The minimum for the silence threshold (3 minutes) isn't an arbitrary number — it's the registration throttling interval (60 seconds, see below) tripled with margin, so that a live host with infrequent exports doesn't trip a false incident just because `last_seen` naturally lags a little.
 
-Incident evaluation (open/escalate/resolve) runs on a background loop every `GOTCHA_HOST_EVAL_INTERVAL` (60 seconds by default, minimum 1 second, see [Configuration](/docs/configuration)); notifications go out through the project's channels via the same shared mechanism as [Alerts](/docs/alerts).
+Incident evaluation (open/escalate/resolve) runs on a background loop every `GOTCHA_HOST_EVAL_INTERVAL` (60 seconds by default, minimum 1 second, see [Configuration](/docs/configuration)); notifications go out through the project's channels via the same shared mechanism as [Alerts](/docs/alerts), and further step-by-step escalation is configured on the [Escalations](/docs/escalations) page.
 
 A disabled threshold is not evaluated at all, so saving the settings also resolves its **already open** incidents right away: otherwise nothing could clear the red badge off the host — host incidents cannot be closed by hand. No notification is sent for such a resolve: the operator disabled the threshold themselves, and there is no news in reporting the consequence of their own action back to them.
 

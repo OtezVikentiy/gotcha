@@ -116,3 +116,9 @@ window to count.
 The evaluator re-scores every enabled SLO on a fixed interval —
 `GOTCHA_SLO_EVAL_INTERVAL`, 120 seconds by default. Lowering it makes burn alerts
 react faster at the cost of more frequent queries; raising it does the opposite.
+
+Important: like the metric/host/regression evaluators, the SLO evaluator by
+default only runs in `uptime` and `all` modes — in a `web`+`ingest` split, an
+SLO looks configured but budget burn is never computed. Enable the
+evaluators explicitly with `GOTCHA_RUN_EVALUATORS=true`, see
+[Configuration](/docs/configuration).

@@ -6,7 +6,7 @@ silent, metric thresholds trip, an SLO monitor turns red. Incident groups
 fold that fan-out into a single card: a **root availability incident**
 (a silent host or a down uptime monitor) plus its **composition** — incidents
 of nodes chained to the root through declared dependencies (dependency
-edges are set on the "Alerts → Storm suppression" page).
+edges are set on the ["Alerts → Storm suppression"](/docs/alert-suppression) page).
 
 ## How a group is built
 
@@ -62,11 +62,12 @@ the same card at once, each for its own reason:
   group, notified on its behalf by the root: it holds back its own open
   notifications as long as the group and its own incident stay open.
 - "suppressed — parent down" — suppression driven by the dependency graph
-  (edges set on the "Alerts → Storm suppression" page), a mechanism
-  independent of grouping: the incident's escalation is suppressed
-  because its node depends on one that's already down. The absence of
-  this badge doesn't guarantee a notification actually went out — it may
-  have been held back for the other reason instead.
+  (edges set on the ["Alerts → Storm suppression"](/docs/alert-suppression)
+  page), a mechanism independent of grouping: the incident's
+  [escalation](/docs/escalations) is suppressed because its node depends on
+  one that's already down. The absence of this badge doesn't guarantee a
+  notification actually went out — it may have been held back for the
+  other reason instead.
 
 ## Why transactions and profiling stay out of groups
 

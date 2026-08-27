@@ -63,15 +63,22 @@ Being on a team attached to a project — an **operator**, in the table below �
 |---|:---:|:---:|:---:|:---:|
 | View issues, performance, uptime, alerts, etc. | ✓ | ✓ | ✓ | ✓ |
 | Change an issue's or a performance issue's status | ✓ | ✓ | ✓ | ✓ |
+| Acknowledge an open incident — any of the six sources (hosts, metrics, traces, profiles, SLOs, uptime) | — | ✓ | ✓ | ✓ |
 | Monitors: create, edit, pause/resume, delete | — | ✓ | ✓ | ✓ |
 | Heartbeat monitor: regenerate the ping token | — | ✓ | ✓ | ✓ |
 | Maintenance windows: create, edit, delete | — | ✓ | ✓ | ✓ |
 | Status page content: create/edit a page, pick monitors and titles; delete it while unpublished | — | ✓ (a page an operator creates starts unpublished) | ✓ | ✓ |
 | Status page publication: the "Published" toggle, or deleting a page that's already published | — | — | ✓ | ✓ |
 | Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
+| [Escalations](/docs/escalations): per-severity notification ladders ("Critical"/"Warning") | — | ✓ | ✓ | ✓ |
+| [Storm suppression](/docs/alert-suppression): dependency edges — create, delete | — | ✓ | ✓ | ✓ |
 | Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, enough to tell channels apart when picking one in a rule) | ✓ | ✓ |
 | Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
 | Metric alerts: create, delete | — | ✓ | ✓ | ✓ |
+| [SLOs](/docs/slo): create, delete | — | ✓ | ✓ | ✓ |
+| [Recipes](/docs/recipes): turn on a service's recommended thresholds | — | ✓ | ✓ | ✓ |
+| Hosts: project-wide thresholds, environment/role label groups, a per-host threshold override, deleting a host | — | ✓ | ✓ | ✓ |
+| [Exports](/docs/exports): queue and delete an export job | — | ✓ (sees and downloads only their own jobs) | ✓ (every job in the project) | ✓ (every job in the project) |
 | Project settings (rename, DSN keys, quotas, sample rate) | — | — | ✓ | ✓ |
 | Create a new project | — | — | ✓ | ✓ |
 | Organization management (members, roles, invites, teams, probes) | — | — | ✓ | ✓ |
