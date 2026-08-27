@@ -67,10 +67,12 @@ main() {
         reject_newline "${GOTCHA_AGENT_HOSTNAME:-}"
         reject_newline "${GOTCHA_AGENT_CA_CERT:-}"
         reject_newline "${GOTCHA_AGENT_TLS_SKIP_VERIFY:-}"
+        reject_newline "${GOTCHA_AGENT_ENVIRONMENT:-}"
+        reject_newline "${GOTCHA_AGENT_ROLE:-}"
     elif [ -z "$endpoint" ] && [ -z "$key" ]; then
         # Опциональные без обязательных — ошибка, не молчаливый игнор (§2.2):
         # иначе GOTCHA_AGENT_INTERVAL=… при обновлении тихо потерялся бы.
-        if [ -n "${GOTCHA_AGENT_INTERVAL:-}${GOTCHA_AGENT_HOSTNAME:-}${GOTCHA_AGENT_CA_CERT:-}${GOTCHA_AGENT_TLS_SKIP_VERIFY:-}" ]; then
+        if [ -n "${GOTCHA_AGENT_INTERVAL:-}${GOTCHA_AGENT_HOSTNAME:-}${GOTCHA_AGENT_CA_CERT:-}${GOTCHA_AGENT_TLS_SKIP_VERIFY:-}${GOTCHA_AGENT_ENVIRONMENT:-}${GOTCHA_AGENT_ROLE:-}" ]; then
             fail "optional GOTCHA_AGENT_* without ENDPOINT+KEY have no effect: edit $CONF and run systemctl restart gotcha-agent"
         fi
         $SUDO test -f "$CONF" || fail "$CONF not found and GOTCHA_AGENT_ENDPOINT/GOTCHA_AGENT_KEY not set"
@@ -130,6 +132,8 @@ main() {
             if [ -n "${GOTCHA_AGENT_HOSTNAME:-}" ]; then printf 'GOTCHA_AGENT_HOSTNAME=%s\n' "$GOTCHA_AGENT_HOSTNAME"; fi
             if [ -n "${GOTCHA_AGENT_CA_CERT:-}" ]; then printf 'GOTCHA_AGENT_CA_CERT=%s\n' "$GOTCHA_AGENT_CA_CERT"; fi
             if [ -n "${GOTCHA_AGENT_TLS_SKIP_VERIFY:-}" ]; then printf 'GOTCHA_AGENT_TLS_SKIP_VERIFY=%s\n' "$GOTCHA_AGENT_TLS_SKIP_VERIFY"; fi
+            if [ -n "${GOTCHA_AGENT_ENVIRONMENT:-}" ]; then printf 'GOTCHA_AGENT_ENVIRONMENT=%s\n' "$GOTCHA_AGENT_ENVIRONMENT"; fi
+            if [ -n "${GOTCHA_AGENT_ROLE:-}" ]; then printf 'GOTCHA_AGENT_ROLE=%s\n' "$GOTCHA_AGENT_ROLE"; fi
         } | $SUDO tee "$CONF" >/dev/null
     fi
 
