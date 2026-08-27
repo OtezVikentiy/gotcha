@@ -77,19 +77,42 @@ type MetricPointRow struct {
 	Value       float64           `json:"value"`
 }
 
+// LogRow — строка logs субъекта. Перечислены все хранимые колонки (см.
+// ch/0020_logs.up.sql): экспорт отдаёт ровно то, что реально лежит в
+// ClickHouse по этому субъекту. body — free-form текст сообщения, программно
+// не фильтруется и отдаётся как есть (см. ExportSubject/PurgeSubject).
+type LogRow struct {
+	ProjectID      uint64            `json:"project_id"`
+	Timestamp      time.Time         `json:"timestamp"`
+	ObservedTS     time.Time         `json:"observed_ts"`
+	Severity       string            `json:"severity"`
+	SeverityNumber uint8             `json:"severity_number"`
+	SeverityText   string            `json:"severity_text"`
+	Body           string            `json:"body"`
+	TraceID        string            `json:"trace_id"`
+	SpanID         string            `json:"span_id"`
+	LogAttributes  map[string]string `json:"log_attributes"`
+	ResourceAttrs  map[string]string `json:"resource_attrs"`
+	Service        string            `json:"service"`
+	Environment    string            `json:"environment"`
+}
+
 // SubjectExport — выгрузка всех ПДн субъекта в рамках проекта. Сериализуется в
 // JSON для отдачи по праву субъекта на доступ (152-ФЗ, ст. 14).
 type SubjectExport struct {
 	Events       []EventRow       `json:"events"`
 	Transactions []TransactionRow `json:"transactions"`
 	MetricPoints []MetricPointRow `json:"metric_points"`
+	Logs         []LogRow         `json:"logs"`
 }
 
 // ExportSubject возвращает всё, что хранится о субъекте в рамках проекта: строки
 // events (по непустым user_email/user_id/user_ip), transactions (по колонке
-// user_id и тегам user.id/enduser.id/user.email/enduser.email) и
-// metric_points (по attributes user.id/enduser.id/user.email) — тот же охват, что
-// чистит PurgeSubject, чтобы право на доступ было паритетно праву на удаление.
+// user_id и тегам user.id/enduser.id/user.email/enduser.email),
+// metric_points (по attributes user.id/enduser.id/user.email) и logs (по
+// log_attributes user.id/enduser.id/user.email/enduser.email) — тот же охват,
+// что чистит PurgeSubject, чтобы право на доступ было паритетно праву на
+// удаление.
 // Имена таблиц и колонок фиксированы; значения субъекта — только bound-параметры,
 // инъекция невозможна. На таблицу отдаётся не более exportRowLimit строк,
 // отсортированных по времени DESC (сначала свежие). Вся выгрузка ограничена
@@ -214,6 +237,48 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		}
 		if err := mpRows.Close(); err != nil {
 			return SubjectExport{}, fmt.Errorf("telemetry: export subject metric_points close (project %d): %w", projectID, err)
+		}
+	}
+
+	// logs несут ПДн субъекта только в log_attributes (Map(String,String)):
+	// user.id/enduser.id ← UserID, user.email/enduser.email ← Email. IP в
+	// log_attributes не бывает, поэтому по IP-only субъекту эту выборку
+	// пропускаем (как и PurgeSubject). body — free-form, отдаётся как есть.
+	var logConds []string
+	logArgs := []any{projectID}
+	if sub.UserID != "" {
+		logConds = append(logConds, "log_attributes['user.id'] = ?", "log_attributes['enduser.id'] = ?")
+		logArgs = append(logArgs, sub.UserID, sub.UserID)
+	}
+	if sub.Email != "" {
+		logConds = append(logConds, "log_attributes['user.email'] = ?", "log_attributes['enduser.email'] = ?")
+		logArgs = append(logArgs, sub.Email, sub.Email)
+	}
+	if len(logConds) > 0 {
+		logQ := `SELECT project_id, timestamp, observed_ts, severity, severity_number,
+			severity_text, body, trace_id, span_id, log_attributes, resource_attrs,
+			service, environment
+			FROM logs WHERE project_id = ? AND (` + strings.Join(logConds, " OR ") + `)
+			ORDER BY timestamp DESC LIMIT ? SETTINGS max_execution_time = 0`
+		logArgs = append(logArgs, exportRowLimit)
+		logRows, err := p.conn.Query(ctx, logQ, logArgs...)
+		if err != nil {
+			return SubjectExport{}, fmt.Errorf("telemetry: export subject logs (project %d): %w", projectID, err)
+		}
+		for logRows.Next() {
+			var r LogRow
+			if err := logRows.Scan(
+				&r.ProjectID, &r.Timestamp, &r.ObservedTS, &r.Severity, &r.SeverityNumber,
+				&r.SeverityText, &r.Body, &r.TraceID, &r.SpanID, &r.LogAttributes, &r.ResourceAttrs,
+				&r.Service, &r.Environment,
+			); err != nil {
+				_ = logRows.Close()
+				return SubjectExport{}, fmt.Errorf("telemetry: scan log row (project %d): %w", projectID, err)
+			}
+			out.Logs = append(out.Logs, r)
+		}
+		if err := logRows.Close(); err != nil {
+			return SubjectExport{}, fmt.Errorf("telemetry: export subject logs close (project %d): %w", projectID, err)
 		}
 	}
 

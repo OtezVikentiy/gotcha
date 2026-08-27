@@ -137,3 +137,46 @@ func TestExportSubjectMetricPoints(t *testing.T) {
 		t.Errorf("metric_points по IP: получили %d, ждали 0 (метрики не сегментируются по IP)", len(expIP.MetricPoints))
 	}
 }
+
+// TestExportSubjectLogs проверяет паритет выгрузки с чисткой (152-ФЗ): ПДн
+// субъекта из logs.log_attributes попадают в экспорт по всем четырём ключам
+// (user.id/enduser.id ← UserID, user.email/enduser.email ← Email), не отдавая
+// логи постороннего субъекта или чужого проекта.
+func TestExportSubjectLogs(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p1 = int64(400)
+	const p2 = int64(500)
+	ts := time.Now().UTC()
+
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.id": "victim"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"enduser.id": "victim"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.email": "a@b.com"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"enduser.email": "a@b.com"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.id": "other"}, ts)
+	seedLogAttr(t, ctx, conn, p1, map[string]string{"user.id": "victim"}, ts) // чужой проект
+
+	p := telemetry.NewPurger(conn)
+
+	exp, err := p.ExportSubject(ctx, p2, telemetry.Subject{UserID: "victim", Email: "a@b.com"})
+	if err != nil {
+		t.Fatalf("ExportSubject: %v", err)
+	}
+	if len(exp.Logs) != 4 {
+		t.Fatalf("logs: получили %d, ждали 4 (совпадения по всем четырём ключам)", len(exp.Logs))
+	}
+	if exp.Logs[0].ProjectID != uint64(p2) {
+		t.Errorf("logs[0].ProjectID=%d, ждали %d", exp.Logs[0].ProjectID, p2)
+	}
+
+	// Экспорт по IP-only субъекту: логов нет (log_attributes не содержат IP).
+	expIP, err := p.ExportSubject(ctx, p2, telemetry.Subject{IP: "192.168.0.1"})
+	if err != nil {
+		t.Fatalf("ExportSubject by IP: %v", err)
+	}
+	if len(expIP.Logs) != 0 {
+		t.Errorf("logs по IP: получили %d, ждали 0 (логи не сегментируются по IP)", len(expIP.Logs))
+	}
+}

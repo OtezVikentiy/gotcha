@@ -55,6 +55,8 @@ func TestPurgeProject(t *testing.T) {
 	seedProfileSamples(t, ctx, conn, p2, ts)
 	seedCheckResults(t, ctx, conn, p1, ts)
 	seedCheckResults(t, ctx, conn, p2, ts)
+	seedLogs(t, ctx, conn, p1, ts)
+	seedLogs(t, ctx, conn, p2, ts)
 	// web_vitals_5m — MV: наполняется вставкой транзакции с measurements.
 	seedWebVitals(t, ctx, conn, p1, ts)
 	seedWebVitals(t, ctx, conn, p2, ts)
@@ -65,7 +67,7 @@ func TestPurgeProject(t *testing.T) {
 	}
 
 	// mutations_sync=2 делает ALTER синхронным — результат детерминирован.
-	for _, tbl := range []string{"events", "transactions", "spans", "metric_points", "profile_samples", "check_results", "web_vitals_5m"} {
+	for _, tbl := range []string{"events", "transactions", "spans", "metric_points", "profile_samples", "check_results", "logs", "web_vitals_5m"} {
 		if got := count(t, ctx, conn, tbl, p1); got != 0 {
 			t.Errorf("%s p1: осталось %d строк, ждали 0", tbl, got)
 		}
@@ -178,6 +180,55 @@ func TestPurgeSubjectMetricPoints(t *testing.T) {
 	}
 }
 
+// TestPurgeSubjectLogs проверяет, что PurgeSubject чистит ПДн субъекта из
+// logs.log_attributes по всем четырём ключам (user.id/enduser.id ← UserID,
+// user.email/enduser.email ← Email), не задевая логи постороннего субъекта и
+// чужого проекта.
+func TestPurgeSubjectLogs(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p1 = int64(60)
+	const p2 = int64(70)
+	ts := time.Now().UTC()
+
+	// p2: логи субъекта по всем четырём ключам и лог постороннего. p1 — чужой
+	// проект с тем же user.id.
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.id": "victim"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"enduser.id": "victim"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.email": "a@b.com"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"enduser.email": "a@b.com"}, ts)
+	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.id": "other"}, ts)
+	seedLogAttr(t, ctx, conn, p1, map[string]string{"user.id": "victim"}, ts)
+
+	p := telemetry.NewPurger(conn)
+	res, err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "victim", Email: "a@b.com"})
+	if err != nil {
+		t.Fatalf("PurgeSubject: %v", err)
+	}
+	if res.Logs != 4 {
+		t.Errorf("res.Logs = %d, ждали 4 (совпадения по всем четырём ключам)", res.Logs)
+	}
+
+	// В p2 остался только лог постороннего (user.id=other): 1 строка.
+	if got := count(t, ctx, conn, "logs", p2); got != 1 {
+		t.Errorf("p2 logs: осталось %d, ждали 1 (только other)", got)
+	}
+	var otherLeft uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM logs WHERE project_id = ? AND log_attributes['user.id'] = ?", p2, "other").Scan(&otherLeft); err != nil {
+		t.Fatalf("count logs other: %v", err)
+	}
+	if otherLeft != 1 {
+		t.Errorf("p2 logs other: осталось %d, ждали 1", otherLeft)
+	}
+	// Чужой проект не затронут.
+	if got := count(t, ctx, conn, "logs", p1); got != 1 {
+		t.Errorf("p1 logs: осталось %d, ждали 1 (субъект чистится в рамках проекта)", got)
+	}
+}
+
 // TestPurgeSubjectTransactionTags проверяет, что PurgeSubject чистит транзакции,
 // где субъект выделяется не колонкой user_id, а тегами (OTLP-приём: user.id/
 // enduser.id ← UserID, user.email/enduser.email ← Email), не задевая посторонних.
@@ -283,6 +334,24 @@ func seedCheckResults(t *testing.T, ctx context.Context, conn driver.Conn, proje
 		"INSERT INTO check_results (monitor_id, project_id, region, timestamp) VALUES (1, ?, 'eu', ?)",
 		projectID, ts); err != nil {
 		t.Fatalf("insert check_results: %v", err)
+	}
+}
+
+func seedLogs(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, ts time.Time) {
+	t.Helper()
+	if err := conn.Exec(ctx,
+		"INSERT INTO logs (project_id, timestamp) VALUES (?, ?)", projectID, ts); err != nil {
+		t.Fatalf("insert logs: %v", err)
+	}
+}
+
+// seedLogAttr вставляет строку лога с заданными log_attributes.
+func seedLogAttr(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, attrs map[string]string, ts time.Time) {
+	t.Helper()
+	if err := conn.Exec(ctx,
+		"INSERT INTO logs (project_id, log_attributes, timestamp) VALUES (?, ?, ?)",
+		projectID, attrs, ts); err != nil {
+		t.Fatalf("insert logs with attrs: %v", err)
 	}
 }
 

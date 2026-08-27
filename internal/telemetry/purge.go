@@ -25,6 +25,7 @@ var projectTables = []string{
 	"metric_points",
 	"profile_samples",
 	"check_results",
+	"logs",
 	"transactions_5m",
 	"web_vitals_5m",
 }
@@ -51,11 +52,12 @@ type PurgeResult struct {
 	Events       uint64
 	Transactions uint64
 	MetricPoints uint64
+	Logs         uint64
 }
 
 // Total — сколько всего строк отнесено к субъекту.
 func (r PurgeResult) Total() uint64 {
-	return r.Events + r.Transactions + r.MetricPoints
+	return r.Events + r.Transactions + r.MetricPoints + r.Logs
 }
 
 // Purger удаляет телеметрию из ClickHouse.
@@ -93,17 +95,22 @@ func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 //     кладёт атрибуты спана в tags как есть, поэтому субъект по email виден в
 //     transactions только через теги (см. txSubjectConds);
 //   - metric_points: attributes['user.id']/['enduser.id'] (← UserID),
-//     attributes['user.email'] (← Email).
+//     attributes['user.email'] (← Email);
+//   - logs: log_attributes['user.id']/['enduser.id'] (← UserID),
+//     log_attributes['user.email']/['enduser.email'] (← Email).
 //
 // НЕ чистятся программно free-form поля, где субъекта нельзя выделить надёжно, не
 // рискуя удалить чужое или пропустить нужное: spans.data и spans.description
 // (произвольный JSON/URL/SQL от SDK — субъект в них не адресуется по ключу),
-// а также profile_samples.stack (кадры стека; ПДн там практически не бывает).
+// profile_samples.stack (кадры стека; ПДн там практически не бывает), а также
+// logs.body (произвольный текст сообщения приложения — то же самое соображение).
 // Эти поля обезличиваются ретенцией по TTL из миграций ch/: spans — 30 дней,
-// transactions — 90 дней, metric_points — 30 дней, profile_samples — 7 дней.
+// transactions — 90 дней, metric_points — 30 дней, profile_samples — 7 дней,
+// logs — 14 дней.
 //
-// В events, transactions и metric_points удаляются строки, совпавшие ХОТЯ БЫ по
-// одному непустому критерию субъекта. Пустые поля Subject в условие не попадают.
+// В events, transactions, metric_points и logs удаляются строки, совпавшие ХОТЯ
+// БЫ по одному непустому критерию субъекта. Пустые поля Subject в условие не
+// попадают.
 func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject) (PurgeResult, error) {
 	var res PurgeResult
 
@@ -180,6 +187,35 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 			" SETTINGS mutations_sync = 2, max_execution_time = 0"
 		if err := p.conn.Exec(ctx, mpQ, mpArgs...); err != nil {
 			return res, fmt.Errorf("telemetry: purge subject from metric_points (project %d): %w", projectID, err)
+		}
+	}
+
+	// logs несут ПДн субъекта в log_attributes (Map(String,String)): OTel-конвенции
+	// кладут туда user.id/enduser.id/user.email/enduser.email. Чистим по непустым
+	// полям субъекта. user_ip в log_attributes не встречается, поэтому в условие
+	// не входит (как и в metric_points). body — free-form, программно не чистится,
+	// обезличивается TTL (14 дней, см. ch/0020_logs.up.sql).
+	var logConds []string
+	logArgs := []any{projectID}
+	if sub.UserID != "" {
+		logConds = append(logConds, "log_attributes['user.id'] = ?", "log_attributes['enduser.id'] = ?")
+		logArgs = append(logArgs, sub.UserID, sub.UserID)
+	}
+	if sub.Email != "" {
+		logConds = append(logConds, "log_attributes['user.email'] = ?", "log_attributes['enduser.email'] = ?")
+		logArgs = append(logArgs, sub.Email, sub.Email)
+	}
+	if len(logConds) > 0 {
+		logWhere := "project_id = ? AND (" + strings.Join(logConds, " OR ") + ")"
+		n, err := p.countMatching(ctx, "logs", logWhere, logArgs)
+		if err != nil {
+			return res, err
+		}
+		res.Logs = n
+		logQ := "ALTER TABLE logs DELETE WHERE " + logWhere +
+			" SETTINGS mutations_sync = 2, max_execution_time = 0"
+		if err := p.conn.Exec(ctx, logQ, logArgs...); err != nil {
+			return res, fmt.Errorf("telemetry: purge subject from logs (project %d): %w", projectID, err)
 		}
 	}
 	return res, nil

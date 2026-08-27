@@ -49,7 +49,7 @@ docker compose exec -T clickhouse clickhouse-client \
 
 ```bash
 mkdir -p backup/clickhouse
-for t in events transactions spans metric_points profile_samples check_results; do
+for t in events transactions spans metric_points profile_samples check_results logs; do
   docker compose exec -T clickhouse clickhouse-client \
     --user gotcha --password gotcha --database gotcha \
     --query "SELECT * FROM $t FORMAT Native" \
@@ -191,7 +191,7 @@ docker compose exec -T postgres pg_dump -U gotcha -d gotcha \
   | gzip > backup/postgres-$day.sql.gz.tmp
 mv backup/postgres-$day.sql.gz.tmp backup/postgres-$day.sql.gz
 
-for t in events transactions spans metric_points profile_samples check_results; do
+for t in events transactions spans metric_points profile_samples check_results logs; do
   docker compose exec -T clickhouse clickhouse-client \
     --user gotcha --password gotcha --database gotcha \
     --query "SELECT * FROM $t FORMAT Native" \

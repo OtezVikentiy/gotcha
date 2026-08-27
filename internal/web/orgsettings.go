@@ -933,7 +933,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	slog.Info("subject data purged",
 		"org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub),
 		"events", res.Events, "transactions", res.Transactions,
-		"metric_points", res.MetricPoints, "total", res.Total())
+		"metric_points", res.MetricPoints, "logs", res.Logs, "total", res.Total())
 
 	// Итог показывается сообщением, а не query-параметром: параметр оставался в
 	// адресе, залипал при F5 и уезжал в закладку, а ссылку вида ?purged=9999

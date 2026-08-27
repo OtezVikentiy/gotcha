@@ -15,6 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own (80% of `mem_limit`), and the pinned value only overrode that mechanism —
   it predates it. The effective ceiling goes from 200 MiB to 204.8 MiB.
 
+### Fixed
+- Deleting a project left its logs behind in ClickHouse indefinitely (until they
+  aged out on their own retention schedule), even though the interface reported
+  the deletion as successful.
+- Deleting or exporting an end user's personal data (right of access/erasure) did
+  not cover logs.
+- The backup instructions did not include the logs table. Restoring from a backup
+  by the book silently lost the entire log history, with no error to notice it by.
+
+### Security
+- An unauthenticated request to the login/signup forms could make the rate
+  limiter remember keys that grew with the size of a submitted field, with no
+  bound on the resulting memory use. Rate-limiter key length is now capped, and
+  the authentication forms' request bodies are now capped in size as well.
+
+### Documentation
+- The privacy page did not mention logs anywhere — not among the personal data
+  processed, and not in the description of what the subject data export/deletion
+  right covers. Both are now documented.
+
 ## [0.22.1] - 2026-08-27
 
 ### Fixed
