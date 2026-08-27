@@ -234,7 +234,6 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "profiles", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "projects-list", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "regressions", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
-	{Value: "setup", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "slos", Why: "маркер страницы на корневом <div> (список SLO, план D1), стиля нет по замыслу — визуал от @layout и вложенных .card/.data-table", Finding: "по замыслу"},
 	{Value: "teams", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "web-vitals", Why: "маркер страницы на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},

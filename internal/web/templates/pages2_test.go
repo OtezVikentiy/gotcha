@@ -263,6 +263,62 @@ func TestPublicStatusPage(t *testing.T) {
 	}
 }
 
+// TestPublicStatusPageTablesScrollable — волна 3 аудита (P1-2/P1-3, кластер
+// 13): таблицы инцидентов и окон обслуживания на публичной статус-странице
+// были единственным местом продукта без собственного скролл-региона — длинное
+// имя монитора (FQDN) в таблице распирало страницу целиком, а не саму
+// таблицу. Ассерт целится в структуру scrollRegion (div.table-scroll с
+// tabindex/role/aria-label), а не в len(out)!=0: голый <table ...> без обёртки
+// прошёл бы этот тест зелёным, если бы проверял только наличие текста.
+func TestPublicStatusPageTablesScrollable(t *testing.T) {
+	v := StatusPageView{
+		Title: "Acme Status", Overall: "operational",
+		Incidents:   []StatusIncidentView{{Name: "Сбой API", StartedAt: "2026-07-20 10:00", Ongoing: true}},
+		Maintenance: []StatusWindowView{{Name: "Плановые работы", From: "2026-07-22 02:00", To: "2026-07-22 04:00"}},
+	}
+	out := renderTo(t, PublicStatusPage(v))
+
+	// Обёртка инцидентов: класс, клавиатурная доступность (tabindex, №31) и
+	// её собственный aria-label, отличный от label окон обслуживания.
+	if !strings.Contains(out, `<div class="table-scroll" tabindex="0" role="region" aria-label="Таблица инцидентов">`) {
+		t.Error("таблица инцидентов должна быть обёрнута scrollRegion (table-scroll/tabindex/role/aria-label)")
+	}
+	if !strings.Contains(out, `<div class="table-scroll" tabindex="0" role="region" aria-label="Таблица окон обслуживания">`) {
+		t.Error("таблица окон обслуживания должна быть обёрнута scrollRegion (table-scroll/tabindex/role/aria-label)")
+	}
+	// Таблицы остаются внутри своей обёртки (не съехали наружу при рефакторинге).
+	tail := func(i int) string {
+		end := i + 400
+		if end > len(out) {
+			end = len(out)
+		}
+		return out[i:end]
+	}
+	if i := strings.Index(out, `aria-label="Таблица инцидентов">`); i < 0 || !strings.Contains(tail(i), `class="status-incidents data-table"`) {
+		t.Error("таблица status-incidents должна рендериться внутри своего scrollRegion")
+	}
+	if i := strings.Index(out, `aria-label="Таблица окон обслуживания">`); i < 0 || !strings.Contains(tail(i), `class="status-maintenance data-table"`) {
+		t.Error("таблица status-maintenance должна рендериться внутри своего scrollRegion")
+	}
+}
+
+// TestStatusTileNameCarriesFullNameInTitle — волна 3 аудита (кластер 13,
+// P1-2..8): .status-tile-name сжимается многоточием на узком экране (CSS), но
+// полное имя монитора обязано остаться доступным при наведении — иначе
+// длинное имя (FQDN) теряется без следа для мыши/скринридера без CSS.
+func TestStatusTileNameCarriesFullNameInTitle(t *testing.T) {
+	long := "payments-gateway-eu-central-1.internal.example.com"
+	v := StatusPageView{
+		Title: "Acme Status", Overall: "operational",
+		Monitors: []StatusMonitorView{{Name: long, Status: "up", Bars: stub()}},
+	}
+	out := renderTo(t, PublicStatusPage(v))
+	want := `<span class="status-tile-name" title="` + long + `">` + long + `</span>`
+	if !strings.Contains(out, want) {
+		t.Errorf("status-tile-name должен нести полное имя монитора в title, не нашёл %q в выводе", want)
+	}
+}
+
 // TestStatusPageIncidentDurationLocalised: длительность инцидента на публичной
 // статус-странице собиралась строками «h »/«m» без каталога — у функции не
 // было даже ctx. Это внешняя поверхность: её видят клиенты владельца

@@ -151,7 +151,7 @@ templ statusLayoutBody(title string) {
 templ statusMonitorTile(m StatusMonitorView, days int) {
 	<li class="status-tile card">
 		<div class="status-tile-head">
-			<span class="status-tile-name">{ m.Name }</span>
+			<span class="status-tile-name" title={ m.Name }>{ m.Name }</span>
 			<span class={ monitorStatusBadgeClass(m.Status) }>{ statusMonitorText(ctx, m.Status) }</span>
 		</div>
 		<div class="status-tile-bars">@m.Bars</div>
@@ -189,52 +189,56 @@ templ PublicStatusPage(v StatusPageView) {
 		if len(v.Incidents) == 0 {
 			<p>{ i18n.T(ctx, "status.incidents.empty") }</p>
 		} else {
-			<table class="status-incidents data-table">
-				<thead>
-					<tr>
-						<th scope="col">{ i18n.T(ctx, "status.col.service") }</th>
-						<th scope="col">{ i18n.T(ctx, "status.col.started") }</th>
-						<th scope="col">{ i18n.T(ctx, "status.col.duration") }</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, inc := range v.Incidents {
+			@scrollRegion("table-scroll", "region.status.incidents") {
+				<table class="status-incidents data-table">
+					<thead>
 						<tr>
-							<td>{ inc.Name }</td>
-							<td>{ inc.StartedAt }</td>
-							if inc.Ongoing {
-								<td>{ i18n.T(ctx, "status.incident.ongoing") }</td>
-							} else {
-								<td>{ humanize.Duration(ctx, inc.Duration) }</td>
-							}
+							<th scope="col">{ i18n.T(ctx, "status.col.service") }</th>
+							<th scope="col">{ i18n.T(ctx, "status.col.started") }</th>
+							<th scope="col">{ i18n.T(ctx, "status.col.duration") }</th>
 						</tr>
-					}
-				</tbody>
-			</table>
+					</thead>
+					<tbody>
+						for _, inc := range v.Incidents {
+							<tr>
+								<td>{ inc.Name }</td>
+								<td>{ inc.StartedAt }</td>
+								if inc.Ongoing {
+									<td>{ i18n.T(ctx, "status.incident.ongoing") }</td>
+								} else {
+									<td>{ humanize.Duration(ctx, inc.Duration) }</td>
+								}
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
 		}
 
 		<h2>{ i18n.T(ctx, "status.maintenance.title") }</h2>
 		if len(v.Maintenance) == 0 {
 			<p>{ i18n.T(ctx, "status.maintenance.empty") }</p>
 		} else {
-			<table class="status-maintenance data-table">
-				<thead>
-					<tr>
-						<th scope="col">{ i18n.T(ctx, "status.col.window") }</th>
-						<th scope="col">{ i18n.T(ctx, "status.col.started") }</th>
-						<th scope="col">{ i18n.T(ctx, "status.col.ends") }</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, wnd := range v.Maintenance {
+			@scrollRegion("table-scroll", "region.status.maintenance") {
+				<table class="status-maintenance data-table">
+					<thead>
 						<tr>
-							<td>{ wnd.Name }</td>
-							<td>{ wnd.From }</td>
-							<td>{ wnd.To }</td>
+							<th scope="col">{ i18n.T(ctx, "status.col.window") }</th>
+							<th scope="col">{ i18n.T(ctx, "status.col.started") }</th>
+							<th scope="col">{ i18n.T(ctx, "status.col.ends") }</th>
 						</tr>
-					}
-				</tbody>
-			</table>
+					</thead>
+					<tbody>
+						for _, wnd := range v.Maintenance {
+							<tr>
+								<td>{ wnd.Name }</td>
+								<td>{ wnd.From }</td>
+								<td>{ wnd.To }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
 		}
 	}
 }
