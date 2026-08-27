@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The constrained profile (`docker-compose.small.yml`) no longer pins `GOMEMLIMIT`.
+  The application derives its heap ceiling from the container's cgroup limit on its
+  own (80% of `mem_limit`), and the pinned value only overrode that mechanism —
+  it predates it. The effective ceiling goes from 200 MiB to 204.8 MiB.
+
 ## [0.22.1] - 2026-08-27
 
 ### Fixed
