@@ -17,6 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -94,10 +95,21 @@ func exportDownloadFilename(job export.Job, projectName string) string {
 // Гейты по порядку: same-origin → сессия → существование/доступ к проекту
 // (requireProjectOperator) → фича включена (h.Exports != nil, проверяется
 // до гейта — тот же порядок, что у alertSuppressionSave) → разбор
-// kind/format (неизвестное значение — 422, не паника) → относительный
-// период разворачивается В АБСОЛЮТНЫЕ границы ЗДЕСЬ и сейчас (заявка «за
-// последние 24 часа», исполненная позже, обязана дать тот же файл, что и
-// сразу) → лимит частоты → лимит активных заявок → постановка.
+// kind/format (неизвестное значение — 422, не паника) → scope_issue_id
+// принадлежит ТЕКУЩЕМУ проекту (см. ниже) → относительный период
+// разворачивается В АБСОЛЮТНЫЕ границы ЗДЕСЬ и сейчас (заявка «за последние
+// 24 часа», исполненная позже, обязана дать тот же файл, что и сразу) →
+// лимит частоты → лимит активных заявок → постановка.
+//
+// scope_issue_id — ПЕРЕД лимитом частоты и лимитом активных, не после:
+// находка аудита P3-SEC-4 — чужой/несуществующий id раньше доходил до
+// EnqueueLimited и жёг оба лимита холостой заявкой, которая молча собрала
+// бы пустой файл (StreamForExport фильтрует WHERE project_id = ? AND
+// issue_id IN (?) — утечки чужих данных нет, но слот лимита сгорал ни за
+// что, а колонка «Фильтры» показывала чужой id). Отклонять его СРАЗУ после
+// разбора kind/format, до того как запрос успеет стоить хоть один слот —
+// защита в глубину, не первая линия (первая — что StreamForExport и так не
+// отдаст чужие данные).
 //
 // Лимит частоты — ПЕРЕД лимитом активных, а не наоборот: EnqueueLimited
 // проверяет лимит активных заявок и вставляет строку ОДНИМ атомарным SQL-
@@ -139,14 +151,40 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 
 	kind, ok := export.ParseKind(r.PostFormValue("kind"))
 	if !ok {
-		h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.invalid_kind"))
+		h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+			i18n.T(r.Context(), "err.export.invalid_kind"), exportCreateFormState(r))
 		return
 	}
 	format, ok := export.ParseFormat(r.PostFormValue("format"))
 	if !ok {
-		h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.invalid_format"))
+		h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+			i18n.T(r.Context(), "err.export.invalid_format"), exportCreateFormState(r))
 		return
 	}
+
+	var scopeIssueID int64
+	if v := r.PostFormValue("scope_issue_id"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+			scopeIssueID = id
+		}
+	}
+	// Принадлежность scope_issue_id ТЕКУЩЕМУ проекту — см. докблок функции
+	// (находка аудита P3-SEC-4). issue.ErrNotFound трактуется так же, как
+	// чужой проект: разбираться, существует ли id вообще, снаружи незачем —
+	// в обоих случаях ответ один и тот же отказ.
+	if scopeIssueID != 0 {
+		it, err := h.Issues.Get(r.Context(), scopeIssueID)
+		if err != nil && !errors.Is(err, issue.ErrNotFound) {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		if err != nil || it.ProjectID != projectID {
+			h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+				i18n.T(r.Context(), "err.export.invalid_scope"), exportCreateFormState(r))
+			return
+		}
+	}
+
 	// Дефолт — «за всё время» (RangeAll), как у списка issues (issues.go),
 	// НЕ 24ч: список issues по умолчанию живёт на RangeAll и никогда не
 	// пишет "all" в rangeCookie (rangecookie.go — в куку попадают только
@@ -161,15 +199,9 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 	tr := h.resolveTimeRange(w, r, RangeAll)
 
 	if !h.exportLimiter.Allow(exportRateLimitKey(uid, projectID)) {
-		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "err.export.rate_limited"))
+		h.renderExportsPage(w, r, http.StatusTooManyRequests, projectID, uid, authz,
+			i18n.T(r.Context(), "err.export.rate_limited"), exportCreateFormState(r))
 		return
-	}
-
-	var scopeIssueID int64
-	if v := r.PostFormValue("scope_issue_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
-			scopeIssueID = id
-		}
 	}
 
 	job := export.Job{
@@ -199,7 +231,8 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 	// при лимите 3 давали от 3 до 6 успешных вставок.
 	if _, err := h.Exports.EnqueueLimited(r.Context(), job, maxActivePerUser, maxActivePerProject); err != nil {
 		if errors.Is(err, export.ErrActiveLimitReached) {
-			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.limit_reached"))
+			h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+				i18n.T(r.Context(), "err.export.limit_reached"), exportCreateFormState(r))
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -299,7 +332,8 @@ func (h *Handler) exportsDownload(w http.ResponseWriter, r *http.Request) {
 
 // exportsDelete — POST /projects/{id}/exports/{jobID}/delete. Гейты — те же,
 // что у exportsDownload; удаляется только терминальная заявка (Terminal()) —
-// у queued/running в этот момент может писаться файл.
+// у queued/running в этот момент может писаться файл. Само удаление —
+// двухшаговое подтверждение (confirmed=yes), см. комментарий ниже.
 //
 // Файл удаляется ПЕРВЫМ, строка — ВТОРОЙ: осиротевшую строку видно на
 // странице выгрузок (её подберёт следующий проход джанитора), осиротевший
@@ -351,7 +385,21 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !job.Status.Terminal() {
-		h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "err.export.not_deletable"))
+		h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+			i18n.T(r.Context(), "err.export.not_deletable"), nil)
+		return
+	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения вместо необратимого действия — тот
+	// же приём, что у 11 из 13 файлов с *Delete в internal/web (находка
+	// аудита P2-UX-5). jobID уже часть action-пути (маршрут /exports/{jobID}/
+	// delete), поэтому в отличие от maintenanceDelete/metricAlertDelete
+	// (window_id/rule_id в теле формы) hidden-полей переносить не нужно —
+	// тот же случай, что statusPagesDelete.
+	if r.PostFormValue("confirmed") != "yes" {
+		h.renderConfirm(w, r, "confirm.title", "confirm.export_delete.message", "confirm.delete",
+			exportsPath(projectID), exportsPath(projectID)+"/"+strconv.FormatInt(job.ID, 10)+"/delete", nil)
 		return
 	}
 
@@ -403,8 +451,33 @@ func (h *Handler) exportsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.renderExportsPage(w, r, http.StatusOK, projectID, uid, authz, "", nil)
+}
+
+// renderExportsPage — тело GET /projects/{id}/exports, вынесенное в
+// переиспользуемую функцию (находка аудита P2-UX-4): раньше отказ
+// постановки заявки (kind/format невалиден, чужой scope_issue_id, лимит
+// частоты/активных заявок) уходил на chromeless ErrorPage — единственное
+// место internal/web, где мутирующий POST звал renderError вместо
+// перерисовки СВОЕЙ страницы (соседи renderMetricAlerts/аналоги у
+// maintenance перерисовывают себя с errMsg и сохранённым form). Теперь
+// exportsCreate/exportsDelete зовут ЭТУ функцию с errMsg/form вместо
+// renderError — статус ответа (422/429) при этом сохраняется в w.WriteHeader,
+// status передаётся явным параметром, а не всегда 200.
+//
+// authz — из requireProjectOperator вызывающего обработчика: повторный
+// поход за ним отсюда не нужен (тот же приём, что и в остальных local-
+// re-render хендлерах пакета).
+func (h *Handler) renderExportsPage(w http.ResponseWriter, r *http.Request, status int, projectID, uid int64, authz projectAuthz, errMsg string, form templates.FormState) {
+	// Content-Type — ЯВНО, до WriteHeader: тот же приём, что в renderError.
+	// WriteHeader(status) отправляет заголовки до первой записи тела, из-за
+	// чего автоопределение Content-Type сниффингом первого Write не
+	// срабатывает — страница ушла бы вовсе без заголовка, включая штатный
+	// путь status=200 из exportsPage (он тоже проходит через эту функцию).
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if h.Exports == nil {
-		_ = templates.Exports(projectID, nil, authz.CanManage, h.currentEmail(r), false).Render(r.Context(), w)
+		w.WriteHeader(status)
+		_ = templates.Exports(projectID, nil, authz.CanManage, h.currentEmail(r), false, errMsg, form).Render(r.Context(), w)
 		return
 	}
 
@@ -444,7 +517,26 @@ func (h *Handler) exportsPage(w http.ResponseWriter, r *http.Request) {
 	for i, j := range jobs {
 		rows[i] = h.exportViewRow(r.Context(), j, uid, authz, authorEmails[j.CreatedBy])
 	}
-	_ = templates.Exports(projectID, rows, authz.CanManage, h.currentEmail(r), true).Render(r.Context(), w)
+	w.WriteHeader(status)
+	_ = templates.Exports(projectID, rows, authz.CanManage, h.currentEmail(r), true, errMsg, form).Render(r.Context(), w)
+}
+
+// exportCreateFormState — введённые значения формы постановки заявки, чтобы
+// вернуть их пользователю при отказе (P2-UX-4) — тот же приём, что
+// metricRuleFormState (metricalerts.go). include_pii — чекбокс: снятый не
+// попадает в r.Form вовсе (см. докблок FormState.Checked), поэтому здесь —
+// просто наличие ключа, а не сравнение значения.
+func exportCreateFormState(r *http.Request) templates.FormState {
+	f := templates.FormState{}
+	for _, name := range []string{"kind", "format"} {
+		if v := r.PostFormValue(name); v != "" {
+			f[name] = v
+		}
+	}
+	if r.PostFormValue("include_pii") != "" {
+		f["include_pii"] = "1"
+	}
+	return f
 }
 
 // exportViewRow — Job → ExportView: домен переводится в человекочитаемые
@@ -466,21 +558,38 @@ func (h *Handler) exportViewRow(ctx context.Context, j export.Job, uid int64, au
 	if j.ExpiresAt != nil {
 		expiresAt = *j.ExpiresAt
 	}
+	// failureReasonKey — только для ЗАВЕДОМО известного ключа (P2-UX-2
+	// аудита): j.FailureReasonKey приходит из БД как есть (scanJob не
+	// проверяет её содержимое, см. докблок Job.FailureReasonKey), а
+	// export.KnownFailureReasonKey — единственный источник правды о том,
+	// какие ключи вправе там оказаться. Непроверенное значение отдавать
+	// шаблону нельзя: exports.templ переводит его через i18n.T(ctx, key)
+	// напрямую (тот же приём, что и Status/"exports.status."+Status), а
+	// i18n.T() на неизвестном ключе возвращает сам ключ как есть — экран
+	// показал бы пользователю технический идентификатор вместо перевода.
+	// Условие j.Status == StatusFailed — вторая половина защиты: заявка,
+	// вернувшаяся в очередь после Fail() с непустым (по гонке) полем, не
+	// должна показать подсказку об отказе, которого для неё ещё не было.
+	var failureReasonKey string
+	if j.Status == export.StatusFailed && export.KnownFailureReasonKey(j.FailureReasonKey) {
+		failureReasonKey = j.FailureReasonKey
+	}
 	return templates.ExportView{
-		ID:            j.ID,
-		KindLabel:     i18n.T(ctx, "exports.kind."+string(j.Kind)),
-		FormatLabel:   i18n.T(ctx, "exports.format."+string(j.Format)),
-		FilterSummary: exportFilterSummary(ctx, j),
-		Status:        string(j.Status),
-		Rows:          j.RowsWritten,
-		Size:          j.Bytes,
-		Truncated:     j.Truncated,
-		IncludePII:    j.IncludePII,
-		CreatedAt:     j.CreatedAt,
-		ExpiresAt:     expiresAt,
-		Author:        author,
-		CanDownload:   ownOrManaged && j.Status == export.StatusDone,
-		CanDelete:     ownOrManaged && j.Status.Terminal(),
+		ID:               j.ID,
+		KindLabel:        i18n.T(ctx, "exports.kind."+string(j.Kind)),
+		FormatLabel:      i18n.T(ctx, "exports.format."+string(j.Format)),
+		FilterSummary:    exportFilterSummary(ctx, j),
+		Status:           string(j.Status),
+		Rows:             j.RowsWritten,
+		Size:             j.Bytes,
+		Truncated:        j.Truncated,
+		FailureReasonKey: failureReasonKey,
+		IncludePII:       j.IncludePII,
+		CreatedAt:        j.CreatedAt,
+		ExpiresAt:        expiresAt,
+		Author:           author,
+		CanDownload:      ownOrManaged && j.Status == export.StatusDone,
+		CanDelete:        ownOrManaged && j.Status.Terminal(),
 	}
 }
 

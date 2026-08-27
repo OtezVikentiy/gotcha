@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,6 +240,25 @@ func (s *exportsStack) markStatus(t *testing.T, id int64, status string) {
 	if _, err := s.pool.Exec(context.Background(),
 		`UPDATE export_jobs SET status=$2 WHERE id=$1`, id, status); err != nil {
 		t.Fatalf("markStatus: %v", err)
+	}
+}
+
+// markFailed — заявка в failed с заданным failure_reason_key напрямую через
+// SQL (P2-UX-2 аудита), тот же приём, что markStatus/markDoneTruncated:
+// тестам этого файла нужен только конечный вид строки в БД, а не реальный
+// путь Store.Fail/FailPermanent/SweepStale (те уже проверены мутационно в
+// internal/export/store_test.go). reasonKey — "" собирает NULL, тот же
+// случай, что у заявки старше миграции failure_reason_key.
+func (s *exportsStack) markFailed(t *testing.T, id int64, reasonKey string) {
+	t.Helper()
+	var arg any
+	if reasonKey != "" {
+		arg = reasonKey
+	}
+	if _, err := s.pool.Exec(context.Background(),
+		`UPDATE export_jobs SET status='failed', finished_at=now(), last_error='техническая причина', failure_reason_key=$2 WHERE id=$1`,
+		id, arg); err != nil {
+		t.Fatalf("markFailed: %v", err)
 	}
 }
 
@@ -498,6 +518,13 @@ func TestExportsCreateIgnoresPIIFlagFromOperator(t *testing.T) {
 
 // TestExportsCreateRefusesOverActiveLimit — лимит активных (queued+running)
 // заявок на пользователя (exportsMaxActivePerUser).
+//
+// Проверяет и находку аудита P2-UX-4: отказ обязан перерисовать страницу
+// «Выгрузки» (список заявок + форма постановки с сообщением), а не уйти на
+// chromeless ErrorPage с одной ссылкой «На главную» — единственное место
+// пакета, где так было раньше. Мутация — вернуть renderError на место
+// renderExportsPage — обязана уронить оба ассерта: маркер chromeless-
+// страницы появится, форма постановки пропадёт.
 func TestExportsCreateRefusesOverActiveLimit(t *testing.T) {
 	s := newExportsStack(t)
 	for i := 0; i < exportsMaxActivePerUser; i++ {
@@ -512,11 +539,21 @@ func TestExportsCreateRefusesOverActiveLimit(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("код %d при превышении лимита активных заявок: %s", resp.StatusCode, body)
 	}
+	if strings.Contains(body, `class="error-code"`) {
+		t.Errorf("отказ ушёл на chromeless ErrorPage вместо перерисовки страницы «Выгрузки»: %s", body)
+	}
+	if !strings.Contains(body, `name="kind"`) {
+		t.Errorf("форма постановки заявки не отрисована при отказе: %s", body)
+	}
+	if !strings.Contains(body, "Достигнут лимит одновременных заявок") {
+		t.Errorf("сообщение об ошибке лимита не показано на странице: %s", body)
+	}
 }
 
 // TestExportsCreateRateLimited — лимит активных заявок не ловит того, кто
 // ставит и тут же удаляет (завершает): тяжёлую выборку по ClickHouse
-// защищает именно ограничение частоты.
+// защищает именно ограничение частоты. Проверяет ту же находку P2-UX-4, что
+// и TestExportsCreateRefusesOverActiveLimit (429, не только 422).
 func TestExportsCreateRateLimited(t *testing.T) {
 	s := newExportsStack(t)
 	for i := 0; i < exportsCreateRateLimit; i++ {
@@ -526,6 +563,128 @@ func TestExportsCreateRateLimited(t *testing.T) {
 	body := readAll(t, resp)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("код %d, ожидали 429 после %d заявок подряд: %s", resp.StatusCode, exportsCreateRateLimit, body)
+	}
+	if strings.Contains(body, `class="error-code"`) {
+		t.Errorf("отказ ушёл на chromeless ErrorPage вместо перерисовки страницы «Выгрузки»: %s", body)
+	}
+	if !strings.Contains(body, "Слишком много заявок на выгрузку подряд") {
+		t.Errorf("сообщение об ошибке лимита частоты не показано на странице: %s", body)
+	}
+}
+
+// TestExportsCreateInvalidKindReRendersExportsPageWithFormState — та же
+// находка P2-UX-4 для 422 разбора kind: раньше уходила на ErrorPage,
+// теперь — страница «Выгрузки» с сообщением и восстановленным полем format
+// (exportCreateFormState) — введённый формат не потерян из-за опечатки в
+// виде.
+func TestExportsCreateInvalidKindReRendersExportsPageWithFormState(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{"kind": {"bogus"}, "format": {"ndjson"}})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("код %d при неизвестном kind, ожидали 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Неизвестный вид выгрузки") {
+		t.Errorf("сообщение об ошибке не показано: %s", body)
+	}
+	if !strings.Contains(body, `<option value="ndjson" selected>`) {
+		t.Errorf("введённый формат (ndjson) не восстановлен в форме: %s", body)
+	}
+	if n := s.jobCount(t); n != 0 {
+		t.Errorf("создано %d заявок при невалидном kind вместо нуля", n)
+	}
+}
+
+// TestExportsCreateInvalidFormatReRendersExportsPage — тот же отказ 422 для
+// разбора format.
+func TestExportsCreateInvalidFormatReRendersExportsPage(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{"kind": {"events"}, "format": {"bogus"}})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("код %d при неизвестном format, ожидали 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Неизвестный формат выгрузки") {
+		t.Errorf("сообщение об ошибке не показано: %s", body)
+	}
+	if n := s.jobCount(t); n != 0 {
+		t.Errorf("создано %d заявок при невалидном format вместо нуля", n)
+	}
+}
+
+// TestExportsCreateRejectsForeignScopeIssueId — находка аудита P3-SEC-4:
+// scope_issue_id из ЧУЖОГО проекта раньше доходил до EnqueueLimited и жёг
+// оба лимита (частоты и активных заявок) холостой заявкой, которая молча
+// собрала бы пустой файл — StreamForExport фильтрует
+// WHERE project_id = ? AND issue_id IN (?) (event/query.go), утечки данных
+// нет и без этого фикса, но слот лимита сгорал ни за что, а колонка
+// «Фильтры» показывала бы чужой id. Мутация — убрать сверку it.ProjectID
+// != projectID (принять любой существующий issue) — обязана уронить и код
+// ответа, и счётчик заявок: чужой issue существует и прошёл бы Get без
+// ошибки.
+func TestExportsCreateRejectsForeignScopeIssueId(t *testing.T) {
+	s := newExportsStack(t)
+	res, err := s.h.Issues.Upsert(context.Background(), s.otherProjectID, "fp-foreign", "Foreign", "pkg/a.go:1", "error", "", time.Now())
+	if err != nil {
+		t.Fatalf("upsert foreign issue: %v", err)
+	}
+
+	resp := s.postForm(t, s.path("/exports"), url.Values{
+		"kind": {"issues"}, "format": {"csv"}, "scope_issue_id": {strconv.FormatInt(res.IssueID, 10)},
+	})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("код %d при scope_issue_id из чужого проекта, ожидали 422: %s", resp.StatusCode, body)
+	}
+	if n := s.jobCount(t); n != 0 {
+		t.Errorf("создано %d заявок вместо нуля — холостая заявка сожгла слот лимита", n)
+	}
+	if !strings.Contains(body, "Указанная проблема не найдена в этом проекте") {
+		t.Errorf("нет сообщения об ошибке про чужую/несуществующую группу: %s", body)
+	}
+}
+
+// TestExportsCreateRejectsUnknownScopeIssueId — тот же отказ для
+// несуществующего id (issue.ErrNotFound), не только для чужого проекта:
+// h.Issues.Get(ctx, scopeIssueID) возвращает ErrNotFound, и он трактуется
+// так же, как чужой проект (см. докблок exportsCreate).
+func TestExportsCreateRejectsUnknownScopeIssueId(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{
+		"kind": {"issues"}, "format": {"csv"}, "scope_issue_id": {"999999999"},
+	})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("код %d при несуществующем scope_issue_id, ожидали 422: %s", resp.StatusCode, body)
+	}
+	if n := s.jobCount(t); n != 0 {
+		t.Errorf("создано %d заявок вместо нуля", n)
+	}
+}
+
+// TestExportsCreateAcceptsOwnScopeIssueId — здоровая заявка со
+// scope_issue_id ИЗ СВОЕГО проекта обязана пройти как раньше: проверка
+// P3-SEC-4 не должна ловить легитимный сценарий (та самая точка входа
+// «Выгрузить события issue», issuedetail.templ). Мутация — сузить сверку
+// принадлежности до "любой issue с ProjectID > 0" (случайно принять и
+// отвергнуть неверно) не даёт незамеченно сработать: тест ловит именно
+// успешный проход СВОЕГО issue.
+func TestExportsCreateAcceptsOwnScopeIssueId(t *testing.T) {
+	s := newExportsStack(t)
+	res, err := s.h.Issues.Upsert(context.Background(), s.projectID, "fp-own", "Own", "pkg/a.go:1", "error", "", time.Now())
+	if err != nil {
+		t.Fatalf("upsert own issue: %v", err)
+	}
+
+	resp := s.postForm(t, s.path("/exports"), url.Values{
+		"kind": {"events"}, "format": {"csv"}, "scope_issue_id": {strconv.FormatInt(res.IssueID, 10)},
+	})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	if got := s.lastJob(t).ScopeIssueID; got != res.IssueID {
+		t.Errorf("ScopeIssueID заявки = %d, want %d", got, res.IssueID)
 	}
 }
 
@@ -622,14 +781,14 @@ func TestExportsDeleteRejectsRunningJob(t *testing.T) {
 	}
 }
 
-// TestExportsDeleteRemovesFileThenRow — успешное удаление сносит и файл на
-// диске, и строку в таблице.
+// TestExportsDeleteRemovesFileThenRow — успешное удаление (confirmed=yes)
+// сносит и файл на диске, и строку в таблице.
 func TestExportsDeleteRemovesFileThenRow(t *testing.T) {
 	s := newExportsStack(t)
 	id := s.enqueueDone(t, s.operatorUID)
 	filePath := filepath.Join(s.h.ExportDir, fmt.Sprintf("%d.csv", id))
 
-	resp := s.postForm(t, s.path(fmt.Sprintf("/exports/%d/delete", id)), url.Values{})
+	resp := s.postForm(t, s.path(fmt.Sprintf("/exports/%d/delete", id)), url.Values{"confirmed": {"yes"}})
 	body := readAll(t, resp)
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("код %d, ожидали редирект: %s", resp.StatusCode, body)
@@ -639,6 +798,51 @@ func TestExportsDeleteRemovesFileThenRow(t *testing.T) {
 	}
 	if _, err := s.h.Exports.Get(context.Background(), id); !errors.Is(err, export.ErrNotFound) {
 		t.Errorf("строка заявки не удалена: err=%v", err)
+	}
+}
+
+// TestExportsDeleteRequiresConfirmation — находка аудита P2-UX-5: кнопка
+// «Удалить» стоит вплотную к «Скачать», промах уничтожает единственную
+// копию файла, собиравшегося до 15 минут, безвозвратно. POST без
+// confirmed=yes обязан показать страницу подтверждения (тот же общий приём
+// продукта renderConfirm/ConfirmPage, что у 11 из 13 *Delete-хендлеров
+// пакета) и НЕ трогать ни файл, ни строку; тот же POST с confirmed=yes —
+// довести удаление до конца. Мутация — убрать проверку confirmed=yes
+// (удалять сразу) — обязана уронить первый блок: код станет 303, а файл и
+// строка пропадут уже на первом (неподтверждённом) запросе.
+func TestExportsDeleteRequiresConfirmation(t *testing.T) {
+	s := newExportsStack(t)
+	id := s.enqueueDone(t, s.operatorUID)
+	filePath := filepath.Join(s.h.ExportDir, fmt.Sprintf("%d.csv", id))
+
+	resp := s.postForm(t, s.path(fmt.Sprintf("/exports/%d/delete", id)), url.Values{})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("без confirmed=yes: код %d, ожидали 200 (страница подтверждения): %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `action="`+s.path(fmt.Sprintf("/exports/%d/delete", id))+`"`) {
+		t.Errorf("страница подтверждения не ведёт на тот же action: %s", body)
+	}
+	if !strings.Contains(body, `name="confirmed" value="yes"`) {
+		t.Errorf("на странице подтверждения нет скрытого поля confirmed=yes: %s", body)
+	}
+	if _, err := os.Stat(filePath); err != nil {
+		t.Fatalf("файл снесён ДО подтверждения: %v", err)
+	}
+	if _, err := s.h.Exports.Get(context.Background(), id); err != nil {
+		t.Fatalf("строка заявки снесена ДО подтверждения: %v", err)
+	}
+
+	resp = s.postForm(t, s.path(fmt.Sprintf("/exports/%d/delete", id)), url.Values{"confirmed": {"yes"}})
+	body = readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("с confirmed=yes: код %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Errorf("файл не удалён после подтверждения: err=%v", err)
+	}
+	if _, err := s.h.Exports.Get(context.Background(), id); !errors.Is(err, export.ErrNotFound) {
+		t.Errorf("строка заявки не удалена после подтверждения: err=%v", err)
 	}
 }
 
@@ -765,6 +969,68 @@ func TestExportsPageShowsStatusesAndTruncation(t *testing.T) {
 	}
 }
 
+// TestExportsPageShowsFailureReasonHint — P2-UX-2 аудита: провалившаяся
+// заявка сообщает переведённую причину прямо на странице выгрузок, не
+// только в письме (которого на инстансе без почты нет вовсе, notify.go:
+// NewMailNotifier тихо выходит при m == nil). Мутация — убрать сборку
+// failureReasonKey в exportViewRow (internal/web/exports.go) — обязана
+// уронить эту проверку (текст причины пропадёт со страницы).
+func TestExportsPageShowsFailureReasonHint(t *testing.T) {
+	s := newExportsStack(t)
+	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID, Kind: export.KindIssues, Format: export.FormatCSV,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	s.markFailed(t, id, "exports.mail.failed.reason.disk_full")
+
+	body := s.getBody(t, s.operatorUID, s.path("/exports"))
+	if !strings.Contains(body, "на диске выгрузок закончилось место") {
+		t.Errorf("на странице нет переведённой причины отказа: %s", body)
+	}
+	// Техтекст last_error ('техническая причина', см. markFailed) — на UI
+	// не показывается, только переведённая причина по ключу.
+	if strings.Contains(body, "техническая причина") {
+		t.Error("техтекст last_error утёк на страницу")
+	}
+}
+
+// TestExportsPageHidesReasonHintForUnknownOrMissingKey — защита от утечки
+// техтекста (P2-UX-2 аудита, тот же риск, что уже был найден для last_error):
+// строка, у которой failure_reason_key либо NULL (заявка старше миграции,
+// либо не терминальна), либо содержит чужой/битый ключ (ручная правка БД,
+// откат миграции вперёд-назад), НЕ должна показать сырой идентификатор —
+// i18n.T() на неизвестном ключе возвращает сам ключ как есть. Мутация — убрать
+// export.KnownFailureReasonKey(...) из условия в exportViewRow (оставить
+// только j.Status == StatusFailed) — обязана уронить вторую строку (ID=2).
+func TestExportsPageHidesReasonHintForUnknownOrMissingKey(t *testing.T) {
+	s := newExportsStack(t)
+	legacyID, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID, Kind: export.KindIssues, Format: export.FormatCSV,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueue legacy: %v", err)
+	}
+	s.markFailed(t, legacyID, "") // NULL — строка старше миграции
+
+	unknownID, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID, Kind: export.KindIssues, Format: export.FormatCSV,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("enqueue unknown: %v", err)
+	}
+	s.markFailed(t, unknownID, "some.corrupted.key")
+
+	body := s.getBody(t, s.operatorUID, s.path("/exports"))
+	if strings.Contains(body, "some.corrupted.key") {
+		t.Errorf("неизвестный ключ утёк на страницу как есть: %s", body)
+	}
+}
+
 // TestExportsPageHidesDeleteForRunningJob — у queued/running кнопки удаления
 // быть не должно: она разъедется с воркером, который ещё пишет файл.
 func TestExportsPageHidesDeleteForRunningJob(t *testing.T) {
@@ -798,12 +1064,22 @@ func TestExportsPageEmptyState(t *testing.T) {
 }
 
 // TestIssuesPageHasExportButtons — на списке ошибок есть форма постановки
-// заявки (кнопки экспорта групп/событий с текущими фильтрами).
+// заявки (кнопки экспорта групп/событий с текущими фильтрами), и её action
+// реально несёт период. GET без query резолвится в дефолт RangeAll
+// (issues.go:issuesList → h.resolveTimeRange(w, r, RangeAll)), значит action
+// обязан быть .../exports?period=all, а не голым .../exports — перенос
+// периода в action стал частью контракта формы ещё в 6b43db26, и точный
+// матч по closing quote обязан ловить его пропажу, а не мириться с любым
+// query-суффиксом (раньше здесь была ослабленная проверка без query — она
+// перестала отличать «форма пропала» от «формат/период у формы поменялся»).
+// Полный перебор пресетов (7d/all/custom) — на уровне шаблона,
+// TestIssuesListExportFormsCarryTimeRange
+// (internal/web/templates/exports_test.go), здесь не дублируется.
 func TestIssuesPageHasExportButtons(t *testing.T) {
 	s := newExportsStack(t)
 	body := s.getBody(t, s.operatorUID, s.path("/issues"))
-	if !strings.Contains(body, `action="`+s.path("/exports")+`"`) {
-		t.Error("на списке ошибок нет формы выгрузки")
+	if !strings.Contains(body, `action="`+s.path("/exports?period=all")+`"`) {
+		t.Error("на списке ошибок нет формы выгрузки с переносом периода (?period=all)")
 	}
 }
 

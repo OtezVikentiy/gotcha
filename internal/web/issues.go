@@ -154,7 +154,13 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// инстансе без каталога выгрузок воркер не стартует, кнопка «Выгрузить»
 	// поведёт на 404 (ревью веб-части E1, п.3).
 	canExport := canAccess && h.Exports != nil
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canExport).Render(r.Context(), w)
+	// canManagePII — та же роль (owner/admin), что и authz.CanManage в
+	// exports.go: галка «выгрузить как есть» на раскрытых формах экспорта
+	// видна только ей (спека §7/§8), оператору include_pii молча
+	// игнорируется на бэкенде (exports.go:exportsCreate) — здесь просто не
+	// рендерим контрол, которым нельзя воспользоваться (находка аудита
+	// P2-UX-3).
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canExport, canManage).Render(r.Context(), w)
 }
 
 // gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,

@@ -416,7 +416,7 @@ func eventRowClass(selected bool) string {
 // носителем информации, и факт назначения приходилось вычитывать из элемента
 // управления. <details> — нативный, работает без JS.
 templ assignControl(it issue.Issue, members []org.Member) {
-	<details class="assign-control">
+	<details class="dropdown-control">
 		<summary>
 			@icon("user")
 			{ i18n.T(ctx, "issues.action.change_assignee") }
@@ -607,7 +607,7 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 // selectedID — id события из query (для подсветки строки в таблице), может
 // не совпадать ни с одним из events, если событие устарело/удалено — тогда
 // selected/frames приходят пустыми и блок деталей просто не рендерится.
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool) {
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
 			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
@@ -654,18 +654,34 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				// выгрузок (h.Exports == nil) форма поведёт на 404, поэтому
 				// не рендерится вовсе (ревью веб-части E1, п.3).
 				//
+				// Раскрывающаяся <details> — тот же приём, что и у
+				// @assignControl чуть выше и у кнопок экспорта issues.templ:
+				// раньше формат был зашит в hidden-поле («Экспорт событий
+				// issue» всегда давал csv, тот же по названию со списка ошибок
+				// давал ndjson) и выбрать его или поставить галку PII было
+				// негде — находка аудита P2-UX-3. canManagePII гейтит галку
+				// «выгрузить как есть» тем же правилом, что и генерическая
+				// форма страницы «Выгрузки» (exports.go:exportsCreate,
+				// authz.CanManage) — только здесь она впервые доступна ВМЕСТЕ
+				// со scope_issue_id: раньше PII работала только для выгрузки
+				// всего проекта.
+				//
 				// Период — тем же окном, что сейчас выбрано графиком частоты
 				// (rng, дефолт 7д — issuedetail.go), переносится в action
 				// query-параметром (exportsPathWithRange), тем же приёмом, что
 				// и формы issues.templ: hidden-поле сюда не годится, POST-тело
 				// не долетает до resolveTimeRange (ревью веб-части E1, п.1).
 				if exportsEnabled {
-					<form method="post" action={ templ.URL(exportsPathWithRange(it.ProjectID, rng)) }>
-						<input type="hidden" name="kind" value="events"/>
-						<input type="hidden" name="format" value="csv"/>
-						<input type="hidden" name="scope_issue_id" value={ strconv.FormatInt(it.ID, 10) }/>
-						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issuedetail.export") }</button>
-					</form>
+					<details class="dropdown-control">
+						<summary>{ i18n.T(ctx, "issuedetail.export") }</summary>
+						<form method="post" action={ templ.URL(exportsPathWithRange(it.ProjectID, rng)) } class="export-control-form">
+							<input type="hidden" name="kind" value="events"/>
+							<input type="hidden" name="scope_issue_id" value={ strconv.FormatInt(it.ID, 10) }/>
+							@exportFormatField(nil)
+							@exportPIIField(canManagePII, nil)
+							<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
+						</form>
+					</details>
 				}
 			</div>
 

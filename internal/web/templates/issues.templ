@@ -205,7 +205,11 @@ templ environmentOption(value, label string, selected string) {
 // requireProjectOperator, что и остальные lvlOperator-хендлеры проекта —
 // показывать форму, которая поведёт на 404, хуже, чем не показывать её
 // вовсе (тот же принцип, что ExportView.CanDownload/CanDelete в exports.templ).
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool) {
+// canManagePII — сверх canOperate: видна ли галка «выгрузить как есть» на
+// раскрытых формах экспорта (спека §7/§8; находка аудита P2-UX-3 — раньше
+// эта галка не показывалась на точках входа вовсе, только на генерической
+// форме страницы «Выгрузки», которая не несёт scope_issue_id/фильтров).
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool) {
 	@layout(i18n.T(ctx, "issues.title"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
@@ -243,37 +247,51 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
 			if canOperate {
-				// Две отдельные формы (группы/события), не один селект: клик по
-				// кнопке сразу ставит заявку с текущими фильтрами списка — без
-				// промежуточного шага «сначала выбери вид». Полноценная форма с
-				// выбором формата и (для CanManage) PII — на самой странице
-				// «Выгрузки» (exports.templ:exportsForm). Период — тем же окном,
-				// что сейчас видит пользователь на списке (filter.Range),
-				// переносится в action query-параметром (exportsPathWithRange):
-				// hidden-поле для него не годится, POST-тело не долетает до
-				// resolveTimeRange (она читает только r.URL.Query()) — молча
-				// усечённая выгрузка (ревью веб-части E1, п.1).
+				// Две отдельные раскрывающиеся формы (группы/события), не один
+				// селект и не мгновенный POST по клику: раньше кнопка сразу
+				// ставила заявку с форматом, зашитым в hidden-поле, — «Экспорт
+				// событий» отсюда всегда давал ndjson, тот же по названию со
+				// страницы issue всегда давал csv, а выбрать формат или галку
+				// PII было негде (находка аудита P2-UX-3). Теперь клик по
+				// кнопке раскрывает <details> с форматом и (для CanManage)
+				// галкой PII — тот же приём, что и у @assignControl рядом
+				// (issuedetail.templ) — а контекст точки входа (текущие
+				// фильтры списка) по-прежнему летит hidden-полями. Период —
+				// тем же окном, что сейчас видит пользователь на списке
+				// (filter.Range), переносится в action query-параметром
+				// (exportsPathWithRange): hidden-поле для него не годится,
+				// POST-тело не долетает до resolveTimeRange (она читает только
+				// r.URL.Query()) — молча усечённая выгрузка (ревью веб-части
+				// E1, п.1).
 				<div class="issues-export-actions">
-					<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) }>
-						<input type="hidden" name="kind" value="issues"/>
-						<input type="hidden" name="format" value="csv"/>
-						<input type="hidden" name="status" value={ filter.Status }/>
-						<input type="hidden" name="level" value={ filter.Level }/>
-						<input type="hidden" name="query" value={ filter.Query }/>
-						<input type="hidden" name="environment" value={ filter.Environment }/>
-						<input type="hidden" name="sort" value={ filter.Sort }/>
-						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.export.groups") }</button>
-					</form>
-					<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) }>
-						<input type="hidden" name="kind" value="events"/>
-						<input type="hidden" name="format" value="ndjson"/>
-						<input type="hidden" name="status" value={ filter.Status }/>
-						<input type="hidden" name="level" value={ filter.Level }/>
-						<input type="hidden" name="query" value={ filter.Query }/>
-						<input type="hidden" name="environment" value={ filter.Environment }/>
-						<input type="hidden" name="sort" value={ filter.Sort }/>
-						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "issues.export.events") }</button>
-					</form>
+					<details class="dropdown-control">
+						<summary>{ i18n.T(ctx, "issues.export.groups") }</summary>
+						<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) } class="export-control-form">
+							<input type="hidden" name="kind" value="issues"/>
+							<input type="hidden" name="status" value={ filter.Status }/>
+							<input type="hidden" name="level" value={ filter.Level }/>
+							<input type="hidden" name="query" value={ filter.Query }/>
+							<input type="hidden" name="environment" value={ filter.Environment }/>
+							<input type="hidden" name="sort" value={ filter.Sort }/>
+							@exportFormatField(nil)
+							@exportPIIField(canManagePII, nil)
+							<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
+						</form>
+					</details>
+					<details class="dropdown-control">
+						<summary>{ i18n.T(ctx, "issues.export.events") }</summary>
+						<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) } class="export-control-form">
+							<input type="hidden" name="kind" value="events"/>
+							<input type="hidden" name="status" value={ filter.Status }/>
+							<input type="hidden" name="level" value={ filter.Level }/>
+							<input type="hidden" name="query" value={ filter.Query }/>
+							<input type="hidden" name="environment" value={ filter.Environment }/>
+							<input type="hidden" name="sort" value={ filter.Sort }/>
+							@exportFormatField(nil)
+							@exportPIIField(canManagePII, nil)
+							<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
+						</form>
+					</details>
 				</div>
 			}
 			<div id="issues-table">

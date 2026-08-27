@@ -67,7 +67,7 @@ func TestIssueDetailBareFrame(t *testing.T) {
 	// Системный кадр (InApp=false) с модулем — рендерится через <details>.
 	frames := []Frame{{Function: "runtime.main", Module: "runtime", Filename: "", Lineno: 0, InApp: false}}
 	ev := event.Stored{ID: "e9", Level: "info", Message: "just a message"}
-	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true))
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true, true))
 	if !strings.Contains(out, "runtime.main") || !strings.Contains(out, "frame-system") {
 		t.Error("системный кадр не из приложения должен отрендериться через <details>")
 	}
@@ -126,7 +126,7 @@ func TestRegisterClosed(t *testing.T) {
 func TestEmptyStates(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
 	empties := map[string]string{
-		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false)),
+		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false)),
 		"monitors":     renderTo(t, MonitorsList(7, nil, true, "u@e.com")),
 		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com")),
 		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com")),

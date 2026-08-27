@@ -771,3 +771,53 @@ func TestWebGettingStartedHide(t *testing.T) {
 		t.Fatalf("чек-лист виден после скрытия: %s", body)
 	}
 }
+
+// TestWebIssuesListExportButtonsShowPIIOnlyForOwner — проверка боевой
+// проводки issues.go (не только рендера templ, который уже покрыт
+// TestIssuesListExportFormsGatePIIByCanManage в internal/web/templates):
+// canManagePII, переданный в IssuesList, обязан быть настоящей ролью
+// (owner/admin), а не, например, тем же значением, что canOperate (это и
+// была бы незамеченная регрессия — оператор увидел бы галку include_pii,
+// хотя бэкенд её для него игнорирует, exports.go:exportsCreate). Владелец
+// (CanManage) видит галку include_pii на кнопках экспорта списка ошибок,
+// оператор без CanManage (доступ только через команду) — нет, но сами
+// кнопки (выбор формата) у него остаются.
+func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "pii-owner@example.com")
+	project := createProject(t, s, ownerID, "pii-org", "pii-proj")
+
+	operatorID, operatorCookie := registerAndLogin(t, s, "pii-operator@example.com")
+	if err := s.org.AddMember(context.Background(), project.OrgID, operatorID, org.RoleMember); err != nil {
+		t.Fatalf("add operator as member: %v", err)
+	}
+	team, err := s.org.CreateTeam(context.Background(), project.OrgID, "pii-team", "pii-team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := s.org.AddTeamMember(context.Background(), team.ID, operatorID); err != nil {
+		t.Fatalf("add team member: %v", err)
+	}
+	if err := s.org.AttachTeam(context.Background(), project.ID, team.ID); err != nil {
+		t.Fatalf("attach team: %v", err)
+	}
+
+	s.h.Exports = export.NewStore(s.pool)
+	t.Cleanup(func() { s.h.Exports = nil })
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+
+	ownerBody := readAll(t, getWithCookie(t, s.srv, issuesPath, ownerCookie))
+	if n := strings.Count(ownerBody, `name="include_pii"`); n != 2 {
+		t.Errorf("владельцу показано %d галок include_pii, want 2 (группы + события): %s", n, ownerBody)
+	}
+
+	operatorBody := readAll(t, getWithCookie(t, s.srv, issuesPath, operatorCookie))
+	if strings.Contains(operatorBody, `name="include_pii"`) {
+		t.Error("оператору без CanManage показана галка include_pii на списке ошибок")
+	}
+	if n := strings.Count(operatorBody, `<select name="format"`); n != 2 {
+		t.Errorf("оператору должны остаться обе кнопки экспорта с выбором формата, селекторов format = %d, want 2", n)
+	}
+}

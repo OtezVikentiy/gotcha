@@ -165,7 +165,22 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	// воркер не стартует, форма экспорта событий issue поведёт на 404
 	// (ревью веб-части E1, п.3; та же граница, что canExport на issues.go).
 	exportsEnabled := h.Exports != nil
-	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled).Render(r.Context(), w)
+
+	// canManagePII — тот же predicate, что canManage в issues.go (owner/
+	// admin организации), и то же правило, что authz.CanManage в
+	// exports.go: галка «выгрузить как есть» на раскрытой форме экспорта
+	// событий issue видна только ей — от оператора include_pii молча
+	// игнорируется на постановке (спека §7/§8, находка аудита P2-UX-3: до
+	// этой находки галка не показывалась здесь вовсе, даже CanManage не мог
+	// выгрузить события ОДНОЙ issue без маски).
+	role, err := h.Org.Role(r.Context(), orgID, uid)
+	if err != nil && !errors.Is(err, org.ErrNotMember) {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	canManagePII := role == org.RoleOwner || role == org.RoleAdmin
+
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII).Render(r.Context(), w)
 }
 
 // issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored

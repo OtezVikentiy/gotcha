@@ -20,7 +20,7 @@ func TestRelativeTimeCarriesExactMoment(t *testing.T) {
 	rows := []IssueRow{
 		{Issue: issue.Issue{ID: 1, Title: "boom", Level: "error", Status: "unresolved", LastSeen: moment}, Sparkline: stub()},
 	}
-	out := renderTo(t, IssuesList(7, rows, IssuesFilter{}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{}, false))
+	out := renderTo(t, IssuesList(7, rows, IssuesFilter{}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{}, false, false))
 	if !strings.Contains(out, "<time ") {
 		t.Fatal("относительное время без <time>: точный момент недоступен")
 	}
