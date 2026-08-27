@@ -169,6 +169,24 @@ live process means delivery is blocked on a channel — check
 rescheduled. **`gotcha_notify_failed_jobs`** — how many of those given-up jobs sit
 in the queue right now.
 
+**`gotcha_export_pending_jobs`** / **`gotcha_export_oldest_pending_age_seconds`**
+— depth of the error/event export queue (requests in `queued` or `running`
+status) and the age of the oldest one. The age matters more than the depth —
+it is the only number that tells "the queue is empty because every request
+was finished" from "the queue is stuck because the worker isn't running or is
+blocked on disk". These metrics are only published where the queue is
+actually served: `--mode=ingest` has no export worker (there's nobody to hand
+the file to), so these metrics are absent there too — that absence is
+expected, not a fault.
+
+**`gotcha_export_failed_jobs`** — export requests that exhausted every retry
+and were closed as `failed`. A non-zero, growing value is exactly the closed
+P0 scenario (mass request failures were only visible as `slog.Warn` on the
+worker's tick — an operator only learned about them by checking the log): every
+request usually fails for the same reason, typically export directory
+permissions or an exhausted `GOTCHA_EXPORT_DISK_BUDGET_BYTES` (see the last
+attempt's error in the UI's Exports section).
+
 **`gotcha_memory_limit_bytes`** — the heap ceiling derived from the container's
 memory limit (80% of it). Zero means there is no limit: buffers will grow until
 the HOST runs out of memory, and the kernel's OOM killer gets there first — it
@@ -221,6 +239,16 @@ PostgreSQL can't report those. To gauge how much headroom is left, compare
 this number against the volume size you already know PostgreSQL runs on
 (usually one volume per instance) — by hand: gotcha has no way to learn your
 disk size on its own.
+
+**`gotcha_storage_used_bytes{store="exports"}`** — how many bytes the error/
+event export directory (`GOTCHA_EXPORT_DIR`) currently occupies. Unlike
+`store="postgres"`, this isn't an abstract database size — it's the same
+directory whose budget the export worker checks before every request
+(`GOTCHA_EXPORT_DISK_BUDGET_BYTES`); before this metric, that directory was
+the one piece of disk the application manages entirely on its own and had no
+external visibility at all. Polled every 5 minutes, same as the neighboring
+`gotcha_storage_*` metrics; only registered where the export queue is
+actually served (see `gotcha_export_pending_jobs` above).
 
 **`gotcha_web_cross_origin_rejected_total`** — POST requests rejected because
 their `Origin`/`Referer` did not match `GOTCHA_BASE_URL` (cross-origin
