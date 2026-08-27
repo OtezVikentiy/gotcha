@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Exports: the `url` column of an issue-groups export pointed at a page that does
+  not exist, so every link in the file returned 404. It now points at the group's
+  actual page.
+- Exports: on a single issue's page the export form was laid out as a row inside a
+  narrow popup — the format dropdown was clipped and the submit button stretched
+  into a vertical slab. The "Export PII unmasked" checkbox sat on a line above its
+  own label on all four export forms.
+- Exports: the button on a single issue's page is now named in Russian throughout
+  ("Экспорт событий группы" instead of a half-English "Экспорт событий issue").
+
 ## [0.22.0] - 2026-08-27
 
 ### Added

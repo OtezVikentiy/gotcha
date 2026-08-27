@@ -1296,7 +1296,7 @@
     "exports.mail.truncated_note": "Файл обрезан: заявка упёрлась в лимит выгрузки (объём или число строк), часть данных в него не попала.",
     "issues.export.groups": "Экспорт групп",
     "issues.export.events": "Экспорт событий",
-    "issuedetail.export": "Экспорт событий issue",
+    "issuedetail.export": "Экспорт событий группы",
     "getting_started.state.done": "Сделано:",
     "getting_started.state.todo": "Не сделано:",
     "issues.action.change_assignee": "Изменить ответственного",
