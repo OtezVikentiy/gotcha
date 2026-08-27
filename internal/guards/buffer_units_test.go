@@ -37,6 +37,12 @@ const (
 	unitsConstName = "autoBufferCapUnits"
 	// wiringFile — файл, где писатели создаются и получают потолок.
 	wiringFile = "cmd/gotcha/main.go"
+	// shareConstName — доля потолка кучи, отдаваемая сумме буферов.
+	shareConstName = "autoBufferSafeShare"
+	// ratioConstName — доля лимита контейнера, отдаваемая куче.
+	ratioConstName = "defaultRatio"
+	// ratioFile — файл, где живёт ratioConstName.
+	ratioFile = "internal/memlimit/memlimit.go"
 )
 
 func TestAutoBufferCapUnitsMatchesWriters(t *testing.T) {
@@ -197,4 +203,89 @@ func countCapComparisons(f *ast.File) int {
 		return true
 	})
 	return n
+}
+
+// Пин на доли, из которых выводится авто-дефолт. В отличие от
+// autoBufferCapUnits их расхождение с описанием ничего не ломает в рантайме —
+// но делает неверными сразу четыре предложения справочника на двух языках:
+// потолок кучи (80% от mem_limit ≈ 819 МиБ на 1g), доля под буферы (60%),
+// объём на буфер (≈82 МиБ) и сравнение с flat-константой (256 МиБ × 6 = 1.5
+// ГиБ). Все четыре — следствия этих двух чисел, и правка любого из них
+// оставляет прозу утверждать арифметику, которой больше нет.
+//
+// Сторож намеренно ничего не разбирает в самих доках: сверять прозу дороже,
+// чем она того стоит, а число внутри вывода («шесть единиц → 60% → 82 МиБ»)
+// нельзя оставить нетронутым, не сломав читаемость абзаца. Задача пина —
+// не проверить доки, а не дать поменять долю молча.
+func TestBufferShareConstantsPinned(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	for _, c := range []struct {
+		file string
+		name string
+		want float64
+	}{
+		{wiringFile, shareConstName, 0.6},
+		{ratioFile, ratioConstName, 0.8},
+	} {
+		f, err := parser.ParseFile(fset, filepath.Join(root, c.file), nil, 0)
+		if err != nil {
+			t.Fatalf("разбор %s: %v", c.file, err)
+		}
+		got, ok := floatConst(f, c.name)
+		if !ok {
+			t.Errorf("%s: не найдена константа %s — сторож ослеп, а не код исправился",
+				c.file, c.name)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s = %g, а сторож ждёт %g (%s).\n"+
+				"Доля изменилась осознанно? Тогда пройти по обоим языкам "+
+				"internal/docs/{ru,en}/configuration.md: описание авто-дефолта "+
+				"GOTCHA_MAX_BUFFER_BYTES и строку GOTCHA_MEM_LIMIT в таблице. "+
+				"Там четыре числа — потолок кучи, доля под буферы, объём на буфер "+
+				"и сумма flat-константы, — и все они следствия этих долей. "+
+				"Выправив прозу, поднять значение здесь.",
+				c.name, got, c.want, c.file)
+		}
+	}
+}
+
+// floatConst достаёт значение константы верхнего уровня с плавающей точкой.
+// Второе значение — «нашлась ли»: ноль здесь осмысленное значение, отличать
+// его от отсутствия обязательно.
+func floatConst(f *ast.File, name string) (float64, bool) {
+	var (
+		out   float64
+		found bool
+	)
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs, ok := sp.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, id := range vs.Names {
+				if id.Name != name || i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || (lit.Kind != token.FLOAT && lit.Kind != token.INT) {
+					continue
+				}
+				if v, err := strconv.ParseFloat(lit.Value, 64); err == nil {
+					out, found = v, true
+				}
+			}
+		}
+	}
+	return out, found
 }
