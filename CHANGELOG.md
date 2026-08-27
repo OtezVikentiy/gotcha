@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-08-27
+
 ### Fixed
 - Exports: the `url` column of an issue-groups export pointed at a page that does
   not exist, so every link in the file returned 404. It now points at the group's
