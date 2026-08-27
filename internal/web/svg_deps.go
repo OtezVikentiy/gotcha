@@ -56,8 +56,8 @@ func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w, h 
 				edgeClass, formatCoord(cx), formatCoord(cy), formatCoord(x), formatCoord(y)))
 			mx, my := (cx+x)/2, (cy+y)/2
 			label := fmt.Sprintf("p95 %s · %s", depMicros(d.P95US), depPercent(d.ErrorRate))
-			sb.WriteString(fmt.Sprintf(`<text class="deps-edge-label" x="%s" y="%s">%s</text>`,
-				formatCoord(mx), formatCoord(my), templ.EscapeString(label)))
+			sb.WriteString(fmt.Sprintf(`<text class="deps-edge-label" x="%s" y="%s" text-anchor="%s">%s</text>`,
+				formatCoord(mx), formatCoord(my), depEdgeLabelAnchor(x-cx), templ.EscapeString(label)))
 			sb.WriteString(depNodeSVG(x, y, d.Target, "deps-node"))
 		}
 		if len(deps) > depsMapNodeCap {
@@ -69,6 +69,31 @@ func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w, h 
 		_, err := io.WriteString(wr, sb.String())
 		return err
 	})
+}
+
+// depEdgeLabelAnchor выбирает якорь подписи ребра так, чтобы текст рос ОТ
+// узла, а не под него: без text-anchor подпись росла слева направо от точки
+// привязки, а следующей строкой рисуется прямоугольник узла — на самой
+// нагруженной зависимости (индекс 0, угол 0°, узел строго справа от хаба)
+// подпись гарантированно уезжала под него. Узел лежит дальше от хаба, чем
+// середина ребра, в направлении dx = x-cx, поэтому подпись должна расти в
+// противоположную сторону: dx>0 (узел справа) → "end" (текст растёт влево),
+// dx<0 (узел слева) → "start" (текст растёт вправо). Знак dx определён для
+// любого угла ребра, но само отсутствие наложения на прямоугольник узла —
+// нет: оно держится на текущих constants этого файла (radius = min(cx,cy)-60,
+// узел 100×28 в depNodeSVG) и на том, что подпись обычно короче зазора между
+// серединой ребра и узлом. На меньшем радиусе, более крупном узле или
+// длинной подписи (Target длиннее обычного) якорь по-прежнему уводит текст в
+// верном направлении, но расстояния может не хватить, и наложение вернётся.
+func depEdgeLabelAnchor(dx float64) string {
+	switch {
+	case dx > 0:
+		return "end"
+	case dx < 0:
+		return "start"
+	default:
+		return "middle"
+	}
 }
 
 // depNodeSVG рисует один узел карты — подписанный прямоугольник с центром в

@@ -115,7 +115,7 @@ func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int
 		sb.WriteString(`" y="`)
 		sb.WriteString(strconv.Itoa(y + flameRowHeight - 6))
 		sb.WriteString(`" fill="#111">`)
-		sb.WriteString(html.EscapeString(truncateRunes(n.Name, int(w/6))))
+		sb.WriteString(html.EscapeString(truncateRunes(n.Name, int(w/svgCharWidthPx))))
 		sb.WriteString(`</text>`)
 	}
 	sb.WriteString(`</g>`)
@@ -1265,6 +1265,7 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	if k < 1 {
 		k = 1
 	}
+	prevDayLabelRight := math.Inf(-1)
 	for j, idx := range dayIdx {
 		if j%k != 0 {
 			continue
@@ -1273,22 +1274,25 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		if idx > 0 {
 			axisLine(&sb, x, y0, x, y1)
 		}
-		// У краёв холста подпись прижимаем к своей стороне (как в writeXTicks):
-		// центрированная метка первого дня у левой оси наезжала на подпись «0»
-		// оси Y и рамку.
-		anchor := "middle"
-		switch {
-		case x > x1-24:
-			anchor = "end"
-		case x < x0+24:
-			anchor = "start"
+		text := points[idx].T.UTC().Format("02.01")
+		// Якорь и защита от наезда на предыдущую подпись — общая с
+		// writeXTicks (svgaxis.go) логика xLabelPlacement: было две копии
+		// одного и того же порога у края холста, которые могли разойтись,
+		// и ни одна не учитывала сдвиг подписи при переключении якоря
+		// (P1-7 — первая подпись наезжала на вторую). draw=false, если наезд
+		// не удалось починить сменой якоря (не рисуем — линия сетки выше
+		// уже нарисована).
+		anchor, _, right, draw := xLabelPlacement(x0, x1, prevDayLabelRight, x, text)
+		if !draw {
+			continue
 		}
+		prevDayLabelRight = right
 		sb.WriteString(`<text x="`)
 		sb.WriteString(formatCoord(x))
 		sb.WriteString(`" y="`)
 		sb.WriteString(formatCoord(float64(h) - 7))
 		sb.WriteString(`" text-anchor="` + anchor + `" fill="currentColor">`)
-		sb.WriteString(html.EscapeString(points[idx].T.UTC().Format("02.01")))
+		sb.WriteString(html.EscapeString(text))
 		sb.WriteString(`</text>`)
 	}
 	sb.WriteString(`</g>`)
@@ -1429,7 +1433,17 @@ func availabilityBarsMarkup(ctx context.Context, bars []uptime.UptimeStat, w, h 
 	}
 
 	var sb strings.Builder
-	sb.WriteString(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")))
+	// preserveAspectRatio="none": полоска рисуется в фиксированные
+	// availabilityBarsWidth×Height (192×24), а карточка на публичной
+	// статус-странице шире (646px/255px) — дефолтный
+	// "xMidYMid meet" держит натуральный масштаб и центрирует SVG, отчего
+	// полоска смотрится крошечной в большой рамке. object-fit тут не
+	// работает: это не замещаемый элемент (<img>), а инлайновый корневой
+	// <svg> — растягивать умеет только сам preserveAspectRatio, и только у
+	// ЭТОГО графика (svgRoot общий на все графики продукта, менять его
+	// атрибут по умолчанию нельзя — см. chartEmptyAxis выше, тот же приём).
+	sb.WriteString(strings.TrimSuffix(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")), ">"))
+	sb.WriteString(` preserveAspectRatio="none">`)
 	sb.WriteString(rects.String())
 	sb.WriteString(`</svg>`)
 	return sb.String()
@@ -1475,7 +1489,11 @@ func availabilityBarLabel(ctx context.Context, b uptime.UptimeStat) string {
 
 func availabilityEmptyBarsSVG(ctx context.Context, w, h int) string {
 	var sb strings.Builder
-	sb.WriteString(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")))
+	// preserveAspectRatio="none" — тот же адресный фикс, что и в
+	// availabilityBarsMarkup выше (пустое состояние того же графика должно
+	// растягиваться одинаково с заполненным).
+	sb.WriteString(strings.TrimSuffix(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")), ">"))
+	sb.WriteString(` preserveAspectRatio="none">`)
 	sb.WriteString(`<rect x="0" y="0" width="`)
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteString(`" height="`)

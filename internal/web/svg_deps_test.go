@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -69,5 +70,37 @@ func TestDependencyMapSVGCap(t *testing.T) {
 	// пометка про остаток
 	if !strings.Contains(out, "deps-more") {
 		t.Errorf("нет пометки «+N ещё» при превышении кэпа")
+	}
+}
+
+// TestDependencyMapSVGEdgeLabelAnchor — подпись ребра растёт ОТ узла, к
+// которому оно ведёт, а не под него: без text-anchor подпись росла вправо
+// от точки привязки, и на самой нагруженной зависимости (индекс 0, угол
+// 0° — узел строго справа от хаба) уезжала под прямоугольник узла, который
+// рисуется следующей строкой (P1-1). Якорь зависит от знака dx = x-cx и
+// должен работать для любого угла ребра, поэтому проверяем оба полюса: 0°
+// (узел справа → якорь "end", текст растёт влево, от узла) и 180° (узел
+// слева → якорь "start", текст растёт вправо, тоже от узла).
+func TestDependencyMapSVGEdgeLabelAnchor(t *testing.T) {
+	deps := []templates.DependencyRow{
+		{Kind: "database", Target: "svc-right", P95US: 1000}, // i=0, угол 0°, узел справа от хаба
+		{Kind: "database", Target: "svc-left", P95US: 1000},  // i=1, угол 180°, узел слева от хаба
+	}
+	var sb strings.Builder
+	if err := dependencyMapSVG(context.Background(), deps, 720, 360).Render(context.Background(), &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := sb.String()
+
+	labelRe := regexp.MustCompile(`<text class="deps-edge-label"[^>]*text-anchor="(\w+)"`)
+	matches := labelRe.FindAllStringSubmatch(out, -1)
+	if len(matches) != 2 {
+		t.Fatalf("ожидались 2 подписи ребра, получено %d: %s", len(matches), out)
+	}
+	if got := matches[0][1]; got != "end" {
+		t.Errorf("якорь подписи ребра на 0° (узел справа) = %q, ожидался end", got)
+	}
+	if got := matches[1][1]; got != "start" {
+		t.Errorf("якорь подписи ребра на 180° (узел слева) = %q, ожидался start", got)
 	}
 }

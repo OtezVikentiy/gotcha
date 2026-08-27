@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -255,5 +257,53 @@ func TestBridgeSparseGapsKeepsDenseSeries(t *testing.T) {
 	}
 	if got[5].has {
 		t.Errorf("пустая корзина плотного ряда обязана остаться разрывом: %+v", got[5])
+	}
+}
+
+// TestChartBarsDayLabelsShareXLabelPlacement — подписи дней chartBars должны
+// звать ту же xLabelPlacement, что и writeXTicks (svgaxis.go), а не
+// собственную копию порога у края холста (P1-7): на узком холсте первая
+// подпись дня стоит ровно на x0 и переключается на якорь "start", что
+// сдвигает её видимый центр на полширины вправо; вторая подпись (день
+// спустя, рядом с первой) должна это учесть, иначе наезжает на первую — как
+// у TestWriteXTicksAccountsForAnchorShift для writeXTicks. Собственная копия
+// порога (было: фиксированные 24 у обоих генераторов) этот сдвиг не
+// учитывала.
+func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	points := []event.Point{
+		{T: base, N: 3},
+		{T: base.AddDate(0, 0, 1), N: 5},
+		{T: base.AddDate(0, 0, 2), N: 4},
+	}
+	const narrowW = 150 // x0=chartPadL=40, x1=narrowW-chartPadR=140 — дни ложатся близко
+	out := chartBars(context.Background(), points, narrowW, chartHeight)
+
+	// Подписи дней рисуются на одной и той же y = chartHeight-7 = 173.0 —
+	// этим отличаются от подписей оси Y (другой y) и подсказок <title>.
+	dayLabelRe := regexp.MustCompile(`<text x="([-\d.]+)" y="173\.0" text-anchor="(\w+)" fill="currentColor">`)
+	matches := dayLabelRe.FindAllStringSubmatch(out, -1)
+	if len(matches) < 2 {
+		t.Fatalf("ожидались минимум 2 подписи дней, получено %d: %s", len(matches), out)
+	}
+	x0, err0 := strconv.ParseFloat(matches[0][1], 64)
+	x1, err1 := strconv.ParseFloat(matches[1][1], 64)
+	if err0 != nil || err1 != nil {
+		t.Fatalf("не удалось распарсить x подписей: %v / %v", err0, err1)
+	}
+	anchor0, anchor1 := matches[0][2], matches[1][2]
+	if anchor0 != "start" {
+		t.Fatalf("якорь первой подписи дня = %q, ожидался start (стоит ровно на x0)", anchor0)
+	}
+	if anchor1 != "start" {
+		t.Fatalf("якорь второй подписи дня = %q, ожидался start (сдвиг первой не учтён — наехала бы)", anchor1)
+	}
+
+	width0 := estimateTextWidth("01.07")
+	rightFirst := x0 + width0 // якорь start растёт вправо от x
+	leftSecond := x1          // тоже start — левый край подписи = сама x
+	if gap := leftSecond - rightFirst; gap < 0 {
+		t.Errorf("подписи дней перекрываются: правый край первой %.2f > левый край второй %.2f (%.2f/%s vs %.2f/%s)",
+			rightFirst, leftSecond, x0, anchor0, x1, anchor1)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
@@ -110,6 +112,36 @@ func TestAvailabilityBarClassThresholds(t *testing.T) {
 				t.Errorf("[%s] ключ %q из availabilityBarLabelKey не резолвится — на полоске будет сырой ключ", lang, key)
 			}
 		}
+	}
+}
+
+// TestAvailabilityBarsStretchToCardWidth — полоска доступности рисуется в
+// фиксированные 192×24 (availabilityBarsWidth/Height), а на публичной
+// статус-странице карточка шире (646px/255px). Дефолтный
+// preserveAspectRatio="xMidYMid meet" держит натуральный масштаб и
+// центрирует SVG внутри карточки — полоска выглядит крошечной. object-fit
+// тут не помогает (не замещаемый элемент, инлайновый корневой <svg>),
+// поэтому растягивать обязан сам preserveAspectRatio="none" на ЭТОМ
+// графике. Второй ассерт — обязательная защита от расползания: у ПРОИЗВОЛЬНОГО
+// другого графика (chartBars) атрибут должен остаться отсутствующим
+// (дефолтное поведение) — иначе правка молча тронула бы svgRoot() и все
+// графики продукта разом.
+func TestAvailabilityBarsStretchToCardWidth(t *testing.T) {
+	ctx := context.Background()
+
+	populated := availabilityBarsMarkup(ctx, []uptime.UptimeStat{{Total: 10, OK: 10}}, 300, 24)
+	if !strings.Contains(populated, `preserveAspectRatio="none"`) {
+		t.Errorf("заполненная полоска доступности без preserveAspectRatio=\"none\": %s", populated)
+	}
+	empty := availabilityBarsMarkup(ctx, nil, 300, 24)
+	if !strings.Contains(empty, `preserveAspectRatio="none"`) {
+		t.Errorf("пустая полоска доступности без preserveAspectRatio=\"none\": %s", empty)
+	}
+
+	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	other := chartBars(ctx, []event.Point{{T: base, N: 3}, {T: base.Add(24 * time.Hour), N: 5}}, chartWidth, chartHeight)
+	if strings.Contains(other, `preserveAspectRatio`) {
+		t.Errorf("правка расползлась на другой график (chartBars): preserveAspectRatio не должен появляться там: %s", other)
 	}
 }
 
