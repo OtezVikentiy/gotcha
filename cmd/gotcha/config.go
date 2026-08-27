@@ -295,8 +295,9 @@ type Config struct {
 	// (GOTCHA_EXPORT_MAX_BYTES).
 	ExportMaxBytes int64
 	// ExportDiskBudgetBytes — суммарный бюджет каталога ExportDir
-	// (GOTCHA_EXPORT_DISK_BUDGET_BYTES): переполнение — постоянный отказ новой
-	// заявки, а не частично записанный файл.
+	// (GOTCHA_EXPORT_DISK_BUDGET_BYTES): переполнение — ВРЕМЕННЫЙ отказ новой
+	// заявки (до трёх попыток, пока джанитор не освободит место истёкшими
+	// файлами), а не частично записанный файл.
 	ExportDiskBudgetBytes int64
 
 	// OAuth/social login (этап 5). Каждый провайдер включается независимо;

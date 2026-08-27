@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -235,6 +236,24 @@ type pgUsedBytesSource struct{ pool *pgxpool.Pool }
 func (s pgUsedBytesSource) stat(ctx context.Context) (used uint64, err error) {
 	err = s.pool.QueryRow(ctx, "SELECT pg_database_size(current_database())").Scan(&used)
 	return used, err
+}
+
+// exportDirUsedBytesSource — источник для registerUsedBytesMetric под меткой
+// store="exports" (P1-OPS-1): export.DirSize суммирует файлы каталога тем же
+// приёмом, что и Worker.process перед проверкой DiskBudget (worker.go) —
+// каталог выгрузок единственный кусок диска, которым распоряжается само
+// приложение, и до этой метрики был единственным неизмеряемым в
+// gotcha_storage_used_bytes (соседняя store="postgres" уже зарегистрирована).
+// Опрашивается фоновым pollLoop (та же гигиена, что у
+// storagePollers/usedBytesPoller выше), а не на каждый скрап /metrics.
+type exportDirUsedBytesSource struct{ dir string }
+
+func (s exportDirUsedBytesSource) stat(context.Context) (uint64, error) {
+	n, err := export.DirSize(s.dir)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(n), nil
 }
 
 // usedBytesSource — источник для registerUsedBytesMetric; pgUsedBytesSource

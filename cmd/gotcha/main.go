@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -205,6 +206,26 @@ func exportRowRetention(ttl time.Duration) time.Duration {
 	return exportMinRowRetention
 }
 
+// waitGroupWithTimeout ждёт wg не дольше timeout и сообщает, успел ли он
+// завершиться (P2-OPS-5): вынесено из drain() в run() отдельной функцией,
+// чтобы само ограниченное ожидание — то, что окно НЕ растягивается на всю
+// работающую горутину и не виснет, если горутина никогда не завершится, —
+// было проверяемо юнит-тестом без поднятия PG/ClickHouse/HTTP, которые
+// требует run() целиком.
+func waitGroupWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	stopped := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // commonServicesEnabled — режимы, в которых run() строит общие сервисы
 // (orgSvc/issueSvc/alertSvc/emailSender/outbox, см. блок "Общие сервисы").
 // Единственный источник истины для этой тройки: список литералов существует
@@ -216,18 +237,90 @@ func commonServicesEnabled(mode string) bool {
 	return mode == "ingest" || mode == "web" || mode == "all"
 }
 
+// exportModeServesFiles — режимы, где сам процесс отдаёт скачивание файла
+// выгрузки (webHandler строится только тут, см. блок "if cfg.Mode == "web"
+// || cfg.Mode == "all"" ниже). Единственный источник истины для этой пары:
+// exportsWiringEnabled и проба каталога (run()) обязаны смотреть на один и
+// тот же список литералов, а не дублировать его текстом — такое
+// дублирование ("тот же гейт ingest|web|all" в комментарии, не подкреплённое
+// общим кодом) уже породило панику при --mode=uptime (см. докблок
+// exportsWiringEnabled) и было исходной причиной P1-OPS-2 (воркер/джанитор
+// выгрузок поднимались в --mode=ingest, где раздать файл некому).
+func exportModeServesFiles(mode string) bool {
+	return mode == "web" || mode == "all"
+}
+
 // exportsWiringEnabled решает, поднимать ли обработчик выгрузок ошибок/
-// событий (E1) в этом процессе. Два независимых условия: issueSvc строится
-// только там, где включены общие сервисы (commonServicesEnabled), а каталог
-// выгрузок (dirOK) может быть недоступен независимо от режима. Оба обязаны
-// выполниться разом — гейта "outbox != nil" на вызывающей стороне
-// недостаточно: --mode=uptime тоже поднимает outbox (нужен уведомителю
-// детектора аптайма), но issueSvc там остаётся nil, и export.NewIssueSource/
-// NewEventSource, получив nil *issue.Service, всё равно возвращают НЕ-nil
-// интерфейсы — воркер выгрузок стартует и на первой же заявке issues/events
-// падает паникой (issueSource.Stream разыменовывает nil *issue.Service).
+// событий (E1) в этом процессе — каталог (dirOK, включая пробу на запись,
+// см. exportDirWritable) И режим, который отдаёт файл (exportModeServesFiles).
+// Оба обязаны выполниться разом. Раньше вторым условием был
+// commonServicesEnabled (ingest|web|all): issueSvc там действительно
+// строится, но воркер и джанитор — не issueSvc ради issueSvc, а обслуга
+// ОЧЕРЕДИ webHandler'а; в --mode=ingest webHandler не строится никогда
+// (exportModeServesFiles ниже), и заявка, собранная там воркером, лежит на
+// диске реплики без единого маршрута /projects/{id}/exports — а джанитор
+// СВОЕЙ реплики, увидев там ENOENT, помечает чужую заявку expired и теряет
+// файл до PurgeRows (30 суток). --mode=uptime поднимает outbox (нужен
+// уведомителю детектора аптайма), но issueSvc там остаётся nil, и
+// export.NewIssueSource/NewEventSource, получив nil *issue.Service, всё
+// равно возвращают НЕ-nil интерфейсы — воркер выгрузок стартовал бы и на
+// первой же заявке issues/events упал паникой (issueSource.Stream
+// разыменовывает nil *issue.Service); exportModeServesFiles исключает и этот
+// режим тем же условием, без отдельной проверки issueSvc.
 func exportsWiringEnabled(mode string, dirOK bool) bool {
-	return dirOK && commonServicesEnabled(mode)
+	return dirOK && exportModeServesFiles(mode)
+}
+
+// exportDirMode — права каталога выгрузок при создании. 0700, а не 0755
+// (остаток P3-SEC-1): каталог выгрузок — единственное место продукта, где
+// ПДн (user_email/user_ip и т.п., см. worker.go) ложатся на диск целым
+// каталогом, а не только файлом — файлы внутри уже 0600, но листинг
+// каталога 0755 сам по себе был читаем любому пользователю этого хоста.
+//
+// os.MkdirAll НЕ меняет режим уже существующего каталога (тот же нюанс, из-за
+// которого exportDirWritable ниже вообще понадобился): на инсталляциях, где
+// каталог создан ДО этого патча или кем-то другим (например Docker при
+// монтировании тома, см. докблок exportDirWritable), права остаются
+// прежними, и их лечит оператор вручную — см. configuration.md обеих локалей.
+const exportDirMode = 0o700
+
+// ensureExportDir создаёт каталог выгрузок с exportDirMode. Вынесено из
+// run() отдельной функцией ради теста: run() слишком велик, чтобы гонять его
+// целиком ради проверки одной строки прав.
+func ensureExportDir(dir string) error {
+	return os.MkdirAll(dir, exportDirMode)
+}
+
+// exportDirWritable проверяет, что каталог выгрузок действительно доступен
+// НА ЗАПИСЬ этому процессу. os.MkdirAll на каталоге, который уже существует,
+// возвращает nil независимо от его владельца и прав (P0-OPS-1): штатный
+// docker-compose монтирует свежий именованный том в каталог, которого нет в
+// образе, точку монтирования создаёт сам Docker — root:root 0755, финальный
+// слой образа работает под uid 10001 (см. Dockerfile) — MkdirAll молча
+// проходит, exportDirOK становится true, раздел включается целиком, и КАЖДАЯ
+// заявка падает на OpenFile("permission denied"), уходя в failed с письмом
+// автору. Проба создаёт и сразу удаляет временный файл — то же самое, что
+// воркер делает на каждой реальной заявке (writer.go, .part-файл), только
+// раньше и без заявки в очереди. Имя пробы уникально на каждый вызов
+// (os.CreateTemp, шаблон ".probe-*"): несколько web-реплик за балансировщиком
+// (internal/docs/{ru,en}/exports.md признаёт это поддерживаемым сценарием)
+// стартуют параллельно на общем томе, и с фиксированным именем ".probe" один
+// os.Remove забирал файл, который параллельно создала и уже удалила другая
+// реплика, — вторая ловила ENOENT на своём же os.Remove и ложно выключала
+// раздел выгрузок до рестарта на исправном каталоге.
+func exportDirWritable(dir string) error {
+	// os.CreateTemp создаёт файл с правами 0600 (до umask) сам — отдельный
+	// Chmod не нужен.
+	f, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		return err
+	}
+	probe := f.Name()
+	if err := f.Close(); err != nil {
+		os.Remove(probe)
+		return err
+	}
+	return os.Remove(probe)
 }
 
 // applyMemoryLimit приводит потолок кучи к лимиту контейнера и сообщает
@@ -635,6 +728,12 @@ func run() error {
 	// nil остаётся, если каталог не удалось создать (см. ниже) — тогда раздел
 	// выгрузок выключен, а не фатален для процесса.
 	var exportStore *export.Store
+	// exportWorkersWG считает горутины воркера и джанитора выгрузок (P2-OPS-5):
+	// оба запускаются с ctx, отменяемым в SIGTERM/деплое, но раньше их
+	// завершения никто не ждал — drain() ниже ждёт wg с ограниченным окном,
+	// тем же приёмом, что и srv.Shutdown, чтобы заявка, прерванная посреди
+	// сборки, успела дописать release() в БД до убийства процесса.
+	var exportWorkersWG sync.WaitGroup
 	// cardinality — ограничитель кардинальности; нужен и приёму (схлопывание),
 	// и веб-слою (диагностика: что схлопнуто и примеры значений).
 	var cardinality *ingest.CardinalityGuard
@@ -724,23 +823,28 @@ func run() error {
 		go outboxJanitor.Run(ctx)
 
 		// Выгрузки ошибок/событий (E1). Гейт запуска — ДВА условия разом:
-		// наличие ресурса (каталог на диске ЭТОГО процесса) И режим, в котором
-		// собирается issueSvc (commonServicesEnabled) — заявку ставит веб, а
-		// собирает тот процесс, у которого есть каталог (см. GOTCHA_EXPORT_DIR,
-		// docs/exports), но воркеру нужен живой issueSvc, а он строится не в
-		// каждом режиме, что доходит досюда (ниже, в блоке uptime, outbox
-		// поднимается и для --mode=uptime — там issueSvc остаётся nil).
-		// exportsWiringEnabled формализует оба условия и покрыта тестом.
-		// Каталог трогаем только когда режим вообще может им воспользоваться:
-		// иначе на uptime/probe-реплике без тома exportdata (в compose она
-		// read_only) это давало бы бесполезный warn на каждый старт про раздел,
-		// которого в этом режиме нет вовсе.
+		// наличие ресурса (каталог на диске ЭТОГО процесса, включая пробу на
+		// запись — exportDirWritable, P0-OPS-1) И режим, который отдаёт файл
+		// (exportModeServesFiles: web|all — воркер и джанитор существуют
+		// только чтобы обслуживать очередь webHandler'а, в --mode=ingest их
+		// поднимать некому и незачем, см. докблок exportsWiringEnabled/
+		// P1-OPS-2). exportsWiringEnabled формализует оба условия и покрыта
+		// тестом. Каталог трогаем только когда режим вообще может им
+		// воспользоваться: иначе на ingest/uptime/probe-реплике без тома
+		// exportdata (в compose она read_only) это давало бы бесполезный warn
+		// на каждый старт про раздел, которого в этом режиме нет вовсе.
 		exportDirOK := false
-		if commonServicesEnabled(cfg.Mode) {
-			if err := os.MkdirAll(cfg.ExportDir, 0o755); err != nil {
+		if exportModeServesFiles(cfg.Mode) {
+			if err := ensureExportDir(cfg.ExportDir); err != nil {
 				// Не фатально: продукт работает дальше без раздела выгрузок,
 				// страница отвечает 404 (webHandler.Exports остаётся nil ниже).
 				slog.Warn("export: export directory is unavailable, the exports section is disabled", "dir", cfg.ExportDir, "err", err)
+			} else if err := exportDirWritable(cfg.ExportDir); err != nil {
+				// MkdirAll молчит, если каталог уже существует, — в том числе
+				// когда его создал Docker при монтировании тома и он достался
+				// не тому владельцу (P0-OPS-1). Без этой пробы exportDirOK
+				// стало бы true, а каждая заявка падала бы на OpenFile.
+				slog.Warn("export: export directory is not writable by this process, the exports section is disabled", "dir", cfg.ExportDir, "err", err)
 			} else {
 				exportDirOK = true
 			}
@@ -776,7 +880,11 @@ func run() error {
 				Cfg:    exportCfg,
 				Notify: export.NewMailNotifier(exportMailer, exportStore, cfg.BaseURL, i18n.Locale{Code: cfg.Locale}),
 			}
-			go exportWorker.Run(ctx)
+			exportWorkersWG.Add(1)
+			go func() {
+				defer exportWorkersWG.Done()
+				exportWorker.Run(ctx)
+			}()
 
 			exportJanitor := &export.Janitor{
 				Store:        exportStore,
@@ -784,7 +892,37 @@ func run() error {
 				Dir:          cfg.ExportDir,
 				RowRetention: exportRowRetention(exportCfg.TTL),
 			}
-			go exportJanitor.Run(ctx)
+			exportWorkersWG.Add(1)
+			go func() {
+				defer exportWorkersWG.Done()
+				exportJanitor.Run(ctx)
+			}()
+
+			// Наблюдаемость очереди выгрузок (P1-OPS-1): до этого КАЖДАЯ соседняя
+			// очередь была видна (gotcha_notify_pending_jobs/_failed_jobs/
+			// _oldest_pending_age_seconds выше, gotcha_purge_queue_depth/
+			// _oldest_seconds ниже), а у выгрузок не было ни одной метрики —
+			// дежурный не видел ни вставшую очередь, ни массовые отказы заявок
+			// (сценарий закрытого P0 был именно таким: тишина, только slog.Warn
+			// на тик воркера). Тот же приём, что у notifyStats.RunSnapshots(ctx,
+			// outbox) выше: export.Stats симметричен notify.Stats.
+			exportStats := &export.Stats{}
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_pending_jobs",
+				"Export requests queued or being built.", nil, exportStats.Pending)
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_failed_jobs",
+				"Export requests in the queue that exhausted retries and will not be retried again.", nil, exportStats.FailedJobs)
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_oldest_pending_age_seconds",
+				"Age of the oldest export request still queued or being built; the number that tells a quiet queue from a stuck one.",
+				nil, exportStats.OldestPendingAgeSeconds)
+			go exportStats.RunSnapshots(ctx, exportStore)
+
+			// gotcha_storage_used_bytes был зарегистрирован только под
+			// store="postgres" (pgUsedBytes выше), хотя registerUsedBytesMetric
+			// принимает произвольный источник — каталог выгрузок остаётся
+			// единственным куском диска, которым распоряжается само приложение,
+			// и до этой строки единственным неизмеряемым.
+			exportUsedBytes := registerUsedBytesMetric(&selfMetrics, "exports", exportDirUsedBytesSource{dir: cfg.ExportDir})
+			go exportUsedBytes.Run(ctx)
 		}
 	}
 
@@ -1265,6 +1403,18 @@ func run() error {
 			if err := uptimeWriter.Close(cctx); err != nil {
 				slog.Error("uptime result writer drain failed", "error", err)
 			}
+		}
+		// Воркер/джанитор выгрузок (P2-OPS-5): ctx уже отменён к этому моменту
+		// (см. select ниже), сами они завершаются быстро — тик воркера видит
+		// <-ctx.Done() и выходит из select в Run() без ожидания текущего
+		// тика/файла. Ждём именно ЗАВЕРШЕНИЯ горутин, а не только отмены ctx:
+		// без этого release() (см. internal/export/worker.go) мог бы не успеть
+		// дописать строку в PG до того, как процесс убьют. Окно небольшое
+		// (5с, не 15 минут jobTimeout) — ждать саму сборку файла нельзя, это
+		// сорвало бы деплой; 5с с запасом хватает release()/detachTimeout()
+		// (см. их докблоки), а stop_grace_period в docker-compose — 90с.
+		if !waitGroupWithTimeout(&exportWorkersWG, 5*time.Second) {
+			slog.Warn("export worker/janitor did not stop within the shutdown window")
 		}
 	}
 

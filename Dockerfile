@@ -34,7 +34,22 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor \
 
 # Refresh with: docker buildx imagetools inspect alpine:3.21   (copy the Digest)
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
-RUN adduser -D -u 10001 gotcha
+# Каталог выгрузок (E1, GOTCHA_EXPORT_DIR) обязан существовать и принадлежать
+# gotcha ДО USER ниже: docker-compose.yml монтирует сюда именованный том, и
+# если точки монтирования в образе нет, Docker создаёт её сам — root:root
+# 0755 — а свежий том наследует владельца ИЗ ОБРАЗА только когда каталог уже
+# существует и chown'нут на этом слое (P0-OPS-1). Без этого MkdirAll в
+# main.go молча проходит (каталог уже есть), фича включается, и каждая заявка
+# на выгрузку падает на записи файла с permission denied.
+# chmod 0700 здесь, а не только в main.go: MkdirAll сужает права ТОЛЬКО у
+# каталога, который создаёт сам, а этот каталог к моменту старта уже создан
+# строкой выше — то есть в Docker-поставке документированные 0700 не наступали
+# бы никогда и том оставался бы 0755 (имена файлов выгрузок видны любому
+# процессу в контейнере).
+RUN adduser -D -u 10001 gotcha \
+ && mkdir -p /var/lib/gotcha/exports \
+ && chown gotcha:gotcha /var/lib/gotcha/exports \
+ && chmod 0700 /var/lib/gotcha/exports
 USER gotcha
 COPY --from=build /out/gotcha /usr/local/bin/gotcha
 COPY --from=build /out/agent-dist /opt/gotcha/agent-dist
