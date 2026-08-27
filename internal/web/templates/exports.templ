@@ -230,7 +230,13 @@ templ exportFormatField(form FormState) {
 templ exportPIIField(canManagePII bool, form FormState) {
 	if canManagePII {
 		<div class="field">
-			<label>
+			// checkbox-inline — канон подписи чекбокса (алерты, мониторы,
+			// обслуживание, SSO): квадрат и текст на одной строке, кликабельна
+			// вся подпись. Без него работало базовое `.field label`
+			// (flex-direction: column, подпись НАД контролом — верно для
+			// input/select) и галка уезжала на отдельную строку над своим
+			// текстом на всех четырёх формах экспорта; приёмка v0.22.0.
+			<label class="checkbox-inline">
 				<input type="checkbox" name="include_pii" value="1" checked?={ form.Checked("include_pii", false) }/>
 				{ i18n.T(ctx, "exports.pii.label") }
 			</label>

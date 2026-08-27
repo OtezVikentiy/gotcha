@@ -497,3 +497,41 @@ func TestExportsListShowsFailureReasonHintForKnownKey(t *testing.T) {
 // её и мутационно проверяет internal/web/exports_test.go на реальном
 // HTTP-рендере страницы, где имеет смысл: заявка, у которой в БД случайно
 // оказался неизвестный ключ, а не искусственно собранный ExportView здесь.
+
+// TestExportPIICheckboxUsesInlineLabel — сторож раскладки галки PII на всех
+// формах экспорта.
+//
+// Приёмка v0.22.0 в браузере: подпись галки жила в голом <label> внутри
+// .field, а базовое правило `.field label` раскладывает поле колонкой
+// (подпись НАД контролом — верно для input/select) — квадрат оказывался на
+// отдельной строке, текст под ним. Канон подписи чекбокса в этом дереве —
+// class="checkbox-inline" (алерты, мониторы, обслуживание, SSO). Тест
+// разметочный: CSS в templ-тестах не применяется, увидеть саму раскладку
+// здесь нельзя — можно потребовать класс, за которым она закреплена.
+func TestExportPIICheckboxUsesInlineLabel(t *testing.T) {
+	filter := IssuesFilter{Status: "unresolved"}
+	it := issue.Issue{ID: 5, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved"}
+	stubC := templ.Raw("<svg data-c></svg>")
+
+	pages := map[string]string{
+		"страница «Выгрузки»": renderTo(t, Exports(7, nil, true, "u@e.com", true, "", nil)),
+		"список ошибок":       renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true)),
+		"карточка ошибки":     renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true)),
+	}
+	for name, html := range pages {
+		idx := strings.Index(html, `name="include_pii"`)
+		if idx < 0 {
+			t.Errorf("%s: галки include_pii нет вовсе — тест проверял бы пустоту", name)
+			continue
+		}
+		label := strings.LastIndex(html[:idx], "<label")
+		if label < 0 {
+			t.Errorf("%s: галка include_pii не обёрнута в <label> — цель нажатия сузилась до квадрата", name)
+			continue
+		}
+		if !strings.Contains(html[label:idx], `class="checkbox-inline"`) {
+			t.Errorf("%s: подпись галки include_pii без class=\"checkbox-inline\" — `.field label` разложит её колонкой, "+
+				"квадрат уедет на строку над текстом (приёмка v0.22.0)", name)
+		}
+	}
+}
