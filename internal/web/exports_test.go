@@ -1209,3 +1209,26 @@ func rowContaining(t *testing.T, body, marker string) string {
 	}
 	return body[start : i+end]
 }
+
+// TestExportIssueURLHitsRegisteredRoute — сторож колонки url выгрузки групп:
+// ссылка, которую получает пользователь в CSV/JSON, обязана вести на реально
+// зарегистрированный маршрут, а не в catch-all.
+//
+// Живой случай (приёмка v0.22.0 в браузере): выгрузка отдавала
+// {base}/projects/{projectID}/issues/{issueID} — страницы по такому пути нет,
+// деталь группы обслуживает «GET /issues/{id}», и КАЖДАЯ строка выгрузки вела
+// в 404. Юнит-тест источника это пропустил, потому что собирал ожидание тем же
+// fmt.Sprintf, что и реализация: тавтология переживает любую мутацию шаблона.
+// Здесь ожидания нет вовсе — путь скармливается роутеру, и вопрос ему один:
+// есть ли у тебя такой маршрут.
+func TestExportIssueURLHitsRegisteredRoute(t *testing.T) {
+	s := newStack(t)
+
+	const base = "https://gotcha.example.com"
+	got := export.IssueURL(base, 1049)
+	path, ok := strings.CutPrefix(got, base)
+	if !ok {
+		t.Fatalf("IssueURL = %q, want абсолютную ссылку с префиксом %q", got, base)
+	}
+	assertRouteRegistered(t, s, http.MethodGet, path)
+}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,7 +42,13 @@ func TestIssueSourceRecordHasAbsoluteURL(t *testing.T) {
 	}
 	rec := records[0]
 
-	wantURL := fmt.Sprintf("https://gotcha.example.com/projects/%d/issues/%d", projectID, res.IssueID)
+	// Ожидание собирается ЛИТЕРАЛЬНО, а не тем же выражением, что и
+	// реализация: пока здесь стоял fmt.Sprintf с тем же шаблоном, тест был
+	// тавтологией и пропустил в прод ссылку на несуществующий
+	// /projects/{id}/issues/{id} (v0.22.0). Что путь реально обслуживается
+	// роутером, проверяет TestExportIssueURLHitsRegisteredRoute в
+	// internal/web — здесь роутера нет.
+	wantURL := "https://gotcha.example.com/issues/" + strconv.FormatInt(res.IssueID, 10)
 	url, _ := rec["url"].(string)
 	if url != wantURL {
 		t.Errorf("url = %q, want %q (baseURL со слэшем не должен задваиваться)", url, wantURL)
@@ -190,7 +195,7 @@ func TestIssueSourcePipelineThroughWriter(t *testing.T) {
 	if row["assignee_email"] != "" {
 		t.Errorf("assignee_email = %v, want пустую строку (назначение снято)", row["assignee_email"])
 	}
-	wantURL := fmt.Sprintf("https://gotcha.example.com/projects/%d/issues/%d", projectID, res.IssueID)
+	wantURL := "https://gotcha.example.com/issues/" + strconv.FormatInt(res.IssueID, 10)
 	if row["url"] != wantURL {
 		t.Errorf("url = %v, want %q", row["url"], wantURL)
 	}

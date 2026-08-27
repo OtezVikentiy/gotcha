@@ -37,6 +37,20 @@ func NewIssueSource(svc *issue.Service, baseURL string) IssueSource {
 	return &issueSource{svc: svc, baseURL: strings.TrimRight(baseURL, "/")}
 }
 
+// IssueURL — значение колонки url выгрузки групп: абсолютная ссылка на
+// страницу группы. Путь — ровно тот, что зарегистрирован роутером
+// («GET /issues/{id}», internal/web/web.go; тот же, что строит
+// web.issueDetailPath), а НЕ производный от проекта: страницы вида
+// /projects/{id}/issues/{id} не существует, и v0.22.0 уехала в прод с
+// колонкой url, каждая строка которой вела в 404 (приёмка в браузере).
+// Ошибку не поймали тесты, потому что ожидание собиралось тем же
+// fmt.Sprintf, что и реализация; сторож против повторения —
+// TestExportIssueURLHitsRegisteredRoute (internal/web), он спрашивает
+// сам роутер, а не повторяет строку.
+func IssueURL(baseURL string, issueID int64) string {
+	return fmt.Sprintf("%s/issues/%d", strings.TrimRight(baseURL, "/"), issueID)
+}
+
 // Stream переносит Params заявки в issue.Filter (те же имена полей — Params
 // снимает фильтр списка issues на момент постановки заявки в очередь) и
 // стримит группы дальше как Record.
@@ -62,7 +76,7 @@ func (s *issueSource) Stream(ctx context.Context, projectID int64, p Params, fn 
 			"last_seen":      it.LastSeen,
 			"environments":   strings.Join(it.Environments, ", "),
 			"assignee_email": it.AssigneeEmail,
-			"url":            fmt.Sprintf("%s/projects/%d/issues/%d", s.baseURL, projectID, it.ID),
+			"url":            IssueURL(s.baseURL, it.ID),
 		})
 	})
 }
