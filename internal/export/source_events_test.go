@@ -138,6 +138,76 @@ func TestEventSourcePipelineThroughWriter(t *testing.T) {
 	})
 }
 
+// TestEventSourceMasksPIICarriedInTags — P2-SEC-2 аудита: email/IP
+// пользователя мог прийти ТЕГОМ (user.email), а не отдельным полем
+// UserEmail/UserIP — эта колонка раньше маску обходила целиком. Сценарий:
+// инстанс с ВЫКЛЮЧЕННЫМ приёмным скрабингом (GOTCHA_SCRUB_EMAIL=false,
+// поддержанная конфигурация, config.go) — событие приходит с открытым email
+// только в теге, поля UserEmail/UserIP пусты. Выгрузка обязана замаскировать
+// его НЕЗАВИСИМО от настройки приёма — jsonScrubber в pii.go захардкожен
+// true,true (см. её докблок), тем же способом, что уже применяется к
+// request/contexts. Два прогона через ОДИН источник (includePII true/false),
+// как в TestEventSourcePipelineThroughWriter.
+func TestEventSourceMasksPIICarriedInTags(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	svc := issue.NewService(pool)
+	projectID, _ := seedProjectAndUser(t, pool)
+
+	seenAt := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	res, err := svc.Upsert(ctx, projectID, "fp-tags-pii", "boom", "app.worker", issue.LevelError, "prod", seenAt)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	b := event.NewBatcher(ch)
+	go b.Run()
+	seedEvent(t, b, event.Event{
+		ProjectID: projectID, IssueID: res.IssueID, Timestamp: seenAt,
+		Message: "boom", Environment: "prod",
+		// UserEmail/UserIP намеренно пусты — сценарий приёма без скрабинга,
+		// где email осел ТОЛЬКО в теге.
+		Tags: map[string]string{"user.email": "victim@example.com", "env": "prod"},
+	})
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	src := NewEventSource(event.NewQuery(ch), svc)
+
+	t.Run("маска включена по умолчанию — тег с email тоже скрыт", func(t *testing.T) {
+		var got Record
+		if err := src.Stream(ctx, projectID, 0, false /*includePII*/, Params{}, func(r Record) error {
+			got = r
+			return nil
+		}); err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		tags, _ := got["tags"].(string)
+		if strings.Contains(tags, "victim@example.com") {
+			t.Errorf("email утёк через tags при includePII=false: %s", tags)
+		}
+		if !strings.Contains(tags, "env=prod") {
+			t.Errorf("безобидный тег потерян: %s", tags)
+		}
+	})
+
+	t.Run("includePII=true — тег как есть", func(t *testing.T) {
+		var got Record
+		if err := src.Stream(ctx, projectID, 0, true /*includePII*/, Params{}, func(r Record) error {
+			got = r
+			return nil
+		}); err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		tags, _ := got["tags"].(string)
+		if !strings.Contains(tags, "victim@example.com") {
+			t.Errorf("includePII=true обязан отдавать тег как есть, не нашёл email: %s", tags)
+		}
+	})
+}
+
 // TestEventSourceCSVOmitsRawFields — CSV не должен содержать stacktrace/
 // contexts/breadcrumbs/request: полотно JSON в ячейке нечитаемо (§6 спеки).
 func TestEventSourceCSVOmitsRawFields(t *testing.T) {

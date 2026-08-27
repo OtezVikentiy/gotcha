@@ -429,6 +429,30 @@ func TestEnqueueLimitedRefusesAtUserLimit(t *testing.T) {
 	}
 }
 
+// TestEnqueueLimitedUserLimitAppliesAcrossProjects — предел на пользователя
+// обязан считаться по ВСЕМ проектам сразу, а не в границах одного проекта
+// (P2-SEC-2 аудита): без этого пользователь, состоящий в K проектах, ставит
+// K*userLimit активных заявок одновременно, хотя докблок и обе локали доки
+// обещают единый потолок на пользователя.
+func TestEnqueueLimitedUserLimitAppliesAcrossProjects(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectA, userA := seedProjectAndUser(t, pool)
+	projectB, _ := seedProjectAndUser(t, pool)
+
+	const userLimit, projectLimit = 2, 10
+
+	for i := 0; i < userLimit; i++ {
+		if _, err := st.EnqueueLimited(ctx, testJob(projectA, userA), userLimit, projectLimit); err != nil {
+			t.Fatalf("заявка %d в projectA: %v", i, err)
+		}
+	}
+	if _, err := st.EnqueueLimited(ctx, testJob(projectB, userA), userLimit, projectLimit); !errors.Is(err, ErrActiveLimitReached) {
+		t.Fatalf("заявка того же пользователя в ДРУГОМ проекте = %v, ожидали ErrActiveLimitReached (общий предел на пользователя, не по-проектный)", err)
+	}
+}
+
 // TestEnqueueLimitedRefusesAtProjectLimit — третья заявка снова от userA (его
 // персональный лимит 10, далеко не исчерпан) обязана упереться именно в
 // проектный предел, а не быть пропущена по ошибке смешения условий.
@@ -676,15 +700,20 @@ func TestSweepStaleFailsExhaustedJob(t *testing.T) {
 	if len(swept) != 1 {
 		t.Fatalf("SweepStale обработал %d заявок, ожидали 1", len(swept))
 	}
-	if swept[0].ID != id || swept[0].Status != StatusFailed || swept[0].LastError == "" {
+	if swept[0].ID != id || swept[0].Status != StatusFailed || swept[0].LastError == "" || swept[0].FailureReasonKey != reasonInternal {
 		t.Errorf("SweepStale вернул не тот снимок: %+v", swept[0])
 	}
 	got, err := st.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Status != StatusFailed || got.LastError == "" {
-		t.Errorf("зависшая заявка осталась в статусе %q, причина %q", got.Status, got.LastError)
+	// FailureReasonKey = reasonInternal (P2-UX-2 аудита): SweepStale добивает
+	// заявку мимо fail()/failPermanent(), различимой причины провала
+	// последней попытки у него нет (см. докблок Store.SweepStale). Мутация —
+	// вернуть UPDATE без failure_reason_key = $3 — обязана уронить именно
+	// эту проверку.
+	if got.Status != StatusFailed || got.LastError == "" || got.FailureReasonKey != reasonInternal {
+		t.Errorf("зависшая заявка осталась в статусе %q, причина %q, ключ %q", got.Status, got.LastError, got.FailureReasonKey)
 	}
 	// Заявка с исчерпанными попытками не должна больше выдаваться в работу.
 	if _, ok, _ := st.Claim(ctx); ok {
@@ -732,7 +761,7 @@ func TestFailRetriesThenGivesUp(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Claim %d: %v", i, err)
 		}
-		if err := st.Fail(ctx, id, claim.Attempts, "ClickHouse недоступен"); err != nil {
+		if err := st.Fail(ctx, id, claim.Attempts, "ClickHouse недоступен", reasonInternal); err != nil {
 			t.Fatalf("Fail %d: %v", i, err)
 		}
 		got, err := st.Get(ctx, id)
@@ -745,6 +774,19 @@ func TestFailRetriesThenGivesUp(t *testing.T) {
 		}
 		if got.Status != want {
 			t.Errorf("после %d-й неудачи статус %q, ожидали %q", i, got.Status, want)
+		}
+		// P2-UX-2 аудита: failure_reason_key ложится ТОЛЬКО вместе с
+		// переходом в failed — пока заявка возвращается в очередь
+		// (промежуточные попытки), ключ пуст, потому что следующая попытка
+		// может провалиться по другой причине или вовсе завершиться
+		// успехом. Мутация — убрать "CASE WHEN attempts >= $2" вокруг
+		// failure_reason_key в Store.Fail — обязана уронить именно эту
+		// ветку (i < maxAttempts): ключ появится досрочно.
+		if i < maxAttempts && got.FailureReasonKey != "" {
+			t.Errorf("после %d-й (промежуточной) неудачи FailureReasonKey = %q, ожидали пусто", i, got.FailureReasonKey)
+		}
+		if i == maxAttempts && got.FailureReasonKey != reasonInternal {
+			t.Errorf("после исчерпания попыток FailureReasonKey = %q, ожидали %q", got.FailureReasonKey, reasonInternal)
 		}
 	}
 }
@@ -797,7 +839,7 @@ func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
 	if err := st.Done(ctx, id, claim.Attempts, 1, 1, false, time.Hour); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
-	if err := st.Fail(ctx, id, claim.Attempts, "запоздавшая ошибка зомби-воркера"); !errors.Is(err, ErrStaleClaim) {
+	if err := st.Fail(ctx, id, claim.Attempts, "запоздавшая ошибка зомби-воркера", reasonInternal); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Fail: err=%v, ожидали ErrStaleClaim", err)
 	}
 	got, err := st.Get(ctx, id)
@@ -885,7 +927,7 @@ func TestFailRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("Claim B (переклейм): %v ok=%v", err, ok)
 	}
 
-	if err := st.Fail(ctx, id, claimA.Attempts, "устаревшая ошибка A"); !errors.Is(err, ErrStaleClaim) {
+	if err := st.Fail(ctx, id, claimA.Attempts, "устаревшая ошибка A", reasonInternal); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Fail от A: err=%v, ожидали ErrStaleClaim", err)
 	}
 	afterA, err := st.Get(ctx, id)
@@ -896,7 +938,7 @@ func TestFailRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("устаревший Fail от A изменил заявку: %+v", afterA)
 	}
 
-	if err := st.Fail(ctx, id, claimB.Attempts, "реальная ошибка B"); err != nil {
+	if err := st.Fail(ctx, id, claimB.Attempts, "реальная ошибка B", reasonInternal); err != nil {
 		t.Fatalf("Fail от B: %v", err)
 	}
 	final, err := st.Get(ctx, id)
@@ -1042,7 +1084,7 @@ func TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence(t *testing.T) {
 		t.Fatalf("Claim: ok=%v err=%v", ok, err)
 	}
 
-	if err := st.FailPermanent(ctx, id, claim.Attempts, "на диске не осталось места"); err != nil {
+	if err := st.FailPermanent(ctx, id, claim.Attempts, "на диске не осталось места", reasonDiskFull); err != nil {
 		t.Fatalf("FailPermanent: %v", err)
 	}
 
@@ -1058,6 +1100,9 @@ func TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence(t *testing.T) {
 	}
 	if got.LastError != "на диске не осталось места" {
 		t.Errorf("last_error = %q", got.LastError)
+	}
+	if got.FailureReasonKey != reasonDiskFull {
+		t.Errorf("failure_reason_key = %q, ожидали %q", got.FailureReasonKey, reasonDiskFull)
 	}
 	if got.FinishedAt == nil {
 		t.Error("finished_at не выставлен")
@@ -1095,7 +1140,7 @@ func TestFailPermanentRejectsStaleClaimAfterReclaim(t *testing.T) {
 	}
 
 	// A не знает о перехвате и зовёт постоянный отказ по СВОЕЙ (устаревшей) попытке.
-	if err := st.FailPermanent(ctx, id, claimA.Attempts, "диск переполнен"); !errors.Is(err, ErrStaleClaim) {
+	if err := st.FailPermanent(ctx, id, claimA.Attempts, "диск переполнен", reasonDiskFull); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("FailPermanent от A: err=%v, ожидали ErrStaleClaim", err)
 	}
 
@@ -1116,8 +1161,96 @@ func TestFailPermanentUnknownIDReturnsStaleClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
-	if err := st.FailPermanent(ctx, 0, 1, "не важно"); !errors.Is(err, ErrStaleClaim) {
+	if err := st.FailPermanent(ctx, 0, 1, "не важно", reasonInternal); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("FailPermanent по несуществующему id: err=%v, ожидали ErrStaleClaim", err)
+	}
+}
+
+// TestReleaseReturnsJobToQueueWithoutSpendingAttempt — базовый happy path
+// P2-OPS-5: Release отпускает клейм без последствий, которые несёт Fail —
+// attempts не растёт, last_error/failure_reason_key не заполняются, а
+// claimed_at обнуляется настолько, что следующий Claim подбирает заявку
+// снова (мутация — забыть "claimed_at = NULL" в UPDATE — обязана уронить
+// именно повторный Claim ниже: WHERE в Claim требует протухшую лизу, а без
+// сброса claimed_at заявка осталась бы недоступной для подбора все 20 минут
+// leaseTTL).
+func TestReleaseReturnsJobToQueueWithoutSpendingAttempt(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+
+	claim, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	if err := st.Release(ctx, id, claim.Attempts); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Fatalf("Release не вернул заявку в очередь: %+v", got)
+	}
+	if got.Attempts != claim.Attempts {
+		t.Fatalf("Release потратил попытку: attempts=%d, ожидали %d", got.Attempts, claim.Attempts)
+	}
+	if got.LastError != "" || got.FailureReasonKey != "" {
+		t.Fatalf("Release заполнил поля отказа: last_error=%q reason_key=%q", got.LastError, got.FailureReasonKey)
+	}
+
+	reclaim, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("повторный Claim после Release: %v ok=%v", err, ok)
+	}
+	if reclaim.ID != id || reclaim.Attempts != claim.Attempts+1 {
+		t.Fatalf("повторный Claim не подобрал отпущенную заявку: %+v", reclaim)
+	}
+}
+
+// TestReleaseRejectsStaleClaimAfterReclaim — та же гонка, что у
+// Fail/Done/FailPermanent: A клеймит заявку, лиза протухает, её подбирает B
+// (attempts вырос и B активно работает), и запоздавший релиз от A обязан
+// получить ErrStaleClaim и не тронуть строку — иначе зомби-релиз выбил бы
+// из-под B заявку, которую тот ещё активно строит.
+func TestReleaseRejectsStaleClaimAfterReclaim(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueue(t, st, projectID, userID)
+
+	claimA, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim A: %v ok=%v", err, ok)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE export_jobs SET claimed_at = now() - interval '21 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatalf("протухание лизы A: %v", err)
+	}
+	claimB, ok, err := st.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Claim B (переклейм): %v ok=%v", err, ok)
+	}
+	if claimB.Attempts != claimA.Attempts+1 {
+		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
+	}
+
+	// A не знает о перехвате и запоздало отпускает СВОЮ (уже неактуальную) попытку.
+	if err := st.Release(ctx, id, claimA.Attempts); !errors.Is(err, ErrStaleClaim) {
+		t.Fatalf("Release от A: err=%v, ожидали ErrStaleClaim", err)
+	}
+
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusRunning || got.Attempts != claimB.Attempts {
+		t.Fatalf("запоздавший Release A задел активную попытку B: %+v", got)
 	}
 }
 

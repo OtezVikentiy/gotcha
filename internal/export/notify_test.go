@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -22,10 +23,15 @@ type mailCall struct {
 type fakeMailer struct {
 	calls []mailCall
 	err   error
+	// lastCtx — ctx, с которым пришёл ПОСЛЕДНИЙ вызов Send: нужен только
+	// TestMailNotifierSendHasOwnTimeout (P2-OPS-3 аудита), проверяющей, что
+	// NewMailNotifier не пробрасывает родительский ctx как есть.
+	lastCtx context.Context
 }
 
 func (m *fakeMailer) Send(ctx context.Context, t notify.Target, payload map[string]any) error {
 	m.calls = append(m.calls, mailCall{target: t, payload: payload})
+	m.lastCtx = ctx
 	return m.err
 }
 
@@ -75,6 +81,38 @@ func TestMailNotifierReportsSuccessWithLink(t *testing.T) {
 	subject := fmt.Sprint(sent.calls[0].payload["subject"])
 	if subject == "" {
 		t.Error("тема письма пуста")
+	}
+}
+
+// TestMailNotifierSendHasOwnTimeout — P2-OPS-3 аудита: раньше m.Send
+// получал jobCtx воркера как есть (живёт до Config.JobTimeout, по
+// умолчанию 15 минут, без собственного дедлайна у DialContext) — зависший
+// SMTP держал бы advisory lock воркера все эти 15 минут. ctx, дошедший до
+// Mailer.Send, обязан нести СВОЙ, более короткий дедлайн независимо от
+// родительского ctx (здесь — вовсе без дедлайна, context.Background()).
+func TestMailNotifierSendHasOwnTimeout(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{
+		ID: 1, ProjectID: projectID, CreatedBy: userID,
+		Status: StatusDone, RowsWritten: 1, Bytes: 1,
+	})
+
+	if len(sent.calls) != 1 {
+		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
+	}
+	deadline, ok := sent.lastCtx.Deadline()
+	if !ok {
+		t.Fatal("ctx у Mailer.Send без дедлайна — родительский ctx проброшен как есть")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > sendTimeout {
+		t.Errorf("дедлайн ctx = %s от текущего момента, want в (0, %s]", remaining, sendTimeout)
 	}
 }
 

@@ -2,6 +2,7 @@ package export
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,20 +35,23 @@ const (
 	// нужным значением поля. Не приходит от вызывающего извне и не
 	// конфигурируется из env/Config — это внутренняя деталь стора.
 	janitorBatchSize = 500
-	// enqueueLockClass — classID двухаргументной формы advisory-лока
-	// постановки заявки (EnqueueLimited): pg_advisory_xact_lock(int,int) —
-	// СТРУКТУРНО отдельное от pg_advisory_lock/pg_try_advisory_lock(bigint)
-	// keyspace (однопараметрическая форма, которой пользуются воркер и
-	// джанитор — advisoryLockKey=0x6578706F в worker.go, janitorLockKey в
-	// janitor.go): PostgreSQL хранит их под разными тегами лока независимо
-	// от числовых значений, поэтому пересечение исключено ГАРАНТИРОВАННО, а
-	// не потому что диапазоны project_id и констант воркера/джанитора пока
-	// не пересекаются (при project_id, доросшем до ~1.7 млрд, старая
-	// однопараметрическая форма начала бы конфликтовать с воркером —
-	// находка ре-ревью задачи 10, P3). Сам classID здесь не обязан быть
-	// уникальным вовне пакета — он лишь отделяет ключи EnqueueLimited друг
-	// от друга, если в пакете появится ещё один двухаргументный лок.
-	enqueueLockClass = 1
+	// enqueueLockClassProject/enqueueLockClassUser — classID'ы двухаргументной
+	// формы advisory-лока постановки заявки (EnqueueLimited):
+	// pg_advisory_xact_lock(int,int) — СТРУКТУРНО отдельное от
+	// pg_advisory_lock/pg_try_advisory_lock(bigint) keyspace
+	// (однопараметрическая форма, которой пользуются воркер и джанитор —
+	// advisoryLockKey=0x6578706F в worker.go, janitorLockKey в janitor.go):
+	// PostgreSQL хранит их под разными тегами лока независимо от числовых
+	// значений, поэтому пересечение исключено ГАРАНТИРОВАННО, а не потому
+	// что диапазоны project_id/user_id и констант воркера/джанитора пока не
+	// пересекаются (при id, доросшем до ~1.7 млрд, старая однопараметрическая
+	// форма начала бы конфликтовать с воркером — находка ре-ревью задачи 10,
+	// P3). Два разных classID здесь — ДВА разных лока внутри одной
+	// EnqueueLimited: project (по project_id) и user (по created_by, через
+	// ВСЕ проекты сразу, см. докблок EnqueueLimited) не пересекаются друг с
+	// другом по той же гарантии структурного разделения тегов лока.
+	enqueueLockClassProject = 1
+	enqueueLockClassUser    = 2
 )
 
 var (
@@ -100,7 +104,8 @@ func (s *Store) batch() int {
 // строку строго в этом порядке.
 const jobColumns = `id, project_id, created_by, kind, format,
 	coalesce(scope_issue_id, 0), params, include_pii, status, attempts, last_error,
-	rows_written, bytes, truncated, file_ext, claimed_at, created_at, finished_at, expires_at`
+	rows_written, bytes, truncated, file_ext, claimed_at, created_at, finished_at, expires_at,
+	failure_reason_key`
 
 // rowScanner — общий интерфейс pgx.Row и pgx.Rows, достаточный для scanJob.
 type rowScanner interface {
@@ -114,17 +119,20 @@ func scanJob(row rowScanner) (Job, error) {
 	var j Job
 	var kind, format, status string
 	var raw []byte
+	var reasonKey sql.NullString
 	if err := row.Scan(
 		&j.ID, &j.ProjectID, &j.CreatedBy, &kind, &format,
 		&j.ScopeIssueID, &raw, &j.IncludePII, &status, &j.Attempts, &j.LastError,
 		&j.RowsWritten, &j.Bytes, &j.Truncated, &j.FileExt,
 		&j.ClaimedAt, &j.CreatedAt, &j.FinishedAt, &j.ExpiresAt,
+		&reasonKey,
 	); err != nil {
 		return Job{}, err
 	}
 	j.Kind = Kind(kind)
 	j.Format = Format(format)
 	j.Status = Status(status)
+	j.FailureReasonKey = reasonKey.String // NULL → "" (заявка не терминальна либо старше колонки, см. докблок Job.FailureReasonKey)
 	if err := json.Unmarshal(raw, &j.Params); err != nil {
 		return Job{}, fmt.Errorf("разбор params: %w", err)
 	}
@@ -187,29 +195,40 @@ func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
 // lock — снимается сам на COMMIT/ROLLBACK, в отличие от сессионного
 // pg_advisory_lock воркера/джанитора, которому нужен ручной unlock — ДО
 // подсчёта: все конкурентные постановки ОДНОГО проекта сериализуются в
-// критической секции «посчитать → сравнить с лимитом → вставить», и
-// per-user предел проверяется внутри неё же — отдельный лок по паре
-// (project,user) не нужен, лок по project уже её накрывает. Разные проекты
-// друг друга не блокируют (project_id — часть ключа лока, см. hashtext ниже).
+// критической секции «посчитать → сравнить с лимитом → вставить». Предел на
+// пользователя — ОТДЕЛЬНЫЙ лок по created_by (без project_id: пользователь
+// ставит заявки в K проектах под ОДНИМ и тем же id, лок по паре (project,
+// user) не сериализовал бы его постановки в разных проектах друг с другом, и
+// count по одному project_id не увидел бы заявки, уже стоящие в других —
+// P2-SEC-2 аудита: без этого предел «N активных на пользователя» был
+// фактически «N на пользователя В КАЖДОМ проекте», то есть не существовал
+// вовсе). Порядок локов ФИКСИРОВАН — сперва user (enqueueLockClassUser),
+// затем project (enqueueLockClassProject) — у любых двух конкурентных
+// постановок одинаковый порядок захвата, поэтому дедлок между ними
+// структурно невозможен. Разные проекты (и разные пользователи) друг друга
+// не блокируют — project_id/created_by — часть ключа своего лока, см.
+// hashtext ниже.
 //
 // Ключ — ДВУХаргументная форма pg_advisory_xact_lock(classid, objid), не
 // pg_advisory_xact_lock(bigint): однопараметрическую форму по константным
 // ключам уже держат воркер (advisoryLockKey, worker.go) и джанитор
 // (janitorLockKey, janitor.go), и это ОДНО 64-битное пространство — лок по
-// сырому project_id делил бы его с ними, а project_id, доросший до значения
-// их констант (~1.7 млрд), начал бы блокировать воркер/джанитор (находка
-// ре-ревью задачи 10, P3). Двухаргументная форма — СТРУКТУРНО отдельное
-// keyspace в PostgreSQL (свой тег лока независимо от чисел), поэтому
-// пересечение исключено гарантированно, а не диапазоном значений; objid —
-// hashtext(project_id) вместо прямого project_id::int, потому что objid
-// физически int4, а project_id — bigint (IDENTITY), и не влезающий в int4
-// id обязан не падать и не давать двум разным проектам один и тот же лок
-// по случайности усечения. project_id передаётся уже строкой
-// (strconv.FormatInt), а не $N::text в самом SQL: pgx на extended-протоколе
-// узнаёт тип параметра из Describe-ответа Postgres и при инлайновом ::text
-// в тексте запроса пытается закодировать Go int64 как text напрямую, что не
-// умеет (ловится этой же правкой — без неё Exec падает с "unable to encode
-// ... into text format").
+// сырому project_id/created_by делил бы его с ними, а id, доросший до
+// значения их констант (~1.7 млрд), начал бы блокировать воркер/джанитор
+// (находка ре-ревью задачи 10, P3). Двухаргументная форма — СТРУКТУРНО
+// отдельное keyspace в PostgreSQL (свой тег лока независимо от чисел),
+// поэтому пересечение исключено гарантированно, а не диапазоном значений;
+// classID (enqueueLockClassProject/enqueueLockClassUser) дополнительно
+// разводит ключи project и user между собой в этом же keyspace. objid —
+// hashtext(id) вместо прямого id::int, потому что objid физически int4, а
+// project_id/created_by — bigint (IDENTITY), и не влезающий в int4 id
+// обязан не падать и не давать двум разным id один и тот же лок по
+// случайности усечения. id передаётся уже строкой (strconv.FormatInt), а не
+// $N::text в самом SQL: pgx на extended-протоколе узнаёт тип параметра из
+// Describe-ответа Postgres и при инлайновом ::text в тексте запроса
+// пытается закодировать Go int64 как text напрямую, что не умеет (ловится
+// этой же правкой — без неё Exec падает с "unable to encode ... into text
+// format").
 //
 // ErrActiveLimitReached — лимит исчерпан, id не выдан.
 func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLimit int) (int64, error) {
@@ -219,16 +238,22 @@ func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLim
 	}
 	defer tx.Rollback(ctx) // no-op после успешного Commit
 
+	// Порядок ФИКСИРОВАН: user, затем project (см. докблок выше) — иначе две
+	// конкурентные постановки с обратным порядком захвата дали бы дедлок.
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, hashtext($2))",
-		enqueueLockClass, strconv.FormatInt(j.ProjectID, 10)); err != nil {
-		return 0, fmt.Errorf("export: постановка заявки: advisory lock: %w", err)
+		enqueueLockClassUser, strconv.FormatInt(j.CreatedBy, 10)); err != nil {
+		return 0, fmt.Errorf("export: постановка заявки: advisory lock (user): %w", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+		enqueueLockClassProject, strconv.FormatInt(j.ProjectID, 10)); err != nil {
+		return 0, fmt.Errorf("export: постановка заявки: advisory lock (project): %w", err)
 	}
 
 	var proj, user int
 	if err := tx.QueryRow(ctx, `
-		SELECT count(*), count(*) FILTER (WHERE created_by = $2)
-		FROM export_jobs
-		WHERE project_id = $1 AND status IN ('queued','running')`,
+		SELECT
+			(SELECT count(*) FROM export_jobs WHERE project_id = $1 AND status IN ('queued','running')),
+			(SELECT count(*) FROM export_jobs WHERE created_by = $2 AND status IN ('queued','running'))`,
 		j.ProjectID, j.CreatedBy).Scan(&proj, &user); err != nil {
 		return 0, fmt.Errorf("export: постановка заявки: подсчёт активных: %w", err)
 	}
@@ -355,13 +380,18 @@ func (s *Store) Claim(ctx context.Context) (Job, bool, error) {
 // иначе как ручной перезагрузкой страницы выгрузок. Вызывающий (worker.go,
 // Tick) заводит по ним w.notifyFailed так же, как fail()/failPermanent().
 func (s *Store) SweepStale(ctx context.Context) ([]Job, error) {
+	// failure_reason_key = reasonInternal всегда: инстанс, добивающий
+	// зомби-заявку, не знает исходную причину провала попытки (та лиза
+	// протухла вместе с процессом, который её держал) — тот же повод, что
+	// у reasonInternal в worker.go Tick (см. её комментарий там).
 	rows, err := s.pool.Query(ctx, `
 		UPDATE export_jobs
 		SET status = 'failed', finished_at = now(),
-		    last_error = 'сборка выгрузки не завершилась за отведённое число попыток'
+		    last_error = 'сборка выгрузки не завершилась за отведённое число попыток',
+		    failure_reason_key = $3
 		WHERE status = 'running' AND claimed_at < now() - $1::interval AND attempts >= $2
 		RETURNING `+jobColumns,
-		leaseTTL.String(), maxAttempts)
+		leaseTTL.String(), maxAttempts, reasonInternal)
 	if err != nil {
 		return nil, fmt.Errorf("export: снятие зависших заявок: %w", err)
 	}
@@ -392,13 +422,20 @@ func (s *Store) SweepStale(ctx context.Context) ([]Job, error) {
 // подтверждает, что вызывающий всё ещё держит именно ту попытку, что забрал.
 // Ноль затронутых строк — не ошибка выполнения, а сигнал ErrStaleClaim:
 // заявку либо переклеймили, либо её уже финализировал кто-то другой.
-func (s *Store) Fail(ctx context.Context, id int64, attempt int, cause string) error {
+//
+// reasonKey ложится в failure_reason_key ТОЛЬКО вместе с переходом в
+// status='failed' (попытки исчерпаны): заявка, вернувшаяся в очередь на
+// повтор, ключ не несёт — следующая попытка может провалиться по другой
+// причине или вовсе завершиться успехом, и висящий с прошлого раза ключ
+// был бы враньём на странице выгрузок.
+func (s *Store) Fail(ctx context.Context, id int64, attempt int, cause, reasonKey string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
 		SET status = CASE WHEN attempts >= $2 THEN 'failed' ELSE 'queued' END,
 		    finished_at = CASE WHEN attempts >= $2 THEN now() ELSE NULL END,
-		    claimed_at = NULL, last_error = $3
-		WHERE id = $1 AND status = 'running' AND attempts = $4`, id, maxAttempts, cause, attempt)
+		    claimed_at = NULL, last_error = $3,
+		    failure_reason_key = CASE WHEN attempts >= $2 THEN $5 ELSE NULL END
+		WHERE id = $1 AND status = 'running' AND attempts = $4`, id, maxAttempts, cause, attempt, reasonKey)
 	if err != nil {
 		return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)
 	}
@@ -444,13 +481,43 @@ func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int
 // подхватила и продолжает работать, — дыра шире обычного зомби-Done, потому
 // что FailPermanent не ждёт даже исчерпания попыток. Ноль затронутых строк —
 // тот же сигнал ErrStaleClaim, что и у Fail/Done, а не ошибка выполнения.
-func (s *Store) FailPermanent(ctx context.Context, id int64, attempt int, cause string) error {
+func (s *Store) FailPermanent(ctx context.Context, id int64, attempt int, cause, reasonKey string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
-		SET status = 'failed', finished_at = now(), last_error = $3
-		WHERE id = $1 AND status = 'running' AND attempts = $2`, id, attempt, cause)
+		SET status = 'failed', finished_at = now(), last_error = $3, failure_reason_key = $4
+		WHERE id = $1 AND status = 'running' AND attempts = $2`, id, attempt, cause, reasonKey)
 	if err != nil {
 		return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStaleClaim
+	}
+	return nil
+}
+
+// Release возвращает заявку в очередь БЕЗ траты попытки (P2-OPS-5): путь
+// штатной остановки процесса (SIGTERM/деплой, см. worker.go) — прерванная
+// на середине сборка не вина заявки, жечь на неё одну из maxAttempts
+// неправильно. В отличие от Fail, статус безусловно 'queued' вне
+// зависимости от того, сколько попыток уже потрачено, attempts не
+// меняется — Claim подхватит заявку следующим стартом с тем же attempts,
+// каким её отпустили. last_error/failure_reason_key не трогаются: это не
+// отказ, автору нечего сообщать.
+//
+// attempt фенсит владение попыткой той же связкой status='running' AND
+// attempts=$attempt, что и Fail/Done/FailPermanent (см. их комментарии):
+// без этого запоздавший релиз от зомби-горутины сбросил бы в очередь
+// заявку, которую уже переклеймила и активно строит следующая попытка —
+// та же гонка, что фенсят Fail/Done/FailPermanent, только зомби-сторона
+// здесь не ошибка, а само штатное завершение процесса. Ноль затронутых
+// строк — тот же сигнал ErrStaleClaim, что и у соседей, а не ошибка
+// выполнения.
+func (s *Store) Release(ctx context.Context, id int64, attempt int) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE export_jobs SET status = 'queued', claimed_at = NULL
+		WHERE id = $1 AND status = 'running' AND attempts = $2`, id, attempt)
+	if err != nil {
+		return fmt.Errorf("export: возврат заявки %d в очередь: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrStaleClaim

@@ -183,7 +183,8 @@ var legitExemptions = []Exemption{
 	{Value: `return 0, fmt.Errorf("export: сериализация params: %w", err)`, Why: "insertJob: та же категория (см. комментарий к группе store.go)", Finding: "по замыслу"},
 	{Value: `return 0, fmt.Errorf("export: постановка заявки: %w", err)`, Why: "insertJob: та же категория", Finding: "по замыслу"},
 	{Value: `return 0, fmt.Errorf("export: постановка заявки: begin: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
-	{Value: `return 0, fmt.Errorf("export: постановка заявки: advisory lock: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: advisory lock (user): %w", err)`, Why: "EnqueueLimited: та же категория, лок по created_by (P2-SEC-2 аудита)", Finding: "по замыслу"},
+	{Value: `return 0, fmt.Errorf("export: постановка заявки: advisory lock (project): %w", err)`, Why: "EnqueueLimited: та же категория, лок по project_id", Finding: "по замыслу"},
 	{Value: `return 0, fmt.Errorf("export: постановка заявки: подсчёт активных: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
 	{Value: `return 0, fmt.Errorf("export: постановка заявки: commit: %w", err)`, Why: "EnqueueLimited: та же категория", Finding: "по замыслу"},
 	{Value: `return Job{}, fmt.Errorf("export: чтение заявки %d: %w", id, err)`, Why: "Get: та же категория — web/exports.go разбирает только errors.Is(ErrNotFound), иначе generic error.internal", Finding: "по замыслу"},
@@ -197,6 +198,7 @@ var legitExemptions = []Exemption{
 	{Value: `return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)`, Why: "Fail: ошибка САМОГО SQL UPDATE (не cause попытки) — читает worker.fail через slog.Warn, в письмо/last_error не попадает", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: завершение заявки %d: %w", id, err)`, Why: "Done: та же категория", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)`, Why: "FailPermanent: та же категория", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: возврат заявки %d в очередь: %w", id, err)`, Why: "Release: та же категория (P2-OPS-5) — ошибка САМОГО SQL UPDATE, читает worker.release через slog.Warn, автору письмо не идёт (release не отказ)", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: удаление заявки %d: %w", id, err)`, Why: "Delete: та же категория, web/exports.go — только errors.Is(ErrNotDeletable), иначе generic error.internal", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: заявки на истечение срока: %w", err)`, Why: "DueForExpiry: та же категория, читает только Janitor (Tick → slog.Warn)", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: разбор заявки на истечение срока: %w", err)`, Why: "DueForExpiry: та же категория", Finding: "по замыслу"},
@@ -219,13 +221,19 @@ var legitExemptions = []Exemption{
 	{Value: `var ErrPermanent = errors.New("export: постоянный отказ сборки выгрузки")`, Why: "сентинел: errors.Is в process(), текст ErrPermanent.Error() сам по себе в письмо не идёт (обёртки ниже дают reasonInternal/reasonTooManyGroups)", Finding: "по замыслу"},
 	{Value: `var errLimitReached = errors.New("export: достигнут потолок заявки")`, Why: "внутренний сентинел остановки потока (см. её докблок): writeFile разбирает его сам, наружу как error не возвращает", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: конфигурация: MaxRows (%d) обязан быть строго меньше защитного предела потока событий (%d) — иначе усечение по этому пределу проходит без Truncated=true",`, Why: "Config.Validate: ошибка конфигурации из окружения (GOTCHA_*), читает оператор при старте/в логе Tick, не посетитель", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: конфигурация: MaxRows (%d) обязан быть положительным — здесь 0 не значит «без лимита», а тихо включает усечение по защитному пределу потока событий без Truncated=true",`, Why: "Config.Validate: та же категория (P2-OPS-1 аудита: MaxRows<=0 тихо включало усечение без Truncated=true)", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: конфигурация: MaxBytes (%d) обязан быть положительным — здесь 0 не значит «без лимита», а выключает собственный потолок размера файла",`, Why: "Config.Validate: та же категория (P2-OPS-1 аудита)", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: конфигурация: DiskBudget (%d) обязан быть положительным — при 0 или отрицательном значении «занято >= бюджет» истинно на пустом каталоге, и каждая заявка отказывает без единой попытки",`, Why: "Config.Validate: та же категория (P2-OPS-2 аудита: DiskBudget<=0 отказывало каждой заявке без единой попытки)", Finding: "по замыслу"},
+	{Value: `return fmt.Errorf("export: конфигурация: TTL (%s) обязан быть положительным — при 0 файл считается истёкшим сразу после сборки, и ближайший тик джанитора сносит его раньше, чем автор успеет скачать",`, Why: "Config.Validate: та же категория (P2-OPS-2 аудита)", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: конфигурация: JobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", jt, leaseTTL)`, Why: "Config.Validate: та же категория", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: воркер: %w", err)`, Why: "Tick: обёртка Config.Validate, читает main.go через slog.Warn", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: воркер: получение соединения: %w", err)`, Why: "Tick: та же категория", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: воркер: advisory lock: %w", err)`, Why: "Tick: та же категория", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: воркер: клейм заявки: %w", err)`, Why: "Tick: та же категория", Finding: "по замыслу"},
 	{Value: `w.fail(ctx, job, fmt.Errorf("подсчёт занятого места в каталоге выгрузок: %w", err), reasonInternal)`, Why: "process(): cause попадает в last_error (техника для БД/лога); письмо получает reasonInternal — уже переведённый текст, см. группу выше", Finding: "по замыслу"},
-	{Value: `w.failPermanent(ctx, job, "на диске не осталось места под выгрузку: исчерпан общий бюджет каталога", reasonDiskFull)`, Why: "process(): та же категория, письмо получает reasonDiskFull", Finding: "по замыслу"},
+	{Value: `w.fail(ctx, job, errors.New("на диске не осталось места под выгрузку: исчерпан общий бюджет каталога"), reasonDiskFull)`, Why: "process(): та же категория, письмо получает reasonDiskFull (P2-OPS-4 аудита: бюджет резервируется под текущую заявку — used+MaxBytes>DiskBudget, retryable fail вместо failPermanent)", Finding: "по замыслу"},
+	{Value: `w.fail(ctx, job, fmt.Errorf("подсчёт свободного места на файловой системе: %w", err), reasonInternal)`, Why: "process(): cause попадает в last_error, письмо получает reasonInternal — та же категория (P2-OPS-4 аудита: реальное свободное место на ФС хоста)", Finding: "по замыслу"},
+	{Value: `w.fail(ctx, job, errors.New("на диске не осталось места под выгрузку: не хватает свободного места на файловой системе хоста"), reasonDiskFull)`, Why: "process(): та же категория, письмо получает reasonDiskFull (P2-OPS-4 аудита)", Finding: "по замыслу"},
 	{Value: `w.fail(ctx, job, fmt.Errorf("переименование файла выгрузки: %w", err), reasonInternal)`, Why: "process(): та же категория, письмо получает reasonInternal", Finding: "по замыслу"},
 	{Value: `return writeResult{}, fmt.Errorf("создание временного файла выгрузки: %w", err)`, Why: "writeFile: та же категория — доезжает до last_error/reasonInternal через process(), не до письма дословно", Finding: "по замыслу"},
 	{Value: `return writeResult{}, fmt.Errorf("создание писателя выгрузки: %w", err)`, Why: "writeFile: та же категория", Finding: "по замыслу"},
@@ -242,6 +250,12 @@ var legitExemptions = []Exemption{
 	// writeFile (см. группу worker.go выше), та же цепочка last_error/
 	// reasonInternal.
 	{Value: `return nil, fmt.Errorf("экспорт: неизвестный формат %q", f)`, Why: "NewWriter: доезжает до last_error/reasonInternal через writeFile/process(), не до письма дословно", Finding: "по замыслу"},
+
+	// internal/export/stats.go: Store.QueueSnapshot (P1-OPS-1, самометрики
+	// очереди выгрузок) — та же категория, что и обёртки ошибок SQL в
+	// store.go выше: читает только Stats.refresh (RunSnapshots → slog.Warn),
+	// к посетителю не идёт вовсе.
+	{Value: `return QueueSnapshot{}, fmt.Errorf("export: снимок очереди: %w", err)`, Why: "Store.QueueSnapshot: обёртка ошибки SQL, читает только Stats.refresh (RunSnapshots → slog.Warn) — та же категория, что у остальных Store-методов в группе store.go выше", Finding: "по замыслу"},
 }
 
 // maxLegitExemptions — потолок списка исключений «по замыслу»: 33 записи
@@ -272,7 +286,27 @@ var legitExemptions = []Exemption{
 // С 95 до 97 той же волной финревью (находка P2-1, часть в сторе): новый
 // Store.ByProjectForUser — точная копия ByProject с предикатом по автору,
 // две новые строки обёрток ошибок той же категории.
-const maxLegitExemptions = 97
+//
+// С 97 до 98 волной D устранения находок аудита (P1-OPS-1, самометрики
+// очереди выгрузок): новый Store.QueueSnapshot — одна обёртка ошибки SQL
+// той же категории, что и остальные Store-методы в группе store.go.
+//
+// С 98 до 105 той же волной устранения находок аудита: EnqueueLimited
+// (P2-SEC-2, отдельный лок на пользователя) разъединила один advisory-lock-
+// литерал на два (+1); process() (P2-OPS-4, бюджет резервируется под
+// текущую заявку + реальное свободное место на ФС хоста) заменила один
+// failPermanent-литерал на три строки у fail() — два disk-full-сообщения и
+// одну обёртку ошибки freeBytes (+2); Config.Validate (P2-OPS-1/P2-OPS-2,
+// MaxRows/MaxBytes/DiskBudget/TTL <= 0 обязаны быть отклонены явно, а не
+// тихо трактоваться как «без лимита») добавила четыре новых многострочных
+// сообщения (+4) — все той же категории «читает оператор при старте/в
+// логе, не посетитель».
+//
+// С 105 до 106 устранением P2-OPS-5 (заявка виснет в running до 20 минут
+// после деплоя): новый Store.Release — та же категория, что Fail/Done/
+// FailPermanent рядом (ошибка САМОГО SQL UPDATE, читает worker.release
+// через slog.Warn, автору письмо не идёт — release не отказ).
+const maxLegitExemptions = 106
 
 // leakDebtExemptions — временный долг правила: настоящие утечки, найденные
 // первым прогоном на расширенном охвате (восемь записей, находки №132–137

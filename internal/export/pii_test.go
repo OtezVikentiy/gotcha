@@ -116,6 +116,65 @@ func TestMaskJSONCoversRequestAndContexts(t *testing.T) {
 	}
 }
 
+// TestMaskTagsHidesDenylistedTags — денилист тегов совпадает с request/
+// contexts: секрет и email/IP пользователя, пришедший ТЕГОМ (не отдельным
+// полем), маскируются наравне с прочими поверхностями PII (P2-SEC-2 аудита).
+func TestMaskTagsHidesDenylistedTags(t *testing.T) {
+	tags := map[string]string{
+		"user.email": "victim@example.com",
+		"user_ip":    "203.0.113.7",
+		"api_token":  "secret-abc",
+		"env":        "prod",
+	}
+	got := MaskTags(tags)
+	for _, k := range []string{"user.email", "user_ip", "api_token"} {
+		if got[k] == tags[k] {
+			t.Errorf("тег %q = %q, не замаскирован", k, got[k])
+		}
+	}
+	if got["env"] != "prod" {
+		t.Errorf("безобидный тег env испорчен: %q", got["env"])
+	}
+}
+
+// TestMaskTagsDoesNotMutateInput — ScrubTags мутирует карту НА МЕСТЕ, а
+// MaskTags обязана работать на копии: вызывающий (eventSource.toRecord)
+// продолжает владеть картой event.Stored.Tags, и маскирование выгрузки не
+// должно быть видно никому, кто читает те же теги после возврата.
+func TestMaskTagsDoesNotMutateInput(t *testing.T) {
+	original := map[string]string{"user.email": "victim@example.com", "env": "prod"}
+	snapshot := map[string]string{"user.email": "victim@example.com", "env": "prod"}
+
+	got := MaskTags(original)
+
+	for k, wantV := range snapshot {
+		if original[k] != wantV {
+			t.Fatalf("входная карта изменена: original[%q] = %q, want %q", k, original[k], wantV)
+		}
+	}
+	if len(original) != len(snapshot) {
+		t.Fatalf("входная карта изменена по составу ключей: %v, want %v", original, snapshot)
+	}
+	// Возврат обязан быть НОВОЙ картой, а не тем же объектом.
+	got["env"] = "изменено-в-копии"
+	if original["env"] != "prod" {
+		t.Fatalf("правка результата задела входную карту: original[env] = %q", original["env"])
+	}
+}
+
+// TestMaskTagsEmptyAndNil — пустая/nil карта не должна падать и не должна
+// превращаться в ненужную аллокацию новой пустой карты (нечего копировать —
+// нечего маскировать).
+func TestMaskTagsEmptyAndNil(t *testing.T) {
+	if got := MaskTags(nil); got != nil {
+		t.Errorf("MaskTags(nil) = %#v, want nil", got)
+	}
+	empty := map[string]string{}
+	if got := MaskTags(empty); len(got) != 0 {
+		t.Errorf("MaskTags({}) = %#v, want пустую карту", got)
+	}
+}
+
 // TestMaskJSONConcurrentUseIsRace-free — jsonScrubber теперь один общий
 // *ingest.Scrubber на весь пакет (см. её докблок в pii.go), а не новый на
 // каждый вызов MaskJSON: eventSource.toRecord зовёт её из воркера, который в

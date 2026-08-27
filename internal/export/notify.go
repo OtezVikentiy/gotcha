@@ -4,11 +4,23 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
+
+// sendTimeout — таймаут ОДНОЙ попытки отправки письма об итоге заявки,
+// независимый от jobCtx воркера (P2-OPS-3 аудита): jobCtx живёт до
+// Config.JobTimeout (по умолчанию 15 минут), а m.Send здесь — DialContext
+// без собственного таймаута. Зависший SMTP держал бы лок воркера (advisory
+// lock, worker.go) и не двигал очередь все эти 15 минут; риск умножается
+// SweepStale (worker.go), который шлёт письма ПОСЛЕДОВАТЕЛЬНО по каждой
+// добитой заявке до Claim следующей. Тот же таймаут и то же обоснование, что
+// у defaultSendTimeout в internal/notify/worker.go (её докблок — прецедент
+// именно этого риска в проекте).
+const sendTimeout = 30 * time.Second
 
 // Mailer — минимальный контракт отправки письма, которого хватает
 // нотифаеру выгрузок. Отдельный интерфейс (не notify.Sender целиком) —
@@ -56,7 +68,9 @@ func NewMailNotifier(m Mailer, st *Store, baseURL string, locale i18n.Locale) fu
 			slog.Warn("export: письмо об итоге заявки: адрес автора", "job_id", job.ID, "err", err)
 			return
 		}
-		if err := m.Send(ctx, notify.Target{Kind: "email", Target: email}, payload); err != nil {
+		sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+		defer cancel()
+		if err := m.Send(sendCtx, notify.Target{Kind: "email", Target: email}, payload); err != nil {
 			slog.Warn("export: письмо об итоге заявки: отправка", "job_id", job.ID, "err", err)
 		}
 	}

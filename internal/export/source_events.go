@@ -124,15 +124,19 @@ func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssue
 }
 
 // toRecord превращает событие CH в Record. При includePII == false прямые
-// идентификаторы пользователя и запрос/контексты маскируются тем же
-// денилистом, что и приём (MaskUser/MaskJSON, internal/export/pii.go).
+// идентификаторы пользователя, запрос/контексты И теги маскируются тем же
+// денилистом, что и приём (MaskUser/MaskJSON/MaskTags, internal/export/pii.go)
+// — иначе email/IP, пришедший тегом (user.email, user_ip и т.п.), утекал бы
+// в колонку tags мимо маски отдельных полей UserIP/UserEmail.
 func (s *eventSource) toRecord(ev event.Stored, includePII bool) Record {
 	userIP, userEmail := ev.UserIP, ev.UserEmail
 	request, contexts := ev.Request, ev.Contexts
+	tags := ev.Tags
 	if !includePII {
 		userIP, userEmail = MaskUser(userIP, userEmail)
 		request = MaskJSON(request)
 		contexts = MaskJSON(contexts)
+		tags = MaskTags(tags)
 	}
 	return Record{
 		"timestamp":       ev.Timestamp,
@@ -150,7 +154,7 @@ func (s *eventSource) toRecord(ev event.Stored, includePII bool) Record {
 		"user_id":         ev.UserID,
 		"user_ip":         userIP,
 		"user_email":      userEmail,
-		"tags":            flattenTags(ev.Tags),
+		"tags":            flattenTags(tags),
 		"stacktrace":      rawJSON(ev.Stacktrace),
 		"contexts":        rawJSON(contexts),
 		"breadcrumbs":     rawJSON(ev.Breadcrumbs),

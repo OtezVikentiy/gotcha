@@ -50,3 +50,30 @@ var jsonScrubber = ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
 func MaskJSON(raw string) string {
 	return jsonScrubber.ScrubJSON(raw)
 }
+
+// MaskTags возвращает КОПИЮ карты тегов события с денилист-ключами
+// (Authorization/Cookie/token и т.п., включая email/IP пользователя —
+// user.email/user_ip и их варианты, см. emailAttrKeysNorm/ipAttrKeysNorm в
+// internal/ingest/scrub.go) замаскированными тем же jsonScrubber, что и
+// request/contexts (MaskJSON выше). Раньше маска PII проверяла только
+// UserIP/UserEmail и request/contexts — колонка tags её обходила целиком:
+// при выключенном GOTCHA_SCRUB_EMAIL событие могло нести user.email тегом,
+// и оператор без права на «выгрузить как есть» получал файл, где
+// user_email=[masked], а рядом в tags тот же адрес открытым текстом.
+//
+// КОПИЯ обязательна: Scrubber.ScrubTags мутирует карту на месте, а входная
+// map[string]string принадлежит вызывающему (event.Stored из общего кеша/
+// повторного использования, а не одноразовый снимок) — маскирование под
+// выгрузку не должно быть видно никому, кто продолжает читать те же теги
+// после возврата из этой функции.
+func MaskTags(tags map[string]string) map[string]string {
+	if len(tags) == 0 {
+		return tags
+	}
+	cp := make(map[string]string, len(tags))
+	for k, v := range tags {
+		cp[k] = v
+	}
+	jsonScrubber.ScrubTags(cp)
+	return cp
+}

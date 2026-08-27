@@ -104,12 +104,20 @@ type Job struct {
 	Status       Status
 	Attempts     int
 	LastError    string
-	// FailureReasonKey — ключ i18n.T() переведённой причины отказа для
-	// письма автору (см. failureReason* в worker.go, mailPayload в
-	// notify.go). Заполняется ТОЛЬКО Worker.notifyFailed на снимке, который
-	// уходит в Notify — не персистится в export_jobs (last_error там
-	// остаётся техническим текстом для лога/отладки, см. её докблок) и
-	// потому не участвует в scanJob/jobColumns.
+	// FailureReasonKey — ключ i18n.T() переведённой причины отказа: тот же
+	// снимок несёт его и в письмо автору (mailPayload в notify.go), и в
+	// колонку failure_reason_key export_jobs (P2-UX-2 аудита — раньше
+	// колонки не было, и на инстансе без почты причина не попадала автору
+	// никуда). Fail/FailPermanent/SweepStale (store.go) пишут в неё ТОЛЬКО
+	// при переходе в status='failed' — заявка, вернувшаяся в очередь на
+	// повтор, ключ не несёт (следующая попытка может завершиться иначе).
+	// NULL/пусто у строки — заявка не терминальна либо старше этой колонки;
+	// scanJob отдаёт такую строку пустым FailureReasonKey, а не паникует.
+	// Значение из БД — до недоверия то же самое, что last_error (сырая
+	// строка): веб-слой обязан сверить его с export.KnownFailureReasonKey
+	// перед i18n.T(), а не подставлять напрямую (см. exportViewRow в
+	// internal/web/exports.go) — i18n.T() на неизвестном ключе возвращает
+	// сам ключ, и пользователь увидел бы технический идентификатор.
 	FailureReasonKey string
 	RowsWritten      int64
 	Bytes            int64

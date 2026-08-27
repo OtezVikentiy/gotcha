@@ -31,6 +31,11 @@ const (
 	// "expo" в ASCII. Один воркер под локом — вторая реплика молча уступает
 	// проход, а не пишет тот же файл параллельно.
 	advisoryLockKey = 0x6578706F
+	// terminalWriteTimeout — бюджет detachTimeout() на саму запись терминала
+	// в PG (P2-OPS-5): небольшой (5с) запас с лихвой хватает на здоровую БД,
+	// но не даёт зомби-записи зависнуть навсегда, если процесс останавливают,
+	// а БД в этот момент недоступна.
+	terminalWriteTimeout = 5 * time.Second
 )
 
 func init() {
@@ -75,6 +80,23 @@ const (
 	reasonTooManyGroups = "exports.mail.failed.reason.too_many_groups"
 	reasonInternal      = "exports.mail.failed.reason.internal"
 )
+
+// KnownFailureReasonKey — сверка ключа из failure_reason_key export_jobs
+// (P2-UX-2 аудита) с множеством, которое вправе туда записать
+// fail()/failPermanent()/Store.SweepStale ниже. Веб-слой обязан звать её
+// перед i18n.T() на значении из БД (см. докблок Job.FailureReasonKey в
+// job.go): i18n.T() на неизвестном ключе возвращает сам ключ как есть, а не
+// перевод, и без этой проверки повреждённая или устаревшая (миграция назад
+// и вперёд, ручная правка) строка стала бы техническим идентификатором,
+// показанным пользователю напрямую — той самой утечкой техтекста, что уже
+// была отдельной находкой аудита для last_error.
+func KnownFailureReasonKey(key string) bool {
+	switch key {
+	case reasonDiskFull, reasonTooManyGroups, reasonInternal:
+		return true
+	}
+	return false
+}
 
 // Config — параметры воркера, приходящие из окружения (§10 спеки).
 type Config struct {
@@ -124,12 +146,37 @@ func (c Config) jobTimeout() time.Duration {
 // eventStreamSafetyLimit строк, поток закончится «естественно» раньше, чем
 // счётчик заявки дойдёт до своего потолка, и Truncated останется false —
 // ровно то самое «молча неполная выгрузка», которое запрещает §8 спеки.
-// JobTimeout не строже leaseTTL воскрешает зомби-переклейм, ради которого
-// заведён init()-сторож для значения по умолчанию.
+// MaxRows/MaxBytes <= 0 — та же дыра с другой стороны (P2-OPS-1): worker.go
+// гасит собственный потолок условием "> 0", то есть 0 ЗДЕСЬ не значит
+// "без лимита" (в отличие от задокументированной конвенции проекта у
+// GOTCHA_AGENT_DIST_RATE_PER_MIN/*_RETENTION_DAYS) — поток всё равно
+// обрывается на eventStreamSafetyLimit, но молча. DiskBudget <= 0 (P2-OPS-2)
+// делает "used >= budget" истинным на пустом каталоге — failPermanent для
+// каждой заявки без единой попытки. TTL <= 0 — expires_at не позже now(),
+// ближайший тик джанитора сносит файл раньше, чем автор успевает его
+// скачать, хотя заявка отчиталась успехом. JobTimeout не строже leaseTTL
+// воскрешает зомби-переклейм, ради которого заведён init()-сторож для
+// значения по умолчанию.
 func (c Config) Validate() error {
+	if c.MaxRows <= 0 {
+		return fmt.Errorf("export: конфигурация: MaxRows (%d) обязан быть положительным — здесь 0 не значит «без лимита», а тихо включает усечение по защитному пределу потока событий без Truncated=true",
+			c.MaxRows)
+	}
 	if c.MaxRows >= eventStreamSafetyLimit {
 		return fmt.Errorf("export: конфигурация: MaxRows (%d) обязан быть строго меньше защитного предела потока событий (%d) — иначе усечение по этому пределу проходит без Truncated=true",
 			c.MaxRows, eventStreamSafetyLimit)
+	}
+	if c.MaxBytes <= 0 {
+		return fmt.Errorf("export: конфигурация: MaxBytes (%d) обязан быть положительным — здесь 0 не значит «без лимита», а выключает собственный потолок размера файла",
+			c.MaxBytes)
+	}
+	if c.DiskBudget <= 0 {
+		return fmt.Errorf("export: конфигурация: DiskBudget (%d) обязан быть положительным — при 0 или отрицательном значении «занято >= бюджет» истинно на пустом каталоге, и каждая заявка отказывает без единой попытки",
+			c.DiskBudget)
+	}
+	if c.TTL <= 0 {
+		return fmt.Errorf("export: конфигурация: TTL (%s) обязан быть положительным — при 0 файл считается истёкшим сразу после сборки, и ближайший тик джанитора сносит его раньше, чем автор успеет скачать",
+			c.TTL)
 	}
 	if jt := c.jobTimeout(); jt >= leaseTTL {
 		return fmt.Errorf("export: конфигурация: JobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", jt, leaseTTL)
@@ -149,6 +196,24 @@ type Worker struct {
 	// (внутренности see internal/notify, задача 12). nil допустим: в тестах
 	// воркера почта не нужна.
 	Notify func(context.Context, Job)
+	// FreeBytes сообщает объём реального свободного места на файловой
+	// системе, содержащей Cfg.Dir (P2-OPS-4 аудита: pgdata/chdata/exportdata
+	// в поставляемом docker-compose делят одну ФС хоста, и одного бюджета из
+	// env недостаточно). nil — используется боевая platformFreeBytes
+	// (diskfree.go/diskfree_linux.go/diskfree_other.go); поле существует,
+	// чтобы тесты могли подменить её детерминированным значением, не завися
+	// от реального свободного места файловой системы, на которой гоняются
+	// тесты.
+	FreeBytes func(dir string) (free int64, ok bool, err error)
+}
+
+// freeBytes — реализация Worker.FreeBytes с учётом nil-поля (см. его
+// докблок).
+func (w *Worker) freeBytes(dir string) (int64, bool, error) {
+	if w.FreeBytes != nil {
+		return w.FreeBytes(dir)
+	}
+	return freeBytes(dir)
 }
 
 // Run крутит тикер до отмены ctx. Ошибка одного тика не останавливает
@@ -195,14 +260,29 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return nil
 	}
 	defer func() {
-		if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", int64(advisoryLockKey)); err != nil {
+		// detachTimeout(ctx), а не ctx напрямую (P2-OPS-5): при штатной
+		// остановке процесса ctx (Run-level) уже отменён к этому моменту —
+		// без детача снятие лока падало бы с ошибкой отменённого контекста
+		// на КАЖДОМ деплое и логировало бы WARN, приучая оператора
+		// игнорировать предупреждения о реальных сбоях. Лок сессионный и
+		// освобождается вместе с закрытием соединения (conn.Release() чуть
+		// ниже) в любом случае — это не более чем аккуратное снятие пораньше,
+		// поэтому короткий отвязанный таймаут здесь так же уместен, как и у
+		// терминальных записей заявки.
+		uctx, cancel := detachTimeout(ctx)
+		defer cancel()
+		if _, err := conn.Exec(uctx, "SELECT pg_advisory_unlock($1)", int64(advisoryLockKey)); err != nil {
 			slog.Warn("export: воркер: снятие advisory lock", "err", err)
 		}
 	}()
 
-	// Ctx с дедлайном покрывает все шаги тика вплоть до Done/Fail включительно:
+	// Ctx с дедлайном покрывает все шаги тика вплоть до самой сборки файла:
 	// context.Background() здесь означал бы зомби-воркер, который дописывает
-	// файл уже после того, как процесс должен был остановиться.
+	// файл уже после того, как процесс должен был остановиться. Терминальная
+	// ЗАПИСЬ ИТОГА (Done/Fail/FailPermanent/Release) — исключение: она обязана
+	// дойти до PG, даже если jobCtx уже умер (собственный таймаут сборки или
+	// отмена ctx при остановке процесса), и берёт detachTimeout() вместо
+	// jobCtx напрямую (P2-OPS-5, см. process()/fail()/failPermanent()/release()).
 	jobCtx, cancel := context.WithTimeout(ctx, w.Cfg.jobTimeout())
 	defer cancel()
 
@@ -232,7 +312,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return nil
 	}
 
-	w.process(jobCtx, job)
+	w.process(jobCtx, ctx, job)
 	return nil
 }
 
@@ -240,7 +320,14 @@ func (w *Worker) Tick(ctx context.Context) error {
 // терминальный статус. Порядок шагов зеркалит §5/§10 спеки: бюджет диска —
 // до записи, временный файл — во время, атомарный rename — только после
 // успешного закрытия писателя.
-func (w *Worker) process(ctx context.Context, job Job) {
+//
+// runCtx — ctx самого Run(), НЕ ограниченный jobTimeout (в отличие от ctx —
+// это jobCtx): единственный признак, по которому process отличает штатную
+// остановку процесса (SIGTERM/деплой) от настоящего сбоя сборки. Тому же
+// jobCtx.Err() != nil соответствуют ОБА случая (jobCtx наследует отмену от
+// runCtx), а runCtx.Err() != nil — только остановка процесса, свой таймаут
+// сборки его не трогает (P2-OPS-5).
+func (w *Worker) process(ctx, runCtx context.Context, job Job) {
 	partPath := filepath.Join(w.Cfg.Dir, fmt.Sprintf("%d.part", job.ID))
 	finalPath := filepath.Join(w.Cfg.Dir, fmt.Sprintf("%d.%s", job.ID, job.Format.Ext()))
 
@@ -249,8 +336,29 @@ func (w *Worker) process(ctx context.Context, job Job) {
 		w.fail(ctx, job, fmt.Errorf("подсчёт занятого места в каталоге выгрузок: %w", err), reasonInternal)
 		return
 	}
-	if used >= w.Cfg.DiskBudget {
-		w.failPermanent(ctx, job, "на диске не осталось места под выгрузку: исчерпан общий бюджет каталога", reasonDiskFull)
+	// Бюджет РЕЗЕРВИРУЕТСЯ под текущую заявку (P2-OPS-4 аудита): раньше
+	// проверка была used >= DiskBudget, и заявка при used == DiskBudget-1
+	// проходила, а затем дописывала до MaxBytes СВЕРХ бюджета — единственный
+	// потолок размера файла (Cfg.MaxBytes) её больше не сдерживал, потому что
+	// заявку уже пропустили. used+MaxBytes > DiskBudget отказывает раньше:
+	// заявка обязана заведомо ПОМЕСТИТЬСЯ в бюджет, а не просто начаться,
+	// когда в нём ещё есть хоть один байт.
+	if used+w.Cfg.MaxBytes > w.Cfg.DiskBudget {
+		w.fail(ctx, job, errors.New("на диске не осталось места под выгрузку: исчерпан общий бюджет каталога"), reasonDiskFull)
+		return
+	}
+	// Реальное свободное место на ФС хоста, а не только сверка с числом из
+	// env (P2-OPS-4 аудита): в поставляемом docker-compose pgdata/chdata/
+	// exportdata — именованные тома на ОДНОЙ файловой системе, и заявка,
+	// уместившаяся в DiskBudget, всё равно может не уместиться на диске,
+	// который уже почти съели Postgres/ClickHouse. ok=false (платформа не
+	// поддержана freeBytes, см. diskfree_other.go) — проверка пропускается,
+	// бюджет остаётся единственным критерием, как было до этой правки.
+	if free, ok, err := w.freeBytes(w.Cfg.Dir); err != nil {
+		w.fail(ctx, job, fmt.Errorf("подсчёт свободного места на файловой системе: %w", err), reasonInternal)
+		return
+	} else if ok && free < w.Cfg.MaxBytes {
+		w.fail(ctx, job, errors.New("на диске не осталось места под выгрузку: не хватает свободного места на файловой системе хоста"), reasonDiskFull)
 		return
 	}
 
@@ -266,6 +374,17 @@ func (w *Worker) process(ctx context.Context, job Job) {
 			w.failPermanent(ctx, job, err.Error(), reasonTooManyGroups)
 		case errors.Is(err, ErrPermanent) || errors.Is(err, ErrMaxIssueIDsNotConfigured):
 			w.failPermanent(ctx, job, err.Error(), reasonInternal)
+		case runCtx.Err() != nil:
+			// Сборку прервал не отказ, а остановка процесса (SIGTERM/деплой,
+			// P2-OPS-5): writeFile/w.stream получили отменённый ctx и вышли с
+			// ошибкой отмены, которая иначе попала бы в default ниже и сожгла
+			// бы попытку заявки, ни в чём не виноватой. Проверяется ПОСЛЕ
+			// permanent-веток нарочно: реальная постоянная ошибка (например,
+			// не настроен источник) обязана остаться постоянной ошибкой, даже
+			// если она совпала по времени с остановкой процесса — иначе
+			// настоящая неисправность конфигурации маскировалась бы под
+			// безобидный релиз и молча повторялась бы вечно на каждом старте.
+			w.release(ctx, job)
 		default:
 			w.fail(ctx, job, err, reasonInternal)
 		}
@@ -284,7 +403,23 @@ func (w *Worker) process(ctx context.Context, job Job) {
 		return
 	}
 
-	if err := w.Store.Done(ctx, job.ID, job.Attempts, res.rows, res.bytes, res.truncated, w.Cfg.TTL); err != nil {
+	// doneCtx — обычный jobCtx, кроме одного случая: процесс останавливают
+	// (runCtx.Err() != nil) ровно в те миллисекунды, когда writeFile уже
+	// успел дописать файл (P2-OPS-5). jobCtx в этот момент тоже мёртв (он
+	// наследует отмену от runCtx) — без детача Done ушёл бы с уже отменённым
+	// ctx и заявка осталась бы 'running' до SweepStale, хотя файл на диске
+	// уже полный и годный. Собственный таймаут сборки (jobCtx истёк САМ,
+	// runCtx жив) детача НЕ получает и обязан провалить Done как раньше —
+	// см. TestWorkerDoesNotFinalizeAfterJobTimeoutExpiresBeforeDone: заявка,
+	// перевалившая за свой бюджет времени, не имеет права стать done просто
+	// потому что запись в PG случайно оказалась короче отменённого дедлайна.
+	doneCtx := ctx
+	if runCtx.Err() != nil {
+		var cancel context.CancelFunc
+		doneCtx, cancel = detachTimeout(ctx)
+		defer cancel()
+	}
+	if err := w.Store.Done(doneCtx, job.ID, job.Attempts, res.rows, res.bytes, res.truncated, w.Cfg.TTL); err != nil {
 		// Файл убирается при ЛЮБОЙ ошибке Done, не только ErrStaleClaim:
 		// строка так и не станет status='done' (эта попытка либо чужая, либо
 		// подтвердить успех не вышло из-за обрыва/таймаута похода в PG), а
@@ -315,9 +450,27 @@ func (w *Worker) process(ctx context.Context, job Job) {
 	}
 }
 
+// detachTimeout возвращает контекст с тем же набором значений, что и parent
+// (context.WithoutCancel), но полностью отвязанный от его отмены — с
+// собственным коротким taймаутом terminalWriteTimeout (P2-OPS-5). Общая
+// точка для каждой терминальной записи воркера (fail/failPermanent/
+// release, а также Done в process() при остановке процесса): parent (jobCtx)
+// умирает вместе с отменой родителя — своим таймаутом сборки или отменой
+// Run(ctx) при SIGTERM/деплое, — а запись ИТОГА обязана дойти до PG именно
+// тогда, когда сборка уже прервалась, а не только когда всё прошло гладко.
+func detachTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), terminalWriteTimeout)
+}
+
 // fail помечает заявку временным отказом: попытки ещё есть — вернётся в
 // очередь, исчерпаны — станет failed сама Store.Fail. ErrStaleClaim не
 // логируется как сбой воркера: лизу потеряли, и это уже не наша забота.
+//
+// Пишет через detachTimeout(ctx), а не ctx напрямую (P2-OPS-5): ctx —
+// jobCtx, к моменту вызова может быть уже мёртв (свой таймаут сборки истёк,
+// либо процесс останавливают) — без детача сама запись отказа тоже
+// проваливалась бы, и заявка застревала бы в 'running' до SweepStale
+// (до 20 минут) вместо немедленного возврата в очередь/отказа.
 //
 // Notify зовётся, только когда попытки исчерпаны (job.Attempts достиг
 // maxAttempts — того же порога, что Store.Fail применяет в SQL): автору
@@ -329,7 +482,9 @@ func (w *Worker) process(ctx context.Context, job Job) {
 // константы), отдельно от cause: cause.Error() остаётся техническим
 // текстом last_error (лог/БД), reasonKey — переведённая причина для автора.
 func (w *Worker) fail(ctx context.Context, job Job, cause error, reasonKey string) {
-	if err := w.Store.Fail(ctx, job.ID, job.Attempts, cause.Error()); err != nil {
+	dctx, cancel := detachTimeout(ctx)
+	defer cancel()
+	if err := w.Store.Fail(dctx, job.ID, job.Attempts, cause.Error(), reasonKey); err != nil {
 		if !errors.Is(err, ErrStaleClaim) {
 			slog.Warn("export: воркер: запись неудачи", "job_id", job.ID, "err", err)
 		}
@@ -338,7 +493,7 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error, reasonKey strin
 	if job.Attempts < maxAttempts {
 		return
 	}
-	w.notifyFailed(ctx, job, cause.Error(), reasonKey)
+	w.notifyFailed(dctx, job, cause.Error(), reasonKey)
 }
 
 // failPermanent закрывает заявку без права на повтор — причина не устранится
@@ -348,6 +503,9 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error, reasonKey strin
 // переклеймила и продолжает работать. ErrStaleClaim по той же причине не
 // логируется как сбой воркера — лизу потеряли, и это уже не наша забота.
 //
+// Пишет через detachTimeout(ctx) по той же причине, что и fail() — см. её
+// докблок (P2-OPS-5).
+//
 // Notify зовётся сразу — в отличие от fail(), FailPermanent не оставляет
 // заявке права на повтор ни на какой попытке, значит первая же и есть
 // последняя.
@@ -355,13 +513,46 @@ func (w *Worker) fail(ctx context.Context, job Job, cause error, reasonKey strin
 // reasonKey — см. докблок fail() выше: тот же смысл, cause здесь уже string,
 // а не error.
 func (w *Worker) failPermanent(ctx context.Context, job Job, cause string, reasonKey string) {
-	if err := w.Store.FailPermanent(ctx, job.ID, job.Attempts, cause); err != nil {
+	dctx, cancel := detachTimeout(ctx)
+	defer cancel()
+	if err := w.Store.FailPermanent(dctx, job.ID, job.Attempts, cause, reasonKey); err != nil {
 		if !errors.Is(err, ErrStaleClaim) {
 			slog.Warn("export: воркер: постоянный отказ", "job_id", job.ID, "err", err)
 		}
 		return
 	}
-	w.notifyFailed(ctx, job, cause, reasonKey)
+	w.notifyFailed(dctx, job, cause, reasonKey)
+}
+
+// release отпускает клейм при штатной остановке процесса (SIGTERM/деплой,
+// см. process()/docблок runCtx выше — P2-OPS-5): заявка возвращается в
+// очередь тем же attempts, с которым её забрал Claim, — прерванная деплоем
+// сборка не вина заявки, жечь на неё попытку из maxAttempts (как это
+// сделал бы fail()) неправильно. last_error/failure_reason_key не
+// трогаются и Notify не зовётся — это не отказ, автору нечего сообщать.
+//
+// .part заявки убирает вызывающий (process) сразу после ошибки writeFile,
+// той же строкой, что и для остальных веток отказа — ждать stalePartAge
+// джанитора незачем, заявка уже вернулась в очередь.
+//
+// Пишет через detachTimeout(ctx) по той же причине, что и fail() (см. её
+// докблок): ctx (jobCtx) в этой ветке уже мёртв — именно отмена родителя
+// (runCtx) и привела сюда.
+//
+// attempt фенсит владение попыткой так же, как Fail/Done/FailPermanent (см.
+// их докблоки в store.go): без этого запоздавший релиз от зомби-горутины,
+// которая всё ещё досчитывала файл в момент отмены, сбросил бы в очередь
+// заявку, которую уже переклеймила и активно строит следующая попытка.
+// ErrStaleClaim по той же причине не логируется как сбой воркера — лизу
+// потеряли, и это уже не наша забота.
+func (w *Worker) release(ctx context.Context, job Job) {
+	dctx, cancel := detachTimeout(ctx)
+	defer cancel()
+	if err := w.Store.Release(dctx, job.ID, job.Attempts); err != nil {
+		if !errors.Is(err, ErrStaleClaim) {
+			slog.Warn("export: воркер: возврат заявки в очередь при остановке", "job_id", job.ID, "err", err)
+		}
+	}
 }
 
 // notifyFailed собирает снимок терминально упавшей заявки для w.Notify —
@@ -393,7 +584,12 @@ type writeResult struct {
 // остаётся закрытым, но не переименованным — удаление .part на совести
 // вызывающего (process), чтобы writeFile отвечал только за содержимое файла.
 func (w *Worker) writeFile(ctx context.Context, job Job, partPath string) (writeResult, error) {
-	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// 0o600 — единственное место продукта, где ПДн (user_email/user_ip,
+	// contexts, request) ложатся на диск (P3-SEC-1 аудита): 0644 читался бы
+	// любым пользователем хоста на bare-metal деплое. os.Rename ниже (см.
+	// process()) переносит именно эти права на финальный файл — отдельного
+	// os.Chmod для finalPath не нужно.
+	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return writeResult{}, fmt.Errorf("создание временного файла выгрузки: %w", err)
 	}
@@ -481,6 +677,12 @@ func columnsFor(k Kind) []string {
 	}
 	return IssueColumns()
 }
+
+// DirSize — экспортированная обёртка над dirSize для самометрик (P1-OPS-1,
+// gotcha_storage_used_bytes{store="exports"}, см. cmd/gotcha/storagemetrics.go):
+// каталог выгрузок — единственный кусок диска, которым распоряжается само
+// приложение, и до этой метрики был единственным неизмеряемым.
+func DirSize(dir string) (int64, error) { return dirSize(dir) }
 
 // dirSize суммирует размеры файлов каталога выгрузок (без рекурсии — в
 // каталоге лежат только .part и готовые файлы, подкаталогов не бывает).
