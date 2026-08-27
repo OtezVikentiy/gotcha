@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 )
@@ -110,6 +112,31 @@ func TestRegistryInvariants(t *testing.T) {
 		}
 		if strings.Contains(cfg, "%!") {
 			t.Fatalf("recipe %q: артефакт форматирования в Config", r.ID)
+		}
+		// Разбор YAML-парсером, а не strings.Contains (аудит W3-G #3): сниппет
+		// отдаётся пользователю на копирование в config.yaml коллектора, и
+		// «строка присутствует» ничего не говорит о том, что otelcol его
+		// прочитает — битый отступ переживал бы strings.Contains-проверки, но
+		// ломал бы коллектор в проде. Тот же приём, что filesystemScraperConfig
+		// (internal/web/hosts_test.go) применяет к сниппету hostmetrics.
+		var parsed struct {
+			Receivers map[string]any `yaml:"receivers"`
+			Exporters map[string]any `yaml:"exporters"`
+			Service   struct {
+				Pipelines map[string]any `yaml:"pipelines"`
+			} `yaml:"service"`
+		}
+		if err := yaml.Unmarshal([]byte(cfg), &parsed); err != nil {
+			t.Fatalf("recipe %q: Config не разбирается как YAML: %v\n%s", r.ID, err, cfg)
+		}
+		if len(parsed.Receivers) == 0 {
+			t.Fatalf("recipe %q: Config без секции receivers после разбора YAML\n%s", r.ID, cfg)
+		}
+		if len(parsed.Exporters) == 0 {
+			t.Fatalf("recipe %q: Config без секции exporters после разбора YAML\n%s", r.ID, cfg)
+		}
+		if len(parsed.Service.Pipelines) == 0 {
+			t.Fatalf("recipe %q: Config без секции service.pipelines после разбора YAML\n%s", r.ID, cfg)
 		}
 		// Transform-инвариант (BLOCKER-1 спеки): каждый PromotedAttr реально
 		// продвигается сниппетом ПОЛНЫМ transform-стейтментом (два раздельных

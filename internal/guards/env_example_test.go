@@ -25,18 +25,20 @@ var envReaderFuncs = map[string]bool{
 	"getenv":          true,
 }
 
-// TestEnvExampleCoversConfig — №86: каждая переменная GOTCHA_*, которую
-// читает cmd/gotcha/config.go, обязана упоминаться в .env.example —
-// единственном полном справочном файле переменных в репозитории. Исключений
-// нет: переменные добавлялись в конфиг и не попадали в справочный файл
-// повторно, класс закрывается сверкой, а не дисциплиной.
-func TestEnvExampleCoversConfig(t *testing.T) {
-	tree := Load(t)
+// collectGotchaEnvVars разбирает один Go-файл и возвращает имена переменных
+// GOTCHA_*, читаемых через envReaderFuncs — тот же приём (go/ast, а не
+// регэксп), что и раньше, вынесенный в функцию, потому что источников теперь
+// два: cmd/gotcha/config.go (сервер) и internal/agent/config.go (агент,
+// getenv-параметр LoadConfig подходит под то же имя "getenv"). Дублировать
+// разбор под каждый источник — плодить два места, которые разъедутся
+// синтаксисом так же, как разъехались сами копии контракта (см.
+// agent_env_contract_test.go).
+func collectGotchaEnvVars(t *testing.T, root, relFile string) map[string]bool {
+	t.Helper()
 	fset := token.NewFileSet()
-	src := filepath.Join(tree.Root, "cmd", "gotcha", "config.go")
-	f, err := parser.ParseFile(fset, src, nil, 0)
+	f, err := parser.ParseFile(fset, filepath.Join(root, relFile), nil, 0)
 	if err != nil {
-		t.Fatalf("parse config.go: %v", err)
+		t.Fatalf("parse %s: %v", relFile, err)
 	}
 	vars := map[string]bool{}
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -67,9 +69,37 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 		}
 		return true
 	})
-	if len(vars) < 20 {
-		t.Fatalf("collected only %d variables — config.go parsing is broken", len(vars))
+	return vars
+}
+
+// TestEnvExampleCoversConfig — №86: каждая переменная GOTCHA_*, которую
+// читает cmd/gotcha/config.go ИЛИ internal/agent/config.go, обязана
+// упоминаться в .env.example — единственном полном справочном файле
+// переменных в репозитории. Исключений нет: переменные добавлялись в конфиг
+// и не попадали в справочный файл повторно, класс закрывается сверкой, а не
+// дисциплиной. internal/agent/config.go добавлен отдельно (аудит W3-G #2):
+// восемь агентских переменных не были покрыты ни .env.example, ни этим
+// сторожем — сторож видел только cmd/gotcha/config.go.
+func TestEnvExampleCoversConfig(t *testing.T) {
+	tree := Load(t)
+
+	serverVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go"))
+	if len(serverVars) < 20 {
+		t.Fatalf("collected only %d server variables — cmd/gotcha/config.go parsing is broken", len(serverVars))
 	}
+	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"))
+	if len(agentVars) < 8 {
+		t.Fatalf("collected only %d agent variables — internal/agent/config.go parsing is broken", len(agentVars))
+	}
+
+	vars := map[string]bool{}
+	for v := range serverVars {
+		vars[v] = true
+	}
+	for v := range agentVars {
+		vars[v] = true
+	}
+
 	example, err := os.ReadFile(filepath.Join(tree.Root, ".env.example"))
 	if err != nil {
 		t.Fatal(err)
