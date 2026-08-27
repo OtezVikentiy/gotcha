@@ -2,14 +2,53 @@ package uptime_test
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
+
+// blackholePool opens a pgxpool.Pool pointed at a local TCP listener that
+// accepts connections but never writes a byte back — the PG startup
+// handshake blocks on read until the caller's ctx is cancelled. Models an
+// unreachable/hung PostgreSQL without needing to fake pgxpool.Pool itself
+// (a concrete type, not an interface — see leaseBudget's docblock).
+// pgxpool.New is lazy (MinConns defaults to 0), so this doesn't dial until
+// the first real query.
+func blackholePool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			// Accepted connections are deliberately never read from or
+			// written to (not even closed): the startup packet the client
+			// sends sits unacknowledged until the caller's ctx is done.
+			// Closing ln.Cleanup unblocks Accept and ends this goroutine;
+			// the OS reclaims the leaked half-open sockets on process exit.
+			if _, err := ln.Accept(); err != nil {
+				return
+			}
+		}
+	}()
+	dsn := fmt.Sprintf("postgres://nobody:nobody@%s/none?sslmode=disable", ln.Addr().String())
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
 
 // waitForRunner polls cond until it's true or 5s pass, failing the test on
 // timeout — the runner's tickers are fast in these tests (tens of ms) but
@@ -416,4 +455,59 @@ func TestRunnerRecoversFromCheckerPanic(t *testing.T) {
 		n, err := svc.PendingCount(context.Background())
 		return err == nil && n == 0
 	})
+}
+
+// TestRunnerPublishesTickLiveness — self-метрики живости: без них умерший
+// или отставший Runner снаружи неотличим от «мониторов к проверке сейчас
+// нет». Мониторов не заводим — лизинг пуст, но обязан УСПЕШНО завершаться.
+func TestRunnerPublishesTickLiveness(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+
+	runner := &uptime.Runner{Svc: svc, Region: "local", LeaseEvery: 20 * time.Millisecond}
+	if got := runner.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	before := time.Now().Unix()
+	go runner.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		runner.Close()
+	})
+
+	waitForRunner(t, func() bool { return runner.LastTickUnix() != 0 })
+	if got := runner.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := runner.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// TestRunnerLeaseBudgetAbortsHungLease — повисший Svc.LeaseLocal (недоступный
+// PostgreSQL) не должен блокировать лизинг дольше leaseBudget: тот же
+// контракт, что host.Evaluator/metric.Evaluator, применённый к единственному
+// PG-вызову leaseAndDispatch (раздача по семафору исполнителям в бюджет не
+// входит — см. leaseBudget).
+func TestRunnerLeaseBudgetAbortsHungLease(t *testing.T) {
+	svc := uptime.NewService(blackholePool(t))
+	runner := &uptime.Runner{Svc: svc, Region: "local", LeaseEvery: 20 * time.Millisecond}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runner.Run(ctx)
+	t.Cleanup(runner.Close)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for runner.LastTickSeconds() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := runner.LastTickSeconds(); got <= 0 {
+		t.Fatal("leaseAndDispatch не завершился за 60с: повисший PostgreSQL блокирует лизинг")
+	}
+	if got := runner.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по бюджету лизинга, want 0", got)
+	}
 }

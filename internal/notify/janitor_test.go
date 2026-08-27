@@ -73,25 +73,22 @@ func TestOutboxJanitorRunLifecycle(t *testing.T) {
 }
 
 // TestOutboxJanitorRunDefaultInterval: при Interval<=0 берётся ОСМЫСЛЕННЫЙ
-// дефолт.
+// дефолт — ПОСЛЕ первого прохода (который всегда сразу, см.
+// TestOutboxJanitorRunFirstPassIsImmediate) тикер не должен снова сработать
+// за заметное время.
 //
 // Раньше тест отменял контекст сразу после запуска и проверял только выход
 // горутины: дефолт можно было поменять с часа на наносекунду — постоянный
-// обстрел собственной базы — и тест бы этого не заметил. Теперь он требует,
-// чтобы за заметное время чистка НЕ случилась.
+// обстрел собственной базы — и тест бы этого не заметил. Строка состаривается
+// уже ПОСЛЕ первого прохода (который её ещё не застаёт и чистить нечего),
+// чтобы проверить именно период ТИКЕРА, а не факт первого прохода — тот
+// покрыт отдельным тестом.
 func TestOutboxJanitorRunDefaultInterval(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
 	ctx0 := context.Background()
 
 	channelID := newChannel(t, pool)
-	if err := ob.Enqueue(ctx0, channelID, map[string]any{"kind": "test"}); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-	if _, err := pool.Exec(ctx0,
-		"UPDATE notification_outbox SET status='sent', created_at = now() - interval '2 hours'"); err != nil {
-		t.Fatalf("age the row: %v", err)
-	}
 
 	j := &notify.OutboxJanitor{Outbox: ob, Retention: time.Hour, Interval: 0}
 
@@ -102,6 +99,18 @@ func TestOutboxJanitorRunDefaultInterval(t *testing.T) {
 		close(done)
 	}()
 
+	// Даём первому проходу (сразу, без ожидания тикера) успеть завершиться —
+	// он не застаёт ни одной строки, чистить нечего.
+	time.Sleep(50 * time.Millisecond)
+
+	if err := ob.Enqueue(ctx0, channelID, map[string]any{"kind": "test"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := pool.Exec(ctx0,
+		"UPDATE notification_outbox SET status='sent', created_at = now() - interval '2 hours'"); err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
+
 	time.Sleep(50 * time.Millisecond)
 	var n int
 	if err := pool.QueryRow(ctx0, "SELECT count(*) FROM notification_outbox").Scan(&n); err != nil {
@@ -109,7 +118,7 @@ func TestOutboxJanitorRunDefaultInterval(t *testing.T) {
 	}
 	if n == 0 {
 		cancel()
-		t.Fatal("при Interval=0 чистка сработала за 50 мс — дефолтный интервал слишком мал")
+		t.Fatal("при Interval=0 чистка сработала за 50 мс после первого прохода — дефолтный интервал тикера слишком мал")
 	}
 
 	cancel()
@@ -135,5 +144,47 @@ func TestOutboxMarkErrorsCancelledCtx(t *testing.T) {
 	}
 	if err := ob.MarkFailed(ctx, 1, errors.New("giving up")); err == nil {
 		t.Error("MarkFailed on cancelled ctx: got nil error, want DB error")
+	}
+}
+
+// TestOutboxJanitorRunFirstPassIsImmediate — первый проход не должен ждать
+// полного Interval: он выполняется до входа в цикл тикера (см. Run), иначе
+// после каждого рестарта чаще Interval (час по умолчанию) очередь с секретами
+// каналов в payload не чистится вовсе.
+func TestOutboxJanitorRunFirstPassIsImmediate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ob := notify.NewOutbox(pool)
+	ctx0 := context.Background()
+
+	channelID := newChannel(t, pool)
+	if err := ob.Enqueue(ctx0, channelID, map[string]any{"kind": "test"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := pool.Exec(ctx0,
+		"UPDATE notification_outbox SET status='sent', created_at = now() - interval '2 hours'"); err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
+
+	// Interval заведомо больше времени теста — если бы первого прохода не
+	// было, строка дожила бы до конца теста нетронутой.
+	j := &notify.OutboxJanitor{Outbox: ob, Retention: time.Hour, Interval: time.Hour}
+	ctx, cancel := context.WithCancel(ctx0)
+	defer cancel()
+	go j.Run(ctx)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(ctx0, "SELECT count(*) FROM notification_outbox").Scan(&n); err != nil {
+			t.Fatalf("count outbox: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("протухшая строка не убрана за 5с — первого прохода нет, чистка ждёт целый Interval")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }

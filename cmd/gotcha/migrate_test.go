@@ -80,14 +80,16 @@ func TestMigrationStagesAreLogged(t *testing.T) {
 	}
 
 	// Каждый этап — начало и конец с длительностью полем (не текстом: её
-	// читают машины). Список — ровно то, что перечислено в брифе находки:
-	// миграции PostgreSQL, миграции ClickHouse, признаки совместимости схемы,
-	// изменение сроков хранения по таблицам (rollout — общий для PG-state и
-	// всех ALTER TABLE ... MODIFY TTL в ClickHouse).
+	// читают машины). Признаки совместимости схемы записываются ДВУМЯ
+	// отдельными этапами, каждый сразу за миграцией своей схемы (W3-D,
+	// запись 5) — а не одним общим хвостом после обеих, как раньше: иначе
+	// сорванная CH-миграция при успешной PG оставляла PG без единой строки в
+	// schema_compat и без возможности отката.
 	for _, stage := range []string{
 		"postgres schema migration",
+		"postgres schema compatibility markers",
 		"clickhouse schema migration",
-		"schema compatibility markers",
+		"clickhouse schema compatibility markers",
 		"retention rollout",
 	} {
 		startLine := fmt.Sprintf(`msg="migration stage starting" stage=%q`, stage)
@@ -107,5 +109,59 @@ func TestMigrationStagesAreLogged(t *testing.T) {
 		if !strings.Contains(out[idx:end], "duration=") {
 			t.Errorf("конец этапа %q без длительности (поле duration): %s", stage, out[idx:end])
 		}
+	}
+}
+
+// TestFailedCHMigrationLeavesPGRollbackable — сорванная CH-миграция при
+// успешной PG не должна оставлять PG без маркеров совместимости (W3-D,
+// запись 5): раньше recordSchemaCompat писал ОБЕ схемы одним хвостом ПОСЛЕ
+// обеих миграций, и провал на ClickHouse означал, что PG-версии, УЖЕ реально
+// применённые к базе, не получали ни строки в schema_compat — откат бинаря
+// назад становился невозможен без восстановления из бэкапа. Теперь PG пишет
+// свои маркеры сразу за своей миграцией, до попытки мигрировать CH.
+func TestFailedCHMigrationLeavesPGRollbackable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres/clickhouse containers")
+	}
+	pgDSN := testenv.PostgresDSN(t)
+	ctx := context.Background()
+
+	pg, err := db.NewPostgres(ctx, pgDSN)
+	if err != nil {
+		t.Fatalf("connect pg: %v", err)
+	}
+	defer pg.Close()
+	// ch передаётся для сигнатуры applyMigrations, но реальной миграции CH не
+	// требуется: она обязана провалиться раньше, на MigrateCH(cfg.ClickHouseDSN).
+	ch, err := db.NewClickHouse(ctx, testenv.ClickHouseDSN(t))
+	if err != nil {
+		t.Fatalf("connect ch: %v", err)
+	}
+	defer ch.Close()
+
+	cfg := Config{
+		PostgresDSN:   pgDSN,
+		ClickHouseDSN: "clickhouse://127.0.0.1:1/gotcha", // порт, где никто не слушает — быстрый отказ соединения
+		AutoMigrate:   true,
+	}
+
+	if err := applyMigrations(ctx, cfg, pg, ch); err == nil {
+		t.Fatal("applyMigrations с недоступным ClickHouse должен был вернуть ошибку")
+	}
+
+	var pgRows int
+	if err := pg.QueryRow(ctx, "SELECT count(*) FROM schema_compat WHERE target = 'pg'").Scan(&pgRows); err != nil {
+		t.Fatalf("count pg schema_compat rows: %v", err)
+	}
+	if pgRows == 0 {
+		t.Error("после сорванной CH-миграции у PG нет ни одной строки в schema_compat — откат бинаря невозможен")
+	}
+
+	var chRows int
+	if err := pg.QueryRow(ctx, "SELECT count(*) FROM schema_compat WHERE target = 'ch'").Scan(&chRows); err != nil {
+		t.Fatalf("count ch schema_compat rows: %v", err)
+	}
+	if chRows != 0 {
+		t.Errorf("CH-миграция провалилась, но schema_compat содержит %d строк для 'ch' — маркер записан раньше времени", chRows)
 	}
 }

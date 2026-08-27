@@ -3,6 +3,8 @@ package trace
 import (
 	"context"
 	"log/slog"
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +20,14 @@ const (
 	evaluatorDefaultInterval     = 5 * time.Minute
 	evaluatorDefaultTopK         = 50
 	evaluatorDefaultBaselineDays = 7
+)
+
+// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
+// тика — доля Interval, но не меньше пола, иначе повисший ClickHouse-запрос
+// (Query здесь без собственного таймаута) держал бы тик бесконечно.
+const (
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
 )
 
 // evaluatorVitalMetrics — web-vital'ы, которые оценщик отслеживает на регрессию.
@@ -79,6 +89,32 @@ type Evaluator struct {
 	Interval     time.Duration // период тика, дефолт 5 минут
 	TopK         int           // сколько верхних по трафику целей оценивать, дефолт 50
 	BaselineDays int           // ширина окна скользящей базы, дефолт 7 дней
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
+	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+}
+
+// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
+// ещё не было). Self-метрика живости, как у host.Evaluator/slo.Evaluator:
+// умерший или отставший оценщик снаружи выглядит ровно как «регрессий нет».
+func (e *Evaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего завершённого тика в секундах.
+func (e *Evaluator) LastTickSeconds() float64 {
+	return math.Float64frombits(e.lastTickSeconds.Load())
+}
+
+// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
+func (e *Evaluator) tickBudget() time.Duration {
+	interval := e.Interval
+	if interval <= 0 {
+		interval = evaluatorDefaultInterval
+	}
+	budget := time.Duration(float64(interval) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
 }
 
 // inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
@@ -130,7 +166,14 @@ type projectConfig struct {
 // проекту/цели/метрике логируется и не прерывает остальные (§9). Публичная
 // видимость в пакете — чтобы интеграционный тест звал его напрямую вместо
 // ожидания тикера.
+// tick ограничен дедлайном (tickBudget): listProjects/evalProject бьют по CH
+// голыми запросами без собственного таймаута, и без внешнего дедлайна
+// повисший запрос держал бы тик (и self-метрику живости) бесконечно.
 func (e *Evaluator) tick(ctx context.Context) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
+	defer cancel()
+
 	topK := e.TopK
 	if topK <= 0 {
 		topK = evaluatorDefaultTopK
@@ -146,6 +189,7 @@ func (e *Evaluator) tick(ctx context.Context) {
 	projects, err := e.listProjects(ctx)
 	if err != nil {
 		slog.Error("trace: evaluator: list projects failed", "error", err)
+		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return
 	}
 
@@ -162,6 +206,14 @@ func (e *Evaluator) tick(ctx context.Context) {
 		}
 		e.evalProject(ctx, p.id, cfg, topK, baselineDays, now)
 	}
+
+	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if ctx.Err() != nil {
+		slog.Warn("trace: evaluator: tick did not finish within its budget",
+			"budget", e.tickBudget(), "projects", len(projects))
+		return
+	}
+	e.lastTickUnix.Store(time.Now().Unix())
 }
 
 // listProjects читает id и конфиг всех проектов. Строки вычитываются целиком до

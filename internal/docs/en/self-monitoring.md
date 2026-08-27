@@ -95,6 +95,24 @@ a thousand small events and a thousand megabyte-sized ones are very different
 loads at the same depth. When drops show `reason="queue_bytes"`, this is the
 budget that ran out.
 
+**`gotcha_ingest_key_rejections_total{reason="…"}`** — requests rejected during
+key authentication, before quotas and before the body is even parsed. None of
+this ever reached a project, so it's invisible in that project's own drop
+counters — this is the only place it shows up at all. The `reason` label
+separates client-side mistakes from each other:
+
+| `reason` | What happened |
+|---|---|
+| `missing_key` | a Sentry-style request arrived with no `sentry_key` at all |
+| `invalid_key` | `sentry_key` was sent but doesn't resolve to any project (typo, revoked key) |
+| `project_mismatch` | the key resolves fine, but to a project other than the one in the request path — usually a DSN copied into the wrong project |
+| `missing_bearer` | an OTLP request arrived with no `Authorization: Bearer` header |
+| `invalid_dsn_key` | the OTLP bearer token doesn't resolve to any DSN |
+
+A steady trickle is normal — scanners and stale SDK configs hit this. A step
+change after a deploy usually means a DSN or project ID changed and one
+sender wasn't updated.
+
 **`gotcha_pipeline_dropped_tasks_total{reason="…"}`** — events and transactions
 the pipeline threw away. Also unrecoverable. The `reason` label tells you what to
 fix:
@@ -145,6 +163,66 @@ the timestamp noticeably larger than `GOTCHA_SLO_EVAL_INTERVAL` means burn rates
 are not being recomputed and error-budget incidents are neither opened nor
 closed; a duration approaching the interval means the evaluator is falling
 behind.
+
+**`gotcha_trace_evaluator_last_tick_timestamp_seconds`** /
+**`gotcha_trace_evaluator_tick_duration_seconds`** — when the performance
+regression evaluator last completed a pass over every project, and how long it
+took. Same blind spot as the host evaluator above: silence is the normal
+output, so a dead evaluator looks exactly like "no regressions right now". It
+runs every 5 minutes (fixed, no config knob); a gap noticeably larger than
+that means regression alerts have stopped firing, and a duration approaching
+the interval means ClickHouse is falling behind.
+
+**`gotcha_metric_evaluator_last_tick_timestamp_seconds`** /
+**`gotcha_metric_evaluator_tick_duration_seconds`** — when the metric
+threshold evaluator last completed a pass over every rule, and how long it
+took. Same blind spot again. A gap noticeably larger than
+`GOTCHA_METRIC_EVAL_INTERVAL` (default 60s) means metric-rule alerts are not
+being evaluated; a duration approaching the interval means the evaluator is
+falling behind.
+
+**`gotcha_profile_evaluator_last_tick_timestamp_seconds`** /
+**`gotcha_profile_evaluator_tick_duration_seconds`** — when the profile
+regression evaluator last completed a pass over every service, and how long
+it took. A gap noticeably larger than `GOTCHA_PROFILE_EVAL_INTERVAL` (default
+300s) means profile regression alerts are not being evaluated; a duration
+approaching the interval means ClickHouse is falling behind.
+
+**`gotcha_escalation_scheduler_last_tick_timestamp_seconds`** /
+**`gotcha_escalation_scheduler_tick_duration_seconds`** — when the
+centralized escalation scheduler last completed a pass over all six incident
+sources (performance regressions, metric rules, profile regressions, host
+thresholds, SLO burn rate, uptime), and how long it took. A dead scheduler
+looks exactly like "nothing needs escalating" — every ladder simply stops
+advancing. A gap noticeably larger than `GOTCHA_ESCALATION_INTERVAL` (default
+60s) means escalation steps and reminders are not firing for any source; a
+duration approaching the interval means PostgreSQL is not keeping up. A tick
+that runs out of budget partway through skips the remaining bindings for that
+pass rather than blocking the next one — check the log for `escalation
+scheduler: tick did not finish within its budget`.
+
+**`gotcha_uptime_scheduler_last_tick_timestamp_seconds`** /
+**`gotcha_uptime_scheduler_tick_duration_seconds`** — when the uptime check
+scheduler last completed a pass enqueuing due checks, and how long it took. A
+stale timestamp means monitors show as enabled but nothing is actually being
+checked — state freezes at whatever it last was, and missed heartbeats or
+expiring certificates go uncounted. This runs in every process with an uptime
+service, not just `--mode=uptime`; on `--mode=web` it logs a warning that
+checks are scheduled but not executed there.
+
+**`gotcha_uptime_runner_last_tick_timestamp_seconds`** /
+**`gotcha_uptime_runner_tick_duration_seconds`** — when the uptime runner
+(`--mode=uptime`/`all`) last completed a pass leasing and dispatching due
+checks, and how long it took. A stale timestamp means checks are enqueued by
+the scheduler above but nobody is executing them.
+
+**`gotcha_uptime_watchdog_last_tick_timestamp_seconds`** /
+**`gotcha_uptime_watchdog_tick_duration_seconds`** — when the uptime watchdog
+last completed a heartbeat/reminder pass, and how long it took. A stale
+timestamp means missed heartbeat checks and incident reminders are not being
+evaluated — a heartbeat monitor can go silent indefinitely without ever
+raising an incident. Default interval is 1 minute; a duration approaching it
+means the watchdog is falling behind.
 
 **`gotcha_host_registration_failures_total`** — background writes to the host
 registry that failed. While this grows, host `last_seen` is not refreshed, so

@@ -42,25 +42,34 @@ func (j *Janitor) Run(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Первый проход — сразу, не дожидаясь тика (как telemetry.EntityJanitor):
+	// иначе после каждого рестарта чаще Interval (час по умолчанию) просроченные
+	// сессии и Extra-очистки (org_invites) не выполняются вовсе.
+	j.tick(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := j.Svc.DeleteExpiredSessions(ctx)
-			if err != nil {
-				slog.Error("auth janitor: delete expired sessions failed", "error", err)
-			} else {
-				slog.Debug("auth janitor: deleted expired sessions", "count", n)
-			}
-			for _, c := range j.Extra {
-				m, err := c.Fn(ctx)
-				if err != nil {
-					slog.Error("auth janitor: cleanup failed", "cleanup", c.Name, "error", err)
-					continue
-				}
-				slog.Debug("auth janitor: cleanup done", "cleanup", c.Name, "count", m)
-			}
+			j.tick(ctx)
 		}
+	}
+}
+
+func (j *Janitor) tick(ctx context.Context) {
+	n, err := j.Svc.DeleteExpiredSessions(ctx)
+	if err != nil {
+		slog.Error("auth janitor: delete expired sessions failed", "error", err)
+	} else {
+		slog.Debug("auth janitor: deleted expired sessions", "count", n)
+	}
+	for _, c := range j.Extra {
+		m, err := c.Fn(ctx)
+		if err != nil {
+			slog.Error("auth janitor: cleanup failed", "cleanup", c.Name, "error", err)
+			continue
+		}
+		slog.Debug("auth janitor: cleanup done", "cleanup", c.Name, "count", m)
 	}
 }

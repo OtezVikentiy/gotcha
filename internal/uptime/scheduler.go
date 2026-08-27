@@ -3,6 +3,8 @@ package uptime
 import (
 	"context"
 	"log/slog"
+	"math"
+	"sync/atomic"
 	"time"
 )
 
@@ -10,6 +12,18 @@ import (
 // очередь. Пять секунд: минимальный интервал монитора — 30 секунд, так что
 // задержка постановки на порядок меньше самого частого расписания.
 const defaultSchedulerEvery = 5 * time.Second
+
+// scheduleBudget — дедлайн ОДНОГО вызова Svc.Schedule (ревью W3-D: цикл был
+// пропущен в записи 1 наравне с Runner/Watchdog — тот же класс дефекта, но
+// без метрик и бюджета). `statement_timeout=30с` (internal/db/postgres.go)
+// страхует от вечного зависания на уровне PG, но 30 секунд на пятисекундном
+// цикле — это шесть пропущенных тиков подряд без единой self-метрики,
+// показывающей причину: очередь check_queue не наполняется, монитор
+// показан включённым, а «оценщик умер» неотличимо от «созревших проверок
+// сейчас нет». Бюджет — та же величина, что у leaseBudget uptime.Runner
+// (Svc.LeaseLocal): один простой запрос по индексу, тот же профиль
+// нагрузки, что и Svc.Schedule здесь.
+const scheduleBudget = 5 * time.Second
 
 // Scheduler ставит созревшие проверки в очередь (check_queue). Только ставит —
 // исполняют их Runner (локальный регион) и выносные пробы через /probe/lease.
@@ -32,6 +46,20 @@ type Scheduler struct {
 
 	// Every — период постановки; 0 означает defaultSchedulerEvery.
 	Every time.Duration
+
+	lastTickUnix    atomic.Int64  // unix-время последней завершённой постановки
+	lastTickSeconds atomic.Uint64 // длительность последней постановки, math.Float64bits
+}
+
+// LastTickUnix — unix-время последней завершённой постановки (0, если ни
+// одной ещё не было). Self-метрика живости, как у остальных фоновых циклов
+// (host.Evaluator и др.): умерший или отставший Scheduler снаружи выглядит
+// ровно как «созревших проверок сейчас нет».
+func (s *Scheduler) LastTickUnix() int64 { return s.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего вызова Svc.Schedule в секундах.
+func (s *Scheduler) LastTickSeconds() float64 {
+	return math.Float64frombits(s.lastTickSeconds.Load())
 }
 
 // Run ставит проверки в очередь до отмены контекста.
@@ -58,8 +86,21 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
+// scheduleOnce ограничен дедлайном (scheduleBudget): без него повисший
+// Svc.Schedule (голый PG-запрос, statement_timeout=30с — на порядок больше
+// пятисекундного цикла) держал бы постановку (и self-метрику живости) до
+// самого statement_timeout, шесть тиков подряд, никак не показывая причину.
 func (s *Scheduler) scheduleOnce(ctx context.Context) {
-	if _, err := s.Svc.Schedule(ctx); err != nil {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, scheduleBudget)
+	defer cancel()
+
+	_, err := s.Svc.Schedule(ctx)
+
+	s.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if err != nil {
 		slog.Error("uptime: scheduler: schedule failed", "error", err)
+		return
 	}
+	s.lastTickUnix.Store(time.Now().Unix())
 }

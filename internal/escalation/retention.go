@@ -21,12 +21,17 @@ import (
 // FK на incident_id (тот же приём, что у incident_escalations самой — 6
 // разных источников в разных таблицах, общий FK невозможен) строка живёт
 // сама по себе и НЕ исчезает вместе с инцидентом/проектом. Единственные её
-// писатели — recordLogFailure/clearLogFailure внутри SendStepIfDue
-// (step.go) — а clearLogFailure зовётся только когда SendStepIfDue СНОВА
-// позвали для той же тройки (успех или принудительный бамп). Инцидент,
-// подтверждённый или закрытый ДО следующего вызова (например: лог упал на
-// 2-й из 5 попыток, затем оператор подтвердил — инцидент выпал из
-// OpenUnacked навсегда), оставляет строку осиротевшей без этой чистки.
+// писатели — recordLogFailure/clearLogFailure, вызываемые ИЗ LogStepChannels
+// (step.go) — а не порознь по вызывающим: у SendStepIfDue (лесенка, шаги 1+
+// пяти источников) и uptime.Detector.notifyOpen/retryStepZeroLog (шаг 0
+// аптайма, W3-E — тот же механизм, не вторая копия) один и тот же путь
+// записи/очистки, и clearLogFailure зовётся только когда LogStepChannels
+// СНОВА позвали для той же тройки (успех или принудительный прогресс).
+// Инцидент, подтверждённый или закрытый ДО следующего такого вызова
+// (например: лог упал на 2-й из 5 попыток, затем оператор подтвердил —
+// инцидент выпал из OpenUnacked/из-под уведомлений навсегда), оставляет
+// строку осиротевшей без этой чистки — источник (incident_source) в строке
+// тот же, что у любого из шести, отдельного фильтра здесь не нужно.
 func PurgeOldEscalations(ctx context.Context, pool *pgxpool.Pool, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 	tag, err := pool.Exec(ctx, "DELETE FROM incident_escalations WHERE sent_at < $1", cutoff)
@@ -63,19 +68,29 @@ func (j *Janitor) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// Первый проход — сразу, не дожидаясь тика (как telemetry.EntityJanitor):
+	// иначе после каждого рестарта чаще Interval (час по умолчанию)
+	// incident_escalations/escalation_step_log_failures не чистятся вовсе.
+	j.tick(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := PurgeOldEscalations(ctx, j.Pool, j.Retention)
-			if err != nil {
-				slog.Error("escalation janitor: purge failed", "error", err)
-				continue
-			}
-			if n > 0 {
-				slog.Info("escalation janitor: purged old rows", "deleted", n)
-			}
+			j.tick(ctx)
 		}
+	}
+}
+
+func (j *Janitor) tick(ctx context.Context) {
+	n, err := PurgeOldEscalations(ctx, j.Pool, j.Retention)
+	if err != nil {
+		slog.Error("escalation janitor: purge failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("escalation janitor: purged old rows", "deleted", n)
 	}
 }

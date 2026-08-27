@@ -120,3 +120,42 @@ func TestPurgeOldEscalationsPurgesOldLogFailures(t *testing.T) {
 		t.Fatalf("свежая строка escalation_step_log_failures не должна была удаляться: count=%d", freshCount)
 	}
 }
+
+// TestJanitorRunFirstPassIsImmediate — первый проход не должен ждать полного
+// Interval: он выполняется до входа в цикл тикера (см. Run), иначе после
+// каждого рестарта чаще Interval (час по умолчанию) incident_escalations/
+// escalation_step_log_failures не чистятся вовсе.
+func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	pid := newProject(t, pool)
+	ch := newChannel(t, pool, pid, true)
+	if _, err := pool.Exec(ctx, `INSERT INTO incident_escalations (incident_source, incident_id, channel_id, step, sent_at)
+		VALUES ('host', 7779, $1, 0, now() - interval '10 days')`, ch); err != nil {
+		t.Fatalf("insert old row: %v", err)
+	}
+
+	// Interval заведомо больше времени теста — если бы первого прохода не
+	// было, строка дожила бы до конца теста нетронутой.
+	j := &escalation.Janitor{Pool: pool, Retention: 24 * time.Hour, Interval: time.Hour}
+	jCtx, jCancel := context.WithCancel(ctx)
+	defer jCancel()
+	go j.Run(jCtx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM incident_escalations WHERE incident_id = 7779`).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("старая строка не убрана за 5с — первого прохода нет, чистка ждёт целый Interval")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

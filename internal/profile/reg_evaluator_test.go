@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,5 +175,91 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 	jobs3, _ := ob.Claim(ctx, 10)
 	if len(jobs3) != 1 {
 		t.Fatalf("close jobs = %d, want 1", len(jobs3))
+	}
+}
+
+// emptyQuery — profileQuery, чей ActiveServices успешно возвращает пустой
+// список: тику незачем идти дальше, но он обязан ЗАВЕРШИТЬСЯ успешно, в
+// отличие от countingQuery (та нарочно возвращает ошибку).
+type emptyQuery struct{}
+
+func (emptyQuery) ActiveServices(context.Context, time.Time, time.Time) ([]profile.ProjectService, error) {
+	return nil, nil
+}
+
+func (emptyQuery) TopFunctionShares(context.Context, int64, string, string, time.Time, time.Time, int) ([]profile.FunctionShare, error) {
+	return nil, nil
+}
+
+func (emptyQuery) BaselineFunctionShares(context.Context, int64, string, string, []string, int, time.Time) (map[string]float64, error) {
+	return nil, nil
+}
+
+// blockingQuery — profileQuery, чей ActiveServices держит вызов до отмены
+// ctx: модель повисшего ClickHouse-похода без реальной инфраструктуры.
+type blockingQuery struct {
+	calls atomic.Int64
+}
+
+func (b *blockingQuery) ActiveServices(ctx context.Context, _, _ time.Time) ([]profile.ProjectService, error) {
+	b.calls.Add(1)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (b *blockingQuery) TopFunctionShares(context.Context, int64, string, string, time.Time, time.Time, int) ([]profile.FunctionShare, error) {
+	return nil, nil
+}
+
+func (b *blockingQuery) BaselineFunctionShares(context.Context, int64, string, string, []string, int, time.Time) (map[string]float64, error) {
+	return nil, nil
+}
+
+// TestRegressionEvaluatorPublishesTickLiveness — self-метрики живости: без
+// них умерший или отставший RegressionEvaluator снаружи неотличим от
+// «регрессий профилей нет».
+func TestRegressionEvaluatorPublishesTickLiveness(t *testing.T) {
+	eval := &profile.RegressionEvaluator{Query: &emptyQuery{}, Interval: time.Hour}
+	if got := eval.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	eval.Tick(context.Background())
+
+	if got := eval.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := eval.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// TestRegressionEvaluatorTickBudgetAbortsHungTick — повисший ActiveServices
+// (голый ClickHouse-запрос без своего таймаута) не должен блокировать тик
+// дольше бюджета: тот же контракт, что host.Evaluator/metric.Evaluator.
+func TestRegressionEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
+	q := &blockingQuery{}
+	eval := &profile.RegressionEvaluator{Query: q, Interval: time.Second}
+
+	done := make(chan struct{})
+	go func() {
+		eval.Tick(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("Tick не завершился: повисший ClickHouse блокирует оценщик")
+	}
+
+	if q.calls.Load() == 0 {
+		t.Error("оценщик не звал ActiveServices вовсе — тест не проверяет то, что должен")
+	}
+	if got := eval.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
+	}
+	if got := eval.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
 	}
 }

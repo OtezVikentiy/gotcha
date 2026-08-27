@@ -7,10 +7,50 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
+// прохода heartbeat+reminder — доля Interval, но не меньше пола, иначе
+// повисший запрос (StaleHeartbeats/ApplyResult/IncidentsDueForReminder/
+// ClaimReminder — все идут прямо в PG без собственного таймаута на вызов)
+// держал бы проход (и self-метрику живости) бесконечно. Проверку
+// сертификатов (checkSSL, суточный тик) в ЭТУ self-метрику намеренно не
+// берём (нет LastTick*-полей у неё): суточный горизонт нельзя валидно
+// смешивать с минутным, которым интересуется LastTickUnix/LastTickSeconds —
+// «повисло на сутки» и «повисло на минуту» это разные тревоги для разных
+// получателей. У неё свой бюджет — см. sslCheckBudget: без него первый же
+// прогон (см. Run — он безусловный, ДО входа в тикер) вешал бы Watchdog
+// целиком на самом старте процесса, ещё до первого heartbeat/reminder-тика.
+const (
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
+)
+
+// sslCheckBudget — дедлайн ОДНОГО прохода checkSSL (ревью W3-D, финальная
+// находка): без него SSLCandidates/ClaimSSLAlert/Notify — голые PG-запросы
+// и вызов Notifier без своего таймаута — вешали бы проверку сертификатов
+// НАВСЕГДА, а нашли это только потому, что нельзя было написать hung-tick
+// тест на Watchdog без Notifier=nil (иначе первый же безусловный вызов
+// checkSSL в Run зависал бы раньше, чем тест доезжал до бюджетированного
+// tick). Суточный цикл, вставший намертво, молчит о прекращении проверки
+// сертификатов ровно так же тихо, как отсутствие метрики у остальных шести
+// целей записи 1 молчало об их зависании.
+//
+// 30 секунд — не доля SSLEvery (сутки × 0.8 бессмысленны как потолок одного
+// прохода), а фиксированная величина по профилю запроса, как leaseBudget у
+// Runner: SSLCandidates — один скан по индексу ssl_expires_at IS NOT NULL,
+// дальше на каждый созревший порог — ClaimSSLAlert (UPDATE по id) и Notify
+// (вставка в outbox, не синхронный сетевой вызов). Тридцать секунд —
+// тот же порядок, что и process-wide statement_timeout (internal/db/
+// postgres.go): не короче него ни для одного отдельного запроса внутри
+// прохода, но ограничивает ВЕСЬ проход (много мониторов × два запроса
+// каждый) единым потолком, а не оставляет его неограниченным при большом
+// флоте с одновременно истекающими сертификатами.
+const sslCheckBudget = 30 * time.Second
 
 // heartbeatMissedError — Result.Error/State.LastError recorded for a
 // heartbeat monitor whose grace period expired without a ping. Not a real
@@ -55,6 +95,35 @@ type Watchdog struct {
 
 	Interval time.Duration // heartbeat + reminder tick period, default 1 minute
 	SSLEvery time.Duration // SSL check tick period, default 24 hours
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого прохода heartbeat+reminder
+	lastTickSeconds atomic.Uint64 // длительность последнего прохода, math.Float64bits
+}
+
+// LastTickUnix — unix-время последнего завершённого прохода heartbeat+
+// reminder (0, если ни одного ещё не было). Self-метрика живости, как у
+// host.Evaluator: умерший или отставший Watchdog снаружи выглядит ровно как
+// «пропущенных heartbeat и созревших напоминаний сейчас нет».
+func (w *Watchdog) LastTickUnix() int64 { return w.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего прохода heartbeat+reminder в
+// секундах.
+func (w *Watchdog) LastTickSeconds() float64 {
+	return math.Float64frombits(w.lastTickSeconds.Load())
+}
+
+// tickBudget — дедлайн одного прохода heartbeat+reminder (см.
+// tickBudgetShare/minTickBudget).
+func (w *Watchdog) tickBudget() time.Duration {
+	interval := w.Interval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	budget := time.Duration(float64(interval) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
 }
 
 func (w *Watchdog) region() string {
@@ -102,12 +171,30 @@ func (w *Watchdog) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			w.checkHeartbeats(ctx)
-			w.checkReminders(ctx)
+			w.tick(ctx)
 		case <-sslTick.C:
 			w.checkSSL(ctx)
 		}
 	}
+}
+
+// tick — один проход heartbeat+reminder, ограниченный дедлайном (tickBudget):
+// см. его докблок за тем, почему checkSSL в этот бюджет не входит.
+func (w *Watchdog) tick(ctx context.Context) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, w.tickBudget())
+	defer cancel()
+
+	w.checkHeartbeats(ctx)
+	w.checkReminders(ctx)
+
+	w.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if ctx.Err() != nil {
+		slog.Warn("uptime: watchdog: heartbeat/reminder tick did not finish within its budget",
+			"budget", w.tickBudget())
+		return
+	}
+	w.lastTickUnix.Store(time.Now().Unix())
 }
 
 // checkHeartbeats applies a synthetic failed result for every heartbeat
@@ -198,6 +285,14 @@ func (w *Watchdog) checkSSL(ctx context.Context) {
 		// would never fire for it.
 		return
 	}
+	// Ограничен дедлайном (sslCheckBudget): без него повисший SSLCandidates/
+	// ClaimSSLAlert/Notify держал бы проверку сертификатов бесконечно — а
+	// первый прогон (см. Run) безусловный и случается ДО первого
+	// heartbeat/reminder-тика, поэтому без бюджета мог бы повесить Watchdog
+	// на самом старте процесса.
+	ctx, cancel := context.WithTimeout(ctx, sslCheckBudget)
+	defer cancel()
+
 	monitors, err := w.Svc.SSLCandidates(ctx)
 	if err != nil {
 		slog.Error("uptime: watchdog: ssl candidates failed", "error", err)

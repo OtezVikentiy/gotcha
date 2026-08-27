@@ -3,6 +3,8 @@ package metric
 import (
 	"context"
 	"log/slog"
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,6 +13,15 @@ import (
 )
 
 const evaluatorDefaultInterval = 60 * time.Second
+
+// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator (см. её
+// докблок): дедлайн тика — доля Interval, но не меньше пола, иначе висящий
+// ClickHouse-запрос (Query здесь не ставит СВОЙ таймаут, в отличие от
+// host.Evaluator) съедал бы тик целиком и сдвигал бы все последующие.
+const (
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
+)
 
 // Evaluator периодически считает агрегат каждой enabled-метрики за окно правила
 // и открывает/закрывает инциденты, шлёт алерт ровно один раз на открытие и
@@ -61,14 +72,14 @@ type Evaluator struct {
 	// «не maintenance И не grouped» (исход от порядка проверок не зависит).
 	// Nil-совместим, как Maint.
 	IncidentGroups metricGroupHook
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
+	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
 }
 
 // Run тикает каждый Interval, пока не отменят ctx.
 func (e *Evaluator) Run(ctx context.Context) {
-	interval := e.Interval
-	if interval <= 0 {
-		interval = evaluatorDefaultInterval
-	}
+	interval := e.interval()
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
@@ -81,18 +92,61 @@ func (e *Evaluator) Run(ctx context.Context) {
 	}
 }
 
+func (e *Evaluator) interval() time.Duration {
+	if e.Interval <= 0 {
+		return evaluatorDefaultInterval
+	}
+	return e.Interval
+}
+
+// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
+func (e *Evaluator) tickBudget() time.Duration {
+	budget := time.Duration(float64(e.interval()) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
+}
+
+// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
+// ещё не было). Self-метрика живости: умерший или отставший оценщик снаружи
+// выглядит ровно как «по всем правилам спокойно» — молчание и есть его
+// нормальный вывод, как у host.Evaluator/slo.Evaluator.
+func (e *Evaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего завершённого тика в секундах.
+func (e *Evaluator) LastTickSeconds() float64 {
+	return math.Float64frombits(e.lastTickSeconds.Load())
+}
+
 // Tick — один проход по всем enabled-правилам. Ошибка по одному правилу не
-// роняет остальные (error-isolation).
+// роняет остальные (error-isolation). Тик ограничен дедлайном (tickBudget):
+// Query здесь берёт голый ClickHouse-запрос без собственного таймаута, и без
+// внешнего дедлайна повисший запрос держал бы тик (и self-метрику живости)
+// бесконечно.
 func (e *Evaluator) Tick(ctx context.Context) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
+	defer cancel()
+
 	rules, err := e.Rules.ListEnabled(ctx)
 	if err != nil {
 		slog.Error("metric evaluator: list rules failed", "error", err)
+		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return
 	}
 	now := time.Now().UTC()
 	for _, r := range rules {
 		e.evalRule(ctx, r, now)
 	}
+
+	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if ctx.Err() != nil {
+		slog.Warn("metric evaluator: tick did not finish within its budget",
+			"budget", e.tickBudget(), "rules", len(rules))
+		return
+	}
+	e.lastTickUnix.Store(time.Now().Unix())
 }
 
 func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {

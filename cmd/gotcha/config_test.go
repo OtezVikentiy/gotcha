@@ -232,6 +232,57 @@ func TestLoadConfigTelegramAPIBase(t *testing.T) {
 	}
 }
 
+// GOTCHA_BASE_URL нормализуется той же логикой, что GOTCHA_TELEGRAM_API_BASE
+// выше (W3-D, запись 4): хвостовая косая снимается, потому что продукт сам
+// дописывает путь к базе в heartbeat cron-команде, OAuth RedirectURI и
+// ссылке-приглашении — «…app/» дало бы «…app//uptime/hb/…» в каждой из них.
+func TestLoadConfigBaseURLNormalized(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.BaseURL != "http://localhost:8080" {
+		t.Errorf("default BaseURL = %q, want %q", cfg.BaseURL, "http://localhost:8080")
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"https://gotcha.example.com", "https://gotcha.example.com"},
+		{"https://gotcha.example.com/", "https://gotcha.example.com"},
+		{"https://gotcha.example.com///", "https://gotcha.example.com"},
+		{"http://127.0.0.1:8081", "http://127.0.0.1:8081"},
+		{"https://gw.example.com/gotcha", "https://gw.example.com/gotcha"},
+	} {
+		// ALLOW_INSECURE_SECRET: сами значения не local (isLocalBaseURL) — без
+		// него тест упёрся бы в ЧУЖУЮ проверку (слабый GOTCHA_SECRET_KEY на
+		// не-local BaseURL, SEC-C1), не в ту, которую проверяет этот тест.
+		env := map[string]string{"GOTCHA_BASE_URL": tc.in, "GOTCHA_ALLOW_INSECURE_SECRET": "1"}
+		cfg, err := loadConfig(getenvFrom(env), nil)
+		if err != nil {
+			t.Fatalf("GOTCHA_BASE_URL=%q: loadConfig: %v", tc.in, err)
+		}
+		if cfg.BaseURL != tc.want {
+			t.Errorf("GOTCHA_BASE_URL=%q: got %q, want %q", tc.in, cfg.BaseURL, tc.want)
+		}
+	}
+}
+
+// Невалидный GOTCHA_BASE_URL — отказ при запуске, а не битые ссылки в каждом
+// письме/cron/редиректе: без схемы и хоста построенная ссылка ведёт в никуда.
+func TestLoadConfigBaseURLRejectsInvalid(t *testing.T) {
+	for _, v := range []string{
+		"gotcha.example.com",
+		"/app",
+		"ftp://gotcha.example.com",
+		"https://gotcha.example.com?token=1",
+		"https://gotcha.example.com#frag",
+		"https://",
+	} {
+		env := map[string]string{"GOTCHA_BASE_URL": v}
+		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
+			t.Errorf("GOTCHA_BASE_URL=%q: want error, got nil", v)
+		}
+	}
+}
+
 // Невалидный адрес Bot API — отказ при запуске, а не таймаут на каждой
 // доставке: без схемы и хоста отправка падает с "unsupported protocol scheme",
 // а запрос/фрагмент оказались бы посреди пути к /bot{token}/sendMessage.

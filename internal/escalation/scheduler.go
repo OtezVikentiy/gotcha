@@ -3,9 +3,21 @@ package escalation
 import (
 	"context"
 	"log/slog"
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
+// тика — доля Interval, но не меньше пола, иначе повисшая проверка окна
+// обслуживания/резолв лесенки/постановка в outbox по одному инциденту
+// держали бы тик (и self-метрику живости) бесконечно, а следующий тик так и
+// не начался бы.
+const (
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
 )
 
 // MaintenanceChecker сообщает, идёт ли сейчас окно обслуживания проекта —
@@ -66,6 +78,29 @@ type Scheduler struct {
 	// Now — источник текущего времени; в проде time.Now, в тестах
 	// фиксируется, чтобы детерминированно управлять elapsed.
 	Now func() time.Time
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
+	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+}
+
+// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
+// ещё не было). Self-метрика живости, как у host.Evaluator/slo.Evaluator:
+// умерший или отставший планировщик снаружи выглядит ровно как «эскалировать
+// нечего».
+func (s *Scheduler) LastTickUnix() int64 { return s.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего завершённого тика в секундах.
+func (s *Scheduler) LastTickSeconds() float64 {
+	return math.Float64frombits(s.lastTickSeconds.Load())
+}
+
+// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
+func (s *Scheduler) tickBudget() time.Duration {
+	budget := time.Duration(float64(s.Interval) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
 }
 
 // Tick — один проход по всем источникам: для каждого открытого неподтверж-
@@ -73,9 +108,21 @@ type Scheduler struct {
 // шлёт очередную ступень, если её задержка от открытия инцидента настала.
 // Ошибка на одном инциденте логируется и не прерывает обработку остальных —
 // один плохой инцидент не должен глушить эскалацию по всем прочим.
+// Tick ограничен дедлайном (tickBudget): без внешнего дедлайна повисший
+// источник (b.Src.OpenUnacked) или повисшая постановка ступени по одному
+// инциденту держали бы весь тик (и self-метрику живости) бесконечно.
 func (s *Scheduler) Tick(ctx context.Context) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, s.tickBudget())
+	defer cancel()
+
 	now := s.Now()
 	for _, b := range s.Bindings {
+		if ctx.Err() != nil {
+			slog.Warn("escalation scheduler: tick budget exhausted, remaining bindings skipped",
+				"budget", s.tickBudget())
+			break
+		}
 		pending, err := b.Src.OpenUnacked(ctx)
 		if err != nil {
 			slog.Error("escalation scheduler: open unacked failed", "source", b.Src.Name(), "error", err)
@@ -85,6 +132,13 @@ func (s *Scheduler) Tick(ctx context.Context) {
 			s.tickOne(ctx, b, p, now)
 		}
 	}
+
+	s.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if ctx.Err() != nil {
+		slog.Warn("escalation scheduler: tick did not finish within its budget", "budget", s.tickBudget())
+		return
+	}
+	s.lastTickUnix.Store(time.Now().Unix())
 }
 
 func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, now time.Time) {

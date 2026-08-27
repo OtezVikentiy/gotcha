@@ -18,6 +18,7 @@ type composeFile struct {
 type composeService struct {
 	Restart     string            `yaml:"restart"`
 	MemLimit    string            `yaml:"mem_limit"`
+	Ports       []string          `yaml:"ports"`
 	Environment map[string]string `yaml:"environment"`
 	Logging     struct {
 		Options map[string]string `yaml:"options"`
@@ -154,4 +155,34 @@ func TestComposeServicesAreBounded(t *testing.T) {
 	// Оверлей для стеснённых машин: требований к перекрытиям нет, но
 	// нечитаемый YAML — ошибка здесь, раньше CI (тот проверяет связку целиком).
 	loadCompose(t, root, "docker-compose.small.yml")
+}
+
+// TestComposeGotchaPortBindsLoopbackByDefault — публикация порта приложения
+// (ports: у сервиса gotcha) обязана по умолчанию биндиться ТОЛЬКО на
+// loopback (${GOTCHA_BIND:-127.0.0.1}), а не на все интерфейсы (W3-D,
+// запись 6, ревью 2026-08-27). Раньше compose публиковал 59080 на 0.0.0.0
+// безусловно: чек-лист прод-развёртывания (installation.md) ставит перед
+// приложением TLS-реверс-прокси, но голый HTTP-вход и открытый /metrics
+// (self-телеметрия без аутентификации) оставались доступны напрямую В ОБХОД
+// прокси с ЛЮБОГО адреса. YAML юнит-тестами не проверяется — этот сторож
+// ловит будущую правку compose, которая молча вернёт бинд на 0.0.0.0.
+func TestComposeGotchaPortBindsLoopbackByDefault(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf := loadCompose(t, root, "docker-compose.yml")
+	gotcha, ok := cf.Services["gotcha"]
+	if !ok {
+		t.Fatal("в docker-compose.yml нет сервиса gotcha — сторож ослеп")
+	}
+	if len(gotcha.Ports) == 0 {
+		t.Fatal("сервис gotcha не публикует ни одного порта — сторож ослеп")
+	}
+	for _, p := range gotcha.Ports {
+		if !strings.Contains(p, "${GOTCHA_BIND:-127.0.0.1}") {
+			t.Errorf("docker-compose.yml: порт %q публикуется без дефолтного бинда на loopback "+
+				"(${GOTCHA_BIND:-127.0.0.1}:...) — риск снова публиковать приложение на 0.0.0.0 по умолчанию", p)
+		}
+	}
 }

@@ -31,6 +31,7 @@ type stack struct {
 	pool     *pgxpool.Pool
 	ch       driver.Conn
 	srv      *httptest.Server
+	h        *ingest.Handler
 	pipeline *ingest.Pipeline
 	batcher  *event.Batcher
 	spans    *trace.SpanWriter
@@ -153,7 +154,7 @@ func newStackTracing(t *testing.T, tracing bool) *stack {
 		_ = spans.Close(cctx)
 	})
 	return &stack{
-		pool: pool, ch: ch, srv: srv,
+		pool: pool, ch: ch, srv: srv, h: h,
 		pipeline: pipeline, batcher: batcher, spans: spans,
 		orgSvc: orgSvc, org: o, project: p, key: k, metrics: metrics, profiles: profiles,
 	}
@@ -250,20 +251,57 @@ func TestStoreEndpoint(t *testing.T) {
 	waitIssue(t, s.pool, s.project.ID, 1)
 }
 
+// TestAuthFailures проверяет три ветки отказа authenticate() — заодно и то,
+// что каждая из них видна self-метрикой (KeyRejectedBy) и логом: раньше эти
+// отказы не растили ни один из 33 gotcha_*-счётчиков продукта и не писали ни
+// строки в лог, при том что соседние отказы того же файла (rate limit, квота)
+// уже логируют slog.Warn (W3-D, запись 3).
 func TestAuthFailures(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
 
+	// Перехват логов — рядом со счётчиком: находка ревью W3-D (мутация
+	// «убрать slog.Warn из countKeyReject» проходила молча, пока тест
+	// проверял только счётчик). Метрика без лога даёт число, но не «кто и
+	// куда стучался» — оператору нечем понять, чей DSN протух.
+	var logs syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	before := s.h.KeyRejectedBy(ingest.KeyRejectMissingKey)
 	if resp := s.post(t, path, envelopeBody(testEventJSON), false, ""); resp.StatusCode != 401 {
 		t.Errorf("no key: %d, want 401", resp.StatusCode)
 	}
+	if got := s.h.KeyRejectedBy(ingest.KeyRejectMissingKey); got != before+1 {
+		t.Errorf("KeyRejectedBy(missing_key) = %d, want %d", got, before+1)
+	}
+	if out := logs.String(); !strings.Contains(out, "reason=missing_key") || !strings.Contains(out, "path="+path) {
+		t.Errorf("missing_key: лог не содержит reason=missing_key path=%s:\n%s", path, out)
+	}
+
+	before = s.h.KeyRejectedBy(ingest.KeyRejectInvalidKey)
 	if resp := s.post(t, path, envelopeBody(testEventJSON), false, "00000000000000000000000000000000"); resp.StatusCode != 403 {
 		t.Errorf("unknown key: %d, want 403", resp.StatusCode)
 	}
+	if got := s.h.KeyRejectedBy(ingest.KeyRejectInvalidKey); got != before+1 {
+		t.Errorf("KeyRejectedBy(invalid_key) = %d, want %d", got, before+1)
+	}
+	if out := logs.String(); !strings.Contains(out, "reason=invalid_key") {
+		t.Errorf("invalid_key: лог не содержит reason=invalid_key:\n%s", out)
+	}
+
 	// Ключ валиден, но не от этого проекта.
+	before = s.h.KeyRejectedBy(ingest.KeyRejectProjectMismatch)
 	other := fmt.Sprintf("/api/%d/envelope/", s.project.ID+999)
 	if resp := s.post(t, other, envelopeBody(testEventJSON), false, s.key.PublicKey); resp.StatusCode != 403 {
 		t.Errorf("project mismatch: %d, want 403", resp.StatusCode)
+	}
+	if got := s.h.KeyRejectedBy(ingest.KeyRejectProjectMismatch); got != before+1 {
+		t.Errorf("KeyRejectedBy(project_mismatch) = %d, want %d", got, before+1)
+	}
+	if out := logs.String(); !strings.Contains(out, "reason=project_mismatch") || !strings.Contains(out, "path="+other) {
+		t.Errorf("project_mismatch: лог не содержит reason=project_mismatch path=%s:\n%s", other, out)
 	}
 }
 

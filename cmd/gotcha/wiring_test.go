@@ -44,6 +44,29 @@ func TestRunEvaluatorsDefaultsAndExplicit(t *testing.T) {
 	}
 }
 
+// TestEvaluatorsDisabledWarningNamesAllSixCycles: GOTCHA_RUN_EVALUATORS гейтит
+// ШЕСТЬ фоновых циклов (metric/trace(perf)/profile/host-оценщики + slo.Evaluator
+// + escalation.Scheduler, см. startEvaluators), но предупреждение при старте
+// раньше называло только четыре — slo и эскалация молчали о себе так же, как
+// правило по метрике молчит без этого предупреждения (W3-D, запись 8 = находка
+// W3-C). Оператор раздельного развёртывания web+ingest без
+// GOTCHA_RUN_EVALUATORS не узнавал, что SLO-алерты и эскалация ВСЕХ пяти
+// источников инцидентов (не только SLO) тоже не работают.
+func TestEvaluatorsDisabledWarningNamesAllSixCycles(t *testing.T) {
+	for _, want := range []string{"metric", "profile", "host", "slo", "escalation"} {
+		if !strings.Contains(evaluatorsDisabledWarning, want) {
+			t.Errorf("evaluatorsDisabledWarning не упоминает %q: %s", want, evaluatorsDisabledWarning)
+		}
+	}
+	// trace-пакет отвечает за регрессии производительности — в тексте
+	// предупреждения (и в UI) он называется "performance"/"regression", не
+	// "trace" (см. соседние Warn/лог сообщения того же файла).
+	if !strings.Contains(evaluatorsDisabledWarning, "regression") {
+		t.Errorf("evaluatorsDisabledWarning не упоминает регрессии производительности (trace.Evaluator): %s",
+			evaluatorsDisabledWarning)
+	}
+}
+
 // TestDeriveCookieKeyIsDomainSeparated: подключ для подписи oauth-cookie не
 // должен совпадать с мастер-секретом и обязан быть детерминированным —
 // иначе рестарт инстанса рвёт все начатые входы через провайдера.

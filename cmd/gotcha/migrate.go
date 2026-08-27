@@ -86,17 +86,30 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			}); err != nil {
 				return err
 			}
+			// Признаки обратной совместимости PG пишутся СРАЗУ здесь — до
+			// попытки мигрировать ClickHouse, а не общим хвостом после обеих
+			// схем (W3-D, запись 5). Раньше сорванная CH-миграция при
+			// успешной PG оставляла PG-версии без единой строки в
+			// schema_compat: откат бинаря назад становился невозможен
+			// (CheckSchemaCurrent видит "unknown" и отказывает в старте),
+			// даже когда сами PG-миграции были безопасно аддитивны и откат
+			// ничем не грозил. Пишет тот, кто применял: только он содержит
+			// файлы миграций и знает их маркеры. Читает любой бинарь, включая
+			// откатившийся назад.
+			if err := migrationStage("postgres schema compatibility markers", func() error {
+				return db.RecordSchemaCompatPG(ctx, pg)
+			}); err != nil {
+				return err
+			}
 			if err := migrationStage("clickhouse schema migration", func() error {
 				return db.MigrateCH(cfg.ClickHouseDSN)
 			}); err != nil {
 				return err
 			}
-			// Признаки обратной совместимости применённых миграций. Пишет тот,
-			// кто их применял: только он содержит эти файлы и знает их маркеры.
-			// Читает любой бинарь, включая откатившийся назад, — без этой
-			// записи откат релиза требует восстановления базы из бэкапа.
-			if err := migrationStage("schema compatibility markers", func() error {
-				return db.RecordSchemaCompat(ctx, pg)
+			// Симметрично PG-маркерам выше: пишутся сразу за CH-миграцией, не
+			// откладываясь до конца функции.
+			if err := migrationStage("clickhouse schema compatibility markers", func() error {
+				return db.RecordSchemaCompatCH(ctx, pg)
 			}); err != nil {
 				return err
 			}

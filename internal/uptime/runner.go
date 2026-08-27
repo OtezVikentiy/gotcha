@@ -3,7 +3,9 @@ package uptime
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +18,17 @@ const (
 	defaultLeaseEvery  = time.Second
 	defaultConcurrency = 50
 )
+
+// leaseBudget — дедлайн ОДНОГО вызова Svc.LeaseLocal, не всего
+// leaseAndDispatch: раздача пойманных заданий по семафору намеренно может
+// ждать дольше (это backpressure, не зависание — см. leaseAndDispatch), а вот
+// сам поход в PostgreSQL за партией заданий обязан укладываться в разумное
+// время, иначе тик молча не наступает вовсе, ровно как у host.Evaluator без
+// tickBudget. Пять секунд — на порядок больше обычного запроса LeaseLocal
+// (один UPDATE ... RETURNING по индексу monitor_id/region), но всё ещё
+// однозначный сигнал "PG для этого запроса недоступен", а не транзиентная
+// задержка на загруженном пуле.
+const leaseBudget = 5 * time.Second
 
 // Runner — локальная проба: исполняет проверки в том же процессе, что и центр
 // (регион DefaultRegion, если Region не задан). Забирает задания через
@@ -62,6 +75,22 @@ type Runner struct {
 	// Ingestor); собирается в init() из Svc/Writer/OnResult, чтобы Runner
 	// по-прежнему можно было собрать литералом без конструктора.
 	ing *Ingestor
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого lease-прохода
+	lastTickSeconds atomic.Uint64 // длительность последнего lease-прохода, math.Float64bits
+}
+
+// LastTickUnix — unix-время последнего завершённого прохода
+// leaseAndDispatch (0, если ни одного ещё не было). Self-метрика живости, как
+// у host.Evaluator: умерший или отставший Runner снаружи выглядит ровно как
+// «мониторов к проверке сейчас нет».
+func (r *Runner) LastTickUnix() int64 { return r.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего прохода leaseAndDispatch в
+// секундах (только сам вызов LeaseLocal — раздача по семафору исполнителям
+// не входит, см. leaseBudget).
+func (r *Runner) LastTickSeconds() float64 {
+	return math.Float64frombits(r.lastTickSeconds.Load())
 }
 
 func (r *Runner) init() {
@@ -131,11 +160,16 @@ func (r *Runner) Run(ctx context.Context) {
 // блокируют раздачу следующих заданий этого тика (не всего Run — только
 // текущего вызова), пока какая-то проверка не освободит слот.
 func (r *Runner) leaseAndDispatch(ctx context.Context, sem chan struct{}) {
-	jobs, err := r.Svc.LeaseLocal(ctx, r.region(), r.concurrency())
+	started := time.Now()
+	leaseCtx, cancel := context.WithTimeout(ctx, leaseBudget)
+	jobs, err := r.Svc.LeaseLocal(leaseCtx, r.region(), r.concurrency())
+	cancel()
+	r.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 	if err != nil {
 		slog.Error("uptime: runner: lease failed", "region", r.region(), "error", err)
 		return
 	}
+	r.lastTickUnix.Store(time.Now().Unix())
 	for _, j := range jobs {
 		select {
 		case sem <- struct{}{}:

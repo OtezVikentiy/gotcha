@@ -548,6 +548,26 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ExportMaxBytes:           num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
 		ExportDiskBudgetBytes:    num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
 	}
+	// GOTCHA_BASE_URL — база всех ссылок, которые продукт строит сам: heartbeat
+	// cron-команда (см. её докблок в web/monitorform.go — curl без -L, редиректа
+	// не будет), OAuth RedirectURI, приглашения (orgsettings.go). Проверяем и
+	// нормализуем на старте той же логикой, что GOTCHA_TELEGRAM_API_BASE ниже:
+	// без схемы/хоста каждая построенная ссылка вела бы в никуда, а хвостовая
+	// косая («…app/») даёт «…app//dashboard» в КАЖДОЙ из них — молча, до первого
+	// репорта пользователя о битой ссылке в письме или упавшем cron.
+	if cfg.BaseURL != "" {
+		u, err := url.Parse(cfg.BaseURL)
+		if err != nil {
+			return Config{}, fmt.Errorf("GOTCHA_BASE_URL: %w", err)
+		}
+		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Config{}, fmt.Errorf("GOTCHA_BASE_URL must be an absolute http(s) url, got %q", cfg.BaseURL)
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return Config{}, fmt.Errorf("GOTCHA_BASE_URL must not carry a query or fragment, got %q", cfg.BaseURL)
+		}
+		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	}
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
 	cfg.OIDCClientID = str("GOTCHA_OIDC_CLIENT_ID", "")

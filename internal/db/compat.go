@@ -76,44 +76,63 @@ func embeddedCompat(fsys embed.FS, dir string) (map[uint]bool, error) {
 func EmbeddedCompatPG() (map[uint]bool, error) { return embeddedCompat(pgMigrations, "migrations/pg") }
 func EmbeddedCompatCH() (map[uint]bool, error) { return embeddedCompat(chMigrations, "migrations/ch") }
 
-// RecordSchemaCompat записывает признаки применённых миграций обеих схем.
-//
-// Вызывается СРАЗУ после успешного применения обеих схем — тем, кто их
-// применял: только он содержит эти файлы и знает их маркеры. Отсюда и
-// отсутствие параметра «до какой версии»: успешный Up означает, что применены
-// все встроенные миграции, и любая передаваемая версия была бы вторым,
-// расходящимся утверждением о том же.
-//
-// Идемпотентна: ON CONFLICT DO NOTHING. Перезаписывать существующую строку
-// нельзя — она отражает то, что реально применяли к этой базе, а не то, что
-// написано в файлах текущего бинаря.
-func RecordSchemaCompat(ctx context.Context, pool *pgxpool.Pool) error {
-	pgCompat, err := EmbeddedCompatPG()
-	if err != nil {
-		return err
-	}
-	chCompat, err := EmbeddedCompatCH()
-	if err != nil {
-		return err
-	}
-	for _, s := range []struct {
-		target string
-		compat map[uint]bool
-	}{
-		{"pg", pgCompat},
-		{"ch", chCompat},
-	} {
-		for version, compatible := range s.compat {
-			if _, err := pool.Exec(ctx,
-				`INSERT INTO schema_compat (target, version, backward_compatible)
-				 VALUES ($1, $2, $3)
-				 ON CONFLICT (target, version) DO NOTHING`,
-				s.target, int64(version), compatible); err != nil {
-				return fmt.Errorf("schema compat: record %s/%d: %w", s.target, version, err)
-			}
+// recordCompat записывает признаки применённых миграций ОДНОЙ схемы (target
+// — "pg"/"ch"). Идемпотентна: ON CONFLICT DO NOTHING. Перезаписывать
+// существующую строку нельзя — она отражает то, что реально применяли к этой
+// базе, а не то, что написано в файлах текущего бинаря.
+func recordCompat(ctx context.Context, pool *pgxpool.Pool, target string, compat map[uint]bool) error {
+	for version, compatible := range compat {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO schema_compat (target, version, backward_compatible)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (target, version) DO NOTHING`,
+			target, int64(version), compatible); err != nil {
+			return fmt.Errorf("schema compat: record %s/%d: %w", target, version, err)
 		}
 	}
 	return nil
+}
+
+// RecordSchemaCompatPG записывает признаки применённых PG-миграций.
+//
+// Вызывается СРАЗУ после успешного применения PG-схемы — ДО попытки
+// применить CH (W3-D, запись 5): раньше единственная RecordSchemaCompat
+// писала обе схемы разом ПОСЛЕ обеих миграций, и сорванная CH-миграция при
+// успешной PG оставляла PG-версии без единой строки в schema_compat — откат
+// бинаря назад становился невозможен (CheckSchemaCurrent видит "unknown" и
+// отказывает в старте), даже если сами PG-миграции были безопасно
+// аддитивны. Раздельная запись делает PG откатываемым независимо от того,
+// как далеко продвинулась CH-миграция следом.
+func RecordSchemaCompatPG(ctx context.Context, pool *pgxpool.Pool) error {
+	compat, err := EmbeddedCompatPG()
+	if err != nil {
+		return err
+	}
+	return recordCompat(ctx, pool, "pg", compat)
+}
+
+// RecordSchemaCompatCH записывает признаки применённых CH-миграций. Симметрична
+// RecordSchemaCompatPG, вызывается сразу после успешной CH-миграции.
+func RecordSchemaCompatCH(ctx context.Context, pool *pgxpool.Pool) error {
+	compat, err := EmbeddedCompatCH()
+	if err != nil {
+		return err
+	}
+	return recordCompat(ctx, pool, "ch", compat)
+}
+
+// RecordSchemaCompat записывает признаки применённых миграций ОБЕИХ схем.
+//
+// Оставлена как композиция RecordSchemaCompatPG+RecordSchemaCompatCH для
+// вызывающих, которым нужен один вызов на обе схемы разом (тесты, разовые
+// скрипты) — но migrate.go её больше не зовёт: там PG и CH мигрируют
+// раздельными шагами, и маркер каждой схемы пишется сразу за её собственной
+// миграцией, а не общим хвостом после обеих (см. RecordSchemaCompatPG).
+func RecordSchemaCompat(ctx context.Context, pool *pgxpool.Pool) error {
+	if err := RecordSchemaCompatPG(ctx, pool); err != nil {
+		return err
+	}
+	return RecordSchemaCompatCH(ctx, pool)
 }
 
 // loadSchemaCompat читает признаки, записанные при применении миграций.

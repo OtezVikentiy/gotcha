@@ -2,6 +2,7 @@ package metric_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -319,5 +320,81 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	jobs2, _ := ob.Claim(ctx, 10)
 	if len(jobs2) != 0 {
 		t.Errorf("close jobs = %d, want 0 (close by saved flag, not by current window)", len(jobs2))
+	}
+}
+
+// fakeRuleLister — минимальная реализация ruleLister для тестов, которым не
+// нужны контейнеры: Tick требует только эту зависимость до первого evalRule.
+type fakeRuleLister struct {
+	rules []metric.Rule
+	err   error
+	// block, если true, держит ListEnabled до отмены ctx — модель повисшего
+	// ClickHouse/PostgreSQL похода без реальной инфраструктуры.
+	block bool
+	calls atomic.Int64
+}
+
+func (f *fakeRuleLister) ListEnabled(ctx context.Context) ([]metric.Rule, error) {
+	f.calls.Add(1)
+	if f.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.rules, f.err
+}
+
+// TestEvaluatorPublishesTickLiveness — self-метрики живости: без них умерший
+// или отставший metric.Evaluator снаружи неотличим от «правил, готовых
+// сработать, сейчас нет».
+func TestEvaluatorPublishesTickLiveness(t *testing.T) {
+	rules := &fakeRuleLister{}
+	eval := &metric.Evaluator{Rules: rules, Interval: time.Hour}
+
+	if got := eval.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	eval.Tick(context.Background())
+
+	if got := eval.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := eval.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// TestEvaluatorTickBudgetAbortsHungTick — повисший ListEnabled (голый
+// ClickHouse/PostgreSQL запрос без своего таймаута) не должен блокировать тик
+// дольше бюджета: тот же контракт, что host.Evaluator.
+func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
+	rules := &fakeRuleLister{block: true}
+	// Interval мал — бюджет тика упирается в пол (minTickBudget), как у
+	// host.Evaluator в его аналогичном тесте.
+	eval := &metric.Evaluator{Rules: rules, Interval: time.Second}
+
+	done := make(chan struct{})
+	go func() {
+		eval.Tick(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("Tick не завершился: повисший источник правил блокирует оценщик")
+	}
+
+	if rules.calls.Load() == 0 {
+		t.Error("оценщик не звал ListEnabled вовсе — тест не проверяет то, что должен")
+	}
+	// Тик вышел по дедлайну — отметку «последний завершённый проход» он
+	// публиковать не должен, иначе постоянно обрывающийся тик снаружи выглядел
+	// бы здоровым.
+	if got := eval.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
+	}
+	if got := eval.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
 	}
 }

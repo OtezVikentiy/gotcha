@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -23,12 +24,67 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
+// KeyRejectReason — почему приём отверг запрос на этапе аутентификации по
+// ключу, ДО разбора тела и до квот. Причина отделена от факта отказа по той
+// же логике, что DropReason у Pipeline: "отсутствует ключ" (клиент вообще не
+// прислал sentry_key/DSN-bearer) и "ключ не совпадает с проектом" (валидный
+// ключ чужого проекта/окружения, обычно чей-то скопированный не туда DSN) —
+// разные проблемы на стороне клиента, и общий счётчик не давал их различить.
+type KeyRejectReason string
+
+const (
+	// KeyRejectMissingKey — Sentry-запрос вовсе не содержит sentry_key.
+	KeyRejectMissingKey KeyRejectReason = "missing_key"
+	// KeyRejectInvalidKey — sentry_key прислан, но не резолвится ни в один
+	// проект (опечатка, отозванный ключ).
+	KeyRejectInvalidKey KeyRejectReason = "invalid_key"
+	// KeyRejectProjectMismatch — sentry_key резолвится, но в чужой проект
+	// относительно project id из пути запроса.
+	KeyRejectProjectMismatch KeyRejectReason = "project_mismatch"
+	// KeyRejectMissingBearer — OTLP-запрос без заголовка Authorization: Bearer.
+	KeyRejectMissingBearer KeyRejectReason = "missing_bearer"
+	// KeyRejectInvalidDSNKey — OTLP bearer-токен не резолвится ни в один DSN.
+	KeyRejectInvalidDSNKey KeyRejectReason = "invalid_dsn_key"
+)
+
+// keyRejectReasons — полный набор причин отказа по ключу. Существует, чтобы
+// счётчики создавались один раз при инициализации (как dropReasons у
+// Pipeline): тогда countKeyReject на горячем пути обходится атомарным
+// инкрементом без блокировки и без записи в map.
+var keyRejectReasons = []KeyRejectReason{
+	KeyRejectMissingKey, KeyRejectInvalidKey, KeyRejectProjectMismatch,
+	KeyRejectMissingBearer, KeyRejectInvalidDSNKey,
+}
+
+// KeyRejectReasons — все причины, по которым приём умеет отказывать по
+// ключу. main регистрирует по self-метрике на причину (см. DropReasons).
+func KeyRejectReasons() []KeyRejectReason {
+	return append([]KeyRejectReason(nil), keyRejectReasons...)
+}
+
+func newKeyRejectCounters() map[KeyRejectReason]*atomic.Int64 {
+	m := make(map[KeyRejectReason]*atomic.Int64, len(keyRejectReasons))
+	for _, r := range keyRejectReasons {
+		m[r] = new(atomic.Int64)
+	}
+	return m
+}
+
 // Handler — HTTP-слой Sentry-протокола.
 type Handler struct {
 	keys     *KeyCache
 	quota    QuotaChecker
 	pipeline *Pipeline
 	maxBytes int64
+
+	// keyRejected — отказы аутентификации по ключу, по причине (PROD-P?:
+	// раньше ни одна из шести веток отказа authenticate/otlpAuthenticate не
+	// была видна нигде — ни self-метрикой, ни логом — при том что соседние
+	// отказы того же файла (rate limit, квота, лимит item'ов envelope'а) уже
+	// логируют slog.Warn. Процесс-локальный, как Pipeline.dropped: приём не
+	// знает организацию запроса, пока ключ не резолвился, поэтому это НЕ
+	// per-org учёт (DropCounter), а просто self-телеметрия процесса.
+	keyRejected map[KeyRejectReason]*atomic.Int64
 
 	// rate — дешёвый per-DSN (по project id) токен-бакет ПЕРЕД quota-проверкой:
 	// срезает флуд с одного ключа до похода в PG (см. ratelimit.go). Задаётся в
@@ -132,12 +188,35 @@ type LogSink interface {
 
 func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEventBytes int64) *Handler {
 	return &Handler{
-		keys:     keys,
-		quota:    quota,
-		pipeline: pipeline,
-		maxBytes: maxEventBytes,
-		rate:     newRateLimiter(time.Now, defaultIngestRatePerSec, defaultIngestBurst),
+		keys:        keys,
+		quota:       quota,
+		pipeline:    pipeline,
+		maxBytes:    maxEventBytes,
+		rate:        newRateLimiter(time.Now, defaultIngestRatePerSec, defaultIngestBurst),
+		keyRejected: newKeyRejectCounters(),
 	}
+}
+
+// countKeyReject увеличивает self-счётчик отказа по ключу и пишет
+// предупреждение в лог — тем же уровнем, что соседние отказы этого файла
+// (rate limit, квота, лимит item'ов envelope'а). path — r.URL.Path вызывающего
+// эндпоинта, чтобы отличить Sentry-envelope/security-report/deployments/OTLP
+// metrics/logs/traces/pprof друг от друга в логе (self-метрика их не
+// различает — у неё нет метки эндпоинта, только причина).
+func (h *Handler) countKeyReject(reason KeyRejectReason, path string) {
+	if c, ok := h.keyRejected[reason]; ok {
+		c.Add(1)
+	}
+	slog.Warn("ingest: key rejected", "reason", string(reason), "path", path)
+}
+
+// KeyRejectedBy — сколько запросов отклонено по конкретной причине отказа по
+// ключу. Для самотелеметрии: метка reason у gotcha_ingest_key_rejections_total.
+func (h *Handler) KeyRejectedBy(reason KeyRejectReason) int64 {
+	if c, ok := h.keyRejected[reason]; ok {
+		return c.Load()
+	}
+	return 0
 }
 
 // SetRateLimit заменяет per-DSN лимитер приёма (см. Handler.rate): позволяет
@@ -232,18 +311,21 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key,
 	}
 	pub := PublicKeyFromRequest(r)
 	if pub == "" {
+		h.countKeyReject(KeyRejectMissingKey, r.URL.Path)
 		writeJSONError(w, http.StatusUnauthorized, "missing sentry_key")
 		return org.Key{}, false
 	}
 	key, err := h.keys.Resolve(r.Context(), pub)
 	switch {
 	case errors.Is(err, org.ErrNotFound):
+		h.countKeyReject(KeyRejectInvalidKey, r.URL.Path)
 		writeJSONError(w, http.StatusForbidden, "invalid sentry_key")
 		return org.Key{}, false
 	case err != nil:
 		writeJSONError(w, http.StatusServiceUnavailable, "key lookup failed")
 		return org.Key{}, false
 	case key.ProjectID != projectID:
+		h.countKeyReject(KeyRejectProjectMismatch, r.URL.Path)
 		writeJSONError(w, http.StatusForbidden, "sentry_key does not match project")
 		return org.Key{}, false
 	}

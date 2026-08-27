@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
@@ -809,5 +810,99 @@ func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 	}
 	if got := counting.reads.Load(); got != 1 {
 		t.Fatalf("запросов открытых регрессий за тик = %d, хотим 1 (независимо от числа целей — их %d)", got, len(targets))
+	}
+}
+
+// TestEvaluatorPublishesTickLiveness — self-метрики живости: без них умерший
+// или отставший trace.Evaluator снаружи неотличим от «регрессий нет».
+// Список проектов пуст — тику незачем ходить в ClickHouse вовсе, поэтому
+// достаточно PG.
+func TestEvaluatorPublishesTickLiveness(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	ev := &Evaluator{Pool: pool, Interval: time.Hour}
+	if got := ev.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	ev.tick(ctx)
+
+	if got := ev.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := ev.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// stuckCH — ClickHouse, который «висит»: любой запрос блокируется до отмены
+// контекста. Ровно так выглядит недоступная база для драйвера с ReadTimeout в
+// 300 секунд. Образец — internal/host/evaluator_test.go:stuckCH. Прочие методы
+// наследуются от вложенного nil-интерфейса — оценщик их не зовёт.
+type stuckCH struct {
+	driver.Conn
+	calls atomic.Int64
+}
+
+func (c *stuckCH) QueryRow(ctx context.Context, _ string, _ ...any) driver.Row {
+	c.calls.Add(1)
+	<-ctx.Done()
+	return stuckRow{err: ctx.Err()}
+}
+
+func (c *stuckCH) Query(ctx context.Context, _ string, _ ...any) (driver.Rows, error) {
+	c.calls.Add(1)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type stuckRow struct{ err error }
+
+func (r stuckRow) Err() error           { return r.err }
+func (r stuckRow) Scan(...any) error    { return r.err }
+func (r stuckRow) ScanStruct(any) error { return r.err }
+
+// TestEvaluatorTickBudgetAbortsHungTick — повисший ClickHouse (голый запрос
+// без своего таймаута — см. tickBudget) не должен блокировать тик дольше
+// бюджета: тот же контракт, что host.Evaluator/metric.Evaluator. Проект с
+// enabled-конфигом (дефолт createEvalProject) гонит evalProject в CH и
+// упирается в stuckCH.
+func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	stuck := &stuckCH{}
+	createEvalProject(t, pool, "eval-hung")
+
+	// Interval мал — бюджет тика упирается в пол (minTickBudget), как у
+	// host.Evaluator в его аналогичном тесте. Regressions — реальный PG-стор
+	// (открытых регрессий нет, снимок пуст мгновенно), вешается только CH.
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(stuck), Regressions: NewRegressionService(pool),
+		Interval: time.Second,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		ev.tick(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("tick не завершился: повисший ClickHouse блокирует оценщик")
+	}
+
+	if stuck.calls.Load() == 0 {
+		t.Error("оценщик не ходил в ClickHouse вовсе — тест не проверяет то, что должен")
+	}
+	// Тик вышел по дедлайну — отметку «последний завершённый проход» он
+	// публиковать не должен, иначе постоянно обрывающийся тик снаружи выглядел
+	// бы здоровым.
+	if got := ev.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
+	}
+	if got := ev.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
 	}
 }

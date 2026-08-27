@@ -64,3 +64,47 @@ func TestJanitorDeletesExpiredSessions(t *testing.T) {
 		t.Fatalf("expired session should be gone: %v", err)
 	}
 }
+
+// TestJanitorRunFirstPassIsImmediate — первый проход не должен ждать полного
+// Interval: он выполняется до входа в цикл тикера (см. Run), иначе после
+// каждого рестарта чаще Interval (час по умолчанию) просроченные сессии не
+// чистятся вовсе.
+func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := auth.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	uid, err := svc.Register(ctx, "janitor-firstpass@example.com", "hunter2hunter2")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := svc.CreateSession(ctx, uid); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE sessions SET expires_at = now() - interval '1 minute'"); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+
+	// Interval заведомо больше времени теста — если бы первого прохода не
+	// было, просроченная сессия дожила бы до конца теста нетронутой.
+	j := &auth.Janitor{Svc: svc, Interval: time.Hour}
+	jCtx, jCancel := context.WithCancel(context.Background())
+	defer jCancel()
+	go j.Run(jCtx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM sessions").Scan(&n); err != nil {
+			t.Fatalf("count sessions: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("просроченная сессия не убрана за 5с — первого прохода нет, чистка ждёт целый Interval")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

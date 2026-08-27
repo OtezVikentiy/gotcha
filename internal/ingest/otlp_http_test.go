@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +21,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 )
 
 // --- сборка OTLP-запроса (корневой SERVER-спан + db- и http.client-дети) ---
@@ -420,16 +424,42 @@ func TestOTLPGzipBody(t *testing.T) {
 
 // TestOTLPAuthFailures — DSN-ключ едет в Authorization: Bearer (штатная опция
 // headers: у OTel-экспортёров). Нет заголовка / неизвестный ключ → 401.
+// Заодно проверяет, что обе ветки видны self-метрикой KeyRejectedBy: раньше
+// otlpAuthenticate, как и authenticate, не растил ни один счётчик продукта
+// (W3-D, запись 3).
 func TestOTLPAuthFailures(t *testing.T) {
 	s := newStack(t)
 	body := otlpProtoBody(t, freshExportRequest(otlpTraceID))
 
+	// Перехват логов — рядом со счётчиком: находка ревью W3-D (мутация
+	// «убрать slog.Warn из countKeyReject» проходила молча, пока тест
+	// проверял только счётчик).
+	var logs syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	before := s.h.KeyRejectedBy(ingest.KeyRejectMissingBearer)
 	if resp := s.postOTLP(t, body, "application/x-protobuf", "", false); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("no bearer: status = %d, want 401", resp.StatusCode)
 	}
+	if got := s.h.KeyRejectedBy(ingest.KeyRejectMissingBearer); got != before+1 {
+		t.Errorf("KeyRejectedBy(missing_bearer) = %d, want %d", got, before+1)
+	}
+	if out := logs.String(); !strings.Contains(out, "reason=missing_bearer") || !strings.Contains(out, "path=/v1/traces") {
+		t.Errorf("missing_bearer: лог не содержит reason=missing_bearer path=/v1/traces:\n%s", out)
+	}
+
+	before = s.h.KeyRejectedBy(ingest.KeyRejectInvalidDSNKey)
 	if resp := s.postOTLP(t, body, "application/x-protobuf",
 		"00000000000000000000000000000000", false); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("unknown key: status = %d, want 401", resp.StatusCode)
+	}
+	if got := s.h.KeyRejectedBy(ingest.KeyRejectInvalidDSNKey); got != before+1 {
+		t.Errorf("KeyRejectedBy(invalid_dsn_key) = %d, want %d", got, before+1)
+	}
+	if out := logs.String(); !strings.Contains(out, "reason=invalid_dsn_key") {
+		t.Errorf("invalid_dsn_key: лог не содержит reason=invalid_dsn_key:\n%s", out)
 	}
 }
 

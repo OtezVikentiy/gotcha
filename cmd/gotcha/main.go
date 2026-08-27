@@ -599,6 +599,8 @@ func run() error {
 			// DepCounts — строка «Зависимых узлов: N» в down-уведомлении
 			// корня (D3 Р9); тот же единственный Suppressor, что и у гейтов.
 			DepCounts: depSuppressor,
+			// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+			Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 		}
 		uptimeDetector = &uptime.Detector{
 			Svc: uptimeSvc, Notifier: uptimeNotifier,
@@ -606,6 +608,8 @@ func run() error {
 			// IncidentGroups — группы инцидентов (D3): хуки корня down-инцидента
 			// монитора + членство uptime-детей через MarkSuppressedByDep.
 			IncidentGroups: grouper,
+			// Pool — лог шага 0 и адресность recovery (W3-E), см. Detector.Pool.
+			Pool: pg,
 		}
 		// Ingestor нужен и режиму web (через него /probe/results проводит
 		// результаты выносных проб), и режиму uptime (тот же хвост у
@@ -634,7 +638,17 @@ func run() error {
 	// вставилось, поэтому несколько реплик с планировщиком расписание не
 	// растягивают.
 	if uptimeSvc != nil {
-		go (&uptime.Scheduler{Svc: uptimeSvc}).Run(ctx)
+		uptimeScheduler := &uptime.Scheduler{Svc: uptimeSvc}
+		// Живость Scheduler — та же логика, что у остальных фоновых циклов
+		// (host.Evaluator и т.д.): молчание в журнале снаружи неотличимо от
+		// «созревших проверок сейчас нет».
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_uptime_scheduler_last_tick_timestamp_seconds",
+			"Unix time of the last completed uptime check scheduling pass. Stale value means due checks are not being enqueued.",
+			nil, uptimeScheduler.LastTickUnix)
+		selfMetrics.Add(selfmetrics.Gauge, "gotcha_uptime_scheduler_tick_duration_seconds",
+			"Duration of the last uptime check scheduling call. Approaching scheduleBudget means PostgreSQL is not keeping up.",
+			nil, uptimeScheduler.LastTickSeconds)
+		go uptimeScheduler.Run(ctx)
 		if cfg.Mode == "web" {
 			// Симметрично предупреждению про оценщики: в этом процессе проверки
 			// только ставятся в очередь, а исполнять их некому, кроме реплики
@@ -656,6 +670,15 @@ func run() error {
 			OnResult:            uptimeDetector.OnResult,
 			AllowPrivateTargets: cfg.SSRFAllowPrivateUptime,
 		}
+		// Живость Runner/Watchdog — та же логика, что у оценщиков ниже
+		// (startEvaluators): молчание в журнале снаружи неотличимо от «проверок
+		// к исполнению сейчас нет», умерший или отставший цикл иначе не виден.
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_uptime_runner_last_tick_timestamp_seconds",
+			"Unix time of the last completed uptime check lease pass. Stale value means active checks are not being leased/executed.",
+			nil, runner.LastTickUnix)
+		selfMetrics.Add(selfmetrics.Gauge, "gotcha_uptime_runner_tick_duration_seconds",
+			"Duration of the last uptime check lease call. Approaching leaseBudget means PostgreSQL is not keeping up.",
+			nil, runner.LastTickSeconds)
 		go runner.Run(ctx)
 
 		watchdog := &uptime.Watchdog{
@@ -665,6 +688,12 @@ func run() error {
 			Writer:   uptimeWriter,
 			Region:   cfg.LocalRegion,
 		}
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_uptime_watchdog_last_tick_timestamp_seconds",
+			"Unix time of the last completed heartbeat/reminder pass. Stale value means missed heartbeats and incident reminders are not being evaluated.",
+			nil, watchdog.LastTickUnix)
+		selfMetrics.Add(selfmetrics.Gauge, "gotcha_uptime_watchdog_tick_duration_seconds",
+			"Duration of the last heartbeat/reminder pass. Approaching the interval means the watchdog stops keeping up.",
+			nil, watchdog.LastTickSeconds)
 		go watchdog.Run(ctx)
 
 		// Оценщики регрессий производительности, правил по метрикам и регрессий
@@ -682,7 +711,7 @@ func run() error {
 		// оставлен прежним намеренно: включать их автоматически везде значило бы
 		// в связке web+uptime гонять двойную оценку.
 		if runEvaluators(cfg) {
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace, orgSvc)
 		}
 
 		slog.Info("uptime enabled", "region", cfg.LocalRegion, "concurrency", cfg.UptimeConcurrency)
@@ -692,7 +721,7 @@ func run() error {
 	if cfg.Mode != "uptime" && cfg.Mode != "all" && cfg.Mode != "probe" {
 		switch {
 		case runEvaluatorsExplicit(cfg):
-			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace)
+			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace, orgSvc)
 			slog.Info("evaluators enabled by GOTCHA_RUN_EVALUATORS", "mode", cfg.Mode)
 		default:
 			// Молчать здесь нельзя: правило по метрике в интерфейсе выглядит
@@ -701,11 +730,16 @@ func run() error {
 			// наравне с остальными (ревью M3): startEvaluators поднимает и
 			// host.Evaluator, а страница /hosts/settings точно так же
 			// показывает пороги включёнными.
-			slog.Warn("metric/performance/profile/host evaluators are NOT running in this mode; "+
-				"metric alert rules, regression detection and host thresholds "+
-				"(disk/memory/load/silence) will never fire — "+
-				"run a --mode=uptime (or --mode=all) replica, or set GOTCHA_RUN_EVALUATORS=true here",
-				"mode", cfg.Mode)
+			//
+			// GOTCHA_RUN_EVALUATORS гейтит ШЕСТЬ циклов, не четыре (W3-D,
+			// запись 8 = находка W3-C): startEvaluators поднимает ещё
+			// slo.Evaluator и escalation.Scheduler — их отсутствие в этой
+			// строке молчало о том же классе дефекта, который сама строка
+			// призвана объявлять. При раздельном развёртывании web+ingest без
+			// GOTCHA_RUN_EVALUATORS SLO-алерты сжигания бюджета и эскалация
+			// всех пяти прочих источников инцидентов молчат так же, как
+			// правило по метрике, а прежняя строка об этом не предупреждала.
+			slog.Warn(evaluatorsDisabledWarning, "mode", cfg.Mode)
 		}
 	}
 
@@ -975,6 +1009,8 @@ func run() error {
 						Hosts:     host.NewStore(pg),
 						Settings:  host.NewSettingsService(pg),
 						Pool:      pg,
+						// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+						Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 					},
 				}).Retire,
 			},
@@ -1069,6 +1105,8 @@ func run() error {
 			// (new_issue/regression/spike) ДО claimThrottle/claimBudget в
 			// OnIssue, тем же приёмом, что pipeline.Maint ниже.
 			Maint: uptime.NewService(pg),
+			// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+			Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 		}
 		spikeWorker := &alert.Spike{
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
@@ -1178,6 +1216,19 @@ func run() error {
 		// Деплои (C5): реестр выкладок из CI (PG-таблица deployments).
 		ingestHandler.Deploy = deploy.NewStore(pg)
 		ingestHandler.DropCounter = orgSvc
+		// Отказы приёма по ключу (PROD-P?): раньше ни одна из шести веток
+		// authenticate/otlpAuthenticate не была видна нигде — ни счётчиком, ни
+		// логом. По метрике на причину — та же логика, что у
+		// gotcha_pipeline_dropped_tasks_total выше: "ключа нет вовсе" (клиент
+		// не настроил DSN) и "ключ чужого проекта" (скопированный не туда DSN)
+		// требуют разных действий оператора/клиента, общий счётчик их не
+		// различал бы.
+		for _, reason := range ingest.KeyRejectReasons() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_key_rejections_total",
+				"Ingest requests rejected during key authentication, before quotas. The reason label says why.",
+				map[string]string{"reason": string(reason)},
+				func() int64 { return ingestHandler.KeyRejectedBy(reason) })
+		}
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех
 		// путей приёма — иначе один и тот же проект набирал бы отдельные наборы
@@ -1447,7 +1498,7 @@ func run() error {
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
 	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
 	selfMetrics *selfmetrics.Registry, dep *depsuppress.Suppressor, grouper *incidentgroup.Grouper,
-	settleGrace time.Duration) {
+	settleGrace time.Duration, orgSvc *org.Service) {
 	// maint — окна обслуживания проекта (план B3): подавляет open/close-
 	// уведомления инцидентов всех источников оценщиков ниже (host сейчас,
 	// metric/trace/profile/slo следом). uptimeSvc:385 здесь НЕ переиспользуем —
@@ -1478,8 +1529,16 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			// регрессию по ID (см. RegressionNotifier.NotifyStep).
 			Regressions: trace.NewRegressionService(pg),
 			Pool:        pg,
+			// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+			Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 		},
 	}
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_trace_evaluator_last_tick_timestamp_seconds",
+		"Unix time of the last completed performance regression evaluation pass. Stale value means regression alerts are not being evaluated.",
+		nil, evaluator.LastTickUnix)
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_trace_evaluator_tick_duration_seconds",
+		"Duration of the last performance regression evaluation pass. Approaching the interval means the evaluator stops keeping up.",
+		nil, evaluator.LastTickSeconds)
 	go evaluator.Run(ctx)
 
 	// Оценщик пороговых алертов на метрики (этап 6, план 4) — та же ниша, что
@@ -1508,9 +1567,17 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			Incidents: metric.NewIncidentService(pg),
 			Rules:     metric.NewRuleService(pg),
 			Pool:      pg,
+			// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+			Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 		},
 		Interval: time.Duration(cfg.MetricEvalInterval) * time.Second,
 	}
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_metric_evaluator_last_tick_timestamp_seconds",
+		"Unix time of the last completed metric threshold evaluation pass. Stale value means metric rule alerts are not being evaluated.",
+		nil, metricEval.LastTickUnix)
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_metric_evaluator_tick_duration_seconds",
+		"Duration of the last metric threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
+		nil, metricEval.LastTickSeconds)
 	go metricEval.Run(ctx)
 
 	// Оценщик регрессий профилей (этап 9): рост self-CPU доли функции над
@@ -1533,10 +1600,18 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			// регрессию по ID (см. RegressionNotifier.NotifyStep).
 			Regressions: profile.NewRegressionService(pg),
 			Pool:        pg,
+			// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+			Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 		},
 		Interval: time.Duration(cfg.ProfileEvalInterval) * time.Second,
 		Config:   profile.DefaultProfileRegressionConfig(),
 	}
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_profile_evaluator_last_tick_timestamp_seconds",
+		"Unix time of the last completed profile regression evaluation pass. Stale value means profile regression alerts are not being evaluated.",
+		nil, profileRegEval.LastTickUnix)
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_profile_evaluator_tick_duration_seconds",
+		"Duration of the last profile regression evaluation pass. Approaching the interval means the evaluator stops keeping up.",
+		nil, profileRegEval.LastTickSeconds)
 	go profileRegEval.Run(ctx)
 
 	// Оценщик встроенных порогов хоста (диск/память/нагрузка/тишина, план A1) —
@@ -1577,6 +1652,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			// Dep выше. У Retirer-экземпляра HostNotifier (entityJanitor)
 			// поле остаётся nil намеренно — он шлёт только retire/close.
 			DepCounts: dep,
+			// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+			Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 		},
 		Interval: time.Duration(cfg.HostEvalInterval) * time.Second,
 	}
@@ -1610,6 +1687,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		// SLO+инцидент по ID (см. SLOBurnNotifier.NotifyStep).
 		Store: slo.NewStore(pg),
 		Pool:  pg,
+		// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+		Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 	}
 	sloEval := &slo.Evaluator{
 		Pool:      pg,
@@ -1665,6 +1744,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		// уведомлении (D3 Р9), тот же единственный Suppressor, что и Dep
 		// ниже.
 		DepCounts: dep,
+		// Projects — имя проекта в теме/теле/webhook-payload (W3-E).
+		Projects: escalation.OrgProjectNamer{Svc: orgSvc},
 	}
 	bindings := []escalation.Binding{
 		{Src: trace.NewRegressionService(pg), Notifier: evaluator.Notifier},
@@ -1686,6 +1767,12 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 		Dep:         &incidentgroup.DepGate{Dep: dep, Grouper: grouper},
 		SettleGrace: settleGrace,
 	}
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_escalation_scheduler_last_tick_timestamp_seconds",
+		"Unix time of the last completed escalation scheduler pass. Stale value means escalation ladders are not advancing for any of the six incident sources.",
+		nil, sched.LastTickUnix)
+	selfMetrics.Add(selfmetrics.Gauge, "gotcha_escalation_scheduler_tick_duration_seconds",
+		"Duration of the last escalation scheduler pass. Approaching the interval means the scheduler stops keeping up.",
+		nil, sched.LastTickSeconds)
 	go sched.Run(ctx)
 
 	// Чистка incident_escalations (M-6): без ретенции лог эскалаций растёт
@@ -1747,6 +1834,26 @@ func logDetailPolicy(cfg Config) {
 // выключить (false), не включить. В отличие от runEvaluatorsExplicit — та
 // используется в режимах без аптайма, где дефолт был бы двойной оценкой при
 // совместном web+uptime развёртывании, поэтому там нужно явное true.
+// evaluatorsDisabledWarning — предупреждение при старте без ни явного, ни
+// подразумеваемого GOTCHA_RUN_EVALUATORS (см. вызывающий код). Вынесена в
+// константу ради теста без похода в run() целиком (тот же приём, что
+// applyMigrations/heartbeatCronSnippet — тестируемость без реального
+// процесса).
+//
+// Называет ВСЕ ШЕСТЬ циклов, которые гейтит GOTCHA_RUN_EVALUATORS, не четыре
+// (W3-D, запись 8 = находка W3-C): startEvaluators поднимает
+// metric/trace(perf)/profile/host-оценщики, а ЕЩЁ slo.Evaluator и
+// escalation.Scheduler — раньше их не называли, и при раздельном
+// развёртывании web+ingest без GOTCHA_RUN_EVALUATORS SLO-алерты сжигания
+// бюджета и эскалация всех пяти прочих источников инцидентов молчали так же,
+// как правило по метрике, а сама строка предупреждения об этом не говорила —
+// тот же класс дефекта, который она призвана объявлять.
+const evaluatorsDisabledWarning = "metric/performance/profile/host/slo evaluators and the escalation scheduler are NOT running in this mode; " +
+	"metric alert rules, regression detection, host thresholds (disk/memory/load/silence), " +
+	"SLO error-budget burn alerts and escalation ladders (for ALL incident sources, including uptime) " +
+	"will never fire — " +
+	"run a --mode=uptime (or --mode=all) replica, or set GOTCHA_RUN_EVALUATORS=true here"
+
 func runEvaluators(cfg Config) bool {
 	if cfg.RunEvaluators != nil {
 		return *cfg.RunEvaluators

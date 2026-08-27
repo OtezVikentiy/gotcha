@@ -76,3 +76,30 @@ func TestSchedulerIsIdempotentAcrossReplicas(t *testing.T) {
 		t.Fatalf("в очереди %d заданий на один монитор и регион, want не больше одного", queued)
 	}
 }
+
+// TestSchedulerPublishesTickLiveness — self-метрики живости: без них умерший
+// или отставший Scheduler снаружи неотличим от «созревших проверок сейчас
+// нет» (ревью W3-D: Scheduler был единственным из семи фоновых циклов этого
+// брифа без метрик и бюджета — тот же класс дефекта, что у Runner/Watchdog).
+func TestSchedulerPublishesTickLiveness(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+
+	sched := &uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}
+	if got := sched.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := time.Now().Unix()
+	go sched.Run(ctx)
+
+	waitForRunner(t, func() bool { return sched.LastTickUnix() != 0 })
+	if got := sched.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения постановки)", got, before)
+	}
+	if got := sched.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}

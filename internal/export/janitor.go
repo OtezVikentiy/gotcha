@@ -57,6 +57,16 @@ func (j *Janitor) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// Первый проход — сразу, не дожидаясь тика (как telemetry.EntityJanitor):
+	// иначе после каждого рестарта, который случается чаще Interval (час по
+	// умолчанию), диск-бюджет каталога выгрузок не освобождается вовсе, а
+	// заявки, чей срок истёк ровно перед рестартом, простаивают до
+	// следующего часа.
+	if err := j.Tick(ctx); err != nil {
+		slog.Warn("export: джанитор: тик", "err", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

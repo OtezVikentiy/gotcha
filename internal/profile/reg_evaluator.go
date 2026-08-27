@@ -3,6 +3,8 @@ package profile
 import (
 	"context"
 	"log/slog"
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,6 +13,14 @@ import (
 )
 
 const evaluatorDefaultInterval = 5 * time.Minute
+
+// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
+// тика — доля Interval, но не меньше пола, иначе повисший ClickHouse-запрос
+// (Query здесь без собственного таймаута) держал бы тик бесконечно.
+const (
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
+)
 
 // RegressionEvaluator периодически детектит рост self-CPU доли функций над
 // скользящей базой и открывает/закрывает инциденты (калька trace.Evaluator).
@@ -45,13 +55,13 @@ type RegressionEvaluator struct {
 	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
 	// notifyClose, escalation.RecoveryChannels). Nil-совместим.
 	Pool *pgxpool.Pool
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
+	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
 }
 
 func (e *RegressionEvaluator) Run(ctx context.Context) {
-	interval := e.Interval
-	if interval <= 0 {
-		interval = evaluatorDefaultInterval
-	}
+	interval := e.interval()
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
@@ -64,8 +74,40 @@ func (e *RegressionEvaluator) Run(ctx context.Context) {
 	}
 }
 
+func (e *RegressionEvaluator) interval() time.Duration {
+	if e.Interval <= 0 {
+		return evaluatorDefaultInterval
+	}
+	return e.Interval
+}
+
+// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
+// ещё не было). Self-метрика живости, как у host.Evaluator/slo.Evaluator.
+func (e *RegressionEvaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего завершённого тика в секундах.
+func (e *RegressionEvaluator) LastTickSeconds() float64 {
+	return math.Float64frombits(e.lastTickSeconds.Load())
+}
+
+// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
+func (e *RegressionEvaluator) tickBudget() time.Duration {
+	budget := time.Duration(float64(e.interval()) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
+}
+
 // Tick — один проход по всем проектам. Ошибка по проекту не роняет остальные.
+// Ограничен дедлайном (tickBudget): Query бьёт по CH голыми запросами без
+// собственного таймаута, и без внешнего дедлайна повисший запрос держал бы
+// тик (и self-метрику живости) бесконечно.
 func (e *RegressionEvaluator) Tick(ctx context.Context) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
+	defer cancel()
+
 	now := time.Now().UTC()
 	recentFrom := now.Add(-time.Duration(e.Config.WindowMinutes) * time.Minute)
 
@@ -76,11 +118,20 @@ func (e *RegressionEvaluator) Tick(ctx context.Context) {
 	services, err := e.Query.ActiveServices(ctx, recentFrom, now)
 	if err != nil {
 		slog.Error("profile evaluator: active services failed", "error", err)
+		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return
 	}
 	for _, ps := range services {
 		e.evalService(ctx, ps, recentFrom, now)
 	}
+
+	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if ctx.Err() != nil {
+		slog.Warn("profile evaluator: tick did not finish within its budget",
+			"budget", e.tickBudget(), "services", len(services))
+		return
+	}
+	e.lastTickUnix.Store(time.Now().Unix())
 }
 
 // evalService проверяет один сервис одного проекта: два запроса к

@@ -1,7 +1,11 @@
 package uptime_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,7 +63,7 @@ func TestWatchdogHeartbeatOpensIncidentOnStaleBeat(t *testing.T) {
 	}
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	wd := fastWatchdog(svc, d, notifier)
 
 	wctx, wcancel := context.WithCancel(ctx)
@@ -116,7 +120,7 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	}
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	wd := fastWatchdog(svc, d, notifier)
 
 	wctx, wcancel := context.WithCancel(ctx)
@@ -211,7 +215,7 @@ func TestWatchdogHeartbeatConsensusAllWaitsForAllRegions(t *testing.T) {
 	}
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	// Только регион "local" тикает — "eu" пока не сообщил ничего. С
 	// consensus=all и корректным RegionCount=2 инцидент открыться не должен.
 	localWD := fastWatchdog(svc, d, notifier)
@@ -264,7 +268,7 @@ func TestWatchdogSSLExpiringNotifiesLargestUnalertedThresholdOnce(t *testing.T) 
 	}
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	wd := fastWatchdog(svc, d, notifier)
 
 	wctx, wcancel := context.WithCancel(ctx)
@@ -347,7 +351,7 @@ func TestWatchdogReminderNotifiesAndTouchesOnce(t *testing.T) {
 	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	applyAndDetect(t, ctx, svc, d, created, "local", false, "boom", time.Now().UTC(), nil)
 	assertOpenIncident(t, ctx, svc, created.ID)
 
@@ -490,7 +494,7 @@ func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
 	go writer.Run()
 
 	notifier := &fakeNotifier{}
-	d := &uptime.Detector{Svc: svc, Notifier: notifier}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	wd := fastWatchdog(svc, d, notifier)
 	wd.Writer = writer
 
@@ -521,5 +525,125 @@ func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
 	}
 	if stat.OK != 0 {
 		t.Fatalf("промах записан как успешный: OK=%d из Total=%d", stat.OK, stat.Total)
+	}
+}
+
+// TestWatchdogPublishesTickLiveness — self-метрики живости прохода
+// heartbeat+reminder: без них умерший или отставший Watchdog снаружи
+// неотличим от «пропущенных heartbeat и созревших напоминаний сейчас нет».
+// Мониторов и инцидентов не заводим — оба запроса тика пусты, но обязаны
+// УСПЕШНО завершаться.
+func TestWatchdogPublishesTickLiveness(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+
+	w := &uptime.Watchdog{
+		Svc: svc, Region: "local",
+		Interval: 20 * time.Millisecond,
+		SSLEvery: time.Hour, // не мешаем: первый прогон checkSSL идёт сразу в Run
+	}
+	if got := w.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := time.Now().Unix()
+	go w.Run(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for w.LastTickUnix() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := w.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := w.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// TestWatchdogTickBudgetAbortsHungTick — повисший Svc (недоступный
+// PostgreSQL) не должен блокировать проход heartbeat+reminder дольше
+// tickBudget: тот же контракт, что host.Evaluator/metric.Evaluator.
+// Notifier нарочно не задан: checkSSL (первый прогон, вне бюджета — см. его
+// докблок) с нулевым Notifier выходит сразу же, не трогая Svc вовсе, иначе
+// Run завис бы на SSLCandidates ещё ДО первого тика.
+func TestWatchdogTickBudgetAbortsHungTick(t *testing.T) {
+	svc := uptime.NewService(blackholePool(t))
+	w := &uptime.Watchdog{Svc: svc, Region: "local", Interval: time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for w.LastTickSeconds() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := w.LastTickSeconds(); got <= 0 {
+		t.Fatal("проход heartbeat+reminder не завершился за 60с: повисший PostgreSQL блокирует Watchdog")
+	}
+	if got := w.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по бюджету прохода, want 0", got)
+	}
+}
+
+// syncBuf — mutex-guarded log sink, safe to poll from the test goroutine
+// while slog writes concurrently from the Watchdog's own goroutine (a plain
+// bytes.Buffer would race under `go test -race`).
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestWatchdogSSLCheckBudgetAbortsHungCheck — повисший checkSSL (недоступный
+// PostgreSQL — SSLCandidates без своего таймаута) не должен блокировать
+// проверку сертификатов дольше sslCheckBudget (ревью W3-D, финальная
+// находка): без бюджета первый же безусловный прогон checkSSL в Run вешал бы
+// Watchdog целиком на самом старте процесса, ещё до первого
+// heartbeat/reminder-тика. checkSSL не публикует свою self-метрику
+// (суточный горизонт нельзя валидно смешивать с минутным LastTickUnix/
+// LastTickSeconds — см. докблок sslCheckBudget), поэтому наблюдаем через
+// лог: budget истёк → SSLCandidates вернула context.deadlineExceeded →
+// slog.Error с "ssl candidates failed".
+func TestWatchdogSSLCheckBudgetAbortsHungCheck(t *testing.T) {
+	var logs syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	svc := uptime.NewService(blackholePool(t))
+	w := &uptime.Watchdog{Svc: svc, Notifier: &fakeNotifier{}, Region: "local"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Run зовёт checkSSL безусловно ДО входа в тикер (см. её докблок) — сам
+	// факт вызова Run уже запускает первый (и единственный нужный тесту)
+	// прогон.
+	go w.Run(ctx)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for !strings.Contains(logs.String(), "ssl candidates failed") && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "ssl candidates failed") {
+		t.Fatal("checkSSL не завершился за 60с: повисший PostgreSQL блокирует проверку сертификатов")
+	}
+	if !strings.Contains(out, "context deadline exceeded") {
+		t.Errorf("лог не называет причиной истечение бюджета (context deadline exceeded):\n%s", out)
 	}
 }

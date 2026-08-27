@@ -26,6 +26,36 @@ func TestNewPostgres(t *testing.T) {
 	}
 }
 
+// TestNewPostgresPoolSettings — MaxConns и statement_timeout заданы явно, а
+// не оставлены на встроенный дефолт pgxpool (W3-D, запись 7): max(4,
+// runtime.NumCPU()) — 4-8 соединений на большинстве прод-хостов — тонко для
+// пула, который делят ~150 HTTP-маршрутов, приём и 21 фоновый цикл. Без
+// statement_timeout один зависший запрос удерживал бы соединение пула
+// бесконечно.
+func TestNewPostgresPoolSettings(t *testing.T) {
+	dsn := testenv.PostgresDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := db.NewPostgres(ctx, dsn)
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	defer pool.Close()
+
+	if got := pool.Config().MaxConns; got != 20 {
+		t.Errorf("MaxConns = %d, want 20", got)
+	}
+
+	var timeout string
+	if err := pool.QueryRow(ctx, "SHOW statement_timeout").Scan(&timeout); err != nil {
+		t.Fatalf("SHOW statement_timeout: %v", err)
+	}
+	if timeout != "30s" {
+		t.Errorf("statement_timeout = %q, want %q", timeout, "30s")
+	}
+}
+
 func TestNewClickHouse(t *testing.T) {
 	dsn := testenv.ClickHouseDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

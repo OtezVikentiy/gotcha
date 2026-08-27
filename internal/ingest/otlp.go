@@ -468,12 +468,14 @@ func validAgentVersion(s string) string {
 func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request) (org.Key, bool) {
 	pub := otlpBearer(r)
 	if pub == "" {
+		h.countKeyReject(KeyRejectMissingBearer, r.URL.Path)
 		writeJSONError(w, http.StatusUnauthorized, "missing bearer token")
 		return org.Key{}, false
 	}
 	key, err := h.keys.Resolve(r.Context(), pub)
 	switch {
 	case errors.Is(err, org.ErrNotFound):
+		h.countKeyReject(KeyRejectInvalidDSNKey, r.URL.Path)
 		writeJSONError(w, http.StatusUnauthorized, "invalid dsn key")
 		return org.Key{}, false
 	case err != nil:

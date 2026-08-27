@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -776,5 +777,77 @@ func TestTickSendsAfterGrace(t *testing.T) {
 	}
 	if dep.markCallCount() != 0 {
 		t.Fatalf("MarkSuppressed calls = %d, want 0 (родитель жив)", dep.markCallCount())
+	}
+}
+
+// blockingSource — Source, чей OpenUnacked держит вызов до отмены ctx:
+// модель повисшего PostgreSQL-запроса без реальной инфраструктуры (см.
+// TestSchedulerTickBudgetAbortsHungTick).
+type blockingSource struct {
+	calls atomic.Int64
+}
+
+func (b *blockingSource) Name() string { return "blocking" }
+
+func (b *blockingSource) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	b.calls.Add(1)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (b *blockingSource) BumpEscalation(context.Context, int64, int) (bool, error) {
+	return false, nil
+}
+
+// TestSchedulerPublishesTickLiveness — self-метрики живости: без них
+// умерший или отставший Scheduler снаружи неотличим от «эскалировать
+// нечего». Bindings пуст — Tick завершается, не трогая PostgreSQL вовсе.
+func TestSchedulerPublishesTickLiveness(t *testing.T) {
+	sched := &escalation.Scheduler{Interval: time.Hour, Now: time.Now}
+	if got := sched.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	sched.Tick(context.Background())
+
+	if got := sched.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := sched.LastTickSeconds(); got <= 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// TestSchedulerTickBudgetAbortsHungTick — повисший источник (голый
+// PostgreSQL-запрос без своего таймаута) не должен блокировать тик дольше
+// бюджета: тот же контракт, что host.Evaluator/metric.Evaluator.
+func TestSchedulerTickBudgetAbortsHungTick(t *testing.T) {
+	src := &blockingSource{}
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: &fakeNotifier{}}},
+		Interval: time.Second,
+		Now:      time.Now,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		sched.Tick(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("Tick не завершился: повисший источник блокирует планировщик")
+	}
+
+	if src.calls.Load() == 0 {
+		t.Error("планировщик не звал OpenUnacked вовсе — тест не проверяет то, что должен")
+	}
+	if got := sched.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
+	}
+	if got := sched.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
 	}
 }

@@ -289,3 +289,43 @@ func TestJanitorRunStopsOnCancel(t *testing.T) {
 		t.Fatal("Janitor.Run не завершился после отмены контекста")
 	}
 }
+
+// TestJanitorRunFirstPassIsImmediate — первый проход не должен ждать
+// полного Interval: он выполняется до входа в цикл тикера (см. Run), иначе
+// после каждого рестарта чаще Interval (час по умолчанию) диск-бюджет
+// каталога выгрузок не освобождается вовсе.
+func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
+	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done', finished_at = now(),
+		expires_at = now() - interval '1 hour' WHERE id = $1`, id); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	file := filepath.Join(dir, fmt.Sprintf("%d.csv", id))
+	if err := os.WriteFile(file, []byte("id,title\n1,x\n"), 0o600); err != nil {
+		t.Fatalf("запись файла: %v", err)
+	}
+
+	// Interval заведомо больше времени теста — если бы первого прохода не
+	// было, файл дожил бы до конца теста нетронутым.
+	jan := &Janitor{Store: st, Pool: pool, Dir: dir, RowRetention: 30 * 24 * time.Hour, Interval: time.Hour}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go jan.Run(runCtx)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("файл с истёкшим сроком не убран за 5с — первого прохода нет, чистка ждёт целый Interval")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
