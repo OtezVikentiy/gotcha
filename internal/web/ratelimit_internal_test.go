@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -139,9 +140,9 @@ func authTestHandler(t *testing.T) *Handler {
 	return &Handler{
 		BaseURL:      "http://gotcha.example",
 		Auth:         auth.NewService(pool),
-		loginLimiter: newRateLimiter(time.Now, 5, time.Minute),
-		ipLimiter:    newRateLimiter(time.Now, 20, time.Minute),
-		emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute),
+		loginLimiter: newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
+		ipLimiter:    newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
+		emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
 	}
 }
 
@@ -189,7 +190,7 @@ func TestLoginSubmitOversizedBodyRejected(t *testing.T) {
 // в один и тот же ключ, а не в два разных.
 func TestEmailLimiterKeyCappedInLoginSubmit(t *testing.T) {
 	h := authTestHandler(t)
-	h.emailLimiter = newRateLimiter(time.Now, 0, time.Minute)
+	h.emailLimiter = newRateLimiter(time.Now, 0, time.Minute, emailLimiterMaxKeys, "emailLimiter")
 
 	huge1 := strings.Repeat("a", 2000) + "@x.com" // > maxEmailKeyBytes, < authFormMaxBodyBytes
 	huge2 := strings.Repeat("b", 2000) + "@x.com"
@@ -223,7 +224,7 @@ func TestEmailLimiterKeyCappedInLoginSubmit(t *testing.T) {
 // капа по длине).
 func TestEmailLimiterKeyCappedInRegisterSubmit(t *testing.T) {
 	h := authTestHandler(t)
-	h.emailLimiter = newRateLimiter(time.Now, 0, time.Minute)
+	h.emailLimiter = newRateLimiter(time.Now, 0, time.Minute, emailLimiterMaxKeys, "emailLimiter")
 
 	huge1 := strings.Repeat("a", 2000) + "@x.com"
 	huge2 := strings.Repeat("b", 2000) + "@x.com"
@@ -258,5 +259,291 @@ func TestEmailLimiterKeyCappedInRegisterSubmit(t *testing.T) {
 func TestLimiterEmailKeyPartNormalUnchanged(t *testing.T) {
 	if got, want := limiterEmailKeyPart("  Alice@Example.COM  "), "alice@example.com"; got != want {
 		t.Errorf("limiterEmailKeyPart = %q, want %q", got, want)
+	}
+}
+
+// TestRateLimiterCapDeniesNewKeysAtCapacity — находка W2-B (доработка после
+// ревью): поток из МНОГО РАЗНЫХ свежих ключей (время не двигается,
+// принудительная уборка на потолке ничего не вычистит) не должен раздувать
+// карту лимитера безгранично. Никакого общего overflow-ведра больше нет —
+// после того как карта дошла до maxKeys, каждый НЕВИДЕННЫЙ ранее ключ
+// получает отказ (false) и не заводит запись; карта не растёт ни на один
+// ключ сверх потолка.
+func TestRateLimiterCapDeniesNewKeysAtCapacity(t *testing.T) {
+	now := time.Now()
+	const capacity = 5
+	rl := newRateLimiter(func() time.Time { return now }, 5, time.Minute, capacity, "test")
+
+	for i := 0; i < capacity; i++ {
+		key := fmt.Sprintf("203.0.113.%d:%d", i, i)
+		if !rl.Allow(key) {
+			t.Fatalf("заполнение потолка, ключ %d из %d: want true (карта ещё не на потолке)", i, capacity)
+		}
+	}
+	if got := rl.size(); got != capacity {
+		t.Fatalf("тестовая заготовка: size() = %d, want %d (карта на потолке)", got, capacity)
+	}
+
+	// Карта на потолке. Дальше — сплошь НЕВИДЕННЫЕ ключи: все обязаны
+	// получить отказ, ни один не должен завести запись.
+	for i := capacity; i < capacity+50; i++ {
+		key := fmt.Sprintf("203.0.113.%d:%d", i, i)
+		if rl.Allow(key) {
+			t.Errorf("ключ %d сверх потолка: want false (потолок исчерпан)", i)
+		}
+	}
+	if got := rl.size(); got != capacity {
+		t.Errorf("size() после потока лишних ключей = %d, want %d (потолок не должен пробиваться)", got, capacity)
+	}
+}
+
+// TestRateLimiterCapAllowsExistingKeysAtCapacity — находка ревью W2-B: гвард
+// !exists в условии переполнения (см. Allow) обязан отличать НЕВИДЕННЫЙ ключ
+// от УЖЕ существующего — карта на потолке не должна начинать отказывать
+// собственным известным ключам, у них есть свой счётчик limit/window.
+// Без гварда карта "на потолке" резала бы вообще любой Allow, в том числе
+// повторные попытки уже учтённых клиентов, — это и есть регресс из брифа
+// W2-B п.1 ("существующие ключи под потолком обязаны работать как раньше").
+func TestRateLimiterCapAllowsExistingKeysAtCapacity(t *testing.T) {
+	now := time.Now()
+	const capacity = 3
+	const limit = 5
+	rl := newRateLimiter(func() time.Time { return now }, limit, time.Minute, capacity, "test")
+
+	keys := []string{"k1", "k2", "k3"}
+	for _, k := range keys {
+		if !rl.Allow(k) {
+			t.Fatalf("заполнение потолка, ключ %q: want true", k)
+		}
+	}
+	if got := rl.size(); got != capacity {
+		t.Fatalf("тестовая заготовка: size() = %d, want %d (карта на потолке)", got, capacity)
+	}
+
+	// k2 уже в карте. limit-1 дополнительных попыток обязаны пройти по
+	// СОБСТВЕННОМУ счётчику k2, а не наткнуться на потолок карты.
+	for i := 0; i < limit-1; i++ {
+		if !rl.Allow("k2") {
+			t.Fatalf("k2, дополнительная попытка %d из %d: want true (существующий ключ под потолком продолжает работать своим счётчиком)", i+1, limit-1)
+		}
+	}
+	// Теперь у k2 ровно limit попаданий — следующая упирается в ОБЫЧНЫЙ
+	// лимит (5/мин), а не в потолок карты.
+	if rl.Allow("k2") {
+		t.Errorf("k2 после исчерпания limit=%d: want false (обычный лимит, не потолок карты)", limit)
+	}
+
+	// А вот НОВЫЙ ключ на заполненной карте обязан получить отказ по потолку.
+	if rl.Allow("k4") {
+		t.Errorf("k4 (невиданный ключ на заполненной карте): want false — потолок обязан отказать")
+	}
+	if got := rl.size(); got != capacity {
+		t.Errorf("size() = %d, want %d — ни повтор k2, ни отказанный k4 не должны были менять число ключей", got, capacity)
+	}
+}
+
+// TestRateLimiterForcedSweepAtCapacityThrottled — находка повторного ревью
+// W2-B: принудительная уборка на упоре в потолок (см. Allow) обязана быть
+// ограничена по частоте ТАК ЖЕ, как фоновая (sweepThreshold) — общим
+// lastSweep/rl.window. Без этого КАЖДЫЙ запрос поверх потолка гоняет полный
+// обход карты под мьютексом — та самая O(n), ради снятия которой троттлинг
+// вводился, только теперь с усилением: атакующий, удерживающий карту на
+// потолке, дешёвым запросом заставляет сервер обходить maxKeys элементов, а
+// мьютекс на это время закрыт для чужих легитимных запросов на том же
+// лимитере. Карта заполняется до потолка, время не двигается, дальше — поток
+// НЕВИДЕННЫХ ключей: число вызовов sweepExpired обязано остаться
+// ограниченным, а не расти вместе с числом запросов.
+func TestRateLimiterForcedSweepAtCapacityThrottled(t *testing.T) {
+	now := time.Now()
+	const capacity = 5
+	rl := newRateLimiter(func() time.Time { return now }, 5, time.Minute, capacity, "test")
+
+	for i := 0; i < capacity; i++ {
+		if !rl.Allow(fmt.Sprintf("k%d", i)) {
+			t.Fatalf("заполнение потолка, ключ %d: want true", i)
+		}
+	}
+	before := rl.sweepCalls
+
+	// Карта на потолке, время неподвижно — поток НЕВИДЕННЫХ ключей, каждый
+	// обязан упереться в потолок (см. TestRateLimiterCapDeniesNewKeysAtCapacity).
+	for i := 0; i < 500; i++ {
+		rl.Allow(fmt.Sprintf("attacker%d", i))
+	}
+
+	if got := rl.sweepCalls - before; got != 1 {
+		t.Errorf("sweepCalls вырос на %d за 500 запросов поверх потолка при неподвижном времени, want 1 (принудительная уборка обязана троттлиться так же, как фоновая — не чаще раза в rl.window)", got)
+	}
+}
+
+// TestRateLimiterSweepThrottledByInterval — полный обход карты (sweepExpired)
+// не должен запускаться на каждом вызове Allow за sweepThreshold — только не
+// чаще раза в rl.window. maxKeys здесь заведомо больше числа вставляемых
+// ключей, чтобы потолок carты не вмешивался — тест изолированно проверяет
+// именно троттлинг ФОНОВОЙ уборки, не принудительную уборку на потолке (она
+// покрыта TestRateLimiterCapDeniesNewKeysAtCapacity). Время в тесте не
+// двигается вовсе, так что после первой уборки все последующие вызовы за
+// порогом обязаны её пропускать.
+func TestRateLimiterSweepThrottledByInterval(t *testing.T) {
+	now := time.Now()
+	rl := newRateLimiter(func() time.Time { return now }, 5, time.Minute, 50000, "test")
+
+	// sweepThreshold+2 звонков: первые sweepThreshold+1 доводят карту РОВНО
+	// до sweepThreshold+1 записей (проверка "> sweepThreshold" смотрит на
+	// размер ДО вставки текущего ключа), звонок sweepThreshold+2 — первый,
+	// который застаёт карту уже за порогом и запускает уборку.
+	for i := 0; i < sweepThreshold+2; i++ {
+		rl.Allow(fmt.Sprintf("198.51.100.%d:%d", i%256, i))
+	}
+	if got := rl.sweepCalls; got != 1 {
+		t.Fatalf("после первого пересечения sweepThreshold: sweepCalls = %d, want 1", got)
+	}
+
+	for i := 0; i < 500; i++ {
+		rl.Allow(fmt.Sprintf("198.51.100.%d:extra%d", i%256, i))
+	}
+	if got := rl.sweepCalls; got != 1 {
+		t.Errorf("время не двигалось: sweepCalls = %d, want 1 (уборка не чаще раза в window)", got)
+	}
+}
+
+// TestRateLimiterExpiredKeysStillSwept — регрессия: движение времени вперёд
+// за пределы window по-прежнему освобождает карту от истёкших ключей — сам
+// механизм уборки правкой не сломан, только частота её запуска ограничена.
+// maxKeys заведомо выше числа вставляемых ключей — потолок carты здесь не
+// участвует, см. комментарий у TestRateLimiterSweepThrottledByInterval.
+func TestRateLimiterExpiredKeysStillSwept(t *testing.T) {
+	now := time.Now()
+	clock := &now
+	rl := newRateLimiter(func() time.Time { return *clock }, 5, time.Minute, 50000, "test")
+
+	for i := 0; i < sweepThreshold+2; i++ {
+		rl.Allow(fmt.Sprintf("192.0.2.%d:%d", i%256, i))
+	}
+	before := rl.size()
+	if before == 0 {
+		t.Fatalf("тестовая заготовка: карта пуста после наполнения")
+	}
+	if got := rl.sweepCalls; got != 1 {
+		t.Fatalf("тестовая заготовка: sweepCalls после наполнения = %d, want 1", got)
+	}
+
+	*clock = clock.Add(2 * time.Minute)
+	if !rl.Allow("fresh-after-expiry") {
+		t.Fatalf("Allow после сдвига времени: want true")
+	}
+
+	if got := rl.size(); got >= before {
+		t.Errorf("size() после сдвига времени за window = %d, want < %d (истёкшие ключи должны были уйти)", got, before)
+	}
+	if got := rl.sweepCalls; got != 2 {
+		t.Errorf("sweepCalls после сдвига времени = %d, want 2 (новая уборка после истечения интервала)", got)
+	}
+}
+
+// TestRateLimiterNormalUsageUnaffectedByCap — регрессия: обычный сценарий с
+// малым числом ключей (далеко под потолком) продолжает соблюдать limit/window
+// ровно как до правки — потолок не должен задевать штатный трафик.
+func TestRateLimiterNormalUsageUnaffectedByCap(t *testing.T) {
+	now := time.Now()
+	rl := newRateLimiter(func() time.Time { return now }, 3, time.Minute, 1000, "test")
+
+	for i := 0; i < 3; i++ {
+		if !rl.Allow("client-a") {
+			t.Fatalf("попытка %d для client-a: want true (в пределах limit)", i+1)
+		}
+	}
+	if rl.Allow("client-a") {
+		t.Errorf("4-я попытка для client-a: want false (лимит исчерпан)")
+	}
+	if !rl.Allow("client-b") {
+		t.Errorf("первая попытка для client-b: want true — у другого ключа свой счётчик")
+	}
+	if got, want := rl.size(), 2; got != want {
+		t.Errorf("size() = %d, want %d", got, want)
+	}
+}
+
+// TestLoginSubmitIPLimiterBoundsLoginLimiterGrowth — находка ревью W2-B,
+// рабочий эксплойт: loginSubmit проверял per-account (ip|email) лимитер
+// ПЕРВЫМ операндом || — раньше дешёвого per-IP лимитера. Один IP с потоком
+// выдуманных email заполнял карту loginLimiter быстрее, чем успевал
+// сработать ipLimiter, — 20000 POST с одной машины клали логин ВСЕЙ
+// инсталляции переполнением карты (после чего каждый новый легитимный
+// пользователь падал в отказ по потолку). Теперь ipLimiter (лимит 20/мин,
+// ключ — clientIP) проверяется ПЕРВЫМ: один IP не может завести в
+// loginLimiter больше ключей, чем разрешает ipLimiter за окно.
+func TestLoginSubmitIPLimiterBoundsLoginLimiterGrowth(t *testing.T) {
+	h := authTestHandler(t) // ipLimiter: limit 20, window 1 минута
+
+	post := func(email string) int {
+		body := "email=" + email + "@x.com&password=x"
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", h.BaseURL)
+		r.RemoteAddr = "203.0.113.7:1" // один и тот же IP на все попытки
+		rec := httptest.NewRecorder()
+		h.loginSubmit(rec, r)
+		return rec.Code
+	}
+
+	const attempts = 50
+	const ipLimit = 20 // см. authTestHandler: ipLimiter limit
+	var limited int
+	for i := 0; i < attempts; i++ {
+		if code := post(fmt.Sprintf("attacker%d", i)); code == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+
+	if want := attempts - ipLimit; limited != want {
+		t.Errorf("отказов 429 = %d, want %d — ipLimiter обязан пропускать ровно %d запросов с одного IP в минуту, остальные отсекать ДО loginLimiter", limited, want, ipLimit)
+	}
+	if got := h.loginLimiter.size(); got != ipLimit {
+		t.Errorf("loginLimiter.size() = %d, want %d — один IP не должен заводить в loginLimiter больше ключей, чем разрешает ipLimiter", got, ipLimit)
+	}
+}
+
+// TestSSOSubmitIPLimiterBoundsLoginLimiterGrowth — находка ревью W2-B,
+// «третья дверь»: ssoSubmit проверял loginLimiter БЕЗ ipLimiter перед ним, а
+// loginLimiter — ОДИН инстанс на /login, /register и /sso (plus profile.go).
+// Закрыв порядок только в loginSubmit/registerSubmit, обходной путь к тому
+// же отказу аутентификации оставался открыт через /sso: один IP потоком
+// выдуманных email заполнял ТУ ЖЕ карту loginLimiter, что потом резала
+// первую попытку входа любого реального пользователя на /login. Теперь
+// ipLimiter (лимит 20/мин, ключ — clientIP) проверяется первым и здесь.
+//
+// Фикстура — ssoTestHandler (sso_internal_test.go), собирающая Handler через
+// New() с боевыми лимитами: ssoSubmit после лимитеров доходит до
+// h.Org.SSOByDomain, а Handler.Org — конкретный *org.Service, не интерфейс,
+// nil-значение там паникует на разыменовании внутреннего пула соединений.
+func TestSSOSubmitIPLimiterBoundsLoginLimiterGrowth(t *testing.T) {
+	h, _, _, _ := ssoTestHandler(t) // ipLimiter: limit 20, window 1 минута (New())
+
+	post := func(email string) int {
+		body := "email=" + email + "@x.com"
+		r := httptest.NewRequest(http.MethodPost, "/sso", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", h.BaseURL)
+		r.RemoteAddr = "203.0.113.7:1" // один и тот же IP на все попытки
+		rec := httptest.NewRecorder()
+		h.ssoSubmit(rec, r)
+		return rec.Code
+	}
+
+	const attempts = 50
+	const ipLimit = 20 // см. web.go New(): ipLimiter limit
+	var limited int
+	for i := 0; i < attempts; i++ {
+		if code := post(fmt.Sprintf("attacker%d", i)); code == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+
+	if want := attempts - ipLimit; limited != want {
+		t.Errorf("отказов 429 = %d, want %d — ipLimiter обязан пропускать ровно %d запросов с одного IP в минуту через /sso, остальные отсекать ДО loginLimiter", limited, want, ipLimit)
+	}
+	if got := h.loginLimiter.size(); got != ipLimit {
+		t.Errorf("loginLimiter.size() = %d, want %d — один IP не должен заводить в loginLimiter больше ключей через /sso, чем разрешает ipLimiter", got, ipLimit)
 	}
 }

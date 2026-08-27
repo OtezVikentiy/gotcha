@@ -1,12 +1,22 @@
 package web
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
+
+// sweepThreshold — при превышении числа ключей карта становится кандидатом
+// на фоновую, лениво-периодическую уборку (см. Allow); сама уборка при этом
+// ограничена по частоте не чаще раза в rl.window, см. lastSweep. Не путать
+// с потолком rl.maxKeys ниже: это разные механизмы — sweepThreshold лишь
+// экономит полные обходы карты, пока она не подошла к потолку, а сам
+// потолок обеспечивает жёсткую границу памяти независимо от того, успела
+// сработать фоновая уборка или нет.
+const sweepThreshold = 10000
 
 // rateLimiter — фиксированное окно: не более limit попыток за window на
 // ключ. Часы инжектируются, чтобы юнит-тесты могли перематывать время без
@@ -17,14 +27,43 @@ type rateLimiter struct {
 	window time.Duration
 	now    func() time.Time
 	hits   map[string][]time.Time
+
+	// maxKeys — жёсткий потолок числа ключей в карте, свой для каждого
+	// инстанса (находка W2-B: один потолок на все лимитеры пакета неверен —
+	// у per-IP публичного лимитера и per-account лимитера логина совершенно
+	// разная ожидаемая кардинальность). Значение и обоснование — на месте
+	// создания в web.go/New(). Задаётся конструктором, см. newRateLimiter.
+	maxKeys int
+
+	// name — имя лимитера для лога отказа при переполнении (см. Allow).
+	name string
+
+	// lastSweep — момент (по rl.now()) последнего полного обхода карты, будь
+	// то фоновый (sweepThreshold) или принудительный на упоре в maxKeys; не
+	// даёт ЛЮБОМУ из них гоняться чаще раза в window, см. Allow. Общий
+	// троттлинг обязателен для обоих путей: без него принудительная уборка
+	// на упоре в потолок гоняла бы полный обход на КАЖДЫЙ запрос поверх
+	// потолка — та же O(n) под мьютексом, что и у нетроттленного фонового
+	// пути (находка ревью W2-B).
+	lastSweep time.Time
+
+	// sweepCalls — счётчик вызовов sweepExpired. Инструментарий только для
+	// тестов (аналогично size() ниже) — проверяет, что уборка не запускается
+	// на каждом вызове Allow за порогом.
+	sweepCalls int
 }
 
-func newRateLimiter(now func() time.Time, limit int, window time.Duration) *rateLimiter {
+// newRateLimiter создаёт лимитер на limit попыток за window на ключ, с
+// жёстким потолком maxKeys числа ключей в карте (см. поле maxKeys) и
+// именем name для лога отказа при переполнении (см. Allow).
+func newRateLimiter(now func() time.Time, limit int, window time.Duration, maxKeys int, name string) *rateLimiter {
 	return &rateLimiter{
-		limit:  limit,
-		window: window,
-		now:    now,
-		hits:   make(map[string][]time.Time),
+		limit:   limit,
+		window:  window,
+		now:     now,
+		maxKeys: maxKeys,
+		name:    name,
+		hits:    make(map[string][]time.Time),
 	}
 }
 
@@ -38,16 +77,56 @@ func (rl *rateLimiter) Allow(key string) bool {
 
 	now := rl.now()
 
-	// Порог считает КОЛИЧЕСТВО ключей в карте, а не занимаемую ими память —
-	// это корректно ТОЛЬКО пока каждый вызывающий код строит ограниченный по
-	// длине ключ; сам rateLimiter это не проверяет и не может проверить.
-	// Для email-based ключей (per-account и per-email лимитеры логина/
-	// регистрации) граница обеспечена limiterEmailKeyPart и константами
-	// maxEmailKeyBytes/oversizedEmailBucket ниже — без неё ключ мог бы
-	// весить мегабайты, и порог не сработал бы раньше, чем карта раздулась
-	// бы до десятков гигабайт.
-	if len(rl.hits) > 10000 {
+	// Число ключей в карте ограничено ДВОЙНО:
+	//  1. Граница памяти гарантирована самим rateLimiter независимо от
+	//     вызывающего кода: rl.maxKeys — жёсткий потолок на инстанс (см. поле
+	//     и newRateLimiter). За потолком НЕВИДЕННЫЙ ранее ключ получает
+	//     отказ, не заводя записи в карте, — см. блок ниже. Уже существующие
+	//     ключи под потолком продолжают работать как раньше, своим счётчиком.
+	//  2. Фоновая лениво-периодическая уборка (sweepExpired) удаляет ключи,
+	//     чьё окно истекло целиком, и ограничена по частоте — не чаще раза в
+	//     rl.window (см. lastSweep) — чтобы полный обход карты не оплачивал
+	//     КАЖДЫЙ запрос, попавший за sweepThreshold.
+	// На совести вызывающего кода остаётся длина ОТДЕЛЬНОГО ключа: для
+	// email-based ключей (per-account и per-email лимитеры логина/
+	// регистрации) она ограничена limiterEmailKeyPart и константами
+	// maxEmailKeyBytes/oversizedEmailBucket ниже — без этого один ключ мог
+	// бы весить мегабайты. Потолок rl.maxKeys от этого не защищает, он
+	// только не даёт числу ключей расти неограниченно.
+	if len(rl.hits) > sweepThreshold && now.Sub(rl.lastSweep) >= rl.window {
 		rl.sweepExpired(now)
+		rl.lastSweep = now
+	}
+
+	if _, exists := rl.hits[key]; !exists && len(rl.hits) >= rl.maxKeys {
+		// Упёрлись в потолок на НЕВИДЕННОМ ранее ключе. Уборка здесь — ТОТ
+		// ЖЕ троттлинг lastSweep/rl.window, что и у фонового sweepThreshold
+		// выше (находка ревью W2-B): без него принудительная уборка на
+		// каждом запросе поверх потолка возвращает ровно ту O(n) под
+		// мьютексом, ради снятия которой троттлинг вводился, — атакующий,
+		// удерживающий карту на потолке, получает усиление: каждый его
+		// дешёвый запрос стоит сервера полного обхода maxKeys элементов, а
+		// мьютекс на это время закрыт для чужих легитимных запросов на
+		// ЭТОМ ЖЕ лимитере (loginLimiter общий на /login, /register, /sso).
+		// Если с последней уборки прошло меньше окна — отказываем СЛЕПО, не
+		// обходя карту: ключ всё равно не заводится, так что слепота здесь
+		// ничего не портит, а число полных обходов в единицу времени
+		// остаётся ограничено независимо от частоты запросов.
+		if now.Sub(rl.lastSweep) >= rl.window {
+			rl.sweepExpired(now)
+			rl.lastSweep = now
+		}
+		if _, exists := rl.hits[key]; !exists && len(rl.hits) >= rl.maxKeys {
+			// Уборка не помогла: в окне действительно живёт rl.maxKeys
+			// различных ключей. Эти лимитеры защищают аутентификацию и
+			// публичные роуты — молча снять защиту (пропустить всех)
+			// хуже, чем отказать паре (ключу), которую не видели раньше:
+			// состояние само рассосётся со следующим окном. Отказ обязан
+			// быть громким — иначе оператор узнаёт об атаке постфактум.
+			slog.Warn("rate limiter at capacity, denying unseen key",
+				"limiter", rl.name, "keys", len(rl.hits), "max_keys", rl.maxKeys)
+			return false
+		}
 	}
 
 	cutoff := now.Add(-rl.window)
@@ -66,8 +145,9 @@ func (rl *rateLimiter) Allow(key string) bool {
 }
 
 // sweepExpired removes all entries whose time windows have fully expired.
-// Called with lock held, only when map size exceeds threshold.
+// Called with lock held, throttled to at most once per rl.window (see Allow).
 func (rl *rateLimiter) sweepExpired(now time.Time) {
+	rl.sweepCalls++
 	cutoff := now.Add(-rl.window)
 	for key, times := range rl.hits {
 		// Keep only entries within the window
@@ -127,7 +207,7 @@ func (h *Handler) SetAgentDistRateLimit(perMinute int) {
 		h.agentLimiter = nil
 		return
 	}
-	h.agentLimiter = newRateLimiter(time.Now, perMinute, time.Minute)
+	h.agentLimiter = newRateLimiter(time.Now, perMinute, time.Minute, agentLimiterMaxKeys, "agentLimiter")
 }
 
 // agentDistRateLimited навешивает узкий per-IP лимит на раздачу бинарей

@@ -435,6 +435,48 @@ func (h *Handler) localRegion() string {
 	return h.LocalRegion
 }
 
+// Потолки числа ключей (rl.maxKeys) для лимитеров ниже — находка W2-B: один
+// общий потолок на все лимитеры пакета неверен, у каждого своя ожидаемая
+// кардинальность и модель ключа (per-IP vs per-account vs per-аутентифицированный
+// пользователь). Числа — не тесный бюджет памяти (лишний порядок здесь
+// тривиален: maxKeys*limit временных меток по 24 байта — единицы МиБ даже на
+// 20000), а верхняя граница РАЗНЫХ ключей, которую лимитер готов принять,
+// прежде чем начать отказывать невиданным ранее ключам (см. ratelimit.go,
+// Allow).
+const (
+	// loginLimiterMaxKeys — ключ ip|email (5/мин). После находки W2-B в
+	// auth.go per-IP ipLimiter проверяется ПЕРВЫМ операндом || — один IP не
+	// заводит в loginLimiter больше ipLimiter'ного лимита (20) ключей в
+	// минуту, так что заполнение карты требует ботнета, а не одной машины.
+	// Потолок здесь — backstop поверх этого: щедрый запас на тысячи
+	// одновременно атакующих IP.
+	loginLimiterMaxKeys = 20000
+	// ipLimiterMaxKeys — ключ clientIP (20/мин): тот же щедрый запас, что и
+	// у loginLimiterMaxKeys — это и есть тот самый дешёвый по кардинальности
+	// лимитер, что теперь в auth.go сдерживает рост карты loginLimiter.
+	ipLimiterMaxKeys = 20000
+	// emailLimiterMaxKeys — ключ email без IP (50/15мин): окно длиннее, но
+	// пространство ключей (реальные адреса) естественно меньше пространства
+	// IP-адресов; тот же порядок запаса, не тесный бюджет.
+	emailLimiterMaxKeys = 20000
+	// publicLimiterMaxKeys — ключ clientIP на самой широкой по охвату группе
+	// роутов (heartbeat/пробы/публичные статус-страницы, см. поле
+	// Handler.publicLimiter) — тот же запас, что и у остальных per-IP
+	// лимитеров этого блока.
+	publicLimiterMaxKeys = 20000
+	// agentLimiterMaxKeys — ключ clientIP, но узкий сценарий (раздача
+	// бинаря агента, ~9.3 МиБ за запрос, см. поле Handler.agentLimiter):
+	// установок агента на порядки меньше общего публичного трафика, потолок
+	// ниже.
+	agentLimiterMaxKeys = 5000
+	// statusPageLimiterMaxKeys / exportLimiterMaxKeys — ключ аутентифицирован
+	// (uid или uid|projectID): кардинальность ограничена числом
+	// пользователей/проектов self-hosted инстанса, а не открытым интернетом,
+	// потолок соразмерно ниже, чем у анонимных per-IP лимитеров выше.
+	statusPageLimiterMaxKeys = 5000
+	exportLimiterMaxKeys     = 5000
+)
+
 // New собирает Handler. BaseURL используется для sameOrigin-проверки POST-ов
 // и для выставления Secure-флага сессионной cookie.
 //
@@ -451,13 +493,13 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		BaseURL:           baseURL,
 		Secure:            strings.HasPrefix(baseURL, "https://"),
 		RegistrationMode:  "open",
-		loginLimiter:      newRateLimiter(time.Now, 5, time.Minute),
-		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute),
-		emailLimiter:      newRateLimiter(time.Now, 50, 15*time.Minute),
-		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute),
-		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute),
-		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute),
-		exportLimiter:     newRateLimiter(time.Now, createRateLimit, createRateWindow),
+		loginLimiter:      newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
+		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
+		emailLimiter:      newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
+		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute, statusPageLimiterMaxKeys, "statusPageLimiter"),
+		exportLimiter:     newRateLimiter(time.Now, createRateLimit, createRateWindow, exportLimiterMaxKeys, "exportLimiter"),
 		attrKeysCache:     newAttrKeysCache(),
 	}
 }

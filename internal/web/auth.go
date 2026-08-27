@@ -218,12 +218,23 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 
-	// SEC-L2: сначала per-account (ip|email), затем глобальный per-IP лимит, затем
-	// per-email (без IP) — против распределённого перебора одного аккаунта с пула
-	// IP. Любое превышение → 429. Порядок важен: короткое замыкание || не
-	// расходует последующие бакеты, если ранний уже отказал.
+	// SEC-L2: сначала глобальный per-IP лимит (дешёвый по кардинальности —
+	// один ключ на IP), затем per-account (ip|email) и per-email (без IP) —
+	// против распределённого перебора одного аккаунта с пула IP. Любое
+	// превышение → 429.
+	//
+	// Порядок важен и это не просто оптимизация (находка W2-B, рабочий
+	// эксплойт): ip|email — самый дорогой по кардинальности ключ, её задаёт
+	// атакующий подстановкой произвольного email, — раньше проверялся
+	// ПЕРВЫМ операндом ||, то есть ДО per-IP лимита. Из-за этого один IP с
+	// потоком выдуманных email мог заполнить карту loginLimiter (у неё есть
+	// потолок числа ключей, см. web.go) быстрее, чем успевал сработать
+	// ipLimiter, — после чего КАЖДЫЙ новый легитимный пользователь получал
+	// отказ по переполнению карты. Короткое замыкание || теперь работает на
+	// нас: отказавший дешёвый ipLimiter не даёт дорогим лимитерам завести
+	// новую запись вовсе.
 	emailKey := limiterEmailKeyPart(email)
-	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
+	if !h.ipLimiter.Allow(h.clientIP(r)) || !h.loginLimiter.Allow(h.rateLimitKey(r, email)) ||
 		!h.emailLimiter.Allow(emailKey) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
@@ -279,11 +290,12 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	password2 := r.FormValue("password2")
 	next := safeNextPath(r.FormValue("next"))
 
-	// SEC-L2: per-account (ip|email), глобальный per-IP и per-email (без IP) —
-	// тот же набор и тот же порядок, что в loginSubmit. Per-email нужен и здесь:
-	// без него распределённый перебор одного приглашённого адреса с пула IP не
-	// ограничивался ничем.
-	if !h.loginLimiter.Allow(h.rateLimitKey(r, email)) || !h.ipLimiter.Allow(h.clientIP(r)) ||
+	// SEC-L2: per-IP, per-account (ip|email) и per-email (без IP) — тот же
+	// набор и тот же порядок, что в loginSubmit (см. комментарий там про
+	// находку W2-B: per-IP обязан идти первым, иначе он не сдерживает рост
+	// карты loginLimiter). Per-email нужен и здесь: без него распределённый
+	// перебор одного приглашённого адреса с пула IP не ограничивался ничем.
+	if !h.ipLimiter.Allow(h.clientIP(r)) || !h.loginLimiter.Allow(h.rateLimitKey(r, email)) ||
 		!h.emailLimiter.Allow(limiterEmailKeyPart(email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
@@ -411,7 +423,13 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := r.FormValue("email")
-	if !h.loginLimiter.Allow("sso|" + h.rateLimitKey(r, email)) {
+	// SEC-L2, тот же порядок и то же обоснование, что в loginSubmit (находка
+	// W2-B): per-IP лимит ПЕРВЫМ операндом ||. loginLimiter — ОДИН инстанс на
+	// /login, /register и /sso (плюс profile.go) — без ipLimiter здесь тот же
+	// эксплойт был доступен в обход уже закрытых путей: один IP потоком
+	// выдуманных email через /sso заполнял ту же карту, что бьёт по обычному
+	// входу.
+	if !h.ipLimiter.Allow(h.clientIP(r)) || !h.loginLimiter.Allow("sso|"+h.rateLimitKey(r, email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = templates.SSOLogin(i18n.T(r.Context(), "err.auth.rate_limited")).Render(r.Context(), w)
 		return

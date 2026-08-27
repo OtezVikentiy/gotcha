@@ -11,7 +11,7 @@ func TestRateLimiterSweepExpiredEntries(t *testing.T) {
 	now := time.Now()
 	clock := func() time.Time { return now }
 
-	rl := newRateLimiter(clock, 5, 10*time.Second)
+	rl := newRateLimiter(clock, 5, 10*time.Second, 20000, "test")
 
 	// Insert 10001 distinct keys to trigger sweep
 	for i := 0; i < 10001; i++ {
@@ -121,7 +121,7 @@ func TestSetAgentDistRateLimitZeroMeansUnlimited(t *testing.T) {
 // пул общий с веб-частью — без капа аноним без единого ключа выбирает пул и
 // роняет UI, алерты и квоты.
 func TestPublicRateLimitedGuardsUnauthRoutes(t *testing.T) {
-	h := &Handler{publicLimiter: newRateLimiter(time.Now, 3, time.Minute)}
+	h := &Handler{publicLimiter: newRateLimiter(time.Now, 3, time.Minute, publicLimiterMaxKeys, "publicLimiter")}
 	var served int
 	guarded := h.publicRateLimited(func(w http.ResponseWriter, r *http.Request) {
 		served++

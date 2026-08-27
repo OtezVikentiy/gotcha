@@ -324,7 +324,7 @@ func TestRegisterDenialIsIndistinguishable(t *testing.T) {
 
 // emailLimitPerWindow — ёмкость per-EMAIL бакета регистрации/входа. Значение
 // не выведено из наблюдения, а взято из места, где ограничитель создаётся:
-// internal/web/web.go, `emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute)`.
+// internal/web/web.go, `emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute, ...)`.
 // Если порог там изменится, этот тест упадёт и потребует осознанной правки —
 // это и нужно: он закрепляет наличие бакета, а не случайное число.
 const emailLimitPerWindow = 50

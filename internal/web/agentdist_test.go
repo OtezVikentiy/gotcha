@@ -170,8 +170,8 @@ func TestAgentDistRateLimited(t *testing.T) {
 		h := &Handler{
 			AgentDistDir:  dir,
 			BaseURL:       "http://localhost",
-			publicLimiter: newRateLimiter(time.Now, 600, time.Minute),
-			agentLimiter:  newRateLimiter(time.Now, 0, time.Minute),
+			publicLimiter: newRateLimiter(time.Now, 600, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+			agentLimiter:  newRateLimiter(time.Now, 0, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
 		}
 		mux := http.NewServeMux()
 		h.Register(mux)
@@ -201,8 +201,8 @@ func TestAgentDistRateLimited(t *testing.T) {
 		h := &Handler{
 			AgentDistDir:  dir,
 			BaseURL:       "http://localhost",
-			publicLimiter: newRateLimiter(time.Now, 0, time.Minute),
-			agentLimiter:  newRateLimiter(time.Now, 10, time.Minute),
+			publicLimiter: newRateLimiter(time.Now, 0, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+			agentLimiter:  newRateLimiter(time.Now, 10, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
 		}
 		mux := http.NewServeMux()
 		h.Register(mux)
