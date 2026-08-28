@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-28
+
 ### Added
 - New self-metrics: `gotcha_ingest_rejected_total{reason,signal}` — ingest
   rejections by reason (rate limit, quota, body size, malformed body) and
