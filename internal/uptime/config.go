@@ -3,6 +3,7 @@ package uptime
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/url"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
@@ -88,6 +89,56 @@ func sealHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (json.RawMessa
 		}
 		return ring.Seal(v)
 	})
+}
+
+// rewrapHTTPHeaders поднимает ЧИТАЕМЫЕ значения заголовков http-конфига до
+// конверта v2 текущего ключа кольца (Keyring.Rewrap) — рабочая лошадка
+// RewrapSecrets (service.go). Деградация ПО ЗНАЧЕНИЮ, а не по строке: у
+// монитора может быть один читаемый и один нечитаемый (запечатан потерянным
+// ключом) заголовок разом. Нечитаемое значение остаётся как есть, его ошибка
+// попадает в failures, но не прерывает обработку остальных заголовков этой
+// же строки — иначе один потерянный ключ навсегда законсервировал бы
+// соседний plaintext.
+//
+// changed=true, только если поднялось хотя бы одно значение — только тогда
+// строку имеет смысл перезаписывать (и только тогда RewrapSecrets вообще
+// шлёт UPDATE). При changed=false возвращается тот же raw БЕЗ ремаршалинга:
+// не только последствий для заголовков нет, но и повода разойтись байт-в-
+// байт со значением, которое RewrapSecrets использует в CAS-предикате.
+func rewrapHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (out json.RawMessage, changed bool, failures []error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return raw, false, nil
+	}
+	var cfg HTTPConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return raw, false, nil
+	}
+	if len(cfg.Headers) == 0 {
+		return raw, false, nil
+	}
+	next := make(map[string]string, len(cfg.Headers))
+	for name, val := range cfg.Headers {
+		rewrapped, didChange, err := ring.Rewrap(val)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("header %q: %w", name, err))
+		}
+		if didChange {
+			changed = true
+		}
+		next[name] = rewrapped
+	}
+	if !changed {
+		return raw, false, failures
+	}
+	cfg.Headers = next
+	remarshaled, err := json.Marshal(cfg)
+	if err != nil {
+		// cfg только что разобран из валидного JSON — маршалинг обратно не
+		// должен падать; если всё же случилось, не теряем raw, просто не
+		// поднимаем строку в этом проходе (следующий рестарт попробует снова).
+		return raw, false, failures
+	}
+	return remarshaled, true, failures
 }
 
 // openHTTPHeaders — обратная операция: расшифровывает значения заголовков.

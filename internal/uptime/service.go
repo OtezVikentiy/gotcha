@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -105,67 +104,117 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 	return nil
 }
 
-// EncryptLegacyHeaders разово дошифровывает значения HTTP-заголовков мониторов,
-// сохранённых до включения шифрования (A2a): переход штатно ленивый — старое
-// значение шифруется при следующем Update монитора, — но пока оператор не
-// пересохранит монитор, его заголовки лежат в БД plaintext. Читательский вектор
-// оператора закрыт маской независимо от формата хранения, поэтому эксплуатируемой
-// дыры нет; это второй эшелон — «защита от чтения БД в обход приложения». Метод
-// достраивает его для существующих записей: вызывается один раз на старте после
-// SetKeyring (main.go). Идемпотентен — уже-enc: значения sealHTTPHeaders не
-// трогает, а строки без plaintext-заголовков не переписываются вовсе. Возвращает
-// число обновлённых мониторов. Без ключа (dev) — no-op.
-func (s *Service) EncryptLegacyHeaders(ctx context.Context) (int, error) {
+// RewrapSecrets поднимает значения HTTP-заголовков мониторов kind=http до
+// конверта v2 ТЕКУЩЕГО ключа кольца. Заменяет EncryptLegacyHeaders (A2a):
+// тот дошифровывал только legacy plaintext, этот поднимает вообще всё
+// читаемое — legacy plaintext, v1 текущим ключом, v2 предыдущим ключом — до
+// текущей версии. Это и есть смысл ротации GOTCHA_SECRET_KEY (см. §6 спеки
+// ротации мастер-ключа): инстанс, который ещё ни разу не ротировал ключ,
+// всё равно приезжает в v2, иначе первая реальная ротация упёрлась бы в
+// v1-значения, для которых нет id. Вызывается один раз на старте сразу после
+// SetKeyring (main.go), до подъёма слушателя. Без ключа (dev) — no-op.
+//
+// Идемпотентен: строка, целиком лежащая в v2 текущего ключа, не
+// переписывается — второй проход возвращает 0.
+//
+// Деградация ПО ЗНАЧЕНИЮ, а не по строке (rewrapHTTPHeaders, config.go): у
+// монитора может быть один читаемый и один нечитаемый (запечатан потерянным
+// ключом) заголовок разом. Читаемый поднимается, нечитаемый остаётся как
+// есть, строка обновляется — пропуск всей строки навсегда законсервировал бы
+// читаемый plaintext.
+//
+// CAS по старому значению config (casUpdateMonitorConfig): ноль затронутых
+// строк значит, что монитор изменили между чтением и записью — другой
+// оператор через форму или другой инстанс в параллели уже перешифровал —
+// и не является ошибкой, просто пропуск. Ужесточение против прежнего
+// EncryptLegacyHeaders, писавшего безусловным UPDATE ... WHERE id = $1,
+// способным затереть такую параллельную правку.
+//
+// Читает партиями: курсор закрывается ДО первого UPDATE — держать его
+// открытым и параллельно слать запись по тому же пулу нельзя (грабли уже
+// были учтены в прежнем EncryptLegacyHeaders).
+//
+// Не роняет старт: нерасшифруемое значение — slog.Error (id монитора и
+// причина; key-id конверта, если он был в форме, уже есть в тексте
+// secretbox.ErrOpen), проход продолжается. Подробный лог капируется первыми
+// пятью значениями на весь вызов — иначе массово провалившаяся ротация
+// топит итог в полотне на тысячу строк. Итог — одна slog.Info: сколько
+// обновлено, сколько пропущено как нечитаемые. Ошибка самого SQL —
+// slog.Warn и не возвращается вызывающему: старт не роняем, защита чтения
+// (маска, SecretBroken, scrub) работает и без бэкфилла.
+func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 	if !s.secretKeySet {
 		return 0, nil
 	}
 	rows, err := s.pool.Query(ctx, "SELECT id, config FROM monitors WHERE kind = $1", string(KindHTTP))
 	if err != nil {
-		return 0, err
+		slog.Warn("uptime: rewrap secrets: query monitors failed", "err", err)
+		return 0, nil
 	}
 	// Собираем кандидатов ДО апдейтов: держать rows открытыми и параллельно
-	// слать UPDATE по тому же пулу нельзя. Кандидат — монитор с хотя бы одним
-	// plaintext-значением заголовка (без префикса enc:).
+	// слать UPDATE по тому же пулу нельзя.
 	type candidate struct {
 		id  int64
 		cfg json.RawMessage
 	}
 	var todo []candidate
 	for rows.Next() {
-		var id int64
-		var cfg json.RawMessage
-		if err := rows.Scan(&id, &cfg); err != nil {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.cfg); err != nil {
 			rows.Close()
-			return 0, err
+			slog.Warn("uptime: rewrap secrets: scan monitor failed", "err", err)
+			return 0, nil
 		}
-		var hc HTTPConfig
-		if err := json.Unmarshal(cfg, &hc); err != nil {
-			continue // неразбираемый config — не наш формат, пропускаем
-		}
-		for _, v := range hc.Headers {
-			if v != "" && !strings.HasPrefix(v, secretbox.EncPrefix) {
-				todo = append(todo, candidate{id: id, cfg: cfg})
-				break
-			}
-		}
+		todo = append(todo, c)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		rows.Close()
+		slog.Warn("uptime: rewrap secrets: read monitors failed", "err", err)
+		return 0, nil
 	}
 	rows.Close()
 
-	updated := 0
+	var updated, unreadable, logged int
 	for _, c := range todo {
-		sealed, err := sealHTTPHeaders(s.ring, c.cfg)
-		if err != nil {
-			return updated, err
+		next, changed, failures := rewrapHTTPHeaders(s.ring, c.cfg)
+		unreadable += len(failures)
+		for _, f := range failures {
+			if logged < 5 {
+				slog.Error("uptime: rewrap secrets: header value unreadable, left as is",
+					"monitor_id", c.id, "err", f)
+				logged++
+			}
 		}
-		if _, err := s.pool.Exec(ctx, "UPDATE monitors SET config = $2 WHERE id = $1", c.id, sealed); err != nil {
-			return updated, err
+		if !changed {
+			continue
+		}
+		ok, err := s.casUpdateMonitorConfig(ctx, c.id, next, c.cfg)
+		if err != nil {
+			slog.Warn("uptime: rewrap secrets: update monitor failed", "monitor_id", c.id, "err", err)
+			continue
+		}
+		if !ok {
+			continue // config изменили между чтением и записью — не наша забота
 		}
 		updated++
 	}
+	slog.Info("uptime: rewrap secrets done", "updated", updated, "unreadable_skipped", unreadable)
 	return updated, nil
+}
+
+// casUpdateMonitorConfig — точечный compare-and-swap апдейт config: UPDATE
+// применяется, только если config в таблице всё ещё равен oldCfg. Ноль
+// затронутых строк — не ошибка, просто «промахнулись» (см. RewrapSecrets).
+// Выделен в отдельный метод (а не заинлайнен в цикл RewrapSecrets), чтобы
+// race-safety CAS-предиката проверялась отдельным детерминированным тестом,
+// без гонки по времени с остальным циклом бэкфилла.
+func (s *Service) casUpdateMonitorConfig(ctx context.Context, id int64, newCfg, oldCfg json.RawMessage) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE monitors SET config = $2 WHERE id = $1 AND config = $3::jsonb", id, newCfg, oldCfg)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // localRegion — имя встроенного региона: LocalRegion, а если не задано —
