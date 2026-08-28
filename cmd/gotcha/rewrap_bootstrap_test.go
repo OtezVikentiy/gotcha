@@ -106,6 +106,161 @@ func TestRewrapAllSecretsCallSiteOrder(t *testing.T) {
 	}
 }
 
+// TestWireSecretRingBuildsKeyringFromCurrentAndPrevious — прямая проверка
+// половины «проводки кольца» (находка ревью T5), которую run() раньше делал
+// инлайном необёрнутым вызовом secretbox.NewKeyring(cfg.SecretKey,
+// cfg.SecretKeyPrev): мутация «previous заменён на пустую строку» (кольцо
+// теряет предыдущий ключ, ротация молча перестаёт работать — старые значения
+// станут нечитаемыми, а бэкфилл их пропустит) проходила мимо CI, потому что
+// ни один тест не звал сборку кольца ЧЕРЕЗ bootstrap-код — только
+// собранными вручную кольцами (secretbox.NewKeyring напрямую в
+// TestRewrapAllSecretsRotationRoundTrip). Здесь наоборот: current и previous
+// заведомо разные строки, и обе ветки (current и previous) сверяются
+// раздельно с эталонными кольцами, собранными secretbox.NewKeyring напрямую
+// — так перепутанные местами аргументы тоже ловятся (CurrentID() совпал бы
+// с previous-эталоном, а не с current).
+func TestWireSecretRingBuildsKeyringFromCurrentAndPrevious(t *testing.T) {
+	const (
+		current  = "wire-secret-ring-master-current"
+		previous = "wire-secret-ring-master-previous"
+	)
+
+	ring, err := wireSecretRing(current, previous, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("wireSecretRing: %v", err)
+	}
+
+	wantCurrent, err := secretbox.NewKeyring(current, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(current): %v", err)
+	}
+	wantPrevious, err := secretbox.NewKeyring(previous, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(previous): %v", err)
+	}
+
+	if ring.CurrentID() != wantCurrent.CurrentID() {
+		t.Fatalf("CurrentID() = %q, want %q (id ключа, выведенного из current) — "+
+			"wireSecretRing собрал кольцо не из cfg.SecretKey", ring.CurrentID(), wantCurrent.CurrentID())
+	}
+	if ring.PreviousID() != wantPrevious.CurrentID() {
+		t.Fatalf("PreviousID() = %q, want %q (id ключа, выведенного из previous): "+
+			"если внутри wireSecretRing NewKeyring зовётся с пустой строкой вместо "+
+			"previous-параметра, PreviousID() вернётся пустым и этот ассерт провалится — "+
+			"именно так выжила находка ревью «кольцо теряет предыдущий ключ, "+
+			"ротация молча перестаёт работать»", ring.PreviousID(), wantPrevious.CurrentID())
+	}
+}
+
+// TestWireSecretRingDistributesSameRingToAllThree — структурная проверка
+// второй половины «проводки кольца»: ровно три вызова SetKeyring внутри
+// wireSecretRing, и ВСЕ — с одним и тем же идентификатором (тем самым, в
+// который присвоен результат secretbox.NewKeyring выше по функции). Юнит-
+// тестом этот факт не накрыть: org.Service/alert.Service/uptime.Service не
+// отдают своё внутреннее кольцо наружу (unexported-поле — см. их SetKeyring),
+// а поднимать ради этого реальную БД, чтобы косвенно доказывать через
+// сквозное шифрование/расшифровку «раздано ли ОДНО и ТО ЖЕ кольцо трём
+// сервисам» — избыточно: это чисто структурный факт исходника, тем же
+// приёмом, что и TestRewrapAllSecretsCallSiteOrder выше (go/ast, а не
+// компиляция — не привязан к номерам строк). Мутация «убрать один из трёх
+// SetKeyring» (сервис остаётся без кольца на время ротации) или «подсунуть
+// одному из сервисов другое кольцо» (тот же эффект, но незаметнее) обязана
+// уронить именно этот тест.
+func TestWireSecretRingDistributesSameRingToAllThree(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+
+	var fn *ast.FuncDecl
+	ast.Inspect(file, func(n ast.Node) bool {
+		if f, ok := n.(*ast.FuncDecl); ok && f.Name.Name == "wireSecretRing" {
+			fn = f
+		}
+		return true
+	})
+	if fn == nil {
+		t.Fatalf("объявление func wireSecretRing не найдено в main.go")
+	}
+
+	// ringIdent — идентификатор, в который присвоен результат
+	// secretbox.NewKeyring(...) внутри тела функции: это и есть «то самое»
+	// кольцо, которое обязано попасть во все три SetKeyring ниже.
+	var ringIdent string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 || len(assign.Lhs) == 0 {
+			return true
+		}
+		call, ok := assign.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "NewKeyring" {
+			return true
+		}
+		if id, ok := assign.Lhs[0].(*ast.Ident); ok {
+			ringIdent = id.Name
+		}
+		return true
+	})
+	if ringIdent == "" {
+		t.Fatalf("не нашёл присваивание результата secretbox.NewKeyring внутри wireSecretRing — " +
+			"тест не нашёл ориентир, проверь, что сборка кольца всё ещё выглядит как " +
+			"`ring, err := secretbox.NewKeyring(...)`")
+	}
+
+	var receivers, args []string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "SetKeyring" {
+			return true
+		}
+		recv, ok := sel.X.(*ast.Ident)
+		if !ok {
+			t.Fatalf("SetKeyring вызван на получателе типа %T, не на простом идентификаторе — "+
+				"тест не умеет это разобрать, проверь вручную", sel.X)
+		}
+		receivers = append(receivers, recv.Name)
+		if len(call.Args) != 1 {
+			t.Fatalf("SetKeyring вызван у %s с %d аргументами, want 1", recv.Name, len(call.Args))
+		}
+		arg, ok := call.Args[0].(*ast.Ident)
+		if !ok {
+			t.Fatalf("аргумент SetKeyring у %s — не идентификатор (%T)", recv.Name, call.Args[0])
+		}
+		args = append(args, arg.Name)
+		return true
+	})
+
+	if len(receivers) != 3 {
+		t.Fatalf("вызовов SetKeyring внутри wireSecretRing = %d (получатели: %v), want 3 "+
+			"(orgSvc+alertSvc+uptimeSvc) — пропавший узел раздачи молча оставляет сервис "+
+			"без кольца на время ротации", len(receivers), receivers)
+	}
+	seen := map[string]bool{}
+	for _, r := range receivers {
+		if seen[r] {
+			t.Fatalf("получатель %q встречается среди SetKeyring дважды (%v) — ожидались три "+
+				"РАЗНЫХ сервиса, а не двойная раздача одному и пропуск другого", r, receivers)
+		}
+		seen[r] = true
+	}
+	for i, arg := range args {
+		if arg != ringIdent {
+			t.Fatalf("SetKeyring у %s вызван с %q, want %q (кольцо, собранное secretbox.NewKeyring "+
+				"выше по функции): сервис получил бы ДРУГОЕ кольцо, чем остальные два, и молчаливо "+
+				"потерял бы доступ к части секретов на время ротации", receivers[i], arg, ringIdent)
+		}
+	}
+}
+
 // newBootstrapOrgAndProject заводит организацию и проект напрямую SQL — тем
 // же приёмом, что newEvalProject (internal/alert) и newOrgWithSSO
 // (internal/org). Секреты (org_sso/alert_channels/monitors) заводятся ниже
