@@ -1,6 +1,7 @@
 package secretbox
 
 import (
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -152,6 +153,68 @@ func TestRingWithPrevOpensAllForms(t *testing.T) {
 			t.Fatalf("Open(v2 foreign) err = %q, want to contain foreign key id %q", err.Error(), foreign.CurrentID())
 		}
 	})
+}
+
+// TestOpenV1UnknownKeyNeitherRingMember — v1-конверт, запечатанный ключом,
+// которого нет в кольце ни текущим, ни предыдущим: обе попытки openRaw
+// проваливаются, Open обязан отдать ErrOpen. Отличается от
+// TestOpenV1LegacyVector (там текущий ключ кольца совпадает с ключом
+// вектора) — здесь не совпадает ни один из двух.
+func TestOpenV1UnknownKeyNeitherRingMember(t *testing.T) {
+	ring, err := NewKeyring("v1-unknown-current-master", "v1-unknown-previous-master")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	got, err := ring.Open(v1FixedEnvelope)
+	if !errors.Is(err, ErrOpen) {
+		t.Fatalf("Open(v1FixedEnvelope) err = %v, want ErrOpen", err)
+	}
+	if got != "" {
+		t.Fatalf("Open(v1FixedEnvelope) = %q, want empty on ErrOpen", got)
+	}
+}
+
+// TestOpenV2BitFlippedCiphertext — v2-конверт, запечатанный ТЕКУЩИМ ключом
+// кольца, у которого затем испорчен байт в теле ciphertext (id конверта
+// остаётся верным). keyByID находит ключ по id без проблем, поэтому падение
+// происходит именно на проверке Poly1305 внутри openRaw — сценарий, который
+// старый пакет покрывал TestOpenBitFlippedCiphertext, а новые тесты Keyring
+// не унаследовали (существующие «нечитаемые» кейсы используют ЧУЖОЙ id и
+// бьют мимо, отказывая ещё в keyByID).
+func TestOpenV2BitFlippedCiphertext(t *testing.T) {
+	ring, err := NewKeyring("bitflip-current-master", "")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	sealed, err := ring.Seal("bitflip-secret")
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	// sealed = "enc:v2:<id>:<base64(nonce24‖ciphertext)>" — портим байт
+	// строго внутри тела ciphertext (после 24-байтного nonce), а не в id и
+	// не в base64-обвязке, чтобы декодирование не свалилось раньше времени
+	// и падение случилось на Poly1305, а не на разборе конверта.
+	prefix := v2Prefix + ring.CurrentID() + ":"
+	if !strings.HasPrefix(sealed, prefix) {
+		t.Fatalf("Seal() = %q, want prefix %q", sealed, prefix)
+	}
+	raw, err := base64.StdEncoding.DecodeString(sealed[len(prefix):])
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	if len(raw) <= 24 {
+		t.Fatalf("decoded payload too short to contain ciphertext: %d bytes", len(raw))
+	}
+	raw[24] ^= 0x01 // флип бита в первом байте ciphertext, сразу после nonce
+	corrupted := prefix + base64.StdEncoding.EncodeToString(raw)
+
+	got, err := ring.Open(corrupted)
+	if !errors.Is(err, ErrOpen) {
+		t.Fatalf("Open(corrupted v2) err = %v, want ErrOpen", err)
+	}
+	if got != "" {
+		t.Fatalf("Open(corrupted v2) = %q, want empty on ErrOpen", got)
+	}
 }
 
 // TestRewrapMatrix — матрица §4 спеки целиком.
