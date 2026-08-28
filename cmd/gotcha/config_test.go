@@ -1,8 +1,12 @@
 package main
 
 import (
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
 func getenvFrom(m map[string]string) func(string) string {
@@ -1265,5 +1269,130 @@ func TestLoadConfigRunEvaluatorsTriState(t *testing.T) {
 		if *cfg.RunEvaluators != tc.want {
 			t.Errorf("GOTCHA_RUN_EVALUATORS=%q: RunEvaluators = %v, want %v", tc.value, *cfg.RunEvaluators, tc.want)
 		}
+	}
+}
+
+// sortedRenamedOldNames — старые имена envcontract.Renamed в детерминированном
+// (алфавитном) порядке. Поведенческие тесты ниже намеренно не пишут ни одного
+// старого имени буквально: TestNoRenamedEnvVarNames (internal/guards) иначе
+// пришлось бы выводить из-под проверки весь этот файл, а не точечную
+// фикстуру-справочник (см. cmd/gotcha/renamed_env_contract_test.go) — файл с
+// сотнями других GOTCHA_-токенов растёт с каждой фичей конфига, и случайно
+// оставленное там старое имя сторож обязан ловить. Вместо литералов тесты
+// берут пару(ы) прямо из карты-истины: тест остаётся привязан к ней и не
+// слабеет (проверяется механика отказа, а не конкретное имя), а вывод
+// t.Errorf всё равно называет ИМЕННО ту пару, что проверялась, — она просто
+// подставляется в текст ошибки как переменная, а не пишется в код теста.
+func sortedRenamedOldNames() []string {
+	names := make([]string, 0, len(envcontract.Renamed))
+	for old := range envcontract.Renamed {
+		names = append(names, old)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// renamedEnvVarNewNameChecks — новое имя → (тестовое значение, читатель
+// соответствующего поля Config). TestLoadConfigRenamedEnvVarNewNameStillApplies
+// ниже проходит ПО ВСЕЙ этой таблице подтестами, а не по одной записи —
+// таблица, по которой реально не итерируются, ничем не отличается от
+// комментария: ложная уверенность в покрытии десяти переименований на деле
+// покрывала бы одно. Полноту самой таблицы (что в ней ровно те новые имена,
+// что есть в envcontract.Renamed, — ни лишних, ни пропущенных) проверяет
+// TestRenamedEnvVarNewNameChecksComplete в renamed_env_contract_test.go.
+var renamedEnvVarNewNameChecks = map[string]struct {
+	value string
+	get   func(Config) string
+}{
+	"GOTCHA_METRIC_EVAL_INTERVAL_SECONDS":  {"301", func(c Config) string { return strconv.Itoa(c.MetricEvalInterval) }},
+	"GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS": {"302", func(c Config) string { return strconv.Itoa(c.ProfileEvalInterval) }},
+	"GOTCHA_HOST_EVAL_INTERVAL_SECONDS":    {"303", func(c Config) string { return strconv.Itoa(c.HostEvalInterval) }},
+	"GOTCHA_SLO_EVAL_INTERVAL_SECONDS":     {"304", func(c Config) string { return strconv.Itoa(c.SLOEvalInterval) }},
+	"GOTCHA_ESCALATION_INTERVAL_SECONDS":   {"305", func(c Config) string { return strconv.Itoa(c.EscalationInterval) }},
+	"GOTCHA_EVENT_RETENTION_DAYS":          {"306", func(c Config) string { return strconv.Itoa(c.RetentionDays) }},
+	"GOTCHA_PROBE_SERVER_URL":              {"https://renamed-regression.example", func(c Config) string { return c.ServerURL }},
+	"GOTCHA_INGEST_RATE_PER_SEC":           {"307", func(c Config) string { return strconv.Itoa(c.IngestRateLimit) }},
+	"GOTCHA_DIST_DIR":                      {"/tmp/renamed-regression-dist", func(c Config) string { return c.AgentDistDir }},
+	"GOTCHA_DIST_RATE_PER_MIN":             {"308", func(c Config) string { return strconv.Itoa(c.AgentDistRatePerMin) }},
+}
+
+// TestLoadConfigRenamedEnvVarFailsStart — старое имя переменной окружения с
+// непустым значением роняет старт (envcontract.Renamed), а не молча
+// подменяется дефолтом. Сообщение обязано называть И старое, И новое имя —
+// оператор должен сразу понять, что чинить.
+func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
+	old := sortedRenamedOldNames()[0]
+	newName := envcontract.Renamed[old]
+
+	_, err := loadConfig(getenvFrom(map[string]string{old: "some-value"}), nil)
+	if err == nil {
+		t.Fatalf("loadConfig: want ошибку на устаревшем %s, получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) {
+		t.Errorf("err = %q, want упоминание старого имени %s", err, old)
+	}
+	if !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание нового имени %s", err, newName)
+	}
+}
+
+// TestLoadConfigRenamedEnvVarsListsAllFindings — несколько устаревших
+// переменных сразу: сообщение обязано перечислить ВСЕ найденные старые
+// имена, а не только первое встреченное при обходе карты — иначе оператор
+// чинит их по одному, по циклу деплоя на переменную.
+func TestLoadConfigRenamedEnvVarsListsAllFindings(t *testing.T) {
+	names := sortedRenamedOldNames()
+	old1, old2 := names[0], names[1]
+
+	_, err := loadConfig(getenvFrom(map[string]string{
+		old1: "x",
+		old2: "y",
+	}), nil)
+	if err == nil {
+		t.Fatalf("loadConfig: want ошибку на двух устаревших именах, получили nil")
+	}
+	for _, old := range []string{old1, old2} {
+		if !strings.Contains(err.Error(), old) {
+			t.Errorf("err = %q, want упоминание %s (найдено больше одного устаревшего имени)", err, old)
+		}
+	}
+}
+
+// TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart — пустое значение
+// старого имени не роняет старт: docker-compose штатно прокидывает
+// объявленные, но не заданные переменные пустой строкой, и такое значение и
+// раньше ничего не применяло бы.
+func TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart(t *testing.T) {
+	old := sortedRenamedOldNames()[0]
+	if _, err := loadConfig(getenvFrom(map[string]string{old: ""}), nil); err != nil {
+		t.Errorf("loadConfig с пустым устаревшим %s: %v, want nil (пустое значение легитимно)", old, err)
+	}
+}
+
+// TestLoadConfigRenamedEnvVarNewNameStillApplies — регрессия: проверка
+// устаревших имён не задевает применение НОВОГО имени, пришедшего той же
+// волной переименования. Идёт ПОДТЕСТОМ на КАЖДУЮ запись renamedEnvVarNewNameChecks
+// (а не берёт одну произвольную пару) — иначе таблица из десяти строк
+// защищала бы ровно одно переименование, а девять остальных были бы никогда
+// не вызываемым мёртвым кодом. Имя подтеста — само новое имя переменной:
+// упавшая строка сразу называет себя в выводе `go test`.
+func TestLoadConfigRenamedEnvVarNewNameStillApplies(t *testing.T) {
+	newNames := make([]string, 0, len(renamedEnvVarNewNameChecks))
+	for newName := range renamedEnvVarNewNameChecks {
+		newNames = append(newNames, newName)
+	}
+	sort.Strings(newNames)
+
+	for _, newName := range newNames {
+		check := renamedEnvVarNewNameChecks[newName]
+		t.Run(newName, func(t *testing.T) {
+			cfg, err := loadConfig(getenvFrom(map[string]string{newName: check.value}), nil)
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if got := check.get(cfg); got != check.value {
+				t.Errorf("%s=%q: соответствующее поле Config = %q, want %q (регрессия применения нового имени)", newName, check.value, got, check.value)
+			}
+		})
 	}
 }

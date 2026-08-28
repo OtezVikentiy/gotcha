@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking.** Ten environment variables have been renamed: the unit of
   measurement is now part of the name, and the agent-distribution and remote-probe
   variables carry the correct subsystem prefix. The old names are no longer read —
-  update your `.env` and compose variables before upgrading.
+  update your `.env` and compose variables before upgrading. An old name set to a
+  non-empty value now refuses to start, naming the new variable, instead of
+  silently applying a default.
 
   | Before | After |
   |---|---|

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
 // renamedEnvVars — старые имена переменных окружения (переименованы этой
@@ -18,19 +20,15 @@ import (
 // существовало — скопированная команда молча не работала бы, и поймал это
 // человек, а не гейт. Этот сторож закрывает класс находки целиком: ни одно
 // из десяти старых имён не должно встречаться нигде в дереве (кроме
-// CHANGELOG — см. докблок TestNoRenamedEnvVarNames).
-var renamedEnvVars = map[string]string{
-	"GOTCHA_METRIC_EVAL_INTERVAL":    "GOTCHA_METRIC_EVAL_INTERVAL_SECONDS",
-	"GOTCHA_PROFILE_EVAL_INTERVAL":   "GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS",
-	"GOTCHA_HOST_EVAL_INTERVAL":      "GOTCHA_HOST_EVAL_INTERVAL_SECONDS",
-	"GOTCHA_SLO_EVAL_INTERVAL":       "GOTCHA_SLO_EVAL_INTERVAL_SECONDS",
-	"GOTCHA_ESCALATION_INTERVAL":     "GOTCHA_ESCALATION_INTERVAL_SECONDS",
-	"GOTCHA_RETENTION_DAYS":          "GOTCHA_EVENT_RETENTION_DAYS",
-	"GOTCHA_SERVER_URL":              "GOTCHA_PROBE_SERVER_URL",
-	"GOTCHA_INGEST_RATE_LIMIT":       "GOTCHA_INGEST_RATE_PER_SEC",
-	"GOTCHA_AGENT_DIST_DIR":          "GOTCHA_DIST_DIR",
-	"GOTCHA_AGENT_DIST_RATE_PER_MIN": "GOTCHA_DIST_RATE_PER_MIN",
-}
+// CHANGELOG и файла-истины — см. докблок TestNoRenamedEnvVarNames).
+//
+// Сам список — не собственная копия, а псевдоним envcontract.Renamed
+// (internal/envcontract/renamed.go, ЕДИНСТВЕННАЯ истина). Держать здесь
+// вторую копию значило бы завести ровно ту дыру, ради закрытия которой этот
+// сторож и написан: при следующем переименовании кто-то поправил бы карту в
+// cmd/gotcha/config.go, забыл про копию сторожа — и сторож продолжал бы
+// зелено проверять уже неактуальный список.
+var renamedEnvVars = envcontract.Renamed
 
 // gotchaTokenRe находит МАКСИМАЛЬНЫЙ идентификатор вида GOTCHA_..., а не
 // голое вхождение старого имени как подстроки. Границы \b по обе стороны и
@@ -123,12 +121,28 @@ var renamedEnvVarsSkipRootDirs = map[string]bool{
 //     Исключение точечно одного файла сторожа не закрыло бы эту находку и
 //     потребовало бы отдельного списка; исключение всего пакета — уже
 //     проверенный в этом репозитории приём, который заодно исключает и сам
-//     этот файл (в нём все десять старых имён перечислены по определению,
-//     см. renamedEnvVars) без отдельной строки самоисключения, которая
+//     этот файл (renamedEnvVars — псевдоним envcontract.Renamed, а его
+//     идентификаторы-ключи карты сами являются токенами GOTCHA_..., пусть и
+//     не буквальным литералом) без отдельной строки самоисключения, которая
 //     сама могла бы стать дырой;
+//   - internal/envcontract/renamed.go — файл-истина (см. renamedEnvVars
+//     выше). Исключение ТОЧЕЧНО одного файла, а не всего пакета: envcontract
+//     может обрасти другими файлами (тестом карты, будущими фактами о
+//     совместимости env), и они не должны получить безусловный пропуск
+//     старых имён просто по соседству с истиной;
 //   - CHANGELOG.md/CHANGELOG.ru.md — там старые имена верны как
 //     историческая запись прошлых релизов, править их значило бы
-//     фальсифицировать историю.
+//     фальсифицировать историю;
+//   - cmd/gotcha/renamed_env_contract_test.go — держит независимую сверку
+//     envcontract.Renamed с документированным в CHANGELOG списком
+//     (TestEnvcontractRenamedComplete): её want-таблица по определению
+//     повторяет все десять старых имён буквально, иначе тест сверял бы карту
+//     саму с собой и не заметил бы порчи. Исключение точечно ЭТОГО файла, а
+//     не всего cmd/gotcha: config_test.go (где живут поведенческие тесты
+//     самого отказа старта) старое имя не пишет НИ РАЗУ — тесты берут пару
+//     прямо из envcontract.Renamed (sortedRenamedOldNames), поэтому остаётся
+//     под сторожем целиком и растёт вместе с фичами конфига, не становясь
+//     слепой зоной.
 //
 // Обход собственный, не через guards.Tree/Load: Tree (tree.go) намеренно не
 // включает markdown-документацию и .env.example — как раз те файлы, ради
@@ -176,6 +190,14 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 			return nil
 		}
 		if rel == "CHANGELOG.md" || rel == "CHANGELOG.ru.md" {
+			return nil
+		}
+		// internal/envcontract/renamed.go — файл-истина,
+		// cmd/gotcha/renamed_env_contract_test.go — справочник для сверки
+		// с CHANGELOG; оба исключения разобраны в докблоке
+		// TestNoRenamedEnvVarNames выше. cmd/gotcha/config_test.go под
+		// сторожем целиком — его поведенческие тесты старое имя не пишут.
+		if rel == "internal/envcontract/renamed.go" || rel == "cmd/gotcha/renamed_env_contract_test.go" {
 			return nil
 		}
 		if !renamedEnvVarsExtensions[filepath.Ext(rel)] && !renamedEnvVarsExactNames[filepath.Base(rel)] {
