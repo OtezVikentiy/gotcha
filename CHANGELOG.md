@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GOTCHA_SECRET_KEY_PREV` environment variable to support rotating
+  `GOTCHA_SECRET_KEY` without losing access to previously encrypted secrets:
+  set it to the old key alongside the new `GOTCHA_SECRET_KEY`, restart, and
+  the app re-encrypts everything readable (SSO client secrets, channel
+  tokens, monitor headers) under the new key. See /docs/privacy for the full
+  procedure.
+
+### Changed
+- At-rest encrypted values now carry a format version and the ID of the key
+  they were sealed with (`enc:v2:<key-id>:...`), so key rotation can be
+  verified directly in the database instead of by trial and error. The
+  previous format (`enc:...`, no version) is still read without limit.
+- Encryption backfill now runs on every start and upgrades everything
+  readable to the new format under the current key, including values that
+  were never encrypted because the instance once ran on the default dev key.
+  Previously, setting a real key after the fact left existing rows in plain
+  text until they were manually re-saved.
+
+### Breaking
+- **Downgrading to a version below this one is not supported once any
+  secret has been written in the new envelope format.** An older binary
+  doesn't recognize `enc:v2:...` as ciphertext, treats it as a legacy plain
+  secret, and sends it out as-is — delivery channel and SSO integrations
+  will silently break. Roll forward only.
+
 ## [0.24.0] - 2026-08-28
 
 ### Added

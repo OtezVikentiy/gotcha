@@ -15,24 +15,52 @@ the product does not pretend otherwise.
 
 Two consequences worth knowing:
 
-- Setting a real key later does **not** encrypt what is already stored. Existing
-  rows stay readable as legacy plain text; only values written afterwards are
-  encrypted. If an instance ever ran on the dev key with real credentials,
-  re-enter those credentials after setting a proper key.
+- Setting a real key encrypts what's already stored, too: on every boot, the
+  app re-wraps all readable secrets (SSO client secrets, delivery channel
+  tokens, monitor headers) under the current key, including values that are
+  still sitting as legacy plain text. The exception is values that are
+  already unreadable (for example, sealed under a lost key): the backfill
+  leaves those alone and logs them — they still need to be re-entered
+  manually through the UI.
 - On a non-local `GOTCHA_BASE_URL` the app refuses to start with the default key
   in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`), so this normally only affects local instances — unless
   the refusal was explicitly overridden.
-- **Rotating `GOTCHA_SECRET_KEY` on a running instance is a breaking operation.**
-  Encrypted values (`enc:...`) don't carry a key ID/version, so a new key cannot
-  decrypt ANY previously stored value (SSO client secrets, delivery channel
-  tokens, monitor headers) — they become unreadable (decryption error), exactly
-  as with a wrong key. Reads degrade gracefully (each secret is flagged broken
-  individually rather than failing the whole list), but a working channel/SSO
-  integration will stop functioning until its secret is manually re-entered
-  after rotation. If you do need to rotate the key (leak, scheduled rotation),
-  plan for a manual re-encrypt: after switching keys, reopen and re-save every
-  secret (SSO client secret, Telegram/webhook channel tokens, monitor headers)
-  through the UI so it gets written back under the new key.
+
+## Rotating the encryption key (`GOTCHA_SECRET_KEY`)
+
+**Before you start: step 1 logs out every user.** The key that signs session
+and OAuth cookies is derived from the same master key as at-rest encryption,
+so rotating `GOTCHA_SECRET_KEY` invalidates all active sessions. That's an
+unavoidable part of rotation in the current design, not a bug — warn your
+users ahead of time instead of fielding complaints afterward.
+
+Encrypted values carry the fingerprint of the key that sealed them
+(`enc:v2:<key-id>:...`), so rotation is a managed, reversible procedure
+rather than a one-shot secret swap:
+
+1. Set `GOTCHA_SECRET_KEY_PREV=<old key>` and the new
+   `GOTCHA_SECRET_KEY=<new key>`, then restart the instance. On boot,
+   everything readable (SSO client secrets, channel tokens, monitor headers)
+   is re-encrypted under the new key; the outcome for each of the three
+   stores is logged, along with the key-ring IDs.
+2. Confirm the log lines show zero skipped values, then check the database
+   directly to make sure no envelopes with the old key ID remain (`<old-id>`
+   comes from the log in step 1):
+
+   ```sql
+   SELECT count(*) FROM alert_channels WHERE secret LIKE 'enc:v2:<old-id>:%';
+   SELECT count(*) FROM org_sso WHERE client_secret LIKE 'enc:v2:<old-id>:%';
+   SELECT count(*) FROM monitors WHERE config::text LIKE '%enc:v2:<old-id>:%';
+   ```
+
+   All three should return `0`.
+3. Remove `GOTCHA_SECRET_KEY_PREV` and restart again. The key ring is back to
+   a single key.
+
+Rotation is reversible as long as the old key isn't lost: swapping the two
+keys (`GOTCHA_SECRET_KEY=<old>`, `GOTCHA_SECRET_KEY_PREV=<new>`) rolls the
+instance back the same way. Fear of irreversibility shouldn't be the reason
+rotation gets postponed — it doesn't need to be.
 
 ## What personal data is processed
 
