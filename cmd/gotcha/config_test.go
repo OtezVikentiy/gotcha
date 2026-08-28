@@ -668,8 +668,11 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 		if err == nil {
 			t.Fatal("PREV == дев-ключ: want error, got nil")
 		}
-		if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
-			t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+		// Фрагмент уникален для ветки «PREV == дев-ключ»: остальные две ветки
+		// его не содержат, поэтому переклейка текстов ошибок между ветками
+		// этот тест уронит (см. мутацию в отчёте задачи).
+		if !strings.Contains(err.Error(), "public dev default") {
+			t.Errorf("error = %q, want it to mention that PREV cannot be the public dev default", err)
 		}
 	})
 
@@ -683,8 +686,9 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 		if err == nil {
 			t.Fatal("PREV == текущий ключ: want error, got nil")
 		}
-		if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
-			t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+		// Фрагмент уникален для ветки «PREV == текущий ключ».
+		if !strings.Contains(err.Error(), "differ from GOTCHA_SECRET_KEY") {
+			t.Errorf("error = %q, want it to mention that PREV must differ from GOTCHA_SECRET_KEY", err)
 		}
 	})
 
@@ -699,8 +703,9 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 		if err == nil {
 			t.Fatal("текущий ключ дев + PREV задан: want error, got nil")
 		}
-		if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
-			t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+		// Фрагмент уникален для ветки «текущий ключ ещё дев».
+		if !strings.Contains(err.Error(), "still the dev default") {
+			t.Errorf("error = %q, want it to mention that GOTCHA_SECRET_KEY is still the dev default", err)
 		}
 	})
 
