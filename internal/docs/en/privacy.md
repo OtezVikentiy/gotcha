@@ -28,11 +28,17 @@ Two consequences worth knowing:
 
 ## Rotating the encryption key (`GOTCHA_SECRET_KEY`)
 
-**Before you start: step 1 logs out every user.** The key that signs session
-and OAuth cookies is derived from the same master key as at-rest encryption,
-so rotating `GOTCHA_SECRET_KEY` invalidates all active sessions. That's an
-unavoidable part of rotation in the current design, not a bug — warn your
-users ahead of time instead of fielding complaints afterward.
+**Before you start: there's no downtime to announce.** Sessions are stored
+separately from at-rest encryption — the session token doesn't depend on
+`GOTCHA_SECRET_KEY` — so rotating the key doesn't log anyone out, and active
+sessions survive it untouched. That's worth stating plainly because the
+natural expectation from swapping an encryption key runs the other way. The
+one thing rotation can catch is a user who happens to be mid-way through an
+OAuth redirect at the moment of restart: the signed cookie for that step is
+sealed under a separate subkey that changes along with `GOTCHA_SECRET_KEY`,
+and it won't verify after restart — that login just needs to be retried. Any
+ordinary restart landing in that same narrow window has the same effect, so
+for users, rotation is no different from a routine restart.
 
 Encrypted values carry the fingerprint of the key that sealed them
 (`enc:v2:<key-id>:...`), so rotation is a managed, reversible procedure
@@ -42,7 +48,14 @@ rather than a one-shot secret swap:
    `GOTCHA_SECRET_KEY=<new key>`, then restart the instance. On boot,
    everything readable (SSO client secrets, channel tokens, monitor headers)
    is re-encrypted under the new key; the outcome for each of the three
-   stores is logged, along with the key-ring IDs.
+   stores is logged, along with the key-ring IDs, in a line like:
+
+   ```
+   INFO secretbox keyring ready current_key_id=<new-id> previous_key_id=<old-id> rotation_in_progress=true
+   ```
+
+   `current_key_id` is the new key; `previous_key_id` is the `<old-id>`
+   you'll need in the next step.
 2. Confirm the log lines show zero skipped values, then check the database
    directly to make sure no envelopes with the old key ID remain (`<old-id>`
    comes from the log in step 1):
