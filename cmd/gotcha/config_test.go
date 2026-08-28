@@ -648,6 +648,145 @@ func TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs — GOTCHA_SECRET_KEY_PREV
+// задаёт предыдущий мастер-ключ на время ротации. Три сочетания с текущим
+// ключом физически не могут означать «ротация идёт», и отказ старта тут —
+// не про стойкость ключа (как у GOTCHA_ALLOW_INSECURE_SECRET), а про то, что
+// молча проигнорированная переменная в .env убедила бы оператора в ротации,
+// которой на самом деле нет.
+func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
+	const strongCurrent = "current-master-key-at-least-32-bytes!!"
+	const strongOther = "other-master-key-also-32-bytes-long!!!"
+
+	t.Run("PREV равен дев-ключу", func(t *testing.T) {
+		env := map[string]string{
+			"GOTCHA_BASE_URL":        "https://gotcha.example.com",
+			"GOTCHA_SECRET_KEY":      strongCurrent,
+			"GOTCHA_SECRET_KEY_PREV": devSecretKey,
+		}
+		_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+		if err == nil {
+			t.Fatal("PREV == дев-ключ: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
+			t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+		}
+	})
+
+	t.Run("PREV равен текущему ключу", func(t *testing.T) {
+		env := map[string]string{
+			"GOTCHA_BASE_URL":        "https://gotcha.example.com",
+			"GOTCHA_SECRET_KEY":      strongCurrent,
+			"GOTCHA_SECRET_KEY_PREV": strongCurrent,
+		}
+		_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+		if err == nil {
+			t.Fatal("PREV == текущий ключ: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
+			t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+		}
+	})
+
+	t.Run("текущий ключ дев, PREV задан", func(t *testing.T) {
+		// Локальный BaseURL, чтобы не упереться в ЧУЖУЮ проверку (дефолтный
+		// ключ на не-локальном URL) раньше, чем в свою.
+		env := map[string]string{
+			"GOTCHA_BASE_URL":        "http://localhost:8080",
+			"GOTCHA_SECRET_KEY_PREV": strongOther,
+		}
+		_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+		if err == nil {
+			t.Fatal("текущий ключ дев + PREV задан: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
+			t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+		}
+	})
+
+	t.Run("корректная пара стартует", func(t *testing.T) {
+		env := map[string]string{
+			"GOTCHA_BASE_URL":        "https://gotcha.example.com",
+			"GOTCHA_SECRET_KEY":      strongCurrent,
+			"GOTCHA_SECRET_KEY_PREV": strongOther,
+		}
+		cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+		if err != nil {
+			t.Fatalf("корректная пара ключей должна стартовать: %v", err)
+		}
+		if cfg.SecretKeyPrev != strongOther {
+			t.Errorf("SecretKeyPrev = %q, want %q", cfg.SecretKeyPrev, strongOther)
+		}
+	})
+
+	t.Run("пустой PREV — норма", func(t *testing.T) {
+		env := map[string]string{
+			"GOTCHA_BASE_URL":   "https://gotcha.example.com",
+			"GOTCHA_SECRET_KEY": strongCurrent,
+		}
+		cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+		if err != nil {
+			t.Fatalf("пустой PREV — ротации нет, старт должен пройти: %v", err)
+		}
+		if cfg.SecretKeyPrev != "" {
+			t.Errorf("SecretKeyPrev = %q, want пусто", cfg.SecretKeyPrev)
+		}
+	})
+
+	t.Run("короткий PREV — норма, порога нет", func(t *testing.T) {
+		env := map[string]string{
+			"GOTCHA_BASE_URL":        "http://localhost:8080",
+			"GOTCHA_SECRET_KEY":      strongCurrent,
+			"GOTCHA_SECRET_KEY_PREV": "short-prev-key",
+		}
+		cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+		if err != nil {
+			t.Fatalf("короткий PREV не про стойкость: порога длины нет: %v", err)
+		}
+		if cfg.SecretKeyPrev != "short-prev-key" {
+			t.Errorf("SecretKeyPrev = %q, want short-prev-key", cfg.SecretKeyPrev)
+		}
+	})
+}
+
+// TestLoadConfig_SecretKeyPrevAllowInsecureDoesNotBypass —
+// GOTCHA_ALLOW_INSECURE_SECRET снимает требования к СТОЙКОСТИ ключа (дефолтный,
+// короткий), а не к ЛОГИЧЕСКОЙ согласованности пары current/PREV: конфиг,
+// который физически не может делать то, что от него ждут, «разрешать» нечего.
+func TestLoadConfig_SecretKeyPrevAllowInsecureDoesNotBypass(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL":              "https://gotcha.example.com",
+		"GOTCHA_SECRET_KEY_PREV":       "some-other-strong-previous-key-32b!!",
+		"GOTCHA_ALLOW_INSECURE_SECRET": "1",
+		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret, что само по
+		// себе разрешено эскейп-хэтчем, но с заданным PREV ротация невозможна
+		// (дев-ключом ничего не шифровалось), и эскейп-хэтч это не чинит.
+	}
+	_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err == nil {
+		t.Fatal("GOTCHA_ALLOW_INSECURE_SECRET=1 не должен снимать проверку PREV: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
+		t.Errorf("error = %q, want it to mention GOTCHA_SECRET_KEY_PREV", err)
+	}
+}
+
+// TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode — probe не расшифровывает
+// секретов вообще (см. secretKeyMattersFor), поэтому мёртвая для него
+// переменная не должна ронять зонд — ровно то же правило, по которому в probe
+// не проверяется и сам GOTCHA_SECRET_KEY.
+func TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN":      "ptok",
+		// PREV равен дев-ключу — в любом другом режиме это отказ старта.
+		"GOTCHA_SECRET_KEY_PREV": devSecretKey,
+	}
+	if _, err := loadConfig(getenvFrom(env), []string{"--mode=probe"}); err != nil {
+		t.Fatalf("probe не проверяет PREV, ключ ему не нужен: %v", err)
+	}
+}
+
 func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
