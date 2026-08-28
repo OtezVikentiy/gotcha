@@ -20,7 +20,7 @@ func TestUpdateChannelKeepsSecret(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
-	svc.SetSecretKey("a-strong-master-key-for-channel-secrets")
+	svc.SetKeyring(mustKeyring(t, "a-strong-master-key-for-channel-secrets"))
 	ctx := context.Background()
 	pid := newEvalProject(t, pool, "chanupd")
 
@@ -118,7 +118,7 @@ func TestUpdateChannelReplacesSecret(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
-	svc.SetSecretKey("a-strong-master-key-for-channel-secrets")
+	svc.SetKeyring(mustKeyring(t, "a-strong-master-key-for-channel-secrets"))
 	ctx := context.Background()
 	pid := newEvalProject(t, pool, "chanupd2")
 
@@ -316,7 +316,7 @@ func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
 
 	// Канал заведён под одним мастер-ключом...
 	svc := alert.NewService(pool)
-	svc.SetSecretKey("original-master-key-for-channel-secrets")
+	svc.SetKeyring(mustKeyring(t, "original-master-key-for-channel-secrets"))
 	id, err := svc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true,
 		Target: "-100500", Secret: "bot-token",
@@ -328,7 +328,7 @@ func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
 	// ...а читается под другим — ровно то, что происходит при смене
 	// GOTCHA_SECRET_KEY.
 	rotated := alert.NewService(pool)
-	rotated.SetSecretKey("a-completely-different-master-key-value")
+	rotated.SetKeyring(mustKeyring(t, "a-completely-different-master-key-value"))
 
 	chs, err := rotated.Channels(ctx, pid)
 	if err != nil {

@@ -57,7 +57,7 @@ func (s *Service) UpsertSSO(ctx context.Context, cfg SSOConfig) error {
 	// пишем plaintext — читатель это распознаёт по отсутствию префикса "enc:".
 	storedSecret := cfg.ClientSecret
 	if s.secretKeySet {
-		sealed, err := sealSecret(s.secretKey, cfg.ClientSecret)
+		sealed, err := s.ring.Seal(cfg.ClientSecret)
 		if err != nil {
 			return fmt.Errorf("org: seal sso secret: %w", err)
 		}
@@ -87,9 +87,9 @@ func scanSSO(row pgx.Row) (SSOConfig, error) {
 	return c, err
 }
 
-// decryptSSO расшифровывает client_secret прочитанного конфига, если задан
-// мастер-ключ. openSecret на legacy-plaintext (без префикса "enc:") вернёт
-// значение как есть, поэтому вызов безопасен и для старых записей.
+// decryptSSO расшифровывает client_secret прочитанного конфига, если задано
+// кольцо ключей. Keyring.Open на legacy-plaintext (без префикса "enc:")
+// вернёт значение как есть, поэтому вызов безопасен и для старых записей.
 func (s *Service) decryptSSO(c SSOConfig) (SSOConfig, error) {
 	if !s.secretKeySet {
 		if secretbox.IsEncrypted(c.ClientSecret) {
@@ -101,7 +101,7 @@ func (s *Service) decryptSSO(c SSOConfig) (SSOConfig, error) {
 		}
 		return c, nil
 	}
-	secret, err := openSecret(s.secretKey, c.ClientSecret)
+	secret, err := s.ring.Open(c.ClientSecret)
 	if err != nil {
 		return SSOConfig{}, fmt.Errorf("org: open sso secret: %w", err)
 	}

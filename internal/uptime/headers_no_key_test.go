@@ -13,7 +13,7 @@ import (
 // TestGetScrubsEncryptedHeadersWithoutMasterKey — воспроизводит W2/P1-7: монитор
 // заведён под мастер-ключом (значения заголовков зашифрованы, enc:-ciphertext в
 // БД), а читается сервисом БЕЗ ключа вовсе (откат GOTCHA_SECRET_KEY на
-// dev-дефолт: main.go SetSecretKey тогда не вызывается, secretKeySet остаётся
+// dev-дефолт: main.go SetKeyring тогда не вызывается, secretKeySet остаётся
 // false). Раньше decryptMonitorConfig был no-op при !secretKeySet и отдавал
 // config как есть — сырой enc:base64... лежал бы в значении заголовка. Теперь
 // такое значение обнуляется, а не отдаётся ciphertext'ом.
@@ -24,7 +24,7 @@ func TestGetScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 	pid := newProject(t, pool)
 
 	keyed := uptime.NewService(pool)
-	keyed.SetSecretKey("uptime-master-key-rollback")
+	keyed.SetKeyring(mustKeyring(t, "uptime-master-key-rollback"))
 	m := httpMonitorWithHeaders(t, pid, map[string]string{"Authorization": "Bearer rollback-victim"})
 	created, err := keyed.Create(ctx, m, []string{"local"}, nil)
 	if err != nil {
@@ -37,7 +37,7 @@ func TestGetScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 		t.Fatalf("precondition: header must be encrypted at rest, got plaintext %q", got)
 	}
 
-	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetSecretKey.
+	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetKeyring.
 	noKey := uptime.NewService(pool)
 	got, err := noKey.Get(ctx, created.ID)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestLeaseScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 	pid := newProject(t, pool)
 
 	keyed := uptime.NewService(pool)
-	keyed.SetSecretKey("uptime-master-key-rollback")
+	keyed.SetKeyring(mustKeyring(t, "uptime-master-key-rollback"))
 	m := httpMonitorWithHeaders(t, pid, map[string]string{"Authorization": "Bearer rollback-victim"})
 	created, err := keyed.Create(ctx, m, []string{"local"}, nil)
 	if err != nil {

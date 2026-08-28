@@ -26,6 +26,18 @@ func httpMonitorWithHeaders(t *testing.T, projectID int64, headers map[string]st
 	return m
 }
 
+// mustKeyring — тестовый шорткат: однокелевое кольцо шифрования из raw.
+// NewKeyring отказывает только на пустом current — тестовые мастер-ключи
+// здесь всегда заданы литералом, поэтому ошибка означала бы баг теста.
+func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
+	t.Helper()
+	ring, err := secretbox.NewKeyring(raw, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(%q): %v", raw, err)
+	}
+	return ring
+}
+
 // rawConfigOf читает config монитора напрямую из БД, минуя расшифровку сервиса,
 // — чтобы проверить, что в хранилище значения заголовков лежат зашифрованными.
 func rawConfigOf(t *testing.T, pool *pgxpool.Pool, id int64) uptime.HTTPConfig {
@@ -44,7 +56,7 @@ func rawConfigOf(t *testing.T, pool *pgxpool.Pool, id int64) uptime.HTTPConfig {
 func TestCreateEncryptsHeaderValuesAtRest(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
-	svc.SetSecretKey("uptime-master-key-A2a")
+	svc.SetKeyring(mustKeyring(t, "uptime-master-key-A2a"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -92,7 +104,7 @@ func TestCreateEncryptsHeaderValuesAtRest(t *testing.T) {
 func TestLeaseDecryptsHeaderValuesForChecker(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
-	svc.SetSecretKey("uptime-master-key-A2a")
+	svc.SetKeyring(mustKeyring(t, "uptime-master-key-A2a"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -151,7 +163,7 @@ func TestLegacyPlaintextHeadersStillReadable(t *testing.T) {
 
 	// Новый сервис С ключом читает legacy plaintext как есть (passthrough).
 	keyed := uptime.NewService(pool)
-	keyed.SetSecretKey("uptime-master-key-A2a")
+	keyed.SetKeyring(mustKeyring(t, "uptime-master-key-A2a"))
 	got, err := keyed.Get(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("get legacy: %v", err)
@@ -173,7 +185,7 @@ func TestLegacyPlaintextHeadersStillReadable(t *testing.T) {
 func TestUpdateDoesNotDoubleEncryptHeaders(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
-	svc.SetSecretKey("uptime-master-key-A2a")
+	svc.SetKeyring(mustKeyring(t, "uptime-master-key-A2a"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -235,7 +247,7 @@ func TestEncryptLegacyHeadersBackfill(t *testing.T) {
 
 	// Теперь шифрование включено. Новый монитор рождается уже enc:.
 	svc := uptime.NewService(pool)
-	svc.SetSecretKey("backfill-master-key")
+	svc.SetKeyring(mustKeyring(t, "backfill-master-key"))
 	encM, err := svc.Create(ctx, httpMonitorWithHeaders(t, pid, map[string]string{
 		"Authorization": "Bearer born-encrypted",
 	}), []string{"local"}, nil)

@@ -470,7 +470,7 @@ func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)
 	asvc := alert.NewService(pool)
-	asvc.SetSecretKey("test-master-key-at-least-32-bytes-long")
+	asvc.SetKeyring(mustKeyring(t, "test-master-key-at-least-32-bytes-long"))
 	ob := notify.NewOutbox(pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

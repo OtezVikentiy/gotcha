@@ -4,7 +4,6 @@ package org
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
@@ -12,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
 var (
@@ -92,10 +93,10 @@ type Service struct {
 	defaultMetricQuota  int64
 	defaultProfileQuota int64
 	defaultLogQuota     int64
-	// secretKey — мастер-ключ (sha256 от cfg.SecretKey) для шифрования
-	// чувствительных полей at-rest (org_sso.client_secret). secretKeySet=false
-	// (пустой ключ, dev) → шифрование выключено, пишем plaintext.
-	secretKey    [32]byte
+	// ring — кольцо ключей at-rest шифрования чувствительных полей
+	// (org_sso.client_secret). secretKeySet=false (кольцо не задано, dev) →
+	// шифрование выключено, пишем plaintext.
+	ring         secretbox.Keyring
 	secretKeySet bool
 }
 
@@ -117,15 +118,12 @@ func (s *Service) SetQuotaDefaults(transaction, metric, profile, log int64) {
 	s.defaultLogQuota = log
 }
 
-// SetSecretKey задаёт мастер-ключ шифрования чувствительных полей at-rest.
-// Ключ выводится как sha256 от произвольной строки (cfg.SecretKey). Пустой raw
-// оставляет шифрование выключенным (dev-стенды пишут plaintext). Вызывается из
-// bootstrap'а рядом с NewService (см. cmd/gotcha/main.go).
-func (s *Service) SetSecretKey(raw string) {
-	if raw == "" {
-		return
-	}
-	s.secretKey = sha256.Sum256([]byte(raw))
+// SetKeyring задаёт кольцо ключей шифрования чувствительных полей at-rest
+// (org_sso.client_secret). Вызывается из bootstrap'а рядом с NewService (см.
+// cmd/gotcha/main.go) — не вызывается вовсе для dev-стендов, которые пишут
+// plaintext.
+func (s *Service) SetKeyring(ring secretbox.Keyring) {
+	s.ring = ring
 	s.secretKeySet = true
 }
 

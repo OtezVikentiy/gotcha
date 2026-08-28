@@ -15,8 +15,10 @@ import (
 // Раньше идемпотентность определялась голым strings.HasPrefix(v, "enc:") —
 // такое значение прошло бы мимо Seal насквозь (P2-4 из аудита 2026-08-12).
 func TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix(t *testing.T) {
-	var key [32]byte
-	copy(key[:], "seal-test-master-key-32-bytes!!")
+	ring, err := secretbox.NewKeyring("seal-test-master-key-32-bytes!!", "")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
 
 	plaintextThatLooksSealed := "enc:not-actually-ciphertext"
 	raw, err := json.Marshal(HTTPConfig{
@@ -28,7 +30,7 @@ func TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix(t *testing.T) {
 		t.Fatalf("marshal config: %v", err)
 	}
 
-	sealed, err := sealHTTPHeaders(key, raw)
+	sealed, err := sealHTTPHeaders(ring, raw)
 	if err != nil {
 		t.Fatalf("sealHTTPHeaders: %v", err)
 	}
@@ -45,7 +47,7 @@ func TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix(t *testing.T) {
 		t.Fatalf("stored value %q is not real ciphertext", stored)
 	}
 
-	opened, err := secretbox.Open(key, stored)
+	opened, err := ring.Open(stored)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -57,10 +59,12 @@ func TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix(t *testing.T) {
 // TestSealHTTPHeadersIsIdempotentOnRealCiphertext — реальное enc:-значение
 // (продукт Seal) не должно шифроваться повторно.
 func TestSealHTTPHeadersIsIdempotentOnRealCiphertext(t *testing.T) {
-	var key [32]byte
-	copy(key[:], "seal-test-master-key-32-bytes!!")
+	ring, err := secretbox.NewKeyring("seal-test-master-key-32-bytes!!", "")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
 
-	sealedOnce, err := secretbox.Seal(key, "s3cr3t-token")
+	sealedOnce, err := ring.Seal("s3cr3t-token")
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -73,7 +77,7 @@ func TestSealHTTPHeadersIsIdempotentOnRealCiphertext(t *testing.T) {
 		t.Fatalf("marshal config: %v", err)
 	}
 
-	sealed, err := sealHTTPHeaders(key, raw)
+	sealed, err := sealHTTPHeaders(ring, raw)
 	if err != nil {
 		t.Fatalf("sealHTTPHeaders: %v", err)
 	}

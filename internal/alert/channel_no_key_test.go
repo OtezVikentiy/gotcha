@@ -12,7 +12,7 @@ import (
 // TestChannelEncryptedSecretWithoutMasterKey — воспроизводит W2/P1-7: канал
 // заведён под мастер-ключом (secret зашифрован, enc:-ciphertext в БД), а
 // читается сервисом БЕЗ ключа вовсе (GOTCHA_SECRET_KEY откатился на
-// dev-дефолт: main.go SetSecretKey тогда не вызывается, secretKeySet
+// dev-дефолт: main.go SetKeyring тогда не вызывается, secretKeySet
 // остаётся false). Раньше ветка "!secretKeySet" безусловно отдавала
 // c.Secret/secret как есть, считая его legacy plaintext, — и сырой
 // enc:base64... уходил как bot-токен/HMAC-ключ. Теперь оба пути (Channels и
@@ -28,7 +28,7 @@ func TestChannelEncryptedSecretWithoutMasterKey(t *testing.T) {
 
 	// Канал заведён под мастер-ключом — secret в БД лежит зашифрованным.
 	keyed := alert.NewService(pool)
-	keyed.SetSecretKey("a-strong-master-key-for-channel-secrets")
+	keyed.SetKeyring(mustKeyring(t, "a-strong-master-key-for-channel-secrets"))
 	id, err := keyed.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true,
 		Target: "-100500", Secret: "real-bot-token",
@@ -38,7 +38,7 @@ func TestChannelEncryptedSecretWithoutMasterKey(t *testing.T) {
 	}
 
 	// ...а читается сервисом БЕЗ ключа вовсе (откат GOTCHA_SECRET_KEY на dev):
-	// SetSecretKey не вызывается, secretKeySet остаётся false.
+	// SetKeyring не вызывается, secretKeySet остаётся false.
 	noKey := alert.NewService(pool)
 
 	chs, err := noKey.Channels(ctx, pid)

@@ -36,12 +36,12 @@ type Service struct {
 	// localRegion).
 	LocalRegion string
 
-	// secretKey/secretKeySet — мастер-ключ шифрования ЗНАЧЕНИЙ HTTP-заголовков
-	// монитора at-rest (тот же GOTCHA_SECRET_KEY, что у alert.Service для
-	// секретов каналов и org для SSO client_secret). Пустой ключ (dev) —
-	// заголовки хранятся plaintext, читатель распознаёт по отсутствию префикса
-	// "enc:". Ставится из main.go.
-	secretKey    [32]byte
+	// ring/secretKeySet — кольцо ключей шифрования ЗНАЧЕНИЙ HTTP-заголовков
+	// монитора at-rest (то же кольцо, что у alert.Service для секретов каналов
+	// и org для SSO client_secret). secretKeySet=false (кольцо не задано, dev)
+	// — заголовки хранятся plaintext, читатель распознаёт по отсутствию
+	// префикса "enc:". Ставится из main.go.
+	ring         secretbox.Keyring
 	secretKeySet bool
 }
 
@@ -49,15 +49,12 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// SetSecretKey включает шифрование значений HTTP-заголовков монитора at-rest тем
-// же мастер-ключом, что и остальные секреты продукта. Пустой ключ (dev) →
-// заголовки хранятся plaintext (openHTTPHeaders распознаёт это по отсутствию
-// префикса "enc:"). Мирроринг alert.Service.SetSecretKey.
-func (s *Service) SetSecretKey(raw string) {
-	if raw == "" {
-		return
-	}
-	s.secretKey = sha256.Sum256([]byte(raw))
+// SetKeyring включает шифрование значений HTTP-заголовков монитора at-rest тем
+// же кольцом ключей, что и остальные секреты продукта. Не вызывается вовсе
+// для dev-стендов — заголовки остаются plaintext (openHTTPHeaders распознаёт
+// это по отсутствию префикса "enc:"). Мирроринг alert.Service.SetKeyring.
+func (s *Service) SetKeyring(ring secretbox.Keyring) {
+	s.ring = ring
 	s.secretKeySet = true
 }
 
@@ -69,7 +66,7 @@ func (s *Service) encryptMonitorConfig(kind Kind, raw json.RawMessage) (json.Raw
 	if !s.secretKeySet || kind != KindHTTP {
 		return raw, nil
 	}
-	return sealHTTPHeaders(s.secretKey, raw)
+	return sealHTTPHeaders(s.ring, raw)
 }
 
 // decryptMonitorConfig расшифровывает значения заголовков http-монитора на месте.
@@ -100,7 +97,7 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 		m.Config = scrubbedCfg
 		return nil
 	}
-	opened, err := openHTTPHeaders(s.secretKey, m.Config)
+	opened, err := openHTTPHeaders(s.ring, m.Config)
 	if err != nil {
 		return err
 	}
@@ -115,7 +112,7 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 // оператора закрыт маской независимо от формата хранения, поэтому эксплуатируемой
 // дыры нет; это второй эшелон — «защита от чтения БД в обход приложения». Метод
 // достраивает его для существующих записей: вызывается один раз на старте после
-// SetSecretKey (main.go). Идемпотентен — уже-enc: значения sealHTTPHeaders не
+// SetKeyring (main.go). Идемпотентен — уже-enc: значения sealHTTPHeaders не
 // трогает, а строки без plaintext-заголовков не переписываются вовсе. Возвращает
 // число обновлённых мониторов. Без ключа (dev) — no-op.
 func (s *Service) EncryptLegacyHeaders(ctx context.Context) (int, error) {
@@ -159,7 +156,7 @@ func (s *Service) EncryptLegacyHeaders(ctx context.Context) (int, error) {
 
 	updated := 0
 	for _, c := range todo {
-		sealed, err := sealHTTPHeaders(s.secretKey, c.cfg)
+		sealed, err := sealHTTPHeaders(s.ring, c.cfg)
 		if err != nil {
 			return updated, err
 		}

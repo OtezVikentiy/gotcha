@@ -37,6 +37,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
@@ -502,19 +503,28 @@ func run() error {
 	if commonServicesEnabled(cfg.Mode) {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
 		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
-		// SSO client_secret шифруется этим мастер-ключом at-rest. С публично
+		// SSO client_secret шифруется этим кольцом ключей at-rest. С публично
 		// известным dev-дефолтом шифровать бессмысленно — ключ виден в исходниках,
 		// а «enc:»-значение давало бы ложное чувство защиты (Info21). Тогда
 		// оставляем plaintext, как при пустом ключе. На не-localhost web/all
 		// дефолтный ключ и так отбивается валидацией конфига, поэтому в реальном
-		// проде сюда приходит настоящий ключ и шифрование включается.
+		// проде сюда приходит настоящий ключ и шифрование включается. Предыдущий
+		// ключ кольца (ротация) — задача GOTCHA_SECRET_KEY_PREV, здесь пока пусто.
 		if cfg.SecretKey != devSecretKey {
-			orgSvc.SetSecretKey(cfg.SecretKey)
+			ring, err := secretbox.NewKeyring(cfg.SecretKey, "")
+			if err != nil {
+				return fmt.Errorf("build secretbox keyring: %w", err)
+			}
+			orgSvc.SetKeyring(ring)
 		}
 		issueSvc = issue.NewService(pg)
 		alertSvc = alert.NewService(pg)
 		if cfg.SecretKey != devSecretKey {
-			alertSvc.SetSecretKey(cfg.SecretKey)
+			ring, err := secretbox.NewKeyring(cfg.SecretKey, "")
+			if err != nil {
+				return fmt.Errorf("build secretbox keyring: %w", err)
+			}
+			alertSvc.SetKeyring(ring)
 		}
 		alertSvc.SetBudget(time.Duration(cfg.AlertBudgetWindowSeconds)*time.Second, cfg.AlertBudgetLimit)
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
@@ -553,13 +563,17 @@ func run() error {
 	var uptimeIngestor *uptime.Ingestor
 	if cfg.Mode == "web" || cfg.Mode == "uptime" || cfg.Mode == "all" {
 		uptimeSvc = uptime.NewService(pg)
-		// Значения HTTP-заголовков монитора шифруются этим мастер-ключом at-rest
+		// Значения HTTP-заголовков монитора шифруются этим кольцом ключей at-rest
 		// (той же логикой, что секреты каналов alert и SSO client_secret): роль
 		// operator не должна вычитывать из БД bearer-токены в заголовках. Dev-
 		// дефолт публично известен — шифровать им бессмысленно, оставляем
 		// plaintext, как для пустого ключа (см. orgSvc/alertSvc выше).
 		if cfg.SecretKey != devSecretKey {
-			uptimeSvc.SetSecretKey(cfg.SecretKey)
+			ring, err := secretbox.NewKeyring(cfg.SecretKey, "")
+			if err != nil {
+				return fmt.Errorf("build secretbox keyring: %w", err)
+			}
+			uptimeSvc.SetKeyring(ring)
 			// Второй эшелон A2a: разово дошифровать заголовки мониторов,
 			// сохранённых ДО включения шифрования (штатный переход ленивый — при
 			// следующем Update монитора). Идемпотентно (уже-enc: не трогает) и
@@ -589,7 +603,11 @@ func run() error {
 		if alertSvc == nil {
 			alertSvc = alert.NewService(pg)
 			if cfg.SecretKey != devSecretKey {
-				alertSvc.SetSecretKey(cfg.SecretKey)
+				ring, err := secretbox.NewKeyring(cfg.SecretKey, "")
+				if err != nil {
+					return fmt.Errorf("build secretbox keyring: %w", err)
+				}
+				alertSvc.SetKeyring(ring)
 			}
 			alertSvc.SetBudget(time.Duration(cfg.AlertBudgetWindowSeconds)*time.Second, cfg.AlertBudgetLimit)
 		}

@@ -7,8 +7,21 @@ import (
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
+
+// mustKeyring — тестовый шорткат: однокелевое кольцо шифрования из raw.
+// NewKeyring отказывает только на пустом current — тестовые мастер-ключи
+// здесь всегда заданы литералом, поэтому ошибка означала бы баг теста.
+func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
+	t.Helper()
+	ring, err := secretbox.NewKeyring(raw, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(%q): %v", raw, err)
+	}
+	return ring
+}
 
 // TestChannelSecretEncryptedAtRest — при заданном мастер-ключе секрет канала
 // (Telegram bot-токен) хранится в БД зашифрованным (префикс enc:, plaintext не
@@ -19,7 +32,7 @@ func TestChannelSecretEncryptedAtRest(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
-	svc.SetSecretKey("a-strong-master-key-for-channel-secrets")
+	svc.SetKeyring(mustKeyring(t, "a-strong-master-key-for-channel-secrets"))
 	ctx := context.Background()
 	pid := newEvalProject(t, pool, "chansec")
 
@@ -56,7 +69,7 @@ func TestChannelSecretByID(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
-	svc.SetSecretKey("test-master-key-at-least-32-bytes-long")
+	svc.SetKeyring(mustKeyring(t, "test-master-key-at-least-32-bytes-long"))
 	ctx := context.Background()
 
 	const token = "123456:AAHplaintext-bot-token"
