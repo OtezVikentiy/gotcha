@@ -366,14 +366,13 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 	}
 
 	// "Рестарт" с кольцом ротации: current=B, prev=A — тем же приёмом, что
-	// bootstrap собирает secretRing из GOTCHA_SECRET_KEY/_PREV.
-	ringRestart, err := secretbox.NewKeyring(keyB, keyA)
-	if err != nil {
-		t.Fatalf("NewKeyring(restart): %v", err)
+	// bootstrap собирает secretRing из GOTCHA_SECRET_KEY/_PREV. Раздача — через
+	// сам bootstrap-код wireSecretRing (находка ревью T5/P3), а не вручную
+	// тремя SetKeyring: так тест исполняет все три тела раздачи, а не только
+	// доказывает их структурно (TestWireSecretRingDistributesSameRingToAllThree).
+	if _, err := wireSecretRing(keyB, keyA, orgSvc, alertSvc, uptimeSvc); err != nil {
+		t.Fatalf("wireSecretRing(restart): %v", err)
 	}
-	orgSvc.SetKeyring(ringRestart)
-	alertSvc.SetKeyring(ringRestart)
-	uptimeSvc.SetKeyring(ringRestart)
 
 	rewrapAllSecrets(ctx, orgSvc, alertSvc, uptimeSvc)
 
@@ -445,14 +444,11 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 
 	t.Run("обратимость", func(t *testing.T) {
 		// Тот же проход с переставленными местами ключами: current=A, prev=B —
-		// откатывает инстанс назад (design §7, «страх необратимости»).
-		ringReverse, err := secretbox.NewKeyring(keyA, keyB)
-		if err != nil {
-			t.Fatalf("NewKeyring(reverse): %v", err)
+		// откатывает инстанс назад (design §7, «страх необратимости»). Раздача —
+		// снова через wireSecretRing, тем же приёмом, что и выше.
+		if _, err := wireSecretRing(keyA, keyB, orgSvc, alertSvc, uptimeSvc); err != nil {
+			t.Fatalf("wireSecretRing(reverse): %v", err)
 		}
-		orgSvc.SetKeyring(ringReverse)
-		alertSvc.SetKeyring(ringReverse)
-		uptimeSvc.SetKeyring(ringReverse)
 
 		rewrapAllSecrets(ctx, orgSvc, alertSvc, uptimeSvc)
 
