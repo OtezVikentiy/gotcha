@@ -9,6 +9,70 @@
 
 ## [Unreleased]
 
+### Добавлено
+- Новые self-метрики: `gotcha_ingest_rejected_total{reason,signal}` — отказы
+  приёма по причине (частота, квота, размер тела, битое тело) и виду телеметрии,
+  `gotcha_i18n_missing_key_total{locale,stage}` и
+  `gotcha_uptime_heartbeat_ignored_total{reason}`.
+- Публичная страница статуса объясняет себя постороннему: указан часовой пояс
+  времени на странице и раскрыто значение статуса «Пауза».
+
+### Изменено
+- **Ломающее.** Десять переменных окружения переименованы: единица измерения
+  теперь в имени, а у переменных раздачи агента и выносной пробы — верный
+  префикс подсистемы. Старые имена не читаются, обновите `.env` и переменные
+  compose до обновления.
+
+  | Было | Стало |
+  |---|---|
+  | `GOTCHA_METRIC_EVAL_INTERVAL` | `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_PROFILE_EVAL_INTERVAL` | `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_HOST_EVAL_INTERVAL` | `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_SLO_EVAL_INTERVAL` | `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_ESCALATION_INTERVAL` | `GOTCHA_ESCALATION_INTERVAL_SECONDS` |
+  | `GOTCHA_RETENTION_DAYS` | `GOTCHA_EVENT_RETENTION_DAYS` |
+  | `GOTCHA_SERVER_URL` | `GOTCHA_PROBE_SERVER_URL` |
+  | `GOTCHA_INGEST_RATE_LIMIT` | `GOTCHA_INGEST_RATE_PER_SEC` |
+  | `GOTCHA_AGENT_DIST_DIR` | `GOTCHA_DIST_DIR` |
+  | `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `GOTCHA_DIST_RATE_PER_MIN` |
+
+- **Ломающее.** Self-метрики очередей приведены к единому канону
+  `gotcha_<подсистема>_queue_*`: `gotcha_export_pending_jobs` →
+  `gotcha_export_queue_depth`, `gotcha_export_oldest_pending_age_seconds` →
+  `gotcha_export_queue_oldest_seconds`, `gotcha_export_failed_jobs` →
+  `gotcha_export_queue_failed`, то же для `gotcha_notify_*`;
+  `gotcha_pipeline_queued_tasks` → `gotcha_pipeline_queue_depth`,
+  `gotcha_pipeline_queued_bytes` → `gotcha_pipeline_queue_bytes`. Обновите
+  дашборды и алерты.
+- Метаданные выгрузки (идентификатор группы, код фильтра, пометка о
+  псевдонимах) убраны из тела файлов и доставляются рядом: ответ `?meta=1` у
+  скачивания, атрибуты на странице «Выгрузки», строка в письме о готовности.
+  Файлы CSV/JSON/NDJSON снова читаются стандартными средствами, без особой
+  обработки первой строки или первого элемента.
+- Рекомендуемая команда heartbeat — `curl -fsS -X POST`; `GET` по-прежнему
+  поддержан.
+
+### Исправлено
+- Команда запуска выносной пробы, которую интерфейс выдаёт пользователю,
+  ссылалась на переменную окружения, переставшую существовать: проба,
+  запущенная копированием этой команды, не стартовала бы.
+- Heartbeat больше не засчитывает запросы, помеченные как префетч или
+  предпросмотр ссылки (боты мессенджеров, антивирусные прокси, префетч
+  браузера): раньше пересланная в чат ссылка могла погасить настоящую тревогу.
+- Приём деплой-маркера на теле сверх лимита отвечает `413`, а не `400` «битый
+  JSON», — как и остальные входы приёма.
+- Публичная страница статуса запрашивала таблицу стилей без версии, обещая
+  кэширующим прокси иную политику, чем остальной интерфейс.
+- Форма выгрузки проверяет статус и уровень по закрытому перечню: раньше
+  произвольная строка сохранялась в задании и показывалась на странице списка.
+  Ошибки формы называют причину вместо общего «Не удалось выполнить действие».
+- `GOTCHA_DEPLOY_RETENTION_DAYS` отклоняет отрицательное значение на старте —
+  раньше оно молча выключало уборку деплой-маркеров.
+- Промах ключа перевода стал наблюдаемым: предупреждение в журнале (не чаще
+  раза в минуту на ключ) и метрика. Поведение рендера не изменилось.
+- Колонки `host_incidents.current_value` и `peak_value` получили `NOT NULL` —
+  схема больше не допускала состояния, на котором чтение инцидента падало.
+
 ## [0.23.0] - 2026-08-27
 
 ### Добавлено

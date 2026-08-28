@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New self-metrics: `gotcha_ingest_rejected_total{reason,signal}` — ingest
+  rejections by reason (rate limit, quota, body size, malformed body) and
+  telemetry signal, `gotcha_i18n_missing_key_total{locale,stage}` and
+  `gotcha_uptime_heartbeat_ignored_total{reason}`.
+- The public status page now explains itself to an outside reader: the time zone
+  of the timestamps is stated and the meaning of the "Paused" status is spelled
+  out.
+
+### Changed
+- **Breaking.** Ten environment variables have been renamed: the unit of
+  measurement is now part of the name, and the agent-distribution and remote-probe
+  variables carry the correct subsystem prefix. The old names are no longer read —
+  update your `.env` and compose variables before upgrading.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_METRIC_EVAL_INTERVAL` | `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_PROFILE_EVAL_INTERVAL` | `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_HOST_EVAL_INTERVAL` | `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_SLO_EVAL_INTERVAL` | `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` |
+  | `GOTCHA_ESCALATION_INTERVAL` | `GOTCHA_ESCALATION_INTERVAL_SECONDS` |
+  | `GOTCHA_RETENTION_DAYS` | `GOTCHA_EVENT_RETENTION_DAYS` |
+  | `GOTCHA_SERVER_URL` | `GOTCHA_PROBE_SERVER_URL` |
+  | `GOTCHA_INGEST_RATE_LIMIT` | `GOTCHA_INGEST_RATE_PER_SEC` |
+  | `GOTCHA_AGENT_DIST_DIR` | `GOTCHA_DIST_DIR` |
+  | `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `GOTCHA_DIST_RATE_PER_MIN` |
+
+- **Breaking.** The queue self-metrics now follow a single naming canon,
+  `gotcha_<subsystem>_queue_*`: `gotcha_export_pending_jobs` →
+  `gotcha_export_queue_depth`, `gotcha_export_oldest_pending_age_seconds` →
+  `gotcha_export_queue_oldest_seconds`, `gotcha_export_failed_jobs` →
+  `gotcha_export_queue_failed`, likewise for `gotcha_notify_*`;
+  `gotcha_pipeline_queued_tasks` → `gotcha_pipeline_queue_depth`,
+  `gotcha_pipeline_queued_bytes` → `gotcha_pipeline_queue_bytes`. Update your
+  dashboards and alerts.
+- Export metadata (the group id, the filter code, the pseudonymisation notice) has
+  been taken out of the file bodies and is delivered alongside them instead: a
+  `?meta=1` response on the download, attributes on the Exports page and a line in
+  the "export is ready" email. CSV/JSON/NDJSON files can again be read with
+  standard tools, with no special handling of the first line or the first element.
+- The recommended heartbeat command is now `curl -fsS -X POST`; `GET` remains
+  supported.
+
+### Fixed
+- The remote-probe launch command shown in the interface referred to an
+  environment variable that no longer existed: a probe started by copying that
+  command would not have come up.
+- A heartbeat is no longer credited for requests marked as a prefetch or a link
+  preview (messenger bots, antivirus proxies, browser prefetch): previously a link
+  forwarded into a chat could silence a real alert.
+- Posting a deploy marker with a body over the limit now answers `413` instead of
+  `400` "malformed JSON", in line with the other ingest endpoints.
+- The public status page requested its stylesheet without a version, promising
+  caching proxies a different policy than the rest of the interface.
+- The export form now validates the status and the level against a closed set:
+  previously an arbitrary string was stored in the job and displayed on the list
+  page. Form errors now name the reason instead of a generic "Action failed".
+- `GOTCHA_DEPLOY_RETENTION_DAYS` rejects a negative value at startup — previously
+  it silently disabled the deploy-marker cleanup.
+- A missing translation key is now observable: a log warning (at most once per
+  minute per key) and a metric. Rendering behaviour is unchanged.
+- The `host_incidents.current_value` and `peak_value` columns are now `NOT NULL` —
+  the schema no longer allowed a state on which reading an incident failed.
+
 ## [0.23.0] - 2026-08-27
 
 ### Added
