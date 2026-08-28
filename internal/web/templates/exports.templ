@@ -55,6 +55,17 @@ type ExportView struct {
 	KindLabel     string
 	FormatLabel   string
 	FilterSummary string
+	// ScopeIssueID/FilterCode/PseudonymMasked — F5/F1′ контрактной уборки
+	// 2026-08-28 (CONTRACT-DECISIONS.md, докблок export.Meta в meta.go):
+	// то же самое, что FilterSummary показывает человеку текстом, здесь же
+	// рядом машиночитаемо — атрибуты data-* на ТОЙ ЖЕ ячейке (exportRow
+	// ниже), чтобы получателю не приходилось парсить локализованную фразу
+	// вида «issue #123», чтобы достать число 123. Значения — export.Meta
+	// как есть (internal/web/exports.go:exportViewRow зовёт
+	// export.BuildMeta(j) тем же снимком Job, что и FilterSummary).
+	ScopeIssueID    int64
+	FilterCode      string
+	PseudonymMasked bool
 	// Status — сырой код (queued/running/done/failed/expired), перевод —
 	// i18n-ключом "exports.status."+Status внутри exportRow, тем же приёмом,
 	// что issueStatusLabel для issues.
@@ -105,7 +116,11 @@ templ exportRow(projectID int64, e ExportView) {
 	<tr>
 		<td>{ e.KindLabel }</td>
 		<td>{ e.FormatLabel }</td>
-		<td>{ e.FilterSummary }</td>
+		<td
+			data-scope-issue-id={ strconv.FormatInt(e.ScopeIssueID, 10) }
+			data-filter-code={ e.FilterCode }
+			data-pseudonym-masked={ strconv.FormatBool(e.PseudonymMasked) }
+		>{ e.FilterSummary }</td>
 		<td>
 			<span class={ exportStatusBadgeClass(e.Status) }>{ i18n.T(ctx, "exports.status."+e.Status) }</span>
 			if e.Truncated {

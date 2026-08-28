@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -90,6 +91,37 @@ func exportDownloadFilename(job export.Job, projectName string) string {
 	return fmt.Sprintf("gotcha-%s-%s-%s.%s", job.Kind, slug, at.Format("20060102-1504"), job.FileExt)
 }
 
+// exportParseStatus/exportParseLevel — сверка status/level формы выгрузки с
+// закрытым перечислением (находка ревью соседней задачи, P1): раньше оба
+// поля клались в export.Params прямо из PostFormValue без всякой проверки —
+// произвольная строка оседала в БД как параметр заявки и затем рендерилась
+// через i18n.T("issues.status."+v)/"issues.level."+v на странице списка
+// (exportViewRow ниже), где промах ключа в этом продукте отдаёт САМ КЛЮЧ:
+// оператор видел бы на странице собственную подставленную строку в виде
+// "issues.status.<мусор>", а каждое уникальное значение заодно плодило
+// уникальный промах i18n. Пустая строка — «любой», как и в issue.Filter
+// (buildIssueFilter трактует "" как отсутствие фильтра по полю) — остаётся
+// допустимой, это НЕ то же самое, что недопустимое значение.
+//
+// Сверка идёт напрямую с issue.IsValidStatus/issue.IsValidLevel — issue
+// единственный владелец обоих перечней (internal/issue/query.go), здесь
+// собственной копии множества больше нет (была exportValidStatuses/
+// exportValidLevels, зеркалившая issue.query.go и bulkActionStatus/
+// issues.go — устранено сторожем internal/guards, см. его докблок).
+func exportParseStatus(v string) (string, bool) {
+	if v == "" || issue.IsValidStatus(v) {
+		return v, true
+	}
+	return "", false
+}
+
+func exportParseLevel(v string) (string, bool) {
+	if v == "" || issue.IsValidLevel(v) {
+		return v, true
+	}
+	return "", false
+}
+
 // exportsCreate — POST /projects/{id}/exports: ставит заявку на выгрузку.
 //
 // Гейты по порядку: same-origin → сессия → существование/доступ к проекту
@@ -161,6 +193,24 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 			i18n.T(r.Context(), "err.export.invalid_format"), exportCreateFormState(r))
 		return
 	}
+	// status/level — сверка с закрытым перечислением (находка ревью, P1):
+	// см. докблок exportParseStatus/exportParseLevel выше. err.export.invalid_kind/
+	// invalid_format здесь не подходят по смыслу (речь не о kind/format) —
+	// err.export.invalid_status/invalid_level называют, что именно неверно,
+	// вместо общего error.action_failed (использовавшегося раньше как
+	// временный fallback, пока заводить новый ключ было нельзя).
+	status, ok := exportParseStatus(r.PostFormValue("status"))
+	if !ok {
+		h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+			i18n.T(r.Context(), "err.export.invalid_status"), exportCreateFormState(r))
+		return
+	}
+	level, ok := exportParseLevel(r.PostFormValue("level"))
+	if !ok {
+		h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
+			i18n.T(r.Context(), "err.export.invalid_level"), exportCreateFormState(r))
+		return
+	}
 
 	var scopeIssueID int64
 	if v := r.PostFormValue("scope_issue_id"); v != "" {
@@ -219,8 +269,8 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 		Format:       format,
 		ScopeIssueID: scopeIssueID,
 		Params: export.Params{
-			Status:      r.PostFormValue("status"),
-			Level:       r.PostFormValue("level"),
+			Status:      status,
+			Level:       level,
 			Query:       r.PostFormValue("query"),
 			Environment: r.PostFormValue("environment"),
 			Sort:        r.PostFormValue("sort"),
@@ -258,6 +308,17 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 // Доступ к проекту перепроверяется КАЖДЫЙ раз (requireProjectOperator), а
 // не только на постановке — он мог быть отозван после. Чужая заявка (не
 // автор и не CanManage) — 404, не 403 (существование заявки не раскрываем).
+// exportsMetaQueryParam — query-параметр GET .../download, отличающий запрос
+// машиночитаемых метаданных заявки (Meta, internal/export/meta.go) от
+// запроса самого файла. Отдельного маршрута сознательно не заведено (F5
+// контрактной уборки 2026-08-28, CONTRACT-DECISIONS.md): Meta — соседний
+// ресурс уже существующего скачивания, а не самостоятельная сущность
+// продукта, поэтому у неё те же гейты доступа (авторство/CanManage/
+// Status==Done), что и у файла, — без единой строки в authz_map_test.go,
+// который знает маршруты по шаблону пути, а не по query. См. докблок Meta
+// (meta.go) — там же перечислены остальные два пути доставки (UI/письмо).
+const exportsMetaQueryParam = "meta"
+
 func (h *Handler) exportsDownload(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -303,6 +364,11 @@ func (h *Handler) exportsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Query().Get(exportsMetaQueryParam) == "1" {
+		h.exportsServeMeta(w, job)
+		return
+	}
+
 	path := h.exportFilePath(job)
 	f, err := os.Open(path)
 	if err != nil {
@@ -336,6 +402,25 @@ func (h *Handler) exportsDownload(w http.ResponseWriter, r *http.Request) {
 	// переопределяет сниффингом) — тот же приём, что и у раздачи агента
 	// (internal/web/agentdist.go:130).
 	http.ServeContent(w, r, filename, info.ModTime(), f)
+}
+
+// exportsServeMeta отдаёт export.BuildMeta(job) в JSON — ветка
+// exportsDownload при ?meta=1 (см. exportsMetaQueryParam). Meta считается
+// заново из уже прочитанного job, а не читается с диска: она чистая функция
+// снимка Job (BuildMeta, meta.go), и хранить для неё отдельный файл рядом с
+// данными незачем — заодно исключает расхождение с job, если строку заявки
+// когда-нибудь поправят вручную.
+func (h *Handler) exportsServeMeta(w http.ResponseWriter, job export.Job) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(export.BuildMeta(job)); err != nil {
+		// Тело уже могло начать уходить клиенту (заголовки не откладывают
+		// запись) — залогировать и выйти, отдельный код ошибки клиенту тут
+		// недостижим ровно как и в остальных местах пакета, отдающих поток
+		// напрямую в http.ResponseWriter.
+		slog.Warn("exportsServeMeta: encode", "job_id", job.ID, "err", err)
+	}
 }
 
 // exportsDelete — POST /projects/{id}/exports/{jobID}/delete. Гейты — те же,
@@ -582,11 +667,22 @@ func (h *Handler) exportViewRow(ctx context.Context, j export.Job, uid int64, au
 	if j.Status == export.StatusFailed && export.KnownFailureReasonKey(j.FailureReasonKey) {
 		failureReasonKey = j.FailureReasonKey
 	}
+	// meta — F5 контрактной уборки 2026-08-28 (CONTRACT-DECISIONS.md):
+	// export.BuildMeta(j), тот же снимок Job, что и exportFilterSummary чуть
+	// выше использует для человекочитаемой FilterSummary. ScopeIssueID/
+	// FilterCode/PseudonymMasked уходят в exports.templ как атрибуты data-*
+	// НА ТОЙ ЖЕ ячейке, что и FilterSummary (см. докблок Meta, meta.go, п.2)
+	// — получателю не нужно парсить локализованный текст, чтобы достать
+	// число или код.
+	meta := export.BuildMeta(j)
 	return templates.ExportView{
 		ID:               j.ID,
 		KindLabel:        i18n.T(ctx, "exports.kind."+string(j.Kind)),
 		FormatLabel:      i18n.T(ctx, "exports.format."+string(j.Format)),
 		FilterSummary:    exportFilterSummary(ctx, j),
+		ScopeIssueID:     meta.ScopeIssueID,
+		FilterCode:       meta.FilterCode,
+		PseudonymMasked:  meta.PseudonymNote != "",
 		Status:           string(j.Status),
 		Rows:             j.RowsWritten,
 		Size:             j.Bytes,

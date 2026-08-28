@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -659,6 +660,96 @@ func TestExportsCreateInvalidFormatReRendersExportsPage(t *testing.T) {
 	}
 }
 
+// TestExportsCreateRejectsInvalidStatus — находка ревью соседней задачи
+// (P1): status раньше клался в export.Params прямо из PostFormValue без
+// сверки с закрытым перечислением issues.status (issue.query.go:
+// validStatuses) — произвольная строка оседала в БД как параметр заявки и
+// затем рендерилась на странице списка как "issues.status.<мусор>" (промах
+// ключа i18n в этом продукте отдаёт сам ключ). Мутация — убрать сверку
+// exportParseStatus (вернуть в Params голый PostFormValue) — обязана уронить
+// именно проверку `if n := s.jobCount(t); n != 0`: заявка со status=bogus
+// создастся вместо отказа, и счётчик заявок станет 1.
+func TestExportsCreateRejectsInvalidStatus(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{
+		"kind": {"issues"}, "format": {"csv"}, "status": {"bogus"},
+	})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("код %d при неизвестном status, ожидали 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Неизвестный статус в фильтре выгрузки") {
+		t.Errorf("точное сообщение об ошибке status не показано: %s", body)
+	}
+	if n := s.jobCount(t); n != 0 {
+		t.Errorf("создано %d заявок при невалидном status вместо нуля", n)
+	}
+}
+
+// TestExportsCreateRejectsInvalidLevel — тот же отказ 422 для level, что и
+// TestExportsCreateRejectsInvalidStatus для status.
+func TestExportsCreateRejectsInvalidLevel(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{
+		"kind": {"issues"}, "format": {"csv"}, "level": {"bogus"},
+	})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("код %d при неизвестном level, ожидали 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Неизвестный уровень в фильтре выгрузки") {
+		t.Errorf("точное сообщение об ошибке level не показано: %s", body)
+	}
+	if n := s.jobCount(t); n != 0 {
+		t.Errorf("создано %d заявок при невалидном level вместо нуля", n)
+	}
+}
+
+// TestExportsCreateAcceptsKnownStatusAndLevel — здоровые значения из
+// закрытого перечисления обязаны по-прежнему проходить и лечь в Params
+// заявки как есть — сверка не должна ловить легитимные значения.
+func TestExportsCreateAcceptsKnownStatusAndLevel(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{
+		"kind": {"issues"}, "format": {"csv"}, "status": {"resolved"}, "level": {"error"},
+	})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код %d, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	job := s.lastJob(t)
+	if job.Params.Status != "resolved" {
+		t.Errorf("Params.Status = %q, want %q", job.Params.Status, "resolved")
+	}
+	if job.Params.Level != "error" {
+		t.Errorf("Params.Level = %q, want %q", job.Params.Level, "error")
+	}
+}
+
+// TestExportsCreateAcceptsEmptyStatusAndLevel — пустое значение (поле
+// формы не тронуто оператором) обязано по-прежнему означать «любой» и
+// проходить, а не трактоваться как невалидное — issue.Filter/
+// buildIssueFilter понимают "" как отсутствие фильтра по полю (issue/
+// query.go). Мутация — сделать сверку exportParseStatus/exportParseLevel
+// строгой к пустой строке (убрать `v == "" ||`) — обязана уронить именно
+// `resp.StatusCode != http.StatusSeeOther`: здоровая заявка без явного
+// status/level получит 422 вместо редиректа на страницу «Выгрузки».
+func TestExportsCreateAcceptsEmptyStatusAndLevel(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), url.Values{"kind": {"issues"}, "format": {"csv"}})
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("код %d при пустых status/level, ожидали редирект: %s", resp.StatusCode, body)
+	}
+	job := s.lastJob(t)
+	if job.Params.Status != "" {
+		t.Errorf("Params.Status = %q, want \"\" (любой)", job.Params.Status)
+	}
+	if job.Params.Level != "" {
+		t.Errorf("Params.Level = %q, want \"\" (любой)", job.Params.Level)
+	}
+}
+
 // TestExportsCreateRejectsForeignScopeIssueId — находка аудита P3-SEC-4:
 // scope_issue_id из ЧУЖОГО проекта раньше доходил до EnqueueLimited и жёг
 // оба лимита (частоты и активных заявок) холостой заявкой, которая молча
@@ -1278,4 +1369,114 @@ func TestExportIssueURLHitsRegisteredRoute(t *testing.T) {
 		t.Fatalf("IssueURL = %q, want абсолютную ссылку с префиксом %q", got, base)
 	}
 	assertRouteRegistered(t, s, http.MethodGet, path)
+}
+
+// TestExportsMetaEndpointReturnsBuildMeta — F5/F1′ контрактной уборки
+// 2026-08-28 (CONTRACT-DECISIONS.md, докблок export.Meta, meta.go):
+// GET .../download?meta=1 обязан отдавать export.BuildMeta(job) в JSON —
+// тот же маршрут скачивания, тот же гейт доступа, но тело — метаданные, а
+// не файл. Заявка Kind=events/IncludePII=false без ScopeIssueID и без
+// сужающих Params — scope_issue_id=0, filter_code="all", pseudonym_note
+// непусто (псевдонимизация user_id есть).
+func TestExportsMetaEndpointReturnsBuildMeta(t *testing.T) {
+	s := newExportsStack(t)
+	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID,
+		Kind: export.KindEvents, Format: export.FormatNDJSON, IncludePII: false,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	s.markDone(t, id)
+
+	resp := s.getAs(t, s.operatorUID, s.path(fmt.Sprintf("/exports/%d/download?meta=1", id)))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("код %d, ожидали 200: %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var meta export.Meta
+	if err := json.Unmarshal([]byte(body), &meta); err != nil {
+		t.Fatalf("json.Unmarshal: %v (%q)", err, body)
+	}
+	if meta.ScopeIssueID != 0 {
+		t.Errorf("ScopeIssueID = %d, want 0", meta.ScopeIssueID)
+	}
+	if meta.FilterCode != export.FilterCodeAll {
+		t.Errorf("FilterCode = %q, want %q", meta.FilterCode, export.FilterCodeAll)
+	}
+	if meta.PseudonymNote != export.PseudonymUniquenessNote {
+		t.Errorf("PseudonymNote = %q, want %q", meta.PseudonymNote, export.PseudonymUniquenessNote)
+	}
+}
+
+// TestExportsMetaEndpointScopeIssueID — заявка, ограниченная одной группой
+// (Kind=issues, ScopeIssueID!=0): filter_code="issue", pseudonym_note пусто
+// (у issues колонки user_id нет вовсе — предупреждать о псевдониме, которого
+// нет, нечего, см. докблок BuildMeta).
+func TestExportsMetaEndpointScopeIssueID(t *testing.T) {
+	s := newExportsStack(t)
+	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
+		ProjectID: s.projectID, CreatedBy: s.operatorUID,
+		Kind: export.KindIssues, Format: export.FormatCSV, ScopeIssueID: 99,
+		Params: export.Params{Since: time.Now().Add(-time.Hour), Until: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	s.markDone(t, id)
+
+	resp := s.getAs(t, s.operatorUID, s.path(fmt.Sprintf("/exports/%d/download?meta=1", id)))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("код %d, ожидали 200: %s", resp.StatusCode, body)
+	}
+	var meta export.Meta
+	if err := json.Unmarshal([]byte(body), &meta); err != nil {
+		t.Fatalf("json.Unmarshal: %v (%q)", err, body)
+	}
+	if meta.ScopeIssueID != 99 {
+		t.Errorf("ScopeIssueID = %d, want 99", meta.ScopeIssueID)
+	}
+	if meta.FilterCode != export.FilterCodeIssue {
+		t.Errorf("FilterCode = %q, want %q", meta.FilterCode, export.FilterCodeIssue)
+	}
+	if meta.PseudonymNote != "" {
+		t.Errorf("PseudonymNote = %q, want пусто (kind=issues)", meta.PseudonymNote)
+	}
+}
+
+// TestExportsMetaEndpointForeignJobIs404 — та же межпроектная изоляция, что
+// и у самого скачивания (TestExportsDownloadForeignJobIs404): ?meta=1 не
+// открывает лазейку мимо сверки job.ProjectID.
+func TestExportsMetaEndpointForeignJobIs404(t *testing.T) {
+	s := newExportsStack(t)
+	other := s.enqueueAs(t, s.operatorUID)
+
+	resp := s.getAs(t, s.operatorUID, s.path(fmt.Sprintf("/exports/%d/download?meta=1", other)))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("метаданные чужой заявки отданы с кодом %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestExportsMetaEndpointNotDoneIs404 — тот же гейт Status==Done, что и у
+// самого файла: заявка, ещё не досчитанная, не отдаёт метаданные тоже — до
+// завершения Job.Params/ScopeIssueID уже стабильны, но продукт сознательно
+// не отличает "ещё нет файла" от "ещё нет метаданных о нём" (см. докблок
+// exportsMetaQueryParam, internal/web/exports.go).
+func TestExportsMetaEndpointNotDoneIs404(t *testing.T) {
+	s := newExportsStack(t)
+	resp := s.postForm(t, s.path("/exports"), okForm)
+	readAll(t, resp)
+	id := s.lastJobID(t)
+
+	resp = s.getAs(t, s.operatorUID, s.path(fmt.Sprintf("/exports/%d/download?meta=1", id)))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("метаданные queued-заявки отданы с кодом %d: %s", resp.StatusCode, body)
+	}
 }

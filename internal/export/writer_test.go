@@ -590,3 +590,135 @@ func TestJSONWriterCommaWriteErrorPropagates(t *testing.T) {
 		t.Error("ожидали ошибку на разделительной запятой перед вторым объектом")
 	}
 }
+
+// TestCSVWriterReadableByStandardCSVReader — F5/F1′ контрактной уборки
+// 2026-08-28 (CONTRACT-DECISIONS.md): CSV-файл выгрузки обязан парситься
+// СТАНДАРТНЫМ encoding/csv.Reader с настройками по умолчанию — тот обязывает
+// все строки нести ОДИНАКОВОЕ число полей, начиная с первой прочитанной.
+// Именно эта проверка поймала регресс предыдущего прохода (P1 ревью):
+// комментарий "# gotcha-export-meta ..." перед строкой колонок ломал файл
+// РОВНО так — у комментария 1 поле (в нём нет запятых), у настоящей строки
+// колонок — len(columns), и csv.Reader падал "record on line 2: wrong number
+// of fields", а не просто "не то содержимое". Мутационная точка F5: вернуть
+// комментарий метаданных перед строкой колонок в newCSVWriter (writer.go) —
+// этот тест обязан упасть на err от r.ReadAll(), а не молча пройти.
+//
+// BOM перед первым полем не срезаем нарочно избирательно — это конвенция
+// формата (Excel опознаёт кодировку только по нему, см. docblock newCSVWriter),
+// а не дефект: срез делает сам тест перед сравнением, тем же приёмом, каким
+// это делает любой типичный потребитель (Python — encoding="utf-8-sig").
+func TestCSVWriterReadableByStandardCSVReader(t *testing.T) {
+	var buf bytes.Buffer
+	w, err := NewWriter(&buf, FormatCSV, []string{"id", "title"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Write(Record{"id": int64(1), "title": "boom"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Write(Record{"id": int64(2), "title": "bang"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r := csv.NewReader(bytes.NewReader(buf.Bytes()))
+	records, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("encoding/csv (настройки по умолчанию) не разобрал файл: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("получено %d строк, want 3 (заголовок + 2 строки данных): %v", len(records), records)
+	}
+	header := records[0]
+	header[0] = strings.TrimPrefix(header[0], "\ufeff")
+	if header[0] != "id" || header[1] != "title" {
+		t.Errorf("первая прочитанная строка не является строкой колонок: %v", header)
+	}
+	if records[1][0] != "1" || records[1][1] != "boom" {
+		t.Errorf("вторая строка = %v, want [1 boom]", records[1])
+	}
+	if records[2][0] != "2" || records[2][1] != "bang" {
+		t.Errorf("третья строка = %v, want [2 bang]", records[2])
+	}
+}
+
+// TestJSONWriterDecodesDirectlyIntoRecordSlice — F5: получатель обязан
+// разбирать файл наивным json.Unmarshal(data, &[]map[string]any{}) — без
+// какой-либо специальной обработки первого элемента. Именно эта проверка
+// поймала регресс предыдущего прохода: элемент {"_export_meta": {...}}
+// первым в массиве не был строкой данных, и код вида
+// `for _, row := range rows { _ = row["id"].(int64) }` (Go) или
+// `for row in json.load(f): row["id"]` (Python) падал бы на элементе 0.
+// Мутационная точка F5: вернуть writeMeta/exportMetaElement первым элементом
+// в newJSONWriter (writer.go) — len(rows) станет 3 вместо 2 и rows[0]["id"]
+// не будет float64(1): оба Errorf ниже обязаны упасть.
+func TestJSONWriterDecodesDirectlyIntoRecordSlice(t *testing.T) {
+	var buf bytes.Buffer
+	w, err := NewWriter(&buf, FormatJSON, nil)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Write(Record{"id": int64(1)}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Write(Record{"id": int64(2)}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
+		t.Fatalf("json.Unmarshal без спецобработки первого элемента: %v (%q)", err, buf.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("получено %d элементов, want 2 (только строки данных, без служебного первого): %v", len(rows), rows)
+	}
+	if got, want := rows[0]["id"], float64(1); got != want {
+		t.Errorf("rows[0][%q] = %v, want %v — первый элемент обязан быть данными, не метаданными", "id", got, want)
+	}
+	if got, want := rows[1]["id"], float64(2); got != want {
+		t.Errorf("rows[1][%q] = %v, want %v", "id", got, want)
+	}
+}
+
+// TestNDJSONWriterEachLineIsHomogeneousRecord — F5: тот же контракт, что и
+// у JSON-массива выше, но построчно — ни одна строка NDJSON-файла не несёт
+// служебный ключ "_export_meta", каждая декодируется в ту же форму записи.
+func TestNDJSONWriterEachLineIsHomogeneousRecord(t *testing.T) {
+	var buf bytes.Buffer
+	w, err := NewWriter(&buf, FormatNDJSON, nil)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Write(Record{"id": int64(1)}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Write(Record{"id": int64(2)}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("получено %d строк, want 2 (только строки данных): %q", len(lines), buf.String())
+	}
+	wantIDs := []float64{1, 2}
+	for i, line := range lines {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("строка %d: json.Unmarshal: %v (%q)", i, err, line)
+		}
+		if _, ok := row["_export_meta"]; ok {
+			t.Errorf("строка %d несёт служебный ключ _export_meta: %v", i, row)
+		}
+		if got := row["id"]; got != wantIDs[i] {
+			t.Errorf("строка %d: id = %v, want %v", i, got, wantIDs[i])
+		}
+	}
+}

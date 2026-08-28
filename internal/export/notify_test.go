@@ -323,3 +323,91 @@ func TestMailNotifierUsesConfiguredLocaleEmptyContext(t *testing.T) {
 		t.Errorf("тема письма не на configured-локали (en): %q", subject)
 	}
 }
+
+// TestMailNotifierIncludesMachineReadableMeta — F5 контрактной уборки
+// 2026-08-28 (CONTRACT-DECISIONS.md): письмо о готовности обязано нести
+// job_id/scope_issue_id/filter_code машиночитаемо, рядом с локализованной
+// фразой, а не только внутри неё — получателю не приходится парсить текст
+// вида «issue #77» на языке инстанса, чтобы достать число 77.
+func TestMailNotifierIncludesMachineReadableMeta(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{
+		ID: 11, ProjectID: projectID, CreatedBy: userID,
+		Kind: KindIssues, ScopeIssueID: 77, Status: StatusDone,
+	})
+
+	if len(sent.calls) != 1 {
+		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
+	}
+	body := mailBody(sent.calls[0])
+	want := "gotcha-export-meta: job_id=11 scope_issue_id=77 filter_code=issue"
+	if !strings.Contains(body, want) {
+		t.Errorf("в письме нет строки машиночитаемых метаданных: want %q содержится в %q", want, body)
+	}
+}
+
+// TestMailNotifierIncludesPseudonymNoteForMaskedEvents — F1′: письмо о
+// готовности обязано нести пометку о невозможности сопоставить псевдонимы
+// user_id между выгрузками РОВНО там, где BuildMeta её ставит (Kind=events,
+// IncludePII=false) — тот же контракт, что и у Meta.PseudonymNote (meta.go,
+// см. TestBuildMetaPseudonymNoteOnlyForMaskedEvents).
+func TestMailNotifierIncludesPseudonymNoteForMaskedEvents(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{
+		ID: 12, ProjectID: projectID, CreatedBy: userID,
+		Kind: KindEvents, IncludePII: false, Status: StatusDone,
+	})
+
+	if len(sent.calls) != 1 {
+		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
+	}
+	body := mailBody(sent.calls[0])
+	if !strings.Contains(body, PseudonymUniquenessNote) {
+		t.Errorf("письмо о готовности не несёт пометку о псевдонимах (F1′): %q", body)
+	}
+}
+
+// TestMailNotifierOmitsPseudonymNoteWhenNotMasked — зеркало предыдущего
+// теста: пометка не появляется там, где псевдонимизации нет вовсе (issues —
+// колонки user_id нет) или PII отдан сырым (IncludePII=true) — предупреждать
+// о свойстве, которого нет, было бы ложью получателю письма.
+func TestMailNotifierOmitsPseudonymNoteWhenNotMasked(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	cases := []Job{
+		{ID: 13, Kind: KindEvents, IncludePII: true},
+		{ID: 14, Kind: KindIssues, IncludePII: false},
+	}
+	for _, base := range cases {
+		sent := &fakeMailer{}
+		notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+		job := base
+		job.ProjectID = projectID
+		job.CreatedBy = userID
+		job.Status = StatusDone
+		notifyFn(ctx, job)
+
+		if len(sent.calls) != 1 {
+			t.Fatalf("job=%+v: отправлено писем: %d, ожидали 1", job, len(sent.calls))
+		}
+		body := mailBody(sent.calls[0])
+		if strings.Contains(body, PseudonymUniquenessNote) {
+			t.Errorf("job=%+v: письмо несёт пометку о псевдонимах, хотя маскирования user_id нет: %q", job, body)
+		}
+	}
+}

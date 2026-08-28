@@ -93,6 +93,27 @@ func mailPayload(ctx context.Context, job Job, baseURL string) (map[string]any, 
 		if job.Truncated {
 			body += " " + i18n.T(ctx, "exports.mail.truncated_note")
 		}
+		// F1′ (CONTRACT-DECISIONS.md): пометка о невозможности сопоставить
+		// псевдонимы user_id между выгрузками обязана дойти до автора в
+		// письме о готовности, не только в документации/метаданных файла
+		// (см. докблок Meta, meta.go). PseudonymUniquenessNote — та же
+		// НЕпереведённая строка, что несёт Meta.PseudonymNote: содержимое
+		// файла и его свойства не локализуются нигде в продукте (см. её
+		// докблок в pii.go), в отличие от остального тела письма выше.
+		meta := BuildMeta(job)
+		if meta.PseudonymNote != "" {
+			body += " " + meta.PseudonymNote
+		}
+		// F5: машиночитаемые значения — рядом с локализованной фразой выше,
+		// не растворённые в ней. EmailSender (internal/notify/email.go)
+		// шлёт только "subject"/"body" из payload, отдельного поля в письме
+		// не завести — строка с фиксированным, не подлежащим переводу
+		// префиксом "gotcha-export-meta:" (тот же формат, что и остальной
+		// контент, который в продукте не локализуется) даёт получателю
+		// возможность выдернуть job_id/scope_issue_id/filter_code из письма
+		// без разбора переведённого текста выше.
+		body += "\n\n" + fmt.Sprintf("gotcha-export-meta: job_id=%d scope_issue_id=%d filter_code=%s",
+			job.ID, meta.ScopeIssueID, meta.FilterCode)
 		return map[string]any{
 			"subject": i18n.T(ctx, "exports.mail.done.subject"),
 			"body":    body,

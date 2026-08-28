@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -227,5 +229,55 @@ func TestIssueSourcePipelineThroughWriter(t *testing.T) {
 	wantURL := "https://gotcha.example.com/issues/" + strconv.FormatInt(res.IssueID, 10)
 	if row["url"] != wantURL {
 		t.Errorf("url = %v, want %q", row["url"], wantURL)
+	}
+}
+
+// TestIssueSourceOrderDescendingByIDOnEqualLastSeen — F2 контрактной уборки
+// 2026-08-28 (CONTRACT-DECISIONS.md): порядок ORDER BY last_seen DESC,
+// id DESC (issue.Service.StreamForExport, internal/issue/query.go) —
+// публичный контракт выгрузки, до этого державшийся только докблоком.
+// Несколько групп с ОДИНАКОВЫМ last_seen обязаны прийти через IssueSource
+// строго убывающим по id — тай-брейк, без которого порядок строк выгрузки
+// переставал бы быть детерминированным на границе одинаковых значений
+// last_seen (частый случай: пачка событий, пришедшая разом).
+func TestIssueSourceOrderDescendingByIDOnEqualLastSeen(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	projectID, _ := seedProjectAndUser(t, pool)
+
+	same := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	const n = 12
+	var wantIDs []int64
+	for i := 0; i < n; i++ {
+		res, err := svc.Upsert(ctx, projectID, fmt.Sprintf("fp-order-%02d", i), "boom", "", issue.LevelError, "", same)
+		if err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+		wantIDs = append(wantIDs, res.IssueID)
+	}
+	// Убывающий порядок по id — ожидание собирается сортировкой уже
+	// известных id, НЕ повторением запроса реализации: тавтология здесь
+	// пропустила бы потерю тай-брейка так же тихо, как раньше пропускала
+	// потерю ссылки TestIssueSourceRecordHasAbsoluteURL (см. её докблок).
+	sort.Slice(wantIDs, func(i, j int) bool { return wantIDs[i] > wantIDs[j] })
+
+	src := NewIssueSource(svc, "https://gotcha.example.com")
+	var gotIDs []int64
+	if err := src.Stream(ctx, projectID, Params{}, func(r Record) error {
+		id, _ := r["id"].(int64)
+		gotIDs = append(gotIDs, id)
+		return nil
+	}); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(gotIDs) != n {
+		t.Fatalf("получено %d записей, want %d", len(gotIDs), n)
+	}
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Fatalf("порядок строк на равном last_seen не убывает строго по id (позиция %d): got %d, want %d — полные последовательности: got=%v, want=%v",
+				i, gotIDs[i], wantIDs[i], gotIDs, wantIDs)
+		}
 	}
 }

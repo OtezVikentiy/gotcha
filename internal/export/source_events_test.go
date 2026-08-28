@@ -713,3 +713,62 @@ func TestEventSourceUserIDPseudonym(t *testing.T) {
 		t.Errorf("распределение псевдонимов = %v, want один псевдоним дважды (alice) и один — один раз (bob)", counts)
 	}
 }
+
+// TestEventSourceUserIDPseudonymDiffersAcrossExports — F1′ контрактной
+// уборки 2026-08-28 (CONTRACT-DECISIONS.md, докблок NewExportSalt в pii.go):
+// salt псевдонимизации живёт РОВНО один вызов Stream, поэтому один и тот же
+// user_id в ДВУХ разных выгрузках одного проекта обязан дать РАЗНЫЕ
+// псевдонимы — иначе получатель двух файлов мог бы сшить их по user_id, чего
+// свойство salt-на-Stream как раз и не допускает. Мутационная точка: вынести
+// создание salt за пределы Stream (например, в поле eventSource, наполняемое
+// в NewEventSource) — assert ниже про равенство псевдонимов между двумя
+// вызовами обязан упасть.
+func TestEventSourceUserIDPseudonymDiffersAcrossExports(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	svc := issue.NewService(pool)
+	projectID, _ := seedProjectAndUser(t, pool)
+
+	seenAt := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	res, err := svc.Upsert(ctx, projectID, "fp-uid-cross-export", "boom", "app.worker", issue.LevelError, "prod", seenAt)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	b := event.NewBatcher(ch)
+	go b.Run()
+	seedEvent(t, b, event.Event{
+		ProjectID: projectID, IssueID: res.IssueID, Timestamp: seenAt,
+		Message: "boom", Environment: "prod", UserID: "carol@example.com",
+	})
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	src := NewEventSource(event.NewQuery(ch), svc)
+
+	runOnce := func() string {
+		var uid string
+		if err := src.Stream(ctx, projectID, 0, false, Params{}, func(r Record) error {
+			uid, _ = r["user_id"].(string)
+			return nil
+		}); err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		if uid == "" {
+			t.Fatalf("пустой псевдоним user_id")
+		}
+		return uid
+	}
+
+	first := runOnce()
+	second := runOnce()
+
+	if first == "carol@example.com" || second == "carol@example.com" {
+		t.Fatalf("user_id уехал сырым: first=%q, second=%q", first, second)
+	}
+	if first == second {
+		t.Fatalf("псевдоним user_id совпал между ДВУМЯ разными выгрузками (first=%q, second=%q) — salt пережил Stream, две выгрузки стали сопоставимы по user_id", first, second)
+	}
+}

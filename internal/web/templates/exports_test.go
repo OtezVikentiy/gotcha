@@ -545,3 +545,44 @@ func TestExportPIICheckboxUsesInlineLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestExportsListFilterCellCarriesMachineReadableAttributes — F5/F1′
+// контрактной уборки 2026-08-28 (CONTRACT-DECISIONS.md, докблок export.Meta
+// в internal/export/meta.go, п.2): ячейка «Фильтры» обязана нести
+// data-scope-issue-id/data-filter-code/data-pseudonym-masked рядом с
+// локализованным текстом FilterSummary — получателю (скрипту, а не
+// человеку) не нужно парсить фразу вида «issue #123», чтобы достать число
+// 123. Мутационная точка: убрать один из трёх атрибутов из <td> в exportRow
+// (exports.templ) — соответствующий Errorf ниже обязан упасть.
+func TestExportsListFilterCellCarriesMachineReadableAttributes(t *testing.T) {
+	rows := []ExportView{
+		{
+			ID: 1, KindLabel: "events", FormatLabel: "ndjson", Status: "done",
+			FilterSummary: "issue #123", ScopeIssueID: 123, FilterCode: "issue", PseudonymMasked: true,
+		},
+		{
+			ID: 2, KindLabel: "issues", FormatLabel: "csv", Status: "done",
+			FilterSummary: "без фильтров", ScopeIssueID: 0, FilterCode: "all", PseudonymMasked: false,
+		},
+	}
+	out := renderTo(t, Exports(7, rows, false, "u@e.com", true, "", nil))
+
+	if !strings.Contains(out, `data-scope-issue-id="123"`) {
+		t.Error("нет data-scope-issue-id=\"123\" для заявки, ограниченной группой")
+	}
+	if !strings.Contains(out, `data-filter-code="issue"`) {
+		t.Error("нет data-filter-code=\"issue\" для заявки, ограниченной группой")
+	}
+	if !strings.Contains(out, `data-pseudonym-masked="true"`) {
+		t.Error("нет data-pseudonym-masked=\"true\" для заявки events без ПДн")
+	}
+	if !strings.Contains(out, `data-scope-issue-id="0"`) {
+		t.Error("нет data-scope-issue-id=\"0\" для заявки без области (ScopeIssueID=0 — валидное значение, не отсутствие атрибута)")
+	}
+	if !strings.Contains(out, `data-filter-code="all"`) {
+		t.Error("нет data-filter-code=\"all\" для заявки без фильтров")
+	}
+	if !strings.Contains(out, `data-pseudonym-masked="false"`) {
+		t.Error("нет data-pseudonym-masked=\"false\" для заявки issues (псевдонимов не бывает)")
+	}
+}

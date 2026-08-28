@@ -22,6 +22,12 @@ A job is queued with the same time range and environment filter selected on the
 page at the moment it's created; the range is frozen into the job, so changing
 the page's time selector afterward doesn't affect an already-queued job.
 
+Row order is part of the file's contract, not an accident: groups are sorted
+by last seen, newest first, and groups with the SAME last-seen time break the
+tie by descending id (the most recently created one of them comes first). A
+program processing the file can rely on this — the rule is frozen and won't
+change silently.
+
 ## Formats
 
 | Format | What it is | When to use it |
@@ -67,13 +73,20 @@ irreversible delete only happens after confirming there.
 ## PII: masked by default
 
 `user_email` and `user_ip` are replaced with `[masked]` by default; `user_id`
-is left as-is. In JSON/NDJSON the same mask applies to keys in `request` and
-`contexts` that look like personal data.
+is replaced with a pseudonym (a random string, stable only within a single
+file — see "`user_id` pseudonyms aren't comparable across exports" below),
+not left as-is and not replaced with the same static mask as email/IP: unlike
+`[masked]`, a pseudonym still lets you count how many DIFFERENT users were
+affected without exposing any original value. In JSON/NDJSON the same mask or
+scrub applies to `request`, `contexts`, `stacktrace`, and `breadcrumbs` keys
+that look like personal data (frame-local variables, URLs with query
+parameters).
 
 The "Export PII unmasked" checkbox on the creation form is only shown to org
 admins and owners — a project operator without that role never sees it, and a
 value submitted anyway is silently ignored (the job is still queued masked,
-not rejected). Whether the checkbox was used is visible in the job list to
+not rejected). With the checkbox on, `user_id` is also left as-is, with no
+pseudonymization. Whether the checkbox was used is visible in the job list to
 anyone who can see the job itself.
 
 If server-side scrubbing is enabled on ingest (`GOTCHA_SCRUB_EMAIL`/
@@ -81,6 +94,38 @@ If server-side scrubbing is enabled on ingest (`GOTCHA_SCRUB_EMAIL`/
 already blanked in storage at ingest time. The "Export PII unmasked" checkbox
 doesn't resurrect what was never saved — if the fields are already empty,
 unmasking on export changes nothing.
+
+### `user_id` pseudonyms aren't comparable across exports
+
+The `user_id` pseudonym is built from a random, one-time key generated fresh
+for EACH job and never stored anywhere. As a result: within ONE file, the
+same `user_id` always yields the same pseudonym (so you can count unique
+users of an event or a group), but across TWO different files — even two jobs
+created back to back with the same filter — the same real user gets DIFFERENT
+pseudonyms. You cannot stitch two exports together by `user_id`, and that's
+deliberate, not a bug: the opposite would correlate one user's activity
+across files, which nobody asked for.
+
+The note isn't only here. Export files (CSV/JSON/NDJSON) stay CLEAN: CSV
+carries only the column row and data rows with no comment lines at all, JSON
+is only an array of records, NDJSON is only homogeneous lines — none of the
+three formats carries a service element that a reader would have to tell
+apart from data. The machine-readable facts about a job — `scope_issue_id`,
+`filter_code`, and, for an unmasked-PII-free events job, `pseudonym_note` —
+live NEXT TO the file, delivered three ways:
+
+- **A sibling response on the same download**: `GET .../exports/{jobID}/download?meta=1`
+  returns these fields as JSON under the same access gates as the file
+  itself — a recipient who only needs the identifier doesn't have to parse a
+  translated phrase like "issue #123" out of the human-readable summary;
+- **On the Exports page**: the "Filters" column's cell carries
+  `data-scope-issue-id`/`data-filter-code`/`data-pseudonym-masked`
+  attributes — the same values sitting next to the localized text, readable
+  by a script without parsing it;
+- **In the readiness email**: a non-localized `gotcha-export-meta: job_id=…
+  scope_issue_id=… filter_code=…` line, and the pseudonym note itself when it
+  applies, are appended to the body separately from the translated sentence
+  above.
 
 ## Limits
 
