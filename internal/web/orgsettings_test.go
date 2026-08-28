@@ -853,3 +853,71 @@ func TestWebOrgSettingsSSO(t *testing.T) {
 		t.Fatal("sso should be gone after delete")
 	}
 }
+
+// TestWebOrgSettingsSSOOwnerNotInstanceAdminRejected — P1 находка ревью T4:
+// requireInstanceAdminForSSO (orgsettings.go) гейтит SSO-ручки глобальным
+// флагом users.is_instance_admin, а НЕ ролью владельца организации
+// (lvlInstanceAdmin в authz_map_test.go, не lvlOwner). Ни один существующий
+// тест не бил ровно в эту угрозу: TestWebOrgSettingsSSO проверяет отказ
+// org-admin'у (adminCookie, роль RoleAdmin), а не владельцу;
+// TestWebOrgSettingsSSONoteForNonAdmin проверяет только GET-рендер (скрыта
+// ли форма), не сам POST-гейт. Модель угроз (docs/tech-docs/07-security-privacy.md)
+// описывает защиту именно от владельца своей организации, самостоятельно
+// подключающего SSO для непроверенного домена — self-service захват аккаунта.
+// Этот тест — owner своей организации, НЕ являющийся инстанс-админом, получает
+// 403 и на настройку, и на удаление SSO.
+func TestWebOrgSettingsSSOOwnerNotInstanceAdminRejected(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	ctx := context.Background()
+
+	// Первый Register инстанса становится bootstrap instance-admin (see
+	// auth.Service.Register, internal/auth/user.go:65-84, частичный уникальный
+	// индекс one_instance_admin — админ инстанса ровно один). Расходуем этот
+	// слот на одноразового пользователя ДО владельца теста: иначе владелец сам
+	// оказался бы инстанс-админом и легитимно проходил бы SSO-ручки — не
+	// разрыв гейта, а особенность порядка регистрации в тесте.
+	orgSettingsRegister(t, authSvc, "sso-owner-reject-bootstrap@example.com")
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "sso-owner-reject-owner@example.com")
+	o, err := orgSvc.CreateOrg(ctx, "sso-owner-reject-co", "SSO Owner Reject Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Предусловие теста: владелец ДЕЙСТВИТЕЛЬНО owner своей организации и
+	// ДЕЙСТВИТЕЛЬНО не инстанс-админ — иначе тест зелёный по неверной причине
+	// (например, если bootstrap-слот случайно достался не тому пользователю).
+	if role, err := orgSvc.Role(ctx, o.ID, ownerID); err != nil || role != org.RoleOwner {
+		t.Fatalf("precondition: owner role in org = (%v,%v), want (RoleOwner,nil)", role, err)
+	}
+	if admin, err := authSvc.UserIsInstanceAdmin(ctx, ownerID); err != nil || admin {
+		t.Fatalf("precondition: owner UserIsInstanceAdmin = (%v,%v), want (false,nil)", admin, err)
+	}
+
+	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/sso"
+	form := url.Values{
+		"issuer": {"https://idp.example/realms/x"}, "client_id": {"cid"}, "client_secret": {"sec"},
+		"domain": {"owner-reject.example"}, "default_role": {"member"},
+	}
+
+	// Owner (не инстанс-админ) настраивает SSO своей же организации → 403.
+	resp := postForm(t, s.srv, base, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("owner (non-instance-admin) sso save status = %d, want 403", resp.StatusCode)
+	}
+	if _, ok, _ := orgSvc.SSOByOrg(ctx, o.ID); ok {
+		t.Fatal("sso must not be saved: owner is not instance admin")
+	}
+
+	// Owner (не инстанс-админ) удаляет SSO своей же организации → тоже 403,
+	// даже с confirmed=yes (гейт стоит до подтверждения удаления).
+	resp = postForm(t, s.srv, base+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("owner (non-instance-admin) sso delete status = %d, want 403", resp.StatusCode)
+	}
+}

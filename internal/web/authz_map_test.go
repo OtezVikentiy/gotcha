@@ -21,7 +21,17 @@ const (
 	lvlAccess   = "access"   // любой с доступом к проекту (статусы issue/perf-issue)
 	lvlOperator = "operator" // оператор мониторинга (спека 2026-08-08)
 	lvlAdmin    = "admin"    // org owner/admin
-	lvlOwner    = "owner"    // только owner (удаления, SSO)
+	lvlOwner    = "owner"    // только owner (удаления)
+	// lvlInstanceAdmin — принципиально ДРУГОЙ механизм, чем lvlOwner: не роль
+	// в организации, а глобальный флаг users.is_instance_admin (один на весь
+	// инстанс, миграция 0017, bootstrap первому зарегистрированному,
+	// auth.Service.UserIsInstanceAdmin). Гейт requireInstanceAdminForSSO
+	// (orgsettings.go) закрывает per-org SSO именно им, а не owner-ролью —
+	// смешивать эти два уровня под одной константой значило бы утверждать,
+	// что владелец организации может настраивать федерацию для своего орга
+	// самостоятельно, что и есть закрываемая этим гейтом дыра (захват
+	// аккаунта через непроверенный домен, см. комментарий у гейта).
+	lvlInstanceAdmin = "instance_admin"
 )
 
 var routeAuthz = map[string]string{
@@ -127,14 +137,17 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/alerts/channels/delete": lvlAdmin,
 	"POST /projects/{id}/alerts/channels/test":   lvlAdmin,
 
-	// --- Только owner (requireOrgOwner/requireProjectOwner/
-	// requireInstanceAdminForSSO): удаления и SSO. ---
-	"POST /orgs/{id}/settings/sso":            lvlOwner,
-	"POST /orgs/{id}/settings/sso/delete":     lvlOwner,
+	// --- Только owner (requireOrgOwner/requireProjectOwner): удаления. ---
 	"POST /orgs/{id}/settings/delete":         lvlOwner,
 	"POST /orgs/{id}/settings/purge-subject":  lvlOwner,
 	"POST /orgs/{id}/settings/export-subject": lvlOwner,
 	"POST /projects/{id}/settings/delete":     lvlOwner,
+
+	// --- Только админ инстанса (requireInstanceAdminForSSO): per-org SSO.
+	// Не owner-роль организации — глобальный флаг users.is_instance_admin,
+	// см. комментарий у lvlInstanceAdmin выше. ---
+	"POST /orgs/{id}/settings/sso":        lvlInstanceAdmin,
+	"POST /orgs/{id}/settings/sso/delete": lvlInstanceAdmin,
 
 	// ============================= GET =============================
 	// (находка B2: тот же принцип, что у POST выше, но для рендера).
@@ -257,7 +270,7 @@ func TestRoutesDeclareAuthzLevel(t *testing.T) {
 	for route, lvl := range routeAuthz {
 		declared[route] = false
 		switch lvl {
-		case lvlPublic, lvlUser, lvlAccess, lvlOperator, lvlAdmin, lvlOwner:
+		case lvlPublic, lvlUser, lvlAccess, lvlOperator, lvlAdmin, lvlOwner, lvlInstanceAdmin:
 		default:
 			t.Errorf("маршрут %q: неизвестный уровень %q", route, lvl)
 		}
