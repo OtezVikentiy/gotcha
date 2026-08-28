@@ -14,18 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// validLevels — единственные уровни, которым мы доверяем как есть; всё
-// остальное (в т.ч. пустая строка отдельно обрабатывается ниже) каппится до
-// error. Ключи — issue.Levels: issue владеет множеством, приём только
-// сверяется с ним.
-var validLevels = map[string]bool{
-	issue.LevelDebug:   true,
-	issue.LevelInfo:    true,
-	issue.LevelWarning: true,
-	issue.LevelError:   true,
-	issue.LevelFatal:   true,
-}
-
 // maxJSONBlock — потолок сырого JSON-блока события (contexts/breadcrumbs/
 // request/exception). 256 КиБ с запасом покрывают легитимный стектрейс с исходным
 // контекстом и большой request-интерфейс; всё, что крупнее, — злоупотребление.
@@ -219,8 +207,8 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 		Fingerprint: capFingerprint(se.Fingerprint),
 		Tags:        map[string]string{},
 	}
-	if !validLevels[pe.Level] {
-		pe.Level = "error"
+	if !issue.IsValidLevel(pe.Level) {
+		pe.Level = issue.LevelError
 	}
 
 	if id, err := uuid.Parse(se.EventID); err == nil {

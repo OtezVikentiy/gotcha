@@ -637,7 +637,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 
 			<div class="issue-actions">
 				<form method="post" action={ templ.URL(issueStatusPath(it.ID)) }>
-					if it.Status == "unresolved" {
+					if it.Status == issue.StatusUnresolved {
 						<button type="submit" name="status" value="resolved" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve") }</button>
 						<button type="submit" name="status" value="ignored" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
 					} else {

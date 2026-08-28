@@ -73,11 +73,16 @@ func levelBadgeClass(level string) string {
 
 // statusBadgeClass — бейдж статуса issue: unresolved подсвечивается как
 // "требует внимания" (warn), resolved — good, ignored — нейтральный.
+// default (в т.ч. неизвестный статус) деградирует в тот же warn, что и
+// unresolved, — сознательно: "требует внимания" безопаснее, чем молчаливое
+// "всё хорошо" для статуса, которого шаблон не узнал. Полнота набора,
+// закрывающая case-ветками issue.Statuses, проверяется
+// TestIssueStatusBadgeAndLabelComplete (helpers_test.go).
 func statusBadgeClass(status string) string {
 	switch status {
-	case "resolved":
+	case issue.StatusResolved:
 		return "badge badge-good"
-	case "ignored":
+	case issue.StatusIgnored:
 		return "badge badge-neutral"
 	default:
 		return "badge badge-warn"
@@ -100,7 +105,7 @@ func issueLevelLabel(ctx context.Context, level string) string {
 // resolved/ignored). Неизвестный статус возвращается как есть.
 func issueStatusLabel(ctx context.Context, status string) string {
 	switch status {
-	case "unresolved", "resolved", "ignored":
+	case issue.StatusUnresolved, issue.StatusResolved, issue.StatusIgnored:
 		return i18n.T(ctx, "issues.status."+status)
 	}
 	return status

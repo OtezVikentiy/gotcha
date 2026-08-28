@@ -15,13 +15,36 @@ var (
 	ErrInvalidStatus = errors.New("issue: invalid status")
 )
 
-// validStatuses — единственные допустимые значения issues.status
-// (совпадают с CHECK-constraint в миграции).
-var validStatuses = map[string]bool{
-	"unresolved": true,
-	"resolved":   true,
-	"ignored":    true,
-}
+// Статусы issue. Как и уровни ниже (Levels), раньше набор был размножен
+// литералами по внешним потребителям — internal/web/issues.go (дефолт
+// фильтра списка и bulkActionStatus) и internal/web/exports.go
+// (exportValidStatuses, копия из докблока «issue не экспортирует их
+// набором») — ни одна из копий не сверялась друг с другом. Экспортированные
+// константы и Statuses делают issue единственным владельцем набора: обе
+// копии переведены на них.
+const (
+	StatusUnresolved = "unresolved"
+	StatusResolved   = "resolved"
+	StatusIgnored    = "ignored"
+)
+
+// Statuses — все допустимые статусы issues.status (совпадают с
+// CHECK-constraint в миграции), в порядке, использующемся в дропдауне
+// фильтра/форме выгрузки.
+var Statuses = []string{StatusUnresolved, StatusResolved, StatusIgnored}
+
+var validStatuses = func() map[string]bool {
+	m := make(map[string]bool, len(Statuses))
+	for _, s := range Statuses {
+		m[s] = true
+	}
+	return m
+}()
+
+// IsValidStatus сообщает, входит ли v в Statuses. Пустая строка — не
+// статус (фильтры трактуют "" отдельно, как «без ограничения»,
+// см. buildIssueFilter/Filter) — IsValidStatus для неё возвращает false.
+func IsValidStatus(v string) bool { return validStatuses[v] }
 
 // Уровни issue. В отличие от status, колонка issues.level не ограничена
 // CHECK в схеме (см. миграцию 0003) — единственный источник истины для
@@ -40,6 +63,19 @@ const (
 // Levels — все допустимые уровни issue, по возрастанию серьёзности. Порядок
 // важен: это же он используется в дропдауне фильтра.
 var Levels = []string{LevelDebug, LevelInfo, LevelWarning, LevelError, LevelFatal}
+
+var validLevels = func() map[string]bool {
+	m := make(map[string]bool, len(Levels))
+	for _, l := range Levels {
+		m[l] = true
+	}
+	return m
+}()
+
+// IsValidLevel сообщает, входит ли v в Levels. Пустая строка — не уровень
+// (фильтры/форма выгрузки трактуют "" отдельно, как «без ограничения») —
+// IsValidLevel для неё возвращает false.
+func IsValidLevel(v string) bool { return validLevels[v] }
 
 // sortColumns — whitelist сортировки: в SQL-текст попадает только
 // это заранее заданное выражение, никогда пользовательская строка.

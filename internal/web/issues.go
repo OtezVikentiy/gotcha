@@ -72,7 +72,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// дефолт остаётся полностью переопределяемым из UI-фильтра.
 	status := q.Get("status")
 	if !q.Has("status") {
-		status = "unresolved"
+		status = issue.StatusUnresolved
 	}
 	// Тот же контрол окна времени, что и на остальных страницах, с
 	// дополнительным пунктом «за всё время» — он же по умолчанию: большинство
@@ -136,7 +136,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		// ?status=unresolved список не сужают — это не повод показывать
 		// «ничего не подошло» вместо «событий ещё не было».
 		Active: filter.Level != "" || filter.Query != "" || filter.Environment != "" ||
-			(q.Has("status") && status != "" && status != "unresolved") ||
+			(q.Has("status") && status != "" && status != issue.StatusUnresolved) ||
 			rng.Key != RangeAll,
 	}
 	banner := h.quotaBanner(r.Context(), orgID, canManage)
@@ -284,10 +284,14 @@ func parsePage(s string) int {
 }
 
 // bulkActionStatus — whitelist допустимых POST-действий bulk-панели.
+// Значения — issue.StatusXxx, не литералы: раньше здесь была третья копия
+// того же множества, что и default status выше и exportValidStatuses
+// (internal/web/exports.go) — устранено, issue остаётся единственным
+// владельцем набора (internal/guards следит, чтобы копия не вернулась).
 var bulkActionStatus = map[string]string{
-	"resolve":   "resolved",
-	"ignore":    "ignored",
-	"unresolve": "unresolved",
+	"resolve":   issue.StatusResolved,
+	"ignore":    issue.StatusIgnored,
+	"unresolve": issue.StatusUnresolved,
 }
 
 // bulkActionFlashKey — сообщение об итоге каждого массового действия.

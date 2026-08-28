@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -47,6 +48,46 @@ func TestStatusBadgeClass(t *testing.T) {
 	for in, want := range cases {
 		if got := statusBadgeClass(in); got != want {
 			t.Errorf("statusBadgeClass(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestIssueStatusBadgeAndLabelComplete — полнота обработки канона:
+// statusBadgeClass/issueStatusLabel обязаны явно знать каждое значение
+// issue.Statuses. wantClass — не копия канона (сторож
+// TestNoIssueEnumLiteralCopies за копиями Go-литералов и так следит), а
+// ОЖИДАЕМЫЙ РЕЗУЛЬТАТ: если issue.Statuses вырастет, длина сравнится first
+// и тест упадёт с понятным сообщением ДО того, как дело дойдёт до
+// покласса/подписи конкретного нового значения — тот, кто добавляет статус
+// в канон, обязан прийти сюда и в statusBadgeClass/issueStatusLabel руками,
+// а не полагаться на то, что default-ветка "сойдёт".
+//
+// Для statusBadgeClass отдельно: unresolved легитимно попадает в default
+// (badge-warn) — то же самое, во что попал бы и неизвестный статус. Просто
+// "got != default" эту находку не поймало бы, поэтому здесь сверка идёт с
+// заранее прописанным ожидаемым классом на каждый статус, а не с фактом
+// "не default".
+func TestIssueStatusBadgeAndLabelComplete(t *testing.T) {
+	wantClass := map[string]string{
+		issue.StatusUnresolved: "badge badge-warn",
+		issue.StatusResolved:   "badge badge-good",
+		issue.StatusIgnored:    "badge badge-neutral",
+	}
+	if len(issue.Statuses) != len(wantClass) {
+		t.Fatalf("issue.Statuses = %v (%d значений), а wantClass в этом тесте знает %d — канон вырос: добавь case в statusBadgeClass/issueStatusLabel (issues.templ) и обнови wantClass здесь", issue.Statuses, len(issue.Statuses), len(wantClass))
+	}
+	ctx := ruCtx()
+	for _, s := range issue.Statuses {
+		want, ok := wantClass[s]
+		if !ok {
+			t.Errorf("issue.Statuses содержит %q, для которого этот тест не знает ожидаемого класса бейджа", s)
+			continue
+		}
+		if got := statusBadgeClass(s); got != want {
+			t.Errorf("statusBadgeClass(%q) = %q, want %q — добавь явный case в statusBadgeClass (issues.templ)", s, got, want)
+		}
+		if got := issueStatusLabel(ctx, s); got == "" || got == s {
+			t.Errorf("issueStatusLabel(%q) = %q — не локализован (провалился в raw-возврат): добавь %q в switch issueStatusLabel (issues.templ)", s, got, s)
 		}
 	}
 }

@@ -1668,7 +1668,7 @@ func IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rn
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if it.Status == "unresolved" {
+			if it.Status == issue.StatusUnresolved {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 95, "<button type=\"submit\" name=\"status\" value=\"resolved\" class=\"btn btn-primary\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
