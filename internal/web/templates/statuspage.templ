@@ -22,7 +22,7 @@ type StatusPageView struct {
 	Overall     string // operational | partial | major
 	// Days — фактическая глубина страницы в сутках. Раньше «90» стояло в
 	// текстах подписей, а глубина уже ограничивалась сроком хранения: при
-	// GOTCHA_RETENTION_DAYS=30 страница рисовала 30 корзин и подписывала их
+	// GOTCHA_EVENT_RETENTION_DAYS=30 страница рисовала 30 корзин и подписывала их
 	// «за 90 дней».
 	Days        int
 	Monitors    []StatusMonitorView
@@ -99,6 +99,19 @@ func statusMonitorText(ctx context.Context, status string) string {
 	}
 }
 
+// hasPausedMonitor сообщает, есть ли среди мониторов страницы хотя бы один
+// на паузе: подсказка status.monitor.paused_hint осмысленна только тогда,
+// когда посетитель реально видит бейдж «Пауза» — иначе это шум на
+// единственной публичной поверхности продукта.
+func hasPausedMonitor(monitors []StatusMonitorView) bool {
+	for _, m := range monitors {
+		if m.Status == "paused" {
+			return true
+		}
+	}
+	return false
+}
+
 func overallStatusClass(overall string) string {
 	switch overall {
 	case "major":
@@ -138,8 +151,8 @@ templ statusLayoutBody(title string) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>{ title }</title>
-			<link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
-		<link rel="stylesheet" href="/static/app.css"/>
+			<link rel="icon" href={ assetURL("/static/favicon.svg") } type="image/svg+xml"/>
+		<link rel="stylesheet" href={ assetURL("/static/app.css") }/>
 	</head>
 	<body class="status-body">
 		<main class="status-page">
@@ -171,6 +184,10 @@ templ PublicStatusPage(v StatusPageView) {
 			<p class="status-description">{ v.Description }</p>
 		}
 		<p class={ overallStatusClass(v.Overall) }>{ overallStatusText(ctx, v.Overall) }</p>
+		<p class="hint" data-status-note="timezone">{ i18n.T(ctx, "status.timezone_note") }</p>
+		if hasPausedMonitor(v.Monitors) {
+			<p class="hint" data-status-note="paused">{ i18n.T(ctx, "status.monitor.paused_hint") }</p>
+		}
 
 		if len(v.Monitors) == 0 {
 			<p>{ i18n.T(ctx, "status.monitors.empty") }</p>

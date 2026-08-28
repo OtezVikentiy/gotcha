@@ -32,11 +32,23 @@ You'll find the current public link right under the edit form on `/projects/{id}
 The public page (`/status/{public_id}`) requires no login and has no dashboard navigation — just:
 
 - overall status ("All systems operational" / "Partial outage" / "Major outage");
-- service tiles with their public name, current status (up/down/paused/maintenance/unknown), an availability bar, and 90-day uptime % (or the `GOTCHA_RETENTION_DAYS` window, whichever is shorter — the page never shows cells beyond what is actually stored);
+- service tiles with their public name, current status (up/down/paused/maintenance/unknown), an availability bar, and 90-day uptime % (or the `GOTCHA_EVENT_RETENTION_DAYS` window, whichever is shorter — the page never shows cells beyond what is actually stored);
 - an incident feed for the last 90 days (service, start time, duration — no cause text or region detail);
 - a list of upcoming scheduled [maintenance windows](/docs/maintenance).
 
 Real monitor URLs, hosts, ports, and error text never reach the public page — only what you explicitly selected and labeled is exposed.
+
+## What a stranger sees when they open the link
+
+The page is public: anyone with the direct link can open it, with no login and no check on who's looking. The page explains itself — it carries a note about the timezone and an explanation of the "Paused" status — but for reference, here's what each service status means:
+
+- **Operational** — the service is fine.
+- **Down** — an incident is open; the service isn't responding right now.
+- **Paused** — checks for this service are temporarily turned off by the team; this is NOT an outage and says nothing about the service's current state.
+- **Maintenance** — a pre-announced [maintenance window](/docs/maintenance) is in progress; not counted as an outage.
+- **Unknown** — the service hasn't been checked yet (a freshly added monitor).
+
+All times on the page (incident start/end, maintenance windows) are shown in UTC — the page is the same for every visitor regardless of their own timezone.
 
 ## FAQ
 
@@ -66,7 +78,7 @@ It counts in the service's favor: [maintenance window](/docs/maintenance) interv
 
 ### How much history does the page show?
 
-The availability bar and uptime % cover 90 days, and so does the incident feed. If the `GOTCHA_RETENTION_DAYS` retention is shorter, the page shows exactly what is stored — it never renders cells out of thin air.
+The availability bar and uptime % cover 90 days, and so does the incident feed. If the `GOTCHA_EVENT_RETENTION_DAYS` retention is shorter, the page shows exactly what is stored — it never renders cells out of thin air.
 
 ## What's next
 
