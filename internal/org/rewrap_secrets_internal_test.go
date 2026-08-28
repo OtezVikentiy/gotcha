@@ -66,3 +66,26 @@ func TestRewrapSSOSecretCAS(t *testing.T) {
 		t.Fatalf("client_secret = %q, want new-value", stored)
 	}
 }
+
+// TestRewrapSSOSecretExecError — обрыв соединения на самом UPDATE, зеркало
+// internal/alert.TestRewrapChannelSecretExecError: rewrapSSOSecret обязан
+// вернуть ошибку вызывающему, а не (false,nil) — иначе RewrapSecrets молча
+// спишет реальный сбой записи на «кто-то опередил» (CAS miss) и не
+// залогирует его через slog.Warn.
+func TestRewrapSSOSecretExecError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := NewService(pool, 1_000_000)
+	ctx := context.Background()
+	pool.Close()
+
+	ok, err := svc.rewrapSSOSecret(ctx, 1, "old-value", "new-value")
+	if err == nil {
+		t.Fatalf("rewrapSSOSecret на закрытом пуле = (%v,nil), want ненулевую ошибку", ok)
+	}
+	if ok {
+		t.Fatalf("rewrapSSOSecret на закрытом пуле = (true,%v), want false при ошибке", err)
+	}
+}

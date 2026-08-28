@@ -75,3 +75,25 @@ func TestRewrapChannelSecretCAS(t *testing.T) {
 		t.Fatalf("secret = %q, want new-value", stored)
 	}
 }
+
+// TestRewrapChannelSecretExecError — обрыв соединения на самом UPDATE:
+// rewrapChannelSecret обязан вернуть ошибку вызывающему, а не (false,nil) —
+// иначе RewrapSecrets молча спишет реальный сбой записи на «кто-то опередил»
+// (CAS miss, 0 затронутых строк) и не залогирует его через slog.Warn.
+func TestRewrapChannelSecretExecError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := NewService(pool)
+	ctx := context.Background()
+	pool.Close()
+
+	ok, err := svc.rewrapChannelSecret(ctx, 1, "old-value", "new-value")
+	if err == nil {
+		t.Fatalf("rewrapChannelSecret на закрытом пуле = (%v,nil), want ненулевую ошибку", ok)
+	}
+	if ok {
+		t.Fatalf("rewrapChannelSecret на закрытом пуле = (true,%v), want false при ошибке", err)
+	}
+}

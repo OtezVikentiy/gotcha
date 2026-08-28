@@ -2,6 +2,8 @@ package alert_test
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -168,5 +170,118 @@ func TestChannelsRewrapSecretsNoKey(t *testing.T) {
 	}
 	if stored != "plain-secret" {
 		t.Fatalf("secret изменён без ключа: %q", stored)
+	}
+}
+
+// capturingLogHandler — slog.Handler, копящий Record'ы в срез вместо вывода.
+// Используется только тестом капа лога (ниже) — не запускается с
+// t.Parallel(), потому что slog.SetDefault меняет глобальный логгер процесса.
+type capturingLogHandler struct {
+	records *[]slog.Record
+}
+
+func (h capturingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h capturingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r.Clone())
+	return nil
+}
+func (h capturingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h capturingLogHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestChannelsRewrapSecretsLogCap — свойство rewrapLogCap (internal/alert/
+// rewrap_secrets.go): подробный лог нерасшифруемых секретов капируется
+// пятью записями на проход, но итоговая строка (slog.Info) считает ВСЕ
+// нерасшифруемые, а не только залогированные подробно — кап режет
+// детализацию, а не сам факт нечитаемости. Нечитаемых каналов заведено
+// заведомо больше капа, иначе тест не отличил бы «кап работает» от «их и
+// так меньше пяти».
+func TestChannelsRewrapSecretsLogCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ring, err := secretbox.NewKeyring("rewrap-logcap-current-master", "")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	svc := alert.NewService(pool)
+	svc.SetKeyring(ring)
+	ctx := context.Background()
+	pid := newEvalProject(t, pool, "rewraplogcap")
+
+	garbageRing, err := secretbox.NewKeyring("logcap-unrelated-master-key-abc", "")
+	if err != nil {
+		t.Fatalf("NewKeyring(garbage): %v", err)
+	}
+	const unreadableCount = 8 // > rewrapLogCap(5) по спеке
+	for i := 0; i < unreadableCount; i++ {
+		garbage, err := garbageRing.Seal(fmt.Sprintf("garbage-secret-%d", i))
+		if err != nil {
+			t.Fatalf("Seal(garbage %d): %v", i, err)
+		}
+		insertChannel(t, pool, pid, garbage)
+	}
+
+	var records []slog.Record
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	defer slog.SetDefault(prevDefault)
+
+	updated, err := svc.RewrapSecrets(ctx)
+	if err != nil {
+		t.Fatalf("RewrapSecrets: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("RewrapSecrets updated = %d, want 0 (все секреты нечитаемы)", updated)
+	}
+
+	const wantSkipLogs = 5 // rewrapLogCap
+	var skipLogs int
+	var summarySeen bool
+	for _, r := range records {
+		switch r.Message {
+		case "alert: channel secret cannot be rewrapped, skipping":
+			skipLogs++
+		case "alert: rewrap secrets backfill complete":
+			summarySeen = true
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "unreadable" && a.Value.Int64() != int64(unreadableCount) {
+					t.Fatalf("итоговый unreadable=%d, want %d (кап не должен резать итог)", a.Value.Int64(), unreadableCount)
+				}
+				return true
+			})
+		}
+	}
+	if skipLogs != wantSkipLogs {
+		t.Fatalf("подробных логов нечитаемого секрета = %d, want %d (кап должен обрезать детализацию)", skipLogs, wantSkipLogs)
+	}
+	if !summarySeen {
+		t.Fatalf("итоговая строка лога (alert: rewrap secrets backfill complete) не найдена")
+	}
+}
+
+// TestChannelsRewrapSecretsPoolClosed — обрыв соединения на самом SELECT
+// партии: RewrapSecrets обязан вернуть ошибку вызывающему, а не (0,nil) —
+// иначе старт с недоступной на секунду БД молча спишется на «нечего
+// поднимать». Это единственная ветка ошибки RewrapSecrets, которую честно
+// достать закрытием пула: он рвёт соединение уже на pool.Query, до чтения
+// партии, так что ветки rows.Scan/rows.Err и slog.Warn-путь одиночного
+// UPDATE внутри цикла этим способом не воспроизвести (см. отчёт задачи).
+func TestChannelsRewrapSecretsPoolClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ring, err := secretbox.NewKeyring("rewrap-poolclosed-current-master", "")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	svc := alert.NewService(pool)
+	svc.SetKeyring(ring)
+	pool.Close()
+
+	updated, err := svc.RewrapSecrets(context.Background())
+	if err == nil {
+		t.Fatalf("RewrapSecrets на закрытом пуле = (%d,nil), want ненулевую ошибку", updated)
 	}
 }
