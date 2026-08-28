@@ -79,6 +79,28 @@ func TestCASUpdateMonitorConfigRejectsStaleOldValue(t *testing.T) {
 	}
 }
 
+// TestCASUpdateMonitorConfigExecError — обрыв соединения на самом UPDATE:
+// casUpdateMonitorConfig обязан вернуть ошибку вызывающему, а не (false,nil)
+// — иначе RewrapSecrets молча спишет реальный сбой записи на «конфиг
+// изменили между чтением и записью» (CAS miss, 0 затронутых строк) и не
+// залогирует его. Зеркало internal/alert.TestRewrapChannelSecretExecError.
+func TestCASUpdateMonitorConfigExecError(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := NewService(pool)
+	ctx := context.Background()
+	pool.Close()
+
+	ok, err := svc.casUpdateMonitorConfig(ctx, 1,
+		json.RawMessage(`{"method":"GET","url":"https://example.com/health"}`),
+		json.RawMessage(`{"method":"GET","url":"https://example.com/health"}`))
+	if err == nil {
+		t.Fatalf("casUpdateMonitorConfig на закрытом пуле = (%v,nil), want ненулевую ошибку", ok)
+	}
+	if ok {
+		t.Fatalf("casUpdateMonitorConfig на закрытом пуле = (true,%v), want false при ошибке", err)
+	}
+}
+
 // rawConfigBytes читает config монитора напрямую из БД — канонический вид
 // jsonb, как его реально сравнивает CAS-предикат casUpdateMonitorConfig.
 func rawConfigBytes(t *testing.T, pool *pgxpool.Pool, id int64) json.RawMessage {

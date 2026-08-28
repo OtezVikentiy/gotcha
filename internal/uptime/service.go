@@ -139,17 +139,16 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 // secretbox.ErrOpen), проход продолжается. Подробный лог капируется первыми
 // пятью значениями на весь вызов — иначе массово провалившаяся ротация
 // топит итог в полотне на тысячу строк. Итог — одна slog.Info: сколько
-// обновлено, сколько пропущено как нечитаемые. Ошибка самого SQL —
-// slog.Warn и не возвращается вызывающему: старт не роняем, защита чтения
-// (маска, SecretBroken, scrub) работает и без бэкфилла.
+// обновлено, сколько пропущено как нечитаемые. Ошибка всего прохода (сам
+// SQL — Query/Scan/rows.Err) возвращается вызывающему; решение «не ронять
+// старт» принимает bootstrap, здесь только журналирование не задваивается.
 func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 	if !s.secretKeySet {
 		return 0, nil
 	}
 	rows, err := s.pool.Query(ctx, "SELECT id, config FROM monitors WHERE kind = $1", string(KindHTTP))
 	if err != nil {
-		slog.Warn("uptime: rewrap secrets: query monitors failed", "err", err)
-		return 0, nil
+		return 0, err
 	}
 	// Собираем кандидатов ДО апдейтов: держать rows открытыми и параллельно
 	// слать UPDATE по тому же пулу нельзя.
@@ -162,15 +161,13 @@ func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 		var c candidate
 		if err := rows.Scan(&c.id, &c.cfg); err != nil {
 			rows.Close()
-			slog.Warn("uptime: rewrap secrets: scan monitor failed", "err", err)
-			return 0, nil
+			return 0, err
 		}
 		todo = append(todo, c)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		slog.Warn("uptime: rewrap secrets: read monitors failed", "err", err)
-		return 0, nil
+		return 0, err
 	}
 	rows.Close()
 

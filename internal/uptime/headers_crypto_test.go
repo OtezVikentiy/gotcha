@@ -375,6 +375,56 @@ func TestRewrapSecretsPromotesReadableValuesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRewrapSecretsNoKey — без заданного кольца (dev-стенд) проход — no-op:
+// ни ошибки, ни попытки что-то прочитать/переписать. Зеркало
+// internal/alert.TestChannelsRewrapSecretsNoKey и
+// internal/org.TestSSORewrapSecretsNoKey.
+func TestRewrapSecretsNoKey(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+
+	svc := uptime.NewService(pool)
+	created, err := svc.Create(ctx, httpMonitorWithHeaders(t, pid, map[string]string{
+		"X-Plain": "plaintext-header-value",
+	}), []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create monitor: %v", err)
+	}
+	before := rawBytesOf(t, pool, created.ID)
+
+	updated, err := svc.RewrapSecrets(ctx)
+	if err != nil || updated != 0 {
+		t.Fatalf("RewrapSecrets без ключа = (%d,%v), want (0,nil)", updated, err)
+	}
+
+	after := rawBytesOf(t, pool, created.ID)
+	if string(before) != string(after) {
+		t.Fatalf("config изменён без ключа: before=%s after=%s", before, after)
+	}
+}
+
+// TestRewrapSecretsPoolClosed — обрыв соединения на самом SELECT партии:
+// RewrapSecrets обязан вернуть ошибку вызывающему, а не (0,nil) — иначе
+// старт с недоступной на секунду БД молча спишется на «нечего поднимать».
+// Зеркало internal/alert.TestChannelsRewrapSecretsPoolClosed: закрытый пул
+// рвёт соединение уже на pool.Query, до чтения партии, так что ветки
+// rows.Scan/rows.Err и err-путь casUpdateMonitorConfig этим способом не
+// воспроизвести — они покрыты отдельно (TestCASUpdateMonitorConfigExecError
+// в rewrap_secrets_internal_test.go для err-пути CAS-апдейта).
+func TestRewrapSecretsPoolClosed(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	svc.SetKeyring(mustKeyring(t, "rewrap-poolclosed-master"))
+	pool.Close()
+
+	updated, err := svc.RewrapSecrets(context.Background())
+	if err == nil {
+		t.Fatalf("RewrapSecrets на закрытом пуле = (%d,nil), want ненулевую ошибку", updated)
+	}
+}
+
 // TestRewrapSecretsDegradesPerHeaderValueNotPerRow — у монитора два
 // заголовка: один legacy plaintext (читаемый), второй запечатан ключом,
 // которого нет в кольце (потерянный). Читаемый обязан подняться до
