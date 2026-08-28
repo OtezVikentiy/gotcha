@@ -26,10 +26,10 @@ The type is fixed once a monitor is created — editing lets you change its sett
 For a Heartbeat monitor, the personal ping URL of the form `{base_url}/uptime/hb/{token}` — plus a ready-made `curl` cron line — is shown **once, right after you create or regenerate** the monitor. The token is stored hashed and can't be shown again, so copy it then; if you lose it, use **Regenerate token** on the detail page to mint a new URL. A normal visit to the detail page shows a "regenerate to get a new URL" hint instead of the token.
 
 ```
-*/5 * * * * curl -fsS https://gotcha.example.com/uptime/hb/6e1f...af92 >/dev/null
+*/5 * * * * curl -fsS -X POST https://gotcha.example.com/uptime/hb/6e1f...af92 >/dev/null
 ```
 
-Add that to your application's cron/systemd timer — every successful call resets the grace timer.
+Add that to your application's cron/systemd timer — every successful call resets the grace timer. `GET` is also supported and keeps working, but `POST` is the recommended form: the ping URL regularly gets hit by more than your cron job — forwarded in a chat, it gets fetched by a messenger's link-preview bot or scanned by an antivirus proxy — and such automated visits always arrive as `GET` and are recognized by their headers/User-Agent; a request like that is rejected with `204` and never counts as "the service is alive".
 
 ## Interval, timeout, thresholds
 

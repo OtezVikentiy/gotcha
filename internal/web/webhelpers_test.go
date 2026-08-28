@@ -67,6 +67,11 @@ func TestHeartbeatSnippets(t *testing.T) {
 	if got := heartbeatCronSnippet("https://g.example", "tok", 30); !strings.HasPrefix(got, "*/1 * * * *") {
 		t.Errorf("cron 30s = %q, ожидался минимум 1 минута", got)
 	}
+	// Рекомендуемая форма команды в интерфейсе — явный -X POST (T9): голый GET
+	// неотличим от префетч-бота/антивирусного прокси на стороне клиента.
+	if got := heartbeatCronSnippet("https://g.example", "tok", 300); !strings.Contains(got, "curl -fsS -X POST ") {
+		t.Errorf("cron snippet = %q, want содержит \"curl -fsS -X POST \"", got)
+	}
 }
 
 // TestMetricAggFor — допустимая агрегация зависит от типа метрики: у histogram

@@ -377,6 +377,11 @@ func TestHeartbeatMonitorDetail(t *testing.T) {
 	if !strings.Contains(out, "hbtok") {
 		t.Error("деталь heartbeat должна содержать токен пинга")
 	}
+	// T9: рекомендуемая команда — явный -X POST, а не голый curl (GET
+	// неотличим от префетч-бота/антивирусного прокси на стороне клиента).
+	if !strings.Contains(out, "curl -fsS -X POST ") {
+		t.Error("cron-сниппет heartbeat должен содержать \"curl -fsS -X POST \"")
+	}
 }
 
 // TestLayoutShellRendersRail — рендер страницы внутри nav.Shell раскрывает

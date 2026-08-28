@@ -218,6 +218,55 @@ func TestHeartbeatOversizedBodyReturns413(t *testing.T) {
 	}
 }
 
+// TestHeartbeatPrefetchHeaderStillCapsOversizedBody — регресс на находку
+// ревью T9: отсев префетча/превью раньше стоял ПЕРЕД капом тела
+// (http.MaxBytesReader), а заголовки Sec-Purpose/Purpose/X-Purpose/X-Moz и
+// User-Agent — то, что клиент заявляет о себе сам, подделать их тривиально.
+// Итог был: любой аноним, добавив один такой заголовок, заливал
+// неограниченное тело в публичный неаутентифицированный
+// POST /uptime/hb/{token} — до БД запрос всё равно не доходил, но кап,
+// объявленный десятью строками выше как обязательный для ВСЕХ запросов,
+// переставал действовать именно для помеченных как «отсев». Тело больше
+// heartbeatMaxBodyBytes с Sec-Purpose: prefetch обязано быть отвергнуто по
+// размеру (413), а не прочитано целиком с последующим 204.
+func TestHeartbeatPrefetchHeaderStillCapsOversizedBody(t *testing.T) {
+	s := newUptimeStack(t)
+	pid := newProject(t, s.pool)
+	created := newHeartbeatMonitor(t, s, pid)
+	before := web.HeartbeatIgnoredBy(web.HeartbeatIgnorePrefetchHeader)
+
+	body := bytes.Repeat([]byte("x"), 2<<10) // 2 KB, over the 1 KB cap
+	req, err := http.NewRequest(http.MethodPost, s.srv.URL+"/uptime/hb/"+created.HeartbeatToken, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Sec-Purpose", "prefetch")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 — тело поверх лимита с Sec-Purpose: prefetch обязано быть отвергнуто капом ДО ветвления на игнор, а не пройти как 204", resp.StatusCode)
+	}
+
+	got, err := s.uptime.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastBeatAt != nil {
+		t.Fatalf("монитор не отмечен живым: LastBeatAt = %v, want nil", got.LastBeatAt)
+	}
+
+	// Запрос отвергнут капом раньше ветвления на игнор — счётчик отсева расти
+	// не должен: это не «мы распознали и вежливо проигнорировали префетч», а
+	// «мы вообще не добрались до этой классификации».
+	if got := web.HeartbeatIgnoredBy(web.HeartbeatIgnorePrefetchHeader); got != before {
+		t.Errorf("HeartbeatIgnoredBy(prefetch_header) = %d, want %d — счётчик игнора расти не должен, запрос отвергнут раньше классификации", got, before)
+	}
+}
+
 func TestHeartbeatUnknownTokenReturns404(t *testing.T) {
 	s := newUptimeStack(t)
 
@@ -279,5 +328,144 @@ func TestHeartbeatFeedsDetector(t *testing.T) {
 	}
 	if !got[0].ok || got[0].status != "up" {
 		t.Fatalf("OnResult получил %+v, want ok=true status=up", got[0])
+	}
+}
+
+// newHeartbeatMonitor создаёт heartbeat-монитор с настройками, идентичными
+// остальным тестам этого файла — общий хелпер для тестов отсева
+// префетча/предпросмотра ниже.
+func newHeartbeatMonitor(t *testing.T, s *uptimeStack, pid int64) uptime.Monitor {
+	t.Helper()
+	created, err := s.uptime.Create(context.Background(), uptime.Monitor{
+		ProjectID: pid, Name: "Cron job", Kind: uptime.KindHeartbeat, Enabled: true,
+		IntervalSeconds: 60, TimeoutSeconds: 10, FailThreshold: 3, RecoveryThreshold: 1,
+		Consensus: uptime.ConsensusMajority, SSLAlertDays: 14,
+		Config: heartbeatConfigJSON(t, uptime.HeartbeatConfig{GraceSeconds: 60}),
+	}, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return created
+}
+
+// TestHeartbeatPrefetchAndPreviewIgnored — P0 (C3/T9): ссылка heartbeat
+// регулярно дёргается не человеком — unfurl-бот мессенджера, антивирусный
+// прокси, префетч браузера, — и такой запрос НЕ обязан засчитываться как
+// «сервис жив», иначе он гасит настоящую тревогу watchdog'а. Каждый признак
+// (протокольный заголовок или известный User-Agent) обязан отдавать 204 без
+// тела и не трогать вообще ничего: ни last_seen монитора, ни состояние.
+func TestHeartbeatPrefetchAndPreviewIgnored(t *testing.T) {
+	cases := []struct {
+		name       string
+		setHeaders func(r *http.Request)
+		reason     web.HeartbeatIgnoreReason
+	}{
+		{"sec-purpose-prefetch", func(r *http.Request) { r.Header.Set("Sec-Purpose", "prefetch") }, web.HeartbeatIgnorePrefetchHeader},
+		// Значение составное ("prefetch;prerender" и подобное) — сверка идёт
+		// префиксом, не равенством (см. heartbeatIgnoreReason).
+		{"sec-purpose-prefetch-prerender", func(r *http.Request) { r.Header.Set("Sec-Purpose", "prefetch;prerender") }, web.HeartbeatIgnorePrefetchHeader},
+		{"purpose-prefetch", func(r *http.Request) { r.Header.Set("Purpose", "prefetch") }, web.HeartbeatIgnorePrefetchHeader},
+		{"x-purpose-preview", func(r *http.Request) { r.Header.Set("X-Purpose", "preview") }, web.HeartbeatIgnorePrefetchHeader},
+		{"x-moz-prefetch", func(r *http.Request) { r.Header.Set("X-Moz", "prefetch") }, web.HeartbeatIgnorePrefetchHeader},
+		{"slackbot-user-agent", func(r *http.Request) {
+			r.Header.Set("User-Agent", "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)")
+		}, web.HeartbeatIgnoreBotUserAgent},
+		{"telegram-user-agent", func(r *http.Request) {
+			r.Header.Set("User-Agent", "TelegramBot (like TwitterBot)")
+		}, web.HeartbeatIgnoreBotUserAgent},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newUptimeStack(t)
+			pid := newProject(t, s.pool)
+			created := newHeartbeatMonitor(t, s, pid)
+			before := web.HeartbeatIgnoredBy(c.reason)
+
+			req, err := http.NewRequest(http.MethodGet, s.srv.URL+"/uptime/hb/"+created.HeartbeatToken, nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			c.setHeaders(req)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204: %s", resp.StatusCode, body)
+			}
+			if len(body) != 0 {
+				t.Errorf("204-ответ содержит тело %q, want пусто", body)
+			}
+
+			got, err := s.uptime.Get(context.Background(), created.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.LastBeatAt != nil {
+				t.Fatalf("монитор не отмечен живым: LastBeatAt = %v, want nil", got.LastBeatAt)
+			}
+
+			states, err := s.uptime.States(context.Background(), created.ID)
+			if err != nil {
+				t.Fatalf("States: %v", err)
+			}
+			if len(states) != 0 {
+				t.Fatalf("states = %+v, want пусто — отклонённый пинг не создаёт состояние", states)
+			}
+
+			if got := web.HeartbeatIgnoredBy(c.reason); got != before+1 {
+				t.Errorf("HeartbeatIgnoredBy(%s) = %d, want %d", c.reason, got, before+1)
+			}
+		})
+	}
+}
+
+// TestHeartbeatCurlLikeClientsNotIgnored — регресс: обычный curl/wget-подобный
+// клиент (без протокольных заголовков префетча, с типичным User-Agent) обязан
+// засчитываться как раньше, и GET, и POST. Отсев не должен быть шире, чем
+// нужно.
+func TestHeartbeatCurlLikeClientsNotIgnored(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		ua     string
+	}{
+		{"curl-get", http.MethodGet, "curl/8.4.0"},
+		{"curl-post", http.MethodPost, "curl/8.4.0"},
+		{"wget-get", http.MethodGet, "Wget/1.21.3"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newUptimeStack(t)
+			pid := newProject(t, s.pool)
+			created := newHeartbeatMonitor(t, s, pid)
+
+			req, err := http.NewRequest(c.method, s.srv.URL+"/uptime/hb/"+created.HeartbeatToken, nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("User-Agent", c.ua)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+
+			got, err := s.uptime.Get(context.Background(), created.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.LastBeatAt == nil {
+				t.Fatalf("LastBeatAt is nil, want set — обычный %s не должен отклоняться", c.ua)
+			}
+		})
 	}
 }

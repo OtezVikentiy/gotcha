@@ -116,7 +116,11 @@ func yesNo(ctx context.Context, b bool) string {
 // heartbeatPingURL/heartbeatCronSnippet — те же вычисления, что и одноимённые
 // функции в web/monitorform.go; собственная копия здесь, а не импорт
 // web-пакета — templates не может импортировать web (иначе цикл: web ->
-// templates -> web).
+// templates -> web). Рекомендуемая команда — -X POST, не голый GET: URL
+// heartbeat регулярно дёргают не люди (unfurl-бот мессенджера, антивирусный
+// прокси, префетч браузера), все такие клиенты шлют GET, и POST снижает
+// шанс случайного совпадения (сам отсев по заголовкам/User-Agent — в
+// web.heartbeatIgnoreReason). GET остаётся полностью поддержан.
 func heartbeatPingURL(baseURL, token string) string {
 	return baseURL + "/uptime/hb/" + token
 }
@@ -126,7 +130,7 @@ func heartbeatCronSnippet(baseURL, token string, intervalSeconds int) string {
 	if minutes < 1 {
 		minutes = 1
 	}
-	return "*/" + strconv.Itoa(minutes) + " * * * * curl -fsS " + heartbeatPingURL(baseURL, token) + " >/dev/null"
+	return "*/" + strconv.Itoa(minutes) + " * * * * curl -fsS -X POST " + heartbeatPingURL(baseURL, token) + " >/dev/null"
 }
 
 templ checkRow(c uptime.CheckRow) {

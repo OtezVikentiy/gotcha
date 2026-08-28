@@ -816,10 +816,17 @@ func heartbeatPingURL(baseURL, token string) string {
 	return baseURL + "/uptime/hb/" + token
 }
 
+// heartbeatCronSnippet рекомендует -X POST (не голый GET): у GET нет
+// семантической разницы для этого пинга, но ссылка вида /uptime/hb/{token}
+// регулярно дёргается не человеком — unfurl-ботом мессенджера, антивирусным
+// прокси, префетчем браузера, — и все они шлют GET. heartbeatIgnoreReason
+// отсеивает такие запросы по заголовкам/User-Agent, но POST дополнительно
+// снижает шанс, что чужой автоматический клиент вообще попадёт по этому URL
+// (GET остаётся полностью поддержан и документирован — см. internal/docs).
 func heartbeatCronSnippet(baseURL, token string, intervalSeconds int) string {
 	minutes := intervalSeconds / 60
 	if minutes < 1 {
 		minutes = 1
 	}
-	return fmt.Sprintf("*/%d * * * * curl -fsS %s >/dev/null", minutes, heartbeatPingURL(baseURL, token))
+	return fmt.Sprintf("*/%d * * * * curl -fsS -X POST %s >/dev/null", minutes, heartbeatPingURL(baseURL, token))
 }
