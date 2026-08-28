@@ -460,6 +460,20 @@ func run() error {
 			"stamped": strconv.FormatBool(version.Stamped()),
 		},
 		func() float64 { return 1 })
+	// K1: промах перевода (ключа нет в запрошенной локали — fallback на
+	// локаль по умолчанию, либо нет НИГДЕ — missing, страница показывает
+	// сырой ключ) не падал и не переставал рендерить страницу, но и не был
+	// виден никак, кроме дедуплицированного slog.Warn. Регистрация не
+	// зависит от cfg.Mode: i18n.T зовётся и из web (страницы), и из notify
+	// (текст уведомлений) независимо от режима процесса.
+	for _, locale := range i18n.SupportedLocales() {
+		for _, stage := range i18n.MissingKeyStages() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_i18n_missing_key_total",
+				"Translation key lookups that missed: stage=\"fallback\" found the key in the default locale, stage=\"missing\" found it nowhere and the raw key was shown. Rendering never fails on a miss — see internal/i18n/catalog.go.",
+				map[string]string{"locale": locale, "stage": string(stage)},
+				func() int64 { return i18n.MissingKeyTotal(locale, stage) })
+		}
+	}
 	// Заполнение диска (находка №40): полный список самометрик молчал про
 	// место — 95% и 100% заполнения выглядели одинаково, сигнала не было
 	// вовсе, только рост отброшенных вставок и провал /readyz постфактум.
@@ -809,11 +823,11 @@ func run() error {
 			"Notifications given up on after exhausting retries.", nil, notifyStats.Failed)
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_notify_retried_total",
 			"Delivery attempts that failed and were rescheduled.", nil, notifyStats.Retried)
-		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_pending_jobs",
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_queue_depth",
 			"Notifications waiting to be delivered.", nil, notifyStats.Pending)
-		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_failed_jobs",
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_queue_failed",
 			"Notifications in the queue that will not be retried again.", nil, notifyStats.FailedJobs)
-		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_oldest_pending_age_seconds",
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_notify_queue_oldest_seconds",
 			"Age of the oldest notification still waiting; the number that tells a quiet queue from a stuck one.",
 			nil, notifyStats.OldestPendingAgeSeconds)
 		go notifyStats.RunSnapshots(ctx, outbox)
@@ -933,19 +947,19 @@ func run() error {
 			}()
 
 			// Наблюдаемость очереди выгрузок (P1-OPS-1): до этого КАЖДАЯ соседняя
-			// очередь была видна (gotcha_notify_pending_jobs/_failed_jobs/
-			// _oldest_pending_age_seconds выше, gotcha_purge_queue_depth/
+			// очередь была видна (gotcha_notify_queue_depth/_queue_failed/
+			// _queue_oldest_seconds выше, gotcha_purge_queue_depth/
 			// _oldest_seconds ниже), а у выгрузок не было ни одной метрики —
 			// дежурный не видел ни вставшую очередь, ни массовые отказы заявок
 			// (сценарий закрытого P0 был именно таким: тишина, только slog.Warn
 			// на тик воркера). Тот же приём, что у notifyStats.RunSnapshots(ctx,
 			// outbox) выше: export.Stats симметричен notify.Stats.
 			exportStats := &export.Stats{}
-			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_pending_jobs",
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_queue_depth",
 				"Export requests queued or being built.", nil, exportStats.Pending)
-			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_failed_jobs",
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_queue_failed",
 				"Export requests in the queue that exhausted retries and will not be retried again.", nil, exportStats.FailedJobs)
-			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_oldest_pending_age_seconds",
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_queue_oldest_seconds",
 				"Age of the oldest export request still queued or being built; the number that tells a quiet queue from a stuck one.",
 				nil, exportStats.OldestPendingAgeSeconds)
 			go exportStats.RunSnapshots(ctx, exportStore)
@@ -960,14 +974,14 @@ func run() error {
 		}
 	}
 
-	// Ретенция сущностей PostgreSQL. GOTCHA_RETENTION_DAYS вытеснял только
+	// Ретенция сущностей PostgreSQL. GOTCHA_EVENT_RETENTION_DAYS вытеснял только
 	// телеметрию из ClickHouse: группы, инциденты и регрессии в PostgreSQL
 	// жили вечно, и список проблем показывал группы, событий которых уже нет.
 	//
 	// Сроков четыре, и каждое правило живёт сроком СВОЕЙ сущности (см.
 	// telemetry.entityRules): регрессия профиля — сроком профилей, инцидент
 	// метрики — сроком метрик, инцидент аптайма — своим собственным. Раньше все
-	// шесть правил жили одним GOTCHA_RETENTION_DAYS.
+	// шесть правил жили одним GOTCHA_EVENT_RETENTION_DAYS.
 	//
 	// Гейт по наличию ресурса, а не по режиму: сущности переживают срок
 	// хранения независимо от того, какие роли развёрнуты. Одновременный запуск
@@ -1131,9 +1145,9 @@ func run() error {
 
 		pipeline = ingest.NewPipeline(issueSvc, batcher)
 		pipeline.SetMaxQueueBytes(cfg.MaxQueueBytes)
-		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queued_tasks",
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queue_depth",
 			"Tasks waiting in the ingest pipeline queue.", nil, pipeline.Queued)
-		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queued_bytes",
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queue_bytes",
 			"Bytes held by tasks waiting in the ingest pipeline queue.", nil, pipeline.QueuedBytes)
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_pipeline_queue_capacity",
 			"Ingest pipeline queue capacity.", nil, pipeline.QueueCap)
@@ -1228,6 +1242,20 @@ func run() error {
 				"Ingest requests rejected during key authentication, before quotas. The reason label says why.",
 				map[string]string{"reason": string(reason)},
 				func() int64 { return ingestHandler.KeyRejectedBy(reason) })
+		}
+		// J3: gotcha_ingest_key_rejections_total выше детализирует ТОЛЬКО отказ
+		// по ключу (шесть узких причин), а частота/квота/размер тела не были
+		// видны в метриках вовсе — только в логе конкретного эндпойнта, и без
+		// возможности сравнить, какой ИЗ ШЕСТИ входов (событие, транзакция,
+		// метрика, профиль, лог, деплой) отбивает больше. gotcha_ingest_rejected_total
+		// даёт ту же картину огрублённо (одна причина key_unknown вместо
+		// пяти), но КАЖДУЮ причину — со вторым измерением: видом телеметрии.
+		// Обе метрики намеренно сосуществуют, разный масштаб детализации.
+		for _, p := range ingest.IngestRejectionPairs() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_rejected_total",
+				"Ingest requests rejected, by broad reason and telemetry signal. reason=\"key_revoked\" is reserved for future use (see ingest.IngestRejectReason) and never appears here today.",
+				map[string]string{"reason": string(p.Reason), "signal": string(p.Signal)},
+				func() int64 { return ingestHandler.RejectedBy(p.Reason, p.Signal) })
 		}
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех
@@ -1361,7 +1389,7 @@ func run() error {
 		webHandler.LocalRegion = cfg.LocalRegion
 		webHandler.Purger = telemetry.NewPurger(ch)
 		// Раздача install.sh/бинарей агента (план A2, задача 10): каталог из
-		// GOTCHA_AGENT_DIST_DIR, дефолт совпадает с путём из Dockerfile —
+		// GOTCHA_DIST_DIR, дефолт совпадает с путём из Dockerfile —
 		// см. AgentDistDir. Порог её лимитера (ops-H4) — отдельно от New(),
 		// чтобы Ansible-раскатка/массовое обновление парка за одним IP не
 		// упирались в дефолт, рассчитанный на штучные установки.
@@ -1370,6 +1398,16 @@ func run() error {
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_web_cross_origin_rejected_total",
 			"POST requests rejected because Origin/Referer did not match GOTCHA_BASE_URL.",
 			nil, webHandler.CrossOriginRejected)
+		// C3: /uptime/hb/{token} — публичная ссылка, разосланная в cron'ы, а
+		// такие ссылки регулярно дёргают не люди (unfurl-бот мессенджера,
+		// антивирусный прокси, префетч браузера). Не в счёт факта живости
+		// монитора — но и не невидимо: причина отсева на self-метрике.
+		for _, reason := range web.HeartbeatIgnoreReasons() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_uptime_heartbeat_ignored_total",
+				"Heartbeat pings received but NOT counted as monitor liveness. The reason label says why (prefetch/preview header or a known link-preview bot User-Agent).",
+				map[string]string{"reason": string(reason)},
+				func() int64 { return web.HeartbeatIgnoredBy(reason) })
+		}
 		janitor := &auth.Janitor{Svc: authSvc}
 		if orgSvc != nil {
 			// Просроченные/принятые инвайты копят email приглашённых бессрочно —

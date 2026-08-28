@@ -84,16 +84,26 @@ succeeding, and you are heading for loss.
 buffer hit its ceiling. **These are gone.** Any non-zero value deserves
 attention; a growing one means you are losing telemetry right now.
 
-**`gotcha_pipeline_queued_tasks`** / **`gotcha_pipeline_queue_capacity`** — depth
+**`gotcha_pipeline_queue_depth`** / **`gotcha_pipeline_queue_capacity`** — depth
 and size of the ingest queue that sits between the HTTP handler and the workers.
 Sustained depth near capacity means the workers cannot keep up, usually because
 PostgreSQL is slow (every task upserts an issue).
 
-**`gotcha_pipeline_queued_bytes`** — bytes held by tasks waiting in that queue.
+**`gotcha_pipeline_queue_bytes`** — bytes held by tasks waiting in that queue.
 The queue has a byte budget as well as a task count (`GOTCHA_MAX_QUEUE_BYTES`):
 a thousand small events and a thousand megabyte-sized ones are very different
 loads at the same depth. When drops show `reason="queue_bytes"`, this is the
 budget that ran out.
+
+The naming canon for any queue is `gotcha_<subsystem>_queue_depth` /
+`_queue_oldest_seconds` / `_queue_failed` / `_queue_capacity` / `_queue_bytes`
+(as needed) — the shape `gotcha_purge_queue_*` already used below, and the
+shape `gotcha_export_*`/`gotcha_notify_*` use further down this page. Before
+the version where this paragraph was written, three subsystems named the same
+"depth + age of the oldest item" pair three different ways
+(`_pending_jobs`/`_oldest_pending_age_seconds` for export and notify,
+`_queued_tasks`/`_queued_bytes` for pipeline) — the divergence only caught the
+eye when reading a dashboard by hand.
 
 **`gotcha_ingest_key_rejections_total{reason="…"}`** — requests rejected during
 key authentication, before quotas and before the body is even parsed. None of
@@ -112,6 +122,27 @@ separates client-side mistakes from each other:
 A steady trickle is normal — scanners and stale SDK configs hit this. A step
 change after a deploy usually means a DSN or project ID changed and one
 sender wasn't updated.
+
+**`gotcha_ingest_rejected_total{reason="…",signal="…"}`** — the same intake,
+but coarser and across ALL rejection reasons at once, with a telemetry-signal
+label (`signal`: `event`, `transaction`, `metric`, `profile`, `log`,
+`deploy`). The metric above only breaks down key rejections and cannot say
+which of the six inputs it concerns; rate limiting (`rate_limit`), an
+organization's quota (`quota`) and body size (`too_large`) were not visible in
+metrics at all — only in that one endpoint's log. `reason` is a closed set:
+
+| `reason` | What happened |
+|---|---|
+| `key_unknown` | the ingest key doesn't resolve: missing, mistyped, revoked, or resolves to a different project (all three cases from `gotcha_ingest_key_rejections_total` above collapse into this one reason — see it for detail) |
+| `key_revoked` | reserved, never seen today: the key resolver does not distinguish "never existed" from "revoked" (both return `org.ErrNotFound`) |
+| `rate_limit` | the per-DSN rate limit was exceeded (see `GOTCHA_INGEST_RATE_PER_SEC`) |
+| `quota` | the organization exhausted this signal's monthly quota — the request was FULLY rejected (429); partial quota debits on a mixed envelope do not count here, only a full reject does |
+| `too_large` | the body exceeded the size limit |
+| `malformed` | the body was read but did not parse: broken JSON/protobuf, a corrupt gzip/zstd header |
+
+The two key-rejection metrics deliberately coexist: one is narrow and exact
+about the key itself, the other is broad and comparable across telemetry
+signals.
 
 **`gotcha_pipeline_dropped_tasks_total{reason="…"}`** — events and transactions
 the pipeline threw away. Also unrecoverable. The `reason` label tells you what to
@@ -142,7 +173,7 @@ gauge is the guard's own memory footprint.
 memory, load, silence) last completed a pass, and how long that pass took. What
 needs watching here is not failure but continuation: a dead evaluator looks
 exactly like "all hosts are fine", because silence is its normal output. A gap
-between now and the timestamp noticeably larger than `GOTCHA_HOST_EVAL_INTERVAL`
+between now and the timestamp noticeably larger than `GOTCHA_HOST_EVAL_INTERVAL_SECONDS`
 means host thresholds are not being evaluated; a duration approaching the
 interval means the evaluator is falling behind — usually a slow ClickHouse or a
 fleet that outgrew the interval.
@@ -159,7 +190,7 @@ not finish within its budget`.
 evaluator last completed a pass over every enabled SLO, and how long it took.
 Same blind spot as the host evaluator: silence is the normal output, so a dead
 evaluator looks exactly like "every error budget is fine". A gap between now and
-the timestamp noticeably larger than `GOTCHA_SLO_EVAL_INTERVAL` means burn rates
+the timestamp noticeably larger than `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` means burn rates
 are not being recomputed and error-budget incidents are neither opened nor
 closed; a duration approaching the interval means the evaluator is falling
 behind.
@@ -177,14 +208,14 @@ the interval means ClickHouse is falling behind.
 **`gotcha_metric_evaluator_tick_duration_seconds`** — when the metric
 threshold evaluator last completed a pass over every rule, and how long it
 took. Same blind spot again. A gap noticeably larger than
-`GOTCHA_METRIC_EVAL_INTERVAL` (default 60s) means metric-rule alerts are not
+`GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` (default 60s) means metric-rule alerts are not
 being evaluated; a duration approaching the interval means the evaluator is
 falling behind.
 
 **`gotcha_profile_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_profile_evaluator_tick_duration_seconds`** — when the profile
 regression evaluator last completed a pass over every service, and how long
-it took. A gap noticeably larger than `GOTCHA_PROFILE_EVAL_INTERVAL` (default
+it took. A gap noticeably larger than `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS` (default
 300s) means profile regression alerts are not being evaluated; a duration
 approaching the interval means ClickHouse is falling behind.
 
@@ -194,7 +225,7 @@ centralized escalation scheduler last completed a pass over all six incident
 sources (performance regressions, metric rules, profile regressions, host
 thresholds, SLO burn rate, uptime), and how long it took. A dead scheduler
 looks exactly like "nothing needs escalating" — every ladder simply stops
-advancing. A gap noticeably larger than `GOTCHA_ESCALATION_INTERVAL` (default
+advancing. A gap noticeably larger than `GOTCHA_ESCALATION_INTERVAL_SECONDS` (default
 60s) means escalation steps and reminders are not firing for any source; a
 duration approaching the interval means PostgreSQL is not keeping up. A tick
 that runs out of budget partway through skips the remaining bindings for that
@@ -235,7 +266,7 @@ appearing in the Hosts section: either the fleet really did reach the ceiling, o
 an identifier leaked into the host name (pods, autoscaling) and every instance
 registers as a separate machine.
 
-**`gotcha_notify_pending_jobs`** / **`gotcha_notify_oldest_pending_age_seconds`** —
+**`gotcha_notify_queue_depth`** / **`gotcha_notify_queue_oldest_seconds`** —
 delivery queue depth and the age of the oldest waiting notification. The age
 matters more than the depth: it is the only number that tells "the queue is empty
 because everything was delivered" from "the queue is stuck". A growing age on a
@@ -244,10 +275,10 @@ live process means delivery is blocked on a channel — check
 
 **`gotcha_notify_sent_total`** / **`gotcha_notify_failed_total`** /
 **`gotcha_notify_retried_total`** — delivered, given up on after retries,
-rescheduled. **`gotcha_notify_failed_jobs`** — how many of those given-up jobs sit
+rescheduled. **`gotcha_notify_queue_failed`** — how many of those given-up jobs sit
 in the queue right now.
 
-**`gotcha_export_pending_jobs`** / **`gotcha_export_oldest_pending_age_seconds`**
+**`gotcha_export_queue_depth`** / **`gotcha_export_queue_oldest_seconds`**
 — depth of the error/event export queue (requests in `queued` or `running`
 status) and the age of the oldest one. The age matters more than the depth —
 it is the only number that tells "the queue is empty because every request
@@ -257,7 +288,7 @@ actually served: `--mode=ingest` has no export worker (there's nobody to hand
 the file to), so these metrics are absent there too — that absence is
 expected, not a fault.
 
-**`gotcha_export_failed_jobs`** — export requests that exhausted every retry
+**`gotcha_export_queue_failed`** — export requests that exhausted every retry
 and were closed as `failed`. A non-zero, growing value is exactly the closed
 P0 scenario (mass request failures were only visible as `slog.Warn` on the
 worker's tick — an operator only learned about them by checking the log): every
@@ -272,7 +303,7 @@ throws away everything buffered, not just the excess. If this reads zero, set
 `mem_limit` on the container or `GOMEMLIMIT` by hand.
 
 **`gotcha_entities_purged_total`** — rows deleted from PostgreSQL once they
-outlived `GOTCHA_RETENTION_DAYS`: issues, closed incidents, regressions. This is
+outlived `GOTCHA_EVENT_RETENTION_DAYS`: issues, closed incidents, regressions. This is
 expected behaviour, not a failure; the counter exists because every disappearance
 of data should have a number you can look at. A flat zero while retention is
 configured means the purge is not running — and the issue list is showing groups
@@ -326,7 +357,7 @@ directory whose budget the export worker checks before every request
 the one piece of disk the application manages entirely on its own and had no
 external visibility at all. Polled every 5 minutes, same as the neighboring
 `gotcha_storage_*` metrics; only registered where the export queue is
-actually served (see `gotcha_export_pending_jobs` above).
+actually served (see `gotcha_export_queue_depth` above).
 
 **`gotcha_web_cross_origin_rejected_total`** — POST requests rejected because
 their `Origin`/`Referer` did not match `GOTCHA_BASE_URL` (cross-origin
@@ -340,6 +371,30 @@ build carries git metadata: `stamped="false"` means the image was built outside
 `make`, its version string is the source default, and "deployed exactly what
 you think" cannot be verified from it.
 
+**`gotcha_uptime_heartbeat_ignored_total{reason="…"}`** — pings on
+`/uptime/hb/{token}` that were received but NOT counted as a sign of monitor
+life. The ping URL is a plain link that regularly gets hit by non-humans:
+`prefetch_header` — the request itself carries a protocol header
+(`Sec-Purpose`, `Purpose`, `X-Purpose`, `X-Moz`) by which the client explicitly
+marks itself as a speculative fetch; `bot_user_agent` — the User-Agent matches
+a known link-preview bot from a messenger or social network. The response to
+such a ping is still `204` (so the bot doesn't retry), but the monitor's
+`last_seen` does not move. A growing counter is not a fault — it's the
+expected noise wherever the ping link is posted to a channel that unfurls it
+(Slack, Telegram).
+
+**`gotcha_i18n_missing_key_total{locale="…",stage="…"}`** — a translation key
+lookup miss. Rendering never fails on a miss — see
+[Configuration](/docs/configuration) (the section on adding a locale) — but it
+does not pass unnoticed either: `stage="fallback"` means the key is missing in
+the requested locale but was found in the default locale (the page silently
+shows the wrong language); `stage="missing"` means the key is missing
+everywhere, and the raw key identifier shows on the page. A non-zero, growing
+`missing` almost always means a translation key was recently added to the code
+without a matching entry in the locale's JSON catalog; `fallback` on a locale
+other than English usually means a translation of an existing key hasn't been
+carried over to the third locale yet.
+
 ## Alerts worth setting
 
 ```
@@ -349,7 +404,7 @@ increase(gotcha_pipeline_dropped_tasks_total[5m]) > 0
 
 # Storage is not keeping up — loss is coming.
 gotcha_writer_buffered_rows > 5000
-gotcha_pipeline_queued_tasks / gotcha_pipeline_queue_capacity > 0.5
+gotcha_pipeline_queue_depth / gotcha_pipeline_queue_capacity > 0.5
 ```
 
 The first two are the ones to page on: they mean telemetry has already been
@@ -404,7 +459,7 @@ metrics: poll failed`, with a `store` field).
    raw number, since it tells you how much time is left, not just how much is
    used right now.
 2. **Check that purging is actually running.** `gotcha_entities_purged_total`
-   should climb whenever `GOTCHA_RETENTION_DAYS` is set; a flat zero means
+   should climb whenever `GOTCHA_EVENT_RETENTION_DAYS` is set; a flat zero means
    PostgreSQL's purge isn't working even though it should be (see above).
    ClickHouse's TTL runs automatically, but each kind of data has its own
    retention period — see [Configuration](/docs/configuration).
@@ -418,7 +473,7 @@ metrics: poll failed`, with a `store` field).
    from ClickHouse immediately, not gradually — useful for test or abandoned
    projects that piled up data for nothing.
 5. **If space is consistently tight, shorten retention.** Retention is set
-   separately per kind of data (`GOTCHA_RETENTION_DAYS`,
+   separately per kind of data (`GOTCHA_EVENT_RETENTION_DAYS`,
    `GOTCHA_SPAN_RETENTION_DAYS`, `GOTCHA_METRIC_RETENTION_DAYS`,
    `GOTCHA_PROFILE_RETENTION_DAYS` — see [Configuration](/docs/configuration)).
    The change takes effect on the next start and doesn't retroactively restore

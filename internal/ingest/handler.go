@@ -86,6 +86,13 @@ type Handler struct {
 	// per-org учёт (DropCounter), а просто self-телеметрия процесса.
 	keyRejected map[KeyRejectReason]*atomic.Int64
 
+	// rejected — отказы приёма по (reason, signal), огрублённые до вида,
+	// одинаково читаемого по всем шести входам (см. IngestRejectReason).
+	// Отдельная карта от keyRejected: та детальна по ключу, эта — по всем
+	// причинам отказа сразу и с меткой вида телеметрии, которой у keyRejected
+	// нет.
+	rejected map[IngestRejectionKey]*atomic.Int64
+
 	// rate — дешёвый per-DSN (по project id) токен-бакет ПЕРЕД quota-проверкой:
 	// срезает флуд с одного ключа до похода в PG (см. ratelimit.go). Задаётся в
 	// NewHandler дефолтом; заменяем на nil/свой через SetRateLimit для тестов и
@@ -194,6 +201,7 @@ func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEvent
 		maxBytes:    maxEventBytes,
 		rate:        newRateLimiter(time.Now, defaultIngestRatePerSec, defaultIngestBurst),
 		keyRejected: newKeyRejectCounters(),
+		rejected:    newIngestRejectCounters(),
 	}
 }
 
@@ -233,12 +241,14 @@ func (h *Handler) SetRateLimit(now func() time.Time, ratePerSec, burst float64) 
 // коротким Retry-After (в отличие от квоты — окно не месяц, а доли секунды).
 // Возвращает true, если запрос НАДО отклонить (ответ уже записан). Вызывается
 // ПОСЛЕ аутентификации (нужен project id) и ДО quota-проверки (дешевле её).
-func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64) bool {
+// signal — метка gotcha_ingest_rejected_total{reason="rate_limit",signal}.
+func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64, signal IngestSignal) bool {
 	if h.rate == nil || h.rate.Allow(projectID) {
 		return false
 	}
 	slog.Warn("ingest: per-DSN rate limit exceeded",
 		"project_id", projectID, "org_id", orgID)
+	h.countRejected(RejectRateLimit, signal)
 	w.Header().Set("Retry-After", "1")
 	writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
 	return true
@@ -302,8 +312,10 @@ func corsPreflight(w http.ResponseWriter, _ *http.Request) {
 // authenticate проверяет ключ проекта; при успехе возвращает ключ и true. При
 // отказе сама пишет ошибку в w и возвращает false. Квоты здесь НЕ проверяются:
 // их две (ошибки и транзакции), и какую списывать — видно только после
-// разбора envelope'а.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key, bool) {
+// разбора envelope'а. signal — метка gotcha_ingest_rejected_total{reason=
+// "key_unknown",signal}: все три ветки отказа сводятся к одной причине, см.
+// докблок IngestRejectReason.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal) (org.Key, bool) {
 	projectID, err := strconv.ParseInt(r.PathValue("project"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "unknown project")
@@ -312,6 +324,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key,
 	pub := PublicKeyFromRequest(r)
 	if pub == "" {
 		h.countKeyReject(KeyRejectMissingKey, r.URL.Path)
+		h.countRejected(RejectKeyUnknown, signal)
 		writeJSONError(w, http.StatusUnauthorized, "missing sentry_key")
 		return org.Key{}, false
 	}
@@ -319,6 +332,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key,
 	switch {
 	case errors.Is(err, org.ErrNotFound):
 		h.countKeyReject(KeyRejectInvalidKey, r.URL.Path)
+		h.countRejected(RejectKeyUnknown, signal)
 		writeJSONError(w, http.StatusForbidden, "invalid sentry_key")
 		return org.Key{}, false
 	case err != nil:
@@ -326,6 +340,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (org.Key,
 		return org.Key{}, false
 	case key.ProjectID != projectID:
 		h.countKeyReject(KeyRejectProjectMismatch, r.URL.Path)
+		h.countRejected(RejectKeyUnknown, signal)
 		writeJSONError(w, http.StatusForbidden, "sentry_key does not match project")
 		return org.Key{}, false
 	}
@@ -398,8 +413,12 @@ func (h *Handler) countDrop(ctx context.Context, kind dropKind, orgID int64, n i
 }
 
 // writeQuotaExceeded пишет 429 с Retry-After — числом секунд до 1-го числа
-// следующего месяца UTC, когда счётчик организации обнулится.
-func writeQuotaExceeded(w http.ResponseWriter, detail string) {
+// следующего месяца UTC, когда счётчик организации обнулится. Каждый вызов —
+// это ОТКАЗАННЫЙ запрос (не путать с частичным списанием квоты у envelope,
+// см. IngestRejectReason.RejectQuota), поэтому он же считает
+// gotcha_ingest_rejected_total{reason="quota",signal}.
+func (h *Handler) writeQuotaExceeded(w http.ResponseWriter, signal IngestSignal, detail string) {
+	h.countRejected(RejectQuota, signal)
 	w.Header().Set("Retry-After", strconv.FormatInt(secondsUntilNextMonth(time.Now().UTC()), 10))
 	writeJSONError(w, http.StatusTooManyRequests, detail)
 }
@@ -516,16 +535,17 @@ func gunzipLimited(raw []byte, limit int64) ([]byte, error) {
 }
 
 func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.authenticate(w, r)
+	key, ok := h.authenticate(w, r, SignalEvent)
 	if !ok {
 		return
 	}
 	projectID := key.ProjectID
-	if h.rateLimited(w, key.OrgID, projectID) {
+	if h.rateLimited(w, key.OrgID, projectID, SignalEvent) {
 		return
 	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalEvent)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -533,10 +553,13 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	env, err := ParseEnvelope(body, h.maxBytes)
 	if err != nil {
 		status := http.StatusBadRequest
+		reason := RejectMalformed
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
 			status = http.StatusRequestEntityTooLarge
+			reason = RejectTooLarge
 		}
+		h.countRejected(reason, SignalEvent)
 		writeJSONError(w, status, "malformed envelope")
 		return
 	}
@@ -592,10 +615,12 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	}
 	if (hasEvents || hasTx) && !eventsAllowed && !txAllowed {
 		detail := "event quota exceeded"
+		signal := SignalEvent
 		if !hasEvents {
 			detail = "transaction quota exceeded"
+			signal = SignalTransaction
 		}
-		writeQuotaExceeded(w, detail)
+		h.writeQuotaExceeded(w, signal, detail)
 		return
 	}
 	// Смешанный envelope, где по ОДНОМУ классу квота исчерпана: отвечаем 200 (по
@@ -782,21 +807,22 @@ func (h *Handler) sampleRate(ctx context.Context, projectID int64) float64 {
 // store — легаси-эндпойнт: одно событие ошибки, транзакций тут не бывает,
 // поэтому квота ровно одна (ошибок).
 func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.authenticate(w, r)
+	key, ok := h.authenticate(w, r, SignalEvent)
 	if !ok {
 		return
 	}
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalEvent) {
 		return
 	}
 	if h.grant(r.Context(), h.quota, key.OrgID, "event", 1) == 0 {
 		h.countDrop(r.Context(), dropEvent, key.OrgID, 1)
-		writeQuotaExceeded(w, "event quota exceeded")
+		h.writeQuotaExceeded(w, SignalEvent, "event quota exceeded")
 		return
 	}
 	projectID := key.ProjectID
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalEvent)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -805,14 +831,17 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalEvent)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "event too large")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalEvent)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
 	pe, err := ParseEvent(raw)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalEvent)
 		writeJSONError(w, http.StatusBadRequest, "malformed event")
 		return
 	}

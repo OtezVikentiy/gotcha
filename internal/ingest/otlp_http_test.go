@@ -440,23 +440,34 @@ func TestOTLPAuthFailures(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	before := s.h.KeyRejectedBy(ingest.KeyRejectMissingBearer)
+	beforeRejected := s.h.RejectedBy(ingest.RejectKeyUnknown, ingest.SignalTransaction)
 	if resp := s.postOTLP(t, body, "application/x-protobuf", "", false); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("no bearer: status = %d, want 401", resp.StatusCode)
 	}
 	if got := s.h.KeyRejectedBy(ingest.KeyRejectMissingBearer); got != before+1 {
 		t.Errorf("KeyRejectedBy(missing_bearer) = %d, want %d", got, before+1)
 	}
+	// T6: gotcha_ingest_rejected_total{reason="key_unknown",signal="transaction"}
+	// схлопывает missing_bearer/invalid_dsn_key/project_mismatch в одну причину
+	// "этот ключ не работает здесь" — растёт на ОБЕИХ ветках ниже.
+	if got := s.h.RejectedBy(ingest.RejectKeyUnknown, ingest.SignalTransaction); got != beforeRejected+1 {
+		t.Errorf("RejectedBy(key_unknown, transaction) = %d, want %d", got, beforeRejected+1)
+	}
 	if out := logs.String(); !strings.Contains(out, "reason=missing_bearer") || !strings.Contains(out, "path=/v1/traces") {
 		t.Errorf("missing_bearer: лог не содержит reason=missing_bearer path=/v1/traces:\n%s", out)
 	}
 
 	before = s.h.KeyRejectedBy(ingest.KeyRejectInvalidDSNKey)
+	beforeRejected = s.h.RejectedBy(ingest.RejectKeyUnknown, ingest.SignalTransaction)
 	if resp := s.postOTLP(t, body, "application/x-protobuf",
 		"00000000000000000000000000000000", false); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("unknown key: status = %d, want 401", resp.StatusCode)
 	}
 	if got := s.h.KeyRejectedBy(ingest.KeyRejectInvalidDSNKey); got != before+1 {
 		t.Errorf("KeyRejectedBy(invalid_dsn_key) = %d, want %d", got, before+1)
+	}
+	if got := s.h.RejectedBy(ingest.RejectKeyUnknown, ingest.SignalTransaction); got != beforeRejected+1 {
+		t.Errorf("RejectedBy(key_unknown, transaction) = %d, want %d", got, beforeRejected+1)
 	}
 	if out := logs.String(); !strings.Contains(out, "reason=invalid_dsn_key") {
 		t.Errorf("invalid_dsn_key: лог не содержит reason=invalid_dsn_key:\n%s", out)

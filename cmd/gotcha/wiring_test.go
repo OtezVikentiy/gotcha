@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 )
 
 // Точка входа состоит из проводки, но решения в ней есть, и они меняют
@@ -445,5 +446,89 @@ func TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow(t *testing.T)
 	}
 	if elapsed > 200*time.Millisecond {
 		t.Errorf("waitGroupWithTimeout ждал %s — окно (30ms) не ограничило ожидание", elapsed)
+	}
+}
+
+// fakeWriterStats — писатель, рассказывающий о себе три числа (см. writerStats).
+type fakeWriterStats struct{ buffered, dropped, failures int64 }
+
+func (f *fakeWriterStats) Buffered() int64       { return f.buffered }
+func (f *fakeWriterStats) Dropped() int64        { return f.dropped }
+func (f *fakeWriterStats) InsertFailures() int64 { return f.failures }
+
+// TestRegisterWriterMetricsPublishesAllThree: разбор «часть событий не
+// доезжает» опирается на все три числа сразу — глубина буфера показывает,
+// принимает ли хранилище, отказы вставки говорят почему, потери означают, что
+// данные уже не вернуть. Потерять при регистрации любое из трёх — потерять
+// половину ответа, поэтому проверяются имя, тип и метка каждой метрики.
+func TestRegisterWriterMetricsPublishesAllThree(t *testing.T) {
+	var r selfmetrics.Registry
+	registerWriterMetrics(&r, "event", &fakeWriterStats{buffered: 7, dropped: 3, failures: 11})
+
+	got := r.Gather()
+	for _, want := range []string{
+		"# TYPE gotcha_writer_buffered_rows gauge",
+		"gotcha_writer_buffered_rows{writer=\"event\"} 7",
+		"# TYPE gotcha_writer_dropped_rows_total counter",
+		"gotcha_writer_dropped_rows_total{writer=\"event\"} 3",
+		"# TYPE gotcha_writer_insert_failures_total counter",
+		"gotcha_writer_insert_failures_total{writer=\"event\"} 11",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("экспозиция не содержит %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestRegisterWriterMetricsSeparatesWritersByLabel: метка writer= — то, ради
+// чего регистрация вынесена в общую функцию. Общее имя без разделяющей метки
+// склеило бы пятерых писателей в одну строку, и «теряет спаны» стало бы
+// неотличимо от «теряет логи».
+func TestRegisterWriterMetricsSeparatesWritersByLabel(t *testing.T) {
+	var r selfmetrics.Registry
+	registerWriterMetrics(&r, "span", &fakeWriterStats{buffered: 1})
+	registerWriterMetrics(&r, "log", &fakeWriterStats{buffered: 2})
+
+	got := r.Gather()
+	if !strings.Contains(got, "gotcha_writer_buffered_rows{writer=\"span\"} 1") ||
+		!strings.Contains(got, "gotcha_writer_buffered_rows{writer=\"log\"} 2") {
+		t.Errorf("писатели не разделены меткой writer=:\n%s", got)
+	}
+}
+
+// TestRegisterWriterMetricsReadsValuesLazily: значения обязаны браться на
+// каждый скрап, а не сниматься один раз при регистрации — снимок на старте
+// показывал бы вечные нули, то есть «всё хорошо» ровно в тот момент, когда
+// буфер растёт.
+func TestRegisterWriterMetricsReadsValuesLazily(t *testing.T) {
+	var r selfmetrics.Registry
+	w := &fakeWriterStats{}
+	registerWriterMetrics(&r, "metric", w)
+
+	w.buffered = 42
+	if got := r.Gather(); !strings.Contains(got, "gotcha_writer_buffered_rows{writer=\"metric\"} 42") {
+		t.Errorf("значение снято на регистрации, а не на скрапе:\n%s", got)
+	}
+}
+
+// TestCommonServicesEnabled: единственный источник истины для тройки режимов,
+// где run() строит общие сервисы. Расхождение этого списка с проводкой уже
+// давало панику при --mode=uptime (nil issueSvc), поэтому список проверяется
+// целиком, включая режимы, которых в нём быть не должно.
+func TestCommonServicesEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want bool
+	}{
+		{"ingest", true},
+		{"web", true},
+		{"all", true},
+		{"uptime", false},
+		{"probe", false},
+		{"", false},
+	} {
+		if got := commonServicesEnabled(tc.mode); got != tc.want {
+			t.Errorf("commonServicesEnabled(%q) = %v, want %v", tc.mode, got, tc.want)
+		}
 	}
 }

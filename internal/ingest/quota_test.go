@@ -6,10 +6,15 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 )
 
 // TestQuotaExceededReturns429 закрывает основной сценарий: квота 2, третье
-// принятое событие получает 429 с Retry-After > 0.
+// принятое событие получает 429 с Retry-After > 0. Заодно проверяет
+// self-метрику T6: (quota, event) — одна из 29 пар
+// gotcha_ingest_rejected_total, которые ничем не были защищены (см.
+// countRejected в writeQuotaExceeded).
 func TestQuotaExceededReturns429(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -25,6 +30,7 @@ func TestQuotaExceededReturns429(t *testing.T) {
 		}
 	}
 
+	beforeRejected := s.h.RejectedBy(ingest.RejectQuota, ingest.SignalEvent)
 	resp := s.post(t, path, envelopeBody(testEventJSON), false, s.key.PublicKey)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("third event: status = %d, want 429", resp.StatusCode)
@@ -36,6 +42,9 @@ func TestQuotaExceededReturns429(t *testing.T) {
 	secs, err := time.ParseDuration(ra + "s")
 	if err != nil || secs <= 0 {
 		t.Fatalf("Retry-After = %q, want positive seconds", ra)
+	}
+	if got := s.h.RejectedBy(ingest.RejectQuota, ingest.SignalEvent); got != beforeRejected+1 {
+		t.Fatalf("RejectedBy(quota, event) = %d, want %d", got, beforeRejected+1)
 	}
 }
 

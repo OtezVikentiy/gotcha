@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,7 +17,7 @@ import (
 // та же, что у envelope/store (project id из пути + public key), но вход
 // server-to-server, поэтому без CORS.
 func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.authenticate(w, r)
+	key, ok := h.authenticate(w, r, SignalDeploy)
 	if !ok {
 		return
 	}
@@ -24,7 +25,7 @@ func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 	// поэтому без rate-limit любой владелец DSN мог бы лить неограниченный поток
 	// INSERT'ов в общую таблицу деплоев. Квоту деплои не расходуют (не биллинговая
 	// телеметрия), достаточно rate-limit.
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalDeploy) {
 		return
 	}
 	if h.Deploy == nil {
@@ -33,6 +34,7 @@ func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalDeploy)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
@@ -46,6 +48,19 @@ func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 		Changelog   string          `json:"changelog"`
 	}
 	if err := json.NewDecoder(body).Decode(&in); err != nil {
+		// Тело в этой ветке приходит из того же http.MaxBytesReader, что у
+		// остальных пяти входов (h.body), но раньше decode-ошибка отсюда всегда
+		// отвечала 400 "malformed json" — даже когда тело превысило лимит и
+		// декодер упёрся в *http.MaxBytesError. Клиент получал "битый JSON" за
+		// собственный слишком большой пейлоад, а метрика не могла отличить одно
+		// от другого. Проверка та же, что у остальных ReadAll/Parse-веток.
+		var maxErr *http.MaxBytesError
+		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalDeploy)
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "deployment too large")
+			return
+		}
+		h.countRejected(RejectMalformed, SignalDeploy)
 		writeJSONError(w, http.StatusBadRequest, "malformed json")
 		return
 	}

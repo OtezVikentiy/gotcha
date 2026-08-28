@@ -52,6 +52,11 @@ X-Sentry-Auth: Sentry sentry_key=<PUBLIC_KEY>
 A missing key returns `401`; a key that doesn't belong to `<PROJECT_ID>`
 returns `403`.
 
+The request body is capped by the same variable used for the rest of ingest,
+`GOTCHA_MAX_EVENT_BYTES` (see [Configuration](/docs/configuration)) — a body
+larger than the cap is rejected with `413`. A body that doesn't parse as JSON
+returns `400`.
+
 ### Request body
 
 A single JSON object describing one deployment:

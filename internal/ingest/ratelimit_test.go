@@ -56,7 +56,7 @@ func TestRateLimiterDisabled(t *testing.T) {
 
 // TestSetRateLimitZeroDisablesLimit: SetRateLimit(_, 0, 0) — «лимит выключен»
 // (ветка rate <= 0 в rateLimiter.Allow). На это поведение опирается
-// GOTCHA_INGEST_RATE_LIMIT=0 (№35).
+// GOTCHA_INGEST_RATE_PER_SEC=0 (№35).
 func TestSetRateLimitZeroDisablesLimit(t *testing.T) {
 	h := NewHandler(nil, nil, nil, 0)
 	h.SetRateLimit(nil, 0, 0)
@@ -68,22 +68,31 @@ func TestSetRateLimitZeroDisablesLimit(t *testing.T) {
 }
 
 // TestHandlerRateLimited: h.rateLimited пишет 429 с Retry-After при исчерпании
-// бакета и не трогает ответ, пока токены есть.
+// бакета и не трогает ответ, пока токены есть. Заодно проверяет self-метрику
+// T6: (rate_limit, event) — одна из 29 пар gotcha_ingest_rejected_total,
+// которые ничем не были защищены (см. countRejected в rateLimited).
 func TestHandlerRateLimited(t *testing.T) {
-	h := &Handler{rate: newRateLimiter(func() time.Time { return time.Unix(0, 0) }, 1, 1)}
+	h := &Handler{
+		rate:     newRateLimiter(func() time.Time { return time.Unix(0, 0) }, 1, 1),
+		rejected: newIngestRejectCounters(),
+	}
+	beforeRejected := h.RejectedBy(RejectRateLimit, SignalEvent)
 
 	// Первый запрос проходит (есть 1 токен) — ответ не пишется.
 	w1 := httptest.NewRecorder()
-	if h.rateLimited(w1, 1, 7) {
+	if h.rateLimited(w1, 1, 7, SignalEvent) {
 		t.Fatal("first call limited, want allowed")
 	}
 	if w1.Code != http.StatusOK { // recorder default 200, ничего не писали
 		t.Fatalf("first call wrote status %d, want untouched", w1.Code)
 	}
+	if got := h.RejectedBy(RejectRateLimit, SignalEvent); got != beforeRejected {
+		t.Fatalf("RejectedBy(rate_limit, event) after allowed call = %d, want %d (не должен расти)", got, beforeRejected)
+	}
 
 	// Второй — токенов нет → 429 с Retry-After.
 	w2 := httptest.NewRecorder()
-	if !h.rateLimited(w2, 1, 7) {
+	if !h.rateLimited(w2, 1, 7, SignalEvent) {
 		t.Fatal("second call allowed, want limited")
 	}
 	if w2.Code != http.StatusTooManyRequests {
@@ -92,10 +101,13 @@ func TestHandlerRateLimited(t *testing.T) {
 	if w2.Header().Get("Retry-After") == "" {
 		t.Fatal("Retry-After header missing on rate-limit 429")
 	}
+	if got := h.RejectedBy(RejectRateLimit, SignalEvent); got != beforeRejected+1 {
+		t.Fatalf("RejectedBy(rate_limit, event) = %d, want %d", got, beforeRejected+1)
+	}
 
 	// nil-лимитер (выключен) — никогда не режет.
 	hNil := &Handler{}
-	if hNil.rateLimited(httptest.NewRecorder(), 1, 7) {
+	if hNil.rateLimited(httptest.NewRecorder(), 1, 7, SignalEvent) {
 		t.Fatal("nil rate limiter must not limit")
 	}
 }

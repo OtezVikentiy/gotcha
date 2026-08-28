@@ -33,6 +33,24 @@ func loadCatalogs() map[string]catalog {
 }
 
 // lookup — сообщение по (code,key) c fallback на Default и на сам ключ.
+//
+// Контракт (осознанный, не пересматривать без спеки): рендер НИКОГДА не
+// падает и не паникует на отсутствующем ключе. Промах — это либо тихий
+// fallback на локаль по умолчанию (страница показывает чужой язык), либо
+// возврат самого ключа как строки (страница показывает сырой идентификатор
+// вида "nav.issues"). Это защищает сторонних переводчиков, форкающих
+// локаль под третий язык: незаконченный перевод не должен ронять страницу
+// или отдавать 500. Оба случая промаха наблюдаемы — не молчаливы: см.
+// recordMissingKey (missingkey.go) — log/slog.Warn с полями key/locale/stage
+// (дедуп раз в минуту на одну и ту же тройку) и self-метрика
+// gotcha_i18n_missing_key_total{locale,stage}, которая считает КАЖДЫЙ промах
+// независимо от дедупликации лога (снимок — MissingKeyTotal).
+//
+// Тот же промах случается и для ключа, который есть только в секции
+// "plurals" каталога, но вызван через T()/lookup вместо Tn()/pluralLookup —
+// lookup смотрит только в Messages, поэтому такой ключ всегда учитывается
+// как MissingKeyMissing (или fallback, если нашёлся в Messages дефолтной
+// локали — на практике этого не бывает, раз ключ живёт в plurals).
 func lookup(code, key string) string {
 	if c, ok := catalogs[code]; ok {
 		if v, ok := c.Messages[key]; ok {
@@ -42,9 +60,11 @@ func lookup(code, key string) string {
 	if code != Default.Code {
 		if c, ok := catalogs[Default.Code]; ok {
 			if v, ok := c.Messages[key]; ok {
+				recordMissingKey(code, key, MissingKeyFallback)
 				return v
 			}
 		}
 	}
+	recordMissingKey(code, key, MissingKeyMissing)
 	return key
 }

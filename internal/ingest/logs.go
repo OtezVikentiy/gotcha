@@ -21,7 +21,7 @@ import (
 // не зависят от флага трейсинга. Логи выключены (h.Logs == nil) → отвечаем
 // успехом без записи (коллектор не ретраит вечно).
 func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.otlpAuthenticate(w, r)
+	key, ok := h.otlpAuthenticate(w, r, SignalLog)
 	if !ok {
 		return
 	}
@@ -34,11 +34,12 @@ func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
 		writeOTLPResponse(w, enc)
 		return
 	}
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalLog) {
 		return
 	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalLog)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -47,21 +48,24 @@ func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalLog)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "export too large")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalLog)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
 	data, err := otlpUnmarshalLogs(enc, raw)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalLog)
 		writeJSONError(w, http.StatusBadRequest, "malformed otlp payload")
 		return
 	}
 	records := log.MapOTLPLogs(data.GetResourceLogs(), time.Now())
 	granted := h.grantAndSanitizeLogs(r.Context(), key.OrgID, key.ProjectID, records)
 	if granted == 0 && len(records) > 0 {
-		writeQuotaExceeded(w, "log quota exceeded")
+		h.writeQuotaExceeded(w, SignalLog, "log quota exceeded")
 		return
 	}
 	writeOTLPResponse(w, enc)
@@ -73,7 +77,7 @@ func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
 // без согласования кодировки (NDJSON — единственный формат тела) и с
 // собственным JSON-ответом ({"accepted":N}), а не пустым OTLP-конвертом.
 func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.otlpAuthenticate(w, r)
+	key, ok := h.otlpAuthenticate(w, r, SignalLog)
 	if !ok {
 		return
 	}
@@ -81,11 +85,12 @@ func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]int{"accepted": 0})
 		return
 	}
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalLog) {
 		return
 	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalLog)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -98,15 +103,17 @@ func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalLog)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "body too large")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalLog)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
 	granted := h.grantAndSanitizeLogs(r.Context(), key.OrgID, key.ProjectID, records)
 	if granted == 0 && len(records) > 0 {
-		writeQuotaExceeded(w, "log quota exceeded")
+		h.writeQuotaExceeded(w, SignalLog, "log quota exceeded")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"accepted": granted})

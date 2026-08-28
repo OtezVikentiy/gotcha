@@ -110,7 +110,7 @@ const (
 // транзакций (h.TxQuota), то же детерминированное семплирование
 // (enqueueSampled → trace.Keep) и тот же SpanWriter.
 func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.otlpAuthenticate(w, r)
+	key, ok := h.otlpAuthenticate(w, r, SignalTransaction)
 	if !ok {
 		return
 	}
@@ -127,13 +127,14 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		writeOTLPResponse(w, enc)
 		return
 	}
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalTransaction) {
 		return
 	}
 	// Лимит тела и распаковка — общий Handler.body: коллектор по умолчанию жмёт
 	// gzip'ом, и защита от «бомбы» здесь ровно та же, что у Sentry-входа.
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalTransaction)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -142,9 +143,11 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalTransaction)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "export too large")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalTransaction)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
@@ -155,9 +158,11 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errJSONTooDeep) {
 			slog.Warn("otlp: body rejected", "reason", "json_too_deep",
 				"project_id", key.ProjectID)
+			h.countRejected(RejectMalformed, SignalTransaction)
 			writeJSONError(w, http.StatusBadRequest, "json nesting too deep")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalTransaction)
 		writeJSONError(w, http.StatusBadRequest, "malformed otlp payload")
 		return
 	}
@@ -186,7 +191,7 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	// исчерпанная квота, и отвечать на него 429 значило бы просить коллектор
 	// прислать то же самое ещё раз.
 	if granted == 0 && len(kept) > 0 {
-		writeQuotaExceeded(w, "transaction quota exceeded")
+		h.writeQuotaExceeded(w, SignalTransaction, "transaction quota exceeded")
 		return
 	}
 
@@ -199,7 +204,7 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 // метрики не семплируются и не зависят от флага трейсинга. Метрики выключены
 // (h.Metrics == nil) → отвечаем успехом без записи (коллектор не ретраит вечно).
 func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.otlpAuthenticate(w, r)
+	key, ok := h.otlpAuthenticate(w, r, SignalMetric)
 	if !ok {
 		return
 	}
@@ -212,11 +217,12 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		writeOTLPResponse(w, enc)
 		return
 	}
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalMetric) {
 		return
 	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalMetric)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -225,14 +231,17 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalMetric)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "export too large")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalMetric)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
 	var req metricspb.MetricsData
 	if err := otlpUnmarshalMetrics(enc, raw, &req); err != nil {
+		h.countRejected(RejectMalformed, SignalMetric)
 		writeJSONError(w, http.StatusBadRequest, "malformed otlp payload")
 		return
 	}
@@ -311,7 +320,7 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 			"project_id", key.ProjectID, "org_id", key.OrgID)
 	}
 	if granted == 0 && len(points) > 0 {
-		writeQuotaExceeded(w, "metric quota exceeded")
+		h.writeQuotaExceeded(w, SignalMetric, "metric quota exceeded")
 		return
 	}
 
@@ -465,10 +474,11 @@ func validAgentVersion(s string) string {
 // опция headers:, своего формата мы не изобретаем). Проект берётся ИЗ КЛЮЧА: в
 // OTLP-протоколе нет места для него в URL. Нет заголовка / неизвестный ключ →
 // 401 (у envelope там 403 — там ключ уже сопоставляется с проектом из пути).
-func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request) (org.Key, bool) {
+func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal) (org.Key, bool) {
 	pub := otlpBearer(r)
 	if pub == "" {
 		h.countKeyReject(KeyRejectMissingBearer, r.URL.Path)
+		h.countRejected(RejectKeyUnknown, signal)
 		writeJSONError(w, http.StatusUnauthorized, "missing bearer token")
 		return org.Key{}, false
 	}
@@ -476,6 +486,7 @@ func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request) (org.
 	switch {
 	case errors.Is(err, org.ErrNotFound):
 		h.countKeyReject(KeyRejectInvalidDSNKey, r.URL.Path)
+		h.countRejected(RejectKeyUnknown, signal)
 		writeJSONError(w, http.StatusUnauthorized, "invalid dsn key")
 		return org.Key{}, false
 	case err != nil:

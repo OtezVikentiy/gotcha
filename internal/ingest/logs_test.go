@@ -276,10 +276,13 @@ func TestNDJSONLogsTooLarge(t *testing.T) {
 }
 
 // TestNDJSONLogsBadBody: нечитаемая кодировка тела (Content-Encoding: gzip на
-// не-gzip теле) → 400, не 500/413.
+// не-gzip теле) → 400, не 500/413. Заодно проверяет self-метрику: T6 завела
+// gotcha_ingest_rejected_total{reason,signal}, и (malformed, log) — одна из
+// 29 пар, которые ничем не были защищены (см. countRejected в logsNDJSON).
 func TestNDJSONLogsBadBody(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
+	before := h.RejectedBy(RejectMalformed, SignalLog)
 
 	req := httptest.NewRequest("POST", "/logs", strings.NewReader("не gzip"))
 	req.Header.Set("Authorization", "Bearer pub")
@@ -289,6 +292,9 @@ func TestNDJSONLogsBadBody(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if got := h.RejectedBy(RejectMalformed, SignalLog); got != before+1 {
+		t.Errorf("RejectedBy(malformed, log) = %d, want %d", got, before+1)
 	}
 }
 

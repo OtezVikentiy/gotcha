@@ -14,7 +14,7 @@ import (
 // Bearer-DSN аутентификацией и метаданными из query (service/transaction/
 // environment/type). Профили выключены (h.Profiles==nil) → 202 без записи.
 func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.otlpAuthenticate(w, r)
+	key, ok := h.otlpAuthenticate(w, r, SignalProfile)
 	if !ok {
 		return
 	}
@@ -22,16 +22,17 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if h.rateLimited(w, key.OrgID, key.ProjectID) {
+	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalProfile) {
 		return
 	}
 	if h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", 1) == 0 {
 		h.countDrop(r.Context(), dropProfile, key.OrgID, 1)
-		writeQuotaExceeded(w, "profile quota exceeded")
+		h.writeQuotaExceeded(w, SignalProfile, "profile quota exceeded")
 		return
 	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
+		h.countRejected(RejectMalformed, SignalProfile)
 		writeJSONError(w, http.StatusBadRequest, "bad body encoding")
 		return
 	}
@@ -40,9 +41,11 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
+			h.countRejected(RejectTooLarge, SignalProfile)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "profile too large")
 			return
 		}
+		h.countRejected(RejectMalformed, SignalProfile)
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
@@ -53,10 +56,12 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	raw, err = gunzipLimited(raw, h.maxBytes*10)
 	if err != nil {
 		if errors.Is(err, ErrTooLarge) {
+			h.countRejected(RejectTooLarge, SignalProfile)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "profile too large")
 			return
 		}
 		slog.Warn("ingest: bad pprof gzip", "error", err)
+		h.countRejected(RejectMalformed, SignalProfile)
 		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
 		return
 	}
@@ -64,6 +69,7 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	prof, err := profile.ParsePprof(raw, q.Get("type"), time.Now().UTC())
 	if err != nil {
 		slog.Warn("ingest: bad pprof profile", "error", err)
+		h.countRejected(RejectMalformed, SignalProfile)
 		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
 		return
 	}

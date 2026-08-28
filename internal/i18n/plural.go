@@ -14,21 +14,42 @@ func Tn(ctx context.Context, key string, n int) string {
 	return strings.ReplaceAll(s, "{n}", strconv.Itoa(n))
 }
 
+// pluralLookup — как lookup (catalog.go:36), но по секции "plurals" и с
+// выбором формы по CLDR-категории. Тот же контракт наблюдаемости промаха
+// (см. докблок lookup): fallback и missing регистрируются через
+// recordMissingKey, рендер никогда не падает.
 func pluralLookup(code, key, form string) string {
-	if c, ok := catalogs[code]; ok {
-		if forms, ok := c.Plurals[key]; ok {
-			if v, ok := forms[form]; ok {
-				return v
-			}
-			if v, ok := forms["other"]; ok {
-				return v
-			}
-		}
+	if v, ok := pluralLookupOwn(code, key, form); ok {
+		return v
 	}
 	if code != Default.Code {
-		return pluralLookup(Default.Code, key, form)
+		if v, ok := pluralLookupOwn(Default.Code, key, form); ok {
+			recordMissingKey(code, key, MissingKeyFallback)
+			return v
+		}
 	}
+	recordMissingKey(code, key, MissingKeyMissing)
 	return key
+}
+
+// pluralLookupOwn — форма ключа в конкретной локали, без fallback на другую
+// локаль (сам fallback и учёт промаха — забота pluralLookup).
+func pluralLookupOwn(code, key, form string) (string, bool) {
+	c, ok := catalogs[code]
+	if !ok {
+		return "", false
+	}
+	forms, ok := c.Plurals[key]
+	if !ok {
+		return "", false
+	}
+	if v, ok := forms[form]; ok {
+		return v, true
+	}
+	if v, ok := forms["other"]; ok {
+		return v, true
+	}
+	return "", false
 }
 
 // pluralForm — CLDR-категория количественного числа для локали.
