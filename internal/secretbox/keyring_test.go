@@ -59,6 +59,35 @@ func TestNewKeyringValidation(t *testing.T) {
 	})
 }
 
+// TestPreviousID — PreviousID отдаёт id предыдущего ключа, выведенный той же
+// деривацией, что и CurrentID (а не отдельной копией с иным путём вычисления),
+// и пустую строку, когда предыдущего ключа нет.
+func TestPreviousID(t *testing.T) {
+	t.Run("предыдущий ключ есть — та же деривация, что у CurrentID", func(t *testing.T) {
+		ring, err := NewKeyring("current-master-for-previd", "previous-master-for-previd")
+		if err != nil {
+			t.Fatalf("NewKeyring: %v", err)
+		}
+		asCurrent, err := NewKeyring("previous-master-for-previd", "")
+		if err != nil {
+			t.Fatalf("NewKeyring(previous as current): %v", err)
+		}
+		if got, want := ring.PreviousID(), asCurrent.CurrentID(); got != want {
+			t.Fatalf("PreviousID() = %q, want %q (same derivation as CurrentID)", got, want)
+		}
+	})
+
+	t.Run("предыдущего ключа нет — пустая строка", func(t *testing.T) {
+		ring, err := NewKeyring("current-master-only", "")
+		if err != nil {
+			t.Fatalf("NewKeyring: %v", err)
+		}
+		if got := ring.PreviousID(); got != "" {
+			t.Fatalf("PreviousID() = %q, want empty for single-key keyring", got)
+		}
+	})
+}
+
 func TestSealOpenRoundtripSingleKey(t *testing.T) {
 	r, err := NewKeyring("roundtrip-master", "")
 	if err != nil {

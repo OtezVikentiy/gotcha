@@ -503,12 +503,12 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("build secretbox keyring: %w", err)
 		}
-		// id ключа — не секрет, но без него оператору неоткуда взять <old-id>
-		// для проверочного SELECT из процедуры ротации (privacy.md). Кольцо
-		// отдаёт наружу только id ТЕКУЩЕГО ключа (CurrentID) — id предыдущего
-		// не экспортируется намеренно (см. internal/secretbox/keyring.go), так
-		// что при ротации в этой строке виден новый id, не старый.
+		// id ключей — не секрет, но без старого оператору неоткуда взять
+		// <old-id> для проверочного SELECT из процедуры ротации (privacy.md):
+		// previous_key_id логируется только пока ротация идёт (PreviousID
+		// пуст без предыдущего ключа), current_key_id — всегда.
 		slog.Info("secretbox keyring ready", "current_key_id", secretRing.CurrentID(),
+			"previous_key_id", secretRing.PreviousID(),
 			"rotation_in_progress", cfg.SecretKeyPrev != "")
 	}
 
