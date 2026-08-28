@@ -60,9 +60,12 @@ func TestSnapshotCacheTTL(t *testing.T) {
 
 	// Открываем silent-инцидент хоста — в пределах TTL кеш обязан остаться
 	// прежним: второй вызов НЕ перезагружает снимок и НЕ видит новые данные.
+	// current_value/peak_value для kind='silent' — длительность тишины в
+	// секундах, как их пишет host.IncidentService.Open; с миграции 0087 обе
+	// колонки NOT NULL.
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO host_incidents (project_id,host_id,kind,status,started_at)
-		 VALUES ($1,$2,'silent','open',now())`,
+		`INSERT INTO host_incidents (project_id,host_id,kind,status,current_value,peak_value,started_at)
+		 VALUES ($1,$2,'silent','open',900,900,now())`,
 		projectID, hostID); err != nil {
 		t.Fatalf("open incident: %v", err)
 	}

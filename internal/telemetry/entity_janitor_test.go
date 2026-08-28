@@ -378,7 +378,7 @@ func rowExists(t *testing.T, pool *pgxpool.Pool, table string, id int64) bool {
 }
 
 // TestEntityJanitorUsesPerEntityRetention — находка №108: все шесть правил жили
-// одним GOTCHA_RETENTION_DAYS, хотя сроков в продукте четыре.
+// одним GOTCHA_EVENT_RETENTION_DAYS, хотя сроков в продукте четыре.
 //
 // Регрессия профиля переживала свои сэмплы на восемьдесят три дня — карточка
 // открывалась, а флеймграфа за ней уже не было; инцидент метрики переживал
@@ -444,8 +444,8 @@ func insertHostIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int6
 	}
 	var id int64
 	if err := pool.QueryRow(context.Background(),
-		`INSERT INTO host_incidents (project_id, host_id, kind, status, resolved_at)
-		 VALUES ($1, $2, 'disk', $3, $4) RETURNING id`,
+		`INSERT INTO host_incidents (project_id, host_id, kind, status, current_value, peak_value, resolved_at)
+		 VALUES ($1, $2, 'disk', $3, 0.95, 0.95, $4) RETURNING id`,
 		projectID, hostID, status, resolvedAt).Scan(&id); err != nil {
 		t.Fatalf("insert host incident: %v", err)
 	}

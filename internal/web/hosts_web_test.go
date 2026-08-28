@@ -1107,8 +1107,8 @@ func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 	}
 	// 600 закрытых инцидентов свежее открытого — больше прежнего лимита в 500.
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO host_incidents (project_id, host_id, kind, status, started_at, resolved_at)
-		SELECT $1, $2, 'load', 'resolved', now() - make_interval(secs => g), now()
+		INSERT INTO host_incidents (project_id, host_id, kind, status, current_value, peak_value, started_at, resolved_at)
+		SELECT $1, $2, 'load', 'resolved', 1.5, 1.5, now() - make_interval(secs => g), now()
 		FROM generate_series(1, 600) AS g`, project.ID, hst.ID); err != nil {
 		t.Fatalf("наполнить закрытыми инцидентами: %v", err)
 	}

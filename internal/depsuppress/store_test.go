@@ -49,6 +49,24 @@ func seedHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name, role, env
 	return hostID
 }
 
+// silentSeconds — длительность тишины (секунды), с которой оценщик открыл бы
+// silent-инцидент: заведомо больше порога по умолчанию.
+const silentSeconds = 900.0
+
+// seedSilentIncident открывает инцидент тишины хоста — так же, как это
+// делает host.IncidentService.Open (единственный продовый писатель
+// host_incidents): current_value/peak_value для kind='silent' — длительность
+// тишины в секундах, обе колонки NOT NULL с миграции 0087.
+func seedSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64) int64 {
+	t.Helper()
+	var incidentID int64
+	mustScan(t, pool, &incidentID,
+		`INSERT INTO host_incidents (project_id, host_id, kind, status, current_value, peak_value, started_at)
+		 VALUES ($1,$2,'silent','open',$3,$3,now()) RETURNING id`,
+		projectID, hostID, silentSeconds)
+	return incidentID
+}
+
 // seedProjectHostMonitor создаёт организацию, проект, хост (role='web',
 // env='prod') и монитор — минимальный набор для тестов store.go.
 func seedProjectHostMonitor(t *testing.T, pool *pgxpool.Pool) (projectID, hostID, monitorID int64) {

@@ -55,8 +55,7 @@ func TestParentDownLabelAndTransitive(t *testing.T) {
 	web := seedHost(t, pool, pid, "web1", "web", "prod")
 	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
 		VALUES ($1,$2,'role','web')`, pid, gwHost)
-	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now())`, pid, gwHost)
+	seedSilentIncident(t, pool, pid, gwHost)
 	sup := depsuppress.NewSuppressor(pool)
 	ctx := context.Background()
 	if down, err := sup.ParentDown(ctx, "host", web); err != nil || !down {
@@ -83,9 +82,7 @@ func TestTransitiveChainViaOpenIntermediate(t *testing.T) {
 		t.Fatalf("create edge B->C: %v", err)
 	}
 
-	var incID int64
-	mustScan(t, pool, &incID, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now()) RETURNING id`, pid, b)
+	incID := seedSilentIncident(t, pool, pid, b)
 	mustExec(t, pool, `UPDATE host_incidents SET suppressed_by_dep = true WHERE id = $1`, incID)
 
 	sup := depsuppress.NewSuppressor(pool)
@@ -114,10 +111,8 @@ func TestParentDownReciprocalCycleNoBlackHole(t *testing.T) {
 		VALUES ($1,$2,'role','web')`, pid, a)
 	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
 		VALUES ($1,$2,'role','web')`, pid, b)
-	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now())`, pid, a)
-	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now())`, pid, b)
+	seedSilentIncident(t, pool, pid, a)
+	seedSilentIncident(t, pool, pid, b)
 
 	sup := depsuppress.NewSuppressor(pool)
 	ctx := context.Background()
@@ -161,9 +156,7 @@ func TestCheckIncidentHostVanished(t *testing.T) {
 func TestMarkSuppressed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, hostID, _ := seedProjectHostMonitor(t, pool)
-	var incID int64
-	mustScan(t, pool, &incID, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now()) RETURNING id`, pid, hostID)
+	incID := seedSilentIncident(t, pool, pid, hostID)
 
 	sup := depsuppress.NewSuppressor(pool)
 	ctx := context.Background()
@@ -200,8 +193,7 @@ func TestParentDownLabelDoesNotCrossProjectBoundary(t *testing.T) {
 
 	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
 		VALUES ($1,$2,'role','web')`, p1, gw)
-	mustExec(t, pool, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now())`, p1, gw)
+	seedSilentIncident(t, pool, p1, gw)
 
 	sup := depsuppress.NewSuppressor(pool)
 	ctx := context.Background()
@@ -227,9 +219,7 @@ func TestCheckIncidentHostSource(t *testing.T) {
 	}
 	mustExec(t, pool, `INSERT INTO incidents (monitor_id, started_at) VALUES ($1, now())`, monID)
 
-	var incID int64
-	mustScan(t, pool, &incID, `INSERT INTO host_incidents (project_id, host_id, kind, status, started_at)
-		VALUES ($1,$2,'silent','open',now()) RETURNING id`, pid, hostID)
+	incID := seedSilentIncident(t, pool, pid, hostID)
 
 	sup := depsuppress.NewSuppressor(pool)
 	ctx := context.Background()
