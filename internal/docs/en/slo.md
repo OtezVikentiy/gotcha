@@ -106,7 +106,7 @@ when the request stream has gone silent.
 
 The SLO window can be set up to 90 days, but it can only see as far back as your
 data actually goes. Each evaluation clips the window to your telemetry retention
-(`GOTCHA_RETENTION_DAYS` for request-based SLIs, the check-result retention for
+(`GOTCHA_EVENT_RETENTION_DAYS` for request-based SLIs, the check-result retention for
 uptime): a 90-day window on an instance that keeps 30 days of data is evaluated
 over 30 days. Keep the SLO window at or below your retention if you want the full
 window to count.
@@ -114,7 +114,7 @@ window to count.
 ## Evaluation cadence
 
 The evaluator re-scores every enabled SLO on a fixed interval —
-`GOTCHA_SLO_EVAL_INTERVAL`, 120 seconds by default. Lowering it makes burn alerts
+`GOTCHA_SLO_EVAL_INTERVAL_SECONDS`, 120 seconds by default. Lowering it makes burn alerts
 react faster at the cost of more frequent queries; raising it does the opposite.
 
 Important: like the metric/host/regression evaluators, the SLO evaluator by

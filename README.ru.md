@@ -122,7 +122,7 @@ Gotcha настраивается целиком через переменные
 | `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | Строка подключения к ClickHouse. |
 | `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Подписывает OAuth state / cookie сессий. **Значение по умолчанию публично** (оно лежит в исходниках) и открывает возможность захвата аккаунта через OAuth на любом не-localhost развёртывании — процесс отказывается стартовать в режимах `web`, `all`, `ingest` и `uptime` (везде, кроме `probe`) при не-локальном `GOTCHA_BASE_URL`, если значение не переопределено (аварийный обход: `GOTCHA_ALLOW_INSECURE_SECRET=1`, только для разработки). Для любого реального развёртывания сгенерируйте стойкое случайное значение. |
 | `GOTCHA_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_FROM` | не задано / `587` / не задано / не задано / не задано | Исходящая почта для инвайтов и email-каналов оповещений; отправка email отключена, пока не задан `GOTCHA_SMTP_HOST`. |
-| `GOTCHA_RETENTION_DAYS` | `90` | Срок хранения событий/транзакций/Web Vitals в ClickHouse. |
+| `GOTCHA_EVENT_RETENTION_DAYS` | `90` | Срок хранения событий/транзакций/Web Vitals в ClickHouse. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Срок хранения спанов трейсов. |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Срок хранения точек метрик. |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Срок хранения сэмплов профилей. |
@@ -137,11 +137,11 @@ Gotcha настраивается целиком через переменные
 | `GOTCHA_OIDC_ENABLED` / `GOTCHA_YANDEX_ENABLED` / `GOTCHA_VK_ENABLED` | `false` | Включают каждый SSO-провайдер независимо; после включения каждому нужен свой client ID/secret (и issuer — для OIDC). |
 
 Переменные для сборки из исходников (`GOTCHA_MAX_EVENT_BYTES`,
-`GOTCHA_METRIC_EVAL_INTERVAL`, `GOTCHA_PROFILE_EVAL_INTERVAL`,
-`GOTCHA_HOST_EVAL_INTERVAL`,
+`GOTCHA_METRIC_EVAL_INTERVAL_SECONDS`, `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS`,
+`GOTCHA_HOST_EVAL_INTERVAL_SECONDS`,
 `GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE`,
 `GOTCHA_EXTERNAL_CHANNEL_DETAILS`, `GOTCHA_UPTIME_CONCURRENCY`,
-`GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_SERVER_URL`,
+`GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_PROBE_SERVER_URL`,
 `GOTCHA_SCRUB_FREETEXT`) и полный набор переменных OIDC/Yandex/VK перечислены
 со значениями по умолчанию в [`.env.example`](.env.example).
 

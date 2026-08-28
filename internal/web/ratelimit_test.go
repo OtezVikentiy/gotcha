@@ -47,7 +47,7 @@ func key(i int) string {
 }
 
 // TestSetAgentDistRateLimit — rem-A ops-H4: main.go зовёт этот метод один раз
-// при старте с порогом из GOTCHA_AGENT_DIST_RATE_PER_MIN, перекрывая
+// при старте с порогом из GOTCHA_DIST_RATE_PER_MIN, перекрывая
 // дефолтный лимитер New() (10/мин — рассчитан на одиночный сервер, ломает
 // Ansible-раскатку/массовое обновление парка за одним IP).
 func TestSetAgentDistRateLimit(t *testing.T) {

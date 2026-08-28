@@ -33,7 +33,7 @@ const aggregateWindow = 5 * time.Minute
 // ClickHouse (его ReadTimeout по умолчанию 300с) копил бы наложенные проходы.
 const tickBudgetShare = 0.8
 
-// minTickBudget — пол бюджета тика. GOTCHA_HOST_EVAL_INTERVAL допускает
+// minTickBudget — пол бюджета тика. GOTCHA_HOST_EVAL_INTERVAL_SECONDS допускает
 // значение в одну секунду, и доля от него дала бы 800 мс — меньше таймаута
 // одного запроса в ClickHouse; на сколько-нибудь большом парке проход по
 // тишине не успевал бы дойти до конца НИКОГДА, то есть частый тик отменял бы

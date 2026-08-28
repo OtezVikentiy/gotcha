@@ -121,7 +121,7 @@ var installShExclusions = map[string]string{}
 // независимая реализация здесь не заводится.
 func agentConfigEnvVarSet(t *testing.T, root string) map[string]bool {
 	t.Helper()
-	vars := collectGotchaEnvVars(t, root, filepath.Join("internal", "agent", "config.go"))
+	vars := collectGotchaEnvVars(t, root, filepath.Join("internal", "agent", "config.go"), nil)
 	if len(vars) < 8 {
 		t.Fatalf("обход ослеп: канонических переменных агента найдено %d, ожидалось не меньше 8", len(vars))
 	}

@@ -114,7 +114,7 @@ func TestWebProbes(t *testing.T) {
 	if !strings.Contains(string(body), "GOTCHA_PROBE_TOKEN="+token) {
 		t.Fatalf("POST %s missing docker run line with token: %s", probesPath, body)
 	}
-	if !strings.Contains(string(body), "GOTCHA_SERVER_URL="+s.srv.URL) {
+	if !strings.Contains(string(body), "GOTCHA_PROBE_SERVER_URL="+s.srv.URL) {
 		t.Fatalf("POST %s missing docker run line with server url: %s", probesPath, body)
 	}
 	// Проба без last_seen_at — offline. Статус локализован (B5), поэтому

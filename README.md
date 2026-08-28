@@ -120,7 +120,7 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 | `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | ClickHouse connection string. |
 | `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs OAuth state/session cookies. **The default is public** (it's in the source) and enables account takeover via OAuth on any non-localhost deployment — the process refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) on a non-local `GOTCHA_BASE_URL` unless this is overridden (escape hatch: `GOTCHA_ALLOW_INSECURE_SECRET=1`, dev only). Generate a strong random value for any real deployment. |
 | `GOTCHA_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_FROM` | unset / `587` / unset / unset / unset | Outbound email for invites and email alert channels; email delivery is disabled until `GOTCHA_SMTP_HOST` is set. |
-| `GOTCHA_RETENTION_DAYS` | `90` | Retention for events/transactions/Web Vitals in ClickHouse. |
+| `GOTCHA_EVENT_RETENTION_DAYS` | `90` | Retention for events/transactions/Web Vitals in ClickHouse. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans. |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points. |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profile samples. |
@@ -135,16 +135,16 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 | `GOTCHA_OIDC_ENABLED` / `GOTCHA_YANDEX_ENABLED` / `GOTCHA_VK_ENABLED` | `false` | Enable each SSO provider independently; each requires its own client ID/secret (and issuer, for OIDC) once enabled. |
 
 Further runtime variables (`GOTCHA_MAX_EVENT_BYTES`,
-`GOTCHA_METRIC_EVAL_INTERVAL`, `GOTCHA_PROFILE_EVAL_INTERVAL`,
-`GOTCHA_HOST_EVAL_INTERVAL`,
+`GOTCHA_METRIC_EVAL_INTERVAL_SECONDS`, `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS`,
+`GOTCHA_HOST_EVAL_INTERVAL_SECONDS`,
 `GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE`,
 `GOTCHA_EXTERNAL_CHANNEL_DETAILS`, `GOTCHA_UPTIME_CONCURRENCY`,
-`GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_SERVER_URL`,
+`GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_PROBE_SERVER_URL`,
 `GOTCHA_SCRUB_FREETEXT`) and the full OIDC/Yandex/VK variable set are listed
 with their defaults in [`.env.example`](.env.example) and described in the
 built-in [Configuration](internal/docs/en/configuration.md) guide. They are
 ordinary environment variables — no rebuild needed; `GOTCHA_PROBE_TOKEN` and
-`GOTCHA_SERVER_URL` are in fact required to run a remote probe.
+`GOTCHA_PROBE_SERVER_URL` are in fact required to run a remote probe.
 
 ## Build from source
 

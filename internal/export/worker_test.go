@@ -1526,7 +1526,7 @@ func validExportConfig() Config {
 }
 
 // TestConfigValidateRejectsNonPositiveMaxRows: P2-OPS-1 — MaxRows <= 0 не
-// значит «без лимита» (в отличие от GOTCHA_AGENT_DIST_RATE_PER_MIN/
+// значит «без лимита» (в отличие от GOTCHA_DIST_RATE_PER_MIN/
 // *_RETENTION_DAYS): worker.go гасит собственный потолок условием "> 0", а
 // source_events.go всё равно шлёт в ClickHouse LIMIT eventStreamSafetyLimit
 // — поток обрывается на миллионе строк, а Truncated остаётся false. Оператор,

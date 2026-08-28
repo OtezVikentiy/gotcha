@@ -57,7 +57,7 @@ func probeStatus(p uptime.Probe, now time.Time) string {
 // («gotcha-gotcha»). Прежняя строка копировалась целиком и падала с «Unable to
 // find image 'gotcha:latest'» — то есть готовая команда была неготовой.
 func probeRunCommand(baseURL, token string) string {
-	return "docker run -e GOTCHA_SERVER_URL=" + baseURL +
+	return "docker run -e GOTCHA_PROBE_SERVER_URL=" + baseURL +
 		" -e GOTCHA_PROBE_TOKEN=" + token + " <gotcha-image> --mode=probe"
 }
 

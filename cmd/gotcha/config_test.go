@@ -119,10 +119,10 @@ func TestLoadConfig_ExportOverrides(t *testing.T) {
 
 // TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault — rem-A ops-H1: явно
 // заданная пустая строка (как её отдаёт docker-compose env_file на
-// GOTCHA_AGENT_DIST_DIR= из .env.example) неотличима для str() от «не
+// GOTCHA_DIST_DIR= из .env.example) неотличима для str() от «не
 // задано» — не должна гасить раздачу пустым значением поверх ENV образа.
 func TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault(t *testing.T) {
-	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_AGENT_DIST_DIR": ""}), nil)
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DIST_DIR": ""}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -131,10 +131,10 @@ func TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_AgentDistRatePerMinOverride — GOTCHA_AGENT_DIST_RATE_PER_MIN
+// TestLoadConfig_AgentDistRatePerMinOverride — GOTCHA_DIST_RATE_PER_MIN
 // читается как обычный intNum (rem-A ops-H4).
 func TestLoadConfig_AgentDistRatePerMinOverride(t *testing.T) {
-	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_AGENT_DIST_RATE_PER_MIN": "500"}), nil)
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DIST_RATE_PER_MIN": "500"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -145,24 +145,24 @@ func TestLoadConfig_AgentDistRatePerMinOverride(t *testing.T) {
 
 func TestLoadConfigOverrides(t *testing.T) {
 	env := map[string]string{
-		"GOTCHA_ADDR":                ":9090",
-		"GOTCHA_BASE_URL":            "https://errors.example.com",
-		"GOTCHA_PG_DSN":              "postgres://u:p@pg:5432/g",
-		"GOTCHA_CH_DSN":              "clickhouse://ch:9000/g",
-		"GOTCHA_SMTP_HOST":           "smtp.example.com",
-		"GOTCHA_SMTP_PORT":           "465",
-		"GOTCHA_SMTP_USER":           "mailer",
-		"GOTCHA_SMTP_PASSWORD":       "s3cret",
-		"GOTCHA_SMTP_FROM":           "gotcha@example.com",
-		"GOTCHA_RETENTION_DAYS":      "30",
-		"GOTCHA_SPAN_RETENTION_DAYS": "7",
-		"GOTCHA_DEFAULT_EVENT_QUOTA": "50000",
-		"GOTCHA_MAX_EVENT_BYTES":     "2097152",
-		"GOTCHA_SECRET_KEY":          "prod-secret-at-least-32-bytes-long!",
-		"GOTCHA_UPTIME_CONCURRENCY":  "10",
-		"GOTCHA_LOCAL_REGION":        "eu-fra",
-		"GOTCHA_PROBE_TOKEN":         "ptok",
-		"GOTCHA_SERVER_URL":          "https://gotcha.example.com",
+		"GOTCHA_ADDR":                 ":9090",
+		"GOTCHA_BASE_URL":             "https://errors.example.com",
+		"GOTCHA_PG_DSN":               "postgres://u:p@pg:5432/g",
+		"GOTCHA_CH_DSN":               "clickhouse://ch:9000/g",
+		"GOTCHA_SMTP_HOST":            "smtp.example.com",
+		"GOTCHA_SMTP_PORT":            "465",
+		"GOTCHA_SMTP_USER":            "mailer",
+		"GOTCHA_SMTP_PASSWORD":        "s3cret",
+		"GOTCHA_SMTP_FROM":            "gotcha@example.com",
+		"GOTCHA_EVENT_RETENTION_DAYS": "30",
+		"GOTCHA_SPAN_RETENTION_DAYS":  "7",
+		"GOTCHA_DEFAULT_EVENT_QUOTA":  "50000",
+		"GOTCHA_MAX_EVENT_BYTES":      "2097152",
+		"GOTCHA_SECRET_KEY":           "prod-secret-at-least-32-bytes-long!",
+		"GOTCHA_UPTIME_CONCURRENCY":   "10",
+		"GOTCHA_LOCAL_REGION":         "eu-fra",
+		"GOTCHA_PROBE_TOKEN":          "ptok",
+		"GOTCHA_PROBE_SERVER_URL":     "https://gotcha.example.com",
 	}
 	cfg, err := loadConfig(getenvFrom(env), []string{"--mode", "ingest"})
 	if err != nil {
@@ -309,12 +309,12 @@ func TestLoadConfigInvalidMode(t *testing.T) {
 }
 
 func TestLoadConfigAcceptsUptimeAndProbeModes(t *testing.T) {
-	// probe без GOTCHA_SERVER_URL/GOTCHA_PROBE_TOKEN не запускается (см.
+	// probe без GOTCHA_PROBE_SERVER_URL/GOTCHA_PROBE_TOKEN не запускается (см.
 	// TestLoadConfigProbeModeRequiresServerURLAndToken), поэтому здесь они
 	// заданы для обоих режимов — проверяется только разбор --mode.
 	env := map[string]string{
-		"GOTCHA_SERVER_URL":  "https://gotcha.example.com",
-		"GOTCHA_PROBE_TOKEN": "probe-token",
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN":      "probe-token",
 	}
 	for _, mode := range []string{"uptime", "probe"} {
 		cfg, err := loadConfig(getenvFrom(env), []string{"--mode", mode})
@@ -332,11 +332,11 @@ func TestLoadConfigProbeModeRejectsServerURLWithoutScheme(t *testing.T) {
 	// scheme" раз в секунду вечно — отказываем на старте.
 	for _, serverURL := range []string{"gotcha.example.com", "/probe", "ftp://gotcha.example.com"} {
 		env := map[string]string{
-			"GOTCHA_SERVER_URL":  serverURL,
-			"GOTCHA_PROBE_TOKEN": "probe-token",
+			"GOTCHA_PROBE_SERVER_URL": serverURL,
+			"GOTCHA_PROBE_TOKEN":      "probe-token",
 		}
 		if _, err := loadConfig(getenvFrom(env), []string{"--mode", "probe"}); err == nil {
-			t.Errorf("GOTCHA_SERVER_URL=%q: want error, got nil", serverURL)
+			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q: want error, got nil", serverURL)
 		}
 	}
 }
@@ -351,9 +351,9 @@ func TestLoadConfigNonPositiveUptimeConcurrency(t *testing.T) {
 }
 
 func TestLoadConfigInvalidInt(t *testing.T) {
-	env := map[string]string{"GOTCHA_RETENTION_DAYS": "ninety"}
+	env := map[string]string{"GOTCHA_EVENT_RETENTION_DAYS": "ninety"}
 	if _, err := loadConfig(getenvFrom(env), nil); err == nil {
-		t.Fatal("want error for non-numeric GOTCHA_RETENTION_DAYS, got nil")
+		t.Fatal("want error for non-numeric GOTCHA_EVENT_RETENTION_DAYS, got nil")
 	}
 }
 
@@ -361,12 +361,13 @@ func TestLoadConfigInvalidInt(t *testing.T) {
 // документация (configuration.md) обещала это раньше, чем смог код.
 func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 	env := map[string]string{
-		"GOTCHA_RETENTION_DAYS":          "0",
+		"GOTCHA_EVENT_RETENTION_DAYS":    "0",
 		"GOTCHA_SPAN_RETENTION_DAYS":     "0",
 		"GOTCHA_METRIC_RETENTION_DAYS":   "0",
 		"GOTCHA_PROFILE_RETENTION_DAYS":  "0",
 		"GOTCHA_LOG_RETENTION_DAYS":      "0",
 		"GOTCHA_INCIDENT_RETENTION_DAYS": "0",
+		"GOTCHA_DEPLOY_RETENTION_DAYS":   "0",
 	}
 	cfg, err := loadConfig(getenvFrom(env), nil)
 	if err != nil {
@@ -374,21 +375,31 @@ func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 	}
 	if cfg.RetentionDays != 0 || cfg.SpanRetentionDays != 0 ||
 		cfg.MetricRetentionDays != 0 || cfg.ProfileRetentionDays != 0 ||
-		cfg.LogRetentionDays != 0 || cfg.IncidentRetentionDays != 0 {
-		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d/%d",
+		cfg.LogRetentionDays != 0 || cfg.IncidentRetentionDays != 0 ||
+		cfg.DeployRetentionDays != 0 {
+		t.Fatalf("want all retention fields = 0, got %d/%d/%d/%d/%d/%d/%d",
 			cfg.RetentionDays, cfg.SpanRetentionDays, cfg.MetricRetentionDays,
-			cfg.ProfileRetentionDays, cfg.LogRetentionDays, cfg.IncidentRetentionDays)
+			cfg.ProfileRetentionDays, cfg.LogRetentionDays, cfg.IncidentRetentionDays,
+			cfg.DeployRetentionDays)
 	}
 }
 
+// TestLoadConfigNegativeRetentionRejected — T2: GOTCHA_DEPLOY_RETENTION_DAYS
+// добавлен в этот список. У шести соседей (RetentionDays, SpanRetentionDays,
+// MetricRetentionDays, ProfileRetentionDays, LogRetentionDays,
+// IncidentRetentionDays) проверка "< 0" была; у DeployRetentionDays — не
+// было: отрицательное значение проходило validate() молча и попадало в
+// time.Duration(cfg.DeployRetentionDays) * 24 * time.Hour (main.go) как
+// отрицательный TTL.
 func TestLoadConfigNegativeRetentionRejected(t *testing.T) {
 	for _, key := range []string{
-		"GOTCHA_RETENTION_DAYS",
+		"GOTCHA_EVENT_RETENTION_DAYS",
 		"GOTCHA_SPAN_RETENTION_DAYS",
 		"GOTCHA_METRIC_RETENTION_DAYS",
 		"GOTCHA_PROFILE_RETENTION_DAYS",
 		"GOTCHA_LOG_RETENTION_DAYS",
 		"GOTCHA_INCIDENT_RETENTION_DAYS",
+		"GOTCHA_DEPLOY_RETENTION_DAYS",
 	} {
 		env := map[string]string{key: "-1"}
 		if _, err := loadConfig(getenvFrom(env), nil); err == nil {
@@ -418,7 +429,7 @@ func TestLoadConfigProbeModeRequiresServerURLAndToken(t *testing.T) {
 		env  map[string]string
 	}{
 		{"both missing", nil},
-		{"no token", map[string]string{"GOTCHA_SERVER_URL": "https://gotcha.example.com"}},
+		{"no token", map[string]string{"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com"}},
 		{"no server url", map[string]string{"GOTCHA_PROBE_TOKEN": "t"}},
 	}
 	for _, tc := range cases {
@@ -432,8 +443,8 @@ func TestLoadConfigProbeModeRequiresServerURLAndToken(t *testing.T) {
 
 func TestLoadConfigProbeMode(t *testing.T) {
 	env := map[string]string{
-		"GOTCHA_SERVER_URL":  "https://gotcha.example.com",
-		"GOTCHA_PROBE_TOKEN": "probe-token",
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN":      "probe-token",
 	}
 	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=probe"})
 	if err != nil {
@@ -447,7 +458,7 @@ func TestLoadConfigProbeMode(t *testing.T) {
 	}
 }
 
-// Остальные режимы GOTCHA_SERVER_URL/GOTCHA_PROBE_TOKEN не требуют.
+// Остальные режимы GOTCHA_PROBE_SERVER_URL/GOTCHA_PROBE_TOKEN не требуют.
 func TestLoadConfigNonProbeModeDoesNotRequireProbeCreds(t *testing.T) {
 	for _, mode := range []string{"ingest", "web", "uptime", "all"} {
 		if _, err := loadConfig(getenvFrom(nil), []string{"--mode=" + mode}); err != nil {
@@ -517,15 +528,15 @@ func TestLoadConfigIngestRateLimit(t *testing.T) {
 	if cfg.IngestRateLimit != 500 {
 		t.Fatalf("default IngestRateLimit = %d, want 500", cfg.IngestRateLimit)
 	}
-	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_LIMIT": "0"}), nil)
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_PER_SEC": "0"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig with 0: %v", err)
 	}
 	if cfg.IngestRateLimit != 0 {
 		t.Fatalf("IngestRateLimit = %d, want 0", cfg.IngestRateLimit)
 	}
-	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_LIMIT": "-1"}), nil); err == nil {
-		t.Fatal("GOTCHA_INGEST_RATE_LIMIT=-1: want error, got nil")
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_PER_SEC": "-1"}), nil); err == nil {
+		t.Fatal("GOTCHA_INGEST_RATE_PER_SEC=-1: want error, got nil")
 	}
 }
 
@@ -601,8 +612,8 @@ func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
 
 	// probe секретов не видит: ни PG, ни CH, ни каналов — ключ ему не нужен.
 	env := map[string]string{
-		"GOTCHA_SERVER_URL":  "https://gotcha.example.com",
-		"GOTCHA_PROBE_TOKEN": "ptok",
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN":      "ptok",
 	}
 	getenv := func(k string) string { return env[k] }
 	if _, err := loadConfig(getenv, []string{"--mode=probe"}); err != nil {
@@ -613,14 +624,14 @@ func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
 // TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo — ops P2-1: раньше
 // проверка GOTCHA_SECRET_KEY шла хвостом функции, ПОСЛЕ бейл-аута по
 // errs[0] на числовых/булевых полях (config.go). Если оператор одновременно
-// опечатался в GOTCHA_RETENTION_DAYS И оставил слабый/дефолтный секрет на
+// опечатался в GOTCHA_EVENT_RETENTION_DAYS И оставил слабый/дефолтный секрет на
 // проде, он видел только ошибку про retention, чинил её, перезапускал — и
 // только тогда узнавал про секрет. Секьюрити-критичная проверка теперь идёт
 // раньше errs[0], поэтому именно она должна быть видна первой.
 func TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo(t *testing.T) {
 	env := map[string]string{
-		"GOTCHA_BASE_URL":       "https://gotcha.example.com",
-		"GOTCHA_RETENTION_DAYS": "abc", // опечатка в числовом поле
+		"GOTCHA_BASE_URL":             "https://gotcha.example.com",
+		"GOTCHA_EVENT_RETENTION_DAYS": "abc", // опечатка в числовом поле
 		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret на не-local URL
 	}
 	getenv := func(k string) string { return env[k] }
@@ -641,7 +652,7 @@ func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	if cfg.ProfileEvalInterval != 300 {
 		t.Errorf("ProfileEvalInterval = %d, want 300", cfg.ProfileEvalInterval)
 	}
-	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_EVAL_INTERVAL": "0"}), nil); err == nil {
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS": "0"}), nil); err == nil {
 		t.Error("zero profile eval interval must fail")
 	}
 }
@@ -654,7 +665,7 @@ func TestLoadConfigHostEvalInterval(t *testing.T) {
 	if cfg.HostEvalInterval != 60 {
 		t.Errorf("HostEvalInterval = %d, want 60", cfg.HostEvalInterval)
 	}
-	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_HOST_EVAL_INTERVAL": "0"}), nil); err == nil {
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_HOST_EVAL_INTERVAL_SECONDS": "0"}), nil); err == nil {
 		t.Error("zero host eval interval must fail")
 	}
 }
@@ -667,7 +678,7 @@ func TestLoadConfigEscalationInterval(t *testing.T) {
 	if cfg.EscalationInterval != 60 {
 		t.Errorf("EscalationInterval = %d, want 60", cfg.EscalationInterval)
 	}
-	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_ESCALATION_INTERVAL": "0"}), nil); err == nil {
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_ESCALATION_INTERVAL_SECONDS": "0"}), nil); err == nil {
 		t.Error("zero escalation interval must fail")
 	}
 }
@@ -921,7 +932,7 @@ func TestMigrateOnlyImpliesAutoMigrate(t *testing.T) {
 // выйти нулём было бы обманом: оператор решил бы, что схема применена.
 func TestMigrateOnlyRejectedForProbe(t *testing.T) {
 	_, err := loadConfig(getenvFrom(map[string]string{
-		"GOTCHA_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_TOKEN": "t",
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_TOKEN": "t",
 	}), []string{"--migrate-only", "--mode=probe"})
 	if err == nil {
 		t.Fatal("loadConfig принял --migrate-only с --mode=probe")
@@ -947,7 +958,7 @@ func TestMigrateOnlyDefaultsOff(t *testing.T) {
 // разбирается, дефолт — «не запрошено» (−1).
 func TestMigrateForceFlags(t *testing.T) {
 	probeEnv := map[string]string{
-		"GOTCHA_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_TOKEN": "t",
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_TOKEN": "t",
 	}
 	rejected := []struct {
 		name string
@@ -984,5 +995,275 @@ func TestMigrateForceFlags(t *testing.T) {
 	}
 	if cfg.MigrateForcePG != -1 || cfg.MigrateForceCH != -1 {
 		t.Errorf("дефолт: MigrateForcePG=%d MigrateForceCH=%d, want -1 и -1", cfg.MigrateForcePG, cfg.MigrateForceCH)
+	}
+}
+
+// TestLoadConfigOutOfRangeNumericEnvRejected — интервалы, окна, лимиты и
+// квоты, у которых свой пол. Проверка не только «отказ есть», но и «отказ про
+// ЭТУ переменную»: сообщения писались копипастой соседнего блока, и оператор,
+// получив на старте имя чужой переменной, чинит не то, что сломано.
+func TestLoadConfigOutOfRangeNumericEnvRejected(t *testing.T) {
+	cases := []struct{ key, value string }{
+		{"GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", "0"},
+		{"GOTCHA_ALERT_BUDGET_LIMIT", "-1"},
+		{"GOTCHA_CARDINALITY_LIMIT", "-1"},
+		{"GOTCHA_CARDINALITY_WINDOW_SECONDS", "0"},
+		{"GOTCHA_METRIC_EVAL_INTERVAL_SECONDS", "0"},
+		{"GOTCHA_PURGE_RECONCILE_HOURS", "-1"},
+		{"GOTCHA_NOTIFY_CONCURRENCY", "0"},
+		{"GOTCHA_SLO_EVAL_INTERVAL_SECONDS", "0"},
+		{"GOTCHA_DEPENDENCY_SETTLE_SECONDS", "-1"},
+		{"GOTCHA_DEFAULT_TRANSACTION_QUOTA", "-1"},
+		{"GOTCHA_DEFAULT_PROFILE_QUOTA", "-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			_, err := loadConfig(getenvFrom(map[string]string{tc.key: tc.value}), nil)
+			if err == nil {
+				t.Fatalf("%s=%s: want error, got nil", tc.key, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("%s=%s: error %q does not name the variable", tc.key, tc.value, err)
+			}
+		})
+	}
+}
+
+// TestLoadConfigRejectsInvalidBoolean — мусор в булевой переменной не должен
+// молча превращаться в false: «GOTCHA_SCRUB_IP=maybe» так выключил бы
+// скрубинг IP, а оператор считал бы его включённым.
+func TestLoadConfigRejectsInvalidBoolean(t *testing.T) {
+	_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_IP": "maybe"}), nil)
+	if err == nil {
+		t.Fatal("GOTCHA_SCRUB_IP=maybe: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SCRUB_IP") || !strings.Contains(err.Error(), "invalid boolean") {
+		t.Errorf("error = %q, want it to name GOTCHA_SCRUB_IP and say 'invalid boolean'", err)
+	}
+}
+
+// TestLoadConfigRejectsNonNumericInt64 — байтовые потолки читаются как целое;
+// «8MiB» разбирается в 0, а 0 для GOTCHA_MAX_BUFFER_BYTES означает «выведи
+// потолок сам» (см. effectiveMaxBufferBytes), то есть опечатка тихо меняла бы
+// смысл настройки вместо отказа на старте.
+func TestLoadConfigRejectsNonNumericInt64(t *testing.T) {
+	_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_MAX_BUFFER_BYTES": "8MiB"}), nil)
+	if err == nil {
+		t.Fatal("GOTCHA_MAX_BUFFER_BYTES=8MiB: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_MAX_BUFFER_BYTES") {
+		t.Errorf("error = %q, want it to name GOTCHA_MAX_BUFFER_BYTES", err)
+	}
+}
+
+// TestLoadConfigTrustedProxiesParsed — CIDR и голые адреса. Голый IP обязан
+// становиться /32 (/128 для IPv6), иначе net.ParseCIDR отвергнет запись, и
+// самая частая форма записи («192.168.1.5») стала бы ошибкой конфигурации.
+func TestLoadConfigTrustedProxiesParsed(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_TRUSTED_PROXIES": " 10.0.0.0/8 , 192.168.1.5 ,, 2001:db8::1 ",
+	}
+	cfg, err := loadConfig(getenvFrom(env), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.TrustedProxies) != 3 {
+		t.Fatalf("TrustedProxies = %v, want 3 entries (пустая запись отбрасывается)", cfg.TrustedProxies)
+	}
+	got := make([]string, 0, len(cfg.TrustedProxies))
+	for _, n := range cfg.TrustedProxies {
+		got = append(got, n.String())
+	}
+	want := []string{"10.0.0.0/8", "192.168.1.5/32", "2001:db8::1/128"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("TrustedProxies[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestLoadConfigTrustedProxiesRejectsInvalidEntry — невалидная запись обязана
+// ронять старт, а не пропускаться молча: тихо выпавший из списка прокси
+// означает, что X-Forwarded-For больше не доверяется, лимитер ключуется по
+// адресу прокси и защита деградирует, ничего об этом не сообщая.
+func TestLoadConfigTrustedProxiesRejectsInvalidEntry(t *testing.T) {
+	env := map[string]string{"GOTCHA_TRUSTED_PROXIES": "10.0.0.0/8,not-an-ip"}
+	_, err := loadConfig(getenvFrom(env), nil)
+	if err == nil {
+		t.Fatal("GOTCHA_TRUSTED_PROXIES с мусорной записью: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_TRUSTED_PROXIES") || !strings.Contains(err.Error(), "not-an-ip") {
+		t.Errorf("error = %q, want it to name the variable and the bad entry", err)
+	}
+}
+
+// TestLoadConfigScrubAllowKeysParsed — исключения из denylist сравниваются с
+// именами полей в нижнем регистре, поэтому список нормализуется при разборе;
+// без нормализации «Order_ID» не совпал бы ни с чем и исключение молча не
+// работало бы.
+func TestLoadConfigScrubAllowKeysParsed(t *testing.T) {
+	env := map[string]string{"GOTCHA_SCRUB_ALLOW_KEYS": " Order_ID , ,USER_ID"}
+	cfg, err := loadConfig(getenvFrom(env), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.ScrubAllowKeys) != 2 {
+		t.Fatalf("ScrubAllowKeys = %v, want 2 entries (пустая запись отбрасывается)", cfg.ScrubAllowKeys)
+	}
+	if cfg.ScrubAllowKeys[0] != "order_id" || cfg.ScrubAllowKeys[1] != "user_id" {
+		t.Errorf("ScrubAllowKeys = %v, want [order_id user_id]", cfg.ScrubAllowKeys)
+	}
+}
+
+// TestLoadConfigShortSecretKeyOnRemoteBaseURL — свой, но короткий ключ на
+// не-локальном стенде: 16 байт подписи угадываемы, а тем же ключом шифруются
+// секреты каналов доставки. Локальный стенд и явный аварийный тумблер —
+// исключения.
+func TestLoadConfigShortSecretKeyOnRemoteBaseURL(t *testing.T) {
+	short := "0123456789abcdef" // 16 байт, ровно вдвое меньше требуемого
+	base := map[string]string{
+		"GOTCHA_BASE_URL":   "https://gotcha.example",
+		"GOTCHA_SECRET_KEY": short,
+	}
+	_, err := loadConfig(getenvFrom(base), []string{"--mode=web"})
+	if err == nil {
+		t.Fatal("короткий GOTCHA_SECRET_KEY на не-локальном BaseURL: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY is too short") {
+		t.Errorf("error = %q, want it to say the key is too short", err)
+	}
+
+	// Явный аварийный тумблер снимает проверку.
+	withEscape := map[string]string{
+		"GOTCHA_BASE_URL":              "https://gotcha.example",
+		"GOTCHA_SECRET_KEY":            short,
+		"GOTCHA_ALLOW_INSECURE_SECRET": "1",
+	}
+	if _, err := loadConfig(getenvFrom(withEscape), []string{"--mode=web"}); err != nil {
+		t.Fatalf("GOTCHA_ALLOW_INSECURE_SECRET=1 должен разрешать короткий ключ: %v", err)
+	}
+
+	// Локальный стенд — тоже исключение, тумблер там не нужен.
+	local := map[string]string{
+		"GOTCHA_BASE_URL":   "http://localhost:8080",
+		"GOTCHA_SECRET_KEY": short,
+	}
+	if _, err := loadConfig(getenvFrom(local), []string{"--mode=web"}); err != nil {
+		t.Fatalf("короткий ключ на localhost должен проходить: %v", err)
+	}
+
+	// probe секретов не расшифровывает — короткий ключ ему не мешает.
+	probe := map[string]string{
+		"GOTCHA_BASE_URL":         "https://gotcha.example",
+		"GOTCHA_SECRET_KEY":       short,
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example",
+		"GOTCHA_PROBE_TOKEN":      "tok",
+	}
+	if _, err := loadConfig(getenvFrom(probe), []string{"--mode=probe"}); err != nil {
+		t.Fatalf("--mode=probe с коротким ключом должен проходить: %v", err)
+	}
+}
+
+// TestLoadConfigRejectsUnparseableURLs — адрес, который не разбирается вовсе
+// (незакрытая скобка IPv6-хоста). Ветка отдельная от проверки схемы/хоста:
+// url.Parse возвращает ошибку раньше, чем есть что проверять.
+func TestLoadConfigRejectsUnparseableURLs(t *testing.T) {
+	const broken = "http://[::1"
+
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_BASE_URL": broken}), nil); err == nil {
+		t.Error("GOTCHA_BASE_URL=" + broken + ": want error, got nil")
+	} else if !strings.Contains(err.Error(), "GOTCHA_BASE_URL") {
+		t.Errorf("BaseURL error = %q, want it to name GOTCHA_BASE_URL", err)
+	}
+
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_TELEGRAM_API_BASE": broken}), nil); err == nil {
+		t.Error("GOTCHA_TELEGRAM_API_BASE=" + broken + ": want error, got nil")
+	} else if !strings.Contains(err.Error(), "GOTCHA_TELEGRAM_API_BASE") {
+		t.Errorf("Telegram error = %q, want it to name GOTCHA_TELEGRAM_API_BASE", err)
+	}
+
+	probe := map[string]string{
+		"GOTCHA_PROBE_SERVER_URL": broken,
+		"GOTCHA_PROBE_TOKEN":      "tok",
+	}
+	if _, err := loadConfig(getenvFrom(probe), []string{"--mode=probe"}); err == nil {
+		t.Error("GOTCHA_PROBE_SERVER_URL=" + broken + ": want error, got nil")
+	} else if !strings.Contains(err.Error(), "GOTCHA_PROBE_SERVER_URL") {
+		t.Errorf("probe error = %q, want it to name GOTCHA_PROBE_SERVER_URL", err)
+	}
+}
+
+// TestLoadConfigSocialProvidersRequireSecrets — включённый провайдер без
+// client_id/secret. Стартовать с ним значит отдать пользователю кнопку входа,
+// которая падает уже после редиректа к провайдеру.
+func TestLoadConfigSocialProvidersRequireSecrets(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"yandex без id и секрета", map[string]string{"GOTCHA_YANDEX_ENABLED": "1"}},
+		{"yandex без секрета", map[string]string{
+			"GOTCHA_YANDEX_ENABLED":   "1",
+			"GOTCHA_YANDEX_CLIENT_ID": "ycid",
+		}},
+		{"vk без id и секрета", map[string]string{"GOTCHA_VK_ENABLED": "1"}},
+		{"vk без секрета", map[string]string{
+			"GOTCHA_VK_ENABLED":   "1",
+			"GOTCHA_VK_CLIENT_ID": "vcid",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := loadConfig(getenvFrom(tc.env), []string{"--mode=web"}); err == nil {
+				t.Fatalf("%s: want error, got nil", tc.name)
+			}
+		})
+	}
+
+	// Полный комплект — стартуем.
+	full := map[string]string{
+		"GOTCHA_VK_ENABLED":       "1",
+		"GOTCHA_VK_CLIENT_ID":     "vcid",
+		"GOTCHA_VK_CLIENT_SECRET": "vsec",
+	}
+	cfg, err := loadConfig(getenvFrom(full), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.VKEnabled || cfg.VKClientSecret != "vsec" {
+		t.Errorf("VK fields = %v/%q", cfg.VKEnabled, cfg.VKClientSecret)
+	}
+}
+
+// TestLoadConfigRunEvaluatorsTriState — «не задано» и «задано false» означают
+// разное (см. runEvaluatorsExplicit), поэтому поле тристабильное, и loadConfig
+// обязан различать все три состояния.
+func TestLoadConfigRunEvaluatorsTriState(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.RunEvaluators != nil {
+		t.Errorf("RunEvaluators = %v без переменной, want nil", *cfg.RunEvaluators)
+	}
+
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"1", true}, {"true", true}, {"YES", true},
+		{"0", false}, {"false", false}, {"nonsense", false},
+	} {
+		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_RUN_EVALUATORS": tc.value}), nil)
+		if err != nil {
+			t.Fatalf("GOTCHA_RUN_EVALUATORS=%q: loadConfig: %v", tc.value, err)
+		}
+		if cfg.RunEvaluators == nil {
+			t.Errorf("GOTCHA_RUN_EVALUATORS=%q: RunEvaluators = nil, want заданное значение", tc.value)
+			continue
+		}
+		if *cfg.RunEvaluators != tc.want {
+			t.Errorf("GOTCHA_RUN_EVALUATORS=%q: RunEvaluators = %v, want %v", tc.value, *cfg.RunEvaluators, tc.want)
+		}
 	}
 }

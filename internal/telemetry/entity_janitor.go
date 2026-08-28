@@ -71,7 +71,7 @@ const (
 	retentionDeployments
 )
 
-// Retentions — сроки хранения по классам данных: GOTCHA_RETENTION_DAYS,
+// Retentions — сроки хранения по классам данных: GOTCHA_EVENT_RETENTION_DAYS,
 // GOTCHA_METRIC_RETENTION_DAYS, GOTCHA_PROFILE_RETENTION_DAYS,
 // GOTCHA_INCIDENT_RETENTION_DAYS, GOTCHA_DEPLOY_RETENTION_DAYS. Нулевой срок
 // класса выключает удаление в его правилах.
@@ -107,7 +107,7 @@ func (r Retentions) forKind(k retentionKind) time.Duration {
 
 // entityRules — что и по какому сроку удаляется.
 //
-// Раньше все шесть правил жили одним GOTCHA_RETENTION_DAYS, хотя сроков в
+// Раньше все шесть правил жили одним GOTCHA_EVENT_RETENTION_DAYS, хотя сроков в
 // продукте четыре. Следствие несимметрично в обе стороны: регрессия профиля
 // переживала свои сэмплы на восемьдесят три дня (карточка открывалась, а
 // флеймграфа за ней уже не было), инцидент метрики переживал точки метрик на
@@ -170,7 +170,7 @@ var entityRules = []entityRule{
 // EntityJanitor удаляет из PostgreSQL сущности, переживших срок хранения
 // телеметрии.
 //
-// Существует потому, что GOTCHA_RETENTION_DAYS вытеснял данные только из
+// Существует потому, что GOTCHA_EVENT_RETENTION_DAYS вытеснял данные только из
 // ClickHouse, а issues, perf_issues, инциденты и регрессии в PostgreSQL жили
 // вечно. Следствий три. Список проблем показывал группы, событий которых уже
 // нет, с пожизненным счётчиком times_seen. Заголовок issue — свободный текст,

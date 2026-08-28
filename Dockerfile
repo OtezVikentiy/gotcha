@@ -53,7 +53,7 @@ RUN adduser -D -u 10001 gotcha \
 USER gotcha
 COPY --from=build /out/gotcha /usr/local/bin/gotcha
 COPY --from=build /out/agent-dist /opt/gotcha/agent-dist
-ENV GOTCHA_AGENT_DIST_DIR=/opt/gotcha/agent-dist
+ENV GOTCHA_DIST_DIR=/opt/gotcha/agent-dist
 EXPOSE 8080
 # Проверка состояния — подкомандой самого бинаря, а не curl/wget: тогда она
 # зависит только от того, что в образе точно есть. Спрашивает /readyz, то есть

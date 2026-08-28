@@ -160,7 +160,7 @@ func (c Config) jobTimeout() time.Duration {
 // MaxRows/MaxBytes <= 0 — та же дыра с другой стороны (P2-OPS-1): worker.go
 // гасит собственный потолок условием "> 0", то есть 0 ЗДЕСЬ не значит
 // "без лимита" (в отличие от задокументированной конвенции проекта у
-// GOTCHA_AGENT_DIST_RATE_PER_MIN/*_RETENTION_DAYS) — поток всё равно
+// GOTCHA_DIST_RATE_PER_MIN/*_RETENTION_DAYS) — поток всё равно
 // обрывается на eventStreamSafetyLimit, но молча. DiskBudget <= 0 (P2-OPS-2)
 // делает "used >= budget" истинным на пустом каталоге — failPermanent для
 // каждой заявки без единой попытки. TTL <= 0 — expires_at не позже now(),

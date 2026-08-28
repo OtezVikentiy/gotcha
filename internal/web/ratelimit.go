@@ -189,7 +189,7 @@ func (h *Handler) publicRateLimited(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // SetAgentDistRateLimit переустанавливает порог per-IP лимитера раздачи
-// бинарей агента (GOTCHA_AGENT_DIST_RATE_PER_MIN, ops-H4, cmd/gotcha/main.go).
+// бинарей агента (GOTCHA_DIST_RATE_PER_MIN, ops-H4, cmd/gotcha/main.go).
 // Отдельный метод, а не публичное поле лимитера: *rateLimiter — внутренний
 // тип пакета, конструктору нужен источник времени. Вызывается один раз при
 // старте, до начала обслуживания запросов — гонок с Allow() нет.

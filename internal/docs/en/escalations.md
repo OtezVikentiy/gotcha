@@ -88,7 +88,7 @@ ladder while suppressed.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_ESCALATION_INTERVAL` | `60` | How often (in seconds) the centralized scheduler sweeps every open, unacknowledged incident across all six sources and advances the ladder to its next step once that step's delay from opening has elapsed. Minimum 1 second. |
+| `GOTCHA_ESCALATION_INTERVAL_SECONDS` | `60` | How often (in seconds) the centralized scheduler sweeps every open, unacknowledged incident across all six sources and advances the ladder to its next step once that step's delay from opening has elapsed. Minimum 1 second. |
 
 Like the metric/host/SLO evaluators, the escalation scheduler itself only
 runs in `uptime`/`all` modes, or when explicitly enabled via

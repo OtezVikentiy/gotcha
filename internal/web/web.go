@@ -351,7 +351,7 @@ type Handler struct {
 
 	// AgentDistDir — каталог с install.sh-скриптом (встроен через //go:embed,
 	// см. agentdist.go) и бинарями gotcha-agent (план A2, задача 10):
-	// GOTCHA_AGENT_DIST_DIR, раскладывается в образ сборкой Docker. Дефолт
+	// GOTCHA_DIST_DIR, раскладывается в образ сборкой Docker. Дефолт
 	// (cmd/gotcha/config.go) совпадает с путём из Dockerfile — пусто здесь
 	// бывает только в dev-режиме (go run без docker) или если оператор явно
 	// указал каталог, которого физически нет; в обоих случаях GET /install.sh
@@ -396,7 +396,7 @@ type Handler struct {
 	// (см. Handler.agentFile). install.sh мал и остаётся под publicLimiter.
 	// Дефолт New() (10/мин) — только для стендов/тестов без конфига; в
 	// проде main.go сразу перекрывает его через SetAgentDistRateLimit
-	// (GOTCHA_AGENT_DIST_RATE_PER_MIN, ops-H4) — щедрее, чтобы одна установка
+	// (GOTCHA_DIST_RATE_PER_MIN, ops-H4) — щедрее, чтобы одна установка
 	// (2 запроса: бинарь+SHA) не сериализовала раскатку парка за одним IP.
 	agentLimiter *rateLimiter
 	// statusPageLimiter — per-USER лимитер создания статус-страниц (security

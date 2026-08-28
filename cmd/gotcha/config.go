@@ -76,7 +76,7 @@ type Config struct {
 	// физически не может сработать раньше OOM-killer'а.
 	MaxBufferBytes int64
 	// IngestRateLimit — per-DSN токен-бакет приёма, запросов/с на project id
-	// (GOTCHA_INGEST_RATE_LIMIT). Burst = 2×лимит. 0 выключает лимит.
+	// (GOTCHA_INGEST_RATE_PER_SEC). Burst = 2×лимит. 0 выключает лимит.
 	// Срабатывает после аутентификации ключа и ДО квоты; ответ 429.
 	IngestRateLimit int
 	// MaxQueueBytes — байтовый потолок очереди приёма (в дополнение к её
@@ -259,17 +259,17 @@ type Config struct {
 	ProbeToken string
 	ServerURL  string
 
-	// AgentDistDir — каталог с install.sh и бинарями gotcha-agent (GOTCHA_AGENT_DIST_DIR,
+	// AgentDistDir — каталог с install.sh и бинарями gotcha-agent (GOTCHA_DIST_DIR,
 	// план A2, задача 10): раскладывается в образ на этапе сборки Docker (Task 12/13),
 	// сервер отдаёт их из web-хендлера (internal/web/agentdist.go). Дефолт совпадает с
-	// `ENV GOTCHA_AGENT_DIST_DIR` в Dockerfile — на штатном Docker-проде оператору не
+	// `ENV GOTCHA_DIST_DIR` в Dockerfile — на штатном Docker-проде оператору не
 	// нужно ничего задавать явно, а env_file с пустым значением переменной (или её
 	// отсутствием) не гасит раздачу (rem-A ops-H1: `str()` трактует пустую строку как
 	// «не задано» и берёт этот дефолт). В dev-режиме (go run без docker) каталога по
 	// этому пути физически нет — agentDistAvailable() честно отдаёт 404 с подсказкой.
 	AgentDistDir string
 	// AgentDistRatePerMin — порог per-IP лимитера раздачи бинарей агента
-	// (GOTCHA_AGENT_DIST_RATE_PER_MIN, ops-H4): install.sh качает бинарь и SHA256SUMS
+	// (GOTCHA_DIST_RATE_PER_MIN, ops-H4): install.sh качает бинарь и SHA256SUMS
 	// (2 запроса на установку/обновление), а ключ лимитера — клиентский IP, поэтому
 	// парк за одним egress-адресом (NAT, Ansible-раскатка) делит один бюджет. Дефолт
 	// 120/мин — это 60 хостов в минуту с одного IP, с запасом для обычной раскатки;
@@ -502,7 +502,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SMTPPassword:             str("GOTCHA_SMTP_PASSWORD", ""),
 		SMTPFrom:                 str("GOTCHA_SMTP_FROM", ""),
 		TelegramAPIBase:          str("GOTCHA_TELEGRAM_API_BASE", ""),
-		RetentionDays:            intNum("GOTCHA_RETENTION_DAYS", 90),
+		RetentionDays:            intNum("GOTCHA_EVENT_RETENTION_DAYS", 90),
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
 		MetricRetentionDays:      intNum("GOTCHA_METRIC_RETENTION_DAYS", 30),
 		ProfileRetentionDays:     intNum("GOTCHA_PROFILE_RETENTION_DAYS", 7),
@@ -516,7 +516,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultProfileQuota:      num("GOTCHA_DEFAULT_PROFILE_QUOTA", defQuota),
 		DefaultLogQuota:          num("GOTCHA_DEFAULT_LOG_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
-		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_LIMIT", 500),
+		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_PER_SEC", 500),
 		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
 		MaxQueueBytes:            num("GOTCHA_MAX_QUEUE_BYTES", 0),
 		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
@@ -524,11 +524,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		CardinalityLimit:         intNum("GOTCHA_CARDINALITY_LIMIT", 10000),
 		CardinalityWindowSeconds: intNum("GOTCHA_CARDINALITY_WINDOW_SECONDS", 3600),
 		RunEvaluators:            optionalBoolEnv(getenv, "GOTCHA_RUN_EVALUATORS"),
-		MetricEvalInterval:       intNum("GOTCHA_METRIC_EVAL_INTERVAL", 60),
-		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL", 300),
-		HostEvalInterval:         intNum("GOTCHA_HOST_EVAL_INTERVAL", 60),
-		SLOEvalInterval:          intNum("GOTCHA_SLO_EVAL_INTERVAL", 120),
-		EscalationInterval:       intNum("GOTCHA_ESCALATION_INTERVAL", 60),
+		MetricEvalInterval:       intNum("GOTCHA_METRIC_EVAL_INTERVAL_SECONDS", 60),
+		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS", 300),
+		HostEvalInterval:         intNum("GOTCHA_HOST_EVAL_INTERVAL_SECONDS", 60),
+		SLOEvalInterval:          intNum("GOTCHA_SLO_EVAL_INTERVAL_SECONDS", 120),
+		EscalationInterval:       intNum("GOTCHA_ESCALATION_INTERVAL_SECONDS", 60),
 		DependencySettleSeconds:  intNum("GOTCHA_DEPENDENCY_SETTLE_SECONDS", 300),
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
 		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
@@ -539,9 +539,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
 		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
 		ProbeToken:               str("GOTCHA_PROBE_TOKEN", ""),
-		ServerURL:                str("GOTCHA_SERVER_URL", ""),
-		AgentDistDir:             str("GOTCHA_AGENT_DIST_DIR", "/opt/gotcha/agent-dist"),
-		AgentDistRatePerMin:      intNum("GOTCHA_AGENT_DIST_RATE_PER_MIN", 120),
+		ServerURL:                str("GOTCHA_PROBE_SERVER_URL", ""),
+		AgentDistDir:             str("GOTCHA_DIST_DIR", "/opt/gotcha/agent-dist"),
+		AgentDistRatePerMin:      intNum("GOTCHA_DIST_RATE_PER_MIN", 120),
 		ExportDir:                str("GOTCHA_EXPORT_DIR", "/var/lib/gotcha/exports"),
 		ExportTTLHours:           intNum("GOTCHA_EXPORT_TTL_HOURS", 168),
 		ExportMaxRows:            num("GOTCHA_EXPORT_MAX_ROWS", 200_000),
@@ -673,7 +673,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// security-critical проверка конфига (слабый/дефолтный ключ на не-local
 	// BaseURL = угон аккаунта через OAuth-link, SEC-C1). Если у оператора
 	// ОДНОВРЕМЕННО опечатка в каком-то числовом поле (например
-	// GOTCHA_RETENTION_DAYS=abc) И слабый секрет, порядок ниже гарантирует,
+	// GOTCHA_EVENT_RETENTION_DAYS=abc) И слабый секрет, порядок ниже гарантирует,
 	// что он увидит именно предупреждение про секрет первым, а не только
 	// про опечатку — иначе он мог бы исправить опечатку, перезапуститься и
 	// невольно продолжить стартовать со слабым ключом ещё один цикл
@@ -733,7 +733,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 
 	if cfg.RetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.RetentionDays)
+		return Config{}, fmt.Errorf("GOTCHA_EVENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.RetentionDays)
 	}
 	if cfg.SpanRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_SPAN_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.SpanRetentionDays)
@@ -748,7 +748,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_LIMIT must be >= 0 (0 disables the ceiling), got %d", cfg.AlertBudgetLimit)
 	}
 	if cfg.IngestRateLimit < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_INGEST_RATE_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit)
+		return Config{}, fmt.Errorf("GOTCHA_INGEST_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit)
 	}
 	if cfg.CardinalityLimit < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit)
@@ -757,7 +757,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_WINDOW_SECONDS must be >= 1, got %d", cfg.CardinalityWindowSeconds)
 	}
 	if cfg.MetricEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL must be >= 1, got %d", cfg.MetricEvalInterval)
+		return Config{}, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.MetricEvalInterval)
 	}
 	if cfg.ProfileRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.ProfileRetentionDays)
@@ -767,6 +767,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.IncidentRetentionDays < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.IncidentRetentionDays)
+	}
+	if cfg.DeployRetentionDays < 0 {
+		return Config{}, fmt.Errorf("GOTCHA_DEPLOY_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.DeployRetentionDays)
 	}
 	if cfg.OutboxRetentionDays < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
@@ -778,16 +781,16 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, fmt.Errorf("GOTCHA_NOTIFY_CONCURRENCY must be >= 1, got %d", cfg.NotifyConcurrency)
 	}
 	if cfg.ProfileEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL must be >= 1, got %d", cfg.ProfileEvalInterval)
+		return Config{}, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.ProfileEvalInterval)
 	}
 	if cfg.HostEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_HOST_EVAL_INTERVAL must be >= 1, got %d", cfg.HostEvalInterval)
+		return Config{}, fmt.Errorf("GOTCHA_HOST_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.HostEvalInterval)
 	}
 	if cfg.SLOEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_SLO_EVAL_INTERVAL must be >= 1, got %d", cfg.SLOEvalInterval)
+		return Config{}, fmt.Errorf("GOTCHA_SLO_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.SLOEvalInterval)
 	}
 	if cfg.EscalationInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_ESCALATION_INTERVAL must be >= 1, got %d", cfg.EscalationInterval)
+		return Config{}, fmt.Errorf("GOTCHA_ESCALATION_INTERVAL_SECONDS must be >= 1, got %d", cfg.EscalationInterval)
 	}
 	if cfg.DependencySettleSeconds < 0 {
 		return Config{}, fmt.Errorf("GOTCHA_DEPENDENCY_SETTLE_SECONDS must be >= 0, got %d", cfg.DependencySettleSeconds)
@@ -837,17 +840,17 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	if cfg.Mode == "probe" {
 		if cfg.ServerURL == "" {
-			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL is required with --mode=probe")
+			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL is required with --mode=probe")
 		}
 		// Схему и хост проверяем на старте: без них каждый тик пробы (раз в
 		// секунду, вечно) падал бы с "unsupported protocol scheme" — тихий
 		// бесконечный цикл ошибок вместо внятного отказа при запуске.
 		u, err := url.Parse(cfg.ServerURL)
 		if err != nil {
-			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL: %w", err)
+			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL: %w", err)
 		}
 		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return Config{}, fmt.Errorf("GOTCHA_SERVER_URL must be an absolute http(s) url, got %q", cfg.ServerURL)
+			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL must be an absolute http(s) url, got %q", cfg.ServerURL)
 		}
 		if cfg.ProbeToken == "" {
 			return Config{}, fmt.Errorf("GOTCHA_PROBE_TOKEN is required with --mode=probe")

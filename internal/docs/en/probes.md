@@ -20,13 +20,13 @@ The probe's token is shown **once**, right after creation, on the page itself �
 
 A probe needs no access to PostgreSQL or ClickHouse — only outbound HTTP(S) to the central server. Two environment variables are required:
 
-- `GOTCHA_SERVER_URL` — the central Gotcha server's base URL (the same value as `GOTCHA_BASE_URL` on the server), e.g. `https://gotcha.example.com`;
+- `GOTCHA_PROBE_SERVER_URL` — the central Gotcha server's base URL (the same value as `GOTCHA_BASE_URL` on the server), e.g. `https://gotcha.example.com`;
 - `GOTCHA_PROBE_TOKEN` — the token you got when registering the probe.
 
 Example run with Docker (this exact command, with your values filled in, is what the "Probes" page shows you after creating a probe):
 
 ```bash
-docker run -e GOTCHA_SERVER_URL=https://gotcha.example.com \
+docker run -e GOTCHA_PROBE_SERVER_URL=https://gotcha.example.com \
   -e GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
   <gotcha-image> --mode=probe
 ```
@@ -45,7 +45,7 @@ The probe machine does not have that image yet — copy it over (`docker save` /
 The same process can run without Docker, from a built `gotcha` binary:
 
 ```bash
-GOTCHA_SERVER_URL=https://gotcha.example.com \
+GOTCHA_PROBE_SERVER_URL=https://gotcha.example.com \
 GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
 ./gotcha --mode=probe
 ```
@@ -60,7 +60,7 @@ Once a probe has checked in at least once, its `Region` appears in the list of a
 
 ### What does a probe need to run?
 
-Only outbound HTTP(S) to the central Gotcha server and two environment variables — `GOTCHA_SERVER_URL` and `GOTCHA_PROBE_TOKEN`. No PostgreSQL or ClickHouse access, no inbound ports: the probe calls the server, never the other way around. That makes the cheapest VPS in the target region a perfectly good home for it.
+Only outbound HTTP(S) to the central Gotcha server and two environment variables — `GOTCHA_PROBE_SERVER_URL` and `GOTCHA_PROBE_TOKEN`. No PostgreSQL or ClickHouse access, no inbound ports: the probe calls the server, never the other way around. That makes the cheapest VPS in the target region a perfectly good home for it.
 
 ### I lost the probe token. How do I recover it?
 
@@ -76,7 +76,7 @@ The "Organization" → "Probes" page shows each probe's status: **online** with 
 
 ### The probe is running, but its region doesn't show up in the monitor form. Why?
 
-A region appears in the list only after the probe has checked in at least once. Check the probe's status on the "Probes" page: if it's **offline**, verify `GOTCHA_SERVER_URL` (it must match the server's `GOTCHA_BASE_URL` and be reachable from the probe machine) and the token.
+A region appears in the list only after the probe has checked in at least once. Check the probe's status on the "Probes" page: if it's **offline**, verify `GOTCHA_PROBE_SERVER_URL` (it must match the server's `GOTCHA_BASE_URL` and be reachable from the probe machine) and the token.
 
 ## What's next
 

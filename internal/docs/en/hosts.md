@@ -18,7 +18,7 @@ Run the command as a regular user with `sudo` rights, or as root. **Don't prefix
 
 What the command does:
 
-- downloads the agent binary and verifies its SHA-256 against `SHA256SUMS` — both files are served by the instance itself (`GOTCHA_AGENT_DIST_DIR`, see [Configuration](/docs/configuration)), so the agent needs no outbound internet access to install — this works in closed networks too; if the instance was built without a Docker image (e.g. a local `make go-build` without the image build), `/install.sh` answers `404` — the Docker build is what puts the agent binaries into the image (`GOTCHA_AGENT_DIST_DIR`);
+- downloads the agent binary and verifies its SHA-256 against `SHA256SUMS` — both files are served by the instance itself (`GOTCHA_DIST_DIR`, see [Configuration](/docs/configuration)), so the agent needs no outbound internet access to install — this works in closed networks too; if the instance was built without a Docker image (e.g. a local `make go-build` without the image build), `/install.sh` answers `404` — the Docker build is what puts the agent binaries into the image (`GOTCHA_DIST_DIR`);
 - creates a system user `gotcha-agent` (no home directory, no shell) and places the binary at `/usr/local/bin/gotcha-agent`;
 - writes the config to `/etc/gotcha-agent/gotcha-agent.env` (mode `0600`, readable only by root) and a systemd unit `gotcha-agent` (`User=gotcha-agent` — the process doesn't run as root);
 - enables and starts the service: `systemctl enable --now gotcha-agent`.
@@ -229,7 +229,7 @@ CPU utilization is deliberately left out of the built-in set: a brief spike to 1
 
 The minimum for the silence threshold (3 minutes) isn't an arbitrary number — it's the registration throttling interval (60 seconds, see below) tripled with margin, so that a live host with infrequent exports doesn't trip a false incident just because `last_seen` naturally lags a little.
 
-Incident evaluation (open/escalate/resolve) runs on a background loop every `GOTCHA_HOST_EVAL_INTERVAL` (60 seconds by default, minimum 1 second, see [Configuration](/docs/configuration)); notifications go out through the project's channels via the same shared mechanism as [Alerts](/docs/alerts), and further step-by-step escalation is configured on the [Escalations](/docs/escalations) page.
+Incident evaluation (open/escalate/resolve) runs on a background loop every `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` (60 seconds by default, minimum 1 second, see [Configuration](/docs/configuration)); notifications go out through the project's channels via the same shared mechanism as [Alerts](/docs/alerts), and further step-by-step escalation is configured on the [Escalations](/docs/escalations) page.
 
 A disabled threshold is not evaluated at all, so saving the settings also resolves its **already open** incidents right away: otherwise nothing could clear the red badge off the host — host incidents cannot be closed by hand. No notification is sent for such a resolve: the operator disabled the threshold themselves, and there is no news in reporting the consequence of their own action back to them.
 
@@ -256,7 +256,7 @@ Role outranks environment: if a host carries both labels and both have a group r
 
 Changing the scope (environment/role) or the label on save creates a separate rule — the original stays in place; delete it from the table to remove it.
 
-The effective value is the same one the background incident evaluator uses (`GOTCHA_HOST_EVAL_INTERVAL`) and the one shown in the UI with its source. An override that turns a kind off resolves the host's already-open incidents for that kind right away — the same rule, and the same lack of notification, as changing the project-wide settings (see above).
+The effective value is the same one the background incident evaluator uses (`GOTCHA_HOST_EVAL_INTERVAL_SECONDS`) and the one shown in the UI with its source. An override that turns a kind off resolves the host's already-open incidents for that kind right away — the same rule, and the same lack of notification, as changing the project-wide settings (see above).
 
 ## Notification privacy
 
@@ -321,4 +321,4 @@ The names `.` and `..` are never registered: a host card's address is `/projects
 - [Metrics](/docs/metrics) — the general OTLP metric ingest this section is built on.
 - [Cardinality](/docs/cardinality) — what happens when the distinct-value limit overflows.
 - [Alerts](/docs/alerts) — delivery channels for host incident notifications.
-- [Configuration](/docs/configuration) — instance environment variables, including `GOTCHA_HOST_EVAL_INTERVAL` and `GOTCHA_METRIC_RETENTION_DAYS`.
+- [Configuration](/docs/configuration) — instance environment variables, including `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` and `GOTCHA_METRIC_RETENTION_DAYS`.
