@@ -284,13 +284,26 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	publicKey := firstLiveKey(keys)
 
-	var dsn string
+	browserKey := liveKeyFor(keys, org.KindBrowser)
+	serverKey := liveKeyFor(keys, org.KindServer)
+
+	var browserDSN, serverDSN string
+	if browserKey != "" {
+		browserDSN = buildDSN(h.BaseURL, browserKey, projectID)
+	}
+	if serverKey != "" {
+		serverDSN = buildDSN(h.BaseURL, serverKey, projectID)
+	}
 	var snippets []templates.SetupSnippet
-	if publicKey != "" {
-		dsn = buildDSN(h.BaseURL, publicKey, projectID)
-		snippets = setupSnippets(project.Platform, dsn)
+	if browserDSN != "" || serverDSN != "" {
+		snippets = setupSnippets(project.Platform, browserDSN, serverDSN)
+	}
+	// Шапке страницы показываем DSN, соответствующий платформе проекта:
+	// «главного» DSN у проекта больше нет, каждый сниппет несёт свой.
+	dsn := serverDSN
+	if project.Platform == "javascript" {
+		dsn = browserDSN
 	}
 
 	_ = templates.ProjectSetup(project, dsn, snippets, h.currentEmail(r)).Render(r.Context(), w)
@@ -305,13 +318,29 @@ func findProject(projects []org.Project, id int64) (org.Project, bool) {
 	return org.Project{}, false
 }
 
-func firstLiveKey(keys []org.Key) string {
+// liveKeyFor — public_key живого ключа, которым следует пользоваться в
+// сценарии, требующем тип kind: первый живой ключ нужного типа → иначе первый
+// живой legacy → иначе "" (вызывающий показывает пустое состояние с кнопкой
+// «выпустить ключ»).
+//
+// Фолбэк на legacy даёт переход без простоя: проект, чьи ключи выпущены до
+// появления типов, продолжает видеть рабочий DSN на всех страницах. Ключ с
+// незаданным типом здесь считается legacy — это ровно то состояние, которое
+// оставляет дефолт столбца после вставки кодом, не знающим про типы.
+func liveKeyFor(keys []org.Key, kind org.KeyKind) string {
+	var legacy string
 	for _, k := range keys {
-		if !k.Revoked {
+		if k.Revoked {
+			continue
+		}
+		if k.Kind == kind {
 			return k.PublicKey
 		}
+		if (k.Kind == org.KindLegacy || k.Kind == "") && legacy == "" {
+			legacy = k.PublicKey
+		}
 	}
-	return ""
+	return legacy
 }
 
 // buildDSN собирает DSN проекта из BaseURL: {scheme}://{public_key}@{host}/{project_id}.
@@ -332,7 +361,13 @@ func buildDSN(baseURL, publicKey string, projectID int64) string {
 // подсовывается DSN проекта Gotcha. Раньше здесь были захардкожены три сниппета
 // с пакетами, которых не существует (gotcha-go, @gotcha/browser, Gotcha\init), и
 // без команд установки — новый пользователь упирался в 404 на первом же шаге.
-func setupSnippets(platform, dsn string) []templates.SetupSnippet {
+//
+// browserDSN и serverDSN разведены по языкам не для косметики: JS-сниппет
+// исполняется в браузере, то есть публикуется в коде страницы, — ему нужен
+// DSN с ключом browser, у которого нет прав, доступных серверному ключу.
+// Отдать серверный ключ в JS-сниппет значило бы опубликовать в вебе ключ с
+// более широким допуском, чем ему требуется.
+func setupSnippets(platform, browserDSN, serverDSN string) []templates.SetupSnippet {
 	all := map[string]templates.SetupSnippet{
 		"go": {
 			Lang:    "Go",
@@ -345,7 +380,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 				")\n\n" +
 				"func main() {\n" +
 				"\tif err := sentry.Init(sentry.ClientOptions{\n" +
-				"\t\tDsn:              \"" + dsn + "\",\n" +
+				"\t\tDsn:              \"" + serverDSN + "\",\n" +
 				"\t\tEnvironment:      \"production\",\n" +
 				"\t\tTracesSampleRate: 0.2,\n" +
 				"\t}); err != nil {\n" +
@@ -360,7 +395,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 			Code: "<?php\n" +
 				"require __DIR__ . '/vendor/autoload.php';\n\n" +
 				"\\Sentry\\init([\n" +
-				"    'dsn' => '" + dsn + "',\n" +
+				"    'dsn' => '" + serverDSN + "',\n" +
 				"    'environment' => getenv('APP_ENV') ?: 'production',\n" +
 				"    'traces_sample_rate' => 0.2,\n" +
 				"]);\n",
@@ -370,7 +405,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 			Install: "npm install @sentry/browser",
 			Code: "import * as Sentry from \"@sentry/browser\";\n\n" +
 				"Sentry.init({\n" +
-				"  dsn: \"" + dsn + "\",\n" +
+				"  dsn: \"" + browserDSN + "\",\n" +
 				"  environment: \"production\",\n" +
 				"  tracesSampleRate: 0.2,\n" +
 				"});\n",
@@ -380,7 +415,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 			Install: "pip install sentry-sdk",
 			Code: "import sentry_sdk\n\n" +
 				"sentry_sdk.init(\n" +
-				"    dsn=\"" + dsn + "\",\n" +
+				"    dsn=\"" + serverDSN + "\",\n" +
 				"    environment=\"production\",\n" +
 				"    traces_sample_rate=0.2,\n" +
 				")\n",

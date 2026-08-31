@@ -106,8 +106,9 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("keys for project: %v", err)
 	}
 	// Онбординг выпускает сразу три ключа — по одному на класс источника
-	// (browser/server/agent) — страница setup показывает DSN первого живого,
-	// то есть browser (см. firstLiveKey в onboarding.go).
+	// (browser/server/agent) — страница setup показывает DSN, подобранный по
+	// платформе проекта (см. liveKeyFor в onboarding.go); JS-сниппет на
+	// странице в любом случае несёт browser-DSN — его и сверяем ниже.
 	if len(keys) != 3 {
 		t.Fatalf("keys for project = %+v, want exactly three keys", keys)
 	}

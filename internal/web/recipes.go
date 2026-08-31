@@ -9,6 +9,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -99,8 +100,9 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // recipeDetailPage — GET /projects/{id}/recipes/{slug}: шаги подключения со
-// сниппетом конфига (ключ проекта — тем же путём KeysForProject→firstLiveKey,
-// что hostInstallBlocks; нет живого ключа → сниппет скрыт с подсказкой),
+// сниппетом конфига (ключ проекта — тем же путём KeysForProject→liveKeyFor,
+// что hostInstallBlocks, только с типом server; нет живого ключа → сниппет
+// скрыт с подсказкой),
 // статус данных, преднастроенные графики (только когда данные уже приходят —
 // до первого скрейпа блок из одних пустых карточек лишь загромождал бы
 // инструкцию подключения) и таблица рекомендованных порогов. Доступ — как у
@@ -172,17 +174,22 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	_ = templates.RecipeDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// recipeConfig — готовый сниппет коллектора с первым активным публичным
-// ключом проекта; "" — ключа нет или чтение ключей упало (страница не
-// падает, шаблон показывает подсказку «выпустите ключ» со ссылкой на
-// настройки) — ровно контракт hostInstallBlocks (hosts.go).
+// recipeConfig — готовый сниппет коллектора с ключом типа server проекта;
+// "" — ключа нет или чтение ключей упало (страница не падает, шаблон
+// показывает подсказку «выпустите ключ» со ссылкой на настройки) — тот же
+// контракт, что hostInstallBlocks (hosts.go).
+//
+// server, а не agent: сниппеты рецептов (registry.go) сознательно НЕ ставят
+// resourcedetection, хост не регистрируют и никогда не регистрировали (§7
+// дизайна). Выдать рецепту agent-ключ значило бы дать право регистрации
+// источнику, которому оно не нужно, — против самой цели типизации ключей.
 func (h *Handler) recipeConfig(ctx context.Context, projectID int64, rec recipes.Recipe) string {
 	keys, err := h.Org.KeysForProject(ctx, projectID)
 	if err != nil {
 		slog.Warn("recipes: cannot list project keys", "project_id", projectID, "error", err)
 		return ""
 	}
-	key := firstLiveKey(keys)
+	key := liveKeyFor(keys, org.KindServer)
 	if key == "" {
 		return ""
 	}

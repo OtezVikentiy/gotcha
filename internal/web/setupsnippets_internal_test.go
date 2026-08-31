@@ -4,7 +4,67 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
+
+// TestLiveKeyFor — правило выбора ключа для сценария (§7 спеки): первый живой
+// ключ нужного типа → иначе первый живой legacy → иначе пусто.
+//
+// Фолбэк на legacy — это и есть переход без простоя: проект, у которого типов
+// ещё нет, продолжает видеть рабочий DSN везде, где видел.
+func TestLiveKeyFor(t *testing.T) {
+	keys := []org.Key{
+		{ID: 1, PublicKey: "revoked-agent", Kind: org.KindAgent, Revoked: true},
+		{ID: 2, PublicKey: "legacy", Kind: org.KindLegacy},
+		{ID: 3, PublicKey: "browser", Kind: org.KindBrowser},
+		{ID: 4, PublicKey: "browser2", Kind: org.KindBrowser},
+	}
+	cases := []struct {
+		kind org.KeyKind
+		want string
+	}{
+		{org.KindBrowser, "browser"}, // первый живой нужного типа
+		{org.KindAgent, "legacy"},    // нужного типа живого нет → legacy
+		{org.KindServer, "legacy"},   // и здесь
+	}
+	for _, c := range cases {
+		if got := liveKeyFor(keys, c.kind); got != c.want {
+			t.Errorf("liveKeyFor(%q) = %q, ожидался %q", c.kind, got, c.want)
+		}
+	}
+	// Отозванный legacy не спасает: выдавать мёртвый ключ хуже, чем показать
+	// пустое состояние с кнопкой «создать».
+	dead := []org.Key{{ID: 1, PublicKey: "legacy", Kind: org.KindLegacy, Revoked: true}}
+	if got := liveKeyFor(dead, org.KindAgent); got != "" {
+		t.Errorf("liveKeyFor по отозванным = %q, ожидалась пустая строка", got)
+	}
+	// Ключ с незаданным типом трактуется как legacy: столбец с дефолтом
+	// legacy — то же самое состояние, что и строка, вставленная старым кодом.
+	untyped := []org.Key{{ID: 1, PublicKey: "old"}}
+	if got := liveKeyFor(untyped, org.KindServer); got != "old" {
+		t.Errorf("liveKeyFor по ключу без типа = %q, ожидался old", got)
+	}
+}
+
+// TestSetupSnippetsPerPlatformDSN — JS получает браузерный DSN, серверные
+// языки — серверный. Иначе онбординг сам учит ставить серверный ключ в
+// браузер.
+func TestSetupSnippetsPerPlatformDSN(t *testing.T) {
+	sn := setupSnippets("go", "dsn-browser", "dsn-server")
+	byLang := map[string]string{}
+	for _, s := range sn {
+		byLang[s.Lang] = s.Code
+	}
+	if !strings.Contains(byLang["JavaScript"], "dsn-browser") {
+		t.Error("JS-сниппет получил не браузерный DSN")
+	}
+	for _, lang := range []string{"Go", "PHP", "Python"} {
+		if !strings.Contains(byLang[lang], "dsn-server") {
+			t.Errorf("%s-сниппет получил не серверный DSN", lang)
+		}
+	}
+}
 
 // TestSetupSnippetsUseRealSDKs фиксирует блокер онбординга: страница подключения
 // раздавала сниппеты с пакетами, которых не существует
@@ -14,7 +74,7 @@ import (
 // протокола у Gotcha нет, ставится официальный Sentry SDK нужного языка.
 func TestSetupSnippetsUseRealSDKs(t *testing.T) {
 	const dsn = "https://pub@gotcha.example/7"
-	snips := setupSnippets("go", dsn)
+	snips := setupSnippets("go", dsn, dsn)
 
 	if len(snips) != 4 {
 		t.Fatalf("сниппетов %d, want 4 (go/php/javascript/python)", len(snips))
@@ -65,7 +125,7 @@ func TestSetupSnippetsPlatformFirst(t *testing.T) {
 		"javascript": "JavaScript",
 		"go":         "Go",
 	} {
-		snips := setupSnippets(platform, "dsn")
+		snips := setupSnippets(platform, "dsn", "dsn")
 		if len(snips) == 0 || snips[0].Lang != wantLang {
 			t.Errorf("платформа %q: первый сниппет %v, want %s", platform, snips[0].Lang, wantLang)
 		}
@@ -75,7 +135,7 @@ func TestSetupSnippetsPlatformFirst(t *testing.T) {
 	}
 
 	// Неизвестная платформа («other») — показываем все, без дублей.
-	snips := setupSnippets("other", "dsn")
+	snips := setupSnippets("other", "dsn", "dsn")
 	if len(snips) != 4 {
 		t.Fatalf("платформа other: сниппетов %d, want 4", len(snips))
 	}
@@ -94,7 +154,7 @@ func TestSetupSnippetsPlatformFirst(t *testing.T) {
 // "time", то есть выдавала заведомо несобирающийся код.
 func TestGoSnippetCompiles(t *testing.T) {
 	var code string
-	for _, sn := range setupSnippets("go", "https://pub@host/1") {
+	for _, sn := range setupSnippets("go", "https://pub@host/1", "https://pub@host/1") {
 		if sn.Lang == "Go" {
 			code = sn.Code
 		}

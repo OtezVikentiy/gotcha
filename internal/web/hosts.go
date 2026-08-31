@@ -20,6 +20,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -451,9 +452,11 @@ func collectorConfig(baseURL, key string) string {
 // hostInstallBlocks собирает обе готовые строки подключения хоста — команду
 // установки собственного Go-агента (путь по умолчанию, T14) и конфиг
 // коллектора otelcol-contrib (свёрнутая альтернатива) — по ОДНОМУ чтению
-// ключей проекта: обе строки делят один и тот же первый активный публичный
-// ключ (та же граница видимости, что у DSN на странице настройки проекта —
-// buildDSN/firstLiveKey, onboarding.go).
+// ключей проекта: обе строки делят один и тот же ключ типа agent
+// (liveKeyFor(keys, org.KindAgent), onboarding.go). Именно agent, а не
+// server: конфиг коллектора несёт процессор resourcedetection и тем самым
+// РЕГИСТРИРУЕТ хост (§7 дизайна) — это единственный тип, которому разрешена
+// регистрация.
 //
 // installCmd и config пусты одновременно, если в проекте нет ни одного
 // активного ключа, или чтение ключей провалилось (запасной путь — не
@@ -476,7 +479,7 @@ func (h *Handler) hostInstallBlocks(ctx context.Context, projectID int64) (insta
 	if err != nil {
 		return "", "", ""
 	}
-	key := firstLiveKey(keys)
+	key := liveKeyFor(keys, org.KindAgent)
 	if key == "" {
 		return "", "", ""
 	}
