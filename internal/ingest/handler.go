@@ -111,6 +111,16 @@ type Handler struct {
 	// устаревшем пути пишется один раз за жизнь процесса, а не на каждый запрос.
 	deprecatedLogged map[DeprecatedPath]*sync.Once
 
+	// hostScopeSkipped — сколько экспортов метрик пришло с host.*-атрибутами
+	// ключом, которому регистрация хоста не разрешена. Отдельный счётчик, а не
+	// метка существующих: gotcha_ingest_rejected_total считает ОТКАЗАННЫЕ
+	// запросы, а здесь запрос принят (метрики пишутся, не регистрируется
+	// только хост); а Toucher.RejectedNames означает «упёрлись в потолок
+	// хостов на проект» — слить их значило бы сделать две причины
+	// неразличимыми ровно тогда, когда дежурный выясняет, почему хост не
+	// появился.
+	hostScopeSkipped atomic.Int64
+
 	// rate — дешёвый per-DSN (по project id) токен-бакет ПЕРЕД quota-проверкой:
 	// срезает флуд с одного ключа до похода в PG (см. ratelimit.go). Задаётся в
 	// NewHandler дефолтом; заменяем на nil/свой через SetRateLimit для тестов и
@@ -620,7 +630,9 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer closeBody()
-	env, err := ParseEnvelope(body, h.maxBytes)
+	env, err := ParseEnvelope(body, h.maxBytes, func(s IngestSignal) bool {
+		return scopeAllows(key.Kind, s)
+	})
 	if err != nil {
 		status := http.StatusBadRequest
 		reason := RejectMalformed
@@ -643,6 +655,19 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			"limit", maxEnvelopeItems, "dropped", env.Dropped,
 			"project_id", projectID, "org_id", key.OrgID)
 		h.countDrop(r.Context(), dropEvent, key.OrgID, env.Dropped)
+	}
+	// Отказ по скоупу считается ОДИН РАЗ НА ЗАПРОС на каждый сигнал, у
+	// которого хоть один item отброшен, а не по разу на item:
+	// gotcha_ingest_rejected_total — метрика ОТКАЗАННЫХ ЗАПРОСОВ (см. докблок
+	// IngestRejectReason), и поштучный счёт сделал бы key_scope несравнимым с
+	// соседними причинами на дашборде. Детализация по сигналу при этом
+	// сохраняется: видно, ЧТО именно пытались слать не тем ключом.
+	//
+	// Логировать здесь не нужно: отказ по скоупу на самом маршруте уже пишет
+	// countKeyReject с путём, а поштучный отбор внутри принятого запроса —
+	// рутина браузерного SDK, который шлёт то, чего не умеет.
+	for signal := range env.ScopeRejected {
+		h.countRejected(RejectKeyScope, signal)
 	}
 
 	// Квоты списываются раздельно и только за те типы item'ов, которые в

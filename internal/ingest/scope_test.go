@@ -3,7 +3,10 @@ package ingest
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
@@ -195,4 +198,92 @@ func TestAuthenticateEmptyKindDenied(t *testing.T) {
 	if got := h.RejectedBy(RejectKeyScope, SignalMetric); got != 1 {
 		t.Fatalf("gotcha_ingest_rejected_total{key_scope,metric} = %d, ожидалась 1", got)
 	}
+}
+
+// TestEnvelopeBrowserProfileRejected — E2E по §9 спеки: envelope от
+// браузерного ключа с profile-item'ом. Событие принято (200), профиль
+// отброшен, счётчик (key_scope, profile) вырос на единицу.
+func TestEnvelopeBrowserProfileRejected(t *testing.T) {
+	fr := &fakeResolver{keys: map[string]org.Key{
+		"browserkey": {ID: 2, ProjectID: 7, OrgID: 3, PublicKey: "browserkey", Kind: org.KindBrowser},
+	}}
+	h := NewHandler(NewKeyCache(fr), nil, NewPipeline(nil, nil), 1<<20)
+	raw := strings.Join([]string{
+		`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`,
+		`{"type":"event"}`, `{"message":"e"}`,
+		`{"type":"profile"}`, `{"profile":"p"}`,
+		"",
+	}, "\n")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/7/envelope/?sentry_key=browserkey", strings.NewReader(raw))
+	req.SetPathValue("project", "7")
+
+	h.envelope(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("статус %d, ожидался 200; тело: %s", rec.Code, rec.Body.String())
+	}
+	if got := h.pipeline.Queued(); got != 1 {
+		t.Fatalf("событие не доехало до приёмника: очередь = %d, ожидалась 1", got)
+	}
+	if got := h.RejectedBy(RejectKeyScope, SignalProfile); got != 1 {
+		t.Fatalf("gotcha_ingest_rejected_total{key_scope,profile} = %d, ожидалась 1", got)
+	}
+	if got := h.RejectedBy(RejectKeyScope, SignalEvent); got != 0 {
+		t.Fatalf("gotcha_ingest_rejected_total{key_scope,event} = %d, ожидалась 0", got)
+	}
+}
+
+// TestOTLPMetricsHostScope — §4.3: экспорт метрик с host.name серверным
+// ключом. Метрики записаны (запрос принят), хост НЕ зарегистрирован,
+// gotcha_host_registrations_scope_skipped_total вырос, лога нет.
+//
+// Логировать эту ветку нельзя: серверные OTel SDK ставят host.name
+// resource-детектором по умолчанию, и каждый обычный экспорт давал бы строку
+// в лог.
+func TestOTLPMetricsHostScope(t *testing.T) {
+	t.Run("server", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindServer}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHost("web-1", "cpu"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if len(sink.points) != 1 {
+			t.Fatalf("точек записано = %d, want 1 (экспорт принят)", len(sink.points))
+		}
+		if got := hosts.get(1); len(got) != 0 {
+			t.Fatalf("Toucher не вызывался: получено %v", got)
+		}
+		if got := h.HostScopeSkipped(); got != 1 {
+			t.Fatalf("gotcha_host_registrations_scope_skipped_total = %d, ожидалась 1", got)
+		}
+	})
+
+	t.Run("agent", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindAgent}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHost("web-1", "cpu"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if got := hosts.get(1); len(got) != 1 || got[0] != "web-1" {
+			t.Fatalf("хост не зарегистрирован: %v, ожидался [web-1]", got)
+		}
+		if got := h.HostScopeSkipped(); got != 0 {
+			t.Fatalf("gotcha_host_registrations_scope_skipped_total = %d, ожидалась 0", got)
+		}
+	})
 }

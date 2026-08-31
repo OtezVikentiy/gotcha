@@ -287,6 +287,14 @@ appearing in the Hosts section: either the fleet really did reach the ceiling, o
 an identifier leaked into the host name (pods, autoscaling) and every instance
 registers as a separate machine.
 
+**`gotcha_host_registrations_scope_skipped_total`** — metric exports carrying
+`host.*` attributes from a key type that is not allowed to register hosts (only
+an `agent`-type key may). The export itself is accepted and its data points are
+written; only the host registration is skipped. A non-zero value on a `server`
+or `browser` key is expected and harmless — those SDKs commonly set `host.name`
+via a default resource detector — but a rising count on a key you expected to be
+an `agent` points at a misconfigured key type.
+
 **`gotcha_notify_queue_depth`** / **`gotcha_notify_queue_oldest_seconds`** —
 delivery queue depth and the age of the oldest waiting notification. The age
 matters more than the depth: it is the only number that tells "the queue is empty

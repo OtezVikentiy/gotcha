@@ -161,3 +161,6 @@ func (h *Handler) RejectedBy(reason IngestRejectReason, signal IngestSignal) int
 	}
 	return 0
 }
+
+// HostScopeSkipped — снимок счётчика gotcha_host_registrations_scope_skipped_total.
+func (h *Handler) HostScopeSkipped() int64 { return h.hostScopeSkipped.Load() }

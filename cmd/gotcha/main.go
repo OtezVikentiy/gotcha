@@ -1226,6 +1226,9 @@ func run() error {
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_host_registrations_rejected_total",
 			"New host names dropped because a project hit the per-project host ceiling.",
 			nil, hostToucher.RejectedNames)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_host_registrations_scope_skipped_total",
+			"Metric exports carrying host.* attributes from a key type that may not register hosts. The export is accepted; only host registration is skipped.",
+			nil, ingestHandler.HostScopeSkipped)
 		// Профили (этап 7): приёмник + отдельная квота профилей.
 		ingestHandler.Profiles = profileWriter
 		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)

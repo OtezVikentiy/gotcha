@@ -36,6 +36,7 @@ var wantSelfMetricNames = []string{
 	"gotcha_host_evaluator_tick_duration_seconds",
 	"gotcha_host_registration_failures_total",
 	"gotcha_host_registrations_rejected_total",
+	"gotcha_host_registrations_scope_skipped_total",
 	"gotcha_i18n_missing_key_total",
 	"gotcha_ingest_deprecated_path_total",
 	"gotcha_ingest_key_rejections_total",

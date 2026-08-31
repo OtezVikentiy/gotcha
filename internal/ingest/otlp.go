@@ -266,7 +266,15 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	// добиваемся, чтобы цикл записи (Task 3, ниже по функции) вызывал Value
 	// уже на ПРИНЯТОМ имени или на CardinalityOverflow — то есть строго по
 	// идемпотентным веткам.
-	if h.Hosts != nil {
+	switch {
+	case h.Hosts == nil:
+		// Реестр хостов не сконфигурирован — ветка не работает вовсе.
+	case !scopeAllowsHosts(key.Kind):
+		// Метрики принимаются, host.*-атрибуты игнорируются: регистрировать
+		// хост может только ключ типа agent (§4.3 спеки). Без лога — см.
+		// докблок hostScopeSkipped.
+		h.hostScopeSkipped.Add(1)
+	default:
 		// Версии агента — по СЫРЫМ (ещё не схлопнутым гардом) host.name, отдельным
 		// проходом по ресурсам батча: MapOTLP уплощает ResourceMetrics в плоский
 		// список точек и теряет границу resource (спека §3.2), а версия агента —
