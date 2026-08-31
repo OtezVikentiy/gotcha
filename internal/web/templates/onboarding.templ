@@ -78,14 +78,16 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, use
 		<div class="setup">
 			@breadcrumbBackTo(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title"))
 			<h1>{ project.Name }</h1>
-			if dsn == "" {
+			if len(snippets) == 0 {
 				<p class="error">{ i18n.T(ctx, "project.setup.no_key") }</p>
 			} else {
-				<section class="card">
-					<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
-					<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
-					<pre>{ dsn }</pre>
-				</section>
+				if dsn != "" {
+					<section class="card">
+						<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
+						<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
+						<pre>{ dsn }</pre>
+					</section>
+				}
 				<p class="hint">{ i18n.T(ctx, "project.setup.sdk_note") }</p>
 				for _, sn := range snippets {
 					<section class="panel">

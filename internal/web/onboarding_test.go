@@ -303,3 +303,93 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET %s (other user) status = %d, want 404", setupPath, resp.StatusCode)
 	}
 }
+
+// TestProjectSetupShowsSnippetsWithoutPlatformDSN — MAJOR из ревью задачи 5:
+// шапка страницы показывает DSN платформы проекта (browser для JS, server
+// для остальных), но видимость ВСЕГО блока сниппетов обязана идти по
+// наличию сниппетов, а не по этому одному DSN. У JS-проекта с отозванным
+// browser-ключом и живым server-ключом шапочный DSN пуст, но Go/PHP/Python
+// сниппеты валидны и обязаны быть на странице — старый гейт по dsn==""
+// прятал их вместе с пустым состоянием, хотя рабочий путь подключения есть.
+func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
+	s := newStack(t)
+	ctx := context.Background()
+
+	uid, cookie := orgSettingsRegister(t, s.h.Auth, "setup-fallback@example.com")
+	o, err := s.h.Org.CreateOrg(ctx, "setup-fb", "Setup FB", uid)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj", "JS Proj", "javascript")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	keys, err := s.h.Org.CreateKeys(ctx, project.ID, org.KindBrowser, org.KindServer)
+	if err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	var browserKeyID int64
+	var serverKey string
+	for _, k := range keys {
+		switch k.Kind {
+		case org.KindBrowser:
+			browserKeyID = k.ID
+		case org.KindServer:
+			serverKey = k.PublicKey
+		}
+	}
+	if browserKeyID == 0 || serverKey == "" {
+		t.Fatalf("keys = %+v, want один browser и один server", keys)
+	}
+	if err := s.h.Org.RevokeKey(ctx, browserKeyID); err != nil {
+		t.Fatalf("revoke browser key: %v", err)
+	}
+
+	setupPath := projectSetupPathForTest(project.ID)
+	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+setupPath, nil)
+	req.AddCookie(cookie)
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("get setup: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", setupPath, resp.StatusCode)
+	}
+	if strings.Contains(string(body), "нет активного ключа") {
+		t.Errorf("страница показывает пустое состояние, хотя server-ключ жив: %s", body)
+	}
+	wantServerDSN := "://" + serverKey + "@"
+	if !strings.Contains(string(body), wantServerDSN) {
+		t.Fatalf("GET %s body missing server DSN %q (Go/PHP/Python сниппеты должны остаться): %s", setupPath, wantServerDSN, body)
+	}
+
+	// Симметричный случай: живых ключей нет вовсе → честное пустое состояние.
+	project2, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj-empty", "JS Proj Empty", "javascript")
+	if err != nil {
+		t.Fatalf("create project 2: %v", err)
+	}
+	setupPath2 := projectSetupPathForTest(project2.ID)
+	req2, _ := http.NewRequest(http.MethodGet, s.srv.URL+setupPath2, nil)
+	req2.AddCookie(cookie)
+	resp2, err := noRedirectClient().Do(req2)
+	if err != nil {
+		t.Fatalf("get setup 2: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", setupPath2, resp2.StatusCode)
+	}
+	if !strings.Contains(string(body2), "нет активного ключа") {
+		t.Errorf("GET %s без ключей должен показывать пустое состояние: %s", setupPath2, body2)
+	}
+}
+
+// projectSetupPathForTest — тот же путь, что строит projectSetupPath
+// (onboarding.go), но функция неэкспортируема, а этот файл — package
+// web_test.
+func projectSetupPathForTest(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/setup"
+}

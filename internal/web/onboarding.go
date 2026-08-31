@@ -300,7 +300,11 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 		snippets = setupSnippets(project.Platform, browserDSN, serverDSN)
 	}
 	// Шапке страницы показываем DSN, соответствующий платформе проекта:
-	// «главного» DSN у проекта больше нет, каждый сниппет несёт свой.
+	// «главного» DSN у проекта больше нет, каждый сниппет несёт свой. dsn
+	// может быть пуст и при непустых snippets (например, у JS-проекта
+	// отозван браузерный ключ, а серверный жив) — гейт видимости всего блока
+	// в шаблоне идёт по len(snippets), а не по dsn, шапка в этом случае
+	// просто не рисуется.
 	dsn := serverDSN
 	if project.Platform == "javascript" {
 		dsn = browserDSN
