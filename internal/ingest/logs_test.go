@@ -70,7 +70,7 @@ func postNDJSON(t *testing.T, h *Handler, body string, gzipped bool) *httptest.R
 	} else {
 		buf.WriteString(body)
 	}
-	req := httptest.NewRequest("POST", "/logs", &buf)
+	req := httptest.NewRequest("POST", "/api/v1/logs", &buf)
 	req.Header.Set("Authorization", "Bearer pub")
 	if gzipped {
 		req.Header.Set("Content-Encoding", "gzip")
@@ -284,7 +284,7 @@ func TestNDJSONLogsBadBody(t *testing.T) {
 	h := newLogsTestHandler(sink)
 	before := h.RejectedBy(RejectMalformed, SignalLog)
 
-	req := httptest.NewRequest("POST", "/logs", strings.NewReader("не gzip"))
+	req := httptest.NewRequest("POST", "/api/v1/logs", strings.NewReader("не gzip"))
 	req.Header.Set("Authorization", "Bearer pub")
 	req.Header.Set("Content-Encoding", "gzip")
 	w := httptest.NewRecorder()

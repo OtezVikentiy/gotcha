@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -92,6 +93,15 @@ type Handler struct {
 	// причинам отказа сразу и с меткой вида телеметрии, которой у keyRejected
 	// нет.
 	rejected map[IngestRejectionKey]*atomic.Int64
+
+	// deprecated — попадания в старые пути приёма, оставленные алиасами до 1.0
+	// (см. deprecated.go). Отдельная карта от rejected: та про отказы, эта —
+	// про принятые запросы, пришедшие не туда, куда сегодня зовёт документация.
+	deprecated map[DeprecatedPath]*atomic.Int64
+
+	// deprecatedLogged — по одному sync.Once на путь: предупреждение об
+	// устаревшем пути пишется один раз за жизнь процесса, а не на каждый запрос.
+	deprecatedLogged map[DeprecatedPath]*sync.Once
 
 	// rate — дешёвый per-DSN (по project id) токен-бакет ПЕРЕД quota-проверкой:
 	// срезает флуд с одного ключа до похода в PG (см. ratelimit.go). Задаётся в
@@ -202,6 +212,9 @@ func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEvent
 		rate:        newRateLimiter(time.Now, defaultIngestRatePerSec, defaultIngestBurst),
 		keyRejected: newKeyRejectCounters(),
 		rejected:    newIngestRejectCounters(),
+
+		deprecated:       newDeprecatedCounters(),
+		deprecatedLogged: newDeprecatedLogOnce(),
 	}
 }
 
@@ -270,17 +283,30 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// metric_points (см. otlp.go otlpMetrics).
 	mux.HandleFunc("POST /v1/metrics", h.otlpMetrics)
 	// Профили pprof (этап 7): свой минимальный эндпоинт (стандарта пуша pprof
-	// нет), Bearer-DSN auth + метаданные из query.
-	mux.HandleFunc("POST /profiles/pprof", h.pprofIngest)
-	// Логи (C1) — OTLP-вход, четвёртая дверь в тот же ingest-mux (своя квота и
-	// своя таблица logs, см. logs.go otlpLogs), и NDJSON-вход для источников без
-	// OTLP-экспортёра (см. logsNDJSON).
+	// нет), Bearer-DSN auth + метаданные из query. Канон — собственный
+	// неймспейс /api/v1/*; корневой /profiles/pprof остаётся алиасом до 1.0.
+	mux.HandleFunc("POST /api/v1/profiles/pprof", h.pprofIngest)
+	mux.HandleFunc("POST /profiles/pprof", h.deprecatedAlias(DeprecatedProfilePprof, h.pprofIngest))
+	// Логи (C1) — OTLP-вход /v1/logs, четвёртая дверь в тот же ingest-mux (своя
+	// квота и своя таблица logs, см. logs.go otlpLogs), и NDJSON-вход для
+	// источников без OTLP-экспортёра (см. logsNDJSON). Это НЕ дубликат: два
+	// формата одного сигнала поверх общей аутентификации, лимитера и квоты.
+	// /v1/logs принадлежит стандарту OTLP и не переезжает никогда; NDJSON-вход
+	// наш, поэтому его канон — /api/v1/logs, а корневой /logs остаётся алиасом.
 	mux.HandleFunc("POST /v1/logs", h.otlpLogs)
-	mux.HandleFunc("POST /logs", h.logsNDJSON)
+	mux.HandleFunc("POST /api/v1/logs", h.logsNDJSON)
+	mux.HandleFunc("POST /logs", h.deprecatedAlias(DeprecatedLogs, h.logsNDJSON))
 	// Деплои (C5) — server-to-server вход из CI (не браузер), поэтому без CORS и
 	// preflight, в отличие от envelope/store: sentry_key передаётся заголовком
 	// или query, тело — JSON одного события выкладки (см. deployments.go).
-	mux.HandleFunc("POST /api/{project}/deployments/{$}", h.deploymentsIngest)
+	// ОБЕ формы канона регистрируются явно: на незарегистрированную форму
+	// ServeMux ответил бы 301, а клиенты приёма (CI-скрипты, curl без -L)
+	// редиректы на POST не следуют — это была бы тихая потеря маркеров.
+	// Каноном в документации объявлена форма без завершающего слэша.
+	mux.HandleFunc("POST /api/v1/{project}/deployments", h.deploymentsIngest)
+	mux.HandleFunc("POST /api/v1/{project}/deployments/{$}", h.deploymentsIngest)
+	mux.HandleFunc("POST /api/{project}/deployments/{$}",
+		h.deprecatedAlias(DeprecatedDeployments, h.deploymentsIngest))
 }
 
 // corsHeaders разрешает кросс-origin отправку телеметрии из браузера: DSN
