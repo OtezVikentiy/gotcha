@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of a single shared one.
 - A host now registers only through a key of type `agent`. Metrics exports
   with other key types are still accepted, but no longer register a host.
+- The single "project DSN" field in project settings is gone; each key's DSN
+  now shows in its own row of the keys table.
 
 ## [0.26.0] - 2026-08-31
 
