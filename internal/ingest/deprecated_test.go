@@ -147,7 +147,7 @@ func TestDeprecatedAliasPprof(t *testing.T) {
 // TestDeprecatedAliasDeployments — старый Sentry-образный путь деплоя остаётся
 // алиасом, а канон принимается в ОБЕИХ формах (со слэшем и без) и обе — без
 // заголовков устаревания. Обе формы регистрируются явно: на незарегистрированную
-// ServeMux ответил бы 301, а клиенты приёма (CI, curl без -L) редиректы на POST
+// ServeMux ответил бы 307, а клиенты приёма (CI, curl без -L) редиректы на POST
 // не следуют — это была бы тихая потеря маркеров.
 func TestDeprecatedAliasDeployments(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
@@ -226,5 +226,15 @@ func TestDeprecatedPathsIsCopy(t *testing.T) {
 	got[0] = "мусор"
 	if again := DeprecatedPaths(); again[0] == "мусор" {
 		t.Error("DeprecatedPaths вернул общий слайс, а не копию")
+	}
+}
+
+// TestDeprecatedPathHitsUnknownPath — путь вне закрытого набора: счётчика для
+// него нет, DeprecatedPathHits отдаёт 0 и не паникует (тот же контракт, что у
+// RejectedBy для пары вне набора, см. reject_test.go).
+func TestDeprecatedPathHitsUnknownPath(t *testing.T) {
+	h := newRejectHandler(1 << 20)
+	if got := h.DeprecatedPathHits(DeprecatedPath("/nowhere")); got != 0 {
+		t.Errorf("DeprecatedPathHits(/nowhere) = %d, want 0 (пути нет в наборе)", got)
 	}
 }

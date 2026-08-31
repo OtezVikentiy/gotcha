@@ -155,9 +155,10 @@ type Handler struct {
 	// (режимы без PG). *host.Toucher ему удовлетворяет.
 	Hosts HostRegistry
 
-	// Logs — приёмник логов (C1): /v1/logs (OTLP) и /logs (NDJSON) кладут
-	// распарсенные записи сюда (*log.Writer ему удовлетворяет). nil → логи
-	// выключены, эндпоинты отвечают успехом без записи (как Metrics nil).
+	// Logs — приёмник логов (C1): /v1/logs (OTLP) и /api/v1/logs (NDJSON, алиас
+	// /logs до 1.0) кладут распарсенные записи сюда (*log.Writer ему
+	// удовлетворяет). nil → логи выключены, эндпоинты отвечают успехом без
+	// записи (как Metrics nil).
 	Logs LogSink
 	// LogQuota — квота ЛОГОВ (log_quota против org_usage.logs_count),
 	// отдельный счётчик. nil → логи не квотируются.
