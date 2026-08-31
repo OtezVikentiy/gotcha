@@ -286,4 +286,32 @@ func TestOTLPMetricsHostScope(t *testing.T) {
 			t.Fatalf("gotcha_host_registrations_scope_skipped_total = %d, ожидалась 0", got)
 		}
 	})
+
+	// server/без host.* — штатный случай, ради которого server вообще
+	// допущен к metric: приложение шлёт метрики без резурсного host.name.
+	// Счётчик обязан остаться на нуле — иначе он растёт на каждый обычный
+	// экспорт и диагностика «неверный тип ключа» тонет в фоновом шуме.
+	t.Run("server без host.*", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindServer}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHost("", "requests"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if len(sink.points) != 1 {
+			t.Fatalf("точек записано = %d, want 1 (экспорт принят)", len(sink.points))
+		}
+		if got := hosts.get(1); len(got) != 0 {
+			t.Fatalf("Toucher не должен вызываться: получено %v", got)
+		}
+		if got := h.HostScopeSkipped(); got != 0 {
+			t.Fatalf("gotcha_host_registrations_scope_skipped_total = %d, ожидалась 0 (батч без host.*)", got)
+		}
+	})
 }
