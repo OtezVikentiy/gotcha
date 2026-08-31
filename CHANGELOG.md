@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-31
+
 ### Added
 - Ingest endpoints now live in gotcha's own `/api/v1/*` namespace:
   `POST /api/v1/logs` (NDJSON logs), `POST /api/v1/profiles/pprof` (pprof

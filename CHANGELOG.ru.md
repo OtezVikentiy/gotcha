@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-31
+
 ### Добавлено
 - Входы приёма переехали в собственный неймспейс gotcha `/api/v1/*`:
   `POST /api/v1/logs` (логи NDJSON), `POST /api/v1/profiles/pprof` (профили
