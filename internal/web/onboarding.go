@@ -348,8 +348,13 @@ func findProject(projects []org.Project, id int64) (org.Project, bool) {
 //
 // Фолбэк на legacy даёт переход без простоя: проект, чьи ключи выпущены до
 // появления типов, продолжает видеть рабочий DSN на всех страницах. Ключ с
-// незаданным типом здесь считается legacy — это ровно то состояние, которое
-// оставляет дефолт столбца после вставки кодом, не знающим про типы.
+// незаданным типом сюда НЕ попадает: приём (internal/ingest/scope.go)
+// трактует "" как отказ по всему — незаданный тип в матрице скоупа не
+// заведён вовсе, — и предложить пользователю DSN, который приём молча
+// отобьёт 403, хуже, чем показать пустое состояние. Сегодня недостижимо
+// (project_keys.kind — NOT NULL с CHECK, дефолт вставляет литерал 'legacy'),
+// правка — на случай, если ветка когда-нибудь станет достижимой (тестовый
+// или будущий конструктор, забывший проставить тип).
 func liveKeyFor(keys []org.Key, kind org.KeyKind) string {
 	var legacy string
 	for _, k := range keys {
@@ -359,7 +364,7 @@ func liveKeyFor(keys []org.Key, kind org.KeyKind) string {
 		if k.Kind == kind {
 			return k.PublicKey
 		}
-		if (k.Kind == org.KindLegacy || k.Kind == "") && legacy == "" {
+		if k.Kind == org.KindLegacy && legacy == "" {
 			legacy = k.PublicKey
 		}
 	}

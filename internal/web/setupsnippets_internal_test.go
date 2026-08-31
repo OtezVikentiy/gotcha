@@ -39,11 +39,12 @@ func TestLiveKeyFor(t *testing.T) {
 	if got := liveKeyFor(dead, org.KindAgent); got != "" {
 		t.Errorf("liveKeyFor по отозванным = %q, ожидалась пустая строка", got)
 	}
-	// Ключ с незаданным типом трактуется как legacy: столбец с дефолтом
-	// legacy — то же самое состояние, что и строка, вставленная старым кодом.
+	// Ключ с незаданным типом НЕ считается legacy и не отдаётся: приём
+	// трактует "" как отказ по всему (fail-closed, §3.1), и предложить DSN,
+	// который приём молча отобьёт 403, хуже пустого состояния.
 	untyped := []org.Key{{ID: 1, PublicKey: "old"}}
-	if got := liveKeyFor(untyped, org.KindServer); got != "old" {
-		t.Errorf("liveKeyFor по ключу без типа = %q, ожидался old", got)
+	if got := liveKeyFor(untyped, org.KindServer); got != "" {
+		t.Errorf("liveKeyFor по ключу без типа = %q, ожидалась пустая строка", got)
 	}
 }
 
