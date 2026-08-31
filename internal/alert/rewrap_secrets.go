@@ -66,6 +66,7 @@ func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 		batch = append(batch, c)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return 0, err
 	}
 	rows.Close()

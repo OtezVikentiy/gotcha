@@ -104,6 +104,10 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 	return nil
 }
 
+// rewrapLogCap — сколько нечитаемых значений заголовков бэкфилл логирует
+// подробно за один проход. Симметрично alert.rewrapLogCap/org.rewrapLogCap.
+const rewrapLogCap = 5
+
 // RewrapSecrets поднимает значения HTTP-заголовков мониторов kind=http до
 // конверта v2 ТЕКУЩЕГО ключа кольца. Заменяет EncryptLegacyHeaders (A2a):
 // тот дошифровывал только legacy plaintext, этот поднимает вообще всё
@@ -137,11 +141,12 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 // Не роняет старт: нерасшифруемое значение — slog.Error (id монитора и
 // причина; key-id конверта, если он был в форме, уже есть в тексте
 // secretbox.ErrOpen), проход продолжается. Подробный лог капируется первыми
-// пятью значениями на весь вызов — иначе массово провалившаяся ротация
-// топит итог в полотне на тысячу строк. Итог — одна slog.Info: сколько
-// обновлено, сколько пропущено как нечитаемые. Ошибка всего прохода (сам
-// SQL — Query/Scan/rows.Err) возвращается вызывающему; решение «не ронять
-// старт» принимает bootstrap, здесь только журналирование не задваивается.
+// rewrapLogCap значениями на весь вызов — иначе массово провалившаяся
+// ротация топит итог в полотне на тысячу строк. Итог — одна slog.Info:
+// сколько обновлено, сколько пропущено как нечитаемые. Ошибка всего прохода
+// (сам SQL — Query/Scan/rows.Err) возвращается вызывающему; решение «не
+// ронять старт» принимает bootstrap, здесь только журналирование не
+// задваивается.
 func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 	if !s.secretKeySet {
 		return 0, nil
@@ -176,7 +181,7 @@ func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 		next, changed, failures := rewrapHTTPHeaders(s.ring, c.cfg)
 		unreadable += len(failures)
 		for _, f := range failures {
-			if logged < 5 {
+			if logged < rewrapLogCap {
 				slog.Error("uptime: rewrap secrets: header value unreadable, left as is",
 					"monitor_id", c.id, "err", f)
 				logged++
