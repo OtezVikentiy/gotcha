@@ -94,6 +94,27 @@ func TestCreateKeysBatchKinds(t *testing.T) {
 		seen[k.PublicKey] = true
 	}
 
+	// Сопоставление id↔ключ не перепутано: RETURNING id мог бы прийти в
+	// порядке VALUES, а Scan — записать его не туда (например, в реверсе).
+	// Сверяем НАПРЯМУЮ с БД по каждому id, а не полагаемся на то, что
+	// PublicKey/Kind в keys[i] и так были выставлены до похода в БД.
+	for i, k := range keys {
+		var dbPublicKey, dbKind string
+		if err := pool.QueryRow(ctx,
+			"SELECT public_key, kind FROM project_keys WHERE id = $1", k.ID).
+			Scan(&dbPublicKey, &dbKind); err != nil {
+			t.Fatalf("ключ %d (id=%d): select из БД: %v", i, k.ID, err)
+		}
+		if dbPublicKey != k.PublicKey {
+			t.Errorf("ключ %d (id=%d): БД хранит public_key=%q, keys[%d].PublicKey=%q",
+				i, k.ID, dbPublicKey, i, k.PublicKey)
+		}
+		if org.KeyKind(dbKind) != k.Kind {
+			t.Errorf("ключ %d (id=%d): БД хранит kind=%q, keys[%d].Kind=%q",
+				i, k.ID, dbKind, i, k.Kind)
+		}
+	}
+
 	// Тип доезжает до горячего пути приёма: KeyByPublic его читает.
 	got, err := s.KeyByPublic(ctx, keys[2].PublicKey)
 	if err != nil {
@@ -111,6 +132,50 @@ func TestCreateKeysBatchKinds(t *testing.T) {
 	for _, k := range all {
 		if k.Kind == "" {
 			t.Fatalf("KeysForProject вернул ключ %d без kind", k.ID)
+		}
+	}
+}
+
+// TestCreateKeysTwoKinds — CreateKeys ровно с ДВУМЯ типами: нумерация
+// плейсхолдеров ($N) строится по факту накопленных args, и при числе ключей,
+// отличном от края (1 или 3), легко промахнуться на единицу.
+func TestCreateKeysTwoKinds(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	s := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "keys-two@example.com")
+	o, err := s.CreateOrg(ctx, "keystwo", "KeysTwo", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	p, err := s.CreateProject(ctx, o.ID, "api", "API", "go")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	keys, err := s.CreateKeys(ctx, p.ID, org.KindBrowser, org.KindAgent)
+	if err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("выпущено %d ключей, ожидалось 2", len(keys))
+	}
+	want := []org.KeyKind{org.KindBrowser, org.KindAgent}
+	for i, k := range keys {
+		if k.Kind != want[i] {
+			t.Errorf("ключ %d: kind=%q, ожидался %q", i, k.Kind, want[i])
+		}
+		var dbPublicKey, dbKind string
+		if err := pool.QueryRow(ctx,
+			"SELECT public_key, kind FROM project_keys WHERE id = $1", k.ID).
+			Scan(&dbPublicKey, &dbKind); err != nil {
+			t.Fatalf("ключ %d (id=%d): select из БД: %v", i, k.ID, err)
+		}
+		if dbPublicKey != k.PublicKey || org.KeyKind(dbKind) != k.Kind {
+			t.Errorf("ключ %d (id=%d): БД хранит (%q,%q), keys[%d]=(%q,%q)",
+				i, k.ID, dbPublicKey, dbKind, i, k.PublicKey, k.Kind)
 		}
 	}
 }
