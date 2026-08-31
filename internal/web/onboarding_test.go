@@ -385,6 +385,54 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	if !strings.Contains(string(body2), "нет активного ключа") {
 		t.Errorf("GET %s без ключей должен показывать пустое состояние: %s", setupPath2, body2)
 	}
+
+	// Зеркальный случай: серверная платформа (go), отозван server-ключ,
+	// browser жив — шапочный DSN пуст (для go он берётся из server), но
+	// JS-сниппет с рабочим browser-DSN обязан остаться на странице.
+	project3, err := s.h.Org.CreateProject(ctx, o.ID, "go-proj", "Go Proj", "go")
+	if err != nil {
+		t.Fatalf("create project 3: %v", err)
+	}
+	keys3, err := s.h.Org.CreateKeys(ctx, project3.ID, org.KindBrowser, org.KindServer)
+	if err != nil {
+		t.Fatalf("create keys 3: %v", err)
+	}
+	var serverKeyID3 int64
+	var browserKey3 string
+	for _, k := range keys3 {
+		switch k.Kind {
+		case org.KindServer:
+			serverKeyID3 = k.ID
+		case org.KindBrowser:
+			browserKey3 = k.PublicKey
+		}
+	}
+	if serverKeyID3 == 0 || browserKey3 == "" {
+		t.Fatalf("keys3 = %+v, want один browser и один server", keys3)
+	}
+	if err := s.h.Org.RevokeKey(ctx, serverKeyID3); err != nil {
+		t.Fatalf("revoke server key: %v", err)
+	}
+
+	setupPath3 := projectSetupPathForTest(project3.ID)
+	req3, _ := http.NewRequest(http.MethodGet, s.srv.URL+setupPath3, nil)
+	req3.AddCookie(cookie)
+	resp3, err := noRedirectClient().Do(req3)
+	if err != nil {
+		t.Fatalf("get setup 3: %v", err)
+	}
+	body3, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", setupPath3, resp3.StatusCode)
+	}
+	if strings.Contains(string(body3), "нет активного ключа") {
+		t.Errorf("страница показывает пустое состояние, хотя browser-ключ жив: %s", body3)
+	}
+	wantBrowserDSN := "://" + browserKey3 + "@"
+	if !strings.Contains(string(body3), wantBrowserDSN) {
+		t.Fatalf("GET %s body missing browser DSN %q (JS-сниппет должен остаться): %s", setupPath3, wantBrowserDSN, body3)
+	}
 }
 
 // projectSetupPathForTest — тот же путь, что строит projectSetupPath

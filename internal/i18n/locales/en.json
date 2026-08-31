@@ -1391,7 +1391,7 @@
     "org.gdpr.purge.inert": "This instance scrubs email and IP on ingest, so searching by them will match nothing. Use user_id instead.",
     "org.gdpr.purge.inert_email": "This instance scrubs email on ingest, so searching by it will match nothing. Use user_id instead.",
     "org.gdpr.purge.inert_ip": "This instance scrubs IP on ingest, so searching by it will match nothing. Use user_id instead.",
-    "project.setup.sdk_note": "Gotcha has no SDK of its own: it accepts data over the Sentry ingest protocol. Install the official Sentry SDK for your language and point it at the DSN above.",
+    "project.setup.sdk_note": "Gotcha has no SDK of its own: it accepts data over the Sentry ingest protocol. Install the official Sentry SDK for your language — the project DSN is already filled in below.",
     "project.setup.install": "Install:",
     "project.setup.init": "Initialize:",
     "confirm.monitor_delete.message": "Delete this monitor? Its incidents and check history go with it. This cannot be undone.",
