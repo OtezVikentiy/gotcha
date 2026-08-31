@@ -201,7 +201,7 @@ OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf
 OTEL_EXPORTER_OTLP_LOGS_HEADERS=Authorization=Bearer%20a1b2c3d4e5f6
 ```
 
-### NDJSON: `POST /logs`
+### NDJSON: `POST /api/v1/logs`
 
 Более простой путь для источников без OTel-экспортёра — произвольный скрипт,
 агент сбора логов, ручной `curl`. Тело — newline-delimited JSON: одна запись
@@ -225,7 +225,7 @@ NDJSON-записи не несут ресурсных атрибутов — п
 Пример:
 
 ```bash
-curl -X POST https://gotcha.example.com/logs \
+curl -X POST https://gotcha.example.com/api/v1/logs \
   -H "Authorization: Bearer a1b2c3d4e5f6" \
   --data-binary $'{"message":"payment failed: gateway timeout","level":"error","attributes":{"order_id":42}}\n{"message":"retrying in 5s","level":"info"}\n'
 ```
@@ -235,6 +235,15 @@ curl -X POST https://gotcha.example.com/logs \
 строк в теле, если часть отклонена по квоте — см. ниже). Строка, которая не
 разбирается как JSON, или пустой `message` — строка молча пропускается и не
 входит в `N`, но не роняет остальной батч.
+
+> **Переход с `/logs`.** Раньше NDJSON-вход жил в корне, по адресу
+> `POST /logs`. Этот путь продолжает работать и ведёт себя точно так же — та же
+> аутентификация, тот же лимит частоты, та же квота, — но объявлен устаревшим:
+> ответы на нём несут заголовки `Deprecation` и `Link; rel="deprecation"`, и в
+> 1.0 он будет удалён. Переведите отправителей на `/api/v1/logs`. Если вы
+> держите gotcha сами, счётчик
+> `gotcha_ingest_deprecated_path_total{path="/logs"}` покажет, ходит ли кто-то
+> ещё по старому пути.
 
 ## Что канонизируется в severity
 
@@ -288,4 +297,4 @@ UI и правила алертинга (когда появятся) работ
 месячную квоту организации: лимит по умолчанию — `GOTCHA_DEFAULT_LOG_QUOTA`,
 тонко настраивается в «Настройках организации → Использование и лимиты» (см.
 [Конфигурацию](/docs/configuration)). При исчерпании квоты `/v1/logs` и
-`/logs` отвечают `429`, уже принятые записи не удаляются.
+`/api/v1/logs` отвечают `429`, уже принятые записи не удаляются.

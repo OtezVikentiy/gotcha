@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Ingest endpoints now live in gotcha's own `/api/v1/*` namespace:
+  `POST /api/v1/logs` (NDJSON logs), `POST /api/v1/profiles/pprof` (pprof
+  profiles) and `POST /api/v1/{project}/deployments` (deploy markers). The
+  deploy path accepts both forms, with and without a trailing slash. The OTLP
+  endpoints (`/v1/traces`, `/v1/metrics`, `/v1/logs`) and the Sentry-compatible
+  ones (`/api/{project}/envelope|store`) are unchanged — their paths belong to
+  those standards, not to us.
+- `gotcha_ingest_deprecated_path_total{path="…"}` self-metric, counting requests
+  that still arrive on a deprecated ingest path. **Temporary by design:** it is
+  removed in 1.0 together with the deprecated paths, so do not build long-lived
+  dashboards on it. See /docs/self-monitoring.
+
+### Deprecated
+- `POST /logs`, `POST /profiles/pprof` and `POST /api/{project}/deployments/`
+  are deprecated in favour of their `/api/v1/*` equivalents above. They keep
+  working exactly as before — same authentication, rate limiting and quotas —
+  and responses now carry `Deprecation` and `Link; rel="deprecation"` headers.
+  **They will be removed in 1.0.** Point your senders at the new paths; the
+  `gotcha_ingest_deprecated_path_total` counter above tells you whether anything
+  still uses the old ones.
+
 ## [0.25.0] - 2026-08-31
 
 ### Added

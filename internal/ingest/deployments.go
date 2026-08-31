@@ -12,7 +12,7 @@ import (
 )
 
 // deploymentsIngest принимает событие выкладки из CI: POST
-// /api/{project}/deployments/ с sentry_key-авторизацией и телом-JSON одного
+// /api/v1/{project}/deployments с sentry_key-авторизацией и телом-JSON одного
 // деплоя. Записывает в реестр деплоев (h.Deploy) и отвечает {id}. Аутентификация
 // та же, что у envelope/store (project id из пути + public key), но вход
 // server-to-server, поэтому без CORS.

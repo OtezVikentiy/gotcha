@@ -40,7 +40,7 @@ func newRejectHandler(maxBytes int64) *Handler {
 }
 
 func pprofRequest(body io.Reader, contentEncoding string) *http.Request {
-	req := httptest.NewRequest("POST", "/profiles/pprof", body)
+	req := httptest.NewRequest("POST", "/api/v1/profiles/pprof", body)
 	req.Header.Set("Authorization", "Bearer pub")
 	if contentEncoding != "" {
 		req.Header.Set("Content-Encoding", contentEncoding)
@@ -105,7 +105,7 @@ func TestIngestRejectionPairsContract(t *testing.T) {
 	}
 }
 
-// TestPprofRejectCounters — каждый отказ /profiles/pprof виден
+// TestPprofRejectCounters — каждый отказ /api/v1/profiles/pprof виден
 // gotcha_ingest_rejected_total с ПРАВИЛЬНОЙ причиной: дежурный обязан
 // отличать «клиента троттлит» от «квота исчерпана» и «тело битое» от «тело
 // слишком большое», а не видеть один общий рост 4xx.
@@ -377,14 +377,14 @@ func TestOTLPLogsRejectCounters(t *testing.T) {
 	})
 }
 
-// TestNDJSONLogsRejectCounters — отказы /logs (NDJSON) с правильными причинами.
+// TestNDJSONLogsRejectCounters — отказы /api/v1/logs (NDJSON) с правильными причинами.
 func TestNDJSONLogsRejectCounters(t *testing.T) {
 	t.Run("missing-bearer", func(t *testing.T) {
 		h := newRejectHandler(1 << 20)
 		h.Logs = &collectLogSink{}
 
 		before := h.RejectedBy(RejectKeyUnknown, SignalLog)
-		req := httptest.NewRequest("POST", "/logs", strings.NewReader(`{"message":"hi"}`+"\n"))
+		req := httptest.NewRequest("POST", "/api/v1/logs", strings.NewReader(`{"message":"hi"}`+"\n"))
 		w := httptest.NewRecorder()
 		h.logsNDJSON(w, req)
 		if w.Code != http.StatusUnauthorized {
@@ -428,7 +428,7 @@ func TestNDJSONLogsRejectCounters(t *testing.T) {
 
 		beforeBad := h.RejectedBy(RejectMalformed, SignalLog)
 		beforeLarge := h.RejectedBy(RejectTooLarge, SignalLog)
-		req := httptest.NewRequest("POST", "/logs", errReader{})
+		req := httptest.NewRequest("POST", "/api/v1/logs", errReader{})
 		req.Header.Set("Authorization", "Bearer pub")
 		w := httptest.NewRecorder()
 		h.logsNDJSON(w, req)

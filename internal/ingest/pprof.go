@@ -10,7 +10,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
-// pprofIngest — POST /profiles/pprof: приём pprof-профиля (gzip-protobuf) с
+// pprofIngest — POST /api/v1/profiles/pprof: приём pprof-профиля (gzip-protobuf) с
 // Bearer-DSN аутентификацией и метаданными из query (service/transaction/
 // environment/type). Профили выключены (h.Profiles==nil) → 202 без записи.
 func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {

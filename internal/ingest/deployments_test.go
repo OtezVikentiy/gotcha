@@ -85,11 +85,11 @@ func newIngestTestWithDeploy(t *testing.T) (h *Handler, projectID int64) {
 	return h, projectID
 }
 
-// postDeploy шлёт POST /api/{project}/deployments/ с sentry_key и телом body.
+// postDeploy шлёт POST /api/v1/{project}/deployments с sentry_key и телом body.
 func postDeploy(t *testing.T, h *Handler, projectID int64, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST",
-		"/api/"+strconv.FormatInt(projectID, 10)+"/deployments/?sentry_key=deadbeef", strings.NewReader(body))
+		"/api/v1/"+strconv.FormatInt(projectID, 10)+"/deployments?sentry_key=deadbeef", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -219,11 +219,11 @@ func TestIngestDeploymentRateLimited(t *testing.T) {
 	}
 }
 
-// deployRequest — POST /api/{project}/deployments/ с произвольными заголовками
+// deployRequest — POST /api/v1/{project}/deployments с произвольными заголовками
 // и (опционально) без sentry_key: postDeploy ключ подставляет всегда, а ветки
 // отказа по ключу и по кодировке тела иначе недостижимы.
 func deployRequest(h *Handler, projectID int64, body string, withKey bool, contentEncoding string) *httptest.ResponseRecorder {
-	url := "/api/" + strconv.FormatInt(projectID, 10) + "/deployments/"
+	url := "/api/v1/" + strconv.FormatInt(projectID, 10) + "/deployments"
 	if withKey {
 		url += "?sentry_key=deadbeef"
 	}

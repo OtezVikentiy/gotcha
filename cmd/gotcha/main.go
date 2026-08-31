@@ -1103,13 +1103,13 @@ func run() error {
 		go metricWriter.Run()
 
 		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и
-		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
+		// pprof из /api/v1/profiles/pprof пишутся в profile_samples своим батчером.
 		profileWriter = profile.NewWriter(ch)
 		profileWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
-		// Логи (C1) — пятый приёмник: OTLP /v1/logs и NDJSON /logs пишут в
+		// Логи (C1) — пятый приёмник: OTLP /v1/logs и NDJSON /api/v1/logs пишут в
 		// logs своим батчером, тем же паттерном, что метрики и профили выше.
 		logWriter = log.NewWriter(ch)
 		logWriter.SetMaxBufferBytes(maxBufBytes)
@@ -1261,6 +1261,24 @@ func run() error {
 				"Ingest requests rejected, by broad reason and telemetry signal. reason=\"key_revoked\" is reserved for future use (see ingest.IngestRejectReason) and never appears here today.",
 				map[string]string{"reason": string(p.Reason), "signal": string(p.Signal)},
 				func() int64 { return ingestHandler.RejectedBy(p.Reason, p.Signal) })
+		}
+		// E1: три собственных входа приёма переехали в /api/v1/*, старые пути
+		// оставлены алиасами до 1.0 (см. ingest.DeprecatedPath). Счётчик отвечает
+		// на единственный вопрос — какой из удаляемых путей ещё принимает трафик,
+		// — чтобы проверка перед удалением алиасов была механической, а не
+		// «вроде все переехали». Метка path, а не signal: вопрос про ПУТЬ, и
+		// ответ на него не должен требовать похода в доку за соответствием
+		// «сигнал → путь».
+		//
+		// Метрика ВРЕМЕННАЯ: она исчезает вместе с алиасами в 1.0. Это сказано
+		// и в /docs/self-monitoring обеих локалей, и в CHANGELOG — вводить имя
+		// self-метрики молча и удалять его через релиз значило бы сломать
+		// контракт наблюдаемости, который мы сами же и заморозили.
+		for _, p := range ingest.DeprecatedPaths() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_deprecated_path_total",
+				"Requests that arrived on a deprecated ingest path, kept working as an alias until 1.0. TEMPORARY: this metric is removed together with the aliases.",
+				map[string]string{"path": string(p)},
+				func() int64 { return ingestHandler.DeprecatedPathHits(p) })
 		}
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех

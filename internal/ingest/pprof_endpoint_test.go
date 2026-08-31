@@ -28,7 +28,7 @@ func pprofBody(t *testing.T) []byte {
 
 func (s *stack) postPprof(t *testing.T, body []byte, query, bearer string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest("POST", s.srv.URL+"/profiles/pprof"+query, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", s.srv.URL+"/api/v1/profiles/pprof"+query, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}

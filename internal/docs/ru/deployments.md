@@ -25,7 +25,7 @@
 Сообщите о деплое одним HTTP-запросом в конце job'а выкладки.
 
 ```
-POST https://<адрес-gotcha>/api/<PROJECT_ID>/deployments/
+POST https://<адрес-gotcha>/api/v1/<PROJECT_ID>/deployments
 ```
 
 ### Аутентификация
@@ -38,7 +38,7 @@ DSN — см. [SDK и интеграции](/docs/sdk).
 Ключ передаётся либо query-параметром:
 
 ```
-POST https://<адрес-gotcha>/api/<PROJECT_ID>/deployments/?sentry_key=<PUBLIC_KEY>
+POST https://<адрес-gotcha>/api/v1/<PROJECT_ID>/deployments?sentry_key=<PUBLIC_KEY>
 ```
 
 либо заголовком протокола Sentry:
@@ -78,7 +78,7 @@ X-Sentry-Auth: Sentry sentry_key=<PUBLIC_KEY>
 - name: Notify Gotcha of the deployment
   run: |
     curl -sf -X POST \
-      "https://gotcha.example.com/api/${{ secrets.GOTCHA_PROJECT_ID }}/deployments/?sentry_key=${{ secrets.GOTCHA_PUBLIC_KEY }}" \
+      "https://gotcha.example.com/api/v1/${{ secrets.GOTCHA_PROJECT_ID }}/deployments?sentry_key=${{ secrets.GOTCHA_PUBLIC_KEY }}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg v "${{ github.ref_name }}" \
@@ -99,10 +99,20 @@ notify-gotcha:
   script:
     - |
       curl -sf -X POST \
-        "https://gotcha.example.com/api/${GOTCHA_PROJECT_ID}/deployments/?sentry_key=${GOTCHA_PUBLIC_KEY}" \
+        "https://gotcha.example.com/api/v1/${GOTCHA_PROJECT_ID}/deployments?sentry_key=${GOTCHA_PUBLIC_KEY}" \
         -H "Content-Type: application/json" \
         -d "{\"version\":\"${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}\",\"environment\":\"prod\",\"url\":\"${CI_PIPELINE_URL}\",\"changelog\":\"${CI_COMMIT_TITLE}\"}"
 ```
+
+> **Переход с `/api/<PROJECT_ID>/deployments/`.** Раньше приём деплоев жил по
+> адресу `/api/<PROJECT_ID>/deployments/`. Этот путь продолжает работать и
+> ведёт себя точно так же — та же аутентификация, тот же лимит частоты, та же
+> квота, — но объявлен устаревшим: ответы на нём несут заголовки
+> `Deprecation` и `Link; rel="deprecation"`, и в 1.0 он будет удалён.
+> Переведите CI на `/api/v1/<PROJECT_ID>/deployments`. Если вы держите gotcha
+> сами, счётчик
+> `gotcha_ingest_deprecated_path_total{path="/api/{project}/deployments/"}`
+> покажет, ходит ли кто-то ещё по старому пути.
 
 ## Где видны маркеры
 

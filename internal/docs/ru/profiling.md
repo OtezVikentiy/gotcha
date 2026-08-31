@@ -15,7 +15,7 @@ Gotcha принимает профили двумя разными путями.
 Для Go-приложений (например, через встроенный `net/http/pprof`) или любого инструмента continuous profiling, который умеет отдавать стандартный формат Go pprof, есть отдельный эндпойнт приёма:
 
 ```
-POST /profiles/pprof?service=<имя_сервиса>&type=<sample_type>&environment=<окружение>&transaction=<транзакция>
+POST /api/v1/profiles/pprof?service=<имя_сервиса>&type=<sample_type>&environment=<окружение>&transaction=<транзакция>
 Authorization: Bearer <публичный ключ DSN>
 ```
 
@@ -30,12 +30,21 @@ Authorization: Bearer <публичный ключ DSN>
 ```bash
 curl -s "http://localhost:6060/debug/pprof/profile?seconds=10" -o cpu.pprof
 gzip -c cpu.pprof | curl -X POST \
-  "https://<адрес_gotcha>/profiles/pprof?service=my-service&type=cpu&environment=production" \
+  "https://<адрес_gotcha>/api/v1/profiles/pprof?service=my-service&type=cpu&environment=production" \
   -H "Authorization: Bearer <публичный_ключ_DSN>" \
   --data-binary @-
 ```
 
 Успешный приём отвечает `202 Accepted`. Если профили выключены на инстансе, запись молча пропускается, но ответ всё равно `202`. Если квота организации на профили исчерпана, приём отвечает `429`.
+
+> **Переход с `/profiles/pprof`.** Раньше приём pprof-профилей жил в корне,
+> по адресу `POST /profiles/pprof`. Этот путь продолжает работать и ведёт себя
+> точно так же — та же аутентификация, тот же лимит частоты, та же квота, — но
+> объявлен устаревшим: ответы на нём несут заголовки `Deprecation` и
+> `Link; rel="deprecation"`, и в 1.0 он будет удалён. Переведите отправителей
+> на `/api/v1/profiles/pprof`. Если вы держите gotcha сами, счётчик
+> `gotcha_ingest_deprecated_path_total{path="/profiles/pprof"}` покажет,
+> ходит ли кто-то ещё по старому пути.
 
 ## Список профилей
 

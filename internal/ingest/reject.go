@@ -7,9 +7,9 @@ import "sync/atomic"
 // телеметрии. gotcha_ingest_key_rejections_total{reason} (см.
 // KeyRejectReason) уже даёт точную причину отказа по ключу, но не говорит,
 // какой вход отбивало (событие? лог? метрика?) — приёмник отвечает по-своему
-// на каждый из шести входов (envelope/store, /v1/traces, /v1/metrics,
-// /v1/logs, /logs, /profiles/pprof, /api/{project}/deployments/), и раньше
-// частота отказа по rate-limit/квоте/размеру тела не была видна нигде вовсе
+// на каждый из семи входов (envelope/store, /v1/traces, /v1/metrics,
+// /v1/logs, /api/v1/logs, /api/v1/profiles/pprof, /api/v1/{project}/deployments),
+// и раньше частота отказа по rate-limit/квоте/размеру тела не была видна нигде вовсе
 // (J3): дежурный видел только рост 429/413/400 в логе реверс-прокси, без
 // возможности отличить "клиента троттлит" от "организация исчерпала квоту".
 //
