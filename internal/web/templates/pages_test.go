@@ -492,13 +492,18 @@ func TestProbes(t *testing.T) {
 }
 
 // TestProjectSettings — настройки проекта с ключами (активный/отозванный,
-// типизированный и legacy), формами perf/регрессий и собственным DSN
-// каждого ключа.
+// типизированный, legacy и без типа вовсе), формами perf/регрессий и
+// собственным DSN каждого ключа.
 func TestProjectSettings(t *testing.T) {
 	project := org.Project{ID: 7, OrgID: 1, Slug: "web", Name: "Web", Platform: "go"}
 	keys := []ProjectKeyView{
 		{Key: org.Key{ID: 1, PublicKey: "pk_live", Kind: org.KindServer, Revoked: false}, DSN: "https://pk_live@dsn"},
 		{Key: org.Key{ID: 2, PublicKey: "pk_old", Kind: org.KindLegacy, Revoked: true}, DSN: "https://pk_old@dsn"},
+		// Kind == "" — строка, вставленная кодом, не знающим о типах (до
+		// миграции 0088 столбец не существовал вовсе); keyKindLabelKey
+		// обязана показать её как «без типа», как и явный KindLegacy, а не
+		// пустым/сломанным бейджем.
+		{Key: org.Key{ID: 3, PublicKey: "pk_untyped", Kind: "", Revoked: false}, DSN: "https://pk_untyped@dsn"},
 	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
 	reg := RegressionSettingsForm{ThresholdPct: "20", RecoveryPct: "10", WindowMinutes: "60", MinSamples: "100", Enabled: true}
@@ -514,6 +519,28 @@ func TestProjectSettings(t *testing.T) {
 	}
 	if !strings.Contains(out, "/docs/keys") {
 		t.Error("legacy-ключ должен показывать ссылку на /docs/keys")
+	}
+	if !strings.Contains(out, "https://pk_untyped@dsn") {
+		t.Error("ключ с Kind==\"\" должен показывать собственный DSN")
+	}
+	// Строка конкретно ЭТОГО ключа (а не любая другая с badge-warn — legacy
+	// pk_old его тоже несёт) обязана получить предупреждающий бейдж и
+	// подпись «без типа».
+	if idx := strings.Index(out, "pk_untyped"); idx == -1 {
+		t.Error("ключ с Kind==\"\" не найден в выводе")
+	} else {
+		rowStart := strings.LastIndex(out[:idx], "<tr>")
+		rowEnd := strings.Index(out[idx:], "</tr>")
+		if rowStart == -1 || rowEnd == -1 {
+			t.Fatalf("malformed row for pk_untyped: %s", out)
+		}
+		row := out[rowStart : idx+rowEnd+len("</tr>")]
+		if !strings.Contains(row, "badge-warn") {
+			t.Error("ключ с Kind==\"\" должен получить предупреждающий бейдж legacy, а не обычный")
+		}
+		if !strings.Contains(row, "/docs/keys") {
+			t.Error("ключ с Kind==\"\" должен показывать ссылку на /docs/keys в своей строке")
+		}
 	}
 }
 

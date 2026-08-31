@@ -657,14 +657,65 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	if !strings.Contains(html, legacyDSN) {
 		t.Fatalf("GET %s missing legacy key DSN %q: %s", settingsPath, legacyDSN, html)
 	}
-	if !strings.Contains(html, "Браузер") && !strings.Contains(html, "Browser") {
-		t.Fatalf("GET %s missing browser kind label: %s", settingsPath, html)
+
+	// Таблица ключей — единственный <table class="data-table"> на странице
+	// (см. projsettings.templ). Вырезаем её и делим HTML на «внутри
+	// таблицы» / «снаружи»: тип и DSN обязаны жить ТОЛЬКО в строках, иначе
+	// проверки ниже не отличили бы возврат старого блока «DSN проекта» или
+	// подписей формы выпуска от настоящей таблицы.
+	tableStart := strings.Index(html, `<table class="data-table">`)
+	tableEnd := strings.Index(html, "</table>")
+	if tableStart == -1 || tableEnd == -1 || tableEnd < tableStart {
+		t.Fatalf("GET %s missing keys table: %s", settingsPath, html)
 	}
-	if !strings.Contains(html, "Агент") && !strings.Contains(html, "Agent") {
-		t.Fatalf("GET %s missing agent kind label: %s", settingsPath, html)
+	tableEnd += len("</table>")
+	tableHTML := html[tableStart:tableEnd]
+	outsideHTML := html[:tableStart] + html[tableEnd:]
+
+	// «Главного» DSN проекта больше нет: если кто-то вернёт старый блок
+	// <p>метка</p><pre>DSN</pre> перед таблицей, эта проверка обязана
+	// покраснеть на дублирующемся DSN снаружи таблицы.
+	for _, dsn := range []string{browserDSN, agentDSN, legacyDSN} {
+		if strings.Contains(outsideHTML, dsn) {
+			t.Fatalf("GET %s shows DSN %q outside the keys table (вернулся старый блок «DSN проекта»): %s", settingsPath, dsn, html)
+		}
 	}
-	if !strings.Contains(html, "/docs/keys") {
-		t.Fatalf("GET %s missing legacy hint link to /docs/keys: %s", settingsPath, html)
+	if strings.Contains(outsideHTML, "DSN этого ключа") || strings.Contains(outsideHTML, "DSN of this key") {
+		t.Fatalf("GET %s shows a DSN label outside the keys table: %s", settingsPath, html)
+	}
+
+	// rowFor вырезает фрагмент <tr>...</tr>, содержащий public_key ключа —
+	// подпись типа проверяем ИМЕННО в строке этого ключа, а не «где-то на
+	// странице» (форма выпуска рендерит те же подписи типов безусловно в
+	// своих radio, и наивная проверка по всему HTML не отличила бы одно от
+	// другого).
+	rowFor := func(publicKey string) string {
+		idx := strings.Index(tableHTML, publicKey)
+		if idx == -1 {
+			t.Fatalf("GET %s key row for %q not found in table: %s", settingsPath, publicKey, tableHTML)
+		}
+		rowStart := strings.LastIndex(tableHTML[:idx], "<tr>")
+		rowEndRel := strings.Index(tableHTML[idx:], "</tr>")
+		if rowStart == -1 || rowEndRel == -1 {
+			t.Fatalf("GET %s malformed row for %q: %s", settingsPath, publicKey, tableHTML)
+		}
+		return tableHTML[rowStart : idx+rowEndRel+len("</tr>")]
+	}
+
+	browserRow := rowFor(browserKey.PublicKey)
+	if !strings.Contains(browserRow, "Браузер") && !strings.Contains(browserRow, "Browser") {
+		t.Fatalf("GET %s browser row missing kind label: %s", settingsPath, browserRow)
+	}
+	agentRow := rowFor(agentKey.PublicKey)
+	if !strings.Contains(agentRow, "Агент") && !strings.Contains(agentRow, "Agent") {
+		t.Fatalf("GET %s agent row missing kind label: %s", settingsPath, agentRow)
+	}
+	legacyRow := rowFor(legacyKey.PublicKey)
+	if !strings.Contains(legacyRow, "Без типа") && !strings.Contains(legacyRow, "Untyped") {
+		t.Fatalf("GET %s legacy row missing kind label: %s", settingsPath, legacyRow)
+	}
+	if !strings.Contains(legacyRow, "/docs/keys") {
+		t.Fatalf("GET %s legacy row missing hint link to /docs/keys: %s", settingsPath, legacyRow)
 	}
 }
 
