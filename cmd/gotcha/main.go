@@ -1103,13 +1103,13 @@ func run() error {
 		go metricWriter.Run()
 
 		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и
-		// pprof из /profiles/pprof пишутся в profile_samples своим батчером.
+		// pprof из /api/v1/profiles/pprof пишутся в profile_samples своим батчером.
 		profileWriter = profile.NewWriter(ch)
 		profileWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
-		// Логи (C1) — пятый приёмник: OTLP /v1/logs и NDJSON /logs пишут в
+		// Логи (C1) — пятый приёмник: OTLP /v1/logs и NDJSON /api/v1/logs пишут в
 		// logs своим батчером, тем же паттерном, что метрики и профили выше.
 		logWriter = log.NewWriter(ch)
 		logWriter.SetMaxBufferBytes(maxBufBytes)

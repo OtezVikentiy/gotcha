@@ -15,7 +15,7 @@ If your Sentry SDK supports profiling, the profile is sent as part of the regula
 For Go applications (e.g. via the built-in `net/http/pprof`) or any continuous-profiling tool that can emit the standard Go pprof format, there's a dedicated ingestion endpoint:
 
 ```
-POST /profiles/pprof?service=<service_name>&type=<sample_type>&environment=<environment>&transaction=<transaction>
+POST /api/v1/profiles/pprof?service=<service_name>&type=<sample_type>&environment=<environment>&transaction=<transaction>
 Authorization: Bearer <DSN public key>
 ```
 
@@ -30,12 +30,21 @@ Example — capture a 10-second CPU profile with Go's standard tooling and send 
 ```bash
 curl -s "http://localhost:6060/debug/pprof/profile?seconds=10" -o cpu.pprof
 gzip -c cpu.pprof | curl -X POST \
-  "https://<gotcha_host>/profiles/pprof?service=my-service&type=cpu&environment=production" \
+  "https://<gotcha_host>/api/v1/profiles/pprof?service=my-service&type=cpu&environment=production" \
   -H "Authorization: Bearer <DSN_public_key>" \
   --data-binary @-
 ```
 
 A successful submission returns `202 Accepted`. If profiling is disabled on the instance, the write is silently skipped but the response is still `202`. If the organization's profile quota is exhausted, ingestion returns `429`.
+
+> **Migrating from `/profiles/pprof`.** The pprof intake used to live at the
+> root, at `POST /profiles/pprof`. That path still works and behaves
+> identically — same authentication, same rate limit, same quota — but it is
+> deprecated: responses to it carry `Deprecation` and `Link; rel="deprecation"`
+> headers, and it will be removed in 1.0. Point your senders at
+> `/api/v1/profiles/pprof`. If you run gotcha yourself,
+> `gotcha_ingest_deprecated_path_total{path="/profiles/pprof"}` tells you
+> whether anything still uses the old path.
 
 ## Profile list
 

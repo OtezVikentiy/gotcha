@@ -319,7 +319,7 @@ Worth knowing:
 Besides the profiles a Sentry SDK sends alongside traces (`profiles_sample_rate` in the Python/PHP/JS/Go SDKs), Gotcha also accepts raw pprof profiles directly:
 
 ```
-POST https://<your-gotcha-host>/profiles/pprof?service=<service-name>&environment=<environment>
+POST https://<your-gotcha-host>/api/v1/profiles/pprof?service=<service-name>&environment=<environment>
 Authorization: Bearer <PUBLIC_KEY>
 Content-Type: application/octet-stream
 ```

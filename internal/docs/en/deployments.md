@@ -27,7 +27,7 @@ reports deployments, there are simply no markers and the list is empty.
 Report a deployment with a single HTTP request at the end of your deploy job.
 
 ```
-POST https://<your-gotcha-host>/api/<PROJECT_ID>/deployments/
+POST https://<your-gotcha-host>/api/v1/<PROJECT_ID>/deployments
 ```
 
 ### Authentication
@@ -40,7 +40,7 @@ of the DSN). See [SDK & integrations](/docs/sdk) for where to find your DSN.
 Pass the key either as a query parameter:
 
 ```
-POST https://<your-gotcha-host>/api/<PROJECT_ID>/deployments/?sentry_key=<PUBLIC_KEY>
+POST https://<your-gotcha-host>/api/v1/<PROJECT_ID>/deployments?sentry_key=<PUBLIC_KEY>
 ```
 
 or in the header used by the Sentry protocol:
@@ -80,7 +80,7 @@ A step at the end of the deploy job — the DSN parts live in repository secrets
 - name: Notify Gotcha of the deployment
   run: |
     curl -sf -X POST \
-      "https://gotcha.example.com/api/${{ secrets.GOTCHA_PROJECT_ID }}/deployments/?sentry_key=${{ secrets.GOTCHA_PUBLIC_KEY }}" \
+      "https://gotcha.example.com/api/v1/${{ secrets.GOTCHA_PROJECT_ID }}/deployments?sentry_key=${{ secrets.GOTCHA_PUBLIC_KEY }}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg v "${{ github.ref_name }}" \
@@ -101,10 +101,19 @@ notify-gotcha:
   script:
     - |
       curl -sf -X POST \
-        "https://gotcha.example.com/api/${GOTCHA_PROJECT_ID}/deployments/?sentry_key=${GOTCHA_PUBLIC_KEY}" \
+        "https://gotcha.example.com/api/v1/${GOTCHA_PROJECT_ID}/deployments?sentry_key=${GOTCHA_PUBLIC_KEY}" \
         -H "Content-Type: application/json" \
         -d "{\"version\":\"${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}\",\"environment\":\"prod\",\"url\":\"${CI_PIPELINE_URL}\",\"changelog\":\"${CI_COMMIT_TITLE}\"}"
 ```
+
+> **Migrating from `/api/<PROJECT_ID>/deployments/`.** The deployments intake
+> used to live at `/api/<PROJECT_ID>/deployments/`. That path still works and
+> behaves identically — same authentication, same rate limit, same quota —
+> but it is deprecated: responses to it carry `Deprecation` and
+> `Link; rel="deprecation"` headers, and it will be removed in 1.0. Point your
+> CI at `/api/v1/<PROJECT_ID>/deployments`. If you run gotcha yourself,
+> `gotcha_ingest_deprecated_path_total{path="/api/{project}/deployments/"}`
+> tells you whether anything still uses the old path.
 
 ## Where the markers appear
 

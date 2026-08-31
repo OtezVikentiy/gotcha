@@ -127,7 +127,7 @@ type Handler struct {
 	MetricQuota QuotaChecker
 
 	// Profiles — приёмник профилей (этап 7): Sentry-профили из envelope и
-	// pprof из /profiles/pprof кладут распарсенные Profile сюда (*profile.Writer).
+	// pprof из /api/v1/profiles/pprof кладут распарсенные Profile сюда (*profile.Writer).
 	// nil → профили выключены (не пишутся).
 	Profiles ProfileSink
 	// ProfileQuota — квота ПРОФИЛЕЙ (profile_quota против org_usage.profiles_count).

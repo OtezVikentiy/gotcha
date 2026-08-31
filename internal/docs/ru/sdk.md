@@ -319,7 +319,7 @@ Authorization: Bearer <PUBLIC_KEY>
 Помимо профилей, которые присылает Sentry SDK вместе с трейсами (`profiles_sample_rate` в Python/PHP/JS/Go SDK), Gotcha принимает и «сырые» pprof-профили напрямую:
 
 ```
-POST https://<адрес_gotcha>/profiles/pprof?service=<имя_сервиса>&environment=<окружение>
+POST https://<адрес_gotcha>/api/v1/profiles/pprof?service=<имя_сервиса>&environment=<окружение>
 Authorization: Bearer <PUBLIC_KEY>
 Content-Type: application/octet-stream
 ```

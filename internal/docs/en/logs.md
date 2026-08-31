@@ -207,7 +207,7 @@ OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf
 OTEL_EXPORTER_OTLP_LOGS_HEADERS=Authorization=Bearer%20a1b2c3d4e5f6
 ```
 
-### NDJSON: `POST /logs`
+### NDJSON: `POST /api/v1/logs`
 
 A simpler path for sources without an OTel exporter — an ad hoc script, a log
 shipping agent, a manual `curl`. The body is newline-delimited JSON: one
@@ -231,7 +231,7 @@ if you need that attribution today, use OTLP instead.
 Example:
 
 ```bash
-curl -X POST https://gotcha.example.com/logs \
+curl -X POST https://gotcha.example.com/api/v1/logs \
   -H "Authorization: Bearer a1b2c3d4e5f6" \
   --data-binary $'{"message":"payment failed: gateway timeout","level":"error","attributes":{"order_id":42}}\n{"message":"retrying in 5s","level":"info"}\n'
 ```
@@ -242,6 +242,14 @@ smaller than the number of lines in the body if some were rejected by quota
 — see below). A line that doesn't parse as JSON, or has an empty `message`,
 is silently skipped and doesn't count toward `N`, but doesn't fail the rest
 of the batch.
+
+> **Migrating from `/logs`.** The NDJSON intake used to live at the root, at
+> `POST /logs`. That path still works and behaves identically — same
+> authentication, same rate limit, same quota — but it is deprecated: responses
+> to it carry `Deprecation` and `Link; rel="deprecation"` headers, and it will
+> be removed in 1.0. Point your senders at `/api/v1/logs`. If you run gotcha
+> yourself, `gotcha_ingest_deprecated_path_total{path="/logs"}` tells you
+> whether anything still uses the old path.
 
 ## What gets canonicalized in severity
 
@@ -296,5 +304,5 @@ voluminous than events, hence the shorter default; `0` keeps data forever).
 Log ingest counts against the organization's monthly quota: the default
 limit is `GOTCHA_DEFAULT_LOG_QUOTA`, fine-tuned under "Organization settings
 → Usage & rate limits" (see [Configuration](/docs/configuration)). Once the
-quota is exhausted, `/v1/logs` and `/logs` return `429`; already-ingested
+quota is exhausted, `/v1/logs` and `/api/v1/logs` return `429`; already-ingested
 records are not deleted.
