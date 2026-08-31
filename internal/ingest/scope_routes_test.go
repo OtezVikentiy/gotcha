@@ -86,6 +86,15 @@ func TestIngestRoutesGuard(t *testing.T) {
 		if !got[r.pattern] {
 			t.Errorf("маршрут из таблицы не зарегистрирован: %s", r.pattern)
 		}
+		// Пустой denied — легальная отписка от TestIngestRoutesScopeGated
+		// ТОЛЬКО для CORS-preflight (OPTIONS): такой маршрут не
+		// аутентифицируется и гейта скоупа не имеет по конструкции. Любой
+		// другой маршрут с пустым denied пройдёт сторожа, ни разу не будучи
+		// проверенным на наличие гейта — ровно та ошибка, ради которой
+		// сторож заведён.
+		if r.denied == "" && !strings.HasPrefix(r.pattern, "OPTIONS ") {
+			t.Errorf("маршрут %s: пустой denied допустим только у OPTIONS-preflight — заполните denied, чтобы TestIngestRoutesScopeGated проверил гейт", r.pattern)
+		}
 	}
 	for p := range got {
 		if !want[p] {
