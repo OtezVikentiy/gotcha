@@ -310,7 +310,26 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 		dsn = browserDSN
 	}
 
-	_ = templates.ProjectSetup(project, dsn, snippets, h.currentEmail(r)).Render(r.Context(), w)
+	// missingPlatformKind — снипет для языка САМОГО проекта не попал в
+	// snippets (setupSnippets отбросил его из-за пустого DSN), а другие
+	// снипеты при этом есть: страница обязана объяснить, куда делся именно
+	// этот язык, а не молча показать чужие. Если snippets пуст вовсе,
+	// работает общее пустое состояние (len(snippets)==0 в шаблоне) — эта
+	// более узкая подсказка ему не нужна.
+	var missingPlatformKind org.KeyKind
+	if len(snippets) > 0 {
+		if want := sdkPlatformKind(project.Platform); want != "" {
+			got := serverDSN
+			if want == org.KindBrowser {
+				got = browserDSN
+			}
+			if got == "" {
+				missingPlatformKind = want
+			}
+		}
+	}
+
+	_ = templates.ProjectSetup(project, dsn, snippets, missingPlatformKind, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 func findProject(projects []org.Project, id int64) (org.Project, bool) {
@@ -356,6 +375,21 @@ func buildDSN(baseURL, publicKey string, projectID int64) string {
 	return u.Scheme + "://" + publicKey + "@" + u.Host + "/" + strconv.FormatInt(projectID, 10)
 }
 
+// sdkPlatformKind — тип ключа, которым подключается язык SDK platform:
+// browser для javascript (сниппет исполняется в браузере), server — для
+// остальных известных языков (go/php/python). Пустая строка — platform не
+// входит в набор, для которого вообще есть сниппет (например, "other"): для
+// такой платформы нет ни своего сниппета, ни смысла требовать под неё ключ.
+func sdkPlatformKind(platform string) org.KeyKind {
+	switch platform {
+	case "javascript":
+		return org.KindBrowser
+	case "go", "php", "python":
+		return org.KindServer
+	}
+	return ""
+}
+
 // setupSnippets собирает блоки «как подключить» для страницы проекта: сперва
 // платформа, выбранная при создании проекта, затем остальные.
 //
@@ -371,7 +405,25 @@ func buildDSN(baseURL, publicKey string, projectID int64) string {
 // DSN с ключом browser, у которого нет прав, доступных серверному ключу.
 // Отдать серверный ключ в JS-сниппет значило бы опубликовать в вебе ключ с
 // более широким допуском, чем ему требуется.
+//
+// Сниппет, чей DSN пуст (нет живого ключа нужного типа — browser для JS,
+// server для остальных), в результат НЕ попадает: сниппет с dsn: "" выглядит
+// готовым к копированию и молча не работает — это ловушка, а не информация
+// (ревью задачи 5, круг 3). Если из-за этого не осталось ни одного сниппета,
+// вызывающий (projectSetup) показывает пустое состояние — гейт по
+// len(snippets), уже существующий в шаблоне.
 func setupSnippets(platform, browserDSN, serverDSN string) []templates.SetupSnippet {
+	// dsnFor — какой DSN нужен языку k (см. sdkPlatformKind): пуст, если для
+	// k нет живого ключа нужного типа — тогда язык k в результат не попадёт.
+	dsnFor := func(k string) string {
+		switch sdkPlatformKind(k) {
+		case org.KindBrowser:
+			return browserDSN
+		case org.KindServer:
+			return serverDSN
+		}
+		return ""
+	}
 	all := map[string]templates.SetupSnippet{
 		"go": {
 			Lang:    "Go",
@@ -426,14 +478,16 @@ func setupSnippets(platform, browserDSN, serverDSN string) []templates.SetupSnip
 		},
 	}
 
-	// Порядок: платформа проекта первой — за ней пришли, её и показываем сверху.
+	// Порядок: платформа проекта первой — за ней пришли, её и показываем
+	// сверху. Язык, для которого dsnFor пуст (нет живого ключа нужного
+	// типа), в результат не попадает вовсе.
 	order := []string{"go", "php", "javascript", "python"}
 	out := make([]templates.SetupSnippet, 0, len(order))
-	if sn, ok := all[platform]; ok {
+	if sn, ok := all[platform]; ok && dsnFor(platform) != "" {
 		out = append(out, sn)
 	}
 	for _, k := range order {
-		if k == platform {
+		if k == platform || dsnFor(k) == "" {
 			continue
 		}
 		out = append(out, all[k])

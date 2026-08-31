@@ -364,6 +364,22 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	if !strings.Contains(string(body), wantServerDSN) {
 		t.Fatalf("GET %s body missing server DSN %q (Go/PHP/Python сниппеты должны остаться): %s", setupPath, wantServerDSN, body)
 	}
+	// Ловушка: JS-сниппета с пустым DSN на странице быть не должно вовсе —
+	// он выглядит готовым к копированию и молча не работает. Сниппета нет —
+	// значит нет и его команды установки (шаблон HTML-экранирует кавычки,
+	// поэтому "пустой dsn" ищем по отсутствию всего блока, а не по
+	// буквальным символам кавычек).
+	if strings.Contains(string(body), "npm install @sentry/browser") {
+		t.Errorf("страница показывает JS-сниппет с пустым DSN (ловушка копирования): %s", body)
+	}
+	// Молчаливое исчезновение JS объяснено: платформа проекта — javascript,
+	// её сниппет пропал именно из-за отсутствия browser-ключа.
+	if !strings.Contains(string(body), "Для JavaScript нужен ключ типа «Браузер»") {
+		t.Errorf("GET %s не объясняет пропажу JS-сниппета: %s", setupPath, body)
+	}
+	if !strings.Contains(string(body), "Настройки проекта") {
+		t.Errorf("GET %s: подсказка без ссылки «Настройки проекта»: %s", setupPath, body)
+	}
 
 	// Симметричный случай: живых ключей нет вовсе → честное пустое состояние.
 	project2, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj-empty", "JS Proj Empty", "javascript")
@@ -432,6 +448,18 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	wantBrowserDSN := "://" + browserKey3 + "@"
 	if !strings.Contains(string(body3), wantBrowserDSN) {
 		t.Fatalf("GET %s body missing browser DSN %q (JS-сниппет должен остаться): %s", setupPath3, wantBrowserDSN, body3)
+	}
+	// Ловушка: Go-сниппет с пустым DSN (платформа самого проекта — go) быть
+	// не должен, как и PHP/Python — все трое требуют server-ключа. Сниппета
+	// нет — значит нет и его команды установки.
+	if strings.Contains(string(body3), "go get github.com/getsentry/sentry-go") {
+		t.Errorf("страница показывает Go-сниппет с пустым DSN (ловушка копирования): %s", body3)
+	}
+	if !strings.Contains(string(body3), "Для Go нужен ключ типа «Сервер»") {
+		t.Errorf("GET %s не объясняет пропажу Go-сниппета: %s", setupPath3, body3)
+	}
+	if !strings.Contains(string(body3), "Настройки проекта") {
+		t.Errorf("GET %s: подсказка без ссылки «Настройки проекта»: %s", setupPath3, body3)
 	}
 }
 

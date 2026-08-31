@@ -1072,6 +1072,8 @@
     "onboarding.submit": "Create",
     "project.setup.title": "Setup",
     "project.setup.no_key": "The project has no active key — issue a new one in project settings.",
+    "project.setup.missing_platform_key": "{platform} needs a key of type “{kind}” — issue one in project settings.",
+    "project.setup.missing_platform_key_link": "Project settings",
     "project.setup.dsn.title": "DSN",
     "project.setup.dsn_label": "DSN for sending events:",
     "project.setup.full_docs_link": "Full guide & more platforms",

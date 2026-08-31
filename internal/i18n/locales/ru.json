@@ -1072,6 +1072,8 @@
     "onboarding.submit": "Создать",
     "project.setup.title": "Подключение",
     "project.setup.no_key": "У проекта нет активного ключа — выпустите новый в настройках проекта.",
+    "project.setup.missing_platform_key": "Для {platform} нужен ключ типа «{kind}» — выпустите его в настройках проекта.",
+    "project.setup.missing_platform_key_link": "Настройки проекта",
     "project.setup.dsn.title": "DSN",
     "project.setup.dsn_label": "DSN для отправки событий:",
     "project.setup.full_docs_link": "Полная инструкция и другие платформы",

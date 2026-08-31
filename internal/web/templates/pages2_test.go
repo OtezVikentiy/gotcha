@@ -106,7 +106,7 @@ func TestProjectSetup(t *testing.T) {
 		{Lang: "Go", Install: "go get github.com/getsentry/sentry-go", Code: "sentry.Init(...)"},
 		{Lang: "PHP", Install: "composer require sentry/sentry", Code: "\\Sentry\\init(...)"},
 	}
-	out := renderTo(t, ProjectSetup(project, "https://key@dsn/7", snippets, "u@e.com"))
+	out := renderTo(t, ProjectSetup(project, "https://key@dsn/7", snippets, "", "u@e.com"))
 	if !strings.Contains(out, "https://key@dsn/7") {
 		t.Error("экран установки должен показать DSN")
 	}
