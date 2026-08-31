@@ -81,7 +81,7 @@ func postNDJSON(t *testing.T, h *Handler, body string, gzipped bool) *httptest.R
 }
 
 func newLogsTestHandler(sink *collectLogSink) *Handler {
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Logs = sink
 	return h
 }
@@ -186,7 +186,7 @@ func TestOTLPLogsUnauthenticated(t *testing.T) {
 // TestOTLPLogsSinkNil: h.Logs == nil → 200 без записи (эндпоинт выключен, но
 // коллектор не должен ретраить вечно).
 func TestOTLPLogsSinkNil(t *testing.T) {
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 
 	rl := []*logspb.ResourceLogs{{
 		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{{Body: logStrVal("hello")}}}},
@@ -201,7 +201,7 @@ func TestOTLPLogsSinkNil(t *testing.T) {
 // 413, а не 400/500.
 func TestOTLPLogsTooLarge(t *testing.T) {
 	sink := &collectLogSink{}
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 16)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 16)
 	h.Logs = sink
 
 	rl := []*logspb.ResourceLogs{{
@@ -262,7 +262,7 @@ func TestNDJSONLogsGzip(t *testing.T) {
 // (MaxBytesReader), не 400/500.
 func TestNDJSONLogsTooLarge(t *testing.T) {
 	sink := &collectLogSink{}
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 8)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 8)
 	h.Logs = sink
 
 	body := `{"message":"` + strings.Repeat("x", 200) + `"}` + "\n"
@@ -300,7 +300,7 @@ func TestNDJSONLogsBadBody(t *testing.T) {
 
 // TestNDJSONLogsSinkNil: h.Logs == nil → 200 без записи, {"accepted":0}.
 func TestNDJSONLogsSinkNil(t *testing.T) {
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 
 	w := postNDJSON(t, h, `{"message":"hi"}`+"\n", false)
 	if w.Code != http.StatusOK {

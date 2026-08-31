@@ -48,7 +48,7 @@ func fakeAgentSample() agent.Sample {
 // коллектора hostmetrics.
 func TestAgentExportEndToEnd(t *testing.T) {
 	sink := &collectMetricSink{}
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindAgent}}), nil, nil, 1<<20)
 	h.Metrics = sink
 
 	md := agent.BuildExport("web-1", "", "", fakeAgentSample())

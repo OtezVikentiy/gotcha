@@ -16,7 +16,7 @@ import "sync/atomic"
 // Набор ЗАКРЫТ и является контрактом self-метрики
 // gotcha_ingest_rejected_total{reason,signal}: после 1.0 расширять его
 // дорого (см. internal/guards — каждое имя self-метрики пиннится литералом,
-// а свежая метка reason ломает дашборды, построенные на перечислении). Шесть
+// а свежая метка reason ломает дашборды, построенные на перечислении). Семь
 // значений:
 //   - key_unknown — ключ приёма не резолвится ни в один проект: клиент не
 //     прислал sentry_key/bearer вовсе, прислал опечатанный/несуществующий
@@ -36,6 +36,12 @@ import "sync/atomic"
 //     запросом на подтверждённом пути отказа — вне горячего пути, дёшево),
 //     не потребовал трогать контракт этой метрики: разметка появится, счётчик
 //     — уже существует и заранее упомянут в документации.
+//   - key_scope — ключ резолвится и принадлежит нужному проекту, но его ТИП
+//     (org.KeyKind) не допущен к этому сигналу: браузерным ключом постучали в
+//     профили или деплой-маркеры, ключом агента — в события. Отделена от
+//     key_unknown намеренно: «ключ не работает здесь» и «ключ не тот» —
+//     разные проблемы у клиента, и первая означает опечатку/отзыв, а вторая —
+//     утёкший публичный ключ либо неправильно настроенный источник.
 //   - rate_limit — per-DSN токен-бакет (Handler.rate) отклонил запрос ДО
 //     квоты и ДО разбора тела.
 //   - quota — организация исчерпала месячную квоту вида телеметрии: запрос
@@ -53,6 +59,7 @@ type IngestRejectReason string
 const (
 	RejectKeyUnknown IngestRejectReason = "key_unknown"
 	RejectKeyRevoked IngestRejectReason = "key_revoked" // зарезервировано, см. докблок типа
+	RejectKeyScope   IngestRejectReason = "key_scope"
 	RejectRateLimit  IngestRejectReason = "rate_limit"
 	RejectQuota      IngestRejectReason = "quota"
 	RejectTooLarge   IngestRejectReason = "too_large"
@@ -95,7 +102,13 @@ type IngestRejectionKey struct {
 //
 // deploy отсутствует у reason=quota: деплои не расходуют месячную квоту
 // (см. deploymentsIngest) — только auth/rate-limit/размер тела/разбор.
-var ingestRejectionPairs = []IngestRejectionKey{
+//
+// Пары key_scope сюда НЕ выписаны литералом — они вычисляются из
+// keyScopeMatrix (см. keyScopeRejectionPairs) и дописываются ниже. Матрица
+// живёт в scope.go и меняется отдельно от этого файла; выписывать её пары
+// руками здесь означало бы держать два места, которые обязаны совпадать, но
+// ничем не связаны.
+var ingestRejectionPairs = append([]IngestRejectionKey{
 	{RejectKeyUnknown, SignalEvent}, {RejectKeyUnknown, SignalTransaction},
 	{RejectKeyUnknown, SignalMetric}, {RejectKeyUnknown, SignalProfile},
 	{RejectKeyUnknown, SignalLog}, {RejectKeyUnknown, SignalDeploy},
@@ -115,7 +128,7 @@ var ingestRejectionPairs = []IngestRejectionKey{
 	{RejectQuota, SignalEvent}, {RejectQuota, SignalTransaction},
 	{RejectQuota, SignalMetric}, {RejectQuota, SignalProfile},
 	{RejectQuota, SignalLog},
-}
+}, keyScopeRejectionPairs()...)
 
 // IngestRejectionPairs — копия ingestRejectionPairs для main (та же защита
 // от чужой мутации общего слайса, что у KeyRejectReasons/DropReasons).

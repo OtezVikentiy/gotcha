@@ -1523,7 +1523,7 @@ func postOTLPMetrics(t *testing.T, h *Handler, rm []*metricspb.ResourceMetrics) 
 func TestOTLPMetricsHostRegistryTouch(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Hosts = hosts
 
@@ -1553,7 +1553,7 @@ func TestOTLPMetricsHostRegistryTouch(t *testing.T) {
 func TestOTLPMetricsHostRegistryNoHost(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Hosts = hosts
 
@@ -1574,7 +1574,7 @@ func TestOTLPMetricsHostRegistryNoHost(t *testing.T) {
 func TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Hosts = hosts
 	h.MetricQuota = zeroQuotaChecker{}
@@ -1598,7 +1598,7 @@ func TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded(t *testing.T) {
 func TestOTLPMetricsHostRegistrySkipsCardinalityOverflow(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Hosts = hosts
 	h.Cardinality = NewCardinalityGuard(1, time.Hour)
@@ -1670,7 +1670,7 @@ func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 	t.Run("версия есть", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()
-		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 		h.Metrics = sink
 		h.Hosts = hosts
 
@@ -1690,7 +1690,7 @@ func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 	t.Run("версии нет — пустая", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()
-		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 		h.Metrics = sink
 		h.Hosts = hosts
 
@@ -1714,7 +1714,7 @@ func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 	t.Run("смешанный экспорт: версия первым ресурсом", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()
-		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 		h.Metrics = sink
 		h.Hosts = hosts
 
@@ -1735,7 +1735,7 @@ func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 	t.Run("смешанный экспорт: версия вторым ресурсом", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()
-		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 		h.Metrics = sink
 		h.Hosts = hosts
 
@@ -1770,7 +1770,7 @@ func TestOTLPMetricsAgentVersionGarbage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &collectMetricSink{}
 			hosts := newFakeHostRegistry()
-			h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+			h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 			h.Metrics = sink
 			h.Hosts = hosts
 
@@ -1800,7 +1800,7 @@ func TestOTLPMetricsAgentVersionGarbage(t *testing.T) {
 func TestOTLPMetricsAgentVersionNotInAttrs(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Hosts = hosts
 
@@ -1856,7 +1856,7 @@ func resourceMetricWithHostLabels(host, env, role, metricName string) *metricspb
 func TestOTLPMetricsHostLabelsTouch(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Hosts = hosts
 

@@ -1235,13 +1235,13 @@ func run() error {
 		// Деплои (C5): реестр выкладок из CI (PG-таблица deployments).
 		ingestHandler.Deploy = deploy.NewStore(pg)
 		ingestHandler.DropCounter = orgSvc
-		// Отказы приёма по ключу (PROD-P?): раньше ни одна из шести веток
+		// Отказы приёма по ключу (PROD-P?): раньше ни одна из веток
 		// authenticate/otlpAuthenticate не была видна нигде — ни счётчиком, ни
 		// логом. По метрике на причину — та же логика, что у
 		// gotcha_pipeline_dropped_tasks_total выше: "ключа нет вовсе" (клиент
 		// не настроил DSN) и "ключ чужого проекта" (скопированный не туда DSN)
 		// требуют разных действий оператора/клиента, общий счётчик их не
-		// различал бы.
+		// различал бы. Причин семь (см. keyRejectReasons в internal/ingest).
 		for _, reason := range ingest.KeyRejectReasons() {
 			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_key_rejections_total",
 				"Ingest requests rejected during key authentication, before quotas. The reason label says why.",

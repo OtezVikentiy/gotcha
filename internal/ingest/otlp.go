@@ -474,6 +474,8 @@ func validAgentVersion(s string) string {
 // опция headers:, своего формата мы не изобретаем). Проект берётся ИЗ КЛЮЧА: в
 // OTLP-протоколе нет места для него в URL. Нет заголовка / неизвестный ключ →
 // 401 (у envelope там 403 — там ключ уже сопоставляется с проектом из пути).
+// Гейт скоупа (тип ключа не допущен к сигналу) отвечает 403, а не 401: ключ
+// резолвился успешно, отказ не про предъявление, а про допуск.
 func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal) (org.Key, bool) {
 	pub := otlpBearer(r)
 	if pub == "" {
@@ -491,6 +493,10 @@ func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request, signa
 		return org.Key{}, false
 	case err != nil:
 		writeJSONError(w, http.StatusServiceUnavailable, "key lookup failed")
+		return org.Key{}, false
+	}
+	if !scopeAllows(key.Kind, signal) {
+		h.scopeReject(w, r, signal)
 		return org.Key{}, false
 	}
 	return key, true

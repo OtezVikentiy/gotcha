@@ -46,6 +46,11 @@ const (
 	KeyRejectMissingBearer KeyRejectReason = "missing_bearer"
 	// KeyRejectInvalidDSNKey — OTLP bearer-токен не резолвится ни в один DSN.
 	KeyRejectInvalidDSNKey KeyRejectReason = "invalid_dsn_key"
+	// KeyRejectScope — ключ валиден и принадлежит проекту, но его тип не
+	// допущен к этому эндпойнту. В отличие от прочих причин файла, это НЕ
+	// проблема доставки ключа: источник настроен ключом не того класса. Лог
+	// пишет path (countKeyReject) — дежурный видит, по какому эндпойнту бьют.
+	KeyRejectScope KeyRejectReason = "scope"
 )
 
 // keyRejectReasons — полный набор причин отказа по ключу. Существует, чтобы
@@ -54,7 +59,7 @@ const (
 // инкрементом без блокировки и без записи в map.
 var keyRejectReasons = []KeyRejectReason{
 	KeyRejectMissingKey, KeyRejectInvalidKey, KeyRejectProjectMismatch,
-	KeyRejectMissingBearer, KeyRejectInvalidDSNKey,
+	KeyRejectMissingBearer, KeyRejectInvalidDSNKey, KeyRejectScope,
 }
 
 // KeyRejectReasons — все причины, по которым приём умеет отказывать по
@@ -271,7 +276,15 @@ func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64, sig
 	return true
 }
 
-func (h *Handler) Register(mux *http.ServeMux) {
+// muxRegistrar — то, что Register нужно от мультиплексора. Сужение ради
+// сторожа маршрутов (scope_routes_test.go): http.ServeMux не даёт перечислить
+// зарегистрированные паттерны, а подменный регистратор — даёт. В бою сюда
+// приходит тот же *http.ServeMux.
+type muxRegistrar interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+func (h *Handler) Register(mux muxRegistrar) {
 	// Браузерные SDK шлют телеметрию с ПРОИЗВОЛЬНОГО origin (сайт и gotcha —
 	// разные домены), поэтому envelope/store отвечают CORS-заголовками и
 	// обрабатывают preflight (OPTIONS). DSN (public key) не секрет — как у
@@ -339,13 +352,32 @@ func corsPreflight(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// scopeReject отвечает 403 и считает отказ по скоупу в ОБЕ метрики: узкую
+// (gotcha_ingest_key_rejections_total{reason="scope"}, с path в логе) и
+// широкую (gotcha_ingest_rejected_total{reason="key_scope",signal}).
+//
+// 403, а не 401, ВКЛЮЧАЯ OTLP-вход, где соседние ветки отвечают 401:
+// расхождение осознанное и семантически верное — 401 значит «ты не
+// представился», 403 — «представился, но сюда нельзя», а ключ здесь
+// резолвится успешно.
+func (h *Handler) scopeReject(w http.ResponseWriter, r *http.Request, signal IngestSignal) {
+	h.countKeyReject(KeyRejectScope, r.URL.Path)
+	h.countRejected(RejectKeyScope, signal)
+	writeJSONError(w, http.StatusForbidden, "key type not allowed for this endpoint")
+}
+
 // authenticate проверяет ключ проекта; при успехе возвращает ключ и true. При
 // отказе сама пишет ошибку в w и возвращает false. Квоты здесь НЕ проверяются:
 // их две (ошибки и транзакции), и какую списывать — видно только после
 // разбора envelope'а. signal — метка gotcha_ingest_rejected_total{reason=
 // "key_unknown",signal}: все три ветки отказа сводятся к одной причине, см.
 // докблок IngestRejectReason.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal) (org.Key, bool) {
+//
+// also — сигналы СВЕРХ signal, которые маршрут может нести (envelope). Пусто
+// — маршрут односигнальный. Гейт скоупа стоит ПОСЛЕ резолва ключа и сверки
+// проекта: отказ по типу ключа имеет смысл только для ключа, который
+// действительно принадлежит этому проекту.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal, also ...IngestSignal) (org.Key, bool) {
 	projectID, err := strconv.ParseInt(r.PathValue("project"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "unknown project")
@@ -372,6 +404,11 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 		h.countKeyReject(KeyRejectProjectMismatch, r.URL.Path)
 		h.countRejected(RejectKeyUnknown, signal)
 		writeJSONError(w, http.StatusForbidden, "sentry_key does not match project")
+		return org.Key{}, false
+	}
+
+	if !scopeAllowsRoute(key.Kind, signal, also) {
+		h.scopeReject(w, r, signal)
 		return org.Key{}, false
 	}
 
@@ -568,7 +605,7 @@ func gunzipLimited(raw []byte, limit int64) ([]byte, error) {
 }
 
 func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.authenticate(w, r, SignalEvent)
+	key, ok := h.authenticate(w, r, SignalEvent, envelopeAlsoSignals...)
 	if !ok {
 		return
 	}
