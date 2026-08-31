@@ -491,16 +491,29 @@ func TestProbes(t *testing.T) {
 	}
 }
 
-// TestProjectSettings — настройки проекта с ключами (активный/отозванный),
-// формами perf/регрессий и DSN.
+// TestProjectSettings — настройки проекта с ключами (активный/отозванный,
+// типизированный и legacy), формами perf/регрессий и собственным DSN
+// каждого ключа.
 func TestProjectSettings(t *testing.T) {
 	project := org.Project{ID: 7, OrgID: 1, Slug: "web", Name: "Web", Platform: "go"}
-	keys := []org.Key{{ID: 1, PublicKey: "pk_live", Revoked: false}, {ID: 2, PublicKey: "pk_old", Revoked: true}}
+	keys := []ProjectKeyView{
+		{Key: org.Key{ID: 1, PublicKey: "pk_live", Kind: org.KindServer, Revoked: false}, DSN: "https://pk_live@dsn"},
+		{Key: org.Key{ID: 2, PublicKey: "pk_old", Kind: org.KindLegacy, Revoked: true}, DSN: "https://pk_old@dsn"},
+	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
 	reg := RegressionSettingsForm{ThresholdPct: "20", RecoveryPct: "10", WindowMinutes: "60", MinSamples: "100", Enabled: true}
-	out := renderTo(t, ProjectSettings(project, keys, "https://key@dsn", "", "u@e.com", perf, reg, 30))
+	out := renderTo(t, ProjectSettings(project, keys, "", "u@e.com", perf, reg, 30))
 	if !strings.Contains(out, "pk_live") || !strings.Contains(out, "badge-danger") {
 		t.Error("ключи со статусами должны отрендериться")
+	}
+	if !strings.Contains(out, "https://pk_live@dsn") {
+		t.Error("собственный DSN живого ключа должен отрендериться")
+	}
+	if strings.Contains(out, "https://pk_old@dsn") {
+		t.Error("отозванный ключ не должен показывать DSN")
+	}
+	if !strings.Contains(out, "/docs/keys") {
+		t.Error("legacy-ключ должен показывать ссылку на /docs/keys")
 	}
 }
 

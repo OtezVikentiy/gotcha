@@ -175,6 +175,31 @@ func keyBelongsToProject(keys []org.Key, keyID int64) bool {
 	return false
 }
 
+// lastLiveKeyOfKind — отзываемый ключ единственный живой своего типа?
+// Возвращает тип и признак. Отозванные ключи не считаются: они уже ничего не
+// принимают.
+func lastLiveKeyOfKind(keys []org.Key, keyID int64) (org.KeyKind, bool) {
+	var kind org.KeyKind
+	found := false
+	for _, k := range keys {
+		if k.ID == keyID {
+			if k.Revoked {
+				return "", false
+			}
+			kind, found = k.Kind, true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	for _, k := range keys {
+		if k.ID != keyID && !k.Revoked && k.Kind == kind {
+			return kind, false
+		}
+	}
+	return kind, true
+}
+
 // projectSettingsPage — GET /projects/{id}/settings: имя, платформа
 // (readonly), таблица ключей, DSN текущего живого ключа. Доступ только
 // owner/admin организации проекта (requireProjectRole).
@@ -223,9 +248,12 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	var dsn string
-	if publicKey := firstLiveKey(keys); publicKey != "" {
-		dsn = buildDSN(h.BaseURL, publicKey, projectID)
+	// «Главного» ключа у проекта больше нет: их несколько, по одному на класс
+	// источника, и произвольно выбранный дефолт прятал бы вопрос «какой из
+	// них брать» вместо ответа на него. DSN даётся в КАЖДОЙ строке таблицы.
+	views := make([]templates.ProjectKeyView, len(keys))
+	for i, k := range keys {
+		views[i] = templates.ProjectKeyView{Key: k, DSN: buildDSN(h.BaseURL, k.PublicKey, projectID)}
 	}
 	perf := perfFormFromProject(project)
 	if perfOverride != nil {
@@ -236,7 +264,7 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		reg = *regOverride
 	}
 	w.WriteHeader(status)
-	_ = templates.ProjectSettings(project, keys, dsn, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays).Render(r.Context(), w)
+	_ = templates.ProjectSettings(project, views, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays).Render(r.Context(), w)
 }
 
 // projectSettingsRename — POST /projects/{id}/settings/rename: name.
@@ -352,9 +380,18 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	// исполняет inline onclick="confirm()" — see renderConfirm): без
 	// confirmed=yes показываем страницу подтверждения вместо отзыва ключа.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.key_revoke.message", "project.settings.keys.revoke",
+		// Отзыв последнего ЖИВОГО ключа своего типа останавливает приём
+		// целого класса телеметрии — вопрос без этой детали защищал бы
+		// только от промаха мышью, а не от реального последствия.
+		msgKey := "confirm.key_revoke.message"
+		var kv []string
+		if kind, last := lastLiveKeyOfKind(keys, keyID); last {
+			msgKey = "confirm.key_revoke.last_of_kind.message"
+			kv = []string{"kind", i18n.T(r.Context(), "project.settings.keys.kind."+string(kind))}
+		}
+		h.renderConfirmf(w, r, "confirm.title", msgKey, "project.settings.keys.revoke",
 			projectSettingsPath(projectID), projectSettingsKeysRevokePath(projectID),
-			[]templates.HiddenField{{Name: "key_id", Value: strconv.FormatInt(keyID, 10)}})
+			[]templates.HiddenField{{Name: "key_id", Value: strconv.FormatInt(keyID, 10)}}, kv...)
 		return
 	}
 	if err := h.Org.RevokeKey(r.Context(), keyID); err != nil {

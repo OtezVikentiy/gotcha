@@ -89,14 +89,52 @@ func keyStatusLabelKey(k org.Key) string {
 	return "project.settings.keys.status.active"
 }
 
-templ keyRow(projectID int64, k org.Key) {
+// ProjectKeyView — строка таблицы ключей: сам ключ и его собственный DSN.
+// DSN считается в web-слое (buildDSN знает BaseURL инстанса), шаблон его
+// только показывает.
+type ProjectKeyView struct {
+	Key org.Key
+	DSN string
+}
+
+// keyKindLabelKey — i18n-ключ подписи типа ключа. legacy отображается как
+// «без типа»: с точки зрения пользователя это ключ, выпущенный до появления
+// типов, а не ещё один равноправный выбор.
+func keyKindLabelKey(k org.Key) string {
+	if k.Kind == org.KindLegacy || k.Kind == "" {
+		return "project.settings.keys.kind.legacy"
+	}
+	return "project.settings.keys.kind." + string(k.Kind)
+}
+
+// keyKindBadgeClass — legacy выделен как состояние, требующее внимания
+// (переход на типизированные ключи), но не как ошибка: ключ работает.
+func keyKindBadgeClass(k org.Key) string {
+	if k.Kind == org.KindLegacy || k.Kind == "" {
+		return "badge badge-warn"
+	}
+	return "badge"
+}
+
+templ keyRow(projectID int64, v ProjectKeyView) {
 	<tr>
-		<td>{ k.PublicKey }</td>
-		<td><span class={ keyStatusBadgeClass(k) }>{ i18n.T(ctx, keyStatusLabelKey(k)) }</span></td>
+		<td>{ v.Key.PublicKey }</td>
 		<td>
-			if !k.Revoked {
+			<span class={ keyKindBadgeClass(v.Key) }>{ i18n.T(ctx, keyKindLabelKey(v.Key)) }</span>
+			if v.Key.Kind == org.KindLegacy || v.Key.Kind == "" {
+				<a href="/docs/keys">{ i18n.T(ctx, "project.settings.keys.kind.legacy.hint") }</a>
+			}
+		</td>
+		<td><span class={ keyStatusBadgeClass(v.Key) }>{ i18n.T(ctx, keyStatusLabelKey(v.Key)) }</span></td>
+		<td>
+			if !v.Key.Revoked && v.DSN != "" {
+				@copyBlock("dsn-"+strconv.FormatInt(v.Key.ID, 10), "project.settings.dsn.label", v.DSN)
+			}
+		</td>
+		<td>
+			if !v.Key.Revoked {
 				<form method="post" action={ templ.URL(projectSettingsKeysRevokePath(projectID)) } class="key-revoke-form">
-					<input type="hidden" name="key_id" value={ strconv.FormatInt(k.ID, 10) }/>
+					<input type="hidden" name="key_id" value={ strconv.FormatInt(v.Key.ID, 10) }/>
 					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "project.settings.keys.revoke") }</button>
 				</form>
 			}
@@ -266,7 +304,7 @@ templ retentionNotice(retentionDays int) {
 	}
 }
 
-templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm, retentionDays int) {
+templ ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm, retentionDays int) {
 	@layout(i18n.T(ctx, "project.settings.title")+" "+project.Name, userEmail) {
 		<div class="project-settings">
 			<h1>{ i18n.T(ctx, "project.settings.title") } { project.Name }</h1>
@@ -290,10 +328,7 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 			</section>
 			<section class="card">
 				<h2 class="card-header">{ i18n.T(ctx, "project.settings.keys.title") }</h2>
-				if dsn != "" {
-					<p>{ i18n.T(ctx, "project.settings.dsn.label") }</p>
-					<pre>{ dsn }</pre>
-				} else {
+				if len(keys) == 0 {
 					<p class="error">{ i18n.T(ctx, "project.settings.keys.no_dsn") }</p>
 				}
 				@scrollRegion("table-scroll", "project.settings.keys.title") {
@@ -301,18 +336,30 @@ templ ProjectSettings(project org.Project, keys []org.Key, dsn, errMsg, userEmai
 						<thead>
 							<tr>
 								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.key") }</th>
+								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.kind") }</th>
 								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.status") }</th>
+								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.dsn") }</th>
 								<th scope="col"></th>
 							</tr>
 						</thead>
 						<tbody>
-							for _, k := range keys {
-								@keyRow(project.ID, k)
+							for _, v := range keys {
+								@keyRow(project.ID, v)
 							}
 						</tbody>
 					</table>
 				}
 				<form method="post" action={ templ.URL(projectSettingsKeysPath(project.ID)) } class="key-create-form">
+					<fieldset>
+						<legend>{ i18n.T(ctx, "project.settings.keys.kind.legend") }</legend>
+						for _, kind := range []org.KeyKind{org.KindBrowser, org.KindServer, org.KindAgent} {
+							<label>
+								<input type="radio" name="kind" value={ string(kind) } required/>
+								<strong>{ i18n.T(ctx, "project.settings.keys.kind."+string(kind)) }</strong>
+								<span class="hint">{ i18n.T(ctx, "project.settings.keys.kind."+string(kind)+".hint") }</span>
+							</label>
+						}
+					</fieldset>
 					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.settings.keys.create") }</button>
 				</form>
 			</section>

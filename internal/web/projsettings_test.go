@@ -501,3 +501,223 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		t.Fatalf("ThresholdPct after 422s = %v, want unchanged 0.40", cfg.ThresholdPct)
 	}
 }
+
+// TestProjectSettingsKeyCreateRequiresKind — форма без выбранного типа не
+// создаёт ключ: 422 и сообщение, а не молчаливый ключ с произвольным типом.
+func TestProjectSettingsKeyCreateRequiresKind(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "keykind-req-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "keykind-req-co", "KeyKindReq Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "keykind-req-proj", "KeyKindReq Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	keysPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/keys"
+
+	resp := postForm(t, s.srv, keysPath, url.Values{}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (no kind) status = %d, want 422: %s", keysPath, resp.StatusCode, body)
+	}
+	keys, err := orgSvc.KeysForProject(context.Background(), proj.ID)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("KeysForProject after kind-less POST = %+v, err=%v, want none", keys, err)
+	}
+}
+
+// TestProjectSettingsKeyCreateRejectsLegacy — legacy через UI не выпускается:
+// это тип ключей, выпущенных ДО появления типов.
+func TestProjectSettingsKeyCreateRejectsLegacy(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "keykind-legacy-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "keykind-legacy-co", "KeyKindLegacy Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "keykind-legacy-proj", "KeyKindLegacy Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	keysPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/keys"
+
+	resp := postForm(t, s.srv, keysPath, url.Values{"kind": {"legacy"}}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s (kind=legacy) status = %d, want 422: %s", keysPath, resp.StatusCode, body)
+	}
+	keys, err := orgSvc.KeysForProject(context.Background(), proj.ID)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("KeysForProject after kind=legacy POST = %+v, err=%v, want none", keys, err)
+	}
+}
+
+// TestProjectSettingsKeyCreateKind — выбранный тип доезжает до БД.
+func TestProjectSettingsKeyCreateKind(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "keykind-agent-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "keykind-agent-co", "KeyKindAgent Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "keykind-agent-proj", "KeyKindAgent Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	keysPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/keys"
+
+	resp := postForm(t, s.srv, keysPath, url.Values{"kind": {"agent"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (kind=agent) status = %d, want 303", keysPath, resp.StatusCode)
+	}
+	keys, err := orgSvc.KeysForProject(context.Background(), proj.ID)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("KeysForProject after kind=agent POST = %+v, err=%v, want 1 key", keys, err)
+	}
+	if keys[0].Kind != org.KindAgent {
+		t.Fatalf("created key Kind = %q, want %q", keys[0].Kind, org.KindAgent)
+	}
+}
+
+// TestProjectSettingsPageShowsKindsAndDSN — таблица показывает тип каждого
+// ключа и его СОБСТВЕННЫЙ DSN; отдельного «DSN проекта» на странице нет.
+func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "keykind-show-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "keykind-show-co", "KeyKindShow Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "keykind-show-proj", "KeyKindShow Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
+
+	newKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindBrowser, org.KindAgent)
+	if err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	var browserKey, agentKey org.Key
+	for _, k := range newKeys {
+		switch k.Kind {
+		case org.KindBrowser:
+			browserKey = k
+		case org.KindAgent:
+			agentKey = k
+		}
+	}
+	if browserKey.ID == 0 || agentKey.ID == 0 {
+		t.Fatalf("CreateKeys did not return both kinds: %+v", newKeys)
+	}
+	// legacy-ключ через UI не выпускается (шаг блокируется обработчиком), но
+	// на уровне сервиса kind.Valid() пропускает legacy — им и пользовались
+	// ключи, выпущенные ДО появления типов. Заводим такой напрямую.
+	legacyKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindLegacy)
+	if err != nil {
+		t.Fatalf("create legacy key: %v", err)
+	}
+	legacyKey := legacyKeys[0]
+
+	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", settingsPath, resp.StatusCode, body)
+	}
+	html := string(body)
+
+	browserDSN := "://" + browserKey.PublicKey + "@"
+	if !strings.Contains(html, browserDSN) {
+		t.Fatalf("GET %s missing browser key DSN %q: %s", settingsPath, browserDSN, html)
+	}
+	agentDSN := "://" + agentKey.PublicKey + "@"
+	if !strings.Contains(html, agentDSN) {
+		t.Fatalf("GET %s missing agent key DSN %q: %s", settingsPath, agentDSN, html)
+	}
+	legacyDSN := "://" + legacyKey.PublicKey + "@"
+	if !strings.Contains(html, legacyDSN) {
+		t.Fatalf("GET %s missing legacy key DSN %q: %s", settingsPath, legacyDSN, html)
+	}
+	if !strings.Contains(html, "Браузер") && !strings.Contains(html, "Browser") {
+		t.Fatalf("GET %s missing browser kind label: %s", settingsPath, html)
+	}
+	if !strings.Contains(html, "Агент") && !strings.Contains(html, "Agent") {
+		t.Fatalf("GET %s missing agent kind label: %s", settingsPath, html)
+	}
+	if !strings.Contains(html, "/docs/keys") {
+		t.Fatalf("GET %s missing legacy hint link to /docs/keys: %s", settingsPath, html)
+	}
+}
+
+// TestProjectSettingsRevokeLastOfKindWarns — подтверждение отзыва последнего
+// ЖИВОГО ключа своего типа предупреждает, что приём этого класса телеметрии
+// остановится; при наличии второго живого ключа того же типа — обычный
+// текст.
+func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "keykind-warn-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "keykind-warn-co", "KeyKindWarn Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "keykind-warn-proj", "KeyKindWarn Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	revokePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/keys/revoke"
+
+	// Единственный живой ключ типа agent -> предупреждение.
+	soleKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindAgent)
+	if err != nil {
+		t.Fatalf("create sole agent key: %v", err)
+	}
+	soleKey := soleKeys[0]
+	resp := postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(soleKey.ID, 10)}}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (sole agent key) status = %d, want 200: %s", revokePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "confirm.key_revoke.last_of_kind.message") &&
+		!strings.Contains(string(body), "последний активный ключ") {
+		t.Fatalf("POST %s (sole agent key) missing last-of-kind warning: %s", revokePath, body)
+	}
+
+	// Второй живой ключ того же типа -> обычный текст, без предупреждения.
+	pairKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer, org.KindServer)
+	if err != nil {
+		t.Fatalf("create two server keys: %v", err)
+	}
+	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(pairKeys[0].ID, 10)}}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (paired server key) status = %d, want 200: %s", revokePath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "confirm.key_revoke.last_of_kind.message") ||
+		strings.Contains(string(body), "последний активный ключ") {
+		t.Fatalf("POST %s (paired server key) unexpectedly shows last-of-kind warning: %s", revokePath, body)
+	}
+}
