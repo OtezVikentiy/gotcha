@@ -144,6 +144,27 @@ The two key-rejection metrics deliberately coexist: one is narrow and exact
 about the key itself, the other is broad and comparable across telemetry
 signals.
 
+**`gotcha_ingest_deprecated_path_total{path="…"}`** — requests that arrived on
+an ingest path that has been replaced. Three intake endpoints moved into
+gotcha's own `/api/v1/*` namespace; the old paths still work, but every request
+to them is counted here and answered with `Deprecation` and
+`Link; rel="deprecation"` response headers. `path` is a closed set:
+
+| `path` | Send to instead |
+|---|---|
+| `/logs` | `/api/v1/logs` |
+| `/profiles/pprof` | `/api/v1/profiles/pprof` |
+| `/api/{project}/deployments/` | `/api/v1/{project}/deployments` |
+
+Watch it after upgrading: a non-zero rate means some sender still uses a path
+that will be removed. Once every series here stays flat at zero, you are safe
+for 1.0.
+
+**This metric is temporary.** It exists only to make that check mechanical, and
+it will be removed in 1.0 together with the deprecated paths themselves. Do not
+build a long-lived dashboard or alert on it — unlike the rest of the metrics on
+this page, its name is not part of the 1.0 observability contract.
+
 **`gotcha_pipeline_dropped_tasks_total{reason="…"}`** — events and transactions
 the pipeline threw away. Also unrecoverable. The `reason` label tells you what to
 fix:

@@ -1262,6 +1262,24 @@ func run() error {
 				map[string]string{"reason": string(p.Reason), "signal": string(p.Signal)},
 				func() int64 { return ingestHandler.RejectedBy(p.Reason, p.Signal) })
 		}
+		// E1: три собственных входа приёма переехали в /api/v1/*, старые пути
+		// оставлены алиасами до 1.0 (см. ingest.DeprecatedPath). Счётчик отвечает
+		// на единственный вопрос — какой из удаляемых путей ещё принимает трафик,
+		// — чтобы проверка перед удалением алиасов была механической, а не
+		// «вроде все переехали». Метка path, а не signal: вопрос про ПУТЬ, и
+		// ответ на него не должен требовать похода в доку за соответствием
+		// «сигнал → путь».
+		//
+		// Метрика ВРЕМЕННАЯ: она исчезает вместе с алиасами в 1.0. Это сказано
+		// и в /docs/self-monitoring обеих локалей, и в CHANGELOG — вводить имя
+		// self-метрики молча и удалять его через релиз значило бы сломать
+		// контракт наблюдаемости, который мы сами же и заморозили.
+		for _, p := range ingest.DeprecatedPaths() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_deprecated_path_total",
+				"Requests that arrived on a deprecated ingest path, kept working as an alias until 1.0. TEMPORARY: this metric is removed together with the aliases.",
+				map[string]string{"path": string(p)},
+				func() int64 { return ingestHandler.DeprecatedPathHits(p) })
+		}
 		ingestHandler.Scrub = scrubber // RA-5: тем же скрабером чистим атрибуты метрик
 		// Ограничитель кардинальности: один экземпляр на процесс, общий для всех
 		// путей приёма — иначе один и тот же проект набирал бы отдельные наборы
