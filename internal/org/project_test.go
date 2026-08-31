@@ -335,10 +335,11 @@ func TestDeleteProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	key, err := svc.CreateKey(ctx, proj.ID)
+	keys, err := svc.CreateKeys(ctx, proj.ID, org.KindServer)
 	if err != nil {
-		t.Fatalf("CreateKey: %v", err)
+		t.Fatalf("CreateKeys: %v", err)
 	}
+	key := keys[0]
 	// Монитор — прямой FK на projects с ON DELETE CASCADE: проверяем, что после
 	// удаления проекта не остаётся осиротевших мониторов (иначе uptime-раннер
 	// продолжил бы их дёргать).

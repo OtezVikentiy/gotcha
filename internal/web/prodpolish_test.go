@@ -66,8 +66,9 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	keysPath := settingsPath + "/keys"
 	revokePath := keysPath + "/revoke"
 
-	// Создаём живой ключ, чтобы в таблице появилась кнопка Revoke.
-	resp := postForm(t, s.srv, keysPath, url.Values{}, s.srv.URL, ownerCookie)
+	// Создаём живой ключ, чтобы в таблице появилась кнопка Revoke. Форма
+	// выбора типа появится в Task 4 — здесь шлём kind напрямую.
+	resp := postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

@@ -75,10 +75,11 @@ func setupOrgWithTeamMember(t *testing.T, s *issuesStack) tenancyRevokeEnv {
 		t.Fatalf("attach team: %v", err)
 	}
 
-	key, err := s.org.CreateKey(ctx, proj.ID)
+	keys, err := s.org.CreateKeys(ctx, proj.ID, org.KindServer)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
+	key := keys[0]
 
 	// Проблема нужна для проверки поверхности «мутация статуса»
 	// (POST /issues/{id}/status) — заводится тем же приёмом, что и в

@@ -135,10 +135,11 @@ func TestWebHostsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	key, err := s.org.CreateKey(ctx, project.ID)
+	keys, err := s.org.CreateKeys(ctx, project.ID, org.KindAgent)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
+	key := keys[0]
 
 	now := time.Now().UTC()
 
@@ -247,7 +248,7 @@ func TestWebHostsListAgentDistUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if _, err := s.org.CreateKey(ctx, project.ID); err != nil {
+	if _, err := s.org.CreateKeys(ctx, project.ID, org.KindAgent); err != nil {
 		t.Fatalf("create key: %v", err)
 	}
 
@@ -296,7 +297,7 @@ func TestWebHostsListAgentInsecureBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if _, err := s.org.CreateKey(ctx, project.ID); err != nil {
+	if _, err := s.org.CreateKeys(ctx, project.ID, org.KindAgent); err != nil {
 		t.Fatalf("create key: %v", err)
 	}
 
@@ -1222,10 +1223,11 @@ func TestWebHostsListEmptyStateOnboardingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	key, err := s.org.CreateKey(ctx, project.ID)
+	keys, err := s.org.CreateKeys(ctx, project.ID, org.KindAgent)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
+	key := keys[0]
 
 	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
 	resp := getWithCookie(t, s.srv, base, ownerCookie)

@@ -105,8 +105,9 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("GET %s unexpectedly has a DSN before any key created: %s", settingsPath, body)
 	}
 
-	// POST keys create -> 303, ключ появился.
-	resp = postForm(t, s.srv, keysPath, url.Values{}, s.srv.URL, ownerCookie)
+	// POST keys create -> 303, ключ появился. Форма выбора типа появится в
+	// Task 4 — здесь шлём kind напрямую, как это будет делать та форма.
+	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -131,10 +132,11 @@ func TestWebProjectSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other project: %v", err)
 	}
-	otherKey, err := orgSvc.CreateKey(context.Background(), otherProj.ID)
+	otherKeys, err := orgSvc.CreateKeys(context.Background(), otherProj.ID, org.KindServer)
 	if err != nil {
 		t.Fatalf("create other key: %v", err)
 	}
+	otherKey := otherKeys[0]
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "key_id": {strconv.FormatInt(otherKey.ID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -154,7 +156,7 @@ func TestWebProjectSettings(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303", revokePath, resp.StatusCode)
 	}
-	resp = postForm(t, s.srv, keysPath, url.Values{}, s.srv.URL, ownerCookie)
+	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

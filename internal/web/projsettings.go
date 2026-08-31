@@ -287,10 +287,23 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
+	orgID, ok := h.requireProjectRole(w, r, projectID, uid)
+	if !ok {
 		return
 	}
-	if _, err := h.Org.CreateKey(r.Context(), projectID); err != nil {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	kind := org.KeyKind(r.FormValue("kind"))
+	// legacy через UI не выпускается: это тип ключей, выпущенных ДО появления
+	// типов, и его полный допуск — совместимость, а не предлагаемый выбор.
+	if kind == org.KindLegacy || !kind.Valid() {
+		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID,
+			i18n.T(r.Context(), "error.key_kind.invalid"), nil, nil)
+		return
+	}
+	if _, err := h.Org.CreateKeys(r.Context(), projectID, kind); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}

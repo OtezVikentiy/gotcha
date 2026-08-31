@@ -112,10 +112,11 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 		t.Errorf("GET %s (no key): нет подсказки про выпуск ключа: %s", path, body)
 	}
 
-	key, err := orgSvc.CreateKey(context.Background(), proj.ID)
+	keys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
+	key := keys[0]
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()

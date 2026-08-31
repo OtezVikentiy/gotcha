@@ -105,8 +105,20 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keys for project: %v", err)
 	}
-	if len(keys) != 1 || keys[0].Revoked {
-		t.Fatalf("keys for project = %+v, want exactly one live key", keys)
+	// Онбординг выпускает сразу три ключа — по одному на класс источника
+	// (browser/server/agent) — страница setup показывает DSN первого живого,
+	// то есть browser (см. firstLiveKey в onboarding.go).
+	if len(keys) != 3 {
+		t.Fatalf("keys for project = %+v, want exactly three keys", keys)
+	}
+	wantKinds := []org.KeyKind{org.KindBrowser, org.KindServer, org.KindAgent}
+	for i, k := range keys {
+		if k.Revoked {
+			t.Fatalf("keys for project = %+v, want no revoked keys", keys)
+		}
+		if k.Kind != wantKinds[i] {
+			t.Fatalf("keys for project = %+v, want kinds %v", keys, wantKinds)
+		}
 	}
 	publicKey := keys[0].PublicKey
 

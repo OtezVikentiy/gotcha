@@ -131,7 +131,8 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
+	if _, err := h.Org.CreateKeys(r.Context(), p.ID,
+		org.KindBrowser, org.KindServer, org.KindAgent); err != nil {
 		h.compensateOrgCreate(r, o.ID)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -195,15 +196,17 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Дальше — то же, что делает онбординг для своего первого проекта: правила
-	// алертинга по умолчанию и первый ключ приёма. Без ключа страница
-	// подключения SDK показала бы проект без DSN, то есть бесполезный.
+	// алертинга по умолчанию и три ключа приёма, по одному на класс источника.
+	// Без ключей страница подключения SDK показала бы проект без DSN, то есть
+	// бесполезный.
 	if h.Alerts != nil {
 		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 	}
-	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
+	if _, err := h.Org.CreateKeys(r.Context(), p.ID,
+		org.KindBrowser, org.KindServer, org.KindAgent); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
