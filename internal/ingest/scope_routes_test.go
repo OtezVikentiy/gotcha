@@ -109,7 +109,16 @@ func TestIngestRoutesScopeGated(t *testing.T) {
 			fr := &fakeResolver{keys: map[string]org.Key{
 				"k": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "k", Kind: kind},
 			}}
-			h := NewHandler(NewKeyCache(fr), nil, nil, 1<<20)
+			// Пайплайн — НЕ nil: при снятом (в мутационной проверке) гейте
+			// скоупа otlp-маршруты уходят вглубь обработчика и обращаются к
+			// h.Pipeline (например, Pipeline.TracingEnabled в otlpTraces).
+			// С nil-пайплайном это паника без recover, которая убивает весь
+			// процесс go test — тогда при снятом гейте падает и отчитывается
+			// только ПЕРВЫЙ маршрут таблицы, а остальные шесть подтестов
+			// просто не запускаются, и сторож перестаёт называть виновника.
+			// NewPipeline(nil, nil) достаточно: до записи дело не доходит,
+			// гейт (когда он на месте) отбивает запрос раньше.
+			h := NewHandler(NewKeyCache(fr), nil, NewPipeline(nil, nil), 1<<20)
 			mux := http.NewServeMux()
 			h.Register(mux)
 
