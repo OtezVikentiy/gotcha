@@ -314,4 +314,27 @@ func TestOTLPMetricsHostScope(t *testing.T) {
 			t.Fatalf("gotcha_host_registrations_scope_skipped_total = %d, ожидалась 0 (батч без host.*)", got)
 		}
 	})
+
+	// server/несколько точек одного хоста — счётчик считает ЭКСПОРТЫ, а не
+	// точки: реальный экспорт коллектора несёт сотни точек одного хоста, и
+	// без break по первой найденной счётчик прыгал бы на сотни за один
+	// экспорт, тогда как имя, докблок и доки обещают «экспорты».
+	t.Run("server несколько точек одного хоста", func(t *testing.T) {
+		sink := &collectMetricSink{}
+		hosts := newFakeHostRegistry()
+		h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindServer}}), nil, nil, 1<<20)
+		h.Metrics = sink
+		h.Hosts = hosts
+
+		w := postOTLPMetrics(t, h, []*metricspb.ResourceMetrics{
+			resourceMetricWithHost("web-1", "cpu"),
+			resourceMetricWithHost("web-1", "mem"),
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if got := h.HostScopeSkipped(); got != 1 {
+			t.Fatalf("gotcha_host_registrations_scope_skipped_total = %d, ожидалась 1 (один экспорт, а не число точек)", got)
+		}
+	})
 }
