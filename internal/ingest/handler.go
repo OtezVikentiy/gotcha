@@ -388,7 +388,10 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 //
 // nil-квота (не сконфигурирована) и сбой счётчика → fail-open: терять данные
 // из-за сбоя квот хуже, чем иногда пропустить организацию сверх квоты.
-func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, kind string, want int) int {
+//
+// quotaKind — вид телеметрии для КВОТЫ (event/transaction/...); не путать с
+// org.KeyKind, типом ключа приёма.
+func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, quotaKind string, want int) int {
 	if want <= 0 {
 		return 0
 	}
@@ -398,7 +401,7 @@ func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, kind s
 	granted, err := q.CheckAndCount(ctx, orgID, int64(want))
 	if err != nil {
 		slog.Warn("ingest: quota check failed, allowing items",
-			"org_id", orgID, "kind", kind, "want", want, "error", err)
+			"org_id", orgID, "kind", quotaKind, "want", want, "error", err)
 		return want
 	}
 	return int(granted)
