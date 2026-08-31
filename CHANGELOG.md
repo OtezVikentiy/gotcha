@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't recognize `enc:v2:...` as ciphertext, treats it as a legacy plain
   secret, and sends it out as-is — delivery channel and SSO integrations
   will silently break. Roll forward only.
+- **During a rolling deploy, keep secret key rotation off until every
+  instance is on this version.** An old binary running alongside a new one
+  doesn't understand `enc:v2:...` either: it hands the value back as-is as
+  if it were live, and writes fresh secrets in the old format, bypassing the
+  backfill the new binary already ran.
 
 ## [0.24.0] - 2026-08-28
 

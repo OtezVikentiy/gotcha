@@ -44,27 +44,92 @@ Encrypted values carry the fingerprint of the key that sealed them
 (`enc:v2:<key-id>:...`), so rotation is a managed, reversible procedure
 rather than a one-shot secret swap:
 
+**Rotate only once the whole fleet is running the version that has this
+procedure.** During a rolling deploy, an old binary sitting next to the new
+one doesn't understand the `enc:v2:...` format: it hands it back as-is as if
+it were the live secret, and writes fresh values in the old format,
+bypassing the backfill that already ran. Start rotation only once the
+rollout has reached 100% of the fleet.
+
 1. Set `GOTCHA_SECRET_KEY_PREV=<old key>` and the new
-   `GOTCHA_SECRET_KEY=<new key>`, then restart the instance. On boot,
-   everything readable (SSO client secrets, channel tokens, monitor headers)
-   is re-encrypted under the new key; the outcome for each of the three
-   stores is logged, along with the key-ring IDs, in a line like:
+   `GOTCHA_SECRET_KEY=<new key>`, then restart the instance. Right on boot, a
+   line with the key-ring IDs is logged — it reports the ring's composition,
+   not the outcome of re-encryption:
 
    ```
    INFO secretbox keyring ready current_key_id=<new-id> previous_key_id=<old-id> rotation_in_progress=true
    ```
 
-   `current_key_id` is the new key; `previous_key_id` is the `<old-id>`
-   you'll need in the next step.
-2. Confirm the log lines show zero skipped values, then check the database
-   directly to make sure no envelopes with the old key ID remain (`<old-id>`
-   comes from the log in step 1):
+   `current_key_id` (`<new-id>`) is the new key — that's the one you'll need
+   in the next step. `previous_key_id`, together with
+   `rotation_in_progress=true`, is only here to confirm the ring actually
+   came up with two keys. Right after, everything readable (SSO client
+   secrets, channel tokens, monitor headers) is re-encrypted under the new
+   key; the actual outcome is one line per store:
+
+   ```
+   INFO org: rewrap secrets backfill complete updated=<N> unreadable=<N>
+   INFO alert: rewrap secrets backfill complete updated=<N> unreadable=<N>
+   INFO uptime: rewrap secrets done updated=<N> unreadable_skipped=<N>
+   ```
+
+   Note the field name differs: uptime uses `unreadable_skipped`, the other
+   two use `unreadable`.
+2. A nonzero `unreadable`/`unreadable_skipped` isn't an emergency — that's
+   what a secret that lost both keys looks like — but it means some secrets
+   need re-entering through the UI before you remove `PREV`.
+
+   Separately from that counter, the same run may log WARN-level lines.
+   Three of them mean a SINGLE row was left behind — one text per store:
+
+   ```
+   WARN alert: rewrap channel secret: update failed
+   WARN org: rewrap sso secret: update failed
+   WARN uptime: rewrap secrets: update monitor failed
+   ```
+
+   This is a secret that was readable and should have moved to the new key,
+   but the targeted `UPDATE` for it didn't land because of a SQL failure.
+   That line is counted in neither `unreadable` nor `unreadable_skipped` —
+   the counters look clean while the secret is still sitting on the old key.
+   (There's a second reason an `UPDATE` can miss — a concurrent write moved
+   the row between the read and the update, a CAS miss — but that one isn't
+   logged at any level at all, and the only way to tell it apart from
+   "already fully migrated" is the query below.)
+
+   A whole pass over a store can fail too — `rewrap org sso secrets failed`,
+   `rewrap alert channel secrets failed`, `rewrap monitor header secrets
+   failed`. That's worse than a single row: the store wasn't processed at
+   all, and its summary INFO line won't be in the log — you'll be one line
+   short of the three in step 1.
+
+   If you see any of these lines, don't move to step 3 yet — just restart
+   the instance again (step 1 again): the backfill is idempotent, so the
+   next pass picks up what was left behind.
+
+   Then check the database directly to make sure nothing is left that isn't
+   on the new key yet (`<new-id>` comes from the `secretbox keyring ready`
+   line in step 1). This check is version-neutral: it also catches the very
+   oldest envelope format, `enc:<b64>` with no key ID at all, which is what
+   an existing installation's entire database looks like before its very
+   first rotation (a check for `LIKE 'enc:v2:<old-id>:%'` would never have
+   matched that):
 
    ```sql
-   SELECT count(*) FROM alert_channels WHERE secret LIKE 'enc:v2:<old-id>:%';
-   SELECT count(*) FROM org_sso WHERE client_secret LIKE 'enc:v2:<old-id>:%';
-   SELECT count(*) FROM monitors WHERE config::text LIKE '%enc:v2:<old-id>:%';
+   SELECT count(*) FROM alert_channels WHERE secret LIKE 'enc:%' AND secret NOT LIKE 'enc:v2:<new-id>:%';
+   SELECT count(*) FROM org_sso WHERE client_secret LIKE 'enc:%' AND client_secret NOT LIKE 'enc:v2:<new-id>:%';
+   SELECT count(*) FROM monitors WHERE kind = 'http' AND config::text ~ 'enc:(?!v2:<new-id>:)';
    ```
+
+   The third query uses a negative-lookahead regex (PostgreSQL supports
+   `(?!...)` for `~` by default). `monitors.config` is JSON that can hold
+   several header values in one row; a plain `NOT LIKE 'enc:v2:<new-id>:%'`,
+   like the two queries above use, wouldn't work here — a row with one
+   header already on the new key and another still on the old one would
+   read as falsely clean, because that comparison matches the whole string,
+   not each value separately. The query above catches exactly that row: it
+   fires if the row contains even one `enc:` occurrence not followed by
+   `v2:<new-id>:`.
 
    All three should return `0`.
 3. Remove `GOTCHA_SECRET_KEY_PREV` and restart again. The key ring is back to
