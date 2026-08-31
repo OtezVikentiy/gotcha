@@ -1152,7 +1152,7 @@
     "error.onboarding.failed": "Не удалось создать организацию или проект",
     "error.monitor.save_failed": "Не удалось сохранить монитор",
     "error.project.invalid_name": "Имя проекта не должно быть пустым",
-    "error.key_kind.invalid": "Выберите тип ключа.",
+    "error.key_kind.invalid": "Выберите тип ключа",
     "error.statuspage.invalid": "Недопустимая статус-страница: slug из латиницы, цифр и дефисов, заголовок не пустой",
     "error.statuspage.rate_limited": "Слишком много попыток создания статус-страниц, повторите через минуту",
     "error.team.cross_org_project": "Проект принадлежит другой организации",

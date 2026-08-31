@@ -1152,7 +1152,7 @@
     "error.onboarding.failed": "Could not create organization or project",
     "error.monitor.save_failed": "Could not save monitor",
     "error.project.invalid_name": "Project name must not be empty",
-    "error.key_kind.invalid": "Select a key type.",
+    "error.key_kind.invalid": "Select a key type",
     "error.statuspage.invalid": "Invalid status page: slug must be latin letters, digits and hyphens, title must not be empty",
     "error.statuspage.rate_limited": "Too many status-page attempts, try again in a minute",
     "error.team.cross_org_project": "Project belongs to another organization",
