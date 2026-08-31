@@ -4,7 +4,6 @@ package alert
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -99,7 +98,7 @@ func (c Channel) Deliverable() bool { return c.Enabled && !c.SecretBroken }
 // Service — CRUD над правилами и каналами алертинга.
 type Service struct {
 	pool         *pgxpool.Pool
-	secretKey    [32]byte
+	ring         secretbox.Keyring
 	secretKeySet bool
 
 	// Пер-проектный потолок уведомлений (см. budget.go). budgetSet отличает
@@ -109,15 +108,12 @@ type Service struct {
 	budgetSet    bool
 }
 
-// SetSecretKey включает шифрование секретов каналов (Telegram bot-токен, HMAC-
-// ключ webhook) at-rest тем же мастер-ключом, что и SSO client_secret. Пустой
-// ключ (dev) → секреты хранятся plaintext (openSecret/Open распознаёт это по
-// отсутствию префикса "enc:"). Ставится из main.go.
-func (s *Service) SetSecretKey(raw string) {
-	if raw == "" {
-		return
-	}
-	s.secretKey = sha256.Sum256([]byte(raw))
+// SetKeyring включает шифрование секретов каналов (Telegram bot-токен, HMAC-
+// ключ webhook) at-rest тем же кольцом ключей, что и SSO client_secret. Не
+// вызывается вовсе для dev-стендов — секреты остаются plaintext (Keyring.Open
+// распознаёт это по отсутствию префикса "enc:"). Ставится из main.go.
+func (s *Service) SetKeyring(ring secretbox.Keyring) {
+	s.ring = ring
 	s.secretKeySet = true
 }
 
@@ -321,7 +317,7 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 		// Расшифровываем секрет, если задан мастер-ключ (legacy plaintext без
 		// префикса "enc:" Open вернёт как есть — совместимость со старыми записями).
 		if s.secretKeySet {
-			secret, err := secretbox.Open(s.secretKey, c.Secret)
+			secret, err := s.ring.Open(c.Secret)
 			if err != nil {
 				// Деградируем ПОКАНАЛЬНО, а не роняем весь список: один
 				// нерасшифруемый секрет (сменившийся или потерянный
@@ -372,7 +368,7 @@ func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 	// пустого ключа — читатель распознаёт по отсутствию префикса "enc:").
 	storedSecret := c.Secret
 	if s.secretKeySet {
-		sealed, err := secretbox.Seal(s.secretKey, c.Secret)
+		sealed, err := s.ring.Seal(c.Secret)
 		if err != nil {
 			return 0, fmt.Errorf("alert: seal channel secret: %w", err)
 		}
@@ -420,7 +416,7 @@ func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, e
 		}
 		return secret, nil
 	}
-	open, err := secretbox.Open(s.secretKey, secret)
+	open, err := s.ring.Open(secret)
 	if err != nil {
 		return "", fmt.Errorf("alert: channel %d secret cannot be decrypted: %w", channelID, err)
 	}
@@ -457,7 +453,7 @@ func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 
 	stored := c.Secret
 	if s.secretKeySet {
-		sealed, err := secretbox.Seal(s.secretKey, c.Secret)
+		sealed, err := s.ring.Seal(c.Secret)
 		if err != nil {
 			return fmt.Errorf("alert: seal channel secret: %w", err)
 		}

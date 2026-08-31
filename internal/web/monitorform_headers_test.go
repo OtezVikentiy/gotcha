@@ -10,8 +10,21 @@ import (
 	"strings"
 	"testing"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
+
+// mustKeyring — тестовый шорткат: однокелевое кольцо шифрования из raw.
+// NewKeyring отказывает только на пустом current — тестовые мастер-ключи
+// здесь всегда заданы литералом, поэтому ошибка означала бы баг теста.
+func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
+	t.Helper()
+	ring, err := secretbox.NewKeyring(raw, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(%q): %v", raw, err)
+	}
+	return ring
+}
 
 // createHeaderMonitor заводит http-монитор с заголовками через сервис (как это
 // делает владелец), чтобы затем править его по HTTP уже под оператором.
@@ -82,7 +95,7 @@ func operatorUpdateForm(target, headers string) url.Values {
 // HTML не попадает. Владелец (canManageProject) видит реальное значение.
 func TestWebMonitorEditOperatorMasksHeaderValues(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monhdrmask")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",
@@ -121,7 +134,7 @@ func TestWebMonitorEditOperatorMasksHeaderValues(t *testing.T) {
 // сохраняется, а не затирается.
 func TestWebMonitorUpdateOperatorKeepsBlankHeader(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, _, memberCookie := ownerAndMember(t, s, "monhdrkeep")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",
@@ -146,7 +159,7 @@ func TestWebMonitorUpdateOperatorKeepsBlankHeader(t *testing.T) {
 // меняется (иначе токен уехал бы на новый, возможно чужой, хост).
 func TestWebMonitorUpdateOperatorURLChangeBlocksHeaderExfil(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, _, memberCookie := ownerAndMember(t, s, "monhdrexfil")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",
@@ -172,7 +185,7 @@ func TestWebMonitorUpdateOperatorURLChangeBlocksHeaderExfil(t *testing.T) {
 // вводит значение заголовка заново → разрешено (303), применяется.
 func TestWebMonitorUpdateOperatorURLChangeWithFreshHeaders(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, _, memberCookie := ownerAndMember(t, s, "monhdrfresh")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",
@@ -199,7 +212,7 @@ func TestWebMonitorUpdateOperatorURLChangeWithFreshHeaders(t *testing.T) {
 // и keep-on-blank — только для оператора.
 func TestWebMonitorUpdateAdminRepointsFreely(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, ownerCookie, _ := ownerAndMember(t, s, "monhdradmin")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",
@@ -229,7 +242,7 @@ func TestWebMonitorUpdateAdminRepointsFreely(t *testing.T) {
 // пустым — апдейт проходит (303), URL меняется, значение заголовка пусто.
 func TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, _, memberCookie := ownerAndMember(t, s, "monhdrnosecret")
 
 	// Монитор без заголовков вовсе.
@@ -262,7 +275,7 @@ func TestWebMonitorUpdateOperatorURLChangeNoStoredSecretAllowed(t *testing.T) {
 // заголовок в исходящих запросах). Теперь — 422, ничего не меняется.
 func TestWebMonitorUpdateOperatorMaskedNewHeaderWithoutStoredRejected(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, _, memberCookie := ownerAndMember(t, s, "monhdrmasknonew")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health", nil)
@@ -293,7 +306,7 @@ func TestWebMonitorUpdateOperatorMaskedNewHeaderWithoutStoredRejected(t *testing
 // нетронутым: секрет остаётся под старым именем "Authorization".
 func TestWebMonitorUpdateOperatorRenamedMaskedHeaderRejected(t *testing.T) {
 	s := newMonitorFormStack(t)
-	s.uptime.SetSecretKey("test-master-key-A2b")
+	s.uptime.SetKeyring(mustKeyring(t, "test-master-key-A2b"))
 	proj, _, memberCookie := ownerAndMember(t, s, "monhdrrename")
 
 	created := createHeaderMonitor(t, s, proj.ID, "https://api.example.com/health",

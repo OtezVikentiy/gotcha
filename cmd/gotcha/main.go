@@ -37,6 +37,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
@@ -487,6 +488,16 @@ func run() error {
 	pgUsedBytes := registerUsedBytesMetric(&selfMetrics, "postgres", pgUsedBytesSource{pool: pg})
 	go pgUsedBytes.Run(ctx)
 
+	// Кольцо at-rest ключей — одно на процесс, раздаётся всем сервисам, которые
+	// шифруют секреты (SSO client_secret, alert-каналы, HTTP-заголовки
+	// мониторов). Не строится здесь: и сборка (secretbox.NewKeyring из
+	// cfg.SecretKey/SecretKeyPrev), и раздача — в wireSecretRing ниже, ПОСЛЕ
+	// того как построены все три сервиса-потребителя (блоки ниже). Собраны в
+	// одну функцию, а не оставлены инлайном в run(), — так обе половины
+	// «проводки кольца» можно проверить тестом отдельно от bootstrap; см.
+	// docstring wireSecretRing про то, какие два регресса раньше проходили
+	// мимо CI незамеченными.
+
 	// Общие сервисы нужны и ingest-у, и web-у — строим один раз на любой
 	// активный режим, а не дублируем на каждый. alertSvc/emailSender/outbox
 	// тоже общие: ingest использует их для срабатывания правил
@@ -502,20 +513,12 @@ func run() error {
 	if commonServicesEnabled(cfg.Mode) {
 		orgSvc = org.NewService(pg, cfg.DefaultEventQuota)
 		orgSvc.SetQuotaDefaults(cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
-		// SSO client_secret шифруется этим мастер-ключом at-rest. С публично
-		// известным dev-дефолтом шифровать бессмысленно — ключ виден в исходниках,
-		// а «enc:»-значение давало бы ложное чувство защиты (Info21). Тогда
-		// оставляем plaintext, как при пустом ключе. На не-localhost web/all
-		// дефолтный ключ и так отбивается валидацией конфига, поэтому в реальном
-		// проде сюда приходит настоящий ключ и шифрование включается.
-		if cfg.SecretKey != devSecretKey {
-			orgSvc.SetSecretKey(cfg.SecretKey)
-		}
+		// Кольцо at-rest ключей (SSO client_secret) раздаётся не здесь, а
+		// централизованно в wireSecretRing ниже, после того как построены все
+		// сервисы — см. её docstring про rationale (Info21) и про то, почему
+		// это единственная точка раздачи, а не по вызову на конструктор.
 		issueSvc = issue.NewService(pg)
 		alertSvc = alert.NewService(pg)
-		if cfg.SecretKey != devSecretKey {
-			alertSvc.SetSecretKey(cfg.SecretKey)
-		}
 		alertSvc.SetBudget(time.Duration(cfg.AlertBudgetWindowSeconds)*time.Second, cfg.AlertBudgetLimit)
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
@@ -553,25 +556,11 @@ func run() error {
 	var uptimeIngestor *uptime.Ingestor
 	if cfg.Mode == "web" || cfg.Mode == "uptime" || cfg.Mode == "all" {
 		uptimeSvc = uptime.NewService(pg)
-		// Значения HTTP-заголовков монитора шифруются этим мастер-ключом at-rest
-		// (той же логикой, что секреты каналов alert и SSO client_secret): роль
-		// operator не должна вычитывать из БД bearer-токены в заголовках. Dev-
-		// дефолт публично известен — шифровать им бессмысленно, оставляем
-		// plaintext, как для пустого ключа (см. orgSvc/alertSvc выше).
-		if cfg.SecretKey != devSecretKey {
-			uptimeSvc.SetSecretKey(cfg.SecretKey)
-			// Второй эшелон A2a: разово дошифровать заголовки мониторов,
-			// сохранённых ДО включения шифрования (штатный переход ленивый — при
-			// следующем Update монитора). Идемпотентно (уже-enc: не трогает) и
-			// race-safe между репликами. Не фатально: ленивый путь и маска на
-			// чтении держат защиту и без бэкфилла, поэтому ошибку логируем, а не
-			// роняем старт.
-			if n, err := uptimeSvc.EncryptLegacyHeaders(ctx); err != nil {
-				slog.Warn("encrypt legacy monitor headers failed", "err", err)
-			} else if n > 0 {
-				slog.Info("encrypted legacy monitor headers", "monitors", n)
-			}
-		}
+		// Кольцо at-rest ключей (заголовки HTTP-мониторов) раздаётся не здесь —
+		// см. wireSecretRing ниже. Бэкфилл (второй эшелон, разово дошифровать
+		// заголовки мониторов, сохранённых ДО включения шифрования) тоже не
+		// запускается тут же — все три прохода собраны в rewrapAllSecrets
+		// ниже, после того как кольцо роздано ВСЕМ сервисам.
 		// Имя встроенного региона — конфигурируемое: Service.Regions предлагает
 		// его в форме монитора, и оно обязано совпадать с тем, которое лизит
 		// Runner ниже, иначе монитор попал бы в регион, который не проверяет
@@ -588,9 +577,6 @@ func run() error {
 		// runs on its own.
 		if alertSvc == nil {
 			alertSvc = alert.NewService(pg)
-			if cfg.SecretKey != devSecretKey {
-				alertSvc.SetSecretKey(cfg.SecretKey)
-			}
 			alertSvc.SetBudget(time.Duration(cfg.AlertBudgetWindowSeconds)*time.Second, cfg.AlertBudgetLimit)
 		}
 		if outbox == nil {
@@ -634,6 +620,25 @@ func run() error {
 			Writer:   uptimeWriter,
 			OnResult: uptimeDetector.OnResult,
 		}
+	}
+
+	// Сборка кольца из cfg.SecretKey/SecretKeyPrev и раздача ВСЕМ трём
+	// сервисам — единой точкой (wireSecretRing), а не по вызову
+	// secretbox.NewKeyring + SetKeyring на каждый конструктор выше: та
+	// раскладка была невидима для теста (проверялось только поведение
+	// rewrapAllSecrets НАД уже собранным вручную в тесте кольцом, а не то,
+	// что сам bootstrap строит и раздаёт кольцо правильно), и два регресса —
+	// потерянный SecretKeyPrev при сборке кольца и пропущенная раздача
+	// одному из сервисов — проходили мимо CI. Обязательно ДО подъёма
+	// HTTP-слушателя и ДО бэкфилла ниже: итог по ротации обязан появиться в
+	// логе того же рестарта, а не следующего (design §6/§7). Без ключа
+	// (dev-дефолт) кольца нет и раздавать нечего — см. rationale (Info21) в
+	// докстринге wireSecretRing.
+	if cfg.SecretKey != devSecretKey {
+		if _, err := wireSecretRing(cfg.SecretKey, cfg.SecretKeyPrev, orgSvc, alertSvc, uptimeSvc); err != nil {
+			return err
+		}
+		rewrapAllSecrets(ctx, orgSvc, alertSvc, uptimeSvc)
 	}
 
 	// Планировщик — в любом процессе, у которого есть uptimeSvc, а не только
@@ -1526,6 +1531,87 @@ func run() error {
 		}
 		drain()
 		return nil
+	}
+}
+
+// wireSecretRing — единая точка «проводки» кольца at-rest ключей: и сборка
+// (secretbox.NewKeyring из current/previous), и раздача всем трём сервисам,
+// которые шифруют секреты (SSO client_secret, alert-каналы, HTTP-заголовки
+// мониторов). Вынесена отдельной функцией из run() тем же приёмом, что и
+// rewrapAllSecrets ниже: обе половины проводки, размазанные инлайном по
+// run() (сборка кольца — до всех сервисов, раздача — по четырём местам их
+// конструирования, разным для разных --mode), были невидимы для теста —
+// TestRewrapAllSecretsRotationRoundTrip проверял только поведение
+// rewrapAllSecrets НАД уже вручную собранным в тесте кольцом, а не то, что
+// run() САМ строит и раздаёт кольцо правильно. Два регресса проходили с
+// зелёными build/vet/test молча: (1) секрет-ключ ротации собирался как
+// NewKeyring(cfg.SecretKey, "") — кольцо теряет предыдущий ключ, ротация
+// перестаёт работать без единого сигнала об этом; (2) один из четырёх
+// SetKeyring пропадал — соответствующий сервис не видит старый ключ на
+// время ротации. С публично известным dev-дефолтом шифровать бессмысленно —
+// ключ виден в исходниках, а «enc:»-значение давало бы ложное чувство
+// защиты (Info21), поэтому вызывающий (run()) зовёт эту функцию только
+// когда cfg.SecretKey != devSecretKey; здесь это не перепроверяется.
+//
+// nil-сервис пропускается молча — тем же контрактом, что у rewrapAllSecrets:
+// в части режимов процесса соответствующий сервис не строится вовсе.
+func wireSecretRing(current, previous string, orgSvc *org.Service, alertSvc *alert.Service, uptimeSvc *uptime.Service) (secretbox.Keyring, error) {
+	ring, err := secretbox.NewKeyring(current, previous)
+	if err != nil {
+		return secretbox.Keyring{}, fmt.Errorf("build secretbox keyring: %w", err)
+	}
+	// id ключей — не секрет, но без старого оператору неоткуда взять
+	// <old-id> для проверочного SELECT из процедуры ротации (privacy.md):
+	// previous_key_id логируется только пока ротация идёт (PreviousID
+	// пуст без предыдущего ключа), current_key_id — всегда.
+	slog.Info("secretbox keyring ready", "current_key_id", ring.CurrentID(),
+		"previous_key_id", ring.PreviousID(),
+		"rotation_in_progress", previous != "")
+	if orgSvc != nil {
+		orgSvc.SetKeyring(ring)
+	}
+	if alertSvc != nil {
+		alertSvc.SetKeyring(ring)
+	}
+	if uptimeSvc != nil {
+		uptimeSvc.SetKeyring(ring)
+	}
+	return ring, nil
+}
+
+// rewrapAllSecrets — бэкфилл секретов трёх хранилищ на текущий ключ кольца
+// (design §6): org_sso.client_secret, alert_channels.secret, заголовки
+// HTTP-мониторов. Вынесена отдельной функцией из run(), а не оставлена
+// инлайн-циклом — так порядок «после раздачи кольца, до подъёма слушателя» и
+// свойство «ошибка прохода не роняет старт» можно проверить тестом отдельно
+// от всего бутстрапа. Сигнатура без возврата ошибки — намеренно: решение «не
+// ронять старт при отказе SQL» принимает вызывающий (run()), но раз функция
+// физически не может вернуть ошибку наверх, эту границу нельзя случайно
+// нарушить последующей правкой.
+//
+// nil-сервис пропускается молча — в части режимов процесса (например,
+// --mode=probe) соответствующий сервис не строится вовсе.
+func rewrapAllSecrets(ctx context.Context, orgSvc *org.Service, alertSvc *alert.Service, uptimeSvc *uptime.Service) {
+	if orgSvc != nil {
+		if n, err := orgSvc.RewrapSecrets(ctx); err != nil {
+			slog.Warn("rewrap org sso secrets failed", "err", err)
+		} else if n > 0 {
+			slog.Info("rewrapped org sso secrets", "rows", n)
+		}
+	}
+	if alertSvc != nil {
+		if n, err := alertSvc.RewrapSecrets(ctx); err != nil {
+			slog.Warn("rewrap alert channel secrets failed", "err", err)
+		} else if n > 0 {
+			slog.Info("rewrapped alert channel secrets", "rows", n)
+		}
+	}
+	if uptimeSvc != nil {
+		if n, err := uptimeSvc.RewrapSecrets(ctx); err != nil {
+			slog.Warn("rewrap monitor header secrets failed", "err", err)
+		} else if n > 0 {
+			slog.Info("rewrapped monitor header secrets", "rows", n)
+		}
 	}
 }
 

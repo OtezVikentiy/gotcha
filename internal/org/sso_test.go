@@ -7,8 +7,21 @@ import (
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
+
+// mustKeyring — тестовый шорткат: однокелевое кольцо шифрования из raw.
+// NewKeyring отказывает только на пустом current — тестовые мастер-ключи
+// здесь всегда заданы литералом, поэтому ошибка означала бы баг теста.
+func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
+	t.Helper()
+	ring, err := secretbox.NewKeyring(raw, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(%q): %v", raw, err)
+	}
+	return ring
+}
 
 func TestSSOConfigCRUD(t *testing.T) {
 	if testing.Short() {
@@ -69,7 +82,7 @@ func TestSSOSecretEncryptedAtRest(t *testing.T) {
 	}
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
-	svc.SetSecretKey("master-key-for-sso")
+	svc.SetKeyring(mustKeyring(t, "master-key-for-sso"))
 	ctx := context.Background()
 
 	owner := newUser(t, pool, "sso-enc@example.com")
@@ -109,7 +122,7 @@ func TestSSOSecretEncryptedAtRest(t *testing.T) {
 // TestSSOSecretEncryptedWithoutMasterKey — воспроизводит W2/P1-7: SSO-конфиг
 // заведён под мастер-ключом (client_secret зашифрован, enc:-ciphertext в БД),
 // а читается сервисом БЕЗ ключа вовсе (откат GOTCHA_SECRET_KEY на dev-дефолт:
-// main.go SetSecretKey тогда не вызывается, secretKeySet остаётся false).
+// main.go SetKeyring тогда не вызывается, secretKeySet остаётся false).
 // Раньше decryptSSO при !secretKeySet отдавал c.ClientSecret как есть — и
 // SSO-логин ушёл бы в OIDC token-обмен с client_secret=enc:base64.... Теперь
 // такое чтение должно отказывать, а не отдавать ciphertext.
@@ -121,7 +134,7 @@ func TestSSOSecretEncryptedWithoutMasterKey(t *testing.T) {
 	ctx := context.Background()
 
 	keyed := org.NewService(pool, 1_000_000)
-	keyed.SetSecretKey("master-key-for-sso-rollback")
+	keyed.SetKeyring(mustKeyring(t, "master-key-for-sso-rollback"))
 	owner := newUser(t, pool, "sso-rollback@example.com")
 	o, _ := keyed.CreateOrg(ctx, "sso-rollback", "SSO Rollback", owner)
 
@@ -139,7 +152,7 @@ func TestSSOSecretEncryptedWithoutMasterKey(t *testing.T) {
 		t.Fatalf("precondition: client_secret must be encrypted at rest, got %q", stored)
 	}
 
-	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetSecretKey.
+	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetKeyring.
 	noKey := org.NewService(pool, 1_000_000)
 	if _, ok, err := noKey.SSOByOrg(ctx, o.ID); err == nil {
 		t.Fatal("SSOByOrg вернул nil-ошибку — должен отказать, а не отдать ciphertext как client_secret")

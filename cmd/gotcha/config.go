@@ -139,6 +139,10 @@ type Config struct {
 	// мёртвый вебхук с 30-секундным таймаутом задерживает все остальные.
 	NotifyConcurrency int
 	SecretKey         string
+	// SecretKeyPrev — предыдущий мастер-ключ на время ротации
+	// (GOTCHA_SECRET_KEY_PREV). Пусто — ротация не идёт, кольцо из одного
+	// ключа. Валидация — ниже, рядом с проверками SecretKey.
+	SecretKeyPrev string
 	// TrustedProxies — CIDR/IP доверенных reverse-proxy (GOTCHA_TRUSTED_PROXIES).
 	// Пусто — X-Forwarded-For не доверяется, per-IP лимитер ключуется по
 	// RemoteAddr (см. web.clientIP, SEC-L2).
@@ -588,6 +592,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
+		SecretKeyPrev:            str("GOTCHA_SECRET_KEY_PREV", ""),
 		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
 		Locale:                   str("GOTCHA_LOCALE", "ru"),
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
@@ -770,6 +775,39 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 				"use at least 32 random bytes (e.g. `openssl rand -hex 32`); "+
 				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development",
 			len(cfg.SecretKey), cfg.Mode)
+	}
+
+	// GOTCHA_SECRET_KEY_PREV — предыдущий мастер-ключ на время ротации.
+	// Три сочетания с текущим ключом не про стойкость (GOTCHA_ALLOW_INSECURE_SECRET
+	// тут ни при чём — эскейп-хэтч снимает требования к силе ключа, а не чинит
+	// конфиг, физически не способный сделать то, что от него ждут), а про то,
+	// что молча проигнорированная переменная убедила бы оператора в ротации,
+	// которой на самом деле нет:
+	if secretKeyMattersFor(cfg.Mode) && cfg.SecretKeyPrev != "" {
+		switch {
+		case cfg.SecretKeyPrev == devSecretKey:
+			// Дев-ключом никогда ничего не шифровалось — предыдущим ключом
+			// ротации он быть не может по определению.
+			return Config{}, fmt.Errorf(
+				"GOTCHA_SECRET_KEY_PREV must not be the public dev default " +
+					"(nothing was ever encrypted with it, so it cannot be a rotation source); " +
+					"unset GOTCHA_SECRET_KEY_PREV if no rotation is in progress")
+		case cfg.SecretKeyPrev == cfg.SecretKey:
+			// PREV равен текущему — ротации нет, а конфиг выглядит так, будто
+			// она идёт.
+			return Config{}, fmt.Errorf(
+				"GOTCHA_SECRET_KEY_PREV must differ from GOTCHA_SECRET_KEY " +
+					"(a rotation source equal to the current key means no rotation " +
+					"is actually happening); unset GOTCHA_SECRET_KEY_PREV if none is")
+		case cfg.SecretKey == devSecretKey:
+			// Текущий ключ дев → шифрование at-rest выключено целиком, PREV
+			// молча ничего не расшифровывал бы.
+			return Config{}, fmt.Errorf(
+				"GOTCHA_SECRET_KEY_PREV is set but GOTCHA_SECRET_KEY is still the dev " +
+					"default (encryption at rest is off entirely on the dev key, so " +
+					"GOTCHA_SECRET_KEY_PREV would silently do nothing); " +
+					"set a real GOTCHA_SECRET_KEY or unset GOTCHA_SECRET_KEY_PREV")
+		}
 	}
 
 	if len(errs) > 0 {

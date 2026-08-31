@@ -13,11 +13,11 @@ import (
 // выражается первой фразой самого пункта, а не заголовком секции.
 var changelogHeadings = map[string][]string{
 	"CHANGELOG.md": {
-		"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security",
+		"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Breaking",
 		"Performance", "Accessibility", "Interface", "Documentation", "Testing",
 	},
 	"CHANGELOG.ru.md": {
-		"Добавлено", "Изменено", "Устарело", "Удалено", "Исправлено", "Безопасность",
+		"Добавлено", "Изменено", "Устарело", "Удалено", "Исправлено", "Безопасность", "Ломающее",
 		"Производительность", "Доступность", "Интерфейс", "Документация", "Тестирование",
 	},
 }

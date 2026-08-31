@@ -15,24 +15,130 @@ the product does not pretend otherwise.
 
 Two consequences worth knowing:
 
-- Setting a real key later does **not** encrypt what is already stored. Existing
-  rows stay readable as legacy plain text; only values written afterwards are
-  encrypted. If an instance ever ran on the dev key with real credentials,
-  re-enter those credentials after setting a proper key.
+- Setting a real key encrypts what's already stored, too: on every boot, the
+  app re-wraps all readable secrets (SSO client secrets, delivery channel
+  tokens, monitor headers) under the current key, including values that are
+  still sitting as legacy plain text. The exception is values that are
+  already unreadable (for example, sealed under a lost key): the backfill
+  leaves those alone and logs them — they still need to be re-entered
+  manually through the UI.
 - On a non-local `GOTCHA_BASE_URL` the app refuses to start with the default key
   in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`), so this normally only affects local instances — unless
   the refusal was explicitly overridden.
-- **Rotating `GOTCHA_SECRET_KEY` on a running instance is a breaking operation.**
-  Encrypted values (`enc:...`) don't carry a key ID/version, so a new key cannot
-  decrypt ANY previously stored value (SSO client secrets, delivery channel
-  tokens, monitor headers) — they become unreadable (decryption error), exactly
-  as with a wrong key. Reads degrade gracefully (each secret is flagged broken
-  individually rather than failing the whole list), but a working channel/SSO
-  integration will stop functioning until its secret is manually re-entered
-  after rotation. If you do need to rotate the key (leak, scheduled rotation),
-  plan for a manual re-encrypt: after switching keys, reopen and re-save every
-  secret (SSO client secret, Telegram/webhook channel tokens, monitor headers)
-  through the UI so it gets written back under the new key.
+
+## Rotating the encryption key (`GOTCHA_SECRET_KEY`)
+
+**Before you start: there's no downtime to announce.** Sessions are stored
+separately from at-rest encryption — the session token doesn't depend on
+`GOTCHA_SECRET_KEY` — so rotating the key doesn't log anyone out, and active
+sessions survive it untouched. That's worth stating plainly because the
+natural expectation from swapping an encryption key runs the other way. The
+one thing rotation can catch is a user who happens to be mid-way through an
+OAuth redirect at the moment of restart: the signed cookie for that step is
+sealed under a separate subkey that changes along with `GOTCHA_SECRET_KEY`,
+and it won't verify after restart — that login just needs to be retried. Any
+ordinary restart landing in that same narrow window has the same effect, so
+for users, rotation is no different from a routine restart.
+
+Encrypted values carry the fingerprint of the key that sealed them
+(`enc:v2:<key-id>:...`), so rotation is a managed, reversible procedure
+rather than a one-shot secret swap:
+
+**Rotate only once the whole fleet is running the version that has this
+procedure.** During a rolling deploy, an old binary sitting next to the new
+one doesn't understand the `enc:v2:...` format: it hands it back as-is as if
+it were the live secret, and writes fresh values in the old format,
+bypassing the backfill that already ran. Start rotation only once the
+rollout has reached 100% of the fleet.
+
+1. Set `GOTCHA_SECRET_KEY_PREV=<old key>` and the new
+   `GOTCHA_SECRET_KEY=<new key>`, then restart the instance. Right on boot, a
+   line with the key-ring IDs is logged — it reports the ring's composition,
+   not the outcome of re-encryption:
+
+   ```
+   INFO secretbox keyring ready current_key_id=<new-id> previous_key_id=<old-id> rotation_in_progress=true
+   ```
+
+   `current_key_id` (`<new-id>`) is the new key — that's the one you'll need
+   in the next step. `previous_key_id`, together with
+   `rotation_in_progress=true`, is only here to confirm the ring actually
+   came up with two keys. Right after, everything readable (SSO client
+   secrets, channel tokens, monitor headers) is re-encrypted under the new
+   key; the actual outcome is one line per store:
+
+   ```
+   INFO org: rewrap secrets backfill complete updated=<N> unreadable=<N>
+   INFO alert: rewrap secrets backfill complete updated=<N> unreadable=<N>
+   INFO uptime: rewrap secrets done updated=<N> unreadable_skipped=<N>
+   ```
+
+   Note the field name differs: uptime uses `unreadable_skipped`, the other
+   two use `unreadable`.
+2. A nonzero `unreadable`/`unreadable_skipped` isn't an emergency — that's
+   what a secret that lost both keys looks like — but it means some secrets
+   need re-entering through the UI before you remove `PREV`.
+
+   Separately from that counter, the same run may log WARN-level lines.
+   Three of them mean a SINGLE row was left behind — one text per store:
+
+   ```
+   WARN alert: rewrap channel secret: update failed
+   WARN org: rewrap sso secret: update failed
+   WARN uptime: rewrap secrets: update monitor failed
+   ```
+
+   This is a secret that was readable and should have moved to the new key,
+   but the targeted `UPDATE` for it didn't land because of a SQL failure.
+   That line is counted in neither `unreadable` nor `unreadable_skipped` —
+   the counters look clean while the secret is still sitting on the old key.
+   (There's a second reason an `UPDATE` can miss — a concurrent write moved
+   the row between the read and the update, a CAS miss — but that one isn't
+   logged at any level at all, and the only way to tell it apart from
+   "already fully migrated" is the query below.)
+
+   A whole pass over a store can fail too — `rewrap org sso secrets failed`,
+   `rewrap alert channel secrets failed`, `rewrap monitor header secrets
+   failed`. That's worse than a single row: the store wasn't processed at
+   all, and its summary INFO line won't be in the log — you'll be one line
+   short of the three in step 1.
+
+   If you see any of these lines, don't move to step 3 yet — just restart
+   the instance again (step 1 again): the backfill is idempotent, so the
+   next pass picks up what was left behind.
+
+   Then check the database directly to make sure nothing is left that isn't
+   on the new key yet (`<new-id>` comes from the `secretbox keyring ready`
+   line in step 1). This check is version-neutral: it also catches the very
+   oldest envelope format, `enc:<b64>` with no key ID at all, which is what
+   an existing installation's entire database looks like before its very
+   first rotation (a check for `LIKE 'enc:v2:<old-id>:%'` would never have
+   matched that):
+
+   ```sql
+   SELECT count(*) FROM alert_channels WHERE secret LIKE 'enc:%' AND secret NOT LIKE 'enc:v2:<new-id>:%';
+   SELECT count(*) FROM org_sso WHERE client_secret LIKE 'enc:%' AND client_secret NOT LIKE 'enc:v2:<new-id>:%';
+   SELECT count(*) FROM monitors WHERE kind = 'http' AND config::text ~ 'enc:(?!v2:<new-id>:)';
+   ```
+
+   The third query uses a negative-lookahead regex (PostgreSQL supports
+   `(?!...)` for `~` by default). `monitors.config` is JSON that can hold
+   several header values in one row; a plain `NOT LIKE 'enc:v2:<new-id>:%'`,
+   like the two queries above use, wouldn't work here — a row with one
+   header already on the new key and another still on the old one would
+   read as falsely clean, because that comparison matches the whole string,
+   not each value separately. The query above catches exactly that row: it
+   fires if the row contains even one `enc:` occurrence not followed by
+   `v2:<new-id>:`.
+
+   All three should return `0`.
+3. Remove `GOTCHA_SECRET_KEY_PREV` and restart again. The key ring is back to
+   a single key.
+
+Rotation is reversible as long as the old key isn't lost: swapping the two
+keys (`GOTCHA_SECRET_KEY=<old>`, `GOTCHA_SECRET_KEY_PREV=<new>`) rolls the
+instance back the same way. Fear of irreversibility shouldn't be the reason
+rotation gets postponed — it doesn't need to be.
 
 ## What personal data is processed
 

@@ -3,6 +3,7 @@ package uptime
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/url"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
@@ -68,32 +69,84 @@ type HeartbeatConfig struct {
 // токен в Authorization, ключ в X-Api-Key). Тот же приём, что alert.Service для
 // секретов каналов. Пустые заголовки и невалидный (не наш) config возвращаются
 // без изменений; валидность самого config проверяет validateConfig отдельно.
-func sealHTTPHeaders(key [32]byte, raw json.RawMessage) (json.RawMessage, error) {
+func sealHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (json.RawMessage, error) {
 	return transformHTTPHeaders(raw, func(v string) (string, error) {
-		// Идемпотентность: уже зашифрованное значение НЕ шифруем повторно —
-		// двойной Seal сделал бы его невосстановимым (Open вернул бы внутренний
-		// ciphertext-текст, а не исходное значение). Зеркалит passthrough на
-		// чтении и страхует вызывающих, которые могли передать сюда ещё не
-		// расшифрованный config (bulk-edit, импорт, фид из List/GetBatch).
-		//
-		// secretbox.IsEncrypted, а не голая проверка префикса "enc:": реальное
-		// (незашифрованное) значение заголовка тоже может начинаться с "enc:" —
-		// IsEncrypted дополнительно требует валидный base64 нужной длины
-		// (nonce+overhead), так что такое значение по-прежнему шифруется, а не
-		// принимается за уже зашифрованное и не сохраняется как plaintext.
+		// Уже зашифрованное значение не шифруем заново голым Seal — вместо
+		// этого зовём Rewrap: конфиг, пришедший в запись нерасшифрованным
+		// (bulk-edit, импорт, фид из List/GetBatch), поднимается до текущего
+		// ключа кольца, а не остаётся навсегда на предыдущем. Идемпотентность
+		// сохраняется — значение уже на текущем ключе Rewrap не трогает.
+		// Нерасшифруемое значение Rewrap оставляет как есть: потерять его
+		// хуже, чем сохранить нечитаемым.
 		if secretbox.IsEncrypted(v) {
-			return v, nil
+			// Rewrap возвращает нетронутое значение и ErrOpen, если ключа для
+			// расшифровки в кольце нет (запись пришла с чужим/потерянным
+			// ключом). Ошибку сюда не пробрасываем: одно нечитаемое значение
+			// не должно рушить сохранение всего конфига монитора — оно
+			// просто остаётся на прежнем ключе, как и раньше при passthrough.
+			out, _, _ := ring.Rewrap(v)
+			return out, nil
 		}
-		return secretbox.Seal(key, v)
+		return ring.Seal(v)
 	})
 }
 
+// rewrapHTTPHeaders поднимает ЧИТАЕМЫЕ значения заголовков http-конфига до
+// конверта v2 текущего ключа кольца (Keyring.Rewrap) — рабочая лошадка
+// RewrapSecrets (service.go). Деградация ПО ЗНАЧЕНИЮ, а не по строке: у
+// монитора может быть один читаемый и один нечитаемый (запечатан потерянным
+// ключом) заголовок разом. Нечитаемое значение остаётся как есть, его ошибка
+// попадает в failures, но не прерывает обработку остальных заголовков этой
+// же строки — иначе один потерянный ключ навсегда законсервировал бы
+// соседний plaintext.
+//
+// changed=true, только если поднялось хотя бы одно значение — только тогда
+// строку имеет смысл перезаписывать (и только тогда RewrapSecrets вообще
+// шлёт UPDATE). При changed=false возвращается тот же raw БЕЗ ремаршалинга:
+// не только последствий для заголовков нет, но и повода разойтись байт-в-
+// байт со значением, которое RewrapSecrets использует в CAS-предикате.
+func rewrapHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (out json.RawMessage, changed bool, failures []error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return raw, false, nil
+	}
+	var cfg HTTPConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return raw, false, nil
+	}
+	if len(cfg.Headers) == 0 {
+		return raw, false, nil
+	}
+	next := make(map[string]string, len(cfg.Headers))
+	for name, val := range cfg.Headers {
+		rewrapped, didChange, err := ring.Rewrap(val)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("header %q: %w", name, err))
+		}
+		if didChange {
+			changed = true
+		}
+		next[name] = rewrapped
+	}
+	if !changed {
+		return raw, false, failures
+	}
+	cfg.Headers = next
+	remarshaled, err := json.Marshal(cfg)
+	if err != nil {
+		// cfg только что разобран из валидного JSON — маршалинг обратно не
+		// должен падать; если всё же случилось, не теряем raw, просто не
+		// поднимаем строку в этом проходе (следующий рестарт попробует снова).
+		return raw, false, failures
+	}
+	return remarshaled, true, failures
+}
+
 // openHTTPHeaders — обратная операция: расшифровывает значения заголовков.
-// Legacy plaintext без префикса enc: secretbox.Open вернёт как есть
+// Legacy plaintext без префикса enc: Keyring.Open вернёт как есть
 // (совместимость со старыми записями, сделанными до включения шифрования).
-func openHTTPHeaders(key [32]byte, raw json.RawMessage) (json.RawMessage, error) {
+func openHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (json.RawMessage, error) {
 	return transformHTTPHeaders(raw, func(v string) (string, error) {
-		return secretbox.Open(key, v)
+		return ring.Open(v)
 	})
 }
 
