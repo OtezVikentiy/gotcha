@@ -35,6 +35,11 @@ type Page struct {
 var registry = []struct{ Slug, Group string }{
 	// Начало
 	{"getting-started", "docs.group.start"},
+	// keys — концептуальная страница уровня glossary/time-range (что такое
+	// тип ключа и какой чему разрешён), а не факт про конкретную интеграцию:
+	// ключ нужен раньше любого из разделов ниже, включая SDK, поэтому здесь,
+	// а не в docs.group.integrations рядом с sdk.
+	{"keys", "docs.group.start"},
 	{"glossary", "docs.group.start"},
 	{"time-range", "docs.group.start"},
 	// Установка и эксплуатация

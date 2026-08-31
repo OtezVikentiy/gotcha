@@ -6,6 +6,12 @@ Open it via the server icon in the left icon rail ("Hosts") or directly at `/pro
 
 ## Connecting a host
 
+Both methods below — the agent and the collector — register a host, and both
+use a project key of type `agent`: that's the only key type that can register
+a host (see [Ingest keys](/docs/keys) for details). The command/config shown
+in the UI already has such a key filled in; reissue one in the project
+settings if you need to.
+
 ### Gotcha agent (recommended)
 
 The simplest way to collect host metrics is the native `gotcha-agent`: a single static, dependency-free binary installed with one command run straight from your instance. A ready-made command with the instance's address and the project's key already filled in is shown right in the UI: as the onboarding step on an empty hosts list, and under "How to install the agent" on a non-empty list and on the threshold settings page, with a "Copy command" button next to it. In shape it looks like this:

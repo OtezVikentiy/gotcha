@@ -50,7 +50,10 @@ X-Sentry-Auth: Sentry sentry_key=<PUBLIC_KEY>
 ```
 
 A missing key returns `401`; a key that doesn't belong to `<PROJECT_ID>`
-returns `403`.
+returns `403`. The key needs the `server` type (or an untyped `legacy` key) —
+deployment markers aren't part of what a browser key is allowed to send; a
+key of the wrong type also gets `403`. See [Ingest keys](/docs/keys) for the
+full type breakdown.
 
 The request body is capped by the same variable used for the rest of ingest,
 `GOTCHA_MAX_EVENT_BYTES` (see [Configuration](/docs/configuration)) — a body

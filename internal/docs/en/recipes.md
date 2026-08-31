@@ -15,7 +15,12 @@ Viewing is open to anyone with access to the project — it is telemetry reading
 The recipe page walks you through the steps:
 
 1. **Install `otelcol-contrib`** on the server next to the service. It is the same [OpenTelemetry Collector Contrib](https://github.com/open-telemetry/opentelemetry-collector-releases) as in the [hosts](/docs/hosts) connection guide — the official `.deb`/`.rpm` packages install the `otelcol-contrib` systemd unit and a config at `/etc/otelcol-contrib/config.yaml`.
-2. **Copy the config from the recipe page** (the "Copy config" button) and replace the contents of `/etc/otelcol-contrib/config.yaml` with it. The instance address and an active public project key are already filled in; replace the `CHANGE_ME` values with your own (see the per-service requirements below). If the project has no active public key, the page shows a hint to issue one in the project settings instead of the config. The exporter `endpoint` is the instance's **base** URL, without `/v1/metrics`: the `otlphttp` exporter appends the path itself (the same rule as in [Hosts](/docs/hosts)).
+2. **Copy the config from the recipe page** (the "Copy config" button) and replace the contents of `/etc/otelcol-contrib/config.yaml` with it. The instance address and an active `server`-type project key are already filled in; replace the `CHANGE_ME` values with your own (see the per-service requirements below). If the project has no live key of that type, the page shows a hint to issue one in the project settings instead of the config. The exporter `endpoint` is the instance's **base** URL, without `/v1/metrics`: the `otlphttp` exporter appends the path itself (the same rule as in [Hosts](/docs/hosts)).
+
+   A recipe needs `server`, not `agent`: a recipe's config deliberately
+   doesn't set `resourcedetection` and doesn't register a host — a recipe
+   watches the service itself, not the machine it runs on. See [Ingest
+   keys](/docs/keys) for details.
 3. **Restart the collector** (`sudo systemctl restart otelcol-contrib`). Within a minute or two the badge on the page flips from "Waiting for data" to "Receiving data".
 
 **How detection works.** The "Receiving data" badge means the recipe's signature metric (e.g. `postgresql.backends` for PostgreSQL) has data points within the last **15 minutes**. Detection is live: if the service or the collector goes silent for longer than that window, the badge flips back to "Waiting for data" — and during first-time setup that same badge is an honest signal that the export has not landed yet.

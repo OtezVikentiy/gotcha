@@ -118,6 +118,7 @@ separates client-side mistakes from each other:
 | `project_mismatch` | the key resolves fine, but to a project other than the one in the request path — usually a DSN copied into the wrong project |
 | `missing_bearer` | an OTLP request arrived with no `Authorization: Bearer` header |
 | `invalid_dsn_key` | the OTLP bearer token doesn't resolve to any DSN |
+| `scope` | the key resolves and belongs to the project, but its type isn't allowed on this endpoint (see [Ingest keys](/docs/keys)); the log line carries the endpoint path |
 
 A steady trickle is normal — scanners and stale SDK configs hit this. A step
 change after a deploy usually means a DSN or project ID changed and one
@@ -139,6 +140,7 @@ metrics at all — only in that one endpoint's log. `reason` is a closed set:
 | `quota` | the organization exhausted this signal's monthly quota — the request was FULLY rejected (429); partial quota debits on a mixed envelope do not count here, only a full reject does |
 | `too_large` | the body exceeded the size limit |
 | `malformed` | the body was read but did not parse: broken JSON/protobuf, a corrupt gzip/zstd header |
+| `key_scope` | the same key-type rejection as `scope` on `gotcha_ingest_key_rejections_total` above, but labeled with `signal` — which telemetry kind that key type was denied |
 
 The two key-rejection metrics deliberately coexist: one is narrow and exact
 about the key itself, the other is broad and comparable across telemetry
