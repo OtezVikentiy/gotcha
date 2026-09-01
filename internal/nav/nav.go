@@ -72,6 +72,9 @@ type NavArea struct {
 	LabelKey string
 	Href     string
 	Active   bool
+	// Footer — область принадлежит подвалу рейла (рендерится после
+	// распорки, ниже рабочих областей, рядом с аватаром и выходом).
+	Footer bool
 }
 
 // Shell is the app-shell state carried through the request context: the
@@ -153,18 +156,23 @@ func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
 
-// railAreas is the static, ordered definition of the icon-rail areas
-// (excluding the org area, which is a separate bottom rail entry).
+// railAreas — статический упорядоченный список областей рейла. Три яруса,
+// разделённые в вёрстке распорками: работа (issues…uptime), настройка
+// (alerts), служебное (settings, docs). Порядок наблюдательных областей —
+// по частоте обращения в разборе: сначала то, что система нашла сама,
+// потом измерения, потом инфраструктура, потом доступность.
 var railAreas = []struct {
 	id, icon, labelKey string
+	footer             bool
 }{
-	{"issues", "bug", "nav.issues"},
-	{"performance", "zap", "nav.performance"},
-	{"metrics", "chart", "nav.metrics"},
-	{"hosts", "server", "nav.hosts"},
-	{"logs", "file-text", "nav.logs"},
-	{"uptime", "activity", "nav.uptime"},
-	{"alerts", "bell", "nav.alerts"},
+	{"issues", "bug", "nav.issues", false},
+	{"performance", "zap", "nav.performance", false},
+	{"logs", "file-text", "nav.logs", false},
+	{"metrics", "chart", "nav.metrics", false},
+	{"hosts", "server", "nav.hosts", false},
+	{"uptime", "activity", "nav.uptime", false},
+	{"alerts", "bell", "nav.alerts", false},
+	{"settings", "settings", "nav.settings", true},
 }
 
 // AreaForPath maps a request path to a rail area id, per the information
@@ -521,10 +529,11 @@ func markActive(items []NavItem, path string) {
 	}
 }
 
-// Areas returns the icon-rail areas (issues/performance/metrics/uptime/
-// alerts, plus the trailing org entry), each with Active set by s.Area
-// and Href pointing at its first subsection for the effective
-// project/org.
+// Areas returns the icon-rail areas (issues/performance/logs/metrics/
+// hosts/uptime/alerts/settings, plus the trailing docs entry), each with
+// Active set by s.Area and Href pointing at its first subsection for the
+// effective project/org. Settings and docs carry Footer: true — they
+// render in the rail's bottom tier, next to the avatar and logout.
 func Areas(s Shell) []NavArea {
 	result := make([]NavArea, 0, len(railAreas)+1)
 	for _, a := range railAreas {
@@ -541,6 +550,7 @@ func Areas(s Shell) []NavArea {
 			LabelKey: a.labelKey,
 			Href:     href,
 			Active:   s.Area == a.id,
+			Footer:   a.footer,
 		})
 	}
 
@@ -552,15 +562,7 @@ func Areas(s Shell) []NavArea {
 		LabelKey: "nav.docs",
 		Href:     "/docs",
 		Active:   s.Area == "docs",
-	})
-
-	orgHref := firstSubsectionHref(s, "org")
-	result = append(result, NavArea{
-		ID:       "org",
-		IconName: "building",
-		LabelKey: "nav.org",
-		Href:     orgHref,
-		Active:   s.Area == "org",
+		Footer:   true,
 	})
 
 	return result

@@ -97,15 +97,29 @@ templ layoutBody(title string, userEmail string) {
 			// ориентира navigation не было вовсе.
 			<nav class="rail" aria-label={ i18n.T(ctx, "nav.primary") }>
 				<a class="rail-logo" href="/" title="Gotcha">@brandMark()</a>
+				{{ spacerDone := false }}
 				if shell := nav.FromContext(ctx); len(shell.Projects) > 0 {
+					// Разделитель перед «Оповещениями» отбивает ярус настройки
+					// алертинга от рабочих областей выше; распорка перед первой
+					// footer-областью («Настройки») прижимает подвал (настройки,
+					// документация) вниз, к аватару и выходу.
 					for _, a := range nav.Areas(shell) {
+						if a.ID == "alerts" {
+							<div class="rail-sep"></div>
+						}
+						if a.Footer && !spacerDone {
+							<div class="rail-spacer"></div>
+							{{ spacerDone = true }}
+						}
 						<a class={ railAreaClass(a.Active) } href={ templ.SafeURL(a.Href) } title={ i18n.T(ctx, a.LabelKey) } if a.Active { aria-current="page" }>
 							<span class="rail-ic">@icon(a.IconName)</span>
 							<span class="rail-label">{ i18n.T(ctx, a.LabelKey) }</span>
 						</a>
 					}
 				}
-				<div class="rail-spacer"></div>
+				if !spacerDone {
+					<div class="rail-spacer"></div>
+				}
 				<a class="avatar" href="/profile" title={ userEmail }>{ initials(userEmail) }</a>
 				<form method="post" action="/logout" class="rail-logout">
 					<button type="submit" class="rail-logout-btn" title={ i18n.T(ctx, "action.logout") } aria-label={ i18n.T(ctx, "action.logout") }>

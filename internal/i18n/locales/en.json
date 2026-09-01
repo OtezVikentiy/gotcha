@@ -21,6 +21,7 @@
     "nav.uptime": "Uptime",
     "nav.alerts": "Alerts",
     "nav.alert_deliveries": "Delivery log",
+    "nav.settings": "Settings",
     "nav.docs": "Documentation",
     "docs.index.title": "Documentation",
     "docs.table_region": "Reference table",

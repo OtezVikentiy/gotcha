@@ -381,6 +381,13 @@ a:hover {
 .rail-spacer {
 	flex: 1;
 }
+/* Разделитель между рабочими областями и ярусом настройки алертинга. */
+.rail-sep {
+	width: 28px;
+	height: 1px;
+	margin: 4px 0;
+	background: var(--rail-border);
+}
 .rail-logout,
 .rail-logout .rail-logout-btn {
 	background: none;

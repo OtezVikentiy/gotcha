@@ -330,9 +330,9 @@ func TestAreas(t *testing.T) {
 	}
 	areas := Areas(s)
 	if len(areas) != 9 {
-		t.Fatalf("Areas() len = %d, want 9 (7 rail + docs + org)", len(areas))
+		t.Fatalf("Areas() len = %d, want 9 (8 rail incl. settings + docs)", len(areas))
 	}
-	wantIDs := []string{"issues", "performance", "metrics", "hosts", "logs", "uptime", "alerts", "docs", "org"}
+	wantIDs := []string{"issues", "performance", "logs", "metrics", "hosts", "uptime", "alerts", "settings", "docs"}
 	for i, a := range areas {
 		if a.ID != wantIDs[i] {
 			t.Errorf("areas[%d].ID = %q, want %q", i, a.ID, wantIDs[i])
@@ -350,9 +350,6 @@ func TestAreas(t *testing.T) {
 		if a.ID == "issues" && a.Href != "/projects/7/issues" {
 			t.Errorf("issues area href = %q, want /projects/7/issues", a.Href)
 		}
-		// Область «Организация» упразднена (Subsections больше не знает
-		// case "org"): footer-иконка рейла ещё не переработана — это
-		// задача 3, здесь её href намеренно не проверяется.
 		if a.ID == "docs" {
 			if a.Href != "/docs" {
 				t.Errorf("docs area href = %q, want /docs", a.Href)
@@ -363,6 +360,63 @@ func TestAreas(t *testing.T) {
 			if a.LabelKey != "nav.docs" {
 				t.Errorf("docs area labelKey = %q, want nav.docs", a.LabelKey)
 			}
+		}
+	}
+}
+
+// TestAreasOrderAndTiers — новый порядок областей рейла и разбивка на
+// ярусы: рабочие области сверху, «Настройки» и «Документация» — в подвале
+// (NavArea.Footer), «Организация» из рейла упразднена.
+func TestAreasOrderAndTiers(t *testing.T) {
+	s := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3, CanOperate: true, CanManage: true}
+	var got []string
+	for _, a := range Areas(s) {
+		got = append(got, a.ID)
+	}
+	want := []string{
+		"issues", "performance", "logs", "metrics", "hosts", "uptime",
+		"alerts", "settings", "docs",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Areas order = %v, want %v", got, want)
+	}
+	for _, a := range Areas(s) {
+		if a.ID == "settings" || a.ID == "docs" {
+			if !a.Footer {
+				t.Errorf("area %q must live in the rail footer", a.ID)
+			}
+			continue
+		}
+		if a.Footer {
+			t.Errorf("area %q must not live in the rail footer", a.ID)
+		}
+	}
+}
+
+// TestAreasHideAlertsForPlainMember — участник без CanOperate не видит
+// область «Оповещения»: все её подразделы закрыты, и иконка вела бы на 404.
+func TestAreasHideAlertsForPlainMember(t *testing.T) {
+	s := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3}
+	for _, a := range Areas(s) {
+		if a.ID == "alerts" {
+			t.Fatalf("«Оповещения» не должны показываться участнику без CanOperate: все подразделы области закрыты, иконка вела бы на 404")
+		}
+	}
+}
+
+// TestAreaForOrigin — подсветка области рейла для подраздела-источника.
+func TestAreaForOrigin(t *testing.T) {
+	cases := []struct{ origin, want string }{
+		{"web-vitals", "performance"},
+		{"endpoint", "performance"},
+		{"issue", "issues"},
+		{"perf-issue", "issues"},
+		{"unknown", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := AreaForOrigin(c.origin); got != c.want {
+			t.Errorf("AreaForOrigin(%q) = %q, want %q", c.origin, got, c.want)
 		}
 	}
 }
