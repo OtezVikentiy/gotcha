@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-01
+
 ### Добавлено
 - Strict-Transport-Security теперь настраивается: `GOTCHA_HSTS_ENABLED`,
   `GOTCHA_HSTS_MAX_AGE_SECONDS`, `GOTCHA_HSTS_INCLUDE_SUBDOMAINS` и
