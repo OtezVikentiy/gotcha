@@ -140,7 +140,20 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET %s body missing DSN %q: %s", setupPath, wantDSN, body)
 	}
 
-	// GET / теперь → 303 на /projects/{id}/issues (проект уже есть).
+	// orgID проекта — нужен и здесь (GET /), и ниже (GET /projects).
+	orgID, err := orgSvc.ProjectOrg(context.Background(), projectID)
+	if err != nil {
+		t.Fatalf("project org: %v", err)
+	}
+	orgProjectsPath := "/orgs/" + strconv.FormatInt(orgID, 10) + "/projects"
+
+	// GET / без cookie проекта (запрос ниже несёт только сессионную cookie,
+	// "proj" сюда не долетала ни разу — visiting /setup её выставляет через
+	// Set-Cookie, но этот тест не гоняет cookie jar и не переносит её между
+	// запросами) → 303 на список проектов организации (задача 6 nav-ia,
+	// §5 спеки: кука решает дверь на голом "/", только если она есть; без
+	// неё — явный выбор организации/проекта, а не молчаливый первый проект
+	// из списка).
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -152,9 +165,24 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("GET / status = %d, want 303", resp.StatusCode)
 	}
-	wantIssues := "/projects/" + projectIDStr + "/issues"
-	if got := resp.Header.Get("Location"); got != wantIssues {
-		t.Fatalf("GET / Location = %q, want %q", got, wantIssues)
+	if got := resp.Header.Get("Location"); got != orgProjectsPath {
+		t.Fatalf("GET / Location = %q, want %q", got, orgProjectsPath)
+	}
+	// Редирект обязан резолвиться, а не 404-ить: сверяем реальным GET, а не
+	// только адресом в Location.
+	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+orgProjectsPath, nil)
+	req.AddCookie(cookie)
+	resp, err = noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("get %s: %v", orgProjectsPath, err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (target of GET / redirect) status = %d, want 200: %s", orgProjectsPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Backend") {
+		t.Fatalf("GET %s body missing the onboarded project: %s", orgProjectsPath, body)
 	}
 
 	// GET /onboarding теперь (у юзера уже есть организация) → 303 на /.
@@ -174,11 +202,8 @@ func TestWebOnboardingFlow(t *testing.T) {
 	}
 
 	// GET /projects → 303 на /orgs/{orgID}/projects (задача 5 nav-ia: дверь
-	// в организацию вместо плоского списка всех проектов).
-	orgID, err := orgSvc.ProjectOrg(context.Background(), projectID)
-	if err != nil {
-		t.Fatalf("project org: %v", err)
-	}
+	// в организацию вместо плоского списка всех проектов). orgID/
+	// orgProjectsPath уже посчитаны выше для GET /.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/projects", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -190,7 +215,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("GET /projects status = %d, want 303", resp.StatusCode)
 	}
-	orgProjectsPath := "/orgs/" + strconv.FormatInt(orgID, 10) + "/projects"
 	if got := resp.Header.Get("Location"); got != orgProjectsPath {
 		t.Fatalf("GET /projects Location = %q, want %q", got, orgProjectsPath)
 	}
