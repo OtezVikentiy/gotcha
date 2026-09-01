@@ -101,7 +101,7 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 		<div class="incidents">
 			@breadcrumbBackTo(templ.URL(monitorsPath(projectID)), i18n.T(ctx, "nav.monitors"))
 			<h1>{ i18n.T(ctx, "nav.incidents") }</h1>
-			<p class="hint">{ i18n.T(ctx, "uptime.incidents.see_feed_hint") }<a href={ templ.URL(incidentFeedPath(projectID)) }>{ i18n.T(ctx, "nav.incident_feed") }</a>{ i18n.T(ctx, "uptime.incidents.see_feed_hint_suffix") }</p>
+			<p class="hint">{ i18n.T(ctx, "uptime.incidents.see_feed_hint") }<a href={ templ.URL(overviewPath(projectID)) }>{ i18n.T(ctx, "nav.overview") }</a>{ i18n.T(ctx, "uptime.incidents.see_feed_hint_suffix") }</p>
 			@helpPanel("incidents", "uptime")
 			if len(rows) == 0 {
 				@emptyState("activity", "uptime.incidents.empty.title", "uptime.incidents.empty.body", "", "", 2)

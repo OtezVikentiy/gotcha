@@ -35,18 +35,18 @@ func TestFeedItemHrefKnownSources(t *testing.T) {
 	}
 }
 
-// TestFeedItemHrefUnknownSourceFallsBackToFeedPath — источник, не входящий
-// ни в одну из 6 известных веток, обязан упасть в default: ссылка на саму
-// ленту (incidentFeedPath), а не паника/пустая строка.
-func TestFeedItemHrefUnknownSourceFallsBackToFeedPath(t *testing.T) {
+// TestFeedItemHrefUnknownSourceFallsBackToOverviewPath — источник, не
+// входящий ни в одну из 6 известных веток, обязан упасть в default: ссылка
+// на «Обзор» (overviewPath), а не паника/пустая строка.
+func TestFeedItemHrefUnknownSourceFallsBackToOverviewPath(t *testing.T) {
 	const projectID = int64(42)
 	got := feedItemHref(projectID, incidentgroup.FeedItem{Source: "bogus"})
-	want := incidentFeedPath(projectID)
+	want := overviewPath(projectID)
 	if got != want {
 		t.Errorf("feedItemHref(unknown source) = %q, want %q", got, want)
 	}
-	if want != "/projects/42/incident-feed" {
-		t.Errorf("incidentFeedPath(42) = %q, want /projects/42/incident-feed", want)
+	if want != "/projects/42/overview" {
+		t.Errorf("overviewPath(42) = %q, want /projects/42/overview", want)
 	}
 }
 
@@ -194,7 +194,7 @@ func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
 		[]incidentgroup.FeedItem{{Source: "host"}},
 	)
-	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, nil, nil, nil, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", []GroupCard{group}, nil, nil, nil, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Открытых групп нет") {
 		t.Errorf("non-empty openGroups must not render the empty-state message: %s", html)
 	}
@@ -224,7 +224,7 @@ func TestIncidentFeedOutOfGroupAllSixSources(t *testing.T) {
 			Source: src, IncidentID: int64(i + 1), Title: "item-" + src, StartedAt: time.Now(),
 		})
 	}
-	html := renderTo(t, IncidentFeed(1, nil, items, nil, nil, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", nil, items, nil, nil, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Открытых инцидентов вне групп нет") {
 		t.Errorf("non-empty outOfGroup must not render the empty-state message: %s", html)
 	}
@@ -248,7 +248,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now(), ResolvedAt: &resolvedAt}},
 		[]incidentgroup.FeedItem{{Source: "metric"}},
 	)
-	html := renderTo(t, IncidentFeed(1, nil, nil, []GroupCard{closedGroup}, nil, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", nil, nil, []GroupCard{closedGroup}, nil, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("closedGroups>0 must suppress the closed-empty message even though out-of-group closed items are empty: %s", html)
 	}
@@ -265,7 +265,7 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 // закрытых рисуется, заглушка отсутствует, карточек групп нет.
 func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 	closed := []incidentgroup.FeedItem{{Source: "host", Title: "closed-lone", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(1, nil, nil, nil, closed, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", nil, nil, nil, closed, FeedCaps{}, true, ""))
 	if strings.Contains(html, "Недавно ничего не решалось") {
 		t.Errorf("non-empty closed out-of-group items must suppress the empty message: %s", html)
 	}
@@ -279,7 +279,7 @@ func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 func TestIncidentFeedProjectIDInLinks(t *testing.T) {
 	const projectID = int64(777)
 	items := []incidentgroup.FeedItem{{Source: "metric", Title: "m1", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(projectID, nil, items, nil, nil, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(projectID, "24h", nil, items, nil, nil, FeedCaps{}, true, ""))
 	want := metricAlertsBasePath(projectID)
 	if !strings.Contains(html, want) {
 		t.Errorf("row link must use the page's projectID (%d): missing %q in %s", projectID, want, html)
@@ -303,13 +303,17 @@ func TestFeedItemHrefHostReusesHostLink(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedHelpPanelAndBackLink — W16/W28: страница объясняет себя
+// TestOverviewHelpPanelAndBackLink — W16/W28: страница объясняет себя
 // (helpPanel со ссылкой на /docs/incident-groups) и ведёт обратно на
 // страницу аптайм-инцидентов (/projects/{id}/incidents), а не только
-// наоборот.
-func TestIncidentFeedHelpPanelAndBackLink(t *testing.T) {
+// наоборот. Подпись ссылки — "Сбои доступности" (nav.incidents), не
+// "Инциденты": прежняя строка ассерта уже разъехалась с каталогом
+// (nav.incidents переименован в более раннем разделе фичи) и была
+// самотавтологичной находкой — здесь она литералом, попутно с переносом
+// теста на Overview.
+func TestOverviewHelpPanelAndBackLink(t *testing.T) {
 	const projectID = int64(5)
-	html := renderTo(t, IncidentFeed(projectID, nil, nil, nil, nil, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(projectID, "24h", nil, nil, nil, nil, FeedCaps{}, true, ""))
 	if !strings.Contains(html, `class="help-panel"`) {
 		t.Errorf("page must render the help panel: %s", html)
 	}
@@ -320,7 +324,7 @@ func TestIncidentFeedHelpPanelAndBackLink(t *testing.T) {
 	if !strings.Contains(html, wantBackHref) {
 		t.Errorf("feed must link back to %s: missing %q in %s", incidentsPath(projectID), wantBackHref, html)
 	}
-	if !strings.Contains(html, "Инциденты</a>") {
+	if !strings.Contains(html, "Сбои доступности</a>") {
 		t.Errorf("back link text must be the localized nav.incidents label: %s", html)
 	}
 }
@@ -335,7 +339,7 @@ func TestIncidentFeedTableHeadColumns(t *testing.T) {
 	)
 	outOfGroup := []incidentgroup.FeedItem{{Source: "uptime", Title: "m1", StartedAt: time.Now()}}
 	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, ""))
 
 	wantHeaders := []string{"Источник", "Название", "Статус", "Начало"}
 	// 3 непустых таблицы (состав группы, вне групп, закрытые) — по одной
@@ -368,7 +372,7 @@ func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
 	)
 	outOfGroup := []incidentgroup.FeedItem{{Source: "uptime", Title: "m1", StartedAt: time.Now()}}
 	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
-	html := renderTo(t, IncidentFeed(1, []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, ""))
 
 	groupLabel := `aria-label="Состав группы"`
 	outLabel := `aria-label="Вне групп"`
@@ -386,19 +390,45 @@ func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
 // TestIncidentFeedEmptyStatesUseEmptyStateComponent — W18: пустые секции
 // рендерятся через @emptyState (иконка + заголовок + текст), а не голым
 // <p class="hint">.
-func TestIncidentFeedEmptyStatesUseEmptyStateComponent(t *testing.T) {
-	html := renderTo(t, IncidentFeed(1, nil, nil, nil, nil, FeedCaps{}, true, ""))
-	if got := strings.Count(html, `class="empty-state"`); got != 3 {
-		t.Errorf("all 3 sections must render @emptyState when empty: got %d, want 3: %s", got, html)
+func TestOverviewPartialEmptySectionsUseEmptyStateComponent(t *testing.T) {
+	openGroups := []GroupCard{NewGroupCard(
+		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
+		[]incidentgroup.FeedItem{{Source: "host"}},
+	)}
+	html := renderTo(t, Overview(1, "24h", openGroups, nil, nil, nil, FeedCaps{}, true, ""))
+	if got := strings.Count(html, `class="empty-state"`); got != 2 {
+		t.Errorf("the 2 empty sections (out-of-group, closed) must render @emptyState: got %d, want 2: %s", got, html)
 	}
-	if got := strings.Count(html, `href="#i-activity"`); got != 3 {
-		t.Errorf("empty states must use the activity icon: got %d uses, want 3: %s", got, html)
+	if got := strings.Count(html, `href="#i-activity"`); got != 2 {
+		t.Errorf("empty sections must use the activity icon: got %d uses, want 2: %s", got, html)
 	}
 	// Единственный оставшийся <p class="hint"> — ссылка назад на /incidents
 	// под <h1> (не относится к пустым состояниям); если бы эмпти-стейты
-	// откатились на старый голый абзац, счёт вырос бы до 4.
+	// откатились на старый голый абзац, счёт вырос бы до 3.
 	if got := strings.Count(html, `<p class="hint">`); got != 1 {
 		t.Errorf("only the back-link hint paragraph should remain, empty sections must use @emptyState: got %d <p class=\"hint\"> blocks, want 1: %s", got, html)
+	}
+}
+
+// TestOverviewEmptyProjectShowsGettingStartedInvite — задача 6 nav-ia:
+// проект без единого инцидента ни в одной из четырёх выборок получает не три
+// «нет данных» подряд (выглядело бы как поломка на первом же экране
+// проекта), а одно приглашение подключить SDK со ссылкой на «Первые шаги».
+func TestOverviewEmptyProjectShowsGettingStartedInvite(t *testing.T) {
+	const projectID = int64(11)
+	html := renderTo(t, Overview(projectID, "24h", nil, nil, nil, nil, FeedCaps{}, true, ""))
+	if got := strings.Count(html, `class="empty-state"`); got != 1 {
+		t.Errorf("a totally empty project must render exactly ONE page-level empty state, not per-section: got %d: %s", got, html)
+	}
+	if !strings.Contains(html, `href="#i-home"`) {
+		t.Errorf("the page-level empty state must use the home icon (same as the rail area): %s", html)
+	}
+	if strings.Contains(html, `href="#i-activity"`) {
+		t.Errorf("no per-section empty state should render alongside the page-level one: %s", html)
+	}
+	wantCTA := `href="` + projectSetupPath(projectID) + `"`
+	if !strings.Contains(html, wantCTA) {
+		t.Errorf("empty state must link to the project's getting-started page: missing %q in %s", wantCTA, html)
 	}
 }
 
@@ -639,7 +669,7 @@ func TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup(t *testing.T) {
 		Source: "host", Title: "m1", StartedAt: time.Now(),
 		FormerGroupID: 42, FormerGroupRootName: "root-1",
 	}}
-	html := renderTo(t, IncidentFeed(1, nil, outOfGroup, []GroupCard{closedGroup}, nil, FeedCaps{}, true, ""))
+	html := renderTo(t, Overview(1, "24h", nil, outOfGroup, []GroupCard{closedGroup}, nil, FeedCaps{}, true, ""))
 	if !strings.Contains(html, `id="group-42"`) {
 		t.Errorf("closed group card must carry the anchor id: %s", html)
 	}

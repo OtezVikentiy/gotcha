@@ -31,7 +31,7 @@ func TestIconSpriteContainsSymbols(t *testing.T) {
 		t.Fatalf("render iconSprite: %v", err)
 	}
 	out := sb.String()
-	for _, name := range []string{"bug", "zap", "chart", "activity", "bell", "building"} {
+	for _, name := range []string{"home", "bug", "zap", "chart", "activity", "bell", "building"} {
 		if !strings.Contains(out, `id="i-`+name+`"`) {
 			t.Fatalf("sprite missing symbol id=i-%s: %s", name, out)
 		}

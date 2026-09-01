@@ -205,7 +205,8 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/monitors":                     lvlAccess,
 	"GET /monitors/{id}":                              lvlAccess,
 	"GET /projects/{id}/incidents":                    lvlAccess,
-	"GET /projects/{id}/incident-feed":                lvlAccess,
+	"GET /projects/{id}/overview":                     lvlAccess, // «Обзор», задача 6 nav-ia — та же граница, что у incident-feed ниже (заменяет её)
+	"GET /projects/{id}/incident-feed":                lvlAccess, // теперь чистый редирект на overview; requireUser остаётся тем же гейтом, что и у самой страницы
 	"GET /projects/{id}/performance":                  lvlAccess,
 	"GET /projects/{id}/performance/{transaction...}": lvlAccess,
 	"GET /projects/{id}/dependencies":                 lvlAccess,

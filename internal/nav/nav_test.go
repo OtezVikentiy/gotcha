@@ -59,6 +59,9 @@ func TestBackLabelKey(t *testing.T) {
 		path string
 		want string
 	}{
+		{"/projects/7/overview", "nav.overview"},
+		{"/projects/7/overview?range=7d", "nav.overview"},
+		{"/projects/7/incident-feed", "nav.overview"},
 		{"/projects/7/issues?status=resolved", "nav.issues"},
 		{"/projects/7/exports", "nav.exports"},
 		{"/issues/9", "nav.issues"},
@@ -110,6 +113,8 @@ func TestAreaForPathExtras(t *testing.T) {
 		{"/projects/7/deployments", "performance"},
 		{"/perf-issues/1", "issues"},
 		{"/projects/7/metrics", "metrics"},
+		{"/projects/7/overview", "overview"},
+		{"/projects/7/incident-feed", "overview"},
 		{"/projects/7/incidents", "uptime"},
 		{"/projects/7/maintenance", "alerts"},
 		{"/projects/7/statuspages", "settings"},
@@ -329,10 +334,10 @@ func TestAreas(t *testing.T) {
 		CanOperate: true,
 	}
 	areas := Areas(s)
-	if len(areas) != 9 {
-		t.Fatalf("Areas() len = %d, want 9 (8 rail incl. settings + docs)", len(areas))
+	if len(areas) != 10 {
+		t.Fatalf("Areas() len = %d, want 10 (overview + 8 rail incl. settings + docs)", len(areas))
 	}
-	wantIDs := []string{"issues", "performance", "logs", "metrics", "hosts", "uptime", "alerts", "settings", "docs"}
+	wantIDs := []string{"overview", "issues", "performance", "logs", "metrics", "hosts", "uptime", "alerts", "settings", "docs"}
 	for i, a := range areas {
 		if a.ID != wantIDs[i] {
 			t.Errorf("areas[%d].ID = %q, want %q", i, a.ID, wantIDs[i])
@@ -374,7 +379,7 @@ func TestAreasOrderAndTiers(t *testing.T) {
 		got = append(got, a.ID)
 	}
 	want := []string{
-		"issues", "performance", "logs", "metrics", "hosts", "uptime",
+		"overview", "issues", "performance", "logs", "metrics", "hosts", "uptime",
 		"alerts", "settings", "docs",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -390,6 +395,23 @@ func TestAreasOrderAndTiers(t *testing.T) {
 		if a.Footer {
 			t.Errorf("area %q must not live in the rail footer", a.ID)
 		}
+	}
+}
+
+// TestAreasIncludeOverviewFirst — «Обзор» (задача 6 nav-ia) встаёт первой
+// областью рейла с явным href (firstSubsectionHref для неё не сработал бы —
+// у неё нет подразделов) и не отдаёт подразделов вовсе.
+func TestAreasIncludeOverviewFirst(t *testing.T) {
+	s := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3}
+	areas := Areas(s)
+	if len(areas) == 0 || areas[0].ID != "overview" {
+		t.Fatalf("первая область рейла = %+v, want overview", areas)
+	}
+	if areas[0].Href != "/projects/7/overview" {
+		t.Fatalf("href обзора = %q, want /projects/7/overview", areas[0].Href)
+	}
+	if subs := Subsections(Shell{Area: "overview", ProjectID: 7}); subs != nil {
+		t.Fatalf("у «Обзора» не должно быть подразделов, получено %v", subs)
 	}
 }
 
@@ -553,12 +575,12 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("uptime → %q, want /projects/2/monitors", got)
 	}
 	shell.Area = "org"
-	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
-		t.Errorf("org → %q, want issues-фолбэк", got)
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/overview" {
+		t.Errorf("org → %q, want overview-фолбэк", got)
 	}
 	shell.Area = ""
-	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
-		t.Errorf("пустая область → %q, want issues-фолбэк", got)
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/overview" {
+		t.Errorf("пустая область → %q, want overview-фолбэк", got)
 	}
 
 	// C1 (закрыт в задаче 4): CanOperate — флаг ТЕКУЩЕГО проекта, не
@@ -570,8 +592,8 @@ func TestProjectSwitchHref(t *testing.T) {
 	// в issues-фолбэк, безопасный при любых правах на целевом проекте.
 	shell.Area = "alerts"
 	shell.CanOperate = true
-	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
-		t.Errorf("alerts → %q, want issues-фолбэк (CanOperate целевого проекта не подтверждён)", got)
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/overview" {
+		t.Errorf("alerts → %q, want overview-фолбэк (CanOperate целевого проекта не подтверждён)", got)
 	}
 }
 
@@ -593,8 +615,8 @@ func TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects(t *testing.T) {
 	if got == "/projects/2/alerts" {
 		t.Fatalf("ProjectSwitchHref(A→B) = %q, ведёт на страницу, требующую CanOperate целевого проекта — небезопасно", got)
 	}
-	if got != "/projects/2/issues" {
-		t.Errorf("ProjectSwitchHref(A→B) = %q, want /projects/2/issues (заведомо доступный путь)", got)
+	if got != "/projects/2/overview" {
+		t.Errorf("ProjectSwitchHref(A→B) = %q, want /projects/2/overview (заведомо доступный путь)", got)
 	}
 }
 

@@ -239,8 +239,14 @@ func AreaForPath(path string) string {
 					return "logs"
 				case "monitors", "incidents":
 					return "uptime"
-				case "alerts", "slos", "escalations", "alert-suppression", "incident-feed", "maintenance":
+				case "alerts", "slos", "escalations", "alert-suppression", "maintenance":
 					return "alerts"
+				case "overview", "incident-feed":
+					// Лента инцидентов (D3) переехала на «Обзор» (задача 6
+					// nav-ia); старый адрес /incident-feed редиректит туда
+					// же (см. web/overview.go), поэтому подсвечивает ту же
+					// область, а не исчезает молча.
+					return "overview"
 				case "statuspages", "recipes", "settings", "setup":
 					// Not a rail area (nothing lights up in the rail), but
 					// it does own the sidebar: without it the sidebar shows
@@ -268,6 +274,8 @@ func BackLabelKey(rawPath string) string {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/projects/"), "/", 4)
 		if len(parts) >= 2 {
 			switch parts[1] {
+			case "overview", "incident-feed":
+				return "nav.overview"
 			case "issues":
 				return "nav.issues"
 			case "exports":
@@ -319,14 +327,14 @@ func BackLabelKey(rawPath string) string {
 				return "nav.escalations"
 			case "alert-suppression":
 				return "nav.alert_suppression"
-			case "incident-feed":
-				return "nav.incident_feed"
 			case "settings", "setup":
 				return "nav.project_settings"
 			}
 		}
 	}
 	switch AreaForPath(path) {
+	case "overview":
+		return "nav.overview"
 	case "issues":
 		return "nav.issues"
 	case "performance":
@@ -541,13 +549,30 @@ func markActive(items []NavItem, path string) {
 	}
 }
 
-// Areas returns the icon-rail areas (issues/performance/logs/metrics/
-// hosts/uptime/alerts/settings, plus the trailing docs entry), each with
-// Active set by s.Area and Href pointing at its first subsection for the
-// effective project/org. Settings and docs carry Footer: true — they
-// render in the rail's bottom tier, next to the avatar and logout.
+// Areas returns the icon-rail areas: overview first, then issues/
+// performance/logs/metrics/hosts/uptime/alerts/settings, plus the trailing
+// docs entry — each with Active set by s.Area and Href pointing at its
+// first subsection for the effective project/org. Settings and docs carry
+// Footer: true — they render in the rail's bottom tier, next to the avatar
+// and logout.
 func Areas(s Shell) []NavArea {
-	result := make([]NavArea, 0, len(railAreas)+1)
+	result := make([]NavArea, 0, len(railAreas)+2)
+	// Обзор (задача 6 nav-ia) — единственная область без подразделов:
+	// контекстная колонка на ней не рендерится (Subsections отдаёт nil), а
+	// значит firstSubsectionHref ниже вернул бы "" и область молча пропала
+	// бы из рейла — тот же защитный приём, что убирает «Оповещения» у
+	// участника без CanOperate, здесь бы стёр единственную область с явным
+	// href. Поэтому href задаётся явно, а не через firstSubsectionHref, и
+	// единственное условие показа — наличие проекта вообще.
+	if effectiveProjectID(s) != 0 {
+		result = append(result, NavArea{
+			ID:       "overview",
+			IconName: "home",
+			LabelKey: "nav.overview",
+			Href:     "/projects/" + itoa(effectiveProjectID(s)) + "/overview",
+			Active:   s.Area == "overview",
+		})
+	}
 	for _, a := range railAreas {
 		href := firstSubsectionHref(s, a.id)
 		// Область без единого доступного подраздела не показывается вовсе:
@@ -607,9 +632,13 @@ func firstSubsectionHref(s Shell, area string) string {
 // ProjectSwitchHref computes where the project switcher takes the user when
 // they pick projectID: the SAME area they are currently in (№60 — switching
 // projects is not a reason to lose context), falling back to the project's
-// issues list when the current area is not a per-project one (org, docs,
-// settings) or has no accessible subsection for that project. The probe
-// keeps the shell's CanManage as-is: CanManage is per-organization, and the
+// overview when the current area is not a per-project one (overview itself,
+// org, docs, settings) or has no accessible subsection for that project. The
+// fallback used to be the issues list; the задача 6 nav-ia landing page is
+// «Обзор», open to anyone with access to the project (same safety property
+// the issues fallback had — see CanOperate note below), so a switch that
+// can't stay in the current area now lands there instead. The probe keeps
+// the shell's CanManage as-is: CanManage is per-organization, and the
 // switcher only ever offers projects of the currently selected organization
 // (topbar org selector, задача 4), so CanManage stays valid for the target.
 //
@@ -623,7 +652,7 @@ func firstSubsectionHref(s Shell, area string) string {
 // project could point the target project at a page that 404s there
 // (requireProjectOperator), for a target where the user is not an operator.
 // Rather than trust an unverified flag across the project boundary, the
-// switcher always falls back to the target project's issues list from
+// switcher always falls back to the target project's overview from
 // "alerts" — a page open to anyone with access to the project, safe under
 // any permission combination.
 func ProjectSwitchHref(s Shell, projectID int64) string {
@@ -638,5 +667,5 @@ func ProjectSwitchHref(s Shell, projectID int64) string {
 			return href
 		}
 	}
-	return "/projects/" + itoa(projectID) + "/issues"
+	return "/projects/" + itoa(projectID) + "/overview"
 }

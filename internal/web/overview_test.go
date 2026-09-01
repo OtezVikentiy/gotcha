@@ -19,8 +19,8 @@ import (
 )
 
 // incidentFeedStack — Handler + Store поверх мигрированной PG, без
-// ClickHouse (лента D3 его не читает) — облегчённая версия newHostsStack
-// (hosts_web_test.go) для incident-feed.
+// ClickHouse (шкала «Обзора» его не читает) — облегчённая версия
+// newHostsStack (hosts_web_test.go) для overview.
 type incidentFeedStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -80,11 +80,15 @@ func (s *incidentFeedStack) seedFeedHostIncident(t *testing.T, projectID, hostID
 	return id
 }
 
-func incidentFeedPath(projectID int64) string {
-	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incident-feed"
+func overviewPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/overview"
 }
 
-func TestIncidentFeedEmptyState(t *testing.T) {
+// TestOverviewEmptyProject — проект без единого инцидента получает не три
+// «нет данных» подряд, а одно приглашение подключить SDK (задача 6 nav-ia,
+// §7 спеки — «пустое состояние — приглашение к следующему шагу, а не «нет
+// данных»»).
+func TestOverviewEmptyProject(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner@example.com")
@@ -97,28 +101,25 @@ func TestIncidentFeedEmptyState(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
 	}
 	text := string(body)
-	for _, want := range []string{
-		"Лента инцидентов",
-		"Открытых групп нет",
-		"Связанных сбоев сейчас нет — раздел заполнится, когда инциденты на зависимых узлах откроются вместе.",
-		"Открытых инцидентов вне групп нет",
-		"Здесь появляются одиночные инциденты, не связанные с другими.",
-		"Недавно ничего не решалось",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("пустая лента не содержит %q: %s", want, text)
-		}
+	if !strings.Contains(text, "Обзор пока пуст") {
+		t.Errorf("empty overview must invite the next onboarding step, not render per-section empty states: %s", text)
+	}
+	if !strings.Contains(text, `href="`+"/projects/"+strconv.FormatInt(project.ID, 10)+"/setup"+`"`) {
+		t.Errorf("empty overview must link to the project's getting-started page: %s", text)
+	}
+	if strings.Contains(text, "Открытых групп нет") {
+		t.Errorf("a totally empty overview must not ALSO render the old per-section empty states: %s", text)
 	}
 }
 
-func TestIncidentFeedGroupWithComposition(t *testing.T) {
+func TestOverviewGroupWithComposition(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner2@example.com")
@@ -165,7 +166,7 @@ func TestIncidentFeedGroupWithComposition(t *testing.T) {
 		t.Fatalf("SetGroup uptime: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -184,7 +185,7 @@ func TestIncidentFeedGroupWithComposition(t *testing.T) {
 	}
 }
 
-func TestIncidentFeedAccessDenied(t *testing.T) {
+func TestOverviewAccessDenied(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, _ := orgSettingsRegister(t, s.auth, "feed-owner3@example.com")
@@ -198,7 +199,7 @@ func TestIncidentFeedAccessDenied(t *testing.T) {
 	}
 	_, outsiderCookie := orgSettingsRegister(t, s.auth, "feed-outsider@example.com")
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), outsiderCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -206,7 +207,13 @@ func TestIncidentFeedAccessDenied(t *testing.T) {
 	}
 }
 
-func TestIncidentFeedNilStore(t *testing.T) {
+// TestOverviewNilStoreRendersEmpty — задача 6 nav-ia: в отличие от прежней
+// /incident-feed (404 на h.IncidentGroups == nil, «стенд без подсистемы»),
+// «Обзор» — теперь дверь по умолчанию (index() ведёт сюда), и 404 на голом
+// входе в приложение читался бы как поломка. Инстанс/стенд без подсистемы
+// D3 получает страницу с пустыми секциями (то же приглашение, что и у
+// TestOverviewEmptyProject), а не ошибку.
+func TestOverviewNilStoreRendersEmpty(t *testing.T) {
 	s := newIncidentFeedStack(t, false)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner4@example.com")
@@ -219,15 +226,18 @@ func TestIncidentFeedNilStore(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
-	io.Copy(io.Discard, resp.Body)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("h.IncidentGroups == nil: status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("h.IncidentGroups == nil: status = %d, want 200 (overview renders, doesn't 404): %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Обзор пока пуст") {
+		t.Errorf("overview without the IncidentGroups store must still render the empty-project invite: %s", body)
 	}
 }
 
-// TestIncidentFeedInvalidProjectID — {id} в пути не парсится как int64:
+// TestOverviewInvalidProjectID — {id} в пути не парсится как int64:
 // parsePathProjectID отдаёт 404 тем же путём, что и остальные ручки проекта
 // (projsettings.go), а не 500/панику на мусорном сегменте URL. Тело страницы
 // проверяем на ОДНОКРАТНОЕ вхождение текста 404 — если бы ручка не
@@ -235,11 +245,11 @@ func TestIncidentFeedNilStore(t *testing.T) {
 // продолжилось бы с нулевым projectID и дошло бы до собственного notFound
 // ручки ещё раз: тот же статус 404 замаскировал бы пропавший return, а
 // задвоенное тело — нет.
-func TestIncidentFeedInvalidProjectID(t *testing.T) {
+func TestOverviewInvalidProjectID(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	_, ownerCookie := orgSettingsRegister(t, s.auth, "feed-badid@example.com")
 
-	resp := getWithCookie(t, s.srv, "/projects/not-a-number/incident-feed", ownerCookie)
+	resp := getWithCookie(t, s.srv, "/projects/not-a-number/overview", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -252,7 +262,7 @@ func TestIncidentFeedInvalidProjectID(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedCanAccessProjectQueryError — сбой самого запроса
+// TestOverviewCanAccessProjectQueryError — сбой самого запроса
 // CanAccessProject (не «доступа нет», а поломка БД) обязан отдать 500, а не
 // молча отрендерить 404 (это была бы неразличимая с «нет доступа» тишина —
 // ровно то, чего инженерные правила требуют избегать). Ломаем role — из неё
@@ -260,7 +270,7 @@ func TestIncidentFeedInvalidProjectID(t *testing.T) {
 // БД для теста изолирована (testenv.MigratedPG(t) выдаёт свою t_<hash> на
 // тест), так что ALTER TABLE не аукается соседям — тот же приём, что и
 // TestProfileDeleteLogsWhenEmailReadFails (cover_profile_delete_test.go).
-func TestIncidentFeedCanAccessProjectQueryError(t *testing.T) {
+func TestOverviewCanAccessProjectQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-accesserr@example.com")
@@ -277,7 +287,7 @@ func TestIncidentFeedCanAccessProjectQueryError(t *testing.T) {
 		t.Fatalf("break org_members.role: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -285,12 +295,12 @@ func TestIncidentFeedCanAccessProjectQueryError(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedOpenGroupsQueryError — сбой OpenGroups (queryGroupRows)
+// TestOverviewOpenGroupsQueryError — сбой OpenGroups (queryGroupRows)
 // обязан отдать 500. Ломаем root_node_kind — колонку groupRowSelect'а
 // (group.go), которую feedMemberSelect/feedProjectQuery (Composition,
 // OpenOutOfGroup, ClosedSince) не используют вовсе — обломка бьёт ровно по
 // OpenGroups/ClosedGroupsSince, ничего больше в ручке задеть не может.
-func TestIncidentFeedOpenGroupsQueryError(t *testing.T) {
+func TestOverviewOpenGroupsQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-opengroupserr@example.com")
@@ -308,7 +318,7 @@ func TestIncidentFeedOpenGroupsQueryError(t *testing.T) {
 		t.Fatalf("break incident_groups.root_node_kind: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -316,10 +326,10 @@ func TestIncidentFeedOpenGroupsQueryError(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedCompositionQueryError — сбой Compositions (состав ВСЕХ
+// TestOverviewCompositionQueryError — сбой Compositions (состав ВСЕХ
 // открытых/закрытых групп разом, один батч-запрос, W7) обязан отдать 500.
-// Заводим ровно одну открытую группу — иначе incidentFeed вообще не собрал
-// бы непустой groupIDs и не позвал бы Compositions. Ломаем ТИП
+// Заводим ровно одну открытую группу — иначе overview вообще не собрал бы
+// непустой groupIDs и не позвал бы Compositions. Ломаем ТИП
 // host_incidents.group_id (bigint -> text): его сравнивает С ПАРАМЕТРОМ
 // ($1 = ANY(group IDs)) только feedMemberSelectBatch (group.go, WHERE
 // hi.group_id = ANY($1)) — feedProjectQuery (OpenOutOfGroup/ClosedSince)
@@ -327,7 +337,7 @@ func TestIncidentFeedOpenGroupsQueryError(t *testing.T) {
 // смена типа рвёт РОВНО Compositions и никого из соседей (обычный
 // ALTER COLUMN … RENAME сломал бы саму SELECT-колонку и задел бы оба
 // запроса — здесь нужна асимметрия именно по сравнению типов).
-func TestIncidentFeedCompositionQueryError(t *testing.T) {
+func TestOverviewCompositionQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-compositionerr@example.com")
@@ -356,7 +366,7 @@ func TestIncidentFeedCompositionQueryError(t *testing.T) {
 		t.Fatalf("break host_incidents.group_id type: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -364,12 +374,12 @@ func TestIncidentFeedCompositionQueryError(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedOpenOutOfGroupQueryError — сбой OpenOutOfGroup (6-источник-
+// TestOverviewOpenOutOfGroupQueryError — сбой OpenOutOfGroup (6-источник-
 // ный feedProjectQuery) обязан отдать 500. Групп в проекте нет (иначе
 // Composition сработал бы раньше и замаскировал бы именно эту ветку), ломаем
 // perf_regressions.metric — колонку trace-ветки feedProjectQuery, которую ни
 // groupRowSelect, ни feedMemberSelect не используют.
-func TestIncidentFeedOpenOutOfGroupQueryError(t *testing.T) {
+func TestOverviewOpenOutOfGroupQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-outofgrouperr@example.com")
@@ -387,7 +397,7 @@ func TestIncidentFeedOpenOutOfGroupQueryError(t *testing.T) {
 		t.Fatalf("break perf_regressions.metric: %v", err)
 	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -395,15 +405,14 @@ func TestIncidentFeedOpenOutOfGroupQueryError(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedMultipleGroupsCompositionNotCrossed — W7: incidentFeed
-// теперь собирает состав ВСЕХ карточек одним батч-запросом
-// (h.IncidentGroups.Compositions) вместо цикла Composition-по-группе.
-// Главный риск батча — перепутать member'ов между группами через общий
-// список groupIDs/map (см. ту же тревогу в feed_test.go:
-// TestFeedCompositionsBatch на уровне стора). Здесь та же проверка на
-// уровне HTTP-ответа: две открытые группы с РАЗНЫМИ по имени членами,
-// каждая карточка обязана показать ТОЛЬКО своего.
-func TestIncidentFeedMultipleGroupsCompositionNotCrossed(t *testing.T) {
+// TestOverviewMultipleGroupsCompositionNotCrossed — W7: overview собирает
+// состав ВСЕХ карточек одним батч-запросом (h.IncidentGroups.Compositions)
+// вместо цикла Composition-по-группе. Главный риск батча — перепутать
+// member'ов между группами через общий список groupIDs/map (см. ту же
+// тревогу в feed_test.go: TestFeedCompositionsBatch на уровне стора). Здесь
+// та же проверка на уровне HTTP-ответа: две открытые группы с РАЗНЫМИ по
+// имени членами, каждая карточка обязана показать ТОЛЬКО своего.
+func TestOverviewMultipleGroupsCompositionNotCrossed(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner5@example.com")
@@ -437,7 +446,7 @@ func TestIncidentFeedMultipleGroupsCompositionNotCrossed(t *testing.T) {
 	makeGroup("root-alpha", "member-alpha")
 	makeGroup("root-beta", "member-beta")
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -469,12 +478,14 @@ func TestIncidentFeedMultipleGroupsCompositionNotCrossed(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedCapCaptions — W7/W8: подписи потолков рядом с
-// заголовками секций — реальные числа (incidentgroup.MaxOpenGroups/
-// MaxOpenOutOfGroup, feedClosedGroupsLimit/feedClosedOutOfGroupLimit), а не
-// нули FeedCaps{} и не единое (уже неверное) число на обе закрытые секции
-// разом (см. докблок feedClosedGroupsLimit/feedClosedOutOfGroupLimit).
-func TestIncidentFeedCapCaptions(t *testing.T) {
+// TestOverviewCapCaptions — W7/W8: подписи потолков рядом с заголовками
+// секций — реальные числа (incidentgroup.MaxOpenGroups/MaxOpenOutOfGroup,
+// overviewClosedGroupsLimit/overviewClosedOutOfGroupLimit), а не нули
+// FeedCaps{} и не единое (уже неверное) число на обе закрытые секции разом
+// (см. докблок overviewClosedGroupsLimit/overviewClosedOutOfGroupLimit).
+// Заводим одну открытую группу — иначе рендер ушёл бы в ветку «проект
+// совсем пуст» (задача 6 nav-ia) и заголовки секций не появились бы вовсе.
+func TestOverviewCapCaptions(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-owner6@example.com")
@@ -486,8 +497,14 @@ func TestIncidentFeedCapCaptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
+	rootHost := s.seedFeedHost(t, project.ID, "root-cap")
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
+		VALUES ($1,$2,'silent','open',0,0,'',true)`, project.ID, rootHost); err != nil {
+		t.Fatalf("seed root incident: %v", err)
+	}
 
-	resp := getWithCookie(t, s.srv, incidentFeedPath(project.ID), ownerCookie)
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -496,10 +513,125 @@ func TestIncidentFeedCapCaptions(t *testing.T) {
 	text := string(body)
 	for _, want := range []string{
 		"не больше 50",
-		"за последние сутки: групп не больше 50, отдельных инцидентов не больше 50",
+		"за последние 24 ч: групп не больше 50, отдельных инцидентов не больше 50",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("incident feed page missing cap caption %q: %s", want, text)
+			t.Errorf("overview page missing cap caption %q: %s", want, text)
 		}
 	}
 }
+
+// TestOverviewRangeToggleSelectsWindow — переключатель ?range= секции
+// «недавно решённые» (задача 6 nav-ia): 24ч — умолчание, канонический адрес
+// без параметра; 7д — явный ?range=7d, отражается и в подписи окна, и в
+// активной вкладке; нераспознанное значение откатывается на 24ч, а не падает.
+// Заводим одну открытую группу — иначе рендер ушёл бы в ветку «проект
+// совсем пуст», где ни подписи, ни вкладок вовсе нет.
+func TestOverviewRangeToggleSelectsWindow(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-range@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co-range", "Feed Co Range", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj-range", "Feed Proj Range", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	rootHost := s.seedFeedHost(t, project.ID, "root-range")
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
+		VALUES ($1,$2,'silent','open',0,0,'',true)`, project.ID, rootHost); err != nil {
+		t.Fatalf("seed root incident: %v", err)
+	}
+
+	cases := []struct {
+		suffix     string
+		wantWindow string
+		wantActive string
+	}{
+		{"", "за последние 24 ч", `href="` + overviewPath(project.ID) + `" aria-current="page"`},
+		{"?range=7d", "за последние 7 дн", `href="` + overviewPath(project.ID) + `?range=7d" aria-current="page"`},
+		{"?range=bogus", "за последние 24 ч", `href="` + overviewPath(project.ID) + `" aria-current="page"`},
+	}
+	for _, c := range cases {
+		resp := getWithCookie(t, s.srv, overviewPath(project.ID)+c.suffix, ownerCookie)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("range=%q: status = %d, want 200: %s", c.suffix, resp.StatusCode, body)
+		}
+		text := string(body)
+		if !strings.Contains(text, c.wantWindow) {
+			t.Errorf("range=%q: missing window caption %q: %s", c.suffix, c.wantWindow, text)
+		}
+		if !strings.Contains(text, c.wantActive) {
+			t.Errorf("range=%q: missing active tab %q: %s", c.suffix, c.wantActive, text)
+		}
+	}
+}
+
+// TestIncidentFeedRedirectsToOverview — старый адрес ленты (D3) целиком
+// редиректит на «Обзор» (задача 6 nav-ia): экран не должен остаться
+// достижимым по двум разным путям.
+func TestIncidentFeedRedirectsToOverview(t *testing.T) {
+	s := newIssuesStack(t)
+	uid, cookie := registerAndLogin(t, s, "feed@example.com")
+	p := createProject(t, s, uid, "feed-org", "feed-proj")
+	pid := strconv.FormatInt(p.ID, 10)
+
+	resp := getWithCookie(t, s.srv, "/projects/"+pid+"/incident-feed", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want redirect", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.HasSuffix(loc, "/projects/"+pid+"/overview") {
+		t.Fatalf("Location = %q, want /projects/%s/overview", loc, pid)
+	}
+}
+
+// TestIncidentFeedRedirectInvalidProjectID — редирект со старого адреса
+// ленты, как и сама /overview, отдаёт 404 на нечисловой {id}, а не 500/пустой
+// Location (несуществующий числовой id тоже безопасен: редирект слепой,
+// доступ проверяет цель редиректа — overview).
+func TestIncidentFeedRedirectInvalidProjectID(t *testing.T) {
+	s := newIssuesStack(t)
+	_, cookie := registerAndLogin(t, s, "feed-badid@example.com")
+
+	resp := getWithCookie(t, s.srv, "/projects/not-a-number/incident-feed", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestCookieOnlyDecidesTheDoor — правило состояния (§5 спеки): кука имеет
+// право голоса только на голом /, все остальные экраны берут истину из URL.
+// Без этого теста через полгода правило «оптимизируют»: две вкладки с
+// разными проектами начнут перебивать друг друга.
+func TestCookieOnlyDecidesTheDoor(t *testing.T) {
+	s := newIssuesStack(t)
+	uid, cookie := registerAndLogin(t, s, "tabs@example.com")
+	a := createProject(t, s, uid, "org-a", "proj-a")
+	b := createProject(t, s, uid, "org-b", "proj-b")
+
+	// заходим в проект A — кука запоминает его
+	respA := getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(a.ID, 10)+"/overview", cookie)
+	respA.Body.Close()
+
+	// прямой адрес проекта B обязан открыть B, а не запомненный A:
+	// иначе две вкладки с разными проектами перебивают друг друга
+	respB := getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(b.ID, 10)+"/overview", cookie)
+	defer respB.Body.Close()
+	body, _ := io.ReadAll(respB.Body)
+	if !strings.Contains(string(body), b.Name) || strings.Contains(string(body), a.Name) {
+		t.Fatal("экран смотрит в куку вместо URL: работа в нескольких вкладках сломана")
+	}
+}
+
+// index()'s cookie-remembers-project / falls-back-to-org-projects behavior
+// (задача 6 nav-ia, шаг 5) is covered by TestIndexStickyProject
+// (projcookie_test.go) — the authoritative test for that logic, updated in
+// this same task; no separate copy here to avoid duplicate, weaker coverage
+// of the same rule.

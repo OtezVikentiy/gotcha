@@ -373,9 +373,9 @@ func IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, u
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var18 templ.SafeURL
-			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(incidentFeedPath(projectID)))
+			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(overviewPath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidents.templ`, Line: 104, Col: 116}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidents.templ`, Line: 104, Col: 112}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -386,9 +386,9 @@ func IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, u
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var19 string
-			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.incident_feed"))
+			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.overview"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidents.templ`, Line: 104, Col: 153}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidents.templ`, Line: 104, Col: 144}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -401,7 +401,7 @@ func IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, u
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.see_feed_hint_suffix"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidents.templ`, Line: 104, Col: 213}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidents.templ`, Line: 104, Col: 204}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {

@@ -84,12 +84,15 @@ func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
 	case "profile":
 		return profileRegressionsBasePath(projectID)
 	default:
-		return incidentFeedPath(projectID)
+		return overviewPath(projectID)
 	}
 }
 
-func incidentFeedPath(projectID int64) string {
-	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incident-feed"
+// overviewPath — путь до «Обзора» проекта (задача 6 nav-ia): ссылка по
+// умолчанию для источника ленты без родной страницы (default-ветка выше) и
+// цель редиректа со старого адреса /incident-feed (см. web/overview.go).
+func overviewPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/overview"
 }
 
 // feedItemSubKind — человекочитаемый подвид инцидента (W13): раньше везде
@@ -292,10 +295,11 @@ templ groupCard(projectID int64, c GroupCard, canOperate bool) {
 	</details>
 }
 
-// FeedCaps — потолки четырёх независимых запросов ленты (R4, W7/W8):
+// FeedCaps — потолки четырёх независимых запросов «Обзора» (R4, W7/W8,
+// перенесены из бывшей /incident-feed задачей 6 nav-ia без изменений):
 // открытые группы, открытые внегрупповые, закрытые группы, закрытые
-// внегрупповые. Числа приходят из incidentfeed.go (incidentgroup.MaxOpen*
-// для открытых секций, feedClosed*Limit для закрытых) — шаблон только
+// внегрупповые. Числа приходят из overview.go (incidentgroup.MaxOpen* для
+// открытых секций, overviewClosed*Limit для закрытых) — шаблон только
 // печатает подпись рядом с заголовком секции, само число не выбирает:
 // иначе подпись и SQL-потолок могли бы разъехаться молча.
 type FeedCaps struct {
@@ -303,65 +307,4 @@ type FeedCaps struct {
 	OutOfGroup   int
 	ClosedGroups int
 	ClosedItems  int
-}
-
-// IncidentFeed — GET /projects/{id}/incident-feed: сводная лента (D3, §6.1):
-// открытые группы с раскрываемым составом (details/summary, без JS),
-// внегрупповые открытые инциденты 6 источников, недавно закрытые. canOperate
-// (W9) — гейт ссылки на родную страницу metric/slo-инцидента, см.
-// feedItemLinkable; сама лента остаётся на lvlAccess.
-templ IncidentFeed(projectID int64, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, caps FeedCaps, canOperate bool, userEmail string) {
-	{{ closedIDs := closedGroupIDSet(closedGroups) }}
-	@layout(i18n.T(ctx, "feed.title"), userEmail) {
-		<div class="incident-feed">
-			<h1>{ i18n.T(ctx, "feed.title") }</h1>
-			<p class="hint">{ i18n.T(ctx, "feed.see_incidents_hint") }<a href={ templ.URL(incidentsPath(projectID)) }>{ i18n.T(ctx, "nav.incidents") }</a>{ i18n.T(ctx, "feed.see_incidents_hint_suffix") }</p>
-			@helpPanel("feed", "incident-groups")
-			<h2>{ i18n.T(ctx, "feed.section.groups") } <span class="hint">{ i18n.Tf(ctx, "feed.open_groups.cap", "n", strconv.Itoa(caps.OpenGroups)) }</span></h2>
-			if len(openGroups) == 0 {
-				@emptyState("activity", "feed.groups.empty.title", "feed.groups.empty.body", "", "", 3)
-			} else {
-				for _, c := range openGroups {
-					@groupCard(projectID, c, canOperate)
-				}
-			}
-			<h2>{ i18n.T(ctx, "feed.section.out_of_group") } <span class="hint">{ i18n.Tf(ctx, "feed.out_of_group.cap", "n", strconv.Itoa(caps.OutOfGroup)) }</span></h2>
-			if len(outOfGroup) == 0 {
-				@emptyState("activity", "feed.out_of_group.empty.title", "feed.out_of_group.empty.body", "", "", 3)
-			} else {
-				<div class="card">
-					@scrollRegion("table-scroll", "feed.section.out_of_group") {
-						<table class="data-table">
-							@feedTableHead()
-							<tbody>
-								for _, it := range outOfGroup {
-									@feedItemRow(projectID, it, closedIDs, canOperate)
-								}
-							</tbody>
-						</table>
-					}
-				</div>
-			}
-			<h2>{ i18n.T(ctx, "feed.section.closed") } <span class="hint">{ i18n.Tf(ctx, "feed.closed.cap", "groups", strconv.Itoa(caps.ClosedGroups), "items", strconv.Itoa(caps.ClosedItems)) }</span></h2>
-			for _, c := range closedGroups {
-				@groupCard(projectID, c, canOperate)
-			}
-			if len(closed) == 0 && len(closedGroups) == 0 {
-				@emptyState("activity", "feed.closed.empty.title", "feed.closed.empty.body", "", "", 3)
-			} else if len(closed) > 0 {
-				<div class="card">
-					@scrollRegion("table-scroll", "feed.section.closed") {
-						<table class="data-table">
-							@feedTableHead()
-							<tbody>
-								for _, it := range closed {
-									@feedItemRow(projectID, it, closedIDs, canOperate)
-								}
-							</tbody>
-						</table>
-					}
-				</div>
-			}
-		</div>
-	}
 }

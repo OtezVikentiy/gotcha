@@ -260,8 +260,12 @@ type Handler struct {
 	// и у EscalationPolicy/SLO выше.
 	AlertDeps *depsuppress.Store
 
-	// IncidentGroups — группы инцидентов (D3): сводная лента
-	// /projects/{id}/incident-feed. nil → 404 (стенд без подсистемы).
+	// IncidentGroups — группы инцидентов (D3): секции «Обзора»
+	// (/projects/{id}/overview, задача 6 nav-ia — бывшая сводная лента
+	// /incident-feed, теперь редиректящая туда). nil (стенд/инстанс без
+	// подсистемы) НЕ отдаёт 404 — «Обзор» является дверью по умолчанию
+	// (index()), страница рендерится с пустыми секциями вместо ошибки, см.
+	// докблок overview.go.
 	IncidentGroups *incidentgroup.Store
 
 	// Exports — очередь заявок на выгрузку ошибок/событий (E1): раздел
@@ -776,7 +780,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /monitors/{id}", h.requireUser(http.HandlerFunc(h.monitorUpdate)))
 
 	inner.Handle("GET /projects/{id}/incidents", h.requireUser(http.HandlerFunc(h.incidentsList)))
-	inner.Handle("GET /projects/{id}/incident-feed", h.requireUser(http.HandlerFunc(h.incidentFeed)))
+	inner.Handle("GET /projects/{id}/overview", h.requireUser(http.HandlerFunc(h.overview)))
+	inner.Handle("GET /projects/{id}/incident-feed", h.requireUser(http.HandlerFunc(h.incidentFeedRedirect)))
 
 	// Производительность (этап 3, план 4, задача 2): список эндпойнтов и
 	// страница эндпойнта — только чтение, доступ открыт любому участнику
@@ -1119,22 +1124,39 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/onboarding", http.StatusSeeOther)
 		return
 	}
-	// Запомненный в cookie проект важнее первого из списка (см.
-	// projcookie.go); недоступный или битый id молча откатывает на первый.
-	target := projects[0].ID
+	// Кука голая "/" — единственное место, где она вправе решать (§5 спеки
+	// nav-ia): запомненный проект (если юзер всё ещё в списке своих
+	// проектов) ведёт прямиком на его «Обзор». Без запомненного проекта —
+	// НЕ первый проект списка (это подменяло бы явный выбор организации
+	// молчаливым решением за юзера), а список проектов первой по порядку
+	// организации (та же дверь, что и у /projects, projectsRedirect в
+	// orgprojects.go) — юзер выбирает проект сам.
 	if id := projCookieID(r); id != 0 {
 		for _, p := range projects {
 			if p.ID == id {
-				target = id
-				break
+				http.Redirect(w, r, overviewPath(id), http.StatusSeeOther)
+				return
 			}
 		}
 	}
-	http.Redirect(w, r, projectIssuesPath(target), http.StatusSeeOther)
+	orgs, err := h.Org.OrgsOf(r.Context(), uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	if len(orgs) == 0 {
+		// Не должно случаться, раз projects непуст (проект без организации
+		// не существует) — тот же тупиковый выход, что и у orgs==0 выше,
+		// если инвариант всё же нарушится.
+		http.Redirect(w, r, "/onboarding", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, orgProjectsPath(orgs[0].ID), http.StatusSeeOther)
 }
 
-// projectIssuesPath — предварительный путь до issue-листинга проекта;
-// окончательный роутинг появится в задаче 5.
+// projectIssuesPath — путь до issue-листинга проекта: цель ссылок «Первые
+// шаги»/ошибок онбординга (issues.go), больше не цель голого index() —
+// задача 6 nav-ia увела вход в приложение на overviewPath.
 func projectIssuesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/issues"
 }
