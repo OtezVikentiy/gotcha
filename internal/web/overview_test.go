@@ -717,34 +717,65 @@ func TestOverviewStatusLineIsClickable(t *testing.T) {
 
 // TestOverviewShowsDeployMarkers — деплои (C5) на той же временной оси, что
 // и инциденты (задача 7 nav-ia): деплой внутри окна обзора должен быть
-// виден на странице, чтобы отвечать на вопрос «после выкатки или само».
+// виден на странице, чтобы отвечать на вопрос «после выкатки или само». В
+// отличие от исходной версии теста (ревью фикс-раунда 1: ревьюер снял окно
+// целиком — `since, now` → `time.Time{}, now.Add(999*time.Hour)` — и весь
+// TestOverview* остался зелёным, потому что отсутствие деплоя ВНЕ окна не
+// проверял никто), здесь второй деплой заведён ЗА пределами окна 24ч (но
+// внутри 7д) и должен ОТСУТСТВОВАТЬ на дефолтном (24ч) экране, а при явном
+// расширении окна (?range=7d, тот же переключатель, что и у «недавно
+// решённых») — появиться.
 func TestOverviewShowsDeployMarkers(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "deploy@example.com")
 	p := createProject(t, s, uid, "dep-org", "dep-proj")
 	pid := strconv.FormatInt(p.ID, 10)
-	// Деплой внутри окна обзора. Отдельного помощника вставки в пакете нет:
-	// TestWebDeploymentsScreen (internal/web/deployments_test.go:54) пишет
-	// деплой в БД прямо в теле теста — повторить оттуда те же вызовы,
-	// подставив время внутри последних 24 часов. newIssuesStack не заводит
-	// h.Deploy (стенд задачи 4 issues его не знает) — заводим сами через тот
-	// же deploy.NewStore(s.pool), что и newDeployStack.
+	// Деплои внутри/вне окна обзора. Отдельного помощника вставки в пакете
+	// нет: TestWebDeploymentsScreen (internal/web/deployments_test.go:54)
+	// пишет деплой в БД прямо в теле теста — повторить оттуда те же вызовы,
+	// подставив нужное время. newIssuesStack не заводит h.Deploy (стенд
+	// задачи 4 issues его не знает) — заводим сами через тот же
+	// deploy.NewStore(s.pool), что и newDeployStack.
 	depSvc := deploy.NewStore(s.pool)
 	s.h.Deploy = depSvc
 
-	const deployVersion = "v1.2.3-overview"
+	const insideVersion = "v1.2.3-overview"
 	if _, err := depSvc.Record(context.Background(), p.ID, deploy.Deployment{
-		Version:     deployVersion,
+		Version:     insideVersion,
 		Environment: "prod",
 		DeployedAt:  time.Now().UTC().Add(-2 * time.Hour),
 	}); err != nil {
-		t.Fatalf("record deploy: %v", err)
+		t.Fatalf("record inside-window deploy: %v", err)
+	}
+	// -25h: вне окна 24ч по умолчанию, но внутри окна 7д (rangeKey ниже).
+	const outsideVersion = "v0.9.0-before-window"
+	if _, err := depSvc.Record(context.Background(), p.ID, deploy.Deployment{
+		Version:     outsideVersion,
+		Environment: "prod",
+		DeployedAt:  time.Now().UTC().Add(-25 * time.Hour),
+	}); err != nil {
+		t.Fatalf("record outside-window deploy: %v", err)
 	}
 
 	resp := getWithCookie(t, s.srv, "/projects/"+pid+"/overview", cookie)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), deployVersion) {
-		t.Fatalf("маркер деплоя %q не попал на шкалу", deployVersion)
+	text := string(body)
+	if !strings.Contains(text, insideVersion) {
+		t.Fatalf("маркер деплоя %q не попал на шкалу (окно 24ч по умолчанию): %s", insideVersion, text)
+	}
+	if strings.Contains(text, outsideVersion) {
+		t.Fatalf("маркер деплоя %q старше окна 24ч не должен рисоваться по умолчанию: %s", outsideVersion, text)
+	}
+
+	respWide := getWithCookie(t, s.srv, "/projects/"+pid+"/overview?range=7d", cookie)
+	defer respWide.Body.Close()
+	bodyWide, _ := io.ReadAll(respWide.Body)
+	textWide := string(bodyWide)
+	if !strings.Contains(textWide, outsideVersion) {
+		t.Fatalf("маркер деплоя %q обязан появиться при расширении окна до 7д: %s", outsideVersion, textWide)
+	}
+	if !strings.Contains(textWide, insideVersion) {
+		t.Fatalf("расширение окна до 7д не должно терять более свежий деплой %q: %s", insideVersion, textWide)
 	}
 }

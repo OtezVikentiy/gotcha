@@ -1,0 +1,23 @@
+-- backward-compatible: yes (новый индекс)
+--
+-- issue.Service.CountNewSince (задача 7 nav-ia, строка состояния «Обзора» —
+-- «новые проблемы за сутки») фильтрует WHERE project_id = $1 AND
+-- first_seen >= $2. issues_project_last_seen_idx (0003_issues.up.sql)
+-- начинается с project_id, но продолжается last_seen — planner не может
+-- использовать его для отсечки по first_seen и просканирует построчно все
+-- issues проекта. «Обзор» — дверь по умолчанию после логина (задача 6), то
+-- есть этот запрос идёт на каждый заход, а не раз в час, как у чистильщика
+-- (0031/0032) — тот же класс дефекта индекса, что и там, но горячее.
+--
+-- CONCURRENTLY/один оператор на файл/IF NOT EXISTS — тот же приём и то же
+-- обоснование, что и в 0031_issues_last_seen_idx.up.sql (эксперимент
+-- task-1-report.md, 2026-08-02): обычный CREATE INDEX держит ACCESS
+-- EXCLUSIVE на всё время построения, CONCURRENTLY не может идти в
+-- транзакционном блоке, golang-migrate шлёт файл одним оператором.
+--
+-- Проверка после наката (та же ловушка недостроенного индекса, что у
+-- 0031-0036): SELECT indexrelid::regclass, indisvalid FROM pg_index WHERE
+-- NOT indisvalid; индекс в списке — DROP INDEX CONCURRENTLY <имя> и повторный
+-- накат.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS issues_project_first_seen_idx
+    ON issues (project_id, first_seen);
