@@ -206,7 +206,7 @@ var routeAuthz = map[string]string{
 	"GET /monitors/{id}":                              lvlAccess,
 	"GET /projects/{id}/incidents":                    lvlAccess,
 	"GET /projects/{id}/overview":                     lvlAccess, // «Обзор», задача 6 nav-ia — та же граница, что у incident-feed ниже (заменяет её)
-	"GET /projects/{id}/incident-feed":                lvlAccess, // теперь чистый редирект на overview; requireUser остаётся тем же гейтом, что и у самой страницы
+	"GET /projects/{id}/incident-feed":                lvlAccess, // редирект на overview, но CanAccessProject проверяется ДО него (ревью фикс-раунда 2: раньше редиректил вообще без проверки — TestAuthzBehaviorStrangerRejectedOnScopedRoutes)
 	"GET /projects/{id}/performance":                  lvlAccess,
 	"GET /projects/{id}/performance/{transaction...}": lvlAccess,
 	"GET /projects/{id}/dependencies":                 lvlAccess,
