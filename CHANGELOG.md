@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-01
+
 ### Added
 - Ingest DSN keys now have a type: `browser`, `server`, `agent`. A key is
   granted access only to what its source actually needs; keys issued before
