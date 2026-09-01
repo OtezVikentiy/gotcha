@@ -116,8 +116,22 @@ func keyKindBadgeClass(k org.Key) string {
 	return "badge"
 }
 
+// keyRowHasDSN — у строки ключа есть вторая строка, с его DSN. Отозванному
+// ключу DSN не показываем (слать им нечего), пустой DSN означает ненастроенный
+// BaseURL инстанса — и то, и другое оставляет строку одиночной.
+func keyRowHasDSN(v ProjectKeyView) bool {
+	return !v.Key.Revoked && v.DSN != ""
+}
+
+// keyRow — ключ занимает ДВЕ строки таблицы: сама запись (ключ, тип, статус,
+// отзыв) и под ней DSN во всю ширину через colspan. Пятой колонкой DSN не
+// живёт: таблица стоит в узкой средней колонке трёхколоночных настроек, на
+// пять колонок ширины не хватает, и колонка DSN схлопывалась до ~78px —
+// адрес печатался столбиком по одному-два символа, а кнопка отзыва уезжала
+// под горизонтальную прокрутку. Прокрутка тут отвергнута ещё обходом
+// 2026-07-20 (см. .card pre в app.css): она прячет содержимое ровно так же.
 templ keyRow(projectID int64, v ProjectKeyView) {
-	<tr>
+	<tr class={ templ.KV("key-row-with-dsn", keyRowHasDSN(v)) }>
 		<td>{ v.Key.PublicKey }</td>
 		<td>
 			<span class={ keyKindBadgeClass(v.Key) }>{ i18n.T(ctx, keyKindLabelKey(v.Key)) }</span>
@@ -127,11 +141,6 @@ templ keyRow(projectID int64, v ProjectKeyView) {
 		</td>
 		<td><span class={ keyStatusBadgeClass(v.Key) }>{ i18n.T(ctx, keyStatusLabelKey(v.Key)) }</span></td>
 		<td>
-			if !v.Key.Revoked && v.DSN != "" {
-				@copyBlock("dsn-"+strconv.FormatInt(v.Key.ID, 10), "project.settings.dsn.label", v.DSN)
-			}
-		</td>
-		<td>
 			if !v.Key.Revoked {
 				<form method="post" action={ templ.URL(projectSettingsKeysRevokePath(projectID)) } class="key-revoke-form">
 					<input type="hidden" name="key_id" value={ strconv.FormatInt(v.Key.ID, 10) }/>
@@ -140,11 +149,19 @@ templ keyRow(projectID int64, v ProjectKeyView) {
 			}
 		</td>
 	</tr>
+	if keyRowHasDSN(v) {
+		<tr class="key-dsn-row">
+			<td colspan="4">
+				@copyBlock("dsn-"+strconv.FormatInt(v.Key.ID, 10), "project.settings.dsn.label", v.DSN)
+			</td>
+		</tr>
+	}
 }
 
 // ProjectSettings — GET/POST /projects/{id}/settings: имя (форма rename),
-// платформа (readonly), таблица DSN-ключей (public_key, статус, revoke),
-// форма выпуска нового ключа, DSN текущего живого ключа. errMsg —
+// платформа (readonly), таблица DSN-ключей (public_key, тип, статус, revoke
+// и DSN строкой под каждым живым ключом, см. keyRow), форма выпуска нового
+// ключа. errMsg —
 // сообщение об ошибке последнего POST, рендерится с тем же статусом (422),
 // что и ответ — тот же принцип, что и у OrgSettings/Teams.
 // helpLabel — подпись поля с всплывающей расшифровкой (нативный title, без JS
@@ -338,7 +355,6 @@ templ ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEm
 								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.key") }</th>
 								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.kind") }</th>
 								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.status") }</th>
-								<th scope="col">{ i18n.T(ctx, "project.settings.keys.table.dsn") }</th>
 								<th scope="col"></th>
 							</tr>
 						</thead>

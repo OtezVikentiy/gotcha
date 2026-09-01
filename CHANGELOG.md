@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Project settings: a key's DSN is shown on its own full-width line under the
+  key instead of a narrow column, so the address no longer wraps one character
+  per line and the revoke button no longer slides under a horizontal scrollbar.
+
 ## [0.27.0] - 2026-09-01
 
 ### Added

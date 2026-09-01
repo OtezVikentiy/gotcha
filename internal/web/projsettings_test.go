@@ -689,17 +689,39 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	// странице» (форма выпуска рендерит те же подписи типов безусловно в
 	// своих radio, и наивная проверка по всему HTML не отличила бы одно от
 	// другого).
+	//
+	// Ищем именно "<tr" без закрывающей скобки: у строки ключа есть класс
+	// (key-row-with-dsn у ключа с DSN), и поиск по литеральному "<tr>"
+	// проскочил бы её до <tr> шапки — фрагмент тогда охватывал бы пол-таблицы
+	// и проверки подписей ниже проходили бы на чужих строках.
 	rowFor := func(publicKey string) string {
 		idx := strings.Index(tableHTML, publicKey)
 		if idx == -1 {
 			t.Fatalf("GET %s key row for %q not found in table: %s", settingsPath, publicKey, tableHTML)
 		}
-		rowStart := strings.LastIndex(tableHTML[:idx], "<tr>")
+		rowStart := strings.LastIndex(tableHTML[:idx], "<tr")
 		rowEndRel := strings.Index(tableHTML[idx:], "</tr>")
 		if rowStart == -1 || rowEndRel == -1 {
 			t.Fatalf("GET %s malformed row for %q: %s", settingsPath, publicKey, tableHTML)
 		}
 		return tableHTML[rowStart : idx+rowEndRel+len("</tr>")]
+	}
+
+	// dsnRowAfter возвращает строку, идущую СРАЗУ за строкой ключа: DSN живёт
+	// в ней (colspan под записью ключа), и привязка «этот DSN принадлежит
+	// этому ключу» держится только соседством. Проверка по всей таблице её
+	// не заменяет: страница с тремя ключами содержит три DSN, и перепутанные
+	// местами строки такую проверку прошли бы.
+	dsnRowAfter := func(publicKey string) string {
+		row := rowFor(publicKey)
+		idx := strings.Index(tableHTML, row)
+		rest := tableHTML[idx+len(row):]
+		start := strings.Index(rest, "<tr")
+		end := strings.Index(rest, "</tr>")
+		if start == -1 || end == -1 || end < start {
+			t.Fatalf("GET %s no row after key %q: %s", settingsPath, publicKey, tableHTML)
+		}
+		return rest[start : end+len("</tr>")]
 	}
 
 	browserRow := rowFor(browserKey.PublicKey)
@@ -716,6 +738,30 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	}
 	if !strings.Contains(legacyRow, "/docs/keys") {
 		t.Fatalf("GET %s legacy row missing hint link to /docs/keys: %s", settingsPath, legacyRow)
+	}
+
+	// DSN каждого ключа — в строке ПОД его записью, и ни один DSN не остаётся
+	// в самой записи: колонки DSN в таблице больше нет (она схлопывалась в
+	// столбик из одного символа), а место DSN — отдельная строка с colspan.
+	for _, c := range []struct {
+		publicKey string
+		dsn       string
+		row       string
+	}{
+		{browserKey.PublicKey, browserDSN, browserRow},
+		{agentKey.PublicKey, agentDSN, agentRow},
+		{legacyKey.PublicKey, legacyDSN, legacyRow},
+	} {
+		dsnRow := dsnRowAfter(c.publicKey)
+		if !strings.Contains(dsnRow, `class="key-dsn-row"`) {
+			t.Fatalf("GET %s row after key %q is not the DSN row: %s", settingsPath, c.publicKey, dsnRow)
+		}
+		if !strings.Contains(dsnRow, c.dsn) {
+			t.Fatalf("GET %s DSN row after key %q missing its DSN %q: %s", settingsPath, c.publicKey, c.dsn, dsnRow)
+		}
+		if strings.Contains(c.row, c.dsn) {
+			t.Fatalf("GET %s key row for %q still carries the DSN inline: %s", settingsPath, c.publicKey, c.row)
+		}
 	}
 }
 
