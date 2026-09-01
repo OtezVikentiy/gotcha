@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - New "Overview" screen for a project (`/projects/{id}/overview`): what
-  needs attention right now — recent errors, active alerts, deploy markers —
-  instead of dropping straight into the issue list.
+  needs attention right now — a status line (uptime, hosts over threshold,
+  new issues today), open incident groups, and deploy markers — instead of
+  dropping straight into the issue list.
 - New "All projects" screen for an organization (`/orgs/{id}/projects`): a
   flat list of every project in the organization, reachable from an
   organization switcher rather than nested one level inside a project.
@@ -39,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/projects` now redirects to your organization's project list instead of
   showing its own page, and a project's old incident-feed link now
   redirects to its Overview.
+- Signing in without a remembered project now lands on your organization's
+  project list instead of the first project's issue list — you pick a
+  project instead of the app guessing one for you.
 
 ## [0.28.0] - 2026-09-01
 

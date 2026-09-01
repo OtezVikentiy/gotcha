@@ -31,11 +31,11 @@ edges are set on the ["Alerts → Silence → Storm suppression"](/docs/alert-su
   an empty `group_id` — a problem that outlived its neighbor doesn't drop
   out of sight.
 
-## Incident feed
+## Overview
 
 The "Overview" section shows open groups with their
 composition (expand in place), open out-of-group incidents across all six
-sources, and what closed in the last day.
+sources, and what recently resolved — the window is switchable (24h/7d).
 
 A group card's header shows the root's type and name (linked to its own
 page; a node that has since been deleted is labeled "deleted node"), the

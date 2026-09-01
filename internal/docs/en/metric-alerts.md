@@ -4,7 +4,7 @@ A metric alert rule watches a metric's aggregate (avg/max/p95, etc.) over a roll
 
 ## Where to find it
 
-The bell icon in the left icon rail → "Alerts" → the "Rules" group → "Metric Alerts" (or go directly to `/projects/{id}/metrics/alerts`). Managing rules is available to a project team member (an operator) as well as to the organization's owner and admins — see [Roles and access](/docs/teams).
+The bell icon in the left icon rail → "Alerts" → the "Rules" group → "By metrics" (or go directly to `/projects/{id}/metrics/alerts`). Managing rules is available to a project team member (an operator) as well as to the organization's owner and admins — see [Roles and access](/docs/teams).
 
 ## Creating a rule
 
@@ -69,7 +69,7 @@ If the metric detail page (`/projects/{id}/metrics/{name}`) has the same aggrega
 Say your app sends a histogram metric `http.server.duration` (unit `ms`) — see [Metrics](/docs/metrics) for how to send it over OTLP.
 
 1. Open `/projects/{id}/metrics/http.server.duration` to confirm points are arriving, and double-check the exact metric name and unit.
-2. Go to "Alerts → Rules → Metric Alerts" and click **"New rule"**.
+2. Go to "Alerts → Rules → By metrics" and click **"New rule"**.
 3. Fill in the form:
    - Metric: `http.server.duration`
    - Aggregation: `p95`
