@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Strict-Transport-Security is now configurable: `GOTCHA_HSTS_ENABLED`,
+  `GOTCHA_HSTS_MAX_AGE_SECONDS`, `GOTCHA_HSTS_INCLUDE_SUBDOMAINS` and
+  `GOTCHA_HSTS_PRELOAD`. Defaults keep today's behaviour (one year, no
+  subdomains, no preload); set `GOTCHA_HSTS_ENABLED=false` when the reverse
+  proxy already sends the header. See /docs/hardening.
+- New documentation page "Hardening your install": what the reverse proxy
+  closes and what the app closes, which service endpoints to keep off the
+  public internet, TLS/HSTS, security.txt and a curl self-check.
+
 ## [0.27.1] - 2026-09-01
 
 ### Fixed
