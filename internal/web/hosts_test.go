@@ -15,6 +15,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -416,7 +418,7 @@ func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason str
 // TestHostsOnboardingAgentDefault — T14: онбординг предлагает свой агент по
 // умолчанию (одна install.sh-команда с ключом+endpoint), коллектор otelcol —
 // свёрнутая альтернатива с прежними тремя шагами. Оба пути берут ключ одним
-// и тем же firstLiveKey-путём (h.hostInstallBlocks в hosts.go), поэтому при
+// и тем же liveKeyFor-путём (h.hostInstallBlocks в hosts.go), поэтому при
 // его отсутствии подсказка hosts.onboarding.no_key
 // показывается на ОБОИХ путях, а не на одном.
 func TestHostsOnboardingAgentDefault(t *testing.T) {
@@ -1117,5 +1119,72 @@ func TestHostSettingsAgentInstallBlock(t *testing.T) {
 	}
 	if !strings.Contains(html, "otlphttp") {
 		t.Errorf("страница настроек без конфига коллектора: %s", html)
+	}
+}
+
+// TestHostInstallBlocksUsesAgentKey — команда установки и конфиг коллектора
+// со страницы хостов берут ключ типа agent: этот коллектор несёт
+// resourcedetection, то есть РЕГИСТРИРУЕТ хост, а регистрировать может только
+// agent (§7 дизайна).
+func TestHostInstallBlocksUsesAgentKey(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	orgSvc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	h := &Handler{Org: orgSvc, BaseURL: "https://g.example"}
+
+	var uid int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id",
+		"host-install-agent@example.com").Scan(&uid); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	o, err := orgSvc.CreateOrg(ctx, "hia-org", "HIA Org", uid)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Проект с типизированными ключами: коллектор берёт agent, не server.
+	proj, err := orgSvc.CreateProject(ctx, o.ID, "hia-proj", "HIA Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	keys, err := orgSvc.CreateKeys(ctx, proj.ID, org.KindServer, org.KindAgent)
+	if err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	var serverKey, agentKey string
+	for _, k := range keys {
+		switch k.Kind {
+		case org.KindServer:
+			serverKey = k.PublicKey
+		case org.KindAgent:
+			agentKey = k.PublicKey
+		}
+	}
+	if serverKey == "" || agentKey == "" {
+		t.Fatalf("keys = %+v, want один server и один agent", keys)
+	}
+
+	_, config, _ := h.hostInstallBlocks(ctx, proj.ID)
+	if !strings.Contains(config, agentKey) {
+		t.Errorf("config без agent-ключа %q: %s", agentKey, config)
+	}
+	if strings.Contains(config, serverKey) {
+		t.Errorf("config содержит server-ключ %q, ожидался только agent: %s", serverKey, config)
+	}
+
+	// Проект только с legacy-ключом — переход без простоя: коллектор
+	// продолжает получать рабочий ключ, а не пустое состояние.
+	proj2, err := orgSvc.CreateProject(ctx, o.ID, "hia-proj-legacy", "HIA Proj Legacy", "go")
+	if err != nil {
+		t.Fatalf("create project 2: %v", err)
+	}
+	legacyKeys, err := orgSvc.CreateKeys(ctx, proj2.ID, org.KindLegacy)
+	if err != nil {
+		t.Fatalf("create legacy key: %v", err)
+	}
+	_, legacyConfig, _ := h.hostInstallBlocks(ctx, proj2.ID)
+	if !strings.Contains(legacyConfig, legacyKeys[0].PublicKey) {
+		t.Errorf("config без legacy-ключа при отсутствии agent: %s", legacyConfig)
 	}
 }

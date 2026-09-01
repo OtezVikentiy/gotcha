@@ -80,6 +80,29 @@ DROP INDEX CONCURRENTLY <index-name>;
 
 then re-apply migrations (restart with `GOTCHA_AUTO_MIGRATE=true`, or run `--migrate-only` again) — this time `IF NOT EXISTS` won't find an object under that name and will build the index from scratch.
 
+## What changes when upgrading: ingest DSN keys get a type
+
+Starting with this upgrade, a DSN key has a type (`browser`/`server`/`agent`)
+that limits what telemetry it may send — see [Ingest keys](/docs/keys) for
+the full breakdown. For an existing install, this upgrade breaks nothing:
+
+- every key issued before the upgrade keeps working with no action on your
+  part — it automatically becomes type `legacy` with full access,
+  indefinitely;
+- in the project settings such keys are marked with an "Untyped" badge —
+  that's not an error and not a reason to rush a change;
+- projects created after the upgrade get three keys right away — one each
+  for `browser`/`server`/`agent` — instead of a single shared one;
+- a host still registers automatically after upgrading, but **only** from an
+  export sent with an `agent`-type key (or an old untyped key); a metrics
+  export with a key of another type is still accepted, as before, it just
+  doesn't register a host — if you already have an agent or collector set up
+  from the old config template, there's nothing to change: it keeps using
+  the same key it used before the upgrade.
+
+Splitting your sources across the new typed keys without any ingest downtime
+is a separate, optional task — see [Ingest keys](/docs/keys) for the steps.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

@@ -36,7 +36,7 @@ func (s *collectMetricSink) Add(_ int64, p metric.MetricPoint) {
 // scrubber перед записью — denylist-ключ заменён маской, прочие атрибуты целы.
 func TestOTLPMetricsScrubAttributes(t *testing.T) {
 	sink := &collectMetricSink{}
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Scrub = NewScrubber(true, false, []string{"token"})
 
@@ -86,7 +86,7 @@ func TestOTLPMetricsScrubAttributes(t *testing.T) {
 // схлопывается в CardinalityOverflow.
 func TestOTLPMetricsHostCardinalityCollapses(t *testing.T) {
 	sink := &collectMetricSink{}
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Cardinality = NewCardinalityGuard(1, time.Hour)
 	// Потолок уже исчерпан другим хостом того же проекта.

@@ -143,7 +143,9 @@ Authorization: Bearer <PUBLIC_KEY>
 
 `<PUBLIC_KEY>` is the part of the project DSN between `https://` and `@` (see
 the project's "Setup" page and [SDK & integrations](/docs/sdk)). A missing
-or invalid key returns `401`.
+or invalid key returns `401`. Logs are within what `browser` and `server`
+keys are allowed to send (as is `legacy`); a key of another type (e.g.
+`agent`) gets `403` — see [Ingest keys](/docs/keys) for details.
 
 ### OTLP: `POST /v1/logs`
 

@@ -19,7 +19,7 @@ POST /api/v1/profiles/pprof?service=<service_name>&type=<sample_type>&environmen
 Authorization: Bearer <DSN public key>
 ```
 
-- **Authentication** — an `Authorization: Bearer <key>` header, where `<key>` is the public part of the project's DSN (the same string that sits before the `@` in a DSN like `https://<public_key>@<host>/<project_id>`).
+- **Authentication** — an `Authorization: Bearer <key>` header, where `<key>` is the public part of the project's DSN (the same string that sits before the `@` in a DSN like `https://<public_key>@<host>/<project_id>`). The key needs the `server` type (or an untyped `legacy` key) — profiles aren't part of what a browser key is allowed to send; a key of the wrong type gets `403`, see [Ingest keys](/docs/keys).
 - **Request body** — a pprof profile (protobuf), **which the client must gzip itself**. That's a convention of the pprof format itself (compression inside the body, not an HTTP `Content-Encoding`); the server decompresses it with a size limit.
 - **`service`** — an arbitrary service/application name the profile is grouped under in the list.
 - **`type`** — the name of the pprof sample type to record (e.g. `cpu`/`samples` for a CPU profile, `alloc_space`/`inuse_space` for a memory profile). If omitted or not found in the profile, the profile's last sample type is used.

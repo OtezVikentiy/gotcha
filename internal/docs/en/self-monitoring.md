@@ -118,6 +118,7 @@ separates client-side mistakes from each other:
 | `project_mismatch` | the key resolves fine, but to a project other than the one in the request path — usually a DSN copied into the wrong project |
 | `missing_bearer` | an OTLP request arrived with no `Authorization: Bearer` header |
 | `invalid_dsn_key` | the OTLP bearer token doesn't resolve to any DSN |
+| `scope` | the key resolves and belongs to the project, but its type isn't allowed on this endpoint (see [Ingest keys](/docs/keys)); the log line carries the endpoint path |
 
 A steady trickle is normal — scanners and stale SDK configs hit this. A step
 change after a deploy usually means a DSN or project ID changed and one
@@ -139,6 +140,7 @@ metrics at all — only in that one endpoint's log. `reason` is a closed set:
 | `quota` | the organization exhausted this signal's monthly quota — the request was FULLY rejected (429); partial quota debits on a mixed envelope do not count here, only a full reject does |
 | `too_large` | the body exceeded the size limit |
 | `malformed` | the body was read but did not parse: broken JSON/protobuf, a corrupt gzip/zstd header |
+| `key_scope` | the same key-type rejection as `scope` on `gotcha_ingest_key_rejections_total` above, but labeled with `signal` — which telemetry kind that key type was denied |
 
 The two key-rejection metrics deliberately coexist: one is narrow and exact
 about the key itself, the other is broad and comparable across telemetry
@@ -286,6 +288,14 @@ ceiling of 1000 hosts per project. A non-zero value means new machines stop
 appearing in the Hosts section: either the fleet really did reach the ceiling, or
 an identifier leaked into the host name (pods, autoscaling) and every instance
 registers as a separate machine.
+
+**`gotcha_host_registrations_scope_skipped_total`** — metric exports carrying
+`host.*` attributes from a key type that is not allowed to register hosts (only
+an `agent`-type key may). The export itself is accepted and its data points are
+written; only the host registration is skipped. A non-zero value on a `server`
+or `browser` key is expected and harmless — those SDKs commonly set `host.name`
+via a default resource detector — but a rising count on a key you expected to be
+an `agent` points at a misconfigured key type.
 
 **`gotcha_notify_queue_depth`** / **`gotcha_notify_queue_oldest_seconds`** —
 delivery queue depth and the age of the oldest waiting notification. The age

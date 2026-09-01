@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Ingest DSN keys now have a type: `browser`, `server`, `agent`. A key is
+  granted access only to what its source actually needs; keys issued before
+  this release keep working unchanged and are marked as untyped in the
+  project settings. See /docs/keys.
+- `gotcha_host_registrations_scope_skipped_total` counter, and a `key_scope`/
+  `scope` value on the ingest rejection metrics.
+
+### Changed
+- A new project now gets three keys right away — one per source class —
+  instead of a single shared one.
+- A host now registers only through a key of type `agent`. Metrics exports
+  with other key types are still accepted, but no longer register a host.
+- The single "project DSN" field in project settings is gone; each key's DSN
+  now shows in its own row of the keys table.
+
 ## [0.26.0] - 2026-08-31
 
 ### Added

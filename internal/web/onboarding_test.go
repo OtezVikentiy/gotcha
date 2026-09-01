@@ -105,8 +105,21 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keys for project: %v", err)
 	}
-	if len(keys) != 1 || keys[0].Revoked {
-		t.Fatalf("keys for project = %+v, want exactly one live key", keys)
+	// Онбординг выпускает сразу три ключа — по одному на класс источника
+	// (browser/server/agent) — страница setup показывает DSN, подобранный по
+	// платформе проекта (см. liveKeyFor в onboarding.go); JS-сниппет на
+	// странице в любом случае несёт browser-DSN — его и сверяем ниже.
+	if len(keys) != 3 {
+		t.Fatalf("keys for project = %+v, want exactly three keys", keys)
+	}
+	wantKinds := []org.KeyKind{org.KindBrowser, org.KindServer, org.KindAgent}
+	for i, k := range keys {
+		if k.Revoked {
+			t.Fatalf("keys for project = %+v, want no revoked keys", keys)
+		}
+		if k.Kind != wantKinds[i] {
+			t.Fatalf("keys for project = %+v, want kinds %v", keys, wantKinds)
+		}
 	}
 	publicKey := keys[0].PublicKey
 
@@ -289,4 +302,170 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("GET %s (other user) status = %d, want 404", setupPath, resp.StatusCode)
 	}
+}
+
+// TestProjectSetupShowsSnippetsWithoutPlatformDSN — MAJOR из ревью задачи 5:
+// шапка страницы показывает DSN платформы проекта (browser для JS, server
+// для остальных), но видимость ВСЕГО блока сниппетов обязана идти по
+// наличию сниппетов, а не по этому одному DSN. У JS-проекта с отозванным
+// browser-ключом и живым server-ключом шапочный DSN пуст, но Go/PHP/Python
+// сниппеты валидны и обязаны быть на странице — старый гейт по dsn==""
+// прятал их вместе с пустым состоянием, хотя рабочий путь подключения есть.
+func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
+	s := newStack(t)
+	ctx := context.Background()
+
+	uid, cookie := orgSettingsRegister(t, s.h.Auth, "setup-fallback@example.com")
+	o, err := s.h.Org.CreateOrg(ctx, "setup-fb", "Setup FB", uid)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj", "JS Proj", "javascript")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	keys, err := s.h.Org.CreateKeys(ctx, project.ID, org.KindBrowser, org.KindServer)
+	if err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	var browserKeyID int64
+	var serverKey string
+	for _, k := range keys {
+		switch k.Kind {
+		case org.KindBrowser:
+			browserKeyID = k.ID
+		case org.KindServer:
+			serverKey = k.PublicKey
+		}
+	}
+	if browserKeyID == 0 || serverKey == "" {
+		t.Fatalf("keys = %+v, want один browser и один server", keys)
+	}
+	if err := s.h.Org.RevokeKey(ctx, browserKeyID); err != nil {
+		t.Fatalf("revoke browser key: %v", err)
+	}
+
+	setupPath := projectSetupPathForTest(project.ID)
+	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+setupPath, nil)
+	req.AddCookie(cookie)
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("get setup: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", setupPath, resp.StatusCode)
+	}
+	if strings.Contains(string(body), "нет активного ключа") {
+		t.Errorf("страница показывает пустое состояние, хотя server-ключ жив: %s", body)
+	}
+	wantServerDSN := "://" + serverKey + "@"
+	if !strings.Contains(string(body), wantServerDSN) {
+		t.Fatalf("GET %s body missing server DSN %q (Go/PHP/Python сниппеты должны остаться): %s", setupPath, wantServerDSN, body)
+	}
+	// Ловушка: JS-сниппета с пустым DSN на странице быть не должно вовсе —
+	// он выглядит готовым к копированию и молча не работает. Сниппета нет —
+	// значит нет и его команды установки (шаблон HTML-экранирует кавычки,
+	// поэтому "пустой dsn" ищем по отсутствию всего блока, а не по
+	// буквальным символам кавычек).
+	if strings.Contains(string(body), "npm install @sentry/browser") {
+		t.Errorf("страница показывает JS-сниппет с пустым DSN (ловушка копирования): %s", body)
+	}
+	// Молчаливое исчезновение JS объяснено: платформа проекта — javascript,
+	// её сниппет пропал именно из-за отсутствия browser-ключа.
+	if !strings.Contains(string(body), "Для JavaScript нужен ключ типа «Браузер»") {
+		t.Errorf("GET %s не объясняет пропажу JS-сниппета: %s", setupPath, body)
+	}
+	if !strings.Contains(string(body), "Настройки проекта") {
+		t.Errorf("GET %s: подсказка без ссылки «Настройки проекта»: %s", setupPath, body)
+	}
+
+	// Симметричный случай: живых ключей нет вовсе → честное пустое состояние.
+	project2, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj-empty", "JS Proj Empty", "javascript")
+	if err != nil {
+		t.Fatalf("create project 2: %v", err)
+	}
+	setupPath2 := projectSetupPathForTest(project2.ID)
+	req2, _ := http.NewRequest(http.MethodGet, s.srv.URL+setupPath2, nil)
+	req2.AddCookie(cookie)
+	resp2, err := noRedirectClient().Do(req2)
+	if err != nil {
+		t.Fatalf("get setup 2: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", setupPath2, resp2.StatusCode)
+	}
+	if !strings.Contains(string(body2), "нет активного ключа") {
+		t.Errorf("GET %s без ключей должен показывать пустое состояние: %s", setupPath2, body2)
+	}
+
+	// Зеркальный случай: серверная платформа (go), отозван server-ключ,
+	// browser жив — шапочный DSN пуст (для go он берётся из server), но
+	// JS-сниппет с рабочим browser-DSN обязан остаться на странице.
+	project3, err := s.h.Org.CreateProject(ctx, o.ID, "go-proj", "Go Proj", "go")
+	if err != nil {
+		t.Fatalf("create project 3: %v", err)
+	}
+	keys3, err := s.h.Org.CreateKeys(ctx, project3.ID, org.KindBrowser, org.KindServer)
+	if err != nil {
+		t.Fatalf("create keys 3: %v", err)
+	}
+	var serverKeyID3 int64
+	var browserKey3 string
+	for _, k := range keys3 {
+		switch k.Kind {
+		case org.KindServer:
+			serverKeyID3 = k.ID
+		case org.KindBrowser:
+			browserKey3 = k.PublicKey
+		}
+	}
+	if serverKeyID3 == 0 || browserKey3 == "" {
+		t.Fatalf("keys3 = %+v, want один browser и один server", keys3)
+	}
+	if err := s.h.Org.RevokeKey(ctx, serverKeyID3); err != nil {
+		t.Fatalf("revoke server key: %v", err)
+	}
+
+	setupPath3 := projectSetupPathForTest(project3.ID)
+	req3, _ := http.NewRequest(http.MethodGet, s.srv.URL+setupPath3, nil)
+	req3.AddCookie(cookie)
+	resp3, err := noRedirectClient().Do(req3)
+	if err != nil {
+		t.Fatalf("get setup 3: %v", err)
+	}
+	body3, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", setupPath3, resp3.StatusCode)
+	}
+	if strings.Contains(string(body3), "нет активного ключа") {
+		t.Errorf("страница показывает пустое состояние, хотя browser-ключ жив: %s", body3)
+	}
+	wantBrowserDSN := "://" + browserKey3 + "@"
+	if !strings.Contains(string(body3), wantBrowserDSN) {
+		t.Fatalf("GET %s body missing browser DSN %q (JS-сниппет должен остаться): %s", setupPath3, wantBrowserDSN, body3)
+	}
+	// Ловушка: Go-сниппет с пустым DSN (платформа самого проекта — go) быть
+	// не должен, как и PHP/Python — все трое требуют server-ключа. Сниппета
+	// нет — значит нет и его команды установки.
+	if strings.Contains(string(body3), "go get github.com/getsentry/sentry-go") {
+		t.Errorf("страница показывает Go-сниппет с пустым DSN (ловушка копирования): %s", body3)
+	}
+	if !strings.Contains(string(body3), "Для Go нужен ключ типа «Сервер»") {
+		t.Errorf("GET %s не объясняет пропажу Go-сниппета: %s", setupPath3, body3)
+	}
+	if !strings.Contains(string(body3), "Настройки проекта") {
+		t.Errorf("GET %s: подсказка без ссылки «Настройки проекта»: %s", setupPath3, body3)
+	}
+}
+
+// projectSetupPathForTest — тот же путь, что строит projectSetupPath
+// (onboarding.go), но функция неэкспортируема, а этот файл — package
+// web_test.
+func projectSetupPathForTest(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/setup"
 }

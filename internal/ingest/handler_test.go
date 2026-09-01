@@ -112,10 +112,11 @@ func newStackTracing(t *testing.T, tracing bool) *stack {
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}
-	k, err := orgSvc.CreateKey(ctx, p.ID)
+	keys, err := orgSvc.CreateKeys(ctx, p.ID, org.KindLegacy)
 	if err != nil {
 		t.Fatalf("key: %v", err)
 	}
+	k := keys[0]
 
 	batcher := event.NewBatcher(ch)
 	go batcher.Run()

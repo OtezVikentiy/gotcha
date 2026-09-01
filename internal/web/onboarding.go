@@ -131,7 +131,8 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
+	if _, err := h.Org.CreateKeys(r.Context(), p.ID,
+		org.KindBrowser, org.KindServer, org.KindAgent); err != nil {
 		h.compensateOrgCreate(r, o.ID)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -195,15 +196,17 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Дальше — то же, что делает онбординг для своего первого проекта: правила
-	// алертинга по умолчанию и первый ключ приёма. Без ключа страница
-	// подключения SDK показала бы проект без DSN, то есть бесполезный.
+	// алертинга по умолчанию и три ключа приёма, по одному на класс источника.
+	// Без ключей страница подключения SDK показала бы проект без DSN, то есть
+	// бесполезный.
 	if h.Alerts != nil {
 		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
 	}
-	if _, err := h.Org.CreateKey(r.Context(), p.ID); err != nil {
+	if _, err := h.Org.CreateKeys(r.Context(), p.ID,
+		org.KindBrowser, org.KindServer, org.KindAgent); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
@@ -281,16 +284,52 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	publicKey := firstLiveKey(keys)
 
-	var dsn string
+	browserKey := liveKeyFor(keys, org.KindBrowser)
+	serverKey := liveKeyFor(keys, org.KindServer)
+
+	var browserDSN, serverDSN string
+	if browserKey != "" {
+		browserDSN = buildDSN(h.BaseURL, browserKey, projectID)
+	}
+	if serverKey != "" {
+		serverDSN = buildDSN(h.BaseURL, serverKey, projectID)
+	}
 	var snippets []templates.SetupSnippet
-	if publicKey != "" {
-		dsn = buildDSN(h.BaseURL, publicKey, projectID)
-		snippets = setupSnippets(project.Platform, dsn)
+	if browserDSN != "" || serverDSN != "" {
+		snippets = setupSnippets(project.Platform, browserDSN, serverDSN)
+	}
+	// Шапке страницы показываем DSN, соответствующий платформе проекта:
+	// «главного» DSN у проекта больше нет, каждый сниппет несёт свой. dsn
+	// может быть пуст и при непустых snippets (например, у JS-проекта
+	// отозван браузерный ключ, а серверный жив) — гейт видимости всего блока
+	// в шаблоне идёт по len(snippets), а не по dsn, шапка в этом случае
+	// просто не рисуется.
+	dsn := serverDSN
+	if project.Platform == "javascript" {
+		dsn = browserDSN
 	}
 
-	_ = templates.ProjectSetup(project, dsn, snippets, h.currentEmail(r)).Render(r.Context(), w)
+	// missingPlatformKind — снипет для языка САМОГО проекта не попал в
+	// snippets (setupSnippets отбросил его из-за пустого DSN), а другие
+	// снипеты при этом есть: страница обязана объяснить, куда делся именно
+	// этот язык, а не молча показать чужие. Если snippets пуст вовсе,
+	// работает общее пустое состояние (len(snippets)==0 в шаблоне) — эта
+	// более узкая подсказка ему не нужна.
+	var missingPlatformKind org.KeyKind
+	if len(snippets) > 0 {
+		if want := sdkPlatformKind(project.Platform); want != "" {
+			got := serverDSN
+			if want == org.KindBrowser {
+				got = browserDSN
+			}
+			if got == "" {
+				missingPlatformKind = want
+			}
+		}
+	}
+
+	_ = templates.ProjectSetup(project, dsn, snippets, missingPlatformKind, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 func findProject(projects []org.Project, id int64) (org.Project, bool) {
@@ -302,13 +341,34 @@ func findProject(projects []org.Project, id int64) (org.Project, bool) {
 	return org.Project{}, false
 }
 
-func firstLiveKey(keys []org.Key) string {
+// liveKeyFor — public_key живого ключа, которым следует пользоваться в
+// сценарии, требующем тип kind: первый живой ключ нужного типа → иначе первый
+// живой legacy → иначе "" (вызывающий показывает пустое состояние с кнопкой
+// «выпустить ключ»).
+//
+// Фолбэк на legacy даёт переход без простоя: проект, чьи ключи выпущены до
+// появления типов, продолжает видеть рабочий DSN на всех страницах. Ключ с
+// незаданным типом сюда НЕ попадает: приём (internal/ingest/scope.go)
+// трактует "" как отказ по всему — незаданный тип в матрице скоупа не
+// заведён вовсе, — и предложить пользователю DSN, который приём молча
+// отобьёт 403, хуже, чем показать пустое состояние. Сегодня недостижимо
+// (project_keys.kind — NOT NULL с CHECK, дефолт вставляет литерал 'legacy'),
+// правка — на случай, если ветка когда-нибудь станет достижимой (тестовый
+// или будущий конструктор, забывший проставить тип).
+func liveKeyFor(keys []org.Key, kind org.KeyKind) string {
+	var legacy string
 	for _, k := range keys {
-		if !k.Revoked {
+		if k.Revoked {
+			continue
+		}
+		if k.Kind == kind {
 			return k.PublicKey
 		}
+		if k.Kind == org.KindLegacy && legacy == "" {
+			legacy = k.PublicKey
+		}
 	}
-	return ""
+	return legacy
 }
 
 // buildDSN собирает DSN проекта из BaseURL: {scheme}://{public_key}@{host}/{project_id}.
@@ -320,6 +380,21 @@ func buildDSN(baseURL, publicKey string, projectID int64) string {
 	return u.Scheme + "://" + publicKey + "@" + u.Host + "/" + strconv.FormatInt(projectID, 10)
 }
 
+// sdkPlatformKind — тип ключа, которым подключается язык SDK platform:
+// browser для javascript (сниппет исполняется в браузере), server — для
+// остальных известных языков (go/php/python). Пустая строка — platform не
+// входит в набор, для которого вообще есть сниппет (например, "other"): для
+// такой платформы нет ни своего сниппета, ни смысла требовать под неё ключ.
+func sdkPlatformKind(platform string) org.KeyKind {
+	switch platform {
+	case "javascript":
+		return org.KindBrowser
+	case "go", "php", "python":
+		return org.KindServer
+	}
+	return ""
+}
+
 // setupSnippets собирает блоки «как подключить» для страницы проекта: сперва
 // платформа, выбранная при создании проекта, затем остальные.
 //
@@ -329,7 +404,31 @@ func buildDSN(baseURL, publicKey string, projectID int64) string {
 // подсовывается DSN проекта Gotcha. Раньше здесь были захардкожены три сниппета
 // с пакетами, которых не существует (gotcha-go, @gotcha/browser, Gotcha\init), и
 // без команд установки — новый пользователь упирался в 404 на первом же шаге.
-func setupSnippets(platform, dsn string) []templates.SetupSnippet {
+//
+// browserDSN и serverDSN разведены по языкам не для косметики: JS-сниппет
+// исполняется в браузере, то есть публикуется в коде страницы, — ему нужен
+// DSN с ключом browser, у которого нет прав, доступных серверному ключу.
+// Отдать серверный ключ в JS-сниппет значило бы опубликовать в вебе ключ с
+// более широким допуском, чем ему требуется.
+//
+// Сниппет, чей DSN пуст (нет живого ключа нужного типа — browser для JS,
+// server для остальных), в результат НЕ попадает: сниппет с dsn: "" выглядит
+// готовым к копированию и молча не работает — это ловушка, а не информация
+// (ревью задачи 5, круг 3). Если из-за этого не осталось ни одного сниппета,
+// вызывающий (projectSetup) показывает пустое состояние — гейт по
+// len(snippets), уже существующий в шаблоне.
+func setupSnippets(platform, browserDSN, serverDSN string) []templates.SetupSnippet {
+	// dsnFor — какой DSN нужен языку k (см. sdkPlatformKind): пуст, если для
+	// k нет живого ключа нужного типа — тогда язык k в результат не попадёт.
+	dsnFor := func(k string) string {
+		switch sdkPlatformKind(k) {
+		case org.KindBrowser:
+			return browserDSN
+		case org.KindServer:
+			return serverDSN
+		}
+		return ""
+	}
 	all := map[string]templates.SetupSnippet{
 		"go": {
 			Lang:    "Go",
@@ -342,7 +441,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 				")\n\n" +
 				"func main() {\n" +
 				"\tif err := sentry.Init(sentry.ClientOptions{\n" +
-				"\t\tDsn:              \"" + dsn + "\",\n" +
+				"\t\tDsn:              \"" + serverDSN + "\",\n" +
 				"\t\tEnvironment:      \"production\",\n" +
 				"\t\tTracesSampleRate: 0.2,\n" +
 				"\t}); err != nil {\n" +
@@ -357,7 +456,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 			Code: "<?php\n" +
 				"require __DIR__ . '/vendor/autoload.php';\n\n" +
 				"\\Sentry\\init([\n" +
-				"    'dsn' => '" + dsn + "',\n" +
+				"    'dsn' => '" + serverDSN + "',\n" +
 				"    'environment' => getenv('APP_ENV') ?: 'production',\n" +
 				"    'traces_sample_rate' => 0.2,\n" +
 				"]);\n",
@@ -367,7 +466,7 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 			Install: "npm install @sentry/browser",
 			Code: "import * as Sentry from \"@sentry/browser\";\n\n" +
 				"Sentry.init({\n" +
-				"  dsn: \"" + dsn + "\",\n" +
+				"  dsn: \"" + browserDSN + "\",\n" +
 				"  environment: \"production\",\n" +
 				"  tracesSampleRate: 0.2,\n" +
 				"});\n",
@@ -377,21 +476,23 @@ func setupSnippets(platform, dsn string) []templates.SetupSnippet {
 			Install: "pip install sentry-sdk",
 			Code: "import sentry_sdk\n\n" +
 				"sentry_sdk.init(\n" +
-				"    dsn=\"" + dsn + "\",\n" +
+				"    dsn=\"" + serverDSN + "\",\n" +
 				"    environment=\"production\",\n" +
 				"    traces_sample_rate=0.2,\n" +
 				")\n",
 		},
 	}
 
-	// Порядок: платформа проекта первой — за ней пришли, её и показываем сверху.
+	// Порядок: платформа проекта первой — за ней пришли, её и показываем
+	// сверху. Язык, для которого dsnFor пуст (нет живого ключа нужного
+	// типа), в результат не попадает вовсе.
 	order := []string{"go", "php", "javascript", "python"}
 	out := make([]templates.SetupSnippet, 0, len(order))
-	if sn, ok := all[platform]; ok {
+	if sn, ok := all[platform]; ok && dsnFor(platform) != "" {
 		out = append(out, sn)
 	}
 	for _, k := range order {
-		if k == platform {
+		if k == platform || dsnFor(k) == "" {
 			continue
 		}
 		out = append(out, all[k])

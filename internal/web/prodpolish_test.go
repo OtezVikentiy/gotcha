@@ -44,9 +44,17 @@ func TestWebIssuesEmptyStateCTA(t *testing.T) {
 // unsafe-inline инлайновый onclick="confirm()" не исполняется (см. коммит
 // «server-side confirm for destructive actions»), поэтому подтверждение
 // отзыва ключа — server-side двухшаговый POST: без confirmed=yes revoke
-// рендерит страницу подтверждения (200, с сообщением «получат 403» и
-// hidden-полем confirmed=yes) и НЕ отзывает ключ; с confirmed=yes — отзывает
-// (303). Разметка кнопки Revoke больше не содержит confirm(...).
+// рендерит страницу подтверждения (200, hidden-полем confirmed=yes) и НЕ
+// отзывает ключ; с confirmed=yes — отзывает (303). Разметка кнопки Revoke
+// больше не содержит confirm(...).
+//
+// Текст подтверждения зависит от того, последний ли это живой ключ своего
+// типа (задача «типы ключей», матрица сообщений подробно —
+// TestProjectSettingsRevokeLastOfKindWarns в projsettings_test.go):
+// единственный живой ключ типа — предупреждение «приём из этого источника
+// остановится», второй и далее — обычное «клиенты получат 403». Здесь
+// проверяются обе ветки на том же двухшаговом POST-потоке, который ловит
+// инлайновый confirm().
 func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -66,8 +74,9 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	keysPath := settingsPath + "/keys"
 	revokePath := keysPath + "/revoke"
 
-	// Создаём живой ключ, чтобы в таблице появилась кнопка Revoke.
-	resp := postForm(t, s.srv, keysPath, url.Values{}, s.srv.URL, ownerCookie)
+	// Создаём живой ключ, чтобы в таблице появилась кнопка Revoke. Форма
+	// выбора типа появится в Task 4 — здесь шлём kind напрямую.
+	resp := postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -89,21 +98,56 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	}
 	keyID := keys[0].ID
 
-	// POST revoke БЕЗ confirmed=yes → 200, страница подтверждения (сообщение
-	// «получат 403» и hidden confirmed=yes), ключ НЕ отозван.
+	// POST revoke БЕЗ confirmed=yes, ключ — ЕДИНСТВЕННЫЙ живой своего типа →
+	// 200, страница предупреждения «последний активный ключ» (не обычного
+	// «получат 403» — этого текста здесь по конструкции нет), ключ НЕ
+	// отозван.
 	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(keyID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST %s (unconfirmed) status = %d, want 200: %s", revokePath, resp.StatusCode, body)
+		t.Fatalf("POST %s (unconfirmed, sole key) status = %d, want 200: %s", revokePath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "получат 403") {
-		t.Fatalf("POST %s (unconfirmed) missing confirm message: %s", revokePath, body)
+	if !strings.Contains(string(body), "последний активный ключ") {
+		t.Fatalf("POST %s (unconfirmed, sole key) missing last-of-kind warning: %s", revokePath, body)
+	}
+	if strings.Contains(string(body), "получат 403") {
+		t.Fatalf("POST %s (unconfirmed, sole key) unexpectedly shows the ordinary message: %s", revokePath, body)
 	}
 	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
-		t.Fatalf("POST %s (unconfirmed) missing confirmed hidden field: %s", revokePath, body)
+		t.Fatalf("POST %s (unconfirmed, sole key) missing confirmed hidden field: %s", revokePath, body)
 	}
-	if keys, err := orgSvc.KeysForProject(context.Background(), proj.ID); err != nil || keys[0].Revoked {
+	if keys, err := orgSvc.KeysForProject(context.Background(), proj.ID); err != nil || keyRevoked(keys, keyID) {
+		t.Fatalf("key revoked by unconfirmed POST: %+v err=%v", keys, err)
+	}
+
+	// Второй живой ключ того же типа: теперь keyID — уже НЕ последний.
+	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (create second key) status = %d, want 303", keysPath, resp.StatusCode)
+	}
+
+	// POST revoke БЕЗ confirmed=yes, ключ — один из ДВУХ живых своего типа →
+	// 200, страница подтверждения с обычным сообщением «получат 403» (без
+	// предупреждения о последнем ключе), ключ НЕ отозван.
+	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(keyID, 10)}}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (unconfirmed, paired key) status = %d, want 200: %s", revokePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "получат 403") {
+		t.Fatalf("POST %s (unconfirmed, paired key) missing ordinary confirm message: %s", revokePath, body)
+	}
+	if strings.Contains(string(body), "последний активный ключ") {
+		t.Fatalf("POST %s (unconfirmed, paired key) unexpectedly shows last-of-kind warning: %s", revokePath, body)
+	}
+	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
+		t.Fatalf("POST %s (unconfirmed, paired key) missing confirmed hidden field: %s", revokePath, body)
+	}
+	if keys, err := orgSvc.KeysForProject(context.Background(), proj.ID); err != nil || keyRevoked(keys, keyID) {
 		t.Fatalf("key revoked by unconfirmed POST: %+v err=%v", keys, err)
 	}
 
@@ -114,9 +158,21 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s (confirmed) status = %d, want 303", revokePath, resp.StatusCode)
 	}
-	if keys, err := orgSvc.KeysForProject(context.Background(), proj.ID); err != nil || !keys[0].Revoked {
+	if keys, err := orgSvc.KeysForProject(context.Background(), proj.ID); err != nil || !keyRevoked(keys, keyID) {
 		t.Fatalf("key not revoked after confirmed POST: %+v err=%v", keys, err)
 	}
+}
+
+// keyRevoked — статус ключа keyID в срезе, вернувшемся из KeysForProject.
+// В TestWebProjectSettingsRevokeConfirm ключей становится два, и позиционный
+// keys[0].Revoked (как раньше, при одном ключе) больше не надёжен.
+func keyRevoked(keys []org.Key, keyID int64) bool {
+	for _, k := range keys {
+		if k.ID == keyID {
+			return k.Revoked
+		}
+	}
+	return false
 }
 
 // TestWebProjectSettingsRetentionNotice — PROD-P6: при заданном RetentionDays

@@ -1226,6 +1226,9 @@ func run() error {
 		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_host_registrations_rejected_total",
 			"New host names dropped because a project hit the per-project host ceiling.",
 			nil, hostToucher.RejectedNames)
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_host_registrations_scope_skipped_total",
+			"Metric exports carrying host.* attributes from a key type that may not register hosts. The export is accepted; only host registration is skipped.",
+			nil, ingestHandler.HostScopeSkipped)
 		// Профили (этап 7): приёмник + отдельная квота профилей.
 		ingestHandler.Profiles = profileWriter
 		ingestHandler.ProfileQuota = ingest.NewOrgProfileQuota(orgSvc)
@@ -1235,13 +1238,13 @@ func run() error {
 		// Деплои (C5): реестр выкладок из CI (PG-таблица deployments).
 		ingestHandler.Deploy = deploy.NewStore(pg)
 		ingestHandler.DropCounter = orgSvc
-		// Отказы приёма по ключу (PROD-P?): раньше ни одна из шести веток
+		// Отказы приёма по ключу (PROD-P?): раньше ни одна из веток
 		// authenticate/otlpAuthenticate не была видна нигде — ни счётчиком, ни
 		// логом. По метрике на причину — та же логика, что у
 		// gotcha_pipeline_dropped_tasks_total выше: "ключа нет вовсе" (клиент
 		// не настроил DSN) и "ключ чужого проекта" (скопированный не туда DSN)
 		// требуют разных действий оператора/клиента, общий счётчик их не
-		// различал бы.
+		// различал бы. Причин семь (см. keyRejectReasons в internal/ingest).
 		for _, reason := range ingest.KeyRejectReasons() {
 			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_key_rejections_total",
 				"Ingest requests rejected during key authentication, before quotas. The reason label says why.",

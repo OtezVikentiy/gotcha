@@ -14,6 +14,12 @@ https://<PUBLIC_KEY>@<your-gotcha-host>/<PROJECT_ID>
 
 In every example below, replace `<YOUR_PROJECT_DSN>` with this full string.
 
+**Which DSN goes where.** A project doesn't have a single DSN — it has
+several, one per key, and keys differ by type. For JavaScript in the browser,
+use the browser key's DSN; for PHP, server-side Node, Python, and Go, use the
+server key's DSN. See [Ingest keys](/docs/keys) for the full list of what
+each type is allowed to send and why it matters.
+
 ## PHP (plain project)
 
 ```bash

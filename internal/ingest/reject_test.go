@@ -36,7 +36,7 @@ func (s *countingProfileSink) Add(_ int64, _ profile.Profile) { s.n++ }
 // newRejectHandler — приёмник с валидным ключом (Bearer pub / sentry_key любой)
 // и заданным потолком тела. Квоты/приёмники подставляют сами тесты.
 func newRejectHandler(maxBytes int64) *Handler {
-	return NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, maxBytes)
+	return NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, maxBytes)
 }
 
 func pprofRequest(body io.Reader, contentEncoding string) *http.Request {
@@ -66,8 +66,11 @@ func otlpLogsRequest(body io.Reader, contentType, contentEncoding string) *http.
 // пары набора есть живой счётчик, а пара ВНЕ набора молча игнорируется.
 func TestIngestRejectionPairsContract(t *testing.T) {
 	pairs := IngestRejectionPairs()
-	if len(pairs) != 29 {
-		t.Fatalf("пар в наборе = %d, want 29 (5 сигналов × 4 причины + 5 quota-сигналов, без deploy)", len(pairs))
+	// 29 (5 сигналов × 4 причины + 5 quota-сигналов, без deploy) + 6 пар
+	// key_scope (по одной на каждый сигнал — вычислены из keyScopeMatrix,
+	// см. keyScopeRejectionPairs).
+	if len(pairs) != 35 {
+		t.Fatalf("пар в наборе = %d, want 35 (29 старых + 6 key_scope)", len(pairs))
 	}
 
 	// Копия, а не общий слайс: порча вернувшегося набора не должна доезжать

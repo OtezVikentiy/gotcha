@@ -38,12 +38,20 @@ type Envelope struct {
 	// отброшенных по лимиту maxEnvelopeItems. Handler считает их дропом
 	// (best-effort) и логирует; 0 — предел не достигнут.
 	Dropped int
+	// ScopeRejected — сколько item'ов КАЖДОГО сигнала отброшено потому, что тип
+	// ключа к нему не допущен (§4.2 спеки). Отбор поштучный, а не «весь envelope
+	// в отказ»: item'ы независимы, и браузерное событие не должно теряться из-за
+	// соседнего profile-item'а. nil/пустая карта — ничего не отброшено.
+	ScopeRejected map[IngestSignal]int
 }
 
 // ParseEnvelope разбирает envelope-формат Sentry: JSON-заголовок, затем
 // пары (JSON-заголовок item'а, payload). Item'ы прочих типов (session,
 // attachment, client_report...) пропускаются.
-func ParseEnvelope(r io.Reader, maxItem int64) (*Envelope, error) {
+//
+// allow — допущен ли тип ключа к сигналу item'а; nil означает «всё
+// разрешено» (разбор без скоупа, как в тестах формата).
+func ParseEnvelope(r io.Reader, maxItem int64, allow func(IngestSignal) bool) (*Envelope, error) {
 	br := bufio.NewReader(r)
 
 	headerLine, err := readLine(br, maxItem)
@@ -115,6 +123,14 @@ func ParseEnvelope(r io.Reader, maxItem int64) (*Envelope, error) {
 				env.Dropped++
 				continue
 			}
+			signal := envelopeItemSignal(ih.Type)
+			if allow != nil && !allow(signal) {
+				if env.ScopeRejected == nil {
+					env.ScopeRejected = map[IngestSignal]int{}
+				}
+				env.ScopeRejected[signal]++
+				continue
+			}
 			switch ih.Type {
 			case "event":
 				env.Events = append(env.Events, payload)
@@ -124,6 +140,20 @@ func ParseEnvelope(r io.Reader, maxItem int64) (*Envelope, error) {
 				env.Profiles = append(env.Profiles, payload)
 			}
 		}
+	}
+}
+
+// envelopeItemSignal — сигнал приёма, которому соответствует тип item'а
+// envelope'а. Соответствие однозначно: других известных типов в switch выше
+// нет, а неизвестные до сюда не доходят.
+func envelopeItemSignal(itemType string) IngestSignal {
+	switch itemType {
+	case "transaction":
+		return SignalTransaction
+	case "profile":
+		return SignalProfile
+	default:
+		return SignalEvent
 	}
 }
 

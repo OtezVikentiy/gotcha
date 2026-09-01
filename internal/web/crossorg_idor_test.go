@@ -63,10 +63,11 @@ func TestWebCrossOrgProjectIDOR(t *testing.T) {
 	attackerCookie, proj := crossOrgVictimProject(t, authSvc, orgSvc, "idor-proj")
 
 	// Seed a live key in the victim project so revoke has a real target.
-	victimKey, err := orgSvc.CreateKey(context.Background(), proj.ID)
+	victimKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer)
 	if err != nil {
 		t.Fatalf("create victim key: %v", err)
 	}
+	victimKey := victimKeys[0]
 
 	settings := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
 	origName := proj.Name

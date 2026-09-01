@@ -266,7 +266,28 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 	// добиваемся, чтобы цикл записи (Task 3, ниже по функции) вызывал Value
 	// уже на ПРИНЯТОМ имени или на CardinalityOverflow — то есть строго по
 	// идемпотентным веткам.
-	if h.Hosts != nil {
+	switch {
+	case h.Hosts == nil:
+		// Реестр хостов не сконфигурирован — ветка не работает вовсе.
+	case !scopeAllowsHosts(key.Kind):
+		// Метрики принимаются, host.*-атрибуты игнорируются: регистрировать
+		// хост может только ключ типа agent (§4.3 спеки). Без лога — см.
+		// докблок hostScopeSkipped.
+		//
+		// Счётчик — только если батч ДЕЙСТВИТЕЛЬНО нёс host.*: обычный
+		// экспорт метрик приложения (без host.name вовсе) — штатный трафик
+		// серверного ключа, а не несостоявшаяся регистрация хоста, и не
+		// повод растить счётчик, придуманный для диагностики неверного типа
+		// ключа. points[i].Host читается СЫРЫМ, БЕЗ CardinalityGuard.Value:
+		// эта ветка хосты не пишет и не обязана участвовать в идемпотентности
+		// Value/Report (см. комментарий выше о повторном вызове Value).
+		for i := range points {
+			if points[i].Host != "" {
+				h.hostScopeSkipped.Add(1)
+				break
+			}
+		}
+	default:
 		// Версии агента — по СЫРЫМ (ещё не схлопнутым гардом) host.name, отдельным
 		// проходом по ресурсам батча: MapOTLP уплощает ResourceMetrics в плоский
 		// список точек и теряет границу resource (спека §3.2), а версия агента —
@@ -474,6 +495,8 @@ func validAgentVersion(s string) string {
 // опция headers:, своего формата мы не изобретаем). Проект берётся ИЗ КЛЮЧА: в
 // OTLP-протоколе нет места для него в URL. Нет заголовка / неизвестный ключ →
 // 401 (у envelope там 403 — там ключ уже сопоставляется с проектом из пути).
+// Гейт скоупа (тип ключа не допущен к сигналу) отвечает 403, а не 401: ключ
+// резолвился успешно, отказ не про предъявление, а про допуск.
 func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal) (org.Key, bool) {
 	pub := otlpBearer(r)
 	if pub == "" {
@@ -491,6 +514,10 @@ func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request, signa
 		return org.Key{}, false
 	case err != nil:
 		writeJSONError(w, http.StatusServiceUnavailable, "key lookup failed")
+		return org.Key{}, false
+	}
+	if !scopeAllows(key.Kind, signal) {
+		h.scopeReject(w, r, signal)
 		return org.Key{}, false
 	}
 	return key, true

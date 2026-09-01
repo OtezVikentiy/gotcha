@@ -73,19 +73,36 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 
 // ProjectSetup — страница «подключи SDK»: DSN проекта и сниппеты
 // подключения для нескольких платформ.
-templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, userEmail string) {
+//
+// missingPlatformKind — непустой, когда снипет для ПЛАТФОРМЫ САМОГО ПРОЕКТА
+// не попал в snippets (setupSnippets не отдаёт сниппет с пустым DSN — ревью
+// задачи 5, круг 3): страница обязана сказать, почему пропал именно язык
+// проекта, а не молчать — иначе пользователь JS-проекта видит Go/PHP/Python
+// и не понимает, куда делся его язык.
+templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, missingPlatformKind org.KeyKind, userEmail string) {
 	@chromeless(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
 		<div class="setup">
 			@breadcrumbBackTo(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title"))
 			<h1>{ project.Name }</h1>
-			if dsn == "" {
+			if len(snippets) == 0 {
 				<p class="error">{ i18n.T(ctx, "project.setup.no_key") }</p>
 			} else {
-				<section class="card">
-					<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
-					<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
-					<pre>{ dsn }</pre>
-				</section>
+				if dsn != "" {
+					<section class="card">
+						<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
+						<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
+						<pre>{ dsn }</pre>
+					</section>
+				}
+				if missingPlatformKind != "" {
+					<p class="hint">
+						{ i18n.Tf(ctx, "project.setup.missing_platform_key",
+							"platform", i18n.T(ctx, "platform."+project.Platform),
+							"kind", i18n.T(ctx, "project.settings.keys.kind."+string(missingPlatformKind))) }
+						{ " " }
+						<a href={ templ.URL(projectSettingsPath(project.ID)) }>{ i18n.T(ctx, "project.setup.missing_platform_key_link") }</a>
+					</p>
+				}
 				<p class="hint">{ i18n.T(ctx, "project.setup.sdk_note") }</p>
 				for _, sn := range snippets {
 					<section class="panel">

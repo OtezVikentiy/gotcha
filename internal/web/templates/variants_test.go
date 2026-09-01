@@ -56,7 +56,7 @@ func TestPerfEvidenceEachKind(t *testing.T) {
 // TestProjectSettingsRetentionUnset — retentionDays=0 показывает «безлимитную»
 // ветку уведомления о хранении, а не число дней.
 func TestProjectSettingsRetentionUnset(t *testing.T) {
-	out := renderTo(t, ProjectSettings(org.Project{ID: 7, Slug: "web", Name: "Web"}, nil, "dsn", "ошибка ключа", "u@e.com", PerfSettingsForm{}, RegressionSettingsForm{}, 0))
+	out := renderTo(t, ProjectSettings(org.Project{ID: 7, Slug: "web", Name: "Web"}, nil, "ошибка ключа", "u@e.com", PerfSettingsForm{}, RegressionSettingsForm{}, 0))
 	if !strings.Contains(out, "ошибка ключа") {
 		t.Error("ошибка настроек проекта должна отрендериться")
 	}

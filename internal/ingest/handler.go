@@ -46,6 +46,11 @@ const (
 	KeyRejectMissingBearer KeyRejectReason = "missing_bearer"
 	// KeyRejectInvalidDSNKey — OTLP bearer-токен не резолвится ни в один DSN.
 	KeyRejectInvalidDSNKey KeyRejectReason = "invalid_dsn_key"
+	// KeyRejectScope — ключ валиден и принадлежит проекту, но его тип не
+	// допущен к этому эндпойнту. В отличие от прочих причин файла, это НЕ
+	// проблема доставки ключа: источник настроен ключом не того класса. Лог
+	// пишет path (countKeyReject) — дежурный видит, по какому эндпойнту бьют.
+	KeyRejectScope KeyRejectReason = "scope"
 )
 
 // keyRejectReasons — полный набор причин отказа по ключу. Существует, чтобы
@@ -54,7 +59,7 @@ const (
 // инкрементом без блокировки и без записи в map.
 var keyRejectReasons = []KeyRejectReason{
 	KeyRejectMissingKey, KeyRejectInvalidKey, KeyRejectProjectMismatch,
-	KeyRejectMissingBearer, KeyRejectInvalidDSNKey,
+	KeyRejectMissingBearer, KeyRejectInvalidDSNKey, KeyRejectScope,
 }
 
 // KeyRejectReasons — все причины, по которым приём умеет отказывать по
@@ -105,6 +110,16 @@ type Handler struct {
 	// deprecatedLogged — по одному sync.Once на путь: предупреждение об
 	// устаревшем пути пишется один раз за жизнь процесса, а не на каждый запрос.
 	deprecatedLogged map[DeprecatedPath]*sync.Once
+
+	// hostScopeSkipped — сколько экспортов метрик пришло с host.*-атрибутами
+	// ключом, которому регистрация хоста не разрешена. Отдельный счётчик, а не
+	// метка существующих: gotcha_ingest_rejected_total считает ОТКАЗАННЫЕ
+	// запросы, а здесь запрос принят (метрики пишутся, не регистрируется
+	// только хост); а Toucher.RejectedNames означает «упёрлись в потолок
+	// хостов на проект» — слить их значило бы сделать две причины
+	// неразличимыми ровно тогда, когда дежурный выясняет, почему хост не
+	// появился.
+	hostScopeSkipped atomic.Int64
 
 	// rate — дешёвый per-DSN (по project id) токен-бакет ПЕРЕД quota-проверкой:
 	// срезает флуд с одного ключа до похода в PG (см. ratelimit.go). Задаётся в
@@ -271,7 +286,15 @@ func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64, sig
 	return true
 }
 
-func (h *Handler) Register(mux *http.ServeMux) {
+// muxRegistrar — то, что Register нужно от мультиплексора. Сужение ради
+// сторожа маршрутов (scope_routes_test.go): http.ServeMux не даёт перечислить
+// зарегистрированные паттерны, а подменный регистратор — даёт. В бою сюда
+// приходит тот же *http.ServeMux.
+type muxRegistrar interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+func (h *Handler) Register(mux muxRegistrar) {
 	// Браузерные SDK шлют телеметрию с ПРОИЗВОЛЬНОГО origin (сайт и gotcha —
 	// разные домены), поэтому envelope/store отвечают CORS-заголовками и
 	// обрабатывают preflight (OPTIONS). DSN (public key) не секрет — как у
@@ -339,13 +362,32 @@ func corsPreflight(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// scopeReject отвечает 403 и считает отказ по скоупу в ОБЕ метрики: узкую
+// (gotcha_ingest_key_rejections_total{reason="scope"}, с path в логе) и
+// широкую (gotcha_ingest_rejected_total{reason="key_scope",signal}).
+//
+// 403, а не 401, ВКЛЮЧАЯ OTLP-вход, где соседние ветки отвечают 401:
+// расхождение осознанное и семантически верное — 401 значит «ты не
+// представился», 403 — «представился, но сюда нельзя», а ключ здесь
+// резолвится успешно.
+func (h *Handler) scopeReject(w http.ResponseWriter, r *http.Request, signal IngestSignal) {
+	h.countKeyReject(KeyRejectScope, r.URL.Path)
+	h.countRejected(RejectKeyScope, signal)
+	writeJSONError(w, http.StatusForbidden, "key type not allowed for this endpoint")
+}
+
 // authenticate проверяет ключ проекта; при успехе возвращает ключ и true. При
 // отказе сама пишет ошибку в w и возвращает false. Квоты здесь НЕ проверяются:
 // их две (ошибки и транзакции), и какую списывать — видно только после
 // разбора envelope'а. signal — метка gotcha_ingest_rejected_total{reason=
 // "key_unknown",signal}: все три ветки отказа сводятся к одной причине, см.
 // докблок IngestRejectReason.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal) (org.Key, bool) {
+//
+// also — сигналы СВЕРХ signal, которые маршрут может нести (envelope). Пусто
+// — маршрут односигнальный. Гейт скоупа стоит ПОСЛЕ резолва ключа и сверки
+// проекта: отказ по типу ключа имеет смысл только для ключа, который
+// действительно принадлежит этому проекту.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal IngestSignal, also ...IngestSignal) (org.Key, bool) {
 	projectID, err := strconv.ParseInt(r.PathValue("project"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "unknown project")
@@ -375,6 +417,11 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 		return org.Key{}, false
 	}
 
+	if !scopeAllowsRoute(key.Kind, signal, also) {
+		h.scopeReject(w, r, signal)
+		return org.Key{}, false
+	}
+
 	return key, true
 }
 
@@ -388,7 +435,10 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 //
 // nil-квота (не сконфигурирована) и сбой счётчика → fail-open: терять данные
 // из-за сбоя квот хуже, чем иногда пропустить организацию сверх квоты.
-func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, kind string, want int) int {
+//
+// quotaKind — вид телеметрии для КВОТЫ (event/transaction/...); не путать с
+// org.KeyKind, типом ключа приёма.
+func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, quotaKind string, want int) int {
 	if want <= 0 {
 		return 0
 	}
@@ -398,7 +448,7 @@ func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, kind s
 	granted, err := q.CheckAndCount(ctx, orgID, int64(want))
 	if err != nil {
 		slog.Warn("ingest: quota check failed, allowing items",
-			"org_id", orgID, "kind", kind, "want", want, "error", err)
+			"org_id", orgID, "kind", quotaKind, "want", want, "error", err)
 		return want
 	}
 	return int(granted)
@@ -565,7 +615,7 @@ func gunzipLimited(raw []byte, limit int64) ([]byte, error) {
 }
 
 func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.authenticate(w, r, SignalEvent)
+	key, ok := h.authenticate(w, r, SignalEvent, envelopeAlsoSignals...)
 	if !ok {
 		return
 	}
@@ -580,7 +630,9 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer closeBody()
-	env, err := ParseEnvelope(body, h.maxBytes)
+	env, err := ParseEnvelope(body, h.maxBytes, func(s IngestSignal) bool {
+		return scopeAllows(key.Kind, s)
+	})
 	if err != nil {
 		status := http.StatusBadRequest
 		reason := RejectMalformed
@@ -603,6 +655,19 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			"limit", maxEnvelopeItems, "dropped", env.Dropped,
 			"project_id", projectID, "org_id", key.OrgID)
 		h.countDrop(r.Context(), dropEvent, key.OrgID, env.Dropped)
+	}
+	// Отказ по скоупу считается ОДИН РАЗ НА ЗАПРОС на каждый сигнал, у
+	// которого хоть один item отброшен, а не по разу на item:
+	// gotcha_ingest_rejected_total — метрика ОТКАЗАННЫХ ЗАПРОСОВ (см. докблок
+	// IngestRejectReason), и поштучный счёт сделал бы key_scope несравнимым с
+	// соседними причинами на дашборде. Детализация по сигналу при этом
+	// сохраняется: видно, ЧТО именно пытались слать не тем ключом.
+	//
+	// Логировать здесь не нужно: отказ по скоупу на самом маршруте уже пишет
+	// countKeyReject с путём, а поштучный отбор внутри принятого запроса —
+	// рутина браузерного SDK, который шлёт то, чего не умеет.
+	for signal := range env.ScopeRejected {
+		h.countRejected(RejectKeyScope, signal)
 	}
 
 	// Квоты списываются раздельно и только за те типы item'ов, которые в

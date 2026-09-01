@@ -15,7 +15,7 @@ hello
 {"type":"event"}
 {"message":"second"}
 `
-	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20)
+	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20, nil)
 	if err != nil {
 		t.Fatalf("ParseEnvelope: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestParseEnvelopeMixedItems(t *testing.T) {
 {"type":"profile"}
 {"platform":"go"}
 `
-	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20)
+	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20, nil)
 	if err != nil {
 		t.Fatalf("ParseEnvelope: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestParseEnvelopeMixedItems(t *testing.T) {
 
 func TestParseEnvelopeNoTrailingNewline(t *testing.T) {
 	raw := "{}\n{\"type\":\"event\"}\n{\"message\":\"x\"}"
-	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20)
+	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20, nil)
 	if err != nil || len(env.Events) != 1 {
 		t.Fatalf("events=%d err=%v", len(env.Events), err)
 	}
@@ -69,20 +69,20 @@ func TestParseEnvelopeNoTrailingNewline(t *testing.T) {
 
 func TestParseEnvelopeTooLargeItem(t *testing.T) {
 	raw := "{}\n{\"type\":\"event\",\"length\":100}\n" + strings.Repeat("x", 100)
-	if _, err := ParseEnvelope(strings.NewReader(raw), 10); !errors.Is(err, ErrTooLarge) {
+	if _, err := ParseEnvelope(strings.NewReader(raw), 10, nil); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("got %v, want ErrTooLarge", err)
 	}
 }
 
 func TestParseEnvelopeGarbage(t *testing.T) {
-	if _, err := ParseEnvelope(strings.NewReader("not json at all"), 1<<20); err == nil {
+	if _, err := ParseEnvelope(strings.NewReader("not json at all"), 1<<20, nil); err == nil {
 		t.Fatal("want error for garbage input")
 	}
 }
 
 func TestParseEnvelopeNegativeLength(t *testing.T) {
 	raw := "{}\n{\"type\":\"event\",\"length\":-5}\nxxxxx\n"
-	_, err := ParseEnvelope(strings.NewReader(raw), 1<<20)
+	_, err := ParseEnvelope(strings.NewReader(raw), 1<<20, nil)
 	if err == nil {
 		t.Fatal("want error for negative length, got nil (or panic)")
 	}
@@ -92,7 +92,7 @@ func TestParseEnvelopeNegativeLength(t *testing.T) {
 }
 
 func TestParseEnvelopeHeaderOnlyNoNewline(t *testing.T) {
-	env, err := ParseEnvelope(strings.NewReader(`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`), 1<<20)
+	env, err := ParseEnvelope(strings.NewReader(`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`), 1<<20, nil)
 	if err != nil {
 		t.Fatalf("single-line envelope without trailing newline: %v", err)
 	}
@@ -103,14 +103,14 @@ func TestParseEnvelopeHeaderOnlyNoNewline(t *testing.T) {
 
 func TestParseEnvelopeUnboundedLineCapped(t *testing.T) {
 	raw := "{}\n{\"type\":\"event\"}\n" + strings.Repeat("a", 2048) + "\n"
-	if _, err := ParseEnvelope(strings.NewReader(raw), 1024); !errors.Is(err, ErrTooLarge) {
+	if _, err := ParseEnvelope(strings.NewReader(raw), 1024, nil); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("got %v, want ErrTooLarge", err)
 	}
 }
 
 func TestParseEnvelopeGarbageWithNewline(t *testing.T) {
 	// Мусор с \n: ошибка должна прийти из JSON-валидации, не из EOF.
-	if _, err := ParseEnvelope(strings.NewReader("not json at all\n"), 1<<20); err == nil {
+	if _, err := ParseEnvelope(strings.NewReader("not json at all\n"), 1<<20, nil); err == nil {
 		t.Fatal("want error for garbage header")
 	}
 }
@@ -124,7 +124,7 @@ func TestParseEnvelopeItemLimit(t *testing.T) {
 	for i := 0; i < maxEnvelopeItems+extra; i++ {
 		b.WriteString("{\"type\":\"event\"}\n{\"message\":\"x\"}\n")
 	}
-	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20)
+	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20, nil)
 	if err != nil {
 		t.Fatalf("ParseEnvelope: %v", err)
 	}
@@ -145,11 +145,64 @@ func TestParseEnvelopeUnknownTypesNotCounted(t *testing.T) {
 		b.WriteString("{\"type\":\"session\"}\n{\"x\":1}\n") // игнорируемый тип
 	}
 	b.WriteString("{\"type\":\"event\"}\n{\"message\":\"kept\"}\n")
-	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20)
+	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20, nil)
 	if err != nil {
 		t.Fatalf("ParseEnvelope: %v", err)
 	}
 	if len(env.Events) != 1 || env.Dropped != 0 {
 		t.Fatalf("events=%d dropped=%d, want 1/0 (unknown types uncounted)", len(env.Events), env.Dropped)
+	}
+}
+
+// TestParseEnvelopeScopeFilter — item, чей сигнал ключу не разрешён,
+// отбрасывается ПОШТУЧНО, остальные принимаются: браузерный envelope не
+// должен терять события из-за одного лишнего profile-item'а.
+func TestParseEnvelopeScopeFilter(t *testing.T) {
+	raw := strings.Join([]string{
+		`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`,
+		`{"type":"event"}`, `{"message":"e"}`,
+		`{"type":"profile"}`, `{"profile":"p"}`,
+		`{"type":"transaction"}`, `{"tx":"t"}`,
+		"",
+	}, "\n")
+	allow := func(s IngestSignal) bool { return s != SignalProfile }
+	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20, allow)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(env.Events) != 1 || len(env.Transactions) != 1 {
+		t.Fatalf("события/транзакции потеряны: %d/%d", len(env.Events), len(env.Transactions))
+	}
+	if len(env.Profiles) != 0 {
+		t.Fatalf("профиль принят, хотя запрещён: %d", len(env.Profiles))
+	}
+	if env.ScopeRejected[SignalProfile] != 1 {
+		t.Fatalf("ScopeRejected[profile] = %d, ожидалась 1", env.ScopeRejected[SignalProfile])
+	}
+	if len(env.ScopeRejected) != 1 {
+		t.Fatalf("посчитаны лишние сигналы: %v", env.ScopeRejected)
+	}
+}
+
+// TestParseEnvelopeNilAllow — nil-предикат означает «всё разрешено»:
+// существующие вызовы разбора без скоупа поведения не меняют.
+func TestParseEnvelopeNilAllow(t *testing.T) {
+	raw := strings.Join([]string{
+		`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`,
+		`{"type":"event"}`, `{"message":"e"}`,
+		`{"type":"profile"}`, `{"profile":"p"}`,
+		`{"type":"transaction"}`, `{"tx":"t"}`,
+		"",
+	}, "\n")
+	env, err := ParseEnvelope(strings.NewReader(raw), 1<<20, nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(env.Events) != 1 || len(env.Transactions) != 1 || len(env.Profiles) != 1 {
+		t.Fatalf("item'ы потеряны: events=%d tx=%d profiles=%d",
+			len(env.Events), len(env.Transactions), len(env.Profiles))
+	}
+	if len(env.ScopeRejected) != 0 {
+		t.Fatalf("ScopeRejected не пуст при nil-предикате: %v", env.ScopeRejected)
 	}
 }

@@ -55,8 +55,8 @@ func settingsMinutesDefault(d time.Duration) string {
 // (см. FormState); при первом открытии (GET) form == nil, и все поля берут
 // значения из s (сервис уже вернул DefaultSettings, если строки настроек ещё
 // нет). installCmd/config — пустые одновременно, если в проекте нет ни
-// одного активного публичного ключа (h.hostInstallBlocks, hosts.go, общий
-// firstLiveKey-путь) — тогда вместо copyBlock показывается подсказка, где
+// одного активного ключа типа agent (h.hostInstallBlocks, hosts.go, общий
+// liveKeyFor-путь) — тогда вместо copyBlock показывается подсказка, где
 // ключ завести. agentReason — почему installCmd пуст при непустом config
 // (rem-A sec-M1/sec-M4): см. комментарий hostInstallBlocks и
 // hostsCollectorConfigDetails (hosts.templ, тот же компонент рендерит блоки

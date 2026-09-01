@@ -254,7 +254,7 @@ func hostsFacetValueClass(active bool) string {
 // нет внешней зависимости от отдельно устанавливаемого пакета). agentReason —
 // почему installCmd пуст при непустом config (rem-A sec-M1/sec-M4, см.
 // hostInstallBlocks); обе строки пустые одновременно (agentReason=="") — в
-// проекте нет ни одного активного публичного ключа (общий firstLiveKey-путь,
+// проекте нет ни одного активного ключа типа agent (общий liveKeyFor-путь,
 // hosts.go), тогда вместо copyBlock — подсказка.
 //
 // Конфиг нужен обеим веткам, а не только онбордингу пустого списка (UX-аудит
@@ -468,8 +468,8 @@ templ hostsCollectorConfigDetails(id string, projectID int64, installCmd, config
 // парк out-of-the-box коллекторов или агент не подходит по иной причине).
 //
 // installCmd/collectorCfg == "" одновременно (agentReason=="") — в проекте
-// ещё нет активного публичного ключа (h.hostInstallBlocks, hosts.go, общий
-// firstLiveKey-путь): без него ни командой, ни конфигом заполнить нечего
+// ещё нет активного ключа типа agent (h.hostInstallBlocks, hosts.go, общий
+// liveKeyFor-путь): без него ни командой, ни конфигом заполнить нечего
 // (endpoint без ключа не заработает), поэтому на ОБОИХ путях вместо
 // copyBlock — подсказка, где ключ завести, со ссылкой на настройки проекта
 // (rem-E ux-M4) — тот же projectID, что и у HostsList/HostSettings. Если

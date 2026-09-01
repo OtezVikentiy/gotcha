@@ -80,7 +80,7 @@ func newIngestTestWithDeploy(t *testing.T) (h *Handler, projectID int64) {
 		t.Fatalf("insert project: %v", err)
 	}
 
-	h = NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: projectID, OrgID: orgID}}), nil, nil, 1<<20)
+	h = NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: projectID, OrgID: orgID, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Deploy = deploy.NewStore(pool)
 	return h, projectID
 }
@@ -183,7 +183,7 @@ func TestIngestDeploymentTooLarge(t *testing.T) {
 
 // TestIngestDeploymentDisabled: без сконфигурированного стора эндпоинт отвечает 503.
 func TestIngestDeploymentDisabled(t *testing.T) {
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	rec := postDeploy(t, h, 1, `{"version":"v1"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("h.Deploy==nil → %d, want 503", rec.Code)
@@ -242,7 +242,7 @@ func deployRequest(h *Handler, projectID int64, body string, withKey bool, conte
 // self-метрикой с сигналом deploy — приёмник обязан различать, какой ИЗ ШЕСТИ
 // входов отбивало по ключу, иначе дежурный видит только общий рост 401.
 func TestIngestDeploymentUnauthorized(t *testing.T) {
-	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1}}), nil, nil, 1<<20)
+	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	before := h.RejectedBy(RejectKeyUnknown, SignalDeploy)
 
 	rec := deployRequest(h, 1, `{"version":"v1"}`, false, "")
@@ -288,7 +288,7 @@ func TestIngestDeploymentBadBodyEncoding(t *testing.T) {
 func TestIngestDeploymentRecordFailure(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 	ghost := projectID + 1_000_000
-	h.keys = NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: ghost, OrgID: 1}})
+	h.keys = NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: ghost, OrgID: 1, Kind: org.KindLegacy}})
 
 	rec := deployRequest(h, ghost, `{"version":"v1.2.3"}`, true, "")
 	if rec.Code != http.StatusServiceUnavailable {
