@@ -871,7 +871,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		} {
 			if strings.TrimSpace(getenv(name)) != "" {
 				slog.Warn(fmt.Sprintf(
-					"HSTS is off (GOTCHA_HSTS_ENABLED=false) — %s is ignored", name))
+					"HSTS is off (GOTCHA_HSTS_ENABLED=false) — %s is ignored", name),
+					"var", name)
 			}
 		}
 	}

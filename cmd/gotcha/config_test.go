@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
 func getenvFrom(m map[string]string) func(string) string {
@@ -1602,6 +1603,30 @@ func TestLoadConfig_HSTSRejects(t *testing.T) {
 				t.Error("конфиг принят, ожидался отказ старта")
 			}
 		})
+	}
+}
+
+// TestLoadConfig_HSTSPreloadAccepted — позитивный кейс к TestLoadConfig_HSTSRejects:
+// ровно на границе (max-age год день-в-день) корректная preload-конфигурация
+// обязана стартовать, а не просто НЕ отказами — без этого теста замена
+// строгого сравнения `< 31536000` на `<= 31536000` в валидации не роняет ни
+// один тест (граница в 31536000 никогда не проверяется как «принято»).
+func TestLoadConfig_HSTSPreloadAccepted(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_HSTS_ENABLED":            "true",
+		"GOTCHA_HSTS_PRELOAD":            "true",
+		"GOTCHA_HSTS_INCLUDE_SUBDOMAINS": "true",
+		"GOTCHA_HSTS_MAX_AGE_SECONDS":    "31536000",
+		"GOTCHA_BASE_URL":                "https://gotcha.example.com",
+		"GOTCHA_ALLOW_INSECURE_SECRET":   "1",
+	}), nil)
+	if err != nil {
+		t.Fatalf("корректная preload-конфигурация на границе (max-age=31536000) обязана стартовать: %v", err)
+	}
+	got := web.HSTSHeaderValue(cfg.HSTSEnabled, cfg.HSTSMaxAgeSeconds, cfg.HSTSIncludeSubDomains, cfg.HSTSPreload)
+	want := "max-age=31536000; includeSubDomains; preload"
+	if got != want {
+		t.Errorf("собранный заголовок = %q, want %q", got, want)
 	}
 }
 
