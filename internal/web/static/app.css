@@ -3216,6 +3216,28 @@ form.inline {
 	margin: 0;
 }
 
+/* -- Org projects (/orgs/{id}/projects): список проектов одной организации,
+   раскладка карточек — та же .settings-grid, что у настроек/команд.
+   .org-projects задаёт отступ под кнопкой создания (.btn margin не имеет —
+   без явного правила сетка карточек сидела бы вплотную к кнопке). */
+.org-projects .create-trigger {
+	margin-bottom: 16px;
+}
+/* .project-card — карточка проекта в этой сетке: имя (ссылка на «Обзор»),
+   платформа, ссылка на подключение SDK — вертикальным стеком с единым gap
+   вместо разномастных margin у .card-header/.card-actions по отдельности. */
+.project-card {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.project-card .card-header {
+	margin-bottom: 0;
+}
+.project-card .card-actions {
+	margin-top: 0;
+}
+
 /* -- About page (/about): build-info list + outbound links -- */
 .about-list {
 	display: grid;
