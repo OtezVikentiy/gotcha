@@ -1003,7 +1003,6 @@
     "project.settings.keys.table.key": "Публичный ключ",
     "project.settings.keys.table.kind": "Тип",
     "project.settings.keys.table.status": "Статус",
-    "project.settings.keys.table.dsn": "DSN",
     "project.settings.keys.status.active": "Активен",
     "project.settings.keys.status.revoked": "Отозван",
     "project.settings.keys.revoke": "Отозвать",

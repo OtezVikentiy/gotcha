@@ -4053,6 +4053,27 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	overflow-wrap: normal;
 	white-space: nowrap;
 }
+/* Ключ и его DSN — одна запись из двух строк таблицы (см. keyRow в
+   projsettings.templ): DSN идёт под строкой ключа во всю ширину через
+   colspan, а не пятой колонкой. Пятой колонкой он схлопывался до ~78px —
+   таблица стоит в узкой средней колонке настроек, — и адрес печатался
+   столбиком по одному-два символа, отодвигая кнопку отзыва под
+   горизонтальную прокрутку. Разделительную линию несёт только нижняя строка
+   пары: иначе ключ и его DSN читались бы как две независимые записи. */
+.data-table tr.key-row-with-dsn > td {
+	border-bottom: none;
+	padding-bottom: 0;
+}
+.data-table tr.key-dsn-row > td {
+	padding-top: 4px;
+}
+/* Подсветка при наведении берёт пару целиком — с любой из двух строк.
+   Без этого курсор над DSN подсвечивал «половину» записи. */
+.data-table tbody tr.key-row-with-dsn:hover + tr.key-dsn-row,
+.data-table tbody tr.key-row-with-dsn:has(+ tr.key-dsn-row:hover) {
+	background: var(--surface-2);
+}
+
 /* Подписи кнопок и бейджей тоже не рвём: «Отозвать» переносилось как
    «Отозва/ть». Перенос по любому символу нужен только машинным строкам
    (ключам, DSN, URL), а не элементам управления. */

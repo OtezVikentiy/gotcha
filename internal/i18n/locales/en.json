@@ -1003,7 +1003,6 @@
     "project.settings.keys.table.key": "Public key",
     "project.settings.keys.table.kind": "Type",
     "project.settings.keys.table.status": "Status",
-    "project.settings.keys.table.dsn": "DSN",
     "project.settings.keys.status.active": "Active",
     "project.settings.keys.status.revoked": "Revoked",
     "project.settings.keys.revoke": "Revoke",
