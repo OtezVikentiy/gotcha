@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New "All projects" screen for an organization (`/orgs/{id}/projects`): a
   flat list of every project in the organization, reachable from an
   organization switcher rather than nested one level inside a project.
-- The sidebar is now split into three tiers: work areas (Overview, Errors,
+- The sidebar is now split into three tiers: work areas (Overview, Issues,
   Performance, Logs, Metrics, Hosts, Uptime), setup (Alerts), and a footer
   (Settings, Documentation). The context column groups related pages under
   each area, and the top bar now shows where you are: organization, project,
@@ -27,12 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Several sections were renamed to describe what's actually inside them
   instead of repeating their parent's name: "Transactions" is now
-  "Performance"; the "Issues" subsection under Errors is now "Errors"
-  outright; "Performance issues" is now "Bottlenecks"; uptime "Incidents" is
-  now "Availability failures"; the alerts subsections are now "By errors"
-  and "By metrics"; the "Organization" area is gone, folded into the
-  project/organization switcher and settings; "Projects" is now the "All
-  projects" entry in that switcher.
+  "Performance"; under the Issues area, the subsection that used to just
+  repeat the area's own name is now called "Errors"; "Performance issues"
+  is now "Bottlenecks"; uptime "Incidents" is now "Availability incidents";
+  the alerts subsections are now "By errors" and "By metrics"; the
+  "Organization" area is gone, folded into the project/organization
+  switcher and settings; "Projects" is now the "All projects" entry in that
+  switcher.
 - No page changed address: every screen kept its URL, so old bookmarks and
   links keep working. Two exceptions changed behavior rather than address:
   `/projects` now redirects to your organization's project list instead of
