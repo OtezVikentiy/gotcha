@@ -50,7 +50,7 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 		if ps, err := h.Org.ProjectsForUser(ctx, uid); err == nil {
 			projs = make([]nav.Project, 0, len(ps))
 			for _, p := range ps {
-				projs = append(projs, nav.Project{ID: p.ID, Slug: p.Slug, Name: p.Name})
+				projs = append(projs, nav.Project{ID: p.ID, Slug: p.Slug, Name: p.Name, OrgID: p.OrgID})
 			}
 		}
 
@@ -93,7 +93,35 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			orgID, _ = h.Org.ProjectOrg(ctx, projs[0].ID)
 		}
 
-		orgMode := area == "org"
+		// Топбар (задача 4 nav-ia) сужает список проектов селектом
+		// организации: без сужения два селекта противоречили бы друг
+		// другу — организация выбрана одна, а проекты в списке ниже были
+		// бы из всех организаций пользователя. projs (полный список) уже
+		// несёт OrgID (задача T4/I1: то же обращение в БД, что и
+		// ProjectsForUser выше, второй запрос ProjectsForUserInOrg не
+		// нужен) — здесь его заменяет только то, что попадёт в
+		// sh.Projects.
+		shellProjects := projs
+		if orgID != 0 {
+			shellProjects = make([]nav.Project, 0, len(projs))
+			for _, p := range projs {
+				if p.OrgID == orgID {
+					shellProjects = append(shellProjects, p)
+				}
+			}
+		}
+
+		// I1: projID из куки может принадлежать другой организации, чем
+		// та, что видна из пути или уже разрешена выше (/orgs/{A}/...
+		// с кукой на проект организации B) — тогда шапка (OrgID=A) и
+		// рейл (effectiveProjectID — первый проект sh.Projects, т.е. B)
+		// расходятся молча: пункты рейла ведут в чужую организацию.
+		// Проект, не входящий в shellProjects текущей организации,
+		// сбрасывается — effectiveProjectID откатится на первый проект
+		// ТЕКУЩЕЙ организации, совпав с тем, что показывает топбар.
+		if orgID != 0 && projID != 0 && !projectInList(shellProjects, projID) {
+			projID = 0
+		}
 
 		// Best-effort: resolve whether the user can manage orgID
 		// (owner/admin) to gate management links (project settings,
@@ -115,22 +143,6 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 		// здесь не нужен.
 		canOperate := projID != 0 && projectInList(projs, projID)
 
-		// Топбар (задача 4 nav-ia) сужает список проектов селектом
-		// организации: без сужения два селекта противоречили бы друг
-		// другу — организация выбрана одна, а проекты в списке ниже были
-		// бы из всех организаций пользователя. projs (полный список) выше
-		// уже отработал во всех проверках (cookie, orgID-фолбэк, CanOperate)
-		// — здесь его заменяет только то, что попадёт в sh.Projects.
-		shellProjects := projs
-		if orgID != 0 {
-			if ps, err := h.Org.ProjectsForUserInOrg(ctx, uid, orgID); err == nil {
-				shellProjects = make([]nav.Project, 0, len(ps))
-				for _, p := range ps {
-					shellProjects = append(shellProjects, nav.Project{ID: p.ID, Slug: p.Slug, Name: p.Name})
-				}
-			}
-		}
-
 		sh := nav.Shell{
 			UserEmail: email,
 			Orgs:      orgs,
@@ -138,7 +150,6 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 			ProjectID: projID,
 			OrgID:     orgID,
 			Area:      area,
-			OrgMode:   orgMode,
 			Path:      path,
 			Origin:    origin,
 			// Locale feeds nav.Subsections' docs case (doc page titles

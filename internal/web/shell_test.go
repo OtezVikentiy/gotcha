@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
@@ -212,6 +213,82 @@ func TestWithShellNarrowsProjectsByOrg(t *testing.T) {
 	get("/projects/" + strconv.FormatInt(projB.ID, 10) + "/issues")
 	if len(seen.Projects) != 1 || seen.Projects[0].ID != projB.ID {
 		t.Fatalf("Projects with orgB selected = %+v, want only projB", seen.Projects)
+	}
+}
+
+// TestWithShellDropsForeignOrgProjectCookie — I1: projID из cookie может
+// принадлежать другой организации, чем та, что видна из пути
+// (/orgs/{A}/... с кукой на проект организации B). Без сброса шапка
+// (OrgID=A, Projects — проекты A) и рейл (effectiveProjectID — застрявший
+// на B) расходятся молча: любая иконка рейла вела бы в чужую организацию.
+func TestWithShellDropsForeignOrgProjectCookie(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+	h := &Handler{Auth: authSvc, Org: orgSvc, BaseURL: "http://localhost"}
+	ctx := context.Background()
+
+	uid, err := authSvc.Register(ctx, "foreign-org-cookie@example.com", "hunter2hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgA, err := orgSvc.CreateOrg(ctx, "foreign-cookie-a", "Probe A", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgB, err := orgSvc.CreateOrg(ctx, "foreign-cookie-b", "Probe B", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projA, err := orgSvc.CreateProject(ctx, orgA.ID, "proj-a", "Proj A", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projB, err := orgSvc.CreateProject(ctx, orgB.ID, "proj-b", "Proj B", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := authSvc.CreateSession(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen nav.Shell
+	mw := h.withShell(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = nav.FromContext(r.Context())
+	}))
+
+	r := httptest.NewRequest("GET", "/orgs/"+strconv.FormatInt(orgA.ID, 10)+"/projects", nil)
+	r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	r.AddCookie(&http.Cookie{Name: "proj", Value: strconv.FormatInt(projB.ID, 10)})
+	mw.ServeHTTP(httptest.NewRecorder(), r)
+
+	if seen.OrgID != orgA.ID {
+		t.Fatalf("OrgID = %d, want %d (org A, from path)", seen.OrgID, orgA.ID)
+	}
+	if seen.ProjectID == projB.ID {
+		t.Fatalf("ProjectID = %d, want reset away from foreign-org project B", seen.ProjectID)
+	}
+	if len(seen.Projects) != 1 || seen.Projects[0].ID != projA.ID {
+		t.Fatalf("Projects = %+v, want only projA (org A)", seen.Projects)
+	}
+	projAPart := "/projects/" + strconv.FormatInt(projA.ID, 10) + "/"
+	projBPart := "/projects/" + strconv.FormatInt(projB.ID, 10) + "/"
+	// Рейл (nav.Areas, effectiveProjectID) должен откатиться на первый
+	// проект ТЕКУЩЕЙ организации — совпасть с тем, что показывает топбар
+	// (Projects выше), а не остаться на проекте org B: до фикса «Обзор» на
+	// рейле вёл в projB, хотя топбар говорил «Probe A / Proj A».
+	sawProjA := false
+	for _, area := range nav.Areas(seen) {
+		if strings.Contains(area.Href, projBPart) {
+			t.Fatalf("rail area %q hrefs into foreign-org project B: %q", area.ID, area.Href)
+		}
+		if strings.Contains(area.Href, projAPart) {
+			sawProjA = true
+		}
+	}
+	if !sawProjA {
+		t.Fatalf("no rail area links into projA, want at least overview")
 	}
 }
 
