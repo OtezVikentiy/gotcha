@@ -51,6 +51,17 @@ templ overviewRangeTab(projectID int64, value, rangeKey string) {
 	<a class={ overviewRangeTabClass(value == rangeKey) } href={ templ.URL(overviewRangeHref(projectID, value)) } if value == rangeKey { aria-current="page" }>{ i18n.T(ctx, "range."+value) }</a>
 }
 
+// overviewRangeTabs — переключатель окна «недавно решённые» (M1, ревью
+// фикс-раунда 2): вынесен из непустой ветки Overview, чтобы быть доступным
+// и в пустой — проект без данных в окне 24ч, у которого всё закрылось,
+// скажем, трое суток назад, без этого не имел ни одной двери к окну 7д.
+templ overviewRangeTabs(projectID int64, rangeKey string) {
+	<nav class="tabs" aria-label={ i18n.T(ctx, "overview.range.aria") }>
+		@overviewRangeTab(projectID, "24h", rangeKey)
+		@overviewRangeTab(projectID, "7d", rangeKey)
+	</nav>
+}
+
 // statusLine — строка состояния (§ шаг 3 брифа задачи 7): три плитки,
 // повторяющие вёрстку .stat-tile (monitordetail/hostdetail/slodetail), но
 // каждая — ссылка на свой раздел, а не просто число. .monitor-meta —
@@ -134,6 +145,7 @@ templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGr
 			@helpPanel("feed", "incident-groups")
 			if empty {
 				@emptyState("home", "overview.empty.title", "overview.empty.body", "getting_started.title", projectSetupPath(projectID), 2)
+				@overviewRangeTabs(projectID, rangeKey)
 			} else {
 				<h2>{ i18n.T(ctx, "feed.section.groups") } <span class="hint">{ i18n.Tf(ctx, "feed.open_groups.cap", "n", strconv.Itoa(caps.OpenGroups)) }</span></h2>
 				if len(openGroups) == 0 {
@@ -161,10 +173,7 @@ templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGr
 					</div>
 				}
 				<h2>{ i18n.T(ctx, "feed.section.closed") } <span class="hint">{ i18n.Tf(ctx, "overview.closed.cap", "window", i18n.T(ctx, "range."+rangeKey), "groups", strconv.Itoa(caps.ClosedGroups), "items", strconv.Itoa(caps.ClosedItems)) }</span></h2>
-				<nav class="tabs" aria-label={ i18n.T(ctx, "overview.range.aria") }>
-					@overviewRangeTab(projectID, "24h", rangeKey)
-					@overviewRangeTab(projectID, "7d", rangeKey)
-				</nav>
+				@overviewRangeTabs(projectID, rangeKey)
 				for _, c := range closedGroups {
 					@groupCard(projectID, c, canOperate)
 				}

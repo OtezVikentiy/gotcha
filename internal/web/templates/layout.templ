@@ -232,7 +232,13 @@ templ whereAmI(shell nav.Shell) {
 					// раздел, недоступный у целевого проекта, откатывается на issues.
 					<li><a href={ templ.SafeURL(nav.ProjectSwitchHref(shell, p.ID)) }>{ p.Name }</a></li>
 				}
-				<li class="proj-switch-all"><a href={ templ.SafeURL("/orgs/" + itoa(shell.OrgID) + "/projects") }>{ i18n.T(ctx, "nav.all_projects") }</a></li>
+				// OrgID резолвится best-effort (web/shell.go): ProjectOrg
+				// может ошибиться, тогда OrgID==0 и "/orgs/0/projects" 404-ит
+				// — пункт рендерится только при разрешённой организации (M2,
+				// ревью фикс-раунда 2).
+				if shell.OrgID != 0 {
+					<li class="proj-switch-all"><a href={ templ.SafeURL("/orgs/" + itoa(shell.OrgID) + "/projects") }>{ i18n.T(ctx, "nav.all_projects") }</a></li>
+				}
 			</ul>
 		</details>
 	}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,7 +15,9 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
+	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
+	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
@@ -118,6 +121,51 @@ func TestOverviewEmptyProject(t *testing.T) {
 	}
 	if strings.Contains(text, "Открытых групп нет") {
 		t.Errorf("a totally empty overview must not ALSO render the old per-section empty states: %s", text)
+	}
+}
+
+// TestOverviewEmptyWindowStillOffersRangeTabs — M1 финревью: проект, у
+// которого всё закрылось за пределами дефолтного окна 24ч (но данные есть —
+// SDK уже шлёт события), получал «Обзор пока пуст» без единой двери к окну
+// 7д, где инцидент нашёлся бы. Вкладки переключателя обязаны рендериться и
+// в пустой ветке (см. overviewRangeTabs).
+func TestOverviewEmptyWindowStillOffersRangeTabs(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-tabs@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-tabs-co", "Feed Tabs Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-tabs-proj", "Feed Tabs Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Инцидент закрылся трое суток назад — за пределами дефолтного окна 24ч
+	// (внутри 7д). Ни одного открытого инцидента нет, поэтому empty=true на
+	// 24ч, хотя у проекта данные ЕСТЬ.
+	host := s.seedFeedHost(t, project.ID, "closed-host")
+	resolvedAt := time.Now().Add(-72 * time.Hour)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, started_at, resolved_at)
+		VALUES ($1,$2,'disk','resolved',0,0,'',$3,$3)`,
+		project.ID, host, resolvedAt); err != nil {
+		t.Fatalf("seed resolved incident: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, "Обзор пока пуст") {
+		t.Fatalf("expected empty-state invite for a 24h window with no data in it, got: %s", text)
+	}
+	if !strings.Contains(text, `class="tabs"`) || !strings.Contains(text, "range=7d") {
+		t.Errorf("empty 24h window must still offer a door to the 7d window: %s", text)
 	}
 }
 
@@ -712,6 +760,77 @@ func TestOverviewStatusLineIsClickable(t *testing.T) {
 		if !strings.Contains(string(body), "/projects/"+pid+href) {
 			t.Errorf("строка состояния не ведёт в %s: мёртвых чисел на обзоре быть не должно", href)
 		}
+	}
+}
+
+// TestOverviewStatusLineShowsExactCounts — I1..I4 финревью, I3: мутация
+// «sl.HostsOverThreshold = 0, sl.NewIssues24h = 0» переживала весь пакет
+// (TestOverviewStatusLineIsClickable проверял только наличие ссылок — их
+// печатает рейл и без строки состояния). Здесь проверяются САМИ числа:
+// сид с известными счётчиками → ассерт на конкретные значения в HTML, а не
+// на хрефы, которые (по I2) те же самые области печатают и без плитки.
+func TestOverviewStatusLineShowsExactCounts(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	issueSvc := issue.NewService(s.pool)
+	s.h.Issues = issueSvc
+	s.h.HostIncidents = host.NewIncidentService(s.pool)
+
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "statusnum-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "statusnum-co", "Statusnum Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "statusnum-proj", "Statusnum Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Хосты за порогом: дедуп по HostID (не по инциденту) — два открытых
+	// инцидента на hostA считаются одним хостом, hostB добавляет второй →
+	// итог 2, а не 3.
+	hostA := s.seedFeedHost(t, project.ID, "host-a")
+	hostB := s.seedFeedHost(t, project.ID, "host-b")
+	s.seedFeedHostIncident(t, project.ID, hostA, "disk")
+	s.seedFeedHostIncident(t, project.ID, hostA, "memory")
+	s.seedFeedHostIncident(t, project.ID, hostB, "load")
+
+	// Новые проблемы за сутки: два issue с first_seen внутри окна (сейчас,
+	// час назад), один — за пределами (48ч назад) не должен попасть в счёт.
+	now := time.Now().UTC()
+	if _, err := issueSvc.Upsert(ctx, project.ID, "fp-new-1", "new issue 1", "", "error", "", now); err != nil {
+		t.Fatalf("upsert fp-new-1: %v", err)
+	}
+	if _, err := issueSvc.Upsert(ctx, project.ID, "fp-new-2", "new issue 2", "", "error", "", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("upsert fp-new-2: %v", err)
+	}
+	if _, err := issueSvc.Upsert(ctx, project.ID, "fp-old", "old issue", "", "error", "", now.Add(-48*time.Hour)); err != nil {
+		t.Fatalf("upsert fp-old: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+
+	pid := strconv.FormatInt(project.ID, 10)
+	hostsRe := regexp.MustCompile(`(?s)href="/projects/` + pid + `/hosts".*?stat-value">(\d+)<`)
+	issuesRe := regexp.MustCompile(`(?s)href="/projects/` + pid + `/issues".*?stat-value">(\d+)<`)
+
+	hm := hostsRe.FindStringSubmatch(text)
+	if hm == nil {
+		t.Fatalf("hosts-over-threshold tile not found in body: %s", text)
+	}
+	if hm[1] != "2" {
+		t.Errorf("HostsOverThreshold в HTML = %s, want 2 (дедуп по хосту, не по инциденту)", hm[1])
+	}
+
+	im := issuesRe.FindStringSubmatch(text)
+	if im == nil {
+		t.Fatalf("new-issues tile not found in body: %s", text)
+	}
+	if im[1] != "2" {
+		t.Errorf("NewIssues24h в HTML = %s, want 2 (fp-old вне окна 24ч не должен считаться)", im[1])
 	}
 }
 

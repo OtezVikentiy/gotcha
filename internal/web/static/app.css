@@ -496,7 +496,7 @@ a:hover {
 	min-width: 0;
 }
 .topbar {
-	height: 44px;
+	min-height: 44px;
 	display: flex;
 	align-items: center;
 	gap: 8px;

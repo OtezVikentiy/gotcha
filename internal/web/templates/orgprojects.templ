@@ -7,21 +7,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// projectOverviewPath — «Обзор» проекта (задача 6/7 nav-ia): маршрут ещё не
-// зарегистрирован в этой задаче, ссылка на него ставится заранее — тем же
-// стеком задач, следующим по плану.
-func projectOverviewPath(projectID int64) string {
-	return "/projects/" + strconv.FormatInt(projectID, 10) + "/overview"
-}
-
-// orgProjectCard — карточка одного проекта: имя ведёт в «Обзор», под ним —
-// платформа (тот же чип, что и в плоском списке /projects, projectRow) и
-// ссылка на подключение SDK (тот же аффорданс и тот же ключ, что у Setup в
+// orgProjectCard — карточка одного проекта: имя ведёт в «Обзор» (общий
+// overviewPath, incidentfeed.templ — маршрут зарегистрирован задачей 6), под
+// ним — платформа (тот же чип, что и в плоском списке /projects, projectRow)
+// и ссылка на подключение SDK (тот же аффорданс и тот же ключ, что у Setup в
 // projectRow плоского списка — фикс-раунд 1, п.2: карточка не должна тихо
 // терять путь к подключению SDK).
 templ orgProjectCard(p org.Project) {
 	<div class="card project-card">
-		<h2 class="card-header"><a href={ templ.URL(projectOverviewPath(p.ID)) }>{ p.Name }</a></h2>
+		<h2 class="card-header"><a href={ templ.URL(overviewPath(p.ID)) }>{ p.Name }</a></h2>
 		<span class="chip">{ i18n.T(ctx, "platform."+p.Platform) }</span>
 		<div class="card-actions">
 			<a class="btn btn-ghost" href={ templ.URL(projectSetupPath(p.ID)) }>{ i18n.T(ctx, "project.list.setup_link") }</a>
