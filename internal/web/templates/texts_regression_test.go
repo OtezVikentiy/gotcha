@@ -246,7 +246,11 @@ func TestOverviewSeeIncidentsHintIsLiteral(t *testing.T) {
 func TestOverviewClosedEmptyBodyHasNoStaleCap(t *testing.T) {
 	caps := FeedCaps{OpenGroups: 0, OutOfGroup: 0, ClosedGroups: 17, ClosedItems: 17}
 	openGroups := []GroupCard{NewGroupCard(
-		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}, RootName: "gw-1"},
+		// Фиксированное время без "50" ни в одном поле (секунды/минуты/год —
+		// ни один не рендерится как "50"): StartedAt печатается в
+		// <time datetime="…">, и live time.Now() иногда попадал ровно на
+		// :50 секунд/минут, роняя ассерт на потолок ниже флаком, не багом.
+		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)}, RootName: "gw-1"},
 		[]incidentgroup.FeedItem{{Source: "host"}},
 	)}
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -258,7 +262,11 @@ func TestOverviewClosedEmptyBodyHasNoStaleCap(t *testing.T) {
 	if !strings.Contains(out, "групп не больше 17, отдельных инцидентов не больше 17") {
 		t.Errorf("Overview не отражает потолок 17 в подписи секции closed: %s", out)
 	}
-	if strings.Contains(out, "50") {
-		t.Errorf("Overview содержит устаревшее число потолка 50 (пустое состояние closed разъехалось с FeedCaps): %s", out)
+	// Сама фраза устаревшего потолка ("(не больше 50)", захардкоженного в
+	// feed.closed.empty.body до задачи 6 nav-ia), а не голое "50" — то
+	// совпадает с чем угодно на странице (id, порт, случайная цифра в любом
+	// другом числе), не только с текстом пустого состояния closed.
+	if strings.Contains(out, "не больше 50") {
+		t.Errorf("Overview содержит устаревшую фразу потолка «не больше 50» (пустое состояние closed разъехалось с FeedCaps): %s", out)
 	}
 }
