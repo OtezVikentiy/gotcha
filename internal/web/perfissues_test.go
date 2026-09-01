@@ -171,7 +171,7 @@ func TestWebPerfIssuesListEmpty(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200", listPath, resp.StatusCode)
 	}
-	if !strings.Contains(string(body), "Проблем производительности нет") {
+	if !strings.Contains(string(body), "Узких мест нет") {
 		t.Fatalf("empty list missing placeholder: %s", body)
 	}
 }

@@ -72,9 +72,9 @@ func ruleScope(ctx context.Context, r metric.Rule) string {
 // MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
 templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, form FormState, errMsg, userEmail string, ackedByOpt ...map[int64]string) {
 	{{ ackedBy := firstAckedByMap(ackedByOpt) }}
-	@layout(i18n.T(ctx, "metrics.alerts.title"), userEmail) {
+	@layout(i18n.T(ctx, "nav.metric_alerts"), userEmail) {
 		<div class="metric-alerts">
-			<h1>{ i18n.T(ctx, "metrics.alerts.title") }</h1>
+			<h1>{ i18n.T(ctx, "nav.metric_alerts") }</h1>
 			@helpPanel("metricalerts", "metric-alerts")
 			// Ошибка валидации формы показывается ВНУТРИ модалки, рядом с полями.
 			// Раньше она рисовалась здесь, на странице: модалка при этом

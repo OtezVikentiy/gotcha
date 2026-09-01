@@ -227,9 +227,9 @@ func MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incid
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var10 string
-			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.title"))
+			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.metric_alerts"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/metricalerts.templ`, Line: 77, Col: 44}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/metricalerts.templ`, Line: 77, Col: 41}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -1283,7 +1283,7 @@ func MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incid
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = layout(i18n.T(ctx, "metrics.alerts.title"), userEmail).Render(templ.WithChildren(ctx, templ_7745c5c3_Var9), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = layout(i18n.T(ctx, "nav.metric_alerts"), userEmail).Render(templ.WithChildren(ctx, templ_7745c5c3_Var9), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

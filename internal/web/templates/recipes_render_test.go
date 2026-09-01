@@ -34,7 +34,7 @@ func TestRecipeDetailDockerNoRules(t *testing.T) {
 	if !strings.Contains(out, "нет рекомендованных порогов") {
 		t.Error("docker без Rules должен показывать пояснение recipes.docker.no_rules")
 	}
-	if !strings.Contains(out, "Оповещения по метрикам") {
+	if !strings.Contains(out, "По метрикам") {
 		t.Error("пояснение docker должно нести рабочую ссылку на страницу правил метрик")
 	}
 	if !strings.Contains(out, "докер-сокету") {

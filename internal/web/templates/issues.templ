@@ -215,11 +215,11 @@ templ environmentOption(value, label string, selected string) {
 // эта галка не показывалась на точках входа вовсе, только на генерической
 // форме страницы «Выгрузки», которая не несёт scope_issue_id/фильтров).
 templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool) {
-	@layout(i18n.T(ctx, "issues.title"), userEmail) {
+	@layout(i18n.T(ctx, "nav.errors"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
 			@gettingStartedChecklist(gs)
-			<h1>{ i18n.T(ctx, "issues.title") }</h1>
+			<h1>{ i18n.T(ctx, "nav.errors") }</h1>
 			@helpPanel("issues", "issues")
 			<form method="get" action={ templ.URL(issuesPath(projectID)) } class="issues-filters">
 				<select name="status" class="select" aria-label={ i18n.T(ctx, "filter.status") }>
@@ -307,7 +307,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				} else {
 					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
 						<div class="card">
-						@scrollRegion("table-scroll", "issues.title") {
+						@scrollRegion("table-scroll", "nav.errors") {
 								<table class="data-table">
 									<thead>
 										<tr>

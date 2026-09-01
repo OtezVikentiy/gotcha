@@ -1015,9 +1015,9 @@ func Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, email
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var53 string
-			templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alerts.title"))
+			templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.rules_errors"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alerts.templ`, Line: 274, Col: 36}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alerts.templ`, Line: 274, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 			if templ_7745c5c3_Err != nil {
@@ -1657,7 +1657,7 @@ func Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, email
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = layout(i18n.T(ctx, "alerts.title"), userEmail).Render(templ.WithChildren(ctx, templ_7745c5c3_Var52), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = layout(i18n.T(ctx, "nav.rules_errors"), userEmail).Render(templ.WithChildren(ctx, templ_7745c5c3_Var52), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

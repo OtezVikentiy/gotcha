@@ -592,9 +592,9 @@ func IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int,
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var23 string
-			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "issues.title"))
+			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.errors"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/issues.templ`, Line: 222, Col: 36}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/issues.templ`, Line: 222, Col: 34}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -1411,7 +1411,7 @@ func IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int,
 					}
 					return nil
 				})
-				templ_7745c5c3_Err = scrollRegion("table-scroll", "issues.title").Render(templ.WithChildren(ctx, templ_7745c5c3_Var50), templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = scrollRegion("table-scroll", "nav.errors").Render(templ.WithChildren(ctx, templ_7745c5c3_Var50), templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -1584,7 +1584,7 @@ func IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int,
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = layout(i18n.T(ctx, "issues.title"), userEmail).Render(templ.WithChildren(ctx, templ_7745c5c3_Var22), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = layout(i18n.T(ctx, "nav.errors"), userEmail).Render(templ.WithChildren(ctx, templ_7745c5c3_Var22), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

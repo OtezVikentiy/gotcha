@@ -269,9 +269,9 @@ func channelBoxChecked(form FormState, open bool, name string, fallback bool) bo
 // видит правила и (уже замаскированную хендлером) цель канала, но не CRUD
 // каналов: создание, правку, тест и удаление (спека 2026-08-08).
 templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled bool, canManage bool, form FormState, errMsg, userEmail string) {
-	@layout(i18n.T(ctx, "alerts.title"), userEmail) {
+	@layout(i18n.T(ctx, "nav.rules_errors"), userEmail) {
 		<div class="alerts">
-			<h1>{ i18n.T(ctx, "alerts.title") }</h1>
+			<h1>{ i18n.T(ctx, "nav.rules_errors") }</h1>
 			@helpPanel("alerts", "alerts")
 			// Ошибка формы создания канала показывается внутри модалки, рядом с
 			// полями; здесь остаются ошибки прочих действий страницы (правила).
