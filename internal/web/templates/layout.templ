@@ -234,8 +234,7 @@ templ whereAmI(shell nav.Shell) {
 				}
 				// OrgID резолвится best-effort (web/shell.go): ProjectOrg
 				// может ошибиться, тогда OrgID==0 и "/orgs/0/projects" 404-ит
-				// — пункт рендерится только при разрешённой организации (M2,
-				// ревью фикс-раунда 2).
+				// — пункт рендерится только при разрешённой организации.
 				if shell.OrgID != 0 {
 					<li class="proj-switch-all"><a href={ templ.SafeURL("/orgs/" + itoa(shell.OrgID) + "/projects") }>{ i18n.T(ctx, "nav.all_projects") }</a></li>
 				}

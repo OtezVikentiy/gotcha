@@ -286,14 +286,13 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 // alias-хендлер: внешние ссылки/закладки должны увидеть канонический адрес в
 // адресной строке, а не отрендеренную под старым URL страницу.
 //
-// Ревью фикс-раунда 2 (TestAuthzBehaviorStrangerRejectedOnScopedRoutes):
-// доступ ПРОВЕРЯЕТСЯ здесь, той же CanAccessProject, что и у overview —
-// прежняя версия рассуждала «редирект просто ведёт на overview, а там та же
-// проверка», но это неверно уже на первом прыжке: parsePathProjectID не
-// ходит в БД (только парсит число из пути), поэтому чужак и вовсе
-// НЕсуществующий id получали 301 неотличимо от своего — единый
+// Доступ ПРОВЕРЯЕТСЯ здесь, той же CanAccessProject, что и у overview:
+// «редирект просто ведёт на overview, а там та же проверка» неверно уже на
+// первом прыжке — parsePathProjectID не ходит в БД (только парсит число из
+// пути), поэтому чужак и вовсе несуществующий id получали бы неотличимый
+// 301 (см. TestAuthzBehaviorStrangerRejectedOnScopedRoutes) — единый
 // existence-oracle (h.notFound и для отсутствия, и для отказа), которого
-// держится весь остальной сайт, здесь был пробит.
+// держится весь остальной сайт, был бы пробит.
 func (h *Handler) incidentFeedRedirect(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {

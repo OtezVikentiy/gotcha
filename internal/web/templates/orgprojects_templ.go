@@ -19,8 +19,8 @@ import (
 // overviewPath, incidentfeed.templ — маршрут зарегистрирован задачей 6), под
 // ним — платформа (тот же чип, что и в плоском списке /projects, projectRow)
 // и ссылка на подключение SDK (тот же аффорданс и тот же ключ, что у Setup в
-// projectRow плоского списка — фикс-раунд 1, п.2: карточка не должна тихо
-// терять путь к подключению SDK).
+// projectRow плоского списка — карточка не должна тихо терять путь к
+// подключению SDK).
 func orgProjectCard(p org.Project) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context

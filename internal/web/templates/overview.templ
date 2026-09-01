@@ -51,10 +51,10 @@ templ overviewRangeTab(projectID int64, value, rangeKey string) {
 	<a class={ overviewRangeTabClass(value == rangeKey) } href={ templ.URL(overviewRangeHref(projectID, value)) } if value == rangeKey { aria-current="page" }>{ i18n.T(ctx, "range."+value) }</a>
 }
 
-// overviewRangeTabs — переключатель окна «недавно решённые» (M1, ревью
-// фикс-раунда 2): вынесен из непустой ветки Overview, чтобы быть доступным
-// и в пустой — проект без данных в окне 24ч, у которого всё закрылось,
-// скажем, трое суток назад, без этого не имел ни одной двери к окну 7д.
+// overviewRangeTabs — переключатель окна «недавно решённые»: вынесен из
+// непустой ветки Overview, чтобы быть доступным и в пустой — проект без
+// данных в окне 24ч, у которого всё закрылось, скажем, трое суток назад,
+// без этого не имел ни одной двери к окну 7д.
 templ overviewRangeTabs(projectID int64, rangeKey string) {
 	<nav class="tabs" aria-label={ i18n.T(ctx, "overview.range.aria") }>
 		@overviewRangeTab(projectID, "24h", rangeKey)

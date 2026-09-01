@@ -138,10 +138,10 @@ func overviewRangeTab(projectID int64, value, rangeKey string) templ.Component {
 	})
 }
 
-// overviewRangeTabs — переключатель окна «недавно решённые» (M1, ревью
-// фикс-раунда 2): вынесен из непустой ветки Overview, чтобы быть доступным
-// и в пустой — проект без данных в окне 24ч, у которого всё закрылось,
-// скажем, трое суток назад, без этого не имел ни одной двери к окну 7д.
+// overviewRangeTabs — переключатель окна «недавно решённые»: вынесен из
+// непустой ветки Overview, чтобы быть доступным и в пустой — проект без
+// данных в окне 24ч, у которого всё закрылось, скажем, трое суток назад,
+// без этого не имел ни одной двери к окну 7д.
 func overviewRangeTabs(projectID int64, rangeKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
