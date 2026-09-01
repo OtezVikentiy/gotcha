@@ -35,7 +35,16 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/7/escalations", "alerts"},
 		{"/projects/7/maintenance", "alerts"},
 		{"/projects/7/statuspages", "settings"},
-		{"/orgs/5/teams", "org"},
+		// Управление организацией (участники/команды/пробы) переехало в
+		// задаче 4 в группу «Организация» области «Настройки» — область
+		// "org" упразднена (см. Subsections, case "settings").
+		{"/orgs/5/settings", "settings"},
+		{"/orgs/5/teams", "settings"},
+		{"/orgs/5/probes", "settings"},
+		// Список проектов организации и профиль пользователя ни в какую
+		// область не входят (осознанно, задача 5).
+		{"/orgs/5/projects", ""},
+		{"/profile", ""},
 		// «Организация» упразднена: /projects больше не мапится ни на
 		// какую область рейла (страница переезжает в задачах 5–7).
 		{"/projects", ""},
@@ -119,7 +128,7 @@ func TestAreaForPathExtras(t *testing.T) {
 		{"/projects/7/maintenance", "alerts"},
 		{"/projects/7/statuspages", "settings"},
 		{"/statuspages/1", "uptime"},
-		{"/profile", "org"},
+		{"/profile", ""},
 		{"/setup", ""},
 		{"/unknown/path", ""},
 	}
@@ -137,7 +146,6 @@ func TestWithShellFromContextRoundTrip(t *testing.T) {
 		ProjectID: 7,
 		OrgID:     5,
 		Area:      "performance",
-		OrgMode:   false,
 		Path:      "/projects/7/web-vitals",
 	}
 	ctx := WithShell(context.Background(), s)

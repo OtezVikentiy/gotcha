@@ -20,12 +20,18 @@ func TestSubsectionsHighlightDetailPages(t *testing.T) {
 		// Обычные пути продолжают работать как раньше.
 		{"/projects/5/web-vitals", "performance", "nav.webvitals"},
 		{"/projects/5/metrics/alerts", "alerts", "nav.metric_alerts"},
+		// Управление организацией (I2, nav-ia): /orgs/{id}/settings|teams|
+		// probes подсвечивают свой пункт в группе «Организация» области
+		// «Настройки» — не проваливаются в пустой сайдбар.
+		{"/orgs/7/settings", "settings", "nav.members"},
+		{"/orgs/7/teams", "settings", "nav.teams"},
+		{"/orgs/7/probes", "settings", "nav.probes"},
 	}
 	for _, c := range cases {
 		// CanManage/CanOperate: подразделы фильтруются по роли (по обоим
 		// скоупам), а проверяется здесь подсветка — она должна работать для
 		// того, кто эти пункты видит.
-		items := Subsections(Shell{ProjectID: 5, Area: c.area, Path: c.path, CanManage: true, CanOperate: true})
+		items := Subsections(Shell{ProjectID: 5, OrgID: 7, Area: c.area, Path: c.path, CanManage: true, CanOperate: true})
 		var active string
 		for _, it := range items {
 			if it.Active {

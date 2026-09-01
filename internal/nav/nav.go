@@ -18,6 +18,11 @@ type Project struct {
 	ID   int64
 	Slug string
 	Name string
+	// OrgID — организация проекта. Нужен web-слою, чтобы сужать полный
+	// список проектов пользователя (projs) до проектов ТЕКУЩЕЙ организации
+	// без второго похода в БД (shellProjects — фильтр в памяти, см.
+	// internal/web/shell.go).
+	OrgID int64
 }
 
 // Org — минимальная ссылка на организацию для селекта в топбаре (задача 4
@@ -99,7 +104,6 @@ type Shell struct {
 	ProjectID int64
 	OrgID     int64
 	Area      string
-	OrgMode   bool
 	Path      string
 	// Origin — подраздел, из которого пользователь пришёл на общую страницу
 	// (?from= в адресе, значение уже проверено в web-слое). Нужен там, где по
@@ -203,9 +207,20 @@ func AreaForPath(path string) string {
 	case strings.HasPrefix(path, "/monitors/"), strings.HasPrefix(path, "/statuspages/"):
 		return "uptime"
 	case strings.HasPrefix(path, "/orgs/"):
-		return "org"
-	case path == "/profile":
-		return "org"
+		// /orgs/{id}/settings|teams|probes — управление организацией,
+		// переехавшее в задаче 4 в группу «Организация» внутри области
+		// «Настройки» (см. Subsections, case "settings"). /orgs/{id}/projects
+		// (список проектов организации) и /profile ни в какую область не
+		// входят — область "" для них осознанна (задача 5).
+		rest := strings.TrimPrefix(path, "/orgs/")
+		parts := strings.SplitN(rest, "/", 3)
+		if len(parts) >= 2 {
+			switch parts[1] {
+			case "settings", "teams", "probes":
+				return "settings"
+			}
+		}
+		return ""
 	case path == "/setup", strings.HasPrefix(path, "/setup/"):
 		return ""
 	}
@@ -345,8 +360,6 @@ func BackLabelKey(rawPath string) string {
 		return "nav.monitors"
 	case "alerts":
 		return "nav.alerts"
-	case "org":
-		return "nav.projects"
 	case "settings":
 		return "nav.project_settings"
 	case "docs":
