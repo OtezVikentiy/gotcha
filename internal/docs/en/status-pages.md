@@ -4,7 +4,7 @@ A public status page is a public view of the state of selected [monitors](/docs/
 
 ## Creating a status page
 
-1. Open the "Uptime" sidebar section → "Status Pages".
+1. Open the "Settings" sidebar section → the "Project" group → "Status Pages".
 2. Click "New status page" — a create modal opens.
 3. Fill in:
    - **Title** — the heading visitors will see; it's also the page's public name, so pick something visitors will recognize.

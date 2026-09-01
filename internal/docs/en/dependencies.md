@@ -8,7 +8,7 @@ data comes from the same transaction/span traces already covered in
 
 ## Where it lives
 
-The screen opens from **"Dependencies"** in the "Transactions" subsection
+The screen opens from **"Dependencies"** in the "Performance" section
 menu — URL `/projects/<id>/dependencies`. Filters at the top are a
 [time range](/docs/time-range) (presets or a custom range); "Apply" reloads
 the page with the new window.

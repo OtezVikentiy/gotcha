@@ -20,7 +20,7 @@ An organization's last owner cannot be demoted or removed — the system always 
 
 ## Inviting members
 
-The "Organization" → "Members" page (`/orgs/{id}/settings`, owner/admin only) has a table of current members (email, role, change-role, remove) and an invite form:
+The "Settings" → "Organization" → "Members" page (`/orgs/{id}/settings`, owner/admin only) has a table of current members (email, role, change-role, remove) and an invite form:
 
 1. Enter the invitee's email.
 2. Pick a role — **member** or **admin** (the **owner** role cannot be granted through an invite — it can only be assigned to an existing member afterward).
@@ -38,7 +38,7 @@ What happens next depends on the instance's **registration mode** (`GOTCHA_REGIS
 
 ## Teams
 
-The "Organization" → "Teams" page (`/orgs/{id}/teams`, owner/admin only) lets you group members and grant them access to specific projects without changing their organization-wide role.
+The "Settings" → "Organization" → "Teams" page (`/orgs/{id}/teams`, owner/admin only) lets you group members and grant them access to specific projects without changing their organization-wide role.
 
 Creating a team:
 

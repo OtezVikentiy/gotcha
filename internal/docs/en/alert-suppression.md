@@ -6,7 +6,7 @@ alerts, and the on-call person gets a storm of notifications instead of one
 clear root cause. Storm suppression works on top of a graph of explicit
 dependency edges that you declare yourself: while a parent has an open
 availability incident, its child's first notification is held back instead
-of going out independently. It's reached through "Alerts → Storm
+of going out independently. It's reached through "Alerts → Silence → Storm
 suppression" — `/projects/{id}/alert-suppression`.
 
 This is **not** the same thing as the [Dependencies](/docs/dependencies)

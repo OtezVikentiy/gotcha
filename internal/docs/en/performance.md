@@ -34,11 +34,11 @@ Column headers are links; clicking one sorts the list by that column. The endpoi
 
 ## Endpoint detail
 
-Clicking an endpoint's name opens `/projects/<id>/performance/<transaction>`: the time range / environment / Apdex threshold in the header, a Web Vitals panel (if this is a page-load transaction — more on that below), a latency chart (p50/p95 over time), a throughput chart, a duration histogram, a table of the slowest traces for the window (a link to each one's waterfall), and a list of related performance issues. As on the list, the metric labels (p50/p95, Apdex, and the Web Vitals) carry hover tooltips.
+Clicking an endpoint's name opens `/projects/<id>/performance/<transaction>`: the time range / environment / Apdex threshold in the header, a Web Vitals panel (if this is a page-load transaction — more on that below), a latency chart (p50/p95 over time), a throughput chart, a duration histogram, a table of the slowest traces for the window (a link to each one's waterfall), and a list of related bottlenecks. As on the list, the metric labels (p50/p95, Apdex, and the Web Vitals) carry hover tooltips.
 
-## Performance issues
+## Bottlenecks
 
-Performance issues — **N+1 queries**, **slow DB queries**, and **HTTP floods** — are a separate, automatically detected category of findings inside transactions (not the same thing as the regressions covered later in this doc). The full list is the **"Performance Issues"** section (`/projects/<id>/perf-issues`), reachable from the same "Performance" subsection menu, with an "Unresolved / Resolved / Ignored / All" status filter. Each row is a detected issue: its kind, the endpoint it was found in, how many times it's been seen, and when.
+Bottlenecks — **N+1 queries**, **slow DB queries**, and **HTTP floods** — are a separate, automatically detected category of findings inside transactions (not the same thing as the regressions covered later in this doc). The full list is the **"Bottlenecks"** section (`/projects/<id>/perf-issues`), reachable from the "Issues" section, with an "Unresolved / Resolved / Ignored / All" status filter. Each row is a detected issue: its kind, the endpoint it was found in, how many times it's been seen, and when.
 
 Opening an issue explains what's wrong, not just the numbers:
 

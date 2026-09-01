@@ -8,7 +8,7 @@ Manage probes on `/orgs/{id}/probes`, available only to an org owner/admin.
 
 ## Registering a probe
 
-1. Open "Organization" → "Probes".
+1. Open "Settings" → "Organization" → "Probes".
 2. In the form at the bottom of the page, fill in:
    - **Name** — a human-readable name for the probe (e.g. "Moscow probe"), up to 40 characters;
    - **Region** — the region identifier monitors will see when picking regions (e.g. `ru-msk`), up to 40 characters. The same region name can be reused by several probes — that's how you scale one region across multiple probe instances.
@@ -72,7 +72,7 @@ Yes. Several probes with the same region identifier are the standard way to scal
 
 ### How do I know a probe is alive?
 
-The "Organization" → "Probes" page shows each probe's status: **online** with the time of its last check-in, **offline** if it stopped reporting, or **revoked**. A probe reports in immediately on start, so there's no long wait.
+The "Settings" → "Organization" → "Probes" page shows each probe's status: **online** with the time of its last check-in, **offline** if it stopped reporting, or **revoked**. A probe reports in immediately on start, so there's no long wait.
 
 ### The probe is running, but its region doesn't show up in the monitor form. Why?
 

@@ -6,7 +6,7 @@ Recipes introduce no new entities or ingest channels: service metrics travel ove
 
 ## Where to find it
 
-The chart icon in the left icon rail → "Metrics" → the "Recipes" sub-item (or go directly to `/projects/{id}/recipes`). The list shows a card per recipe with a data-status badge and a created-thresholds counter; each card leads to the recipe page at `/projects/{id}/recipes/{slug}`.
+The settings icon in the left icon rail → "Settings" → the "Project" group → "Recipes" (or go directly to `/projects/{id}/recipes`). The list shows a card per recipe with a data-status badge and a created-thresholds counter; each card leads to the recipe page at `/projects/{id}/recipes/{slug}`.
 
 Viewing is open to anyone with access to the project — it is telemetry reading and a connection guide, not configuration. The button that creates the recommended thresholds requires a project operator (a project team member, or the organization's owner/admin — see [Roles and access](/docs/teams)).
 

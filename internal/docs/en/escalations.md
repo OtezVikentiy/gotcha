@@ -5,7 +5,7 @@ open and unacknowledged, the wider the set of channels a notification goes
 to. The screen configures two independent ladders — "Critical" and
 "Warning" — and applies to all six incident sources: hosts, metrics,
 transaction regressions, profile regressions, SLOs, and uptime. It's reached
-through "Alerts → Escalations" in the left rail — `/projects/{id}/escalations`.
+through "Alerts → Delivery → Escalations" in the left rail — `/projects/{id}/escalations`.
 
 ## How a ladder is built
 

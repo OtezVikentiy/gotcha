@@ -66,7 +66,7 @@ If an enabled channel is email but SMTP isn't configured on the instance, delive
 
 ## Delivery log
 
-A separate page at `/projects/{id}/alerts/deliveries` (labeled "Delivery log" in the sub-navigation) shows notifications that **failed to deliver**: channel type, recipient, attempt count, and the last error text (e.g. an SMTP rejection or a non-2xx HTTP status from a webhook), plus the timestamp. Useful when a webhook returns a non-2xx status, a Telegram bot token has expired, or your mail server is having intermittent issues — you can see the reason here without digging through server logs.
+A separate page at `/projects/{id}/alerts/deliveries` (labeled "Delivery log" in the "Delivery" group) shows notifications that **failed to deliver**: channel type, recipient, attempt count, and the last error text (e.g. an SMTP rejection or a non-2xx HTTP status from a webhook), plus the timestamp. Useful when a webhook returns a non-2xx status, a Telegram bot token has expired, or your mail server is having intermittent issues — you can see the reason here without digging through server logs.
 
 While there are no failed deliveries, the page shows an empty state: "No failed deliveries".
 
