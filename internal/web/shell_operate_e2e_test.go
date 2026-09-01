@@ -74,6 +74,13 @@ func newShellOperateStack(t *testing.T) *shellOperateStack {
 // withShell (shell.go) — например, забытое присваивание CanOperate в
 // nav.Shell{} — молча спрятала бы эти пункты меню; здесь она уронит тест.
 //
+// Ревью фикс-раунда 2: страницы-источники операторских пунктов сверены с
+// §4 спеки nav-ia — «Обслуживание» и остальная конфигурация алертинга
+// переехали в область «Оповещения» (/alerts), «Статус-страницы» — в группу
+// «Проект» области «Настройки» (/statuspages); «Аптайм» (/monitors) и
+// «Метрики» (/metrics) сегодня без единого CanOperate-гейта в Subsections.
+//
+
 // Второй сценарий («безкомандный» участник организации, role=member без
 // команды) в текущем коде НЕ даёт «200 с урезанным сайдбаром»: доступ к
 // странице проекта (org.CanAccessProject) и операторский статус
@@ -108,17 +115,25 @@ func TestWebShellCanOperateSidebar(t *testing.T) {
 
 	// Пункты сайдбара, гейтящиеся CanOperate (nav.Subsections, internal/
 	// nav/nav.go), по разделу-источнику (Area определяется по пути запроса).
+	// nav-ia §4 спеки развела прежнюю область мониторинга: «Обслуживание»
+	// (maintenance) и остальная конфигурация алертинга живут в области
+	// «Оповещения» (не «Аптайм» — там остались только monitors/incidents,
+	// без гейта), «Статус-страницы» — в группе «Проект» области
+	// «Настройки». Ключи карты — страница-источник САМОГО набора пунктов
+	// (ctxNav рендерит подразделы ТЕКУЩЕЙ области, не общий рейл).
 	operatorHrefs := map[string][]string{
-		"/projects/" + projID + "/monitors": {
-			"/projects/" + projID + "/maintenance",
-			"/projects/" + projID + "/statuspages",
-		},
-		"/projects/" + projID + "/metrics": {
-			"/projects/" + projID + "/metrics/alerts",
-		},
 		"/projects/" + projID + "/alerts": {
 			"/projects/" + projID + "/alerts",
+			"/projects/" + projID + "/metrics/alerts",
+			"/projects/" + projID + "/hosts/settings",
+			"/projects/" + projID + "/slos",
+			"/projects/" + projID + "/maintenance",
+			"/projects/" + projID + "/alert-suppression",
+			"/projects/" + projID + "/escalations",
 			"/projects/" + projID + "/alerts/deliveries",
+		},
+		"/projects/" + projID + "/statuspages": {
+			"/projects/" + projID + "/statuspages",
 		},
 	}
 
