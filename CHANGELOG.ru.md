@@ -9,6 +9,16 @@
 
 ## [Unreleased]
 
+### Добавлено
+- Strict-Transport-Security теперь настраивается: `GOTCHA_HSTS_ENABLED`,
+  `GOTCHA_HSTS_MAX_AGE_SECONDS`, `GOTCHA_HSTS_INCLUDE_SUBDOMAINS` и
+  `GOTCHA_HSTS_PRELOAD`. Дефолты сохраняют сегодняшнее поведение (год, без
+  поддоменов, без предзагрузки); задайте `GOTCHA_HSTS_ENABLED=false`, если
+  заголовок уже шлёт обратный прокси. См. /docs/hardening.
+- Новая страница документации «Усиление установки»: что закрывает обратный
+  прокси, а что — само приложение, какие служебные пути не стоит выставлять
+  наружу, TLS/HSTS, security.txt и самопроверка curl'ом.
+
 ## [0.27.1] - 2026-09-01
 
 ### Исправлено

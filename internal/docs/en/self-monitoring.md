@@ -11,16 +11,17 @@ data.
 | `/metrics` | Prometheus-format counters about buffers, drops and insert failures. Never touches the database, so it answers even when PostgreSQL or ClickHouse is down — which is exactly when you need it. |
 | `/healthz` | Liveness: answers 200 while the process serves HTTP. The body still carries component state (`postgres`, `clickhouse`, `version`), but it no longer affects the status code — put your liveness probe here. |
 | `/readyz` | Readiness: the same fields plus `status`, but 503 while PostgreSQL or ClickHouse is unreachable. Put readiness probes and the container healthcheck here. |
-| `/version` | Build metadata: `version`, `commit`, `date`, `go` (the Go runtime the binary was built with) and `stamped` — whether git metadata was baked into the build. `stamped: false` means the image was built outside `make` and the version is the source default, not a verified release. |
+| `/version` | Build metadata: `version`, `commit`, `date`, `go` (the Go runtime the binary was built with) and `stamped` — whether git metadata was baked into the build. `stamped: false` means the image was built outside `make` and the version is the source default, not a verified release. Reveals the exact version to anyone, unauthenticated — worth closing off just like `/metrics` ([Hardening your install](/docs/hardening)). |
 
 The split matters: a liveness probe on an endpoint that fails during a storage
 outage restarts a healthy process, and every restart throws away the buffers —
 the very telemetry they were holding while waiting for storage to come back.
 
 None of them require authentication and none expose personal data: `/metrics`
-carries counts only, never event contents. If your instance is on the public
-internet, restrict `/metrics` at the reverse proxy — the numbers reveal your
-traffic volume, which you may not want to publish.
+carries counts only, never event contents. The numbers still reveal your
+traffic volume, so on a public instance `/metrics` is worth closing off at
+the reverse proxy — see [Hardening your install](/docs/hardening) for ready
+config snippets and the other service paths.
 
 ## When the container goes unhealthy
 

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"sort"
@@ -151,6 +152,18 @@ type Config struct {
 	// open (открыта всем), invite (по приглашению, кроме bootstrap первого
 	// админа), closed (только bootstrap первого админа). Дефолт — invite.
 	RegistrationMode string
+	// HSTSEnabled/HSTSMaxAgeSeconds/HSTSIncludeSubDomains/HSTSPreload —
+	// заголовок Strict-Transport-Security веб-слоя (GOTCHA_HSTS_*). Четыре
+	// переменные, а не одна строка: включённость и max-age — РАЗНЫЕ состояния.
+	// Выключенный HSTS означает «заголовок не ставится» (его ставит прокси) и
+	// пин у браузера НЕ снимает; снять пин можно только реально отправленным
+	// max-age=0, поэтому ноль — законное значение, а не «выключено».
+	// includeSubDomains по умолчанию false: инстанс часто живёт на поддомене,
+	// и флаг с нашей стороны потребовал бы HTTPS от соседних сервисов домена.
+	HSTSEnabled           bool
+	HSTSMaxAgeSeconds     int
+	HSTSIncludeSubDomains bool
+	HSTSPreload           bool
 	// Locale — язык инстанса для ВНЕШНИХ уведомлений (email/Telegram/webhook):
 	// у получателя вне HTTP-запроса нет своей локали, поэтому язык выбирает
 	// оператор инстанса (№133–136). UI это не трогает — там локаль зрителя.
@@ -380,6 +393,23 @@ func secretKeyMattersFor(mode string) bool {
 	}
 }
 
+// hstsHeaderMattersFor — режимы, в которых вообще существует web.Handler
+// (см. main.go: `webHandler = web.New(...)` — только под
+// `cfg.Mode == "web" || cfg.Mode == "all"`), а значит и заголовок
+// Strict-Transport-Security физически возможен. Уже, чем secretKeyMattersFor
+// выше: ingest и uptime мастер-ключ используют (шифруют/расшифровывают
+// секреты каналов), но веб-хендлера не поднимают — предупреждение про
+// GOTCHA_BASE_URL не https в этих режимах не про что предупреждать, только
+// шумит на каждом старте приёмного узла и dev-стенда uptime.
+func hstsHeaderMattersFor(mode string) bool {
+	switch mode {
+	case "web", "all":
+		return true
+	default:
+		return false
+	}
+}
+
 // checkRenamedEnvVars — envcontract.Renamed (десять пар старое→новое имя,
 // волна контрактной уборки v0.23.0) встречена с НЕПУСТЫМ значением: апгрейд
 // инстанса принёс непровённый `.env`. Без этой проверки старое имя не
@@ -594,6 +624,10 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		SecretKeyPrev:            str("GOTCHA_SECRET_KEY_PREV", ""),
 		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
+		HSTSEnabled:              boolEnvDef("GOTCHA_HSTS_ENABLED", true),
+		HSTSMaxAgeSeconds:        intNum("GOTCHA_HSTS_MAX_AGE_SECONDS", 31536000),
+		HSTSIncludeSubDomains:    boolEnv("GOTCHA_HSTS_INCLUDE_SUBDOMAINS"),
+		HSTSPreload:              boolEnv("GOTCHA_HSTS_PRELOAD"),
 		Locale:                   str("GOTCHA_LOCALE", "ru"),
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
 		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
@@ -812,6 +846,52 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	if len(errs) > 0 {
 		return Config{}, errs[0]
+	}
+
+	// max-age проверяется независимо от HSTSEnabled: отрицательное значение —
+	// всегда опечатка оператора, а не режим.
+	if cfg.HSTSMaxAgeSeconds < 0 {
+		return Config{}, fmt.Errorf(
+			"GOTCHA_HSTS_MAX_AGE_SECONDS must be >= 0 (0 sends max-age=0, which un-pins browsers), got %d",
+			cfg.HSTSMaxAgeSeconds)
+	}
+	// Проверки preload — ТОЛЬКО при включённом HSTS: иначе аварийный откат
+	// («выключить HSTS, флаги оставить как были») упирался бы в отказ старта
+	// ровно тогда, когда сервис и так лежит.
+	if cfg.HSTSEnabled && cfg.HSTSPreload {
+		// Заголовок без includeSubDomains или с коротким max-age в preload-список
+		// всё равно не примут, а владелец будет считать, что подал заявку.
+		if !cfg.HSTSIncludeSubDomains {
+			return Config{}, fmt.Errorf(
+				"GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_INCLUDE_SUBDOMAINS=true: " +
+					"the preload list rejects a header without includeSubDomains")
+		}
+		if cfg.HSTSMaxAgeSeconds < 31536000 {
+			return Config{}, fmt.Errorf(
+				"GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_MAX_AGE_SECONDS >= 31536000 (one year), got %d",
+				cfg.HSTSMaxAgeSeconds)
+		}
+	}
+	if cfg.HSTSEnabled {
+		if hstsHeaderMattersFor(cfg.Mode) && !strings.HasPrefix(cfg.BaseURL, "https://") {
+			slog.Warn("GOTCHA_HSTS_ENABLED is on but GOTCHA_BASE_URL is not https:// — " +
+				"Strict-Transport-Security is never sent on a plain HTTP deploy")
+		}
+	} else {
+		// Факт ПРИСУТСТВИЯ переменной, а не её значение: boolEnvDef/boolEnv
+		// возвращают уже готовое значение и «выставлено в дефолт» от «не
+		// выставлено» через них не отличить.
+		for _, name := range []string{
+			"GOTCHA_HSTS_MAX_AGE_SECONDS",
+			"GOTCHA_HSTS_INCLUDE_SUBDOMAINS",
+			"GOTCHA_HSTS_PRELOAD",
+		} {
+			if strings.TrimSpace(getenv(name)) != "" {
+				slog.Warn(fmt.Sprintf(
+					"HSTS is off (GOTCHA_HSTS_ENABLED=false) — %s is ignored", name),
+					"var", name)
+			}
+		}
 	}
 
 	switch cfg.RegistrationMode {

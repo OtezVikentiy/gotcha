@@ -70,6 +70,13 @@ type Handler struct {
 	// Пусто — XFF игнорируется, ключом лимитера служит RemoteAddr.
 	TrustedProxies []*net.IPNet
 
+	// HSTSHeader — готовое значение Strict-Transport-Security, собранное на
+	// старте из GOTCHA_HSTS_* (см. HSTSHeaderValue). Пустая строка — заголовок
+	// не ставится (HSTS отдан обратному прокси). Дефолт конструктора —
+	// исторический "max-age=31536000"; main.go всегда перезаписывает его
+	// значением из конфига, тем же приёмом, что и RegistrationMode.
+	HSTSHeader string
+
 	// RegistrationMode — режим самостоятельной регистрации (PROD-B1):
 	// open|invite|closed. Проставляется из cfg.RegistrationMode в main.go.
 	// Пустая строка трактуется как «не open» (регистрация закрыта, кроме
@@ -484,6 +491,11 @@ const (
 // (регистрация открыта). Продовая безопасность PROD-B1 живёт на уровне конфига:
 // main.go всегда проставляет webHandler.RegistrationMode = cfg.RegistrationMode
 // (GOTCHA_REGISTRATION, дефолт "invite"), переопределяя это значение.
+//
+// HSTSHeader по умолчанию "max-age=31536000" — исторический контракт
+// конструктора (ровно тот заголовок, который securityHeaders слал до
+// появления настройки). main.go всегда проставляет
+// webHandler.HSTSHeader = web.HSTSHeaderValue(...) из GOTCHA_HSTS_*.
 func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, events *event.Query, baseURL string) *Handler {
 	return &Handler{
 		Auth:              authSvc,
@@ -492,6 +504,7 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		Events:            events,
 		BaseURL:           baseURL,
 		Secure:            strings.HasPrefix(baseURL, "https://"),
+		HSTSHeader:        "max-age=31536000",
 		RegistrationMode:  "open",
 		loginLimiter:      newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
 		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
@@ -952,6 +965,11 @@ const cspHeader = "default-src 'self'; base-uri 'none'; form-action 'self'; fram
 // Strict-Transport-Security добавляется только когда h.Secure (BaseURL
 // начинается с https://) — на голом HTTP-деплое (например, за прокси без
 // TLS) отправлять HSTS нельзя, браузер надолго заблокирует http:// доступ.
+// Значение заголовка берётся из HSTSHeader (собрано на старте из
+// GOTCHA_HSTS_*), а не зашито; HSTS остаётся здесь и НЕ переезжает в
+// baseSecurityHeaders (cmd/gotcha/server.go) — тот ставит только то, что
+// верно для любого ответа, а HSTS зависит от TLS-режима инстанса, про
+// который знает лишь веб-хендлер; в режиме ingest веб-хендлера нет вовсе.
 func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hdr := w.Header()
@@ -965,8 +983,11 @@ func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 		// кэшироваться прокси. Статика ставит свой Cache-Control ниже по цепочке
 		// (cacheControl для /static) и это значение перекрывает.
 		hdr.Set("Cache-Control", "no-store")
-		if h.Secure {
-			hdr.Set("Strict-Transport-Security", "max-age=31536000")
+		// Проверка h.Secure сохраняется рядом с настройкой: на http-инстансе
+		// заголовка нет ни при каких значениях GOTCHA_HSTS_* — защита в
+		// глубину, не зависящая от того, что подставил main.go.
+		if h.Secure && h.HSTSHeader != "" {
+			hdr.Set("Strict-Transport-Security", h.HSTSHeader)
 		}
 		next.ServeHTTP(w, r)
 	})

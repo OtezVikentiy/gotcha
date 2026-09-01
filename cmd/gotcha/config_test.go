@@ -1,12 +1,14 @@
 package main
 
 import (
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
 func getenvFrom(m map[string]string) func(string) string {
@@ -1538,5 +1540,188 @@ func TestLoadConfigRenamedEnvVarNewNameStillApplies(t *testing.T) {
 				t.Errorf("%s=%q: соответствующее поле Config = %q, want %q (регрессия применения нового имени)", newName, check.value, got, check.value)
 			}
 		})
+	}
+}
+
+func TestLoadConfig_HSTSDefaults(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.HSTSEnabled {
+		t.Error("HSTSEnabled default = false, want true")
+	}
+	if cfg.HSTSMaxAgeSeconds != 31536000 {
+		t.Errorf("HSTSMaxAgeSeconds default = %d, want 31536000", cfg.HSTSMaxAgeSeconds)
+	}
+	// includeSubDomains по умолчанию выключен намеренно: инстанс часто живёт
+	// на поддомене, и флаг сломал бы соседям HTTPS-требование на весь домен.
+	if cfg.HSTSIncludeSubDomains {
+		t.Error("HSTSIncludeSubDomains default = true, want false")
+	}
+	if cfg.HSTSPreload {
+		t.Error("HSTSPreload default = true, want false")
+	}
+}
+
+func TestLoadConfig_HSTSOverrides(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_HSTS_MAX_AGE_SECONDS":    "600",
+		"GOTCHA_HSTS_INCLUDE_SUBDOMAINS": "true",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.HSTSMaxAgeSeconds != 600 || !cfg.HSTSIncludeSubDomains {
+		t.Errorf("HSTS = (%d, %v), want (600, true)", cfg.HSTSMaxAgeSeconds, cfg.HSTSIncludeSubDomains)
+	}
+	// max-age=0 — законное значение (снятие пина), а не ошибка конфига.
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_HSTS_MAX_AGE_SECONDS": "0"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig max-age=0: %v", err)
+	}
+	if cfg.HSTSMaxAgeSeconds != 0 {
+		t.Errorf("HSTSMaxAgeSeconds = %d, want 0", cfg.HSTSMaxAgeSeconds)
+	}
+}
+
+func TestLoadConfig_HSTSRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		env           map[string]string
+		wantErrSubstr string // какое именно правило обязано сработать — три
+		// кейса легко перепутать местами или объединить в одну проверку без
+		// единого красного теста, если сверять только err != nil
+	}{
+		{"negative max-age", map[string]string{"GOTCHA_HSTS_MAX_AGE_SECONDS": "-1"},
+			"GOTCHA_HSTS_MAX_AGE_SECONDS must be >= 0"},
+		{"preload without subdomains", map[string]string{"GOTCHA_HSTS_PRELOAD": "true"},
+			"GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_INCLUDE_SUBDOMAINS=true"},
+		{"preload with short max-age", map[string]string{
+			"GOTCHA_HSTS_PRELOAD":            "true",
+			"GOTCHA_HSTS_INCLUDE_SUBDOMAINS": "true",
+			"GOTCHA_HSTS_MAX_AGE_SECONDS":    "600",
+		}, "GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_MAX_AGE_SECONDS >= 31536000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConfig(getenvFrom(tc.env), nil)
+			if err == nil {
+				t.Fatal("конфиг принят, ожидался отказ старта")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSubstr) {
+				t.Errorf("ошибка = %q, want подстроку %q (сработало не то правило)", err.Error(), tc.wantErrSubstr)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_HSTSPreloadAccepted — позитивный кейс к TestLoadConfig_HSTSRejects:
+// ровно на границе (max-age год день-в-день) корректная preload-конфигурация
+// обязана стартовать, а не просто НЕ отказами — без этого теста замена
+// строгого сравнения `< 31536000` на `<= 31536000` в валидации не роняет ни
+// один тест (граница в 31536000 никогда не проверяется как «принято»).
+func TestLoadConfig_HSTSPreloadAccepted(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_HSTS_ENABLED":            "true",
+		"GOTCHA_HSTS_PRELOAD":            "true",
+		"GOTCHA_HSTS_INCLUDE_SUBDOMAINS": "true",
+		"GOTCHA_HSTS_MAX_AGE_SECONDS":    "31536000",
+		"GOTCHA_BASE_URL":                "https://gotcha.example.com",
+		"GOTCHA_ALLOW_INSECURE_SECRET":   "1",
+	}), nil)
+	if err != nil {
+		t.Fatalf("корректная preload-конфигурация на границе (max-age=31536000) обязана стартовать: %v", err)
+	}
+	got := web.HSTSHeaderValue(cfg.HSTSEnabled, cfg.HSTSMaxAgeSeconds, cfg.HSTSIncludeSubDomains, cfg.HSTSPreload)
+	want := "max-age=31536000; includeSubDomains; preload"
+	if got != want {
+		t.Errorf("собранный заголовок = %q, want %q", got, want)
+	}
+}
+
+// TestLoadConfig_HSTSDisabledSkipsPreloadChecks — аварийный откат обязан
+// работать: «выключить HSTS, флаги оставить как были» не должен упираться в
+// отказ старта, то есть ровно в тот момент, когда сервис и так лежит.
+func TestLoadConfig_HSTSDisabledSkipsPreloadChecks(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_HSTS_ENABLED":         "false",
+		"GOTCHA_HSTS_PRELOAD":         "true",
+		"GOTCHA_HSTS_MAX_AGE_SECONDS": "600",
+	}), nil)
+	if err != nil {
+		t.Fatalf("выключенный HSTS с preload обязан стартовать: %v", err)
+	}
+	if cfg.HSTSEnabled {
+		t.Error("HSTSEnabled = true, want false")
+	}
+}
+
+// TestLoadConfig_HSTSWarnings — две ситуации, о которых оператор иначе не
+// узнает: заголовок не уйдёт (BASE_URL не https) и настройки игнорируются
+// (HSTS выключен, а флаги заданы).
+func TestLoadConfig_HSTSWarnings(t *testing.T) {
+	capture := func(t *testing.T, env map[string]string) []slog.Record {
+		t.Helper()
+		var records []slog.Record
+		prev := slog.Default()
+		slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+		defer slog.SetDefault(prev)
+		if _, err := loadConfig(getenvFrom(env), nil); err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		return records
+	}
+	hasWarn := func(records []slog.Record, substr string) bool {
+		for _, r := range records {
+			if r.Level == slog.LevelWarn && strings.Contains(r.Message, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// BASE_URL по дефолту http://localhost:8080 — заголовка не будет.
+	if got := capture(t, map[string]string{"GOTCHA_HSTS_ENABLED": "true"}); !hasWarn(got, "GOTCHA_BASE_URL") {
+		t.Error("нет предупреждения о том, что HSTS включён при не-https GOTCHA_BASE_URL")
+	}
+	// Выключенный HSTS с заданными флагами — они игнорируются.
+	if got := capture(t, map[string]string{
+		"GOTCHA_HSTS_ENABLED":            "false",
+		"GOTCHA_HSTS_INCLUDE_SUBDOMAINS": "true",
+	}); !hasWarn(got, "GOTCHA_HSTS_INCLUDE_SUBDOMAINS") {
+		t.Error("нет предупреждения о том, что настройка HSTS игнорируется при выключенном HSTS")
+	}
+	// Обратный случай: ничего лишнего не задано — предупреждения об игнорировании нет.
+	if got := capture(t, map[string]string{
+		"GOTCHA_HSTS_ENABLED":          "false",
+		"GOTCHA_BASE_URL":              "https://gotcha.example",
+		"GOTCHA_ALLOW_INSECURE_SECRET": "1",
+	}); hasWarn(got, "ignored") {
+		t.Error("предупреждение об игнорировании выдано, хотя ни одна настройка HSTS не задана")
+	}
+}
+
+// TestLoadConfig_HSTSWarningSkippedOutsideWebModes — в ingest/uptime/probe
+// web.Handler вообще не строится (main.go поднимает его только под
+// cfg.Mode == "web" || cfg.Mode == "all"), значит заголовок Strict-Transport-
+// Security структурно невозможен: предупреждение про не-https GOTCHA_BASE_URL
+// не о чем предупреждать и только шумит на каждом старте приёмного узла или
+// dev-стенда. GOTCHA_BASE_URL по умолчанию http://localhost:8080 — то же
+// значение, что в TestLoadConfig_HSTSWarnings роняет предупреждение в
+// дефолтном режиме all.
+func TestLoadConfig_HSTSWarningSkippedOutsideWebModes(t *testing.T) {
+	var records []slog.Record
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	defer slog.SetDefault(prev)
+
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_HSTS_ENABLED": "true"}),
+		[]string{"--mode", "ingest"}); err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	for _, r := range records {
+		if r.Level == slog.LevelWarn && strings.Contains(r.Message, "GOTCHA_BASE_URL") {
+			t.Errorf("предупреждение про GOTCHA_BASE_URL выдано в режиме ingest, где web.Handler не строится: %q", r.Message)
+		}
 	}
 }

@@ -45,6 +45,7 @@ var registry = []struct{ Slug, Group string }{
 	// Установка и эксплуатация
 	{"installation", "docs.group.deploy"},
 	{"configuration", "docs.group.deploy"},
+	{"hardening", "docs.group.deploy"},
 	{"backup-restore", "docs.group.deploy"},
 	{"upgrade", "docs.group.deploy"},
 	{"self-monitoring", "docs.group.deploy"},

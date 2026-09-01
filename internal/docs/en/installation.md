@@ -279,6 +279,7 @@ Before pointing real users or real application traffic at this instance, make su
 - [ ] **SMTP** — without it, invite emails and the email alert channel don't work. Setup is covered in [Configuration](/docs/configuration).
 - [ ] **Backups** — set these up before real data accumulates in the database. See [Backup & Restore](/docs/backup-restore).
 - [ ] **Quotas** — if a project DSN could leak publicly (e.g. frontend JS), set `GOTCHA_DEFAULT_*_QUOTA` (unlimited by default in the oss edition). See [Configuration](/docs/configuration).
+- [ ] **Perimeter** — close off service paths (`/metrics`, `/version`, `/healthz`, `/readyz`) at the reverse proxy, turn off `server_tokens`, and set HSTS in exactly one place. See [Hardening your install](/docs/hardening).
 
 ## Troubleshooting
 
