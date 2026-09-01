@@ -712,3 +712,30 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("alerts с CanOperate=true текущего проекта → %q, want /projects/2/incident-feed", got)
 	}
 }
+
+// TestGroupedSubsectionsSkipsEmptyGroups покрывает groupItems: пункты
+// собираются в группы в порядке первого появления, а группа, у которой не
+// осталось пунктов (все отфильтрованы правами выше по стеку), не оставляет
+// после себя пустой заголовок.
+func TestGroupedSubsectionsSkipsEmptyGroups(t *testing.T) {
+	items := []NavItem{
+		{LabelKey: "a", Href: "/a"},
+		{LabelKey: "b", Href: "/b", Group: "nav.group.rules"},
+		{LabelKey: "c", Href: "/c", Group: "nav.group.rules"},
+		{LabelKey: "d", Href: "/d", Group: "nav.group.delivery"},
+	}
+	got := groupItems(items)
+	want := []NavGroup{
+		{LabelKey: "", Items: items[0:1]},
+		{LabelKey: "nav.group.rules", Items: items[1:3]},
+		{LabelKey: "nav.group.delivery", Items: items[3:4]},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("groupItems() = %#v, want %#v", got, want)
+	}
+	// Группа, все пункты которой отфильтрованы правами, не должна
+	// оставлять после себя пустой заголовок.
+	if got := groupItems(items[0:1]); len(got) != 1 || got[0].LabelKey != "" {
+		t.Fatalf("groupItems(single ungrouped) = %#v, want one headerless group", got)
+	}
+}

@@ -501,6 +501,20 @@ a:hover {
 	color: var(--text);
 	box-shadow: inset 2px 0 0 var(--accent);
 }
+/* Заголовок группы подразделов: отступ сверху больше, чем снизу — заголовок
+   принадлежит тому, что под ним, а не тому, что над ним. */
+.ctx-group {
+	margin: 10px 0 2px;
+	padding: 0 10px;
+	font-size: var(--fs-label);
+	font-weight: 600;
+	color: var(--text-dim);
+	text-transform: uppercase;
+	letter-spacing: .4px;
+}
+.ctx-group:first-child {
+	margin-top: 0;
+}
 .ctx-settings {
 	margin-top: auto;
 	display: flex;

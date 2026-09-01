@@ -29,6 +29,40 @@ type NavItem struct {
 	Label    string
 	Href     string
 	Active   bool
+	// Group — i18n-ключ заголовка группы (nav.group.*), в которую входит
+	// пункт. Пустая строка — пункт вне групп. Заголовок рендерится один раз
+	// при смене группы; группа, все пункты которой отфильтрованы правами,
+	// исчезает вместе с заголовком (иначе оператор без CanManage увидел бы в
+	// «Настройках» заголовок «Организация» без содержимого).
+	Group string
+}
+
+// NavGroup — подразделы одной группы контекстной колонки. Пустой LabelKey
+// означает «рендерить без заголовка».
+type NavGroup struct {
+	LabelKey string
+	Items    []NavItem
+}
+
+// GroupedSubsections — подразделы текущей области, разложенные по группам
+// в порядке их первого появления.
+func GroupedSubsections(s Shell) []NavGroup {
+	return groupItems(Subsections(s))
+}
+
+// groupItems раскладывает items по группам, объединяя подряд идущие пункты
+// одной группы (включая пустую — «без группы») в один NavGroup. Порядок
+// групп — порядок первого появления в items.
+func groupItems(items []NavItem) []NavGroup {
+	var groups []NavGroup
+	for _, it := range items {
+		if n := len(groups); n > 0 && groups[n-1].LabelKey == it.Group {
+			groups[n-1].Items = append(groups[n-1].Items, it)
+			continue
+		}
+		groups = append(groups, NavGroup{LabelKey: it.Group, Items: []NavItem{it}})
+	}
+	return groups
 }
 
 // NavArea is a single icon-rail entry.

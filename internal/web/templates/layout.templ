@@ -163,14 +163,19 @@ templ ctxNav(shell nav.Shell) {
 				}
 			</ul>
 		</details>
-		for _, it := range nav.Subsections(shell) {
-			<a class={ ctxItemClass(it.Active) } href={ templ.SafeURL(it.Href) } if it.Active { aria-current="page" }>
-				if it.Label != "" {
-					{ it.Label }
-				} else {
-					{ i18n.T(ctx, it.LabelKey) }
-				}
-			</a>
+		for _, g := range nav.GroupedSubsections(shell) {
+			if g.LabelKey != "" {
+				<div class="ctx-group">{ i18n.T(ctx, g.LabelKey) }</div>
+			}
+			for _, it := range g.Items {
+				<a class={ ctxItemClass(it.Active) } href={ templ.SafeURL(it.Href) } if it.Active { aria-current="page" }>
+					if it.Label != "" {
+						{ it.Label }
+					} else {
+						{ i18n.T(ctx, it.LabelKey) }
+					}
+				</a>
+			}
 		}
 		// В самой области настроек ссылку в футере не показываем: там она уже
 		// есть первым пунктом списка подразделов, и дублировать её незачем.
