@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -569,6 +570,59 @@ func TestOverviewRangeToggleSelectsWindow(t *testing.T) {
 		if !strings.Contains(text, c.wantActive) {
 			t.Errorf("range=%q: missing active tab %q: %s", c.suffix, c.wantActive, text)
 		}
+	}
+}
+
+// TestOverviewRangeWidensClosedWindowFiltering — фикс-раунд 1 (ревью
+// задачи 6): TestOverviewRangeToggleSelectsWindow проверяет только подпись
+// окна и активную вкладку — обе выводятся из строки rangeKey, не из
+// данных, и не заметили бы, если бы since перестал зависеть от диапазона
+// (ревьюер воспроизвёл это, зашив since на фиксированные 24ч — весь набор
+// TestOverview* остался зелёным). Здесь — фактическая фильтрация по
+// границе окна: инцидент, закрытый 3 суток назад (старше 24ч, моложе 7д),
+// отсутствует в выдаче на умолчании (?range пусто/24h) и появляется на
+// ?range=7d.
+func TestOverviewRangeWidensClosedWindowFiltering(t *testing.T) {
+	s := newIncidentFeedStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "feed-window@example.com")
+	o, err := s.org.CreateOrg(ctx, "feed-co-window", "Feed Co Window", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "feed-proj-window", "Feed Proj Window", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	hostName := "closed-3d-ago"
+	host := s.seedFeedHost(t, project.ID, hostName)
+	resolvedAt := time.Now().Add(-72 * time.Hour)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, started_at, resolved_at)
+		VALUES ($1,$2,'silent','resolved',0,0,'',$3,$3)`,
+		project.ID, host, resolvedAt); err != nil {
+		t.Fatalf("seed closed host incident: %v", err)
+	}
+
+	resp24 := getWithCookie(t, s.srv, overviewPath(project.ID), ownerCookie)
+	body24, _ := io.ReadAll(resp24.Body)
+	resp24.Body.Close()
+	if resp24.StatusCode != http.StatusOK {
+		t.Fatalf("range=24h (default): status = %d, want 200: %s", resp24.StatusCode, body24)
+	}
+	if strings.Contains(string(body24), hostName) {
+		t.Errorf("range=24h (default): an incident closed 3 days ago must NOT appear in a 24h window: %s", body24)
+	}
+
+	resp7d := getWithCookie(t, s.srv, overviewPath(project.ID)+"?range=7d", ownerCookie)
+	body7d, _ := io.ReadAll(resp7d.Body)
+	resp7d.Body.Close()
+	if resp7d.StatusCode != http.StatusOK {
+		t.Fatalf("range=7d: status = %d, want 200: %s", resp7d.StatusCode, body7d)
+	}
+	if !strings.Contains(string(body7d), hostName) {
+		t.Errorf("range=7d: an incident closed 3 days ago must appear once the window widens to 7 days: %s", body7d)
 	}
 }
 
