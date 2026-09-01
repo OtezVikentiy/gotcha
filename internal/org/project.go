@@ -262,6 +262,30 @@ func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project,
 	return out, rows.Err()
 }
 
+// ProjectsForUserInOrg — то же правило доступа, что и ProjectsForUser, суженное
+// до одной организации: топбар (задача 4 nav-ia) фильтрует список проектов
+// селектом организации, и запрос обязан оставаться буквально accessCondition
+// — иначе расхождение с ProjectsForUser означало бы утечку между
+// организациями (не ослаблять, не переписывать под видом оптимизации).
+func (s *Service) ProjectsForUserInOrg(ctx context.Context, userID, orgID int64) ([]Project, error) {
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+projectColumns+" FROM projects p WHERE p.org_id = $2 AND "+
+			accessCondition+" ORDER BY p.id", userID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("org: projects for user in org: %w", err)
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, fmt.Errorf("org: projects for user in org: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // GetProject возвращает проект со всеми настройками; несуществующий id →
 // ErrNotFound. Ingest читает его на горячем пути (через кеш, см.
 // ingest.ProjectCache) ради transaction_sample_rate.

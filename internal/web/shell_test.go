@@ -148,6 +148,73 @@ func TestWithShellStickyProject(t *testing.T) {
 	_ = p1 // первый проект нужен только как «дефолт», к которому не должно откатывать
 }
 
+// TestWithShellNarrowsProjectsByOrg — топбар (задача 4 nav-ia): sh.Orgs несёт
+// все организации пользователя, а sh.Projects сужается ВЫБРАННОЙ (OrgID) —
+// иначе селект организации и переключатель проекта под ним противоречили бы
+// друг другу (организация одна, а список проектов — из всех сразу).
+func TestWithShellNarrowsProjectsByOrg(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+	h := &Handler{Auth: authSvc, Org: orgSvc, BaseURL: "http://localhost"}
+	ctx := context.Background()
+
+	uid, err := authSvc.Register(ctx, "orgscope-web@example.com", "hunter2hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgA, err := orgSvc.CreateOrg(ctx, "orgscope-web-a", "Org A", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgB, err := orgSvc.CreateOrg(ctx, "orgscope-web-b", "Org B", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projA, err := orgSvc.CreateProject(ctx, orgA.ID, "proj-a", "Proj A", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projB, err := orgSvc.CreateProject(ctx, orgB.ID, "proj-b", "Proj B", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := authSvc.CreateSession(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen nav.Shell
+	mw := h.withShell(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = nav.FromContext(r.Context())
+	}))
+	get := func(path string) {
+		t.Helper()
+		seen = nav.Shell{}
+		r := httptest.NewRequest("GET", path, nil)
+		r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		mw.ServeHTTP(httptest.NewRecorder(), r)
+	}
+
+	// sh.Orgs — обе организации, независимо от того, какая выбрана путём.
+	get("/projects/" + strconv.FormatInt(projA.ID, 10) + "/issues")
+	if len(seen.Orgs) != 2 {
+		t.Fatalf("Orgs = %+v, want 2", seen.Orgs)
+	}
+
+	// Выбор проекта A (через путь) резолвит orgID = orgA → sh.Projects несёт
+	// только проекты orgA, не projB из orgB.
+	if len(seen.Projects) != 1 || seen.Projects[0].ID != projA.ID {
+		t.Fatalf("Projects with orgA selected = %+v, want only projA", seen.Projects)
+	}
+
+	// Симметрично для orgB.
+	get("/projects/" + strconv.FormatInt(projB.ID, 10) + "/issues")
+	if len(seen.Projects) != 1 || seen.Projects[0].ID != projB.ID {
+		t.Fatalf("Projects with orgB selected = %+v, want only projB", seen.Projects)
+	}
+}
+
 func TestProjectIDFromPath(t *testing.T) {
 	cases := map[string]int64{
 		"/projects/7/issues": 7,

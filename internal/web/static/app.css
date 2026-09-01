@@ -426,7 +426,10 @@ a:hover {
 	margin-top: 6px;
 }
 
-/* -- Context sidebar: переключатель проекта + подразделы области -- */
+/* -- Context sidebar: подразделы области -- */
+/* Переключатель проекта отсюда переехал в топбар (задача 4 nav-ia, см.
+   whereAmI и «-- Topbar: где я --» ниже) — здесь остались только пункты
+   меню текущей области. */
 .ctx-sidebar {
 	background: var(--surface);
 	border-right: 1px solid var(--border);
@@ -435,60 +438,6 @@ a:hover {
 	padding: 8px;
 	gap: 2px;
 	overflow-y: auto;
-}
-.proj-switch {
-	margin-bottom: 8px;
-}
-.proj-switch summary {
-	list-style: none;
-	cursor: pointer;
-	padding: 7px 9px;
-	background: var(--surface-2);
-	border: 1px solid var(--border-control);
-	border-radius: var(--radius);
-	font-weight: 600;
-	color: var(--text);
-	overflow-wrap: anywhere;
-}
-.proj-switch summary::-webkit-details-marker {
-	display: none;
-}
-.proj-switch summary {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-}
-.proj-switch-name {
-	flex: 1;
-	min-width: 0;
-	overflow-wrap: anywhere;
-}
-.proj-switch summary .ic {
-	flex: none;
-	color: var(--text-dim);
-	transition: transform 120ms ease;
-}
-.proj-switch[open] summary .ic {
-	transform: rotate(180deg);
-}
-.proj-switch ul {
-	list-style: none;
-	margin: 4px 0 0;
-	padding: 4px;
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	background: var(--surface);
-}
-.proj-switch li a {
-	display: block;
-	padding: 5px 8px;
-	border-radius: var(--radius);
-	color: var(--text-dim);
-	text-decoration: none;
-}
-.proj-switch li a:hover {
-	background: var(--surface-2);
-	color: var(--text);
 }
 .ctx-item {
 	display: block;
@@ -554,10 +503,107 @@ a:hover {
 	padding: 0 16px;
 	border-bottom: 1px solid var(--border);
 	background: var(--surface);
+	/* На узком экране .breadcrumb получает flex-basis: 100% (см. медиазапрос
+	   ниже) и уходит на вторую строку — без wrap здесь топбару было бы
+	   некуда её деть, кроме обрезки. */
+	flex-wrap: wrap;
 }
 .topbar-spacer {
 	flex: 1;
 }
+
+/* -- Topbar: «где я» (задача 4 nav-ia) — селект организации + переключатель
+   проекта, суженный выбранной организацией. Раньше жили в .ctx-sidebar (см.
+   выше), теперь — плавающая пилюля с выпадающим списком поверх контента:
+   в topbar высотой 44px открытие <details> статичным списком раздуло бы
+   высоту строки, поэтому .org-switch ul/.proj-switch ul здесь абсолютные,
+   в отличие от прежнего блочного потока сайдбара. -- */
+.org-switch,
+.proj-switch {
+	position: relative;
+	flex: none;
+}
+.org-switch summary,
+.proj-switch summary {
+	list-style: none;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 8px;
+	background: var(--surface-2);
+	border: 1px solid var(--border-control);
+	border-radius: var(--radius);
+	font-weight: 600;
+	color: var(--text);
+	max-width: 220px;
+}
+.org-switch summary::-webkit-details-marker,
+.proj-switch summary::-webkit-details-marker {
+	display: none;
+}
+.org-switch-name,
+.proj-switch-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.org-switch summary .ic,
+.proj-switch summary .ic {
+	flex: none;
+	color: var(--text-dim);
+	transition: transform 120ms ease;
+}
+.org-switch[open] summary .ic,
+.proj-switch[open] summary .ic {
+	transform: rotate(180deg);
+}
+.org-switch ul,
+.proj-switch ul {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	z-index: 20;
+	margin: 4px 0 0;
+	padding: 4px;
+	min-width: 100%;
+	list-style: none;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+}
+.org-switch li a,
+.proj-switch li a {
+	display: block;
+	padding: 5px 8px;
+	border-radius: var(--radius);
+	color: var(--text-dim);
+	text-decoration: none;
+	white-space: nowrap;
+}
+.org-switch li a:hover,
+.proj-switch li a:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+/* «Все проекты» — единственная дверь к списку проектов организации (и
+   создание нового): отбита от остальных пунктов, чтобы не потеряться между
+   именами проектов. */
+.proj-switch-all {
+	margin-top: 4px;
+	padding-top: 4px;
+	border-top: 1px solid var(--border);
+}
+.org-name {
+	color: var(--text-dim);
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 160px;
+}
+
 /* Сегмент-контролы: кнопки склеены в одну пилюлю (общие границы, без
    зазора), поэтому читаются как один переключатель с выбранным значением, а
    не как три самостоятельные кнопки. */
@@ -950,9 +996,11 @@ a:hover {
 }
 
 /* -- Мобильное disclosure-меню в topbar: дублирует содержимое .ctx-sidebar
-   (переключатель проекта, подразделы, настройки проекта) без JS — работает
-   через нативные <details>/<summary>. На десктопе скрыто, т.к. тот же
-   контент уже доступен в .ctx-sidebar (см. адаптив ниже). -- */
+   (подразделы, настройки проекта — переключатель организации/проекта живёт
+   отдельно в .org-switch/.proj-switch, см. выше, и остаётся в topbar на
+   любой ширине) без JS — работает через нативные <details>/<summary>. На
+   десктопе скрыто, т.к. тот же контент уже доступен в .ctx-sidebar (см.
+   адаптив ниже). -- */
 .mobile-nav {
 	display: none;
 }
@@ -1016,6 +1064,12 @@ a:hover {
 	.topbar {
 		padding: 0 8px;
 		gap: 4px;
+	}
+	/* «Где я» (org-switch/org-name + proj-switch) и хлебная крошка не
+	   помещаются в одну строку 44px topbar на телефоне — крошка уходит на
+	   вторую строку целиком, а не обрезается многоточием посередине смысла. */
+	.breadcrumb {
+		flex-basis: 100%;
 	}
 }
 

@@ -9,6 +9,7 @@
     "about.changelog": "Changelog",
     "about.source": "Source code",
     "nav.projects": "Projects",
+    "nav.all_projects": "All projects",
     "nav.back": "Back",
     "action.logout": "Log out",
     "nav.issues": "Issues",

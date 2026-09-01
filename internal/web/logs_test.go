@@ -369,8 +369,8 @@ func TestWebLogsListCursorPagination(t *testing.T) {
 // (logRowView в logs.templ — <summary>{ logBodyPreview(...) }</summary>, БЕЗ
 // атрибутов). Осознанно НЕ используем плоский "(?s)<summary>(.*?)</summary>"
 // по всему документу: у шаблона хватает других plain <summary> без класса —
-// переключатель проекта и в сайдбаре, и в мобильном меню (details
-// class="proj-switch"><summary>...) рендерят его ДВАЖДЫ на каждой странице.
+// переключатель проекта в топбаре (details class="proj-switch"><summary>...)
+// и мобильное disclosure-меню (class="mobile-nav") тоже рендерят его.
 // Поэтому сначала вырезаем <tbody>...</tbody> (см. logRowsTBodyRe), и уже
 // внутри него ищем <summary>.
 var logRowsTBodyRe = regexp.MustCompile(`(?s)<tbody>(.*?)</tbody>`)

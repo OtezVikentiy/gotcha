@@ -561,17 +561,40 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("пустая область → %q, want issues-фолбэк", got)
 	}
 
-	// C1: CanOperate — флаг ТЕКУЩЕГО проекта (участник команды проекта), а
-	// не целевого. С переездом ленты инцидентов в «Обзор» (задача 7) item[0]
-	// области "alerts" снова целиком гейтится CanOperate (см. Subsections
-	// case "alerts") — перенесённый флаг ведёт на первый пункт группы
-	// «Правила» для ТЕКУЩЕГО проекта: если на целевом проекте пользователь
-	// не оператор, эта ссылка 404-ит (тот же класс риска, что и раньше у
-	// остальных operator-гейтнутых первых пунктов, до появления ленты).
+	// C1 (закрыт в задаче 4): CanOperate — флаг ТЕКУЩЕГО проекта, не
+	// целевого — team-членство не переносится между проектами. "alerts"
+	// целиком гейтится CanOperate (см. Subsections case "alerts"), поэтому
+	// перенос флага текущего проекта на целевой мог дать 404 у пользователя,
+	// которому CanOperate на целевом проекте не положен. Переключатель
+	// больше не пытается остаться в "alerts" для другого проекта — падает
+	// в issues-фолбэк, безопасный при любых правах на целевом проекте.
 	shell.Area = "alerts"
 	shell.CanOperate = true
-	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/alerts" {
-		t.Errorf("alerts с CanOperate=true текущего проекта → %q, want /projects/2/alerts", got)
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/issues" {
+		t.Errorf("alerts → %q, want issues-фолбэк (CanOperate целевого проекта не подтверждён)", got)
+	}
+}
+
+// TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects — сценарий
+// задачи 4 (обязательный пункт сверх брифа): оператор проекта A, где
+// CanOperate=true, переключается на проект B, где оператором не является.
+// Падает на старом поведении (ProjectSwitchHref возвращал
+// "/projects/2/alerts" — страницу, требующую requireProjectOperator, — не
+// проверив, держится ли CanOperate на проекте B).
+func TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects(t *testing.T) {
+	shell := Shell{
+		Projects:   []Project{{ID: 1, Name: "A"}, {ID: 2, Name: "B"}},
+		ProjectID:  1,
+		OrgID:      7,
+		Area:       "alerts",
+		CanOperate: true, // оператор проекта A (текущего)
+	}
+	got := ProjectSwitchHref(shell, 2) // переключение на B, где оператором не является
+	if got == "/projects/2/alerts" {
+		t.Fatalf("ProjectSwitchHref(A→B) = %q, ведёт на страницу, требующую CanOperate целевого проекта — небезопасно", got)
+	}
+	if got != "/projects/2/issues" {
+		t.Errorf("ProjectSwitchHref(A→B) = %q, want /projects/2/issues (заведомо доступный путь)", got)
 	}
 }
 

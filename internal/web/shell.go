@@ -38,6 +38,14 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 
 		email, _ := h.Auth.UserEmail(ctx, uid)
 
+		var orgs []nav.Org
+		if os, err := h.Org.OrgsOf(ctx, uid); err == nil {
+			orgs = make([]nav.Org, 0, len(os))
+			for _, o := range os {
+				orgs = append(orgs, nav.Org{ID: o.ID, Name: o.Name})
+			}
+		}
+
 		var projs []nav.Project
 		if ps, err := h.Org.ProjectsForUser(ctx, uid); err == nil {
 			projs = make([]nav.Project, 0, len(ps))
@@ -107,9 +115,26 @@ func (h *Handler) withShell(next http.Handler) http.Handler {
 		// здесь не нужен.
 		canOperate := projID != 0 && projectInList(projs, projID)
 
+		// Топбар (задача 4 nav-ia) сужает список проектов селектом
+		// организации: без сужения два селекта противоречили бы друг
+		// другу — организация выбрана одна, а проекты в списке ниже были
+		// бы из всех организаций пользователя. projs (полный список) выше
+		// уже отработал во всех проверках (cookie, orgID-фолбэк, CanOperate)
+		// — здесь его заменяет только то, что попадёт в sh.Projects.
+		shellProjects := projs
+		if orgID != 0 {
+			if ps, err := h.Org.ProjectsForUserInOrg(ctx, uid, orgID); err == nil {
+				shellProjects = make([]nav.Project, 0, len(ps))
+				for _, p := range ps {
+					shellProjects = append(shellProjects, nav.Project{ID: p.ID, Slug: p.Slug, Name: p.Name})
+				}
+			}
+		}
+
 		sh := nav.Shell{
 			UserEmail: email,
-			Projects:  projs,
+			Orgs:      orgs,
+			Projects:  shellProjects,
 			ProjectID: projID,
 			OrgID:     orgID,
 			Area:      area,

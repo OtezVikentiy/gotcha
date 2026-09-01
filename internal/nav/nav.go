@@ -20,6 +20,14 @@ type Project struct {
 	Name string
 }
 
+// Org — минимальная ссылка на организацию для селекта в топбаре (задача 4
+// nav-ia): переключатель проекта переехал из контекстной колонки в топбар,
+// над ним встал селект организации, сужающий список проектов ниже.
+type Org struct {
+	ID   int64
+	Name string
+}
+
 // NavItem is a single sidebar subsection entry. LabelKey is an i18n key,
 // rendered via i18n.T in templates. Label, when non-empty, is rendered
 // directly instead — used by areas (e.g. docs) whose item labels come
@@ -84,6 +92,10 @@ type NavArea struct {
 type Shell struct {
 	UserEmail string
 	Projects  []Project
+	// Orgs — организации пользователя, для селекта в топбаре (задача 4
+	// nav-ia). Проектный переключатель ниже показывает Projects, уже
+	// суженные выбранной (OrgID) организацией — см. web/shell.go.
+	Orgs      []Org
 	ProjectID int64
 	OrgID     int64
 	Area      string
@@ -597,22 +609,27 @@ func firstSubsectionHref(s Shell, area string) string {
 // projects is not a reason to lose context), falling back to the project's
 // issues list when the current area is not a per-project one (org, docs,
 // settings) or has no accessible subsection for that project. The probe
-// keeps the shell's CanManage and CanOperate as-is (not re-resolved for the
-// target project): CanManage is per-organization so this is mostly right,
-// and for a CanOperate that does not hold on the target project (team
-// membership is per-project) — the fallback below stays the safe door for
-// any area whose FIRST subsection is operator-gated (item[0] could then
-// point at a page 404ing on the target project). "alerts" is such an area
-// again: with the incident feed moved out of Subsections into «Обзор»
-// (задача 7), its whole subsection list is once more gated behind
-// CanOperate (см. Subsections case "alerts"), so a stale CanOperate=true
-// carried over from the current project can still produce a first href
-// the target project 404s on — the same latent gap the D3 incident feed
-// used to close.
+// keeps the shell's CanManage as-is: CanManage is per-organization, and the
+// switcher only ever offers projects of the currently selected organization
+// (topbar org selector, задача 4), so CanManage stays valid for the target.
+//
+// CanOperate is NOT carried over, and "alerts" is deliberately excluded from
+// perProject below (задача 4, обязательный пункт: латентный дефект,
+// зафиксированный в задаче 2). CanOperate is a per-PROJECT flag — the shell
+// only computes it for the CURRENT project (see web/shell.go) — and team
+// membership does not transfer between projects. "alerts" is the one area
+// whose ENTIRE subsection list is gated behind CanOperate (см. Subsections
+// case "alerts"): a stale CanOperate=true carried over from the current
+// project could point the target project at a page that 404s there
+// (requireProjectOperator), for a target where the user is not an operator.
+// Rather than trust an unverified flag across the project boundary, the
+// switcher always falls back to the target project's issues list from
+// "alerts" — a page open to anyone with access to the project, safe under
+// any permission combination.
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,
-		"hosts": true, "logs": true, "uptime": true, "alerts": true,
+		"hosts": true, "logs": true, "uptime": true,
 	}
 	if perProject[s.Area] {
 		target := s

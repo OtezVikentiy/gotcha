@@ -138,6 +138,7 @@ templ layoutBody(title string, userEmail string) {
 							@ctxNav(nav.FromContext(ctx))
 						</div>
 					</details>
+					@whereAmI(nav.FromContext(ctx))
 					<div class="breadcrumb">{ title }</div>
 					<div class="topbar-spacer"></div>
 					@langSwitcher()
@@ -157,26 +158,15 @@ templ layoutBody(title string, userEmail string) {
 	</body>
 }
 
-// ctxNav — содержимое контекстного сайдбара: переключатель проекта,
-// подразделы текущей области и ссылка на настройки проекта (или кнопка
-// создания проекта, если проектов ещё нет). Вынесено отдельным компонентом,
+// ctxNav — содержимое контекстного сайдбара: подразделы текущей области и
+// ссылка на настройки проекта (или кнопка создания проекта, если проектов
+// ещё нет). Переключатель проекта здесь больше не живёт — переехал в топбар
+// (задача 4 nav-ia, см. whereAmI): два селекта в разных местах экрана иначе
+// спорили бы за то, какой из них главный. Вынесено отдельным компонентом,
 // чтобы переиспользовать разметку и в desktop .ctx-sidebar, и в мобильном
 // no-JS disclosure-меню топбара (см. layoutBody).
 templ ctxNav(shell nav.Shell) {
 	if len(shell.Projects) > 0 {
-		<details class="proj-switch">
-			<summary>
-				<span class="proj-switch-name">{ currentProjectName(shell) }</span>
-				@icon("chevron-down")
-			</summary>
-			<ul>
-				for _, p := range shell.Projects {
-					// №60: смена проекта держит текущий раздел (nav.ProjectSwitchHref);
-					// раздел, недоступный у целевого проекта, откатывается на issues.
-					<li><a href={ templ.SafeURL(nav.ProjectSwitchHref(shell, p.ID)) }>{ p.Name }</a></li>
-				}
-			</ul>
-		</details>
 		for _, g := range nav.GroupedSubsections(shell) {
 			if g.LabelKey != "" {
 				<div class="ctx-group">{ i18n.T(ctx, g.LabelKey) }</div>
@@ -202,6 +192,64 @@ templ ctxNav(shell nav.Shell) {
 	} else {
 		<a class="btn btn-primary" href="/onboarding">{ i18n.T(ctx, "nav.create_project") }</a>
 	}
+}
+
+// whereAmI — «где я» в топбаре (задача 4 nav-ia): селект организации (когда
+// их у пользователя больше одной — единственная у одной организации просто
+// подписана) над переключателем проекта, суженным выбранной организацией
+// (nav.Shell.Projects уже отфильтрован в web/shell.go). Дверь к
+// "/orgs/{id}/projects" (задача 5) — единственный способ сменить
+// организацию и единственный способ завести второй проект.
+templ whereAmI(shell nav.Shell) {
+	if len(shell.Orgs) > 1 {
+		<details class="org-switch">
+			<summary>
+				<span class="org-switch-name">{ currentOrgName(shell) }</span>
+				@icon("chevron-down")
+			</summary>
+			<ul>
+				for _, o := range shell.Orgs {
+					<li><a href={ templ.SafeURL("/orgs/" + itoa(o.ID) + "/projects") }>{ o.Name }</a></li>
+				}
+			</ul>
+		</details>
+	} else if len(shell.Orgs) == 1 {
+		<span class="org-name">{ shell.Orgs[0].Name }</span>
+	}
+	if len(shell.Projects) > 0 {
+		// Проектный селект НЕ схлопывается даже при единственном проекте:
+		// в нём живёт пункт «Все проекты», а на той странице — создание
+		// проекта. Схлопни его — и пользователь с одним проектом не сможет
+		// завести второй (см. TestTopbarKeepsAllProjectsDoorWithSingleProject).
+		<details class="proj-switch">
+			<summary>
+				<span class="proj-switch-name">{ currentProjectName(shell) }</span>
+				@icon("chevron-down")
+			</summary>
+			<ul>
+				for _, p := range shell.Projects {
+					// №60: смена проекта держит текущий раздел (nav.ProjectSwitchHref);
+					// раздел, недоступный у целевого проекта, откатывается на issues.
+					<li><a href={ templ.SafeURL(nav.ProjectSwitchHref(shell, p.ID)) }>{ p.Name }</a></li>
+				}
+				<li class="proj-switch-all"><a href={ templ.SafeURL("/orgs/" + itoa(shell.OrgID) + "/projects") }>{ i18n.T(ctx, "nav.all_projects") }</a></li>
+			</ul>
+		</details>
+	}
+}
+
+// currentOrgName — имя организации в селекте: текущая по OrgID, иначе
+// первая из списка, иначе пусто. По образцу currentProjectName ниже.
+func currentOrgName(s nav.Shell) string {
+	for _, o := range s.Orgs {
+		if o.ID == s.OrgID {
+			return o.Name
+		}
+	}
+	if len(s.Orgs) > 0 {
+		return s.Orgs[0].Name
+	}
+	return ""
 }
 
 // chromelessBody — тело минимального layout для анонимных/setup-страниц: без

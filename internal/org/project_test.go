@@ -435,3 +435,43 @@ func TestCreateProjectNormalizesPlatform(t *testing.T) {
 		t.Errorf("Platform = %q, want go", p2.Platform)
 	}
 }
+
+// TestProjectsForUserInOrg — ProjectsForUserInOrg сужает ProjectsForUser до
+// одной организации (задача 4 nav-ia): топбар фильтрует список проектов
+// выбранной в селекте организацией, и без сужения переключатель показал бы
+// проекты организации, которую пользователь в данный момент не выбирал.
+func TestProjectsForUserInOrg(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	owner := newUser(t, pool, "orgscope-owner@example.com")
+	orgA, err := svc.CreateOrg(ctx, "orgscope-a", "Org A", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg A: %v", err)
+	}
+	orgB, err := svc.CreateOrg(ctx, "orgscope-b", "Org B", owner)
+	if err != nil {
+		t.Fatalf("CreateOrg B: %v", err)
+	}
+	projA, err := svc.CreateProject(ctx, orgA.ID, "proj-a", "Proj A", "go")
+	if err != nil {
+		t.Fatalf("CreateProject A: %v", err)
+	}
+	projB, err := svc.CreateProject(ctx, orgB.ID, "proj-b", "Proj B", "go")
+	if err != nil {
+		t.Fatalf("CreateProject B: %v", err)
+	}
+
+	got, err := svc.ProjectsForUserInOrg(ctx, owner, orgA.ID)
+	if err != nil {
+		t.Fatalf("ProjectsForUserInOrg(orgA): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != projA.ID {
+		t.Fatalf("ProjectsForUserInOrg(orgA) = %+v, want only projA", got)
+	}
+	if got, err := svc.ProjectsForUserInOrg(ctx, owner, orgB.ID); err != nil || len(got) != 1 || got[0].ID != projB.ID {
+		t.Fatalf("ProjectsForUserInOrg(orgB) = %+v, err = %v, want only projB", got, err)
+	}
+}
