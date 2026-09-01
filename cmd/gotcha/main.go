@@ -1410,6 +1410,8 @@ func run() error {
 		webHandler.SecretKey = deriveCookieKey(cfg.SecretKey)
 		webHandler.TrustedProxies = cfg.TrustedProxies
 		webHandler.RegistrationMode = cfg.RegistrationMode
+		webHandler.HSTSHeader = web.HSTSHeaderValue(
+			cfg.HSTSEnabled, cfg.HSTSMaxAgeSeconds, cfg.HSTSIncludeSubDomains, cfg.HSTSPreload)
 		webHandler.RetentionDays = cfg.RetentionDays
 		webHandler.SpanRetentionDays = cfg.SpanRetentionDays
 		webHandler.LocalRegion = cfg.LocalRegion
