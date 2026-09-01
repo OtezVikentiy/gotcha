@@ -347,6 +347,31 @@ func BackLabelKey(rawPath string) string {
 			}
 		}
 	}
+	// /orgs/{id}/... — до фикс-раунда 2 (I2) AreaForPath отдавала для ЛЮБОГО
+	// /orgs/* путь одну и ту же область "org", и общий case ниже возвращал
+	// "nav.projects" для всех четырёх страниц разом. I2 развела область:
+	// settings/teams/probes теперь "settings" (крошка «назад» с них ушла бы
+	// на "nav.project_settings" — то же имя ОБЛАСТИ, а не подраздела, тот же
+	// класс дефекта, что чинил d347b117), а /projects — "" (крошка вовсе
+	// теряла подпись, откатываясь на общее "nav.back"). Специфичные ключи —
+	// по тому же приёму: та же подпись, что у пункта сайдбара, на который
+	// эта страница и есть (nav.members/nav.teams/nav.probes — Subsections,
+	// case "settings", группа "nav.group.org").
+	if strings.HasPrefix(path, "/orgs/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/orgs/"), "/", 3)
+		if len(parts) >= 2 {
+			switch parts[1] {
+			case "settings":
+				return "nav.members"
+			case "teams":
+				return "nav.teams"
+			case "probes":
+				return "nav.probes"
+			case "projects":
+				return "nav.projects"
+			}
+		}
+	}
 	switch AreaForPath(path) {
 	case "overview":
 		return "nav.overview"

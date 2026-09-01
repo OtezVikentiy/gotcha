@@ -97,6 +97,17 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects", ""},
 		{"/projects/7/settings", "nav.project_settings"},
 		{"/docs/glossary", "docs.index.title"},
+		// Реревью фикс-раунда 2: /orgs/{id}/... потерял специфичные ключи,
+		// когда I2 развела AreaForPath (settings/teams/probes → "settings",
+		// projects → "") — крошка «назад» с этих страниц откатывалась на
+		// общее "" (nav.back) либо на чужое "nav.project_settings". Ключи —
+		// подраздел-специфичные, та же подпись, что и у пункта сайдбара,
+		// на который эта страница и есть (см. Subsections case "settings",
+		// группа "nav.group.org").
+		{"/orgs/5/settings", "nav.members"},
+		{"/orgs/5/teams", "nav.teams"},
+		{"/orgs/5/probes", "nav.probes"},
+		{"/orgs/5/projects", "nav.projects"},
 		// Неопознанный путь — общий ключ подставляет вызывающий, здесь "".
 		{"/setup", ""},
 		{"/whatever", ""},
