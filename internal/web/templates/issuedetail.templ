@@ -610,7 +610,7 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool) {
 	@layout(it.Title, userEmail) {
 		<div class="issue-detail">
-			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
+			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.errors"))
 			<h1>{ it.Title }</h1>
 			if it.Culprit != "" {
 				<div class="culprit">{ it.Culprit }</div>

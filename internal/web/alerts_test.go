@@ -331,6 +331,35 @@ func TestWebAlertDeliveriesPageShowsFailedDeliveries(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", deliveriesPath, resp.StatusCode, body)
 	}
+
+	// Крошка «назад» обязана вести на /alerts с ЕЁ заголовком — "По ошибкам"
+	// (nav.rules_errors), а не именем всей области "Оповещения" (nav.alerts):
+	// находка фикс-раунда 1 ревью задачи 8. Страница /alerts переименована
+	// в "По ошибкам", а дефолтная подпись крошки на /deliveries (используется,
+	// когда Referer не задан — как здесь, у getWithCookie) осталась старой.
+	// Ищем именно <p class="breadcrumb">, а не href по всей странице: тот же
+	// /alerts выведен ещё и пунктом сайдбара, у него та же ссылка и (законно)
+	// тот же текст "По ошибкам" — без скоупинга до breadcrumb assert совпал
+	// бы с сайдбаром и не поймал бы мутацию.
+	bcStart := strings.Index(string(body), `<p class="breadcrumb">`)
+	if bcStart < 0 {
+		t.Fatalf("GET %s missing breadcrumb: %s", deliveriesPath, body)
+	}
+	bcEnd := strings.Index(string(body)[bcStart:], "</p>")
+	if bcEnd < 0 {
+		t.Fatalf("GET %s breadcrumb <p> never closes: %s", deliveriesPath, body)
+	}
+	breadcrumbHTML := string(body)[bcStart : bcStart+bcEnd]
+	if !strings.Contains(breadcrumbHTML, alertsPath) {
+		t.Fatalf("GET %s breadcrumb does not link to %s: %s", deliveriesPath, alertsPath, breadcrumbHTML)
+	}
+	if !strings.Contains(breadcrumbHTML, "По ошибкам") {
+		t.Errorf("GET %s breadcrumb to %s = %q, want label «По ошибкам» (nav.rules_errors — target page's own title)", deliveriesPath, alertsPath, breadcrumbHTML)
+	}
+	if strings.Contains(breadcrumbHTML, "Оповещения") {
+		t.Errorf("GET %s breadcrumb to %s still carries the area name «Оповещения» (nav.alerts) instead of the page title: %s", deliveriesPath, alertsPath, breadcrumbHTML)
+	}
+
 	if !strings.Contains(string(body), "https://hooks.example.com/failed-test") {
 		t.Fatalf("GET %s missing failed delivery target: %s", deliveriesPath, body)
 	}

@@ -1477,7 +1477,7 @@ func IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rn
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues")).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.errors")).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

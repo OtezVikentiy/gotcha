@@ -44,7 +44,7 @@ templ failedRow(f notify.FailedJob) {
 templ AlertDeliveries(projectID int64, failed []notify.FailedJob, canManage bool, userEmail string) {
 	@layout(i18n.T(ctx, "alerts.deliveries.title"), userEmail) {
 		<div class="alert-deliveries">
-			@breadcrumbBackTo(templ.URL(alertsPath(projectID)), i18n.T(ctx, "nav.alerts"))
+			@breadcrumbBackTo(templ.URL(alertsPath(projectID)), i18n.T(ctx, "nav.rules_errors"))
 			<h1>{ i18n.T(ctx, "alerts.deliveries.title") }</h1>
 			@helpPanel("alertdeliveries", "alerts")
 			if !canManage && len(failed) > 0 {

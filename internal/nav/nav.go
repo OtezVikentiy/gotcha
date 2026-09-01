@@ -277,7 +277,7 @@ func BackLabelKey(rawPath string) string {
 			case "overview", "incident-feed":
 				return "nav.overview"
 			case "issues":
-				return "nav.issues"
+				return "nav.errors"
 			case "exports":
 				return "nav.exports"
 			case "performance":
@@ -320,7 +320,7 @@ func BackLabelKey(rawPath string) string {
 				if len(parts) >= 3 && parts[2] == "deliveries" {
 					return "nav.alert_deliveries"
 				}
-				return "nav.alerts"
+				return "nav.rules_errors"
 			case "slos":
 				return "nav.slo"
 			case "escalations":
