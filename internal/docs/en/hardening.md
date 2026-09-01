@@ -97,9 +97,20 @@ HTTPS-ready.
 
 Preload is a one-way ticket: once a domain lands on a browser's preload list, it's baked into
 browser releases for months, and getting it removed is a matter of months, not minutes. The
-only way out during an emergency is `GOTCHA_HSTS_MAX_AGE_SECONDS=0`, waiting for the pin to
-expire on clients that already visited the instance, and only then turning the header off
-entirely. Turning HSTS off by itself does **not** un-pin — it just stops renewing the pin.
+way out during an emergency is, strictly in this order — otherwise the app refuses to start,
+because config validation requires at least a year of max-age while `PRELOAD=true` (see
+[Configuration](/docs/configuration#security)):
+
+1. `GOTCHA_HSTS_PRELOAD=false` — lifts the year-long max-age requirement that would otherwise
+   block step 2.
+2. `GOTCHA_HSTS_MAX_AGE_SECONDS=0`, keeping `GOTCHA_HSTS_ENABLED=true` — a header with a zero
+   max-age is actually sent to clients and un-pins them.
+3. Wait for the pin to expire on clients that already visited the instance.
+4. Only now `GOTCHA_HSTS_ENABLED=false`, if the header isn't needed at all anymore.
+
+Turning HSTS off by itself does **not** un-pin — it just stops renewing the pin, so step 4
+without steps 1-3 doesn't end the emergency, it freezes it for the duration of the previously
+sent max-age.
 
 ## security.txt
 
@@ -128,6 +139,8 @@ curl -sI https://gotcha.example/login | grep -Ei 'content-security-policy|x-fram
 # HSTS is present on the https instance...
 curl -sI https://gotcha.example/login | grep -i strict-transport
 # ...and absent on a plain-http deploy, regardless of config
+# (empty unless your proxy itself adds HSTS on the http->https redirect —
+# the recommended topology above allows that; then the header on the 301 is expected)
 curl -sI http://gotcha.example/login | grep -i strict-transport   # expected: empty
 
 # service paths are closed at the proxy

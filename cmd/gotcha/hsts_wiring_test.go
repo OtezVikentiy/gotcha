@@ -4,13 +4,27 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"testing"
 )
 
+// wantHSTSHeaderValueArgs — порядок параметров web.HSTSHeaderValue(enabled
+// bool, maxAgeSeconds int, includeSubDomains, preload bool) — см. её
+// сигнатуру в internal/web/hsts.go. Перестановка двух последних
+// (includeSubDomains ↔ preload) компилируется молча: оба bool, оба cfg-поля
+// существуют — но инстанс с INCLUDE_SUBDOMAINS=true, PRELOAD=false отдал бы
+// заголовок с токеном preload, ровно ту комбинацию, ради запрета которой
+// написан блок валидации в config.go. Матчить сам факт вызова
+// web.HSTSHeaderValue(...), не заглядывая внутрь, эту перестановку не ловит.
+var wantHSTSHeaderValueArgs = []string{
+	"HSTSEnabled", "HSTSMaxAgeSeconds", "HSTSIncludeSubDomains", "HSTSPreload",
+}
+
 // TestHSTSHeaderWiredFromConfig — main.go обязан проставлять
-// webHandler.HSTSHeader вызовом web.HSTSHeaderValue(cfg.HSTS...), а не
-// оставлять его на историческом дефолте "max-age=31536000", зашитом в
-// web.New(...) (internal/web/web.go:507, тот же приём, что у RegistrationMode).
+// webHandler.HSTSHeader вызовом web.HSTSHeaderValue(cfg.HSTS...) с полями В
+// ПРАВИЛЬНОМ ПОРЯДКЕ (wantHSTSHeaderValueArgs), а не оставлять его на
+// историческом дефолте "max-age=31536000", зашитом в web.New(...)
+// (internal/web/web.go:507, тот же приём, что у RegistrationMode).
 //
 // internal/guards/handlerassembly_test.go эту проводку не ловит: его методика
 // (докблок TestHandlerAssemblyComplete) считает поле покрытым, если оно
@@ -61,6 +75,35 @@ func TestHSTSHeaderWiredFromConfig(t *testing.T) {
 		}
 
 		found = true
+
+		if len(call.Args) != len(wantHSTSHeaderValueArgs) {
+			t.Errorf("web.HSTSHeaderValue(...) в main.go вызван с %d аргументами, want %d",
+				len(call.Args), len(wantHSTSHeaderValueArgs))
+			return false
+		}
+		gotArgs := make([]string, len(call.Args))
+		for i, arg := range call.Args {
+			sel, ok := arg.(*ast.SelectorExpr)
+			if !ok {
+				t.Errorf("web.HSTSHeaderValue(...): аргумент %d — не селектор вида cfg.Поле (%T)", i, arg)
+				continue
+			}
+			recv, ok := sel.X.(*ast.Ident)
+			if !ok || recv.Name != "cfg" {
+				t.Errorf("web.HSTSHeaderValue(...): аргумент %d — не поле cfg (%s.%s)",
+					i, sel.X, sel.Sel.Name)
+				continue
+			}
+			gotArgs[i] = sel.Sel.Name
+		}
+		if !reflect.DeepEqual(gotArgs, wantHSTSHeaderValueArgs) {
+			t.Errorf("web.HSTSHeaderValue(...) в main.go вызван с cfg.%v, want cfg.%v — "+
+				"перепутанный порядок аргументов даёт РАБОЧИЙ, но неверный заголовок "+
+				"(например includeSubDomains и preload переставлены местами шлют preload "+
+				"без includeSubDomains) без единой ошибки сборки",
+				gotArgs, wantHSTSHeaderValueArgs)
+		}
+
 		return false
 	})
 

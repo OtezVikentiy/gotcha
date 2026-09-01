@@ -393,6 +393,23 @@ func secretKeyMattersFor(mode string) bool {
 	}
 }
 
+// hstsHeaderMattersFor — режимы, в которых вообще существует web.Handler
+// (см. main.go: `webHandler = web.New(...)` — только под
+// `cfg.Mode == "web" || cfg.Mode == "all"`), а значит и заголовок
+// Strict-Transport-Security физически возможен. Уже, чем secretKeyMattersFor
+// выше: ingest и uptime мастер-ключ используют (шифруют/расшифровывают
+// секреты каналов), но веб-хендлера не поднимают — предупреждение про
+// GOTCHA_BASE_URL не https в этих режимах не про что предупреждать, только
+// шумит на каждом старте приёмного узла и dev-стенда uptime.
+func hstsHeaderMattersFor(mode string) bool {
+	switch mode {
+	case "web", "all":
+		return true
+	default:
+		return false
+	}
+}
+
 // checkRenamedEnvVars — envcontract.Renamed (десять пар старое→новое имя,
 // волна контрактной уборки v0.23.0) встречена с НЕПУСТЫМ значением: апгрейд
 // инстанса принёс непровённый `.env`. Без этой проверки старое имя не
@@ -856,7 +873,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		}
 	}
 	if cfg.HSTSEnabled {
-		if !strings.HasPrefix(cfg.BaseURL, "https://") {
+		if hstsHeaderMattersFor(cfg.Mode) && !strings.HasPrefix(cfg.BaseURL, "https://") {
 			slog.Warn("GOTCHA_HSTS_ENABLED is on but GOTCHA_BASE_URL is not https:// — " +
 				"Strict-Transport-Security is never sent on a plain HTTP deploy")
 		}

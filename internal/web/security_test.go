@@ -40,9 +40,11 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
 	}
 	// newStack собирает Handler с http:// BaseURL (h.Secure == false) — HSTS
-	// на голом HTTP отправлять нельзя (см. securityHeaders).
-	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
-		t.Errorf("Strict-Transport-Security on http:// deploy = %q, want empty", got)
+	// на голом HTTP отправлять нельзя (см. securityHeaders). Проверяем
+	// присутствие КЛЮЧА в карте заголовков, а не Get() == "": Get() отдаёт ""
+	// и на отсутствующем ключе, и на Set(name, "") — вторая мутация выживала бы.
+	if values, present := resp.Header["Strict-Transport-Security"]; present {
+		t.Errorf("Strict-Transport-Security on http:// deploy = %q, want no header at all", values)
 	}
 }
 
