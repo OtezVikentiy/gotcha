@@ -972,6 +972,7 @@
     "org.invite_accept.title": "Приглашение в организацию",
     "org.invite_accept.hint": "Нажмите кнопку, чтобы принять приглашение.",
     "org.invite_accept.submit": "Принять приглашение",
+    "org.projects.title": "Проекты организации «{org}»",
     "org.projects.empty.title": "Проектов пока нет",
     "org.projects.empty": "В этой организации ещё нет проектов — создайте первый, чтобы подключить SDK и начать принимать события.",
     "org.projects.empty_cta": "Создать первый проект",

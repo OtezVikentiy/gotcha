@@ -214,6 +214,11 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if !strings.Contains(string(body), overviewLinkPath) {
 		t.Fatalf("GET %s body missing link to overview %q: %s", orgProjectsPath, overviewLinkPath, body)
 	}
+	// Карточка проекта держит и прямую ссылку на подключение SDK (фикс-раунд
+	// 1, п.2) — тот же аффорданс, что раньше был у Setup в плоском списке.
+	if !strings.Contains(string(body), setupPath) {
+		t.Fatalf("GET %s body missing link %q: %s", orgProjectsPath, setupPath, body)
+	}
 	// Logout must be reachable: the header renders the logged-in user's
 	// email and a logout form once userEmail is wired through (fix 1).
 	if !strings.Contains(string(body), "onboard-user@example.com") {
