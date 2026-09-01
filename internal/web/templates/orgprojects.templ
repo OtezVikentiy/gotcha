@@ -1,0 +1,98 @@
+package templates
+
+import (
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+)
+
+// projectOverviewPath — «Обзор» проекта (задача 6/7 nav-ia): маршрут ещё не
+// зарегистрирован в этой задаче, ссылка на него ставится заранее — тем же
+// стеком задач, следующим по плану.
+func projectOverviewPath(projectID int64) string {
+	return "/projects/" + strconv.FormatInt(projectID, 10) + "/overview"
+}
+
+// orgProjectCard — карточка одного проекта: имя ведёт в «Обзор», под ним —
+// платформа (тот же чип, что и в плоском списке /projects, projectRow).
+templ orgProjectCard(p org.Project) {
+	<div class="card project-card">
+		<h2 class="card-header"><a href={ templ.URL(projectOverviewPath(p.ID)) }>{ p.Name }</a></h2>
+		<span class="chip">{ i18n.T(ctx, "platform."+p.Platform) }</span>
+	</div>
+}
+
+// OrgProjects — GET /orgs/{id}/projects: плоский список проектов ОДНОЙ
+// организации — дверь для селекта организации в топбаре и дом для создания
+// проекта. canCreate непуст (ровно с одним элементом — этой организацией)
+// только у owner/admin: только им показывается кнопка и модалка создания.
+//
+// Модалка создания перенесена из ProjectsList (renderProjectsList,
+// onboarding.go) без переписывания — те же поля и то же действие
+// POST /projects/new. FormState здесь не нужен: страница не участвует в
+// перерисовке формы на 422 — тот сценарий остаётся у плоского списка (см.
+// renderProjectsList).
+templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, userEmail string) {
+	@layout(i18n.T(ctx, "nav.all_projects")+" "+o.Name, userEmail) {
+		<div class="org-projects">
+			<h1>{ i18n.T(ctx, "nav.all_projects") } { o.Name }</h1>
+			if len(canCreate) > 0 {
+				@createTrigger("new-project", "project.create.title")
+			}
+			if len(items) == 0 {
+				if len(canCreate) > 0 {
+					@emptyState("building", "org.projects.empty.title", "org.projects.empty", "org.projects.empty_cta", "#new-project", 2)
+				} else {
+					@emptyState("building", "org.projects.empty.title", "org.projects.empty", "", "", 2)
+				}
+			} else {
+				<div class="settings-grid">
+					for _, p := range items {
+						@orgProjectCard(p)
+					}
+				</div>
+			}
+			if len(canCreate) > 0 {
+				@createModalOpen("new-project", "project.create.title", false, false) {
+					<form method="post" action="/projects/new" class="project-create-form">
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.org") }
+								<select name="org_id" class="select">
+									for _, oo := range canCreate {
+										<option value={ strconv.FormatInt(oo.ID, 10) } selected>{ oo.Name }</option>
+									}
+								</select>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.slug") }
+								<input type="text" name="slug" required class="input" placeholder="backend-api"/>
+							</label>
+							<span class="hint">{ i18n.T(ctx, "project.create.slug_hint") }</span>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.name") }
+								<input type="text" name="name" required class="input"/>
+							</label>
+						</div>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "project.create.platform") }
+								<select name="platform" required class="select">
+									for _, pl := range org.Platforms {
+										@platformOption(pl, i18n.T(ctx, "platform."+pl), "go")
+									}
+								</select>
+							</label>
+						</div>
+						<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "project.create.submit") }</button>
+					</form>
+				}
+			}
+		</div>
+	}
+}

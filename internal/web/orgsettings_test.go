@@ -206,15 +206,19 @@ func TestWebOrgSettings(t *testing.T) {
 		t.Fatalf("POST %s (reuse) status = %d, want 422: %s", inviteRelPath, resp.StatusCode, body)
 	}
 
-	// /projects показывает ссылку на настройки организации рядом с проектом.
+	// /orgs/{id}/projects (задача 5 nav-ia, дверь взамен плоского /projects)
+	// показывает owner'у кнопку создания проекта — тот же принцип, что раньше
+	// был у ссылки на настройки организации: управляющая кнопка видна только
+	// тому, у кого действие вообще доступно.
 	if _, err := orgSvc.CreateProject(context.Background(), o.ID, "orgsettings-proj", "OrgSettings Proj", "go"); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	projectsResp := getWithCookie(t, s.srv, "/projects", ownerCookie)
+	orgProjectsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/projects"
+	projectsResp := getWithCookie(t, s.srv, orgProjectsPath, ownerCookie)
 	projectsBody, _ := io.ReadAll(projectsResp.Body)
 	projectsResp.Body.Close()
-	if !strings.Contains(string(projectsBody), settingsPath) {
-		t.Fatalf("GET /projects missing org settings link %q: %s", settingsPath, projectsBody)
+	if !strings.Contains(string(projectsBody), `id="new-project"`) {
+		t.Fatalf("GET %s missing create-project trigger: %s", orgProjectsPath, projectsBody)
 	}
 }
 
@@ -437,16 +441,20 @@ func TestWebManageLinksVisibility(t *testing.T) {
 			t.Fatalf("GET %s (%s): Project settings link present = %v, want %v: %s", issuesPath, tc.descriptor, got, tc.wantLink, body)
 		}
 
-		projResp := getWithCookie(t, s.srv, "/projects", tc.cookie)
+		// /orgs/{id}/projects (задача 5 nav-ia, дверь взамен плоского
+		// /projects): любой участник видит страницу, но кнопку создания
+		// проекта — только owner/admin, тот же принцип, что раньше был у
+		// ссылки на настройки организации в плоском списке.
+		orgProjectsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/projects"
+		projResp := getWithCookie(t, s.srv, orgProjectsPath, tc.cookie)
 		projBody, _ := io.ReadAll(projResp.Body)
 		projResp.Body.Close()
 		if projResp.StatusCode != http.StatusOK {
-			t.Fatalf("GET /projects (%s) status = %d, want 200: %s", tc.descriptor, projResp.StatusCode, projBody)
+			t.Fatalf("GET %s (%s) status = %d, want 200: %s", orgProjectsPath, tc.descriptor, projResp.StatusCode, projBody)
 		}
-		orgSettingsHref := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
-		gotOrg := strings.Contains(string(projBody), orgSettingsHref)
-		if gotOrg != tc.wantLink {
-			t.Fatalf("GET /projects (%s): Org settings link present = %v, want %v: %s", tc.descriptor, gotOrg, tc.wantLink, projBody)
+		gotCreate := strings.Contains(string(projBody), `id="new-project"`)
+		if gotCreate != tc.wantLink {
+			t.Fatalf("GET %s (%s): create-project trigger present = %v, want %v: %s", orgProjectsPath, tc.descriptor, gotCreate, tc.wantLink, projBody)
 		}
 	}
 }

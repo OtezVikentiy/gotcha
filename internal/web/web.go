@@ -608,7 +608,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /docs", h.requireUser(http.HandlerFunc(h.docsIndex)))
 	inner.Handle("GET /docs/{slug}", h.requireUser(http.HandlerFunc(h.docsPage)))
 	inner.Handle("GET /about", h.requireUser(http.HandlerFunc(h.aboutPage)))
-	inner.Handle("GET /projects", h.requireUser(http.HandlerFunc(h.projectsList)))
+	inner.Handle("GET /projects", h.requireUser(http.HandlerFunc(h.projectsRedirect)))
 	inner.Handle("POST /projects/new", h.requireUser(http.HandlerFunc(h.projectCreate)))
 	inner.Handle("GET /projects/{id}/setup", h.requireUser(http.HandlerFunc(h.projectSetup)))
 	inner.Handle("GET /projects/{id}/issues", h.requireUser(http.HandlerFunc(h.issuesList)))
@@ -617,6 +617,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /issues/{id}/status", h.requireUser(http.HandlerFunc(h.issueSetStatus)))
 	inner.Handle("POST /issues/{id}/assign", h.requireUser(http.HandlerFunc(h.issueAssign)))
 
+	inner.Handle("GET /orgs/{id}/projects", h.requireUser(http.HandlerFunc(h.orgProjectsPage)))
 	inner.Handle("GET /orgs/{id}/settings", h.requireUser(http.HandlerFunc(h.orgSettingsPage)))
 	inner.Handle("POST /orgs/{id}/settings/role", h.requireUser(http.HandlerFunc(h.orgSettingsRole)))
 	inner.Handle("POST /orgs/{id}/settings/remove", h.requireUser(http.HandlerFunc(h.orgSettingsRemove)))

@@ -34,12 +34,14 @@ func TestWebProjectCreate(t *testing.T) {
 		t.Fatalf("create first project: %v", err)
 	}
 
-	// На странице проектов есть форма создания.
-	resp := getWithCookie(t, s.srv, "/projects", ownerCookie)
+	// На странице проектов организации (/projects теперь лишь дверь туда,
+	// задача 5 nav-ia) есть форма создания.
+	orgProjectsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/projects"
+	resp := getWithCookie(t, s.srv, orgProjectsPath, ownerCookie)
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if !strings.Contains(string(page), `id="new-project"`) {
-		t.Fatalf("на /projects нет формы создания проекта:\n%s", page)
+		t.Fatalf("на %s нет формы создания проекта:\n%s", orgProjectsPath, page)
 	}
 
 	resp = postForm(t, s.srv, "/projects/new", url.Values{

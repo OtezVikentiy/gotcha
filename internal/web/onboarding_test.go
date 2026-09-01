@@ -173,29 +173,46 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET /onboarding (has org) Location = %q, want /", got)
 	}
 
-	// GET /projects → 200, содержит ссылку на созданный проект.
+	// GET /projects → 303 на /orgs/{orgID}/projects (задача 5 nav-ia: дверь
+	// в организацию вместо плоского списка всех проектов).
+	orgID, err := orgSvc.ProjectOrg(context.Background(), projectID)
+	if err != nil {
+		t.Fatalf("project org: %v", err)
+	}
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/projects", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
 	if err != nil {
 		t.Fatalf("get /projects: %v", err)
 	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET /projects status = %d, want 303", resp.StatusCode)
+	}
+	orgProjectsPath := "/orgs/" + strconv.FormatInt(orgID, 10) + "/projects"
+	if got := resp.Header.Get("Location"); got != orgProjectsPath {
+		t.Fatalf("GET /projects Location = %q, want %q", got, orgProjectsPath)
+	}
+
+	// GET /orgs/{id}/projects → 200, содержит ссылку на созданный проект.
+	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+orgProjectsPath, nil)
+	req.AddCookie(cookie)
+	resp, err = noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("get %s: %v", orgProjectsPath, err)
+	}
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /projects status = %d, want 200", resp.StatusCode)
-	}
-	if !strings.Contains(string(body), setupPath) {
-		t.Fatalf("GET /projects body missing link %q: %s", setupPath, body)
+		t.Fatalf("GET %s status = %d, want 200", orgProjectsPath, resp.StatusCode)
 	}
 	if !strings.Contains(string(body), "Backend") {
-		t.Fatalf("GET /projects body missing project name: %s", body)
+		t.Fatalf("GET %s body missing project name: %s", orgProjectsPath, body)
 	}
-	// Project name now links to the issues list, not straight to setup
-	// (fix 2: issues of non-first projects were otherwise unreachable).
-	issuesLinkPath := "/projects/" + projectIDStr + "/issues"
-	if !strings.Contains(string(body), issuesLinkPath) {
-		t.Fatalf("GET /projects body missing link to issues %q: %s", issuesLinkPath, body)
+	overviewLinkPath := "/projects/" + projectIDStr + "/overview"
+	if !strings.Contains(string(body), overviewLinkPath) {
+		t.Fatalf("GET %s body missing link to overview %q: %s", orgProjectsPath, overviewLinkPath, body)
 	}
 	// Logout must be reachable: the header renders the logged-in user's
 	// email and a logout form once userEmail is wired through (fix 1).

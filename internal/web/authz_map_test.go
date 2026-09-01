@@ -178,6 +178,11 @@ var routeAuthz = map[string]string{
 	"GET /docs/{slug}": lvlUser,
 	"GET /about":       lvlUser,
 	"GET /projects":    lvlUser,
+	// GET /orgs/{id}/projects (задача 5 nav-ia) — тот же принцип, что и у
+	// GET /projects: фильтрация до проектов пользователя не в самом гейте, а
+	// в хендлере (orgProjectsPage сверяет членство через h.Org.Role, чужая
+	// организация — 404).
+	"GET /orgs/{id}/projects": lvlUser,
 
 	// --- Доступ к проекту (CanAccessProject — напрямую или через
 	// loadAccessibleIssue/loadAccessibleMonitor/loadAccessiblePerfIssue/

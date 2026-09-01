@@ -500,24 +500,12 @@ func setupSnippets(platform, browserDSN, serverDSN string) []templates.SetupSnip
 	return out
 }
 
-// projectsList — GET /projects: все проекты, доступные текущему юзеру.
-// Для каждого проекта считается canManage (owner/admin организации проекта)
-// — dead link fix (задача 5/2): «Org settings» рядом с проектом должна
-// показываться только тем, кому эта страница вообще доступна. Роль
-// запрашивается по orgID, а не по проекту, и кэшируется в rolesByOrg — юзер
-// может состоять сразу в нескольких проектах одной организации, второй
-// запрос той же роли не нужен.
-func (h *Handler) projectsList(w http.ResponseWriter, r *http.Request) {
-	uid, ok := auth.UserID(r.Context())
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	h.renderProjectsList(w, r, http.StatusOK, uid, nil, "")
-}
-
-// renderProjectsList — общий рендер списка проектов: GET и POST /projects/new
-// на 422 (то же сообщение на месте, без редиректа — как у renderAlerts).
+// renderProjectsList — общий рендер плоского списка проектов пользователя.
+// GET /projects больше сюда не ведёт (см. projectsRedirect, orgprojects.go —
+// задача 5 nav-ia): дверью служит список проектов организации. Эта функция
+// осталась единственной точкой рендера для 422 POST /projects/new — форма
+// создания возвращается открытой на том же плоском списке, откуда бы её ни
+// открыли (та же логика, что и у renderAlerts).
 func (h *Handler) renderProjectsList(w http.ResponseWriter, r *http.Request, status int, uid int64, form templates.FormState, errMsg string) {
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
