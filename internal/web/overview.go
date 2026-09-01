@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -8,8 +9,112 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
+
+// overviewDeployMarkersLimit — потолок числа деплоев, показываемых на
+// шкале обзора (задача 7 nav-ia): деплои внутри окна — вспомогательный
+// контекст для инцидентов, а не отдельный список (за полным списком — на
+// /deployments), поэтому потолок ниже, чем у deploymentsListLimit.
+const overviewDeployMarkersLimit = 20
+
+// overviewNewIssuesWindow — окно «новых проблем» строки состояния: всегда
+// сутки, НЕ переключается вместе с rangeKey «недавно решённых» ниже — это
+// разные вопросы («сколько новых проблем завелось со вчера» вне зависимости
+// от того, какое окно выбрано для просмотра резолвнутых).
+const overviewNewIssuesWindow = 24 * time.Hour
+
+// overviewStatusLine считает три числа строки состояния (§ шаг 3 брифа
+// задачи 7): аптайм за то же окно, что и «недавно решённые» (rangeKey),
+// хосты, у которых прямо сейчас открыт инцидент по порогу, и новые проблемы
+// за последние сутки (фиксированное окно, см. overviewNewIssuesWindow). Все
+// три источника — необязательные поля Handler (Uptime/UptimeQuery,
+// HostIncidents, Issues) и nil-safe: стенд/инстанс без соответствующей
+// подсистемы получает нулевой uptime.UptimeStat{} (плитка покажет «нет
+// данных», тот же uptimeStatTextCtx, что и на странице монитора) либо
+// честный 0 по хостам/проблемам — не 404/панику. Строка состояния должна
+// быть на «Обзоре» по умолчанию (см. докблок overview ниже, тот же принцип,
+// что и у IncidentGroups==nil).
+func (h *Handler) overviewStatusLine(ctx context.Context, projectID int64, rangeSince, rangeTo time.Time) (templates.StatusLine, error) {
+	var sl templates.StatusLine
+
+	if h.Uptime != nil && h.UptimeQuery != nil {
+		monitors, err := h.Uptime.List(ctx, projectID)
+		if err != nil {
+			return templates.StatusLine{}, err
+		}
+		if len(monitors) > 0 {
+			ids := make([]int64, len(monitors))
+			for i, m := range monitors {
+				ids[i] = m.ID
+			}
+			// UptimeBatch без исключения окон обслуживания — та же точность,
+			// что у сырой колонки списка мониторов (monitors.templ), не
+			// точность страницы монитора (та вычитает maintenance windows
+			// отдельным запросом): строке состояния «Обзора» это не по
+			// карману на каждый заход.
+			batch, err := h.UptimeQuery.UptimeBatch(ctx, ids, rangeSince, rangeTo)
+			if err != nil {
+				return templates.StatusLine{}, err
+			}
+			var sum uptime.UptimeStat
+			for _, st := range batch {
+				sum.Total += st.Total
+				sum.OK += st.OK
+			}
+			sl.Uptime = sum
+		}
+	}
+
+	if h.HostIncidents != nil {
+		incidents, err := h.HostIncidents.ListOpenByProject(ctx, projectID)
+		if err != nil {
+			return templates.StatusLine{}, err
+		}
+		hosts := make(map[int64]bool, len(incidents))
+		for _, in := range incidents {
+			hosts[in.HostID] = true
+		}
+		sl.HostsOverThreshold = len(hosts)
+	}
+
+	if h.Issues != nil {
+		n, err := h.Issues.CountNewSince(ctx, projectID, time.Now().Add(-overviewNewIssuesWindow))
+		if err != nil {
+			return templates.StatusLine{}, err
+		}
+		sl.NewIssues24h = n
+	}
+
+	return sl, nil
+}
+
+// overviewDeployMarkers — деплои проекта в том же временном окне, что и
+// секция «недавно решённые» (rangeKey/since — тот же параметр, что заводит
+// её ниже по overview()): деплои ложатся на ту же временную ось, что и
+// инциденты, чтобы вопрос «после выкатки или само» решался на одном экране
+// (§ шаг 3 брифа задачи 7). h.Deploy == nil (стенд/инстанс без подсистемы
+// C5) — nil-safe, пустой срез, тот же принцип, что и у IncidentGroups/Hosts
+// выше: «Обзор» не 404-ит на отсутствующей опциональной фиче.
+func (h *Handler) overviewDeployMarkers(ctx context.Context, projectID int64, since, now time.Time) ([]templates.DeploymentRow, error) {
+	if h.Deploy == nil {
+		return nil, nil
+	}
+	deps, err := h.Deploy.List(ctx, projectID, since, now, overviewDeployMarkersLimit)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]templates.DeploymentRow, len(deps))
+	for i, d := range deps {
+		rows[i] = templates.DeploymentRow{
+			Version:     d.Version,
+			Environment: d.Environment,
+			DeployedAt:  d.DeployedAt,
+		}
+	}
+	return rows, nil
+}
 
 // overviewClosedGroupsLimit/overviewClosedOutOfGroupLimit — потолки ДВУХ
 // независимых запросов секции «недавно решённые» (перенесены с прежней
@@ -104,7 +209,8 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rangeKey := overviewRangeKey(r)
-	since := time.Now().Add(-overviewRangeWindows[rangeKey])
+	now := time.Now()
+	since := now.Add(-overviewRangeWindows[rangeKey])
 
 	caps := templates.FeedCaps{
 		OpenGroups:   incidentgroup.MaxOpenGroups,
@@ -159,7 +265,18 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = templates.Overview(projectID, rangeKey, openCards, outOfGroup, closedCards, closed, caps, canOperate, h.currentEmail(r)).Render(r.Context(), w)
+	statusLine, err := h.overviewStatusLine(r.Context(), projectID, since, now)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	deploys, err := h.overviewDeployMarkers(r.Context(), projectID, since, now)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+
+	_ = templates.Overview(projectID, rangeKey, openCards, outOfGroup, closedCards, closed, caps, canOperate, statusLine, deploys, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // incidentFeedRedirect — GET /projects/{id}/incident-feed: старый адрес

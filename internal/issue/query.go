@@ -549,6 +549,22 @@ func (s *Service) ActiveSince(ctx context.Context, projectID int64, since time.T
 	return out, nil
 }
 
+// CountNewSince возвращает число issue проекта, у которых first_seen >=
+// since — «строка состояния» Обзора (задача 7 nav-ia) считает так «новые
+// проблемы за сутки», в отличие от ActiveSince выше (та фильтрует по
+// last_seen — «недавно шумевшие», включая давно заведённые issue с новым
+// событием). COUNT(*) вместо выборки строк: странице нужно только число.
+func (s *Service) CountNewSince(ctx context.Context, projectID int64, since time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM issues WHERE project_id = $1 AND first_seen >= $2",
+		projectID, since).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("issue: count new since: %w", err)
+	}
+	return n, nil
+}
+
 // Get возвращает issue по id (с AssigneeEmail) или ErrNotFound.
 // ByIDs возвращает группы проекта по списку идентификаторов.
 //

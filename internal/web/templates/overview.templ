@@ -5,7 +5,26 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
+
+// StatusLine — три числа строки состояния «Обзора» (задача 7 nav-ia): ответ
+// на «дом горит?» с одного экрана, каждое число — ссылка в свой раздел
+// (см. statusLine ниже). Uptime — доля успешных проверок за то же окно, что
+// и секция «недавно решённые» (rangeKey); нулевой uptime.UptimeStat{} (нет
+// мониторов или подсистема не подключена) рисуется как «нет данных» тем же
+// uptimeStatTextCtx, что и на странице монитора. HostsOverThreshold/
+// NewIssues24h — простые счётчики, 0 — легитимное («всё спокойно»)
+// значение, не «нет данных» (в отличие от Uptime, у них нет отдельного
+// признака «подсистема недоступна» — web.overviewStatusLine оставляет 0 и
+// когда HostIncidents/Issues пустые данными, и когда сервис не подключён:
+// разница между «спокойно» и «нечем измерить» здесь не имеет отдельного
+// действия для читателя).
+type StatusLine struct {
+	Uptime             uptime.UptimeStat
+	HostsOverThreshold int
+	NewIssues24h       int64
+}
 
 // overviewRangeHref — ссылка переключателя окна «недавно решённые»: 24ч —
 // канонический адрес без параметра (умолчание, не грязнит URL закладок),
@@ -32,6 +51,65 @@ templ overviewRangeTab(projectID int64, value, rangeKey string) {
 	<a class={ overviewRangeTabClass(value == rangeKey) } href={ templ.URL(overviewRangeHref(projectID, value)) } if value == rangeKey { aria-current="page" }>{ i18n.T(ctx, "range."+value) }</a>
 }
 
+// statusLine — строка состояния (§ шаг 3 брифа задачи 7): три плитки,
+// повторяющие вёрстку .stat-tile (monitordetail/hostdetail/slodetail), но
+// каждая — ссылка на свой раздел, а не просто число. .monitor-meta —
+// тот же контейнер-строка, что и у тех страниц (flex-item блокируется сам,
+// без отдельного правила display на ссылке); своей новой сетки под три
+// плитки не заводим.
+templ statusLine(projectID int64, sl StatusLine) {
+	<div class="monitor-meta">
+		<a class="stat-tile" href={ templ.URL(monitorsPath(projectID)) }>
+			<div class="stat-label">{ i18n.T(ctx, "overview.status.uptime") }</div>
+			<div class="stat-value">{ uptimeStatTextCtx(ctx, sl.Uptime) }</div>
+		</a>
+		<a class="stat-tile" href={ templ.URL(hostsBasePath(projectID)) }>
+			<div class="stat-label">{ i18n.T(ctx, "overview.status.hosts_over_threshold") }</div>
+			<div class="stat-value">{ strconv.Itoa(sl.HostsOverThreshold) }</div>
+		</a>
+		<a class="stat-tile" href={ templ.URL(issuesPath(projectID)) }>
+			<div class="stat-label">{ i18n.T(ctx, "overview.status.new_issues") }</div>
+			<div class="stat-value">{ strconv.FormatInt(sl.NewIssues24h, 10) }</div>
+		</a>
+	</div>
+}
+
+// overviewDeploys — маркеры деплоев (C5) на той же временной оси, что и
+// секция «недавно решённые» ниже (то же окно rangeKey/since, см.
+// web.overviewDeployMarkers): читатель видит и деплой, и инциденты того же
+// окна на одном экране — «после выкатки или само» решается без похода на
+// /deployments. Пусто → секция не рисуется вовсе (в отличие от групп
+// инцидентов, деплои — вспомогательный контекст, не первичное содержимое
+// страницы, отдельного пустого состояния не заслуживают).
+templ overviewDeploys(projectID int64, deploys []DeploymentRow) {
+	if len(deploys) > 0 {
+		<h2>{ i18n.T(ctx, "deploy.title") }</h2>
+		<div class="card">
+			@scrollRegion("table-scroll", "deploy.title") {
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th scope="col">{ i18n.T(ctx, "deploy.table.version") }</th>
+							<th scope="col">{ i18n.T(ctx, "deploy.table.environment") }</th>
+							<th scope="col">{ i18n.T(ctx, "deploy.table.when") }</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, d := range deploys {
+							<tr>
+								<td>{ d.Version }</td>
+								<td>{ d.Environment }</td>
+								<td>@relativeTime(d.DeployedAt)</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+			<p class="hint"><a href={ templ.URL(deploymentsPath(projectID)) }>{ i18n.T(ctx, "overview.deploys.view_all") }</a></p>
+		</div>
+	}
+}
+
 // Overview — GET /projects/{id}/overview (задача 6 nav-ia): первый экран
 // проекта, шкала инцидентов. Тело страницы — прежняя /incident-feed БЕЗ
 // урезания (инвентаризация, см. докблок web.overview): открытые группы и
@@ -44,13 +122,15 @@ templ overviewRangeTab(projectID int64, value, rangeKey string) {
 // «нет данных» по трём секциям сразу, а одно приглашение подключить SDK,
 // ссылкой на «Первые шаги» — три одинаковых «здесь пока пусто» подряд на
 // первом экране проекта выглядели бы как поломка, а не как чистый старт.
-templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, caps FeedCaps, canOperate bool, userEmail string) {
+templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, caps FeedCaps, canOperate bool, sl StatusLine, deploys []DeploymentRow, userEmail string) {
 	{{ closedIDs := closedGroupIDSet(closedGroups) }}
 	{{ empty := len(openGroups) == 0 && len(outOfGroup) == 0 && len(closedGroups) == 0 && len(closed) == 0 }}
 	@layout(i18n.T(ctx, "overview.title"), userEmail) {
 		<div class="incident-feed">
 			<h1>{ i18n.T(ctx, "overview.title") }</h1>
 			<p class="hint">{ i18n.T(ctx, "feed.see_incidents_hint") }<a href={ templ.URL(incidentsPath(projectID)) }>{ i18n.T(ctx, "nav.incidents") }</a>{ i18n.T(ctx, "feed.see_incidents_hint_suffix") }</p>
+			@statusLine(projectID, sl)
+			@overviewDeploys(projectID, deploys)
 			@helpPanel("feed", "incident-groups")
 			if empty {
 				@emptyState("home", "overview.empty.title", "overview.empty.body", "getting_started.title", projectSetupPath(projectID), 2)

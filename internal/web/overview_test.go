@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -689,3 +690,61 @@ func TestCookieOnlyDecidesTheDoor(t *testing.T) {
 // (projcookie_test.go) — the authoritative test for that logic, updated in
 // this same task; no separate copy here to avoid duplicate, weaker coverage
 // of the same rule.
+
+// TestOverviewStatusLineIsClickable — строка состояния (задача 7 nav-ia):
+// три числа над шкалой инцидентов, каждое ссылкой в свой раздел (аптайм →
+// мониторы, хосты за порогом → хосты, новые проблемы → issues). Проверяем
+// только наличие живых ссылок, не значения самих чисел — те завязаны на
+// данные, которых в свежесозданном проекте нет ни по одному источнику
+// (h.Uptime/h.HostIncidents/h.Deploy остаются nil в newIssuesStack), а
+// строка обязана рендериться и в этом состоянии (без данных — не значит без
+// ссылок).
+func TestOverviewStatusLineIsClickable(t *testing.T) {
+	s := newIssuesStack(t)
+	uid, cookie := registerAndLogin(t, s, "status@example.com")
+	p := createProject(t, s, uid, "st-org", "st-proj")
+	pid := strconv.FormatInt(p.ID, 10)
+
+	resp := getWithCookie(t, s.srv, "/projects/"+pid+"/overview", cookie)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, href := range []string{"/monitors", "/hosts", "/issues"} {
+		if !strings.Contains(string(body), "/projects/"+pid+href) {
+			t.Errorf("строка состояния не ведёт в %s: мёртвых чисел на обзоре быть не должно", href)
+		}
+	}
+}
+
+// TestOverviewShowsDeployMarkers — деплои (C5) на той же временной оси, что
+// и инциденты (задача 7 nav-ia): деплой внутри окна обзора должен быть
+// виден на странице, чтобы отвечать на вопрос «после выкатки или само».
+func TestOverviewShowsDeployMarkers(t *testing.T) {
+	s := newIssuesStack(t)
+	uid, cookie := registerAndLogin(t, s, "deploy@example.com")
+	p := createProject(t, s, uid, "dep-org", "dep-proj")
+	pid := strconv.FormatInt(p.ID, 10)
+	// Деплой внутри окна обзора. Отдельного помощника вставки в пакете нет:
+	// TestWebDeploymentsScreen (internal/web/deployments_test.go:54) пишет
+	// деплой в БД прямо в теле теста — повторить оттуда те же вызовы,
+	// подставив время внутри последних 24 часов. newIssuesStack не заводит
+	// h.Deploy (стенд задачи 4 issues его не знает) — заводим сами через тот
+	// же deploy.NewStore(s.pool), что и newDeployStack.
+	depSvc := deploy.NewStore(s.pool)
+	s.h.Deploy = depSvc
+
+	const deployVersion = "v1.2.3-overview"
+	if _, err := depSvc.Record(context.Background(), p.ID, deploy.Deployment{
+		Version:     deployVersion,
+		Environment: "prod",
+		DeployedAt:  time.Now().UTC().Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("record deploy: %v", err)
+	}
+
+	resp := getWithCookie(t, s.srv, "/projects/"+pid+"/overview", cookie)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), deployVersion) {
+		t.Fatalf("маркер деплоя %q не попал на шкалу", deployVersion)
+	}
+}

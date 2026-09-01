@@ -41,7 +41,7 @@ func TestOverviewSectionHeadingsAreLiteral(t *testing.T) {
 	)}
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := Overview(1, "24h", openGroups, nil, nil, nil, caps, true, "u@example.com").Render(ctx, &sb); err != nil {
+	if err := Overview(1, "24h", openGroups, nil, nil, nil, caps, true, StatusLine{}, nil, "u@example.com").Render(ctx, &sb); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	out := sb.String()
@@ -59,7 +59,7 @@ func TestOverviewSectionHeadingsAreLiteral(t *testing.T) {
 
 	ctxEN := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	var sbEN strings.Builder
-	if err := Overview(1, "24h", openGroups, nil, nil, nil, caps, true, "u@example.com").Render(ctxEN, &sbEN); err != nil {
+	if err := Overview(1, "24h", openGroups, nil, nil, nil, caps, true, StatusLine{}, nil, "u@example.com").Render(ctxEN, &sbEN); err != nil {
 		t.Fatalf("Render en: %v", err)
 	}
 	outEN := sbEN.String()
@@ -81,7 +81,7 @@ func TestOverviewSectionHeadingsAreLiteral(t *testing.T) {
 		RootName: "web-1",
 	}, nil)
 	var sb2 strings.Builder
-	if err := Overview(1, "24h", nil, nil, []GroupCard{group}, nil, caps, true, "u@example.com").Render(ctx, &sb2); err != nil {
+	if err := Overview(1, "24h", nil, nil, []GroupCard{group}, nil, caps, true, StatusLine{}, nil, "u@example.com").Render(ctx, &sb2); err != nil {
 		t.Fatalf("Render closed group: %v", err)
 	}
 	if !strings.Contains(sb2.String(), "решена") {
@@ -204,7 +204,7 @@ func TestOverviewSeeIncidentsHintIsLiteral(t *testing.T) {
 	caps := FeedCaps{OpenGroups: 50, OutOfGroup: 50, ClosedGroups: 50, ClosedItems: 50}
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := Overview(1, "24h", nil, nil, nil, nil, caps, true, "u@example.com").Render(ctx, &sb); err != nil {
+	if err := Overview(1, "24h", nil, nil, nil, nil, caps, true, StatusLine{}, nil, "u@example.com").Render(ctx, &sb); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	out := sb.String()
@@ -220,7 +220,7 @@ func TestOverviewSeeIncidentsHintIsLiteral(t *testing.T) {
 
 	ctxEN := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	var sbEN strings.Builder
-	if err := Overview(1, "24h", nil, nil, nil, nil, caps, true, "u@example.com").Render(ctxEN, &sbEN); err != nil {
+	if err := Overview(1, "24h", nil, nil, nil, nil, caps, true, StatusLine{}, nil, "u@example.com").Render(ctxEN, &sbEN); err != nil {
 		t.Fatalf("Render en: %v", err)
 	}
 	outEN := sbEN.String()
@@ -251,7 +251,7 @@ func TestOverviewClosedEmptyBodyHasNoStaleCap(t *testing.T) {
 	)}
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := Overview(1, "24h", openGroups, nil, nil, nil, caps, true, "u@example.com").Render(ctx, &sb); err != nil {
+	if err := Overview(1, "24h", openGroups, nil, nil, nil, caps, true, StatusLine{}, nil, "u@example.com").Render(ctx, &sb); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	out := sb.String()

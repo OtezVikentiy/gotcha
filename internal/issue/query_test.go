@@ -271,6 +271,67 @@ func TestListFilterAndStatus(t *testing.T) {
 	}
 }
 
+// TestCountNewSince — в отличие от ActiveSince (фильтр по last_seen —
+// «недавно шумевшие»), CountNewSince фильтрует по first_seen: повторный
+// Upsert старого issue с недавним seenAt (last_seen подвинулся, first_seen —
+// нет) не должен считаться «новым» (используется строкой состояния Обзора,
+// задача 7 nav-ia).
+func TestCountNewSince(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+	otherPID := newOtherProject(t, pool)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+
+	// fp-old: first_seen at t0, then re-upserted at t0+10s (only last_seen
+	// moves).
+	if _, err := svc.Upsert(ctx, pid, "fp-old", "old issue", "", "error", "", t0); err != nil {
+		t.Fatalf("upsert fp-old: %v", err)
+	}
+	if _, err := svc.Upsert(ctx, pid, "fp-old", "old issue", "", "error", "", t0.Add(10*time.Second)); err != nil {
+		t.Fatalf("re-upsert fp-old: %v", err)
+	}
+	// fp-new: first (and only) seen at t0+5s.
+	if _, err := svc.Upsert(ctx, pid, "fp-new", "new issue", "", "error", "", t0.Add(5*time.Second)); err != nil {
+		t.Fatalf("upsert fp-new: %v", err)
+	}
+	// Other project's issue must not leak into pid's count.
+	if _, err := svc.Upsert(ctx, otherPID, "fp-other", "other project issue", "", "error", "", t0.Add(5*time.Second)); err != nil {
+		t.Fatalf("upsert fp-other: %v", err)
+	}
+
+	// Cutoff at t0+1s: only fp-new (first_seen=t0+5s) qualifies; fp-old's
+	// first_seen (t0) is before the cutoff even though it was touched again
+	// at t0+10s.
+	n, err := svc.CountNewSince(ctx, pid, t0.Add(time.Second))
+	if err != nil {
+		t.Fatalf("CountNewSince: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("CountNewSince(t0+1s) = %d, want 1 (only fp-new)", n)
+	}
+
+	// Cutoff before everything: both of pid's issues, none from otherPID.
+	all, err := svc.CountNewSince(ctx, pid, t0.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("CountNewSince (all): %v", err)
+	}
+	if all != 2 {
+		t.Fatalf("CountNewSince(all) = %d, want 2", all)
+	}
+
+	// Cutoff in the future: nothing qualifies.
+	none, err := svc.CountNewSince(ctx, pid, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CountNewSince (future): %v", err)
+	}
+	if none != 0 {
+		t.Fatalf("CountNewSince(future) = %d, want 0", none)
+	}
+}
+
 // TestUpsertWritesIssueEnvironments проверяет, что Upsert денормализует
 // environment в issue_environments (без дублей и без пустых строк).
 func TestUpsertWritesIssueEnvironments(t *testing.T) {
