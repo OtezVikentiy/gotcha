@@ -16,22 +16,29 @@ func TestAreaForPath(t *testing.T) {
 	}{
 		{"/projects/7/issues", "issues"},
 		{"/projects/7/exports", "issues"},
+		{"/projects/7/perf-issues", "issues"},
+		{"/projects/7/regressions", "issues"},
 		{"/issues/9", "issues"},
 		{"/projects/7/web-vitals", "performance"},
+		{"/projects/7/profile-regressions", "performance"},
 		{"/traces/abc", "performance"},
-		{"/projects/7/metrics/alerts", "metrics"},
-		{"/projects/7/recipes", "metrics"},
-		{"/projects/7/recipes/redis", "metrics"},
+		{"/projects/7/metrics/alerts", "alerts"},
+		{"/projects/7/recipes", "settings"},
+		{"/projects/7/recipes/redis", "settings"},
 		{"/projects/5/hosts", "hosts"},
-		{"/projects/5/hosts/settings", "hosts"},
+		{"/projects/5/hosts/settings", "alerts"},
 		{"/projects/5/hosts/web-1", "hosts"},
 		{"/projects/5/logs", "logs"},
 		{"/monitors/3", "uptime"},
 		{"/projects/7/alerts", "alerts"},
 		{"/projects/7/slos", "alerts"},
 		{"/projects/7/escalations", "alerts"},
+		{"/projects/7/maintenance", "alerts"},
+		{"/projects/7/statuspages", "settings"},
 		{"/orgs/5/teams", "org"},
-		{"/projects", "org"},
+		// «Организация» упразднена: /projects больше не мапится ни на
+		// какую область рейла (страница переезжает в задачах 5–7).
+		{"/projects", ""},
 		// Настройки проекта — не область рейла (в рейле ничего не
 		// подсвечивается), но сайдбар они наполняют своими пунктами:
 		// иначе там оставался бы один переключатель проекта.
@@ -73,7 +80,9 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/alerts/deliveries", "nav.alert_deliveries"},
 		{"/projects/7/slos", "nav.slo"},
 		{"/projects/7/escalations", "nav.escalations"},
-		{"/projects", "nav.projects"},
+		// «Организация» упразднена: /projects не опознаётся ни одной
+		// областью, общий ключ подставляет вызывающий.
+		{"/projects", ""},
 		{"/projects/7/settings", "nav.project_settings"},
 		{"/docs/glossary", "docs.index.title"},
 		// Неопознанный путь — общий ключ подставляет вызывающий, здесь "".
@@ -95,15 +104,15 @@ func TestAreaForPathExtras(t *testing.T) {
 		{"/projects/7/performance", "performance"},
 		{"/projects/7/profiles", "performance"},
 		{"/projects/7/profile-regressions", "performance"},
-		{"/projects/7/perf-issues", "performance"},
-		{"/projects/7/regressions", "performance"},
+		{"/projects/7/perf-issues", "issues"},
+		{"/projects/7/regressions", "issues"},
 		{"/projects/7/dependencies", "performance"},
 		{"/projects/7/deployments", "performance"},
-		{"/perf-issues/1", "performance"},
+		{"/perf-issues/1", "issues"},
 		{"/projects/7/metrics", "metrics"},
 		{"/projects/7/incidents", "uptime"},
-		{"/projects/7/maintenance", "uptime"},
-		{"/projects/7/statuspages", "uptime"},
+		{"/projects/7/maintenance", "alerts"},
+		{"/projects/7/statuspages", "settings"},
 		{"/statuspages/1", "uptime"},
 		{"/profile", "org"},
 		{"/setup", ""},
@@ -143,15 +152,13 @@ func TestFromContextZeroValue(t *testing.T) {
 func TestSubsectionsPerformance(t *testing.T) {
 	s := Shell{ProjectID: 7, Area: "performance", Path: "/projects/7/web-vitals"}
 	items := Subsections(s)
-	if len(items) != 7 {
-		t.Fatalf("Subsections(performance) len = %d, want 7", len(items))
+	if len(items) != 5 {
+		t.Fatalf("Subsections(performance) len = %d, want 5", len(items))
 	}
 	wantHrefs := []string{
 		"/projects/7/performance",
 		"/projects/7/web-vitals",
 		"/projects/7/profiles",
-		"/projects/7/perf-issues",
-		"/projects/7/regressions",
 		"/projects/7/dependencies",
 		"/projects/7/deployments",
 	}
@@ -159,8 +166,6 @@ func TestSubsectionsPerformance(t *testing.T) {
 		"nav.transactions",
 		"nav.webvitals",
 		"nav.profiles",
-		"nav.perf_issues",
-		"nav.regressions",
 		"nav.dependencies",
 		"nav.deployments",
 	}
@@ -184,199 +189,87 @@ func TestSubsectionsPerformance(t *testing.T) {
 	}
 }
 
-func TestSubsectionsMetricsVsMetricAlertsActive(t *testing.T) {
-	// Plain metrics path activates Metrics, not Recipes/Metric Alerts.
-	s := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics", CanOperate: true}
-	items := Subsections(s)
-	if len(items) != 3 {
-		t.Fatalf("Subsections(metrics) len = %d, want 3 (metrics + recipes + metric_alerts)", len(items))
-	}
-	if !items[0].Active || items[1].Active || items[2].Active {
-		t.Errorf("metrics path: items = %+v, want [Metrics active, Recipes inactive, MetricAlerts inactive]", items)
-	}
-
-	// Metric alerts sub-path activates Metric Alerts, not Metrics.
-	s2 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/metrics/alerts", CanOperate: true}
-	items2 := Subsections(s2)
-	if items2[0].Active || items2[1].Active || !items2[2].Active {
-		t.Errorf("metrics/alerts path: items = %+v, want [Metrics inactive, Recipes inactive, MetricAlerts active]", items2)
-	}
-
-	// Recipes path (и детальная страница рецепта) activates Recipes.
-	s3 := Shell{ProjectID: 7, Area: "metrics", Path: "/projects/7/recipes/redis", CanOperate: true}
-	items3 := Subsections(s3)
-	if items3[0].Active || !items3[1].Active || items3[2].Active {
-		t.Errorf("recipes path: items = %+v, want [Metrics inactive, Recipes active, MetricAlerts inactive]", items3)
-	}
-}
-
-func TestSubsectionsOrgAndEmpty(t *testing.T) {
-	s := Shell{OrgID: 5, CanManage: true, Area: "org", Path: "/orgs/5/teams"}
-	items := Subsections(s)
-	if len(items) != 4 {
-		t.Fatalf("Subsections(org) len = %d, want 4", len(items))
-	}
-	if items[0].Href != "/projects" {
-		t.Errorf("org projects href = %q, want /projects", items[0].Href)
-	}
-	if items[1].Href != "/orgs/5/settings" {
-		t.Errorf("org members href = %q", items[1].Href)
-	}
-	if items[2].Href != "/orgs/5/teams" || !items[2].Active {
-		t.Errorf("org teams item = %+v, want active href /orgs/5/teams", items[2])
-	}
-	if items[3].Href != "/orgs/5/probes" {
-		t.Errorf("org probes href = %q", items[3].Href)
-	}
-
-	empty := Shell{ProjectID: 7, Area: "", Path: "/projects/7/settings"}
-	if got := Subsections(empty); got != nil {
+// TestSubsectionsUnknownAreaIsNil — область без обработчика (в т.ч. пустая
+// строка — до входа в первую область) не рисует сайдбар вовсе.
+func TestSubsectionsUnknownAreaIsNil(t *testing.T) {
+	s := Shell{ProjectID: 7, Area: "", Path: "/projects/7/settings"}
+	if got := Subsections(s); got != nil {
 		t.Errorf("Subsections(\"\") = %+v, want nil", got)
 	}
 }
 
-func TestSubsectionsOrgZeroIDOmitsOrgLinks(t *testing.T) {
-	s := Shell{
-		Area:     "org",
-		OrgID:    0,
-		Projects: []Project{{ID: 1, Slug: "demo"}},
-		Path:     "/projects",
-	}
-	items := Subsections(s)
-	for _, it := range items {
-		if strings.Contains(it.Href, "/orgs/0/") {
-			t.Errorf("Subsections(org, OrgID=0) href = %q, want no /orgs/0/ links", it.Href)
+// TestSubsectionsSettingsOrgGroupGating — группа «Организация» внутри
+// «Настроек» требует одновременно резолвленный OrgID и CanManage: без OrgID
+// ссылки вели бы на /orgs/0/…, что 404-ит, участнику без CanManage они
+// 404-ят независимо от id.
+func TestSubsectionsSettingsOrgGroupGating(t *testing.T) {
+	hasOrgGroup := func(items []NavItem) bool {
+		for _, it := range items {
+			if it.Group == "nav.group.org" {
+				return true
+			}
 		}
-	}
-	if len(items) != 1 || items[0].Href != "/projects" {
-		t.Errorf("Subsections(org, OrgID=0) = %+v, want only the /projects item", items)
+		return false
 	}
 
-	withOrg := Shell{
-		Area:      "org",
-		OrgID:     5,
-		CanManage: true,
-		Path:      "/orgs/5",
+	zeroOrg := Shell{ProjectID: 7, OrgID: 0, CanManage: true, Area: "settings", Path: "/projects/7/settings"}
+	if got := Subsections(zeroOrg); hasOrgGroup(got) {
+		t.Errorf("Subsections(settings, OrgID=0, CanManage=true) содержит группу «Организация»: %+v", got)
 	}
-	got := Subsections(withOrg)
-	want := map[string]bool{
-		"/orgs/5/settings": false,
-		"/orgs/5/teams":    false,
-		"/orgs/5/probes":   false,
+
+	notManaging := Shell{ProjectID: 7, OrgID: 5, CanManage: false, Area: "settings", Path: "/projects/7/settings"}
+	if got := Subsections(notManaging); hasOrgGroup(got) {
+		t.Errorf("Subsections(settings, CanManage=false) содержит группу «Организация»: %+v", got)
 	}
-	for _, it := range got {
-		if _, ok := want[it.Href]; ok {
-			want[it.Href] = true
-		}
-	}
-	for href, found := range want {
-		if !found {
-			t.Errorf("Subsections(org, OrgID=5) missing href %q, got %+v", href, got)
-		}
+
+	managing := Shell{ProjectID: 7, OrgID: 5, CanManage: true, Area: "settings", Path: "/projects/7/settings"}
+	if got := Subsections(managing); !hasOrgGroup(got) {
+		t.Errorf("Subsections(settings, OrgID=5, CanManage=true) не содержит группу «Организация»: %+v", got)
 	}
 }
 
-// TestSubsectionsOrgCanManageGatesManagementLinks — Members/Teams/Probes are
-// owner/admin-only management pages that 404 for plain members; they must
-// only appear when the shell says the user can manage the org, regardless of
-// whether an org id is resolved.
-func TestSubsectionsOrgCanManageGatesManagementLinks(t *testing.T) {
-	base := Shell{
-		Area:     "org",
-		OrgID:    5,
-		Projects: []Project{{ID: 1, Slug: "demo"}},
-		Path:     "/projects",
-	}
-
-	notManaging := base
-	notManaging.CanManage = false
-	got := Subsections(notManaging)
-	if len(got) != 1 || got[0].Href != "/projects" {
-		t.Errorf("Subsections(org, CanManage=false) = %+v, want only the /projects item", got)
-	}
+// TestSubsectionsHideManagementPagesFromMembers — зритель без доступа к
+// проекту не должен видеть в навигации страницы, которые ему отдадут 404.
+//
+// Настройки проекта (CanManage) и статус-страницы (CanOperate) внутри
+// области «Настройки» — та же граница, что раньше стояла у «Организации»:
+// показывать их всем означало отправлять зрителя на страницу, которая
+// молча отдаёт 404.
+func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
+	viewer := Shell{ProjectID: 7, OrgID: 5, Area: "settings", Path: "/projects/7/settings"}
+	got := Subsections(viewer)
 	for _, it := range got {
-		if it.Href == "/orgs/5/teams" || it.Href == "/orgs/5/probes" {
-			t.Errorf("Subsections(org, CanManage=false) unexpectedly includes %q", it.Href)
+		if it.LabelKey == "nav.project_settings" || it.LabelKey == "nav.status_pages" {
+			t.Errorf("зритель видит %q — эта страница отдаёт ему 404: %+v", it.LabelKey, got)
 		}
 	}
 
-	managing := base
-	managing.CanManage = true
-	got = Subsections(managing)
-	want := map[string]bool{
-		"/projects":        false,
-		"/orgs/5/settings": false,
-		"/orgs/5/teams":    false,
-		"/orgs/5/probes":   false,
-	}
+	owner := viewer
+	owner.CanManage = true
+	owner.CanOperate = true
+	got = Subsections(owner)
+	keys := map[string]bool{}
 	for _, it := range got {
-		if _, ok := want[it.Href]; ok {
-			want[it.Href] = true
+		keys[it.LabelKey] = true
+	}
+	for _, key := range []string{"nav.project_settings", "nav.status_pages"} {
+		if !keys[key] {
+			t.Errorf("владелец НЕ видит %q: %+v", key, got)
 		}
 	}
-	for href, found := range want {
-		if !found {
-			t.Errorf("Subsections(org, CanManage=true) missing href %q, got %+v", href, got)
+
+	// Читаемые страницы остаются: мониторы и инциденты доступны зрителю.
+	var monitors, incidents bool
+	for _, it := range Subsections(Shell{ProjectID: 7, OrgID: 5, Area: "uptime", Path: "/projects/7/uptime"}) {
+		switch it.LabelKey {
+		case "nav.monitors":
+			monitors = true
+		case "nav.incidents":
+			incidents = true
 		}
 	}
-}
-
-// TestSubsectionsOperatorGating — пункты мониторинга (metric_alerts,
-// maintenance, status_pages, области alerts) гейтятся CanOperate, а не
-// CanManage: оператор с CanOperate=true и CanManage=false их видит,
-// зритель без CanOperate — нет. Org-пункты и ссылка настроек остаются
-// за CanManage.
-func TestSubsectionsOperatorGating(t *testing.T) {
-	operator := Shell{ProjectID: 7, OrgID: 5, CanOperate: true, CanManage: false}
-	viewer := Shell{ProjectID: 7, OrgID: 5, CanOperate: false, CanManage: false}
-
-	// metrics area: metric_alerts — доступен оператору, не зрителю.
-	operator.Area, operator.Path = "metrics", "/projects/7/metrics"
-	viewer.Area, viewer.Path = "metrics", "/projects/7/metrics"
-	if got := Subsections(operator); len(got) != 3 {
-		t.Errorf("metrics/оператор: len = %d, want 3 (metrics + recipes + metric_alerts), got %+v", len(got), got)
-	}
-	if got := Subsections(viewer); len(got) != 2 {
-		t.Errorf("metrics/зритель: len = %d, want 2 (metrics + recipes), got %+v", len(got), got)
-	}
-
-	// uptime area: maintenance + status_pages — доступны оператору, не зрителю.
-	operator.Area, operator.Path = "uptime", "/projects/7/uptime"
-	viewer.Area, viewer.Path = "uptime", "/projects/7/uptime"
-	if got := Subsections(operator); len(got) != 4 {
-		t.Errorf("uptime/оператор: len = %d, want 4 (monitors+incidents+maintenance+status_pages), got %+v", len(got), got)
-	}
-	if got := Subsections(viewer); len(got) != 2 {
-		t.Errorf("uptime/зритель: len = %d, want 2 (только monitors+incidents), got %+v", len(got), got)
-	}
-
-	// hosts area: host_thresholds — доступен оператору, не зрителю; сам
-	// список хостов виден обоим.
-	operator.Area, operator.Path = "hosts", "/projects/7/hosts"
-	viewer.Area, viewer.Path = "hosts", "/projects/7/hosts"
-	if got := Subsections(operator); len(got) != 2 {
-		t.Errorf("hosts/оператор: len = %d, want 2 (hosts + host_thresholds), got %+v", len(got), got)
-	}
-	if got := Subsections(viewer); len(got) != 1 {
-		t.Errorf("hosts/зритель: len = %d, want 1 (только hosts), got %+v", len(got), got)
-	}
-
-	// alerts area: лента инцидентов (D3) видна и зрителю (lvlAccess), только
-	// конфигурационные подпункты по-прежнему гейтятся CanOperate.
-	operator.Area, operator.Path = "alerts", "/projects/7/alerts"
-	viewer.Area, viewer.Path = "alerts", "/projects/7/alerts"
-	if got := Subsections(operator); len(got) != 6 {
-		t.Errorf("alerts/оператор: len = %d, want 6 (incident_feed+alerts+deliveries+slo+escalations+alert_suppression), got %+v", len(got), got)
-	}
-	if got := Subsections(viewer); len(got) != 1 || got[0].LabelKey != "nav.incident_feed" {
-		t.Errorf("alerts/зритель: got %+v, want ровно nav.incident_feed", got)
-	}
-
-	// org area: не затронута CanOperate, по-прежнему гейтится CanManage —
-	// оператор без CanManage Members/Teams/Probes не видит.
-	operator.Area, operator.Path = "org", "/orgs/5/teams"
-	if got := Subsections(operator); len(got) != 1 {
-		t.Errorf("org/оператор(CanManage=false): len = %d, want 1 (только /projects), got %+v", len(got), got)
+	if !monitors || !incidents {
+		t.Error("зритель потерял доступные ему мониторы или инциденты")
 	}
 }
 
@@ -390,23 +283,23 @@ func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
 	base := Shell{ProjectID: 7, Area: "issues", Path: "/projects/7/issues", ExportsEnabled: true}
 
 	viewer := Subsections(base)
-	if len(viewer) != 1 {
-		t.Errorf("зритель: len(Subsections) = %d, want 1 (без exports), got %+v", len(viewer), viewer)
+	if len(viewer) != 3 {
+		t.Errorf("зритель: len(Subsections) = %d, want 3 (errors+perf_issues+regressions, без exports), got %+v", len(viewer), viewer)
 	}
 
 	base.CanOperate = true
 	operator := Subsections(base)
-	if len(operator) != 2 {
-		t.Fatalf("оператор: len(Subsections) = %d, want 2 (issues+exports), got %+v", len(operator), operator)
+	if len(operator) != 4 {
+		t.Fatalf("оператор: len(Subsections) = %d, want 4 (+exports), got %+v", len(operator), operator)
 	}
-	if operator[1].LabelKey != "nav.exports" || operator[1].Href != "/projects/7/exports" {
-		t.Errorf("оператор: exports item = %+v", operator[1])
+	if operator[3].LabelKey != "nav.exports" || operator[3].Href != "/projects/7/exports" {
+		t.Errorf("оператор: exports item = %+v", operator[3])
 	}
 
 	base.ExportsEnabled = false
 	disabled := Subsections(base)
-	if len(disabled) != 1 {
-		t.Errorf("оператор без ExportsEnabled: len(Subsections) = %d, want 1 (без exports), got %+v", len(disabled), disabled)
+	if len(disabled) != 3 {
+		t.Errorf("оператор без ExportsEnabled: len(Subsections) = %d, want 3 (без exports), got %+v", len(disabled), disabled)
 	}
 }
 
@@ -418,7 +311,7 @@ func TestSubsectionsEffectiveProjectFallback(t *testing.T) {
 		Path:     "/projects/42/issues",
 	}
 	items := Subsections(s)
-	if len(items) != 1 || items[0].Href != "/projects/42/issues" {
+	if len(items) != 3 || items[0].Href != "/projects/42/issues" {
 		t.Errorf("Subsections(issues, fallback) = %+v", items)
 	}
 	if !items[0].Active {
@@ -457,9 +350,9 @@ func TestAreas(t *testing.T) {
 		if a.ID == "issues" && a.Href != "/projects/7/issues" {
 			t.Errorf("issues area href = %q, want /projects/7/issues", a.Href)
 		}
-		if a.ID == "org" && a.Href != "/projects" {
-			t.Errorf("org area href = %q, want /projects", a.Href)
-		}
+		// Область «Организация» упразднена (Subsections больше не знает
+		// case "org"): footer-иконка рейла ещё не переработана — это
+		// задача 3, здесь её href намеренно не проверяется.
 		if a.ID == "docs" {
 			if a.Href != "/docs" {
 				t.Errorf("docs area href = %q, want /docs", a.Href)
@@ -542,104 +435,22 @@ func TestSubsectionsDocs(t *testing.T) {
 	}
 }
 
-func TestAreasOrgHrefWithOrgID(t *testing.T) {
-	// per brief: org Href -> /projects OR /orgs/{OrgID}/settings depending on context.
-	// We just verify it is one of those two valid forms and is non-empty.
-	s := Shell{OrgID: 5, Area: "org"}
-	areas := Areas(s)
-	for _, a := range areas {
-		if a.ID == "org" {
-			if a.Href == "" {
-				t.Errorf("org area href empty")
-			}
-		}
-	}
-}
-
-// TestSubsectionsHideManagementPagesFromMembers — зритель без доступа к
-// проекту не должен видеть в навигации страницы, которые ему отдадут 404.
-//
-// Правила по метрикам, окна обслуживания, статус-страницы и обе страницы
-// оповещений требуют оператора проекта (requireProjectOperator — участник
-// команды проекта или owner/admin, см. nav.Shell.CanOperate). Показывали их
-// всем: человек тыкал в пункт, нарисованный самим продуктом, и попадал на
-// «страницы нет» — без намёка, что дело в роли. Область «Организация» этот
-// принцип соблюдала с самого начала, остальные — нет.
-func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
-	viewer := func(area string) []NavItem {
-		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area})
-	}
-	operator := func(area string) []NavItem {
-		return Subsections(Shell{ProjectID: 7, OrgID: 5, Area: area, Path: "/projects/7/" + area, CanOperate: true})
-	}
-
-	hiddenFromViewer := map[string][]string{
-		"metrics": {"nav.metric_alerts"},
-		"uptime":  {"nav.maintenance", "nav.status_pages"},
-		"alerts":  {"nav.alerts", "nav.alert_deliveries", "nav.slo", "nav.escalations", "nav.alert_suppression"},
-	}
-	for area, hidden := range hiddenFromViewer {
-		got := viewer(area)
-		for _, it := range got {
-			for _, key := range hidden {
-				if it.LabelKey == key {
-					t.Errorf("область %q: зритель видит %q — эта страница отдаёт ему 404", area, key)
-				}
-			}
-		}
-		// Оператор их видит — иначе фильтр забрал бы лишнее.
-		operatorKeys := map[string]bool{}
-		for _, it := range operator(area) {
-			operatorKeys[it.LabelKey] = true
-		}
-		for _, key := range hidden {
-			if !operatorKeys[key] {
-				t.Errorf("область %q: оператор НЕ видит %q", area, key)
-			}
-		}
-	}
-
-	// Читаемые страницы остаются: мониторы и инциденты доступны зрителю.
-	var monitors, incidents bool
-	for _, it := range viewer("uptime") {
-		switch it.LabelKey {
-		case "nav.monitors":
-			monitors = true
-		case "nav.incidents":
-			incidents = true
-		}
-	}
-	if !monitors || !incidents {
-		t.Error("зритель потерял доступные ему мониторы или инциденты")
-	}
-}
-
 // TestAreasHideAreaWithNothingVisible — область рейла, у которой для этого
 // человека нет ни одного доступного подраздела, не показывается: иначе иконка
-// вела бы прямиком на 404 (см. Areas: href == "" → continue). До D3 таким
-// примером была «Оповещения» для зрителя (вся область гейтилась целиком);
-// с лентой инцидентов (D3, lvlAccess) «Оповещения» видна всем — зритель
-// теперь идёт по этой иконке на incident-feed, а не проваливается в 404,
-// оператор — туда же (subs[0] — лента, см. Subsections case "alerts").
+// вела бы прямиком на 404 (см. Areas: href == "" → continue). С переездом
+// ленты инцидентов в «Обзор» (задача 7) «Оповещения» снова целиком требуют
+// CanOperate (см. Subsections case "alerts") — зритель эту область не видит,
+// оператор идёт по иконке на первый пункт группы «Правила».
 func TestAreasHideAreaWithNothingVisible(t *testing.T) {
 	viewerAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues"})
-	var viewerHref string
-	var found bool
 	for _, a := range viewerAreas {
 		if a.ID == "alerts" {
-			found = true
-			viewerHref = a.Href
+			t.Errorf("зритель не должен видеть область «Оповещения»: %+v", a)
 		}
-	}
-	if !found {
-		t.Fatal("зритель должен видеть область «Оповещения» — лента инцидентов доступна ему по lvlAccess")
-	}
-	if viewerHref != "/projects/7/incident-feed" {
-		t.Errorf("зритель: alerts.Href = %q, want /projects/7/incident-feed", viewerHref)
 	}
 
 	operatorAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues", CanOperate: true})
-	found = false
+	var found bool
 	var operatorHref string
 	for _, a := range operatorAreas {
 		if a.ID == "alerts" {
@@ -650,8 +461,8 @@ func TestAreasHideAreaWithNothingVisible(t *testing.T) {
 	if !found {
 		t.Error("оператор потерял область «Оповещения»")
 	}
-	if operatorHref != "/projects/7/incident-feed" {
-		t.Errorf("оператор: alerts.Href = %q, want /projects/7/incident-feed", operatorHref)
+	if operatorHref != "/projects/7/alerts" {
+		t.Errorf("оператор: alerts.Href = %q, want /projects/7/alerts", operatorHref)
 	}
 }
 
@@ -696,20 +507,17 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("пустая область → %q, want issues-фолбэк", got)
 	}
 
-	// C1 (обновлено D3): CanOperate — флаг ТЕКУЩЕГО проекта (участник
-	// команды проекта), а не целевого, и раньше это делало «Оповещения»
-	// небезопасными для per-project-переноса — item[0] мог оказаться
-	// operator-гейтнутой страницей /alerts, которая 404-ит на проекте, где
-	// пользователь не оператор. С лентой инцидентов (D3, lvlAccess) item[0]
-	// области "alerts" теперь всегда несёт incident-feed независимо от
-	// CanOperate (см. Subsections case "alerts"), так что перенесённый
-	// флаг больше не может увести на operator-гейтнутую первую ссылку —
-	// переключатель безопасно остаётся в «Оповещениях» вместо
-	// issues-фолбэка.
+	// C1: CanOperate — флаг ТЕКУЩЕГО проекта (участник команды проекта), а
+	// не целевого. С переездом ленты инцидентов в «Обзор» (задача 7) item[0]
+	// области "alerts" снова целиком гейтится CanOperate (см. Subsections
+	// case "alerts") — перенесённый флаг ведёт на первый пункт группы
+	// «Правила» для ТЕКУЩЕГО проекта: если на целевом проекте пользователь
+	// не оператор, эта ссылка 404-ит (тот же класс риска, что и раньше у
+	// остальных operator-гейтнутых первых пунктов, до появления ленты).
 	shell.Area = "alerts"
 	shell.CanOperate = true
-	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/incident-feed" {
-		t.Errorf("alerts с CanOperate=true текущего проекта → %q, want /projects/2/incident-feed", got)
+	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/alerts" {
+		t.Errorf("alerts с CanOperate=true текущего проекта → %q, want /projects/2/alerts", got)
 	}
 }
 
@@ -737,5 +545,86 @@ func TestGroupedSubsectionsSkipsEmptyGroups(t *testing.T) {
 	// оставлять после себя пустой заголовок.
 	if got := groupItems(items[0:1]); len(got) != 1 || got[0].LabelKey != "" {
 		t.Fatalf("groupItems(single ungrouped) = %#v, want one headerless group", got)
+	}
+}
+
+// TestSubsectionsTargetLayout — целевая раскладка подразделов (спека §4,
+// задача 2): переезды находок детекторов в «Проблемы», три группы в
+// «Оповещениях», новая область «Настройки» с проектной и организационной
+// группами, упразднение «Организации». Дополнительные операторские кейсы
+// для metrics/hosts/uptime/settings защищают от разрастания областей,
+// которые с этой задачи больше не гейтятся ролью вовсе.
+func TestSubsectionsTargetLayout(t *testing.T) {
+	base := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3}
+
+	operator := base
+	operator.CanOperate = true
+	admin := operator
+	admin.CanManage = true
+
+	cases := []struct {
+		name string
+		s    Shell
+		area string
+		want []string // пары "ключ_группы|ключ_пункта"
+	}{
+		{"проблемы: участник", base, "issues", []string{
+			"|nav.errors", "|nav.perf_issues", "|nav.regressions",
+		}},
+		{"аптайм: инциденты переименованы", base, "uptime", []string{
+			"|nav.monitors", "|nav.incidents",
+		}},
+		{"аптайм: оператор — по-прежнему без роста", operator, "uptime", []string{
+			"|nav.monitors", "|nav.incidents",
+		}},
+		{"оповещения: участник не видит ничего", base, "alerts", nil},
+		{"оповещения: оператор видит три группы", operator, "alerts", []string{
+			"nav.group.rules|nav.rules_errors",
+			"nav.group.rules|nav.metric_alerts",
+			"nav.group.rules|nav.host_thresholds",
+			"nav.group.rules|nav.slo",
+			"nav.group.silence|nav.maintenance",
+			"nav.group.silence|nav.alert_suppression",
+			"nav.group.delivery|nav.escalations",
+			"nav.group.delivery|nav.alert_deliveries",
+		}},
+		{"настройки: участник видит только проектную часть", base, "settings", []string{
+			"nav.group.project|nav.recipes", "nav.group.project|getting_started.title",
+		}},
+		{"настройки: оператор без CanManage видит статус-страницы, но не проектные настройки и не организацию", operator, "settings", []string{
+			"nav.group.project|nav.status_pages",
+			"nav.group.project|nav.recipes",
+			"nav.group.project|getting_started.title",
+		}},
+		{"настройки: владелец видит обе группы", admin, "settings", []string{
+			"nav.group.project|nav.project_settings",
+			"nav.group.project|nav.status_pages",
+			"nav.group.project|nav.recipes",
+			"nav.group.project|getting_started.title",
+			"nav.group.org|nav.members",
+			"nav.group.org|nav.teams",
+			"nav.group.org|nav.probes",
+		}},
+		{"метрики: одна страница", base, "metrics", []string{"|nav.metrics"}},
+		{"метрики: оператор — по-прежнему без роста", operator, "metrics", []string{"|nav.metrics"}},
+		{"хосты: одна страница", base, "hosts", []string{"|nav.hosts"}},
+		{"хосты: оператор — по-прежнему без роста", operator, "hosts", []string{"|nav.hosts"}},
+		{"организация упразднена", admin, "org", nil},
+	}
+
+	for _, c := range cases {
+		s := c.s
+		s.Area = c.area
+		var got []string
+		for _, it := range Subsections(s) {
+			key := it.LabelKey
+			if key == "" {
+				key = it.Label
+			}
+			got = append(got, it.Group+"|"+key)
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: Subsections = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

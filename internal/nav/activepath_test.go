@@ -13,13 +13,13 @@ func TestSubsectionsHighlightDetailPages(t *testing.T) {
 		area string
 		want string // LabelKey активного пункта
 	}{
-		{"/issues/42", "issues", "nav.issues"},
-		{"/perf-issues/218", "performance", "nav.perf_issues"},
+		{"/issues/42", "issues", "nav.errors"},
+		{"/perf-issues/218", "issues", "nav.perf_issues"},
 		{"/traces/abc123", "performance", "nav.transactions"},
 		{"/monitors/7", "uptime", "nav.monitors"},
 		// Обычные пути продолжают работать как раньше.
 		{"/projects/5/web-vitals", "performance", "nav.webvitals"},
-		{"/projects/5/metrics/alerts", "metrics", "nav.metric_alerts"},
+		{"/projects/5/metrics/alerts", "alerts", "nav.metric_alerts"},
 	}
 	for _, c := range cases {
 		// CanManage/CanOperate: подразделы фильтруются по роли (по обоим

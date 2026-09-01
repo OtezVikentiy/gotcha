@@ -176,13 +176,13 @@ func AreaForPath(path string) string {
 		return "docs"
 	case strings.HasPrefix(path, "/issues"):
 		return "issues"
-	case strings.HasPrefix(path, "/traces/"), strings.HasPrefix(path, "/perf-issues/"):
+	case strings.HasPrefix(path, "/traces/"):
 		return "performance"
+	case strings.HasPrefix(path, "/perf-issues/"):
+		return "issues"
 	case strings.HasPrefix(path, "/monitors/"), strings.HasPrefix(path, "/statuspages/"):
 		return "uptime"
 	case strings.HasPrefix(path, "/orgs/"):
-		return "org"
-	case path == "/projects":
 		return "org"
 	case path == "/profile":
 		return "org"
@@ -196,21 +196,32 @@ func AreaForPath(path string) string {
 		if len(parts) >= 2 {
 			if _, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
 				switch parts[1] {
-				case "issues", "exports":
+				case "issues", "exports", "perf-issues", "regressions":
 					return "issues"
-				case "performance", "web-vitals", "profiles", "profile-regressions", "perf-issues", "regressions", "dependencies", "deployments":
+				case "performance", "web-vitals", "profiles", "profile-regressions", "dependencies", "deployments":
 					return "performance"
-				case "metrics", "recipes":
+				case "metrics":
+					// /metrics/alerts is a rule (когда сработает), grouped
+					// under «Оповещения» with the rest of the alerting
+					// configuration; the plain metrics list stays put.
+					if len(parts) >= 3 && parts[2] == "alerts" {
+						return "alerts"
+					}
 					return "metrics"
 				case "hosts":
+					// /hosts/settings configures thresholds — a rule, same
+					// as above; the host list itself stays put.
+					if len(parts) >= 3 && parts[2] == "settings" {
+						return "alerts"
+					}
 					return "hosts"
 				case "logs":
 					return "logs"
-				case "monitors", "incidents", "maintenance", "statuspages":
+				case "monitors", "incidents":
 					return "uptime"
-				case "alerts", "slos", "escalations", "alert-suppression", "incident-feed":
+				case "alerts", "slos", "escalations", "alert-suppression", "incident-feed", "maintenance":
 					return "alerts"
-				case "settings", "setup":
+				case "statuspages", "recipes", "settings", "setup":
 					// Not a rail area (nothing lights up in the rail), but
 					// it does own the sidebar: without it the sidebar shows
 					// only the project switcher and reads as broken.
@@ -326,16 +337,21 @@ func Subsections(s Shell) []NavItem {
 	var items []NavItem
 	switch s.Area {
 	case "issues":
+		// Находки детекторов (узкие места, регрессии) живут рядом с общим
+		// списком ошибок — все три читают один и тот же поток проблем
+		// проекта, различаясь только источником детекции.
 		items = []NavItem{
-			{LabelKey: "nav.issues", Href: "/projects/" + effID + "/issues"},
+			{LabelKey: "nav.errors", Href: "/projects/" + effID + "/issues"},
+			{LabelKey: "nav.perf_issues", Href: "/projects/" + effID + "/perf-issues"},
+			{LabelKey: "nav.regressions", Href: "/projects/" + effID + "/regressions"},
 		}
 		// Выгрузки ошибок (E1, задача 11) — та же граница CanOperate, что и
-		// у остальных мутирующих подразделов (metric_alerts, maintenance,
-		// exports сама по себе GET, но встаёт в очередь тяжёлой выборки по
-		// ClickHouse — то же требование requireProjectOperator, что у
-		// хендлеров создания/скачивания/удаления заявки). ExportsEnabled —
-		// сверх CanOperate: на инстансе без каталога выгрузок (h.Exports ==
-		// nil) пункт меню не показывается вовсе, а не ведёт на
+		// у остальных мутирующих подразделов ниже: exports сама по себе GET,
+		// но встаёт в очередь тяжёлой выборки по ClickHouse — то же
+		// требование requireProjectOperator, что у хендлеров
+		// создания/скачивания/удаления заявки. ExportsEnabled — сверх
+		// CanOperate: на инстансе без каталога выгрузок (h.Exports == nil)
+		// пункт меню не показывается вовсе, а не ведёт на
 		// страницу-объяснение (ревью веб-части E1, п.3).
 		if s.CanOperate && s.ExportsEnabled {
 			items = append(items,
@@ -347,46 +363,13 @@ func Subsections(s Shell) []NavItem {
 			{LabelKey: "nav.transactions", Href: "/projects/" + effID + "/performance"},
 			{LabelKey: "nav.webvitals", Href: "/projects/" + effID + "/web-vitals"},
 			{LabelKey: "nav.profiles", Href: "/projects/" + effID + "/profiles"},
-			{LabelKey: "nav.perf_issues", Href: "/projects/" + effID + "/perf-issues"},
-			{LabelKey: "nav.regressions", Href: "/projects/" + effID + "/regressions"},
 			{LabelKey: "nav.dependencies", Href: "/projects/" + effID + "/dependencies"},
 			{LabelKey: "nav.deployments", Href: "/projects/" + effID + "/deployments"},
 		}
 	case "metrics":
-		items = []NavItem{
-			{LabelKey: "nav.metrics", Href: "/projects/" + effID + "/metrics"},
-			// Рецепты мониторинга (B6): просмотр открыт всем с доступом к
-			// проекту (как сам список метрик) — без гейта CanOperate; гейт
-			// оператора стоит только на POST создания порогов.
-			{LabelKey: "nav.recipes", Href: "/projects/" + effID + "/recipes"},
-		}
-		// Правила по метрикам, окна обслуживания, статус-страницы и обе
-		// страницы оповещений требуют оператора проекта
-		// (requireProjectOperator: участник команды проекта или owner/
-		// admin). Для зрителя без доступа они отдают 404, а показывали их
-		// всем: человек тыкал в пункт, который ему нарисовал сам продукт, и
-		// попадал на «страницы нет» — без единого намёка, что дело в роли.
-		// Тот же приём, что уже применён к области «Организация» ниже, но
-		// там скоуп организационный (CanManage), здесь — проектный
-		// (CanOperate).
-		if s.CanOperate {
-			items = append(items,
-				NavItem{LabelKey: "nav.metric_alerts", Href: "/projects/" + effID + "/metrics/alerts"},
-			)
-		}
+		items = []NavItem{{LabelKey: "nav.metrics", Href: "/projects/" + effID + "/metrics"}}
 	case "hosts":
-		items = []NavItem{
-			{LabelKey: "nav.hosts", Href: "/projects/" + effID + "/hosts"},
-		}
-		// Пороги хостов — та же граница CanOperate, что у остальных
-		// мутирующих подразделов (metric_alerts, maintenance, status_pages
-		// выше): просмотр списка хостов открыт всем с доступом к проекту,
-		// настройка порогов — только оператору мониторинга.
-		if s.CanOperate {
-			items = append(items,
-				NavItem{LabelKey: "nav.host_thresholds", Href: "/projects/" + effID + "/hosts/settings"},
-			)
-		}
+		items = []NavItem{{LabelKey: "nav.hosts", Href: "/projects/" + effID + "/hosts"}}
 	case "logs":
 		// Просмотрщик логов (задача 2, C2): единственный подраздел —
 		// список открыт всем с доступом к проекту, как и hosts выше (не
@@ -399,34 +382,24 @@ func Subsections(s Shell) []NavItem {
 			{LabelKey: "nav.monitors", Href: "/projects/" + effID + "/monitors"},
 			{LabelKey: "nav.incidents", Href: "/projects/" + effID + "/incidents"},
 		}
-		if s.CanOperate {
-			items = append(items,
-				NavItem{LabelKey: "nav.maintenance", Href: "/projects/" + effID + "/maintenance"},
-				NavItem{LabelKey: "nav.status_pages", Href: "/projects/" + effID + "/statuspages"},
-			)
-		}
 	case "alerts":
-		// Лента инцидентов (D3) — чтение, доступна любому с доступом к
-		// проекту (lvlAccess), поэтому секция больше не прячется целиком;
-		// конфигурационные подпункты по-прежнему только оператору.
-		items = []NavItem{
-			{LabelKey: "nav.incident_feed", Href: "/projects/" + effID + "/incident-feed"},
-		}
+		// Вся конфигурация «когда меня позвать» собрана здесь из четырёх
+		// прежних областей. Группы отвечают на три последовательных вопроса
+		// настройки: при каком условии сработает → когда молчать → кому уйдёт.
+		// Лента инцидентов переехала в «Обзор» (задача 7), поэтому у участника
+		// без CanOperate область теперь схлопывается целиком — сознательное
+		// решение спеки §4; просмотр правил на чтение отложен в 1.0+.
 		if s.CanOperate {
-			items = append(items,
-				NavItem{LabelKey: "nav.alerts", Href: "/projects/" + effID + "/alerts"},
-				NavItem{LabelKey: "nav.alert_deliveries", Href: "/projects/" + effID + "/alerts/deliveries"},
-				// SLO (план D1) — управленческий слой алертинга: цели качества и
-				// сжигание бюджета шлют инциденты по тем же каналам проекта, что и
-				// остальные пункты этой области. Тот же гейт CanOperate.
-				NavItem{LabelKey: "nav.slo", Href: "/projects/" + effID + "/slos"},
-				// Эскалации (B4, задача 9) — лесенки critical/warning поверх тех же
-				// каналов проекта; операционная настройка, тот же гейт CanOperate.
-				NavItem{LabelKey: "nav.escalations", Href: "/projects/" + effID + "/escalations"},
-				// Подавление шторма (B5, задача 9) — рёбра зависимостей между
-				// узлами проекта; операционная настройка, тот же гейт CanOperate.
-				NavItem{LabelKey: "nav.alert_suppression", Href: "/projects/" + effID + "/alert-suppression"},
-			)
+			items = []NavItem{
+				{Group: "nav.group.rules", LabelKey: "nav.rules_errors", Href: "/projects/" + effID + "/alerts"},
+				{Group: "nav.group.rules", LabelKey: "nav.metric_alerts", Href: "/projects/" + effID + "/metrics/alerts"},
+				{Group: "nav.group.rules", LabelKey: "nav.host_thresholds", Href: "/projects/" + effID + "/hosts/settings"},
+				{Group: "nav.group.rules", LabelKey: "nav.slo", Href: "/projects/" + effID + "/slos"},
+				{Group: "nav.group.silence", LabelKey: "nav.maintenance", Href: "/projects/" + effID + "/maintenance"},
+				{Group: "nav.group.silence", LabelKey: "nav.alert_suppression", Href: "/projects/" + effID + "/alert-suppression"},
+				{Group: "nav.group.delivery", LabelKey: "nav.escalations", Href: "/projects/" + effID + "/escalations"},
+				{Group: "nav.group.delivery", LabelKey: "nav.alert_deliveries", Href: "/projects/" + effID + "/alerts/deliveries"},
+			}
 		}
 	case "docs":
 		// Doc page labels come from the markdown H1 (localized by
@@ -435,14 +408,24 @@ func Subsections(s Shell) []NavItem {
 			items = append(items, NavItem{Label: p.Title, Href: "/docs/" + p.Slug})
 		}
 	case "settings":
-		items = []NavItem{
-			{LabelKey: "nav.project_settings", Href: "/projects/" + effID + "/settings"},
-			{LabelKey: "getting_started.title", Href: "/projects/" + effID + "/setup"},
+		// Две группы отвечают на разные вопросы: «Проект» — то, что
+		// настраивает именно этот проект (доступно и участнику — рецепты и
+		// шпаргалка установки читает любой с доступом), «Организация» —
+		// управление организацией целиком, видна только owner/admin.
+		if s.CanManage {
+			items = append(items,
+				NavItem{Group: "nav.group.project", LabelKey: "nav.project_settings", Href: "/projects/" + effID + "/settings"},
+			)
 		}
-	case "org":
-		items = []NavItem{
-			{LabelKey: "nav.projects", Href: "/projects"},
+		if s.CanOperate {
+			items = append(items,
+				NavItem{Group: "nav.group.project", LabelKey: "nav.status_pages", Href: "/projects/" + effID + "/statuspages"},
+			)
 		}
+		items = append(items,
+			NavItem{Group: "nav.group.project", LabelKey: "nav.recipes", Href: "/projects/" + effID + "/recipes"},
+			NavItem{Group: "nav.group.project", LabelKey: "getting_started.title", Href: "/projects/" + effID + "/setup"},
+		)
 		// Members/Teams/Probes are org-scoped management pages
 		// (owner/admin only): without a resolved org id they would
 		// link to /orgs/0/..., which 404s, and for a plain member
@@ -450,9 +433,9 @@ func Subsections(s Shell) []NavItem {
 		// CanManage are required.
 		if s.OrgID != 0 && s.CanManage {
 			items = append(items,
-				NavItem{LabelKey: "nav.members", Href: "/orgs/" + orgID + "/settings"},
-				NavItem{LabelKey: "nav.teams", Href: "/orgs/" + orgID + "/teams"},
-				NavItem{LabelKey: "nav.probes", Href: "/orgs/" + orgID + "/probes"},
+				NavItem{Group: "nav.group.org", LabelKey: "nav.members", Href: "/orgs/" + orgID + "/settings"},
+				NavItem{Group: "nav.group.org", LabelKey: "nav.teams", Href: "/orgs/" + orgID + "/teams"},
+				NavItem{Group: "nav.group.org", LabelKey: "nav.probes", Href: "/orgs/" + orgID + "/probes"},
 			)
 		}
 	default:
@@ -468,9 +451,9 @@ func Subsections(s Shell) []NavItem {
 // проблем производительности, светилась бы одна область, а пункт — из другой.
 func AreaForOrigin(origin string) string {
 	switch origin {
-	case "web-vitals", "perf-issue", "endpoint":
+	case "web-vitals", "endpoint":
 		return "performance"
-	case "issue":
+	case "issue", "perf-issue":
 		return "issues"
 	default:
 		return ""
@@ -617,12 +600,13 @@ func firstSubsectionHref(s Shell, area string) string {
 // and for a CanOperate that does not hold on the target project (team
 // membership is per-project) — the fallback below stays the safe door for
 // any area whose FIRST subsection is operator-gated (item[0] could then
-// point at a page 404ing on the target project). "alerts" used to be such
-// an area (its whole subsection list collapsed to nil for !CanOperate) but
-// isn't anymore: the incident feed (D3, lvlAccess) is unconditionally
-// item[0] regardless of CanOperate (см. Subsections case "alerts"), so
-// transferring CanOperate as-is can no longer produce a wrong first href —
-// "alerts" is per-project again.
+// point at a page 404ing on the target project). "alerts" is such an area
+// again: with the incident feed moved out of Subsections into «Обзор»
+// (задача 7), its whole subsection list is once more gated behind
+// CanOperate (см. Subsections case "alerts"), so a stale CanOperate=true
+// carried over from the current project can still produce a first href
+// the target project 404s on — the same latent gap the D3 incident feed
+// used to close.
 func ProjectSwitchHref(s Shell, projectID int64) string {
 	perProject := map[string]bool{
 		"issues": true, "performance": true, "metrics": true,
