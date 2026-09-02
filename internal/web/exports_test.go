@@ -1214,9 +1214,20 @@ func TestExportsPageEmptyState(t *testing.T) {
 // TestIssuesListExportFormsCarryTimeRange
 // (internal/web/templates/exports_test.go), здесь не дублируется.
 func TestIssuesPageHasExportButtons(t *testing.T) {
-	s := newExportsStack(t)
-	body := s.getBody(t, s.operatorUID, s.path("/issues"))
-	if !strings.Contains(body, `action="`+s.path("/exports?period=all")+`"`) {
+	// Стек issues, а не exports: тулбар с формами экспорта рендерится только
+	// над непустой таблицей (выгружать пустую выборку нечего), а строки
+	// списка тянут спарклайны из CH (Events) — в newExportsStack его нет.
+	s := newIssuesStack(t)
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-export-btn@example.com")
+	project := createProject(t, s, ownerID, "export-btn-org", "export-btn-proj")
+	s.h.Exports = export.NewStore(s.pool)
+	t.Cleanup(func() { s.h.Exports = nil })
+	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-export-btn", "Boom", "pkg/a.go:1", "error", "", time.Now()); err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
+	pid := strconv.FormatInt(project.ID, 10)
+	body := readAll(t, getWithCookie(t, s.srv, "/projects/"+pid+"/issues", ownerCookie))
+	if !strings.Contains(body, `action="/projects/`+pid+`/exports?period=all"`) {
 		t.Error("на списке ошибок нет формы выгрузки с переносом периода (?period=all)")
 	}
 }
