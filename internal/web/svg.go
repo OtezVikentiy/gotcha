@@ -27,6 +27,16 @@ import (
 
 const flameRowHeight = 18
 
+// flameCharWidthPx — ширина символа подписи флеймграфа в единицах viewBox.
+// Не svgCharWidthPx (6.0): та рассчитана на подписи осей, чей кегль задают
+// тиры .chart-vbN text по ширине окна. У флеймграфа кегль фиксирован правилом
+// svg.flamegraph text (11px моноширинного, app.css) — измерено 6.6 на символ.
+// Усечение считается от этой ширины; разойдутся — подписи вылезут за кадр.
+const flameCharWidthPx = 6.6
+
+// flameLabelPad — отступ подписи от левого края кадра (и столько же справа).
+const flameLabelPad = 2
+
 // flamegraphSVG рисует icicle-диаграмму дерева профиля (сверху вниз). Ширина
 // фрейма ∝ его доле от корня; глубина = уровень стека. Текст SVG строится из
 // чисел и html-экранированных имён — templ.Raw безопасен. Пустое дерево
@@ -66,8 +76,7 @@ func flamegraphSVG(ctx context.Context, root *profile.FlameNode, width int) temp
 	depth := flameDepth(root)
 	height := depth * flameRowHeight
 	var sb strings.Builder
-	sb.WriteString(strings.TrimSuffix(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")), ">"))
-	sb.WriteString(` font-family="monospace" font-size="10">`)
+	sb.WriteString(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")))
 	flameRow(&sb, root, 0, float64(width), 0, root.Value)
 	sb.WriteString(`</svg>`)
 	return templ.Raw(sb.String())
@@ -83,48 +92,72 @@ func flameDepth(n *profile.FlameNode) int {
 	return max + 1
 }
 
-// flameRow рисует прямоугольник узла и рекурсивно детей. x/w — позиция и ширина
-// в пикселях; total — Value корня (для доли в подписи).
+// flameRow рисует узел и рекурсивно детей. x/w — позиция и ширина в единицах
+// viewBox; total — Value корня (для доли в подписи).
 func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64) {
 	if w < 0.5 {
 		return
 	}
-	y := depth * flameRowHeight
-	pct := 0.0
-	if total > 0 {
-		pct = float64(n.Value) / float64(total) * 100
-	}
-	sb.WriteString(`<g><rect x="`)
-	sb.WriteString(formatCoord(x))
-	sb.WriteString(`" y="`)
-	sb.WriteString(strconv.Itoa(y))
-	sb.WriteString(`" width="`)
-	sb.WriteString(formatCoord(w))
-	sb.WriteString(`" height="`)
-	sb.WriteString(strconv.Itoa(flameRowHeight - 1))
-	sb.WriteString(`" fill="`)
-	sb.WriteString(flameColor(n.Name))
-	sb.WriteString(`"><title>`)
-	sb.WriteString(html.EscapeString(n.Name))
-	sb.WriteString(` — `)
-	sb.WriteString(strconv.FormatFloat(pct, 'f', 1, 64))
-	sb.WriteString(`%</title></rect>`)
-	if w > 30 {
-		sb.WriteString(`<text x="`)
-		sb.WriteString(formatCoord(x + 2))
-		sb.WriteString(`" y="`)
-		sb.WriteString(strconv.Itoa(y + flameRowHeight - 6))
-		sb.WriteString(`" fill="#111">`)
-		sb.WriteString(html.EscapeString(truncateRunes(n.Name, int(w/svgCharWidthPx))))
-		sb.WriteString(`</text>`)
-	}
-	sb.WriteString(`</g>`)
+	flameNode(sb, n, x, w, depth, total)
 	childX := x
 	for _, c := range n.Children {
 		cw := w * float64(c.Value) / float64(n.Value)
 		flameRow(sb, c, childX, cw, depth+1, total)
 		childX += cw
 	}
+}
+
+// flameNode рисует один кадр: вложенный <svg> → прямоугольник с тултипом и
+// подпись. Вложенный <svg> клипует содержимое сам (overflow hidden по
+// умолчанию), поэтому подпись не вылезет за кадр даже при расхождении
+// расчётной и реальной ширины символа — без clipPath и id. Координаты подписи
+// относительны кадра.
+func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64) {
+	pct := 0.0
+	if total > 0 {
+		pct = float64(n.Value) / float64(total) * 100
+	}
+	sb.WriteString(`<svg x="`)
+	sb.WriteString(formatCoord(x))
+	sb.WriteString(`" y="`)
+	sb.WriteString(strconv.Itoa(depth * flameRowHeight))
+	sb.WriteString(`" width="`)
+	sb.WriteString(formatCoord(w))
+	sb.WriteString(`" height="`)
+	sb.WriteString(strconv.Itoa(flameRowHeight - 1))
+	sb.WriteString(`"><rect x="0" y="0" width="100%" height="100%" fill="`)
+	sb.WriteString(flameColor(n.Name))
+	sb.WriteString(`"><title>`)
+	sb.WriteString(html.EscapeString(n.Name))
+	sb.WriteString(` — `)
+	sb.WriteString(strconv.FormatFloat(pct, 'f', 1, 64))
+	sb.WriteString(`%</title></rect>`)
+	if label := fitFlameLabel(n.Name, w); label != "" {
+		sb.WriteString(`<text x="`)
+		sb.WriteString(strconv.Itoa(flameLabelPad))
+		sb.WriteString(`" y="`)
+		sb.WriteString(strconv.Itoa(flameRowHeight - 6))
+		sb.WriteString(`" fill="#111">`)
+		sb.WriteString(html.EscapeString(label))
+		sb.WriteString(`</text>`)
+	}
+	sb.WriteString(`</svg>`)
+}
+
+// fitFlameLabel подгоняет имя кадра под ширину w: целиком, если влезает с
+// паддингом с обеих сторон; иначе усекает до fit-1 рун и добавляет «…», чтобы
+// обрезка была видна. Если после усечения остаётся меньше трёх рун, подписи
+// нет вовсе — читателю остаётся тултип.
+func fitFlameLabel(name string, w float64) string {
+	fit := int((w - 2*flameLabelPad) / flameCharWidthPx)
+	r := []rune(name)
+	if len(r) <= fit {
+		return name
+	}
+	if fit-1 < 3 {
+		return ""
+	}
+	return string(r[:fit-1]) + "…"
 }
 
 // flameColor — детерминированный тёплый цвет по имени функции. Диапазон hue

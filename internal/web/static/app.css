@@ -3947,6 +3947,17 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	.chart-vb1200 text { font-size: 13px; }
 }
 
+/* Подписи флеймграфа — НЕ оси. Кегль привязан к строке кадра (18 единиц
+   viewBox), а не к ширине окна: тиры .chart-vbN text выше написаны под оси и
+   на планшете/телефоне раздували подписи кадров до 20–45px при строке 18 —
+   текст вылезал за кадр. Селектор svg.flamegraph text (0,1,2) перекрывает
+   тиры (0,1,1) и стоит ПОСЛЕ них. Серверное усечение подписей (fitFlameLabel,
+   6.6 единиц на символ) рассчитано именно на этот кегль и моноширинный шрифт. */
+svg.flamegraph text {
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
 /* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====
    Эти классы стояли в разметке без определений, из-за чего блоки на страницах
    endpoint detail, perf issue detail, trace и profiles рендерились без
