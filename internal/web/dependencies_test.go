@@ -15,6 +15,15 @@ import (
 
 var depsTableRowRe = regexp.MustCompile(`(?s)<table[^>]*data-table.*postgresql`)
 
+// depsDirBothRe — ячейка направления сразу за ячейкой «postgresql»: иконка
+// arrow-left-right из спрайта, подсказка и aria-label с текстом «читаем и
+// пишем» (локаль стенда по умолчанию — ru).
+var depsDirBothRe = regexp.MustCompile(`postgresql</td>\s*<td><span class="deps-dir"[^>]*title="читаем и пишем"[^>]*aria-label="читаем и пишем"[^>]*><svg class="ic"[^>]*><use href="#i-arrow-left-right"></use></svg></span></td>`)
+
+// depsDirNoneRe — у api.stripe.com глагола нет (ни метода, ни описания) →
+// направление не определено: иконка minus, а не пустая ячейка.
+var depsDirNoneRe = regexp.MustCompile(`api\.stripe\.com</td>\s*<td><span class="deps-dir"[^>]*title="не определено"[^>]*><svg class="ic"[^>]*><use href="#i-minus"></use></svg></span></td>`)
+
 // TestWebDependenciesScreen — owner видит таблицу зависимостей (БД/HTTP) с
 // целями и метриками, собранными из client-op спанов трейса.
 func TestWebDependenciesScreen(t *testing.T) {
@@ -36,8 +45,14 @@ func TestWebDependenciesScreen(t *testing.T) {
 		TraceID: "deps-trace", SpanID: "deps-root", Name: "GET /api/checkout", Op: "http.server",
 		Status: "ok", Start: at, End: at.Add(200 * time.Millisecond), Environment: "production",
 		Spans: []trace.Span{
+			// SELECT + INSERT в один postgresql → направление «читаем и пишем» (⇄).
 			{SpanID: "deps-db1", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
-				Start: at, End: at.Add(3000 * time.Microsecond),
+				Description: "SELECT * FROM carts WHERE id = $1",
+				Start:       at, End: at.Add(3000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "postgresql"}},
+			{SpanID: "deps-db2", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "INSERT INTO orders (cart_id) VALUES ($1)",
+				Start:       at, End: at.Add(2000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "postgresql"}},
 			{SpanID: "deps-stripe", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Start: at, End: at.Add(60000 * time.Microsecond),
@@ -61,6 +76,22 @@ func TestWebDependenciesScreen(t *testing.T) {
 	}
 	if !depsTableRowRe.MatchString(string(body)) {
 		t.Fatalf("GET %s (owner) table missing dependency row: %s", path, body)
+	}
+	// Карта — двухколоночный SVG с легендой направлений под ним.
+	for _, want := range []string{`<svg class="deps-map`, `deps-legend`, `<th scope="col">Данные</th>`,
+		`<use href="#i-arrow-left"></use></svg>читаем из зависимости`,
+		`<use href="#i-arrow-right"></use></svg>пишем в зависимость`,
+		`<use href="#i-arrow-left-right"></use></svg>и то и другое`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("GET %s (owner) missing %q: %s", path, want, body)
+		}
+	}
+	// Колонка «Данные»: у postgresql SELECT+INSERT → ⇄ с текстовой подсказкой.
+	if !depsDirBothRe.MatchString(string(body)) {
+		t.Fatalf("GET %s (owner) postgresql row lacks arrow-left-right direction icon: %s", path, body)
+	}
+	if !depsDirNoneRe.MatchString(string(body)) {
+		t.Fatalf("GET %s (owner) api.stripe.com row lacks minus (none) icon: %s", path, body)
 	}
 
 	// Чужой проект → 404.

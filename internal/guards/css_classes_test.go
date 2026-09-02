@@ -253,8 +253,6 @@ var permanentCSSClassExemptions = []Exemption{
 	// правок 1» — там же зафиксирована асимметрия между ними.
 	{Value: "alerts-section", Why: "семантический маркер секции внутри страницы alerts, стиля нет по замыслу", Finding: "по замыслу"},
 	{Value: "escalations-section", Why: "семантический маркер секции внутри страницы escalations (B4 T9), стиля нет по замыслу — стоит в паре с .card (class=\"escalations-section card\")", Finding: "по замыслу"},
-	{Value: "deps-map-card", Why: "семантический маркер, стоит в паре с .card (class=\"card deps-map-card\", C4)", Finding: "по замыслу"},
-	{Value: "deps-truncated", Why: "семантический маркер, стоит в паре с .hint (class=\"hint deps-truncated\", C4)", Finding: "по замыслу"},
 	{Value: "gdpr-block", Why: "семантический маркер секции (152-ФЗ экспорт/удаление ПДн), стиля нет по замыслу — внутри уже стилизованные .field/.hint/.btn-ghost", Finding: "по замыслу"},
 	{Value: "invite-accept", Why: "семантический маркер, стоит в паре с .card (class=\"invite-accept card\") — визуал от .card", Finding: "по замыслу"},
 	{Value: "invite-link-block", Why: "семантический маркер, стоит в паре с .card (class=\"card invite-link-block\")", Finding: "по замыслу"},
@@ -318,7 +316,10 @@ var permanentCSSClassExemptions = []Exemption{
 // неверным: все прочие раскрываемые блоки продукта стилизованы, и страница
 // на их фоне читалась как чужая. Карточка группы получила реальные правила
 // в app.css, оба исключения сняты.
-const maxPermanentCSSClassExemptions = 84
+// 84→82 (карта зависимостей, направление данных): "deps-map-card" и
+// "deps-truncated" получили реальные правила в app.css (зазор между
+// карточкой карты и таблицей, отступ пометки об усечении) — сняты.
+const maxPermanentCSSClassExemptions = 82
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

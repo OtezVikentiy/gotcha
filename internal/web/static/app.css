@@ -789,12 +789,13 @@ a:hover {
    кольца клавиатурный фокус на контейнере неотличим от его отсутствия
    (WCAG 2.4.7). :focus-visible, а не :focus — щелчок мышью кольца не рисует. */
 .table-scroll:focus, .scroll-list:focus, .endpoint-chart:focus,
-.metric-chart-wrap:focus, .flamegraph-wrap:focus, .trace-waterfall:focus,
-.trace-flame:focus, .issue-chart:focus { outline: none; }
+.metric-chart-wrap:focus, .flamegraph-wrap:focus, .deps-map-wrap:focus,
+.trace-waterfall:focus, .trace-flame:focus, .issue-chart:focus { outline: none; }
 .table-scroll:focus-visible, .scroll-list:focus-visible,
 .endpoint-chart:focus-visible, .metric-chart-wrap:focus-visible,
-.flamegraph-wrap:focus-visible, .trace-waterfall:focus-visible,
-.trace-flame:focus-visible, .issue-chart:focus-visible {
+.flamegraph-wrap:focus-visible, .deps-map-wrap:focus-visible,
+.trace-waterfall:focus-visible, .trace-flame:focus-visible,
+.issue-chart:focus-visible {
 	outline: 2px solid var(--link);
 	outline-offset: -2px;
 }
@@ -1368,10 +1369,25 @@ th {
 	width: auto;
 	min-width: 128px;
 }
-/* Hub-SVG карты зависимостей (задача 3, C4): сервис-владелец в центре
-   (.deps-center), зависимости радиально (.deps-node), рёбра окрашены по
-   доле ошибок — нейтральный/warn/danger те же токены, что у остальных
-   графиков продукта. */
+/* Карта зависимостей: хаб-владелец в центре (.deps-center), хранилища
+   колонкой слева, HTTP — справа (.deps-node), кривые рёбра (.deps-edge)
+   окрашены по доле ошибок — нейтральный/warn/danger те же токены, что у
+   остальных графиков; стрелки направления данных (.deps-arrow-*) — маркеры,
+   красятся здесь же. Кегль подписей — в конце файла, после тиров осей. */
+/* Ширина карты: min-width — как у .flamegraph, кегль подписей привязан к
+   строке узла и на телефоне сжался бы до нечитаемого, обёртка .deps-map-wrap
+   даёт прокрутку. max-width — обратная защита: на широком мониторе карточка
+   ~1900px растягивала viewBox 760 в 2.4 раза, и имена узлов вырастали до
+   ~31px — карикатура вместо диаграммы. 1080 — масштаб ~1.4, подписи ~18px;
+   остаток карточки — поля по бокам (margin: auto). */
+.deps-map {
+	width: 100%;
+	min-width: 720px;
+	max-width: 1080px;
+	height: auto;
+	display: block;
+	margin: 0 auto;
+}
 .deps-node rect {
 	fill: var(--surface-2);
 	stroke: var(--border-control);
@@ -1379,23 +1395,9 @@ th {
 .deps-center rect {
 	stroke: var(--link);
 }
-/* Размер подписей карты квалифицирован .deps-map, иначе его перебивает общий
-   responsive-класс осей `.chart-vb720 text` (та же специфичность, объявлен
-   позже) — из-за чего кегль в карте прыгал по ширине вьюпорта. Здесь фиксируем
-   в единицах viewBox: масштабируется вместе с диаграммой, не с системой осей. */
-.deps-map .deps-node text {
-	fill: var(--text);
-	font-size: 13px;
-}
-.deps-map .deps-edge-label {
-	fill: var(--text-dim);
-	font-size: 11px;
-}
-.deps-map .deps-more {
-	fill: var(--text-dim);
-	font-size: 12px;
-}
+/* Ребро — кривая Безье: без fill:none браузер зальёт область под дугой. */
 .deps-edge {
+	fill: none;
 	stroke: var(--border-control);
 	stroke-width: 1.5;
 }
@@ -1404,6 +1406,45 @@ th {
 }
 .deps-edge-bad {
 	stroke: var(--danger);
+}
+.deps-arrow-ok {
+	fill: var(--link);
+}
+.deps-arrow-warn {
+	fill: var(--warn);
+}
+.deps-arrow-bad {
+	fill: var(--danger);
+}
+/* Карточка карты и карточка таблицы под ней — два .card подряд; общего
+   правила «зазор между карточками» в файле нет (у остальных экранов между
+   ними стоит заголовок или тулбар), поэтому отступ здесь свой, тем же шагом,
+   что у тулбара фильтров выше (16px). В ветке с усечением между ними ещё
+   пометка «показаны первые N» — она про таблицу, поэтому прижата к ней:
+   верхний отступ у .hint (4px) схлопнулся бы с 16px карточки, а нижний
+   оставил бы таблицу вплотную — задаём явно. */
+.deps-map-card {
+	margin-bottom: 16px;
+}
+.deps-truncated {
+	margin: 0 0 8px;
+}
+/* Направление в таблице — иконка спрайта (.ic, 1em) в ячейке; кегль ячейки
+   таблицы = --fs-sm, поэтому иконка ~14px, цвет — от текста (currentColor). */
+.deps-dir {
+	font-size: var(--fs-sm);
+}
+/* Легенда под картой: три пары «иконка + текст», переносятся на узком
+   экране; пара не разрывается по иконке (inline-flex). */
+.deps-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 16px;
+}
+.deps-legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
 .issues-filters .input[type="text"],
@@ -3997,6 +4038,7 @@ svg.flamegraph text {
 .endpoint-chart,
 .metric-chart-wrap,
 .flamegraph-wrap,
+.deps-map-wrap,
 .trace-waterfall,
 .trace-flame {
 	overflow-x: auto;
@@ -5105,4 +5147,20 @@ input[type="radio"]:focus-visible {
 }
 .incident-feed .feed-group .table-scroll {
 	margin-top: 10px;
+}
+
+/* Подписи карты зависимостей — та же история, что у флеймграфа: кегль
+   привязан к строке узла (44 единицы viewBox), а не к ширине окна, и тиры
+   .chart-vbN text его перебивать не должны. Селекторы svg.deps-map … (0,1,2)
+   и (0,2,1) выше тиров (0,1,1) и стоят ПОСЛЕ них. Серверное усечение имён
+   (depFitName, 7.2 единицы на символ) рассчитано на этот кегль. */
+svg.deps-map text,
+svg.deps-map .deps-node-name {
+	fill: var(--text);
+	font-size: 13px;
+}
+svg.deps-map .deps-node-meta,
+svg.deps-map .deps-more {
+	fill: var(--text-dim);
+	font-size: 11px;
 }

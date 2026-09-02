@@ -162,9 +162,65 @@ type Dependency struct {
 	Kind      string // database | cache | http
 	Target    string // postgresql | redis | api.stripe.com | ...
 	Calls     int64
+	Reads     int64 // вызовы с глаголом чтения (SELECT/GET/HGET/…), см. *ReadVerbs
+	Writes    int64 // вызовы с глаголом записи (INSERT/POST/SET/…), см. *WriteVerbs
 	P50US     uint32
 	P95US     uint32
 	ErrorRate float64 // доля спанов со status != 'ok'
+}
+
+// DataDirection — направление потока данных между сервисом и зависимостью
+// (стрелка на карте): читает, пишет, и то и другое, либо неизвестно.
+type DataDirection string
+
+const (
+	DirectionNone DataDirection = ""     // ни чтения, ни записи (BEGIN/COMMIT, неизвестные команды)
+	DirectionIn   DataDirection = "in"   // только чтение
+	DirectionOut  DataDirection = "out"  // только запись
+	DirectionBoth DataDirection = "both" // чтение и запись
+)
+
+// Direction выводит направление по счётчикам Reads/Writes.
+func (d Dependency) Direction() DataDirection {
+	switch {
+	case d.Reads > 0 && d.Writes > 0:
+		return DirectionBoth
+	case d.Reads > 0:
+		return DirectionIn
+	case d.Writes > 0:
+		return DirectionOut
+	}
+	return DirectionNone
+}
+
+// Списки глаголов по видам зависимостей — по одному на класс (чтение/запись),
+// через пробел. Подставляются в SQL Dependencies через verbList; на них же
+// ссылаются UI и документация. Всё, что не попало ни в один список (BEGIN,
+// COMMIT, SET у SQL, неизвестные команды), — ни чтение, ни запись.
+const (
+	SQLReadVerbs  = "SELECT WITH SHOW EXPLAIN DESCRIBE DESC"
+	SQLWriteVerbs = "INSERT UPDATE DELETE MERGE REPLACE UPSERT CREATE ALTER DROP TRUNCATE COPY"
+
+	CacheReadVerbs = "GET GETS MGET HGET HGETALL HMGET HEXISTS HLEN HKEYS HVALS EXISTS KEYS SCAN SSCAN HSCAN ZSCAN " +
+		"LRANGE LLEN LINDEX SMEMBERS SISMEMBER SCARD ZRANGE ZREVRANGE ZRANGEBYSCORE ZSCORE ZCARD ZCOUNT ZRANK " +
+		"TTL PTTL TYPE STRLEN GETRANGE PING"
+	CacheWriteVerbs = "SET SETEX SETNX PSETEX MSET MSETNX GETSET GETDEL DEL UNLINK INCR INCRBY INCRBYFLOAT DECR DECRBY " +
+		"APPEND HSET HMSET HDEL HINCRBY LPUSH RPUSH LPOP RPOP LSET LREM LTRIM SADD SREM SPOP ZADD ZREM ZINCRBY " +
+		"EXPIRE PEXPIRE EXPIREAT PERSIST RENAME PUBLISH XADD FLUSHDB FLUSHALL ADD CAS PREPEND TOUCH FLUSH_ALL"
+
+	HTTPReadVerbs  = "GET HEAD OPTIONS"
+	HTTPWriteVerbs = "POST PUT PATCH DELETE"
+)
+
+// verbList превращает список глаголов через пробел в SQL-литералы для `IN (...)`.
+// Источник — только константы выше (значения фиксированы в коде), поэтому
+// экранирование не нужно.
+func verbList(verbs string) string {
+	fields := strings.Fields(verbs)
+	for i, v := range fields {
+		fields[i] = "'" + v + "'"
+	}
+	return strings.Join(fields, ",")
 }
 
 // Dependencies агрегирует внешние зависимости сервиса из client-op спанов за
@@ -181,18 +237,42 @@ type Dependency struct {
 // точки (localhost, internal-svc через url.full) — такой уходит в общий узел
 // 'http'; (2) `:[0-9]+$` может срезать хвост числового hextet у голого
 // IPv6-литерала (fe80::1 → fe80:).
+//
+// Направление данных (Reads/Writes) — по глаголу операции: атрибут
+// (db.operation.name / db.operation у БД и кеша, http.request.method /
+// http.method у http) приоритетнее первого слова description. Глагол
+// классифицируется по виду зависимости списками *ReadVerbs/*WriteVerbs;
+// регистр не важен (upper). Не попавший в списки глагол — ни то ни другое.
 func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time.Time, limit int) ([]Dependency, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := q.conn.Query(ctx, `
 		SELECT kind, target, count() AS c, countIf(status != 'ok') AS f,
+			countIf(verbClass = 'r') AS r, countIf(verbClass = 'w') AS w,
 			quantiles(0.5, 0.95)(duration_us) AS q
 		FROM (
 			SELECT
 				multiIf(op = 'db' OR startsWith(op,'db.sql') OR op = 'db.query', 'database',
 						startsWith(op,'db.'), 'cache',
 						'http') AS kind,
+				upper(if(kind = 'http',
+					coalesce(
+						nullIf(JSONExtractString(data,'http.request.method'),''),
+						nullIf(JSONExtractString(data,'http.method'),''),
+						extract(description, '^\\s*([A-Za-z_]+)')),
+					coalesce(
+						nullIf(JSONExtractString(data,'db.operation.name'),''),
+						nullIf(JSONExtractString(data,'db.operation'),''),
+						extract(description, '^\\s*([A-Za-z_]+)')))) AS verb,
+				multiIf(
+					kind = 'database' AND verb IN (`+verbList(SQLReadVerbs)+`), 'r',
+					kind = 'database' AND verb IN (`+verbList(SQLWriteVerbs)+`), 'w',
+					kind = 'cache' AND verb IN (`+verbList(CacheReadVerbs)+`), 'r',
+					kind = 'cache' AND verb IN (`+verbList(CacheWriteVerbs)+`), 'w',
+					kind = 'http' AND verb IN (`+verbList(HTTPReadVerbs)+`), 'r',
+					kind = 'http' AND verb IN (`+verbList(HTTPWriteVerbs)+`), 'w',
+					'') AS verbClass,
 				multiIf(
 					op = 'db' OR startsWith(op,'db.sql') OR op = 'db.query',
 						coalesce(nullIf(JSONExtractString(data,'db.system'),''), nullIf(JSONExtractString(data,'db.system.name'),''), 'database'),
@@ -222,12 +302,14 @@ func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time
 	var out []Dependency
 	for rows.Next() {
 		var d Dependency
-		var calls, failures uint64
+		var calls, failures, reads, writes uint64
 		var qs []float64
-		if err := rows.Scan(&d.Kind, &d.Target, &calls, &failures, &qs); err != nil {
+		if err := rows.Scan(&d.Kind, &d.Target, &calls, &failures, &reads, &writes, &qs); err != nil {
 			return nil, fmt.Errorf("trace: dependencies: scan: %w", err)
 		}
 		d.Calls = int64(calls)
+		d.Reads = int64(reads)
+		d.Writes = int64(writes)
 		if len(qs) == 2 {
 			d.P50US = usFromFloat(qs[0])
 			d.P95US = usFromFloat(qs[1])

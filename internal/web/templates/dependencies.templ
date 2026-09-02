@@ -16,6 +16,7 @@ type DependencyRow struct {
 	P50US     uint32
 	P95US     uint32
 	ErrorRate float64
+	Direction string // trace.DataDirection: "in" / "out" / "both" / ""
 }
 
 // DepsFilter — состояние фильтра окна времени экрана зависимостей.
@@ -29,6 +30,35 @@ type DepsFilter struct {
 // action) и нав-подменю.
 func dependenciesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/dependencies"
+}
+
+// depDirectionIcon — иконка спрайта для колонки «Данные» по направлению
+// потока (trace.DataDirection): «читаем» — стрелка к сервису (влево, как на
+// карте, где сервис в центре), «пишем» — от него. Минус — операции не
+// распознаны (BEGIN/COMMIT, неизвестные команды). Иконка, а не текстовый
+// глиф: глиф зависит от шрифта и выпадает из общей иконографики (см.
+// TestNoTextGlyphsInsteadOfIcons).
+func depDirectionIcon(dir string) string {
+	switch dir {
+	case "in":
+		return "arrow-left"
+	case "out":
+		return "arrow-right"
+	case "both":
+		return "arrow-left-right"
+	default:
+		return "minus"
+	}
+}
+
+// depDirectionKey — ключ локали текстовой подсказки к глифу направления.
+func depDirectionKey(dir string) string {
+	switch dir {
+	case "in", "out", "both":
+		return "deps.direction." + dir
+	default:
+		return "deps.direction.none"
+	}
 }
 
 templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter, mapSVG templ.Component, loadFailed bool, truncated bool, userEmail string) {
@@ -48,6 +78,20 @@ templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilte
 					@scrollRegion("deps-map-wrap", "region.deps.map") {
 						@mapSVG
 					}
+					<p class="hint deps-legend">
+						<span class="deps-legend-item">
+							@icon("arrow-left")
+							{ i18n.T(ctx, "deps.legend.in") }
+						</span>
+						<span class="deps-legend-item">
+							@icon("arrow-right")
+							{ i18n.T(ctx, "deps.legend.out") }
+						</span>
+						<span class="deps-legend-item">
+							@icon("arrow-left-right")
+							{ i18n.T(ctx, "deps.legend.both") }
+						</span>
+					</p>
 				</div>
 				if truncated {
 					<p class="hint deps-truncated">{ i18n.Tf(ctx, "deps.truncated", "n", strconv.Itoa(len(deps))) }</p>
@@ -58,6 +102,7 @@ templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilte
 							<thead>
 								<tr>
 									<th scope="col">{ i18n.T(ctx, "deps.table.dependency") }</th>
+									<th scope="col">{ i18n.T(ctx, "deps.table.direction") }</th>
 									<th scope="col">{ i18n.T(ctx, "deps.table.calls") }</th>
 									<th scope="col">{ i18n.T(ctx, "deps.table.p50") }</th>
 									<th scope="col">{ i18n.T(ctx, "deps.table.p95") }</th>
@@ -68,6 +113,7 @@ templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilte
 								for _, d := range deps {
 									<tr>
 										<td>{ i18n.T(ctx, "deps.kind." + d.Kind) }: { d.Target }</td>
+										<td><span class="deps-dir" role="img" title={ i18n.T(ctx, depDirectionKey(d.Direction)) } aria-label={ i18n.T(ctx, depDirectionKey(d.Direction)) }>@icon(depDirectionIcon(d.Direction))</span></td>
 										<td>{ strconv.FormatInt(d.Calls, 10) }</td>
 										<td>{ formatDurationUS(d.P50US) }</td>
 										<td>{ formatDurationUS(d.P95US) }</td>

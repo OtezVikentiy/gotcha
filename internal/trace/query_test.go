@@ -3,6 +3,8 @@ package trace_test
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -357,28 +359,104 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		TraceID: "deps-trace", SpanID: "deps-root", Name: "GET /api/checkout", Op: "http.server",
 		Status: "ok", Start: depsAt, End: depsAt.Add(200 * time.Millisecond), Environment: "production",
 		Spans: []trace.Span{
-			// SQL БД (db.system.name) — 2 вызова, 1 ошибка.
+			// SQL БД (db.system.name) — 2 вызова, 1 ошибка; чтение + запись по
+			// глаголу из description → направление Both.
 			{SpanID: "deps-db1", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
-				Start: depsAt, End: depsAt.Add(3000 * time.Microsecond),
+				Description: "SELECT id FROM orders WHERE id = $1",
+				Start:       depsAt, End: depsAt.Add(3000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "postgresql"}},
 			{SpanID: "deps-db2", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "internal_error",
-				Start: depsAt, End: depsAt.Add(9000 * time.Microsecond),
+				Description: "INSERT INTO orders (id) VALUES ($1)",
+				Start:       depsAt, End: depsAt.Add(9000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "postgresql"}},
-			// кеш redis.
+			// БД только на чтение: SELECT, CTE (WITH … SELECT) и глагол в нижнем
+			// регистре — все три должны классифицироваться как чтение → In.
+			{SpanID: "deps-ro1", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "readonly-db"}},
+			{SpanID: "deps-ro2", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "WITH x AS (SELECT 1) SELECT * FROM x",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "readonly-db"}},
+			{SpanID: "deps-ro3", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "select * from t",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "readonly-db"}},
+			// ведущие пробелы перед глаголом — регэксп обязан их пропускать (\s*).
+			{SpanID: "deps-ro4", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "   SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "readonly-db"}},
+			// SQL-спаны без глагола: BEGIN (не в списках) и «1 SELECT» (первое слово —
+			// не буквенное; без анкера ^ регэксп вытянул бы SELECT из середины) →
+			// у цели ни чтения, ни записи → направление None.
+			{SpanID: "deps-txn", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "BEGIN",
+				Start:       depsAt, End: depsAt.Add(100 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "sqlite"}},
+			{SpanID: "deps-txn2", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "1 SELECT",
+				Start:       depsAt, End: depsAt.Add(100 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "sqlite"}},
+			// старый ключ атрибута db.operation (fallback после db.operation.name):
+			// UPDATE побеждает description «SELECT 1» → Out.
+			{SpanID: "deps-oldop", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "oldop-db", "db.operation": "UPDATE"}},
+			// пустой атрибут db.operation — не глагол, берём description → чтение.
+			{SpanID: "deps-emptyop", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "emptyop-db", "db.operation": ""}},
+			// http-атрибут у db-спана игнорируется: глагол берётся из description → In.
+			{SpanID: "deps-crossattr-db", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "crossattr-db", "http.request.method": "POST"}},
+			// кеш redis: чтение (HGET) + запись (SET) → Both.
 			{SpanID: "deps-redis", ParentSpanID: "deps-root", Op: "db.redis", Status: "ok",
-				Start: depsAt, End: depsAt.Add(500 * time.Microsecond)},
-			// старый ключ db.system (coalesce-ветка) — mysql.
+				Description: "HGET k",
+				Start:       depsAt, End: depsAt.Add(500 * time.Microsecond)},
+			{SpanID: "deps-redis2", ParentSpanID: "deps-root", Op: "db.redis", Status: "ok",
+				Description: "SET k v",
+				Start:       depsAt, End: depsAt.Add(500 * time.Microsecond)},
+			// кеш memcached: только чтение, команда в нижнем регистре → In.
+			{SpanID: "deps-memcached", ParentSpanID: "deps-root", Op: "db.memcached", Status: "ok",
+				Description: "get k",
+				Start:       depsAt, End: depsAt.Add(300 * time.Microsecond)},
+			// memcached flush_all — глагол с подчёркиванием, запись.
+			{SpanID: "deps-memcached2", ParentSpanID: "deps-root", Op: "db.memcached", Status: "ok",
+				Description: "flush_all",
+				Start:       depsAt, End: depsAt.Add(300 * time.Microsecond)},
+			// старый ключ db.system (coalesce-ветка) — mysql. Атрибут
+			// db.operation.name важнее description: INSERT побеждает SELECT → Out.
 			{SpanID: "deps-mysql", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
-				Start: depsAt, End: depsAt.Add(2000 * time.Microsecond),
-				Data: map[string]any{"db.system": "mysql"}},
-			// внешний http (server.address).
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(2000 * time.Microsecond),
+				Data: map[string]any{"db.system": "mysql", "db.operation.name": "INSERT"}},
+			// внешний http (server.address); глагол из description → POST → Out.
 			{SpanID: "deps-stripe", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
-				Start: depsAt, End: depsAt.Add(60000 * time.Microsecond),
+				Description: "POST https://api.stripe.com/v1/charges",
+				Start:       depsAt, End: depsAt.Add(60000 * time.Microsecond),
 				Data: map[string]any{"server.address": "api.stripe.com"}},
-			// внешний http через url.full (coalesce-ветка) — host извлекается domain().
+			// внешний http через url.full (coalesce-ветка) — host извлекается domain();
+			// GET → In.
 			{SpanID: "deps-cdn", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
-				Start: depsAt, End: depsAt.Add(30000 * time.Microsecond),
+				Description: "GET https://cdn.example.com/asset.js",
+				Start:       depsAt, End: depsAt.Add(30000 * time.Microsecond),
 				Data: map[string]any{"url.full": "https://cdn.example.com/asset.js"}},
+			// http без description, глагол только в старом атрибуте http.method
+			// (fallback после http.request.method) → POST → Out.
+			{SpanID: "deps-legacy", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(10000 * time.Microsecond),
+				Data: map[string]any{"http.method": "POST", "server.address": "legacy.example.com"}},
+			// db-атрибут у http-спана игнорируется: глагол из description → GET → In.
+			{SpanID: "deps-crossattr-http", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Description: "GET https://x.example.com/",
+				Start:       depsAt, End: depsAt.Add(10000 * time.Microsecond),
+				Data: map[string]any{"db.operation.name": "INSERT", "server.address": "x.example.com"}},
 			// один и тот же хост db.internal через server.address С ПОРТОМ и через
 			// url.full С ПОРТОМ — должны схлопнуться в ОДИН узел «db.internal» (аудит
 			// QA P1: без снятия :port у server.address получалось два узла). Хост с
@@ -543,9 +621,109 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if _, ok := byTarget["http"]; ok {
 			t.Fatalf("byTarget contains degenerate 'http' target")
 		}
-		// 6 таргетов: postgresql, mysql, redis, api.stripe.com, cdn.example.com, db-host.
-		if len(deps) != 6 {
-			t.Fatalf("len(deps) = %d, want 6 (%+v)", len(deps), deps)
+		// 14 таргетов: postgresql, readonly-db, sqlite, oldop-db, emptyop-db,
+		// crossattr-db, mysql, redis, memcached, api.stripe.com, cdn.example.com,
+		// legacy.example.com, x.example.com, db-host.
+		if len(deps) != 14 {
+			t.Fatalf("len(deps) = %d, want 14 (%+v)", len(deps), deps)
+		}
+
+		// Направление данных: reads/writes по глаголу операции.
+		// postgres: SELECT + INSERT → 1/1, Both.
+		if pg.Reads != 1 || pg.Writes != 1 {
+			t.Fatalf("postgresql = {Reads:%d Writes:%d}, want {1 1}", pg.Reads, pg.Writes)
+		}
+		if got := pg.Direction(); got != trace.DirectionBoth {
+			t.Fatalf("postgresql.Direction() = %q, want %q", got, trace.DirectionBoth)
+		}
+		// readonly-db: SELECT, WITH … SELECT, select (нижний регистр), «   SELECT»
+		// (ведущие пробелы) → 4/0, In.
+		ro := byTarget["readonly-db"]
+		if ro.Kind != "database" || ro.Calls != 4 {
+			t.Fatalf("readonly-db = {Kind:%q Calls:%d}, want {database 4}", ro.Kind, ro.Calls)
+		}
+		if ro.Reads != 4 || ro.Writes != 0 {
+			t.Fatalf("readonly-db = {Reads:%d Writes:%d}, want {4 0} (SELECT, WITH, select, «   SELECT»)", ro.Reads, ro.Writes)
+		}
+		if got := ro.Direction(); got != trace.DirectionIn {
+			t.Fatalf("readonly-db.Direction() = %q, want %q", got, trace.DirectionIn)
+		}
+		// sqlite: BEGIN + «1 SELECT» → 0/0, None.
+		sq := byTarget["sqlite"]
+		if sq.Calls != 2 || sq.Reads != 0 || sq.Writes != 0 {
+			t.Fatalf("sqlite = {Calls:%d Reads:%d Writes:%d}, want {2 0 0} (BEGIN и «1 SELECT» — ни чтение, ни запись)", sq.Calls, sq.Reads, sq.Writes)
+		}
+		if got := sq.Direction(); got != trace.DirectionNone {
+			t.Fatalf("sqlite.Direction() = %q, want %q", got, trace.DirectionNone)
+		}
+		// mysql: атрибут db.operation.name=INSERT важнее description «SELECT 1» → 0/1, Out.
+		my := byTarget["mysql"]
+		if my.Reads != 0 || my.Writes != 1 {
+			t.Fatalf("mysql = {Reads:%d Writes:%d}, want {0 1} (db.operation.name=INSERT важнее description)", my.Reads, my.Writes)
+		}
+		if got := my.Direction(); got != trace.DirectionOut {
+			t.Fatalf("mysql.Direction() = %q, want %q", got, trace.DirectionOut)
+		}
+		// oldop-db: старый ключ db.operation=UPDATE важнее description → 0/1, Out.
+		oo := byTarget["oldop-db"]
+		if oo.Reads != 0 || oo.Writes != 1 || oo.Direction() != trace.DirectionOut {
+			t.Fatalf("oldop-db = {Reads:%d Writes:%d Direction:%q}, want {0 1 out} (fallback на db.operation)", oo.Reads, oo.Writes, oo.Direction())
+		}
+		// emptyop-db: пустой db.operation → глагол из description → 1/0.
+		eo := byTarget["emptyop-db"]
+		if eo.Reads != 1 || eo.Writes != 0 {
+			t.Fatalf("emptyop-db = {Reads:%d Writes:%d}, want {1 0} (пустой атрибут → description)", eo.Reads, eo.Writes)
+		}
+		// crossattr-db: http.request.method=POST у db-спана игнорируется → 1/0, In.
+		cd := byTarget["crossattr-db"]
+		if cd.Reads != 1 || cd.Writes != 0 || cd.Direction() != trace.DirectionIn {
+			t.Fatalf("crossattr-db = {Reads:%d Writes:%d Direction:%q}, want {1 0 in} (http-атрибут у db-спана не учитывается)", cd.Reads, cd.Writes, cd.Direction())
+		}
+		// redis: HGET + SET → 1/1, Both.
+		rd := byTarget["redis"]
+		if rd.Calls != 2 || rd.Reads != 1 || rd.Writes != 1 {
+			t.Fatalf("redis = {Calls:%d Reads:%d Writes:%d}, want {2 1 1}", rd.Calls, rd.Reads, rd.Writes)
+		}
+		if got := rd.Direction(); got != trace.DirectionBoth {
+			t.Fatalf("redis.Direction() = %q, want %q", got, trace.DirectionBoth)
+		}
+		// memcached: «get k» + «flush_all» (глагол с подчёркиванием) → 1/1, Both.
+		mc := byTarget["memcached"]
+		if mc.Kind != "cache" || mc.Calls != 2 || mc.Reads != 1 || mc.Writes != 1 {
+			t.Fatalf("memcached = {Kind:%q Calls:%d Reads:%d Writes:%d}, want {cache 2 1 1} (get + flush_all)", mc.Kind, mc.Calls, mc.Reads, mc.Writes)
+		}
+		if got := mc.Direction(); got != trace.DirectionBoth {
+			t.Fatalf("memcached.Direction() = %q, want %q", got, trace.DirectionBoth)
+		}
+		// stripe: POST → 0/1, Out; cdn: GET → 1/0, In.
+		st := byTarget["api.stripe.com"]
+		if st.Reads != 0 || st.Writes != 1 {
+			t.Fatalf("api.stripe.com = {Reads:%d Writes:%d}, want {0 1}", st.Reads, st.Writes)
+		}
+		if got := st.Direction(); got != trace.DirectionOut {
+			t.Fatalf("api.stripe.com.Direction() = %q, want %q", got, trace.DirectionOut)
+		}
+		cdn := byTarget["cdn.example.com"]
+		if cdn.Reads != 1 || cdn.Writes != 0 {
+			t.Fatalf("cdn.example.com = {Reads:%d Writes:%d}, want {1 0}", cdn.Reads, cdn.Writes)
+		}
+		if got := cdn.Direction(); got != trace.DirectionIn {
+			t.Fatalf("cdn.example.com.Direction() = %q, want %q", got, trace.DirectionIn)
+		}
+		// legacy: без description, глагол только в старом http.method=POST → 0/1, Out.
+		lg := byTarget["legacy.example.com"]
+		if lg.Calls != 1 || lg.Reads != 0 || lg.Writes != 1 || lg.Direction() != trace.DirectionOut {
+			t.Fatalf("legacy.example.com = {Calls:%d Reads:%d Writes:%d Direction:%q}, want {1 0 1 out} (fallback на http.method)", lg.Calls, lg.Reads, lg.Writes, lg.Direction())
+		}
+		// x.example.com: db.operation.name=INSERT у http-спана игнорируется, GET из description → 1/0, In.
+		xh := byTarget["x.example.com"]
+		if xh.Reads != 1 || xh.Writes != 0 || xh.Direction() != trace.DirectionIn {
+			t.Fatalf("x.example.com = {Reads:%d Writes:%d Direction:%q}, want {1 0 in} (db-атрибут у http-спана не учитывается)", xh.Reads, xh.Writes, xh.Direction())
+		}
+		// db.internal: http-спаны без глагола (ни description, ни атрибута) → 0/0, None.
+		dh := byTarget["db.internal"]
+		if dh.Reads != 0 || dh.Writes != 0 || dh.Direction() != trace.DirectionNone {
+			t.Fatalf("db.internal = {Reads:%d Writes:%d Direction:%q}, want {0 0 %q}", dh.Reads, dh.Writes, dh.Direction(), trace.DirectionNone)
 		}
 	})
 
@@ -1140,6 +1318,83 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 
 // TestRating проверяет пороги Google для рейтинга Web Vitals по p75, включая
 // границы (good включительна) и неизвестное имя (→ ""). Docker не нужен.
+// TestDependencyDirection — таблица четырёх веток Direction(): по счётчикам
+// reads/writes без ClickHouse.
+func TestDependencyDirection(t *testing.T) {
+	cases := []struct {
+		name   string
+		reads  int64
+		writes int64
+		want   trace.DataDirection
+	}{
+		{"none", 0, 0, trace.DirectionNone},
+		{"in", 3, 0, trace.DirectionIn},
+		{"out", 0, 2, trace.DirectionOut},
+		{"both", 1, 1, trace.DirectionBoth},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := trace.Dependency{Reads: c.reads, Writes: c.writes}
+			if got := d.Direction(); got != c.want {
+				t.Fatalf("Direction(reads=%d, writes=%d) = %q, want %q", c.reads, c.writes, got, c.want)
+			}
+		})
+	}
+	// Значения констант — контракт для UI/шаблонов (data-атрибуты, i18n-ключи).
+	if trace.DirectionNone != "" || trace.DirectionIn != "in" || trace.DirectionOut != "out" || trace.DirectionBoth != "both" {
+		t.Fatalf("DataDirection constants = %q/%q/%q/%q, want \"\"/in/out/both",
+			trace.DirectionNone, trace.DirectionIn, trace.DirectionOut, trace.DirectionBoth)
+	}
+}
+
+// TestVerbClasses — списки глаголов: внутри одного вида чтение и запись не
+// пересекаются, ключевые глаголы на месте.
+func TestVerbClasses(t *testing.T) {
+	classes := []struct {
+		kind        string
+		read, write string
+		wantR       string
+		wantW       string
+	}{
+		{"database", trace.SQLReadVerbs, trace.SQLWriteVerbs, "SELECT", "INSERT"},
+		{"cache", trace.CacheReadVerbs, trace.CacheWriteVerbs, "HGET", "SET"},
+		{"http", trace.HTTPReadVerbs, trace.HTTPWriteVerbs, "GET", "POST"},
+	}
+	// verbList не экранирует, а в SQL глагол сравнивается после upper(): любой
+	// символ вне [A-Z_] в списке — либо сломанный литерал, либо вечное несовпадение.
+	verbRe := regexp.MustCompile(`^[A-Z_]+$`)
+	for _, c := range classes {
+		r := verbSet(c.read)
+		w := verbSet(c.write)
+		for _, set := range []map[string]bool{r, w} {
+			for v := range set {
+				if !verbRe.MatchString(v) {
+					t.Fatalf("%s: глагол %q не матчит ^[A-Z_]+$", c.kind, v)
+				}
+			}
+		}
+		if !r[c.wantR] {
+			t.Fatalf("%s: read verbs не содержат %s: %q", c.kind, c.wantR, c.read)
+		}
+		if !w[c.wantW] {
+			t.Fatalf("%s: write verbs не содержат %s: %q", c.kind, c.wantW, c.write)
+		}
+		for v := range r {
+			if w[v] {
+				t.Fatalf("%s: глагол %s одновременно read и write", c.kind, v)
+			}
+		}
+	}
+}
+
+func verbSet(list string) map[string]bool {
+	set := map[string]bool{}
+	for _, v := range strings.Fields(list) {
+		set[v] = true
+	}
+	return set
+}
+
 func TestRating(t *testing.T) {
 	cases := []struct {
 		name string

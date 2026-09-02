@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Dependency map and table now show the data direction for every dependency:
+  arrows on the map edges and a "Data" column in the table — ← the service
+  reads from it, → writes to it, ⇄ both. The direction is derived from the
+  operation verb of the spans (`SELECT`/`INSERT`, `GET`/`SET`, `GET`/`POST`…);
+  a legend under the map explains the glyphs.
+
+### Changed
+- Dependency map layout: data stores in a column on the left, HTTP
+  dependencies on the right, the service in the middle, curved edges with
+  a full metrics tooltip. Each node carries its own metrics line (calls, p95,
+  error rate) instead of a label on the edge, long names are truncated with
+  the full name on hover, and the map fits up to 16 dependencies (was 8).
+
 ## [0.31.0] - 2026-09-02
 
 ### Added
