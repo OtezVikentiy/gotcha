@@ -200,6 +200,32 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("GET %s body missing <svg sparkline: %s", issuesPath, body)
 	}
 
+	// Компоновка непустого списка: тулбар с массовыми действиями стоит НАД
+	// таблицей, кнопки вынесены из POST-формы и привязаны к ней атрибутом
+	// form= (внутри тулбара лежат формы экспорта, вложенные <form> HTML не
+	// допускает); старого блока .bulk-actions под таблицей больше нет.
+	html := string(body)
+	if n := strings.Count(html, `id="issues-bulk"`); n != 1 {
+		t.Fatalf("GET %s: id=\"issues-bulk\" встречается %d раз, want 1", issuesPath, n)
+	}
+	for _, action := range []string{"resolve", "ignore", "unresolve"} {
+		btn := `form="issues-bulk" name="action" value="` + action + `"`
+		if !strings.Contains(html, btn) {
+			t.Errorf("GET %s: нет кнопки массового действия %s", issuesPath, btn)
+		}
+	}
+	toolbarIdx := strings.Index(html, `class="card-toolbar"`)
+	tableIdx := strings.Index(html, `<table class="data-table"`)
+	if toolbarIdx < 0 || tableIdx < 0 {
+		t.Fatalf("GET %s: нет тулбара (%d) или таблицы (%d)", issuesPath, toolbarIdx, tableIdx)
+	}
+	if toolbarIdx > tableIdx {
+		t.Errorf("GET %s: тулбар (%d) должен стоять раньше таблицы (%d)", issuesPath, toolbarIdx, tableIdx)
+	}
+	if strings.Contains(html, "bulk-actions") {
+		t.Errorf("GET %s: старый блок bulk-actions под таблицей должен исчезнуть", issuesPath)
+	}
+
 	// Resolve issue1, затем ?status=resolved → только он.
 	if _, err := s.issues.SetStatusBulk(context.Background(), project.ID, []int64{r1.IssueID}, "resolved"); err != nil {
 		t.Fatalf("set status bulk: %v", err)
@@ -310,6 +336,12 @@ func TestWebIssuesListHidesExportButtonsWhenExportsDisabled(t *testing.T) {
 	ownerID, ownerCookie := registerAndLogin(t, s, "issues-exports-owner@example.com")
 	project := createProject(t, s, ownerID, "issues-exports-org", "issues-exports-proj")
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	// Тулбар с кнопками экспорта рисуется только над непустым списком —
+	// без хотя бы одной issue проверка гейта по h.Exports не отличима от
+	// пустого состояния.
+	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-exports", "Export me", "pkg/x.go:1", "error", "", time.Now().UTC()); err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
 
 	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -653,6 +685,15 @@ func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
 	if !strings.Contains(string(body), "page=2") {
 		t.Fatalf("GET %s?env=prod&period=24h missing next-page link: %s", issuesPath, body)
 	}
+	// Пагинация остаётся под таблицей: тулбар переехал наверх, а листалка — нет.
+	tableEnd := strings.Index(string(body), "</table>")
+	pagerIdx := strings.Index(string(body), `class="pagination"`)
+	if tableEnd < 0 || pagerIdx < 0 {
+		t.Fatalf("GET %s: нет таблицы (%d) или пагинации (%d)", issuesPath, tableEnd, pagerIdx)
+	}
+	if pagerIdx < tableEnd {
+		t.Errorf("GET %s: пагинация (%d) должна идти после таблицы (%d)", issuesPath, pagerIdx, tableEnd)
+	}
 }
 
 func TestBulkRedirectTargetRejectsProtocolRelativePaths(t *testing.T) {
@@ -807,6 +848,11 @@ func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
 	t.Cleanup(func() { s.h.Exports = nil })
 
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	// Кнопки экспорта живут в тулбаре над таблицей, а он есть только у
+	// непустого списка.
+	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-pii", "PII issue", "pkg/x.go:1", "error", "", time.Now().UTC()); err != nil {
+		t.Fatalf("upsert issue: %v", err)
+	}
 
 	ownerBody := readAll(t, getWithCookie(t, s.srv, issuesPath, ownerCookie))
 	if n := strings.Count(ownerBody, `name="include_pii"`); n != 2 {

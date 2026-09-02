@@ -1737,25 +1737,6 @@ th {
 	font-size: var(--fs-sm);
 }
 
-.bulk-actions {
-	display: flex;
-	gap: 8px;
-	margin-top: 8px;
-	/* См. .team-member-add-form: на узком экране «Вернуть в работу» уходила за
-	   край во вложенный скроллер. */
-	flex-wrap: wrap;
-}
-.bulk-actions button:not(.btn) {
-	background: var(--surface);
-	color: var(--text);
-	border: 1px solid var(--border-control);
-	font-weight: 600;
-}
-.bulk-actions button:not(.btn):hover {
-	background: var(--surface);
-	border-color: var(--accent);
-}
-
 .pagination {
 	display: flex;
 	align-items: center;
@@ -1796,16 +1777,6 @@ th {
 	display: flex;
 	gap: 8px;
 	margin: 0;
-}
-/* Кнопки постановки заявки на выгрузку (issues.templ, E1) — рядом с
-   фильтрами списка ошибок. Каждая кнопка — раскрывающийся <details
-   class="dropdown-control"> (см. блок .dropdown-control выше): без обёртки
-   они разъехались бы вертикально, block по умолчанию. <details> в отличие
-   от <form> не несёт браузерного margin, отдельный сброс не нужен. */
-.issues-export-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
 }
 /* Рамку и фон селекту назначения даёт база .select (разметка несёт
    class="select"). Базовое .select даёт width:100% для вертикальных форм;
@@ -3216,6 +3187,34 @@ form.inline {
 	margin: 0;
 }
 
+/* Тулбар карточки с таблицей (список ошибок): слева массовые действия над
+   отмеченными строками, справа — точки входа экспорта. Одна строка над
+   таблицей вместо кнопок под ней: действия читаются до того, как глаз ушёл
+   в строки, а на длинной странице их не надо искать внизу. Разделитель —
+   тот же --border, что у рамки .card, чтобы линия читалась как часть
+   карточки, а не как отдельный контрол. Горизонтальный отступ не задаём:
+   его уже даёт padding самой .card; иначе кнопки съезжали бы внутрь
+   относительно таблицы. Группы разъезжаются по краям, на узком экране
+   переносятся одна под другую. <details class="dropdown-control"> внутри
+   раскрывает попап поверх таблицы (.export-control-form — position:absolute
+   от .dropdown-control), поток тулбара при раскрытии не меняется. */
+.card-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px 12px;
+	padding: 0 0 10px;
+	margin-bottom: 12px;
+	border-bottom: 1px solid var(--border);
+}
+.card-toolbar-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
 /* -- Org projects (/orgs/{id}/projects): список проектов одной организации,
    раскладка карточек — та же .settings-grid, что у настроек/команд.
    .org-projects задаёт отступ под кнопкой создания (.btn margin не имеет —
@@ -4431,7 +4430,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    в hidden-поля контекстом точки входа (текущие фильтры списка либо
    scope_issue_id). .field/.select внутри — обычные вертикальные поля (база
    в .field/.input,.select чуть ниже), max-width не даёт попапу растянуться
-   на всю ширину контейнера-обёртки (.issues-export-actions/.issue-actions).
+   на всю ширину контейнера-обёртки (.card-toolbar-group/.issue-actions).
    position:absolute — тот же приём попапа, что у .dr-popup/.logs-attr-suggestions
    (значения top/z-index взяты оттуда же): вертикальный список из нескольких
    полей был в обычном потоке (position:static) и при раскрытии раздвигал

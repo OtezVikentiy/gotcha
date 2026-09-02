@@ -56,9 +56,66 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		t.Error("баннер квоты должен отрендериться")
 	}
 
+	// Тулбар над таблицей: массовые действия слева, обе точки входа экспорта
+	// (группы/события) справа — у оператора с canOperate=true.
+	if !strings.Contains(out, `class="card-toolbar"`) {
+		t.Error("непустой список должен рисовать тулбар .card-toolbar над таблицей")
+	}
+	if n := strings.Count(out, `<details class="dropdown-control"`); n != 2 {
+		t.Errorf("тулбар при canOperate=true должен нести ровно 2 раскрывающиеся кнопки экспорта, got %d", n)
+	}
+
+	// Без canOperate тулбар остаётся (массовые действия доступны), а кнопок
+	// экспорта нет — они вели бы на 404.
+	noExport := renderTo(t, IssuesList(7, rows, IssuesFilter{}, 1, 2, "u@e.com", nil, nil, gs, false, false))
+	if !strings.Contains(noExport, `class="card-toolbar"`) {
+		t.Error("непустой список при canOperate=false должен рисовать тулбар с массовыми действиями")
+	}
+	if strings.Contains(noExport, "dropdown-control") {
+		t.Error("при canOperate=false в тулбаре не должно быть кнопок экспорта")
+	}
+
 	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false))
 	if strings.Contains(empty, "boom error") {
 		t.Error("пустой список не должен содержать строк")
+	}
+	// На пустом списке нечего ни отмечать, ни выгружать: ни тулбара, ни
+	// bulk-формы, ни точек входа экспорта — даже при canOperate=true.
+	emptyOp := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	for name, body := range map[string]string{"canOperate=false": empty, "canOperate=true": emptyOp} {
+		for _, marker := range []string{"card-toolbar", "issues-bulk", "dropdown-control"} {
+			if strings.Contains(body, marker) {
+				t.Errorf("пустой список (%s) не должен содержать %q", name, marker)
+			}
+		}
+	}
+}
+
+// TestIssuesListFilterOrder — порядок полей в GET-форме фильтров списка
+// ошибок: поиск первым, дальше статус, уровень, окружение, период, сортировка.
+// Поиск — самое частое действие, и он стоит первым; сортировка — не фильтр,
+// поэтому уходит в конец, перед кнопкой «Применить».
+func TestIssuesListFilterOrder(t *testing.T) {
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "24h"}}, 1, 0, "u@e.com", []string{"prod"}, nil, GettingStartedVM{}, false, false))
+	start := strings.Index(out, `class="issues-filters"`)
+	if start < 0 {
+		t.Fatal("нет формы фильтров .issues-filters")
+	}
+	form := out[start:]
+	if end := strings.Index(form, "</form>"); end >= 0 {
+		form = form[:end]
+	}
+	order := []string{`name="q"`, `name="status"`, `name="level"`, `name="env"`, `name="period"`, `name="sort"`, `type="submit"`}
+	prev := -1
+	for _, field := range order {
+		idx := strings.Index(form, field)
+		if idx < 0 {
+			t.Fatalf("в форме фильтров нет поля %s", field)
+		}
+		if idx <= prev {
+			t.Errorf("поле %s стоит раньше предыдущего по порядку %v", field, order)
+		}
+		prev = idx
 	}
 }
 
