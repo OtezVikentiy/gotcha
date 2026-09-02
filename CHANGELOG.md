@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-09-02
+
 ### Changed
 - Availability bar palette (monitor list "History (24h)", monitor page,
   status pages): the three states are now told apart by hue — green / amber /
