@@ -1477,22 +1477,7 @@ func availabilityBarsMarkup(ctx context.Context, bars []uptime.UptimeStat, w, h 
 	barW := float64(w) / float64(n)
 	gap := barW * 0.1
 
-	// Второй канал «частично» (№28): поверх заливки — диагональная штриховка
-	// цветом карточки. Паттерн объявляется один на документ и только если есть
-	// хоть одна partial-корзина; id уникален (см. gradSeq).
-	patID := ""
-	for _, b := range bars {
-		if availabilityBarClass(b) == availabilityClassPartial {
-			patID = uniqueGradID("barhatch")
-			break
-		}
-	}
 	var rects strings.Builder
-	if patID != "" {
-		rects.WriteString(`<defs><pattern id="`)
-		rects.WriteString(patID)
-		rects.WriteString(`" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" class="bar-hatch"/></pattern></defs>`)
-	}
 	for i, b := range bars {
 		x := float64(i)*barW + gap/2
 		rects.WriteString(`<rect x="`)
@@ -1506,21 +1491,6 @@ func availabilityBarsMarkup(ctx context.Context, bars []uptime.UptimeStat, w, h 
 		rects.WriteString(`"><title>`)
 		rects.WriteString(html.EscapeString(availabilityBarLabel(ctx, b)))
 		rects.WriteString(`</title></rect>`)
-		if availabilityBarClass(b) == availabilityClassPartial {
-			// Оверлей той же геометрии; fill — презентационный АТРИБУТ, не
-			// класс: CSS-правило по классу перебило бы url(#паттерна).
-			// pointer-events:none — чтобы <title> базового прямоугольника
-			// продолжал работать при наведении.
-			rects.WriteString(`<rect x="`)
-			rects.WriteString(formatCoord(x))
-			rects.WriteString(`" y="0" width="`)
-			rects.WriteString(formatCoord(barW - gap))
-			rects.WriteString(`" height="`)
-			rects.WriteString(strconv.Itoa(h))
-			rects.WriteString(`" fill="url(#`)
-			rects.WriteString(patID)
-			rects.WriteString(`)" pointer-events="none"/>`)
-		}
 	}
 
 	var sb strings.Builder

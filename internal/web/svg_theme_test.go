@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -46,28 +45,20 @@ func TestMultiColourChartsEmitClassesNotHex(t *testing.T) {
 	}
 }
 
-// TestAvailabilityBarPartialHatched: у «частично» два канала — цвет и
-// штриховка (№28). Id паттерна уникален на документ — та же дисциплина, что у
-// градиентов графиков (см. gradSeq): дубли id в двух SVG на странице красят
-// оба паттерном первого.
-func TestAvailabilityBarPartialHatched(t *testing.T) {
+// TestAvailabilityBarPartialPlainFill: «частично» — одна заливка классом
+// bar-partial, без оверлея и <pattern>: штриховка снята вместе с переходом на
+// палитру по оттенку (см. CHANGELOG). На корзину — ровно один <rect>.
+func TestAvailabilityBarPartialPlainFill(t *testing.T) {
 	ctx := context.Background()
-	bars := []uptime.UptimeStat{{Total: 10, OK: 9}}
-	m1 := availabilityBarsMarkup(ctx, bars, 300, 28)
-	if !strings.Contains(m1, `<pattern id="barhatch-`) || !strings.Contains(m1, `fill="url(#barhatch-`) {
-		t.Errorf("partial-корзина без штриховки: %s", m1)
+	bars := []uptime.UptimeStat{{Total: 10, OK: 9}, {Total: 10, OK: 10}, {Total: 10, OK: 2}}
+	m := availabilityBarsMarkup(ctx, bars, 300, 28)
+	for _, bad := range []string{"<pattern", "<defs", "url(#", "bar-hatch", "pointer-events"} {
+		if strings.Contains(m, bad) {
+			t.Errorf("в полоске остался след штриховки %q: %s", bad, m)
+		}
 	}
-	if !strings.Contains(m1, `class="bar-hatch"`) {
-		t.Errorf("в паттерне нет штриха класса bar-hatch: %s", m1)
-	}
-	m2 := availabilityBarsMarkup(ctx, bars, 300, 28)
-	id := regexp.MustCompile(`barhatch-[a-z0-9]+`).FindString(m1)
-	if id == "" || strings.Contains(m2, id) {
-		t.Errorf("id паттерна не уникален между документами: %q и в m2", id)
-	}
-	noPartial := availabilityBarsMarkup(ctx, []uptime.UptimeStat{{Total: 10, OK: 10}}, 300, 28)
-	if strings.Contains(noPartial, "<pattern") {
-		t.Errorf("паттерн рисуется без partial-корзин: %s", noPartial)
+	if got := strings.Count(m, "<rect "); got != len(bars) {
+		t.Errorf("на %d корзин %d <rect>, ожидается по одному: %s", len(bars), got, m)
 	}
 }
 

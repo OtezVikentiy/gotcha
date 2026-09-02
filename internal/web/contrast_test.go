@@ -125,11 +125,12 @@ func TestControlBorderMeetsContrast(t *testing.T) {
 	}
 }
 
-// TestAvailabilityBarFillTokens: заливки полоски доступности — не текст, их
-// светлоту можно и нужно разводить (№28): попарно ≥3:1, чтобы состояния
-// различались и без цветового зрения, и ≥1.5:1 к карточке, чтобы корзина не
-// сливалась с фоном. Глобальные --good/--partial/--danger прижаты к текстовому
-// 4.5:1 и разводке не подлежат — поэтому у полоски свои токены.
+// TestAvailabilityBarFillTokens: заливки полоски доступности — не текст, им
+// не нужен текстовый 4.5:1, поэтому у полоски свои токены, а не глобальные
+// --good/--partial/--danger. Требование к ним одно: ≥1.5:1 к карточке, чтобы
+// корзина не сливалась с фоном. Попарная разводка по светлоте и штриховка
+// «частично» сняты осознанно: палитра различает состояния оттенком (см.
+// CHANGELOG), это решение владельца продукта.
 func TestAvailabilityBarFillTokens(t *testing.T) {
 	for _, theme := range []string{"dark", "light"} {
 		tokens := themeTokens(t, theme)
@@ -137,13 +138,8 @@ func TestAvailabilityBarFillTokens(t *testing.T) {
 		if up == "" || pa == "" || dn == "" {
 			t.Fatalf("[%s] нет токенов --bar-up/--bar-partial/--bar-down", theme)
 		}
-		pairs := []struct{ a, b, name string }{
-			{up, pa, "up~partial"}, {pa, dn, "partial~down"}, {up, dn, "up~down"},
-		}
-		for _, p := range pairs {
-			if got := contrast(p.a, p.b); got < 3.0 {
-				t.Errorf("[%s] %s = %.2f:1, нужно ≥3:1", theme, p.name, got)
-			}
+		if up == pa || pa == dn || up == dn {
+			t.Errorf("[%s] заливки совпадают: up=%s partial=%s down=%s", theme, up, pa, dn)
 		}
 		for name, hex := range map[string]string{"bar-up": up, "bar-partial": pa, "bar-down": dn} {
 			if got := contrast(hex, tokens["surface"]); got < 1.5 {

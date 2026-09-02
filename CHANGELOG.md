@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Availability bar palette (monitor list "History (24h)", monitor page,
+  status pages): the three states are now told apart by hue — green / amber /
+  red, saturated in both themes — instead of the previous lightness-graded
+  fills, and the diagonal hatch on the "intermittent" bucket is gone. The
+  lightness spread was hard to read as a traffic light; the product owner
+  chose hue over the monochrome-safe scheme knowingly. Fills still keep at
+  least 1.5:1 against the card so buckets never merge with the background.
+
 ## [0.32.0] - 2026-09-02
 
 ### Added

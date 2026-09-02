@@ -36,13 +36,13 @@
 	   доступности, плашка «Частичный сбой» на статус-странице. Светлый вариант
 	   темнее для читаемости как текст на белом (--warn-golden, не олива). */
 	--partial: #f5b70a;
-	/* Заливки полоски доступности (№28): НЕ текстовые статус-токены. Те прижаты
-	   к 4.5:1 на подложке и потому неразличимы по светлоте между собой; заливке
-	   текстовый контраст не нужен, и светлота разведена: попарно ≥3:1, к
-	   карточке ≥1.5:1 (пришпилено TestAvailabilityBarFillTokens). */
-	--bar-up: #e1f2e4;
-	--bar-partial: #ab7f07;
-	--bar-down: #692621;
+	/* Заливки полоски доступности: свои токены, не текстовые статус-токены —
+	   заливке текстовый контраст 4.5:1 не нужен. Состояния разведены оттенком
+	   (зелёный/жёлтый/красный), к карточке ≥1.5:1 (TestAvailabilityBarFillTokens).
+	   Разводка по светлоте и штриховка «частично» сняты осознанно — см. CHANGELOG. */
+	--bar-up: #297d38;
+	--bar-partial: #bd921e;
+	--bar-down: #a93027;
 	--bar-empty: var(--border);
 	/* Фазы запроса DNS→TCP→TLS→TTFB: секвенция по бренд-градиенту, тёмный →
 	   светлый = порядок во времени. Значения разведены под
@@ -138,9 +138,9 @@
 	--good: #187633;
 	--warn: #8c5e00;
 	--partial: #8e5d00;
-	--bar-up: #a4d5ad;
-	--bar-partial: #926209;
-	--bar-down: #34090c;
+	--bar-up: #56d36d;
+	--bar-partial: #cdb716;
+	--bar-down: #e11624;
 	--bar-empty: var(--border);
 	--phase-dns: #193887;
 	--phase-tcp: #4b52b4;
@@ -194,9 +194,9 @@
 		--good: #187633;
 		--warn: #8c5e00;
 		--partial: #8e5d00;
-		--bar-up: #a4d5ad;
-		--bar-partial: #926209;
-		--bar-down: #34090c;
+		--bar-up: #56d36d;
+		--bar-partial: #cdb716;
+		--bar-down: #e11624;
 		--bar-empty: var(--border);
 		--phase-dns: #193887;
 		--phase-tcp: #4b52b4;
@@ -3889,15 +3889,11 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    и не менялись в светлой теме. */
 .availability-bars .bar-up      { fill: var(--bar-up); }
 /* «Частично» — через --bar-partial, отдельный и от текстового --partial, и от
-   --warn: заливкам полоски нужна разводка по светлоте между собой (№28,
-   TestAvailabilityBarFillTokens), а текстовые статус-токены прижаты к 4.5:1
-   на подложке и разводке не подлежат. */
+   --warn: у заливок полоски своя палитра (см. токены --bar-*), а текстовые
+   статус-токены прижаты к 4.5:1 на подложке. */
 .availability-bars .bar-partial { fill: var(--bar-partial); }
 .availability-bars .bar-down    { fill: var(--bar-down); }
 .availability-bars .bar-empty   { fill: var(--bar-empty); }
-/* Штрих паттерна «частично» — цветом карточки: полосы «прорезают» заливку и
-   читаются одинаково в обеих темах (второй канал состояния, №28). */
-.availability-bars .bar-hatch   { fill: var(--surface); }
 
 .waterfall .wf-ok  { fill: var(--accent); }
 .waterfall .wf-err { fill: var(--danger); }
