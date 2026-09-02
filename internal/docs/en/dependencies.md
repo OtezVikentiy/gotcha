@@ -32,14 +32,21 @@ never included — only outgoing calls count as dependencies.
 
 ## Reading the map and the table
 
-Above the table, a hub-and-spoke diagram places the service in the center
-with one spoke per dependency; edge color reflects error rate so a failing
-dependency is visible at a glance. Below it, the same data as a sortable
-table:
+Above the table, a map: your service in the center, data stores (databases
+and caches) in a column on the left, HTTP dependencies in a column on the
+right. Each node shows the target name and a metrics line "calls · p95 ·
+error rate"; a name too long for the box is truncated, the full name shows on
+hover. The edge from the service to a dependency is colored by error rate
+(neutral, yellow, red), so a failing dependency is visible at a glance;
+hovering an edge shows the full set of metrics. Arrows on the edges show the
+[data direction](#data-direction). The map shows the 16 most-called
+dependencies; the rest are in the table only (a note under the map says how
+many more). Below it, the same data as a table:
 
 | Column | Meaning |
 |---|---|
 | Dependency | kind + target, e.g. "database: postgresql" or "http: api.stripe.com" |
+| Data | data flow direction: ← reads, → writes, ⇄ both, — not determined |
 | Calls | number of client-op spans in the selected window |
 | p50 / p95 | duration percentiles for calls to that dependency |
 | Error rate | share of calls with a status other than `ok` |
@@ -50,6 +57,39 @@ If the project has no tracing configured yet, or no client-op spans were
 recorded in the window, the screen shows an empty/error state instead of a
 table — see [Performance → How to send the data](/docs/performance) for
 enabling tracing in your SDK.
+
+## Data direction
+
+Arrows on the map and the "Data" column in the table show which way
+information flows between the service and a dependency:
+
+- **← reads** — the service receives data from the dependency (the arrow
+  points at the service);
+- **→ writes** — the service sends data to the dependency (the arrow points
+  at the dependency);
+- **⇄ both** — the window contained both reads and writes;
+- **—** — no recognized operations, no arrow on the edge.
+
+The direction is derived from the **operation verb** of each span. The span
+attribute is used first — `db.operation.name` (or `db.operation`) for
+databases and caches, `http.request.method` (or `http.method`) for HTTP
+calls; without the attribute, the verb is the first word of the span
+description (e.g. `SELECT` from `SELECT * FROM users`). Case does not matter.
+
+Which verbs count as what:
+
+| Kind | Read | Write |
+|---|---|---|
+| database | `SELECT`, `WITH`, `SHOW`, `EXPLAIN`, `DESCRIBE` | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `REPLACE`, `UPSERT`, DDL (`CREATE`, `ALTER`, `DROP`, `TRUNCATE`), `COPY` |
+| cache | `GET`, `MGET`, `HGET`, `HGETALL`, `EXISTS`, `KEYS`, `SCAN`, `LRANGE`, `SMEMBERS`, `ZRANGE` and other read commands | `SET`, `MSET`, `DEL`, `INCR`, `HSET`, `LPUSH`, `SADD`, `ZADD`, `EXPIRE`, `FLUSHDB` and other write commands |
+| http | `GET`, `HEAD`, `OPTIONS` | `POST`, `PUT`, `PATCH`, `DELETE` |
+
+A verb outside these lists (`BEGIN`, `COMMIT`, `MULTI`, non-standard commands)
+counts as neither a read nor a write. If a dependency had no recognized
+operation in the window, the edge has no arrow and the table shows a dash.
+The read/write split is deliberately coarse — it is about the *direction of
+data flow*, not the semantics of the operation: an HTTP `GET` counts as a
+read even if the other side changes something on it.
 
 ## What this is not
 
