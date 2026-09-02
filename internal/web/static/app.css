@@ -1368,10 +1368,17 @@ th {
 	width: auto;
 	min-width: 128px;
 }
-/* Hub-SVG карты зависимостей (задача 3, C4): сервис-владелец в центре
-   (.deps-center), зависимости радиально (.deps-node), рёбра окрашены по
-   доле ошибок — нейтральный/warn/danger те же токены, что у остальных
-   графиков продукта. */
+/* Карта зависимостей: хаб-владелец в центре (.deps-center), хранилища
+   колонкой слева, HTTP — справа (.deps-node), кривые рёбра (.deps-edge)
+   окрашены по доле ошибок — нейтральный/warn/danger те же токены, что у
+   остальных графиков; стрелки направления данных (.deps-arrow-*) — маркеры,
+   красятся здесь же. Кегль подписей — в конце файла, после тиров осей. */
+.deps-map {
+	width: 100%;
+	min-width: 720px;
+	height: auto;
+	display: block;
+}
 .deps-node rect {
 	fill: var(--surface-2);
 	stroke: var(--border-control);
@@ -1379,23 +1386,9 @@ th {
 .deps-center rect {
 	stroke: var(--link);
 }
-/* Размер подписей карты квалифицирован .deps-map, иначе его перебивает общий
-   responsive-класс осей `.chart-vb720 text` (та же специфичность, объявлен
-   позже) — из-за чего кегль в карте прыгал по ширине вьюпорта. Здесь фиксируем
-   в единицах viewBox: масштабируется вместе с диаграммой, не с системой осей. */
-.deps-map .deps-node text {
-	fill: var(--text);
-	font-size: 13px;
-}
-.deps-map .deps-edge-label {
-	fill: var(--text-dim);
-	font-size: 11px;
-}
-.deps-map .deps-more {
-	fill: var(--text-dim);
-	font-size: 12px;
-}
+/* Ребро — кривая Безье: без fill:none браузер зальёт область под дугой. */
 .deps-edge {
+	fill: none;
 	stroke: var(--border-control);
 	stroke-width: 1.5;
 }
@@ -1404,6 +1397,19 @@ th {
 }
 .deps-edge-bad {
 	stroke: var(--danger);
+}
+.deps-arrow-ok {
+	fill: var(--link);
+}
+.deps-arrow-warn {
+	fill: var(--warn);
+}
+.deps-arrow-bad {
+	fill: var(--danger);
+}
+/* Глиф направления в таблице — один символ, читается как пиктограмма. */
+.deps-dir {
+	font-size: var(--fs-md);
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
 .issues-filters .input[type="text"],
@@ -5105,4 +5111,19 @@ input[type="radio"]:focus-visible {
 }
 .incident-feed .feed-group .table-scroll {
 	margin-top: 10px;
+}
+
+/* Подписи карты зависимостей — та же история, что у флеймграфа: кегль
+   привязан к строке узла (44 единицы viewBox), а не к ширине окна, и тиры
+   .chart-vbN text его перебивать не должны. Селекторы svg.deps-map … (0,1,2)
+   и (0,2,1) выше тиров (0,1,1) и стоят ПОСЛЕ них. Серверное усечение имён
+   (depFitName, 7.2 единицы на символ) рассчитано на этот кегль. */
+svg.deps-map text {
+	fill: var(--text);
+	font-size: 13px;
+}
+svg.deps-map .deps-node-meta,
+svg.deps-map .deps-more {
+	fill: var(--text-dim);
+	font-size: 11px;
 }

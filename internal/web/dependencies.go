@@ -64,6 +64,7 @@ func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, templates.DependencyRow{
 			Kind: d.Kind, Target: d.Target, Calls: d.Calls,
 			P50US: d.P50US, P95US: d.P95US, ErrorRate: d.ErrorRate,
+			Direction: string(d.Direction()),
 		})
 	}
 	filter := templates.DepsFilter{Range: timeRangeVM(tr), Active: tr.Key != perfDefaultPeriod}
@@ -73,7 +74,7 @@ func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 	// error/empty-состояние по loadFailed/len(rows).
 	var mapSVG templ.Component = templ.NopComponent
 	if !loadFailed && len(rows) > 0 {
-		mapSVG = dependencyMapSVG(r.Context(), rows, 720, 420)
+		mapSVG = dependencyMapSVG(r.Context(), rows, depsMapWidth)
 	}
 	_ = templates.DependenciesScreen(projectID, rows, filter, mapSVG, loadFailed, truncated, h.currentEmail(r)).Render(r.Context(), w)
 }
