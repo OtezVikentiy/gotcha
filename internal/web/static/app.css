@@ -789,12 +789,13 @@ a:hover {
    кольца клавиатурный фокус на контейнере неотличим от его отсутствия
    (WCAG 2.4.7). :focus-visible, а не :focus — щелчок мышью кольца не рисует. */
 .table-scroll:focus, .scroll-list:focus, .endpoint-chart:focus,
-.metric-chart-wrap:focus, .flamegraph-wrap:focus, .trace-waterfall:focus,
-.trace-flame:focus, .issue-chart:focus { outline: none; }
+.metric-chart-wrap:focus, .flamegraph-wrap:focus, .deps-map-wrap:focus,
+.trace-waterfall:focus, .trace-flame:focus, .issue-chart:focus { outline: none; }
 .table-scroll:focus-visible, .scroll-list:focus-visible,
 .endpoint-chart:focus-visible, .metric-chart-wrap:focus-visible,
-.flamegraph-wrap:focus-visible, .trace-waterfall:focus-visible,
-.trace-flame:focus-visible, .issue-chart:focus-visible {
+.flamegraph-wrap:focus-visible, .deps-map-wrap:focus-visible,
+.trace-waterfall:focus-visible, .trace-flame:focus-visible,
+.issue-chart:focus-visible {
 	outline: 2px solid var(--link);
 	outline-offset: -2px;
 }
@@ -1373,11 +1374,19 @@ th {
    окрашены по доле ошибок — нейтральный/warn/danger те же токены, что у
    остальных графиков; стрелки направления данных (.deps-arrow-*) — маркеры,
    красятся здесь же. Кегль подписей — в конце файла, после тиров осей. */
+/* Ширина карты: min-width — как у .flamegraph, кегль подписей привязан к
+   строке узла и на телефоне сжался бы до нечитаемого, обёртка .deps-map-wrap
+   даёт прокрутку. max-width — обратная защита: на широком мониторе карточка
+   ~1900px растягивала viewBox 760 в 2.4 раза, и имена узлов вырастали до
+   ~31px — карикатура вместо диаграммы. 1080 — масштаб ~1.4, подписи ~18px;
+   остаток карточки — поля по бокам (margin: auto). */
 .deps-map {
 	width: 100%;
 	min-width: 720px;
+	max-width: 1080px;
 	height: auto;
 	display: block;
+	margin: 0 auto;
 }
 .deps-node rect {
 	fill: var(--surface-2);
@@ -1409,7 +1418,7 @@ th {
 }
 /* Глиф направления в таблице — один символ, читается как пиктограмма. */
 .deps-dir {
-	font-size: var(--fs-md);
+	font-size: var(--fs-base);
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
 .issues-filters .input[type="text"],
@@ -4003,6 +4012,7 @@ svg.flamegraph text {
 .endpoint-chart,
 .metric-chart-wrap,
 .flamegraph-wrap,
+.deps-map-wrap,
 .trace-waterfall,
 .trace-flame {
 	overflow-x: auto;

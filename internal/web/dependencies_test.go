@@ -20,6 +20,10 @@ var depsTableRowRe = regexp.MustCompile(`(?s)<table[^>]*data-table.*postgresql`)
 // умолчанию — ru).
 var depsDirBothRe = regexp.MustCompile(`postgresql</td>\s*<td><span class="deps-dir"[^>]*title="читаем и пишем"[^>]*aria-label="читаем и пишем"[^>]*>⇄</span></td>`)
 
+// depsDirNoneRe — у api.stripe.com глагола нет (ни метода, ни описания) →
+// направление не определено: прочерк, а не пустая ячейка.
+var depsDirNoneRe = regexp.MustCompile(`api\.stripe\.com</td>\s*<td><span class="deps-dir"[^>]*>—</span></td>`)
+
 // TestWebDependenciesScreen — owner видит таблицу зависимостей (БД/HTTP) с
 // целями и метриками, собранными из client-op спанов трейса.
 func TestWebDependenciesScreen(t *testing.T) {
@@ -82,6 +86,9 @@ func TestWebDependenciesScreen(t *testing.T) {
 	// Колонка «Данные»: у postgresql SELECT+INSERT → ⇄ с текстовой подсказкой.
 	if !depsDirBothRe.MatchString(string(body)) {
 		t.Fatalf("GET %s (owner) postgresql row lacks ⇄ direction glyph: %s", path, body)
+	}
+	if !depsDirNoneRe.MatchString(string(body)) {
+		t.Fatalf("GET %s (owner) api.stripe.com row lacks — (none) glyph: %s", path, body)
 	}
 
 	// Чужой проект → 404.

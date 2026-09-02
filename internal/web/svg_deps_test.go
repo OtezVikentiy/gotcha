@@ -197,6 +197,37 @@ func TestDependencyMapSVGHeight(t *testing.T) {
 	}
 }
 
+// TestDependencyMapSVGGeometry — точные координаты рёбер и хаба на наборе
+// 5 БД / 2 http (H=332, cy=166), выведенные из формул раскладки, а не
+// скопированные из вывода. Порт ребра на хабе — своя доля высоты хаба на
+// каждое ребро стороны: правая (n=2) i=0 → 142+0.5·24 = 154; левая (n=5)
+// i=0 → 142+0.5·9.6 = 146.8. Путь идёт ОТ хаба (x=450/310) К узлу (516/244)
+// — на этом держится семантика маркеров (marker-start у хаба); контрольные
+// точки на середине по x (483/277) с горизонтальными касательными: первая
+// на высоте порта, вторая — на высоте центра узла (114+22=136 справа,
+// 24+22=46 слева). Хаб: x=380-70, y=166-24.
+func TestDependencyMapSVGGeometry(t *testing.T) {
+	var deps []templates.DependencyRow
+	for i := 0; i < 5; i++ {
+		deps = append(deps, templates.DependencyRow{Kind: "database", Target: fmt.Sprintf("db-%d", i)})
+	}
+	for i := 0; i < 2; i++ {
+		deps = append(deps, templates.DependencyRow{Kind: "http", Target: fmt.Sprintf("svc-%d", i)})
+	}
+	out := renderDepsMap(t, deps)
+	for _, want := range []string{
+		`<path class="deps-edge" d="M 450 154.0 C 483.0 154.0 483.0 136.0 516 136.0"`,
+		`<path class="deps-edge" d="M 310 146.8 C 277.0 146.8 277.0 46.0 244 46.0"`,
+		// второе ребро справа — порт ниже на 24 (полная доля), узел ниже на 60
+		`<path class="deps-edge" d="M 450 178.0 C 483.0 178.0 483.0 196.0 516 196.0"`,
+		`<g class="deps-node deps-center"><rect x="310" y="142" rx="6" width="140" height="48"/>`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("нет фрагмента %q: %s", want, out)
+		}
+	}
+}
+
 // TestDependencyMapSVGMarkers — стрелки направления: путь всегда от хаба к
 // узлу, поэтому «читаем» (in) — маркер у хаба (marker-start), «пишем» (out) —
 // у узла (marker-end), both — оба, none — без стрелок. Цвет маркера — по
@@ -223,13 +254,15 @@ func TestDependencyMapSVGMarkers(t *testing.T) {
 	}
 	// определения маркеров — все три, с разворотом на старте
 	out := renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: "x.example", Direction: "both"}})
+	// refX равен ширине маркера — остриё стоит ровно на конце пути (refX=0
+	// сдвинул бы стрелку на 10 единиц за узел/хаб); размер в userSpaceOnUse
+	// не зависит от толщины штриха; auto-start-reverse разворачивает стрелку
+	// на marker-start, иначе у хаба она смотрела бы от него.
+	const attrs = `viewBox="0 0 10 8" refX="10" refY="4" markerWidth="10" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"`
 	for _, id := range []string{"deps-arrow-ok", "deps-arrow-warn", "deps-arrow-bad"} {
-		if !strings.Contains(out, `<marker id="`+id+`"`) {
-			t.Errorf("нет определения маркера %s: %s", id, out)
+		if !strings.Contains(out, `<marker id="`+id+`" class="`+id+`" `+attrs+`>`) {
+			t.Errorf("нет определения маркера %s с полным набором атрибутов: %s", id, out)
 		}
-	}
-	if !strings.Contains(out, `orient="auto-start-reverse"`) {
-		t.Errorf("маркер без auto-start-reverse — стрелка у хаба смотрела бы от него: %s", out)
 	}
 	// класс маркера по доле ошибок
 	out = renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: "x.example", Direction: "out", ErrorRate: 0.1}})
@@ -264,10 +297,16 @@ func TestDependencyMapSVGTruncate(t *testing.T) {
 	if strings.Contains(out, "…") {
 		t.Errorf("короткое имя усечено: %s", out)
 	}
-	// разметка внутри имени экранируется
+	// разметка внутри имени экранируется — и в подписи, и в <title> усечённого
+	// узла (полное имя в подсказке — тоже пользовательская строка).
 	out = renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: "<b>x</b>"}})
 	if strings.Contains(out, "<b>") || !strings.Contains(out, "&lt;b&gt;") {
 		t.Errorf("имя не экранировано: %s", out)
+	}
+	longTag := strings.Repeat("a", 30) + "<b>"
+	out = renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: longTag}})
+	if !strings.Contains(out, "<title>"+strings.Repeat("a", 30)+"&lt;b&gt;</title>") || strings.Contains(out, "<b>") {
+		t.Errorf("полное имя в <title> не экранировано: %s", out)
 	}
 }
 
