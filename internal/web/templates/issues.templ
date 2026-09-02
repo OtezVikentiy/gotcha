@@ -222,6 +222,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 			<h1>{ i18n.T(ctx, "nav.errors") }</h1>
 			@helpPanel("issues", "issues")
 			<form method="get" action={ templ.URL(issuesPath(projectID)) } class="issues-filters">
+				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "issues.filter.query_placeholder") } value={ filter.Query } aria-label={ i18n.T(ctx, "filter.search") }/>
 				<select name="status" class="select" aria-label={ i18n.T(ctx, "filter.status") }>
 					@statusOption("", i18n.T(ctx, "issues.filter.status_all"), filter.Status)
 					@statusOption("unresolved", i18n.T(ctx, "issues.status.unresolved"), filter.Status)
@@ -236,12 +237,6 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@levelOption(issue.LevelError, i18n.T(ctx, "issues.level.error"), filter.Level)
 					@levelOption(issue.LevelFatal, i18n.T(ctx, "issues.level.fatal"), filter.Level)
 				</select>
-				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "issues.filter.query_placeholder") } value={ filter.Query } aria-label={ i18n.T(ctx, "filter.search") }/>
-				<select name="sort" class="select" aria-label={ i18n.T(ctx, "filter.sort") }>
-					@sortOption("last_seen", i18n.T(ctx, "issues.sort.last_seen"), filter.Sort)
-					@sortOption("first_seen", i18n.T(ctx, "issues.sort.first_seen"), filter.Sort)
-					@sortOption("times_seen", i18n.T(ctx, "issues.sort.times_seen"), filter.Sort)
-				</select>
 				<select name="env" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
 					@environmentOption("", i18n.T(ctx, "issues.filter.env_all"), filter.Environment)
 					for _, env := range environments {
@@ -249,118 +244,132 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					}
 				</select>
 				@timeRangeFields(filter.Range)
+				<select name="sort" class="select" aria-label={ i18n.T(ctx, "filter.sort") }>
+					@sortOption("last_seen", i18n.T(ctx, "issues.sort.last_seen"), filter.Sort)
+					@sortOption("first_seen", i18n.T(ctx, "issues.sort.first_seen"), filter.Sort)
+					@sortOption("times_seen", i18n.T(ctx, "issues.sort.times_seen"), filter.Sort)
+				</select>
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
-			if canOperate {
-				// Две отдельные раскрывающиеся формы (группы/события), не один
-				// селект и не мгновенный POST по клику: раньше кнопка сразу
-				// ставила заявку с форматом, зашитым в hidden-поле, — «Экспорт
-				// событий» отсюда всегда давал ndjson, тот же по названию со
-				// страницы issue всегда давал csv, а выбрать формат или галку
-				// PII было негде (находка аудита P2-UX-3). Теперь клик по
-				// кнопке раскрывает <details> с форматом и (для CanManage)
-				// галкой PII — тот же приём, что и у @assignControl рядом
-				// (issuedetail.templ) — а контекст точки входа (текущие
-				// фильтры списка) по-прежнему летит hidden-полями. Период —
-				// тем же окном, что сейчас видит пользователь на списке
-				// (filter.Range), переносится в action query-параметром
-				// (exportsPathWithRange): hidden-поле для него не годится,
-				// POST-тело не долетает до resolveTimeRange (она читает только
-				// r.URL.Query()) — молча усечённая выгрузка (ревью веб-части
-				// E1, п.1).
-				<div class="issues-export-actions">
-					<details class="dropdown-control">
-						<summary>{ i18n.T(ctx, "issues.export.groups") }</summary>
-						<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) } class="export-control-form">
-							<input type="hidden" name="kind" value="issues"/>
-							<input type="hidden" name="status" value={ filter.Status }/>
-							<input type="hidden" name="level" value={ filter.Level }/>
-							<input type="hidden" name="query" value={ filter.Query }/>
-							<input type="hidden" name="environment" value={ filter.Environment }/>
-							<input type="hidden" name="sort" value={ filter.Sort }/>
-							@exportFormatField(nil)
-							@exportPIIField(canManagePII, nil)
-							<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
-						</form>
-					</details>
-					<details class="dropdown-control">
-						<summary>{ i18n.T(ctx, "issues.export.events") }</summary>
-						<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) } class="export-control-form">
-							<input type="hidden" name="kind" value="events"/>
-							<input type="hidden" name="status" value={ filter.Status }/>
-							<input type="hidden" name="level" value={ filter.Level }/>
-							<input type="hidden" name="query" value={ filter.Query }/>
-							<input type="hidden" name="environment" value={ filter.Environment }/>
-							<input type="hidden" name="sort" value={ filter.Sort }/>
-							@exportFormatField(nil)
-							@exportPIIField(canManagePII, nil)
-							<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
-						</form>
-					</details>
-				</div>
-			}
 			<div id="issues-table">
 				if len(rows) == 0 && filter.Active {
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
 				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
 				} else {
-					<form method="post" action={ templ.URL(issuesBulkPath(projectID)) }>
-						<div class="card">
-						@scrollRegion("table-scroll", "nav.errors") {
-								<table class="data-table">
-									<thead>
-										<tr>
-											// №125: колонка чекбоксов не безымянная для скринридера.
-											<th scope="col"><span class="visually-hidden">{ i18n.T(ctx, "issues.table.select") }</span></th>
-											<th scope="col">{ i18n.T(ctx, "issues.table.level") }</th>
-											<th scope="col">{ i18n.T(ctx, "issues.table.issue") }</th>
-											<th scope="col">{ i18n.T(ctx, "issues.table.trend") }</th>
-											<th scope="col" class="num">{ i18n.T(ctx, "issues.table.events") }</th>
-											<th scope="col">{ i18n.T(ctx, "issues.table.last_seen") }</th>
-											<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
-											<th scope="col">{ i18n.T(ctx, "issues.table.assignee") }</th>
-										</tr>
-									</thead>
-									<tbody>
-										for _, row := range rows {
+					<div class="card">
+						// Тулбар над таблицей: слева массовые действия, справа точки
+						// входа экспорта. Кнопки массовых действий стоят ВНЕ POST-формы
+						// #issues-bulk и привязаны к ней атрибутом form=: в том же
+						// тулбаре лежат формы экспорта, а вложенные <form> HTML не
+						// допускает — парсер молча закрыл бы внешнюю форму, и чекбоксы
+						// ids перестали бы отправляться. На пустом списке тулбар не
+						// рендерится вовсе (ветки выше): нечего ни отмечать, ни выгружать.
+						<div class="card-toolbar">
+							<div class="card-toolbar-group">
+								<button type="submit" form="issues-bulk" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve_bulk") }</button>
+								<button type="submit" form="issues-bulk" name="action" value="ignore" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
+								<button type="submit" form="issues-bulk" name="action" value="unresolve" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
+							</div>
+							if canOperate {
+								// Две отдельные раскрывающиеся формы (группы/события), не один
+								// селект и не мгновенный POST по клику: раньше кнопка сразу
+								// ставила заявку с форматом, зашитым в hidden-поле, — «Экспорт
+								// событий» отсюда всегда давал ndjson, тот же по названию со
+								// страницы issue всегда давал csv, а выбрать формат или галку
+								// PII было негде (находка аудита P2-UX-3). Теперь клик по
+								// кнопке раскрывает <details> с форматом и (для CanManage)
+								// галкой PII — тот же приём, что и у @assignControl рядом
+								// (issuedetail.templ) — а контекст точки входа (текущие
+								// фильтры списка) по-прежнему летит hidden-полями. Период —
+								// тем же окном, что сейчас видит пользователь на списке
+								// (filter.Range), переносится в action query-параметром
+								// (exportsPathWithRange): hidden-поле для него не годится,
+								// POST-тело не долетает до resolveTimeRange (она читает только
+								// r.URL.Query()) — молча усечённая выгрузка (ревью веб-части
+								// E1, п.1).
+								<div class="card-toolbar-group">
+									<details class="dropdown-control">
+										<summary>{ i18n.T(ctx, "issues.export.groups") }</summary>
+										<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) } class="export-control-form">
+											<input type="hidden" name="kind" value="issues"/>
+											<input type="hidden" name="status" value={ filter.Status }/>
+											<input type="hidden" name="level" value={ filter.Level }/>
+											<input type="hidden" name="query" value={ filter.Query }/>
+											<input type="hidden" name="environment" value={ filter.Environment }/>
+											<input type="hidden" name="sort" value={ filter.Sort }/>
+											@exportFormatField(nil)
+											@exportPIIField(canManagePII, nil)
+											<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
+										</form>
+									</details>
+									<details class="dropdown-control">
+										<summary>{ i18n.T(ctx, "issues.export.events") }</summary>
+										<form method="post" action={ templ.URL(exportsPathWithRange(projectID, filter.Range)) } class="export-control-form">
+											<input type="hidden" name="kind" value="events"/>
+											<input type="hidden" name="status" value={ filter.Status }/>
+											<input type="hidden" name="level" value={ filter.Level }/>
+											<input type="hidden" name="query" value={ filter.Query }/>
+											<input type="hidden" name="environment" value={ filter.Environment }/>
+											<input type="hidden" name="sort" value={ filter.Sort }/>
+											@exportFormatField(nil)
+											@exportPIIField(canManagePII, nil)
+											<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "exports.create") }</button>
+										</form>
+									</details>
+								</div>
+							}
+						</div>
+						<form method="post" action={ templ.URL(issuesBulkPath(projectID)) } id="issues-bulk">
+							@scrollRegion("table-scroll", "nav.errors") {
+									<table class="data-table">
+										<thead>
 											<tr>
-												<td>
-													// aria-label обязателен: без него скринридер объявляет
-													// «флажок, не отмечен», не сказав, о какой проблеме речь,
-													// и массовые действия становятся выбором вслепую.
-													<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ row.Issue.Title }/>
-												</td>
-												<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
-												<td>
-													<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
-													if row.Issue.Culprit != "" {
-														<div class="culprit">{ row.Issue.Culprit }</div>
+												// №125: колонка чекбоксов не безымянная для скринридера.
+												<th scope="col"><span class="visually-hidden">{ i18n.T(ctx, "issues.table.select") }</span></th>
+												<th scope="col">{ i18n.T(ctx, "issues.table.level") }</th>
+												<th scope="col">{ i18n.T(ctx, "issues.table.issue") }</th>
+												<th scope="col">{ i18n.T(ctx, "issues.table.trend") }</th>
+												<th scope="col" class="num">{ i18n.T(ctx, "issues.table.events") }</th>
+												<th scope="col">{ i18n.T(ctx, "issues.table.last_seen") }</th>
+												<th scope="col">{ i18n.T(ctx, "issues.table.status") }</th>
+												<th scope="col">{ i18n.T(ctx, "issues.table.assignee") }</th>
+											</tr>
+										</thead>
+										<tbody>
+											for _, row := range rows {
+												<tr>
+													<td>
+														// aria-label обязателен: без него скринридер объявляет
+														// «флажок, не отмечен», не сказав, о какой проблеме речь,
+														// и массовые действия становятся выбором вслепую.
+														<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ row.Issue.Title }/>
+													</td>
+													<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
+													<td>
+														<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
+														if row.Issue.Culprit != "" {
+															<div class="culprit">{ row.Issue.Culprit }</div>
+														}
+													</td>
+													<td>@row.Sparkline</td>
+													<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
+													<td>@relativeTime(row.Issue.LastSeen)</td>
+													<td><span class={ statusBadgeClass(row.Issue.Status) }>{ issueStatusLabel(ctx, row.Issue.Status) }</span></td>
+													<td>
+													if row.Issue.AssigneeEmail == "" {
+														{ assigneeDisplay(row.Issue.AssigneeEmail) }
+													} else {
+														@userChip(row.Issue.AssigneeEmail)
 													}
 												</td>
-												<td>@row.Sparkline</td>
-												<td class="num">{ strconv.FormatInt(row.Issue.TimesSeen, 10) }</td>
-												<td>@relativeTime(row.Issue.LastSeen)</td>
-												<td><span class={ statusBadgeClass(row.Issue.Status) }>{ issueStatusLabel(ctx, row.Issue.Status) }</span></td>
-												<td>
-												if row.Issue.AssigneeEmail == "" {
-													{ assigneeDisplay(row.Issue.AssigneeEmail) }
-												} else {
-													@userChip(row.Issue.AssigneeEmail)
-												}
-											</td>
-											</tr>
-										}
-									</tbody>
-								</table>
-						}
-						</div>
-						<div class="bulk-actions">
-							<button type="submit" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve_bulk") }</button>
-							<button type="submit" name="action" value="ignore" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.ignore") }</button>
-							<button type="submit" name="action" value="unresolve" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
-						</div>
-					</form>
+												</tr>
+											}
+										</tbody>
+									</table>
+							}
+						</form>
+					</div>
 				}
 				if totalPages(total) > 1 || page > 1 {
 					<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>

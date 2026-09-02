@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Issues list: bulk actions (resolve, ignore, unresolve) moved from below
+  the table into a toolbar above it, next to the export controls; filters
+  reordered (search first, sort last). Nothing is left under the table but
+  the pager.
+- Form controls: text inputs and selects now share one height, and selects
+  draw their own chevron instead of the browser's edge-hugging arrow — the
+  same look in both themes and on every page.
+
 ## [0.29.0] - 2026-09-02
 
 ### Added

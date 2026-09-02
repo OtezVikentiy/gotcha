@@ -29,8 +29,10 @@ func TestActionRowFormSelectorsAreDirectChild(t *testing.T) {
 	}
 	css = cssCommentRe.ReplaceAllString(css, " ")
 
-	// Контейнеры, внутри которых живёт раскрывающаяся форма (dropdown-control).
-	for _, container := range []string{".issue-actions", ".issues-export-actions"} {
+	// Контейнеры, внутри которых живёт раскрывающаяся форма (dropdown-control):
+	// строка действий на странице issue и тулбар списка ошибок (.card-toolbar,
+	// .card-toolbar-group — там же лежат кнопки массовых действий).
+	for _, container := range []string{".issue-actions", ".card-toolbar", ".card-toolbar-group"} {
 		re := regexp.MustCompile(regexp.QuoteMeta(container) + `\s+form\s*[,{]`)
 		if loc := re.FindString(css); loc != "" {
 			t.Errorf("app.css: селектор %q задаёт раскладку любому вложенному <form> — "+

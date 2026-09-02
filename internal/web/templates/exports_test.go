@@ -231,6 +231,16 @@ func TestExportsFormPIIHintGatedByCanManage(t *testing.T) {
 	}
 }
 
+// exportIssueRows — одна строка списка ошибок для тестов точек входа
+// экспорта: кнопки экспорта живут в тулбаре над таблицей, а он рисуется только
+// у непустого списка — на пустом нечего выгружать.
+func exportIssueRows() []IssueRow {
+	return []IssueRow{{
+		Issue:     issue.Issue{ID: 1, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved", TimesSeen: 1, LastSeen: time.Now()},
+		Sparkline: templ.Raw("<svg data-stub></svg>"),
+	}}
+}
+
 // TestIssuesListExportButtonsGatedByCanOperate — кнопки экспорта на списке
 // ошибок ведут на постановку заявки, которая требует requireProjectOperator;
 // показывать их тому, для кого POST однозначно вернёт 404, — плохой UX (тот
@@ -238,7 +248,7 @@ func TestExportsFormPIIHintGatedByCanManage(t *testing.T) {
 func TestIssuesListExportButtonsGatedByCanOperate(t *testing.T) {
 	filter := IssuesFilter{Status: "unresolved", Level: "error", Query: "npe", Environment: "production", Sort: "last_seen"}
 
-	withAccess := renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	withAccess := renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
 	if !strings.Contains(withAccess, `action="/projects/7/exports"`) {
 		t.Error("оператору не показаны формы экспорта")
 	}
@@ -246,7 +256,7 @@ func TestIssuesListExportButtonsGatedByCanOperate(t *testing.T) {
 		t.Error("текущий поисковый запрос не пробрасывается скрытым полем формы экспорта")
 	}
 
-	without := renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false))
+	without := renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false))
 	if strings.Contains(without, `action="/projects/7/exports"`) {
 		t.Error("без CanOperate формы экспорта не должны рендериться")
 	}
@@ -259,19 +269,19 @@ func TestIssuesListExportButtonsGatedByCanOperate(t *testing.T) {
 // видит пользователь (ревью веб-части E1, п.1).
 func TestIssuesListExportFormsCarryTimeRange(t *testing.T) {
 	preset := IssuesFilter{Range: TimeRangeVM{Key: "7d"}}
-	out := renderTo(t, IssuesList(7, nil, preset, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	out := renderTo(t, IssuesList(7, exportIssueRows(), preset, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
 	if n := strings.Count(out, `action="/projects/7/exports?period=7d"`); n != 2 {
 		t.Errorf("форм с action=...?period=7d = %d, want 2 (группы + события)", n)
 	}
 
 	all := IssuesFilter{Range: TimeRangeVM{Key: "all", AllowAll: true}}
-	outAll := renderTo(t, IssuesList(7, nil, all, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	outAll := renderTo(t, IssuesList(7, exportIssueRows(), all, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
 	if n := strings.Count(outAll, `action="/projects/7/exports?period=all"`); n != 2 {
 		t.Errorf("форм с action=...?period=all = %d, want 2", n)
 	}
 
 	custom := IssuesFilter{Range: TimeRangeVM{Key: "custom", Custom: true, Start: "2026-08-01T00:00", End: "2026-08-02T00:00"}}
-	outCustom := renderTo(t, IssuesList(7, nil, custom, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	outCustom := renderTo(t, IssuesList(7, exportIssueRows(), custom, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
 	// url.Values.Encode() сортирует ключи по алфавиту: end < period < start.
 	if n := strings.Count(outCustom, `action="/projects/7/exports?end=2026-08-02T00%3A00&amp;period=custom&amp;start=2026-08-01T00%3A00"`); n != 2 {
 		t.Errorf("форм с action=...?period=custom&start=...&end=... = %d, want 2: %s", n, outCustom)
@@ -317,7 +327,7 @@ func TestIssueDetailHidesExportFormWhenExportsDisabled(t *testing.T) {
 // страницы «Выгрузки» (у которой нет ни scope_issue_id, ни фильтров).
 func TestIssuesListExportFormsOfferFormatChoice(t *testing.T) {
 	filter := IssuesFilter{Status: "unresolved"}
-	out := renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	out := renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
 
 	if n := strings.Count(out, `<select name="format" class="select"`); n != 2 {
 		t.Errorf(`селекторов format = %d, want 2 (группы + события): %s`, n, out)
@@ -347,12 +357,12 @@ func TestIssuesListExportFormsOfferFormatChoice(t *testing.T) {
 func TestIssuesListExportFormsGatePIIByCanManage(t *testing.T) {
 	filter := IssuesFilter{Status: "unresolved"}
 
-	admin := renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	admin := renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
 	if n := strings.Count(admin, `name="include_pii"`); n != 2 {
 		t.Errorf("галок include_pii у CanManage = %d, want 2 (группы + события): %s", n, admin)
 	}
 
-	operator := renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, false))
+	operator := renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, false))
 	if strings.Contains(operator, `name="include_pii"`) {
 		t.Error("оператору без CanManage показана галка include_pii — на бэкенде она для него не действует")
 	}
@@ -525,7 +535,7 @@ func TestExportPIICheckboxUsesInlineLabel(t *testing.T) {
 
 	pages := map[string]string{
 		"страница «Выгрузки»": renderTo(t, Exports(7, nil, true, "u@e.com", true, "", nil)),
-		"список ошибок":       renderTo(t, IssuesList(7, nil, filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true)),
+		"список ошибок":       renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true)),
 		"карточка ошибки":     renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true)),
 	}
 	for name, html := range pages {

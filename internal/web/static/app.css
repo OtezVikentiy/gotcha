@@ -1435,10 +1435,21 @@ th {
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 6px;
-	padding: 3px;
+	/* 2px, не 3: обойма должна остаться в общей высоте контролов строки (34px
+	   у .input/.select): 28 у внутренних полей + 2·2 + рамка 2 = 34. */
+	padding: 2px;
 	background: var(--surface-2);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
+}
+/* Внутренние контролы обоймы ниже базовых 34px — ровно настолько, чтобы
+   обойма с её отступом и рамкой сравнялась с соседями по строке. Селектор
+   0,2,0 — перебивает базовое .input,.select независимо от порядка в файле. */
+.time-range > .select,
+.time-range > .time-range-input {
+	min-height: 28px;
+	padding-top: 3px;
+	padding-bottom: 3px;
 }
 /* Пресет-<select> внутри обоймы — без своей рамки, но с фоном обоймы
    (--surface-2), чтобы группа читалась единым контролом. Прозрачный фон здесь
@@ -1448,7 +1459,7 @@ th {
    (см. :root) держат попап читаемым в обеих темах. */
 .time-range > .select {
 	border: 0;
-	background: var(--surface-2);
+	background-color: var(--surface-2);
 	color: var(--text);
 	min-width: 0;
 	width: auto;
@@ -1544,6 +1555,8 @@ th {
 	border: 1px solid var(--border-control);
 	border-radius: calc(var(--radius) - 2px);
 	padding: 5px 10px;
+	/* Та же высота, что у .input/.select: триггер стоит в одной строке с ними. */
+	min-height: 34px;
 	cursor: pointer;
 }
 /* Явный фон на :hover обязателен: базовое button:hover (0,1,1) специфичнее
@@ -1737,25 +1750,6 @@ th {
 	font-size: var(--fs-sm);
 }
 
-.bulk-actions {
-	display: flex;
-	gap: 8px;
-	margin-top: 8px;
-	/* См. .team-member-add-form: на узком экране «Вернуть в работу» уходила за
-	   край во вложенный скроллер. */
-	flex-wrap: wrap;
-}
-.bulk-actions button:not(.btn) {
-	background: var(--surface);
-	color: var(--text);
-	border: 1px solid var(--border-control);
-	font-weight: 600;
-}
-.bulk-actions button:not(.btn):hover {
-	background: var(--surface);
-	border-color: var(--accent);
-}
-
 .pagination {
 	display: flex;
 	align-items: center;
@@ -1796,16 +1790,6 @@ th {
 	display: flex;
 	gap: 8px;
 	margin: 0;
-}
-/* Кнопки постановки заявки на выгрузку (issues.templ, E1) — рядом с
-   фильтрами списка ошибок. Каждая кнопка — раскрывающийся <details
-   class="dropdown-control"> (см. блок .dropdown-control выше): без обёртки
-   они разъехались бы вертикально, block по умолчанию. <details> в отличие
-   от <form> не несёт браузерного margin, отдельный сброс не нужен. */
-.issues-export-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
 }
 /* Рамку и фон селекту назначения даёт база .select (разметка несёт
    class="select"). Базовое .select даёт width:100% для вертикальных форм;
@@ -3216,6 +3200,34 @@ form.inline {
 	margin: 0;
 }
 
+/* Тулбар карточки с таблицей (список ошибок): слева массовые действия над
+   отмеченными строками, справа — точки входа экспорта. Одна строка над
+   таблицей вместо кнопок под ней: действия читаются до того, как глаз ушёл
+   в строки, а на длинной странице их не надо искать внизу. Разделитель —
+   тот же --border, что у рамки .card, чтобы линия читалась как часть
+   карточки, а не как отдельный контрол. Горизонтальный отступ не задаём:
+   его уже даёт padding самой .card; иначе кнопки съезжали бы внутрь
+   относительно таблицы. Группы разъезжаются по краям, на узком экране
+   переносятся одна под другую. <details class="dropdown-control"> внутри
+   раскрывает попап поверх таблицы (.export-control-form — position:absolute
+   от .dropdown-control), поток тулбара при раскрытии не меняется. */
+.card-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px 12px;
+	padding: 0 0 10px;
+	margin-bottom: 12px;
+	border-bottom: 1px solid var(--border);
+}
+.card-toolbar-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
 /* -- Org projects (/orgs/{id}/projects): список проектов одной организации,
    раскладка карточек — та же .settings-grid, что у настроек/команд.
    .org-projects задаёт отступ под кнопкой создания (.btn margin не имеет —
@@ -3506,6 +3518,37 @@ form.inline {
 	padding: 6px 10px;
 	font-family: inherit;
 	font-size: var(--fs-base);
+	/* Единая высота 34px (20 + 6·2 + 1·2, box-sizing: border-box) для input
+	   и select в одной строке фильтров: у нативного <select> и <input> свой
+	   внутренний line-height, и без явного они расходились на 1–2px —
+	   заметно, когда стоят бок о бок (поле поиска и селекты на .issues-filters).
+	   min-height, а не height: textarea.input ниже задаёт свой минимум выше. */
+	min-height: 34px;
+	line-height: 20px;
+}
+/* Свой шеврон у <select>. Нативная стрелка прижата к краю и рисуется
+   системным стилем — в тёмной теме и рядом с нашими рамками выглядит чужой,
+   appearance:none её убирает (и системные рамку/фон вместе с ней — их даёт
+   базовое правило выше). Псевдоэлементом шеврон не нарисовать: <select> —
+   replaced element, ::after у него не рендерится; картинкой через data:-URI
+   тоже нельзя — CSP default-src 'self' без img-src режет data:, url() в этом
+   файле нет ни одного. Остаются градиенты: два квадрата 6×6 с диагональным
+   штрихом («\» и «/»), сдвинутые на 6px друг от друга, складываются в «V».
+   Цвет — токен --text-dim, работает в обеих темах. Правило стоит ПОСЛЕ
+   базового .input,.select: там background задан шорткатом и обнулил бы
+   background-image. Те правила, что красят фон конкретного .select
+   (.time-range > .select и т.п.), обязаны использовать background-color,
+   иначе шеврон исчезнет. padding-right резервирует место под него. */
+.select {
+	appearance: none;
+	-webkit-appearance: none;
+	padding-right: 30px;
+	background-image:
+		linear-gradient(45deg, transparent 38%, var(--text-dim) 38%, var(--text-dim) 62%, transparent 62%),
+		linear-gradient(135deg, transparent 38%, var(--text-dim) 38%, var(--text-dim) 62%, transparent 62%);
+	background-position: calc(100% - 17px) 50%, calc(100% - 11px) 50%;
+	background-size: 6px 6px;
+	background-repeat: no-repeat;
 }
 .input:focus,
 .select:focus {
@@ -4431,7 +4474,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    в hidden-поля контекстом точки входа (текущие фильтры списка либо
    scope_issue_id). .field/.select внутри — обычные вертикальные поля (база
    в .field/.input,.select чуть ниже), max-width не даёт попапу растянуться
-   на всю ширину контейнера-обёртки (.issues-export-actions/.issue-actions).
+   на всю ширину контейнера-обёртки (.card-toolbar-group/.issue-actions).
    position:absolute — тот же приём попапа, что у .dr-popup/.logs-attr-suggestions
    (значения top/z-index взяты оттуда же): вертикальный список из нескольких
    полей был в обычном потоке (position:static) и при раскрытии раздвигал
