@@ -2,6 +2,7 @@ package templates
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strconv"
 	"strings"
@@ -78,6 +79,52 @@ func sslExpiryText(ctx context.Context, t *time.Time) string {
 		return i18n.Tf(ctx, "uptime.ssl.expired", "date", date)
 	}
 	return i18n.Tf(ctx, "uptime.ssl.days_left", "days", strconv.Itoa(days), "date", date)
+}
+
+// heartbeatGrace — допуск heartbeat-монитора из его config: тот же
+// HeartbeatConfig, которым конфиг читает форма (web/monitorform.go). Невалидный
+// config на странице детали не встречается (validateConfig отсекает его при
+// записи), поэтому ошибка разбора не обрабатывается — нулевой допуск ниже
+// печатается прочерком, а не «0 с».
+func heartbeatGrace(m uptime.Monitor) time.Duration {
+	var c uptime.HeartbeatConfig
+	_ = json.Unmarshal(m.Config, &c)
+	return time.Duration(c.GraceSeconds) * time.Second
+}
+
+// heartbeatGraceText — допуск короткими единицами: «15 мин», «1 ч», «1 ч 30 мин».
+// humanize.Duration здесь не подходит: она печатает одну самую крупную
+// единицу («1 час» для полутора часов), а по допуску дежурный судит, когда
+// именно монитор сработает, — важна точная величина, не порядок.
+func heartbeatGraceText(ctx context.Context, d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	var parts []string
+	if h := int(d / time.Hour); h > 0 {
+		parts = append(parts, i18n.Tf(ctx, "uptime.detail.grace_hours", "n", strconv.Itoa(h)))
+		d -= time.Duration(h) * time.Hour
+	}
+	if m := int(d / time.Minute); m > 0 {
+		parts = append(parts, i18n.Tf(ctx, "uptime.detail.grace_minutes", "n", strconv.Itoa(m)))
+		d -= time.Duration(m) * time.Minute
+	}
+	if sec := int(d / time.Second); sec > 0 {
+		parts = append(parts, i18n.Tf(ctx, "uptime.detail.grace_seconds", "n", strconv.Itoa(sec)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// heartbeatExpectedByText — крайний срок следующего маячка: last_beat_at +
+// допуск, абсолютным временем в UTC (тот же humanize.Time, что и в title у
+// relativeTime). Пока маячка не было, срока нет — прочерк: watchdog в этом
+// случае отсчитывает допуск от created_at, но показывать дежурному дату
+// создания монитора как «ожидается до» было бы враньём о пинге.
+func heartbeatExpectedByText(ctx context.Context, m uptime.Monitor) string {
+	if m.LastBeatAt == nil {
+		return "—"
+	}
+	return humanize.Time(ctx, m.LastBeatAt.Add(heartbeatGrace(m)), time.UTC)
 }
 
 // incidentStatusBadgeClass/incidentStatusTextKey — открыт (ResolvedAt == nil)
@@ -162,8 +209,17 @@ templ incidentRow(inc uptime.Incident) {
 
 // MonitorDetail — GET /monitors/{id}: крупный статус, uptime% за
 // 24ч/7д/30д (уже посчитанные web/monitors.go — без окон обслуживания
-// проекта), stacked-график задержек за 24ч, последние проверки, таймлайн
-// инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при canManage.
+// проекта), stacked-график задержек за выбранное окно, последние проверки,
+// таймлайн инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при
+// canManage. Страница собрана под опросные мониторы (http/tcp/dns);
+// heartbeat-монитор не пишет check_results никогда — у него нет ни задержки,
+// ни проверок, ни доступности по проверкам, зато есть last_beat_at и допуск.
+// Поэтому у heartbeat вместо плиток доступности — последний маячок / допуск /
+// срок следующего, а секции «Задержка» и «Последние проверки» не рендерятся
+// вовсе (пустой график и «проверок ещё не было» читались бы как поломка).
+// Инциденты heartbeat создаёт (watchdog), их лента остаётся. SSL-плитка —
+// только у http: tcp/dns/heartbeat сертификата не проверяют, прочерк там
+// выглядел бы как «сертификат не найден».
 // Карточка heartbeat-токена (URL пинга + кнопка Regenerate) — отдельный флаг
 // canOperate. С задачи 2 (cld/plans/2026-08-08-access-model-rework.md) оба
 // флага у всех вызывающих наполняются одним и тем же canOperateProject: и
@@ -205,22 +261,45 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 			<span class="chip">{ i18n.T(ctx, "uptime.kind."+string(m.Kind)) }</span>
 
 			<div class="monitor-meta">
-				<div class="stat-tile">
-					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_24h") }</div>
-					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime24h) }</div>
-				</div>
-				<div class="stat-tile">
-					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_7d") }</div>
-					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime7d) }</div>
-				</div>
-				<div class="stat-tile">
-					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_30d") }</div>
-					<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime30d) }</div>
-				</div>
-				<div class="stat-tile stat-tile--text">
-					<div class="stat-label">{ i18n.T(ctx, "uptime.detail.ssl") }</div>
-					<div class="stat-value">{ sslExpiryText(ctx, m.SSLExpiresAt) }</div>
-				</div>
+				if m.Kind == uptime.KindHeartbeat {
+					<div class="stat-tile stat-tile--text">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.last_beat") }</div>
+						<div class="stat-value">
+							if m.LastBeatAt != nil {
+								@relativeTime(*m.LastBeatAt)
+							} else {
+								{ i18n.T(ctx, "uptime.detail.last_beat_never") }
+							}
+						</div>
+					</div>
+					<div class="stat-tile stat-tile--text">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.grace") }</div>
+						<div class="stat-value">{ heartbeatGraceText(ctx, heartbeatGrace(m)) }</div>
+					</div>
+					<div class="stat-tile stat-tile--text">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.expected_by") }</div>
+						<div class="stat-value">{ heartbeatExpectedByText(ctx, m) }</div>
+					</div>
+				} else {
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_24h") }</div>
+						<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime24h) }</div>
+					</div>
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_7d") }</div>
+						<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime7d) }</div>
+					</div>
+					<div class="stat-tile">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.uptime_30d") }</div>
+						<div class="stat-value">{ uptimeStatTextCtx(ctx, uptime30d) }</div>
+					</div>
+				}
+				if m.Kind == uptime.KindHTTP {
+					<div class="stat-tile stat-tile--text">
+						<div class="stat-label">{ i18n.T(ctx, "uptime.detail.ssl") }</div>
+						<div class="stat-value">{ sslExpiryText(ctx, m.SSLExpiresAt) }</div>
+					</div>
+				}
 			</div>
 
 			if canOperate && m.Kind == uptime.KindHeartbeat {
@@ -251,52 +330,54 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				</div>
 			}
 
-			<h2>{ i18n.T(ctx, "uptime.detail.latency_title") }</h2>
-			<form method="get" action={ templ.URL(monitorDetailPath(m.ID)) } class="performance-filters">
-				@timeRangeFields(rng)
-				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
-			</form>
-			<p class="chart-caption">{ i18n.T(ctx, "uptime.detail.latency_caption") }</p>
-			<p class="chart-legend">
-				<span class="legend-item legend-dns">DNS</span>
-				<span class="legend-item legend-tcp">TCP</span>
-				<span class="legend-item legend-tls">TLS</span>
-				<span class="legend-item legend-ttfb">TTFB</span>
-			</p>
-			<div class="card monitor-chart">
-				@latencyChart
-			</div>
+			if m.Kind != uptime.KindHeartbeat {
+				<h2>{ i18n.Tf(ctx, "uptime.detail.latency_title", "range", timeRangeLabelText(ctx, rng)) }</h2>
+				<form method="get" action={ templ.URL(monitorDetailPath(m.ID)) } class="performance-filters">
+					@timeRangeFields(rng)
+					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
+				</form>
+				<p class="chart-caption">{ i18n.T(ctx, "uptime.detail.latency_caption") }</p>
+				<p class="chart-legend">
+					<span class="legend-item legend-dns">DNS</span>
+					<span class="legend-item legend-tcp">TCP</span>
+					<span class="legend-item legend-tls">TLS</span>
+					<span class="legend-item legend-ttfb">TTFB</span>
+				</p>
+				<div class="card monitor-chart">
+					@latencyChart
+				</div>
 
-			<h2>{ i18n.T(ctx, "uptime.detail.checks_title") }</h2>
-			if len(checks) == 0 {
-				@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "", 3)
-			} else {
-				// Прокручиваемый контейнер: последних проверок до 50
-				// (monitorDetailChecksLimit), и без ограничения высоты они
-				// вытягивали страницу так, что инциденты под ними уходили
-				// далеко за экран.
-				// Один scrollRegion вместо прежней двойной обёртки
-				// (card scroll-list > table-scroll): scroll-list сам скроллит
-				// обе оси (см. app.css), внутренний table-scroll дублировал
-				// скроллер и дал бы два табстопа на одну таблицу.
-				@scrollRegion("card scroll-list", "uptime.detail.checks_title") {
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
-								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
-								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
-								<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
-								<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
-								<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, c := range checks {
-								@checkRow(c)
-							}
-						</tbody>
-					</table>
+				<h2>{ i18n.T(ctx, "uptime.detail.checks_title") }</h2>
+				if len(checks) == 0 {
+					@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "", 3)
+				} else {
+					// Прокручиваемый контейнер: последних проверок до 50
+					// (monitorDetailChecksLimit), и без ограничения высоты они
+					// вытягивали страницу так, что инциденты под ними уходили
+					// далеко за экран.
+					// Один scrollRegion вместо прежней двойной обёртки
+					// (card scroll-list > table-scroll): scroll-list сам скроллит
+					// обе оси (см. app.css), внутренний table-scroll дублировал
+					// скроллер и дал бы два табстопа на одну таблицу.
+					@scrollRegion("card scroll-list", "uptime.detail.checks_title") {
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.when") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.region") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.status") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.code") }</th>
+									<th scope="col">{ i18n.T(ctx, "uptime.detail.checks_table.error") }</th>
+									<th scope="col" class="num">{ i18n.T(ctx, "uptime.detail.checks_table.total") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, c := range checks {
+									@checkRow(c)
+								}
+							</tbody>
+						</table>
+					}
 				}
 			}
 
