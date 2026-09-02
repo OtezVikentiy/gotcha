@@ -76,7 +76,7 @@ func svgRoot(class string, w, h int, label string) string {
 // ссылка на URL с фокусом на нём (link), корень — ссылка-сброс (link(nil)).
 // Оборванный путь (данные за другой период) тихо откатывается к корню.
 func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []string, width int, link func(path []string) string) templ.Component {
-	if root == nil || root.Value == 0 {
+	if !flameHasData(root) {
 		return templ.Raw(`<p class="empty">` + html.EscapeString(i18n.T(ctx, "profile.flame.no_data")) + `</p>`)
 	}
 	node, ancestors, ok := focusFlame(root, focusPath)
@@ -98,6 +98,12 @@ func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []str
 	flameRow(&sb, node, 0, fw, len(ancestors), root.Value, focusPath, link)
 	sb.WriteString(`</svg>`)
 	return templ.Raw(sb.String())
+}
+
+// flameHasData — есть ли в дереве сэмплы; тот же критерий, по которому
+// flamegraphSVG рисует плейсхолдер вместо графика.
+func flameHasData(root *profile.FlameNode) bool {
+	return root != nil && root.Value > 0
 }
 
 // focusFlame спускается от корня по именам path (дети слиты по имени при

@@ -157,6 +157,9 @@ type ProfileFlameVM struct {
 	Environment string
 	Range       TimeRangeVM
 	Chart       templ.Component
+	// HasData — в дереве есть сэмплы; без них график — плейсхолдер, и
+	// подсказка про клик по кадру была бы не к месту.
+	HasData bool
 }
 
 // ProfileFlame — GET /projects/{id}/profiles/flame: flamegraph.
@@ -186,7 +189,9 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 			@scrollRegion("card flamegraph-wrap", "profiles.flame.title") {
 				@vm.Chart
 			}
-			<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
+			if vm.HasData {
+				<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
+			}
 		</div>
 	}
 }

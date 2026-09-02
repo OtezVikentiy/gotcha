@@ -168,6 +168,28 @@ func TestFlamegraphSVGFocus(t *testing.T) {
 	}
 }
 
+func TestFlamegraphSVGFocusDeep(t *testing.T) {
+	root := &profile.FlameNode{Name: "all", Value: 10, Children: []*profile.FlameNode{
+		{Name: "handler", Value: 6, Children: []*profile.FlameNode{
+			{Name: "db", Value: 3, Children: []*profile.FlameNode{{Name: "query", Value: 1}}},
+		}},
+	}}
+	out := renderFlame(t, root, []string{"handler", "db"}, 600)
+	// Предок несёт СВОЙ путь, а не путь фокуса: клик по нему — шаг вверх.
+	if !strings.Contains(out, `<a href="/flame?focus=handler"><svg class="flame-ancestor" x="0.0" y="18"`) {
+		t.Fatalf("handler ancestor must link to its own path: %s", out)
+	}
+	if !strings.Contains(out, `<a href="/flame"><svg class="flame-ancestor" x="0.0" y="0"`) {
+		t.Fatalf("root ancestor must link to the reset: %s", out)
+	}
+	if !strings.Contains(out, `<a href="/flame?focus=handler&amp;focus=db"><svg x="0.0" y="36" width="600.0"`) {
+		t.Fatalf("focused db must span the full width on the third row: %s", out)
+	}
+	if !strings.Contains(out, `<a href="/flame?focus=handler&amp;focus=db&amp;focus=query"><svg x="0.0" y="54" width="200.0"`) {
+		t.Fatalf("query child must be scaled from db (600 × 1/3): %s", out)
+	}
+}
+
 func TestFlamegraphSVGBrokenFocusFallsBackToRoot(t *testing.T) {
 	root := &profile.FlameNode{Name: "all", Value: 10, Children: []*profile.FlameNode{{Name: "handler", Value: 10}}}
 	out := renderFlame(t, root, []string{"nope"}, 600)
@@ -194,13 +216,18 @@ func TestFlamegraphSVGEscapesNames(t *testing.T) {
 }
 
 func TestFlamegraphSVGLabels(t *testing.T) {
-	root := &profile.FlameNode{Name: "all", Value: 100, Children: []*profile.FlameNode{
-		// 600 × 4/100 = 24 — уже порога: rect есть, подписи нет.
-		{Name: "tiny-frame", Value: 4},
-		// 600 × 96/100 = 576 → 86 символов; имя в 100 символов усекается с «…».
-		{Name: strings.Repeat("x", 100), Value: 96},
+	root := &profile.FlameNode{Name: "all", Value: 10000, Children: []*profile.FlameNode{
+		// 600 × 400/10000 = 24 — уже порога: rect есть, подписи нет.
+		{Name: "tiny-frame", Value: 400},
+		// 600 × 9599/10000 ≈ 576 → 86 символов; имя в 100 символов усекается с «…».
+		{Name: strings.Repeat("x", 100), Value: 9599},
+		// 600 × 1/10000 = 0.06 < 0.5 — кадр не рисуется вовсе, даже тултипа нет.
+		{Name: "subpixel-frame", Value: 1},
 	}}
 	out := renderFlame(t, root, nil, 600)
+	if strings.Contains(out, "subpixel-frame") {
+		t.Fatalf("frame narrower than half a unit must be skipped entirely: %s", out)
+	}
 	if !strings.Contains(out, "<title>tiny-frame — 4.0%</title>") {
 		t.Fatalf("narrow node must keep its tooltip: %s", out)
 	}
@@ -243,6 +270,12 @@ func TestFlameLink(t *testing.T) {
 	// Исходный запрос билдер не портит.
 	if r.URL.Query().Get("focus") != "old" {
 		t.Fatalf("flameLink must not mutate the request query")
+	}
+
+	// Путь остаётся в экранированном виде: сырой «?» из trace_id начал бы query.
+	esc := flameLink(httptest.NewRequest("GET", "/traces/a%3Fb/flame", nil))
+	if got := esc([]string{"main"}); got != "/traces/a%3Fb/flame?focus=main" {
+		t.Fatalf("escaped path link = %q", got)
 	}
 
 	// Без query — просто путь.

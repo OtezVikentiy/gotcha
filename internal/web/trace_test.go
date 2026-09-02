@@ -410,6 +410,17 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("flamegraph link shown without a profile")
 	}
 
+	// Без профиля страница flamegraph — плейсхолдер, подсказки про зум нет.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "нет данных профиля") {
+		t.Fatalf("flame without profile status=%d body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("zoom hint must not be shown under the empty placeholder: %s", body)
+	}
+
 	// Засеять профиль этого трейса.
 	if err := s.ch.Exec(ctx, `INSERT INTO profile_samples
 		(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)

@@ -106,6 +106,14 @@ func TestWebProfiles(t *testing.T) {
 	if !strings.Contains(string(body), `href="`+base+`/flame?period=24h&amp;service=api&amp;type=cpu"`) {
 		t.Fatalf("root link must reset focus and keep filters: %s", body)
 	}
+	// Пустой профиль (нет такого сервиса) — плейсхолдер без подсказки про зум.
+	resp = getWithCookie(t, s.srv, base+"/flame?service=nope&type=cpu&period=24h", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "нет данных профиля") || strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("empty flame status=%d, want placeholder without the zoom hint: %s", resp.StatusCode, body)
+	}
+
 	// Оборванный путь (нет такого кадра) — полный профиль, не ошибка.
 	resp = getWithCookie(t, s.srv, flame+"&focus=nope", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)

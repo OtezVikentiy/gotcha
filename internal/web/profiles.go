@@ -91,6 +91,7 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 		Environment: environment,
 		Range:       timeRangeVM(tr),
 		Chart:       flamegraphSVG(r.Context(), root, q["focus"], 960, flameLink(r)),
+		HasData:     flameHasData(root),
 	}
 	_ = templates.ProfileFlame(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
@@ -100,7 +101,9 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 // порядок = путь по именам от первого уровня ниже корня). nil-путь — корень:
 // ссылка без focus, то есть сброс зума.
 func flameLink(r *http.Request) func(path []string) string {
-	base := r.URL.Path
+	// EscapedPath, а не Path: trace_id со спецсимволами (?, #, %) в сыром виде
+	// сломал бы ссылку — браузер разобрал бы его как начало query/фрагмента.
+	base := r.URL.EscapedPath()
 	q := r.URL.Query()
 	q.Del("focus")
 	return func(path []string) string {
