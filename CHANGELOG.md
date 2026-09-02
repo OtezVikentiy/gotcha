@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-02
+
 ### Changed
 - Issues list: bulk actions (resolve, ignore, unresolve) moved from below
   the table into a toolbar above it, next to the export controls; filters
