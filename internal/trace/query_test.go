@@ -3,6 +3,7 @@ package trace_test
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -382,12 +383,38 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				Description: "select * from t",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "readonly-db"}},
-			// SQL-спан с BEGIN: ни чтение, ни запись — единственный вызов цели →
-			// направление None.
+			// ведущие пробелы перед глаголом — регэксп обязан их пропускать (\s*).
+			{SpanID: "deps-ro4", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "   SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "readonly-db"}},
+			// SQL-спаны без глагола: BEGIN (не в списках) и «1 SELECT» (первое слово —
+			// не буквенное; без анкера ^ регэксп вытянул бы SELECT из середины) →
+			// у цели ни чтения, ни записи → направление None.
 			{SpanID: "deps-txn", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "BEGIN",
 				Start:       depsAt, End: depsAt.Add(100 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "sqlite"}},
+			{SpanID: "deps-txn2", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "1 SELECT",
+				Start:       depsAt, End: depsAt.Add(100 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "sqlite"}},
+			// старый ключ атрибута db.operation (fallback после db.operation.name):
+			// UPDATE побеждает description «SELECT 1» → Out.
+			{SpanID: "deps-oldop", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "oldop-db", "db.operation": "UPDATE"}},
+			// пустой атрибут db.operation — не глагол, берём description → чтение.
+			{SpanID: "deps-emptyop", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "emptyop-db", "db.operation": ""}},
+			// http-атрибут у db-спана игнорируется: глагол берётся из description → In.
+			{SpanID: "deps-crossattr-db", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
+				Description: "SELECT 1",
+				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
+				Data: map[string]any{"db.system.name": "crossattr-db", "http.request.method": "POST"}},
 			// кеш redis: чтение (HGET) + запись (SET) → Both.
 			{SpanID: "deps-redis", ParentSpanID: "deps-root", Op: "db.redis", Status: "ok",
 				Description: "HGET k",
@@ -398,6 +425,10 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			// кеш memcached: только чтение, команда в нижнем регистре → In.
 			{SpanID: "deps-memcached", ParentSpanID: "deps-root", Op: "db.memcached", Status: "ok",
 				Description: "get k",
+				Start:       depsAt, End: depsAt.Add(300 * time.Microsecond)},
+			// memcached flush_all — глагол с подчёркиванием, запись.
+			{SpanID: "deps-memcached2", ParentSpanID: "deps-root", Op: "db.memcached", Status: "ok",
+				Description: "flush_all",
 				Start:       depsAt, End: depsAt.Add(300 * time.Microsecond)},
 			// старый ключ db.system (coalesce-ветка) — mysql. Атрибут
 			// db.operation.name важнее description: INSERT побеждает SELECT → Out.
@@ -416,6 +447,16 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				Description: "GET https://cdn.example.com/asset.js",
 				Start:       depsAt, End: depsAt.Add(30000 * time.Microsecond),
 				Data: map[string]any{"url.full": "https://cdn.example.com/asset.js"}},
+			// http без description, глагол только в старом атрибуте http.method
+			// (fallback после http.request.method) → POST → Out.
+			{SpanID: "deps-legacy", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Start: depsAt, End: depsAt.Add(10000 * time.Microsecond),
+				Data: map[string]any{"http.method": "POST", "server.address": "legacy.example.com"}},
+			// db-атрибут у http-спана игнорируется: глагол из description → GET → In.
+			{SpanID: "deps-crossattr-http", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
+				Description: "GET https://x.example.com/",
+				Start:       depsAt, End: depsAt.Add(10000 * time.Microsecond),
+				Data: map[string]any{"db.operation.name": "INSERT", "server.address": "x.example.com"}},
 			// один и тот же хост db.internal через server.address С ПОРТОМ и через
 			// url.full С ПОРТОМ — должны схлопнуться в ОДИН узел «db.internal» (аудит
 			// QA P1: без снятия :port у server.address получалось два узла). Хост с
@@ -580,10 +621,11 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if _, ok := byTarget["http"]; ok {
 			t.Fatalf("byTarget contains degenerate 'http' target")
 		}
-		// 9 таргетов: postgresql, readonly-db, sqlite, mysql, redis, memcached,
-		// api.stripe.com, cdn.example.com, db-host.
-		if len(deps) != 9 {
-			t.Fatalf("len(deps) = %d, want 9 (%+v)", len(deps), deps)
+		// 14 таргетов: postgresql, readonly-db, sqlite, oldop-db, emptyop-db,
+		// crossattr-db, mysql, redis, memcached, api.stripe.com, cdn.example.com,
+		// legacy.example.com, x.example.com, db-host.
+		if len(deps) != 14 {
+			t.Fatalf("len(deps) = %d, want 14 (%+v)", len(deps), deps)
 		}
 
 		// Направление данных: reads/writes по глаголу операции.
@@ -594,21 +636,22 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := pg.Direction(); got != trace.DirectionBoth {
 			t.Fatalf("postgresql.Direction() = %q, want %q", got, trace.DirectionBoth)
 		}
-		// readonly-db: SELECT, WITH … SELECT, select (нижний регистр) → 3/0, In.
+		// readonly-db: SELECT, WITH … SELECT, select (нижний регистр), «   SELECT»
+		// (ведущие пробелы) → 4/0, In.
 		ro := byTarget["readonly-db"]
-		if ro.Kind != "database" || ro.Calls != 3 {
-			t.Fatalf("readonly-db = {Kind:%q Calls:%d}, want {database 3}", ro.Kind, ro.Calls)
+		if ro.Kind != "database" || ro.Calls != 4 {
+			t.Fatalf("readonly-db = {Kind:%q Calls:%d}, want {database 4}", ro.Kind, ro.Calls)
 		}
-		if ro.Reads != 3 || ro.Writes != 0 {
-			t.Fatalf("readonly-db = {Reads:%d Writes:%d}, want {3 0} (SELECT, WITH, select)", ro.Reads, ro.Writes)
+		if ro.Reads != 4 || ro.Writes != 0 {
+			t.Fatalf("readonly-db = {Reads:%d Writes:%d}, want {4 0} (SELECT, WITH, select, «   SELECT»)", ro.Reads, ro.Writes)
 		}
 		if got := ro.Direction(); got != trace.DirectionIn {
 			t.Fatalf("readonly-db.Direction() = %q, want %q", got, trace.DirectionIn)
 		}
-		// sqlite: единственный BEGIN → 0/0, None.
+		// sqlite: BEGIN + «1 SELECT» → 0/0, None.
 		sq := byTarget["sqlite"]
-		if sq.Calls != 1 || sq.Reads != 0 || sq.Writes != 0 {
-			t.Fatalf("sqlite = {Calls:%d Reads:%d Writes:%d}, want {1 0 0} (BEGIN — ни чтение, ни запись)", sq.Calls, sq.Reads, sq.Writes)
+		if sq.Calls != 2 || sq.Reads != 0 || sq.Writes != 0 {
+			t.Fatalf("sqlite = {Calls:%d Reads:%d Writes:%d}, want {2 0 0} (BEGIN и «1 SELECT» — ни чтение, ни запись)", sq.Calls, sq.Reads, sq.Writes)
 		}
 		if got := sq.Direction(); got != trace.DirectionNone {
 			t.Fatalf("sqlite.Direction() = %q, want %q", got, trace.DirectionNone)
@@ -621,6 +664,21 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := my.Direction(); got != trace.DirectionOut {
 			t.Fatalf("mysql.Direction() = %q, want %q", got, trace.DirectionOut)
 		}
+		// oldop-db: старый ключ db.operation=UPDATE важнее description → 0/1, Out.
+		oo := byTarget["oldop-db"]
+		if oo.Reads != 0 || oo.Writes != 1 || oo.Direction() != trace.DirectionOut {
+			t.Fatalf("oldop-db = {Reads:%d Writes:%d Direction:%q}, want {0 1 out} (fallback на db.operation)", oo.Reads, oo.Writes, oo.Direction())
+		}
+		// emptyop-db: пустой db.operation → глагол из description → 1/0.
+		eo := byTarget["emptyop-db"]
+		if eo.Reads != 1 || eo.Writes != 0 {
+			t.Fatalf("emptyop-db = {Reads:%d Writes:%d}, want {1 0} (пустой атрибут → description)", eo.Reads, eo.Writes)
+		}
+		// crossattr-db: http.request.method=POST у db-спана игнорируется → 1/0, In.
+		cd := byTarget["crossattr-db"]
+		if cd.Reads != 1 || cd.Writes != 0 || cd.Direction() != trace.DirectionIn {
+			t.Fatalf("crossattr-db = {Reads:%d Writes:%d Direction:%q}, want {1 0 in} (http-атрибут у db-спана не учитывается)", cd.Reads, cd.Writes, cd.Direction())
+		}
 		// redis: HGET + SET → 1/1, Both.
 		rd := byTarget["redis"]
 		if rd.Calls != 2 || rd.Reads != 1 || rd.Writes != 1 {
@@ -629,13 +687,13 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := rd.Direction(); got != trace.DirectionBoth {
 			t.Fatalf("redis.Direction() = %q, want %q", got, trace.DirectionBoth)
 		}
-		// memcached: «get k» → 1/0, In.
+		// memcached: «get k» + «flush_all» (глагол с подчёркиванием) → 1/1, Both.
 		mc := byTarget["memcached"]
-		if mc.Kind != "cache" || mc.Calls != 1 || mc.Reads != 1 || mc.Writes != 0 {
-			t.Fatalf("memcached = {Kind:%q Calls:%d Reads:%d Writes:%d}, want {cache 1 1 0}", mc.Kind, mc.Calls, mc.Reads, mc.Writes)
+		if mc.Kind != "cache" || mc.Calls != 2 || mc.Reads != 1 || mc.Writes != 1 {
+			t.Fatalf("memcached = {Kind:%q Calls:%d Reads:%d Writes:%d}, want {cache 2 1 1} (get + flush_all)", mc.Kind, mc.Calls, mc.Reads, mc.Writes)
 		}
-		if got := mc.Direction(); got != trace.DirectionIn {
-			t.Fatalf("memcached.Direction() = %q, want %q", got, trace.DirectionIn)
+		if got := mc.Direction(); got != trace.DirectionBoth {
+			t.Fatalf("memcached.Direction() = %q, want %q", got, trace.DirectionBoth)
 		}
 		// stripe: POST → 0/1, Out; cdn: GET → 1/0, In.
 		st := byTarget["api.stripe.com"]
@@ -651,6 +709,16 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 		if got := cdn.Direction(); got != trace.DirectionIn {
 			t.Fatalf("cdn.example.com.Direction() = %q, want %q", got, trace.DirectionIn)
+		}
+		// legacy: без description, глагол только в старом http.method=POST → 0/1, Out.
+		lg := byTarget["legacy.example.com"]
+		if lg.Calls != 1 || lg.Reads != 0 || lg.Writes != 1 || lg.Direction() != trace.DirectionOut {
+			t.Fatalf("legacy.example.com = {Calls:%d Reads:%d Writes:%d Direction:%q}, want {1 0 1 out} (fallback на http.method)", lg.Calls, lg.Reads, lg.Writes, lg.Direction())
+		}
+		// x.example.com: db.operation.name=INSERT у http-спана игнорируется, GET из description → 1/0, In.
+		xh := byTarget["x.example.com"]
+		if xh.Reads != 1 || xh.Writes != 0 || xh.Direction() != trace.DirectionIn {
+			t.Fatalf("x.example.com = {Reads:%d Writes:%d Direction:%q}, want {1 0 in} (db-атрибут у http-спана не учитывается)", xh.Reads, xh.Writes, xh.Direction())
 		}
 		// db.internal: http-спаны без глагола (ни description, ни атрибута) → 0/0, None.
 		dh := byTarget["db.internal"]
@@ -1292,9 +1360,19 @@ func TestVerbClasses(t *testing.T) {
 		{"cache", trace.CacheReadVerbs, trace.CacheWriteVerbs, "HGET", "SET"},
 		{"http", trace.HTTPReadVerbs, trace.HTTPWriteVerbs, "GET", "POST"},
 	}
+	// verbList не экранирует, а в SQL глагол сравнивается после upper(): любой
+	// символ вне [A-Z_] в списке — либо сломанный литерал, либо вечное несовпадение.
+	verbRe := regexp.MustCompile(`^[A-Z_]+$`)
 	for _, c := range classes {
 		r := verbSet(c.read)
 		w := verbSet(c.write)
+		for _, set := range []map[string]bool{r, w} {
+			for v := range set {
+				if !verbRe.MatchString(v) {
+					t.Fatalf("%s: глагол %q не матчит ^[A-Z_]+$", c.kind, v)
+				}
+			}
+		}
 		if !r[c.wantR] {
 			t.Fatalf("%s: read verbs не содержат %s: %q", c.kind, c.wantR, c.read)
 		}
