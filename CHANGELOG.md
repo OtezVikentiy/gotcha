@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-02
+
 ### Added
 - New "Overview" screen for a project (`/projects/{id}/overview`): what
   needs attention right now — a status line (uptime, hosts over threshold,
