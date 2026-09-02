@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Flamegraph zoom: every frame is a link — clicking it expands the frame to
+  the full width (ancestors stay on top, dimmed, as the way back); the "all"
+  row restores the full profile. The zoom lives in the URL (`focus=`), so a
+  zoomed view can be shared; a stale path falls back to the full profile.
+  Frames are keyboard-focusable; a hint under the chart explains the gesture.
+
+### Fixed
+- Flamegraph labels no longer spill out of their frames: label size is now
+  tied to the row height instead of the viewport (the axis-label sizing rules
+  made them 2–4× too large on tablets and phones), every frame clips its own
+  text, and a truncated name ends with an ellipsis instead of looking whole.
+
 ## [0.30.0] - 2026-09-02
 
 ### Changed
