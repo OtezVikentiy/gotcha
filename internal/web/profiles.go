@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
@@ -89,7 +90,34 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 		Transaction: transaction,
 		Environment: environment,
 		Range:       timeRangeVM(tr),
-		Chart:       flamegraphSVG(r.Context(), root, 960),
+		Chart:       flamegraphSVG(r.Context(), root, q["focus"], 960, flameLink(r)),
+		HasData:     flameHasData(root),
 	}
 	_ = templates.ProfileFlame(vm, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// flameLink — билдер ссылок зума флеймграфа для текущего запроса: фильтры и
+// период сохраняются, focus подменяется на путь узла (повторяющийся параметр,
+// порядок = путь по именам от первого уровня ниже корня). nil-путь — корень:
+// ссылка без focus, то есть сброс зума.
+func flameLink(r *http.Request) func(path []string) string {
+	// EscapedPath, а не Path: trace_id со спецсимволами (?, #, %) в сыром виде
+	// сломал бы ссылку — браузер разобрал бы его как начало query/фрагмента.
+	base := r.URL.EscapedPath()
+	q := r.URL.Query()
+	q.Del("focus")
+	return func(path []string) string {
+		v := make(url.Values, len(q)+1)
+		for k, vals := range q {
+			v[k] = vals
+		}
+		if len(path) > 0 {
+			v["focus"] = path
+		}
+		enc := v.Encode()
+		if enc == "" {
+			return base
+		}
+		return base + "?" + enc
+	}
 }

@@ -164,6 +164,8 @@ templ TraceExpired(d TraceExpiredData, userEmail string) {
 type TraceFlameData struct {
 	TraceID string
 	Chart   templ.Component
+	// HasData — см. ProfileFlameVM.HasData.
+	HasData bool
 }
 
 // TraceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
@@ -181,6 +183,9 @@ templ TraceFlame(d TraceFlameData, userEmail string) {
 			</div>
 			@scrollRegion("card flamegraph-wrap", "trace.flame.title") {
 				@d.Chart
+			}
+			if d.HasData {
+				<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
 			}
 		}
 	}

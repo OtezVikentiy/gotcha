@@ -27,6 +27,16 @@ import (
 
 const flameRowHeight = 18
 
+// flameCharWidthPx — ширина символа подписи флеймграфа в единицах viewBox.
+// Не svgCharWidthPx (6.0): та рассчитана на подписи осей, чей кегль задают
+// тиры .chart-vbN text по ширине окна. У флеймграфа кегль фиксирован правилом
+// svg.flamegraph text (11px моноширинного, app.css) — измерено 6.6 на символ.
+// Усечение считается от этой ширины; разойдутся — подписи вылезут за кадр.
+const flameCharWidthPx = 6.6
+
+// flameLabelPad — отступ подписи от левого края кадра (и столько же справа).
+const flameLabelPad = 2
+
 // flamegraphSVG рисует icicle-диаграмму дерева профиля (сверху вниз). Ширина
 // фрейма ∝ его доле от корня; глубина = уровень стека. Текст SVG строится из
 // чисел и html-экранированных имён — templ.Raw безопасен. Пустое дерево
@@ -59,18 +69,63 @@ func svgRoot(class string, w, h int, label string) string {
 	return sb.String()
 }
 
-func flamegraphSVG(ctx context.Context, root *profile.FlameNode, width int) templ.Component {
-	if root == nil || root.Value == 0 {
+// flamegraphSVG рисует дерево с фокусом на узле по пути focusPath (зум по
+// клику): предки — строками на всю ширину, полупрозрачные, затем сам узел на
+// всю ширину и его поддерево в масштабе node.Value. Доля в тултипе всегда
+// считается от корня, чтобы при зуме числа не «прыгали». Каждый узел —
+// ссылка на URL с фокусом на нём (link), корень — ссылка-сброс (link(nil)).
+// Оборванный путь (данные за другой период) тихо откатывается к корню.
+func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []string, width int, link func(path []string) string) templ.Component {
+	if !flameHasData(root) {
 		return templ.Raw(`<p class="empty">` + html.EscapeString(i18n.T(ctx, "profile.flame.no_data")) + `</p>`)
 	}
-	depth := flameDepth(root)
-	height := depth * flameRowHeight
+	node, ancestors, ok := focusFlame(root, focusPath)
+	if !ok {
+		focusPath = nil
+	}
+	height := (len(ancestors) + flameDepth(node)) * flameRowHeight
 	var sb strings.Builder
-	sb.WriteString(strings.TrimSuffix(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")), ">"))
-	sb.WriteString(` font-family="monospace" font-size="10">`)
-	flameRow(&sb, root, 0, float64(width), 0, root.Value)
+	sb.WriteString(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")))
+	fw := float64(width)
+	for i, a := range ancestors {
+		// Путь корня — nil, а не пустой срез: link(nil) обязан дать URL без focus.
+		var path []string
+		if i > 0 {
+			path = focusPath[:i]
+		}
+		flameNode(&sb, a, 0, fw, i, root.Value, path, link, true)
+	}
+	flameRow(&sb, node, 0, fw, len(ancestors), root.Value, focusPath, link)
 	sb.WriteString(`</svg>`)
 	return templ.Raw(sb.String())
+}
+
+// flameHasData — есть ли в дереве сэмплы; тот же критерий, по которому
+// flamegraphSVG рисует плейсхолдер вместо графика.
+func flameHasData(root *profile.FlameNode) bool {
+	return root != nil && root.Value > 0
+}
+
+// focusFlame спускается от корня по именам path (дети слиты по имени при
+// сборке дерева — путь однозначен). Возвращает узел и его предков от корня;
+// пустой путь — сам корень без предков. Шаг не найден → корень и ok=false.
+func focusFlame(root *profile.FlameNode, path []string) (node *profile.FlameNode, ancestors []*profile.FlameNode, ok bool) {
+	node = root
+	for _, name := range path {
+		var next *profile.FlameNode
+		for _, c := range node.Children {
+			if c.Name == name {
+				next = c
+				break
+			}
+		}
+		if next == nil {
+			return root, nil, false
+		}
+		ancestors = append(ancestors, node)
+		node = next
+	}
+	return node, ancestors, true
 }
 
 func flameDepth(n *profile.FlameNode) int {
@@ -83,48 +138,84 @@ func flameDepth(n *profile.FlameNode) int {
 	return max + 1
 }
 
-// flameRow рисует прямоугольник узла и рекурсивно детей. x/w — позиция и ширина
-// в пикселях; total — Value корня (для доли в подписи).
-func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64) {
+// flameRow рисует узел и рекурсивно детей. x/w — позиция и ширина в единицах
+// viewBox; total — Value корня (для доли в подписи); path — путь узла от корня
+// по именам (у корня nil), из него строятся ссылки детей.
+func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string) {
 	if w < 0.5 {
 		return
 	}
-	y := depth * flameRowHeight
+	flameNode(sb, n, x, w, depth, total, path, link, false)
+	childX := x
+	for _, c := range n.Children {
+		cw := w * float64(c.Value) / float64(n.Value)
+		// Свой срез на каждого ребёнка: append к общему path делил бы буфер
+		// между братьями.
+		cp := make([]string, len(path)+1)
+		copy(cp, path)
+		cp[len(path)] = c.Name
+		flameRow(sb, c, childX, cw, depth+1, total, cp, link)
+		childX += cw
+	}
+}
+
+// flameNode рисует один кадр: ссылка → вложенный <svg> → прямоугольник с
+// тултипом и подпись. Вложенный <svg> клипует содержимое сам (overflow hidden
+// по умолчанию), поэтому подпись не вылезет за кадр даже при расхождении
+// расчётной и реальной ширины символа — без clipPath и id. Координаты подписи
+// относительны кадра. ancestor — полупрозрачная строка предка при зуме.
+func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string, ancestor bool) {
 	pct := 0.0
 	if total > 0 {
 		pct = float64(n.Value) / float64(total) * 100
 	}
-	sb.WriteString(`<g><rect x="`)
+	sb.WriteString(`<a href="`)
+	sb.WriteString(html.EscapeString(link(path)))
+	sb.WriteString(`"><svg`)
+	if ancestor {
+		sb.WriteString(` class="flame-ancestor"`)
+	}
+	sb.WriteString(` x="`)
 	sb.WriteString(formatCoord(x))
 	sb.WriteString(`" y="`)
-	sb.WriteString(strconv.Itoa(y))
+	sb.WriteString(strconv.Itoa(depth * flameRowHeight))
 	sb.WriteString(`" width="`)
 	sb.WriteString(formatCoord(w))
 	sb.WriteString(`" height="`)
 	sb.WriteString(strconv.Itoa(flameRowHeight - 1))
-	sb.WriteString(`" fill="`)
+	sb.WriteString(`"><rect x="0" y="0" width="100%" height="100%" fill="`)
 	sb.WriteString(flameColor(n.Name))
 	sb.WriteString(`"><title>`)
 	sb.WriteString(html.EscapeString(n.Name))
 	sb.WriteString(` — `)
 	sb.WriteString(strconv.FormatFloat(pct, 'f', 1, 64))
 	sb.WriteString(`%</title></rect>`)
-	if w > 30 {
+	if label := fitFlameLabel(n.Name, w); label != "" {
 		sb.WriteString(`<text x="`)
-		sb.WriteString(formatCoord(x + 2))
+		sb.WriteString(strconv.Itoa(flameLabelPad))
 		sb.WriteString(`" y="`)
-		sb.WriteString(strconv.Itoa(y + flameRowHeight - 6))
+		sb.WriteString(strconv.Itoa(flameRowHeight - 6))
 		sb.WriteString(`" fill="#111">`)
-		sb.WriteString(html.EscapeString(truncateRunes(n.Name, int(w/svgCharWidthPx))))
+		sb.WriteString(html.EscapeString(label))
 		sb.WriteString(`</text>`)
 	}
-	sb.WriteString(`</g>`)
-	childX := x
-	for _, c := range n.Children {
-		cw := w * float64(c.Value) / float64(n.Value)
-		flameRow(sb, c, childX, cw, depth+1, total)
-		childX += cw
+	sb.WriteString(`</svg></a>`)
+}
+
+// fitFlameLabel подгоняет имя кадра под ширину w: целиком, если влезает с
+// паддингом с обеих сторон; иначе усекает до fit-1 рун и добавляет «…», чтобы
+// обрезка была видна. Если после усечения остаётся меньше трёх рун, подписи
+// нет вовсе — читателю остаётся тултип.
+func fitFlameLabel(name string, w float64) string {
+	fit := int((w - 2*flameLabelPad) / flameCharWidthPx)
+	r := []rune(name)
+	if len(r) <= fit {
+		return name
 	}
+	if fit-1 < 3 {
+		return ""
+	}
+	return string(r[:fit-1]) + "…"
 }
 
 // flameColor — детерминированный тёплый цвет по имени функции. Диапазон hue

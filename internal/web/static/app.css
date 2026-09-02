@@ -1275,9 +1275,15 @@ th {
 	margin: 0;
 	padding: 0;
 }
-/* Флеймграф-SVG (viewBox без width/height) — растянуть на ширину карточки. */
+/* Флеймграф-SVG (viewBox без width/height) — растянуть на ширину карточки.
+   min-width: кегль подписи привязан к строке viewBox (11 из 18 единиц), и на
+   телефоне svg сжимается вместе с карточкой (~300px) до нечитаемых ~3px.
+   Нижняя граница 720 держит подпись не меньше ~8px на экране; обёртка
+   .flamegraph-wrap (scrollRegion) даёт горизонтальную прокрутку. На десктопе
+   карточка шире 720 — правило не срабатывает. */
 .flamegraph {
 	width: 100%;
+	min-width: 720px;
 	height: auto;
 	display: block;
 }
@@ -3945,6 +3951,25 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	.chart-vb720 text { font-size: 8px; }
 	.chart-vb960 text { font-size: 11px; }
 	.chart-vb1200 text { font-size: 13px; }
+}
+
+/* Подписи флеймграфа — НЕ оси. Кегль привязан к строке кадра (18 единиц
+   viewBox), а не к ширине окна: тиры .chart-vbN text выше написаны под оси и
+   на планшете/телефоне раздували подписи кадров до 20–45px при строке 18 —
+   текст вылезал за кадр. Селектор svg.flamegraph text (0,1,2) перекрывает
+   тиры (0,1,1) и стоит ПОСЛЕ них. Серверное усечение подписей (fitFlameLabel,
+   6.6 единиц на символ) рассчитано именно на этот кегль и моноширинный шрифт. */
+svg.flamegraph text {
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+/* Зум по клику: каждый кадр — SVG-ссылка. Предки фокуса приглушены, чтобы
+   читалось «где я»; фокус с клавиатуры (Tab по ссылкам SVG) — обводкой. */
+.flamegraph a { cursor: pointer; }
+.flamegraph .flame-ancestor rect { opacity: .55; }
+.flamegraph a:focus-visible rect {
+	stroke: var(--accent);
+	stroke-width: 2;
 }
 
 /* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====

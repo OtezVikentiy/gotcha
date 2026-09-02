@@ -88,6 +88,39 @@ func TestWebProfiles(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<svg") {
 		t.Fatalf("flame status=%d body=%s", resp.StatusCode, body)
 	}
+	if strings.Contains(string(body), "flame-ancestor") || !strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("flame without focus must render the root without ancestors and with the hint: %s", body)
+	}
+
+	// Зум: ?focus=root&focus=a — предки «all» и «root» строками-предками,
+	// ссылки детей сохраняют фильтры и несут путь.
+	resp = getWithCookie(t, s.srv, flame+"&focus=root&focus=a", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || strings.Count(string(body), "flame-ancestor") != 2 {
+		t.Fatalf("focused flame status=%d, want 200 with two ancestor rows: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `href="`+base+`/flame?focus=root&amp;period=24h&amp;service=api&amp;type=cpu"`) {
+		t.Fatalf("ancestor link must keep filters and carry its own path: %s", body)
+	}
+	if !strings.Contains(string(body), `href="`+base+`/flame?period=24h&amp;service=api&amp;type=cpu"`) {
+		t.Fatalf("root link must reset focus and keep filters: %s", body)
+	}
+	// Пустой профиль (нет такого сервиса) — плейсхолдер без подсказки про зум.
+	resp = getWithCookie(t, s.srv, base+"/flame?service=nope&type=cpu&period=24h", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "нет данных профиля") || strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("empty flame status=%d, want placeholder without the zoom hint: %s", resp.StatusCode, body)
+	}
+
+	// Оборванный путь (нет такого кадра) — полный профиль, не ошибка.
+	resp = getWithCookie(t, s.srv, flame+"&focus=nope", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "flame-ancestor") {
+		t.Fatalf("broken focus status=%d, want 200 without ancestors: %s", resp.StatusCode, body)
+	}
 
 	// Произвольный диапазон на списке и flamegraph — селектор в режиме custom
 	// (parseTimeRange custom, ссылки flame несут period=custom).

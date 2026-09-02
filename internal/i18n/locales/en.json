@@ -1229,6 +1229,7 @@
     "chart.bar.partial": "intermittent",
     "chart.bar.down": "down",
     "profile.flame.no_data": "no profile data for the period",
+    "profile.flame.hint": "Click a frame to expand it to full width; the “all” row restores the full profile.",
     "err.auth.rate_limited_login": "Too many sign-in attempts, try again in a minute",
     "err.auth.rate_limited_register": "Too many sign-up attempts, try again in a minute",
     "err.auth.rate_limited": "Too many attempts, try again in a minute",

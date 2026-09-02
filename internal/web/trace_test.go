@@ -410,6 +410,17 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("flamegraph link shown without a profile")
 	}
 
+	// Без профиля страница flamegraph — плейсхолдер, подсказки про зум нет.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "нет данных профиля") {
+		t.Fatalf("flame without profile status=%d body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("zoom hint must not be shown under the empty placeholder: %s", body)
+	}
+
 	// Засеять профиль этого трейса.
 	if err := s.ch.Exec(ctx, `INSERT INTO profile_samples
 		(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
@@ -432,6 +443,21 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<svg") {
 		t.Fatalf("flame page status=%d body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "flame-ancestor") || !strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("flame without focus must render the root without ancestors and with the hint: %s", body)
+	}
+
+	// Зум: ?focus=root&focus=handler — «all» и «root» строками-предками, ссылка
+	// корня без focus.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame?focus=root&focus=handler", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || strings.Count(string(body), "flame-ancestor") != 2 {
+		t.Fatalf("focused flame status=%d, want 200 with two ancestor rows: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `href="/traces/`+traceID+`/flame"><svg class="flame-ancestor"`) {
+		t.Fatalf("root row must link to the flame page without focus: %s", body)
 	}
 
 	// Чужой → 404.
