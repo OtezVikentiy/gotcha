@@ -3957,6 +3957,14 @@ svg.flamegraph text {
 	font-family: var(--font-mono);
 	font-size: 11px;
 }
+/* Зум по клику: каждый кадр — SVG-ссылка. Предки фокуса приглушены, чтобы
+   читалось «где я»; фокус с клавиатуры (Tab по ссылкам SVG) — обводкой. */
+.flamegraph a { cursor: pointer; }
+.flamegraph .flame-ancestor rect { opacity: .55; }
+.flamegraph a:focus-visible rect {
+	stroke: var(--accent);
+	stroke-width: 2;
+}
 
 /* ===== Performance / Trace / Profiles: секционные классы (под-проект ④) =====
    Эти классы стояли в разметке без определений, из-за чего блоки на страницах

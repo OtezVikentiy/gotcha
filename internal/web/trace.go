@@ -218,7 +218,7 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 	}
 	data := templates.TraceFlameData{
 		TraceID: traceID,
-		Chart:   flamegraphSVG(r.Context(), root, 960),
+		Chart:   flamegraphSVG(r.Context(), root, r.URL.Query()["focus"], 960, flameLink(r)),
 	}
 	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
 }

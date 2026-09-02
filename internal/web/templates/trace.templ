@@ -182,6 +182,7 @@ templ TraceFlame(d TraceFlameData, userEmail string) {
 			@scrollRegion("card flamegraph-wrap", "trace.flame.title") {
 				@d.Chart
 			}
+			<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
 		}
 	}
 }

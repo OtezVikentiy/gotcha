@@ -186,6 +186,7 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 			@scrollRegion("card flamegraph-wrap", "profiles.flame.title") {
 				@vm.Chart
 			}
+			<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
 		</div>
 	}
 }

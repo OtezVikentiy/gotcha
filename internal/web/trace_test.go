@@ -433,6 +433,21 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<svg") {
 		t.Fatalf("flame page status=%d body=%s", resp.StatusCode, body)
 	}
+	if strings.Contains(string(body), "flame-ancestor") || !strings.Contains(string(body), "Клик по сегменту") {
+		t.Fatalf("flame without focus must render the root without ancestors and with the hint: %s", body)
+	}
+
+	// Зум: ?focus=root&focus=handler — «all» и «root» строками-предками, ссылка
+	// корня без focus.
+	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame?focus=root&focus=handler", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || strings.Count(string(body), "flame-ancestor") != 2 {
+		t.Fatalf("focused flame status=%d, want 200 with two ancestor rows: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `href="/traces/`+traceID+`/flame"><svg class="flame-ancestor"`) {
+		t.Fatalf("root row must link to the flame page without focus: %s", body)
+	}
 
 	// Чужой → 404.
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", outsiderCookie)

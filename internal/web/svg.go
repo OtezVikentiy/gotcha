@@ -69,17 +69,57 @@ func svgRoot(class string, w, h int, label string) string {
 	return sb.String()
 }
 
-func flamegraphSVG(ctx context.Context, root *profile.FlameNode, width int) templ.Component {
+// flamegraphSVG рисует дерево с фокусом на узле по пути focusPath (зум по
+// клику): предки — строками на всю ширину, полупрозрачные, затем сам узел на
+// всю ширину и его поддерево в масштабе node.Value. Доля в тултипе всегда
+// считается от корня, чтобы при зуме числа не «прыгали». Каждый узел —
+// ссылка на URL с фокусом на нём (link), корень — ссылка-сброс (link(nil)).
+// Оборванный путь (данные за другой период) тихо откатывается к корню.
+func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []string, width int, link func(path []string) string) templ.Component {
 	if root == nil || root.Value == 0 {
 		return templ.Raw(`<p class="empty">` + html.EscapeString(i18n.T(ctx, "profile.flame.no_data")) + `</p>`)
 	}
-	depth := flameDepth(root)
-	height := depth * flameRowHeight
+	node, ancestors, ok := focusFlame(root, focusPath)
+	if !ok {
+		focusPath = nil
+	}
+	height := (len(ancestors) + flameDepth(node)) * flameRowHeight
 	var sb strings.Builder
 	sb.WriteString(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")))
-	flameRow(&sb, root, 0, float64(width), 0, root.Value)
+	fw := float64(width)
+	for i, a := range ancestors {
+		// Путь корня — nil, а не пустой срез: link(nil) обязан дать URL без focus.
+		var path []string
+		if i > 0 {
+			path = focusPath[:i]
+		}
+		flameNode(&sb, a, 0, fw, i, root.Value, path, link, true)
+	}
+	flameRow(&sb, node, 0, fw, len(ancestors), root.Value, focusPath, link)
 	sb.WriteString(`</svg>`)
 	return templ.Raw(sb.String())
+}
+
+// focusFlame спускается от корня по именам path (дети слиты по имени при
+// сборке дерева — путь однозначен). Возвращает узел и его предков от корня;
+// пустой путь — сам корень без предков. Шаг не найден → корень и ok=false.
+func focusFlame(root *profile.FlameNode, path []string) (node *profile.FlameNode, ancestors []*profile.FlameNode, ok bool) {
+	node = root
+	for _, name := range path {
+		var next *profile.FlameNode
+		for _, c := range node.Children {
+			if c.Name == name {
+				next = c
+				break
+			}
+		}
+		if next == nil {
+			return root, nil, false
+		}
+		ancestors = append(ancestors, node)
+		node = next
+	}
+	return node, ancestors, true
 }
 
 func flameDepth(n *profile.FlameNode) int {
@@ -93,31 +133,43 @@ func flameDepth(n *profile.FlameNode) int {
 }
 
 // flameRow рисует узел и рекурсивно детей. x/w — позиция и ширина в единицах
-// viewBox; total — Value корня (для доли в подписи).
-func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64) {
+// viewBox; total — Value корня (для доли в подписи); path — путь узла от корня
+// по именам (у корня nil), из него строятся ссылки детей.
+func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string) {
 	if w < 0.5 {
 		return
 	}
-	flameNode(sb, n, x, w, depth, total)
+	flameNode(sb, n, x, w, depth, total, path, link, false)
 	childX := x
 	for _, c := range n.Children {
 		cw := w * float64(c.Value) / float64(n.Value)
-		flameRow(sb, c, childX, cw, depth+1, total)
+		// Свой срез на каждого ребёнка: append к общему path делил бы буфер
+		// между братьями.
+		cp := make([]string, len(path)+1)
+		copy(cp, path)
+		cp[len(path)] = c.Name
+		flameRow(sb, c, childX, cw, depth+1, total, cp, link)
 		childX += cw
 	}
 }
 
-// flameNode рисует один кадр: вложенный <svg> → прямоугольник с тултипом и
-// подпись. Вложенный <svg> клипует содержимое сам (overflow hidden по
-// умолчанию), поэтому подпись не вылезет за кадр даже при расхождении
+// flameNode рисует один кадр: ссылка → вложенный <svg> → прямоугольник с
+// тултипом и подпись. Вложенный <svg> клипует содержимое сам (overflow hidden
+// по умолчанию), поэтому подпись не вылезет за кадр даже при расхождении
 // расчётной и реальной ширины символа — без clipPath и id. Координаты подписи
-// относительны кадра.
-func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64) {
+// относительны кадра. ancestor — полупрозрачная строка предка при зуме.
+func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string, ancestor bool) {
 	pct := 0.0
 	if total > 0 {
 		pct = float64(n.Value) / float64(total) * 100
 	}
-	sb.WriteString(`<svg x="`)
+	sb.WriteString(`<a href="`)
+	sb.WriteString(html.EscapeString(link(path)))
+	sb.WriteString(`"><svg`)
+	if ancestor {
+		sb.WriteString(` class="flame-ancestor"`)
+	}
+	sb.WriteString(` x="`)
 	sb.WriteString(formatCoord(x))
 	sb.WriteString(`" y="`)
 	sb.WriteString(strconv.Itoa(depth * flameRowHeight))
@@ -141,7 +193,7 @@ func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth in
 		sb.WriteString(html.EscapeString(label))
 		sb.WriteString(`</text>`)
 	}
-	sb.WriteString(`</svg>`)
+	sb.WriteString(`</svg></a>`)
 }
 
 // fitFlameLabel подгоняет имя кадра под ширину w: целиком, если влезает с
