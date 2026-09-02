@@ -2,22 +2,22 @@ package templates
 
 import "testing"
 
-// TestDepDirectionGlyph — глиф и ключ подсказки колонки «Данные» по всем
-// значениям trace.DataDirection плюс неизвестное: прочерк и none — для пустой
+// TestDepDirectionIcon — иконка и ключ подсказки колонки «Данные» по всем
+// значениям trace.DataDirection плюс неизвестное: minus и none — для пустой
 // строки и для мусора, а не пустая ячейка.
-func TestDepDirectionGlyph(t *testing.T) {
+func TestDepDirectionIcon(t *testing.T) {
 	cases := []struct {
-		dir, glyph, key string
+		dir, icon, key string
 	}{
-		{"in", "←", "deps.direction.in"},
-		{"out", "→", "deps.direction.out"},
-		{"both", "⇄", "deps.direction.both"},
-		{"", "—", "deps.direction.none"},
-		{"sideways", "—", "deps.direction.none"},
+		{"in", "arrow-left", "deps.direction.in"},
+		{"out", "arrow-right", "deps.direction.out"},
+		{"both", "arrow-left-right", "deps.direction.both"},
+		{"", "minus", "deps.direction.none"},
+		{"sideways", "minus", "deps.direction.none"},
 	}
 	for _, c := range cases {
-		if got := depDirectionGlyph(c.dir); got != c.glyph {
-			t.Errorf("depDirectionGlyph(%q) = %q, ожидалось %q", c.dir, got, c.glyph)
+		if got := depDirectionIcon(c.dir); got != c.icon {
+			t.Errorf("depDirectionIcon(%q) = %q, ожидалось %q", c.dir, got, c.icon)
 		}
 		if got := depDirectionKey(c.dir); got != c.key {
 			t.Errorf("depDirectionKey(%q) = %q, ожидалось %q", c.dir, got, c.key)

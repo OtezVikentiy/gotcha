@@ -1429,9 +1429,22 @@ th {
 .deps-truncated {
 	margin: 0 0 8px;
 }
-/* Глиф направления в таблице — один символ, читается как пиктограмма. */
+/* Направление в таблице — иконка спрайта (.ic, 1em) в ячейке; кегль ячейки
+   таблицы = --fs-sm, поэтому иконка ~14px, цвет — от текста (currentColor). */
 .deps-dir {
-	font-size: var(--fs-base);
+	font-size: var(--fs-sm);
+}
+/* Легенда под картой: три пары «иконка + текст», переносятся на узком
+   экране; пара не разрывается по иконке (inline-flex). */
+.deps-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 16px;
+}
+.deps-legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
 /* Текстовый поиск может умеренно растянуться, заполняя ряд. */
 .issues-filters .input[type="text"],
@@ -5141,7 +5154,8 @@ input[type="radio"]:focus-visible {
    .chart-vbN text его перебивать не должны. Селекторы svg.deps-map … (0,1,2)
    и (0,2,1) выше тиров (0,1,1) и стоят ПОСЛЕ них. Серверное усечение имён
    (depFitName, 7.2 единицы на символ) рассчитано на этот кегль. */
-svg.deps-map text {
+svg.deps-map text,
+svg.deps-map .deps-node-name {
 	fill: var(--text);
 	font-size: 13px;
 }
