@@ -1,0 +1,13 @@
+{
+  "body": "Project: Storefront\n\nTypeError: cannot read properties of undefined\n\nCulprit: checkoutHandler\nLevel: error\nSeen: 3 times\n\nhttps://gotcha.example/issues/42",
+  "culprit": "checkoutHandler",
+  "issue_id": 42,
+  "kind": "new_issue",
+  "level": "error",
+  "project_id": 7,
+  "project_name": "Storefront",
+  "subject": "[Gotcha] New issue: TypeError: cannot read properties of undefined · Storefront",
+  "times_seen": 3,
+  "title": "TypeError: cannot read properties of undefined",
+  "url": "https://gotcha.example/issues/42"
+}
