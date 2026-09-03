@@ -91,39 +91,135 @@ func hasUnitSuffix(name string) bool {
 	return false
 }
 
-// hasBooleanCanonForm — задача 11, п.2: конвенция булевых имён — ДВЕ
-// легитимные формы: `*_ENABLED` (включение функции целиком) и
-// `<подсистема>_ALLOW_<послабление>` (единственный маркер послабления
-// безопасности в словаре продукта — ALLOW; см. GOTCHA_SSRF_ALLOW_PRIVATE*,
-// GOTCHA_SECRET_KEY_ALLOW_INSECURE в envcontract.Known).
+// booleanCanonForbiddenTokens — задача 11, п.2, ruling team-lead
+// (2026-09-03, вариант (a), механический критерий БЕЗ exception-map):
+// токены-анти-паттерны, которые устранила таблица переименований релиза 2
+// (envcontract.Renamed, «E3, заморозка контракта») — GOTCHA_RUN_EVALUATORS
+// (RUN), GOTCHA_AUTO_MIGRATE (AUTO), GOTCHA_ALLOW_INSECURE_SECRET (голый
+// ALLOW без подсистемы), опечатка-кандидат GOTCHA_HSTS_ENABLE (ENABLE вместо
+// ENABLED). Имя-квалификатор подсистемы (форма 3 в hasBooleanCanonForm ниже)
+// не имеет права нести ни один из этих токенов отдельным "_"-сегментом —
+// иначе оно в точности повторяет один из устранённых анти-паттернов.
+var booleanCanonForbiddenTokens = map[string]bool{
+	"RUN": true, "ENABLE": true, "DISABLE": true, "DISABLED": true,
+	"USE": true, "ON": true, "OFF": true, "FLAG": true, "TOGGLE": true,
+	"ALLOW": true, "AUTO": true,
+}
+
+// hasBooleanCanonForm — задача 11, п.2, ruling team-lead (2026-09-03,
+// вариант (a)): каноничное булево имя — ОДНА из трёх форм, без
+// exception-map:
 //
-// НЕ подключена к сквозному скану реальных boolEnv/boolEnvDef-переменных
-// config.go (в отличие от hasUnitSuffix выше, которую TestEnvExampleCoversConfig
-// прогоняет по numericVars): проверена только на фиксированных кейсах ниже
-// (TestBooleanNamingConvention), по образцу TestUnitSuffixConvention. Причина
-// — не пробел покрытия, а то, что сквозная проверка «нулём исключений»
-// покрасила бы шесть РЕАЛЬНЫХ, целевых имён словаря, ни одно из которых не
-// является «включением функции» или «послаблением безопасности» в смысле
-// этих двух форм: GOTCHA_HSTS_INCLUDE_SUBDOMAINS/_PRELOAD (буквальные
-// термины директив заголовка HSTS — сам HSTS целиком включается ОТДЕЛЬНОЙ
-// GOTCHA_HSTS_ENABLED), GOTCHA_SCRUB_IP/_EMAIL/_FREETEXT (переключатели
-// одного поля Go в подсистеме приватности, а не включение подсистемы целиком)
-// и GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY — переименована ЭТОЙ ЖЕ волной
-// (envcontract.Renamed: GOTCHA_AGENT_TLS_SKIP_VERIFY →
-// GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY), но НАМЕРЕННО не в форму ALLOW_, а
-// под имя Go-поля InsecureSkipVerify — спека явно фиксирует это как целевое
-// имя, не промежуточное (см. cld/specs/2026-09-03-e3-contract-freeze-design.md,
-// §2.2). Сквозной сторож без списка исключений (которого контракт задачи 11
-// явно требует не заводить) на эти шесть имён покраснел бы прямо на HEAD —
-// подключение к реальному скану требует отдельного ruling.
-func hasBooleanCanonForm(name string) bool {
+//  1. `*_ENABLED` — включение функции целиком.
+//  2. `<подсистема>_ALLOW_<послабление>` — единственный маркер послабления
+//     безопасности в словаре (GOTCHA_SSRF_ALLOW_PRIVATE*,
+//     GOTCHA_SECRET_KEY_ALLOW_INSECURE). Подсистема и послабление ОБЯЗАНЫ
+//     быть непустыми: GOTCHA_ALLOW_X — красный, подсистемы нет ("_ALLOW_"
+//     ищется в остатке имени ПОСЛЕ префикса GOTCHA_, не во всём имени —
+//     иначе сам префикс GOTCHA_ сходил бы за «подсистему»).
+//  3. Квалификатор ВНУТРИ уже существующей подсистемы — не форма 1/2, но
+//     обязан пройти оба условия: (a) ни один "_"-токен имени не входит в
+//     booleanCanonForbiddenTokens; (b) первый токен после GOTCHA_ реально
+//     общий хотя бы с ОДНИМ ДРУГИМ именем known (истина — реестр
+//     envcontract.Known на настоящем скане, не отдельный список) —
+//     подсистема должна реально существовать в словаре, а не быть
+//     выдумана: голое GOTCHA_SOMETHING такую проверку не проходит,
+//     GOTCHA_HSTS_INCLUDE_SUBDOMAINS — проходит (в реестре есть
+//     GOTCHA_HSTS_ENABLED/_MAX_AGE_SECONDS/_PRELOAD).
+//
+// На HEAD (см. envcontract.Known) все булевы имена проходят одну из трёх
+// форм — «нулём исключений» выполняется буквально, без списка. Шесть имён
+// живут только формой 3 (не формой 1/2): GOTCHA_HSTS_INCLUDE_SUBDOMAINS,
+// GOTCHA_HSTS_PRELOAD, GOTCHA_SCRUB_IP, GOTCHA_SCRUB_EMAIL,
+// GOTCHA_SCRUB_FREETEXT, GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY — владелец
+// решает отдельно, переименовывать ли их в форму *_ENABLED/_ALLOW_ этой же
+// волной (вне рамок этой задачи, см. отчёт задачи 11).
+func hasBooleanCanonForm(name string, known map[string]bool) bool {
+	rest := strings.TrimPrefix(name, "GOTCHA_")
 	if strings.HasSuffix(name, "_ENABLED") {
 		return true
 	}
-	if i := strings.Index(name, "_ALLOW_"); i > 0 && i+len("_ALLOW_") < len(name) {
+	if idx := strings.Index(rest, "_ALLOW_"); idx > 0 && idx+len("_ALLOW_") < len(rest) {
 		return true
 	}
+	tokens := strings.Split(rest, "_")
+	for _, tok := range tokens {
+		if booleanCanonForbiddenTokens[tok] {
+			return false
+		}
+	}
+	if len(tokens) == 0 || tokens[0] == "" {
+		return false
+	}
+	prefix := "GOTCHA_" + tokens[0] + "_"
+	for other := range known {
+		if other == name {
+			continue
+		}
+		if strings.HasPrefix(other, prefix) {
+			return true
+		}
+	}
 	return false
+}
+
+// boolReaderFuncs — читатели булевых значений: boolEnv/boolEnvDef в
+// cmd/gotcha/config.go (обёртки над parseBool — см. envReaderFuncs выше) и
+// прямой parseBool — и в cmd/gotcha/config.go (GOTCHA_EVALUATORS_ENABLED,
+// минуя boolEnv/boolEnvDef, см. докблок envReaderFuncs), и в
+// internal/agent/config.go (единственный булев читатель агента).
+var boolReaderFuncs = map[string]bool{
+	"boolEnv":    true,
+	"boolEnvDef": true,
+	"parseBool":  true,
+}
+
+// collectBoolReaderVars — как collectGotchaEnvVars выше, но фильтр по
+// boolReaderFuncs, а не envReaderFuncs: конвенция булевых имён сканирует
+// РЕАЛЬНЫЕ булевы читатели, а не любые GOTCHA_*-читатели вообще (строковые/
+// числовые/duration-переменные конвенции не подлежат). Отдельная функция, а
+// не третий out-параметр у collectGotchaEnvVars (как numericOut) — там уже
+// два разных источника (server/agent) вызываются с разными наборами
+// нужных выходов, и совмещение усложнило бы сигнатуру всех вызывающих мест
+// без нужды: то же решение, каким collectOSEnvVars уже сосуществует рядом
+// как отдельный целевой сканер.
+func collectBoolReaderVars(t *testing.T, root, relFile string) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, relFile), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", relFile, err)
+	}
+	vars := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := ""
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			name = fun.Name
+		case *ast.SelectorExpr:
+			name = fun.Sel.Name
+		}
+		if !boolReaderFuncs[name] {
+			return true
+		}
+		for _, arg := range call.Args {
+			lit, ok := arg.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			v := strings.Trim(lit.Value, `"`)
+			if strings.HasPrefix(v, "GOTCHA_") {
+				vars[v] = true
+			}
+			break
+		}
+		return true
+	})
+	return vars
 }
 
 // collectGotchaEnvVars разбирает один Go-файл и возвращает имена переменных
@@ -498,13 +594,34 @@ func TestUnitSuffixConvention(t *testing.T) {
 	}
 }
 
-// TestBooleanNamingConvention — задача 11, п.2: конвенция булевых имён на
-// фиксированных кейсах, по образцу TestUnitSuffixConvention выше (см. докблок
-// hasBooleanCanonForm про то, почему это НЕ сквозной скан реального
-// config.go). GOTCHA_RUN_SOMETHING — пример из контракта задачи 11
-// дословно: голый глагол вместо *_ENABLED, тот же анти-паттерн, что был у
-// переименованной этой волной GOTCHA_RUN_EVALUATORS → GOTCHA_EVALUATORS_ENABLED
-// (envcontract.Renamed).
+// booleanCanonFixtureKnown — синтетический "known"-набор для
+// TestBooleanNamingConvention: держит только то, что нужно кейсам ниже,
+// чтобы (b)-условие формы 3 (реальная семья в словаре) проверялось на
+// вымышленных, но контролируемых данных, а не на envcontract.Known
+// (реальный реестр гоняет отдельный TestBooleanNamingConventionRealReaders
+// ниже).
+var booleanCanonFixtureKnown = map[string]bool{
+	"GOTCHA_HSTS_ENABLED":         true,
+	"GOTCHA_HSTS_MAX_AGE_SECONDS": true,
+	"GOTCHA_HSTS_PRELOAD":         true,
+	"GOTCHA_SCRUB_EMAIL":          true,
+	"GOTCHA_SCRUB_IP":             true,
+	// GOTCHA_SOMETHING — намеренно единственный представитель своей
+	// "подсистемы": ни один ДРУГОЙ ключ этого набора не начинается с
+	// GOTCHA_SOMETHING_, поэтому условие (b) формы 3 не выполняется.
+	"GOTCHA_SOMETHING": true,
+}
+
+// TestBooleanNamingConvention — задача 11, п.2, ruling team-lead
+// (2026-09-03): конвенция булевых имён на фиксированных кейсах, по образцу
+// TestUnitSuffixConvention выше — независимая от фактического набора
+// переменных в config.go проверка самой функции-классификатора (реальный
+// скан — TestBooleanNamingConventionRealReaders ниже). Все три кейса
+// контракта задачи 11 дословно: GOTCHA_RUN_SOMETHING (форма 1/2 не
+// подходит, форбидден-токен RUN — анти-паттерн GOTCHA_RUN_EVALUATORS),
+// GOTCHA_ALLOW_X (форма 2 не подходит — подсистемы перед ALLOW_ нет, и
+// форбидден-токен ALLOW тоже режет форму 3), голое GOTCHA_SOMETHING (форма
+// 3 не подходит — нет ДРУГОГО известного имени той же "подсистемы").
 func TestBooleanNamingConvention(t *testing.T) {
 	cases := []struct {
 		name string
@@ -516,15 +633,57 @@ func TestBooleanNamingConvention(t *testing.T) {
 		{"GOTCHA_SECRET_KEY_ALLOW_INSECURE", true},
 		{"GOTCHA_SSRF_ALLOW_PRIVATE", true},
 		{"GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME", true},
-		// Контракт задачи 11, п.2, дословный пример.
+		// Форма 3 (квалификатор существующей подсистемы): проходит, потому
+		// что booleanCanonFixtureKnown несёт ДРУГИЕ имена той же подсистемы
+		// HSTS/SCRUB.
+		{"GOTCHA_HSTS_INCLUDE_SUBDOMAINS", true},
+		{"GOTCHA_SCRUB_FREETEXT", true},
+		// Изолирует условие (a) от условия (b): подсистема HSTS реальна в
+		// фикстуре (siblings есть), но токен ON запрещён — без отдельной
+		// проверки (a) эта форма прошла бы мимо запрета одним лишь наличием
+		// подсистемы.
+		{"GOTCHA_HSTS_ON", false},
+		// Контракт задачи 11, п.2 и ruling team-lead — три дословных
+		// негативных кейса.
 		{"GOTCHA_RUN_SOMETHING", false},
-		// ALLOW_ на самом краю имени — нет послабления справа (i+len(marker)
-		// упирается в конец строки), форма не признаётся.
+		{"GOTCHA_ALLOW_X", false},
+		{"GOTCHA_SOMETHING", false},
+		// ALLOW_ на самом краю имени — нет послабления справа (idx+len(marker)
+		// упирается в конец остатка), форма 2 не признаётся; форбидден-токен
+		// ALLOW тоже режет форму 3.
 		{"GOTCHA_ALLOW_", false},
 	}
 	for _, c := range cases {
-		if got := hasBooleanCanonForm(c.name); got != c.want {
-			t.Errorf("hasBooleanCanonForm(%q) = %v, want %v", c.name, got, c.want)
+		if got := hasBooleanCanonForm(c.name, booleanCanonFixtureKnown); got != c.want {
+			t.Errorf("hasBooleanCanonForm(%q, ...) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBooleanNamingConventionRealReaders — задача 11, п.2, ruling team-lead
+// (2026-09-03, вариант (a)): сторож подключён к РЕАЛЬНЫМ булевым читателям
+// (boolEnv/boolEnvDef/parseBool — collectBoolReaderVars, cmd/gotcha/config.go
+// и internal/agent/config.go), БЕЗ exception-map. На HEAD все булевы имена
+// обязаны проходить hasBooleanCanonForm относительно настоящего
+// envcontract.Known — «нулём исключений» проверяется буквально, а не на
+// фикстуре.
+func TestBooleanNamingConventionRealReaders(t *testing.T) {
+	tree := Load(t)
+
+	vars := map[string]bool{}
+	for v := range collectBoolReaderVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go")) {
+		vars[v] = true
+	}
+	for v := range collectBoolReaderVars(t, tree.Root, filepath.Join("internal", "agent", "config.go")) {
+		vars[v] = true
+	}
+	if len(vars) < 15 {
+		t.Fatalf("collected only %d boolean variables — parsing is broken, or boolEnv/boolEnvDef/parseBool stopped being used", len(vars))
+	}
+
+	for v := range vars {
+		if !hasBooleanCanonForm(v, envcontract.Known) {
+			t.Errorf("%s is read as a boolean but matches neither *_ENABLED, nor <subsystem>_ALLOW_<relaxation>, nor an established subsystem qualifier — expected form *_ENABLED or <subsystem>_ALLOW_<relaxation>", v)
 		}
 	}
 }
