@@ -58,18 +58,27 @@ func TestSecretLikeSegment(t *testing.T) {
 // но два вебхука одного сервиса по-прежнему различимы по хвосту. Не-URL в
 // норме невозможен (validateChannel), ветка защитная.
 func TestMaskedWebhookTarget(t *testing.T) {
+	// Хосты вендоров ЗАМЕНЕНЫ на зарезервированный TLD .example (RFC 2606,
+	// как у соседнего hooks.acme.example): проверяется ФОРМА пути, а хост в
+	// неё не входит. С настоящими hooks.slack.com/discord.com строка целиком
+	// совпадала с шаблоном боевого вебхука — push protection GitHub отклонял
+	// пуш (релиз v0.33.0), хотя ключ синтетический. Держать в репозитории
+	// строки, неотличимые от боевых адресов, незачем.
+	// Хост участвует в длине результата: > maskedTargetMaxRunes (60 рун) путь
+	// схлопывается до «первый/…/последний», и случай начал бы проверять не то.
+	// Самый длинный здесь — 54 руны, запас есть; удлинять хосты нельзя.
 	cases := []struct{ name, target, want string }{
 		// Секрет в пути: словарные сегменты и короткие id видны, секрет —
 		// только хвостом.
 		{"secret in path", "https://hooks.example.com/services/T000/B000/1234cb88b0", "hooks.example.com/services/T000/B000/…88b0"},
-		{"slack-like path", "https://hooks.slack.com/services/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", "hooks.slack.com/services/T024BE7LD/B024BE7LD/…ccdd"},
+		{"slack-like path", "https://hooks.slack.example/services/T024BE7LD/B024BE7LD/a4d718d555cb88b0aabbccdd", "hooks.slack.example/services/T024BE7LD/B024BE7LD/…ccdd"},
 		{"mattermost-like key", "https://mm.example.com/hooks/hup3y9mggjrr8r9nqxpyzy4qme", "mm.example.com/hooks/…4qme"},
-		{"discord-like id and token", "https://discord.com/api/webhooks/1234567890123456789/aBcDeFgHiJkLmNoPqRsTuVwXyZ012345", "discord.com/api/webhooks/1234567890123456789/…2345"},
+		{"discord-like id and token", "https://discord.example/api/webhooks/1234567890123456789/aBcDeFgHiJkLmNoPqRsTuVwXyZ012345", "discord.example/api/webhooks/1234567890123456789/…2345"},
 		// Zapier: короткий ключ (6–8 рун с цифрой) последним сегментом, у
 		// канонического адреса — завершающий слэш; числовой id аккаунта
 		// перед ним не последний и виден.
-		{"zapier-like key with trailing slash", "https://hooks.zapier.com/hooks/catch/123456/o2eyvv/", "hooks.zapier.com/hooks/catch/123456/…yvv/"},
-		{"zapier-like key no trailing slash", "https://hooks.zapier.com/hooks/catch/123456/o2eyvv", "hooks.zapier.com/hooks/catch/123456/…yvv"},
+		{"zapier-like key with trailing slash", "https://hooks.zapier.example/hooks/catch/123456/o2eyvv/", "hooks.zapier.example/hooks/catch/123456/…yvv/"},
+		{"zapier-like key no trailing slash", "https://hooks.zapier.example/hooks/catch/123456/o2eyvv", "hooks.zapier.example/hooks/catch/123456/…yvv"},
 		// Границы порога последнего сегмента: 5 рун — виден, 6–7 — маска
 		// хвостом не длиннее половины; чисто цифровой хвост от 6 цифр
 		// маскируется (безопасная сторона — id от ключа машинно не отличить).
