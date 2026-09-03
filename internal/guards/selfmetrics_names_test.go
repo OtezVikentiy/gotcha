@@ -10,6 +10,11 @@ import (
 	"testing"
 )
 
+// selfMetricsImportPath — путь пакета, чьё присутствие в импортах файла
+// включает проверку «первый аргумент Add/AddInt обязан быть литеральным
+// selfmetrics.<Type>» (см. importsSelfMetrics в collectSelfMetrics).
+const selfMetricsImportPath = "gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
+
 // selfMetricSpec — одна пара (имя, тип) золотого списка self-метрик:
 // строка имени и идентификатор selfmetrics.Counter/Gauge, которым метрика
 // заведена в коде.
@@ -148,6 +153,16 @@ var bareQueueSuffix = regexp.MustCompile(`^gotcha_[a-z]+_(depth|oldest_seconds|f
 // call-site'ов также возвращается отдельно, чтобы вызывающий тест мог
 // поймать «сторож ослеп» (сканер сломан или указывает не туда) отдельно от
 // «золотой список устарел».
+//
+// Нелитеральный ТИП (первый аргумент — не селектор selfmetrics.<Ident>, а
+// переменная/параметр) в файле, реально импортирующем selfmetrics, роняет
+// тест той же t.Errorf: обёртка вида
+// func reg(r *selfmetrics.Registry, typ selfmetrics.Type, name string, …)
+// пробрасывала бы typ дальше в r.Add/AddInt без единого литерального
+// selfmetrics.Counter/Gauge на call-site'е — заморозка молча переставала бы
+// действовать на всё, что регистрируется через такую обёртку. Пятиаргументный
+// Add/AddInt чужого, не относящегося к selfmetrics типа в файле БЕЗ импорта
+// пакета false positive не даёт: проверка ограничена importsSelfMetrics.
 func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -165,6 +180,18 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", gf.Path, err)
 		}
+		// importsSelfMetrics ограничивает следующую проверку (нелитеральный
+		// первый аргумент Add/AddInt) файлами, реально импортирующими пакет
+		// selfmetrics: без этого фильтра пятиаргументный Add/AddInt чужого типа
+		// в файле, где строка "selfmetrics." встретилась хотя бы раз (например
+		// в комментарии), давал бы ложное срабатывание.
+		importsSelfMetrics := false
+		for _, imp := range f.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == selfMetricsImportPath {
+				importsSelfMetrics = true
+				break
+			}
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok || len(call.Args) != 5 {
@@ -174,15 +201,21 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 			if !ok || (sel.Sel.Name != "Add" && sel.Sel.Name != "AddInt") {
 				return true
 			}
+			pos := fset.Position(call.Pos()).String()
 			typSel, ok := call.Args[0].(*ast.SelectorExpr)
 			if !ok {
+				if importsSelfMetrics {
+					t.Errorf("%s: self-metric type is not a literal selfmetrics.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos)
+				}
 				return true
 			}
 			pkg, ok := typSel.X.(*ast.Ident)
 			if !ok || pkg.Name != "selfmetrics" {
+				if importsSelfMetrics {
+					t.Errorf("%s: self-metric type is not a literal selfmetrics.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos)
+				}
 				return true
 			}
-			pos := fset.Position(call.Pos()).String()
 			lit, ok := call.Args[1].(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
 				t.Errorf("%s: self-metric name is not a string literal — the contract can only freeze a name known at compile time", pos)
