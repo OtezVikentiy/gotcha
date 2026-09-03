@@ -317,26 +317,23 @@ func TestLoadConfigIntervalSecondsBoundaryError(t *testing.T) {
 	}
 }
 
-func sortedRenamedOldNames() []string {
-	names := make([]string, 0, len(envcontract.Renamed))
-	for old := range envcontract.Renamed {
-		names = append(names, old)
-	}
+func sortedAgentOwnedOldNames() []string {
+	names := make([]string, len(envcontract.AgentOwned))
+	copy(names, envcontract.AgentOwned)
 	sort.Strings(names)
 	return names
 }
 
-// TestLoadConfigRenamedEnvVarFailsStart — envcontract.Renamed целиком: КАЖДОЕ
-// старое имя (не только три агентских — install.sh/hosts.go штатно кладут
-// агентские и серверные переменные в общий .env одного хоста, см. докблок
-// checkRenamedEnvVars в config.go) с непустым значением роняет старт агента,
-// сообщение называет И старое, И новое имя. Подтест на КАЖДУЮ пару реестра
-// (t.Run по старому имени, тот же приём, что TestLoadConfigRenamedEnvVarFailsStart
-// в cmd/gotcha/config_test.go), а не одна проверка на первую попавшуюся пару —
-// иначе неоднородный баг в checkRenamedEnvVars, срабатывающий не на всех
-// именах, прошёл бы незамеченным.
+// TestLoadConfigRenamedEnvVarFailsStart — envcontract.AgentOwned (три свои
+// пары, НЕ весь реестр — агент не отвечает за 27 серверных переменных,
+// которые никогда не читает; см. докблок LoadConfig и AgentOwned в
+// internal/envcontract/renamed.go): КАЖДОЕ своё старое имя с непустым
+// значением роняет старт агента, сообщение называет И старое, И новое имя.
+// Подтест на КАЖДУЮ пару (t.Run по старому имени), а не одна проверка на
+// первую попавшуюся — иначе неоднородный баг в envcontract.CheckRenamed,
+// срабатывающий не на всех именах, прошёл бы незамеченным.
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
-	for _, old := range sortedRenamedOldNames() {
+	for _, old := range sortedAgentOwnedOldNames() {
 		newName := envcontract.Renamed[old]
 		t.Run(old, func(t *testing.T) {
 			_, err := LoadConfig(env(map[string]string{old: "some-value"}))
@@ -360,13 +357,49 @@ func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
 // не связанной с переименованием причине, и тест не отличил бы «прошёл
 // renamed-check» от «упал раньше него».
 func TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart(t *testing.T) {
-	old := sortedRenamedOldNames()[0]
+	old := sortedAgentOwnedOldNames()[0]
 	if _, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
 		"GOTCHA_AGENT_INGEST_KEY": "pk",
 		old:                       "",
 	})); err != nil {
 		t.Errorf("LoadConfig с пустым устаревшим %s: %v, want nil (пустое значение легитимно)", old, err)
+	}
+}
+
+// TestLoadConfigIgnoresOutOfScopeRenamedNames — старое СЕРВЕРНОЕ имя (не
+// входящее в envcontract.AgentOwned), стоящее с непустым значением в общем
+// .env хоста, не должно ронять старт агента: он никогда его не читал ни до,
+// ни после переименования, и отказ по нему был бы самоуправством, а не
+// защитой (ops-review E3 T8 круг 1 — до этой правки агент проверял ВЕСЬ
+// реестр из 30 записей, включая 27 чужих). ENDPOINT/KEY заданы явно и
+// валидно, чтобы тест проверял именно эту ветку, а не общий отказ на их
+// отсутствие.
+func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
+	agentOwned := map[string]bool{}
+	for _, old := range envcontract.AgentOwned {
+		agentOwned[old] = true
+	}
+	outOfScope := ""
+	for old := range envcontract.Renamed {
+		if !agentOwned[old] {
+			outOfScope = old
+			break
+		}
+	}
+	if outOfScope == "" {
+		t.Fatal("обход ослеп: в envcontract.Renamed не нашлось имени вне AgentOwned")
+	}
+	cfg, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
+		"GOTCHA_AGENT_INGEST_KEY": "pk",
+		outOfScope:                "some-value",
+	}))
+	if err != nil {
+		t.Fatalf("LoadConfig с посторонним устаревшим %s: %v, want nil (не своя переменная)", outOfScope, err)
+	}
+	if cfg.Endpoint != "https://g.example" {
+		t.Errorf("Endpoint = %q, want https://g.example", cfg.Endpoint)
 	}
 }
 
@@ -386,18 +419,15 @@ var agentRenamedEnvVarNewNameChecks = map[string]struct {
 }
 
 // TestAgentRenamedEnvVarNewNameChecksComplete — agentRenamedEnvVarNewNameChecks
-// обязана содержать РОВНО те новые имена envcontract.Renamed, что начинаются
-// с "GOTCHA_AGENT_" (единственные три: DIST_DIR/DIST_RATE_PER_MIN — старые
-// имена того же префикса из волны v0.23.0, а их НОВЫЕ имена уже без
-// префикса и принадлежат cmd/gotcha) — ни лишних, ни пропущенных. То же
-// назначение, что TestRenamedEnvVarNewNameChecksComplete в cmd/gotcha:
-// без этой сверки новая агентская пара тихо осталась бы без регрессии.
+// обязана содержать РОВНО новые имена envcontract.AgentOwned (единственный
+// источник — та же карта, что LoadConfig сужает CheckRenamed до) — ни
+// лишних, ни пропущенных. То же назначение, что
+// TestRenamedEnvVarNewNameChecksComplete в cmd/gotcha: без этой сверки
+// новая агентская пара тихо осталась бы без регрессии.
 func TestAgentRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 	wantNewNames := map[string]bool{}
-	for _, newName := range envcontract.Renamed {
-		if strings.HasPrefix(newName, "GOTCHA_AGENT_") {
-			wantNewNames[newName] = true
-		}
+	for _, old := range envcontract.AgentOwned {
+		wantNewNames[envcontract.Renamed[old]] = true
 	}
 	for newName := range agentRenamedEnvVarNewNameChecks {
 		if !wantNewNames[newName] {

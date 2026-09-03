@@ -89,15 +89,16 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 // поэтому регрессионный подтест «новое имя применяется как обычно» для них
 // живёт в internal/agent/config_test.go (agentRenamedEnvVarNewNameChecks +
 // TestLoadConfigRenamedEnvVarNewNameStillApplies того пакета), а не здесь.
-// Список явный, а не по префиксу "GOTCHA_AGENT_": GOTCHA_AGENT_DIST_DIR и
-// GOTCHA_AGENT_DIST_RATE_PER_MIN — старые имена того же префикса из волны
-// v0.23.0, но их НОВЫЕ имена (GOTCHA_DIST_DIR/GOTCHA_DIST_RATE_PER_MIN) уже
-// без префикса и читаются cmd/gotcha — префиксное правило дало бы неверный
-// результат, если применить его по ошибке к старым именам.
-var agentOwnedRenamedNewNames = map[string]bool{
-	"GOTCHA_AGENT_INTERVAL_SECONDS":         true,
-	"GOTCHA_AGENT_INGEST_KEY":               true,
-	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY": true,
+// Выведено ИЗ envcontract.AgentOwned (internal/envcontract/renamed.go) —
+// единственного источника, не хардкод: добавление агентской пары в
+// AgentOwned меняет и это множество, без правки cmd/gotcha (ops-review E3
+// T8 круг 1 — раньше список дублировался руками в двух местах).
+func agentOwnedRenamedNewNames() map[string]bool {
+	m := make(map[string]bool, len(envcontract.AgentOwned))
+	for _, old := range envcontract.AgentOwned {
+		m[envcontract.Renamed[old]] = true
+	}
+	return m
 }
 
 // TestRenamedEnvVarNewNameChecksComplete — renamedEnvVarNewNameChecks
@@ -114,29 +115,25 @@ var agentOwnedRenamedNewNames = map[string]bool{
 // имён — они не под сторожем TestNoRenamedEnvVarNames, поэтому написать их
 // буквально можно в любом файле cmd/gotcha, в том числе в config_test.go.
 func TestRenamedEnvVarNewNameChecksComplete(t *testing.T) {
+	agentOwned := agentOwnedRenamedNewNames()
 	wantNewNames := make(map[string]bool, len(envcontract.Renamed))
 	for _, newName := range envcontract.Renamed {
 		wantNewNames[newName] = true
 	}
 	for newName := range renamedEnvVarNewNameChecks {
-		if agentOwnedRenamedNewNames[newName] {
-			t.Errorf("renamedEnvVarNewNameChecks содержит %s — она в agentOwnedRenamedNewNames, регрессия для неё живёт в internal/agent/config_test.go", newName)
+		if agentOwned[newName] {
+			t.Errorf("renamedEnvVarNewNameChecks содержит %s — она агентская (envcontract.AgentOwned), регрессия для неё живёт в internal/agent/config_test.go", newName)
 		}
 		if !wantNewNames[newName] {
 			t.Errorf("renamedEnvVarNewNameChecks содержит лишнюю запись %s — среди значений envcontract.Renamed такого нет", newName)
 		}
 	}
 	for newName := range wantNewNames {
-		if agentOwnedRenamedNewNames[newName] {
+		if agentOwned[newName] {
 			continue
 		}
 		if _, ok := renamedEnvVarNewNameChecks[newName]; !ok {
 			t.Errorf("renamedEnvVarNewNameChecks не хватает записи для %s (есть в envcontract.Renamed, но без регрессионного подтеста)", newName)
-		}
-	}
-	for newName := range agentOwnedRenamedNewNames {
-		if !wantNewNames[newName] {
-			t.Errorf("agentOwnedRenamedNewNames содержит %s, которой нет среди значений envcontract.Renamed — список устарел", newName)
 		}
 	}
 }

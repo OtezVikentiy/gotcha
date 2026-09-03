@@ -335,3 +335,40 @@ func TestInstallShVarsMatchAgentConfig(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallShChecksBeforeSwappingBinary — install.sh обязан прогнать
+// `--check` НОВЫМ бинарём из временного пути ($BIN.new) ДО того, как
+// подменит боевой $BIN (`mv "$BIN.new" "$BIN"`): иначе на устаревшем имени
+// переменной, сохранённом в $CONF (update-режим НЕ переписывает $CONF —
+// см. main() в install.sh), systemd рано или поздно перезапустит уже
+// подменённый бинарь на битом конфиге и получит `exit 2` —
+// RestartPreventExitStatus=2 гасит юнит насмерть вместо "старый агент
+// продолжает работать", как обещает upgrade.md (ops-review E3 T8 круг 1,
+// реалистичный триггер — плановая перезагрузка хоста между обновлением
+// сервера и обходом хостов). Проверяет ПОРЯДОК двух операций в файле, а не
+// факт их присутствия — TestInstallShVarsMatchAgentConfig выше уже
+// проверяет имена; здесь достаточно строкового индекса, переустановка
+// блоков местами обязана уронить именно этот тест.
+func TestInstallShChecksBeforeSwappingBinary(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "internal", "web", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := stripShellLineComments(string(raw))
+
+	checkIdx := strings.Index(code, `"$BIN.new" --check`)
+	mvIdx := strings.Index(code, `mv "$BIN.new" "$BIN"`)
+	if checkIdx < 0 {
+		t.Fatal(`обход ослеп: install.sh не содержит вызов "$BIN.new" --check`)
+	}
+	if mvIdx < 0 {
+		t.Fatal(`обход ослеп: install.sh не содержит mv "$BIN.new" "$BIN"`)
+	}
+	if mvIdx < checkIdx {
+		t.Errorf(`install.sh подменяет боевой бинарь (mv "$BIN.new" "$BIN") РАНЬШЕ, чем проверяет конфиг ("$BIN.new" --check) — на устаревших именах в $CONF это гасит юнит на первом же рестарте вместо того, чтобы оставить работать старый бинарь`)
+	}
+}

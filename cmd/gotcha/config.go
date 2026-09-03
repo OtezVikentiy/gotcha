@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -430,45 +429,6 @@ func hstsHeaderMattersFor(mode string) bool {
 	}
 }
 
-// checkRenamedEnvVars — envcontract.Renamed (накопительно по всем волнам
-// переименования: десять пар контрактной уборки v0.23.0 плюс семнадцать
-// заморозки контракта перед 1.0) встречена с НЕПУСТЫМ значением: апгрейд
-// инстанса принёс непровённый `.env`. Без этой проверки старое имя не
-// диагностируется вовсе — cmd/gotcha/config.go его больше не читает нигде,
-// значит вместо ошибки оператор получил бы тихую подмену своего значения
-// дефолтом (пример с прода: нестандартный срок хранения событий из старого
-// имени тихо стал бы дефолтным — хранение втрое дольше без единой строки в
-// логе; таблица старое/новое — в CHANGELOG, блок `### Changed`).
-//
-// Пустое значение старт не роняет: docker-compose штатно прокидывает
-// объявленные, но не заданные переменные пустой строкой, и такое значение и
-// раньше ничего не применяло бы — отказ был бы ложной тревогой на легитимном
-// окружении, а не сигналом устаревшего конфига.
-//
-// Сообщение перечисляет ВСЕ найденные старые имена за один проход
-// (отсортированно, для устойчивого текста ошибки между запусками — map не
-// даёт порядка сам по себе), а не только первое найденное: оператор с пятью
-// устаревшими именами должен увидеть все пять за один рестарт, а не чинить
-// их по одному, по циклу деплоя на имя.
-func checkRenamedEnvVars(getenv func(string) string) error {
-	var found []string
-	for old := range envcontract.Renamed {
-		if getenv(old) != "" {
-			found = append(found, old)
-		}
-	}
-	if len(found) == 0 {
-		return nil
-	}
-	sort.Strings(found)
-	parts := make([]string, len(found))
-	for i, old := range found {
-		parts[i] = fmt.Sprintf("%s (renamed to %s)", old, envcontract.Renamed[old])
-	}
-	return fmt.Errorf("environment variable(s) renamed, update your .env before upgrading: %s",
-		strings.Join(parts, ", "))
-}
-
 // parseInt64Env читает key через getenv и разбирает его как int64. Незаданная
 // (пустая) переменная — не ошибка, возвращается def. На ошибке разбора тоже
 // возвращается def, а НЕ частичный результат strconv.ParseInt: на «8MiB» тот
@@ -515,7 +475,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// что его .env устарел, — бессмысленный цикл: он мог бы поправить
 	// секрет, перезапуститься и невольно продолжить работать с молча
 	// применёнными дефолтами вместо остальных своих значений.
-	if err := checkRenamedEnvVars(getenv); err != nil {
+	if err := envcontract.CheckRenamed(getenv, nil); err != nil {
 		return Config{}, err
 	}
 
@@ -910,7 +870,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// перезапуститься и невольно продолжить стартовать со слабым ключом ещё
 	// один цикл деплоя, пока не увидит следующую ошибку.
 	//
-	// Тем не менее checkRenamedEnvVars в самом начале loadConfig стоит ВЫШЕ
+	// Тем не менее envcontract.CheckRenamed в самом начале loadConfig стоит ВЫШЕ
 	// даже этой проверки: старое имя означает, что часть .env оператора не
 	// прочиталась ВООБЩЕ, тихо заменившись дефолтом, — это более базовая
 	// поломка конфига, чем состояние конкретно секретного ключа, и о ней

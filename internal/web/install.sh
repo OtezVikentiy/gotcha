@@ -108,12 +108,19 @@ main() {
     ( cd "$tmp" && grep " gotcha-agent-linux-$arch\$" SHA256SUMS \
         | sed "s/gotcha-agent-linux-$arch/gotcha-agent/" | sha256sum -c - ) \
         || fail "SHA-256 mismatch — download is corrupted, retry"
-    # mv из /tmp (tmpfs) в /usr/local/bin — копия через границу ФС, не rename:
-    # неатомарно и упирается в ETXTBSY при работающем сервисе. Поэтому install
-    # кладёт root:root 0755 в $BIN.new (та же ФС), а rename поверх — атомарен
-    # и не трогает исполняемый inode (ревью плана №6).
+    # install в $BIN.new (та же ФС, что и боевой $BIN) — НЕ в $BIN напрямую:
+    # $BIN.new остаётся подменяемым до успешной проверки конфига ниже, и
+    # rename поверх $BIN атомарен, не трогает исполняемый inode работающего
+    # процесса (ревью плана №6). mv на боевой путь — только ПОСЛЕ --check
+    # (ops-review E3 T8 круг 1): если бы install/mv стояли здесь, устаревшее
+    # имя переменной в $CONF (см. переименование контракта агента выше)
+    # застало бы боевой $BIN уже подменённым — юнит пережил бы эту установку,
+    # но погиб бы на первом же следующем рестарте (плановая перезагрузка,
+    # OOM, ручной restart), a RestartPreventExitStatus=2 не поднял бы его
+    # обратно. Держа подмену ПОСЛЕ проверки, битый конфиг оставляет
+    # работать СТАРЫЙ бинарь на любом количестве рестартов, пока $CONF не
+    # поправят вручную.
     $SUDO install -o root -g root -m 755 "$tmp/gotcha-agent" "$BIN.new"
-    $SUDO mv "$BIN.new" "$BIN"
 
     if ! id gotcha-agent >/dev/null 2>&1; then
         $SUDO useradd --system --no-create-home --shell "$(command -v nologin || echo /usr/sbin/nologin)" gotcha-agent
@@ -137,17 +144,26 @@ main() {
         } | $SUDO tee "$CONF" >/dev/null
     fi
 
-    # --check валидирует конфиг ($CONF, свежий или прежний) тем же кодом,
-    # что боевой процесс (agent.LoadConfig), без сети и без цикла сбора —
-    # ДО systemctl enable. Без этой проверки Type=simple + restart вернут 0
-    # мгновенно после exec, даже если агент на битом URL/ключе упадёт через
-    # долю секунды — скрипт соврал бы "installed and running" (ops-H2).
-    # systemd-run с EnvironmentFile=$CONF прогоняет тот же парсинг
-    # окружения, что и боевой юнит ниже (кавычки/пробелы в значениях).
-    $SUDO systemd-run --quiet --wait --pipe --collect \
+    # --check валидирует конфиг ($CONF, свежий или прежний) НОВЫМ бинарём —
+    # $BIN.new, а не боевым $BIN — тем же кодом, что боевой процесс
+    # (agent.LoadConfig), без сети и без цикла сбора, ДО того, как этот
+    # бинарь становится боевым (mv ниже) и ДО systemctl enable. Без этой
+    # проверки Type=simple + restart вернут 0 мгновенно после exec, даже
+    # если агент на битом URL/ключе/переименованной переменной упадёт через
+    # долю секунды — скрипт соврал бы "installed and running" (ops-H2), а
+    # хуже того — уже подменил бы работающий бинарь на заведомо неспособный
+    # стартовать (ops-review E3 T8 круг 1). systemd-run с
+    # EnvironmentFile=$CONF прогоняет тот же парсинг окружения, что и
+    # боевой юнит ниже (кавычки/пробелы в значениях), поэтому проверка
+    # представительна и на $BIN.new: разница с боевым запуском — только
+    # путь к бинарю, EnvironmentFile тот же самый $CONF.
+    if ! $SUDO systemd-run --quiet --wait --pipe --collect \
         -p EnvironmentFile="$CONF" \
-        "$BIN" --check \
-        || fail "config check failed ($BIN --check exited non-zero) — inspect $CONF"
+        "$BIN.new" --check; then
+        $SUDO rm -f "$BIN.new"
+        fail "config check failed ($BIN.new --check exited non-zero) — inspect $CONF; the previous binary at $BIN, if any, was left untouched"
+    fi
+    $SUDO mv "$BIN.new" "$BIN"
 
     # Юнит — артефакт установщика, перезаписывается; свои правки — systemctl edit.
     $SUDO tee "$UNIT" >/dev/null <<'EOF'

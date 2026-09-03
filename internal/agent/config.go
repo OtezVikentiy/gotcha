@@ -6,7 +6,6 @@ package agent
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,34 +37,6 @@ const (
 	maxInterval = maxIntervalSecs * time.Second
 )
 
-// checkRenamedEnvVars — envcontract.Renamed, встреченное с непустым
-// значением, роняет старт агента с подсказкой «старое → новое», тем же
-// приёмом, что checkRenamedEnvVars в cmd/gotcha/config.go (независимая
-// копия: internal/agent не может импортировать package main). Проверяется
-// ВЕСЬ реестр, а не только три агентские пары: install.sh/hosts.go штатно
-// кладут агентские и серверные переменные в общий .env одного хоста, и
-// оператор с устаревшим именем — хоть серверным, хоть агентским — обязан
-// узнать об этом при рестарте ЛЮБОГО из двух процессов, а не только того,
-// который эту конкретную переменную реально читает.
-func checkRenamedEnvVars(getenv func(string) string) error {
-	var found []string
-	for old := range envcontract.Renamed {
-		if getenv(old) != "" {
-			found = append(found, old)
-		}
-	}
-	if len(found) == 0 {
-		return nil
-	}
-	sort.Strings(found)
-	parts := make([]string, len(found))
-	for i, old := range found {
-		parts[i] = fmt.Sprintf("%s (renamed to %s)", old, envcontract.Renamed[old])
-	}
-	return fmt.Errorf("environment variable(s) renamed, update your .env before upgrading: %s",
-		strings.Join(parts, ", "))
-}
-
 // intNum разбирает голое целое число секунд. Название функции — не
 // совпадение с cmd/gotcha/config.go: internal/guards/env_example_test.go
 // (numericReaderFuncs) ищет вызовы именно с этим именем, чтобы применить
@@ -91,7 +62,15 @@ func intNum(name, raw string) (value int, set bool, err error) {
 // LoadConfig читает окружение. getenv параметром — детерминированные тесты
 // без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
 func LoadConfig(getenv func(string) string) (Config, error) {
-	if err := checkRenamedEnvVars(getenv); err != nil {
+	// envcontract.CheckRenamed сужен до envcontract.AgentOwned (три свои
+	// пары), не весь реестр: агент не должен отказывать на устаревших
+	// СЕРВЕРНЫХ именах в общем .env одного хоста — эти переменные он
+	// никогда не читает, отказ по ним не защита, а самоуправство
+	// (ops-review E3 T8 круг 1). Идёт ДО любого разбора значений — иначе
+	// валидный когда-то "30s" под старым именем успел бы разобраться (не
+	// как секунды, но как молчаливый дефолт) прежде, чем оператор узнает,
+	// что имя устарело.
+	if err := envcontract.CheckRenamed(getenv, envcontract.AgentOwned); err != nil {
 		return Config{}, err
 	}
 	cfg := Config{

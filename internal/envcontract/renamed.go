@@ -9,9 +9,10 @@ package envcontract
 // волнам переименования. cmd/gotcha/config.go и internal/agent/config.go
 // старые имена уже не читают нигде — без явного отказа старта апгрейд
 // инстанса с непровённым `.env` не падал бы, а тихо подменял значение
-// оператора дефолтом (см. cmd/gotcha/config.go, врезка checkRenamedEnvVars).
-// Политика — жёсткий fail-fast без мягкой депрекации: однажды попавшее сюда
-// старое имя остаётся под отказом старта навсегда, карта только растёт.
+// оператора дефолтом (см. CheckRenamed в check.go — общая реализация
+// отказа для обеих сторон). Политика — жёсткий fail-fast без мягкой
+// депрекации: однажды попавшее сюда старое имя остаётся под отказом старта
+// навсегда, карта только растёт.
 // Ниже — две волны: контрактная уборка v0.23.0 (см. блок `### Changed` в
 // CHANGELOG «Ten environment variables have been renamed») и заморозка
 // контракта перед 1.0 (см. CHANGELOG, «Семнадцать серверных переменных
@@ -55,4 +56,20 @@ var Renamed = map[string]string{
 	"GOTCHA_AGENT_INTERVAL":        "GOTCHA_AGENT_INTERVAL_SECONDS",
 	"GOTCHA_AGENT_KEY":             "GOTCHA_AGENT_INGEST_KEY",
 	"GOTCHA_AGENT_TLS_SKIP_VERIFY": "GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY",
+}
+
+// AgentOwned — подмножество старых имён Renamed, за отказ на которых
+// отвечает сам internal/agent (три пары контракта агента выше), а не
+// cmd/gotcha. Единственный источник для agent-стороны CheckRenamed (см.
+// check.go) и для регрессионных тестов cmd/gotcha/internal/agent, которые
+// иначе держали бы собственную копию этого списка (ops-review E3 T8 круг
+// 1: агент проверял ВЕСЬ реестр, включая 27 серверных переменных, которые
+// никогда не читает, — env-файл легитимно несёт чужие переменные, отказ на
+// них не защита, а самоуправство). internal/envcontract/check_test.go
+// проверяет, что каждое имя отсюда реально есть среди ключей Renamed и
+// несёт префикс GOTCHA_AGENT_ — рассинхрон ловится тестом.
+var AgentOwned = []string{
+	"GOTCHA_AGENT_INTERVAL",
+	"GOTCHA_AGENT_KEY",
+	"GOTCHA_AGENT_TLS_SKIP_VERIFY",
 }
