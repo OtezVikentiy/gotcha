@@ -33,13 +33,16 @@ const (
 // без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		Endpoint:    strings.TrimRight(getenv("GOTCHA_AGENT_ENDPOINT"), "/"),
-		Key:         getenv("GOTCHA_AGENT_KEY"),
+		// Endpoint: пробелы по краям обрезаются ПЕРЕД срезом хвостовой "/" —
+		// иначе "https://g.example/ " (пробел после слэша) прошёл бы TrimRight
+		// как есть и оставил пробел на конце базового URL.
+		Endpoint:    strings.TrimRight(strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")), "/"),
+		Key:         strings.TrimSpace(getenv("GOTCHA_AGENT_KEY")),
 		Hostname:    getenv("GOTCHA_AGENT_HOSTNAME"),
-		CACert:      getenv("GOTCHA_AGENT_CA_CERT"),
+		CACert:      strings.TrimSpace(getenv("GOTCHA_AGENT_CA_CERT")),
 		Interval:    defaultInterval,
-		Environment: getenv("GOTCHA_AGENT_ENVIRONMENT"),
-		Role:        getenv("GOTCHA_AGENT_ROLE"),
+		Environment: strings.TrimSpace(getenv("GOTCHA_AGENT_ENVIRONMENT")),
+		Role:        strings.TrimSpace(getenv("GOTCHA_AGENT_ROLE")),
 	}
 	if cfg.Endpoint == "" {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT is required")

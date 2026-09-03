@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +116,117 @@ func TestLoadConfigTrimsEndpointSlash(t *testing.T) {
 	}
 	if cfg.Endpoint != "https://g.example" {
 		t.Errorf("endpoint = %q — хвостовой / не срезан (иначе //v1/metrics)", cfg.Endpoint)
+	}
+}
+
+// TestLoadConfigTrimsEndpointLeadingAndTrailingSpace — эндпоинт раньше
+// триммился только по хвостовой "/"; пробел по краям ("https://g.example/ ",
+// " https://g.example") проходил как есть. Пробел ПОСЛЕ хвостовой "/" вообще
+// не срезался бы TrimRight(v, "/") — обрезка пробела должна идти ДО него.
+func TestLoadConfigTrimsEndpointLeadingAndTrailingSpace(t *testing.T) {
+	cases := []string{
+		" https://g.example",
+		"https://g.example ",
+		"https://g.example/ ",
+		"\thttps://g.example\n",
+	}
+	for _, raw := range cases {
+		cfg, err := LoadConfig(env(map[string]string{
+			"GOTCHA_AGENT_ENDPOINT": raw,
+			"GOTCHA_AGENT_KEY":      "pk",
+		}))
+		if err != nil {
+			t.Fatalf("GOTCHA_AGENT_ENDPOINT=%q: LoadConfig: %v", raw, err)
+		}
+		if cfg.Endpoint != "https://g.example" {
+			t.Errorf("GOTCHA_AGENT_ENDPOINT=%q: Endpoint = %q, want %q", raw, cfg.Endpoint, "https://g.example")
+		}
+	}
+}
+
+// TestLoadConfigWhitespaceOnlyEndpointRejected — эндпоинт обязателен; строка
+// из одних пробелов после тримминга становится пустой и обязана давать ту же
+// ошибку, что полностью отсутствующая переменная, а не URL с пробелом внутри.
+func TestLoadConfigWhitespaceOnlyEndpointRejected(t *testing.T) {
+	if _, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT": "   ",
+		"GOTCHA_AGENT_KEY":      "pk",
+	})); err == nil {
+		t.Fatal("пробельный GOTCHA_AGENT_ENDPOINT должен ронять старт")
+	}
+}
+
+// TestLoadConfigWhitespaceOnlyKeyRejected — тот же контракт для ключа: он
+// используется как есть в заголовке Authorization (sender.go), поэтому
+// пробельное значение обязано быть отказом старта, а не пустым Bearer.
+func TestLoadConfigWhitespaceOnlyKeyRejected(t *testing.T) {
+	if _, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT": "https://g.example",
+		"GOTCHA_AGENT_KEY":      "   ",
+	})); err == nil {
+		t.Fatal("пробельный GOTCHA_AGENT_KEY должен ронять старт")
+	}
+}
+
+// TestLoadConfigTrimsKeyCACertLabels — Key/CACert/Environment/Role раньше не
+// триммились вовсе. Key напрямую уходит в заголовок Authorization: "Bearer
+// abc " с хвостовым пробелом — это НЕ тот же Bearer-токен, что "Bearer abc",
+// и сервер отклонит его как неизвестный ключ без единого понятного сообщения
+// в логах агента.
+func TestLoadConfigTrimsKeyCACertLabels(t *testing.T) {
+	cfg, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT":    "https://g.example",
+		"GOTCHA_AGENT_KEY":         "abc ",
+		"GOTCHA_AGENT_CA_CERT":     " /etc/gotcha/ca.pem\t",
+		"GOTCHA_AGENT_ENVIRONMENT": " prod ",
+		"GOTCHA_AGENT_ROLE":        " web\n",
+	}))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Key != "abc" {
+		t.Errorf("Key = %q, want %q", cfg.Key, "abc")
+	}
+	if cfg.CACert != "/etc/gotcha/ca.pem" {
+		t.Errorf("CACert = %q, want %q", cfg.CACert, "/etc/gotcha/ca.pem")
+	}
+	if cfg.Environment != "prod" {
+		t.Errorf("Environment = %q, want %q", cfg.Environment, "prod")
+	}
+	if cfg.Role != "web" {
+		t.Errorf("Role = %q, want %q", cfg.Role, "web")
+	}
+}
+
+// TestLoadConfigKeyTrimReflectedInBearerHeader — сквозной тест по всему
+// пути GOTCHA_AGENT_KEY → Config.Key → заголовок Authorization (sender.go
+// подставляет cfg.Key как есть, без собственного тримминга): "abc " с
+// хвостовым пробелом обязан дойти до сервера как "Bearer abc", а не
+// "Bearer abc ", иначе Bearer-токен не совпадёт ни с одним публичным ключом
+// проекта и сервер молча отклонит агент по 401.
+func TestLoadConfigKeyTrimReflectedInBearerHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT": srv.URL,
+		"GOTCHA_AGENT_KEY":      "abc ",
+	}))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	s, err := NewSender(cfg)
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+	if _, _, err := s.Send(context.Background(), []byte("body")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if gotAuth != "Bearer abc" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer abc")
 	}
 }

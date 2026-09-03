@@ -1894,3 +1894,114 @@ func TestLoadConfig_HSTSWarningSkippedOutsideWebModes(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadConfig_StringEnvTrimmed — обычные str()-переменные обрезаются по
+// краям: раньше "GOTCHA_LOCALE=" ru"" падало с текстом `got " ru"`, хотя
+// оператор явно указал допустимую локаль, просто с лишним пробелом.
+func TestLoadConfig_StringEnvTrimmed(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_LOCALE":       " ru",
+		"GOTCHA_LOCAL_REGION": " eu-fra \t",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Locale != "ru" {
+		t.Errorf("Locale = %q, want %q (leading space must be trimmed)", cfg.Locale, "ru")
+	}
+	if cfg.LocalRegion != "eu-fra" {
+		t.Errorf("LocalRegion = %q, want %q", cfg.LocalRegion, "eu-fra")
+	}
+}
+
+// TestLoadConfig_WhitespaceOnlyStringFallsBackToDefault — строка из одних
+// пробелов у обычной str()-переменной (не входит в strGuarded-список) — то же
+// самое, что переменная не задана: тихий откат на def, без ошибки старта.
+func TestLoadConfig_WhitespaceOnlyStringFallsBackToDefault(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_LOCAL_REGION": "   "}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.LocalRegion != "local" {
+		t.Errorf("LocalRegion = %q, want default %q (whitespace-only counts as unset)", cfg.LocalRegion, "local")
+	}
+}
+
+// TestLoadConfig_SecretKeyTrimmed — "abc ", " abc" и "abc" обязаны дать один и
+// тот же мастер-ключ. Раньше хвостовой/ведущий пробел молча входил в ключ:
+// оператор, «поправив» файл и убрав «лишний» пробел, тихо получал другой
+// ключ и терял всё, что было зашифровано под старым (секреты каналов, SSO).
+// BaseURL по умолчанию localhost — SEC-C1 (дефолтный/короткий ключ) тут не
+// участвует, тест только про сам тримминг.
+func TestLoadConfig_SecretKeyTrimmed(t *testing.T) {
+	for _, raw := range []string{"abc", "abc ", " abc", "\tabc\n"} {
+		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_SECRET_KEY": raw}), nil)
+		if err != nil {
+			t.Fatalf("GOTCHA_SECRET_KEY=%q: loadConfig: %v", raw, err)
+		}
+		if cfg.SecretKey != "abc" {
+			t.Errorf("GOTCHA_SECRET_KEY=%q: SecretKey = %q, want %q", raw, cfg.SecretKey, "abc")
+		}
+	}
+}
+
+// TestLoadConfig_BlankGuardedStringsRejected — GOTCHA_SECRET_KEY/GOTCHA_PG_DSN/
+// GOTCHA_CH_DSN обязаны отказать старт на пробельном (но непустом) значении, а
+// не тихо откатиться на дефолт: для секрета дефолт — публично известный
+// insecure-dev-secret, для DSN — localhost вместо прод-базы, которую оператор
+// явно указывал.
+func TestLoadConfig_BlankGuardedStringsRejected(t *testing.T) {
+	for _, key := range []string{"GOTCHA_SECRET_KEY", "GOTCHA_PG_DSN", "GOTCHA_CH_DSN"} {
+		_, err := loadConfig(getenvFrom(map[string]string{key: "   "}), nil)
+		if err == nil {
+			t.Errorf("%s=\"   \": ждали ошибку старта, получили nil", key)
+			continue
+		}
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("%s=\"   \": ошибка не называет переменную: %v", key, err)
+		}
+	}
+}
+
+// TestLoadConfig_GuardedDSNsTrimmed — GOTCHA_PG_DSN/GOTCHA_CH_DSN с пробелами
+// по краям читаются как непустое явное значение (обрезанное), а не как
+// «не задано».
+func TestLoadConfig_GuardedDSNsTrimmed(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_PG_DSN": " postgres://u:p@pg:5432/g ",
+		"GOTCHA_CH_DSN": " clickhouse://ch:9000/g\t",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.PostgresDSN != "postgres://u:p@pg:5432/g" {
+		t.Errorf("PostgresDSN = %q", cfg.PostgresDSN)
+	}
+	if cfg.ClickHouseDSN != "clickhouse://ch:9000/g" {
+		t.Errorf("ClickHouseDSN = %q", cfg.ClickHouseDSN)
+	}
+}
+
+// TestLoadConfig_ProbeCredsWhitespaceOnlyRejected — ключ и URL пробы обязаны
+// отказать старт на пробельном значении в режиме --mode=probe. Они читаются
+// обычным str() (def == ""), поэтому пробельное значение уже трактуется как
+// «не задано» — и в это же «не задано» упирается существующая обязательность
+// пробы: отдельный strGuarded для них не нужен, но контракт должен быть
+// закрыт тестом, а не молчаливым допущением.
+func TestLoadConfig_ProbeCredsWhitespaceOnlyRejected(t *testing.T) {
+	cases := map[string]map[string]string{
+		"пробельный токен": {
+			"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+			"GOTCHA_PROBE_TOKEN":      "   ",
+		},
+		"пробельный server url": {
+			"GOTCHA_PROBE_SERVER_URL": "   ",
+			"GOTCHA_PROBE_TOKEN":      "ptok",
+		},
+	}
+	for name, env := range cases {
+		if _, err := loadConfig(getenvFrom(env), []string{"--mode=probe"}); err == nil {
+			t.Errorf("%s: ждали отказ старта в --mode=probe, получили nil", name)
+		}
+	}
+}

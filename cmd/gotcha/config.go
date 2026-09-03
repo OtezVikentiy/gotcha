@@ -530,14 +530,42 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, fmt.Errorf("--migrate-force and --migrate-force-ch cannot be combined: migrations run sequentially, only one database can be stuck dirty")
 	}
 
+	// str — обрезает пробелы по краям; строка из одних пробелов — то же самое,
+	// что переменная не задана вовсе (контракт envcontract: пустая строка =
+	// «не задано»), поэтому в обоих случаях отдаётся def. rem-A ops-H1 уже
+	// проверял пустой env против отсутствующего — пробельный добавляется к
+	// той же трактовке, не заводит третью.
 	str := func(key, def string) string {
-		if v := getenv(key); v != "" {
+		if v := strings.TrimSpace(getenv(key)); v != "" {
 			return v
 		}
 		return def
 	}
 
 	var errs []error
+
+	// strGuarded — как str, но для переменных, где тихий откат на def при
+	// НЕПУСТОМ-но-пробельном значении опаснее отказа старта: GOTCHA_SECRET_KEY
+	// откатился бы на публично известный insecure-dev-secret (SEC-C1 ниже его
+	// пропустит на localhost, и оператор годами хранил бы секреты «под
+	// пробелом»), GOTCHA_PG_DSN/GOTCHA_CH_DSN — на localhost вместо прод-БД,
+	// которую оператор явно указал. Отличие от str(): там, где переменная
+	// НЕ задана вовсе (raw == ""), поведение то же самое — def безопасен,
+	// это штатный путь дев-стенда без .env. Опасен только случай «оператор
+	// что-то туда написал, но там оказались только пробелы».
+	strGuarded := func(key, def string) string {
+		raw := getenv(key)
+		if raw == "" {
+			return def
+		}
+		if v := strings.TrimSpace(raw); v != "" {
+			return v
+		}
+		errs = append(errs, fmt.Errorf(
+			"%s must not be blank (got only whitespace); unset the variable entirely to use the default",
+			key))
+		return def
+	}
 
 	// parseBool — распознаёт булево значение env; для непустого нераспознанного
 	// значения копит ошибку (RA-L4: `SCRUB_IP=ture` не должен молча выключать
@@ -649,8 +677,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MigrateForceCH:           *migrateForceCH,
 		Addr:                     str("GOTCHA_ADDR", ":8080"),
 		BaseURL:                  str("GOTCHA_BASE_URL", "http://localhost:8080"),
-		PostgresDSN:              str("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
-		ClickHouseDSN:            str("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
+		PostgresDSN:              strGuarded("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
+		ClickHouseDSN:            strGuarded("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
 		SMTPHost:                 str("GOTCHA_SMTP_HOST", ""),
 		SMTPPort:                 intNum("GOTCHA_SMTP_PORT", 587),
 		SMTPUser:                 str("GOTCHA_SMTP_USER", ""),
@@ -688,7 +716,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
 		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
-		SecretKey:                str("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
+		SecretKey:                strGuarded("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		SecretKeyPrev:            str("GOTCHA_SECRET_KEY_PREV", ""),
 		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
 		HSTSEnabled:              boolEnvDef("GOTCHA_HSTS_ENABLED", true),
