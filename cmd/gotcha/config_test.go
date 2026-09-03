@@ -2079,3 +2079,91 @@ func TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength(t *te
 		}
 	})
 }
+
+// TestLoadConfig_EnumsCaseInsensitive — E3 задача 5: GOTCHA_EDITION,
+// GOTCHA_REGISTRATION и GOTCHA_LOCALE сравниваются после trim+lower. Раньше
+// "EDITION=OSS" (капс — принятая форма записи значений env самим же
+// оператором) ронял старт с "must be oss or saas", хотя это ровно
+// документированное значение, только в другом регистре. Расширение
+// принимаемого, не сужение: уже принятые строчные значения продолжают
+// работать (см. TestLoadConfig_Edition/_Registration/_Locale).
+func TestLoadConfig_EnumsCaseInsensitive(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_EDITION":      "OSS",
+		"GOTCHA_REGISTRATION": "OPEN",
+		"GOTCHA_LOCALE":       "EN",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Edition != "oss" {
+		t.Errorf("Edition = %q, want %q", cfg.Edition, "oss")
+	}
+	if cfg.RegistrationMode != "open" {
+		t.Errorf("RegistrationMode = %q, want %q", cfg.RegistrationMode, "open")
+	}
+	if cfg.Locale != "en" {
+		t.Errorf("Locale = %q, want %q", cfg.Locale, "en")
+	}
+
+	// Смешанный регистр и лишние пробелы по краям — тоже принимается.
+	cfg, err = loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_EDITION": " SaaS ",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig mixed case: %v", err)
+	}
+	if cfg.Edition != "saas" {
+		t.Errorf("Edition = %q, want %q", cfg.Edition, "saas")
+	}
+	if cfg.DefaultEventQuota != 1_000_000 {
+		t.Errorf("DefaultEventQuota (SaaS с пробелами) = %d, want 1000000 — редакция должна распознаться", cfg.DefaultEventQuota)
+	}
+
+	// По-прежнему мусор — ошибка (регистр не спасает опечатку).
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EDITION": "BOGUS"}), nil); err == nil {
+		t.Error("BOGUS GOTCHA_EDITION must fail regardless of case")
+	}
+}
+
+// TestLoadConfig_LogLevelFormatTrimmedAndLowered — cfg.LogLevel/cfg.LogFormat
+// приходят из GOTCHA_LOG_LEVEL/GOTCHA_LOG_FORMAT уже trim+lower (loadConfig
+// сам их не валидирует — это делает setupLogging в main.go, см.
+// TestSetupLoggingWarningAliasSetsWarnLevel в wiring_test.go), поэтому
+// "WARNING" в любом регистре обязан дойти до setupLogging как "warning".
+func TestLoadConfig_LogLevelFormatTrimmedAndLowered(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_LOG_LEVEL":  " WARNING ",
+		"GOTCHA_LOG_FORMAT": " JSON ",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.LogLevel != "warning" {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "warning")
+	}
+	if cfg.LogFormat != "json" {
+		t.Errorf("LogFormat = %q, want %q", cfg.LogFormat, "json")
+	}
+}
+
+// TestTrustedRecipientsWhitespaceAndEmptyElements — бриф задачи 5, дословный
+// кейс: пробелы по краям каждого элемента и пустой элемент от двойной
+// запятой не портят список из двух реальных доменов.
+func TestTrustedRecipientsWhitespaceAndEmptyElements(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{
+		"GOTCHA_TRUSTED_RECIPIENTS": " a.example , ,b.example ",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := []string{"a.example", "b.example"}
+	if len(cfg.TrustedRecipients) != len(want) {
+		t.Fatalf("TrustedRecipients = %v, want %v", cfg.TrustedRecipients, want)
+	}
+	for i, w := range want {
+		if cfg.TrustedRecipients[i] != w {
+			t.Errorf("TrustedRecipients[%d] = %q, want %q", i, cfg.TrustedRecipients[i], w)
+		}
+	}
+}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,14 +124,53 @@ func TestDetailPolicyFollowsRecipient(t *testing.T) {
 	logDetailPolicy(Config{BaseURL: cfg.BaseURL, ExternalChannelDetails: true})
 }
 
-// TestSetupLoggingAcceptsKnownLevels: нераспознанное значение не должно менять
-// поведение молча — апгрейд с новым параметром иначе тихо поднимал бы
-// детализацию логов на проде.
+// TestSetupLoggingAcceptsKnownLevels: каждое распознанное сочетание
+// level/format проходит без ошибки и не паникует. cfg.LogLevel/cfg.LogFormat
+// приходят из config.go уже триммленными и в нижнем регистре — здесь
+// проверяются ровно те значения, что setupLogging реально получает.
 func TestSetupLoggingAcceptsKnownLevels(t *testing.T) {
-	for _, level := range []string{"", "debug", "info", "warn", "warning", "error", "nonsense"} {
-		for _, format := range []string{"", "json", "text", "nonsense"} {
-			setupLogging(level, format) // не должно паниковать ни на одном сочетании
+	defer setupLogging("", "") // не оставлять хендлер последней итерации глобальным
+	for _, level := range []string{"", "debug", "info", "warn", "warning", "error"} {
+		for _, format := range []string{"", "json", "text"} {
+			if err := setupLogging(level, format); err != nil {
+				t.Errorf("setupLogging(%q, %q): %v", level, format, err)
+			}
 		}
+	}
+}
+
+// TestSetupLoggingRejectsUnknownLevel — RA-контракт (задача 5, E3): нераспознанный
+// GOTCHA_LOG_LEVEL обязан ронять старт, а не тихо откатываться на Info.
+// Раньше `LOG_LEVEL=trace` во время инцидента давал молчаливый Info без
+// единой диагностики, и оператор отлаживал логгер вместо инцидента.
+func TestSetupLoggingRejectsUnknownLevel(t *testing.T) {
+	if err := setupLogging("trace", "text"); err == nil {
+		t.Error(`setupLogging("trace", "text") must fail, got nil error`)
+	}
+}
+
+// TestSetupLoggingRejectsUnknownFormat — тот же контракт для GOTCHA_LOG_FORMAT:
+// раньше нераспознанный формат тихо откатывался на text.
+func TestSetupLoggingRejectsUnknownFormat(t *testing.T) {
+	if err := setupLogging("info", "nonsense"); err == nil {
+		t.Error(`setupLogging("info", "nonsense") must fail, got nil error`)
+	}
+}
+
+// TestSetupLoggingWarningAliasSetsWarnLevel — "warning" (алиас, документирован
+// в обеих локалях) обязан выставлять именно slog.LevelWarn: Info-сообщения
+// после него отфильтрованы, Warn — проходят.
+func TestSetupLoggingWarningAliasSetsWarnLevel(t *testing.T) {
+	defer setupLogging("", "")
+	if err := setupLogging("warning", "text"); err != nil {
+		t.Fatalf("setupLogging: %v", err)
+	}
+	h := slog.Default().Handler()
+	if h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error(`level "warning" must disable Info logs`)
+	}
+	if !h.Enabled(context.Background(), slog.LevelWarn) {
+		t.Error(`level "warning" must enable Warn logs`)
 	}
 }
 

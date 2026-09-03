@@ -96,12 +96,22 @@ func deriveCookieKey(master string) string {
 }
 
 // setupLogging настраивает глобальный slog по GOTCHA_LOG_LEVEL/GOTCHA_LOG_FORMAT.
-// Пустые/нераспознанные значения дают прежнее поведение (текст, уровень Info),
-// поэтому апгрейд ничего не меняет молча. json — для Loki/ELK, debug — чтобы
-// поднять детализацию во время инцидента без пересборки.
-func setupLogging(level, format string) {
+// Пустое значение — прежнее поведение (текст, уровень Info); json — для
+// Loki/ELK, debug — чтобы поднять детализацию во время инцидента без
+// пересборки, warning — принятый в проде псевдоним warn (документирован в
+// обеих локалях). Нераспознанное непустое значение — отказ старта, а не
+// тихий откат к дефолту: раньше LOG_LEVEL=trace во время инцидента давал
+// молчаливый Info без единой диагностики, и оператор тратил цикл на отладку
+// самого логгера вместо инцидента — прямое нарушение собственной конвенции
+// продукта («невалидное значение любой переменной — отказ старта», см.
+// internal/docs/{ru,en}/configuration.md). level/format приходят из
+// cfg.LogLevel/cfg.LogFormat уже триммленными и в нижнем регистре
+// (cmd/gotcha/config.go), здесь их разбирать повторно не нужно.
+func setupLogging(level, format string) error {
 	var lv slog.Level
 	switch level {
+	case "", "info":
+		lv = slog.LevelInfo
 	case "debug":
 		lv = slog.LevelDebug
 	case "warn", "warning":
@@ -109,16 +119,20 @@ func setupLogging(level, format string) {
 	case "error":
 		lv = slog.LevelError
 	default:
-		lv = slog.LevelInfo
+		return fmt.Errorf("GOTCHA_LOG_LEVEL must be debug, info, warn (alias warning) or error, got %q", level)
 	}
 	opts := &slog.HandlerOptions{Level: lv}
 	var h slog.Handler
-	if format == "json" {
-		h = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
+	switch format {
+	case "", "text":
 		h = slog.NewTextHandler(os.Stderr, opts)
+	case "json":
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	default:
+		return fmt.Errorf("GOTCHA_LOG_FORMAT must be text or json, got %q", format)
 	}
 	slog.SetDefault(slog.New(h))
+	return nil
 }
 
 // writerStats — то, что каждый буферизованный писатель рассказывает о себе.
@@ -351,7 +365,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	setupLogging(cfg.LogLevel, cfg.LogFormat)
+	if err := setupLogging(cfg.LogLevel, cfg.LogFormat); err != nil {
+		return err
+	}
 	// --migrate-force: снять dirty-флаг и выйти, не поднимая ни одного
 	// компонента. Раньше текст ошибки советовал `migrate force` — бинарь,
 	// которого в образе нет (находка №41).

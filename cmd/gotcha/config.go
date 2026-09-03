@@ -639,7 +639,14 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	// PROD-B2: редакция определяет дефолт квот. В oss безлимит (0),
 	// в saas — прежний 1_000_000. Явный GOTCHA_DEFAULT_*_QUOTA перекрывает.
-	edition := str("GOTCHA_EDITION", "oss")
+	//
+	// lower() здесь и у RegistrationMode/Locale ниже — расширение
+	// принимаемого, не сужение: раньше "EDITION=OSS" ронял старт с
+	// "must be oss or saas", хотя оператор написал ровно то значение, что
+	// документация приводит в примерах (переменные окружения принято писать
+	// капсом), только с заглавной буквы у значения. str() уже триммит —
+	// lower() той же строкой убирает и регистр перед сравнением enum'ов.
+	edition := strings.ToLower(str("GOTCHA_EDITION", "oss"))
 	defQuota := int64(0)
 	if edition == "saas" {
 		defQuota = 1_000_000
@@ -732,12 +739,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                strGuarded("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		SecretKeyPrev:            str("GOTCHA_SECRET_KEY_PREV", ""),
-		RegistrationMode:         str("GOTCHA_REGISTRATION", "invite"),
+		RegistrationMode:         strings.ToLower(str("GOTCHA_REGISTRATION", "invite")),
 		HSTSEnabled:              boolEnvDef("GOTCHA_HSTS_ENABLED", true),
 		HSTSMaxAgeSeconds:        intNum("GOTCHA_HSTS_MAX_AGE_SECONDS", 31536000),
 		HSTSIncludeSubDomains:    boolEnv("GOTCHA_HSTS_INCLUDE_SUBDOMAINS"),
 		HSTSPreload:              boolEnv("GOTCHA_HSTS_PRELOAD"),
-		Locale:                   str("GOTCHA_LOCALE", "ru"),
+		Locale:                   strings.ToLower(str("GOTCHA_LOCALE", "ru")),
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
 		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
 		ProbeToken:               str("GOTCHA_PROBE_TOKEN", ""),
