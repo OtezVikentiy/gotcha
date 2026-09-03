@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
 type hostsStack struct {
@@ -570,6 +572,7 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 			t.Errorf("GET без сохранённых настроек не отдаёт дефолт %q: %s", want, text)
 		}
 	}
+	assertThresholdGrid(t, text, "host-settings-form")
 
 	validForm := url.Values{
 		"disk_enabled": {"1"}, "disk_threshold": {"50"},
@@ -795,8 +798,14 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
 	}
 	text := string(body)
-	if !strings.Contains(text, `id="host-group-threshold-form"`) {
-		t.Errorf("форма группового правила не показана: %s", text)
+	if !strings.Contains(text, `href="#new-group-threshold"`) {
+		t.Errorf("нет кнопки открытия модалки создания правила: %s", text)
+	}
+	if !strings.Contains(text, `id="new-group-threshold"`) {
+		t.Errorf("модалка создания правила не отрисована: %s", text)
+	}
+	if strings.Contains(text, "modal--open") {
+		t.Errorf("на первом GET не должно быть открытых с сервера модалок: %s", text)
 	}
 	if !strings.Contains(text, `value="prod"`) || !strings.Contains(text, `value="web"`) {
 		t.Errorf("метки хоста (prod/web) не предложены в select: %s", text)
@@ -908,12 +917,52 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
 		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
 	}
+	// Пара role/web уже существует — 422 обязан переоткрыть модалку правки
+	// ИМЕННО этого правила, а не модалку создания (образец —
+	// TestWebMaintenanceUpdateInvalidReopensModal).
+	editModalID := templates.EditGroupThresholdModalID("role", "web")
+	if !strings.Contains(text, `id="`+editModalID+`" class="modal modal--open"`) {
+		t.Errorf("422 правки не переоткрыл модалку правила role/web: %s", text)
+	}
+	if strings.Contains(text, `id="new-group-threshold" class="modal modal--open"`) {
+		t.Errorf("вместо модалки правки правила role/web открылась модалка создания: %s", text)
+	}
 	stillSaved, err := s.groups.List(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("list groups after invalid POST: %v", err)
 	}
 	if len(stillSaved) != 1 || stillSaved[0].DiskThreshold == nil || *stillSaved[0].DiskThreshold != 0.55 {
 		t.Errorf("невалидный POST изменил сохранённое правило: %+v, want disk=0.55", stillSaved)
+	}
+
+	// Невалидный POST с парой, которой нет среди правил (создание нового) →
+	// 422 переоткрывает модалку СОЗДАНИЯ с введённым значением, модалка
+	// правки существующего правила остаётся закрытой.
+	invalidCreateForm := url.Values{
+		"scope": {"env"}, "label_env": {"prod"},
+		"disk_mode": {"override"}, "disk_value": {"150"},
+		"memory_mode": {"inherit"},
+		"load_mode":   {"inherit"},
+		"silent_mode": {"inherit"},
+	}
+	resp = postForm(t, s.srv, savePath, invalidCreateForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid create POST status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	text = string(body)
+	if !strings.Contains(text, `id="new-group-threshold" class="modal modal--open"`) {
+		t.Errorf("422 создания не переоткрыл модалку создания: %s", text)
+	}
+	if strings.Contains(text, `id="`+editModalID+`" class="modal modal--open"`) {
+		t.Errorf("422 создания открыл модалку правки чужого правила: %s", text)
+	}
+	// Введённое при 422 попадает только в ПЕРЕОТКРЫТУЮ модалку: закрытая
+	// модалка правки role/web продолжает показывать значение своего правила
+	// (диск 55%), а не значения чужой отправки (groupThresholdFormValues).
+	if !strings.Contains(text, `value="55"`) {
+		t.Errorf("значения чужой отправки вытеснили значения правила в закрытой модалке правки: %s", text)
 	}
 
 	// POST без scope/label → 422 (нечего сохранять).
@@ -970,6 +1019,187 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("repeat delete POST status = %d, want 303", resp.StatusCode)
+	}
+}
+
+// TestWebHostGroupThresholdEditModalsPerRow — модалок правки столько же,
+// сколько строк таблицы, каждая предзаполнена значениями СВОЕГО правила
+// (scope+метка hidden-полями, порог — числом правила), и при этом в
+// документе нет повторяющихся id: сегмент-контролы и поля повторяются в
+// каждой модалке, любой захардкоженный id давал бы дубль, а клик по label
+// одной модалки переключал бы radio в другой.
+func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hgtrows-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hgtrows-co", "HGTRows Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hgtrows-proj", "HGTRows Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{
+		{Name: "web-1", Environment: "prod", Role: "web"},
+	}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	savePath := path + "/groups"
+	for _, form := range []url.Values{
+		{
+			"scope": {"env"}, "label_env": {"prod"},
+			"disk_mode": {"override"}, "disk_value": {"70"},
+			"memory_mode": {"inherit"}, "load_mode": {"inherit"}, "silent_mode": {"inherit"},
+		},
+		{
+			"scope": {"role"}, "label_role": {"web"},
+			"disk_mode": {"override"}, "disk_value": {"55"},
+			"memory_mode": {"inherit"}, "load_mode": {"inherit"}, "silent_mode": {"inherit"},
+		},
+	} {
+		resp := postForm(t, s.srv, savePath, form, s.srv.URL, ownerCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("seed POST %v status = %d, want 303", form, resp.StatusCode)
+		}
+	}
+
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+
+	envID := templates.EditGroupThresholdModalID("env", "prod")
+	roleID := templates.EditGroupThresholdModalID("role", "web")
+	for _, id := range []string{envID, roleID} {
+		if !strings.Contains(text, `id="`+id+`" class="modal"`) {
+			t.Errorf("нет закрытой модалки правки %q: %s", id, text)
+		}
+	}
+	// Пара действий строки — как на «Подавлении шторма»: «Редактировать»
+	// вторичной кнопкой (btn-ghost), «Удалить» — btn-danger, оба в обёртке
+	// .row-actions; текстовой ссылки-редактирования больше нет.
+	for _, id := range []string{envID, roleID} {
+		if !strings.Contains(text, `<a class="btn btn-ghost" href="#`+id+`"`) {
+			t.Errorf("нет кнопки правки btn-ghost для %q: %s", id, text)
+		}
+		if strings.Contains(text, `<a href="#`+id+`"`) {
+			t.Errorf("правка %q осталась текстовой ссылкой: %s", id, text)
+		}
+	}
+	if !strings.Contains(text, `class="row-actions"`) {
+		t.Errorf("действия строки правил без обёртки row-actions: %s", text)
+	}
+	// Пояснения для скринридера — на обеих кнопках каждой строки, с парой
+	// правила (как у suppressionEdgeRow на «Подавлении шторма»).
+	for _, want := range []string{
+		`aria-label="Редактировать правило: Окружение prod"`,
+		`aria-label="Удалить правило: Окружение prod"`,
+		`aria-label="Редактировать правило: Роль web"`,
+		`aria-label="Удалить правило: Роль web"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("нет aria-пояснения %q: %s", want, text)
+		}
+	}
+	// Предзаполнение: у каждой модалки пара своего правила hidden-полями и
+	// порог диска числом правила (70% у env/prod, 55% у role/web).
+	if !strings.Contains(text, `type="hidden" name="scope" value="env"`) ||
+		!strings.Contains(text, `type="hidden" name="label_env" value="prod"`) {
+		t.Errorf("модалка env/prod не несёт свою пару hidden-полями: %s", text)
+	}
+	if !strings.Contains(text, `type="hidden" name="scope" value="role"`) ||
+		!strings.Contains(text, `type="hidden" name="label_role" value="web"`) {
+		t.Errorf("модалка role/web не несёт свою пару hidden-полями: %s", text)
+	}
+	if !strings.Contains(text, `value="70"`) || !strings.Contains(text, `value="55"`) {
+		t.Errorf("модалки правки не предзаполнены значениями своих правил (70 и 55): %s", text)
+	}
+	// Все модалки порогов — широкие (wide): форма с четырьмя fieldset в
+	// узкой карточке сплющивается. Создание + по одной правке на строку.
+	if got := strings.Count(text, "modal-card--wide"); got != 3 {
+		t.Errorf("широких модалок порогов = %d, want 3 (создание + 2 правки)", got)
+	}
+
+	// Дубликаты id в документе: форм на странице несколько, повторяющийся id
+	// ломает связку label/for и якоря модалок.
+	idRe := regexp.MustCompile(` id="([^"]+)"`)
+	seen := map[string]bool{}
+	for _, m := range idRe.FindAllStringSubmatch(text, -1) {
+		if seen[m[1]] {
+			t.Errorf("дублирующийся id=%q в документе", m[1])
+		}
+		seen[m[1]] = true
+	}
+}
+
+// TestWebHostGroupThresholdLegacyEditLink — старый формат ссылки
+// «Редактировать» (?gt_scope=&gt_label=, закладки и переходы из писем)
+// продолжает работать: сервер открывает модалку правки найденного правила;
+// несуществующая пара — обычная страница без открытых модалок, без 404.
+func TestWebHostGroupThresholdLegacyEditLink(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hgtlink-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hgtlink-co", "HGTLink Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hgtlink-proj", "HGTLink Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{
+		{Name: "web-1", Environment: "prod", Role: "web"},
+	}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	form := url.Values{
+		"scope": {"role"}, "label_role": {"web"},
+		"disk_mode": {"override"}, "disk_value": {"70"},
+		"memory_mode": {"inherit"}, "load_mode": {"inherit"}, "silent_mode": {"inherit"},
+	}
+	resp := postForm(t, s.srv, path+"/groups", form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("seed POST status = %d, want 303", resp.StatusCode)
+	}
+
+	// Пара существует → модалка правки открыта с сервера.
+	resp = getWithCookie(t, s.srv, path+"?gt_scope=role&gt_label=web", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("legacy link GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	text := string(body)
+	editID := templates.EditGroupThresholdModalID("role", "web")
+	if !strings.Contains(text, `id="`+editID+`" class="modal modal--open"`) {
+		t.Errorf("старая ссылка не открыла модалку правки role/web: %s", text)
+	}
+	if strings.Contains(text, `id="new-group-threshold" class="modal modal--open"`) {
+		t.Errorf("старая ссылка открыла модалку создания: %s", text)
+	}
+
+	// Пары нет (правило могли удалить) → 200 и ни одной открытой модалки.
+	resp = getWithCookie(t, s.srv, path+"?gt_scope=env&gt_label=ghost", ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ghost pair GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "modal--open") {
+		t.Errorf("несуществующая пара открыла модалку: %s", body)
 	}
 }
 
@@ -1446,6 +1676,44 @@ func TestWebHostDetailNilDeps(t *testing.T) {
 // значения/источники (host для переопределённого, "выключено" для off);
 // невалидный POST (значение вне границы) → 422 с сообщением И введённым
 // значением в форме, ранее сохранённый override НЕ подменяется мусором.
+// assertThresholdGrid — сетка .threshold-grid присутствует в форме порогов и
+// оборачивает ровно четыре карточки-fieldset (Диск/Память/Нагрузка/Тишина):
+// открытие сетки стоит до первого fieldset, все четыре закрываются до кнопки
+// «Сохранить», и после последнего из них закрывается сама обёртка. Общий на
+// обе формы (host-settings-form и host-thresholds-form) — разметка одинаковая.
+func assertThresholdGrid(t *testing.T, body, form string) {
+	t.Helper()
+	formAt := strings.Index(body, `class="`+form+`"`)
+	if formAt < 0 {
+		t.Fatalf("нет формы %s: %s", form, body)
+	}
+	formEnd := strings.Index(body[formAt:], "</form>")
+	if formEnd < 0 {
+		t.Fatalf("форма %s не закрыта: %s", form, body)
+	}
+	sub := body[formAt : formAt+formEnd]
+	gridAt := strings.Index(sub, `<div class="threshold-grid">`)
+	if gridAt < 0 {
+		t.Fatalf("в форме %s нет сетки threshold-grid: %s", form, sub)
+	}
+	if firstFs := strings.Index(sub, "<fieldset"); firstFs >= 0 && firstFs < gridAt {
+		t.Errorf("в форме %s fieldset стоит ДО открытия threshold-grid — карточка вне сетки: %s", form, sub)
+	}
+	btnAt := strings.Index(sub, "<button")
+	if btnAt < 0 {
+		t.Fatalf("в форме %s нет кнопки сохранения: %s", form, sub)
+	}
+	inner := sub[gridAt:btnAt]
+	if got := strings.Count(inner, "<fieldset"); got != 4 {
+		t.Errorf("в форме %s сетка threshold-grid оборачивает %d fieldset, want 4: %s", form, got, inner)
+	}
+	// Закрытие обёртки: последний </div> до кнопки идёт ПОСЛЕ последнего
+	// </fieldset> — иначе сетка закрылась раньше и хвост карточек снаружи.
+	if strings.LastIndex(inner, "</div>") < strings.LastIndex(inner, "</fieldset>") {
+		t.Errorf("в форме %s threshold-grid закрывается до последнего fieldset: %s", form, inner)
+	}
+}
+
 func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1482,6 +1750,7 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	if !strings.Contains(string(body), `class="host-thresholds-form"`) {
 		t.Errorf("оператору не показана форма порогов: %s", body)
 	}
+	assertThresholdGrid(t, string(body), "host-thresholds-form")
 
 	validForm := url.Values{
 		"disk_mode": {"override"}, "disk_value": {"50"},

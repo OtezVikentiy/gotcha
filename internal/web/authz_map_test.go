@@ -90,6 +90,7 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/alerts/rules":                     lvlOperator,
 	"POST /projects/{id}/escalations":                      lvlOperator,
 	"POST /projects/{id}/alert-suppression":                lvlOperator,
+	"POST /projects/{id}/alert-suppression/{depID}":        lvlOperator,
 	"POST /projects/{id}/alert-suppression/{depID}/delete": lvlOperator,
 	// exports: create/delete гейтятся requireProjectOperator, как соседи
 	// выше; download/delete/список ДОПОЛНИТЕЛЬНО проверяют авторство/
@@ -101,6 +102,7 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/incidents/{source}/{incident_id}/ack": lvlOperator,
 	"POST /projects/{id}/metrics/alerts":                       lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete":                lvlOperator,
+	"POST /projects/{id}/metrics/alerts/{ruleID}":              lvlOperator,
 	"POST /projects/{id}/recipes/{slug}/thresholds":            lvlOperator, // рецепты B6: создание порогов — как metric alerts
 	"POST /projects/{id}/slos":                                 lvlOperator,
 	"POST /projects/{id}/slos/{sloID}/delete":                  lvlOperator,

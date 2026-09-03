@@ -14,6 +14,74 @@ func metricAlertsBasePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics/alerts"
 }
 
+// metricAlertUpdatePath — POST правки одного правила: тот же сегмент {ruleID}
+// без суффикса, по образцу alertSuppressionUpdatePath.
+func metricAlertUpdatePath(projectID, ruleID int64) string {
+	return metricAlertsBasePath(projectID) + "/" + strconv.FormatInt(ruleID, 10)
+}
+
+// MetricRuleCreateModalID — якорь модалки создания правила: на него ведёт
+// createTrigger, его же переоткрывает metricAlertCreate после 422.
+const MetricRuleCreateModalID = "new-metric-rule"
+
+// EditMetricRuleModalID — якорь модалки правки одного правила. Модалка на
+// строку таблицы: они построены на CSS :target, якорь обязан быть уникальным,
+// а id правила стабилен между рендерами (RuleService.Update сохраняет id).
+// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
+// после ошибки валидации (тот же приём, что EditSuppressionEdgeModalID).
+func EditMetricRuleModalID(ruleID int64) string {
+	return "edit-metric-rule-" + strconv.FormatInt(ruleID, 10)
+}
+
+// metricRuleFormValues — введённые человеком значения, если 422 вернулась
+// именно из этой модалки, иначе fallback (у создания — дефолты со взведённым
+// «Включено», у правки — значения самого правила). Модалок на странице N+1,
+// а состояние формы одно — без этой развилки введённое при ошибке попало бы
+// во все модалки сразу (тот же приём, что suppressionFormValues).
+func metricRuleFormValues(form FormState, open bool, fallback FormState) FormState {
+	if open {
+		return form
+	}
+	return fallback
+}
+
+// metricRuleErrID — id абзаца ошибки модалки для aria-describedby; "" —
+// модалка отрисовывается без ошибки.
+func metricRuleErrID(modalID string, open bool, errMsg string) string {
+	if open && errMsg != "" {
+		return modalID + "-error"
+	}
+	return ""
+}
+
+// metricRuleCreateDefaults — дефолты формы создания при первом открытии:
+// чекбокс «Включено» взведён (правило по умолчанию активно), остальные поля
+// берут свои fallback'и в Get.
+func metricRuleCreateDefaults() FormState { return FormState{"enabled": "on"} }
+
+// ruleFormDefaults — значения полей модалки правки из самого правила: плоская
+// карта тех же имён, что у FormState, чтобы общий фрагмент полей не знал,
+// создание он или правка (как suppressionEdgeFormDefaults у рёбер). Ключ
+// enabled есть только у включённого правила: снятый чекбокс не приходит в
+// POST вовсе, признак — наличие непустого значения (см. metricRuleFormFields).
+func ruleFormDefaults(r metric.Rule) FormState {
+	f := FormState{
+		"metric_name":    r.MetricName,
+		"aggregation":    r.Aggregation,
+		"comparator":     r.Comparator,
+		"threshold":      strconv.FormatFloat(r.Threshold, 'g', -1, 64),
+		"window_seconds": strconv.Itoa(r.WindowSeconds),
+		"environment":    r.Environment,
+		"label_key":      r.LabelKey,
+		"label_value":    r.LabelValue,
+		"severity":       r.Severity,
+	}
+	if r.Enabled {
+		f["enabled"] = "on"
+	}
+	return f
+}
+
 // fmtFloat — значение/порог метрики для таблиц правил и инцидентов.
 // Компактная запись вместо strconv 'g' (QA: «avg > 8e+08» нечитаемо для
 // байтов) — тот же формат, что на осях графиков метрик (formatAxisValue).
@@ -82,7 +150,18 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 			// кнопке «Новое правило» — то есть в стороне от того, что человек
 			// заполнял. Ошибки, не относящиеся к форме, показывать тут больше
 			// нечему: других действий на странице нет.
-			@createTrigger("new-metric-rule", "metrics.alerts.new_rule")
+			@createTrigger(MetricRuleCreateModalID, "metrics.alerts.new_rule")
+			// datalist, а не select: правило можно завести и на метрику,
+			// которая ещё не приходила (новый сервис только выкатывают),
+			// но опечатка в уже известном имени больше не проходит молча.
+			// Единственный экземпляр на страницу: поле метрики рендерится в
+			// N+1 модалках (создание + правка на строку), и datalist внутри
+			// фрагмента полей давал бы дубли id в документе.
+			<datalist id="known-metrics">
+				for _, name := range knownMetrics {
+					<option value={ name }></option>
+				}
+			</datalist>
 			<h2>{ i18n.T(ctx, "metrics.alerts.rules") }</h2>
 			if len(rules) == 0 {
 				@emptyState("bell", "metrics.alerts.rules.empty.title", "metrics.alerts.rules.empty.body", "", "", 3)
@@ -121,10 +200,26 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 											</td>
 											<td>@ruleEnabledBadge(rule.Enabled)</td>
 											<td>
-												<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") } class="inline">
-													<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
-													<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "metrics.alerts.delete") }</button>
-												</form>
+												<div class="row-actions">
+													<a
+														class="btn btn-ghost"
+														href={ templ.SafeURL("#" + EditMetricRuleModalID(rule.ID)) }
+														aria-label={ i18n.Tf(ctx, "metrics.alerts.action.edit_aria", "metric", rule.MetricName) }
+													>
+														{ i18n.T(ctx, "metrics.alerts.edit") }
+													</a>
+													<form method="post" action={ templ.URL(metricAlertsBasePath(projectID) + "/delete") }>
+														<input type="hidden" name="rule_id" value={ strconv.FormatInt(rule.ID, 10) }/>
+														<button
+															type="submit"
+															class="btn btn-danger"
+															aria-label={ i18n.Tf(ctx, "metrics.alerts.action.delete_aria", "metric", rule.MetricName) }
+														>
+															{ i18n.T(ctx, "metrics.alerts.delete") }
+														</button>
+													</form>
+												</div>
+												@metricRuleEditModal(projectID, rule, form, errMsg)
 											</td>
 										</tr>
 									}
@@ -170,122 +265,172 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 					}
 				</div>
 			}
-			@createModalOpen("new-metric-rule", "metrics.alerts.new_rule", false, form.Has()) {
-				<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
-					// Без role="alert": фокус в модалку переносит modal.js (№80),
-					// ошибка привязана к полю метрики через aria-describedby.
-					if errMsg != "" {
-						<p class="error" id="new-metric-rule-error">{ errMsg }</p>
-					}
-					<div class="form-grid">
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.metric") }
-							<input
-								type="text"
-								name="metric_name"
-								required
-								placeholder="http.server.duration"
-								class="input"
-								list="known-metrics"
-								value={ form.Get("metric_name", "") }
-								if errMsg != "" {
-									aria-invalid="true"
-									aria-describedby="new-metric-rule-error"
-								}
-							/>
-							// datalist, а не select: правило можно завести и на метрику,
-							// которая ещё не приходила (новый сервис только выкатывают),
-							// но опечатка в уже известном имени больше не проходит молча.
-							<datalist id="known-metrics">
-								for _, name := range knownMetrics {
-									<option value={ name }></option>
-								}
-							</datalist>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.aggregation") }
-							<select name="aggregation" class="select">
-								for _, a := range metric.Aggregations {
-									if form.Selected("aggregation", a, "avg") {
-										<option value={ a } selected>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
-									} else {
-										<option value={ a }>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
-									}
-								}
-							</select>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.condition") }
-							<select name="comparator" class="select">
-								if form.Selected("comparator", "lt", "gt") {
-									<option value="gt">&gt;</option>
-									<option value="lt" selected>&lt;</option>
-								} else {
-									<option value="gt" selected>&gt;</option>
-									<option value="lt">&lt;</option>
-								}
-							</select>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.threshold") }
-							<input type="text" name="threshold" required placeholder="100" class="input" value={ form.Get("threshold", "") }/>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.window") }
-							<input type="number" name="window_seconds" value={ form.Get("window_seconds", "300") } min="1" required class="input"/>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.environment") }
-							<input type="text" name="environment" placeholder={ i18n.T(ctx, "metrics.alerts.form.environment_any") } class="input" value={ form.Get("environment", "") }/>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.label_key") }
-							<input type="text" name="label_key" placeholder={ i18n.T(ctx, "metrics.alerts.form.label_key_none") } class="input" value={ form.Get("label_key", "") }/>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.label_value") }
-							<input type="text" name="label_value" class="input" value={ form.Get("label_value", "") }/>
-						</label>
-					</div>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "metrics.alerts.form.severity") }
-							<select name="severity" class="select">
-								if form.Selected("severity", "critical", "") {
-									<option value="">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
-									<option value="critical" selected>{ i18n.T(ctx, "severity.critical") }</option>
-									<option value="warning">{ i18n.T(ctx, "severity.warning") }</option>
-								} else if form.Selected("severity", "warning", "") {
-									<option value="">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
-									<option value="critical">{ i18n.T(ctx, "severity.critical") }</option>
-									<option value="warning" selected>{ i18n.T(ctx, "severity.warning") }</option>
-								} else {
-									<option value="" selected>{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
-									<option value="critical">{ i18n.T(ctx, "severity.critical") }</option>
-									<option value="warning">{ i18n.T(ctx, "severity.warning") }</option>
-								}
-							</select>
-						</label>
-					</div>
-					</div>
-					<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "metrics.alerts.form.submit") }</button>
-				</form>
-			}
+			@metricRuleCreateModal(projectID, form, errMsg)
 		</div>
 	}
+}
+
+// metricRuleCreateModal — модалка создания правила; open — 422 именно из неё
+// (FormState.Opens). Раньше признаком открытия служил form.Has(): модалка на
+// странице была одна, «есть значения» значило «открой её» — с модалками
+// правки на каждую строку это открывало бы заодно и форму создания.
+templ metricRuleCreateModal(projectID int64, form FormState, errMsg string) {
+	{{ open := form.Opens(MetricRuleCreateModalID) }}
+	@createModalOpen(MetricRuleCreateModalID, "metrics.alerts.new_rule", false, open) {
+		<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
+			// Без role="alert": фокус в модалку переносит modal.js (№80),
+			// ошибка привязана к полю метрики через aria-describedby.
+			if open && errMsg != "" {
+				<p class="error" id={ MetricRuleCreateModalID + "-error" }>{ errMsg }</p>
+			}
+			@metricRuleFormFields(metricRuleErrID(MetricRuleCreateModalID, open, errMsg), metricRuleFormValues(form, open, metricRuleCreateDefaults()))
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "metrics.alerts.form.submit") }</button>
+		</form>
+	}
+}
+
+// metricRuleEditModal — модалка правки одного правила теми же полями, что и
+// создание; предзаполнена значениями правила (ruleFormDefaults), после 422 —
+// введёнными человеком (metricRuleFormValues). Подсказка edit.hint — про
+// семантику открытого инцидента: оценщик на каждом тике перечитывает правило
+// и применяет ТЕКУЩЕЕ условие (evaluator.evalRule → Decide), поэтому правка
+// вступает в силу со следующего цикла проверки, а открытый инцидент сам
+// закроется или продолжится по новому условию.
+templ metricRuleEditModal(projectID int64, rule metric.Rule, form FormState, errMsg string) {
+	{{ modalID := EditMetricRuleModalID(rule.ID) }}
+	{{ open := form.Opens(modalID) }}
+	@createModalOpen(modalID, "metrics.alerts.edit.title", false, open) {
+		<form method="post" action={ templ.URL(metricAlertUpdatePath(projectID, rule.ID)) } class="metric-alert-form">
+			if open && errMsg != "" {
+				<p class="error" id={ modalID + "-error" }>{ errMsg }</p>
+			}
+			<p class="hint">{ i18n.T(ctx, "metrics.alerts.edit.hint") }</p>
+			@metricRuleFormFields(metricRuleErrID(modalID, open, errMsg), metricRuleFormValues(form, open, ruleFormDefaults(rule)))
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "metrics.alerts.edit.submit") }</button>
+		</form>
+	}
+}
+
+// metricRuleFormFields — общие поля модалок создания и правки правила. id у
+// полей нет намеренно: фрагмент рендерится в N+1 модалках одной страницы,
+// любой id давал бы дубли в документе (тот же принцип, что
+// suppressionEdgeFields); datalist known-metrics по той же причине вынесен на
+// страницу единственным экземпляром. errID — id абзаца ошибки той модалки,
+// из которой пришла 422 ("" — ошибки нет).
+templ metricRuleFormFields(errID string, values FormState) {
+	<div class="form-grid">
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.metric") }
+			<input
+				type="text"
+				name="metric_name"
+				required
+				placeholder="http.server.duration"
+				class="input"
+				list="known-metrics"
+				value={ values.Get("metric_name", "") }
+				if errID != "" {
+					aria-invalid="true"
+					aria-describedby={ errID }
+				}
+			/>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.aggregation") }
+			<select name="aggregation" class="select">
+				for _, a := range metric.Aggregations {
+					if values.Selected("aggregation", a, "avg") {
+						<option value={ a } selected>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
+					} else {
+						<option value={ a }>{ i18n.T(ctx, "metrics.aggregation."+a) }</option>
+					}
+				}
+			</select>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.condition") }
+			<select name="comparator" class="select">
+				if values.Selected("comparator", "lt", "gt") {
+					<option value="gt">&gt;</option>
+					<option value="lt" selected>&lt;</option>
+				} else {
+					<option value="gt" selected>&gt;</option>
+					<option value="lt">&lt;</option>
+				}
+			</select>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.threshold") }
+			<input type="text" name="threshold" required placeholder="100" class="input" value={ values.Get("threshold", "") }/>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.window") }
+			<input type="number" name="window_seconds" value={ values.Get("window_seconds", "300") } min="1" required class="input"/>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.environment") }
+			<input type="text" name="environment" placeholder={ i18n.T(ctx, "metrics.alerts.form.environment_any") } class="input" value={ values.Get("environment", "") }/>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.label_key") }
+			<input type="text" name="label_key" placeholder={ i18n.T(ctx, "metrics.alerts.form.label_key_none") } class="input" value={ values.Get("label_key", "") }/>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.label_value") }
+			<input type="text" name="label_value" class="input" value={ values.Get("label_value", "") }/>
+		</label>
+	</div>
+	<div class="field">
+		<label>
+			{ i18n.T(ctx, "metrics.alerts.form.severity") }
+			<select name="severity" class="select">
+				if values.Selected("severity", "critical", "") {
+					<option value="">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
+					<option value="critical" selected>{ i18n.T(ctx, "severity.critical") }</option>
+					<option value="warning">{ i18n.T(ctx, "severity.warning") }</option>
+				} else if values.Selected("severity", "warning", "") {
+					<option value="">{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
+					<option value="critical">{ i18n.T(ctx, "severity.critical") }</option>
+					<option value="warning" selected>{ i18n.T(ctx, "severity.warning") }</option>
+				} else {
+					<option value="" selected>{ i18n.T(ctx, "metrics.alerts.form.severity_inherit") }</option>
+					<option value="critical">{ i18n.T(ctx, "severity.critical") }</option>
+					<option value="warning">{ i18n.T(ctx, "severity.warning") }</option>
+				}
+			</select>
+		</label>
+	</div>
+	</div>
+	<label class="checkbox-inline">
+		// Hidden перед чекбоксом: снятый чекбокс в POST не приходит вовсе, а
+		// прямой POST без поля enabled обязан по-прежнему создавать включённое
+		// правило (контракт до появления чекбокса). С hidden браузер шлёт
+		// enabled всегда: ["off"] — снят, ["off","on"] — взведён, отсутствие
+		// поля целиком — запрос мимо формы (см. metricRuleEnabled в web).
+		<input type="hidden" name="enabled" value="off"/>
+		// Признак «взведён» в values — ключ "on" (metricRuleFormState кладёт
+		// его через metricRuleEnabled): в дефолтах создания он есть всегда, у
+		// правки — только у включённого правила.
+		if values.Get("enabled", "") != "" {
+			<input type="checkbox" name="enabled" value="on" checked/>
+		} else {
+			<input type="checkbox" name="enabled" value="on"/>
+		}
+		{ i18n.T(ctx, "metrics.alerts.form.enabled") }
+	</label>
 }

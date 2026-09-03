@@ -80,20 +80,22 @@ templ RecipesList(projectID int64, cards []RecipeCardVM, userEmail string) {
 		<h1>{ i18n.T(ctx, "recipes.list.title") }</h1>
 		@helpPanel("recipes", "recipes")
 		<p class="hint">{ i18n.T(ctx, "recipes.list.lead") }</p>
-		for _, card := range cards {
-			<section class="card" data-recipe={ card.ID }>
-				<h2 class="card-header">
-					<a href={ templ.URL(recipesBasePath(projectID) + "/" + card.ID) }>{ i18n.T(ctx, "recipes." + card.ID + ".title") }</a>
-					@recipeDataBadge(card.DataArrives)
-				</h2>
-				<p>{ i18n.T(ctx, "recipes." + card.ID + ".desc") }</p>
-				if card.TotalRules > 0 {
-					<p class="hint">{ i18n.Tf(ctx, "recipes.card.rules_count", "created", strconv.Itoa(card.CreatedRules), "total", strconv.Itoa(card.TotalRules)) }</p>
-				} else {
-					<p class="hint">{ i18n.T(ctx, "recipes.card.no_rules") }</p>
-				}
-			</section>
-		}
+		<div class="card-stack">
+			for _, card := range cards {
+				<section class="card" data-recipe={ card.ID }>
+					<h2 class="card-header">
+						<a href={ templ.URL(recipesBasePath(projectID) + "/" + card.ID) }>{ i18n.T(ctx, "recipes." + card.ID + ".title") }</a>
+						@recipeDataBadge(card.DataArrives)
+					</h2>
+					<p>{ i18n.T(ctx, "recipes." + card.ID + ".desc") }</p>
+					if card.TotalRules > 0 {
+						<p class="hint">{ i18n.Tf(ctx, "recipes.card.rules_count", "created", strconv.Itoa(card.CreatedRules), "total", strconv.Itoa(card.TotalRules)) }</p>
+					} else {
+						<p class="hint">{ i18n.T(ctx, "recipes.card.no_rules") }</p>
+					}
+				</section>
+			}
+		</div>
 	}
 }
 
@@ -136,113 +138,115 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 		// Ссылка на гайд — тем же приёмом, что hosts.onboarding.docs_link
 		// (hosts.templ): вся фраза кликабельна, ведёт на /docs/recipes.
 		<p class="hint"><a href="/docs/recipes">{ i18n.T(ctx, "recipes.docs_link") }</a></p>
-		<section class="card">
-			<h2 class="card-header">{ i18n.T(ctx, "recipes.steps.title") }</h2>
-			<ol>
-				<li>
-					<p>{ i18n.T(ctx, "recipes.steps.install") }</p>
-				</li>
-				<li>
-					<p>{ i18n.T(ctx, "recipes.steps.config") }</p>
-					if vm.Config != "" {
-						@copyBlock("recipe-config", "recipes.copy.config", vm.Config)
-						// Пер-рецептная подсказка о предусловии, без которого
-						// сниппет не заработает (аудит UX P1-2): требования у
-						// сервисов разные, а до этого подсказка была только у
-						// redis (ревью T1 minor: без requirepass строку password
-						// надо убрать, иначе ресивер не подключится).
-						switch vm.Recipe.ID {
-							case "redis":
-								<p class="hint">{ i18n.T(ctx, "recipes.redis.password_note") }</p>
-							case "nginx":
-								<p class="hint">{ i18n.T(ctx, "recipes.nginx.stub_note") }</p>
-							case "postgres":
-								<p class="hint">{ i18n.T(ctx, "recipes.postgres.user_note") }</p>
-							case "mariadb":
-								<p class="hint">{ i18n.T(ctx, "recipes.mariadb.user_note") }</p>
-							case "docker":
-								<p class="hint">{ i18n.T(ctx, "recipes.docker.socket_note") }</p>
+		<div class="card-stack">
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "recipes.steps.title") }</h2>
+				<ol>
+					<li>
+						<p>{ i18n.T(ctx, "recipes.steps.install") }</p>
+					</li>
+					<li>
+						<p>{ i18n.T(ctx, "recipes.steps.config") }</p>
+						if vm.Config != "" {
+							@copyBlock("recipe-config", "recipes.copy.config", vm.Config)
+							// Пер-рецептная подсказка о предусловии, без которого
+							// сниппет не заработает (аудит UX P1-2): требования у
+							// сервисов разные, а до этого подсказка была только у
+							// redis (ревью T1 minor: без requirepass строку password
+							// надо убрать, иначе ресивер не подключится).
+							switch vm.Recipe.ID {
+								case "redis":
+									<p class="hint">{ i18n.T(ctx, "recipes.redis.password_note") }</p>
+								case "nginx":
+									<p class="hint">{ i18n.T(ctx, "recipes.nginx.stub_note") }</p>
+								case "postgres":
+									<p class="hint">{ i18n.T(ctx, "recipes.postgres.user_note") }</p>
+								case "mariadb":
+									<p class="hint">{ i18n.T(ctx, "recipes.mariadb.user_note") }</p>
+								case "docker":
+									<p class="hint">{ i18n.T(ctx, "recipes.docker.socket_note") }</p>
+							}
+						} else {
+							<p class="hint">
+								{ i18n.T(ctx, "recipes.no_key") }
+								<a href={ templ.URL(projectSettingsPath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.no_key_link") }</a>
+							</p>
+						}
+					</li>
+					<li>
+						<p>{ i18n.T(ctx, "recipes.steps.restart") }</p>
+					</li>
+				</ol>
+			</section>
+			// Блок графиков: пока данные не приходят, хендлер передаёт
+			// Charts == nil — секция не рендерится вовсе (см. RecipeDetailVM).
+			if len(vm.Charts) > 0 {
+				<h2>{ i18n.T(ctx, "recipes.charts.title") }</h2>
+				for _, c := range vm.Charts {
+					@recipeChartCard(c)
+				}
+			}
+			<section class="card">
+				<h2 class="card-header">{ i18n.T(ctx, "recipes.thresholds.title") }</h2>
+				if len(vm.Statuses) == 0 {
+					// Единственный рецепт без порогов — docker (реестр, развилка
+					// F1): пер-контейнерные метрики без разумного общего дефолта.
+					// Упомянутая страница правил — рабочей ссылкой (приём
+					// no_key/no_key_link), а не голым названием.
+					<p>
+						{ i18n.T(ctx, "recipes.docker.no_rules") }
+						<a href={ templ.URL(metricAlertsBasePath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.docker.no_rules_link") }</a>
+					</p>
+				} else {
+					@scrollRegion("table-scroll", "recipes.thresholds.title") {
+						<table>
+							<thead>
+								<tr>
+									<th scope="col">{ i18n.T(ctx, "recipes.table.metric") }</th>
+									<th scope="col">{ i18n.T(ctx, "recipes.table.condition") }</th>
+									<th scope="col">{ i18n.T(ctx, "recipes.table.window") }</th>
+									<th scope="col">{ i18n.T(ctx, "recipes.table.severity") }</th>
+									<th scope="col">{ i18n.T(ctx, "recipes.table.note") }</th>
+									<th scope="col">{ i18n.T(ctx, "recipes.table.status") }</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, st := range vm.Statuses {
+									<tr>
+										<td><code>{ recipeRuleMetricLabel(st.Spec) }</code></td>
+										<td class="num">{ recipeRuleCondition(st.Spec) }</td>
+										<td class="num">{ humanize.Duration(ctx, time.Duration(st.Spec.WindowSeconds)*time.Second) }</td>
+										<td>{ i18n.T(ctx, recipeSeverityKey(st.Spec.Severity)) }</td>
+										<td>{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".rule." + st.Spec.NoteKey) }</td>
+										<td>
+											if st.Exists {
+												<span class="badge badge-good">{ i18n.T(ctx, "recipes.rule_status.exists") }</span>
+											} else {
+												<span class="badge badge-neutral">{ i18n.T(ctx, "recipes.rule_status.pending") }</span>
+											}
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+					if recipeHasPending(vm.Statuses) {
+						if vm.CanOperate {
+							<form method="post" action={ templ.URL(recipesBasePath(vm.ProjectID) + "/" + vm.Recipe.ID + "/thresholds") }>
+								<button type="submit" class="btn btn-primary" aria-label={ i18n.T(ctx, "recipes.create_rules") }>{ i18n.T(ctx, "recipes.create_rules") }</button>
+							</form>
+						} else {
+							// Зрителю кнопка вела бы в 404 requireProjectOperator
+							// (аудит UX/QA P1): вместо мёртвого контрола — честная
+							// подсказка, кому доступно создание.
+							<p class="hint">{ i18n.T(ctx, "recipes.operator_only") }</p>
 						}
 					} else {
-						<p class="hint">
-							{ i18n.T(ctx, "recipes.no_key") }
-							<a href={ templ.URL(projectSettingsPath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.no_key_link") }</a>
-						</p>
+						<p class="hint">{ i18n.T(ctx, "recipes.all_created") }</p>
 					}
-				</li>
-				<li>
-					<p>{ i18n.T(ctx, "recipes.steps.restart") }</p>
-				</li>
-			</ol>
-		</section>
-		// Блок графиков: пока данные не приходят, хендлер передаёт
-		// Charts == nil — секция не рендерится вовсе (см. RecipeDetailVM).
-		if len(vm.Charts) > 0 {
-			<h2>{ i18n.T(ctx, "recipes.charts.title") }</h2>
-			for _, c := range vm.Charts {
-				@recipeChartCard(c)
-			}
-		}
-		<section class="card">
-			<h2 class="card-header">{ i18n.T(ctx, "recipes.thresholds.title") }</h2>
-			if len(vm.Statuses) == 0 {
-				// Единственный рецепт без порогов — docker (реестр, развилка
-				// F1): пер-контейнерные метрики без разумного общего дефолта.
-				// Упомянутая страница правил — рабочей ссылкой (приём
-				// no_key/no_key_link), а не голым названием.
-				<p>
-					{ i18n.T(ctx, "recipes.docker.no_rules") }
-					<a href={ templ.URL(metricAlertsBasePath(vm.ProjectID)) }>{ i18n.T(ctx, "recipes.docker.no_rules_link") }</a>
-				</p>
-			} else {
-				@scrollRegion("table-scroll", "recipes.thresholds.title") {
-					<table>
-						<thead>
-							<tr>
-								<th scope="col">{ i18n.T(ctx, "recipes.table.metric") }</th>
-								<th scope="col">{ i18n.T(ctx, "recipes.table.condition") }</th>
-								<th scope="col">{ i18n.T(ctx, "recipes.table.window") }</th>
-								<th scope="col">{ i18n.T(ctx, "recipes.table.severity") }</th>
-								<th scope="col">{ i18n.T(ctx, "recipes.table.note") }</th>
-								<th scope="col">{ i18n.T(ctx, "recipes.table.status") }</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, st := range vm.Statuses {
-								<tr>
-									<td><code>{ recipeRuleMetricLabel(st.Spec) }</code></td>
-									<td class="num">{ recipeRuleCondition(st.Spec) }</td>
-									<td class="num">{ humanize.Duration(ctx, time.Duration(st.Spec.WindowSeconds)*time.Second) }</td>
-									<td>{ i18n.T(ctx, recipeSeverityKey(st.Spec.Severity)) }</td>
-									<td>{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".rule." + st.Spec.NoteKey) }</td>
-									<td>
-										if st.Exists {
-											<span class="badge badge-good">{ i18n.T(ctx, "recipes.rule_status.exists") }</span>
-										} else {
-											<span class="badge badge-neutral">{ i18n.T(ctx, "recipes.rule_status.pending") }</span>
-										}
-									</td>
-								</tr>
-							}
-						</tbody>
-					</table>
 				}
-				if recipeHasPending(vm.Statuses) {
-					if vm.CanOperate {
-						<form method="post" action={ templ.URL(recipesBasePath(vm.ProjectID) + "/" + vm.Recipe.ID + "/thresholds") }>
-							<button type="submit" class="btn btn-primary" aria-label={ i18n.T(ctx, "recipes.create_rules") }>{ i18n.T(ctx, "recipes.create_rules") }</button>
-						</form>
-					} else {
-						// Зрителю кнопка вела бы в 404 requireProjectOperator
-						// (аудит UX/QA P1): вместо мёртвого контрола — честная
-						// подсказка, кому доступно создание.
-						<p class="hint">{ i18n.T(ctx, "recipes.operator_only") }</p>
-					}
-				} else {
-					<p class="hint">{ i18n.T(ctx, "recipes.all_created") }</p>
-				}
-			}
-		</section>
+			</section>
+		</div>
 	}
 }
 

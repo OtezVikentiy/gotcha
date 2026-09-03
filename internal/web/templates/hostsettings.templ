@@ -2,8 +2,9 @@ package templates
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
-	"net/url"
 	"strconv"
 	"time"
 
@@ -76,70 +77,72 @@ templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentRe
 				<p class="error" id="host-settings-error">{ errMsg }</p>
 			}
 			<form method="post" action={ templ.URL(hostSettingsFormPath(projectID)) } class="host-settings-form">
-				<fieldset class="card">
-					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.disk_title") }</legend>
-					<label class="checkbox-inline">
-						<input type="checkbox" name="disk_enabled" checked?={ form.Get("disk_enabled", settingsBoolDefault(s.DiskEnabled)) == "1" }/>
-						{ i18n.T(ctx, "hosts.settings.field.enabled") }
-					</label>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-							<input type="number" class="input" name="disk_threshold" min="1" max="100" step="1" required
-								value={ form.Get("disk_threshold", settingsPercentDefault(s.DiskThreshold)) }
-								aria-describedby="hint-disk-threshold"/>
+				<div class="threshold-grid">
+					<fieldset class="card">
+						<legend class="card-header">{ i18n.T(ctx, "hosts.settings.disk_title") }</legend>
+						<label class="checkbox-inline">
+							<input type="checkbox" name="disk_enabled" checked?={ form.Get("disk_enabled", settingsBoolDefault(s.DiskEnabled)) == "1" }/>
+							{ i18n.T(ctx, "hosts.settings.field.enabled") }
 						</label>
-						<p class="hint" id="hint-disk-threshold">{ i18n.T(ctx, "hosts.settings.hint.disk_threshold") }</p>
-					</div>
-				</fieldset>
-				<fieldset class="card">
-					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.memory_title") }</legend>
-					<label class="checkbox-inline">
-						<input type="checkbox" name="memory_enabled" checked?={ form.Get("memory_enabled", settingsBoolDefault(s.MemoryEnabled)) == "1" }/>
-						{ i18n.T(ctx, "hosts.settings.field.enabled") }
-					</label>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-							<input type="number" class="input" name="memory_threshold" min="1" max="100" step="1" required
-								value={ form.Get("memory_threshold", settingsPercentDefault(s.MemoryThreshold)) }
-								aria-describedby="hint-memory-threshold"/>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
+								<input type="number" class="input" name="disk_threshold" min="1" max="100" step="1" required
+									value={ form.Get("disk_threshold", settingsPercentDefault(s.DiskThreshold)) }
+									aria-describedby="hint-disk-threshold"/>
+							</label>
+							<p class="hint" id="hint-disk-threshold">{ i18n.T(ctx, "hosts.settings.hint.disk_threshold") }</p>
+						</div>
+					</fieldset>
+					<fieldset class="card">
+						<legend class="card-header">{ i18n.T(ctx, "hosts.settings.memory_title") }</legend>
+						<label class="checkbox-inline">
+							<input type="checkbox" name="memory_enabled" checked?={ form.Get("memory_enabled", settingsBoolDefault(s.MemoryEnabled)) == "1" }/>
+							{ i18n.T(ctx, "hosts.settings.field.enabled") }
 						</label>
-						<p class="hint" id="hint-memory-threshold">{ i18n.T(ctx, "hosts.settings.hint.memory_threshold") }</p>
-					</div>
-				</fieldset>
-				<fieldset class="card">
-					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.load_title") }</legend>
-					<label class="checkbox-inline">
-						<input type="checkbox" name="load_enabled" checked?={ form.Get("load_enabled", settingsBoolDefault(s.LoadEnabled)) == "1" }/>
-						{ i18n.T(ctx, "hosts.settings.field.enabled") }
-					</label>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
-							<input type="number" class="input" name="load_threshold" min="0.1" step="0.1" required
-								value={ form.Get("load_threshold", settingsFloatDefault(s.LoadThreshold)) }
-								aria-describedby="hint-load-threshold"/>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
+								<input type="number" class="input" name="memory_threshold" min="1" max="100" step="1" required
+									value={ form.Get("memory_threshold", settingsPercentDefault(s.MemoryThreshold)) }
+									aria-describedby="hint-memory-threshold"/>
+							</label>
+							<p class="hint" id="hint-memory-threshold">{ i18n.T(ctx, "hosts.settings.hint.memory_threshold") }</p>
+						</div>
+					</fieldset>
+					<fieldset class="card">
+						<legend class="card-header">{ i18n.T(ctx, "hosts.settings.load_title") }</legend>
+						<label class="checkbox-inline">
+							<input type="checkbox" name="load_enabled" checked?={ form.Get("load_enabled", settingsBoolDefault(s.LoadEnabled)) == "1" }/>
+							{ i18n.T(ctx, "hosts.settings.field.enabled") }
 						</label>
-						<p class="hint" id="hint-load-threshold">{ i18n.T(ctx, "hosts.settings.hint.load_threshold") }</p>
-					</div>
-				</fieldset>
-				<fieldset class="card">
-					<legend class="card-header">{ i18n.T(ctx, "hosts.settings.silent_title") }</legend>
-					<label class="checkbox-inline">
-						<input type="checkbox" name="silent_enabled" checked?={ form.Get("silent_enabled", settingsBoolDefault(s.SilentEnabled)) == "1" }/>
-						{ i18n.T(ctx, "hosts.settings.field.enabled") }
-					</label>
-					<div class="field">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.silent_after") }
-							<input type="number" class="input" name="silent_after" min="3" max="720" step="1" required
-								value={ form.Get("silent_after", settingsMinutesDefault(s.SilentAfter)) }
-								aria-describedby="hint-silent-after"/>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
+								<input type="number" class="input" name="load_threshold" min="0.1" step="0.1" required
+									value={ form.Get("load_threshold", settingsFloatDefault(s.LoadThreshold)) }
+									aria-describedby="hint-load-threshold"/>
+							</label>
+							<p class="hint" id="hint-load-threshold">{ i18n.T(ctx, "hosts.settings.hint.load_threshold") }</p>
+						</div>
+					</fieldset>
+					<fieldset class="card">
+						<legend class="card-header">{ i18n.T(ctx, "hosts.settings.silent_title") }</legend>
+						<label class="checkbox-inline">
+							<input type="checkbox" name="silent_enabled" checked?={ form.Get("silent_enabled", settingsBoolDefault(s.SilentEnabled)) == "1" }/>
+							{ i18n.T(ctx, "hosts.settings.field.enabled") }
 						</label>
-						<p class="hint" id="hint-silent-after">{ i18n.T(ctx, "hosts.settings.hint.silent_after") }</p>
-					</div>
-				</fieldset>
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.silent_after") }
+								<input type="number" class="input" name="silent_after" min="3" max="720" step="1" required
+									value={ form.Get("silent_after", settingsMinutesDefault(s.SilentAfter)) }
+									aria-describedby="hint-silent-after"/>
+							</label>
+							<p class="hint" id="hint-silent-after">{ i18n.T(ctx, "hosts.settings.hint.silent_after") }</p>
+						</div>
+					</fieldset>
+				</div>
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "hosts.settings.submit") }</button>
 			</form>
 			@hostGroupThresholdSection(projectID, s, groups)
@@ -165,17 +168,11 @@ type HostGroupThresholdsVM struct {
 	// «окружение», когда ни один хост его не проставил, было бы пустой
 	// опцией без единого варианта метки.
 	Envs, Roles []string
-	// EditScope/EditLabel — какое существующее правило форма редактирует:
-	// на первом открытии — из query "?gt_scope=&gt_label=" ссылки
-	// «Редактировать» в строке таблицы, на переотрисовке после ошибки — из
-	// только что отправленных полей той же формы (см. renderHostSettings,
-	// hosts.go). Пустые — форма в режиме добавления нового правила.
-	EditScope, EditLabel string
 	// Form — введённые значения формы группового правила при переотрисовке
-	// после ошибки валидации (см. FormState); nil на первом открытии — поля
-	// формы тогда берут значения из найденного по EditScope/EditLabel
-	// правила (или из "inherit"/пусто, если EditScope/EditLabel не заданы
-	// или не совпали ни с одним правилом — режим добавления).
+	// после ошибки валидации (см. FormState) вместе со служебной меткой
+	// __modal — какую модалку (создания или правки конкретного правила)
+	// открыть заново; nil на первом открытии. Кто помечает какую —
+	// renderHostSettings, hosts.go.
 	Form FormState
 	// ErrMsg — сообщение об ошибке валидации формы группового правила (не
 	// путать с errMsg у HostSettings — это ошибка ДРУГОЙ формы на той же
@@ -191,43 +188,28 @@ func groupThresholdDeleteSettingsPath(projectID int64) string {
 	return groupThresholdSettingsPath(projectID) + "/delete"
 }
 
-// groupThresholdEditPath — ссылка «Редактировать» строки таблицы: та же
-// страница настроек с query-параметрами, которые говорят форме добавления,
-// какое правило предзаполнить (см. HostGroupThresholdsVM.EditScope/
-// EditLabel), плюс якорь на саму форму — без него правку легко не заметить
-// под уже длинным списком правил.
-func groupThresholdEditPath(projectID int64, scope, label string) string {
-	return hostSettingsFormPath(projectID) + "?gt_scope=" + url.QueryEscape(scope) + "&gt_label=" + url.QueryEscape(label) + "#host-group-threshold-form"
+// GroupThresholdCreateModalID — якорь модалки создания группового правила:
+// на него ведёт createTrigger в шапке секции, его же обработчик открывает
+// заново после ошибки валидации (renderHostSettings).
+const GroupThresholdCreateModalID = "new-group-threshold"
+
+// EditGroupThresholdModalID — якорь модалки правки группового правила. Одна
+// модалка на строку таблицы (CSS :target — якорь обязан быть уникальным), а
+// естественный ключ правила — пара scope+label (Upsert идемпотентен по ней).
+// Метка — произвольная строка пользователя, и в HTML-id/фрагменте URL ей
+// делать нечего, поэтому вместо неё — детерминированный хеш: сервер обязан
+// вычислить ТОТ ЖЕ якорь при переоткрытии модалки после 422
+// (renderHostSettings). Scope в якоре остаётся читаемым — он всегда одно из
+// двух известных слов. Экспортирована затем же, что EditWindowModalID.
+func EditGroupThresholdModalID(scope, label string) string {
+	sum := sha256.Sum256([]byte(label))
+	return "edit-group-threshold-" + scope + "-" + hex.EncodeToString(sum[:8])
 }
 
-// groupThresholdBy находит в groups правило с точным совпадением scope+label
-// — источник значений формы в режиме редактирования (EditScope/EditLabel).
-// Пустой scope/label (режим добавления, ссылка не совпала ни с одним
-// правилом) — намеренно "не найдено", а не совпадение с пустой меткой (та же
-// защита от "группы без метки", что у резолвера, host/resolve.go).
-func groupThresholdBy(groups []host.GroupThreshold, scope, label string) (host.GroupThreshold, bool) {
-	if scope == "" || label == "" {
-		return host.GroupThreshold{}, false
-	}
-	for _, g := range groups {
-		if g.Scope == scope && g.Label == label {
-			return g, true
-		}
-	}
-	return host.GroupThreshold{}, false
-}
-
-// groupScopeDefault — какой scope предвыбран в сегмент-контроле формы: тот,
-// что редактируется (EditScope), а если у него нет доступных меток (env/role
-// исчезли между отрисовкой ссылки «Редактировать» и открытием формы) или
-// правка не запрошена вовсе — первый scope с непустым списком меток.
-func groupScopeDefault(editScope string, envs, roles []string) string {
-	if editScope == "env" && len(envs) > 0 {
-		return "env"
-	}
-	if editScope == "role" && len(roles) > 0 {
-		return "role"
-	}
+// groupScopeDefault — какой scope предвыбран в сегмент-контроле модалки
+// создания: первый с непустым списком меток (scope без меток в контроле не
+// показывается вовсе, см. groupThresholdCreateModal).
+func groupScopeDefault(envs []string) string {
 	if len(envs) > 0 {
 		return "env"
 	}
@@ -293,41 +275,61 @@ templ groupThresholdKinds(gt host.GroupThreshold) {
 }
 
 // groupThresholdRow — строка таблицы существующих правил: scope+label+
-// заданные виды, ссылка «Редактировать» (заполняет форму ниже тем же
-// правилом) и форма удаления (тот же приём без confirm-страницы, что у
-// metricAlertsBasePath+"/delete", metricalerts.templ — правило одно из
-// многих в списке, а не необратимое per-хост действие вроде hostDelete).
-templ groupThresholdRow(projectID int64, gt host.GroupThreshold) {
+// заданные виды, «Редактировать» вторичной кнопкой-якорем (открывает модалку
+// правки этой же строки, как windowRow у окон обслуживания) и форма удаления
+// (тот же приём без confirm-страницы, что у metricAlertsBasePath+"/delete",
+// metricalerts.templ — правило одно из многих в списке, а не необратимое
+// per-хост действие вроде hostDelete). Пара действий оформлена как на
+// соседнем «Подавлении шторма» (suppressionEdgeRow): .row-actions,
+// btn-ghost + btn-danger. s нужен модалке правки — fallback числовых полей,
+// см. groupThresholdKindFields.
+templ groupThresholdRow(projectID int64, s host.Settings, gt host.GroupThreshold, form FormState, errMsg string) {
 	<tr>
 		<td>{ i18n.T(ctx, "host.threshold.scope."+gt.Scope) }</td>
 		<td>{ gt.Label }</td>
 		<td>@groupThresholdKinds(gt)</td>
-		<td class="gt-row-actions">
-			<a href={ templ.URL(groupThresholdEditPath(projectID, gt.Scope, gt.Label)) }>{ i18n.T(ctx, "host.group_threshold.edit") }</a>
-			<form method="post" action={ templ.URL(groupThresholdDeleteSettingsPath(projectID)) } class="inline">
-				<input type="hidden" name="scope" value={ gt.Scope }/>
-				<input type="hidden" name="label" value={ gt.Label }/>
-				<button type="submit" class="btn btn-danger">{ i18n.T(ctx, "host.group_threshold.delete") }</button>
-			</form>
+		<td>
+			<div class="row-actions">
+				<a
+					class="btn btn-ghost"
+					href={ templ.SafeURL("#" + EditGroupThresholdModalID(gt.Scope, gt.Label)) }
+					aria-label={ i18n.Tf(ctx, "host.group_threshold.edit_aria", "scope", i18n.T(ctx, "host.threshold.scope."+gt.Scope), "label", gt.Label) }
+				>
+					{ i18n.T(ctx, "host.group_threshold.edit") }
+				</a>
+				<form method="post" action={ templ.URL(groupThresholdDeleteSettingsPath(projectID)) }>
+					<input type="hidden" name="scope" value={ gt.Scope }/>
+					<input type="hidden" name="label" value={ gt.Label }/>
+					<button
+						type="submit"
+						class="btn btn-danger"
+						aria-label={ i18n.Tf(ctx, "host.group_threshold.delete_aria", "scope", i18n.T(ctx, "host.threshold.scope."+gt.Scope), "label", gt.Label) }
+					>
+						{ i18n.T(ctx, "host.group_threshold.delete") }
+					</button>
+				</form>
+			</div>
+			@groupThresholdEditModal(projectID, s, gt, form, errMsg)
 		</td>
 	</tr>
 }
 
 // hostGroupThresholdSection — блок «Пороги по окружению/роли» (B2, T7):
-// таблица существующих правил + форма добавления/редактирования (пер-видовое
-// наследовать/переопределить/выключить — тот же контрол, что у порогов
-// одного хоста, hostThresholdsSection/T6). s — настройки проекта, источник
-// значения по умолчанию у числового поля при переключении на
-// "Переопределить" (thresholdPercentValue/thresholdFloatValue/
-// thresholdMinutesValue — та же логика, что при переопределении на карточке
-// хоста: редактирование начинается не с нуля, а с уже действующего числа).
+// таблица существующих правил, кнопка «Добавить» с модалкой создания и
+// модалка правки на каждую строку. Раньше форма правила жила всегда
+// развёрнутой внизу страницы (четыре fieldset на пол-экрана, правка — GET с
+// ?gt_scope=&gt_label= и якорем на ту же форму); теперь это тот же паттерн
+// модалок, что у каналов/окон обслуживания (alerts/maintenance.templ).
 //
-// Форма скрыта целиком (вместе с толькочто пояснением), если проект ещё не
-// накопил ни одной метки env/role — предлагать её раньше нечего выбирать в
-// select'е метки (groups.Envs/Roles пусты одновременно).
+// Кнопка «Добавить» скрыта целиком, если проект ещё не накопил ни одной
+// метки env/role — предлагать форму раньше нечего выбирать в select'е метки
+// (groups.Envs/Roles пусты одновременно).
 templ hostGroupThresholdSection(projectID int64, s host.Settings, groups HostGroupThresholdsVM) {
 	<section class="host-group-thresholds">
 		<h2>{ i18n.T(ctx, "host.group_threshold.title") }</h2>
+		if len(groups.Envs) > 0 || len(groups.Roles) > 0 {
+			@createTrigger(GroupThresholdCreateModalID, "host.group_threshold.new.title")
+		}
 		if len(groups.Groups) == 0 {
 			<p class="hint">{ i18n.T(ctx, "host.group_threshold.empty") }</p>
 		} else {
@@ -343,171 +345,235 @@ templ hostGroupThresholdSection(projectID int64, s host.Settings, groups HostGro
 					</thead>
 					<tbody>
 						for _, gt := range groups.Groups {
-							@groupThresholdRow(projectID, gt)
+							@groupThresholdRow(projectID, s, gt, groups.Form, groups.ErrMsg)
 						}
 					</tbody>
 				</table>
 			}
 		}
-		if groups.ErrMsg != "" {
-			<p class="error" id="host-group-threshold-error">{ groups.ErrMsg }</p>
-		}
 		if len(groups.Envs) == 0 && len(groups.Roles) == 0 {
+			// Ошибка групповой формы обычно живёт внутри переоткрытой модалки,
+			// но без меток модалки создания на странице нет — 422 по прямому
+			// POST (несуществующая пара при пустых FacetValues) остался бы без
+			// видимого сообщения.
+			if groups.ErrMsg != "" && groups.Form.Opens(GroupThresholdCreateModalID) {
+				<p class="error">{ groups.ErrMsg }</p>
+			}
 			<p class="hint">{ i18n.T(ctx, "host.group_threshold.no_labels") }</p>
 		} else {
-			{{ editing, editingFound := groupThresholdBy(groups.Groups, groups.EditScope, groups.EditLabel) }}
-			{{ scopeDefault := groupScopeDefault(groups.EditScope, groups.Envs, groups.Roles) }}
-			<form id="host-group-threshold-form" method="post" action={ templ.URL(groupThresholdSettingsPath(projectID)) } class="host-group-threshold-form">
-				if editingFound {
-					<p class="hint" id="host-group-threshold-editing">{ i18n.Tf(ctx, "host.group_threshold.editing", "scope", i18n.T(ctx, "host.threshold.scope."+groups.EditScope), "label", groups.EditLabel) }</p>
-				}
-				<fieldset class="field">
-					<legend class="field-label">{ i18n.T(ctx, "host.group_threshold.scope") }</legend>
-					<div class="segmented">
-						if len(groups.Envs) > 0 {
-							<label>
-								<input type="radio" name="scope" value="env" checked?={ groups.Form.Selected("scope", "env", scopeDefault) }/>
-								{ i18n.T(ctx, "host.threshold.scope.env") }
-							</label>
-						}
-						if len(groups.Roles) > 0 {
-							<label>
-								<input type="radio" name="scope" value="role" checked?={ groups.Form.Selected("scope", "role", scopeDefault) }/>
-								{ i18n.T(ctx, "host.threshold.scope.role") }
-							</label>
-						}
-					</div>
-				</fieldset>
-				<div class="field gt-label-env">
-					<label>
-						{ i18n.T(ctx, "host.group_threshold.label") }
-						<select name="label_env" class="select">
-							for _, v := range groups.Envs {
-								<option value={ v } selected?={ groups.Form.Selected("label_env", v, groupEditDefault(groups.EditScope, groups.EditLabel, "env")) }>{ v }</option>
-							}
-						</select>
-					</label>
-				</div>
-				<div class="field gt-label-role">
-					<label>
-						{ i18n.T(ctx, "host.group_threshold.label") }
-						<select name="label_role" class="select">
-							for _, v := range groups.Roles {
-								<option value={ v } selected?={ groups.Form.Selected("label_role", v, groupEditDefault(groups.EditScope, groups.EditLabel, "role")) }>{ v }</option>
-							}
-						</select>
-					</label>
-				</div>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.disk") }</legend>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="disk_mode" value="inherit" checked?={ thresholdModeFor(groups.Form, "disk_mode", editing.DiskEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="disk_mode" value="override" checked?={ thresholdModeFor(groups.Form, "disk_mode", editing.DiskEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="disk_mode" value="off" checked?={ thresholdModeFor(groups.Form, "disk_mode", editing.DiskEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-disk-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-							<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
-								value={ groups.Form.Get("disk_value", thresholdPercentValue(editing.DiskThreshold, s.DiskThreshold)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.memory") }</legend>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="memory_mode" value="inherit" checked?={ thresholdModeFor(groups.Form, "memory_mode", editing.MemoryEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="memory_mode" value="override" checked?={ thresholdModeFor(groups.Form, "memory_mode", editing.MemoryEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="memory_mode" value="off" checked?={ thresholdModeFor(groups.Form, "memory_mode", editing.MemoryEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-memory-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-							<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
-								value={ groups.Form.Get("memory_value", thresholdPercentValue(editing.MemoryThreshold, s.MemoryThreshold)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.load") }</legend>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="load_mode" value="inherit" checked?={ thresholdModeFor(groups.Form, "load_mode", editing.LoadEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="load_mode" value="override" checked?={ thresholdModeFor(groups.Form, "load_mode", editing.LoadEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="load_mode" value="off" checked?={ thresholdModeFor(groups.Form, "load_mode", editing.LoadEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-load-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
-							<input type="number" class="input" name="load_value" min="0.1" step="0.1"
-								value={ groups.Form.Get("load_value", thresholdFloatValue(editing.LoadThreshold, s.LoadThreshold)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.silent") }</legend>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="silent_mode" value="inherit" checked?={ thresholdModeFor(groups.Form, "silent_mode", editing.SilentEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="silent_mode" value="override" checked?={ thresholdModeFor(groups.Form, "silent_mode", editing.SilentEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="silent_mode" value="off" checked?={ thresholdModeFor(groups.Form, "silent_mode", editing.SilentEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-silent-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.silent_after") }
-							<input type="number" class="input" name="silent_value" min="3" max="720" step="1"
-								value={ groups.Form.Get("silent_value", thresholdMinutesValue(editing.SilentAfter, s.SilentAfter)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "host.group_threshold.save") }</button>
-			</form>
+			@groupThresholdCreateModal(projectID, s, groups)
 		}
 	</section>
 }
 
-// groupEditDefault — fallback метки select'а формы (используется через
-// FormState.Selected как последний аргумент): EditLabel, если правится
-// правило именно этого scope, иначе пусто (ни одна опция не предвыбрана —
-// браузер сам подсветит первую, как у остальных select без сохранённого
-// выбора, ср. maintenanceTimezoneOption).
-func groupEditDefault(editScope, editLabel, wantScope string) string {
-	if editScope == wantScope {
-		return editLabel
+// groupThresholdFormValues — введённые человеком значения, если 422 вернулась
+// именно из этой модалки, иначе nil (поля возьмут собственные fallback'и: у
+// правки — значения правила, у создания — "inherit" и эффективные пороги
+// проекта). Модалок на странице N+1, а состояние формы одно — без этой
+// развилки введённое попало бы во все сразу (тот же приём, что
+// windowFormValues у окон обслуживания).
+func groupThresholdFormValues(form FormState, open bool) FormState {
+	if open {
+		return form
 	}
-	return ""
+	return nil
+}
+
+// groupThresholdCreateModal — модалка создания группового правила: scope
+// сегмент-контролом, метка select'ом (виден только select выбранного scope —
+// CSS :has по radio, .gt-label-env/.gt-label-role в app.css, поэтому класс
+// host-group-threshold-form остаётся на форме и внутри модалки), четыре вида
+// — общим фрагментом groupThresholdKindFields. wide — форма с четырьмя
+// fieldset, узкая модалка её сплющивает.
+templ groupThresholdCreateModal(projectID int64, s host.Settings, groups HostGroupThresholdsVM) {
+	{{ open := groups.Form.Opens(GroupThresholdCreateModalID) }}
+	{{ form := groupThresholdFormValues(groups.Form, open) }}
+	@createModalOpen(GroupThresholdCreateModalID, "host.group_threshold.new.title", true, open) {
+		<form method="post" action={ templ.URL(groupThresholdSettingsPath(projectID)) } class="host-group-threshold-form">
+			// Без role="alert": фокус в модалку переносит modal.js (№80), как
+			// у остальных модалок с формами.
+			if open && groups.ErrMsg != "" {
+				<p class="error" id={ GroupThresholdCreateModalID + "-error" }>{ groups.ErrMsg }</p>
+			}
+			<fieldset class="field">
+				<legend class="field-label">{ i18n.T(ctx, "host.group_threshold.scope") }</legend>
+				<div class="segmented">
+					if len(groups.Envs) > 0 {
+						<label>
+							<input type="radio" name="scope" value="env" checked?={ form.Selected("scope", "env", groupScopeDefault(groups.Envs)) }/>
+							{ i18n.T(ctx, "host.threshold.scope.env") }
+						</label>
+					}
+					if len(groups.Roles) > 0 {
+						<label>
+							<input type="radio" name="scope" value="role" checked?={ form.Selected("scope", "role", groupScopeDefault(groups.Envs)) }/>
+							{ i18n.T(ctx, "host.threshold.scope.role") }
+						</label>
+					}
+				</div>
+			</fieldset>
+			<div class="field gt-label-env">
+				<label>
+					{ i18n.T(ctx, "host.group_threshold.label") }
+					<select name="label_env" class="select">
+						for _, v := range groups.Envs {
+							<option value={ v } selected?={ form.Selected("label_env", v, "") }>{ v }</option>
+						}
+					</select>
+				</label>
+			</div>
+			<div class="field gt-label-role">
+				<label>
+					{ i18n.T(ctx, "host.group_threshold.label") }
+					<select name="label_role" class="select">
+						for _, v := range groups.Roles {
+							<option value={ v } selected?={ form.Selected("label_role", v, "") }>{ v }</option>
+						}
+					</select>
+				</label>
+			</div>
+			@groupThresholdKindFields(form, s, host.GroupThreshold{})
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "host.group_threshold.save") }</button>
+		</form>
+	}
+}
+
+// groupThresholdEditModal — модалка правки одного правила. Scope и метка —
+// естественный КЛЮЧ правила и здесь намеренно не редактируются: Upsert
+// идемпотентен по (project_id, scope, label), и редактируемая пара молча
+// создавала бы ВТОРОЕ правило рядом со старым вместо «переименования». Пара
+// показана read-only текстом, а в POST уходит hidden-полями — тем именем
+// (label_env/label_role), которое hostGroupThresholdSave читает для этого
+// scope. CSS-логика .gt-label-* модалке правки не нужна: select'ов метки в
+// ней нет вовсе.
+templ groupThresholdEditModal(projectID int64, s host.Settings, gt host.GroupThreshold, form FormState, errMsg string) {
+	{{ modalID := EditGroupThresholdModalID(gt.Scope, gt.Label) }}
+	{{ open := form.Opens(modalID) }}
+	{{ values := groupThresholdFormValues(form, open) }}
+	@createModalOpen(modalID, "host.group_threshold.edit.title", true, open) {
+		<form method="post" action={ templ.URL(groupThresholdSettingsPath(projectID)) } class="host-group-threshold-form">
+			if open && errMsg != "" {
+				<p class="error" id={ modalID + "-error" }>{ errMsg }</p>
+			}
+			<p class="hint">{ i18n.Tf(ctx, "host.group_threshold.editing", "scope", i18n.T(ctx, "host.threshold.scope."+gt.Scope), "label", gt.Label) }</p>
+			<input type="hidden" name="scope" value={ gt.Scope }/>
+			if gt.Scope == "role" {
+				<input type="hidden" name="label_role" value={ gt.Label }/>
+			} else {
+				<input type="hidden" name="label_env" value={ gt.Label }/>
+			}
+			@groupThresholdKindFields(values, s, gt)
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "host.group_threshold.save") }</button>
+		</form>
+	}
+}
+
+// groupThresholdKindFields — четыре вида правила (диск/память/load/тишина),
+// общие для модалок создания и правки: пер-видовое наследовать/переопределить/
+// выключить — тот же контрол, что у порогов одного хоста
+// (hostThresholdsSection, T6). form — см. groupThresholdFormValues; gt —
+// правило-источник значений по умолчанию (нулевое у формы создания — все
+// виды "inherit"); s — настройки проекта, fallback числового поля при
+// переключении на «Переопределить» (thresholdPercentValue/
+// thresholdFloatValue/thresholdMinutesValue — редактирование начинается не с
+// нуля, а с уже действующего числа). id у radio/полей нет намеренно (label
+// оборачивает input): модалок с этим фрагментом на странице N+1, любой id
+// здесь давал бы дубли в документе.
+templ groupThresholdKindFields(form FormState, s host.Settings, gt host.GroupThreshold) {
+	<fieldset class="card th-kind">
+		<legend class="card-header">{ i18n.T(ctx, "host.threshold.disk") }</legend>
+		<div class="segmented">
+			<label>
+				<input type="radio" name="disk_mode" value="inherit" checked?={ thresholdModeFor(form, "disk_mode", gt.DiskEnabled) == "inherit" }/>
+				{ i18n.T(ctx, "host.threshold.inherit") }
+			</label>
+			<label>
+				<input type="radio" name="disk_mode" value="override" checked?={ thresholdModeFor(form, "disk_mode", gt.DiskEnabled) == "override" }/>
+				{ i18n.T(ctx, "host.threshold.override") }
+			</label>
+			<label>
+				<input type="radio" name="disk_mode" value="off" checked?={ thresholdModeFor(form, "disk_mode", gt.DiskEnabled) == "off" }/>
+				{ i18n.T(ctx, "host.threshold.off") }
+			</label>
+		</div>
+		<div class="field th-disk-value">
+			<label>
+				{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
+				<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
+					value={ form.Get("disk_value", thresholdPercentValue(gt.DiskThreshold, s.DiskThreshold)) }/>
+			</label>
+		</div>
+	</fieldset>
+	<fieldset class="card th-kind">
+		<legend class="card-header">{ i18n.T(ctx, "host.threshold.memory") }</legend>
+		<div class="segmented">
+			<label>
+				<input type="radio" name="memory_mode" value="inherit" checked?={ thresholdModeFor(form, "memory_mode", gt.MemoryEnabled) == "inherit" }/>
+				{ i18n.T(ctx, "host.threshold.inherit") }
+			</label>
+			<label>
+				<input type="radio" name="memory_mode" value="override" checked?={ thresholdModeFor(form, "memory_mode", gt.MemoryEnabled) == "override" }/>
+				{ i18n.T(ctx, "host.threshold.override") }
+			</label>
+			<label>
+				<input type="radio" name="memory_mode" value="off" checked?={ thresholdModeFor(form, "memory_mode", gt.MemoryEnabled) == "off" }/>
+				{ i18n.T(ctx, "host.threshold.off") }
+			</label>
+		</div>
+		<div class="field th-memory-value">
+			<label>
+				{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
+				<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
+					value={ form.Get("memory_value", thresholdPercentValue(gt.MemoryThreshold, s.MemoryThreshold)) }/>
+			</label>
+		</div>
+	</fieldset>
+	<fieldset class="card th-kind">
+		<legend class="card-header">{ i18n.T(ctx, "host.threshold.load") }</legend>
+		<div class="segmented">
+			<label>
+				<input type="radio" name="load_mode" value="inherit" checked?={ thresholdModeFor(form, "load_mode", gt.LoadEnabled) == "inherit" }/>
+				{ i18n.T(ctx, "host.threshold.inherit") }
+			</label>
+			<label>
+				<input type="radio" name="load_mode" value="override" checked?={ thresholdModeFor(form, "load_mode", gt.LoadEnabled) == "override" }/>
+				{ i18n.T(ctx, "host.threshold.override") }
+			</label>
+			<label>
+				<input type="radio" name="load_mode" value="off" checked?={ thresholdModeFor(form, "load_mode", gt.LoadEnabled) == "off" }/>
+				{ i18n.T(ctx, "host.threshold.off") }
+			</label>
+		</div>
+		<div class="field th-load-value">
+			<label>
+				{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
+				<input type="number" class="input" name="load_value" min="0.1" step="0.1"
+					value={ form.Get("load_value", thresholdFloatValue(gt.LoadThreshold, s.LoadThreshold)) }/>
+			</label>
+		</div>
+	</fieldset>
+	<fieldset class="card th-kind">
+		<legend class="card-header">{ i18n.T(ctx, "host.threshold.silent") }</legend>
+		<div class="segmented">
+			<label>
+				<input type="radio" name="silent_mode" value="inherit" checked?={ thresholdModeFor(form, "silent_mode", gt.SilentEnabled) == "inherit" }/>
+				{ i18n.T(ctx, "host.threshold.inherit") }
+			</label>
+			<label>
+				<input type="radio" name="silent_mode" value="override" checked?={ thresholdModeFor(form, "silent_mode", gt.SilentEnabled) == "override" }/>
+				{ i18n.T(ctx, "host.threshold.override") }
+			</label>
+			<label>
+				<input type="radio" name="silent_mode" value="off" checked?={ thresholdModeFor(form, "silent_mode", gt.SilentEnabled) == "off" }/>
+				{ i18n.T(ctx, "host.threshold.off") }
+			</label>
+		</div>
+		<div class="field th-silent-value">
+			<label>
+				{ i18n.T(ctx, "hosts.settings.field.silent_after") }
+				<input type="number" class="input" name="silent_value" min="3" max="720" step="1"
+					value={ form.Get("silent_value", thresholdMinutesValue(gt.SilentAfter, s.SilentAfter)) }/>
+			</label>
+		</div>
+	</fieldset>
 }

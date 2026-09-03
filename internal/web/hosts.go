@@ -807,7 +807,7 @@ func hostSettingsErrorMessage(ctx context.Context, err error) string {
 // (h.HostSettings.Get — DefaultSettings, если строка ещё не сохранялась) +
 // команда установки агента и конфиг коллектора под свёрнутыми блоками, плюс
 // блок «Пороги по окружению/роли» (B2, T7) — список групповых правил проекта
-// + форма добавления/редактирования. form/errMsg — введённые пользователем
+// с модалками добавления/правки. form/errMsg — введённые пользователем
 // значения формы ПРОЕКТНЫХ порогов при ошибке валидации (см. FormState);
 // groupForm/groupErrMsg — то же самое, но для формы ГРУППОВОГО правила (два
 // независимых блока на одной странице, ошибка одного не трогает другой).
@@ -835,32 +835,41 @@ func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, sta
 			return
 		}
 	}
-	// EditScope/EditLabel — какое существующее правило форма редактирует:
-	// на первом открытии (groupForm == nil) — из query-параметров ссылки
-	// «Редактировать» (?gt_scope=...&gt_label=...), на переотрисовке после
-	// ошибки (groupForm != nil) — из только что отправленных полей формы
-	// (сама форма уже "знает", что редактирует, ошибка не должна это терять).
-	editScope := r.URL.Query().Get("gt_scope")
-	editLabel := r.URL.Query().Get("gt_label")
+	// Какую модалку групповых порогов открыть с сервера. После 422
+	// группового сохранения (groupForm != nil) — ту, из которой пришла
+	// отправка: признак «это была правка» — существование правила с
+	// отправленной парой scope+label (форма правки шлёт свою пару
+	// hidden-полями). Отдельный маркер формы не нужен: Upsert идемпотентен
+	// по паре, то есть отправка существующей пары И ЕСТЬ правка, из какой бы
+	// модалки она ни началась, а пара правила, удалённого параллельно в
+	// другой вкладке, честно падает в модалку создания — её поля читают те
+	// же имена. На GET дежурит старый формат ссылки «Редактировать»
+	// ?gt_scope=&gt_label= (закладки, переходы из писем): открывается
+	// модалка правки найденного правила, а несуществующая пара — просто
+	// страница без открытой модалки (не 404: правило могли удалить).
 	if groupForm != nil {
-		editScope = groupForm.Get("scope", editScope)
-		if editScope == "role" {
-			editLabel = groupForm.Get("label_role", editLabel)
-		} else {
-			editLabel = groupForm.Get("label_env", editLabel)
+		scope := groupForm.Get("scope", "")
+		label := groupForm.Get("label_env", "")
+		if scope == "role" {
+			label = groupForm.Get("label_role", "")
 		}
+		if groupThresholdExists(groups, scope, label) {
+			groupForm = groupForm.Open(templates.EditGroupThresholdModalID(scope, label))
+		} else {
+			groupForm = groupForm.Open(templates.GroupThresholdCreateModalID)
+		}
+	} else if scope, label := r.URL.Query().Get("gt_scope"), r.URL.Query().Get("gt_label"); groupThresholdExists(groups, scope, label) {
+		groupForm = templates.FormState{}.Open(templates.EditGroupThresholdModalID(scope, label))
 	}
 	installCmd, config, agentReason := h.hostInstallBlocks(r.Context(), projectID)
 	w.WriteHeader(status)
 	_ = templates.HostSettings(projectID, settings, installCmd, config, agentReason, form, errMsg,
 		templates.HostGroupThresholdsVM{
-			Groups:    groups,
-			Envs:      envValues,
-			Roles:     roleValues,
-			EditScope: editScope,
-			EditLabel: editLabel,
-			Form:      groupForm,
-			ErrMsg:    groupErrMsg,
+			Groups: groups,
+			Envs:   envValues,
+			Roles:  roleValues,
+			Form:   groupForm,
+			ErrMsg: groupErrMsg,
 		}, h.currentEmail(r)).Render(r.Context(), w)
 }
 
@@ -875,6 +884,21 @@ func groupThresholdFormState(r *http.Request) templates.FormState {
 	form["label_env"] = r.FormValue("label_env")
 	form["label_role"] = r.FormValue("label_role")
 	return form
+}
+
+// groupThresholdExists — есть ли среди правил проекта пара scope+label.
+// Пустые значения — заведомо «нет», а не совпадение с пустой меткой (та же
+// защита от «группы без метки», что у валидации hostGroupThresholdSave).
+func groupThresholdExists(groups []host.GroupThreshold, scope, label string) bool {
+	if scope == "" || label == "" {
+		return false
+	}
+	for _, g := range groups {
+		if g.Scope == scope && g.Label == label {
+			return true
+		}
+	}
+	return false
 }
 
 // hostSettingsPage — GET /projects/{id}/hosts/settings: форма порогов
@@ -965,8 +989,9 @@ const maxGroupThresholdLabelLen = 256
 // (project_id, scope, label) — сохранение под уже существующей парой
 // scope+label ЗАМЕЩАЕТ её целиком (все 4 вида берутся из отправленной формы,
 // как и per-host override, T6): это и есть «редактирование» — отдельного
-// действия для него нет, форма добавления и форма редактирования — одна и та
-// же (см. HostGroupThresholdsVM.EditScope/EditLabel, renderHostSettings).
+// действия для него нет, формы модалок создания и правки шлют одни и те же
+// поля на один роут (groupThresholdCreateModal/groupThresholdEditModal;
+// какую модалку переоткрыть после 422 — см. renderHostSettings).
 // Гейт — оператор + sameOrigin, тот же приём, что hostSettingsSave/
 // hostThresholdsSave.
 func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request) {

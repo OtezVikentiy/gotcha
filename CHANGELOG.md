@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Monitor page for heartbeat monitors no longer borrows the polling layout: the
+  latency chart with DNS/TCP/TLS/TTFB phases and the "Recent checks" table are
+  gone (a heartbeat monitor never runs a check), the SSL tile is now shown for
+  HTTP monitors only, and the uptime tiles are replaced by heartbeat facts —
+  last beat, grace period and the time the next beat is expected by. The ping
+  card also got the missing gap above the action buttons.
+- The latency section heading now follows the selected range — "Latency (30 d)"
+  instead of a hardcoded "(24h)" that contradicted the picker below it.
+- Host thresholds and suppression rules are edited in modal dialogs instead of forms
+  unfolded across the page. In the dependency form only the fields of the selected
+  parent and child type are shown, rather than all of them at once.
+- A suppression dependency can now be edited, not only deleted and recreated. Edits
+  apply to new suppression decisions; incidents already suppressed stay suppressed
+  until they close — the form says so.
+- Metric alert rules can be edited and switched off without deleting them. Switching
+  a rule off closes its open incident: previously such an incident would hang forever
+  while the escalation ladder kept sending steps for it.
+- "Storm suppression" and "Escalations" got the collapsible "What is this section?"
+  panel instead of a wall of intro paragraphs, spacing between blocks, and action
+  buttons in a single consistent style.
+- Escalation steps are laid out as a grid — on a wide screen the whole ladder is
+  visible instead of several screens of scrolling; the rule about step continuity
+  moved to the top of the form.
+- Webhook targets in channel lists no longer print the secret path in full: the host
+  and dictionary path segments stay readable while the token is masked — including
+  short keys and query values.
+- Host and project thresholds are shown as cards in a row; recipe cards and setup
+  page blocks got spacing between them.
+
 ## [0.32.1] - 2026-09-02
 
 ### Changed

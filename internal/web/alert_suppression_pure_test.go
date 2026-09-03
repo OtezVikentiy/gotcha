@@ -257,3 +257,44 @@ func TestAlertSuppressionEdgeFromForm(t *testing.T) {
 		t.Errorf("missing parent_kind must leave both parent fields nil, got %+v", e)
 	}
 }
+
+// TestSuppressionEdgeFormDefaults — предзаполнение модалки правки из самого
+// ребра: те же имена полей, что читает alertSuppressionEdgeFromForm, по одной
+// ветке на каждую форму родителя/ребёнка; незадействованные ветки остаются
+// без ключа (их поля берут пустые fallback'и).
+func TestSuppressionEdgeFormDefaults(t *testing.T) {
+	hostID, monID := int64(11), int64(22)
+	scope, value := "role", "web"
+
+	f := suppressionEdgeFormDefaults(depsuppress.Edge{ParentHostID: &hostID, ChildMonitorID: &monID})
+	for k, want := range map[string]string{
+		"parent_kind": "host", "parent_host_id": "11",
+		"child_kind": "monitor", "child_monitor_id": "22",
+	} {
+		if got := f.Get(k, ""); got != want {
+			t.Errorf("host->monitor defaults[%s] = %q, want %q", k, got, want)
+		}
+	}
+	if _, ok := f["parent_monitor_id"]; ok {
+		t.Errorf("host->monitor defaults must not set parent_monitor_id: %+v", f)
+	}
+
+	f = suppressionEdgeFormDefaults(depsuppress.Edge{ParentMonitorID: &monID, ChildHostID: &hostID})
+	for k, want := range map[string]string{
+		"parent_kind": "monitor", "parent_monitor_id": "22",
+		"child_kind": "host", "child_host_id": "11",
+	} {
+		if got := f.Get(k, ""); got != want {
+			t.Errorf("monitor->host defaults[%s] = %q, want %q", k, got, want)
+		}
+	}
+
+	f = suppressionEdgeFormDefaults(depsuppress.Edge{ParentHostID: &hostID, ChildLabelScope: &scope, ChildLabelValue: &value})
+	for k, want := range map[string]string{
+		"child_kind": "label", "child_label_scope": "role", "child_label_value": "web",
+	} {
+		if got := f.Get(k, ""); got != want {
+			t.Errorf("label-child defaults[%s] = %q, want %q", k, got, want)
+		}
+	}
+}

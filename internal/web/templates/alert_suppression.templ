@@ -20,17 +20,41 @@ func alertSuppressionDeletePath(projectID, depID int64) string {
 	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10) + "/delete"
 }
 
+// alertSuppressionUpdatePath — POST правки одного ребра, по образцу delete
+// (тот же сегмент {depID}, без суффикса).
+func alertSuppressionUpdatePath(projectID, depID int64) string {
+	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10)
+}
+
+// SuppressionCreateModalID — якорь модалки добавления ребра: на него ведёт
+// createTrigger в шапке секции зависимостей, его же открывает заново
+// обработчик после 422 создания (alertSuppressionSave → FormState.Open).
+const SuppressionCreateModalID = "new-suppression-edge"
+
+// EditSuppressionEdgeModalID — якорь модалки правки одного ребра. Модалка на
+// строку таблицы: они построены на CSS :target, якорь обязан быть уникальным,
+// а id ребра стабилен между рендерами (Store.Update сохраняет id).
+// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
+// после ошибки валидации (тот же приём, что EditWindowModalID).
+func EditSuppressionEdgeModalID(depID int64) string {
+	return "edit-suppression-edge-" + strconv.FormatInt(depID, 10)
+}
+
 // SuppressionEdgeView — одна строка списка: родитель/ребёнок уже сведены в
 // человекочитаемую подпись (host.name/monitor.name резолвлены в web-слое,
 // см. alert_suppression.go:suppressionParentLabel/suppressionChildLabel).
+// Defaults — значения полей модалки правки из самого ребра
+// (suppressionEdgeFormDefaults): плоская карта тех же имён, что у FormState,
+// чтобы общий фрагмент полей не знал, создание он или правка (тот же приём,
+// что windowFieldDefaults у окон обслуживания).
 type SuppressionEdgeView struct {
 	ID          int64
 	ParentLabel string
 	ChildLabel  string
+	Defaults    FormState
 }
 
-// SuppressionNodeOption — один <option> селектора хоста/монитора формы
-// добавления.
+// SuppressionNodeOption — один <option> селектора хоста/монитора формы.
 type SuppressionNodeOption struct {
 	ID   int64
 	Name string
@@ -46,128 +70,192 @@ type SuppressionPreviewView struct {
 	Children    []string
 }
 
-templ suppressionNodeOptions(opts []SuppressionNodeOption) {
+// suppressionNodeOptions — опции селектора узла; selected — строковый id
+// выбранного (из FormState/Defaults), пустая строка не выбирает никого.
+templ suppressionNodeOptions(opts []SuppressionNodeOption, selected string) {
 	for _, o := range opts {
-		<option value={ strconv.FormatInt(o.ID, 10) }>{ o.Name }</option>
+		<option value={ strconv.FormatInt(o.ID, 10) } selected?={ strconv.FormatInt(o.ID, 10) == selected }>{ o.Name }</option>
 	}
 }
 
-templ suppressionEdgeRow(projectID int64, e SuppressionEdgeView) {
+// suppressionFormValues — введённые человеком значения, если 422 вернулась
+// именно из этой модалки, иначе fallback (у создания — nil, поля пустые с
+// radio по умолчанию; у правки — Defaults самого ребра). Модалок на странице
+// N+1, а состояние формы одно — без этой развилки введённое при ошибке
+// попало бы во все модалки сразу (тот же приём, что groupThresholdFormValues
+// у групповых порогов).
+func suppressionFormValues(form FormState, open bool, fallback FormState) FormState {
+	if open {
+		return form
+	}
+	return fallback
+}
+
+// suppressionEdgeFields — общие поля модалок создания и правки: radio
+// parent_kind/child_kind выбирают, какое из параллельных полей читает
+// хендлер (alertSuppressionEdgeFromForm), а CSS :has() по тем же radio
+// (.alert-suppression-form + .as-* в app.css) показывает ТОЛЬКО релевантные
+// поля — серверная логика игнорирования лишнего остаётся страховкой для
+// браузеров без :has(), не заменой. id у полей нет намеренно: фрагмент
+// рендерится в N+1 модалках одной страницы, любой id давал бы дубли в
+// документе (тот же принцип, что groupThresholdKindFields).
+templ suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOption) {
+	<fieldset class="field">
+		<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.parent_kind") }</legend>
+		<div class="segmented">
+			<label>
+				<input type="radio" name="parent_kind" value="host" checked?={ form.Get("parent_kind", "host") == "host" }/>
+				{ i18n.T(ctx, "alert_suppression.kind.host") }
+			</label>
+			<label>
+				<input type="radio" name="parent_kind" value="monitor" checked?={ form.Get("parent_kind", "host") == "monitor" }/>
+				{ i18n.T(ctx, "alert_suppression.kind.monitor") }
+			</label>
+		</div>
+	</fieldset>
+	<div class="form-grid">
+		<div class="field as-parent-host">
+			<label>
+				{ i18n.T(ctx, "alert_suppression.field.parent_host") }
+				<select name="parent_host_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.parent_host") }>
+					@suppressionNodeOptions(hosts, form.Get("parent_host_id", ""))
+				</select>
+			</label>
+		</div>
+		<div class="field as-parent-monitor">
+			<label>
+				{ i18n.T(ctx, "alert_suppression.field.parent_monitor") }
+				<select name="parent_monitor_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.parent_monitor") }>
+					@suppressionNodeOptions(monitors, form.Get("parent_monitor_id", ""))
+				</select>
+			</label>
+		</div>
+	</div>
+	<fieldset class="field">
+		<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.child_kind") }</legend>
+		<div class="segmented">
+			<label>
+				<input type="radio" name="child_kind" value="host" checked?={ form.Get("child_kind", "host") == "host" }/>
+				{ i18n.T(ctx, "alert_suppression.kind.host") }
+			</label>
+			<label>
+				<input type="radio" name="child_kind" value="monitor" checked?={ form.Get("child_kind", "host") == "monitor" }/>
+				{ i18n.T(ctx, "alert_suppression.kind.monitor") }
+			</label>
+			<label>
+				<input type="radio" name="child_kind" value="label" checked?={ form.Get("child_kind", "host") == "label" }/>
+				{ i18n.T(ctx, "alert_suppression.kind.label") }
+			</label>
+		</div>
+	</fieldset>
+	<div class="form-grid">
+		<div class="field as-child-host">
+			<label>
+				{ i18n.T(ctx, "alert_suppression.field.child_host") }
+				<select name="child_host_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_host") }>
+					@suppressionNodeOptions(hosts, form.Get("child_host_id", ""))
+				</select>
+			</label>
+		</div>
+		<div class="field as-child-monitor">
+			<label>
+				{ i18n.T(ctx, "alert_suppression.field.child_monitor") }
+				<select name="child_monitor_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_monitor") }>
+					@suppressionNodeOptions(monitors, form.Get("child_monitor_id", ""))
+				</select>
+			</label>
+		</div>
+		<div class="field as-child-label">
+			<label>
+				{ i18n.T(ctx, "alert_suppression.field.child_label_scope") }
+				<select name="child_label_scope" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_label_scope") }>
+					<option value="env" selected?={ form.Selected("child_label_scope", "env", "env") }>{ i18n.T(ctx, "alert_suppression.scope.env") }</option>
+					<option value="role" selected?={ form.Selected("child_label_scope", "role", "env") }>{ i18n.T(ctx, "alert_suppression.scope.role") }</option>
+				</select>
+			</label>
+		</div>
+		<div class="field as-child-label">
+			<label>
+				{ i18n.T(ctx, "alert_suppression.field.child_label_value") }
+				<input
+					type="text"
+					name="child_label_value"
+					class="input"
+					value={ form.Get("child_label_value", "") }
+					placeholder={ i18n.T(ctx, "alert_suppression.field.child_label_value_placeholder") }
+					aria-label={ i18n.T(ctx, "alert_suppression.field.child_label_value") }
+				/>
+			</label>
+		</div>
+	</div>
+	<p class="hint">{ i18n.T(ctx, "alert_suppression.form.hint") }</p>
+}
+
+// suppressionCreateModal — модалка добавления ребра (раньше форма жила
+// постоянной простынёй внизу страницы). open — 422 именно из формы создания
+// (FormState.Opens), тогда же внутри показывается ошибка и введённые
+// значения; фокус в модалку переносит modal.js (№80), как у остальных
+// модалок с формами.
+templ suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) {
+	{{ open := form.Opens(SuppressionCreateModalID) }}
+	@createModalOpen(SuppressionCreateModalID, "alert_suppression.form.title", true, open) {
+		<form method="post" action={ templ.URL(AlertSuppressionPath(projectID)) } class="alert-suppression-form">
+			if open && errMsg != "" {
+				<p class="error" id={ SuppressionCreateModalID + "-error" }>{ errMsg }</p>
+			}
+			@suppressionEdgeFields(suppressionFormValues(form, open, nil), hosts, monitors)
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alert_suppression.form.submit") }</button>
+		</form>
+	}
+}
+
+// suppressionEditModal — модалка правки одного ребра теми же полями, что и
+// создание; предзаполнена значениями самого ребра (e.Defaults), после 422 —
+// введёнными человеком (suppressionFormValues). Подсказка edit.hint — про
+// семантику пересчёта: флаг suppressed_by_dep на открытых инцидентах
+// одноразовый (обратного писателя нет, см. depsuppress.Store.Update), правка
+// действует только на новые решения о подавлении.
+templ suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) {
+	{{ modalID := EditSuppressionEdgeModalID(e.ID) }}
+	{{ open := form.Opens(modalID) }}
+	@createModalOpen(modalID, "alert_suppression.edit.title", true, open) {
+		<form method="post" action={ templ.URL(alertSuppressionUpdatePath(projectID, e.ID)) } class="alert-suppression-form">
+			if open && errMsg != "" {
+				<p class="error" id={ modalID + "-error" }>{ errMsg }</p>
+			}
+			<p class="hint">{ i18n.T(ctx, "alert_suppression.edit.hint") }</p>
+			@suppressionEdgeFields(suppressionFormValues(form, open, e.Defaults), hosts, monitors)
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alert_suppression.edit.submit") }</button>
+		</form>
+	}
+}
+
+templ suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) {
 	<tr>
 		<td>{ e.ParentLabel }</td>
 		<td>{ e.ChildLabel }</td>
 		<td>
-			<form method="post" action={ templ.URL(alertSuppressionDeletePath(projectID, e.ID)) }>
-				<button
-					type="submit"
-					class="btn btn-danger-ghost"
-					aria-label={ i18n.Tf(ctx, "alert_suppression.action.delete_aria", "parent", e.ParentLabel, "child", e.ChildLabel) }
+			<div class="row-actions">
+				<a
+					class="btn btn-ghost"
+					href={ templ.SafeURL("#" + EditSuppressionEdgeModalID(e.ID)) }
+					aria-label={ i18n.Tf(ctx, "alert_suppression.action.edit_aria", "parent", e.ParentLabel, "child", e.ChildLabel) }
 				>
-					{ i18n.T(ctx, "alert_suppression.action.delete") }
-				</button>
-			</form>
+					{ i18n.T(ctx, "alert_suppression.action.edit") }
+				</a>
+				<form method="post" action={ templ.URL(alertSuppressionDeletePath(projectID, e.ID)) }>
+					<button
+						type="submit"
+						class="btn btn-danger"
+						aria-label={ i18n.Tf(ctx, "alert_suppression.action.delete_aria", "parent", e.ParentLabel, "child", e.ChildLabel) }
+					>
+						{ i18n.T(ctx, "alert_suppression.action.delete") }
+					</button>
+				</form>
+			</div>
+			@suppressionEditModal(projectID, e, hosts, monitors, form, errMsg)
 		</td>
 	</tr>
-}
-
-// suppressionForm — форма добавления ребра. Родитель — ровно один узел
-// (radio parent_kind выбирает, какой из двух селектов читает хендлер);
-// ребёнок — узел ЛИБО метка (radio child_kind выбирает узел/узел/пара
-// scope+value). Оба селекта родителя/ребёнка показаны всегда (без JS,
-// принцип продукта) — хендлер читает только выбранную radio-ветку, лишний
-// ввод в невыбранных полях игнорируется.
-templ suppressionForm(projectID int64, hosts, monitors []SuppressionNodeOption) {
-	<form method="post" action={ templ.URL(AlertSuppressionPath(projectID)) }>
-		<fieldset class="field">
-			<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.parent_kind") }</legend>
-			<div class="segmented">
-				<label>
-					<input type="radio" name="parent_kind" value="host" checked/>
-					{ i18n.T(ctx, "alert_suppression.kind.host") }
-				</label>
-				<label>
-					<input type="radio" name="parent_kind" value="monitor"/>
-					{ i18n.T(ctx, "alert_suppression.kind.monitor") }
-				</label>
-			</div>
-		</fieldset>
-		<div class="form-grid">
-			<div class="field">
-				<label>
-					{ i18n.T(ctx, "alert_suppression.field.parent_host") }
-					<select name="parent_host_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.parent_host") }>
-						@suppressionNodeOptions(hosts)
-					</select>
-				</label>
-			</div>
-			<div class="field">
-				<label>
-					{ i18n.T(ctx, "alert_suppression.field.parent_monitor") }
-					<select name="parent_monitor_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.parent_monitor") }>
-						@suppressionNodeOptions(monitors)
-					</select>
-				</label>
-			</div>
-		</div>
-		<fieldset class="field">
-			<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.child_kind") }</legend>
-			<div class="segmented">
-				<label>
-					<input type="radio" name="child_kind" value="host" checked/>
-					{ i18n.T(ctx, "alert_suppression.kind.host") }
-				</label>
-				<label>
-					<input type="radio" name="child_kind" value="monitor"/>
-					{ i18n.T(ctx, "alert_suppression.kind.monitor") }
-				</label>
-				<label>
-					<input type="radio" name="child_kind" value="label"/>
-					{ i18n.T(ctx, "alert_suppression.kind.label") }
-				</label>
-			</div>
-		</fieldset>
-		<div class="form-grid">
-			<div class="field">
-				<label>
-					{ i18n.T(ctx, "alert_suppression.field.child_host") }
-					<select name="child_host_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_host") }>
-						@suppressionNodeOptions(hosts)
-					</select>
-				</label>
-			</div>
-			<div class="field">
-				<label>
-					{ i18n.T(ctx, "alert_suppression.field.child_monitor") }
-					<select name="child_monitor_id" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_monitor") }>
-						@suppressionNodeOptions(monitors)
-					</select>
-				</label>
-			</div>
-			<div class="field">
-				<label>
-					{ i18n.T(ctx, "alert_suppression.field.child_label_scope") }
-					<select name="child_label_scope" class="select" aria-label={ i18n.T(ctx, "alert_suppression.field.child_label_scope") }>
-						<option value="env">{ i18n.T(ctx, "alert_suppression.scope.env") }</option>
-						<option value="role">{ i18n.T(ctx, "alert_suppression.scope.role") }</option>
-					</select>
-				</label>
-			</div>
-			<div class="field">
-				<label>
-					{ i18n.T(ctx, "alert_suppression.field.child_label_value") }
-					<input
-						type="text"
-						name="child_label_value"
-						class="input"
-						placeholder={ i18n.T(ctx, "alert_suppression.field.child_label_value_placeholder") }
-						aria-label={ i18n.T(ctx, "alert_suppression.field.child_label_value") }
-					/>
-				</label>
-			</div>
-		</div>
-		<p class="hint">{ i18n.T(ctx, "alert_suppression.form.hint") }</p>
-		<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "alert_suppression.form.submit") }</button>
-	</form>
 }
 
 // suppressionPreviewRow — одна строка dry-run: «Если бы <родитель> сейчас
@@ -187,7 +275,7 @@ templ suppressionPreviewRow(p SuppressionPreviewView) {
 // пустой preview (все дети — label-селекторы без совпадений) отдельным
 // текстом, не молчаливым исчезновением карточки.
 templ suppressionPreview(preview []SuppressionPreviewView) {
-	<section class="card">
+	<section class="card suppression-section">
 		<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.preview.title") }</h2>
 		<p class="hint">{ i18n.T(ctx, "alert_suppression.preview.intro") }</p>
 		if len(preview) == 0 {
@@ -203,27 +291,37 @@ templ suppressionPreview(preview []SuppressionPreviewView) {
 }
 
 // AlertSuppression — GET/POST /projects/{id}/alert-suppression: список рёбер
-// зависимостей проекта + форма добавления. Доступ — оператор проекта
-// (requireProjectOperator, как Escalations/SLOsScreen). grace — h.SuppressionGrace
-// (задержка первого уведомления, GOTCHA_DEPENDENCY_SETTLE_SECONDS): значение и
-// предупреждение про silent_after показываются, только когда оно положительное
-// (P2-1 устранения аудита B5) — нулевое означает, что грейс выключен либо
-// экран собран на узком тестовом стенде без main.go, где показывать
-// конкретную цифру нечего.
-templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, grace time.Duration, errMsg, userEmail string) {
+// зависимостей проекта, модалка добавления и модалка правки на строку.
+// Доступ — оператор проекта (requireProjectOperator, как Escalations/
+// SLOsScreen). Вводная теория убрана со страницы в свёрнутый helpPanelWith
+// (те же абзацы, что раньше стояли стеной хинтов под <h1>). grace —
+// h.SuppressionGrace (задержка первого уведомления,
+// GOTCHA_DEPENDENCY_SETTLE_SECONDS): значение и предупреждение про
+// silent_after показываются, только когда оно положительное (P2-1 устранения
+// аудита B5) — нулевое означает, что грейс выключен либо экран собран на
+// узком тестовом стенде без main.go, где показывать конкретную цифру нечего.
+// form/errMsg — введённые значения и сообщение 422 (FormState помнит, какую
+// модалку переоткрыть: создания или правки конкретного ребра).
+templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, grace time.Duration, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "alert_suppression.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "alert_suppression.title") }</h1>
-		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.model") }</p>
-		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro") }</p>
-		if grace > 0 {
-			<p class="hint">{ i18n.Tf(ctx, "alert_suppression.intro.grace", "grace", humanize.Duration(ctx, grace)) }</p>
-			<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.grace_warning") }</p>
+		@helpPanelWith("alert_suppression", "alert-suppression") {
+			<p>{ i18n.T(ctx, "alert_suppression.intro.model") }</p>
+			<p>{ i18n.T(ctx, "alert_suppression.intro") }</p>
+			if grace > 0 {
+				<p>{ i18n.Tf(ctx, "alert_suppression.intro.grace", "grace", humanize.Duration(ctx, grace)) }</p>
+				<p>{ i18n.T(ctx, "alert_suppression.intro.grace_warning") }</p>
+			}
+			<p>{ i18n.T(ctx, "alert_suppression.intro.scope") }</p>
 		}
-		<p class="hint">{ i18n.T(ctx, "alert_suppression.intro.scope") }</p>
-		if errMsg != "" {
+		// Ошибка модальной формы показывается внутри переоткрытой модалки;
+		// здесь остаются 422 без состояния формы (прямой POST без полей) —
+		// тот же приём, что на alerts/maintenance.
+		if errMsg != "" && !form.Has() {
 			<p class="error">{ errMsg }</p>
 		}
-		<section class="card">
+		@createTrigger(SuppressionCreateModalID, "alert_suppression.form.title")
+		<section class="card suppression-section">
 			<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.list.title") }</h2>
 			if len(edges) == 0 {
 				@emptyState("bell", "alert_suppression.empty.title", "alert_suppression.empty.body", "", "", 3)
@@ -239,7 +337,7 @@ templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, moni
 						</thead>
 						<tbody>
 							for _, e := range edges {
-								@suppressionEdgeRow(projectID, e)
+								@suppressionEdgeRow(projectID, e, hosts, monitors, form, errMsg)
 							}
 						</tbody>
 					</table>
@@ -249,9 +347,6 @@ templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, moni
 		if len(edges) > 0 {
 			@suppressionPreview(preview)
 		}
-		<section class="card">
-			<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.form.title") }</h2>
-			@suppressionForm(projectID, hosts, monitors)
-		</section>
+		@suppressionCreateModal(projectID, hosts, monitors, form, errMsg)
 	}
 }

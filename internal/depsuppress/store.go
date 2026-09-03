@@ -42,6 +42,11 @@ var (
 	ErrDuplicate = errors.New("depsuppress: duplicate edge")
 	// ErrCycle — ребро замыкает цикл среди явных узлов графа зависимостей.
 	ErrCycle = errors.New("depsuppress: cycle among explicit nodes")
+	// ErrNotFound — ребро с таким id в проекте не существует. Update
+	// намеренно не различает «нет вовсе» и «принадлежит другому проекту»:
+	// вызывающий web-слой отвечает единообразным 404, не раскрывая
+	// существование чужой строки (тот же принцип, что uniform 404 кабинета).
+	ErrNotFound = errors.New("depsuppress: edge not found")
 )
 
 // Store — CRUD рёбер зависимостей поверх таблицы alert_dependencies.
@@ -114,10 +119,10 @@ func (s *Store) Create(ctx context.Context, e Edge) (int64, error) {
 	if err := checkSelfMatch(ctx, tx, e); err != nil {
 		return 0, err
 	}
-	if err := checkDuplicate(ctx, tx, e); err != nil {
+	if err := checkDuplicate(ctx, tx, e, 0); err != nil {
 		return 0, err
 	}
-	if err := checkCycle(ctx, tx, e); err != nil {
+	if err := checkCycle(ctx, tx, e, 0); err != nil {
 		return 0, err
 	}
 
@@ -139,6 +144,78 @@ func (s *Store) Create(ctx context.Context, e Edge) (int64, error) {
 		return 0, fmt.Errorf("depsuppress: commit: %w", err)
 	}
 	return id, nil
+}
+
+// Update заменяет содержимое существующего ребра e.ID (скоуп — e.ProjectID)
+// новой формой, сохраняя id: якоря модалок правки и адреса POST остаются
+// стабильными между рендерами. Цепочка валидации — та же, что у Create, но
+// checkDuplicate/checkCycle исключают само редактируемое ребро: сохранение
+// без изменений не должно падать дубликатом самого себя, а разворот A→B в
+// B→A — ловить «цикл» с собственной старой версией. Несуществующее ребро или
+// ребро чужого проекта — ErrNotFound (см. докблок ошибки). SELECT ... FOR
+// UPDATE держит строку до конца транзакции — конкурентная правка того же
+// ребра сериализуется; гонки с параллельным Create других рёбер остаются
+// теми же benign-гонками, что описаны у Create.
+//
+// На уже открытые подавленные инциденты правка не влияет: флаг
+// suppressed_by_dep одноразовый (его ставят Suppressor.MarkSuppressed и
+// uptime.Service.MarkSuppressedByDep, обратного писателя нет) — новое ребро
+// увидят только будущие решения о подавлении, через перезагрузку снимка
+// Suppressor не позже cacheTTL.
+func (s *Store) Update(ctx context.Context, e Edge) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("depsuppress: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := validateShape(e); err != nil {
+		return err
+	}
+	var lockedID int64
+	err = tx.QueryRow(ctx,
+		`SELECT id FROM alert_dependencies WHERE id = $1 AND project_id = $2 FOR UPDATE`,
+		e.ID, e.ProjectID,
+	).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: edge %d in project %d", ErrNotFound, e.ID, e.ProjectID)
+	}
+	if err != nil {
+		return fmt.Errorf("depsuppress: lock edge %d: %w", e.ID, err)
+	}
+	if err := checkNodesBelongToProject(ctx, tx, e); err != nil {
+		return err
+	}
+	if err := checkSelfLoop(e); err != nil {
+		return err
+	}
+	if err := checkSelfMatch(ctx, tx, e); err != nil {
+		return err
+	}
+	if err := checkDuplicate(ctx, tx, e, e.ID); err != nil {
+		return err
+	}
+	if err := checkCycle(ctx, tx, e, e.ID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE alert_dependencies SET
+			parent_host_id = $1, parent_monitor_id = $2,
+			child_host_id = $3, child_monitor_id = $4,
+			child_label_scope = $5, child_label_value = $6
+		WHERE id = $7 AND project_id = $8`,
+		e.ParentHostID, e.ParentMonitorID,
+		e.ChildHostID, e.ChildMonitorID, e.ChildLabelScope, e.ChildLabelValue,
+		e.ID, e.ProjectID,
+	); err != nil {
+		return fmt.Errorf("depsuppress: update edge %d: %w", e.ID, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("depsuppress: commit: %w", err)
+	}
+	return nil
 }
 
 // Delete удаляет ребро проекта. Отсутствие строки — не ошибка (идемпотентно,
@@ -270,13 +347,16 @@ func checkSelfMatch(ctx context.Context, tx pgx.Tx, e Edge) error {
 }
 
 // checkDuplicate отвергает ребро, точно совпадающее (NULL-safe) с уже
-// существующим рёбром проекта.
-func checkDuplicate(ctx context.Context, tx pgx.Tx, e Edge) error {
+// существующим рёбром проекта. excludeID — id самого редактируемого ребра
+// при Update (его собственная строка — не дубликат себя); 0 при Create —
+// id из bigserial начинаются с 1, ноль не исключает ничего.
+func checkDuplicate(ctx context.Context, tx pgx.Tx, e Edge, excludeID int64) error {
 	var exists bool
 	err := tx.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM alert_dependencies
 			WHERE project_id = $1
+			  AND id <> $8
 			  AND parent_host_id IS NOT DISTINCT FROM $2
 			  AND parent_monitor_id IS NOT DISTINCT FROM $3
 			  AND child_host_id IS NOT DISTINCT FROM $4
@@ -286,6 +366,7 @@ func checkDuplicate(ctx context.Context, tx pgx.Tx, e Edge) error {
 		)`,
 		e.ProjectID, e.ParentHostID, e.ParentMonitorID,
 		e.ChildHostID, e.ChildMonitorID, e.ChildLabelScope, e.ChildLabelValue,
+		excludeID,
 	).Scan(&exists)
 	if err != nil {
 		return fmt.Errorf("depsuppress: check duplicate: %w", err)
@@ -308,7 +389,10 @@ type node struct {
 // проекта (родитель-узел → ребёнок-узел) плюс новое ребро и проверяет, не
 // достигает ли ребёнок нового ребра транзитивно родителя нового ребра
 // (обычный BFS). Рёбра, где ребёнок — label-селектор, в граф не входят.
-func checkCycle(ctx context.Context, tx pgx.Tx, e Edge) error {
+// excludeID — id редактируемого ребра при Update: его старая версия уходит
+// из графа (в БД её вот-вот заменит e), иначе разворот единственного ребра
+// A→B в B→A ловил бы ложный «цикл» сам с собой; 0 при Create.
+func checkCycle(ctx context.Context, tx pgx.Tx, e Edge, excludeID int64) error {
 	// Новое ребро — не среди явных узлов (ребёнок — label-селектор): цикл
 	// среди явных узлов невозможен.
 	if e.ChildHostID == nil && e.ChildMonitorID == nil {
@@ -324,8 +408,9 @@ func checkCycle(ctx context.Context, tx pgx.Tx, e Edge) error {
 	rows, err := tx.Query(ctx, `
 		SELECT parent_host_id, parent_monitor_id, child_host_id, child_monitor_id
 		FROM alert_dependencies
-		WHERE project_id = $1 AND (child_host_id IS NOT NULL OR child_monitor_id IS NOT NULL)`,
-		e.ProjectID)
+		WHERE project_id = $1 AND id <> $2
+		  AND (child_host_id IS NOT NULL OR child_monitor_id IS NOT NULL)`,
+		e.ProjectID, excludeID)
 	if err != nil {
 		return fmt.Errorf("depsuppress: load edges for cycle check: %w", err)
 	}

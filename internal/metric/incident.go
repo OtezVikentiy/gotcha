@@ -131,13 +131,19 @@ func (s *IncidentService) Bump(ctx context.Context, id int64, current, peak floa
 	return nil
 }
 
+// resolveIncidentSQL — единственный UPDATE, которым инцидент закрывается:
+// им пользуются и штатный Resolve (оценщик), и закрытие при выключении
+// правила (resolveOpenIncidentForRule) — чтобы поля закрытия не могли
+// разъехаться между двумя путями.
+const resolveIncidentSQL = `
+		UPDATE metric_incidents SET status = 'resolved', resolved_at = now(), current_value = $2
+		WHERE id = $1 AND status = 'open'
+		RETURNING id`
+
 // Resolve закрывает открытый инцидент. ok=false, если открытого не было
 // (идемпотентно).
 func (s *IncidentService) Resolve(ctx context.Context, id int64, current float64) (bool, error) {
-	row := s.pool.QueryRow(ctx, `
-		UPDATE metric_incidents SET status = 'resolved', resolved_at = now(), current_value = $2
-		WHERE id = $1 AND status = 'open'
-		RETURNING id`, id, current)
+	row := s.pool.QueryRow(ctx, resolveIncidentSQL, id, current)
 	var closedID int64
 	err := row.Scan(&closedID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -147,6 +153,34 @@ func (s *IncidentService) Resolve(ctx context.Context, id int64, current float64
 		return false, fmt.Errorf("metric: resolve incident: %w", err)
 	}
 	return true, nil
+}
+
+// resolveOpenIncidentForRule закрывает открытый инцидент правила при его
+// выключении — тем же resolveIncidentSQL, что и штатный Resolve, поэтому
+// resolved_at и семантика статуса совпадают со штатным закрытием;
+// current_value остаётся последним измеренным (свежего агрегата в момент
+// выключения нет, значение передаётся его же собственным). Уведомление о
+// восстановлении не шлётся намеренно: восстановления не было, правило
+// выключил оператор; notified_close=false — то же штатное состояние, что при
+// пустом наборе recovery-каналов (см. evaluator.notifyClose). Открытого
+// инцидента может не быть — это не ошибка. Вызывается только из транзакции
+// RuleService.Update: выключение правила и закрытие его инцидента атомарны.
+func resolveOpenIncidentForRule(ctx context.Context, tx pgx.Tx, ruleID int64) error {
+	var id int64
+	var current float64
+	err := tx.QueryRow(ctx,
+		"SELECT id, current_value FROM metric_incidents WHERE rule_id = $1 AND status = 'open'",
+		ruleID).Scan(&id, &current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("metric: open incident of disabled rule: %w", err)
+	}
+	if err := tx.QueryRow(ctx, resolveIncidentSQL, id, current).Scan(&id); err != nil {
+		return fmt.Errorf("metric: resolve incident of disabled rule: %w", err)
+	}
+	return nil
 }
 
 // MarkNotified фиксирует отправку уведомления (open → notified_open, иначе

@@ -12,13 +12,29 @@ import (
 // инлайновых обработчиков. area — i18n-ключ (help.<area>.title/body),
 // guideSlug — соответствующая страница документации /docs/{guideSlug}.
 templ helpPanel(area, guideSlug string) {
+	@helpPanelWith(area, guideSlug) {
+		<p>{ i18n.T(ctx, "help."+area+".body") }</p>
+	}
+}
+
+// helpPanelWith — тот же свёрнутый help-panel, но тело приходит children, а
+// не единственным ключом help.<area>.body: страницам с многоабзацной или
+// условной справкой (alert-suppression показывает величину грейса только при
+// положительном h.SuppressionGrace) один плоский ключ не вмещает. helpPanel
+// выше остаётся тонкой обёрткой с каноничным телом — его ~15 вызовов и
+// сторож TestHelpPanelKeysResolve (guards/i18n_dynamic_test.go; его сканер
+// ищет в исходниках шаблонов вызовы helpPanel с литеральной областью и
+// НЕ матчит helpPanelWith) продолжают работать как раньше; для областей,
+// заходящих через helpPanelWith, ключ .body не обязателен, а .title обязан
+// существовать в обеих локалях (паритет локалей держит internal/i18n).
+templ helpPanelWith(area, guideSlug string) {
 	<details class="help-panel">
 		<summary>
 			@icon("chevron-right")
 			{ i18n.T(ctx, "help."+area+".title") }
 		</summary>
 		<div class="help-panel-body">
-			<p>{ i18n.T(ctx, "help."+area+".body") }</p>
+			{ children... }
 			<a href={ templ.SafeURL("/docs/" + guideSlug) }>{ i18n.T(ctx, "help.more_link") }</a>
 		</div>
 	</details>

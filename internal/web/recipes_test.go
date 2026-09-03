@@ -68,10 +68,19 @@ func TestWebRecipesListPage(t *testing.T) {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
 	bodyStr := string(body)
+	// Карточки рецептов идут внутри обёртки вертикального ритма .card-stack —
+	// без неё section.card слипаются (ни .card, ни <section> margin не несут).
+	stackAt := strings.Index(bodyStr, `<div class="card-stack">`)
+	if stackAt < 0 {
+		t.Errorf("GET %s: нет обёртки card-stack вокруг карточек рецептов", path)
+	}
 	for _, rec := range recipes.All() {
 		marker := `data-recipe="` + rec.ID + `"`
-		if !strings.Contains(bodyStr, marker) {
+		at := strings.Index(bodyStr, marker)
+		if at < 0 {
 			t.Errorf("GET %s: нет карточки %s (маркер %q)", path, rec.ID, marker)
+		} else if stackAt >= 0 && at < stackAt {
+			t.Errorf("GET %s: карточка %s стоит до открытия card-stack — вне стека", path, rec.ID)
 		}
 	}
 	// Без ClickHouse на стенде статус у всех рецептов — «ждём данные»
@@ -110,6 +119,11 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "выпустите активный публичный ключ") {
 		t.Errorf("GET %s (no key): нет подсказки про выпуск ключа: %s", path, body)
+	}
+	// Деталка тоже в стеке .card-stack: без него блок шагов и блок порогов
+	// слипались, когда между ними не отрисованы графики (Charts == nil).
+	if !strings.Contains(string(body), `<div class="card-stack">`) {
+		t.Errorf("GET %s: нет обёртки card-stack между блоками деталки", path)
 	}
 
 	keys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer)

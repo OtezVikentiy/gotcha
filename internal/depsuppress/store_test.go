@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -132,5 +133,122 @@ func TestStoreValidation(t *testing.T) {
 	// дубликат
 	if _, err := st.Create(ctx, depsuppress.Edge{ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2}); err == nil {
 		t.Fatal("duplicate edge: want ErrDuplicate")
+	}
+}
+
+// TestStoreUpdate — правка ребра сохраняет id, проходит ту же цепочку
+// валидации, что Create, но не спотыкается о собственную старую версию
+// (no-op сохранение — не дубликат, разворот единственного ребра — не цикл).
+func TestStoreUpdate(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	pid, hostID, monID := seedProjectHostMonitor(t, pool)
+	st := depsuppress.NewStore(pool)
+	ctx := context.Background()
+
+	h2 := seedHost(t, pool, pid, "h2", "db", "prod")
+	id, err := st.Create(ctx, depsuppress.Edge{ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Ребро-свидетель того же проекта: успешные Update ниже не должны его
+	// задевать (UPDATE скоупится по id, а не по всему project_id).
+	bystander, err := st.Create(ctx, depsuppress.Edge{ProjectID: pid, ParentHostID: &hostID, ChildMonitorID: &monID})
+	if err != nil {
+		t.Fatalf("Create bystander: %v", err)
+	}
+
+	// no-op: сохранение той же формы не должно падать дубликатом самого себя.
+	if err := st.Update(ctx, depsuppress.Edge{ID: id, ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2}); err != nil {
+		t.Fatalf("no-op Update: %v", err)
+	}
+
+	// разворот ребра A→B в B→A: старая версия исключена из графа
+	// цикл-проверки, иначе был бы ложный ErrCycle.
+	if err := st.Update(ctx, depsuppress.Edge{ID: id, ProjectID: pid, ParentHostID: &h2, ChildHostID: &hostID}); err != nil {
+		t.Fatalf("reverse Update: %v", err)
+	}
+
+	// смена ребёнка на монитор; id обязан остаться прежним.
+	if err := st.Update(ctx, depsuppress.Edge{ID: id, ProjectID: pid, ParentHostID: &h2, ChildMonitorID: &monID}); err != nil {
+		t.Fatalf("Update child to monitor: %v", err)
+	}
+	list, err := st.List(ctx, pid)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("List = %+v / %v, want 2 ребра", list, err)
+	}
+	byID := map[int64]depsuppress.Edge{list[0].ID: list[0], list[1].ID: list[1]}
+	got := byID[id]
+	if got.ID != id || got.ParentHostID == nil || *got.ParentHostID != h2 ||
+		got.ChildMonitorID == nil || *got.ChildMonitorID != monID || got.ChildHostID != nil {
+		t.Fatalf("после Update ребро = %+v, want id=%d host(%d)->monitor(%d)", got, id, h2, monID)
+	}
+	// Свидетель нетронут: правка одного ребра не переписывает соседей проекта.
+	bst := byID[bystander]
+	if bst.ID != bystander || bst.ParentHostID == nil || *bst.ParentHostID != hostID ||
+		bst.ChildMonitorID == nil || *bst.ChildMonitorID != monID {
+		t.Fatalf("ребро-свидетель после Update = %+v, want нетронутым host(%d)->monitor(%d)", bst, hostID, monID)
+	}
+}
+
+// TestStoreUpdateValidation — Update отвергает то же, что Create: дубликат
+// ЧУЖОГО ребра, цикл через другое ребро, чужой узел, битую форму; ребро
+// чужого проекта или несуществующее — ErrNotFound.
+func TestStoreUpdateValidation(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	pid, hostID, monID := seedProjectHostMonitor(t, pool)
+	st := depsuppress.NewStore(pool)
+	ctx := context.Background()
+
+	h2 := seedHost(t, pool, pid, "h2", "db", "prod")
+	h3 := seedHost(t, pool, pid, "h3", "cache", "prod")
+	e1, err := st.Create(ctx, depsuppress.Edge{ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2}) // A→B
+	if err != nil {
+		t.Fatalf("Create e1: %v", err)
+	}
+	e2, err := st.Create(ctx, depsuppress.Edge{ProjectID: pid, ParentHostID: &h2, ChildHostID: &h3}) // B→C
+	if err != nil {
+		t.Fatalf("Create e2: %v", err)
+	}
+
+	// дубликат другого ребра: правим e2 в форму e1.
+	err = st.Update(ctx, depsuppress.Edge{ID: e2, ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2})
+	if !errors.Is(err, depsuppress.ErrDuplicate) {
+		t.Fatalf("Update в дубликат e1: err = %v, want ErrDuplicate", err)
+	}
+	// цикл через ОСТАВШЕЕСЯ ребро: e1 (A→B) правим в C→B при живом B→C.
+	err = st.Update(ctx, depsuppress.Edge{ID: e1, ProjectID: pid, ParentHostID: &h3, ChildHostID: &h2})
+	if !errors.Is(err, depsuppress.ErrCycle) {
+		t.Fatalf("Update с циклом B→C→B: err = %v, want ErrCycle", err)
+	}
+	// чужой узел в новой форме.
+	_, foreignHost, _ := seedProjectHostMonitor(t, pool)
+	err = st.Update(ctx, depsuppress.Edge{ID: e1, ProjectID: pid, ParentHostID: &hostID, ChildHostID: &foreignHost})
+	if !errors.Is(err, depsuppress.ErrForeignNode) {
+		t.Fatalf("Update с чужим узлом: err = %v, want ErrForeignNode", err)
+	}
+	// битая форма: два родителя.
+	err = st.Update(ctx, depsuppress.Edge{ID: e1, ProjectID: pid, ParentHostID: &hostID, ParentMonitorID: &monID, ChildHostID: &h2})
+	if !errors.Is(err, depsuppress.ErrInvalidEdge) {
+		t.Fatalf("Update с двумя родителями: err = %v, want ErrInvalidEdge", err)
+	}
+	// ребро чужого проекта — ErrNotFound, содержимое не меняется.
+	otherPid, otherHost, otherMon := seedProjectHostMonitor(t, pool)
+	foreignEdge, err := st.Create(ctx, depsuppress.Edge{ProjectID: otherPid, ParentMonitorID: &otherMon, ChildHostID: &otherHost})
+	if err != nil {
+		t.Fatalf("Create foreign edge: %v", err)
+	}
+	err = st.Update(ctx, depsuppress.Edge{ID: foreignEdge, ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2})
+	if !errors.Is(err, depsuppress.ErrNotFound) {
+		t.Fatalf("Update чужого ребра: err = %v, want ErrNotFound", err)
+	}
+	// несуществующий id — тоже ErrNotFound.
+	err = st.Update(ctx, depsuppress.Edge{ID: foreignEdge + 1_000_000, ProjectID: pid, ParentHostID: &hostID, ChildHostID: &h2})
+	if !errors.Is(err, depsuppress.ErrNotFound) {
+		t.Fatalf("Update несуществующего ребра: err = %v, want ErrNotFound", err)
+	}
+
+	list, err := st.List(ctx, otherPid)
+	if err != nil || len(list) != 1 || list[0].ParentMonitorID == nil || *list[0].ParentMonitorID != otherMon {
+		t.Fatalf("чужое ребро после отвергнутых Update = %+v / %v, want нетронутым", list, err)
 	}
 }

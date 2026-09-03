@@ -3,8 +3,11 @@ package templates
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
@@ -56,8 +59,139 @@ func hasDeliverableChannel(channels []alert.Channel) bool {
 	return false
 }
 
+// escalationChannelDisplay — подпись канала для чекбокса ступени и dry-run-
+// предпросмотра: вид канала + безопасное представление адреса. У вебхука
+// Target — URL с секретным путём (https://hooks.slack.com/services/T…/B…/
+// <секрет>): полный адрес на экране — это секрет в каждом скриншоте и на
+// каждой демонстрации, поэтому показываются хост и путь с замаскированными
+// секретными сегментами — их достаточно, чтобы отличить два вебхука друг от
+// друга (maskedWebhookTarget). Email-адрес и
+// telegram chat id секретов не содержат и показываются как есть. Kind
+// валидируется при создании канала (alert.validateChannel) — неизвестный вид
+// в норме невозможен и, как и в channelKindLabel, не теряет данные из вида.
+func escalationChannelDisplay(ctx context.Context, c alert.Channel) string {
+	target := c.Target
+	if c.Kind == alert.ChannelWebhook {
+		target = maskedWebhookTarget(c.Target)
+	}
+	return channelKindLabel(ctx, c.Kind) + ": " + target
+}
+
+// secretLikeSegment — «похож ли сегмент пути вебхука на секрет». Секретным
+// считается сегмент от 20 рун (длинные токены и ключи любого алфавита —
+// Slack 24, Mattermost 26, Discord 68) либо от 10 рун, где есть и буквы, и
+// цифры (hex/base64-токены вида a4d718d555cb88b0). Порог смешанного правила —
+// 10, а не выше: генерируемые ключи generic-вебхуков бывают и по 10–12
+// знаков, и печатать такой целиком — утечка; словарные же сегменты такой
+// длины с цифрами внутри в реальных адресах не встречаются. Идентификаторы
+// вида T024BE7LD (9 рун) и цифровые id Discord (17–19 цифр, без букв) —
+// не секреты, остаются видимыми и различают вебхуки.
+//
+// У ПОСЛЕДНЕГО сегмента (last) порог ниже: от 6 рун при наличии цифры.
+// Последний сегмент вебхука почти всегда и есть ключ, и бывает коротким
+// (Zapier: /hooks/catch/123456/o2eyvv — ключ 6–8 рун); словарные хвосты
+// вида incidents/notifications состоят только из букв и под правило не
+// попадают. Чисто цифровой хвост от 6 цифр тоже маскируется — осознанный
+// выбор безопасной стороны: числовой id последним сегментом бывает и
+// публичным идентификатором, и ключом, а отличить их машинно нельзя; цена
+// маски мала (видимого хвоста достаточно, чтобы различить два вебхука),
+// цена ошибки в другую сторону — восстановимый URL.
+//
+// Сегмент, уже содержащий «…», — не сырой секрет, а след чужой маски
+// (композиция с maskChannelTarget, web/mask.go: не-админу приходит
+// «scheme://host/… ·hhhh») — не перемаскировывается, иначе теряется
+// дискриминатор ·hhhh.
+//
+// Отдельная чистая функция — чтобы граница «секрет/не секрет» была
+// закреплена юнит-таблицей (TestSecretLikeSegment) независимо от сборки
+// всей маски.
+func secretLikeSegment(seg string, last bool) bool {
+	if strings.Contains(seg, "…") {
+		return false
+	}
+	r := []rune(seg)
+	if len(r) >= 20 {
+		return true
+	}
+	hasLetter, hasDigit := false, false
+	for _, c := range r {
+		switch {
+		case unicode.IsLetter(c):
+			hasLetter = true
+		case unicode.IsDigit(c):
+			hasDigit = true
+		}
+	}
+	if last {
+		return len(r) >= 6 && hasDigit
+	}
+	return len(r) >= 10 && hasLetter && hasDigit
+}
+
+// maskedWebhookTarget — «hooks.slack.com/services/T000/B000/…88b0»: хост +
+// путь, в котором секретные на вид сегменты (secretLikeSegment) заменены на
+// «…» плюс последние secretTailRunes рун, а словарные («hooks», «incidents»)
+// показаны как есть — видно, куда уходит уведомление и какой это из вебхуков,
+// но секрет на экран не попадает никогда. Значения query и фрагмента не
+// показываются вовсе («?…»): там секрет почти всегда, а различать параметры
+// пользователю не нужно. Схема и userinfo скрыты. Слишком длинный результат
+// (> maskedTargetMaxRunes) схлопывается посередине пути: первый и последний
+// сегменты остаются — начало говорит о сервисе, конец различает вебхуки.
+func maskedWebhookTarget(target string) string {
+	const (
+		tailRunes            = 6
+		secretTailRunes      = 4
+		maskedTargetMaxRunes = 60
+	)
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		// Не URL: validateChannel такой Target не пропускает, ветка чисто
+		// защитная — хоста нет, показываем только хвост.
+		r := []rune(target)
+		if len(r) <= tailRunes {
+			return target
+		}
+		return "…" + string(r[len(r)-tailRunes:])
+	}
+	suffix := ""
+	if u.RawQuery != "" || u.Fragment != "" {
+		suffix = "?…"
+	}
+	if u.Path == "" {
+		return u.Host + suffix
+	}
+	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	// Последний СОДЕРЖАТЕЛЬНЫЙ сегмент — с поправкой на завершающий слэш
+	// (Zapier канонически пишет ключ с «/» на конце): пустые хвостовые
+	// сегменты — не ключ.
+	lastIdx := len(segs) - 1
+	for lastIdx > 0 && segs[lastIdx] == "" {
+		lastIdx--
+	}
+	parts := make([]string, 0, len(segs))
+	for i, seg := range segs {
+		if secretLikeSegment(seg, i == lastIdx) {
+			r := []rune(seg)
+			// Хвост — не больше половины секрета: у короткого ключа
+			// (6–7 рун) обычные 4 руны хвоста открывали бы две трети.
+			tail := secretTailRunes
+			if len(r)/2 < tail {
+				tail = len(r) / 2
+			}
+			parts = append(parts, "…"+string(r[len(r)-tail:]))
+		} else {
+			parts = append(parts, seg)
+		}
+	}
+	display := u.Host + "/" + strings.Join(parts, "/") + suffix
+	if utf8.RuneCountInString(display) > maskedTargetMaxRunes && len(parts) > 2 {
+		display = u.Host + "/" + parts[0] + "/…/" + parts[len(parts)-1] + suffix
+	}
+	return display
+}
+
 // escalationChannelLabels — человекочитаемый список каналов ступени
-// ("Email: a@b.c, Webhook: https://…") для dry-run-предпросмотра. Канал,
+// ("Email: a@b.c, Webhook: hooks.slack.com/services/T000/B000/…88b0") для dry-run-предпросмотра. Канал,
 // которого уже нет в текущем списке проекта (удалён после того, как лесенка
 // на него ссылалась), молча пропускается — тот же принцип, что и у
 // остальных мест, резолвящих id в отображаемое имя.
@@ -69,7 +203,7 @@ func escalationChannelLabels(ctx context.Context, ids []int64, channels []alert.
 	var parts []string
 	for _, id := range ids {
 		if c, ok := byID[id]; ok {
-			parts = append(parts, channelKindLabel(ctx, c.Kind)+": "+c.Target)
+			parts = append(parts, escalationChannelDisplay(ctx, c))
 		}
 	}
 	if len(parts) == 0 {
@@ -149,7 +283,7 @@ templ escalationStepFields(step EscalationStepForm, channels []alert.Channel) {
 				if c.Deliverable() || step.Selected[c.ID] {
 					<label class="checkbox-inline">
 						<input type="checkbox" name={ stepChannelsField(step.StepNo) } value={ strconv.FormatInt(c.ID, 10) } checked?={ step.Selected[c.ID] }/>
-						{ channelKindLabel(ctx, c.Kind) }: { c.Target }
+						{ escalationChannelDisplay(ctx, c) }
 						if !c.Deliverable() {
 							<span class="badge badge-warn">{ i18n.T(ctx, escalationUndeliverableReasonKey(c)) }</span>
 						}
@@ -173,13 +307,22 @@ templ escalationSeveritySection(projectID int64, form EscalationLadderForm, chan
 		if !hasDeliverableChannel(channels) {
 			<p class="hint">{ i18n.T(ctx, "escalations.field.channels_none") }</p>
 		}
+		// Правило непрерывности ступеней — единственное, обо что спотыкается
+		// заполнение формы: раньше оно стояло мелким серым хвостом ПОД
+		// пятью ступенями, и читалось уже после отклонённого сохранения.
+		// Теперь — заметной подсказкой под заголовком лесенки, до полей.
+		// Тут же, одной строкой на лесенку, — пояснение, от чего считается
+		// задержка ступени: подпись у самого поля короткая («Задержка, мин»),
+		// полная фраза десять раз на экран не повторяется.
+		<p class="notice">{ i18n.T(ctx, "escalations.field.steps_hint") } { i18n.T(ctx, "escalations.field.delay_hint") }</p>
 		<p class="hint">{ i18n.T(ctx, "escalations.default_notice") }</p>
 		<form method="post" action={ templ.URL(EscalationsPath(projectID)) } class="escalation-ladder-form">
 			<input type="hidden" name="severity" value={ form.Severity }/>
-			for _, step := range form.Steps {
-				@escalationStepFields(step, channels)
-			}
-			<p class="hint">{ i18n.T(ctx, "escalations.field.steps_hint") }</p>
+			<div class="escalation-steps">
+				for _, step := range form.Steps {
+					@escalationStepFields(step, channels)
+				}
+			</div>
 			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "escalations.form.submit") }</button>
 		</form>
 		@escalationDryRun(ladder, channels)
@@ -196,8 +339,14 @@ templ Escalations(projectID int64, channels []alert.Channel, critical, warning E
 	@layout(i18n.T(ctx, "escalations.title"), userEmail) {
 		<div class="escalations">
 			<h1>{ i18n.T(ctx, "escalations.title") }</h1>
-			<p class="hint">{ i18n.T(ctx, "escalations.intro") }</p>
-			<p class="hint">{ i18n.T(ctx, "escalations.uptime_note") }</p>
+			// Вводная теория (как устроены лесенки, особый случай аптайма) —
+			// в свёрнутой справке, а не стеной абзацев под <h1>: тот же приём,
+			// что и на alert_suppression. Тело — двумя существующими ключами,
+			// поэтому helpPanelWith, а не helpPanel с одним .body.
+			@helpPanelWith("escalations", "escalations") {
+				<p>{ i18n.T(ctx, "escalations.intro") }</p>
+				<p>{ i18n.T(ctx, "escalations.uptime_note") }</p>
+			}
 			@escalationSeveritySection(projectID, critical, channels, ladders[escalation.SeverityCritical], failedSeverity == escalation.SeverityCritical, errMsg)
 			@escalationSeveritySection(projectID, warning, channels, ladders[escalation.SeverityWarning], failedSeverity == escalation.SeverityWarning, errMsg)
 		</div>

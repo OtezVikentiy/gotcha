@@ -2465,6 +2465,11 @@ th {
 	color: var(--text-dim);
 	font-size: var(--fs-base);
 }
+/* Карточка heartbeat-пинга стоит между плитками и кнопками действий: без
+   собственного отступа снизу она прилипала к .monitor-actions вплотную. */
+.monitor-heartbeat {
+	margin-bottom: 12px;
+}
 .monitor-actions {
 	display: flex;
 	flex-wrap: wrap;
@@ -2508,9 +2513,12 @@ th {
 	font-size: var(--fs-sm);
 	margin-bottom: 6px;
 }
-.host-settings-form > button[type="submit"] {
-	/* Кнопка «Сохранить» — прямой сосед последнего fieldset'а без своего
-	   вертикального margin: без отступа она прилипала к блоку «Тишина». */
+.host-settings-form > button[type="submit"],
+.host-thresholds-form > button[type="submit"] {
+	/* Кнопка «Сохранить» — прямой сосед сетки .threshold-grid без своего
+	   вертикального margin: без отступа она прилипала к блоку «Тишина».
+	   Селектор общий на обе формы порогов (базовые проекта и per-host):
+	   внутри сетки margin карточек погашен, шаг задают gap и этот отступ. */
 	margin-top: 16px;
 }
 .host-charts {
@@ -2996,16 +3004,49 @@ form.inline {
 .slo-indicator-warn { background: var(--warn); }
 .slo-indicator-danger { background: var(--danger); }
 
-/* Эскалации (B4, задача 9): отступ между карточками-ступенями лесенки — те
-   же 12px, что и между полями соседних форм страницы (.field). */
-.escalation-step + .escalation-step {
-	margin-top: 12px;
+/* Эскалации (UI-проход): пять фиксированных ступеней лесенки — сеткой, а не
+   столбиком на всю ширину: две лесенки по пять узких карточек во всю ширину
+   давали несколько экранов прокрутки. auto-fit подбирает число колонок по
+   ширине (на узком экране — одна, как раньше); порядок ступеней 0..4 — это
+   порядок документа, он читается слева направо, сверху вниз. Минимум 240px
+   держит поле задержки и подписи каналов (min() подрезает пол до ширины
+   контейнера, когда та уже 240px, — как у .ctx-groups, чтобы карточки не
+   распирали страницу по горизонтали); зазор — те же 12px, что и между
+   полями соседних форм (.field), снизу он же отделяет сетку от кнопки. */
+/* Карточки двух лесенок (critical и warning) идут подряд — без отступа
+   слипаются в один блок. Тот же шаг 16px, что у .suppression-section. */
+.escalations-section {
+	margin-bottom: 16px;
 }
-/* Dry-run-предпросмотр под формой лесенки: отделён от формы отступом сверху,
-   список ступеней — без маркеров браузера по умолчанию (свой порядок уже
-   виден по тексту "Ступень N"). */
+.escalation-steps {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+	gap: 12px;
+	margin-bottom: 12px;
+}
+/* Карточка-ступень не должна распираться содержимым шире своей колонки. */
+.escalation-step {
+	min-width: 0;
+}
+/* Подпись канала (email как есть, длинный хост вебхука) переносится, а не
+   растягивает колонку сетки. */
+.escalation-step .checkbox-inline {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+/* Dry-run-предпросмотр под формой лесенки — итог формы, а не сноска:
+   собственная подложка с акцентной кромкой и заголовок кегля секции (h2,
+   18px) выделяют его среди полей редактора. Шаг 16px от формы — как у
+   .suppression-section; список ступеней — без маркеров браузера по
+   умолчанию (свой порядок уже виден по тексту "Ступень N"). */
 .escalation-dryrun {
 	margin-top: 16px;
+	border-left: 3px solid var(--accent);
+	background: var(--accent-soft);
+}
+.escalation-dryrun .card-header {
+	font-size: 18px;
+	font-weight: 650;
 }
 .escalation-dryrun-list {
 	margin: 0 0 8px;
@@ -3232,6 +3273,22 @@ form.inline {
 	align-self: start;
 }
 .settings-stack > .card { margin: 0; }
+/* .card-stack — вертикальный ритм карточек/панелей в потоке страницы (список
+   и деталка рецептов, /setup): тот же приём, что у .settings-stack выше
+   (flex-колонка, шаг 16px), но живёт вне .settings-grid — поэтому без
+   align-self, а margin гасится у ВСЕХ прямых детей, не только у .card: в
+   стеке встречаются .panel, h2 и p.hint, чьи собственные вертикальные
+   отступы складывались бы с gap (в flex-колонке margin'ы не схлопываются)
+   и ломали ровный шаг. Класс-сосед, а не сам .settings-stack: у того
+   семантика «пара карточек в ячейке settings-grid», и его align-self/узкий
+   сброс менять под потоковые страницы нельзя — по нему уже свёрстаны
+   настройки проекта. */
+.card-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+.card-stack > * { margin: 0; }
 /* «Новый ключ» не должен прилипать к таблице DSN-ключей сверху. */
 .key-create-form { margin-top: 12px; }
 
@@ -4720,6 +4777,33 @@ svg.flamegraph text {
 	margin-bottom: 1rem;
 }
 
+/* .threshold-grid — четыре карточки порогов (Диск/Память/Нагрузка/Тишина)
+   в ряд вместо стека на всю ширину; одна и та же обёртка у per-host формы
+   (hostdetail) и у базовых порогов проекта (hostsettings). Идиома —
+   .escalation-steps: auto-fit + minmax с полом, подрезанным min() до ширины
+   контейнера. Пол трека 320px (как у .ctx-groups), а не 240px, как у
+   ступеней: содержимое шире — сегмент-контрол из трёх длинных подписей
+   («Наследовать/Переопределить/Выключить») в 240px не помещается и жил бы
+   с постоянным переносом; в 320px он обычно остаётся одной строкой, а в
+   узком треке доперенос даёт flex-wrap самого .segmented (см.
+   .host-thresholds .segmented ниже). auto-fit, а не auto-fill: карточек
+   ровно четыре, пустые фантомные треки на широком экране не нужны —
+   пусть карточки растягиваются. */
+.threshold-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+	gap: 12px;
+}
+/* Fieldset не должен распираться содержимым шире своего трека: у fieldset
+   min-inline-size: min-content по умолчанию — те же грабли, что уже
+   чинились у .escalation-step. Заодно гасится margin-bottom карточек
+   .th-kind — внутри сетки вертикальный шаг задаёт gap, а отступ до кнопки
+   «Сохранить» — margin-top самой кнопки. */
+.threshold-grid > fieldset {
+	min-width: 0;
+	margin: 0;
+}
+
 /* Числовое поле нужно только в режиме "Переопределить" — в "Наследовать" и
    "Выключить" значение не читается (hostThresholdsSave/ValidateOverride).
    Скрытие — тот же приём :has() по radio, без JS, что у .maintenance-form
@@ -4770,12 +4854,6 @@ svg.flamegraph text {
 .host-group-threshold-form:has(input[name="scope"][value="env"]:checked) .gt-label-env,
 .host-group-threshold-form:has(input[name="scope"][value="role"]:checked) .gt-label-role {
 	display: block;
-}
-
-.gt-row-actions {
-	display: flex;
-	align-items: center;
-	gap: 0.75rem;
 }
 
 /* Сегмент-контрол «Разовое / Еженедельное» — две склеенные кнопки, как у
@@ -5087,6 +5165,32 @@ input[type="radio"]:focus-visible {
 }
 .preview-list li {
 	color: var(--text-dim);
+}
+/* Секции подавления шторма («Зависимости», «Предпросмотр подавления») — два
+   .card подряд без заголовков между ними: без отступа слипаются. Тот же шаг
+   16px, что у .hosts-section/.deps-map-card. */
+.suppression-section {
+	margin-bottom: 16px;
+}
+/* Форма ребра зависимости (модалки создания и правки): radio parent_kind/
+   child_kind выбирают, какое из параллельных полей читает хендлер
+   (alertSuppressionEdgeFromForm), — виден только выбранный вариант. Тот же
+   приём :has(), что у .gt-label-env/.gt-label-role выше: скрытые поля
+   остаются в DOM и в POST, хендлер читает только ветку отправленного radio,
+   так что для браузеров без :has() форма просто показывает всё, как раньше. */
+.alert-suppression-form .as-parent-host,
+.alert-suppression-form .as-parent-monitor,
+.alert-suppression-form .as-child-host,
+.alert-suppression-form .as-child-monitor,
+.alert-suppression-form .as-child-label {
+	display: none;
+}
+.alert-suppression-form:has(input[name="parent_kind"][value="host"]:checked) .as-parent-host,
+.alert-suppression-form:has(input[name="parent_kind"][value="monitor"]:checked) .as-parent-monitor,
+.alert-suppression-form:has(input[name="child_kind"][value="host"]:checked) .as-child-host,
+.alert-suppression-form:has(input[name="child_kind"][value="monitor"]:checked) .as-child-monitor,
+.alert-suppression-form:has(input[name="child_kind"][value="label"]:checked) .as-child-label {
+	display: block;
 }
 
 /* -- Incident feed (/projects/{id}/incident-feed, D3, §6.1) -- сводная

@@ -410,6 +410,11 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	if !strings.Contains(string(body), wantServerDSN) {
 		t.Fatalf("GET %s body missing server DSN %q (Go/PHP/Python сниппеты должны остаться): %s", setupPath, wantServerDSN, body)
 	}
+	// Карточка DSN, подсказки и панели сниппетов — в обёртке вертикального
+	// ритма .card-stack: без неё section.card/.panel идут впритык.
+	if !strings.Contains(string(body), `<div class="card-stack">`) {
+		t.Errorf("GET %s: нет обёртки card-stack вокруг блоков setup", setupPath)
+	}
 	// Ловушка: JS-сниппета с пустым DSN на странице быть не должно вовсе —
 	// он выглядит готовым к копированию и молча не работает. Сниппета нет —
 	// значит нет и его команды установки (шаблон HTML-экранирует кавычки,

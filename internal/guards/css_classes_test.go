@@ -252,12 +252,10 @@ var permanentCSSClassExemptions = []Exemption{
 	// затронула (не запрашивалась), см. task-5-report.md, раздел «Раунд
 	// правок 1» — там же зафиксирована асимметрия между ними.
 	{Value: "alerts-section", Why: "семантический маркер секции внутри страницы alerts, стиля нет по замыслу", Finding: "по замыслу"},
-	{Value: "escalations-section", Why: "семантический маркер секции внутри страницы escalations (B4 T9), стиля нет по замыслу — стоит в паре с .card (class=\"escalations-section card\")", Finding: "по замыслу"},
 	{Value: "gdpr-block", Why: "семантический маркер секции (152-ФЗ экспорт/удаление ПДн), стиля нет по замыслу — внутри уже стилизованные .field/.hint/.btn-ghost", Finding: "по замыслу"},
 	{Value: "invite-accept", Why: "семантический маркер, стоит в паре с .card (class=\"invite-accept card\") — визуал от .card", Finding: "по замыслу"},
 	{Value: "invite-link-block", Why: "семантический маркер, стоит в паре с .card (class=\"card invite-link-block\")", Finding: "по замыслу"},
 	{Value: "metric-alerts", Why: "маркер под-раздела на корневом <div>, стиля нет по замыслу", Finding: "по замыслу"},
-	{Value: "monitor-heartbeat", Why: "семантический маркер, стоит в паре с .card (class=\"monitor-heartbeat card\")", Finding: "по замыслу"},
 	{Value: "monitor-kind-fields", Why: "семантический маркер на <fieldset> (HTTP/TCP/DNS/Heartbeat) — группировка полей формы по виду монитора, у <fieldset> уже есть браузерный вид, своего правила не требуется", Finding: "по замыслу"},
 	{Value: "pending-invites", Why: "семантический маркер секции внутри org-settings, стиля нет по замыслу — внутри уже стилизованная .data-table", Finding: "по замыслу"},
 	{Value: "perf-issue-detail", Why: "семантический маркер, стоит в паре с issue-detail, которая и несёт раскладку страницы (перенесено из старого ручного списка csscontract_test.go)", Finding: "по замыслу"},
@@ -319,7 +317,11 @@ var permanentCSSClassExemptions = []Exemption{
 // 84→82 (карта зависимостей, направление данных): "deps-map-card" и
 // "deps-truncated" получили реальные правила в app.css (зазор между
 // карточкой карты и таблицей, отступ пометки об усечении) — сняты.
-const maxPermanentCSSClassExemptions = 82
+// 82→81 (страница монитора, heartbeat): "monitor-heartbeat" получил реальное
+// правило в app.css (зазор между карточкой пинга и кнопками действий) — снят.
+// 81→80 (эскалации, доводки): "escalations-section" получил реальное правило
+// в app.css (зазор между карточками лесенок critical и warning) — снят.
+const maxPermanentCSSClassExemptions = 80
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

@@ -195,106 +195,108 @@ templ hostThresholdsSection(vm HostDetailVM) {
 		}
 		if vm.CanOperate {
 			<form method="post" action={ templ.URL(hostThresholdsPath(vm.ProjectID, vm.Host.Name)) } class="host-thresholds-form">
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.disk") }</legend>
-					<p class="hint">{ thresholdEffectiveLabel(ctx, "disk", vm.Effective.Settings.DiskEnabled, vm.Effective.Settings.DiskThreshold, vm.Effective.DiskSource) }</p>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="disk_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="disk_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="disk_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-disk-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-							<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
-								value={ vm.ThresholdsForm.Get("disk_value", thresholdPercentValue(vm.Override.DiskThreshold, vm.Effective.Settings.DiskThreshold)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.memory") }</legend>
-					<p class="hint">{ thresholdEffectiveLabel(ctx, "memory", vm.Effective.Settings.MemoryEnabled, vm.Effective.Settings.MemoryThreshold, vm.Effective.MemorySource) }</p>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="memory_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="memory_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="memory_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-memory-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-							<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
-								value={ vm.ThresholdsForm.Get("memory_value", thresholdPercentValue(vm.Override.MemoryThreshold, vm.Effective.Settings.MemoryThreshold)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.load") }</legend>
-					<p class="hint">{ thresholdEffectiveLabel(ctx, "load", vm.Effective.Settings.LoadEnabled, vm.Effective.Settings.LoadThreshold, vm.Effective.LoadSource) }</p>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="load_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="load_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="load_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-load-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
-							<input type="number" class="input" name="load_value" min="0.1" step="0.1"
-								value={ vm.ThresholdsForm.Get("load_value", thresholdFloatValue(vm.Override.LoadThreshold, vm.Effective.Settings.LoadThreshold)) }/>
-						</label>
-					</div>
-				</fieldset>
-				<fieldset class="card th-kind">
-					<legend class="card-header">{ i18n.T(ctx, "host.threshold.silent") }</legend>
-					<p class="hint">{ thresholdEffectiveLabel(ctx, "silent", vm.Effective.Settings.SilentEnabled, vm.Effective.Settings.SilentAfter.Seconds(), vm.Effective.SilentSource) }</p>
-					<div class="segmented">
-						<label>
-							<input type="radio" name="silent_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "inherit" }/>
-							{ i18n.T(ctx, "host.threshold.inherit") }
-						</label>
-						<label>
-							<input type="radio" name="silent_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "override" }/>
-							{ i18n.T(ctx, "host.threshold.override") }
-						</label>
-						<label>
-							<input type="radio" name="silent_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "off" }/>
-							{ i18n.T(ctx, "host.threshold.off") }
-						</label>
-					</div>
-					<div class="field th-silent-value">
-						<label>
-							{ i18n.T(ctx, "hosts.settings.field.silent_after") }
-							<input type="number" class="input" name="silent_value" min="3" max="720" step="1"
-								value={ vm.ThresholdsForm.Get("silent_value", thresholdMinutesValue(vm.Override.SilentAfter, vm.Effective.Settings.SilentAfter)) }/>
-						</label>
-					</div>
-				</fieldset>
+				<div class="threshold-grid">
+					<fieldset class="card th-kind">
+						<legend class="card-header">{ i18n.T(ctx, "host.threshold.disk") }</legend>
+						<p class="hint">{ thresholdEffectiveLabel(ctx, "disk", vm.Effective.Settings.DiskEnabled, vm.Effective.Settings.DiskThreshold, vm.Effective.DiskSource) }</p>
+						<div class="segmented">
+							<label>
+								<input type="radio" name="disk_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "inherit" }/>
+								{ i18n.T(ctx, "host.threshold.inherit") }
+							</label>
+							<label>
+								<input type="radio" name="disk_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "override" }/>
+								{ i18n.T(ctx, "host.threshold.override") }
+							</label>
+							<label>
+								<input type="radio" name="disk_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "disk_mode", vm.Override.DiskEnabled) == "off" }/>
+								{ i18n.T(ctx, "host.threshold.off") }
+							</label>
+						</div>
+						<div class="field th-disk-value">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
+								<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
+									value={ vm.ThresholdsForm.Get("disk_value", thresholdPercentValue(vm.Override.DiskThreshold, vm.Effective.Settings.DiskThreshold)) }/>
+							</label>
+						</div>
+					</fieldset>
+					<fieldset class="card th-kind">
+						<legend class="card-header">{ i18n.T(ctx, "host.threshold.memory") }</legend>
+						<p class="hint">{ thresholdEffectiveLabel(ctx, "memory", vm.Effective.Settings.MemoryEnabled, vm.Effective.Settings.MemoryThreshold, vm.Effective.MemorySource) }</p>
+						<div class="segmented">
+							<label>
+								<input type="radio" name="memory_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "inherit" }/>
+								{ i18n.T(ctx, "host.threshold.inherit") }
+							</label>
+							<label>
+								<input type="radio" name="memory_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "override" }/>
+								{ i18n.T(ctx, "host.threshold.override") }
+							</label>
+							<label>
+								<input type="radio" name="memory_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "memory_mode", vm.Override.MemoryEnabled) == "off" }/>
+								{ i18n.T(ctx, "host.threshold.off") }
+							</label>
+						</div>
+						<div class="field th-memory-value">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
+								<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
+									value={ vm.ThresholdsForm.Get("memory_value", thresholdPercentValue(vm.Override.MemoryThreshold, vm.Effective.Settings.MemoryThreshold)) }/>
+							</label>
+						</div>
+					</fieldset>
+					<fieldset class="card th-kind">
+						<legend class="card-header">{ i18n.T(ctx, "host.threshold.load") }</legend>
+						<p class="hint">{ thresholdEffectiveLabel(ctx, "load", vm.Effective.Settings.LoadEnabled, vm.Effective.Settings.LoadThreshold, vm.Effective.LoadSource) }</p>
+						<div class="segmented">
+							<label>
+								<input type="radio" name="load_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "inherit" }/>
+								{ i18n.T(ctx, "host.threshold.inherit") }
+							</label>
+							<label>
+								<input type="radio" name="load_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "override" }/>
+								{ i18n.T(ctx, "host.threshold.override") }
+							</label>
+							<label>
+								<input type="radio" name="load_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "load_mode", vm.Override.LoadEnabled) == "off" }/>
+								{ i18n.T(ctx, "host.threshold.off") }
+							</label>
+						</div>
+						<div class="field th-load-value">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.load_threshold") }
+								<input type="number" class="input" name="load_value" min="0.1" step="0.1"
+									value={ vm.ThresholdsForm.Get("load_value", thresholdFloatValue(vm.Override.LoadThreshold, vm.Effective.Settings.LoadThreshold)) }/>
+							</label>
+						</div>
+					</fieldset>
+					<fieldset class="card th-kind">
+						<legend class="card-header">{ i18n.T(ctx, "host.threshold.silent") }</legend>
+						<p class="hint">{ thresholdEffectiveLabel(ctx, "silent", vm.Effective.Settings.SilentEnabled, vm.Effective.Settings.SilentAfter.Seconds(), vm.Effective.SilentSource) }</p>
+						<div class="segmented">
+							<label>
+								<input type="radio" name="silent_mode" value="inherit" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "inherit" }/>
+								{ i18n.T(ctx, "host.threshold.inherit") }
+							</label>
+							<label>
+								<input type="radio" name="silent_mode" value="override" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "override" }/>
+								{ i18n.T(ctx, "host.threshold.override") }
+							</label>
+							<label>
+								<input type="radio" name="silent_mode" value="off" checked?={ thresholdModeFor(vm.ThresholdsForm, "silent_mode", vm.Override.SilentEnabled) == "off" }/>
+								{ i18n.T(ctx, "host.threshold.off") }
+							</label>
+						</div>
+						<div class="field th-silent-value">
+							<label>
+								{ i18n.T(ctx, "hosts.settings.field.silent_after") }
+								<input type="number" class="input" name="silent_value" min="3" max="720" step="1"
+									value={ vm.ThresholdsForm.Get("silent_value", thresholdMinutesValue(vm.Override.SilentAfter, vm.Effective.Settings.SilentAfter)) }/>
+							</label>
+						</div>
+					</fieldset>
+				</div>
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "hosts.settings.submit") }</button>
 			</form>
 		} else {

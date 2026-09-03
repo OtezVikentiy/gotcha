@@ -91,13 +91,13 @@ func TestWebEscalationsSave(t *testing.T) {
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/escalations"
 
 	c1, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
-		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook-one",
+		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hooks/a4d718d555cb0001",
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel c1: %v", err)
 	}
 	c2, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
-		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook-two",
+		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hooks/a4d718d555cb0002",
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel c2: %v", err)
@@ -128,13 +128,26 @@ func TestWebEscalationsSave(t *testing.T) {
 		t.Fatalf("Ladder(critical) = %+v, want step0->c1, step1(15m)->c2", ladder)
 	}
 
-	// Dry-run на странице отражает то, что реально сохранено: цель канала
-	// должна быть видна в предпросмотре.
+	// Dry-run на странице отражает то, что реально сохранено, но адрес
+	// вебхука показан безопасным представлением (хост + путь с урезанным до
+	// хвоста секретным сегментом), а не полным URL. Два разных вебхука при
+	// этом обязаны оставаться различимы по хвосту.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "hook-one") || !strings.Contains(string(body), "hook-two") {
-		t.Fatalf("GET %s after save missing dry-run channel targets (status %d): %s", path, resp.StatusCode, body)
+	html := string(body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s after save status = %d, want 200: %s", path, resp.StatusCode, html)
+	}
+	for _, want := range []string{"example.com/hooks/…0001", "example.com/hooks/…0002"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("GET %s after save missing masked channel target %q: %s", path, want, html)
+		}
+	}
+	for _, leak := range []string{"a4d718d555cb0001", "a4d718d555cb0002"} {
+		if strings.Contains(html, leak) {
+			t.Fatalf("GET %s after save leaks full webhook path (%q found): %s", path, leak, html)
+		}
 	}
 
 	// Дыра в step_no (ступень 0 занята, 1 пустая, 2 занята) → 422, старая
@@ -328,5 +341,168 @@ func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
 	}
 	if len(ladder) != 1 || len(ladder[0].ChannelIDs) != 1 || ladder[0].ChannelIDs[0] != chID {
 		t.Fatalf("Ladder(critical) после пересохранения = %+v, канал %d потерян", ladder, chID)
+	}
+}
+
+// TestWebEscalationsLayout — UI-проход: вводная теория — в свёрнутой справке
+// под <h1> со ссылкой на существующую доку; ступени лесенки — сеткой
+// (класс-крючок на обёртке каждой из двух лесенок); правило непрерывности
+// ступеней — заметной подсказкой ДО формы, а не серым хвостом под ней.
+func TestWebEscalationsLayout(t *testing.T) {
+	s := newStack(t)
+	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "esc-layout-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "esc-layout-co", "Esc Layout Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "esc-layout-proj", "Esc Layout Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/escalations"
+
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	html := string(body)
+	for _, want := range []string{`class="help-panel"`, `href="/docs/escalations"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("GET %s missing %q: %s", path, want, html)
+		}
+	}
+	// Вводная теория живёт внутри тела свёрнутой справки, а не стеной
+	// абзацев под <h1>: текст интро стоит между help-panel-body и </details>.
+	bodyIdx := strings.Index(html, `class="help-panel-body"`)
+	introIdx := strings.Index(html, "какая из них сработает")
+	if bodyIdx == -1 || introIdx == -1 {
+		t.Fatalf("GET %s: help-panel-body (%d) or intro text (%d) not found: %s", path, bodyIdx, introIdx, html)
+	}
+	detailsEnd := strings.Index(html[bodyIdx:], "</details>")
+	if detailsEnd == -1 || introIdx < bodyIdx || introIdx > bodyIdx+detailsEnd {
+		t.Fatalf("GET %s: intro text at %d is outside help-panel body [%d..%d]: %s", path, introIdx, bodyIdx, bodyIdx+detailsEnd, html)
+	}
+	// Ступени — сеткой: обёртка с классом-крючком в каждой из двух лесенок.
+	if got := strings.Count(html, `class="escalation-steps"`); got != 2 {
+		t.Fatalf("GET %s: %d escalation-steps wrappers, want 2 (critical + warning): %s", path, got, html)
+	}
+	// Правило непрерывности — заметной подсказкой (notice) до полей формы.
+	noticeIdx := strings.Index(html, `<p class="notice">Чтобы убрать ступень`)
+	formIdx := strings.Index(html, `class="escalation-ladder-form"`)
+	if noticeIdx == -1 || formIdx == -1 {
+		t.Fatalf("GET %s: continuity notice (%d) or ladder form (%d) not found: %s", path, noticeIdx, formIdx, html)
+	}
+	if noticeIdx > formIdx {
+		t.Fatalf("GET %s: continuity notice at %d comes after the form at %d — must be readable before filling: %s", path, noticeIdx, formIdx, html)
+	}
+	if got := strings.Count(html, `<p class="notice">Чтобы убрать ступень`); got != 2 {
+		t.Fatalf("GET %s: %d continuity notices, want 2 (one per ladder): %s", path, got, html)
+	}
+	// Подпись задержки — короткая у каждой ступени (иначе полная фраза
+	// повторяется десять раз на экран), развёрнутое пояснение «минут от
+	// открытия инцидента» — один раз на лесенку, в той же плашке-notice.
+	if got := strings.Count(html, "Задержка, мин"); got != 10 {
+		t.Fatalf("GET %s: %d short delay labels, want 10 (2 ladders × 5 steps): %s", path, got, html)
+	}
+	if got := strings.Count(html, "минутах от открытия инцидента"); got != 2 {
+		t.Fatalf("GET %s: %d delay explanations, want 2 (one per ladder): %s", path, got, html)
+	}
+	// Зазор между карточками лесенок: класс-крючок .escalations-section на
+	// обеих секциях (правило в app.css).
+	if got := strings.Count(html, `class="escalations-section card"`); got != 2 {
+		t.Fatalf("GET %s: %d escalations-section hooks, want 2: %s", path, got, html)
+	}
+
+	// Дока, на которую ведёт «подробнее», обязана существовать — иначе
+	// свёрнутая справка кончается 404.
+	resp = getWithCookie(t, s.srv, "/docs/escalations", ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /docs/escalations status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestWebEscalationsChannelTargetMasked — адрес канала в подписях чекбоксов
+// и dry-run: секретный сегмент пути вебхука в HTML отсутствует, но словарные
+// сегменты пути видны целиком (посегментная маска maskedWebhookTarget) и два
+// вебхука одного сервиса различимы по хвосту; email и telegram chat id — не
+// секреты и показываются как есть. Страницу открывает owner (canManage), то
+// есть channelsForView отдаёт СЫРЫЕ цели — маску обязан держать сам шаблон.
+func TestWebEscalationsChannelTargetMasked(t *testing.T) {
+	s := newStack(t)
+	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "esc-mask-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "esc-mask-co", "Esc Mask Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "esc-mask-proj", "Esc Mask Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	// Два вебхука одного сервиса: секрет — в пути, отличимы только хвостом.
+	for _, target := range []string{
+		"https://hooks.example.com/services/T000/B000/secretaaa111",
+		"https://hooks.example.com/services/T000/B000/secretbbb222",
+	} {
+		if _, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
+			ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: target,
+		}); err != nil {
+			t.Fatalf("CreateChannel %s: %v", target, err)
+		}
+	}
+	if _, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelEmail, Enabled: true, Target: "oncall@example.com",
+	}); err != nil {
+		t.Fatalf("CreateChannel email: %v", err)
+	}
+	if _, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
+		ProjectID: proj.ID, Kind: alert.ChannelTelegram, Enabled: true, Target: "-100200300", Secret: "tok",
+	}); err != nil {
+		t.Fatalf("CreateChannel telegram: %v", err)
+	}
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/escalations"
+
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	html := string(body)
+	// Секретный сегмент вебхука не встречается в HTML нигде — ни в подписи
+	// чекбокса ступени, ни в dry-run. Словарные сегменты (/services/T000/
+	// B000) секретами не являются и по замыслу видны — в списке утечек
+	// только настоящие секреты.
+	for _, leak := range []string{"secretaaa111", "secretbbb222"} {
+		if strings.Contains(html, leak) {
+			t.Fatalf("GET %s leaks webhook secret path (%q found): %s", path, leak, html)
+		}
+	}
+	// Хост, словарный путь и различающий хвост видны (вебхуки отличимы),
+	// email и chat id — как есть.
+	for _, want := range []string{
+		"hooks.example.com/services/T000/B000/…a111",
+		"hooks.example.com/services/T000/B000/…b222",
+		"oncall@example.com", "-100200300",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("GET %s missing channel label %q: %s", path, want, html)
+		}
 	}
 }

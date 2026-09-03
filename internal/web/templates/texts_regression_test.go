@@ -126,7 +126,7 @@ func TestUptimeIncidentsSeeFeedHintIsLiteral(t *testing.T) {
 func TestAlertSuppressionScopeDescribesInformingAndSilentRoots(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := AlertSuppression(1, nil, nil, nil, nil, 0, "", "u@example.com").Render(ctx, &sb); err != nil {
+	if err := AlertSuppression(1, nil, nil, nil, nil, 0, nil, "", "u@example.com").Render(ctx, &sb); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	out := sb.String()
@@ -144,7 +144,7 @@ func TestAlertSuppressionScopeDescribesInformingAndSilentRoots(t *testing.T) {
 
 	ctxEN := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	var sbEN strings.Builder
-	if err := AlertSuppression(1, nil, nil, nil, nil, 0, "", "u@example.com").Render(ctxEN, &sbEN); err != nil {
+	if err := AlertSuppression(1, nil, nil, nil, nil, 0, nil, "", "u@example.com").Render(ctxEN, &sbEN); err != nil {
 		t.Fatalf("Render en: %v", err)
 	}
 	outEN := sbEN.String()

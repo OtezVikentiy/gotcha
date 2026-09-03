@@ -87,32 +87,34 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, mis
 			if len(snippets) == 0 {
 				<p class="error">{ i18n.T(ctx, "project.setup.no_key") }</p>
 			} else {
-				if dsn != "" {
-					<section class="card">
-						<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
-						<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
-						<pre>{ dsn }</pre>
-					</section>
-				}
-				if missingPlatformKind != "" {
-					<p class="hint">
-						{ i18n.Tf(ctx, "project.setup.missing_platform_key",
-							"platform", i18n.T(ctx, "platform."+project.Platform),
-							"kind", i18n.T(ctx, "project.settings.keys.kind."+string(missingPlatformKind))) }
-						{ " " }
-						<a href={ templ.URL(projectSettingsPath(project.ID)) }>{ i18n.T(ctx, "project.setup.missing_platform_key_link") }</a>
-					</p>
-				}
-				<p class="hint">{ i18n.T(ctx, "project.setup.sdk_note") }</p>
-				for _, sn := range snippets {
-					<section class="panel">
-						<h2 class="card-header">{ sn.Lang }</h2>
-						<p class="hint">{ i18n.T(ctx, "project.setup.install") }</p>
-						<pre>{ sn.Install }</pre>
-						<p class="hint">{ i18n.T(ctx, "project.setup.init") }</p>
-						<pre>{ sn.Code }</pre>
-					</section>
-				}
+				<div class="card-stack">
+					if dsn != "" {
+						<section class="card">
+							<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
+							<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
+							<pre>{ dsn }</pre>
+						</section>
+					}
+					if missingPlatformKind != "" {
+						<p class="hint">
+							{ i18n.Tf(ctx, "project.setup.missing_platform_key",
+								"platform", i18n.T(ctx, "platform."+project.Platform),
+								"kind", i18n.T(ctx, "project.settings.keys.kind."+string(missingPlatformKind))) }
+							{ " " }
+							<a href={ templ.URL(projectSettingsPath(project.ID)) }>{ i18n.T(ctx, "project.setup.missing_platform_key_link") }</a>
+						</p>
+					}
+					<p class="hint">{ i18n.T(ctx, "project.setup.sdk_note") }</p>
+					for _, sn := range snippets {
+						<section class="panel">
+							<h2 class="card-header">{ sn.Lang }</h2>
+							<p class="hint">{ i18n.T(ctx, "project.setup.install") }</p>
+							<pre>{ sn.Install }</pre>
+							<p class="hint">{ i18n.T(ctx, "project.setup.init") }</p>
+							<pre>{ sn.Code }</pre>
+						</section>
+					}
+				</div>
 				<p><a href="/docs/sdk">{ i18n.T(ctx, "project.setup.full_docs_link") }</a></p>
 			}
 			<p><a href="/projects">{ i18n.T(ctx, "project.setup.back_link") }</a></p>

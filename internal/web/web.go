@@ -662,6 +662,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("GET /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertsPage)))
 	inner.Handle("POST /projects/{id}/metrics/alerts", h.requireUser(http.HandlerFunc(h.metricAlertCreate)))
 	inner.Handle("POST /projects/{id}/metrics/alerts/delete", h.requireUser(http.HandlerFunc(h.metricAlertDelete)))
+	// Литерал "delete" специфичнее {ruleID} — ServeMux разводит их независимо
+	// от порядка регистрации (прецедент hosts/settings ниже).
+	inner.Handle("POST /projects/{id}/metrics/alerts/{ruleID}", h.requireUser(http.HandlerFunc(h.metricAlertUpdate)))
 	inner.Handle("GET /projects/{id}/metrics/{name}", h.requireUser(http.HandlerFunc(h.metricDetail)))
 
 	// Рецепты мониторинга (B6): страницы подключения типовых сервисов
@@ -740,6 +743,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// у escalations выше.
 	inner.Handle("GET /projects/{id}/alert-suppression", h.requireUser(http.HandlerFunc(h.alertSuppressionPage)))
 	inner.Handle("POST /projects/{id}/alert-suppression", h.requireUser(http.HandlerFunc(h.alertSuppressionSave)))
+	inner.Handle("POST /projects/{id}/alert-suppression/{depID}", h.requireUser(http.HandlerFunc(h.alertSuppressionUpdate)))
 	inner.Handle("POST /projects/{id}/alert-suppression/{depID}/delete", h.requireUser(http.HandlerFunc(h.alertSuppressionDelete)))
 
 	// Выгрузки ошибок/событий (E1, задачи 10/11): список заявок + постановка,
