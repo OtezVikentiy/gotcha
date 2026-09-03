@@ -63,7 +63,7 @@ scrape_configs:
   - job_name: gotcha
     static_configs:
       # 8080 is the in-container port; the stock compose publishes 59080
-      # (GOTCHA_PORT). Use whichever port the instance is reachable on for you.
+      # (GOTCHA_COMPOSE_PORT). Use whichever port the instance is reachable on for you.
       - targets: ["gotcha.example.com:59080"]
 ```
 

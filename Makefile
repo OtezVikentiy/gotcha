@@ -4,9 +4,9 @@
 SHELL := /bin/bash
 
 # Внешний порт приложения (см. docker-compose.yml). Переопределяется:
-#   make up GOTCHA_PORT=59081
-GOTCHA_PORT ?= 59080
-export GOTCHA_PORT
+#   make up GOTCHA_COMPOSE_PORT=59081
+GOTCHA_COMPOSE_PORT ?= 59080
+export GOTCHA_COMPOSE_PORT
 
 ### Build metadata (ldflags) ###
 GIT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -18,7 +18,7 @@ LDFLAGS     := -X $(VPKG).version=$(GIT_VERSION) -X $(VPKG).commit=$(COMMIT) -X 
 # Проброс метаданных версии в docker-сборку: compose подставляет эти env в
 # build.args → Dockerfile ARG → ldflags. Без префикса `docker compose build`
 # напрямую даёт версию "dev" (ARG-дефолты).
-DOCKER_BUILD_ENV := GOTCHA_VERSION=$(GIT_VERSION) GOTCHA_COMMIT=$(COMMIT) GOTCHA_DATE=$(DATE)
+DOCKER_BUILD_ENV := GOTCHA_BUILD_VERSION=$(GIT_VERSION) GOTCHA_BUILD_COMMIT=$(COMMIT) GOTCHA_BUILD_DATE=$(DATE)
 
 ### Docker commands ###
 
@@ -68,10 +68,10 @@ ch-connect: ## clickhouse-client into ClickHouse
 	docker compose exec -i -t clickhouse clickhouse-client --user gotcha --password gotcha --database gotcha
 
 health: ## Check /readyz of the running app
-	@curl -sf http://localhost:$(GOTCHA_PORT)/readyz && echo || (echo "app is down"; exit 1)
+	@curl -sf http://localhost:$(GOTCHA_COMPOSE_PORT)/readyz && echo || (echo "app is down"; exit 1)
 
 open: ## Print the app URL
-	@echo "http://localhost:$(GOTCHA_PORT)"
+	@echo "http://localhost:$(GOTCHA_COMPOSE_PORT)"
 
 ### Go commands ###
 

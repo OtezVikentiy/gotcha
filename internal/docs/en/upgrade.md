@@ -144,6 +144,33 @@ names in that file by hand (per the CHANGELOG table) and run the update
 command again. The current names and ranges are in the variable reference
 on the [Hosts](/docs/hosts) page.
 
+## What changes when upgrading: compose and build variables renamed
+
+The same wave renames eleven more variables — eight Docker Compose
+substitution variables (the database containers' passwords and memory
+ceilings, the app container's memory ceiling and network MTU, the published
+port and bind address) get the `GOTCHA_COMPOSE_` prefix, and the three
+variables the `Makefile` uses to pass build metadata into
+`docker-compose.yml` (`DOCKER_BUILD_ENV`) get the `GOTCHA_BUILD_` prefix.
+The full "before → after" table is in that same CHANGELOG table as the
+seventeen server variables above; the variables themselves and their
+defaults are documented in [Configuration](/docs/configuration), under the
+"Compose-only variables" sections.
+
+Unlike the server and agent variables, no gotcha process reads these
+eleven at all — only Docker Compose itself (the `${...}` substitution in
+the compose file) and `make` ever see them. The safety net is the same
+one: `docker-compose.yml` pulls in `.env` wholesale (`env_file`), so an
+old name left in `.env` still reaches the `gotcha` process's environment
+and gets caught by the same "old name → new name" startup refusal, even
+though the process itself never reads it and never did.
+
+If you set these variables somewhere other than `.env` — directly in the
+compose file's `environment:`/`build.args` block, or passed separately to
+`make` (e.g. `make up GOTCHA_COMPOSE_PORT=...`) — rename them there by
+hand, using the same CHANGELOG table: the startup refusal can't catch that
+edit, because it never reaches the `gotcha` process's environment.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

@@ -61,7 +61,7 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_LISTEN_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_PORT` instead (see [Installation](/docs/installation)), not via this variable. |
+| `GOTCHA_LISTEN_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_COMPOSE_PORT` instead (see [Installation](/docs/installation)), not via this variable. |
 | `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default `GOTCHA_SECRET_KEY` in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) — see the Security section below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
 
 ## Database
@@ -77,10 +77,10 @@ These four are **Docker Compose substitution variables**, not configuration of t
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_PG_PASSWORD` | `gotcha` | Password of the `gotcha` PostgreSQL user. Substituted into both the `postgres` container (`POSTGRES_PASSWORD`) and the app's `GOTCHA_PG_DSN`. URL-unsafe characters (`@` `/` `:` `#` `%`) must not be used — the value goes into a DSN URL as-is. |
-| `GOTCHA_CH_PASSWORD` | `gotcha` | Password of the `gotcha` ClickHouse user. Same mechanics and same character restriction as `GOTCHA_PG_PASSWORD`. |
-| `GOTCHA_PG_MEM_LIMIT` | `512m` | Memory ceiling of the `postgres` container. Raise on a server with headroom. |
-| `GOTCHA_CH_MEM_LIMIT` | `2g` | Memory ceiling of the `clickhouse` container. Without a cgroup limit ClickHouse assumes 90% of the **host's** memory is its own — the ceiling is what makes its memory budget real. |
+| `GOTCHA_COMPOSE_PG_PASSWORD` | `gotcha` | Password of the `gotcha` PostgreSQL user. Substituted into both the `postgres` container (`POSTGRES_PASSWORD`) and the app's `GOTCHA_PG_DSN`. URL-unsafe characters (`@` `/` `:` `#` `%`) must not be used — the value goes into a DSN URL as-is. |
+| `GOTCHA_COMPOSE_CH_PASSWORD` | `gotcha` | Password of the `gotcha` ClickHouse user. Same mechanics and same character restriction as `GOTCHA_COMPOSE_PG_PASSWORD`. |
+| `GOTCHA_COMPOSE_PG_MEM_LIMIT` | `512m` | Memory ceiling of the `postgres` container. Raise on a server with headroom. |
+| `GOTCHA_COMPOSE_CH_MEM_LIMIT` | `2g` | Memory ceiling of the `clickhouse` container. Without a cgroup limit ClickHouse assumes 90% of the **host's** memory is its own — the ceiling is what makes its memory budget real. |
 
 **Changing a database password on an existing install.** `POSTGRES_PASSWORD`/`CLICKHOUSE_PASSWORD` only take effect when the data volume is first initialized — on a live install, changing the variable alone locks the app out of a database that still expects the old password. The order matters:
 
@@ -89,15 +89,15 @@ These four are **Docker Compose substitution variables**, not configuration of t
    docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
    docker compose exec clickhouse clickhouse-client --user gotcha --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
    ```
-2. Set `GOTCHA_PG_PASSWORD`/`GOTCHA_CH_PASSWORD` in `.env`.
+2. Set `GOTCHA_COMPOSE_PG_PASSWORD`/`GOTCHA_COMPOSE_CH_PASSWORD` in `.env`.
 3. `docker compose up -d` — the app container is recreated with the new DSN.
 
 ### Compose-only variables (the app container)
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_MEM_LIMIT` | `1g` | Memory ceiling of the `gotcha` container. The app reads this limit from its cgroup and sets its own heap ceiling to 80% of it, so raising the ceiling is enough — `GOMEMLIMIT` doesn't need setting by hand. |
-| `GOTCHA_NET_MTU` | `1500` | MTU of the container network. A last resort for one specific failure — see below; a mismatch on its own is not a reason to touch it. |
+| `GOTCHA_COMPOSE_MEM_LIMIT` | `1g` | Memory ceiling of the `gotcha` container. The app reads this limit from its cgroup and sets its own heap ceiling to 80% of it, so raising the ceiling is enough — `GOMEMLIMIT` doesn't need setting by hand. |
+| `GOTCHA_COMPOSE_NET_MTU` | `1500` | MTU of the container network. A last resort for one specific failure — see below; a mismatch on its own is not a reason to touch it. |
 
 **Start with the symptom, not the numbers.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. The mismatch itself is everywhere, and most installations live with it and never notice.
 
@@ -126,7 +126,7 @@ Check the host:
 ip -o link show
 ```
 
-If the external interface (`ens3`, `eth0`) is below 1500 while `docker0` shows 1500 **and** you have the timeout above, set `GOTCHA_NET_MTU` to the interface's value and bring the stack back up. The container then advertises an MSS the path can certainly carry, and delivery stops depending on somebody else's ICMP:
+If the external interface (`ens3`, `eth0`) is below 1500 while `docker0` shows 1500 **and** you have the timeout above, set `GOTCHA_COMPOSE_NET_MTU` to the interface's value and bring the stack back up. The container then advertises an MSS the path can certainly carry, and delivery stops depending on somebody else's ICMP:
 
 ```bash
 docker compose down && docker compose up -d
@@ -189,7 +189,7 @@ Retention changes apply on the next application start (the value is used to set 
 | `GOTCHA_MAX_WRITER_BUFFER_BYTES` | auto (see below) | Byte ceiling for EACH ClickHouse writer buffer (events, spans, metrics, profiles, logs). Buffers grow while ClickHouse is unavailable so a short outage does not lose telemetry; this bounds the price of that. A value set here always wins over the auto-derived default. Uptime check results are buffered separately and capped by row count (10000), not by this variable. Leaving it unset enables the auto-derived behavior; an explicit `0` or negative number is a configuration error and refuses to start. |
 | `GOTCHA_MAX_INGEST_QUEUE_BYTES` | `67108864` (64 MiB) | Byte ceiling for the ingest queue, on top of its capacity of 1000 tasks. A single event carries up to four raw JSON blocks of 256 KiB each — up to a megabyte — so without this the queue could hold roughly a gigabyte. On exhaustion the event is dropped and counted in `gotcha_pipeline_dropped_tasks_total`; the current size is `gotcha_pipeline_queue_bytes`. Leaving it unset uses the default above; an explicit `0` or negative number is a configuration error and refuses to start. |
 
-**`GOTCHA_MAX_WRITER_BUFFER_BYTES` auto-default:** when the variable is unset, each writer buffer's ceiling is derived from the detected heap ceiling (the same 80%-of-`GOTCHA_MEM_LIMIT` ceiling described above, under "Compose-only variables") instead of the package's flat constant (256 MiB). There are six buffer "units" (events; a tracing writer's transaction buffer and span buffer count as two independent buffers of one writer; metrics; profiles; logs); the auto-default splits 60% of the heap ceiling across them, leaving 40% for everything else (HTTP ingest, JSON parsing, the PostgreSQL client, the runtime itself). On the default `docker-compose.yml` (`mem_limit: 1g`, heap ceiling ≈ 819 MiB) this works out to roughly 82 MiB per buffer — instead of a flat 256 MiB, which summed (1.5 GiB) would exceed the heap ceiling and could trigger a kernel OOM kill during a sustained ClickHouse outage. If there's nothing to derive a heap ceiling from (bare metal, no cgroup, no `GOMEMLIMIT`), behavior is unchanged: a flat 256 MiB per buffer. An explicitly set `GOTCHA_MAX_WRITER_BUFFER_BYTES` always wins over the auto-default — including for constrained profiles (`docker-compose.small.yml` still sets `24 MiB` explicitly).
+**`GOTCHA_MAX_WRITER_BUFFER_BYTES` auto-default:** when the variable is unset, each writer buffer's ceiling is derived from the detected heap ceiling (the same 80%-of-`GOTCHA_COMPOSE_MEM_LIMIT` ceiling described above, under "Compose-only variables") instead of the package's flat constant (256 MiB). There are six buffer "units" (events; a tracing writer's transaction buffer and span buffer count as two independent buffers of one writer; metrics; profiles; logs); the auto-default splits 60% of the heap ceiling across them, leaving 40% for everything else (HTTP ingest, JSON parsing, the PostgreSQL client, the runtime itself). On the default `docker-compose.yml` (`mem_limit: 1g`, heap ceiling ≈ 819 MiB) this works out to roughly 82 MiB per buffer — instead of a flat 256 MiB, which summed (1.5 GiB) would exceed the heap ceiling and could trigger a kernel OOM kill during a sustained ClickHouse outage. If there's nothing to derive a heap ceiling from (bare metal, no cgroup, no `GOMEMLIMIT`), behavior is unchanged: a flat 256 MiB per buffer. An explicitly set `GOTCHA_MAX_WRITER_BUFFER_BYTES` always wins over the auto-default — including for constrained profiles (`docker-compose.small.yml` still sets `24 MiB` explicitly).
 
 **When you must change the quotas:** `0` (unlimited) in the oss edition is a **deliberate choice for a private self-hosted instance** where the DSN never leaks. If a project's DSN ends up in publicly reachable code (e.g. your website's frontend JS), anyone can send it an unbounded volume of events — both an abuse vector and a risk of filling up ClickHouse's disk. In that case, set real numbers, e.g.:
 

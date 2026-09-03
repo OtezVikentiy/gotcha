@@ -177,7 +177,7 @@ All three rows should show `Up` (`postgres` and `clickhouse` show `Up (healthy)`
 
 ## Step 4. Verify it's up
 
-The app listens on host port **59080** by default (see `docker-compose.yml`: `"${GOTCHA_BIND:-127.0.0.1}:${GOTCHA_PORT:-59080}:8080"` — the host address and port are on the left, the container port on the right; a non-standard port `59080` was chosen so it doesn't clash with other services on the server). The host address on the left isn't `0.0.0.0` — it's **loopback** (`127.0.0.1`): the port is reachable from the server itself and over an SSH tunnel, but not from outside. That's a deliberate default: without it, a bare HTTP entry point and an unauthenticated `/metrics` (self-monitoring telemetry) would be reachable from outside, bypassing the HTTPS reverse proxy from the checklist below. Check the health endpoint:
+The app listens on host port **59080** by default (see `docker-compose.yml`: `"${GOTCHA_COMPOSE_BIND:-127.0.0.1}:${GOTCHA_COMPOSE_PORT:-59080}:8080"` — the host address and port are on the left, the container port on the right; a non-standard port `59080` was chosen so it doesn't clash with other services on the server). The host address on the left isn't `0.0.0.0` — it's **loopback** (`127.0.0.1`): the port is reachable from the server itself and over an SSH tunnel, but not from outside. That's a deliberate default: without it, a bare HTTP entry point and an unauthenticated `/metrics` (self-monitoring telemetry) would be reachable from outside, bypassing the HTTPS reverse proxy from the checklist below. Check the health endpoint:
 
 ```bash
 curl -sf http://localhost:59080/readyz
@@ -206,7 +206,7 @@ make logs     # docker compose logs -f gotcha (Ctrl+C to exit)
 Open `http://localhost:59080` in a browser (if you're browsing from the server itself, or through an SSH tunnel) — the Gotcha login page should load. A direct `http://<your-server-IP>:59080` from another machine will **not** load by default — the port only listens on loopback (see above). From here, there are two paths:
 
 - **Recommended.** Put a reverse proxy in front of the app on the same host (nginx/Caddy — see the checklist at the end of this guide): `proxy_pass`/`reverse_proxy` to `127.0.0.1:59080` reaches the app with no change to `docker-compose.yml`, and only the proxy's port 80/443 is exposed.
-- **Quick, for a first look.** Add `GOTCHA_BIND=0.0.0.0` to `.env` and apply it with `docker compose up -d` — the port `59080` then listens on every interface, as it used to. Keep in mind: until you put an HTTPS proxy in front of it, a bare HTTP entry point and an unauthenticated `/metrics` (self-monitoring telemetry) are reachable from any address.
+- **Quick, for a first look.** Add `GOTCHA_COMPOSE_BIND=0.0.0.0` to `.env` and apply it with `docker compose up -d` — the port `59080` then listens on every interface, as it used to. Keep in mind: until you put an HTTPS proxy in front of it, a bare HTTP entry point and an unauthenticated `/metrics` (self-monitoring telemetry) are reachable from any address.
 
 ## Step 5. Set a secret key (required for a real server)
 
@@ -251,7 +251,7 @@ Uncomment in the same `.env`:
 GOTCHA_BASE_URL=https://gotcha.example.com
 ```
 
-(or `http://<server-IP>:59080` if you don't have a domain/HTTPS yet — but note that address is only reachable from outside once you've set `GOTCHA_BIND=0.0.0.0` as described in step 4; see the checklist below for why HTTPS matters). Apply it:
+(or `http://<server-IP>:59080` if you don't have a domain/HTTPS yet — but note that address is only reachable from outside once you've set `GOTCHA_COMPOSE_BIND=0.0.0.0` as described in step 4; see the checklist below for why HTTPS matters). Apply it:
 
 ```bash
 docker compose up -d
@@ -259,7 +259,7 @@ docker compose up -d
 
 ## Step 7. Create the first user
 
-Open `<GOTCHA_BASE_URL>/register` (the address from step 6 — a domain behind your reverse proxy, or `http://<server-IP>:59080` with `GOTCHA_BIND=0.0.0.0` already set) and register.
+Open `<GOTCHA_BASE_URL>/register` (the address from step 6 — a domain behind your reverse proxy, or `http://<server-IP>:59080` with `GOTCHA_COMPOSE_BIND=0.0.0.0` already set) and register.
 
 **Important:** the very first user on a fresh instance is always allowed to register, regardless of the self-registration mode (`GOTCHA_REGISTRATION_MODE`), and is automatically granted **instance-admin** rights. This is the "bootstrap" step — it's how you get your first admin on a brand-new install without touching the database by hand. Every later signup is governed by `GOTCHA_REGISTRATION_MODE` (details in [Configuration](/docs/configuration)).
 
@@ -295,13 +295,13 @@ A common cause is a configuration error message (e.g. the requirement to set `GO
 **Port already in use** (`bind: address already in use`).
 Something on the server is already listening on 59080. Pick a different host port via `.env`:
 ```env
-GOTCHA_PORT=8081
+GOTCHA_COMPOSE_PORT=8081
 ```
 then `docker compose up -d`. The app inside the container still listens on 8080 — only which host port it's mapped to changes.
 
 **The web UI doesn't load, even though containers show `Up`.**
-- Check this first: by default the port only listens on loopback (`GOTCHA_BIND=127.0.0.1`), so direct access over the server's IP from outside **won't work until you add a reverse proxy or set `GOTCHA_BIND=0.0.0.0`** — see step 4. That's the default behavior, not a bug.
-- If `GOTCHA_BIND=0.0.0.0` is already set (or you're using a reverse proxy listening on 80/443 rather than port 59080 itself), check the server's firewall. Ubuntu/Debian: `sudo ufw status` — if ufw is enabled, allow the port: `sudo ufw allow 59080/tcp`. AlmaLinux/Rocky/RHEL: firewalld is enabled by default — allow the port: `sudo firewall-cmd --permanent --add-port=59080/tcp && sudo firewall-cmd --reload`.
+- Check this first: by default the port only listens on loopback (`GOTCHA_COMPOSE_BIND=127.0.0.1`), so direct access over the server's IP from outside **won't work until you add a reverse proxy or set `GOTCHA_COMPOSE_BIND=0.0.0.0`** — see step 4. That's the default behavior, not a bug.
+- If `GOTCHA_COMPOSE_BIND=0.0.0.0` is already set (or you're using a reverse proxy listening on 80/443 rather than port 59080 itself), check the server's firewall. Ubuntu/Debian: `sudo ufw status` — if ufw is enabled, allow the port: `sudo ufw allow 59080/tcp`. AlmaLinux/Rocky/RHEL: firewalld is enabled by default — allow the port: `sudo firewall-cmd --permanent --add-port=59080/tcp && sudo firewall-cmd --reload`.
 - If your server is with a cloud provider/hosting panel, check its Security Group / firewall separately from `ufw` — traffic is often blocked there instead.
 - Run `curl -sf http://localhost:59080/healthz` **from the server itself** — if that works but access from outside doesn't, the problem is networking (firewall/provider), not Gotcha.
 

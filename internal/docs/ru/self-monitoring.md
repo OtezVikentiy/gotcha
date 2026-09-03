@@ -60,7 +60,7 @@ scrape_configs:
   - job_name: gotcha
     static_configs:
       # 8080 — порт ВНУТРИ контейнера; наружу штатный compose публикует 59080
-      # (GOTCHA_PORT). Укажите тот порт, по которому инстанс доступен вам.
+      # (GOTCHA_COMPOSE_PORT). Укажите тот порт, по которому инстанс доступен вам.
       - targets: ["gotcha.example.com:59080"]
 ```
 

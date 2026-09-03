@@ -39,6 +39,29 @@ func TestAgentOwnedSubsetOfRenamed(t *testing.T) {
 	}
 }
 
+// TestInfraOwnedSubsetOfRenamed — InfraOwned не должен разойтись с Renamed:
+// каждое имя обязано быть реальным ключом карты (та же причина, что и у
+// TestAgentOwnedSubsetOfRenamed — иначе Renamed[old] на отсутствующем ключе
+// вернёт "", и текст ошибки соврёт про "renamed to"), а НОВОЕ имя (значение
+// в Renamed) обязано нести префикс GOTCHA_COMPOSE_ или GOTCHA_BUILD_ —
+// у самих старых имён общего префикса нет (см. докблок InfraOwned), поэтому
+// проверяется не старое имя, как у AgentOwned, а новое.
+func TestInfraOwnedSubsetOfRenamed(t *testing.T) {
+	if len(InfraOwned) == 0 {
+		t.Fatal("InfraOwned пуст")
+	}
+	for _, old := range InfraOwned {
+		newName, ok := Renamed[old]
+		if !ok {
+			t.Errorf("InfraOwned содержит %s, которой нет среди ключей Renamed", old)
+			continue
+		}
+		if !strings.HasPrefix(newName, "GOTCHA_COMPOSE_") && !strings.HasPrefix(newName, "GOTCHA_BUILD_") {
+			t.Errorf("InfraOwned: Renamed[%s] = %s без префикса GOTCHA_COMPOSE_/GOTCHA_BUILD_", old, newName)
+		}
+	}
+}
+
 // TestCheckRenamedAllChecksWholeRegistry — CheckRenamedAll проверяет ВЕСЬ
 // реестр (режим cmd/gotcha), а не только AgentOwned. Подтест на КАЖДУЮ
 // запись реестра — не таблица, по которой не итерируют.

@@ -71,8 +71,8 @@ docker compose up -d
 `--mode=all`), `postgres` и `clickhouse`. Приложение по умолчанию слушает
 `http://localhost:59080` (compose-файл пробрасывает хостовый порт 59080 на
 порт 8080 контейнера, чтобы не конфликтовать с другими локальными стеками).
-Переопределить хостовый порт можно через `GOTCHA_PORT`, например
-`GOTCHA_PORT=8080 docker compose up -d`. Есть эквивалентные `make`-цели:
+Переопределить хостовый порт можно через `GOTCHA_COMPOSE_PORT`, например
+`GOTCHA_COMPOSE_PORT=8080 docker compose up -d`. Есть эквивалентные `make`-цели:
 `make up`, `make logs`, `make down`, `make health` (полный список — в Makefile).
 
 Дождитесь, пока приложение поднимется:

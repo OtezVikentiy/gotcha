@@ -57,6 +57,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
   | `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
 
+- **Breaking.** Eleven Docker Compose and build variables have been renamed
+  in the same wave, into their own namespace: eight Compose substitution
+  variables (database container passwords and memory ceilings, the app
+  container's memory ceiling and network MTU, the published port and bind
+  address) now carry a `GOTCHA_COMPOSE_` prefix, and the three build
+  metadata variables the `Makefile` passes into `docker-compose.yml`
+  (`DOCKER_BUILD_ENV`) now carry a `GOTCHA_BUILD_` prefix. None of these
+  eleven are read by any gotcha process — only Docker Compose itself and
+  `make` ever see them — but an old name is still caught: `.env` is loaded
+  wholesale into the app container, so an old name left there refuses
+  startup the same way a server variable would, naming the new one instead
+  of silently doing nothing. `:-` defaults are unchanged, so a fresh clone
+  with no `.env` still starts.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_PG_PASSWORD` | `GOTCHA_COMPOSE_PG_PASSWORD` |
+  | `GOTCHA_CH_PASSWORD` | `GOTCHA_COMPOSE_CH_PASSWORD` |
+  | `GOTCHA_PG_MEM_LIMIT` | `GOTCHA_COMPOSE_PG_MEM_LIMIT` |
+  | `GOTCHA_CH_MEM_LIMIT` | `GOTCHA_COMPOSE_CH_MEM_LIMIT` |
+  | `GOTCHA_MEM_LIMIT` | `GOTCHA_COMPOSE_MEM_LIMIT` |
+  | `GOTCHA_NET_MTU` | `GOTCHA_COMPOSE_NET_MTU` |
+  | `GOTCHA_PORT` | `GOTCHA_COMPOSE_PORT` |
+  | `GOTCHA_BIND` | `GOTCHA_COMPOSE_BIND` |
+  | `GOTCHA_VERSION` | `GOTCHA_BUILD_VERSION` |
+  | `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
+  | `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
+
 ## [0.33.0] - 2026-09-03
 
 ### Changed

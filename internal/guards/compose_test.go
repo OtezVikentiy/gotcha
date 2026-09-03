@@ -3,6 +3,7 @@ package guards
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -180,9 +181,88 @@ func TestComposeGotchaPortBindsLoopbackByDefault(t *testing.T) {
 		t.Fatal("сервис gotcha не публикует ни одного порта — сторож ослеп")
 	}
 	for _, p := range gotcha.Ports {
-		if !strings.Contains(p, "${GOTCHA_BIND:-127.0.0.1}") {
+		if !strings.Contains(p, "${GOTCHA_COMPOSE_BIND:-127.0.0.1}") {
 			t.Errorf("docker-compose.yml: порт %q публикуется без дефолтного бинда на loopback "+
-				"(${GOTCHA_BIND:-127.0.0.1}:...) — риск снова публиковать приложение на 0.0.0.0 по умолчанию", p)
+				"(${GOTCHA_COMPOSE_BIND:-127.0.0.1}:...) — риск снова публиковать приложение на 0.0.0.0 по умолчанию", p)
 		}
 	}
+}
+
+// composeSubstRe находит подстановки Docker Compose ${GOTCHA_...} (с
+// дефолтом `:-...`/`:?...` или без него) в тексте compose-файла.
+var composeSubstRe = regexp.MustCompile(`\$\{(GOTCHA_[A-Z0-9_]+)(?::[-?][^}]*)?\}`)
+
+// TestComposeVarsNamespaced — любая переменная GOTCHA_*, которую подставляет
+// сам Docker Compose (`${GOTCHA_...}` в docker-compose.yml/.small.yml),
+// обязана нести префикс GOTCHA_COMPOSE_ или GOTCHA_BUILD_ (envcontract.Renamed,
+// «E3, заморозка контракта — неймспейс compose и сборки»). Без него имя
+// неотличимо на вид от обычной продуктовой переменной, а cmd/gotcha.Config
+// поля под него нет и не будет: оператор, задавший, скажем, GOTCHA_PG_PASSWORD
+// напрямую на Kubernetes/systemd (без Compose в цепочке), не получает ни
+// эффекта, ни диагностики — сам compose её просто не подставит.
+//
+// Одно сквозное исключение, найденное структурно, а не вторым списком
+// руками: подстановка, которую compose пробрасывает под ТЕМ ЖЕ именем в
+// окружение контейнера (`GOTCHA_BASE_URL: ${GOTCHA_BASE_URL:-...}`,
+// `GOTCHA_SECRET_KEY: ${GOTCHA_SECRET_KEY:-...}`) — это не compose-only
+// переменная, а обычное поле cmd/gotcha.Config, которое compose лишь
+// форвардит дальше под собственным именем. Любая другая подстановка —
+// под другим ключом (`POSTGRES_PASSWORD: ${GOTCHA_PG_PASSWORD:-gotcha}`,
+// `VERSION: ${GOTCHA_VERSION:-dev}`) или вовсе без ключа (`ports:`,
+// `mem_limit:`, `driver_opts:`) — исключения не получает и обязана нести
+// префикс.
+func TestComposeVarsNamespaced(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, name := range []string{"docker-compose.yml", "docker-compose.small.yml"} {
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var doc yaml.Node
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("разбор %s: %v", name, err)
+		}
+		total += checkComposeNamespace(t, name, "", &doc)
+	}
+	if total < 10 {
+		t.Fatalf("найдено %d подстановок GOTCHA_* по всем compose-файлам, ожидалось ≥10 — обход ослеп", total)
+	}
+}
+
+// checkComposeNamespace обходит YAML-дерево одного compose-файла и проверяет
+// каждую найденную подстановку GOTCHA_* (см. докблок TestComposeVarsNamespaced
+// про сквозное исключение "ключ совпадает с именем переменной"). Возвращает
+// число найденных подстановок — по нему TestComposeVarsNamespaced проверяет,
+// что обход не ослеп.
+func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node) int {
+	t.Helper()
+	found := 0
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			found += checkComposeNamespace(t, file, "", c)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			found += checkComposeNamespace(t, file, n.Content[i].Value, n.Content[i+1])
+		}
+	case yaml.ScalarNode:
+		for _, m := range composeSubstRe.FindAllStringSubmatch(n.Value, -1) {
+			found++
+			varName := m[1]
+			if varName == parentKey {
+				continue // проброс: ключ окружения совпадает с именем переменной — это Config, не compose-only
+			}
+			if !strings.HasPrefix(varName, "GOTCHA_COMPOSE_") && !strings.HasPrefix(varName, "GOTCHA_BUILD_") {
+				t.Errorf("%s:%d: подстановка ${%s} без префикса GOTCHA_COMPOSE_/GOTCHA_BUILD_ — "+
+					"эту переменную читает только сам Docker Compose, cmd/gotcha.Config поля под неё нет",
+					file, n.Line, varName)
+			}
+		}
+	}
+	return found
 }

@@ -17,10 +17,11 @@ import (
 // литерала старого имени (см. sortedRenamedOldNames в config_test.go).
 
 // TestEnvcontractRenamedComplete — envcontract.Renamed держит РОВНО
-// тридцать пар (десять из волны контрактной уборки v0.23.0, семнадцать
-// серверных из волны заморозки контракта перед 1.0 плюс три агентские из
-// той же волны) и покрывает весь список, документированный в CHANGELOG.
-// Тест на полноту: если карту в
+// сорок одну пару (десять из волны контрактной уборки v0.23.0, семнадцать
+// серверных из волны заморозки контракта перед 1.0, три агентские из той же
+// волны плюс одиннадцать переменных compose и сборки той же волны) и
+// покрывает весь список, документированный в CHANGELOG. Тест на полноту:
+// если карту в
 // будущем случайно урежут (например, забудут добавить очередное
 // переименование или потеряют одну пару при рефакторинге), этот тест
 // укажет на расхождение с документированным контрактом, а не только на
@@ -61,9 +62,21 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 		"GOTCHA_AGENT_INTERVAL":           "GOTCHA_AGENT_INTERVAL_SECONDS",
 		"GOTCHA_AGENT_KEY":                "GOTCHA_AGENT_INGEST_KEY",
 		"GOTCHA_AGENT_TLS_SKIP_VERIFY":    "GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY",
+		// E3, заморозка контракта — неймспейс compose и сборки
+		"GOTCHA_PG_PASSWORD":  "GOTCHA_COMPOSE_PG_PASSWORD",
+		"GOTCHA_CH_PASSWORD":  "GOTCHA_COMPOSE_CH_PASSWORD",
+		"GOTCHA_PG_MEM_LIMIT": "GOTCHA_COMPOSE_PG_MEM_LIMIT",
+		"GOTCHA_CH_MEM_LIMIT": "GOTCHA_COMPOSE_CH_MEM_LIMIT",
+		"GOTCHA_MEM_LIMIT":    "GOTCHA_COMPOSE_MEM_LIMIT",
+		"GOTCHA_NET_MTU":      "GOTCHA_COMPOSE_NET_MTU",
+		"GOTCHA_PORT":         "GOTCHA_COMPOSE_PORT",
+		"GOTCHA_BIND":         "GOTCHA_COMPOSE_BIND",
+		"GOTCHA_VERSION":      "GOTCHA_BUILD_VERSION",
+		"GOTCHA_COMMIT":       "GOTCHA_BUILD_COMMIT",
+		"GOTCHA_DATE":         "GOTCHA_BUILD_DATE",
 	}
-	if len(envcontract.Renamed) != 30 {
-		t.Errorf("len(envcontract.Renamed) = %d, want 30", len(envcontract.Renamed))
+	if len(envcontract.Renamed) != 41 {
+		t.Errorf("len(envcontract.Renamed) = %d, want 41", len(envcontract.Renamed))
 	}
 	for old, newName := range want {
 		got, ok := envcontract.Renamed[old]
@@ -101,21 +114,42 @@ func agentOwnedRenamedNewNames() map[string]bool {
 	return m
 }
 
+// infraOwnedRenamedNewNames — новые имена envcontract.Renamed, которые не
+// читает НИКТО из Go-кода (ни cmd/gotcha, ни internal/agent): одиннадцать
+// переменных compose и сборки (GOTCHA_COMPOSE_*/GOTCHA_BUILD_*) — их видит
+// только сам Docker Compose (подстановка `${...}` в docker-compose.yml/
+// .small.yml) и Makefile (DOCKER_BUILD_ENV, build-args образа), поэтому у
+// Config нет и не может быть под них поля, и регрессионному подтесту
+// «новое имя применяется как обычно» здесь взяться неоткуда. Выведено ИЗ
+// envcontract.InfraOwned (internal/envcontract/renamed.go) — единственного
+// источника, не хардкод, тем же приёмом, что и agentOwnedRenamedNewNames
+// выше: добавление пары в InfraOwned меняет и это множество без правки
+// cmd/gotcha.
+func infraOwnedRenamedNewNames() map[string]bool {
+	m := make(map[string]bool, len(envcontract.InfraOwned))
+	for _, old := range envcontract.InfraOwned {
+		m[envcontract.Renamed[old]] = true
+	}
+	return m
+}
+
 // TestRenamedEnvVarNewNameChecksComplete — renamedEnvVarNewNameChecks
 // (cmd/gotcha/config_test.go, регрессионные подтесты «новое имя применяется
 // как обычно») обязана содержать РОВНО те новые имена, что есть среди
-// значений envcontract.Renamed И принадлежат cmd/gotcha (не входят в
-// agentOwnedRenamedNewNames выше) — ни лишних, ни пропущенных. Таблица и
-// карта живут в разных местах не просто рядом: без этой сверки
-// одиннадцатая пара, добавленная в envcontract.Renamed, тихо осталась бы
-// без регрессионного подтеста в TestLoadConfigRenamedEnvVarNewNameStillApplies
-// — ровно то же расхождение таблицы и истины, которое уже один раз привело
-// к тому, что девять из десяти строк таблицы не вызывались никогда
-// (таблица заявляла покрытие, которого не было). Сравнение только НОВЫХ
-// имён — они не под сторожем TestNoRenamedEnvVarNames, поэтому написать их
-// буквально можно в любом файле cmd/gotcha, в том числе в config_test.go.
+// значений envcontract.Renamed И принадлежат cmd/gotcha (не входят ни в
+// agentOwnedRenamedNewNames, ни в infraOwnedRenamedNewNames выше) — ни
+// лишних, ни пропущенных. Таблица и карта живут в разных местах не просто
+// рядом: без этой сверки одиннадцатая пара, добавленная в
+// envcontract.Renamed, тихо осталась бы без регрессионного подтеста в
+// TestLoadConfigRenamedEnvVarNewNameStillApplies — ровно то же расхождение
+// таблицы и истины, которое уже один раз привело к тому, что девять из
+// десяти строк таблицы не вызывались никогда (таблица заявляла покрытие,
+// которого не было). Сравнение только НОВЫХ имён — они не под сторожем
+// TestNoRenamedEnvVarNames, поэтому написать их буквально можно в любом
+// файле cmd/gotcha, в том числе в config_test.go.
 func TestRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 	agentOwned := agentOwnedRenamedNewNames()
+	infraOwned := infraOwnedRenamedNewNames()
 	wantNewNames := make(map[string]bool, len(envcontract.Renamed))
 	for _, newName := range envcontract.Renamed {
 		wantNewNames[newName] = true
@@ -124,12 +158,15 @@ func TestRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 		if agentOwned[newName] {
 			t.Errorf("renamedEnvVarNewNameChecks содержит %s — она агентская (envcontract.AgentOwned), регрессия для неё живёт в internal/agent/config_test.go", newName)
 		}
+		if infraOwned[newName] {
+			t.Errorf("renamedEnvVarNewNameChecks содержит %s — она compose/build (envcontract.InfraOwned), ни один Go-код её не читает, регрессионному подтесту взяться неоткуда", newName)
+		}
 		if !wantNewNames[newName] {
 			t.Errorf("renamedEnvVarNewNameChecks содержит лишнюю запись %s — среди значений envcontract.Renamed такого нет", newName)
 		}
 	}
 	for newName := range wantNewNames {
-		if agentOwned[newName] {
+		if agentOwned[newName] || infraOwned[newName] {
 			continue
 		}
 		if _, ok := renamedEnvVarNewNameChecks[newName]; !ok {

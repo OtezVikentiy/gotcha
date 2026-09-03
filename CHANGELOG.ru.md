@@ -56,6 +56,33 @@
   | `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
   | `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
 
+- **Ломающее.** Одиннадцать переменных Docker Compose и сборки переименованы
+  той же волной в собственный неймспейс: восемь переменных подстановки
+  Compose (пароли и потолки памяти контейнеров баз, потолок памяти и MTU
+  сети контейнера приложения, публикуемый порт и адрес бинда) получили
+  префикс `GOTCHA_COMPOSE_`, а три переменные метаданных сборки, которые
+  `Makefile` передаёт в `docker-compose.yml` (`DOCKER_BUILD_ENV`), — префикс
+  `GOTCHA_BUILD_`. Ни одну из этих одиннадцати не читает ни один процесс
+  gotcha — их видит только сам Docker Compose и `make`, — но старое имя
+  всё равно ловится: `.env` подключается в контейнер приложения целиком, и
+  оставленное там старое имя роняет старт так же, как серверная переменная,
+  с указанием нового имени вместо тихого бездействия. Дефолты `:-` не
+  изменились, так что чистый клон без `.env` по-прежнему стартует.
+
+  | Было | Стало |
+  |---|---|
+  | `GOTCHA_PG_PASSWORD` | `GOTCHA_COMPOSE_PG_PASSWORD` |
+  | `GOTCHA_CH_PASSWORD` | `GOTCHA_COMPOSE_CH_PASSWORD` |
+  | `GOTCHA_PG_MEM_LIMIT` | `GOTCHA_COMPOSE_PG_MEM_LIMIT` |
+  | `GOTCHA_CH_MEM_LIMIT` | `GOTCHA_COMPOSE_CH_MEM_LIMIT` |
+  | `GOTCHA_MEM_LIMIT` | `GOTCHA_COMPOSE_MEM_LIMIT` |
+  | `GOTCHA_NET_MTU` | `GOTCHA_COMPOSE_NET_MTU` |
+  | `GOTCHA_PORT` | `GOTCHA_COMPOSE_PORT` |
+  | `GOTCHA_BIND` | `GOTCHA_COMPOSE_BIND` |
+  | `GOTCHA_VERSION` | `GOTCHA_BUILD_VERSION` |
+  | `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
+  | `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
+
 ## [0.33.0] - 2026-09-03
 
 ### Изменено

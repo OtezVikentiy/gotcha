@@ -113,7 +113,7 @@ When the connection is clearly established and the first large exchange is what 
 docker compose exec gotcha wget -q -O /dev/null https://api.github.com/ && echo ok || echo fail
 ```
 
-If it hangs there too, go to `GOTCHA_NET_MTU` in [Configuration](/docs/configuration), which explains why the host works while the container doesn't, why some destinations are fine and others aren't, and why the failure can disappear for ten minutes and come back.
+If it hangs there too, go to `GOTCHA_COMPOSE_NET_MTU` in [Configuration](/docs/configuration), which explains why the host works while the container doesn't, why some destinations are fine and others aren't, and why the failure can disappear for ten minutes and come back.
 
 ## Privacy: what external channels see
 

@@ -246,7 +246,7 @@ func TestBufferShareConstantsPinned(t *testing.T) {
 			t.Errorf("%s = %g, а сторож ждёт %g (%s).\n"+
 				"Доля изменилась осознанно? Тогда пройти по обоим языкам "+
 				"internal/docs/{ru,en}/configuration.md: описание авто-дефолта "+
-				"GOTCHA_MAX_WRITER_BUFFER_BYTES и строку GOTCHA_MEM_LIMIT в таблице. "+
+				"GOTCHA_MAX_WRITER_BUFFER_BYTES и строку GOTCHA_COMPOSE_MEM_LIMIT в таблице. "+
 				"Там четыре числа — потолок кучи, доля под буферы, объём на буфер "+
 				"и сумма flat-константы, — и все они следствия этих долей. "+
 				"Выправив прозу, поднять значение здесь.",

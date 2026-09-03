@@ -70,7 +70,8 @@ This builds the `gotcha` image and starts three containers: `gotcha` (the app,
 `--mode=all`), `postgres`, and `clickhouse`. The app listens on
 `http://localhost:59080` by default (the compose file maps host port 59080 to
 the container's 8080 to avoid clashing with other local stacks). Override the
-host port with `GOTCHA_PORT`, e.g. `GOTCHA_PORT=8080 docker compose up -d`.
+host port with `GOTCHA_COMPOSE_PORT`, e.g.
+`GOTCHA_COMPOSE_PORT=8080 docker compose up -d`.
 Equivalent `make` targets exist: `make up`, `make logs`, `make down`, `make
 health` (see the Makefile for the full list).
 
