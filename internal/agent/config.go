@@ -70,8 +70,8 @@ func LoadConfig(getenv func(string) string, environ func() []string) (Config, er
 	// CheckRenamedScoped на envcontract.AgentOwned (три свои пары), не
 	// CheckRenamedAll: агент не должен отказывать на устаревших СЕРВЕРНЫХ
 	// именах в общем .env одного хоста — эти переменные он никогда не
-	// читает, отказ по ним не защита, а самоуправство (ops-review E3 T8
-	// круг 1). Идёт ДО любого разбора значений — иначе валидный когда-то
+	// читает, отказ по ним не защита, а самоуправство. Идёт ДО любого
+	// разбора значений — иначе валидный когда-то
 	// "30s" под старым именем успел бы разобраться (не как секунды, но как
 	// молчаливый дефолт) прежде, чем оператор узнает, что имя устарело.
 	if err := envcontract.CheckRenamedScoped(getenv, envcontract.AgentOwned); err != nil {
@@ -167,6 +167,19 @@ func LoadConfig(getenv func(string) string, environ func() []string) (Config, er
 // "config OK", а опечатка (например GOTCHA_AGENT_INTERVAL_SECOND без "S" на
 // конце) молча превращалась бы в «переменная не задана», то есть в тихий
 // дефолт вместо отказа старта.
+//
+// Значение проверяемого имени не смотрится — тот же контракт, что у
+// серверного checkUnknownEnvVars (cmd/gotcha/config.go): опечатка вида
+// GOTCHA_AGENT_INTERVAL_SECOND= (пустое значение) не должна проходить там,
+// где GOTCHA_AGENT_INTERVAL_SECOND=30 не прошло бы. Единственное исключение —
+// имя, которое КОГДА-ТО было легитимным и с тех пор переименовано
+// (envcontract.Renamed): его пустое значение — тот же самый
+// declared-but-unset случай, что уже пропускает CheckRenamedScoped выше
+// (docker-compose штатно прокидывает объявленные, но не заданные
+// переменные пустой строкой) — отказывать по нему здесь второй раз, уже
+// не текстом «renamed to», а общим «unknown», было бы избыточно и хуже
+// диагностикой. Имя, которого не было НИКОГДА (настоящая опечатка), под
+// это исключение не попадает ни при каком значении.
 func checkUnknownAgentEnvVars(environ func() []string) error {
 	var unknown []string
 	for _, kv := range environ() {
@@ -174,16 +187,13 @@ func checkUnknownAgentEnvVars(environ func() []string) error {
 		if !ok || !strings.HasPrefix(name, "GOTCHA_AGENT_") {
 			continue
 		}
-		// Пустое значение — та же трактовка «не задано», что и везде в
-		// конфиге агента (см. TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart):
-		// docker-compose штатно прокидывает объявленные, но не заданные
-		// переменные пустой строкой — старое ИМЯ переменной, оставшееся в
-		// compose-файле неиспользуемым, не повод отказывать старту.
-		if value == "" {
-			continue
-		}
 		if envcontract.Known[name] {
 			continue
+		}
+		if value == "" {
+			if _, wasRenamed := envcontract.Renamed[name]; wasRenamed {
+				continue
+			}
 		}
 		unknown = append(unknown, name)
 	}

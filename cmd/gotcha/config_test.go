@@ -1008,6 +1008,51 @@ func TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejected — R5 (повторное
+// ревью): GOTCHA_SECRET_KEY_PREV читается дословно (I1), а значит не
+// проходит через собственную blank-проверку strGuarded() — тот же
+// контракт («пробельное, но непустое значение — отказ старта, а не тихая
+// трактовка как настоящего значения») повторён для PREV явно. Пустой PREV
+// по-прежнему «не задано» — это отдельная ветка, не покрытая этим тестом
+// (см. «пустой PREV — норма» в TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs).
+func TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejected(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL":        "https://gotcha.example.com",
+		"GOTCHA_SECRET_KEY":      "current-master-key-at-least-32-bytes!!",
+		"GOTCHA_SECRET_KEY_PREV": "   ",
+	}
+	_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err == nil {
+		t.Fatal("GOTCHA_SECRET_KEY_PREV=\"   \": want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") || !strings.Contains(err.Error(), "whitespace") {
+		t.Errorf("error = %q, want it to name GOTCHA_SECRET_KEY_PREV and say 'whitespace'", err)
+	}
+}
+
+// TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejectedEvenInProbeMode —
+// проверка пробельности PREV не под secretKeyMattersFor(cfg.Mode): та же
+// безусловная гигиена значения, что и у strGuarded() (GOTCHA_SECRET_KEY/
+// GOTCHA_PG_DSN/GOTCHA_CH_DSN блокируют пробельное значение независимо от
+// режима). В отличие от TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode
+// (девовый PREV в probe — не отказ, probe не расшифровывает секретов),
+// пробельное значение — не про смысл ключа, а про то, что оператор,
+// скорее всего, ошибся при копировании, и это стоит поймать везде.
+func TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejectedEvenInProbeMode(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+		"GOTCHA_PROBE_KEY":        "ptok",
+		"GOTCHA_SECRET_KEY_PREV":  "   ",
+	}
+	_, err := loadConfig(getenvFrom(env), []string{"--mode=probe"})
+	if err == nil {
+		t.Fatal("GOTCHA_SECRET_KEY_PREV=\"   \" в probe: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY_PREV") {
+		t.Errorf("error = %q, want it to name GOTCHA_SECRET_KEY_PREV", err)
+	}
+}
+
 func TestLoadConfigProfileEvalInterval(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {

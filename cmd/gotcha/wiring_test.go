@@ -149,7 +149,7 @@ func TestLogDetailPolicyLogsTrustedRecipients(t *testing.T) {
 
 	trusted := capture(func() { logDetailPolicy(cfg) })
 	if !strings.Contains(trusted, "acme.example") || !strings.Contains(trusted, "acme2.example") {
-		t.Errorf("лог доверенного режима = %q, want оба доменa из GOTCHA_TRUSTED_RECIPIENTS", trusted)
+		t.Errorf("лог доверенного режима = %q, want оба домена из GOTCHA_TRUSTED_RECIPIENTS", trusted)
 	}
 
 	open := capture(func() {

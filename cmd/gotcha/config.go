@@ -776,6 +776,24 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ExportMaxBytes:        num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
 		ExportDiskBudgetBytes: num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
 	}
+	// GOTCHA_SECRET_KEY_PREV читается дословно (см. её докблок у поля выше),
+	// а значит не проходит через собственную blank-проверку strGuarded() —
+	// тот же контракт повторён здесь явно: пробельное (но непустое)
+	// значение почти наверняка случайный пробел, а не осознанный
+	// «prev-ключ из одних пробелов», и молчаливая трактовка его как
+	// настоящего ключа собрала бы кольцо шифрования с ключом, которым
+	// НИЧЕГО не шифровалось, — тот же класс ошибки, что и у
+	// GOTCHA_SECRET_KEY/GOTCHA_PG_DSN/GOTCHA_CH_DSN в strGuarded(). Пустая
+	// строка по-прежнему означает «не задано» (тримминг тут ни при чём —
+	// пустая строка не становится пробельной никаким тримингом), поэтому
+	// проверяется именно "непусто, но триммится в пусто", а не просто
+	// TrimSpace(raw) == "". Не под secretKeyMattersFor(cfg.Mode): та же
+	// гигиена значения, что и у strGuarded(), которая тоже безусловна.
+	if raw := cfg.SecretKeyPrev; raw != "" && strings.TrimSpace(raw) == "" {
+		errs = append(errs, fmt.Errorf(
+			"GOTCHA_SECRET_KEY_PREV must not be blank (got only whitespace); "+
+				"unset the variable entirely if no rotation is in progress"))
+	}
 	// GOTCHA_PG_DSN/GOTCHA_CH_DSN — единственные обязательные адреса, которых
 	// до сих пор старт не разбирал вовсе: опечатка всплывала только на первом
 	// db.NewPostgres/db.NewClickHouse, то есть после того, как остальная

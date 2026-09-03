@@ -44,13 +44,34 @@ func TestCheckUnknownAgentEnvVarsRejectsTypoInOwnNamespace(t *testing.T) {
 	}
 }
 
-// TestCheckUnknownAgentEnvVarsIgnoresEmptyValue — declared-but-unset:
+// TestCheckUnknownAgentEnvVarsRejectsTypoEvenWithEmptyValue — R3
+// (повторное ревью): значение проверяемого имени не смотрится — тот же
+// контракт, что у серверного checkUnknownEnvVars (значение там вообще не
+// читается). GOTCHA_AGENT_INTERVAL_SECOND (без завершающего S) никогда не
+// было легитимным именем ни под каким значением — пустое не должно спасать
+// опечатку от отказа так же, как не спасает непустое.
+func TestCheckUnknownAgentEnvVarsRejectsTypoEvenWithEmptyValue(t *testing.T) {
+	err := checkUnknownAgentEnvVars(environFrom("GOTCHA_AGENT_INTERVAL_SECOND="))
+	if err == nil {
+		t.Fatal("checkUnknownAgentEnvVars: want ошибку на GOTCHA_AGENT_INTERVAL_SECOND даже с пустым значением, получили nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_AGENT_INTERVAL_SECOND") {
+		t.Errorf("err = %q, want упоминание GOTCHA_AGENT_INTERVAL_SECOND", err)
+	}
+}
+
+// TestCheckUnknownAgentEnvVarsIgnoresEmptyRenamedName — declared-but-unset:
 // docker-compose штатно прокидывает объявленные, но не заданные переменные
-// пустой строкой (см. TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart)  —
-// пустое значение под опечатанным именем не повод отказывать старту.
-func TestCheckUnknownAgentEnvVarsIgnoresEmptyValue(t *testing.T) {
-	if err := checkUnknownAgentEnvVars(environFrom("GOTCHA_AGENT_INTERVAL_SECOND=")); err != nil {
-		t.Errorf("checkUnknownAgentEnvVars: %v, want nil для пустого значения", err)
+// пустой строкой (см. TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart).
+// В отличие от опечатки выше, СТАРОЕ ИМЯ, которое когда-то было легитимным
+// (envcontract.Renamed), с пустым значением — не повод отказывать старту:
+// CheckRenamedScoped выше по той же причине пропускает его тем же
+// правилом, и повторный отказ здесь под другим (менее точным) текстом был
+// бы избыточен.
+func TestCheckUnknownAgentEnvVarsIgnoresEmptyRenamedName(t *testing.T) {
+	old := sortedAgentOwnedOldNames()[0]
+	if err := checkUnknownAgentEnvVars(environFrom(old + "=")); err != nil {
+		t.Errorf("checkUnknownAgentEnvVars(%s=\"\"): %v, want nil (старое имя, пустое — declared-but-unset)", old, err)
 	}
 }
 
@@ -90,6 +111,29 @@ func TestLoadConfigRejectsUnknownOwnNamespaceVar(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GOTCHA_AGENT_INTERVAL_SECOND") {
 		t.Errorf("err = %q, want упоминание GOTCHA_AGENT_INTERVAL_SECOND", err)
+	}
+}
+
+// TestLoadConfigRejectsUnknownOwnNamespaceVarEvenWithEmptyValue — R3
+// (повторное ревью) сквозь LoadConfig целиком: GOTCHA_AGENT_TYPO= (пустое
+// значение) отказывает старт так же, как непустое, — install.sh --check не
+// должен подтверждать конфиг с настоящей опечаткой в имени только потому,
+// что значение оказалось пустым.
+func TestLoadConfigRejectsUnknownOwnNamespaceVarEvenWithEmptyValue(t *testing.T) {
+	vars := map[string]string{
+		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
+		"GOTCHA_AGENT_INGEST_KEY": "pk",
+	}
+	getenv, environ := env(vars)
+	environWithTypo := func() []string {
+		return append(environ(), "GOTCHA_AGENT_TYPO=")
+	}
+	_, err := LoadConfig(getenv, environWithTypo)
+	if err == nil {
+		t.Fatal("LoadConfig: want ошибку на GOTCHA_AGENT_TYPO= (пустое значение), получили nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_AGENT_TYPO") {
+		t.Errorf("err = %q, want упоминание GOTCHA_AGENT_TYPO", err)
 	}
 }
 
