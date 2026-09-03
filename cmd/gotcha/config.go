@@ -447,6 +447,41 @@ func checkRenamedEnvVars(getenv func(string) string) error {
 		strings.Join(parts, ", "))
 }
 
+// parseInt64Env читает key через getenv и разбирает его как int64. Незаданная
+// (пустая) переменная — не ошибка, возвращается def. На ошибке разбора тоже
+// возвращается def, а НЕ частичный результат strconv.ParseInt: на «8MiB» тот
+// вернул бы 0, а на переполнении — значение, зажатое до края int64, — то есть
+// молча превратил бы опечатку оператора в правдоподобное на вид число.
+// Ошибка при этом называет переменную по имени.
+func parseInt64Env(getenv func(string) string, key string, def int64) (int64, error) {
+	v := getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def, fmt.Errorf("%s: %w", key, err)
+	}
+	return n, nil
+}
+
+// parseIntEnv — как parseInt64Env, но для полей типа int. Парсит с
+// bitSize = разрядность int (strconv.IntSize), поэтому итоговое int(n)
+// заведомо без усечения на любой платформе — это закрывает CodeQL
+// go/incorrect-integer-conversion для доверенного env-конфига (значения
+// задаёт оператор, не атакующий).
+func parseIntEnv(getenv func(string) string, key string, def int) (int, error) {
+	v := getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, strconv.IntSize)
+	if err != nil {
+		return def, fmt.Errorf("%s: %w", key, err)
+	}
+	return int(n), nil
+}
+
 func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// envcontract-P0: старые имена переменных окружения проверяются самой
 	// первой операцией в loadConfig — до разбора флагов и до
@@ -537,39 +572,27 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return v
 	}
 
-	// num — как intNum, но для полей типа int64. На ошибке разбора возвращает
-	// def, а не частичный результат strconv.ParseInt (который на «8MiB»
-	// вернул бы 0, а на переполнении — зажатый до края диапазона): без этого
-	// нолём, случайно прошедшим все >=0-валидации, оказывалась именно
-	// опечатка оператора, а не осознанный дефолт.
+	// num/intNum — тонкие обёртки над parseInt64Env/parseIntEnv (package-level,
+	// см. ниже), которые только копят ошибку в errs; сам разбор и решение
+	// «что вернуть на ошибке» живут в проверяемых напрямую функциях, а не в
+	// замыкании, — иначе мутация в теле разбора не наблюдаема снаружи
+	// loadConfig ни одним тестом (errors.Join(errs...) уходит раньше любых
+	// cfg.X-валидаций, так что разница между def и частичным результатом
+	// strconv никогда не долетает до Config).
 	num := func(key string, def int64) int64 {
-		v := getenv(key)
-		if v == "" {
-			return def
-		}
-		n, err := strconv.ParseInt(v, 10, 64)
+		n, err := parseInt64Env(getenv, key, def)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", key, err))
-			return def
+			errs = append(errs, err)
 		}
 		return n
 	}
 
-	// intNum — как num, но для полей типа int. Парсит с bitSize = разрядность
-	// int (strconv.IntSize), поэтому итоговое int(n) заведомо без усечения на
-	// любой платформе — это закрывает CodeQL go/incorrect-integer-conversion
-	// для доверенного env-конфига (значения задаёт оператор, не атакующий).
 	intNum := func(key string, def int) int {
-		v := getenv(key)
-		if v == "" {
-			return def
-		}
-		n, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		n, err := parseIntEnv(getenv, key, def)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", key, err))
-			return def
+			errs = append(errs, err)
 		}
-		return int(n)
+		return n
 	}
 
 	// PROD-B2: редакция определяет дефолт квот. В oss безлимит (0),

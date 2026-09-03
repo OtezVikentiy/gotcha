@@ -1206,6 +1206,72 @@ func TestLoadConfigRejectsNonNumericInt64(t *testing.T) {
 	}
 }
 
+// TestParseInt64EnvReturnsDefOnParseError — проверяет parseInt64Env напрямую,
+// в обход loadConfig: errors.Join(errs...) в loadConfig возвращается раньше
+// всех cfg.X-валидаций, поэтому разница между def и частичным результатом
+// strconv.ParseInt («8MiB» → 0 при синтаксической ошибке, переполнение →
+// значение, зажатое до края int64) снаружи loadConfig ненаблюдаема ни одним
+// тестом на самом Config — её обязана ловить проверка функции разбора.
+func TestParseInt64EnvReturnsDefOnParseError(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"syntax", "8MiB"},
+		{"overflow", "999999999999999999999999"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"GOTCHA_TEST_INT64": tc.value}
+			got, err := parseInt64Env(getenvFrom(env), "GOTCHA_TEST_INT64", 5)
+			if err == nil {
+				t.Fatalf("%s: want error, got nil", tc.value)
+			}
+			if !strings.Contains(err.Error(), "GOTCHA_TEST_INT64") {
+				t.Errorf("error = %q, want it to name GOTCHA_TEST_INT64", err)
+			}
+			if got != 5 {
+				t.Errorf("got = %d, want def=5 (not a partial strconv.ParseInt result)", got)
+			}
+		})
+	}
+	// Незаданная переменная — не ошибка, просто def.
+	if got, err := parseInt64Env(getenvFrom(nil), "GOTCHA_TEST_INT64", 5); err != nil || got != 5 {
+		t.Errorf("unset: got (%d, %v), want (5, nil)", got, err)
+	}
+	// Валидное значение разбирается как есть, без ошибки.
+	if got, err := parseInt64Env(getenvFrom(map[string]string{"GOTCHA_TEST_INT64": "42"}), "GOTCHA_TEST_INT64", 5); err != nil || got != 42 {
+		t.Errorf("valid: got (%d, %v), want (42, nil)", got, err)
+	}
+}
+
+// TestParseIntEnvReturnsDefOnParseError — тот же случай для parseIntEnv
+// (полей типа int), см. TestParseInt64EnvReturnsDefOnParseError.
+func TestParseIntEnvReturnsDefOnParseError(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"syntax", "8MiB"},
+		{"overflow", "999999999999999999999999"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"GOTCHA_TEST_INT": tc.value}
+			got, err := parseIntEnv(getenvFrom(env), "GOTCHA_TEST_INT", 7)
+			if err == nil {
+				t.Fatalf("%s: want error, got nil", tc.value)
+			}
+			if !strings.Contains(err.Error(), "GOTCHA_TEST_INT") {
+				t.Errorf("error = %q, want it to name GOTCHA_TEST_INT", err)
+			}
+			if got != 7 {
+				t.Errorf("got = %d, want def=7 (not a partial strconv.ParseInt result)", got)
+			}
+		})
+	}
+	if got, err := parseIntEnv(getenvFrom(nil), "GOTCHA_TEST_INT", 7); err != nil || got != 7 {
+		t.Errorf("unset: got (%d, %v), want (7, nil)", got, err)
+	}
+	if got, err := parseIntEnv(getenvFrom(map[string]string{"GOTCHA_TEST_INT": "13"}), "GOTCHA_TEST_INT", 7); err != nil || got != 13 {
+		t.Errorf("valid: got (%d, %v), want (13, nil)", got, err)
+	}
+}
+
 // TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected —
 // GOTCHA_MAX_BUFFER_BYTES и GOTCHA_MAX_QUEUE_BYTES вошли в семью
 // «запрещённого нуля» вместе с OUTBOX_RETENTION_DAYS/MAX_EVENT_BYTES/
