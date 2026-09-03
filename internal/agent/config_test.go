@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,6 +53,53 @@ func TestLoadConfigLabels(t *testing.T) {
 	}
 	if cfg.Environment != "prod" || cfg.Role != "web" {
 		t.Fatalf("labels=(%q,%q), want (prod,web)", cfg.Environment, cfg.Role)
+	}
+}
+
+// TestLoadConfigTLSSkipVerifyAcceptedSpellings — GOTCHA_AGENT_TLS_SKIP_VERIFY
+// принимает ровно тот же набор написаний, что общий разбор булевых в
+// cmd/gotcha (trim + lower; 1/true/yes/on и 0/false/no/off в обоих
+// регистрах). Раньше switch был буквальным и падал на "True".
+func TestLoadConfigTLSSkipVerifyAcceptedSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"1", true}, {"true", true}, {"TRUE", true}, {"yes", true}, {"YES", true}, {"on", true}, {" on ", true},
+		{"0", false}, {"false", false}, {"FALSE", false}, {"no", false}, {"NO", false}, {"off", false}, {" off ", false},
+	} {
+		vars := map[string]string{
+			"GOTCHA_AGENT_ENDPOINT": "https://g.example",
+			"GOTCHA_AGENT_KEY":      "pk",
+		}
+		if tc.value != "" {
+			vars["GOTCHA_AGENT_TLS_SKIP_VERIFY"] = tc.value
+		}
+		cfg, err := LoadConfig(env(vars))
+		if err != nil {
+			t.Fatalf("GOTCHA_AGENT_TLS_SKIP_VERIFY=%q: LoadConfig: %v", tc.value, err)
+		}
+		if cfg.InsecureSkipVerify != tc.want {
+			t.Errorf("GOTCHA_AGENT_TLS_SKIP_VERIFY=%q: InsecureSkipVerify = %v, want %v", tc.value, cfg.InsecureSkipVerify, tc.want)
+		}
+	}
+}
+
+// TestLoadConfigTLSSkipVerifyRejectsInvalid — мусор в булевой переменной не
+// должен молча превращаться в false: см. TestLoadConfigRunEvaluatorsRejectsInvalid
+// в cmd/gotcha за тем же контрактом.
+func TestLoadConfigTLSSkipVerifyRejectsInvalid(t *testing.T) {
+	_, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT":        "https://g.example",
+		"GOTCHA_AGENT_KEY":             "pk",
+		"GOTCHA_AGENT_TLS_SKIP_VERIFY": "ture",
+	}))
+	if err == nil {
+		t.Fatal("GOTCHA_AGENT_TLS_SKIP_VERIFY=ture: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_AGENT_TLS_SKIP_VERIFY") || !strings.Contains(err.Error(), "invalid boolean") {
+		t.Errorf("error = %q, want it to name GOTCHA_AGENT_TLS_SKIP_VERIFY and say 'invalid boolean'", err)
 	}
 }
 

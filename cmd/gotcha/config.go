@@ -340,17 +340,6 @@ var validModes = map[string]bool{
 	"ingest": true, "web": true, "uptime": true, "probe": true, "all": true,
 }
 
-// optionalBoolEnv — тристабильный флаг: nil, если переменная не задана. Нужен
-// там, где «не задано» и «задано false» означают разное.
-func optionalBoolEnv(getenv func(string) string, name string) *bool {
-	raw := strings.TrimSpace(getenv(name))
-	if raw == "" {
-		return nil
-	}
-	v := raw == "1" || strings.EqualFold(raw, "true") || strings.EqualFold(raw, "yes")
-	return &v
-}
-
 // defaultScrubKeys — denylist ключей для PII-scrubbing по умолчанию (PRIV-H1).
 // Список живёт в internal/ingest (ingest.DefaultDenyKeys), а не здесь: та же
 // маска применяется в internal/export к выгрузкам, и два независимых списка
@@ -575,6 +564,15 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		defQuota = 1_000_000
 	}
 
+	// RunEvaluators — тристабильный: nil, если GOTCHA_RUN_EVALUATORS не задан
+	// (см. докблок поля). Разбор — тот же parseBool, что у всех остальных
+	// булевых полей, поэтому «ture» копит ошибку в errs, а не тихо становится
+	// false.
+	var runEvaluators *bool
+	if v, set := parseBool("GOTCHA_RUN_EVALUATORS"); set {
+		runEvaluators = &v
+	}
+
 	cfg := Config{
 		Mode:                     *mode,
 		MigrateOnly:              *migrateOnly,
@@ -611,7 +609,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		AlertBudgetLimit:         intNum("GOTCHA_ALERT_BUDGET_LIMIT", 50),
 		CardinalityLimit:         intNum("GOTCHA_CARDINALITY_LIMIT", 10000),
 		CardinalityWindowSeconds: intNum("GOTCHA_CARDINALITY_WINDOW_SECONDS", 3600),
-		RunEvaluators:            optionalBoolEnv(getenv, "GOTCHA_RUN_EVALUATORS"),
+		RunEvaluators:            runEvaluators,
 		MetricEvalInterval:       intNum("GOTCHA_METRIC_EVAL_INTERVAL_SECONDS", 60),
 		ProfileEvalInterval:      intNum("GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS", 300),
 		HostEvalInterval:         intNum("GOTCHA_HOST_EVAL_INTERVAL_SECONDS", 60),

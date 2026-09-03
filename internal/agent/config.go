@@ -61,12 +61,30 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 		cfg.Interval = d
 	}
-	switch getenv("GOTCHA_AGENT_TLS_SKIP_VERIFY") {
-	case "", "0", "false":
-	case "1", "true":
-		cfg.InsecureSkipVerify = true
-	default:
-		return Config{}, fmt.Errorf("GOTCHA_AGENT_TLS_SKIP_VERIFY must be 0/1/true/false")
+	v, set, err := parseBool("GOTCHA_AGENT_TLS_SKIP_VERIFY", getenv("GOTCHA_AGENT_TLS_SKIP_VERIFY"))
+	if err != nil {
+		return Config{}, err
+	}
+	if set {
+		cfg.InsecureSkipVerify = v
 	}
 	return cfg, nil
+}
+
+// parseBool — тот же разбор булевых значений env, что у parseBool в
+// cmd/gotcha/config.go: trim + lower, истина 1/true/yes/on, ложь
+// 0/false/no/off, пустая строка — «не задано». agent не может импортировать
+// package main, поэтому набор синхронизируется вручную, а не общим кодом.
+func parseBool(name, raw string) (value bool, set bool, err error) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "":
+		return false, false, nil
+	case "1", "true", "yes", "on":
+		return true, true, nil
+	case "0", "false", "no", "off":
+		return false, true, nil
+	default:
+		return false, true, fmt.Errorf("%s: invalid boolean %q (want 1/0/true/false/yes/no/on/off)", name, raw)
+	}
 }

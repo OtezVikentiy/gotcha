@@ -1401,8 +1401,8 @@ func TestLoadConfigRunEvaluatorsTriState(t *testing.T) {
 		value string
 		want  bool
 	}{
-		{"1", true}, {"true", true}, {"YES", true},
-		{"0", false}, {"false", false}, {"nonsense", false},
+		{"1", true}, {"true", true}, {"TRUE", true}, {"yes", true}, {"YES", true}, {"on", true}, {" on ", true},
+		{"0", false}, {"false", false}, {"FALSE", false}, {"no", false}, {"NO", false}, {"off", false}, {" off ", false},
 	} {
 		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_RUN_EVALUATORS": tc.value}), nil)
 		if err != nil {
@@ -1415,6 +1415,20 @@ func TestLoadConfigRunEvaluatorsTriState(t *testing.T) {
 		if *cfg.RunEvaluators != tc.want {
 			t.Errorf("GOTCHA_RUN_EVALUATORS=%q: RunEvaluators = %v, want %v", tc.value, *cfg.RunEvaluators, tc.want)
 		}
+	}
+}
+
+// TestLoadConfigRunEvaluatorsRejectsInvalid — «ture» и подобный мусор обязаны
+// ронять старт, а не тихо трактоваться как false: раньше RunEvaluators шёл в
+// обход общего parseBool через отдельный разбор (optionalBoolEnv) и такие
+// значения проглатывал молча.
+func TestLoadConfigRunEvaluatorsRejectsInvalid(t *testing.T) {
+	_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_RUN_EVALUATORS": "ture"}), nil)
+	if err == nil {
+		t.Fatal("GOTCHA_RUN_EVALUATORS=ture: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_RUN_EVALUATORS") || !strings.Contains(err.Error(), "invalid boolean") {
+		t.Errorf("error = %q, want it to name GOTCHA_RUN_EVALUATORS and say 'invalid boolean'", err)
 	}
 }
 

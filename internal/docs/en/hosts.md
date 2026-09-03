@@ -92,7 +92,7 @@ journalctl -u gotcha-agent -n 50
 | `GOTCHA_AGENT_INTERVAL` | no | `30s` | Collection and export interval. Valid range **10s–5m**: lower risks self-DoS'ing ingest with your own key, higher causes false "Silence" threshold trips. |
 | `GOTCHA_AGENT_HOSTNAME` | no | the server's `os.Hostname()` | Overrides `host.name`, for when the system hostname isn't what you want on the card. |
 | `GOTCHA_AGENT_CA_CERT` | no | *(empty)* | Path to a PEM CA file — for instances with a self-signed TLS certificate. The recommended way to trust such an instance. |
-| `GOTCHA_AGENT_TLS_SKIP_VERIFY` | no | `false` | Disables TLS certificate verification for the instance entirely (`0`/`1`/`true`/`false`). A last resort — prefer `GOTCHA_AGENT_CA_CERT`; this removes MITM protection on the metric delivery channel. |
+| `GOTCHA_AGENT_TLS_SKIP_VERIFY` | no | `false` | Disables TLS certificate verification for the instance entirely (`1`/`0`/`true`/`false`/`yes`/`no`/`on`/`off`, case-insensitive). A last resort — prefer `GOTCHA_AGENT_CA_CERT`; this removes MITM protection on the metric delivery channel. |
 | `GOTCHA_AGENT_ENVIRONMENT` | no | *(empty)* | Host environment label (`prod`, `staging`, …). Lands in the `deployment.environment` resource attribute; an empty value isn't emitted. |
 | `GOTCHA_AGENT_ROLE` | no | *(empty)* | Host role label (`web`, `db`, …). Lands in the `host.role` resource attribute; an empty value isn't emitted. |
 
