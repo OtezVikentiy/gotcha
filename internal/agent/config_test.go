@@ -330,7 +330,7 @@ func sortedAgentOwnedOldNames() []string {
 // internal/envcontract/renamed.go): КАЖДОЕ своё старое имя с непустым
 // значением роняет старт агента, сообщение называет И старое, И новое имя.
 // Подтест на КАЖДУЮ пару (t.Run по старому имени), а не одна проверка на
-// первую попавшуюся — иначе неоднородный баг в envcontract.CheckRenamed,
+// первую попавшуюся — иначе неоднородный баг в envcontract.CheckRenamedScoped,
 // срабатывающий не на всех именах, прошёл бы незамеченным.
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
 	for _, old := range sortedAgentOwnedOldNames() {
@@ -420,7 +420,7 @@ var agentRenamedEnvVarNewNameChecks = map[string]struct {
 
 // TestAgentRenamedEnvVarNewNameChecksComplete — agentRenamedEnvVarNewNameChecks
 // обязана содержать РОВНО новые имена envcontract.AgentOwned (единственный
-// источник — та же карта, что LoadConfig сужает CheckRenamed до) — ни
+// источник — тот же срез, что LoadConfig передаёт в CheckRenamedScoped) — ни
 // лишних, ни пропущенных. То же назначение, что
 // TestRenamedEnvVarNewNameChecksComplete в cmd/gotcha: без этой сверки
 // новая агентская пара тихо осталась бы без регрессии.

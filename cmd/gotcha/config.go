@@ -475,7 +475,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// что его .env устарел, — бессмысленный цикл: он мог бы поправить
 	// секрет, перезапуститься и невольно продолжить работать с молча
 	// применёнными дефолтами вместо остальных своих значений.
-	if err := envcontract.CheckRenamed(getenv, nil); err != nil {
+	if err := envcontract.CheckRenamedAll(getenv); err != nil {
 		return Config{}, err
 	}
 
@@ -870,7 +870,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// перезапуститься и невольно продолжить стартовать со слабым ключом ещё
 	// один цикл деплоя, пока не увидит следующую ошибку.
 	//
-	// Тем не менее envcontract.CheckRenamed в самом начале loadConfig стоит ВЫШЕ
+	// Тем не менее envcontract.CheckRenamedAll в самом начале loadConfig стоит ВЫШЕ
 	// даже этой проверки: старое имя означает, что часть .env оператора не
 	// прочиталась ВООБЩЕ, тихо заменившись дефолтом, — это более базовая
 	// поломка конфига, чем состояние конкретно секретного ключа, и о ней

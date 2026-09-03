@@ -62,15 +62,14 @@ func intNum(name, raw string) (value int, set bool, err error) {
 // LoadConfig читает окружение. getenv параметром — детерминированные тесты
 // без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
 func LoadConfig(getenv func(string) string) (Config, error) {
-	// envcontract.CheckRenamed сужен до envcontract.AgentOwned (три свои
-	// пары), не весь реестр: агент не должен отказывать на устаревших
-	// СЕРВЕРНЫХ именах в общем .env одного хоста — эти переменные он
-	// никогда не читает, отказ по ним не защита, а самоуправство
-	// (ops-review E3 T8 круг 1). Идёт ДО любого разбора значений — иначе
-	// валидный когда-то "30s" под старым именем успел бы разобраться (не
-	// как секунды, но как молчаливый дефолт) прежде, чем оператор узнает,
-	// что имя устарело.
-	if err := envcontract.CheckRenamed(getenv, envcontract.AgentOwned); err != nil {
+	// CheckRenamedScoped на envcontract.AgentOwned (три свои пары), не
+	// CheckRenamedAll: агент не должен отказывать на устаревших СЕРВЕРНЫХ
+	// именах в общем .env одного хоста — эти переменные он никогда не
+	// читает, отказ по ним не защита, а самоуправство (ops-review E3 T8
+	// круг 1). Идёт ДО любого разбора значений — иначе валидный когда-то
+	// "30s" под старым именем успел бы разобраться (не как секунды, но как
+	// молчаливый дефолт) прежде, чем оператор узнает, что имя устарело.
+	if err := envcontract.CheckRenamedScoped(getenv, envcontract.AgentOwned); err != nil {
 		return Config{}, err
 	}
 	cfg := Config{
