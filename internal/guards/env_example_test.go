@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
 // envReaderFuncs — функции cmd/gotcha/config.go, читающие переменные
@@ -23,6 +25,12 @@ import (
 // ${GOTCHA_SECRET_KEY:-...}`) от настоящей compose-only переменной под тем
 // же именем ключа — сигнатура (key, def string) совпадает со str/boolEnvDef,
 // разбор общий.
+// parseBool добавлен задачей 10 (E3, реестр известных имён, круг правок):
+// без него GOTCHA_EVALUATORS_ENABLED — читается напрямую через
+// parseBool("GOTCHA_EVALUATORS_ENABLED"), не через boolEnv/boolEnvDef,
+// у RunEvaluators особая тристабильная логика (nil/true/false) — не
+// попадала в собранный набор ни здесь, ни в internal/envcontract.Known,
+// хотя реально читается cmd/gotcha/config.go.
 var envReaderFuncs = map[string]bool{
 	"str":             true,
 	"strGuarded":      true,
@@ -32,6 +40,7 @@ var envReaderFuncs = map[string]bool{
 	"boolEnvDef":      true,
 	"optionalBoolEnv": true,
 	"getenv":          true,
+	"parseBool":       true,
 }
 
 // numericReaderFuncs — подмножество envReaderFuncs, читающее переменную как
@@ -326,5 +335,54 @@ func TestMemlimitEnvVarDiscovered(t *testing.T) {
 	vars := collectOSEnvVars(t, tree.Root, filepath.Join("internal", "memlimit", "memlimit.go"))
 	if !vars["GOMEMLIMIT"] {
 		t.Fatalf("collectOSEnvVars(internal/memlimit/memlimit.go) = %v, want it to contain GOMEMLIMIT", vars)
+	}
+}
+
+// TestKnownEnvVarsCoversConfig — E3 T10: реестр известных имён
+// envcontract.Known обязан быть НАДмножеством всего, что реально читают
+// cmd/gotcha/config.go и internal/agent/config.go — иначе новая переменная,
+// добавленная в конфиг без правки Known, стала бы «неизвестной» для
+// checkUnknownEnvVars (cmd/gotcha/config.go) и валила бы старт легитимному
+// оператору. Источник истины — тот же AST-сборщик collectGotchaEnvVars, что
+// уже сверяет .env.example выше в TestEnvExampleCoversConfig — не вторая
+// копия разбора.
+func TestKnownEnvVarsCoversConfig(t *testing.T) {
+	tree := Load(t)
+	serverVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go"), nil)
+	if len(serverVars) < 20 {
+		t.Fatalf("collected only %d server variables — cmd/gotcha/config.go parsing is broken", len(serverVars))
+	}
+	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"), nil)
+	if len(agentVars) < 8 {
+		t.Fatalf("collected only %d agent variables — internal/agent/config.go parsing is broken", len(agentVars))
+	}
+	for v := range serverVars {
+		if !envcontract.Known[v] {
+			t.Errorf("%s is read by cmd/gotcha/config.go but missing from envcontract.Known", v)
+		}
+	}
+	for v := range agentVars {
+		if !envcontract.Known[v] {
+			t.Errorf("%s is read by internal/agent/config.go but missing from envcontract.Known", v)
+		}
+	}
+}
+
+// TestKnownEnvVarsHaveNoGhosts — обратная сверка: каждое имя в
+// envcontract.Known обязано реально читаться cmd/gotcha/config.go или
+// internal/agent/config.go. Без этого теста Known мог бы «знать» имена-
+// призраки (опечатка при ручном заведении записи, оставшееся после
+// переименования старое имя) — checkUnknownEnvVars пропустил бы реальную
+// опечатку оператора, случайно совпавшую с призраком, и реестр перестал бы
+// быть надёжной проверкой в обе стороны, которой его делает
+// TestKnownEnvVarsCoversConfig выше.
+func TestKnownEnvVarsHaveNoGhosts(t *testing.T) {
+	tree := Load(t)
+	serverVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go"), nil)
+	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"), nil)
+	for v := range envcontract.Known {
+		if !serverVars[v] && !agentVars[v] {
+			t.Errorf("envcontract.Known contains %s, but neither cmd/gotcha/config.go nor internal/agent/config.go reads it — stale/ghost entry", v)
+		}
 	}
 }

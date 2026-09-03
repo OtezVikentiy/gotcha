@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1199,4 +1200,163 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadConfigChecked оборачивает loadConfig проверкой неизвестных имён,
+// которую loadConfig сам выполнить не может (см. докблок checkUnknownEnvVars
+// ниже), в ЕДИНСТВЕННОМ порядке, который держит диагностику точной: сначала
+// loadConfig (а внутри него, самой первой операцией, envcontract.CheckRenamedAll),
+// и только если он прошёл — checkUnknownEnvVars. Устаревшее имя из
+// envcontract.Renamed не входит в envcontract.Known (оно больше не читается
+// ни одним конфигом), так что если поменять эти два вызова местами,
+// устаревшее имя получит не точный ответ «renamed to NEW_NAME», а куда менее
+// полезную догадку по Левенштейну (или вовсе никакой, если расстояние до
+// ближайшего известного имени больше порога) — оператор увидит не то
+// сообщение, которое разработчики предусмотрели именно для его случая.
+//
+// main.go зовёт эту функцию вместо loadConfig напрямую; internal/agent эту
+// проверку не выполняет вовсе (свой процесс, свой куда более узкий набор
+// переменных, чужая GOTCHA_* переменная в общем `.env` для него — не повод
+// отказывать в старте, см. envcontract.CheckRenamedScoped).
+func loadConfigChecked(getenv func(string) string, environ func() []string, args []string) (Config, error) {
+	cfg, err := loadConfig(getenv, args)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := checkUnknownEnvVars(environ); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// checkUnknownEnvVars отказывает старту, если в окружении процесса
+// присутствует переменная с префиксом GOTCHA_, которую не читает ни
+// cmd/gotcha (envcontract.Known), ни internal/agent (тоже входит в
+// envcontract.Known — сервер и агент штатно делят один хост и один `.env`,
+// см. докблок envcontract.Known). Опечатка в текущем имени (GOTCHA_HSTS_ENABLE
+// вместо GOTCHA_HSTS_ENABLED) раньше проходила молча с дефолтом; теперь она
+// такой же fail-fast, как устаревшее имя (envcontract.CheckRenamedAll).
+//
+// GOTCHA_COMPOSE_* и GOTCHA_BUILD_* исключены целиком по префиксу, а не
+// перечислением: их читает сам Docker Compose (подстановка ${...}) или
+// Makefile (build-args образа), ни один Go-процесс их не читает и знать их
+// поимённо не обязан — `env_file: .env` в docker-compose.yml легитимно
+// кладёт их в окружение процесса gotcha наравне со всем остальным файлом.
+// Обратная сторона: опечатка ВНУТРИ этих двух префиксов (GOTCHA_COMPOSE_PG_PASWORD)
+// проходит молча — исключение защищает диапазон имён целиком, не каждое имя
+// в нём по отдельности; страховка на этот случай — не эта проверка, а то,
+// что сам Compose откажет в подстановке для `${GOTCHA_COMPOSE_PG_PASSWORD:?}`
+// без дефолта, если оператор реально забудет пароль, а не опечатается в
+// имени переменной, которую Compose и так не потребует.
+//
+// Принимает environ func() []string, а не читает os.Environ() напрямую:
+// loadConfig выше принимает только getenv func(string) string и
+// принципиально не может перечислить всё окружение процесса (интерфейс «дай
+// значение по ключу», а не «покажи, что вообще задано») — эта проверка
+// требует именно перечисления, поэтому она отдельная функция со своей
+// точкой инъекции (в проде — os.Environ, в тестах — срез-фикстура), а не
+// ветка внутри loadConfig.
+func checkUnknownEnvVars(environ func() []string) error {
+	var unknown []string
+	for _, kv := range environ() {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(name, "GOTCHA_") {
+			continue
+		}
+		if envcontract.Known[name] {
+			continue
+		}
+		if strings.HasPrefix(name, "GOTCHA_COMPOSE_") || strings.HasPrefix(name, "GOTCHA_BUILD_") {
+			continue
+		}
+		unknown = append(unknown, name)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	// Отсортировано — иначе порядок вхождений в тексте ошибки менялся бы
+	// между запусками вместе с порядком os.Environ() (тот не гарантирован).
+	sort.Strings(unknown)
+	parts := make([]string, len(unknown))
+	for i, name := range unknown {
+		if suggestions := suggestKnownNames(name); len(suggestions) > 0 {
+			parts[i] = fmt.Sprintf("%s (unknown; did you mean %s?)", name, strings.Join(suggestions, " or "))
+		} else {
+			parts[i] = fmt.Sprintf("%s (unknown)", name)
+		}
+	}
+	return fmt.Errorf("unknown environment variable(s), check for typos: %s", strings.Join(parts, ", "))
+}
+
+// maxSuggestDistance — порог расстояния Левенштейна для подсказки похожего
+// известного имени: 2 ловит характерные опечатки одной буквой или коротким
+// суффиксом (GOTCHA_HSTS_ENABLE → GOTCHA_HSTS_ENABLED, вставка одной буквы;
+// GOTCHA_INGEST_RATE_PER_SEK → GOTCHA_INGEST_RATE_PER_SEC, замена одной), но
+// не расползается на имена из другой подсистемы, которые случайно похожи
+// длиной и общими буквами, а не опечаткой одного и того же имени.
+const maxSuggestDistance = 2
+
+// suggestKnownNames возвращает известные имена в пределах maxSuggestDistance
+// редактирований от name, отсортированные ДЕТЕРМИНИРОВАННО: сначала по
+// расстоянию, затем по алфавиту. envcontract.Known — map, обход которой не
+// гарантирует порядок сам по себе (как и находки CheckRenamedAll выше по
+// файлу) — без сортировки текст ошибки менялся бы между запусками при
+// нескольких кандидатах на одном расстоянии.
+func suggestKnownNames(name string) []string {
+	type candidate struct {
+		name string
+		dist int
+	}
+	var candidates []candidate
+	for known := range envcontract.Known {
+		if d := levenshteinDistance(name, known); d <= maxSuggestDistance {
+			candidates = append(candidates, candidate{known, d})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].dist != candidates[j].dist {
+			return candidates[i].dist < candidates[j].dist
+		}
+		return candidates[i].name < candidates[j].name
+	})
+	out := make([]string, len(candidates))
+	for i, c := range candidates {
+		out[i] = c.name
+	}
+	return out
+}
+
+// levenshteinDistance — расстояние редактирования (вставка/удаление/замена
+// одного символа) между двумя строками, классическое динамическое
+// программирование в две строки-буфера (а не полная матрица) — длины имён
+// переменных окружения малы (десятки символов), но нет причины заводить
+// O(n*m) память там, где хватает O(m).
+func levenshteinDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			deletion := prev[j] + 1
+			insertion := curr[j-1] + 1
+			substitution := prev[j-1] + cost
+			min := deletion
+			if insertion < min {
+				min = insertion
+			}
+			if substitution < min {
+				min = substitution
+			}
+			curr[j] = min
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
 }

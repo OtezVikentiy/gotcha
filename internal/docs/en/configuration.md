@@ -8,6 +8,8 @@ A numeric variable carries its unit right in the name: `_SECONDS`, `_DAYS`, `_HO
 
 The unit-naming convention is enforced by `internal/guards/env_example_test.go`: ANY variable read in `cmd/gotcha/config.go` or `internal/agent/config.go` as a bare number (`intNum`/`num`) is suspect by default — the gate fails it unless its name carries the matching suffix or it is listed explicitly in that test's closed `unitlessCounters` map (bare counters — limits, concurrency, a port — that have no unit to carry). Adding a new line to that list is a review-visible change, not a quiet way around the convention.
 
+Separately from the value, the variable's NAME is checked at startup too. A `GOTCHA_*` name that neither `cmd/gotcha` nor `internal/agent` reads (the registry of known names — `internal/envcontract/known.go`, the union of server and agent variables: the agent is normally installed on the same host as the server, sharing one `.env`) refuses to start, naming the closest known name (edit distance of at most two) — a typo like `GOTCHA_HSTS_ENABLE` (missing the `D`) no longer sails through silently on a default. The exception is the `GOTCHA_COMPOSE_*` and `GOTCHA_BUILD_*` prefixes: Docker Compose itself reads those (via `${...}` substitution), or `Makefile` does (image build-args) — no Go process reads them, and the registry of known names doesn't include them.
+
 ## How to set environment variables with Docker Compose
 
 Two equivalent ways:

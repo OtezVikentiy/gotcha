@@ -173,3 +173,27 @@ func TestCheckRenamedListsAllFindings(t *testing.T) {
 		}
 	}
 }
+
+// TestRenamedTargetsAreKnown — транзитивность реестра (E3 T10): цель
+// (новое имя) каждой записи Renamed, которую реально читает Go-код —
+// то есть КРОМЕ InfraOwned, чьи новые имена намеренно compose/build-
+// namespaced и в Known не входят, см. докблоки InfraOwned и Known — обязана
+// быть именем из Known. Ловит переименование уже переименованного: если
+// будущая волна переименует B (уже бывшее целью старой записи A→B) в C,
+// запись A→B молча останется указывать на B, которого Known больше не
+// содержит, — оператор со старым именем A получит подсказку «renamed to
+// B», применит её и тут же наткнётся на отказ по неизвестному B.
+func TestRenamedTargetsAreKnown(t *testing.T) {
+	infra := map[string]bool{}
+	for _, old := range InfraOwned {
+		infra[old] = true
+	}
+	for old, newName := range Renamed {
+		if infra[old] {
+			continue
+		}
+		if !Known[newName] {
+			t.Errorf("Renamed[%s] = %s, но %s отсутствует в Known — переименование ведёт в никуда", old, newName, newName)
+		}
+	}
+}

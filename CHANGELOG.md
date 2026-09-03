@@ -85,6 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
   | `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
 
+- Startup now refuses an unrecognized `GOTCHA_*` variable in the environment,
+  naming the closest known variable if one is within a couple of letters —
+  a typo in a variable name (`GOTCHA_HSTS_ENABLE` without the `D`) used to
+  pass silently and apply a default, the same class of mistake the renamed-
+  variable check above already caught for old names. `GOTCHA_COMPOSE_*` and
+  `GOTCHA_BUILD_*` are exempt: Compose and the build itself read those, not
+  the gotcha process.
+
 ## [0.33.0] - 2026-09-03
 
 ### Changed

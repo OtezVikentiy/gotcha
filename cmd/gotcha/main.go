@@ -361,7 +361,7 @@ func run() error {
 		fmt.Println("gotcha", version.String())
 		return nil
 	}
-	cfg, err := loadConfig(os.Getenv, os.Args[1:])
+	cfg, err := loadConfigChecked(os.Getenv, os.Environ, os.Args[1:])
 	if err != nil {
 		return err
 	}
