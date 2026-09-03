@@ -160,7 +160,7 @@ func TestComposeServicesAreBounded(t *testing.T) {
 
 // TestComposeGotchaPortBindsLoopbackByDefault — публикация порта приложения
 // (ports: у сервиса gotcha) обязана по умолчанию биндиться ТОЛЬКО на
-// loopback (${GOTCHA_BIND:-127.0.0.1}), а не на все интерфейсы (W3-D,
+// loopback (${GOTCHA_COMPOSE_BIND:-127.0.0.1}), а не на все интерфейсы (W3-D,
 // запись 6, ревью 2026-08-27). Раньше compose публиковал 59080 на 0.0.0.0
 // безусловно: чек-лист прод-развёртывания (installation.md) ставит перед
 // приложением TLS-реверс-прокси, но голый HTTP-вход и открытый /metrics
@@ -211,10 +211,24 @@ var composeSubstRe = regexp.MustCompile(`\$\{(GOTCHA_[A-Z0-9_]+)(?::[-?][^}]*)?\
 // `VERSION: ${GOTCHA_VERSION:-dev}`) или вовсе без ключа (`ports:`,
 // `mem_limit:`, `driver_opts:`) — исключения не получает и обязана нести
 // префикс.
+//
+// Критерий исключения — не только «ключ YAML совпадает с именем переменной»
+// (найдено M2, круг правок 1): такое совпадение само по себе ничего не
+// доказывает — `GOTCHA_NET_MTU: ${GOTCHA_NET_MTU:-1450}` в environment прошло
+// бы этот критерий, хотя GOTCHA_NET_MTU не поле cmd/gotcha.Config, а
+// переименованная (в этой же волне) compose-only переменная. Исключение
+// действует, только если имя ЕЩЁ И реально читает cmd/gotcha/config.go —
+// сверяется с configVars (collectGotchaEnvVars, env_example_test.go, та же
+// истина, которой поверяет .env.example) — а не со вторым списком имён
+// вручную.
 func TestComposeVarsNamespaced(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
 		t.Fatal(err)
+	}
+	configVars := collectGotchaEnvVars(t, root, filepath.Join("cmd", "gotcha", "config.go"), nil)
+	if len(configVars) < 20 {
+		t.Fatalf("обход ослеп: cmd/gotcha/config.go даёт только %d переменных, ожидалось ≥20", len(configVars))
 	}
 	total := 0
 	for _, name := range []string{"docker-compose.yml", "docker-compose.small.yml"} {
@@ -226,7 +240,7 @@ func TestComposeVarsNamespaced(t *testing.T) {
 		if err := yaml.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("разбор %s: %v", name, err)
 		}
-		total += checkComposeNamespace(t, name, "", &doc)
+		total += checkComposeNamespace(t, name, "", &doc, configVars)
 	}
 	if total < 10 {
 		t.Fatalf("найдено %d подстановок GOTCHA_* по всем compose-файлам, ожидалось ≥10 — обход ослеп", total)
@@ -235,27 +249,27 @@ func TestComposeVarsNamespaced(t *testing.T) {
 
 // checkComposeNamespace обходит YAML-дерево одного compose-файла и проверяет
 // каждую найденную подстановку GOTCHA_* (см. докблок TestComposeVarsNamespaced
-// про сквозное исключение "ключ совпадает с именем переменной"). Возвращает
-// число найденных подстановок — по нему TestComposeVarsNamespaced проверяет,
-// что обход не ослеп.
-func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node) int {
+// про сквозное исключение "ключ совпадает с именем переменной, которое
+// реально читает cmd/gotcha.Config"). Возвращает число найденных подстановок
+// — по нему TestComposeVarsNamespaced проверяет, что обход не ослеп.
+func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node, configVars map[string]bool) int {
 	t.Helper()
 	found := 0
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			found += checkComposeNamespace(t, file, "", c)
+			found += checkComposeNamespace(t, file, "", c, configVars)
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			found += checkComposeNamespace(t, file, n.Content[i].Value, n.Content[i+1])
+			found += checkComposeNamespace(t, file, n.Content[i].Value, n.Content[i+1], configVars)
 		}
 	case yaml.ScalarNode:
 		for _, m := range composeSubstRe.FindAllStringSubmatch(n.Value, -1) {
 			found++
 			varName := m[1]
-			if varName == parentKey {
-				continue // проброс: ключ окружения совпадает с именем переменной — это Config, не compose-only
+			if varName == parentKey && configVars[varName] {
+				continue // проброс: ключ окружения совпадает с именем переменной, И это реально поле cmd/gotcha.Config
 			}
 			if !strings.HasPrefix(varName, "GOTCHA_COMPOSE_") && !strings.HasPrefix(varName, "GOTCHA_BUILD_") {
 				t.Errorf("%s:%d: подстановка ${%s} без префикса GOTCHA_COMPOSE_/GOTCHA_BUILD_ — "+

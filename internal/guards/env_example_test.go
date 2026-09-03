@@ -15,8 +15,17 @@ import (
 // (у optionalBoolEnv имя стоит вторым аргументом, поэтому «первый аргумент»
 // недостаточен). go/ast, а не регэксп — чтобы не ловить имена в текстах
 // ошибок и комментариях.
+//
+// strGuarded добавлен кругом правок 1 задачи 9 (M2): без него GOTCHA_PG_DSN/
+// GOTCHA_CH_DSN/GOTCHA_SECRET_KEY — реальные поля cmd/gotcha.Config — не
+// попадали в собранный набор, и TestComposeVarsNamespaced (compose_test.go)
+// не мог структурно отличить их форвардинг (`GOTCHA_SECRET_KEY:
+// ${GOTCHA_SECRET_KEY:-...}`) от настоящей compose-only переменной под тем
+// же именем ключа — сигнатура (key, def string) совпадает со str/boolEnvDef,
+// разбор общий.
 var envReaderFuncs = map[string]bool{
 	"str":             true,
+	"strGuarded":      true,
 	"intNum":          true,
 	"num":             true,
 	"boolEnv":         true,
