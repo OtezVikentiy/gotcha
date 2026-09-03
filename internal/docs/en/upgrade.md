@@ -272,10 +272,12 @@ is now a startup refusal, naming the variable in the error:
   `GOTCHA_SECRET_KEY_PREV`. Full rotation procedure —
   [Privacy and 152-FZ](/docs/privacy).
 
-**Preflight check.** Before upgrading a real instance, run the new binary
-against a copy of your real `.env` on staging — the same command the
-"Running migrations as a separate step" section below uses to initialize a
-schema:
+**Preflight check.** Before upgrading a real instance, it's worth checking
+ahead of time that the new binary accepts your `.env` with no findings —
+but `--migrate-only` doesn't just check the config: once the checks pass,
+it connects to the database and actually applies migrations to it. Run
+this check on staging, not on production — the same command the "Running
+migrations as a separate step" section below uses to initialize a schema:
 
 ```bash
 docker compose --env-file .env run --rm --no-deps gotcha --migrate-only
@@ -285,9 +287,9 @@ Config parsing and every check above (plus the rename checks from the
 sections before this one) run before the app opens a single database
 connection — if `.env` has anything wrong, this command exits non-zero with
 a single `ERROR ... GOTCHA_NAME: ...` line before any migration touches
-staging. Exit zero doesn't just mean "config is clean" — it's followed by a
-real migration run: `--migrate-only` doesn't check the database, it
-connects to it and changes its schema.
+staging. Exit zero doesn't just mean "config is clean" — it also means a
+real migration run against whichever database the command pointed at
+already happened (see below for exactly where).
 
 **Where the migrations actually land.** In this repository's stock
 `docker-compose.yml`, the `gotcha` service's `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN`
