@@ -133,8 +133,8 @@ var renamedEnvVarsSkipRootDirs = map[string]bool{
 //   - CHANGELOG.md/CHANGELOG.ru.md — там старые имена верны как
 //     историческая запись прошлых релизов, править их значило бы
 //     фальсифицировать историю;
-//   - internal/docs/ru/upgrade.md и internal/docs/en/upgrade.md (задача 11,
-//     круг правок) — страница апгрейда обязана называть старое имя
+//   - internal/docs/ru/upgrade.md и internal/docs/en/upgrade.md (задача 11) —
+//     страница апгрейда обязана называть старое имя
 //     буквально, парами «было → стало»: оператору нужен список для sed по
 //     собственному .env, отсылка «см. CHANGELOG» этого не даёт. Полноту
 //     этих таблиц (что каждая пара ВСЕХ волн переименования — envcontract.Renamed
@@ -200,15 +200,14 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 		if rel == "CHANGELOG.md" || rel == "CHANGELOG.ru.md" {
 			return nil
 		}
-		// upgrade.md обеих локалей (задача 11, круг правок): страница
+		// upgrade.md обеих локалей (задача 11): страница
 		// апгрейда обязана называть старое имя буквально — оператору нужен
 		// список «было → стало» для sed по собственному .env, а не абстрактная
 		// отсылка «см. CHANGELOG». Тот же случай, что и у CHANGELOG.{md,ru.md}
 		// выше: старое имя здесь — не забытый огрызок контракта, а сама суть
 		// страницы. Полнота этих таблиц (что каждая пара ВСЕХ волн
-		// переименования — envcontract.Renamed кумулятивен, ruling
-		// team-lead 2026-09-03 вариант b — реально присутствует в
-		// upgrade.md обеих локалей) проверяется отдельно,
+		// переименования — envcontract.Renamed кумулятивен — реально
+		// присутствует в upgrade.md обеих локалей) проверяется отдельно,
 		// TestUpgradeDocDocumentsAllRenamedPairs ниже — исключение здесь не
 		// превращается в дыру, потому что полноту таблиц ловит другой
 		// сторож.
@@ -258,7 +257,7 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 
 // allRenamedOldNames — ВСЕ старые имена envcontract.Renamed, всех волн
 // переименования (кумулятивно: v0.23.0 «контрактная уборка», E3 сервер/
-// агент/compose-сборка). Ruling team-lead (2026-09-03, вариант b): бинарь
+// агент/compose-сборка). Решение владельца (2026-09-03, вариант b): бинарь
 // fail-fast'ит на ЛЮБОМ старом имени, включая v0.23.0-е, — оператор,
 // прыгающий с v0.22 сразу на 1.0, упирается во все записи Renamed сразу и
 // должен найти sed-таблицу «было → стало» в одном месте (upgrade.md), а не
@@ -273,8 +272,8 @@ func allRenamedOldNames() []string {
 	return names
 }
 
-// TestUpgradeDocDocumentsAllRenamedPairs — задача 11, круг правок, п.2,
-// ruling team-lead (вариант b): каждая пара «было → стало» из
+// TestUpgradeDocDocumentsAllRenamedPairs — задача 11, п.2, решение владельца
+// (вариант b): каждая пара «было → стало» из
 // envcontract.Renamed (все волны, allRenamedOldNames()) обязана буквально
 // присутствовать в upgrade.md ОБЕИХ локалей — иначе исключение этих файлов
 // из TestNoRenamedEnvVarNames (см. докблок выше) стало бы дырой: старое имя

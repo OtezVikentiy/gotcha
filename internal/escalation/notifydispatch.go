@@ -69,12 +69,11 @@ func (p OrgProjectNamer) ProjectName(ctx context.Context, projectID int64) (stri
 
 // Enqueuer — интерфейс постановки задачи в очередь, которого Dispatch
 // требует от DispatchDeps.Outbox. *notify.Outbox реализует его штатно
-// (Enqueue пишет в notification_outbox через pgx); в E3 (заморозка
-// контракта вебхука) интерфейс понадобился тесту, замораживающему тело
-// вебхука золотым JSON (internal/notify/webhook_golden_test.go) — он гонит
-// РЕАЛЬНЫЙ Dispatch (резолв имени проекта, сборку Extra, редакцию ПДн) без
-// похода в Postgres, подставляя вместо Outbox фейк, который просто
-// запоминает payload.
+// (Enqueue пишет в notification_outbox через pgx). Интерфейс, а не
+// конкретный тип, — чтобы тест, замораживающий тело вебхука золотым JSON
+// (internal/notify/webhook_golden_test.go), мог прогнать РЕАЛЬНЫЙ Dispatch
+// (резолв имени проекта, сборку Extra, редакцию ПДн) без похода в Postgres,
+// подставив вместо Outbox фейк, который просто запоминает payload.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, channelID int64, payload map[string]any) error
 }

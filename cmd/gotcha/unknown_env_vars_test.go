@@ -239,7 +239,7 @@ func TestSuggestKnownNamesNoCandidate(t *testing.T) {
 	}
 }
 
-// TestSuggestKnownNamesOrdersByDistanceFirst — круг правок 1 (ревью): ветка
+// TestSuggestKnownNamesOrdersByDistanceFirst — находка ревью: ветка
 // sort.Slice, где кандидаты РАЗЛИЧАЮТСЯ расстоянием (candidates[i].dist !=
 // candidates[j].dist), раньше не была покрыта ни одним тестом —
 // TestSuggestKnownNamesDeterministicOrderWithTies проверяет только ничью

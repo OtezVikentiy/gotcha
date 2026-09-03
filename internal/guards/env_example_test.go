@@ -26,7 +26,7 @@ import (
 // ${GOTCHA_SECRET_KEY:-...}`) от настоящей compose-only переменной под тем
 // же именем ключа — сигнатура (key, def string) совпадает со str/boolEnvDef,
 // разбор общий.
-// parseBool добавлен задачей 10 (E3, реестр известных имён, круг правок):
+// parseBool добавлен задачей 10 (E3, реестр известных имён):
 // без него GOTCHA_EVALUATORS_ENABLED — читается напрямую через
 // parseBool("GOTCHA_EVALUATORS_ENABLED"), не через boolEnv/boolEnvDef,
 // у RunEvaluators особая тристабильная логика (nil/true/false) — не
@@ -91,7 +91,7 @@ func hasUnitSuffix(name string) bool {
 	return false
 }
 
-// booleanCanonForbiddenTokens — задача 11, п.2, ruling team-lead
+// booleanCanonForbiddenTokens — задача 11, п.2, решение владельца
 // (2026-09-03, вариант (a), механический критерий БЕЗ exception-map):
 // токены-анти-паттерны, которые устранила таблица переименований релиза 2
 // (envcontract.Renamed, «E3, заморозка контракта») — GOTCHA_RUN_EVALUATORS
@@ -106,7 +106,7 @@ var booleanCanonForbiddenTokens = map[string]bool{
 	"ALLOW": true, "AUTO": true,
 }
 
-// hasBooleanCanonForm — задача 11, п.2, ruling team-lead (2026-09-03,
+// hasBooleanCanonForm — задача 11, п.2, решение владельца (2026-09-03,
 // вариант (a)): каноничное булево имя — ОДНА из трёх форм, без
 // exception-map:
 //
@@ -325,8 +325,8 @@ func collectOSEnvVars(t *testing.T, root, relFile string) map[string]bool {
 // она несёт код-цитату вида `NAME`, сразу за начальным `|` (не считая
 // пробелов). Заякорено на начало строки нарочно: имя, процитированное где-то
 // в третьей колонке (перекрёстная ссылка на другую переменную в тексте
-// описания — так уже было с `_CLIENT_SECRET` в OIDC-строке, круг правок
-// задачи 11), не должно засчитываться как документирующая эту переменную
+// описания — так уже было с `_CLIENT_SECRET` в OIDC-строке, задача 11),
+// не должно засчитываться как документирующая эту переменную
 // строка — только первая колонка таблицы документирует.
 var tableRowFirstCellRe = regexp.MustCompile("^\\|\\s*`([A-Z][A-Z0-9_]*)`")
 
@@ -370,7 +370,7 @@ func tableVarNames(doc string) map[string]bool {
 //     каждое имя, задокументированное строкой таблицы, обязано иметь
 //     читателя из readers (объединение серверных/агентских переменных,
 //     GOMEMLIMIT и compose-неймспейса GOTCHA_COMPOSE_*/GOTCHA_BUILD_* —
-//     ruling задачи 11 п.5: их читатель — подстановка `${...}` в
+//     решение владельца, задача 11 п.5: их читатель — подстановка `${...}` в
 //     docker-compose.yml, не Go-код). Без читателя ни там, ни там — строка
 //     документирует переменную-призрак.
 //
@@ -521,7 +521,7 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 
 	// composeVars — переменные подстановки Docker Compose (${GOTCHA_COMPOSE_*}/
 	// ${GOTCHA_BUILD_*}) из обоих compose-файлов: их читатель — сам Compose,
-	// не Go-код (ruling задачи 11 п.5), они легитимно документируются
+	// не Go-код (решение владельца, задача 11 п.5), они легитимно документируются
 	// таблицей, не будучи в vars/tableVars. composeSubstRe и её семантика —
 	// compose_test.go (тот же пакет).
 	composeVars := map[string]bool{}
@@ -612,7 +612,7 @@ var booleanCanonFixtureKnown = map[string]bool{
 	"GOTCHA_SOMETHING": true,
 }
 
-// TestBooleanNamingConvention — задача 11, п.2, ruling team-lead
+// TestBooleanNamingConvention — задача 11, п.2, решение владельца
 // (2026-09-03): конвенция булевых имён на фиксированных кейсах, по образцу
 // TestUnitSuffixConvention выше — независимая от фактического набора
 // переменных в config.go проверка самой функции-классификатора (реальный
@@ -643,8 +643,7 @@ func TestBooleanNamingConvention(t *testing.T) {
 		// проверки (a) эта форма прошла бы мимо запрета одним лишь наличием
 		// подсистемы.
 		{"GOTCHA_HSTS_ON", false},
-		// Контракт задачи 11, п.2 и ruling team-lead — три дословных
-		// негативных кейса.
+		// Контракт задачи 11, п.2 — три дословных негативных кейса.
 		{"GOTCHA_RUN_SOMETHING", false},
 		{"GOTCHA_ALLOW_X", false},
 		{"GOTCHA_SOMETHING", false},
@@ -660,7 +659,7 @@ func TestBooleanNamingConvention(t *testing.T) {
 	}
 }
 
-// TestBooleanNamingConventionRealReaders — задача 11, п.2, ruling team-lead
+// TestBooleanNamingConventionRealReaders — задача 11, п.2, решение владельца
 // (2026-09-03, вариант (a)): сторож подключён к РЕАЛЬНЫМ булевым читателям
 // (boolEnv/boolEnvDef/parseBool — collectBoolReaderVars, cmd/gotcha/config.go
 // и internal/agent/config.go), БЕЗ exception-map. На HEAD все булевы имена
@@ -829,8 +828,8 @@ func TestConfigurationTableParityCatchesGhostRow(t *testing.T) {
 	ft.requireFailure(t, "GOTCHA_GHOST_VAR")
 }
 
-// TestConfigurationTableParityAcceptsComposeReader — ruling задачи 11 п.5:
-// переменная compose-неймспейса (читатель — подстановка ${...} в
+// TestConfigurationTableParityAcceptsComposeReader — решение владельца,
+// задача 11 п.5: переменная compose-неймспейса (читатель — подстановка ${...} в
 // docker-compose.yml, не Go-код) НЕ должна считаться призраком, даже не
 // входя в vars. Регрессия на случай, если кто-то однажды сузит readers до
 // одного vars, забыв про composeVars.
