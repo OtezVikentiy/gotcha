@@ -105,6 +105,32 @@ DROP INDEX CONCURRENTLY <имя_индекса>;
 отдельная и необязательная задача; порядок действий — на странице [Ключи
 приёма](/docs/keys).
 
+## Что меняется при обновлении с версий до 0.23.0: десять переменных окружения переименованы
+
+Релиз v0.23.0 («контрактная уборка») переименовал десять серверных переменных
+окружения. Переменная под прежним именем с непустым значением роняет старт с
+явным сообщением вида «старое имя → новое», а не тихо подменяется дефолтом —
+эта проверка не имеет срока давности и продолжает действовать на любой,
+сколь угодно старой установке.
+
+| Было | Стало |
+|---|---|
+| `GOTCHA_METRIC_EVAL_INTERVAL` | `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_PROFILE_EVAL_INTERVAL` | `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_HOST_EVAL_INTERVAL` | `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_SLO_EVAL_INTERVAL` | `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_ESCALATION_INTERVAL` | `GOTCHA_ESCALATION_INTERVAL_SECONDS` |
+| `GOTCHA_RETENTION_DAYS` | `GOTCHA_EVENT_RETENTION_DAYS` |
+| `GOTCHA_SERVER_URL` | `GOTCHA_PROBE_SERVER_URL` |
+| `GOTCHA_INGEST_RATE_LIMIT` | `GOTCHA_INGEST_RATE_PER_SEC` |
+| `GOTCHA_AGENT_DIST_DIR` | `GOTCHA_DIST_DIR` |
+| `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `GOTCHA_DIST_RATE_PER_MIN` |
+
+Если вы обновляетесь с версии старше v0.23.0 — пройдите по всем местам, где
+заданы эти переменные, тем же порядком, что описан ниже для волны заморозки
+контракта перед 1.0: `.env`, юниты systemd, `.env` выносных проб на других
+хостах.
+
 ## Что меняется при обновлении: семнадцать переменных окружения переименованы
 
 Это обновление переименовывает семнадцать серверных переменных окружения —

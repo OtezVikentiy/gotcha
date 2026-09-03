@@ -107,13 +107,17 @@ var AgentOwned = []string{
 // более ранней волны v0.23.0 (десять переменных, уже отдельным релизом —
 // CHANGELOG, «Ten environment variables have been renamed»).
 //
-// Единственный источник для internal/guards/renamed_env_vars_test.go
-// (TestUpgradeDocDocumentsCurrentRenameWave) — эта волна, в отличие от
-// более старой v0.23.0, ещё не выпущена отдельным релизом на момент
-// написания, и её пары задокументированы буквально в upgrade.md обеих
-// локалей (оператору нужен список для sed по .env), а не только в
-// CHANGELOG. internal/envcontract/check_test.go проверяет, что каждое имя
-// отсюда реально есть среди ключей Renamed и не пересекается с AgentOwned/
+// internal/guards/renamed_env_vars_test.go
+// (TestUpgradeDocDocumentsAllRenamedPairs) сверяет upgrade.md с ПОЛНЫМ
+// реестром Renamed напрямую (ruling team-lead 2026-09-03, вариант b — все
+// волны, включая v0.23.0, документируются в upgrade.md буквально: бинарь
+// fail-fast'ит на любом старом имени, включая v0.23.0-е, и оператору нужен
+// единый sed-список), а не через это подмножество — ServerOwned остаётся
+// именованной, проверяемой границей семнадцати серверных имён этой волны
+// как таковой (для читаемости renamed.go и на случай, если она понадобится
+// отдельно), не единственным источником для сторожа доки.
+// internal/envcontract/check_test.go проверяет, что каждое имя отсюда
+// реально есть среди ключей Renamed и не пересекается с AgentOwned/
 // InfraOwned — рассинхрон ловится тестом.
 var ServerOwned = []string{
 	"GOTCHA_ADDR",

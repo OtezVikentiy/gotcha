@@ -103,6 +103,32 @@ the full breakdown. For an existing install, this upgrade breaks nothing:
 Splitting your sources across the new typed keys without any ingest downtime
 is a separate, optional task — see [Ingest keys](/docs/keys) for the steps.
 
+## What changes when upgrading from versions before 0.23.0: ten environment variables renamed
+
+Release v0.23.0 ("contract cleanup") renamed ten server environment
+variables. A variable set under its old name with a non-empty value refuses
+to start with an explicit "old name → new name" message, instead of
+silently falling back to a default — this check has no expiration date and
+still applies on any installation, however old.
+
+| Before | After |
+|---|---|
+| `GOTCHA_METRIC_EVAL_INTERVAL` | `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_PROFILE_EVAL_INTERVAL` | `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_HOST_EVAL_INTERVAL` | `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_SLO_EVAL_INTERVAL` | `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_ESCALATION_INTERVAL` | `GOTCHA_ESCALATION_INTERVAL_SECONDS` |
+| `GOTCHA_RETENTION_DAYS` | `GOTCHA_EVENT_RETENTION_DAYS` |
+| `GOTCHA_SERVER_URL` | `GOTCHA_PROBE_SERVER_URL` |
+| `GOTCHA_INGEST_RATE_LIMIT` | `GOTCHA_INGEST_RATE_PER_SEC` |
+| `GOTCHA_AGENT_DIST_DIR` | `GOTCHA_DIST_DIR` |
+| `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `GOTCHA_DIST_RATE_PER_MIN` |
+
+If you're upgrading from a version older than v0.23.0, go through every
+place where these variables are set, the same way described below for the
+pre-1.0 contract freeze wave: `.env`, systemd units, the `.env` of remote
+probes on other hosts.
+
 ## What changes when upgrading: seventeen environment variables renamed
 
 This upgrade renames seventeen server environment variables — the unit of
