@@ -48,6 +48,11 @@ func TestFormStateGet(t *testing.T) {
 // валидации страница отрисовывается заново, фрагмента #id в адресе уже нет,
 // модалка закрывалась вместе с заполненными полями. Человек заполнял семь
 // полей, ошибался в одном и начинал сначала.
+//
+// Состояние помечено Open: с появлением модалки правки на каждое правило
+// признаком открытия служит явный ключ, а не сам факт непустого состояния
+// (см. metricRuleCreateModal). Так же 422 собирает обработчик — иначе тест
+// проверял бы состояние, которого сервер не отдаёт.
 func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 	form := FormState{
 		"metric_name":    "process.memory.usage",
@@ -58,7 +63,7 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 		"environment":    "staging",
 		"label_key":      "route",
 		"label_value":    "/api",
-	}
+	}.Open(MetricRuleCreateModalID)
 	out := renderTo(t, MetricAlerts(7, nil, nil, []string{"http.rps"}, form,
 		"порог должен быть числом", "u@e.com"))
 
@@ -94,6 +99,18 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 	}
 	if !strings.Contains(fresh, `value="300"`) {
 		t.Error("окно по умолчанию должно быть 300 секунд")
+	}
+
+	// 422 из модалки ПРАВКИ не должна открывать модалку создания и тащить в
+	// неё чужой ввод: состояние формы на странице одно, а модалок N+1.
+	foreign := renderTo(t, MetricAlerts(7, nil, nil, nil,
+		FormState{"metric_name": "process.memory.usage"}.Open(EditMetricRuleModalID(42)),
+		"порог должен быть числом", "u@e.com"))
+	if strings.Contains(foreign, "modal--open") {
+		t.Error("модалка создания открылась по метке чужой модалки")
+	}
+	if strings.Contains(foreign, `value="process.memory.usage"`) {
+		t.Error("ввод из модалки правки протёк в форму создания")
 	}
 }
 
