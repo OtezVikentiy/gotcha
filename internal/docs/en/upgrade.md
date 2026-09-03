@@ -285,8 +285,47 @@ Config parsing and every check above (plus the rename checks from the
 sections before this one) run before the app opens a single database
 connection — if `.env` has anything wrong, this command exits non-zero with
 a single `ERROR ... GOTCHA_NAME: ...` line before any migration touches
-staging. Exit zero means the config is clean (and staging's schema is
-updated by the same run, as a side effect).
+staging. Exit zero doesn't just mean "config is clean" — it's followed by a
+real migration run: `--migrate-only` doesn't check the database, it
+connects to it and changes its schema.
+
+**Where the migrations actually land.** In this repository's stock
+`docker-compose.yml`, the `gotcha` service's `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN`
+are set directly in its `environment:` block, pointing at the
+`postgres`/`clickhouse` services of the same compose project — that block
+**overrides** the same names coming from `.env` (see the comment above it
+in the file), so the command above physically cannot reach a production
+database through a production DSN copied into `.env`: it always goes to the
+local containers of whichever stand it's run on. This doesn't remove the
+need for care in two cases:
+
+- if you run this some other way than through the stock `docker-compose.yml`
+  — say, the binary directly (`gotcha --migrate-only` with `.env` exported
+  into the process environment) — then `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` come
+  from `.env` literally, with nothing overriding them, and a production DSN
+  in a copied `.env` goes exactly where it points;
+- if the "staging" you're running this on isn't a separate
+  `docker-compose.yml` at all but the same production project (same host,
+  same compose stack) — then "the local containers of this stand" simply
+  are the production database.
+
+If you need to point the preflight check at a specific staging database
+instead of the compose project's local containers (a shared staging
+Postgres/ClickHouse instance, say), override both DSNs explicitly with
+`-e` — it takes precedence over `environment:` in `docker-compose.yml`
+(verified: `-e` really does win over both `--env-file` and the service's
+`environment:` block):
+
+```bash
+docker compose --env-file .env run --rm --no-deps \
+  -e GOTCHA_PG_DSN='postgres://user:pass@staging-pg:5432/gotcha_staging?sslmode=disable' \
+  -e GOTCHA_CH_DSN='clickhouse://user:pass@staging-ch:9000/gotcha_staging' \
+  gotcha --migrate-only
+```
+
+**Never put a production DSN here** — `-e` overrides `docker-compose.yml`'s
+built-in safety net literally, and the command applies migrations to
+whichever database you point it at, with no further confirmation.
 
 ## Standard upgrade (single server, `--mode=all`)
 
