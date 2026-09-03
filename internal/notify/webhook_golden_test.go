@@ -191,6 +191,74 @@ func TestWebhookBodyGolden(t *testing.T) {
 	}
 }
 
+// TestWebhookSendStripsSecretEvenIfProducerAddsIt закрывает дыру в
+// TestWebhookBodyGolden: сегодня НИ ОДИН продюсер (escalation.Dispatch,
+// alert/digest.go, trace/notify.go, web/alerts.go) не кладёт "secret" в
+// payload очереди — секрет достаётся отдельно через notify.SecretResolver
+// в момент отправки (см. комментарий transportFields в webhook.go), так что
+// ассерт «в теле нет transport-полей» в TestWebhookBodyGolden ни разу не
+// видит реального ключа "secret" и не может покраснеть при его утечке.
+// Контракт из брифа задачи 13 («поле transportFields в теле отсутствует»)
+// — про ВСЕ ТРИ ключа, а не только про те, что реально прислал сегодняшний
+// producer: он обязан пережить гипотетическую будущую утечку secret в
+// payload, а не полагаться на то, что её сегодня нет. Здесь "secret"
+// дописывается в уже собранный Dispatch'ем payload вручную — так тест
+// проверяет именно вырезание в WebhookSender.Send, а не то, кладёт ли его
+// туда Dispatch.
+func TestWebhookSendStripsSecretEvenIfProducerAddsIt(t *testing.T) {
+	payload := dispatchIssueAlertFixture(t, true)
+
+	if _, ok := payload["channel_kind"]; !ok {
+		t.Fatal("fixture payload has no channel_kind — sanity check broken")
+	}
+	if _, ok := payload["target"]; !ok {
+		t.Fatal("fixture payload has no target — sanity check broken")
+	}
+	if _, ok := payload["secret"]; ok {
+		t.Fatal("fixture payload already has secret — adjust the injection below")
+	}
+	payload["secret"] = "leaked-signing-secret"
+
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading request body: %v", err)
+		}
+		gotBody = b
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sender := &notify.WebhookSender{Client: srv.Client()}
+	target := notify.Target{Kind: "webhook", Target: srv.URL, Secret: "test-signing-secret"}
+	if err := sender.Send(context.Background(), target, payload); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if gotBody == nil {
+		t.Fatal("receiver got no request body")
+	}
+
+	for _, k := range []string{"channel_kind", "target", "secret"} {
+		needle := []byte(`"` + k + `"`)
+		if bytes.Contains(gotBody, needle) {
+			t.Errorf("webhook body leaks transport field %q: %s", k, gotBody)
+		}
+	}
+
+	// Вырезание "secret" не должно менять само тело: сравнение с тем же
+	// золотым файлом, что и режим "с деталями" в TestWebhookBodyGolden,
+	// обязано совпасть.
+	wantBody, err := os.ReadFile("testdata/webhook_body_details.json")
+	if err != nil {
+		t.Fatalf("reading golden file: %v", err)
+	}
+	if got, want := canonicalJSON(t, gotBody), canonicalJSON(t, wantBody); got != want {
+		t.Errorf("webhook body with injected secret != golden testdata/webhook_body_details.json\n--- got ---\n%s\n--- want ---\n%s",
+			got, want)
+	}
+}
+
 // canonicalJSON перепечатывает JSON с отсортированными ключами и отступами
 // (json.Marshal сам сортирует ключи map[string]any) — так расхождение
 // золотого сравнения печатает читаемую дельту, а не байт-в-байт то, что
