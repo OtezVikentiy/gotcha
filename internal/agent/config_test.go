@@ -365,28 +365,32 @@ func sortedAgentOwnedOldNames() []string {
 	return names
 }
 
-// foreignRenamedNameUnderOwnPrefix — a sortedRenamedOldNames() style lookup
-// for the W2-2 case: an old name outside envcontract.AgentOwned that still
-// carries the GOTCHA_AGENT_ prefix (old SERVER names, historically
-// misnamed with an agent-looking prefix). Found dynamically, not by
-// literal: internal/guards/renamed_env_vars_test.go (TestNoRenamedEnvVarNames)
-// doesn't let old names appear as literals outside renamed.go/CHANGELOG/
-// upgrade.md/renamed_env_contract_test.go, and t.Fatal is deterministic
-// enough (there's exactly one such pair on HEAD) without needing a sorted
-// pick — any match proves the same code path.
+// foreignRenamedNameUnderOwnPrefix — в стиле sortedAgentOwnedOldNames()
+// выше, для случая W2-2: старое имя ВНЕ envcontract.AgentOwned, но
+// по-прежнему несущее префикс GOTCHA_AGENT_ (старые СЕРВЕРНЫЕ имена,
+// исторически названные с агентским на вид префиксом). Находится
+// динамически, не литералом: internal/guards/renamed_env_vars_test.go
+// (TestNoRenamedEnvVarNames) не пускает старые имена литералом за пределы
+// renamed.go/CHANGELOG/upgrade.md/renamed_env_contract_test.go. Отсортировано
+// той же строкой, что sortedAgentOwnedOldNames() — обход map сам по себе
+// порядок не гарантирует, а кандидатов здесь два.
 func foreignRenamedNameUnderOwnPrefix(t *testing.T) string {
 	t.Helper()
 	agentOwned := map[string]bool{}
 	for _, old := range envcontract.AgentOwned {
 		agentOwned[old] = true
 	}
+	var candidates []string
 	for old := range envcontract.Renamed {
 		if !agentOwned[old] && strings.HasPrefix(old, "GOTCHA_AGENT_") {
-			return old
+			candidates = append(candidates, old)
 		}
 	}
-	t.Fatal("обход ослеп: в envcontract.Renamed не нашлось имени вне AgentOwned, но под префиксом GOTCHA_AGENT_")
-	return ""
+	if len(candidates) == 0 {
+		t.Fatal("обход ослеп: в envcontract.Renamed не нашлось имени вне AgentOwned, но под префиксом GOTCHA_AGENT_")
+	}
+	sort.Strings(candidates)
+	return candidates[0]
 }
 
 // TestLoadConfigRenamedEnvVarFailsStart — envcontract.AgentOwned (три свои

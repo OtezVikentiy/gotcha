@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -116,6 +117,45 @@ func TestCheckUnknownEnvVarsListsAllFindingsSorted(t *testing.T) {
 	}
 	if posA > posZ {
 		t.Errorf("err = %q, want GOTCHA_AAA_TOTALLY_MADE_UP раньше GOTCHA_ZZZ_TOTALLY_MADE_UP (алфавитный порядок)", msg)
+	}
+}
+
+// sortedAgentOwnedOldNames — envcontract.AgentOwned, отсортировано, для
+// детерминированного выбора одного из трёх старых АГЕНТСКИХ имён.
+// Динамически, не литералом: internal/guards/renamed_env_vars_test.go
+// (TestNoRenamedEnvVarNames) не пускает старые имена литералом за пределы
+// renamed.go/CHANGELOG/upgrade.md/renamed_env_contract_test.go.
+func sortedAgentOwnedOldNames() []string {
+	names := make([]string, len(envcontract.AgentOwned))
+	copy(names, envcontract.AgentOwned)
+	sort.Strings(names)
+	return names
+}
+
+// TestCheckUnknownEnvVarsRejectsEmptyRenamedName — W3-1 (повторное ревью):
+// одна и та же переменная общего .env хоста обязана давать один и тот же
+// вердикт у сервера и у агента. Живой прогон нашёл: агентское старое имя
+// (envcontract.AgentOwned) с ПУСТЫМ значением на сервере говорило «unknown,
+// check for typos», а на агенте — «renamed to» (см.
+// internal/agent/config.go). Причина: CheckRenamedAll (loadConfig, самая
+// первая операция) проверяет только НЕПУСТОЕ значение — declared-but-unset
+// для по-настоящему живого имени легитимно, — так что переименованное имя
+// с пустым значением долетало сюда, минуя её, и checkUnknownEnvVars до этой
+// правки не знала про envcontract.Renamed вовсе. Тот же контракт, что у
+// internal/agent.checkUnknownAgentEnvVars: declared-but-unset не спасает
+// имя, которое не читает уже никто.
+func TestCheckUnknownEnvVarsRejectsEmptyRenamedName(t *testing.T) {
+	old := sortedAgentOwnedOldNames()[0]
+	newName := envcontract.Renamed[old]
+	err := checkUnknownEnvVars(environFrom(old + "="))
+	if err == nil {
+		t.Fatalf("checkUnknownEnvVars(%s=\"\"): want ошибку renamed, получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) || !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание старого %s и нового %s имени", err, old, newName)
+	}
+	if strings.Contains(err.Error(), "typo") {
+		t.Errorf("err = %q, want текст переименования, а не «unknown … typos» — это не опечатка, а известное старое имя", err)
 	}
 }
 

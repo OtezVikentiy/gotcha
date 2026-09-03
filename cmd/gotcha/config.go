@@ -1369,8 +1369,20 @@ func loadConfigChecked(getenv func(string) string, environ func() []string, args
 // же класс дыры, что и здесь: на удалённом хосте, где агент стоит один,
 // этой (серверной) проверки нет вовсе, и без агентской install.sh --check
 // подтверждал бы битый конфиг агента как «config OK».
+//
+// Имя из envcontract.Renamed — ОТДЕЛЬНАЯ ветка, не «unknown», и это НЕ
+// дублирует CheckRenamedAll (loadConfig выше, самая первая операция): та
+// проверяет только НЕПУСТОЕ значение (declared-but-unset для по-настоящему
+// живого имени — легитимный случай, докblock checkRenamed в
+// internal/envcontract/check.go), так что переименованное имя с ПУСТЫМ
+// значением долетает досюда, минуя CheckRenamedAll. Но declared-but-unset
+// имеет смысл только для имени, которое что-то ЕЩЁ читает по старому
+// написанию, — переименованное имя не читает уже никто, так что пустое
+// значение его не спасает: тот же контракт, что у internal/agent.
+// checkUnknownAgentEnvVars (после её собственной правки на тот же случай),
+// тем же текстом — envcontract.RenamedError, а не заново набранным «unknown».
 func checkUnknownEnvVars(environ func() []string) error {
-	var unknown []string
+	var renamed, unknown []string
 	for _, kv := range environ() {
 		name, _, ok := strings.Cut(kv, "=")
 		if !ok || !strings.HasPrefix(name, "GOTCHA_") {
@@ -1382,10 +1394,18 @@ func checkUnknownEnvVars(environ func() []string) error {
 		if strings.HasPrefix(name, "GOTCHA_COMPOSE_") || strings.HasPrefix(name, "GOTCHA_BUILD_") {
 			continue
 		}
+		if _, wasRenamed := envcontract.Renamed[name]; wasRenamed {
+			renamed = append(renamed, name)
+			continue
+		}
 		unknown = append(unknown, name)
 	}
+	var errs []error
+	if err := envcontract.RenamedError(renamed); err != nil {
+		errs = append(errs, err)
+	}
 	if len(unknown) == 0 {
-		return nil
+		return errors.Join(errs...)
 	}
 	// Отсортировано — иначе порядок вхождений в тексте ошибки менялся бы
 	// между запусками вместе с порядком os.Environ() (тот не гарантирован).
@@ -1398,7 +1418,8 @@ func checkUnknownEnvVars(environ func() []string) error {
 			parts[i] = fmt.Sprintf("%s (unknown)", name)
 		}
 	}
-	return fmt.Errorf("unknown environment variable(s), check for typos: %s", strings.Join(parts, ", "))
+	errs = append(errs, fmt.Errorf("unknown environment variable(s), check for typos: %s", strings.Join(parts, ", ")))
+	return errors.Join(errs...)
 }
 
 // maxSuggestDistance — порог расстояния Левенштейна для подсказки похожего

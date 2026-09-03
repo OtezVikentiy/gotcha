@@ -2089,14 +2089,45 @@ func TestLoadConfigRenamedEnvVarsListsAllFindings(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart — пустое значение
-// старого имени не роняет старт: docker-compose штатно прокидывает
-// объявленные, но не заданные переменные пустой строкой, и такое значение и
-// раньше ничего не применяло бы.
-func TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart(t *testing.T) {
+// TestLoadConfigRenamedEnvVarEmptyNowFailsStart — контракт изменился
+// (повторное ревью, W3-1): раньше пустое значение старого имени было
+// легитимным declared-but-unset (docker-compose штатно прокидывает
+// объявленные, но не заданные переменные пустой строкой) и не роняло старт
+// нигде в цепочке loadConfig→loadConfigChecked. Теперь checkUnknownEnvVars
+// смотрит имя, а не значение, — declared-but-unset имеет смысл только для
+// переменной, которую что-то ЕЩЁ читает по этому имени (это по-прежнему
+// забота CheckRenamedAll — она пропускает пустое непереименованное так же,
+// как раньше), а переименованное имя не читает уже никто. Тест зовёт
+// loadConfigChecked, а не голый loadConfig: последний по-прежнему пропускает
+// пустое значение (его дело — только CheckRenamedAll), но реальный
+// прод-путь (main.go) идёт через loadConfigChecked целиком, и именно она
+// теперь отказывает.
+func TestLoadConfigRenamedEnvVarEmptyNowFailsStart(t *testing.T) {
+	old := sortedRenamedOldNames()[0]
+	newName := envcontract.Renamed[old]
+	_, err := loadConfigChecked(getenvFrom(map[string]string{old: ""}), environFrom(old+"="), nil)
+	if err == nil {
+		t.Fatalf("loadConfigChecked с пустым устаревшим %s: want ошибку (declared-but-unset больше не спасает переименованное имя), получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) || !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание старого %s и нового %s имени", err, old, newName)
+	}
+	if strings.Contains(err.Error(), "typo") {
+		t.Errorf("err = %q, want текст переименования, а не «unknown … typos» — это не опечатка, а известное старое имя", err)
+	}
+}
+
+// TestLoadConfigBareStillIgnoresEmptyRenamedName — loadConfig в одиночку
+// (без checkUnknownEnvVars) по-прежнему не роняется на пустом устаревшем
+// имени: это её собственный, узкий контракт (только CheckRenamedAll,
+// который пустое значение легитимно пропускает) — регрессия на то, что эта
+// функция не начала молча дублировать проверку неизвестных имён. Реальный
+// прод-путь идёт через loadConfigChecked целиком (см. предыдущий тест) —
+// голый loadConfig в проде не вызывается нигде, кроме как через неё.
+func TestLoadConfigBareStillIgnoresEmptyRenamedName(t *testing.T) {
 	old := sortedRenamedOldNames()[0]
 	if _, err := loadConfig(getenvFrom(map[string]string{old: ""}), nil); err != nil {
-		t.Errorf("loadConfig с пустым устаревшим %s: %v, want nil (пустое значение легитимно)", old, err)
+		t.Errorf("loadConfig с пустым устаревшим %s: %v, want nil (собственный контракт loadConfig не изменился)", old, err)
 	}
 }
 

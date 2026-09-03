@@ -70,12 +70,15 @@ func checkRenamed(getenv func(string) string, keys []string) error {
 // RenamedError форматирует «имя (renamed to новое-имя)» для произвольного
 // набора найденных старых имён — тот же текст, что CheckRenamedAll/
 // CheckRenamedScoped, для вызывающих, которые находят старые имена ДРУГИМ
-// способом (internal/agent.checkUnknownAgentEnvVars — сканом окружения по
-// префиксу GOTCHA_AGENT_, а не перебором известного списка ключей через
-// getenv) и не должны заново набирать тот же текст руками. found — уже
+// способом (сканом окружения по префиксу, а не перебором известного списка
+// ключей через getenv): internal/agent.checkUnknownAgentEnvVars — по
+// GOTCHA_AGENT_, cmd/gotcha.checkUnknownEnvVars — по GOTCHA_ целиком, для
+// переименованного имени с пустым значением, которое CheckRenamedAll/
+// CheckRenamedScoped пропускают как declared-but-unset. Оба не должны
+// заново набирать тот же текст руками. found — уже
 // отфильтрованные вызывающим имена (какие включать и с каким условием —
 // решает он; здесь дублируется только форматирование, не отбор). nil/пустой
-// srez — легитимный «ничего не найдено», а не ошибка.
+// срез — легитимный «ничего не найдено», а не ошибка.
 func RenamedError(found []string) error {
 	if len(found) == 0 {
 		return nil
