@@ -91,8 +91,8 @@ func TestCheckRenamedAllChecksWholeRegistry(t *testing.T) {
 
 // TestCheckRenamedScopedIgnoresOutOfScopeKeys — CheckRenamedScoped проверяет
 // ТОЛЬКО перечисленные ключи: старое серверное имя, стоящее в общем .env,
-// не должно ронять агента, которому оно не принадлежит (ops-review E3 T8
-// круг 1) — CheckRenamedScoped(getenv, AgentOwned) обязан вернуть nil, даже
+// не должно ронять агента, которому оно не принадлежит —
+// CheckRenamedScoped(getenv, AgentOwned) обязан вернуть nil, даже
 // если getenv видит непустое значение постороннего (не входящего в
 // AgentOwned) старого имени.
 func TestCheckRenamedScopedIgnoresOutOfScopeKeys(t *testing.T) {
@@ -135,11 +135,11 @@ func TestCheckRenamedScopedCatchesInScopeKeys(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedScopedEmptySetChecksNothingDeliberately — ops-review E3
-// T8 круг 2: пустой (но не nil, и не отсутствующий) `old` для
-// CheckRenamedScoped — легитимный вызов «в этой области проверять нечего»,
-// а не случайно выродившийся сентинел «весь реестр» (это раньше было
-// поведением старой единой CheckRenamed(getenv, nil)). Раздельные функции
+// TestCheckRenamedScopedEmptySetChecksNothingDeliberately — пустой (но не
+// nil, и не отсутствующий) `old` для CheckRenamedScoped — легитимный
+// вызов «в этой области проверять нечего», а не случайно выродившийся
+// сентинел «весь реестр» (это раньше было поведением старой единой
+// CheckRenamed(getenv, nil)). Раздельные функции
 // делают это осознанным выбором вызывающего кода: пустой список НИКОГДА не
 // проверяет весь реестр — для этого есть отдельная CheckRenamedAll. Тест
 // прогоняет пустой срез (и явный nil — то же самое для CheckRenamedScoped,

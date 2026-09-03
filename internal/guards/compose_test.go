@@ -284,14 +284,14 @@ func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node, c
 // TestComposeVarsDocumented — задача 11, пункт 4: паритет compose-неймспейса
 // (${GOTCHA_COMPOSE_*}/${GOTCHA_BUILD_*}, подстановка Docker Compose самого
 // себя — читатель) ↔ .env.example ↔ таблицы configuration.md обеих локалей.
-// Ruling задачи 11 п.5: у этих имён читатель — не Go-код, а сама подстановка
-// в docker-compose.yml/.small.yml, поэтому TestEnvExampleCoversConfig
+// Решение владельца, задача 11 п.5: у этих имён читатель — не Go-код, а сама
+// подстановка в docker-compose.yml/.small.yml, поэтому TestEnvExampleCoversConfig
 // (которая сверяет .env.example с кодом) и checkConfigurationTableParity
 // (которая берёт vars из кода) их не видят вовсе — этот сторож закрывает
 // именно этот, третий класс переменных, отдельно.
 //
-// До круга правок задачи 11 GOTCHA_COMPOSE_PORT, GOTCHA_COMPOSE_BIND и все
-// три GOTCHA_BUILD_* вовсе отсутствовали в .env.example — реальная находка,
+// До этого сторожа GOTCHA_COMPOSE_PORT, GOTCHA_COMPOSE_BIND и все три
+// GOTCHA_BUILD_* вовсе отсутствовали в .env.example — реальная находка,
 // которую этот сторож теперь не даст повторить.
 func TestComposeVarsDocumented(t *testing.T) {
 	root, err := findRoot()

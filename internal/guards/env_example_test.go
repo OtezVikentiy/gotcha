@@ -19,7 +19,7 @@ import (
 // устойчивым к сигнатуре конкретного читателя). go/ast, а не регэксп — чтобы
 // не ловить имена в текстах ошибок и комментариях.
 //
-// strGuarded добавлен кругом правок 1 задачи 9 (M2): без него GOTCHA_PG_DSN/
+// strGuarded добавлен задачей 9 (M2): без него GOTCHA_PG_DSN/
 // GOTCHA_CH_DSN/GOTCHA_SECRET_KEY — реальные поля cmd/gotcha.Config — не
 // попадали в собранный набор, и TestComposeVarsNamespaced (compose_test.go)
 // не мог структурно отличить их форвардинг (`GOTCHA_SECRET_KEY:

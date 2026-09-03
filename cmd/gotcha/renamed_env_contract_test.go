@@ -104,8 +104,8 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 // TestLoadConfigRenamedEnvVarNewNameStillApplies того пакета), а не здесь.
 // Выведено ИЗ envcontract.AgentOwned (internal/envcontract/renamed.go) —
 // единственного источника, не хардкод: добавление агентской пары в
-// AgentOwned меняет и это множество, без правки cmd/gotcha (ops-review E3
-// T8 круг 1 — раньше список дублировался руками в двух местах).
+// AgentOwned меняет и это множество, без правки cmd/gotcha (список не
+// дублируется руками в двух местах).
 func agentOwnedRenamedNewNames() map[string]bool {
 	m := make(map[string]bool, len(envcontract.AgentOwned))
 	for _, old := range envcontract.AgentOwned {
