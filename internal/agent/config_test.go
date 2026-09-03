@@ -12,8 +12,28 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
-func env(m map[string]string) func(string) string {
-	return func(k string) string { return m[k] }
+// env возвращает и getenv, и environ для LoadConfig — оба вида доступа к
+// одной и той же карте. Возврат двух значений позволяет писать
+// LoadConfig(env(vars)) без распаковки: Go передаёт результат
+// многозначного вызова как оба аргумента, если это единственный аргумент
+// вызова.
+func env(m map[string]string) (func(string) string, func() []string) {
+	getenv := func(k string) string { return m[k] }
+	environ := func() []string {
+		out := make([]string, 0, len(m))
+		for k, v := range m {
+			out = append(out, k+"="+v)
+		}
+		return out
+	}
+	return getenv, environ
+}
+
+// environFrom — вариант env() для тестов, которым нужен только environ
+// (проверка checkUnknownAgentEnvVars напрямую), в том же стиле, что
+// environFrom в cmd/gotcha/unknown_env_vars_test.go.
+func environFrom(kv ...string) func() []string {
+	return func() []string { return kv }
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -53,11 +73,11 @@ func TestLoadConfigRejects(t *testing.T) {
 }
 
 func TestLoadConfigLabels(t *testing.T) {
-	env := map[string]string{
+	vars := map[string]string{
 		"GOTCHA_AGENT_ENDPOINT": "https://x.example", "GOTCHA_AGENT_INGEST_KEY": "k",
 		"GOTCHA_AGENT_ENVIRONMENT": "prod", "GOTCHA_AGENT_ROLE": "web",
 	}
-	cfg, err := LoadConfig(func(k string) string { return env[k] })
+	cfg, err := LoadConfig(env(vars))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -168,6 +188,27 @@ func TestLoadConfigEndpointRejectsQuery(t *testing.T) {
 		})); err == nil {
 			t.Errorf("GOTCHA_AGENT_ENDPOINT=%q: want error, got nil", raw)
 		}
+	}
+}
+
+// TestLoadConfigEndpointNormalizeErrorPassedThroughVerbatim — m1 (финальное
+// ревью): ошибка baseurl.Normalize отдаётся оператору дословно, а не
+// заменяется общим «must be an http(s) URL» — у Normalize свой точный текст
+// на каждый класс проблемы (см. её докблок), и для адреса СО схемой и
+// хостом, но с query, общая формулировка называла бы неверную причину.
+func TestLoadConfigEndpointNormalizeErrorPassedThroughVerbatim(t *testing.T) {
+	_, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT":   "https://g.example?token=1",
+		"GOTCHA_AGENT_INGEST_KEY": "pk",
+	}))
+	if err == nil {
+		t.Fatal("GOTCHA_AGENT_ENDPOINT с query: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must not carry a query or fragment") {
+		t.Errorf("error = %q, want точный текст baseurl.Normalize (must not carry a query or fragment), а не общую формулировку", err)
+	}
+	if strings.Contains(err.Error(), "must be an http(s) URL") {
+		t.Errorf("error = %q, want НЕ общую формулировку — она называет неверную причину для адреса, у которого схема и хост есть", err)
 	}
 }
 

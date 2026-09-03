@@ -6,6 +6,7 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -60,8 +61,12 @@ func intNum(name, raw string) (value int, set bool, err error) {
 }
 
 // LoadConfig читает окружение. getenv параметром — детерминированные тесты
-// без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
-func LoadConfig(getenv func(string) string) (Config, error) {
+// без t.Setenv (тот же приём, что loadConfig в cmd/gotcha). environ
+// перечисляет всё окружение процесса ("KEY=VALUE" на строку, как
+// os.Environ()) — нужен отдельно от getenv (интерфейс «дай значение по
+// ключу» не умеет перечислить, что вообще задано) для проверки неизвестных
+// имён в конце этой функции; в проде — os.Environ, в тестах — фикстура.
+func LoadConfig(getenv func(string) string, environ func() []string) (Config, error) {
 	// CheckRenamedScoped на envcontract.AgentOwned (три свои пары), не
 	// CheckRenamedAll: агент не должен отказывать на устаревших СЕРВЕРНЫХ
 	// именах в общем .env одного хоста — эти переменные он никогда не
@@ -102,9 +107,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	// GOTCHA_TELEGRAM_API_BASE/GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go:
 	// схема и хост обязательны, query/fragment запрещены, хвостовые слэши
 	// срезаются (до этой правки Endpoint слэш срезал, но query не проверял).
+	// Ошибка Normalize отдаётся ОПЕРАТОРУ дословно, а не заменяется общим
+	// «must be an http(s) URL»: у Normalize свой текст на каждый класс
+	// проблемы (нет схемы/хоста, лишние query/fragment) с именем переменной
+	// уже внутри (см. её докблок в internal/baseurl) — сервер (GOTCHA_BASE_URL
+	// и соседи, cmd/gotcha/config.go) отдаёт эту ошибку так же напрямую.
+	// Общая формулировка молча подменяла точную причину («…must not carry a
+	// query or fragment») на неточную («…must be an http(s) URL») для
+	// адреса, который http(s)-схему и хост как раз имеет.
 	normalized, err := baseurl.Normalize("GOTCHA_AGENT_ENDPOINT", cfg.Endpoint)
 	if err != nil {
-		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT must be an http(s) URL, got %q", cfg.Endpoint)
+		return Config{}, err
 	}
 	cfg.Endpoint = normalized
 	if cfg.Key == "" {
@@ -131,7 +144,54 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if set {
 		cfg.InsecureSkipVerify = v
 	}
+	if err := checkUnknownAgentEnvVars(environ); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// checkUnknownAgentEnvVars отказывает старту, если в окружении процесса
+// присутствует переменная с префиксом GOTCHA_AGENT_, которую не читает ни
+// эта функция, ни какая-либо другая (envcontract.Known — общий реестр,
+// объединяющий агентские и серверные имена, см. её докблок в
+// internal/envcontract/known.go).
+//
+// ТОЛЬКО свой префикс, а не любая GOTCHA_*: чужая серверная переменная
+// (GOTCHA_PG_DSN и т.п.) в общем `.env` одного хоста — легитимный сосед по
+// файлу, агент её никогда не читал и отказ по ней был бы самоуправством
+// (тот же принцип, что у envcontract.CheckRenamedScoped выше — см. её
+// докблок). Но опечатка ВНУТРИ своего же префикса — другое дело: агент
+// штатно стоит на удалённом хосте ОДИН, там нет ни сервера, ни его проверки
+// неизвестных имён (checkUnknownEnvVars, cmd/gotcha/config.go) — без этой
+// проверки install.sh --check подтверждал бы битый конфиг агента как
+// "config OK", а опечатка (например GOTCHA_AGENT_INTERVAL_SECOND без "S" на
+// конце) молча превращалась бы в «переменная не задана», то есть в тихий
+// дефолт вместо отказа старта.
+func checkUnknownAgentEnvVars(environ func() []string) error {
+	var unknown []string
+	for _, kv := range environ() {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(name, "GOTCHA_AGENT_") {
+			continue
+		}
+		// Пустое значение — та же трактовка «не задано», что и везде в
+		// конфиге агента (см. TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart):
+		// docker-compose штатно прокидывает объявленные, но не заданные
+		// переменные пустой строкой — старое ИМЯ переменной, оставшееся в
+		// compose-файле неиспользуемым, не повод отказывать старту.
+		if value == "" {
+			continue
+		}
+		if envcontract.Known[name] {
+			continue
+		}
+		unknown = append(unknown, name)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("unknown environment variable(s) in the GOTCHA_AGENT_ namespace, check for typos: %s", strings.Join(unknown, ", "))
 }
 
 // parseBool — тот же разбор булевых значений env, что у parseBool в
