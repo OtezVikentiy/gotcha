@@ -1165,6 +1165,9 @@ func TestLoadConfigOutOfRangeNumericEnvRejected(t *testing.T) {
 		{"GOTCHA_DEPENDENCY_SETTLE_SECONDS", "-1"},
 		{"GOTCHA_DEFAULT_TRANSACTION_QUOTA", "-1"},
 		{"GOTCHA_DEFAULT_PROFILE_QUOTA", "-1"},
+		{"GOTCHA_SMTP_PORT", "-1"},
+		{"GOTCHA_SMTP_PORT", "0"},
+		{"GOTCHA_SMTP_PORT", "99999"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
@@ -2004,4 +2007,75 @@ func TestLoadConfig_ProbeCredsWhitespaceOnlyRejected(t *testing.T) {
 			t.Errorf("%s: ждали отказ старта в --mode=probe, получили nil", name)
 		}
 	}
+}
+
+// TestLoadConfigExportValidatedAtStartup — экспортная четвёрка
+// (GOTCHA_EXPORT_TTL_HOURS/_MAX_ROWS/_MAX_BYTES/_DISK_BUDGET_BYTES)
+// проверяется export.Config.Validate() уже на старте, а не только в первом
+// тике воркера (internal/export/worker.go): раньше Run() глотал её ошибку
+// как slog.Warn на каждом тике, процесс стартовал с виду здоровым, раздел
+// «Выгрузки» был виден в UI, а заявки копились в очереди навсегда. Текст
+// ошибки обязан называть переменную окружения, а не поле структуры Go
+// (MaxRows и т.п.) — оно оператору ни о чём не говорит.
+func TestLoadConfigExportValidatedAtStartup(t *testing.T) {
+	cases := []struct{ key, value string }{
+		{"GOTCHA_EXPORT_MAX_ROWS", "0"},
+		{"GOTCHA_EXPORT_MAX_BYTES", "0"},
+		{"GOTCHA_EXPORT_DISK_BUDGET_BYTES", "0"},
+		{"GOTCHA_EXPORT_TTL_HOURS", "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			_, err := loadConfig(getenvFrom(map[string]string{tc.key: tc.value}), nil)
+			if err == nil {
+				t.Fatalf("%s=%s: want error, got nil", tc.key, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("%s=%s: error %q does not name the variable", tc.key, tc.value, err)
+			}
+			for _, field := range []string{"MaxRows", "MaxBytes", "DiskBudget"} {
+				if strings.Contains(err.Error(), field) {
+					t.Errorf("%s=%s: error %q still names the Go struct field %q instead of the env var", tc.key, tc.value, err, field)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength —
+// GOTCHA_ALLOW_INSECURE_SECRET разбирается ДО обеих secret-проверок ниже, а
+// не inline через boolEnv() в их && условиях. Раньше при СИЛЬНОМ кастомном
+// ключе короткое замыкание останавливалось на состоянии самого ключа
+// (== devSecretKey / длина < 32) раньше, чем доходило до boolEnv() —
+// мусорное значение переменной («ture») никогда не разбиралось и не
+// попадало в errs: fail-fast, зависящий от порядка вычисления выражения, а
+// не от того, что оператор реально написал в .env.
+func TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength(t *testing.T) {
+	strong := strings.Repeat("a", 32) // ровно 32 байта — сильный ключ
+	short := "0123456789abcdef"       // 16 байт — слабый ключ
+
+	t.Run("нормальный ключ + мусор", func(t *testing.T) {
+		_, err := loadConfig(getenvFrom(map[string]string{
+			"GOTCHA_BASE_URL":              "https://gotcha.example",
+			"GOTCHA_SECRET_KEY":            strong,
+			"GOTCHA_ALLOW_INSECURE_SECRET": "ture",
+		}), []string{"--mode=web"})
+		if err == nil {
+			t.Fatal("сильный ключ + мусор в GOTCHA_ALLOW_INSECURE_SECRET: want error, got nil (раньше значение не разбиралось вовсе)")
+		}
+		if !strings.Contains(err.Error(), "GOTCHA_ALLOW_INSECURE_SECRET") || !strings.Contains(err.Error(), "invalid boolean") {
+			t.Errorf("error = %q, want it to name GOTCHA_ALLOW_INSECURE_SECRET and say 'invalid boolean'", err)
+		}
+	})
+
+	t.Run("слабый ключ + мусор", func(t *testing.T) {
+		_, err := loadConfig(getenvFrom(map[string]string{
+			"GOTCHA_BASE_URL":              "https://gotcha.example",
+			"GOTCHA_SECRET_KEY":            short,
+			"GOTCHA_ALLOW_INSECURE_SECRET": "ture",
+		}), []string{"--mode=web"})
+		if err == nil {
+			t.Fatal("слабый ключ + мусор в GOTCHA_ALLOW_INSECURE_SECRET: want error, got nil")
+		}
+	})
 }

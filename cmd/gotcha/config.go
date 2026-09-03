@@ -10,9 +10,23 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
+	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+)
+
+// exportEnvNames переводит текст ошибки export.Config.Validate() (называет
+// поля структуры — MaxRows, MaxBytes, DiskBudget, TTL) в имена переменных
+// окружения, которыми эти поля наполняются в loadConfig ниже: оператору
+// имя поля Go ни о чём не говорит, а имя переменной — то, что он правит в
+// .env.
+var exportEnvNames = strings.NewReplacer(
+	"MaxRows", "GOTCHA_EXPORT_MAX_ROWS",
+	"MaxBytes", "GOTCHA_EXPORT_MAX_BYTES",
+	"DiskBudget", "GOTCHA_EXPORT_DISK_BUDGET_BYTES",
+	"TTL", "GOTCHA_EXPORT_TTL_HOURS",
 )
 
 // devSecretKey — публично известный дефолт GOTCHA_SECRET_KEY для localhost-стендов.
@@ -878,6 +892,17 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// цикл деплоя на секрет, а после рестарта увидит, что у него вдобавок
 	// не применились ещё какие-то из его настроек.
 	//
+	// GOTCHA_ALLOW_INSECURE_SECRET разбирается ЗДЕСЬ, ДО обеих проверок ниже,
+	// а не inline через boolEnv() в их && условиях: у обеих проверок первый
+	// операнд короткого замыкания после режима — состояние самого ключа
+	// (== devSecretKey / длина < 32), и при СИЛЬНОМ кастомном ключе оба
+	// условия останавливаются на этом операнде раньше, чем дошли бы до
+	// boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") — мусорное значение переменной
+	// («ture» и т.п.) в этом случае вообще не разбиралось бы и не копилось
+	// в errs, хотя оператор его туда явно написал. Разбор здесь исполняется
+	// безусловно на каждом старте, до вычисления любого из условий ниже.
+	allowInsecureSecret := boolEnv("GOTCHA_ALLOW_INSECURE_SECRET")
+
 	// SEC-C1: дефолтный ключ подписи oauth-cookie публично известен из
 	// исходников. В серверных режимах на не-localhost BaseURL это дыра
 	// (угон аккаунта через OAuth-link) — отказываемся стартовать.
@@ -886,7 +911,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if secretKeyMattersFor(cfg.Mode) &&
 		cfg.SecretKey == devSecretKey &&
 		!isLocalBaseURL(cfg.BaseURL) &&
-		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
+		!allowInsecureSecret {
 		return Config{}, fmt.Errorf(
 			"GOTCHA_SECRET_KEY must be set to a strong random value for a non-local %s instance "+
 				"(default key is public and enables OAuth account takeover); "+
@@ -901,7 +926,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		cfg.SecretKey != devSecretKey &&
 		len(cfg.SecretKey) < 32 &&
 		!isLocalBaseURL(cfg.BaseURL) &&
-		!boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") {
+		!allowInsecureSecret {
 		return Config{}, fmt.Errorf(
 			"GOTCHA_SECRET_KEY is too short (%d bytes) for a non-local %s instance; "+
 				"use at least 32 random bytes (e.g. `openssl rand -hex 32`); "+
@@ -1100,6 +1125,33 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.UptimeConcurrency < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_UPTIME_CONCURRENCY must be >= 1, got %d", cfg.UptimeConcurrency)
+	}
+	// GOTCHA_SMTP_PORT — TCP-порт, диапазон 1..65535. Раньше -1/0/99999
+	// проходили старт молча (SMTPHost=="" вообще не трогает почту), а отказ
+	// всплывал только при первой попытке отправки — то есть на первом же
+	// алерте, письме-приглашении или уведомлении о выгрузке, месяцами
+	// спустя после деплоя. Диапазон проверяется независимо от того, задан
+	// ли GOTCHA_SMTP_HOST: мусор в порту — опечатка оператора уже сейчас,
+	// а не когда-нибудь потом при первой отправке.
+	if cfg.SMTPPort < 1 || cfg.SMTPPort > 65535 {
+		return Config{}, fmt.Errorf("GOTCHA_SMTP_PORT must be between 1 and 65535, got %d", cfg.SMTPPort)
+	}
+	// Экспортная четвёрка (GOTCHA_EXPORT_TTL_HOURS/_MAX_ROWS/_MAX_BYTES/
+	// _DISK_BUDGET_BYTES) валидируется той же export.Config.Validate(), что
+	// worker.Tick вызывает на каждом тике (internal/export/worker.go) — но
+	// раньше ТОЛЬКО там: Run() глотал её ошибку как slog.Warn на каждом
+	// тике, процесс стартовал с виду здоровым, раздел «Выгрузки» был виден
+	// в UI, а заявки копились в очереди навсегда, потому что ни один тик не
+	// проходил дальше Validate(). Вызов из Tick НЕ убирается — лимиты можно
+	// поправить на ходу без рестарта, и вторая линия защиты остаётся; эта
+	// проверка на старте её дублирует, а не заменяет.
+	if err := (export.Config{
+		TTL:        time.Duration(cfg.ExportTTLHours) * time.Hour,
+		MaxRows:    cfg.ExportMaxRows,
+		MaxBytes:   cfg.ExportMaxBytes,
+		DiskBudget: cfg.ExportDiskBudgetBytes,
+	}).Validate(); err != nil {
+		return Config{}, errors.New(exportEnvNames.Replace(err.Error()))
 	}
 	// GOTCHA_TELEGRAM_API_BASE — свой Bot API вместо api.telegram.org.
 	// Отправитель дописывает к адресу «/bot{token}/sendMessage», поэтому
