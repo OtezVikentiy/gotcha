@@ -91,6 +91,41 @@ func hasUnitSuffix(name string) bool {
 	return false
 }
 
+// hasBooleanCanonForm — задача 11, п.2: конвенция булевых имён — ДВЕ
+// легитимные формы: `*_ENABLED` (включение функции целиком) и
+// `<подсистема>_ALLOW_<послабление>` (единственный маркер послабления
+// безопасности в словаре продукта — ALLOW; см. GOTCHA_SSRF_ALLOW_PRIVATE*,
+// GOTCHA_SECRET_KEY_ALLOW_INSECURE в envcontract.Known).
+//
+// НЕ подключена к сквозному скану реальных boolEnv/boolEnvDef-переменных
+// config.go (в отличие от hasUnitSuffix выше, которую TestEnvExampleCoversConfig
+// прогоняет по numericVars): проверена только на фиксированных кейсах ниже
+// (TestBooleanNamingConvention), по образцу TestUnitSuffixConvention. Причина
+// — не пробел покрытия, а то, что сквозная проверка «нулём исключений»
+// покрасила бы шесть РЕАЛЬНЫХ, целевых имён словаря, ни одно из которых не
+// является «включением функции» или «послаблением безопасности» в смысле
+// этих двух форм: GOTCHA_HSTS_INCLUDE_SUBDOMAINS/_PRELOAD (буквальные
+// термины директив заголовка HSTS — сам HSTS целиком включается ОТДЕЛЬНОЙ
+// GOTCHA_HSTS_ENABLED), GOTCHA_SCRUB_IP/_EMAIL/_FREETEXT (переключатели
+// одного поля Go в подсистеме приватности, а не включение подсистемы целиком)
+// и GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY — переименована ЭТОЙ ЖЕ волной
+// (envcontract.Renamed: GOTCHA_AGENT_TLS_SKIP_VERIFY →
+// GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY), но НАМЕРЕННО не в форму ALLOW_, а
+// под имя Go-поля InsecureSkipVerify — спека явно фиксирует это как целевое
+// имя, не промежуточное (см. cld/specs/2026-09-03-e3-contract-freeze-design.md,
+// §2.2). Сквозной сторож без списка исключений (которого контракт задачи 11
+// явно требует не заводить) на эти шесть имён покраснел бы прямо на HEAD —
+// подключение к реальному скану требует отдельного ruling.
+func hasBooleanCanonForm(name string) bool {
+	if strings.HasSuffix(name, "_ENABLED") {
+		return true
+	}
+	if i := strings.Index(name, "_ALLOW_"); i > 0 && i+len("_ALLOW_") < len(name) {
+		return true
+	}
+	return false
+}
+
 // collectGotchaEnvVars разбирает один Go-файл и возвращает имена переменных
 // GOTCHA_*, читаемых через envReaderFuncs — тот же приём (go/ast, а не
 // регэксп), что и раньше, вынесенный в функцию, потому что источников теперь
@@ -459,6 +494,37 @@ func TestUnitSuffixConvention(t *testing.T) {
 	for _, c := range cases {
 		if got := hasUnitSuffix(c.name); got != c.want {
 			t.Errorf("hasUnitSuffix(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBooleanNamingConvention — задача 11, п.2: конвенция булевых имён на
+// фиксированных кейсах, по образцу TestUnitSuffixConvention выше (см. докблок
+// hasBooleanCanonForm про то, почему это НЕ сквозной скан реального
+// config.go). GOTCHA_RUN_SOMETHING — пример из контракта задачи 11
+// дословно: голый глагол вместо *_ENABLED, тот же анти-паттерн, что был у
+// переименованной этой волной GOTCHA_RUN_EVALUATORS → GOTCHA_EVALUATORS_ENABLED
+// (envcontract.Renamed).
+func TestBooleanNamingConvention(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"GOTCHA_HSTS_ENABLED", true},
+		{"GOTCHA_EVALUATORS_ENABLED", true},
+		{"GOTCHA_AUTO_MIGRATE_ENABLED", true},
+		{"GOTCHA_SECRET_KEY_ALLOW_INSECURE", true},
+		{"GOTCHA_SSRF_ALLOW_PRIVATE", true},
+		{"GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME", true},
+		// Контракт задачи 11, п.2, дословный пример.
+		{"GOTCHA_RUN_SOMETHING", false},
+		// ALLOW_ на самом краю имени — нет послабления справа (i+len(marker)
+		// упирается в конец строки), форма не признаётся.
+		{"GOTCHA_ALLOW_", false},
+	}
+	for _, c := range cases {
+		if got := hasBooleanCanonForm(c.name); got != c.want {
+			t.Errorf("hasBooleanCanonForm(%q) = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
