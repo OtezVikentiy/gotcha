@@ -148,21 +148,37 @@ func nonLiteralSelfMetricTypeMsg(localPkgName string) string {
 	return fmt.Sprintf("self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", localPkgName)
 }
 
+// selfMetricInventory — единый результат обхода дерева: живой набор
+// self-метрик, потребляемый ВСЕМИ тремя сторожами этого класса —
+// TestSelfMetricNamesPinned/TestSelfMetricQueueNamingCanon (имя и тип) и
+// TestSelfMetricsDocumented, selfmetrics_docs_test.go (какие файлы
+// регистрируют каждое имя, для текста ошибки). Один обход, одна истина: до
+// этой правки TestSelfMetricsDocumented вёл собственный, независимый AST-скан
+// с той же логикой распознавания call-site'а, но без фикса на алиасированный/
+// dot-импорт (правки 1-2 этой задачи) — под алиасом файл целиком выпадал бы
+// из ЕГО скана точно так же, как раньше выпадал из этого, только тихо: он не
+// проверяет полноту (только то, что нашёл, документировано), поэтому пропавшая
+// метрика не роняла бы вообще ничего. Второй независимый сканер одного и того
+// же дерева — тот же класс дефекта, который правки 1-2 закрывали для этого
+// файла: две копии сверяются с кодом порознь и расходятся друг с другом
+// молча, а не с одной общей истиной.
+type selfMetricInventory struct {
+	types     map[string]string   // имя → тип (selfmetrics.Counter/Gauge)
+	callSites int                 // сырое число найденных call-site'ов — "сторож ослеп"
+	files     map[string][]string // имя → файлы, где оно зарегистрировано
+}
+
 // collectSelfMetrics — реально зарегистрированные в дереве self-метрики:
 // имя → тип (первый строковый литерал и первый аргумент-селектор пакета
 // selfmetrics пятиаргументного Add/AddInt), плюс сырое число найденных
-// call-site'ов. Та же AST-детекция, что у TestSelfMetricsDocumented
-// (selfmetrics_docs_test.go) — переиспользовать буквально нельзя, скан там
-// приватен и заточен под сбор списка файлов регистрации, здесь нужны имя,
-// тип и число вызовов.
+// call-site'ов и файлы регистрации каждого имени.
 //
 // Нелитеральное имя (переменная, конкатенация, fmt.Sprintf) роняет тест
 // сразу, с file:line: контракт замораживает конкретное имя, а не выражение,
 // которое его в рантайме вычисляет, — со строкой-переменной обход дальше
-// невозможен в принципе (t.Errorf, а не return true, — TestSelfMetricsDocumented
-// проверяет то же самое независимо, но этот сторож не должен полагаться на
-// соседний файл, чтобы не молчать в одиночку). Та же участь — расхождению
-// типа при повторной регистрации одного имени: количество найденных
+// невозможен в принципе (t.Errorf, а не return true — все три сторожа,
+// потребляющие этот скан, узнают о находке через общий t). Та же участь —
+// расхождению типа при повторной регистрации одного имени: количество найденных
 // call-site'ов также возвращается отдельно, чтобы вызывающий тест мог
 // поймать «сторож ослеп» (сканер сломан или указывает не туда) отдельно от
 // «золотой список устарел».
@@ -198,10 +214,11 @@ func nonLiteralSelfMetricTypeMsg(localPkgName string) string {
 // "internal/selfmetrics\"", который остаётся в тексте импорта независимо от
 // локального имени — это только более дешёвая версия того же условия
 // "импортирует ли файл этот пакет", а не альтернатива AST-проверке ниже.
-func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
+func collectSelfMetrics(t *testing.T, tree *Tree) selfMetricInventory {
 	t.Helper()
 	fset := token.NewFileSet()
 	types := map[string]string{}
+	files := map[string][]string{}
 	callSites := 0
 	for _, gf := range tree.GoFiles {
 		if gf.Generated || strings.HasSuffix(gf.Path, "_test.go") ||
@@ -263,6 +280,7 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 			callSites++
 			name := strings.Trim(lit.Value, `"`)
 			typ := typSel.Sel.Name
+			files[name] = append(files[name], gf.Path)
 			if prev, seen := types[name]; seen && prev != typ {
 				t.Errorf("%s: self-metric %q is registered as selfmetrics.%s here, but as selfmetrics.%s elsewhere — a metric cannot change type between registrations", pos, name, typ, prev)
 				return true
@@ -271,20 +289,21 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 			return true
 		})
 	}
-	return types, callSites
+	return selfMetricInventory{types: types, callSites: callSites, files: files}
 }
 
 // TestSelfMetricNamesPinned — сверяет РЕАЛЬНО зарегистрированные self-метрики
 // (имя и тип) с wantSelfMetrics в обе стороны.
 func TestSelfMetricNamesPinned(t *testing.T) {
 	tree := Load(t)
-	live, callSites := collectSelfMetrics(t, tree)
-	if callSites == 0 {
+	scan := collectSelfMetrics(t, tree)
+	live := scan.types
+	if scan.callSites == 0 {
 		t.Fatalf("blind guard: found 0 selfmetrics.Add/AddInt call-sites — the scan is looking at the wrong tree")
 	}
-	if callSites < len(wantSelfMetrics) {
+	if scan.callSites < len(wantSelfMetrics) {
 		t.Fatalf("blind guard: found only %d call-sites, fewer than the %d pinned metrics — the scanner is broken",
-			callSites, len(wantSelfMetrics))
+			scan.callSites, len(wantSelfMetrics))
 	}
 	if len(live) < 10 {
 		t.Fatalf("collected only %d self-metric names — the scanner is broken", len(live))
@@ -325,7 +344,7 @@ func TestSelfMetricNamesPinned(t *testing.T) {
 // gotcha_<подсистема>_queue_<канон>, форма, в которой уже был purge.
 func TestSelfMetricQueueNamingCanon(t *testing.T) {
 	tree := Load(t)
-	live, _ := collectSelfMetrics(t, tree)
+	live := collectSelfMetrics(t, tree).types
 
 	// Позитив: канонические имена очередей действительно существуют. Ловит
 	// переименование МИМО канона (сегмент "_queue_" пропал) — общий пример
