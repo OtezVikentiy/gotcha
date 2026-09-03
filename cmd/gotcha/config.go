@@ -28,7 +28,7 @@ var exportEnvNames = strings.NewReplacer(
 	"MaxRows", "GOTCHA_EXPORT_MAX_ROWS",
 	"MaxBytes", "GOTCHA_EXPORT_MAX_BYTES",
 	"DiskBudget", "GOTCHA_EXPORT_DISK_BUDGET_BYTES",
-	"TTL", "GOTCHA_EXPORT_TTL_HOURS",
+	"TTL", "GOTCHA_EXPORT_RETENTION_HOURS",
 )
 
 // devSecretKey — публично известный дефолт GOTCHA_SECRET_KEY для localhost-стендов.
@@ -156,7 +156,7 @@ type Config struct {
 	DependencySettleSeconds int
 	OutboxRetentionDays     int
 	// PurgeReconcileHours — период сверки телеметрии удалённых проектов
-	// (GOTCHA_PURGE_RECONCILE_HOURS); 0 выключает сверку. Ноль здесь не
+	// (GOTCHA_PROJECT_PURGE_RECONCILE_HOURS); 0 выключает сверку. Ноль здесь не
 	// ошибка, а выключатель: установка, где в ClickHouse пишет что-то помимо
 	// продукта, обязана иметь возможность отключить сверку, не отключая
 	// очередь удаления.
@@ -170,6 +170,11 @@ type Config struct {
 	// (GOTCHA_SECRET_KEY_PREV). Пусто — ротация не идёт, кольцо из одного
 	// ключа. Валидация — ниже, рядом с проверками SecretKey.
 	SecretKeyPrev string
+	// AllowInsecureSecret — аварийный обход обеих проверок SecretKey выше
+	// (GOTCHA_SECRET_KEY_ALLOW_INSECURE). Только для нестандартных
+	// dev-стендов, разбирается безусловно на каждом старте — см. врезку
+	// рядом с использованием ниже.
+	AllowInsecureSecret bool
 	// TrustedProxies — CIDR/IP доверенных reverse-proxy (GOTCHA_TRUSTED_PROXIES).
 	// Пусто — X-Forwarded-For не доверяется, per-IP лимитер ключуется по
 	// RemoteAddr (см. web.clientIP, SEC-L2).
@@ -198,7 +203,7 @@ type Config struct {
 	// MigrateOnly — применить миграции и выйти, не поднимая ни одного
 	// компонента (флаг --migrate-only).
 	//
-	// Нужен для развёртываний с GOTCHA_AUTO_MIGRATE=false, где миграции
+	// Нужен для развёртываний с GOTCHA_AUTO_MIGRATE_ENABLED=false, где миграции
 	// выносят в отдельный init-job. Документация предлагала для этого
 	// `docker compose run ... gotcha /bin/sh -c "true"`, но ENTRYPOINT — сам
 	// бинарь, а flag.Parse останавливается на первом не-флаге и ошибки не
@@ -223,11 +228,11 @@ type Config struct {
 	// намеренно подстрочный и fail-closed (под-scrub = утечка ПДн, over-scrub =
 	// потерянное отладочное поле), поэтому author (⊃auth) или tokenizer (⊃token)
 	// маскируются по умолчанию. Оператор возвращает нужные ему поля явно —
-	// GOTCHA_SCRUB_ALLOW_KEYS=author,tokenizer.
+	// GOTCHA_SCRUB_KEEP_KEYS=author,tokenizer.
 	ScrubAllowKeys []string
 
-	// LogLevel/LogFormat — управление логами (GOTCHA_LOG_LEVEL: debug|info|warn|
-	// error, GOTCHA_LOG_FORMAT: text|json). Без них уровень был жёстко зашит в
+	// LogLevel/LogFormat — управление логами (GOTCHA_LOGGING_LEVEL: debug|info|warn|
+	// error, GOTCHA_LOGGING_FORMAT: text|json). Без них уровень был жёстко зашит в
 	// Info, а формат — текстовый: поднять детализацию во время инцидента было
 	// нельзя вообще, а текстовый вывод плохо ложится в Loki/ELK.
 	LogLevel  string
@@ -328,7 +333,7 @@ type Config struct {
 	// работает дальше без него.
 	ExportDir string
 	// ExportTTLHours — срок хранения готового файла выгрузки от завершения
-	// заявки, в часах (GOTCHA_EXPORT_TTL_HOURS). Дефолт 168 — семь суток.
+	// заявки, в часах (GOTCHA_EXPORT_RETENTION_HOURS). Дефолт 168 — семь суток.
 	ExportTTLHours int
 	// ExportMaxRows — потолок строк одной выгрузки (GOTCHA_EXPORT_MAX_ROWS):
 	// при достижении заявка помечается Truncated, а не растёт неограниченно.
@@ -425,8 +430,9 @@ func hstsHeaderMattersFor(mode string) bool {
 	}
 }
 
-// checkRenamedEnvVars — envcontract.Renamed (десять пар старое→новое имя,
-// волна контрактной уборки v0.23.0) встречена с НЕПУСТЫМ значением: апгрейд
+// checkRenamedEnvVars — envcontract.Renamed (накопительно по всем волнам
+// переименования: десять пар контрактной уборки v0.23.0 плюс семнадцать
+// заморозки контракта перед 1.0) встречена с НЕПУСТЫМ значением: апгрейд
 // инстанса принёс непровённый `.env`. Без этой проверки старое имя не
 // диагностируется вовсе — cmd/gotcha/config.go его больше не читает нигде,
 // значит вместо ошибки оператор получил бы тихую подмену своего значения
@@ -516,7 +522,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	fs := flag.NewFlagSet("gotcha", flag.ContinueOnError)
 	mode := fs.String("mode", "all", "process role: ingest | web | uptime | probe | all")
 	migrateOnly := fs.Bool("migrate-only", false,
-		"apply schema migrations and exit (init-job for deployments with GOTCHA_AUTO_MIGRATE=false)")
+		"apply schema migrations and exit (init-job for deployments with GOTCHA_AUTO_MIGRATE_ENABLED=false)")
 	migrateForce := fs.Int("migrate-force", -1,
 		"clear the dirty flag on the PostgreSQL schema at version N and exit (see upgrade docs)")
 	migrateForceCH := fs.Int("migrate-force-ch", -1,
@@ -654,16 +660,16 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		defQuota = 1_000_000
 	}
 
-	// RunEvaluators — тристабильный: nil, если GOTCHA_RUN_EVALUATORS не задан
+	// RunEvaluators — тристабильный: nil, если GOTCHA_EVALUATORS_ENABLED не задан
 	// (см. докблок поля). Разбор — тот же parseBool, что у всех остальных
 	// булевых полей, поэтому «ture» копит ошибку в errs, а не тихо становится
 	// false.
 	var runEvaluators *bool
-	if v, set := parseBool("GOTCHA_RUN_EVALUATORS"); set {
+	if v, set := parseBool("GOTCHA_EVALUATORS_ENABLED"); set {
 		runEvaluators = &v
 	}
 
-	// GOTCHA_MAX_BUFFER_BYTES/GOTCHA_MAX_QUEUE_BYTES: 0 внутри Config остаётся
+	// GOTCHA_MAX_WRITER_BUFFER_BYTES/GOTCHA_MAX_INGEST_QUEUE_BYTES: 0 внутри Config остаётся
 	// сигналом «нет явного потолка, посчитай/возьми дефолт пакета» для
 	// downstream (effectiveMaxBufferBytes, autoMaxBufferBytes в main.go) — это
 	// НЕ меняется. Но 0 не заданной переменной и 0, написанный оператором
@@ -673,22 +679,22 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// вызова num() — по сырому значению env и по факту добавления ошибки
 	// именно для этого ключа. Так «мусор» и «явный 0» не дублируют друг
 	// друга вторым сообщением об ошибке.
-	maxBufferBytesSet := strings.TrimSpace(getenv("GOTCHA_MAX_BUFFER_BYTES")) != ""
+	maxBufferBytesSet := strings.TrimSpace(getenv("GOTCHA_MAX_WRITER_BUFFER_BYTES")) != ""
 	maxBufferBytesErrsBefore := len(errs)
-	maxBufferBytes := num("GOTCHA_MAX_BUFFER_BYTES", 0)
+	maxBufferBytes := num("GOTCHA_MAX_WRITER_BUFFER_BYTES", 0)
 	if maxBufferBytesSet && len(errs) == maxBufferBytesErrsBefore && maxBufferBytes < 1 {
 		errs = append(errs, fmt.Errorf(
-			"GOTCHA_MAX_BUFFER_BYTES must be >= 1 (0 or negative refuses startup here, unlike "+
+			"GOTCHA_MAX_WRITER_BUFFER_BYTES must be >= 1 (0 or negative refuses startup here, unlike "+
 				"the other retention/quota variables where 0 means unlimited/forever; unset the "+
 				"variable entirely to use the writer package default), got %d", maxBufferBytes))
 	}
 
-	maxQueueBytesSet := strings.TrimSpace(getenv("GOTCHA_MAX_QUEUE_BYTES")) != ""
+	maxQueueBytesSet := strings.TrimSpace(getenv("GOTCHA_MAX_INGEST_QUEUE_BYTES")) != ""
 	maxQueueBytesErrsBefore := len(errs)
-	maxQueueBytes := num("GOTCHA_MAX_QUEUE_BYTES", 0)
+	maxQueueBytes := num("GOTCHA_MAX_INGEST_QUEUE_BYTES", 0)
 	if maxQueueBytesSet && len(errs) == maxQueueBytesErrsBefore && maxQueueBytes < 1 {
 		errs = append(errs, fmt.Errorf(
-			"GOTCHA_MAX_QUEUE_BYTES must be >= 1 (0 or negative refuses startup here, unlike "+
+			"GOTCHA_MAX_INGEST_QUEUE_BYTES must be >= 1 (0 or negative refuses startup here, unlike "+
 				"the other retention/quota variables where 0 means unlimited/forever; unset the "+
 				"variable entirely to use the ingest queue package default), got %d", maxQueueBytes))
 	}
@@ -698,7 +704,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MigrateOnly:              *migrateOnly,
 		MigrateForcePG:           *migrateForce,
 		MigrateForceCH:           *migrateForceCH,
-		Addr:                     str("GOTCHA_ADDR", ":8080"),
+		Addr:                     str("GOTCHA_LISTEN_ADDR", ":8080"),
 		BaseURL:                  str("GOTCHA_BASE_URL", "http://localhost:8080"),
 		PostgresDSN:              strGuarded("GOTCHA_PG_DSN", "postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable"),
 		ClickHouseDSN:            strGuarded("GOTCHA_CH_DSN", "clickhouse://localhost:9000/gotcha"),
@@ -737,24 +743,24 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		EscalationInterval:       intNum("GOTCHA_ESCALATION_INTERVAL_SECONDS", 60),
 		DependencySettleSeconds:  intNum("GOTCHA_DEPENDENCY_SETTLE_SECONDS", 300),
 		OutboxRetentionDays:      intNum("GOTCHA_OUTBOX_RETENTION_DAYS", 7),
-		PurgeReconcileHours:      intNum("GOTCHA_PURGE_RECONCILE_HOURS", 24),
+		PurgeReconcileHours:      intNum("GOTCHA_PROJECT_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                strGuarded("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
 		SecretKeyPrev:            str("GOTCHA_SECRET_KEY_PREV", ""),
-		RegistrationMode:         strings.ToLower(str("GOTCHA_REGISTRATION", "invite")),
+		RegistrationMode:         strings.ToLower(str("GOTCHA_REGISTRATION_MODE", "invite")),
 		HSTSEnabled:              boolEnvDef("GOTCHA_HSTS_ENABLED", true),
 		HSTSMaxAgeSeconds:        intNum("GOTCHA_HSTS_MAX_AGE_SECONDS", 31536000),
 		HSTSIncludeSubDomains:    boolEnv("GOTCHA_HSTS_INCLUDE_SUBDOMAINS"),
 		HSTSPreload:              boolEnv("GOTCHA_HSTS_PRELOAD"),
 		Locale:                   strings.ToLower(str("GOTCHA_LOCALE", "ru")),
 		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
-		LocalRegion:              str("GOTCHA_LOCAL_REGION", "local"),
-		ProbeToken:               str("GOTCHA_PROBE_TOKEN", ""),
+		LocalRegion:              str("GOTCHA_UPTIME_LOCAL_REGION", "local"),
+		ProbeToken:               str("GOTCHA_PROBE_KEY", ""),
 		ServerURL:                str("GOTCHA_PROBE_SERVER_URL", ""),
 		AgentDistDir:             str("GOTCHA_DIST_DIR", "/opt/gotcha/agent-dist"),
 		AgentDistRatePerMin:      intNum("GOTCHA_DIST_RATE_PER_MIN", 120),
 		ExportDir:                str("GOTCHA_EXPORT_DIR", "/var/lib/gotcha/exports"),
-		ExportTTLHours:           intNum("GOTCHA_EXPORT_TTL_HOURS", 168),
+		ExportTTLHours:           intNum("GOTCHA_EXPORT_RETENTION_HOURS", 168),
 		ExportMaxRows:            num("GOTCHA_EXPORT_MAX_ROWS", 200_000),
 		ExportMaxBytes:           num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
 		ExportDiskBudgetBytes:    num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
@@ -795,7 +801,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.OIDCClientID = str("GOTCHA_OIDC_CLIENT_ID", "")
 	cfg.OIDCClientSecret = str("GOTCHA_OIDC_CLIENT_SECRET", "")
 	cfg.OIDCScopes = str("GOTCHA_OIDC_SCOPES", "")
-	cfg.OIDCName = str("GOTCHA_OIDC_NAME", "")
+	cfg.OIDCName = str("GOTCHA_OIDC_DISPLAY_NAME", "")
 	cfg.YandexEnabled = boolEnv("GOTCHA_YANDEX_ENABLED")
 	cfg.YandexClientID = str("GOTCHA_YANDEX_CLIENT_ID", "")
 	cfg.YandexClientSecret = str("GOTCHA_YANDEX_CLIENT_SECRET", "")
@@ -813,9 +819,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.SSRFAllowPrivateWebhook = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK", ssrfAll)
 	cfg.SSRFAllowPrivateOIDC = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_OIDC", ssrfAll)
 	cfg.SSRFAllowPrivateTelegram = boolEnvDef("GOTCHA_SSRF_ALLOW_PRIVATE_TELEGRAM", ssrfAll)
-	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE", true)
+	cfg.AutoMigrate = boolEnvDef("GOTCHA_AUTO_MIGRATE_ENABLED", true)
 	// --migrate-only подразумевает применение миграций: этот запуск ради них и
-	// существует. Иначе флаг вместе с GOTCHA_AUTO_MIGRATE=false — а это ровно
+	// существует. Иначе флаг вместе с GOTCHA_AUTO_MIGRATE_ENABLED=false — а это ровно
 	// та конфигурация, для которой он и нужен, — только проверил бы схему и
 	// вышел, ничего не применив.
 	if cfg.MigrateOnly {
@@ -825,9 +831,9 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// нести ПДн, а внешние каналы (Telegram — серверы за пределами РФ, webhook)
 	// уводят его наружу, потенциально трансгранично (152-ФЗ ст.12). По умолчанию
 	// шлём обезличенный payload (только ссылка/заголовок); оператор осознанно
-	// включает детали через GOTCHA_EXTERNAL_CHANNEL_DETAILS=true.
-	cfg.ExternalChannelDetails = boolEnvDef("GOTCHA_EXTERNAL_CHANNEL_DETAILS", false)
-	// GOTCHA_SCRUB_KEYS ДОПОЛНЯЕТ дефолтный denylist, а не заменяет его.
+	// включает детали через GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true.
+	cfg.ExternalChannelDetails = boolEnvDef("GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED", false)
+	// GOTCHA_SCRUB_DENY_KEYS ДОПОЛНЯЕТ дефолтный denylist, а не заменяет его.
 	//
 	// Раньше заменял, и это был тихий откат защиты: оператор дописывал одно своё
 	// поле — и терял скрубинг password/token/secret/cookie/cvv целиком, ничего об
@@ -836,19 +842,19 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// пропускалась, и denylist оставался ПУСТЫМ.
 	//
 	// Убрать конкретный дефолт по-прежнему можно — точным именем через
-	// GOTCHA_SCRUB_ALLOW_KEYS. Это осознанное действие оператора, а не побочный
+	// GOTCHA_SCRUB_KEEP_KEYS. Это осознанное действие оператора, а не побочный
 	// эффект добавления своего ключа.
 	cfg.ScrubKeys = defaultScrubKeys()
-	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_KEYS"), ",") {
+	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_DENY_KEYS"), ",") {
 		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
 			cfg.ScrubKeys = append(cfg.ScrubKeys, k)
 		}
 	}
-	cfg.LogLevel = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOG_LEVEL")))
-	cfg.LogFormat = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOG_FORMAT")))
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOGGING_LEVEL")))
+	cfg.LogFormat = strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOGGING_FORMAT")))
 
 	// Исключения из denylist — точными именами (см. Config.ScrubAllowKeys).
-	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_ALLOW_KEYS"), ",") {
+	for _, k := range strings.Split(getenv("GOTCHA_SCRUB_KEEP_KEYS"), ",") {
 		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
 			cfg.ScrubAllowKeys = append(cfg.ScrubAllowKeys, k)
 		}
@@ -912,30 +918,30 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// цикл деплоя на секрет, а после рестарта увидит, что у него вдобавок
 	// не применились ещё какие-то из его настроек.
 	//
-	// GOTCHA_ALLOW_INSECURE_SECRET разбирается ЗДЕСЬ, ДО обеих проверок ниже,
+	// GOTCHA_SECRET_KEY_ALLOW_INSECURE разбирается ЗДЕСЬ, ДО обеих проверок ниже,
 	// а не inline через boolEnv() в их && условиях: у обеих проверок первый
 	// операнд короткого замыкания после режима — состояние самого ключа
 	// (== devSecretKey / длина < 32), и при СИЛЬНОМ кастомном ключе оба
 	// условия останавливаются на этом операнде раньше, чем дошли бы до
-	// boolEnv("GOTCHA_ALLOW_INSECURE_SECRET") — мусорное значение переменной
+	// boolEnv("GOTCHA_SECRET_KEY_ALLOW_INSECURE") — мусорное значение переменной
 	// («ture» и т.п.) в этом случае вообще не разбиралось бы и не копилось
 	// в errs, хотя оператор его туда явно написал. Разбор здесь исполняется
 	// безусловно на каждом старте, до вычисления любого из условий ниже.
-	allowInsecureSecret := boolEnv("GOTCHA_ALLOW_INSECURE_SECRET")
+	cfg.AllowInsecureSecret = boolEnv("GOTCHA_SECRET_KEY_ALLOW_INSECURE")
 
 	// SEC-C1: дефолтный ключ подписи oauth-cookie публично известен из
 	// исходников. В серверных режимах на не-localhost BaseURL это дыра
 	// (угон аккаунта через OAuth-link) — отказываемся стартовать.
 	// Escape-hatch для нестандартного dev-окружения —
-	// GOTCHA_ALLOW_INSECURE_SECRET=1.
+	// GOTCHA_SECRET_KEY_ALLOW_INSECURE=1.
 	if secretKeyMattersFor(cfg.Mode) &&
 		cfg.SecretKey == devSecretKey &&
 		!isLocalBaseURL(cfg.BaseURL) &&
-		!allowInsecureSecret {
+		!cfg.AllowInsecureSecret {
 		return Config{}, fmt.Errorf(
 			"GOTCHA_SECRET_KEY must be set to a strong random value for a non-local %s instance "+
 				"(default key is public and enables OAuth account takeover); "+
-				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development", cfg.Mode)
+				"set GOTCHA_SECRET_KEY_ALLOW_INSECURE=1 to override for development", cfg.Mode)
 	}
 
 	// SEC: слишком короткий кастомный ключ — слабый ключ подписи oauth-cookie и
@@ -946,16 +952,16 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		cfg.SecretKey != devSecretKey &&
 		len(cfg.SecretKey) < 32 &&
 		!isLocalBaseURL(cfg.BaseURL) &&
-		!allowInsecureSecret {
+		!cfg.AllowInsecureSecret {
 		return Config{}, fmt.Errorf(
 			"GOTCHA_SECRET_KEY is too short (%d bytes) for a non-local %s instance; "+
 				"use at least 32 random bytes (e.g. `openssl rand -hex 32`); "+
-				"set GOTCHA_ALLOW_INSECURE_SECRET=1 to override for development",
+				"set GOTCHA_SECRET_KEY_ALLOW_INSECURE=1 to override for development",
 			len(cfg.SecretKey), cfg.Mode)
 	}
 
 	// GOTCHA_SECRET_KEY_PREV — предыдущий мастер-ключ на время ротации.
-	// Три сочетания с текущим ключом не про стойкость (GOTCHA_ALLOW_INSECURE_SECRET
+	// Три сочетания с текущим ключом не про стойкость (GOTCHA_SECRET_KEY_ALLOW_INSECURE
 	// тут ни при чём — эскейп-хэтч снимает требования к силе ключа, а не чинит
 	// конфиг, физически не способный сделать то, что от него ждут), а про то,
 	// что молча проигнорированная переменная убедила бы оператора в ротации,
@@ -991,7 +997,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// пятью опечатками правит .env за один проход, а не за пять деплоев.
 	// errors.Join кладёт каждую на отдельную строку, и каждая из них уже
 	// начинается с имени переменной (см. num/intNum/parseBool выше и
-	// GOTCHA_TRUSTED_PROXIES/GOTCHA_MAX_BUFFER_BYTES/GOTCHA_MAX_QUEUE_BYTES
+	// GOTCHA_TRUSTED_PROXIES/GOTCHA_MAX_WRITER_BUFFER_BYTES/GOTCHA_MAX_INGEST_QUEUE_BYTES
 	// рядом) — этим текстом оператор чинит конфиг.
 	if len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
@@ -1046,7 +1052,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	switch cfg.RegistrationMode {
 	case "open", "invite", "closed":
 	default:
-		return Config{}, fmt.Errorf("GOTCHA_REGISTRATION must be open, invite or closed, got %q", cfg.RegistrationMode)
+		return Config{}, fmt.Errorf("GOTCHA_REGISTRATION_MODE must be open, invite or closed, got %q", cfg.RegistrationMode)
 	}
 
 	switch cfg.Locale {
@@ -1104,7 +1110,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
 	}
 	if cfg.PurgeReconcileHours < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_PURGE_RECONCILE_HOURS must be >= 0, got %d", cfg.PurgeReconcileHours)
+		return Config{}, fmt.Errorf("GOTCHA_PROJECT_PURGE_RECONCILE_HOURS must be >= 0, got %d", cfg.PurgeReconcileHours)
 	}
 	if cfg.NotifyConcurrency < 1 {
 		return Config{}, fmt.Errorf("GOTCHA_NOTIFY_CONCURRENCY must be >= 1, got %d", cfg.NotifyConcurrency)
@@ -1156,7 +1162,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.SMTPPort < 1 || cfg.SMTPPort > 65535 {
 		return Config{}, fmt.Errorf("GOTCHA_SMTP_PORT must be between 1 and 65535, got %d", cfg.SMTPPort)
 	}
-	// Экспортная четвёрка (GOTCHA_EXPORT_TTL_HOURS/_MAX_ROWS/_MAX_BYTES/
+	// Экспортная четвёрка (GOTCHA_EXPORT_RETENTION_HOURS/_MAX_ROWS/_MAX_BYTES/
 	// _DISK_BUDGET_BYTES) валидируется той же export.Config.Validate(), что
 	// worker.Tick вызывает на каждом тике (internal/export/worker.go) — но
 	// раньше ТОЛЬКО там: Run() глотал её ошибку как slog.Warn на каждом
@@ -1209,7 +1215,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL is required with --mode=probe")
 		}
 		if cfg.ProbeToken == "" {
-			return Config{}, fmt.Errorf("GOTCHA_PROBE_TOKEN is required with --mode=probe")
+			return Config{}, fmt.Errorf("GOTCHA_PROBE_KEY is required with --mode=probe")
 		}
 	} else if cfg.ServerURL != "" {
 		// Заданный, но бесполезный вне --mode=probe: ничего его не читает,

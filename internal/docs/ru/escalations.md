@@ -91,7 +91,7 @@ fallback, если не настроена) — по каждой ступени
 
 Как и у оценщиков метрик/хостов/SLO, сам планировщик эскалаций запускается
 только в режимах `uptime`/`all`, либо при явном включении
-`GOTCHA_RUN_EVALUATORS` — см. [Конфигурацию](/docs/configuration). Лог
+`GOTCHA_EVALUATORS_ENABLED` — см. [Конфигурацию](/docs/configuration). Лог
 доставленных ступеней (`incident_escalations`) хранится тем же сроком, что и
 сами инциденты, — `GOTCHA_INCIDENT_RETENTION_DAYS`.
 

@@ -120,5 +120,5 @@ react faster at the cost of more frequent queries; raising it does the opposite.
 Important: like the metric/host/regression evaluators, the SLO evaluator by
 default only runs in `uptime` and `all` modes — in a `web`+`ingest` split, an
 SLO looks configured but budget burn is never computed. Enable the
-evaluators explicitly with `GOTCHA_RUN_EVALUATORS=true`, see
+evaluators explicitly with `GOTCHA_EVALUATORS_ENABLED=true`, see
 [Configuration](/docs/configuration).

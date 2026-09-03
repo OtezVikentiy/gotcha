@@ -9,6 +9,38 @@
 
 ## [Unreleased]
 
+### Изменено
+- **Ломающее.** Семнадцать серверных переменных окружения переименованы перед
+  заморозкой контракта 1.0: адрес прослушивания отделён от публикуемого
+  порта, подсистема логирования названа явно и больше не путается с приёмом
+  логов, переменная-модификатор встала рядом с настройкой, которую она
+  модифицирует, а несколько булевых и enum-переменных лишились имён, которые
+  читались ровно наоборот сути. Старые имена не читаются, обновите `.env` и
+  переменные compose до обновления. Старое имя с непустым значением теперь
+  роняет старт с указанием нового имени, а не тихо применяет дефолт.
+  `GOTCHA_PROBE_KEY` заодно поменял сниппет `docker run`, который показывает
+  интерфейс регистрации пробы.
+
+  | Было | Стало |
+  |---|---|
+  | `GOTCHA_ADDR` | `GOTCHA_LISTEN_ADDR` |
+  | `GOTCHA_LOG_LEVEL` | `GOTCHA_LOGGING_LEVEL` |
+  | `GOTCHA_LOG_FORMAT` | `GOTCHA_LOGGING_FORMAT` |
+  | `GOTCHA_LOCAL_REGION` | `GOTCHA_UPTIME_LOCAL_REGION` |
+  | `GOTCHA_REGISTRATION` | `GOTCHA_REGISTRATION_MODE` |
+  | `GOTCHA_EXPORT_TTL_HOURS` | `GOTCHA_EXPORT_RETENTION_HOURS` |
+  | `GOTCHA_SCRUB_KEYS` | `GOTCHA_SCRUB_DENY_KEYS` |
+  | `GOTCHA_SCRUB_ALLOW_KEYS` | `GOTCHA_SCRUB_KEEP_KEYS` |
+  | `GOTCHA_RUN_EVALUATORS` | `GOTCHA_EVALUATORS_ENABLED` |
+  | `GOTCHA_AUTO_MIGRATE` | `GOTCHA_AUTO_MIGRATE_ENABLED` |
+  | `GOTCHA_ALLOW_INSECURE_SECRET` | `GOTCHA_SECRET_KEY_ALLOW_INSECURE` |
+  | `GOTCHA_MAX_BUFFER_BYTES` | `GOTCHA_MAX_WRITER_BUFFER_BYTES` |
+  | `GOTCHA_MAX_QUEUE_BYTES` | `GOTCHA_MAX_INGEST_QUEUE_BYTES` |
+  | `GOTCHA_PROBE_TOKEN` | `GOTCHA_PROBE_KEY` |
+  | `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` |
+  | `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
+  | `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
+
 ## [0.33.0] - 2026-09-03
 
 ### Изменено

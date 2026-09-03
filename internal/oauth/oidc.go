@@ -69,7 +69,7 @@ func (o *OIDC) DisplayName() string {
 // разбор ниже не оставил ни одного элемента) → дефолт "openid email profile".
 //
 // GOTCHA_OIDC_SCOPES принимает список через запятую — тот же разделитель,
-// что у всех остальных списочных переменных контракта (GOTCHA_SCRUB_KEYS,
+// что у всех остальных списочных переменных контракта (GOTCHA_SCRUB_DENY_KEYS,
 // GOTCHA_TRUSTED_RECIPIENTS, GOTCHA_TRUSTED_PROXIES в cmd/gotcha/config.go).
 // Раньше значение уходило в scope= как есть: разделителем там пробел (см.
 // RFC 6749 §3.3), и оператор, написавший по аналогии с остальными списками

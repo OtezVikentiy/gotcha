@@ -15,19 +15,19 @@ import (
 const healthcheckTimeout = 3 * time.Second
 
 // defaultHealthcheckURL — куда стучится проверка по умолчанию. Порт совпадает с
-// портом внутри контейнера (GOTCHA_ADDR по умолчанию :8080).
+// портом внутри контейнера (GOTCHA_LISTEN_ADDR по умолчанию :8080).
 const defaultHealthcheckURL = "http://127.0.0.1:8080/readyz"
 
-// defaultHealthcheckURLFor строит дефолтный URL из GOTCHA_ADDR: оператор,
+// defaultHealthcheckURLFor строит дефолтный URL из GOTCHA_LISTEN_ADDR: оператор,
 // сменивший порт, не должен получать второй независимый симптом от той же
 // правки (проверка ходила бы в мёртвый :8080 — «unhealthy» при живом
-// приложении). Хост всегда 127.0.0.1: проверка ходит к себе, а GOTCHA_ADDR
+// приложении). Хост всегда 127.0.0.1: проверка ходит к себе, а GOTCHA_LISTEN_ADDR
 // вида 0.0.0.0:9000 или [::]:9000 — адрес ПРОСЛУШИВАНИЯ, адресом назначения
 // он быть не может. Непарсибельное значение → дефолтный порт: об опечатке в
-// GOTCHA_ADDR скажет сам сервер при старте, работа проверки — не маскировать
+// GOTCHA_LISTEN_ADDR скажет сам сервер при старте, работа проверки — не маскировать
 // это своей ошибкой.
 func defaultHealthcheckURLFor(getenv func(string) string) string {
-	addr := getenv("GOTCHA_ADDR")
+	addr := getenv("GOTCHA_LISTEN_ADDR")
 	if addr == "" {
 		return defaultHealthcheckURL
 	}

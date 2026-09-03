@@ -92,7 +92,7 @@ ladder while suppressed.
 
 Like the metric/host/SLO evaluators, the escalation scheduler itself only
 runs in `uptime`/`all` modes, or when explicitly enabled via
-`GOTCHA_RUN_EVALUATORS` — see [Configuration](/docs/configuration). The log
+`GOTCHA_EVALUATORS_ENABLED` — see [Configuration](/docs/configuration). The log
 of delivered steps (`incident_escalations`) is kept for the same period as
 incidents themselves — `GOTCHA_INCIDENT_RETENTION_DAYS`.
 

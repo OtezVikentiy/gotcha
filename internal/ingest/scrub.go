@@ -76,7 +76,7 @@ func NewScrubber(scrubIP, scrubEmail bool, denyKeys []string) *Scrubber {
 	return s
 }
 
-// SetAllowKeys задаёт имена-исключения из denylist (GOTCHA_SCRUB_ALLOW_KEYS).
+// SetAllowKeys задаёт имена-исключения из denylist (GOTCHA_SCRUB_KEEP_KEYS).
 // Матч denylist намеренно подстрочный и fail-closed (см. denied), поэтому
 // безобидные поля вроде author (⊃auth) или tokenizer (⊃token) по умолчанию
 // маскируются. Оператор возвращает нужные ему поля точным именем — это

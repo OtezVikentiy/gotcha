@@ -21,13 +21,13 @@
 Пробе не нужен доступ ни к PostgreSQL, ни к ClickHouse — только исходящий HTTP(S) к центральному серверу. Обязательны две переменные окружения:
 
 - `GOTCHA_PROBE_SERVER_URL` — базовый адрес центрального сервера Gotcha (тот же, что `GOTCHA_BASE_URL` на сервере), например `https://gotcha.example.com`;
-- `GOTCHA_PROBE_TOKEN` — токен, полученный на шаге регистрации.
+- `GOTCHA_PROBE_KEY` — токен, полученный на шаге регистрации.
 
 Пример запуска через Docker (именно такая команда, с подставленными вашими значениями, показана на странице «Пробы» после создания):
 
 ```bash
 docker run -e GOTCHA_PROBE_SERVER_URL=https://gotcha.example.com \
-  -e GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
+  -e GOTCHA_PROBE_KEY=6e1f2a...af92 \
   <gotcha-image> --mode=probe
 ```
 
@@ -47,7 +47,7 @@ docker compose images gotcha
 
 ```bash
 GOTCHA_PROBE_SERVER_URL=https://gotcha.example.com \
-GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
+GOTCHA_PROBE_KEY=6e1f2a...af92 \
 ./gotcha --mode=probe
 ```
 
@@ -61,7 +61,7 @@ GOTCHA_PROBE_TOKEN=6e1f2a...af92 \
 
 ### Что нужно пробе для работы?
 
-Только исходящий HTTP(S) к центральному серверу Gotcha и две переменные окружения — `GOTCHA_PROBE_SERVER_URL` и `GOTCHA_PROBE_TOKEN`. Доступ к PostgreSQL и ClickHouse не нужен, входящие порты открывать не нужно: проба сама ходит к серверу, а не наоборот. Поэтому её можно поставить на самый дешёвый VPS в нужном регионе.
+Только исходящий HTTP(S) к центральному серверу Gotcha и две переменные окружения — `GOTCHA_PROBE_SERVER_URL` и `GOTCHA_PROBE_KEY`. Доступ к PostgreSQL и ClickHouse не нужен, входящие порты открывать не нужно: проба сама ходит к серверу, а не наоборот. Поэтому её можно поставить на самый дешёвый VPS в нужном регионе.
 
 ### Я потерял токен пробы. Как его восстановить?
 

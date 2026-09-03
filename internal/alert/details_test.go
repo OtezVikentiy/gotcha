@@ -91,7 +91,7 @@ func TestDetailPolicyAllowAll(t *testing.T) {
 // TestDetailPolicyChannelTrustedFlag — отметка на самом канале разрешает
 // детали там, где получателя опознать нечем. Ради Telegram она и заведена:
 // chat_id не домен, никакой список доверенных хостов его не покроет, и без
-// этой отметки у оператора оставался только GOTCHA_EXTERNAL_CHANNEL_DETAILS,
+// этой отметки у оператора оставался только GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED,
 // открывающий детали всем каналам всех проектов разом.
 func TestDetailPolicyChannelTrustedFlag(t *testing.T) {
 	p := alert.NewDetailPolicy("https://gotcha.corp.example", nil, false)

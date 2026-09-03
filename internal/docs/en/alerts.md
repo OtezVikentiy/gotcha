@@ -139,7 +139,7 @@ GOTCHA_TRUSTED_RECIPIENTS=corp.example
 ```
 
 ```
-GOTCHA_EXTERNAL_CHANNEL_DETAILS=true
+GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true
 ```
 
 lifts the restriction entirely — details then go to every recipient, Telegram included. Enable it only if you have a lawful basis for cross-border transfer. Both are instance-level settings; see [Privacy and 152-FZ](/docs/privacy) for the reasoning.
@@ -148,5 +148,5 @@ lifts the restriction entirely — details then go to every recipient, Telegram 
 
 - [Metric Alerts](/docs/metric-alerts) — threshold rules on numeric metrics, using the same channel set.
 - [Issues](/docs/issues) — what an issue is, what a regression is, statuses.
-- [Configuration](/docs/configuration) — the SMTP variables and `GOTCHA_EXTERNAL_CHANNEL_DETAILS`.
+- [Configuration](/docs/configuration) — the SMTP variables and `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED`.
 - [Teams and roles](/docs/teams) — who is a project operator, and the full table of what operators vs. owner/admin can do.

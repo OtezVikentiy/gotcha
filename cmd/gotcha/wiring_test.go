@@ -47,13 +47,13 @@ func TestRunEvaluatorsDefaultsAndExplicit(t *testing.T) {
 	}
 }
 
-// TestEvaluatorsDisabledWarningNamesAllSixCycles: GOTCHA_RUN_EVALUATORS гейтит
+// TestEvaluatorsDisabledWarningNamesAllSixCycles: GOTCHA_EVALUATORS_ENABLED гейтит
 // ШЕСТЬ фоновых циклов (metric/trace(perf)/profile/host-оценщики + slo.Evaluator
 // + escalation.Scheduler, см. startEvaluators), но предупреждение при старте
 // раньше называло только четыре — slo и эскалация молчали о себе так же, как
 // правило по метрике молчит без этого предупреждения (W3-D, запись 8 = находка
 // W3-C). Оператор раздельного развёртывания web+ingest без
-// GOTCHA_RUN_EVALUATORS не узнавал, что SLO-алерты и эскалация ВСЕХ пяти
+// GOTCHA_EVALUATORS_ENABLED не узнавал, что SLO-алерты и эскалация ВСЕХ пяти
 // источников инцидентов (не только SLO) тоже не работают.
 func TestEvaluatorsDisabledWarningNamesAllSixCycles(t *testing.T) {
 	for _, want := range []string{"metric", "profile", "host", "slo", "escalation"} {
@@ -117,7 +117,7 @@ func TestDetailPolicyFollowsRecipient(t *testing.T) {
 
 	open := detailPolicy(Config{BaseURL: cfg.BaseURL, ExternalChannelDetails: true})
 	if !open.AllowsDetails(alert.Channel{Kind: alert.ChannelTelegram, Target: "12345"}) {
-		t.Error("при GOTCHA_EXTERNAL_CHANNEL_DETAILS=true детали обязаны уходить всем")
+		t.Error("при GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true детали обязаны уходить всем")
 	}
 	// Лог о действующей политике не должен падать ни в одном режиме.
 	logDetailPolicy(cfg)
@@ -140,7 +140,7 @@ func TestSetupLoggingAcceptsKnownLevels(t *testing.T) {
 }
 
 // TestSetupLoggingRejectsUnknownLevel — RA-контракт (задача 5, E3): нераспознанный
-// GOTCHA_LOG_LEVEL обязан ронять старт, а не тихо откатываться на Info.
+// GOTCHA_LOGGING_LEVEL обязан ронять старт, а не тихо откатываться на Info.
 // Раньше `LOG_LEVEL=trace` во время инцидента давал молчаливый Info без
 // единой диагностики, и оператор отлаживал логгер вместо инцидента.
 func TestSetupLoggingRejectsUnknownLevel(t *testing.T) {
@@ -149,7 +149,7 @@ func TestSetupLoggingRejectsUnknownLevel(t *testing.T) {
 	}
 }
 
-// TestSetupLoggingRejectsUnknownFormat — тот же контракт для GOTCHA_LOG_FORMAT:
+// TestSetupLoggingRejectsUnknownFormat — тот же контракт для GOTCHA_LOGGING_FORMAT:
 // раньше нераспознанный формат тихо откатывался на text.
 func TestSetupLoggingRejectsUnknownFormat(t *testing.T) {
 	if err := setupLogging("info", "nonsense"); err == nil {
@@ -175,7 +175,7 @@ func TestSetupLoggingWarningAliasSetsWarnLevel(t *testing.T) {
 }
 
 // TestAutoMaxBufferBytesSafeUnderHeapCeiling: находка P0-1 — дефолтный
-// docker-compose.yml (mem_limit 1g, GOTCHA_MAX_BUFFER_BYTES не задан) даёт
+// docker-compose.yml (mem_limit 1g, GOTCHA_MAX_WRITER_BUFFER_BYTES не задан) даёт
 // потолок кучи 819 МиБ (0.8×1024 МиБ), а пять буферов-«единиц» по flat
 // defaultMaxBufBytes=256 МиБ (событие+SpanWriter×2+метрика+профиль) суммарно
 // весят 1.25 ГиБ — больше потолка. Авто-дефолт обязан вывести per-writer-cap,
@@ -212,13 +212,13 @@ func TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault(t *testing.T) {
 }
 
 // TestEffectiveMaxBufferBytesRespectsExplicitOverride: явный
-// GOTCHA_MAX_BUFFER_BYTES обязан побеждать авто-дефолт в обе стороны — и
+// GOTCHA_MAX_WRITER_BUFFER_BYTES обязан побеждать авто-дефолт в обе стороны — и
 // когда оператор просит больше, и когда меньше того, что вывел бы авто-режим.
 func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
 	const heapCeiling = 800 << 20
 	const explicit = 24 << 20 // как в docker-compose.small.yml
 	if got := effectiveMaxBufferBytes(explicit, heapCeiling); got != explicit {
-		t.Errorf("effectiveMaxBufferBytes(explicit=%d, heap=%d) = %d, явный GOTCHA_MAX_BUFFER_BYTES проигнорирован",
+		t.Errorf("effectiveMaxBufferBytes(explicit=%d, heap=%d) = %d, явный GOTCHA_MAX_WRITER_BUFFER_BYTES проигнорирован",
 			explicit, heapCeiling, got)
 	}
 	if got := effectiveMaxBufferBytes(explicit, 0); got != explicit {
@@ -252,7 +252,7 @@ func TestVersionRequestedForms(t *testing.T) {
 // TestExportRowRetention: Store.PurgeRows чистит терминальные строки заявок
 // на выгрузку по finished_at независимо от expires_at (janitor.go). Если бы
 // retention был жёстко зафиксирован на 30 сутках, оператор, поднявший
-// GOTCHA_EXPORT_TTL_HOURS выше 720 (30 суток), получил бы удаление строки
+// GOTCHA_EXPORT_RETENTION_HOURS выше 720 (30 суток), получил бы удаление строки
 // ЖИВОЙ (ещё не истёкшей по собственному TTL) заявки раньше её срока —
 // retention обязан расти вместе с TTL, а не оставаться позади него.
 func TestExportRowRetention(t *testing.T) {

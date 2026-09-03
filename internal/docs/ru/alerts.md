@@ -139,7 +139,7 @@ GOTCHA_TRUSTED_RECIPIENTS=corp.example
 ```
 
 ```
-GOTCHA_EXTERNAL_CHANNEL_DETAILS=true
+GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true
 ```
 
 снимает ограничение целиком — детали пойдут любому получателю, включая Telegram. Включайте, только если у вас есть законные основания для трансграничной передачи. Обе настройки — на уровне инстанса; подробности и обоснование см. в разделе [Приватность и 152-ФЗ](/docs/privacy).
@@ -148,5 +148,5 @@ GOTCHA_EXTERNAL_CHANNEL_DETAILS=true
 
 - [Оповещения по метрикам](/docs/metric-alerts) — пороговые правила по числовым метрикам, тот же набор каналов.
 - [Проблемы](/docs/issues) — что такое issue, регрессия, статусы.
-- [Конфигурация](/docs/configuration) — переменные SMTP и `GOTCHA_EXTERNAL_CHANNEL_DETAILS`.
+- [Конфигурация](/docs/configuration) — переменные SMTP и `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED`.
 - [Команды и роли](/docs/teams) — кто такой оператор проекта и полная таблица того, что доступно оператору, а что — только owner/admin.

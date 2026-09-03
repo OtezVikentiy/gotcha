@@ -136,7 +136,7 @@ func (s *Service) TouchProbe(ctx context.Context, probeID int64) error {
 // plus the regions of its non-revoked probes, deduplicated and sorted.
 //
 // The built-in region is the one this installation's in-process runner
-// actually leases (s.localRegion() — GOTCHA_LOCAL_REGION, "local" by default),
+// actually leases (s.localRegion() — GOTCHA_UPTIME_LOCAL_REGION, "local" by default),
 // NOT the literal "local": offering a region nobody leases would let an admin
 // assign a monitor to a region in which it is never checked.
 func (s *Service) Regions(ctx context.Context, orgID int64) ([]string, error) {

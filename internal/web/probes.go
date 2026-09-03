@@ -58,7 +58,7 @@ func probeStatus(p uptime.Probe, now time.Time) string {
 // find image 'gotcha:latest'» — то есть готовая команда была неготовой.
 func probeRunCommand(baseURL, token string) string {
 	return "docker run -e GOTCHA_PROBE_SERVER_URL=" + baseURL +
-		" -e GOTCHA_PROBE_TOKEN=" + token + " <gotcha-image> --mode=probe"
+		" -e GOTCHA_PROBE_KEY=" + token + " <gotcha-image> --mode=probe"
 }
 
 // probeBelongsToOrg проверяет принадлежность пробы организации по уже
@@ -165,8 +165,8 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Регион встроенной пробы (in-process runner центра) занят. Сравнивать
 	// надо именно с h.localRegion() — тем именем, которое runner РЕАЛЬНО
-	// лизит (cfg.LocalRegion, GOTCHA_LOCAL_REGION), а не с константой
-	// DefaultRegion: при GOTCHA_LOCAL_REGION=eu-central выносную пробу в
+	// лизит (cfg.LocalRegion, GOTCHA_UPTIME_LOCAL_REGION), а не с константой
+	// DefaultRegion: при GOTCHA_UPTIME_LOCAL_REGION=eu-central выносную пробу в
 	// регионе eu-central завести было бы можно, но её задания забирал бы
 	// LeaseLocal центра (он не org-scoped) — монитор проверялся бы из центра,
 	// а страница показывала бы регион eu-central.

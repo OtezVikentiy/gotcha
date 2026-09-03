@@ -16,16 +16,19 @@ import (
 // отказа старта он берёт из envcontract.Renamed динамически, без единого
 // литерала старого имени (см. sortedRenamedOldNames в config_test.go).
 
-// TestEnvcontractRenamedComplete — envcontract.Renamed держит РОВНО десять
-// пар и покрывает весь список из блока `### Changed` CHANGELOG (волна
-// контрактной уборки v0.23.0). Тест на полноту: если карту в будущем
-// случайно урежут (например, забудут добавить одиннадцатое переименование
-// или потеряют одну пару при рефакторинге), этот тест укажет на
-// расхождение с документированным контрактом, а не только на количество.
-// want прописан буквально и сознательно НЕ переиспользует envcontract.Renamed
-// — иначе тест сверял бы карту саму с собой и не заметил бы никакой порчи.
+// TestEnvcontractRenamedComplete — envcontract.Renamed держит РОВНО
+// двадцать семь пар (десять из волны контрактной уборки v0.23.0 плюс
+// семнадцать из волны заморозки контракта перед 1.0) и покрывает весь
+// список, документированный в CHANGELOG. Тест на полноту: если карту в
+// будущем случайно урежут (например, забудут добавить очередное
+// переименование или потеряют одну пару при рефакторинге), этот тест
+// укажет на расхождение с документированным контрактом, а не только на
+// количество. want прописан буквально и сознательно НЕ переиспользует
+// envcontract.Renamed — иначе тест сверял бы карту саму с собой и не
+// заметил бы никакой порчи.
 func TestEnvcontractRenamedComplete(t *testing.T) {
 	want := map[string]string{
+		// v0.23.0
 		"GOTCHA_METRIC_EVAL_INTERVAL":    "GOTCHA_METRIC_EVAL_INTERVAL_SECONDS",
 		"GOTCHA_PROFILE_EVAL_INTERVAL":   "GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS",
 		"GOTCHA_HOST_EVAL_INTERVAL":      "GOTCHA_HOST_EVAL_INTERVAL_SECONDS",
@@ -36,9 +39,27 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 		"GOTCHA_INGEST_RATE_LIMIT":       "GOTCHA_INGEST_RATE_PER_SEC",
 		"GOTCHA_AGENT_DIST_DIR":          "GOTCHA_DIST_DIR",
 		"GOTCHA_AGENT_DIST_RATE_PER_MIN": "GOTCHA_DIST_RATE_PER_MIN",
+		// E3, заморозка контракта
+		"GOTCHA_ADDR":                     "GOTCHA_LISTEN_ADDR",
+		"GOTCHA_LOG_LEVEL":                "GOTCHA_LOGGING_LEVEL",
+		"GOTCHA_LOG_FORMAT":               "GOTCHA_LOGGING_FORMAT",
+		"GOTCHA_LOCAL_REGION":             "GOTCHA_UPTIME_LOCAL_REGION",
+		"GOTCHA_REGISTRATION":             "GOTCHA_REGISTRATION_MODE",
+		"GOTCHA_EXPORT_TTL_HOURS":         "GOTCHA_EXPORT_RETENTION_HOURS",
+		"GOTCHA_SCRUB_KEYS":               "GOTCHA_SCRUB_DENY_KEYS",
+		"GOTCHA_SCRUB_ALLOW_KEYS":         "GOTCHA_SCRUB_KEEP_KEYS",
+		"GOTCHA_RUN_EVALUATORS":           "GOTCHA_EVALUATORS_ENABLED",
+		"GOTCHA_AUTO_MIGRATE":             "GOTCHA_AUTO_MIGRATE_ENABLED",
+		"GOTCHA_ALLOW_INSECURE_SECRET":    "GOTCHA_SECRET_KEY_ALLOW_INSECURE",
+		"GOTCHA_MAX_BUFFER_BYTES":         "GOTCHA_MAX_WRITER_BUFFER_BYTES",
+		"GOTCHA_MAX_QUEUE_BYTES":          "GOTCHA_MAX_INGEST_QUEUE_BYTES",
+		"GOTCHA_PROBE_TOKEN":              "GOTCHA_PROBE_KEY",
+		"GOTCHA_EXTERNAL_CHANNEL_DETAILS": "GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED",
+		"GOTCHA_OIDC_NAME":                "GOTCHA_OIDC_DISPLAY_NAME",
+		"GOTCHA_PURGE_RECONCILE_HOURS":    "GOTCHA_PROJECT_PURGE_RECONCILE_HOURS",
 	}
-	if len(envcontract.Renamed) != 10 {
-		t.Errorf("len(envcontract.Renamed) = %d, want 10", len(envcontract.Renamed))
+	if len(envcontract.Renamed) != 27 {
+		t.Errorf("len(envcontract.Renamed) = %d, want 27", len(envcontract.Renamed))
 	}
 	for old, newName := range want {
 		got, ok := envcontract.Renamed[old]

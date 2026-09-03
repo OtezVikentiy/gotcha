@@ -85,8 +85,8 @@ curl -sf http://localhost:59080/healthz
 
 1. Откройте `http://localhost:59080/register` и создайте первого пользователя.
    На свежем инстансе первый зарегистрированный пользователь всегда проходит
-   регистрацию вне зависимости от `GOTCHA_REGISTRATION` и автоматически
-   получает права администратора инстанса («bootstrap» — см. `GOTCHA_REGISTRATION`
+   регистрацию вне зависимости от `GOTCHA_REGISTRATION_MODE` и автоматически
+   получает права администратора инстанса («bootstrap» — см. `GOTCHA_REGISTRATION_MODE`
    ниже о том, как ограничиваются последующие регистрации).
 2. Создайте организацию и проект из интерфейса.
 3. Откройте страницу проекта **Settings → Connect** — там его DSN и сниппеты
@@ -116,32 +116,32 @@ Gotcha настраивается целиком через переменные
 
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
-| `GOTCHA_ADDR` | `:8080` | Адрес прослушивания HTTP. |
+| `GOTCHA_LISTEN_ADDR` | `:8080` | Адрес прослушивания HTTP. |
 | `GOTCHA_BASE_URL` | `http://localhost:8080` | Публичный URL этого инстанса; используется для построения DSN проектов, ссылок в оповещениях и инвайт-ссылок. Должен совпадать с тем, как пользователи обращаются к инстансу. |
 | `GOTCHA_PG_DSN` | `postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable` | Строка подключения к PostgreSQL. |
 | `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | Строка подключения к ClickHouse. |
-| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Подписывает OAuth state / cookie сессий. **Значение по умолчанию публично** (оно лежит в исходниках) и открывает возможность захвата аккаунта через OAuth на любом не-localhost развёртывании — процесс отказывается стартовать в режимах `web`, `all`, `ingest` и `uptime` (везде, кроме `probe`) при не-локальном `GOTCHA_BASE_URL`, если значение не переопределено (аварийный обход: `GOTCHA_ALLOW_INSECURE_SECRET=1`, только для разработки). Для любого реального развёртывания сгенерируйте стойкое случайное значение. |
+| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Подписывает OAuth state / cookie сессий. **Значение по умолчанию публично** (оно лежит в исходниках) и открывает возможность захвата аккаунта через OAuth на любом не-localhost развёртывании — процесс отказывается стартовать в режимах `web`, `all`, `ingest` и `uptime` (везде, кроме `probe`) при не-локальном `GOTCHA_BASE_URL`, если значение не переопределено (аварийный обход: `GOTCHA_SECRET_KEY_ALLOW_INSECURE=1`, только для разработки). Для любого реального развёртывания сгенерируйте стойкое случайное значение. |
 | `GOTCHA_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_FROM` | не задано / `587` / не задано / не задано / не задано | Исходящая почта для инвайтов и email-каналов оповещений; отправка email отключена, пока не задан `GOTCHA_SMTP_HOST`. |
 | `GOTCHA_EVENT_RETENTION_DAYS` | `90` | Срок хранения событий/транзакций/Web Vitals в ClickHouse. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Срок хранения спанов трейсов. |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Срок хранения точек метрик. |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Срок хранения сэмплов профилей. |
 | `GOTCHA_INCIDENT_RETENTION_DAYS` | `90` | Срок хранения закрытых инцидентов аптайма в PostgreSQL. Отдельный от остальных: у инцидента нет своей телеметрии, а публичная статус-страница показывает историю за 90 дней. |
-| `GOTCHA_PURGE_RECONCILE_HOURS` | `24` | Как часто искать в ClickHouse телеметрию несуществующих проектов и ставить её в очередь на удаление. Удаление проекта ставит заявку само, той же транзакцией; сверка нужна на случай, когда заявки не появилось вовсе. `0` — выключить. |
+| `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` | `24` | Как часто искать в ClickHouse телеметрию несуществующих проектов и ставить её в очередь на удаление. Удаление проекта ставит заявку само, той же транзакцией; сверка нужна на случай, когда заявки не появилось вовсе. `0` — выключить. |
 | `GOTCHA_EDITION` | `oss` | `oss` или `saas`. Управляет значениями по умолчанию для переменных квот ниже (`oss` → 0/без лимита, `saas` → 1 000 000/месяц). |
 | `GOTCHA_DEFAULT_EVENT_QUOTA` / `_TRANSACTION_QUOTA` / `_METRIC_QUOTA` / `_PROFILE_QUOTA` | `0` в `oss` (без лимита) | Месячная квота приёма по умолчанию, назначаемая новым организациям. **Если вы публикуете DSN проекта в открытый доступ, задайте реальный лимит** — в `oss` по умолчанию без лимита. |
-| `GOTCHA_REGISTRATION` | `invite` | `open` (любой может зарегистрироваться сам), `invite` (самостоятельная регистрация закрыта, кроме инвайт-ссылок) или `closed` (самостоятельная регистрация полностью запрещена). Самый первый пользователь всегда проходит вне зависимости от этой настройки (bootstrap администратора инстанса). |
+| `GOTCHA_REGISTRATION_MODE` | `invite` | `open` (любой может зарегистрироваться сам), `invite` (самостоятельная регистрация закрыта, кроме инвайт-ссылок) или `closed` (самостоятельная регистрация полностью запрещена). Самый первый пользователь всегда проходит вне зависимости от этой настройки (bootstrap администратора инстанса). |
 | `GOTCHA_SCRUB_IP` / `GOTCHA_SCRUB_EMAIL` | `true` / `true` | Обнулять IP/email сообщающего пользователя на сервере до сохранения. Включено по умолчанию. |
-| `GOTCHA_SCRUB_KEYS` | встроенный denylist (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `access_token`, `refresh_token`, `session`, `credit_card`, `card_number`, `cvv`, …) | Имена ключей через запятую, которые редактируются в тегах/контекстах/стек-трейсах/данных спанов. Задание этой переменной дополняет встроенный список (убрать конкретный встроенный ключ — через `GOTCHA_SCRUB_ALLOW_KEYS`). |
+| `GOTCHA_SCRUB_DENY_KEYS` | встроенный denylist (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `access_token`, `refresh_token`, `session`, `credit_card`, `card_number`, `cvv`, …) | Имена ключей через запятую, которые редактируются в тегах/контекстах/стек-трейсах/данных спанов. Задание этой переменной дополняет встроенный список (убрать конкретный встроенный ключ — через `GOTCHA_SCRUB_KEEP_KEYS`). |
 | `GOTCHA_SSRF_ALLOW_PRIVATE` | `false` | Разрешить аптайм-проверкам и исходящим вебхукам обращаться к приватным/loopback/link-local адресам. Держите `false` на любом мультитенантном инстансе. |
 | `GOTCHA_OIDC_ENABLED` / `GOTCHA_YANDEX_ENABLED` / `GOTCHA_VK_ENABLED` | `false` | Включают каждый SSO-провайдер независимо; после включения каждому нужен свой client ID/secret (и issuer — для OIDC). |
 
 Переменные для сборки из исходников (`GOTCHA_MAX_EVENT_BYTES`,
 `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS`, `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS`,
 `GOTCHA_HOST_EVAL_INTERVAL_SECONDS`,
-`GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE`,
-`GOTCHA_EXTERNAL_CHANNEL_DETAILS`, `GOTCHA_UPTIME_CONCURRENCY`,
-`GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_PROBE_SERVER_URL`,
+`GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE_ENABLED`,
+`GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED`, `GOTCHA_UPTIME_CONCURRENCY`,
+`GOTCHA_UPTIME_LOCAL_REGION`, `GOTCHA_PROBE_KEY`, `GOTCHA_PROBE_SERVER_URL`,
 `GOTCHA_SCRUB_FREETEXT`) и полный набор переменных OIDC/Yandex/VK перечислены
 со значениями по умолчанию в [`.env.example`](.env.example).
 

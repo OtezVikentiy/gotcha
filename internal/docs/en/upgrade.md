@@ -13,7 +13,7 @@ In practice:
 
 - **mail on a public service** (`@gmail.com`, `@yandex.ru`, and the like) no longer receives the error text — only a link to the issue in the interface;
 - **mail on your organization's domain** stops receiving details too, if that domain differs from the instance host, until you list it in `GOTCHA_TRUSTED_RECIPIENTS`;
-- **a webhook pointed at your internal infrastructure** now does receive details — previously that required turning `GOTCHA_EXTERNAL_CHANNEL_DETAILS` on globally, which opened up Telegram as well.
+- **a webhook pointed at your internal infrastructure** now does receive details — previously that required turning `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` on globally, which opened up Telegram as well.
 
 If your mail lives on an organization domain, add it before upgrading:
 
@@ -78,7 +78,7 @@ If the list isn't empty — **any of this upgrade's twenty-four indexes** showin
 DROP INDEX CONCURRENTLY <index-name>;
 ```
 
-then re-apply migrations (restart with `GOTCHA_AUTO_MIGRATE=true`, or run `--migrate-only` again) — this time `IF NOT EXISTS` won't find an object under that name and will build the index from scratch.
+then re-apply migrations (restart with `GOTCHA_AUTO_MIGRATE_ENABLED=true`, or run `--migrate-only` again) — this time `IF NOT EXISTS` won't find an object under that name and will build the index from scratch.
 
 ## What changes when upgrading: ingest DSN keys get a type
 
@@ -116,7 +116,7 @@ make up-rebuild
 Breaking this down:
 
 1. `git pull` — pulls the new code from the repository.
-2. `make up-rebuild` — rebuilds the `gotcha` application image with the updated code and recreates the container (Postgres/ClickHouse use pre-built official images; you don't need to rebuild those — Compose pulls the version pinned in `docker-compose.yml` automatically if it changed). On startup (this is the default behavior, `GOTCHA_AUTO_MIGRATE=true` by default), the app **automatically** applies any missing schema migrations to PostgreSQL and ClickHouse before it starts accepting requests — nothing else to do.
+2. `make up-rebuild` — rebuilds the `gotcha` application image with the updated code and recreates the container (Postgres/ClickHouse use pre-built official images; you don't need to rebuild those — Compose pulls the version pinned in `docker-compose.yml` automatically if it changed). On startup (this is the default behavior, `GOTCHA_AUTO_MIGRATE_ENABLED=true` by default), the app **automatically** applies any missing schema migrations to PostgreSQL and ClickHouse before it starts accepting requests — nothing else to do.
 
 Build through `make`, not through a bare `docker compose build`: only `make` computes the git version and stamps it into the binary. An image built with bare compose commands works, but reports itself as "no build metadata" in `/version`, on the About page and in the `gotcha_build_info` metric — you lose the ability to verify that what is deployed is what you think it is.
 
@@ -124,21 +124,21 @@ If you only want to update the image without rebuilding from source (e.g. you're
 
 ## What automatic migrations mean
 
-By default (`GOTCHA_AUTO_MIGRATE=true`), on every start the app checks the schema version in the database and, if it's behind the version baked into the binary, applies the missing migrations automatically before opening its port. This is convenient for the typical "single server, single process" setup — an upgrade boils down to the three commands above.
+By default (`GOTCHA_AUTO_MIGRATE_ENABLED=true`), on every start the app checks the schema version in the database and, if it's behind the version baked into the binary, applies the missing migrations automatically before opening its port. This is convenient for the typical "single server, single process" setup — an upgrade boils down to the three commands above.
 
 ## Running migrations as a separate step (multiple app replicas)
 
 If you're running **multiple** `gotcha` processes at once (e.g. separate `--mode=ingest` and `--mode=web` processes, or several replicas behind a load balancer — an advanced deployment scenario beyond the stock `docker-compose.yml`), letting every replica auto-migrate on startup is risky: multiple processes could try to apply migrations at the same time. For that case:
 
-1. Set `GOTCHA_AUTO_MIGRATE=false` for all replicas.
+1. Set `GOTCHA_AUTO_MIGRATE_ENABLED=false` for all replicas.
 2. Before starting the replicas, run migrations **once** with `--migrate-only`:
 
    ```bash
    docker compose run --rm --no-deps gotcha --migrate-only
    ```
 
-   That invocation applies the schema and exits 0 without opening the HTTP port or starting ingest or uptime — an init job in the proper sense. The flag turns migration on by itself, so `GOTCHA_AUTO_MIGRATE=false` in the replicas' environment does not get in its way. It is rejected together with `--mode=probe`, and says so: a probe never opens a database connection, and exiting 0 quietly would claim a schema was applied when it was not.
-3. After that, start (or restart) all replicas with `GOTCHA_AUTO_MIGRATE=false` — they'll verify the database schema matches the version built into the binary and refuse to start if it doesn't (this is a safeguard against silently accepting data into a stale schema — an explicit refusal at startup beats silent errors on every insert).
+   That invocation applies the schema and exits 0 without opening the HTTP port or starting ingest or uptime — an init job in the proper sense. The flag turns migration on by itself, so `GOTCHA_AUTO_MIGRATE_ENABLED=false` in the replicas' environment does not get in its way. It is rejected together with `--mode=probe`, and says so: a probe never opens a database connection, and exiting 0 quietly would claim a schema was applied when it was not.
+3. After that, start (or restart) all replicas with `GOTCHA_AUTO_MIGRATE_ENABLED=false` — they'll verify the database schema matches the version built into the binary and refuse to start if it doesn't (this is a safeguard against silently accepting data into a stale schema — an explicit refusal at startup beats silent errors on every insert).
 
 For the stock `docker-compose.yml` in this repository (a single `gotcha` service in `all` mode), separate migrations aren't needed — use the standard upgrade flow above.
 
@@ -213,5 +213,5 @@ A line reading `applying migrations` not followed by an error message means migr
 ## What's next
 
 - [Backup & Restore](/docs/backup-restore).
-- [Configuration](/docs/configuration) — the full variable reference, including `GOTCHA_AUTO_MIGRATE`.
+- [Configuration](/docs/configuration) — the full variable reference, including `GOTCHA_AUTO_MIGRATE_ENABLED`.
 - [Installation](/docs/installation).

@@ -286,7 +286,7 @@ func TestUnitSuffixConvention(t *testing.T) {
 	}{
 		{"GOTCHA_ESCALATION_INTERVAL_SECONDS", true},
 		{"GOTCHA_EVENT_RETENTION_DAYS", true},
-		{"GOTCHA_PURGE_RECONCILE_HOURS", true},
+		{"GOTCHA_PROJECT_PURGE_RECONCILE_HOURS", true},
 		{"GOTCHA_MAX_EVENT_BYTES", true},
 		{"GOTCHA_INGEST_RATE_PER_SEC", true},
 		{"GOTCHA_DIST_RATE_PER_MIN", true},

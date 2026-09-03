@@ -95,7 +95,7 @@ func deriveCookieKey(master string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// setupLogging настраивает глобальный slog по GOTCHA_LOG_LEVEL/GOTCHA_LOG_FORMAT.
+// setupLogging настраивает глобальный slog по GOTCHA_LOGGING_LEVEL/GOTCHA_LOGGING_FORMAT.
 // Пустое значение — прежнее поведение (текст, уровень Info); json — для
 // Loki/ELK, debug — чтобы поднять детализацию во время инцидента без
 // пересборки, warning — принятый в проде псевдоним warn (документирован в
@@ -119,7 +119,7 @@ func setupLogging(level, format string) error {
 	case "error":
 		lv = slog.LevelError
 	default:
-		return fmt.Errorf("GOTCHA_LOG_LEVEL must be debug, info, warn (alias warning) or error, got %q", level)
+		return fmt.Errorf("GOTCHA_LOGGING_LEVEL must be debug, info, warn (alias warning) or error, got %q", level)
 	}
 	opts := &slog.HandlerOptions{Level: lv}
 	var h slog.Handler
@@ -129,7 +129,7 @@ func setupLogging(level, format string) error {
 	case "json":
 		h = slog.NewJSONHandler(os.Stderr, opts)
 	default:
-		return fmt.Errorf("GOTCHA_LOG_FORMAT must be text or json, got %q", format)
+		return fmt.Errorf("GOTCHA_LOGGING_FORMAT must be text or json, got %q", format)
 	}
 	slog.SetDefault(slog.New(h))
 	return nil
@@ -175,7 +175,7 @@ const autoBufferCapUnits = 6
 // autoMaxBufferBytes выводит безопасный per-writer байтовый потолок буфера из
 // обнаруженного потолка кучи (heapLimitBytes — то, что вернул applyMemoryLimit,
 // 0 если лимит не обнаружен или GOMEMLIMIT не удалось вывести). Используется,
-// только когда оператор не задал GOTCHA_MAX_BUFFER_BYTES явно: тогда каждый из
+// только когда оператор не задал GOTCHA_MAX_WRITER_BUFFER_BYTES явно: тогда каждый из
 // шести буферов-«единиц» брал бы flat defaultMaxBufBytes=256 МиБ пакета-писателя
 // (1.5 ГиБ суммарно) — больше heap-потолка на дефолтном docker-compose.yml
 // (mem_limit 1g → потолок кучи 819 МиБ), то есть дефолтная поставка могла
@@ -190,7 +190,7 @@ func autoMaxBufferBytes(heapLimitBytes int64) int64 {
 }
 
 // effectiveMaxBufferBytes решает, какой per-writer байтовый потолок ставить
-// каждому писателю. Явный GOTCHA_MAX_BUFFER_BYTES (cfgMaxBufferBytes
+// каждому писателю. Явный GOTCHA_MAX_WRITER_BUFFER_BYTES (cfgMaxBufferBytes
 // != 0) всегда побеждает — оператор, написавший число руками, имел в виду
 // именно его. Иначе — авто-дефолт от обнаруженного потолка кучи
 // (autoMaxBufferBytes); если и его вывести не из чего — 0, что для
@@ -204,14 +204,14 @@ func effectiveMaxBufferBytes(cfgMaxBufferBytes, heapLimitBytes int64) int64 {
 
 // exportMinRowRetention — минимальный срок хранения строки завершённой
 // заявки на выгрузку (export.Janitor.RowRetention), не завязанный на
-// GOTCHA_EXPORT_TTL_HOURS: статус "истекла" должен успеть побыть видимым на
+// GOTCHA_EXPORT_RETENTION_HOURS: статус "истекла" должен успеть побыть видимым на
 // странице, а не исчезнуть в тот же тик, что и файл.
 const exportMinRowRetention = 30 * 24 * time.Hour
 
 // exportRowRetention возвращает срок хранения истории заявок на выгрузку —
 // не короче TTL самого файла (ttl): Store.PurgeRows чистит терминальные
 // строки по finished_at независимо от expires_at, и если бы retention был
-// зафиксирован на exportMinRowRetention, при GOTCHA_EXPORT_TTL_HOURS больше
+// зафиксирован на exportMinRowRetention, при GOTCHA_EXPORT_RETENTION_HOURS больше
 // 30 суток он снёс бы строку ЖИВОЙ (ещё не истёкшей по собственному TTL)
 // заявки раньше её собственного срока.
 func exportRowRetention(ttl time.Duration) time.Duration {
@@ -448,7 +448,7 @@ func run() error {
 	}
 
 	// --migrate-only: схема применена, больше делать нечего. Отдельный
-	// init-job для развёртываний с GOTCHA_AUTO_MIGRATE=false, где миграции
+	// init-job для развёртываний с GOTCHA_AUTO_MIGRATE_ENABLED=false, где миграции
 	// прогоняют один раз перед стартом реплик.
 	if cfg.MigrateOnly {
 		slog.Info("migrations applied, exiting (--migrate-only)")
@@ -742,7 +742,7 @@ func run() error {
 		// ни строки в логе, ни признака в интерфейсе. Ровно тот же класс дефекта
 		// уже находили у воркера доставки.
 		//
-		// GOTCHA_RUN_EVALUATORS позволяет включить их в любом режиме с БД. Дефолт
+		// GOTCHA_EVALUATORS_ENABLED позволяет включить их в любом режиме с БД. Дефолт
 		// оставлен прежним намеренно: включать их автоматически везде значило бы
 		// в связке web+uptime гонять двойную оценку.
 		if runEvaluators(cfg) {
@@ -757,7 +757,7 @@ func run() error {
 		switch {
 		case runEvaluatorsExplicit(cfg):
 			startEvaluators(ctx, cfg, pg, ch, alertSvc, outbox, emailSender, &selfMetrics, depSuppressor, grouper, settleGrace, orgSvc)
-			slog.Info("evaluators enabled by GOTCHA_RUN_EVALUATORS", "mode", cfg.Mode)
+			slog.Info("evaluators enabled by GOTCHA_EVALUATORS_ENABLED", "mode", cfg.Mode)
 		default:
 			// Молчать здесь нельзя: правило по метрике в интерфейсе выглядит
 			// включённым, а не вычисляется. Оператор должен узнать об этом при
@@ -766,12 +766,12 @@ func run() error {
 			// host.Evaluator, а страница /hosts/settings точно так же
 			// показывает пороги включёнными.
 			//
-			// GOTCHA_RUN_EVALUATORS гейтит ШЕСТЬ циклов, не четыре (W3-D,
+			// GOTCHA_EVALUATORS_ENABLED гейтит ШЕСТЬ циклов, не четыре (W3-D,
 			// запись 8 = находка W3-C): startEvaluators поднимает ещё
 			// slo.Evaluator и escalation.Scheduler — их отсутствие в этой
 			// строке молчало о том же классе дефекта, который сама строка
 			// призвана объявлять. При раздельном развёртывании web+ingest без
-			// GOTCHA_RUN_EVALUATORS SLO-алерты сжигания бюджета и эскалация
+			// GOTCHA_EVALUATORS_ENABLED SLO-алерты сжигания бюджета и эскалация
 			// всех пяти прочих источников инцидентов молчат так же, как
 			// правило по метрике, а прежняя строка об этом не предупреждала.
 			slog.Warn(evaluatorsDisabledWarning, "mode", cfg.Mode)
@@ -1087,7 +1087,7 @@ func run() error {
 
 	if cfg.Mode == "ingest" || cfg.Mode == "all" {
 		// maxBufBytes — per-writer байтовый потолок, один на всех писателей.
-		// GOTCHA_MAX_BUFFER_BYTES побеждает, если задан; иначе выводится из
+		// GOTCHA_MAX_WRITER_BUFFER_BYTES побеждает, если задан; иначе выводится из
 		// обнаруженного потолка кучи (memLimitBytes), чтобы дефолтная поставка
 		// без ручной настройки не могла сложить буферы в объём больше
 		// heap-потолка — см. effectiveMaxBufferBytes. Сколько их, знает
@@ -1657,7 +1657,7 @@ func rewrapAllSecrets(ctx context.Context, orgSvc *org.Service, alertSvc *alert.
 // startEvaluators запускает периодические оценщики: регрессии
 // производительности, правила по метрикам и регрессии профилей. Вынесено в
 // функцию, потому что запускать их надо из двух мест — режима uptime|all и
-// явного GOTCHA_RUN_EVALUATORS в прочих режимах с БД.
+// явного GOTCHA_EVALUATORS_ENABLED в прочих режимах с БД.
 func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch driver.Conn,
 	alertSvc *alert.Service, outbox *notify.Outbox, emailSender *notify.EmailSender,
 	selfMetrics *selfmetrics.Registry, dep *depsuppress.Suppressor, grouper *incidentgroup.Grouper,
@@ -1666,7 +1666,7 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	// уведомления инцидентов всех источников оценщиков ниже (host сейчас,
 	// metric/trace/profile/slo следом). uptimeSvc:385 здесь НЕ переиспользуем —
 	// он строится только в режимах uptime|all, а startEvaluators зовётся и без
-	// них (GOTCHA_RUN_EVALUATORS); uptime.NewService(pg) требует только пул,
+	// них (GOTCHA_EVALUATORS_ENABLED); uptime.NewService(pg) требует только пул,
 	// тот же приём уже применён ниже для sloEval (:1216).
 	maint := uptime.NewService(pg)
 
@@ -1974,14 +1974,14 @@ func detailPolicy(cfg Config) alert.DetailPolicy {
 // logDetailPolicy — один раз при старте пишет, кому уйдут детали события.
 //
 // Правило перестало быть очевидным из одного флага: раньше «email — всегда,
-// остальные — по GOTCHA_EXTERNAL_CHANNEL_DETAILS», теперь решает домен
+// остальные — по GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED», теперь решает домен
 // получателя. Оператор, у которого почта на другом домене, обнаружил бы
 // пропажу деталей только по отсутствию текста в письме — а из лога видно
 // сразу, какой список действует и чего в нём не хватает.
 func logDetailPolicy(cfg Config) {
 	switch {
 	case cfg.ExternalChannelDetails:
-		slog.Info("alert details: sent to every recipient (GOTCHA_EXTERNAL_CHANNEL_DETAILS=true)")
+		slog.Info("alert details: sent to every recipient (GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true)")
 	default:
 		slog.Info("alert details: sent only to trusted recipients",
 			"instance_host", cfg.BaseURL,
@@ -1993,21 +1993,21 @@ func logDetailPolicy(cfg Config) {
 // runEvaluators — запускать ли оценщики (регрессии производительности,
 // правила по метрикам, регрессии профилей) в реплике, где уже поднят режим
 // аптайма. Дефолт — true: аптайм-реплика исторически единственное место, где
-// они крутятся, и GOTCHA_RUN_EVALUATORS нужен здесь только чтобы явно
+// они крутятся, и GOTCHA_EVALUATORS_ENABLED нужен здесь только чтобы явно
 // выключить (false), не включить. В отличие от runEvaluatorsExplicit — та
 // используется в режимах без аптайма, где дефолт был бы двойной оценкой при
 // совместном web+uptime развёртывании, поэтому там нужно явное true.
 // evaluatorsDisabledWarning — предупреждение при старте без ни явного, ни
-// подразумеваемого GOTCHA_RUN_EVALUATORS (см. вызывающий код). Вынесена в
+// подразумеваемого GOTCHA_EVALUATORS_ENABLED (см. вызывающий код). Вынесена в
 // константу ради теста без похода в run() целиком (тот же приём, что
 // applyMigrations/heartbeatCronSnippet — тестируемость без реального
 // процесса).
 //
-// Называет ВСЕ ШЕСТЬ циклов, которые гейтит GOTCHA_RUN_EVALUATORS, не четыре
+// Называет ВСЕ ШЕСТЬ циклов, которые гейтит GOTCHA_EVALUATORS_ENABLED, не четыре
 // (W3-D, запись 8 = находка W3-C): startEvaluators поднимает
 // metric/trace(perf)/profile/host-оценщики, а ЕЩЁ slo.Evaluator и
 // escalation.Scheduler — раньше их не называли, и при раздельном
-// развёртывании web+ingest без GOTCHA_RUN_EVALUATORS SLO-алерты сжигания
+// развёртывании web+ingest без GOTCHA_EVALUATORS_ENABLED SLO-алерты сжигания
 // бюджета и эскалация всех пяти прочих источников инцидентов молчали так же,
 // как правило по метрике, а сама строка предупреждения об этом не говорила —
 // тот же класс дефекта, который она призвана объявлять.
@@ -2015,7 +2015,7 @@ const evaluatorsDisabledWarning = "metric/performance/profile/host/slo evaluator
 	"metric alert rules, regression detection, host thresholds (disk/memory/load/silence), " +
 	"SLO error-budget burn alerts and escalation ladders (for ALL incident sources, including uptime) " +
 	"will never fire — " +
-	"run a --mode=uptime (or --mode=all) replica, or set GOTCHA_RUN_EVALUATORS=true here"
+	"run a --mode=uptime (or --mode=all) replica, or set GOTCHA_EVALUATORS_ENABLED=true here"
 
 func runEvaluators(cfg Config) bool {
 	if cfg.RunEvaluators != nil {

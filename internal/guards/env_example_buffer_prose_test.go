@@ -12,7 +12,7 @@ import (
 
 // TestEnvExampleBufferProseMatchesConstants — класс, не покрытый ни одним
 // существующим сторожем (аудит W3-G #4/#5): проза .env.example про
-// GOTCHA_MAX_BUFFER_BYTES утверждала "five writers... 256 MiB... 1.25 GiB",
+// GOTCHA_MAX_WRITER_BUFFER_BYTES утверждала "five writers... 256 MiB... 1.25 GiB",
 // хотя дефолт авто-выводится из cgroup, а единиц потолка шесть, а не пять
 // (себестоимость ошибки — оператор читает .env.example, а не
 // configuration.md, и рассчитывает память хоста по неверным числам).
@@ -54,21 +54,21 @@ func TestEnvExampleBufferProseMatchesConstants(t *testing.T) {
 
 	unitsPhrase := fmt.Sprintf("%d independent buffers", units)
 	if !strings.Contains(text, unitsPhrase) {
-		t.Errorf(".env.example: не нашёл %q рядом с описанием GOTCHA_MAX_BUFFER_BYTES.\n"+
+		t.Errorf(".env.example: не нашёл %q рядом с описанием GOTCHA_MAX_WRITER_BUFFER_BYTES.\n"+
 			"%s = %d (cmd/gotcha/main.go) разошлась с числом единиц в прозе .env.example — "+
 			"поправить прозу под текущую константу.", unitsPhrase, unitsConstName, units)
 	}
 
 	sharePhrase := fmt.Sprintf("%d%% of the heap ceiling", int(share*100))
 	if !strings.Contains(text, sharePhrase) {
-		t.Errorf(".env.example: не нашёл %q рядом с описанием GOTCHA_MAX_BUFFER_BYTES.\n"+
+		t.Errorf(".env.example: не нашёл %q рядом с описанием GOTCHA_MAX_WRITER_BUFFER_BYTES.\n"+
 			"%s = %g (cmd/gotcha/main.go) разошлась с долей в прозе .env.example — "+
 			"поправить прозу под текущую константу.", sharePhrase, shareConstName, share)
 	}
 
 	// flat-фолбэк — units умножить на flat-константу пакета-писателя (256 МиБ,
 	// зафиксирована прозой .env.example выше по файлу как значение
-	// GOTCHA_MAX_BUFFER_BYTES=268435456 = 256 МиБ) — сумма должна оставаться
+	// GOTCHA_MAX_WRITER_BUFFER_BYTES=268435456 = 256 МиБ) — сумма должна оставаться
 	// написанной как явное число, а не потеряться при правке units.
 	flatTotalGiB := float64(units) * 256 / 1024
 	flatPhrase := fmt.Sprintf("%g GiB across all %d buffers", flatTotalGiB, units)

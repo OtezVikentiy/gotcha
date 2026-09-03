@@ -261,7 +261,7 @@ docker compose up -d
 
 Open `<GOTCHA_BASE_URL>/register` (the address from step 6 — a domain behind your reverse proxy, or `http://<server-IP>:59080` with `GOTCHA_BIND=0.0.0.0` already set) and register.
 
-**Important:** the very first user on a fresh instance is always allowed to register, regardless of the self-registration mode (`GOTCHA_REGISTRATION`), and is automatically granted **instance-admin** rights. This is the "bootstrap" step — it's how you get your first admin on a brand-new install without touching the database by hand. Every later signup is governed by `GOTCHA_REGISTRATION` (details in [Configuration](/docs/configuration)).
+**Important:** the very first user on a fresh instance is always allowed to register, regardless of the self-registration mode (`GOTCHA_REGISTRATION_MODE`), and is automatically granted **instance-admin** rights. This is the "bootstrap" step — it's how you get your first admin on a brand-new install without touching the database by hand. Every later signup is governed by `GOTCHA_REGISTRATION_MODE` (details in [Configuration](/docs/configuration)).
 
 After logging in: create an organization, then a project inside it. The project's **"Setup"** page (a URL like `/projects/<id>/setup`, also reachable via the **"Setup"** button in the projects list) shows its DSN — the address your app's SDK sends data to (any language's official Sentry SDK works with Gotcha unmodified, since it speaks the same ingestion protocol). See [Getting Started](/docs/getting-started) and [SDK & Integrations](/docs/sdk) for the full walkthrough.
 

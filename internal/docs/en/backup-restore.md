@@ -100,7 +100,7 @@ secrets have to be entered again by hand.
 ## Restore: PostgreSQL
 
 Restore into an **empty** database and **before** the application starts. On
-startup the application applies migrations itself (`GOTCHA_AUTO_MIGRATE=true` by
+startup the application applies migrations itself (`GOTCHA_AUTO_MIGRATE_ENABLED=true` by
 default) — that is, it creates every table before opening its port — so a dump
 loaded afterwards meets a schema that already exists.
 

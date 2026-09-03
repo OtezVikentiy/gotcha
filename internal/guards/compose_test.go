@@ -48,7 +48,7 @@ func loadCompose(t *testing.T, root, name string) composeFile {
 // .env.example. Compose читает .env дважды — для подстановки ${…} и через
 // env_file — поэтому раскомментированное значение в .env ПОБЕЖДАЕТ дефолт
 // compose: так появилась находка №37 (BASE_URL с портом 8080 против
-// публикуемого 59080 → 403 на каждый POST). GOTCHA_ADDR добавлен явно:
+// публикуемого 59080 → 403 на каждый POST). GOTCHA_LISTEN_ADDR добавлен явно:
 // compose его не задаёт, но проброс порта 59080:8080 подразумевает :8080.
 func TestEnvExampleDoesNotOverrideCompose(t *testing.T) {
 	root, err := findRoot()
@@ -60,7 +60,7 @@ func TestEnvExampleDoesNotOverrideCompose(t *testing.T) {
 	if !ok {
 		t.Fatal("в docker-compose.yml нет сервиса gotcha — сторож ослеп")
 	}
-	keys := []string{"GOTCHA_ADDR"}
+	keys := []string{"GOTCHA_LISTEN_ADDR"}
 	for k := range gotcha.Environment {
 		keys = append(keys, k)
 	}

@@ -36,7 +36,7 @@ A few defaults are worth knowing about when running Gotcha:
   addresses are zeroed server-side (`GOTCHA_SCRUB_IP`, `GOTCHA_SCRUB_EMAIL`,
   both default `true`), and a denylist of sensitive key names (passwords,
   tokens, cookies, API keys, etc.) is redacted from tags/contexts/stack
-  traces/span data by default (`GOTCHA_SCRUB_KEYS`).
+  traces/span data by default (`GOTCHA_SCRUB_DENY_KEYS`).
 - **SSRF protection is on by default.** Outbound requests made on your
   behalf — uptime checks and webhook alert deliveries — refuse to target
   private/loopback/link-local addresses unless you explicitly opt in with

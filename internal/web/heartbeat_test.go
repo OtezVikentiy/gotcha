@@ -40,7 +40,7 @@ func newUptimeStack(t *testing.T) *uptimeStack {
 }
 
 // newUptimeStackInRegion — стенд с явно заданным именем встроенного региона
-// (GOTCHA_LOCAL_REGION в проде): его получают и Handler, и uptime.Service, ровно
+// (GOTCHA_UPTIME_LOCAL_REGION в проде): его получают и Handler, и uptime.Service, ровно
 // как в cmd/gotcha/main.go. Пустая строка — дефолт (uptime.DefaultRegion).
 func newUptimeStackInRegion(t *testing.T, localRegion string) *uptimeStack {
 	t.Helper()

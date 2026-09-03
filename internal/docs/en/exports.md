@@ -158,11 +158,11 @@ live NEXT TO the file, delivered three ways:
 
 ## Retention and cleanup
 
-A finished file lives for `GOTCHA_EXPORT_TTL_HOURS` hours from completion (168
+A finished file lives for `GOTCHA_EXPORT_RETENTION_HOURS` hours from completion (168
 by default — seven days): once that expires, the janitor removes the file
 from disk and marks the job "expired". The job's row in the history outlives
 the file — it's kept for at least 30 days from completion, or exactly
-`GOTCHA_EXPORT_TTL_HOURS` if that's set above 30 days (the row's retention
+`GOTCHA_EXPORT_RETENTION_HOURS` if that's set above 30 days (the row's retention
 grows with the file's TTL but never falls below it), and only then does the
 janitor remove it from the history without a trace. The author gets exactly
 one email per job — when it turns "done" or "failed" (if mail is configured,

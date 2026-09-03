@@ -28,7 +28,7 @@ type Service struct {
 
 	// LocalRegion — как на самом деле НАЗЫВАЕТСЯ регион встроенной пробы в
 	// этой инсталляции: тот, которым Runner помечает свои проверки и который
-	// он лизит (cmd/gotcha: cfg.LocalRegion, GOTCHA_LOCAL_REGION). Пустое
+	// он лизит (cmd/gotcha: cfg.LocalRegion, GOTCHA_UPTIME_LOCAL_REGION). Пустое
 	// значение — DefaultRegion ("local"). Хардкодить "local" нельзя: Regions
 	// предлагает этот список в форме монитора, и монитор, назначенный в
 	// регион, который никто не лизит, не будет проверяться НИКОГДА (см.

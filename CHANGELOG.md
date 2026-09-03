@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking.** Seventeen server environment variables have been renamed ahead
+  of the 1.0 contract freeze: the listen address is distinguished from the
+  published port, the logging subsystem is spelled out so it stops colliding
+  with the log-ingest one, a modifier variable now sits next to the setting it
+  modifies, and several booleans and enums lost names that read like the
+  opposite of what they do. The old names are no longer read — update your
+  `.env` and compose variables before upgrading. An old name set to a
+  non-empty value now refuses to start, naming the new variable, instead of
+  silently applying a default. `GOTCHA_PROBE_KEY` also changed the docker run
+  snippet shown in the probe registration UI.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_ADDR` | `GOTCHA_LISTEN_ADDR` |
+  | `GOTCHA_LOG_LEVEL` | `GOTCHA_LOGGING_LEVEL` |
+  | `GOTCHA_LOG_FORMAT` | `GOTCHA_LOGGING_FORMAT` |
+  | `GOTCHA_LOCAL_REGION` | `GOTCHA_UPTIME_LOCAL_REGION` |
+  | `GOTCHA_REGISTRATION` | `GOTCHA_REGISTRATION_MODE` |
+  | `GOTCHA_EXPORT_TTL_HOURS` | `GOTCHA_EXPORT_RETENTION_HOURS` |
+  | `GOTCHA_SCRUB_KEYS` | `GOTCHA_SCRUB_DENY_KEYS` |
+  | `GOTCHA_SCRUB_ALLOW_KEYS` | `GOTCHA_SCRUB_KEEP_KEYS` |
+  | `GOTCHA_RUN_EVALUATORS` | `GOTCHA_EVALUATORS_ENABLED` |
+  | `GOTCHA_AUTO_MIGRATE` | `GOTCHA_AUTO_MIGRATE_ENABLED` |
+  | `GOTCHA_ALLOW_INSECURE_SECRET` | `GOTCHA_SECRET_KEY_ALLOW_INSECURE` |
+  | `GOTCHA_MAX_BUFFER_BYTES` | `GOTCHA_MAX_WRITER_BUFFER_BYTES` |
+  | `GOTCHA_MAX_QUEUE_BYTES` | `GOTCHA_MAX_INGEST_QUEUE_BYTES` |
+  | `GOTCHA_PROBE_TOKEN` | `GOTCHA_PROBE_KEY` |
+  | `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` |
+  | `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
+  | `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
+
 ## [0.33.0] - 2026-09-03
 
 ### Changed

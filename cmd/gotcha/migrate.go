@@ -78,7 +78,7 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	lockWaitStart := time.Now()
 	return db.WithMigrationLock(ctx, pg, func() error {
 		slog.Info("migration lock acquired", "waited", time.Since(lockWaitStart))
-		// ARCH-M3: авто-миграцию можно отключить (GOTCHA_AUTO_MIGRATE=false) и
+		// ARCH-M3: авто-миграцию можно отключить (GOTCHA_AUTO_MIGRATE_ENABLED=false) и
 		// выносить в отдельный init-job, чтобы app-реплики не клинили все разом.
 		if cfg.AutoMigrate {
 			if err := migrationStage("postgres schema migration", func() error {

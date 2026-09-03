@@ -21,7 +21,7 @@ services:
     environment:
       # Байтовый потолок КАЖДОГО буфера писателя. Авто-вывод дал бы на этом
       # лимите ~20 МиБ; 24 МиБ — осознанный запас. Механика — /docs/configuration.
-      GOTCHA_MAX_BUFFER_BYTES: 25165824
+      GOTCHA_MAX_WRITER_BUFFER_BYTES: 25165824
 
   postgres:
     mem_limit: 256m
