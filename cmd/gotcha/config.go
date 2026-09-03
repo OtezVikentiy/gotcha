@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/baseurl"
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
@@ -757,26 +759,37 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		ExportMaxBytes:           num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
 		ExportDiskBudgetBytes:    num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
 	}
+	// GOTCHA_PG_DSN/GOTCHA_CH_DSN — единственные обязательные адреса, которых
+	// до сих пор старт не разбирал вовсе: опечатка всплывала только на первом
+	// db.NewPostgres/db.NewClickHouse, то есть после того, как остальная
+	// конфигурация уже принята. Проверяем разбираемость БЕЗ соединения —
+	// тем же парсером, что реально потребляет клиент (pgxpool.ParseConfig,
+	// clickhouse.ParseDSN), а не общим baseurl.Normalize: DSN — не «базовый
+	// адрес» с обязательными схемой/хостом и запретом на query, а форма,
+	// которую сам клиент понимает как в URL-виде (postgres://…), так и в
+	// keyword/value-виде (host=… user=… dbname=…) — обе легальны для pgx,
+	// baseurl.Normalize отверг бы вторую как «не URL».
+	if err := db.ValidatePostgresDSN(cfg.PostgresDSN); err != nil {
+		return Config{}, fmt.Errorf("GOTCHA_PG_DSN: %w", err)
+	}
+	if err := db.ValidateClickHouseDSN(cfg.ClickHouseDSN); err != nil {
+		return Config{}, fmt.Errorf("GOTCHA_CH_DSN: %w", err)
+	}
 	// GOTCHA_BASE_URL — база всех ссылок, которые продукт строит сам: heartbeat
 	// cron-команда (см. её докблок в web/monitorform.go — curl без -L, редиректа
 	// не будет), OAuth RedirectURI, приглашения (orgsettings.go). Проверяем и
-	// нормализуем на старте той же логикой, что GOTCHA_TELEGRAM_API_BASE ниже:
-	// без схемы/хоста каждая построенная ссылка вела бы в никуда, а хвостовая
-	// косая («…app/») даёт «…app//dashboard» в КАЖДОЙ из них — молча, до первого
-	// репорта пользователя о битой ссылке в письме или упавшем cron.
-	if cfg.BaseURL != "" {
-		u, err := url.Parse(cfg.BaseURL)
-		if err != nil {
-			return Config{}, fmt.Errorf("GOTCHA_BASE_URL: %w", err)
-		}
-		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return Config{}, fmt.Errorf("GOTCHA_BASE_URL must be an absolute http(s) url, got %q", cfg.BaseURL)
-		}
-		if u.RawQuery != "" || u.Fragment != "" {
-			return Config{}, fmt.Errorf("GOTCHA_BASE_URL must not carry a query or fragment, got %q", cfg.BaseURL)
-		}
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	// нормализуем на старте тем же хелпером baseurl.Normalize, что и
+	// GOTCHA_TELEGRAM_API_BASE/GOTCHA_PROBE_SERVER_URL ниже и GOTCHA_AGENT_ENDPOINT
+	// (internal/agent/config.go) — один хелпер на все четыре базовых адреса,
+	// а не четыре расходящиеся политики: без схемы/хоста каждая построенная
+	// ссылка вела бы в никуда, а хвостовая косая («…app/») даёт «…app//dashboard»
+	// в КАЖДОЙ из них — молча, до первого репорта пользователя о битой ссылке в
+	// письме или упавшем cron.
+	normalizedBaseURL, err := baseurl.Normalize("GOTCHA_BASE_URL", cfg.BaseURL)
+	if err != nil {
+		return Config{}, err
 	}
+	cfg.BaseURL = normalizedBaseURL
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
 	cfg.OIDCClientID = str("GOTCHA_OIDC_CLIENT_ID", "")
@@ -1162,42 +1175,43 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	// GOTCHA_TELEGRAM_API_BASE — свой Bot API вместо api.telegram.org.
 	// Отправитель дописывает к адресу «/bot{token}/sendMessage», поэтому
-	// проверяем на старте: без схемы и хоста каждая доставка падала бы с
-	// "unsupported protocol scheme", а запрос или фрагмент оказались бы
-	// посреди пути — адрес, по которому никто не отвечает, вместо внятного
-	// отказа при запуске. Хвостовые косые снимаем сами: «…org/» дало бы
-	// «…org//bot…», и Bot API ответил бы 404 на каждое уведомление.
-	if cfg.TelegramAPIBase != "" {
-		u, err := url.Parse(cfg.TelegramAPIBase)
-		if err != nil {
-			return Config{}, fmt.Errorf("GOTCHA_TELEGRAM_API_BASE: %w", err)
-		}
-		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return Config{}, fmt.Errorf("GOTCHA_TELEGRAM_API_BASE must be an absolute http(s) url, got %q", cfg.TelegramAPIBase)
-		}
-		if u.RawQuery != "" || u.Fragment != "" {
-			return Config{}, fmt.Errorf("GOTCHA_TELEGRAM_API_BASE must not carry a query or fragment, got %q", cfg.TelegramAPIBase)
-		}
-		cfg.TelegramAPIBase = strings.TrimRight(cfg.TelegramAPIBase, "/")
+	// проверяем и нормализуем тем же baseurl.Normalize, что GOTCHA_BASE_URL
+	// выше: без схемы и хоста каждая доставка падала бы с "unsupported
+	// protocol scheme", а запрос или фрагмент оказались бы посреди пути —
+	// адрес, по которому никто не отвечает, вместо внятного отказа при
+	// запуске. Хвостовые косые снимаем сами: «…org/» дало бы «…org//bot…»,
+	// и Bot API ответил бы 404 на каждое уведомление.
+	normalizedTelegramAPIBase, err := baseurl.Normalize("GOTCHA_TELEGRAM_API_BASE", cfg.TelegramAPIBase)
+	if err != nil {
+		return Config{}, err
 	}
+	cfg.TelegramAPIBase = normalizedTelegramAPIBase
 
+	// GOTCHA_PROBE_SERVER_URL — нормализуем тем же хелпером, если задан,
+	// НЕЗАВИСИМО от режима: мусор в переменной — опечатка оператора в любом
+	// режиме, а не только в --mode=probe. Схему/хост/query проверяем и
+	// хвостовую «/» срезаем сразу — без этого «https://host/» давало бы
+	// «//probe/lease» в КАЖДОМ запросе пробы (см. internal/uptime/probeclient.go).
+	normalizedServerURL, err := baseurl.Normalize("GOTCHA_PROBE_SERVER_URL", cfg.ServerURL)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ServerURL = normalizedServerURL
 	if cfg.Mode == "probe" {
 		if cfg.ServerURL == "" {
 			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL is required with --mode=probe")
 		}
-		// Схему и хост проверяем на старте: без них каждый тик пробы (раз в
-		// секунду, вечно) падал бы с "unsupported protocol scheme" — тихий
-		// бесконечный цикл ошибок вместо внятного отказа при запуске.
-		u, err := url.Parse(cfg.ServerURL)
-		if err != nil {
-			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL: %w", err)
-		}
-		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL must be an absolute http(s) url, got %q", cfg.ServerURL)
-		}
 		if cfg.ProbeToken == "" {
 			return Config{}, fmt.Errorf("GOTCHA_PROBE_TOKEN is required with --mode=probe")
 		}
+	} else if cfg.ServerURL != "" {
+		// Заданный, но бесполезный вне --mode=probe: ничего его не читает,
+		// поэтому оператор, скорее всего, либо забыл переключить режим, либо
+		// перенёс переменную из .env пробы по ошибке — тот же паттерн, что
+		// предупреждение о GOTCHA_HSTS_* при выключенном GOTCHA_HSTS_ENABLED
+		// выше.
+		slog.Warn("GOTCHA_PROBE_SERVER_URL is set but --mode is not probe — the value is ignored",
+			"mode", cfg.Mode)
 	}
 
 	if cfg.OIDCEnabled && (cfg.OIDCIssuer == "" || cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "") {

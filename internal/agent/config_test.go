@@ -143,6 +143,26 @@ func TestLoadConfigTrimsEndpointLeadingAndTrailingSpace(t *testing.T) {
 	}
 }
 
+// TestLoadConfigEndpointRejectsQuery — E3 T6: GOTCHA_AGENT_ENDPOINT срезал
+// хвостовой слэш и до этой правки, но query/fragment не проверял вовсе —
+// baseurl.Normalize (тот же хелпер, что у GOTCHA_BASE_URL/
+// GOTCHA_TELEGRAM_API_BASE/GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go)
+// закрывает и эту ветку: невалидное значение — отказ старта, а не адрес с
+// query/fragment посреди пути в каждом OTLP-пуше.
+func TestLoadConfigEndpointRejectsQuery(t *testing.T) {
+	for _, raw := range []string{
+		"https://g.example?token=1",
+		"https://g.example#frag",
+	} {
+		if _, err := LoadConfig(env(map[string]string{
+			"GOTCHA_AGENT_ENDPOINT": raw,
+			"GOTCHA_AGENT_KEY":      "pk",
+		})); err == nil {
+			t.Errorf("GOTCHA_AGENT_ENDPOINT=%q: want error, got nil", raw)
+		}
+	}
+}
+
 // TestLoadConfigWhitespaceOnlyEndpointRejected — эндпоинт обязателен; строка
 // из одних пробелов после тримминга становится пустой и обязана давать ту же
 // ошибку, что полностью отсутствующая переменная, а не URL с пробелом внутри.

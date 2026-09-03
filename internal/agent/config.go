@@ -6,9 +6,10 @@ package agent
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/baseurl"
 )
 
 // Config — публичный контракт GOTCHA_AGENT_* (фиксируется набело, спека §1.4).
@@ -33,10 +34,13 @@ const (
 // без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		// Endpoint: пробелы по краям обрезаются ПЕРЕД срезом хвостовой "/" —
-		// иначе "https://g.example/ " (пробел после слэша) прошёл бы TrimRight
-		// как есть и оставил пробел на конце базового URL.
-		Endpoint: strings.TrimRight(strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")), "/"),
+		// Endpoint: пробелы по краям обрезаются здесь, ДО baseurl.Normalize
+		// ниже — иначе "https://g.example/ " (пробел после слэша) прошёл бы
+		// TrimRight внутри Normalize как есть и оставил бы пробел на конце
+		// базового URL (Normalize сам пробелы не трогает — это забота
+		// вызывающего кода, как и у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE/
+		// GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go).
+		Endpoint: strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")),
 		Key:      strings.TrimSpace(getenv("GOTCHA_AGENT_KEY")),
 		// Hostname — identity-ключ хоста в проде: run.go кладёт его как есть в
 		// OTLP-атрибут host.name (emit.go), а приём (internal/ingest/otlp.go)
@@ -55,10 +59,15 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.Endpoint == "" {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT is required")
 	}
-	u, err := url.Parse(cfg.Endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	// baseurl.Normalize — тот же хелпер, что GOTCHA_BASE_URL/
+	// GOTCHA_TELEGRAM_API_BASE/GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go:
+	// схема и хост обязательны, query/fragment запрещены, хвостовые слэши
+	// срезаются (до этой правки Endpoint слэш срезал, но query не проверял).
+	normalized, err := baseurl.Normalize("GOTCHA_AGENT_ENDPOINT", cfg.Endpoint)
+	if err != nil {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT must be an http(s) URL, got %q", cfg.Endpoint)
 	}
+	cfg.Endpoint = normalized
 	if cfg.Key == "" {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_KEY is required")
 	}

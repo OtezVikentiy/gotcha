@@ -87,7 +87,7 @@ journalctl -u gotcha-agent -n 50
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GOTCHA_AGENT_ENDPOINT` | yes | — | The instance's base URL, without a path (same meaning as `endpoint` in the collector config). |
+| `GOTCHA_AGENT_ENDPOINT` | yes | — | The instance's base URL, without a path (same meaning as `endpoint` in the collector config). Must be an absolute `http(s)` URL with no query or fragment; a trailing slash is stripped automatically. |
 | `GOTCHA_AGENT_KEY` | yes | — | The project's public key — the same one used in the DSN and in the collector config's `Authorization` header. |
 | `GOTCHA_AGENT_INTERVAL` | no | `30s` | Collection and export interval. Valid range **10s–5m**: lower risks self-DoS'ing ingest with your own key, higher causes false "Silence" threshold trips. |
 | `GOTCHA_AGENT_HOSTNAME` | no | the server's `os.Hostname()` | Overrides `host.name`, for when the system hostname isn't what you want on the card. |

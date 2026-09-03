@@ -347,6 +347,147 @@ func TestLoadConfigProbeModeRejectsServerURLWithoutScheme(t *testing.T) {
 	}
 }
 
+// TestLoadConfigProbeServerURLNormalized — та же нормализация (E3 T6), что у
+// GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE: хвостовая косая срезается. До
+// этой правки GOTCHA_PROBE_SERVER_URL хвостовую "/" не срезал вовсе —
+// internal/uptime/probeclient.go собирает URL запроса как ServerURL+path
+// (path уже начинается с "/"), и "https://host/" давало бы "https://host//probe/lease".
+// Ассерт ниже воспроизводит именно эту сборку: мутация, убирающая срез слэша
+// в loadConfig, красит именно его — "//probe/lease" в собранном URL.
+func TestLoadConfigProbeServerURLNormalized(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"https://gotcha.example.com", "https://gotcha.example.com"},
+		{"https://gotcha.example.com/", "https://gotcha.example.com"},
+		{"https://gotcha.example.com///", "https://gotcha.example.com"},
+	} {
+		env := map[string]string{
+			"GOTCHA_PROBE_SERVER_URL": tc.in,
+			"GOTCHA_PROBE_TOKEN":      "probe-token",
+		}
+		cfg, err := loadConfig(getenvFrom(env), []string{"--mode", "probe"})
+		if err != nil {
+			t.Fatalf("GOTCHA_PROBE_SERVER_URL=%q: loadConfig: %v", tc.in, err)
+		}
+		if cfg.ServerURL != tc.want {
+			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q: got %q, want %q", tc.in, cfg.ServerURL, tc.want)
+		}
+		// Сборка запроса — та же конкатенация, что internal/uptime/probeclient.go
+		// делает в post(): ServerURL + path.
+		if built := cfg.ServerURL + "/probe/lease"; strings.Contains(built, "//probe") {
+			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q: собранный URL = %q, двойной слэш перед путём", tc.in, built)
+		}
+	}
+}
+
+// TestLoadConfigProbeServerURLRejectsQuery — та же политика query/fragment,
+// что у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE, и НЕЗАВИСИМО от --mode:
+// мусор в переменной — опечатка оператора в любом режиме.
+func TestLoadConfigProbeServerURLRejectsQuery(t *testing.T) {
+	for _, v := range []string{
+		"https://gotcha.example.com?token=1",
+		"https://gotcha.example.com#frag",
+	} {
+		env := map[string]string{
+			"GOTCHA_PROBE_SERVER_URL": v,
+			"GOTCHA_PROBE_TOKEN":      "probe-token",
+		}
+		if _, err := loadConfig(getenvFrom(env), []string{"--mode", "probe"}); err == nil {
+			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q: want error, got nil", v)
+		}
+	}
+}
+
+// TestLoadConfigProbeServerURLWarnsOutsideProbeMode — заданный, но
+// бесполезный вне --mode=probe: ничего его не читает, поэтому старт не падает,
+// но лог предупреждает — тот же паттерн, что GOTCHA_HSTS_* при выключенном
+// GOTCHA_HSTS_ENABLED (TestLoadConfig_HSTSWarnings).
+func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
+	capture := func(t *testing.T, env map[string]string, args []string) ([]slog.Record, error) {
+		t.Helper()
+		var records []slog.Record
+		prev := slog.Default()
+		slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+		defer slog.SetDefault(prev)
+		_, err := loadConfig(getenvFrom(env), args)
+		return records, err
+	}
+	hasWarn := func(records []slog.Record, substr string) bool {
+		for _, r := range records {
+			if r.Level == slog.LevelWarn && strings.Contains(r.Message, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Вне --mode=probe: предупреждение, старт продолжается.
+	records, err := capture(t, map[string]string{"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com"}, nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !hasWarn(records, "GOTCHA_PROBE_SERVER_URL") {
+		t.Error("нет предупреждения о GOTCHA_PROBE_SERVER_URL вне --mode=probe")
+	}
+
+	// В --mode=probe — предупреждения нет, переменная используется по назначению.
+	records, err = capture(t, map[string]string{
+		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
+		"GOTCHA_PROBE_TOKEN":      "probe-token",
+	}, []string{"--mode", "probe"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if hasWarn(records, "GOTCHA_PROBE_SERVER_URL") {
+		t.Error("предупреждение о GOTCHA_PROBE_SERVER_URL выдано в --mode=probe, где переменная используется")
+	}
+
+	// Не задан вовсе — тоже без предупреждения.
+	records, err = capture(t, nil, nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if hasWarn(records, "GOTCHA_PROBE_SERVER_URL") {
+		t.Error("предупреждение о GOTCHA_PROBE_SERVER_URL выдано при незаданной переменной")
+	}
+}
+
+// TestLoadConfigDSNsRejectUnparseable — GOTCHA_PG_DSN/GOTCHA_CH_DSN до E3 T6
+// не разбирались на старте вовсе: опечатка всплывала только на первом
+// db.NewPostgres/db.NewClickHouse. Отказ должен называть переменную.
+func TestLoadConfigDSNsRejectUnparseable(t *testing.T) {
+	cases := []struct {
+		key string
+		env map[string]string
+	}{
+		{"GOTCHA_PG_DSN", map[string]string{"GOTCHA_PG_DSN": "::::"}},
+		{"GOTCHA_CH_DSN", map[string]string{"GOTCHA_CH_DSN": "::::"}},
+	}
+	for _, tc := range cases {
+		_, err := loadConfig(getenvFrom(tc.env), nil)
+		if err == nil {
+			t.Errorf("%s=::::: want error, got nil", tc.key)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.key) {
+			t.Errorf("%s=::::: error = %q, want it to name %s", tc.key, err, tc.key)
+		}
+	}
+}
+
+// TestLoadConfigDSNsAcceptKeywordValueForm — Postgres DSN легален и в
+// keyword/value-форме (host=... user=... dbname=...), не только в URL-форме
+// (postgres://...); обе формы принимает pgxpool.ParseConfig, поэтому и
+// проверка на старте обязана принимать обе — иначе она отвергла бы легальный
+// DSN, которым реально пользуются операторы.
+func TestLoadConfigDSNsAcceptKeywordValueForm(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_PG_DSN": "host=pg.example port=5432 user=gotcha password=s3cret dbname=gotcha sslmode=disable",
+	}
+	if _, err := loadConfig(getenvFrom(env), nil); err != nil {
+		t.Errorf("keyword/value GOTCHA_PG_DSN: want no error, got %v", err)
+	}
+}
+
 func TestLoadConfigNonPositiveUptimeConcurrency(t *testing.T) {
 	for _, v := range []string{"0", "-1"} {
 		env := map[string]string{"GOTCHA_UPTIME_CONCURRENCY": v}

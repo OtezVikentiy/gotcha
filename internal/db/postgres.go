@@ -79,3 +79,22 @@ func NewPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	}
 	return pool, nil
 }
+
+// ValidatePostgresDSN проверяет, что dsn разбираем pgx — без установки
+// соединения (та же проверка на старте, что NewPostgres/ForcePG/MigratePG
+// делают неявно первым шагом). Разбор — тем же pgxpool.ParseConfig, что
+// реально потребляет DSN, поэтому принимается ровно то, что примет клиент:
+// и URL-форма (postgres://user:pass@host/db), и keyword/value-форма
+// (host=... user=... dbname=...) — обе легальны для pgx, поэтому DSN нельзя
+// гонять через ту же проверку «схема и хост обязательны», что у обычных
+// базовых адресов (см. internal/baseurl) — она отвергла бы законный DSN.
+//
+// Текст ошибки pgxpool.ParseConfig безопасен для возврата как есть: pgx сам
+// редактирует пароль в сообщении (заменяет на "xxxxxx"), поэтому оборачивание
+// через %w не утекает секрет — в отличие от ClickHouse ниже.
+func ValidatePostgresDSN(dsn string) error {
+	if _, err := pgxpool.ParseConfig(dsn); err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	return nil
+}

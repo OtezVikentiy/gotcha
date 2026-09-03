@@ -68,8 +68,8 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_PG_DSN` | `postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable` | PostgreSQL connection string — stores organizations, projects, users, alert rules, incidents. The stock `docker-compose.yml` already sets `postgres://gotcha:gotcha@postgres:5432/gotcha?sslmode=disable` (hostname `postgres` is the service name inside the Docker network). Only change this if you're using an external/your own database instead of the compose container. The value is trimmed; a whitespace-only value refuses to start instead of silently falling back to the default localhost DSN. |
-| `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | ClickHouse connection string — stores events, trace spans, metrics, profiles, uptime check results. The stock compose file sets `clickhouse://gotcha:gotcha@clickhouse:9000/gotcha`. Change it for the same reasons as `GOTCHA_PG_DSN`. Same trimming, same refusal to start on a whitespace-only value. |
+| `GOTCHA_PG_DSN` | `postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable` | PostgreSQL connection string — stores organizations, projects, users, alert rules, incidents. The stock `docker-compose.yml` already sets `postgres://gotcha:gotcha@postgres:5432/gotcha?sslmode=disable` (hostname `postgres` is the service name inside the Docker network). Only change this if you're using an external/your own database instead of the compose container. The value is trimmed; a whitespace-only value refuses to start instead of silently falling back to the default localhost DSN. Whether the DSN actually parses (either the URL form or the keyword/value form — both are legal) is checked at startup, so a typo refuses to start immediately instead of surfacing on the first database connection. |
+| `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | ClickHouse connection string — stores events, trace spans, metrics, profiles, uptime check results. The stock compose file sets `clickhouse://gotcha:gotcha@clickhouse:9000/gotcha`. Change it for the same reasons as `GOTCHA_PG_DSN`. Same trimming, same refusal to start on a whitespace-only value, and the same startup parseability check. |
 
 ### Compose-only variables (database containers)
 
@@ -273,7 +273,7 @@ Detail level and format of the instance's own logs.
 | `GOTCHA_UPTIME_CONCURRENCY` | `50` | How many uptime checks run concurrently (in `uptime`/`all` mode, and by a remote probe in `probe` mode). |
 | `GOTCHA_LOCAL_REGION` | `local` | The name of the built-in local uptime-check region — what's shown in the UI when picking a monitor's region. |
 | `GOTCHA_PROBE_TOKEN` | *(empty)* | `--mode=probe` only: the bearer token this probe authenticates to the central instance with. Required in this mode. |
-| `GOTCHA_PROBE_SERVER_URL` | *(empty)* | `--mode=probe` only: the base URL of the central Gotcha instance the probe reports to. Required in this mode, must be an absolute `http(s)` URL. |
+| `GOTCHA_PROBE_SERVER_URL` | *(empty)* | `--mode=probe` only: the base URL of the central Gotcha instance the probe reports to. Required in this mode, must be an absolute `http(s)` URL with no query or fragment; a trailing slash is stripped automatically. Set in a different mode, it's simply unused — nothing reads it — and a warning is logged, but startup continues. |
 
 `--mode=probe` is a separate process deployed in another region/data center: it doesn't open PostgreSQL or ClickHouse at all — it only makes outbound HTTP requests to the central instance.
 
