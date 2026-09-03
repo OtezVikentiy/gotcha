@@ -36,9 +36,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		// Endpoint: пробелы по краям обрезаются ПЕРЕД срезом хвостовой "/" —
 		// иначе "https://g.example/ " (пробел после слэша) прошёл бы TrimRight
 		// как есть и оставил пробел на конце базового URL.
-		Endpoint:    strings.TrimRight(strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")), "/"),
-		Key:         strings.TrimSpace(getenv("GOTCHA_AGENT_KEY")),
-		Hostname:    getenv("GOTCHA_AGENT_HOSTNAME"),
+		Endpoint: strings.TrimRight(strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")), "/"),
+		Key:      strings.TrimSpace(getenv("GOTCHA_AGENT_KEY")),
+		// Hostname — identity-ключ хоста в проде: run.go кладёт его как есть в
+		// OTLP-атрибут host.name (emit.go), а приём (internal/ingest/otlp.go)
+		// использует сырой host.name ключом карты хостов без своего тримминга.
+		// " web-1 " и "web-1" — два РАЗНЫХ ключа: оператор, «поправив» пробел
+		// на живом инстансе, получил бы НОВЫЙ хост вместо переименования
+		// старого, с потерей меток/порогов/зависимостей. Серверная нормализация
+		// host.name — отдельная работа (не тут, приём принимает значения не
+		// только от этого агента); здесь только не порождать проблему на входе.
+		Hostname:    strings.TrimSpace(getenv("GOTCHA_AGENT_HOSTNAME")),
 		CACert:      strings.TrimSpace(getenv("GOTCHA_AGENT_CA_CERT")),
 		Interval:    defaultInterval,
 		Environment: strings.TrimSpace(getenv("GOTCHA_AGENT_ENVIRONMENT")),

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -168,11 +167,11 @@ func TestLoadConfigWhitespaceOnlyKeyRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTrimsKeyCACertLabels — Key/CACert/Environment/Role раньше не
-// триммились вовсе. Key напрямую уходит в заголовок Authorization: "Bearer
-// abc " с хвостовым пробелом — это НЕ тот же Bearer-токен, что "Bearer abc",
-// и сервер отклонит его как неизвестный ключ без единого понятного сообщения
-// в логах агента.
+// TestLoadConfigTrimsKeyCACertLabels — Key/CACert/Environment/Role/Hostname
+// раньше не триммились вовсе. Key напрямую уходит в заголовок Authorization:
+// "Bearer abc " с хвостовым пробелом — это НЕ тот же Bearer-токен, что
+// "Bearer abc", и сервер отклонит его как неизвестный ключ без единого
+// понятного сообщения в логах агента.
 func TestLoadConfigTrimsKeyCACertLabels(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":    "https://g.example",
@@ -180,6 +179,7 @@ func TestLoadConfigTrimsKeyCACertLabels(t *testing.T) {
 		"GOTCHA_AGENT_CA_CERT":     " /etc/gotcha/ca.pem\t",
 		"GOTCHA_AGENT_ENVIRONMENT": " prod ",
 		"GOTCHA_AGENT_ROLE":        " web\n",
+		"GOTCHA_AGENT_HOSTNAME":    " web-1 ",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -196,37 +196,61 @@ func TestLoadConfigTrimsKeyCACertLabels(t *testing.T) {
 	if cfg.Role != "web" {
 		t.Errorf("Role = %q, want %q", cfg.Role, "web")
 	}
+	if cfg.Hostname != "web-1" {
+		t.Errorf("Hostname = %q, want %q", cfg.Hostname, "web-1")
+	}
 }
 
-// TestLoadConfigKeyTrimReflectedInBearerHeader — сквозной тест по всему
-// пути GOTCHA_AGENT_KEY → Config.Key → заголовок Authorization (sender.go
-// подставляет cfg.Key как есть, без собственного тримминга): "abc " с
-// хвостовым пробелом обязан дойти до сервера как "Bearer abc", а не
-// "Bearer abc ", иначе Bearer-токен не совпадёт ни с одним публичным ключом
-// проекта и сервер молча отклонит агент по 401.
-func TestLoadConfigKeyTrimReflectedInBearerHeader(t *testing.T) {
-	var gotAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+// TestLoadConfigHostnameTrimmedConsistently — GOTCHA_AGENT_HOSTNAME — это
+// identity-ключ хоста в проде (host.name resource-атрибут, ключ карты на
+// приёме, см. докблок Hostname в config.go). "web-1", "web-1 " и " web-1"
+// обязаны дать один и тот же host.name — иначе оператор, «поправив» пробел
+// на живом инстансе, тихо переименовал бы хост в новый вместо того же самого
+// (потеря меток/порогов/зависимостей на старом ключе).
+func TestLoadConfigHostnameTrimmedConsistently(t *testing.T) {
+	for _, raw := range []string{"web-1", "web-1 ", " web-1", "\tweb-1\n"} {
+		cfg, err := LoadConfig(env(map[string]string{
+			"GOTCHA_AGENT_ENDPOINT": "https://g.example",
+			"GOTCHA_AGENT_KEY":      "pk",
+			"GOTCHA_AGENT_HOSTNAME": raw,
+		}))
+		if err != nil {
+			t.Fatalf("GOTCHA_AGENT_HOSTNAME=%q: LoadConfig: %v", raw, err)
+		}
+		if cfg.Hostname != "web-1" {
+			t.Errorf("GOTCHA_AGENT_HOSTNAME=%q: Hostname = %q, want %q", raw, cfg.Hostname, "web-1")
+		}
+	}
+}
 
+// TestLoadConfigKeyTrimReflectedInBearerHeader — GOTCHA_AGENT_KEY → Config.Key
+// → заголовок Authorization (sender.go подставляет cfg.Key как есть, строкой
+// "Bearer "+cfg.Key, без собственного тримминга): "abc " с хвостовым пробелом
+// обязан дать ровно "Bearer abc", а не "Bearer abc ".
+//
+// Собирается http.Request тем же способом, что и Send() в sender.go
+// (http.NewRequestWithContext + req.Header.Set("Authorization", "Bearer
+// "+cfg.Key)), а не через реальный HTTP round-trip: net/http/textproto
+// обрезает OWS (optional whitespace) у значений заголовков на приёмной
+// стороне при разборе запроса, так что httptest.Server увидел бы уже
+// нормализованное значение и не отличил бы тримминг в LoadConfig от его
+// отсутствия — round-trip через httptest здесь маскировал бы регресс,
+// а не проверял его. Header.Get читает значение из Request.Header
+// (map[string][]string) напрямую, до какой-либо сериализации на провод.
+func TestLoadConfigKeyTrimReflectedInBearerHeader(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
-		"GOTCHA_AGENT_ENDPOINT": srv.URL,
+		"GOTCHA_AGENT_ENDPOINT": "https://g.example",
 		"GOTCHA_AGENT_KEY":      "abc ",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	s, err := NewSender(cfg)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Endpoint+"/v1/metrics", nil)
 	if err != nil {
-		t.Fatalf("NewSender: %v", err)
+		t.Fatalf("NewRequestWithContext: %v", err)
 	}
-	if _, _, err := s.Send(context.Background(), []byte("body")); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	if gotAuth != "Bearer abc" {
-		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer abc")
+	req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	if got := req.Header.Get("Authorization"); got != "Bearer abc" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer abc")
 	}
 }
