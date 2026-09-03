@@ -280,3 +280,70 @@ func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node, c
 	}
 	return found
 }
+
+// TestComposeVarsDocumented — задача 11, пункт 4: паритет compose-неймспейса
+// (${GOTCHA_COMPOSE_*}/${GOTCHA_BUILD_*}, подстановка Docker Compose самого
+// себя — читатель) ↔ .env.example ↔ таблицы configuration.md обеих локалей.
+// Ruling задачи 11 п.5: у этих имён читатель — не Go-код, а сама подстановка
+// в docker-compose.yml/.small.yml, поэтому TestEnvExampleCoversConfig
+// (которая сверяет .env.example с кодом) и checkConfigurationTableParity
+// (которая берёт vars из кода) их не видят вовсе — этот сторож закрывает
+// именно этот, третий класс переменных, отдельно.
+//
+// До круга правок задачи 11 GOTCHA_COMPOSE_PORT, GOTCHA_COMPOSE_BIND и все
+// три GOTCHA_BUILD_* вовсе отсутствовали в .env.example — реальная находка,
+// которую этот сторож теперь не даст повторить.
+func TestComposeVarsDocumented(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	composeVars := map[string]bool{}
+	for _, name := range []string{"docker-compose.yml", "docker-compose.small.yml"} {
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, m := range composeSubstRe.FindAllStringSubmatch(string(raw), -1) {
+			v := m[1]
+			if strings.HasPrefix(v, "GOTCHA_COMPOSE_") || strings.HasPrefix(v, "GOTCHA_BUILD_") {
+				composeVars[v] = true
+			}
+		}
+	}
+	if len(composeVars) < 8 {
+		t.Fatalf("найдено %d переменных GOTCHA_COMPOSE_*/GOTCHA_BUILD_* по всем compose-файлам, ожидалось ≥8 — обход ослеп", len(composeVars))
+	}
+
+	example, err := os.ReadFile(filepath.Join(root, ".env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruDoc, err := os.ReadFile(filepath.Join(root, "internal", "docs", "ru", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enDoc, err := os.ReadFile(filepath.Join(root, "internal", "docs", "en", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruTable := tableVarNames(string(ruDoc))
+	enTable := tableVarNames(string(enDoc))
+
+	for v := range composeVars {
+		// То же «NAME=», что и в TestEnvExampleCoversConfig — короткое имя
+		// префикс более длинного (GOTCHA_COMPOSE_PG_PASSWORD ⊂
+		// GOTCHA_COMPOSE_CH_PASSWORD не бывает, но конвенция общая с тем
+		// сторожем не случайно).
+		if !strings.Contains(string(example), v+"=") {
+			t.Errorf("%s подставляется Docker Compose (${%s}), но отсутствует в .env.example", v, v)
+		}
+		if !ruTable[v] {
+			t.Errorf("ru: %s подставляется Docker Compose, но не задокументирована строкой таблицы в internal/docs/ru/configuration.md", v)
+		}
+		if !enTable[v] {
+			t.Errorf("en: %s подставляется Docker Compose, но не задокументирована строкой таблицы в internal/docs/en/configuration.md", v)
+		}
+	}
+}
