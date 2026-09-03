@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -14,9 +15,9 @@ import (
 
 // envReaderFuncs — функции cmd/gotcha/config.go, читающие переменные
 // окружения. Имя переменной — первый строковый литерал GOTCHA_* в аргументах
-// (у optionalBoolEnv имя стоит вторым аргументом, поэтому «первый аргумент»
-// недостаточен). go/ast, а не регэксп — чтобы не ловить имена в текстах
-// ошибок и комментариях.
+// (не обязательно первый аргумент позиционно — только это делает разбор
+// устойчивым к сигнатуре конкретного читателя). go/ast, а не регэксп — чтобы
+// не ловить имена в текстах ошибок и комментариях.
 //
 // strGuarded добавлен кругом правок 1 задачи 9 (M2): без него GOTCHA_PG_DSN/
 // GOTCHA_CH_DSN/GOTCHA_SECRET_KEY — реальные поля cmd/gotcha.Config — не
@@ -32,15 +33,14 @@ import (
 // попадала в собранный набор ни здесь, ни в internal/envcontract.Known,
 // хотя реально читается cmd/gotcha/config.go.
 var envReaderFuncs = map[string]bool{
-	"str":             true,
-	"strGuarded":      true,
-	"intNum":          true,
-	"num":             true,
-	"boolEnv":         true,
-	"boolEnvDef":      true,
-	"optionalBoolEnv": true,
-	"getenv":          true,
-	"parseBool":       true,
+	"str":        true,
+	"strGuarded": true,
+	"intNum":     true,
+	"num":        true,
+	"boolEnv":    true,
+	"boolEnvDef": true,
+	"getenv":     true,
+	"parseBool":  true,
 }
 
 // numericReaderFuncs — подмножество envReaderFuncs, читающее переменную как
@@ -190,6 +190,89 @@ func collectOSEnvVars(t *testing.T, root, relFile string) map[string]bool {
 	return vars
 }
 
+// tableRowFirstCellRe находит ПЕРВУЮ ячейку строки markdown-таблицы, если
+// она несёт код-цитату вида `NAME`, сразу за начальным `|` (не считая
+// пробелов). Заякорено на начало строки нарочно: имя, процитированное где-то
+// в третьей колонке (перекрёстная ссылка на другую переменную в тексте
+// описания — так уже было с `_CLIENT_SECRET` в OIDC-строке, круг правок
+// задачи 11), не должно засчитываться как документирующая эту переменную
+// строка — только первая колонка таблицы документирует.
+var tableRowFirstCellRe = regexp.MustCompile("^\\|\\s*`([A-Z][A-Z0-9_]*)`")
+
+// tableVarNames возвращает множество имён GOTCHA_*/GOMEMLIMIT, задокументированных
+// ПЕРВОЙ колонкой строки markdown-таблицы в doc — упоминание имени в прозе
+// (в том числе в описании соседней строки) не считается. Одно имя на
+// ячейку: строка с несколькими именами в одной ячейке через `/`
+// (сокращение вида “ `GOTCHA_OIDC_CLIENT_ID` / `_CLIENT_SECRET` “) не
+// распознаётся — такие строки переписаны отдельными строками на переменную
+// (см. configuration.md обеих локалей, раздел OAuth/SSO), а не добавлением
+// более умного разбора: сокращение само по себе плохо читается человеком,
+// чинить парсер под него — тащить проблему дальше вместо того, чтобы убрать
+// её из документа.
+func tableVarNames(doc string) map[string]bool {
+	out := map[string]bool{}
+	for _, line := range strings.Split(doc, "\n") {
+		m := tableRowFirstCellRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		name := m[1]
+		if name == "GOMEMLIMIT" || strings.HasPrefix(name, "GOTCHA_") {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// checkConfigurationTableParity — задача 11, пункт 1: паритет .env.example
+// ↔ таблицы configuration.md обеих локалей (звено код ↔ .env.example уже
+// проверено выше, в TestEnvExampleCoversConfig). Две независимые сверки:
+//
+//   - vars (переменные, реально читаемые cmd/gotcha/config.go, плюс
+//     GOMEMLIMIT) обязаны быть строкой таблицы в ОБЕИХ локалях — ru и en
+//     проверяются раздельно, каждая своим циклом, а не одним объединённым
+//     множеством имён: дыра в одной локали не должна маскироваться полнотой
+//     другой (мутация, которую держит в уме ревьюер задачи — убрать сверку
+//     по одной из локалей — красит именно этот раздельный цикл, а не
+//     тихо проходит по union);
+//   - обратное — «строка таблицы без читателя в коде — тоже находка»:
+//     каждое имя, задокументированное строкой таблицы, обязано иметь
+//     читателя из readers (объединение серверных/агентских переменных,
+//     GOMEMLIMIT и compose-неймспейса GOTCHA_COMPOSE_*/GOTCHA_BUILD_* —
+//     ruling задачи 11 п.5: их читатель — подстановка `${...}` в
+//     docker-compose.yml, не Go-код). Без читателя ни там, ни там — строка
+//     документирует переменную-призрак.
+//
+// Агентские переменные (internal/agent/config.go) намеренно НЕ входят в
+// vars: они документированы отдельной таблицей на странице /docs/hosts
+// (см. upgrade.md, «Актуальные имена ... в справочнике переменных на
+// странице Хосты»), а не в configuration.md — дублировать их сюда значило
+// бы держать вторую копию той таблицы, которая разъедется с первой при
+// следующей агентской переменной. Как ЧИТАТЕЛЬ (readers) агентские
+// переменные всё же учитываются — иначе строка о них в configuration.md
+// (если такая когда-нибудь появится) ложно считалась бы призраком.
+func checkConfigurationTableParity(t testingT, vars, readers, ruTable, enTable map[string]bool) {
+	t.Helper()
+	for v := range vars {
+		if !ruTable[v] {
+			t.Errorf("ru: %s читается кодом (или это GOMEMLIMIT) и есть в .env.example, но не задокументирована строкой таблицы в internal/docs/ru/configuration.md", v)
+		}
+		if !enTable[v] {
+			t.Errorf("en: %s читается кодом (или это GOMEMLIMIT) и есть в .env.example, но не задокументирована строкой таблицы в internal/docs/en/configuration.md", v)
+		}
+	}
+	for v := range ruTable {
+		if !readers[v] {
+			t.Errorf("ru: %s задокументирована строкой таблицы в configuration.md, но её не читает ни cmd/gotcha/config.go, ни internal/agent/config.go, ни Docker Compose (не несёт префикс GOTCHA_COMPOSE_/GOTCHA_BUILD_) — переменная-призрак", v)
+		}
+	}
+	for v := range enTable {
+		if !readers[v] {
+			t.Errorf("en: %s задокументирована строкой таблицы в configuration.md, но её не читает ни cmd/gotcha/config.go, ни internal/agent/config.go, ни Docker Compose (не несёт префикс GOTCHA_COMPOSE_/GOTCHA_BUILD_) — переменная-призрак", v)
+		}
+	}
+}
+
 // TestEnvExampleCoversConfig — №86: каждая переменная GOTCHA_*, которую
 // читает cmd/gotcha/config.go ИЛИ internal/agent/config.go, обязана
 // упоминаться в .env.example — единственном полном справочном файле
@@ -290,6 +373,63 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 			t.Errorf("%s is listed in unitlessCounters but is no longer read as a bare number — remove the stale exception", v)
 		}
 	}
+
+	// Задача 11, пункт 1: паритет .env.example ↔ таблицы configuration.md
+	// обеих локалей (см. докблок checkConfigurationTableParity). tableVars —
+	// СЕРВЕРНЫЕ переменные плюс GOMEMLIMIT, БЕЗ агентских (документированы
+	// отдельно, на /docs/hosts — см. докблок checkConfigurationTableParity):
+	// сборка из уже собранных выше serverVars/memlimitVars, а не второй
+	// проход разбора.
+	tableVars := map[string]bool{}
+	for v := range serverVars {
+		tableVars[v] = true
+	}
+	for v := range memlimitVars {
+		tableVars[v] = true
+	}
+
+	// composeVars — переменные подстановки Docker Compose (${GOTCHA_COMPOSE_*}/
+	// ${GOTCHA_BUILD_*}) из обоих compose-файлов: их читатель — сам Compose,
+	// не Go-код (ruling задачи 11 п.5), они легитимно документируются
+	// таблицей, не будучи в vars/tableVars. composeSubstRe и её семантика —
+	// compose_test.go (тот же пакет).
+	composeVars := map[string]bool{}
+	for _, name := range []string{"docker-compose.yml", "docker-compose.small.yml"} {
+		raw, err := os.ReadFile(filepath.Join(tree.Root, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, m := range composeSubstRe.FindAllStringSubmatch(string(raw), -1) {
+			composeVars[m[1]] = true
+		}
+	}
+	if len(composeVars) < 8 {
+		t.Fatalf("collected only %d compose-substituted GOTCHA_COMPOSE_*/GOTCHA_BUILD_* variables — compose parsing is broken", len(composeVars))
+	}
+
+	readers := map[string]bool{}
+	for v := range vars { // server + agent + GOMEMLIMIT, уже собранные выше
+		readers[v] = true
+	}
+	for v := range composeVars {
+		readers[v] = true
+	}
+
+	ruDoc, err := os.ReadFile(filepath.Join(tree.Root, "internal", "docs", "ru", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enDoc, err := os.ReadFile(filepath.Join(tree.Root, "internal", "docs", "en", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruTable := tableVarNames(string(ruDoc))
+	enTable := tableVarNames(string(enDoc))
+	if len(ruTable) < 50 || len(enTable) < 50 {
+		t.Fatalf("collected %d ru / %d en table rows from configuration.md — table parsing is broken (tableRowFirstCellRe stopped matching)", len(ruTable), len(enTable))
+	}
+
+	checkConfigurationTableParity(t, tableVars, readers, ruTable, enTable)
 }
 
 // TestUnitSuffixConvention — юнит-тест конвенции единиц измерения (T1) на
@@ -384,5 +524,99 @@ func TestKnownEnvVarsHaveNoGhosts(t *testing.T) {
 		if !serverVars[v] && !agentVars[v] {
 			t.Errorf("envcontract.Known contains %s, but neither cmd/gotcha/config.go nor internal/agent/config.go reads it — stale/ghost entry", v)
 		}
+	}
+}
+
+// TestTableVarNamesFirstColumnOnly — tableVarNames считает документирующей
+// только ПЕРВУЮ колонку строки таблицы: имя, упомянутое в прозе или в
+// третьей колонке (описании) той же или другой строки, покрытием не
+// считается (контракт задачи 11, п.1: «упоминание имени в прозе не
+// считается покрытием»). GOMEMLIMIT — легитимное отдельное имя без префикса
+// GOTCHA_, тоже подхватывается.
+func TestTableVarNamesFirstColumnOnly(t *testing.T) {
+	doc := "Проза упоминает `GOTCHA_PROSE_ONLY` мимоходом, не как строку таблицы.\n" +
+		"\n" +
+		"| Переменная | По умолчанию | Описание |\n" +
+		"|---|---|---|\n" +
+		"| `GOTCHA_REAL_ROW` | `1` | Ссылается на `GOTCHA_CROSS_REF` в тексте описания. |\n" +
+		"| `GOMEMLIMIT` | *(вычисляется)* | Рантайм Go. |\n"
+
+	got := tableVarNames(doc)
+
+	for _, want := range []string{"GOTCHA_REAL_ROW", "GOMEMLIMIT"} {
+		if !got[want] {
+			t.Errorf("tableVarNames: %s не найден, хотя это первая колонка настоящей строки таблицы", want)
+		}
+	}
+	for _, notWant := range []string{"GOTCHA_PROSE_ONLY", "GOTCHA_CROSS_REF"} {
+		if got[notWant] {
+			t.Errorf("tableVarNames: %s засчитан, хотя это упоминание в прозе/третьей колонке, не строка таблицы", notWant)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("tableVarNames вернул %v, ожидалось ровно 2 имени", got)
+	}
+}
+
+// TestConfigurationTableParityCatchesMissingRow — «подсунуть переменную,
+// отсутствующую в таблице RU» из контракта задачи 11, п.1: переменная есть
+// в vars (код+.env.example), но отсутствует строкой в ru-таблице — красный
+// с именем переменной и локалью в тексте ошибки. Симметричный случай для en
+// — сама мутация, которую держит в уме ревьюер («убрать сверку по одной из
+// локалей»): реализация проверяет ru и en раздельными циклами (см. докблок
+// checkConfigurationTableParity), поэтому дыра в одной локали не маскируется
+// полнотой другой — оба подтеста ниже должны падать независимо.
+func TestConfigurationTableParityCatchesMissingRow(t *testing.T) {
+	t.Run("ru", func(t *testing.T) {
+		ft := &fakeT{}
+		vars := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		readers := vars
+		ruTable := map[string]bool{} // GOTCHA_FAKE_VAR отсутствует
+		enTable := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+		ft.requireFailure(t, "GOTCHA_FAKE_VAR")
+		ft.requireFailure(t, "ru:")
+	})
+	t.Run("en", func(t *testing.T) {
+		ft := &fakeT{}
+		vars := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		readers := vars
+		ruTable := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		enTable := map[string]bool{} // GOTCHA_FAKE_VAR отсутствует
+		checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+		ft.requireFailure(t, "GOTCHA_FAKE_VAR")
+		ft.requireFailure(t, "en:")
+	})
+}
+
+// TestConfigurationTableParityCatchesGhostRow — обратное направление
+// контракта: строка таблицы без читателя в коде — тоже находка. Имя
+// присутствует в обеих таблицах, но отсутствует в readers (ни серверный/
+// агентский код, ни compose-неймспейс его не читает) — красный в обеих
+// локалях.
+func TestConfigurationTableParityCatchesGhostRow(t *testing.T) {
+	ft := &fakeT{}
+	vars := map[string]bool{}
+	readers := map[string]bool{} // GOTCHA_GHOST_VAR без читателя
+	ruTable := map[string]bool{"GOTCHA_GHOST_VAR": true}
+	enTable := map[string]bool{"GOTCHA_GHOST_VAR": true}
+	checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+	ft.requireFailure(t, "GOTCHA_GHOST_VAR")
+}
+
+// TestConfigurationTableParityAcceptsComposeReader — ruling задачи 11 п.5:
+// переменная compose-неймспейса (читатель — подстановка ${...} в
+// docker-compose.yml, не Go-код) НЕ должна считаться призраком, даже не
+// входя в vars. Регрессия на случай, если кто-то однажды сузит readers до
+// одного vars, забыв про composeVars.
+func TestConfigurationTableParityAcceptsComposeReader(t *testing.T) {
+	ft := &fakeT{}
+	vars := map[string]bool{}
+	readers := map[string]bool{"GOTCHA_COMPOSE_FAKE": true} // читатель — compose, не код
+	ruTable := map[string]bool{"GOTCHA_COMPOSE_FAKE": true}
+	enTable := map[string]bool{"GOTCHA_COMPOSE_FAKE": true}
+	checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+	if ft.failed {
+		t.Fatalf("compose-переменная с читателем в readers ошибочно забракована: %v", ft.msgs)
 	}
 }

@@ -65,6 +65,7 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 |---|---|---|
 | `GOTCHA_LISTEN_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_COMPOSE_PORT` instead (see [Installation](/docs/installation)), not via this variable. |
 | `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default `GOTCHA_SECRET_KEY` in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) — see the Security section below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
+| `GOMEMLIMIT` | *(derived from cgroup)* | The standard (no `GOTCHA_` prefix) Go runtime variable — the heap ceiling. Left unset, `internal/memlimit` reads it directly and derives it itself from the container's cgroup limit (see "Compose-only variables" below, `GOTCHA_COMPOSE_MEM_LIMIT`); set it by hand only on bare metal with no cgroup, or to override the derived value. |
 
 ## Database
 
@@ -100,6 +101,18 @@ These four are **Docker Compose substitution variables**, not configuration of t
 |---|---|---|
 | `GOTCHA_COMPOSE_MEM_LIMIT` | `1g` | Memory ceiling of the `gotcha` container. The app reads this limit from its cgroup and sets its own heap ceiling to 80% of it, so raising the ceiling is enough — `GOMEMLIMIT` doesn't need setting by hand. |
 | `GOTCHA_COMPOSE_NET_MTU` | `1500` | MTU of the container network. A last resort for one specific failure — see below; a mismatch on its own is not a reason to touch it. |
+| `GOTCHA_COMPOSE_BIND` | `127.0.0.1` | Host address the app port is published on. Loopback only by default — the port isn't reachable from outside the server until you explicitly set `0.0.0.0` (see [Installation](/docs/installation)). |
+| `GOTCHA_COMPOSE_PORT` | `59080` | Host port the app container is published on (the container's own port, `8080`, doesn't change). Change it if `59080` on the host is already taken by another service. |
+
+### Build-only variables (`Makefile` build-args)
+
+These three are substitution variables too, but not Docker Compose's — `Makefile`'s: it forwards them into `docker compose build` as image build-args (`DOCKER_BUILD_ENV`, see `Dockerfile`). No gotcha process reads them; `make` sets them itself (`git describe`/commit/date) — you only need these if you build the image with `docker compose build` directly, bypassing `make`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOTCHA_BUILD_VERSION` | `dev` | Version the binary prints in `/healthz` and the startup log. `make` sets it itself from `git describe --tags`. |
+| `GOTCHA_BUILD_COMMIT` | *(empty)* | Commit hash baked into the binary the same way. |
+| `GOTCHA_BUILD_DATE` | *(empty)* | Build date baked into the binary the same way. |
 
 **Start with the symptom, not the numbers.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. The mismatch itself is everywhere, and most installations live with it and never notice.
 
@@ -304,13 +317,18 @@ Each login provider is enabled independently. Enabling a provider without settin
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_OIDC_ENABLED` | `false` | Enables login via a generic OIDC provider (Keycloak, Authentik, Google Workspace, etc). Requires `GOTCHA_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`. |
+| `GOTCHA_OIDC_ENABLED` | `false` | Enables login via a generic OIDC provider (Keycloak, Authentik, Google Workspace, etc). Requires `GOTCHA_OIDC_ISSUER`, `GOTCHA_OIDC_CLIENT_ID`, `GOTCHA_OIDC_CLIENT_SECRET`. |
 | `GOTCHA_OIDC_ISSUER` | *(empty)* | The OIDC provider's issuer URL. |
-| `GOTCHA_OIDC_CLIENT_ID` / `_CLIENT_SECRET` | *(empty)* | Credentials for the application registered with the provider. |
+| `GOTCHA_OIDC_CLIENT_ID` | *(empty)* | ID of the application registered with the provider. |
+| `GOTCHA_OIDC_CLIENT_SECRET` | *(empty)* | Secret of the same application. |
 | `GOTCHA_OIDC_SCOPES` | `openid email profile` | The **complete** comma-separated scope list sent to the provider (the same separator as the other list variables in this document) — the comma is normalized to a space before the request goes out, as the protocol itself requires. Setting it **replaces** the default rather than adding to it, so always include `openid` and `email` — without them the ID token carries no subject or address and every login fails. To request an extra scope, list it alongside the defaults: `openid,email,profile,groups`. Empty elements (a stray comma) are dropped; a value made only of commas and spaces is treated as unset — the default is used. |
 | `GOTCHA_OIDC_DISPLAY_NAME` | *(empty)* | Display name for the login button ("Sign in with …") in the UI. |
-| `GOTCHA_YANDEX_ENABLED` | `false` | Enables login via Yandex ID. Requires `GOTCHA_YANDEX_CLIENT_ID`/`_CLIENT_SECRET`. |
-| `GOTCHA_VK_ENABLED` | `false` | Enables login via VK ID. Requires `GOTCHA_VK_CLIENT_ID`/`_CLIENT_SECRET`. |
+| `GOTCHA_YANDEX_ENABLED` | `false` | Enables login via Yandex ID. Requires `GOTCHA_YANDEX_CLIENT_ID`/`GOTCHA_YANDEX_CLIENT_SECRET`. |
+| `GOTCHA_YANDEX_CLIENT_ID` | *(empty)* | ID of the application registered with Yandex ID. |
+| `GOTCHA_YANDEX_CLIENT_SECRET` | *(empty)* | Secret of the same application. |
+| `GOTCHA_VK_ENABLED` | `false` | Enables login via VK ID. Requires `GOTCHA_VK_CLIENT_ID`/`GOTCHA_VK_CLIENT_SECRET`. |
+| `GOTCHA_VK_CLIENT_ID` | *(empty)* | ID of the application registered with VK ID. |
+| `GOTCHA_VK_CLIENT_SECRET` | *(empty)* | Secret of the same application. |
 
 Step-by-step setup for each provider is in [SSO](/docs/sso).
 
