@@ -205,12 +205,13 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 		// список «было → стало» для sed по собственному .env, а не абстрактная
 		// отсылка «см. CHANGELOG». Тот же случай, что и у CHANGELOG.{md,ru.md}
 		// выше: старое имя здесь — не забытый огрызок контракта, а сама суть
-		// страницы. Полнота этих таблиц (что каждая пара текущей волны
-		// переименования — AgentOwned/InfraOwned/ServerOwned из
-		// envcontract — реально присутствует в upgrade.md обеих локалей)
-		// проверяется отдельно, TestUpgradeDocDocumentsAllRenamedPairs
-		// ниже — исключение здесь не превращается в дыру, потому что полноту
-		// таблиц ловит другой сторож.
+		// страницы. Полнота этих таблиц (что каждая пара ВСЕХ волн
+		// переименования — envcontract.Renamed кумулятивен, ruling
+		// team-lead 2026-09-03 вариант b — реально присутствует в
+		// upgrade.md обеих локалей) проверяется отдельно,
+		// TestUpgradeDocDocumentsAllRenamedPairs ниже — исключение здесь не
+		// превращается в дыру, потому что полноту таблиц ловит другой
+		// сторож.
 		if rel == "internal/docs/ru/upgrade.md" || rel == "internal/docs/en/upgrade.md" {
 			return nil
 		}
