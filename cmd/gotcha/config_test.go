@@ -943,6 +943,33 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 	})
 }
 
+// TestLoadConfig_SecretKeyPrevReadVerbatimNotTrimmed — I1 (финальное
+// ревью): GOTCHA_SECRET_KEY_PREV читается ДОСЛОВНО, без обрезки пробелов —
+// в отличие от GOTCHA_SECRET_KEY, который триммится strGuarded(). Ключ с
+// хвостовым пробелом, скопированный в PREV вместе с тем же пробелом, что
+// был в текущем ключе ДО ротации, обязан пройти «must differ» (текущий
+// ключ теперь триммится и потому отличается от сырого PREV) и остаться в
+// cfg.SecretKeyPrev байт в байт — иначе штатный путь восстановления через
+// PREV неработоспособен для исторического ключа с пробелом.
+func TestLoadConfig_SecretKeyPrevReadVerbatimNotTrimmed(t *testing.T) {
+	const key = "current-master-key-at-least-32-bytes!!"
+	env := map[string]string{
+		"GOTCHA_BASE_URL":        "https://gotcha.example.com",
+		"GOTCHA_SECRET_KEY":      key + " ",
+		"GOTCHA_SECRET_KEY_PREV": key + " ",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("PREV с тем же хвостовым пробелом, что был у ключа до тримминга: want старт, got error: %v", err)
+	}
+	if cfg.SecretKey != key {
+		t.Errorf("SecretKey = %q, want %q (текущий ключ по-прежнему триммится)", cfg.SecretKey, key)
+	}
+	if cfg.SecretKeyPrev != key+" " {
+		t.Errorf("SecretKeyPrev = %q, want %q (читается дословно, без тримминга)", cfg.SecretKeyPrev, key+" ")
+	}
+}
+
 // TestLoadConfig_SecretKeyPrevAllowInsecureDoesNotBypass —
 // GOTCHA_SECRET_KEY_ALLOW_INSECURE снимает требования к СТОЙКОСТИ ключа (дефолтный,
 // короткий), а не к ЛОГИЧЕСКОЙ согласованности пары current/PREV: конфиг,
@@ -1462,6 +1489,55 @@ func TestParseIntEnvReturnsDefOnParseError(t *testing.T) {
 	}
 }
 
+// TestParseInt64EnvTrimsSpace — m2 (финальное ревью): числовые значения
+// триммятся по краям той же строкой, что и строковые/булевы (str/strGuarded/
+// parseBool) — до этой правки числовое было единственным типом env-значения,
+// для которого случайный пробел (перенос из таблицы, отступ в .env) ронял бы
+// старт вместо ожидаемого разбора.
+func TestParseInt64EnvTrimsSpace(t *testing.T) {
+	env := map[string]string{"GOTCHA_TEST_INT64": " 30"}
+	got, err := parseInt64Env(getenvFrom(env), "GOTCHA_TEST_INT64", 5)
+	if err != nil {
+		t.Fatalf("\" 30\": want no error, got %v", err)
+	}
+	if got != 30 {
+		t.Errorf("got = %d, want 30", got)
+	}
+	// Строка из одних пробелов — та же трактовка, что и у пустой: def, а не
+	// ошибка (тот же контракт, что у str()/strGuarded()).
+	if got, err := parseInt64Env(getenvFrom(map[string]string{"GOTCHA_TEST_INT64": "   "}), "GOTCHA_TEST_INT64", 5); err != nil || got != 5 {
+		t.Errorf("пробелы: got (%d, %v), want (5, nil)", got, err)
+	}
+}
+
+// TestParseIntEnvTrimsSpace — тот же случай для parseIntEnv, см.
+// TestParseInt64EnvTrimsSpace.
+func TestParseIntEnvTrimsSpace(t *testing.T) {
+	env := map[string]string{"GOTCHA_TEST_INT": " 30 "}
+	got, err := parseIntEnv(getenvFrom(env), "GOTCHA_TEST_INT", 7)
+	if err != nil {
+		t.Fatalf("\" 30 \": want no error, got %v", err)
+	}
+	if got != 30 {
+		t.Errorf("got = %d, want 30", got)
+	}
+}
+
+// TestLoadConfigNumericEnvTrimmedThroughLoadConfig — та же трактовка на
+// реальном поле Config, а не только на голой функции разбора: не просто
+// parseInt64Env/parseIntEnv триммят, а loadConfig действительно доносит
+// триммированное значение до итогового Config.
+func TestLoadConfigNumericEnvTrimmedThroughLoadConfig(t *testing.T) {
+	env := map[string]string{"GOTCHA_EVENT_RETENTION_DAYS": " 45 "}
+	cfg, err := loadConfig(getenvFrom(env), nil)
+	if err != nil {
+		t.Fatalf("GOTCHA_EVENT_RETENTION_DAYS=\" 45 \": want no error, got %v", err)
+	}
+	if cfg.RetentionDays != 45 {
+		t.Errorf("RetentionDays = %d, want 45", cfg.RetentionDays)
+	}
+}
+
 // TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected —
 // GOTCHA_MAX_WRITER_BUFFER_BYTES и GOTCHA_MAX_INGEST_QUEUE_BYTES вошли в семью
 // «запрещённого нуля» вместе с OUTBOX_RETENTION_DAYS/MAX_EVENT_BYTES/
@@ -1525,6 +1601,53 @@ func TestLoadConfigGarbageInMultipleNumericVarsReportsAllNames(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GOTCHA_MAX_INGEST_QUEUE_BYTES") {
 		t.Errorf("error = %q, does not name GOTCHA_MAX_INGEST_QUEUE_BYTES", err)
+	}
+}
+
+// TestLoadConfigDSNAndBaseURLErrorsJoinRestOfErrs — I2 (финальное ревью):
+// GOTCHA_PG_DSN/GOTCHA_CH_DSN/GOTCHA_BASE_URL раньше возвращали ошибку
+// СВОИМ отдельным return, вставленным ВЫШЕ общего errors.Join, и топили тем
+// самым числовые/булевы опечатки, накопленные до них, — ровно тот цикл
+// «оператор чинит один DSN, перезапускается, узнаёт про следующую опечатку»,
+// ради которого errs вообще завели. Три находки разом обязаны прийти одним
+// сообщением, а не по одной за цикл деплоя.
+func TestLoadConfigDSNAndBaseURLErrorsJoinRestOfErrs(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_SCRUB_IP":             "ture",
+		"GOTCHA_EVENT_RETENTION_DAYS": "abc",
+		"GOTCHA_PG_DSN":               "::::not a dsn",
+	}
+	_, err := loadConfig(getenvFrom(env), nil)
+	if err == nil {
+		t.Fatal("битый DSN плюс две опечатки: want error, got nil")
+	}
+	for _, want := range []string{"GOTCHA_SCRUB_IP", "GOTCHA_EVENT_RETENTION_DAYS", "GOTCHA_PG_DSN"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, does not name %s — DSN-ошибка не должна топить остальные накопленные errs", err, want)
+		}
+	}
+}
+
+// TestLoadConfigBaseURLErrorJoinsRestOfErrsWithRawValueKept — то же для
+// GOTCHA_BASE_URL: ошибка Normalize копится в errs, а не возвращается сразу
+// же, и cfg.BaseURL остаётся СЫРЫМ (ненормализованным) значением — не
+// используется нигде до возврата ошибки, кроме isLocalBaseURL ниже в SEC-C1,
+// для которой невалидная строка консервативно не совпадает ни с одним
+// локальным хостом.
+func TestLoadConfigBaseURLErrorJoinsRestOfErrsWithRawValueKept(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL":             "http://[::1",
+		"GOTCHA_EVENT_RETENTION_DAYS": "abc",
+	}
+	_, err := loadConfig(getenvFrom(env), nil)
+	if err == nil {
+		t.Fatal("битый BASE_URL плюс опечатка в числовой: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_BASE_URL") {
+		t.Errorf("error = %q, does not name GOTCHA_BASE_URL", err)
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_EVENT_RETENTION_DAYS") {
+		t.Errorf("error = %q, does not name GOTCHA_EVENT_RETENTION_DAYS — BASE_URL-ошибка не должна топить остальные накопленные errs", err)
 	}
 }
 
@@ -1872,7 +1995,7 @@ var renamedEnvVarNewNameChecks = map[string]struct {
 // не на всех именах, — прошёл бы незамеченным: единственная запись под
 // защитой не покрывает остальные двадцать шесть.
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
-	// Сторож против вырождения самого перебора (задача 11, круг правок):
+	// Сторож против вырождения самого перебора (задача 11):
 	// sortedRenamedOldNames(), вручную урезанная до, скажем, names[:1],
 	// по-прежнему возвращала бы валидный []string — цикл t.Run ниже просто
 	// прогнал бы один подтест вместо всех и остался бы зелёным. Сверка длины

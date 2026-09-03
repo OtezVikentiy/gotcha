@@ -1978,10 +1978,20 @@ func detailPolicy(cfg Config) alert.DetailPolicy {
 // получателя. Оператор, у которого почта на другом домене, обнаружил бы
 // пропажу деталей только по отсутствию текста в письме — а из лога видно
 // сразу, какой список действует и чего в нём не хватает.
+//
+// GOTCHA_TRUSTED_RECIPIENTS печатается в ОБЕИХ ветках, не только в default:
+// разбор списка не отказывает старт ни на одном значении (невалидное имя
+// просто ни с чем не совпадёт), так что лог на старте — единственная
+// диагностика опечатки в списке. При GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true
+// список сейчас не влияет на решение (детали уходят всем), но оператор мог
+// включить/выключить этот флаг позже, не трогая сам список, и должен видеть,
+// что список распознан правильно ДО этого момента, а не только когда он уже
+// начал на него влиять.
 func logDetailPolicy(cfg Config) {
 	switch {
 	case cfg.ExternalChannelDetails:
-		slog.Info("alert details: sent to every recipient (GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true)")
+		slog.Info("alert details: sent to every recipient (GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true)",
+			"trusted_recipients", cfg.TrustedRecipients)
 	default:
 		slog.Info("alert details: sent only to trusted recipients",
 			"instance_host", cfg.BaseURL,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -122,6 +123,41 @@ func TestDetailPolicyFollowsRecipient(t *testing.T) {
 	// Лог о действующей политике не должен падать ни в одном режиме.
 	logDetailPolicy(cfg)
 	logDetailPolicy(Config{BaseURL: cfg.BaseURL, ExternalChannelDetails: true})
+}
+
+// TestLogDetailPolicyLogsTrustedRecipients — m7 (финальное ревью): разбор
+// GOTCHA_TRUSTED_RECIPIENTS не отказывает старт ни на одном значении
+// (невалидное имя просто ни с чем не совпадёт), так что лог на старте —
+// единственная диагностика опечатки в списке. Список обязан попасть в лог в
+// ОБЕИХ ветках logDetailPolicy, а не только когда список реально фильтрует
+// доставку (default) — GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true не должен
+// прятать распознанный список от оператора.
+func TestLogDetailPolicyLogsTrustedRecipients(t *testing.T) {
+	cfg := Config{
+		BaseURL:           "https://gotcha.example.com",
+		TrustedRecipients: []string{"acme.example", "acme2.example"},
+	}
+
+	capture := func(fn func()) string {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		defer slog.SetDefault(prev)
+		fn()
+		return buf.String()
+	}
+
+	trusted := capture(func() { logDetailPolicy(cfg) })
+	if !strings.Contains(trusted, "acme.example") || !strings.Contains(trusted, "acme2.example") {
+		t.Errorf("лог доверенного режима = %q, want оба доменa из GOTCHA_TRUSTED_RECIPIENTS", trusted)
+	}
+
+	open := capture(func() {
+		logDetailPolicy(Config{BaseURL: cfg.BaseURL, TrustedRecipients: cfg.TrustedRecipients, ExternalChannelDetails: true})
+	})
+	if !strings.Contains(open, "acme.example") || !strings.Contains(open, "acme2.example") {
+		t.Errorf("лог режима EXTERNAL_CHANNEL_DETAILS_ENABLED=true = %q, want тот же список — флаг не должен прятать его от оператора", open)
+	}
 }
 
 // TestSetupLoggingAcceptsKnownLevels: каждое распознанное сочетание

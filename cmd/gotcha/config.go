@@ -471,9 +471,13 @@ func hstsHeaderMattersFor(mode string) bool {
 // возвращается def, а НЕ частичный результат strconv.ParseInt: на «8MiB» тот
 // вернул бы 0, а на переполнении — значение, зажатое до края int64, — то есть
 // молча превратил бы опечатку оператора в правдоподобное на вид число.
-// Ошибка при этом называет переменную по имени.
+// Ошибка при этом называет переменную по имени. Значение триммится по краям
+// той же строкой, что и str()/strGuarded()/parseBool() — иначе голое число
+// было бы единственным типом env-значения, для которого случайный пробел
+// (перенос из .env.example с отступом, копирование из таблицы) ронял бы
+// старт вместо ожидаемого разбора.
 func parseInt64Env(getenv func(string) string, key string, def int64) (int64, error) {
-	v := getenv(key)
+	v := strings.TrimSpace(getenv(key))
 	if v == "" {
 		return def, nil
 	}
@@ -490,7 +494,7 @@ func parseInt64Env(getenv func(string) string, key string, def int64) (int64, er
 // go/incorrect-integer-conversion для доверенного env-конфига (значения
 // задаёт оператор, не атакующий).
 func parseIntEnv(getenv func(string) string, key string, def int) (int, error) {
-	v := getenv(key)
+	v := strings.TrimSpace(getenv(key))
 	if v == "" {
 		return def, nil
 	}
@@ -743,24 +747,34 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		PurgeReconcileHours:      intNum("GOTCHA_PROJECT_PURGE_RECONCILE_HOURS", 24),
 		NotifyConcurrency:        intNum("GOTCHA_NOTIFY_CONCURRENCY", 4),
 		SecretKey:                strGuarded("GOTCHA_SECRET_KEY", "insecure-dev-secret"),
-		SecretKeyPrev:            str("GOTCHA_SECRET_KEY_PREV", ""),
-		RegistrationMode:         strings.ToLower(str("GOTCHA_REGISTRATION_MODE", "invite")),
-		HSTSEnabled:              boolEnvDef("GOTCHA_HSTS_ENABLED", true),
-		HSTSMaxAgeSeconds:        intNum("GOTCHA_HSTS_MAX_AGE_SECONDS", 31536000),
-		HSTSIncludeSubDomains:    boolEnv("GOTCHA_HSTS_INCLUDE_SUBDOMAINS"),
-		HSTSPreload:              boolEnv("GOTCHA_HSTS_PRELOAD"),
-		Locale:                   strings.ToLower(str("GOTCHA_LOCALE", "ru")),
-		UptimeConcurrency:        intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
-		LocalRegion:              str("GOTCHA_UPTIME_LOCAL_REGION", "local"),
-		ProbeToken:               str("GOTCHA_PROBE_KEY", ""),
-		ServerURL:                str("GOTCHA_PROBE_SERVER_URL", ""),
-		AgentDistDir:             str("GOTCHA_DIST_DIR", "/opt/gotcha/agent-dist"),
-		AgentDistRatePerMin:      intNum("GOTCHA_DIST_RATE_PER_MIN", 120),
-		ExportDir:                str("GOTCHA_EXPORT_DIR", "/var/lib/gotcha/exports"),
-		ExportTTLHours:           intNum("GOTCHA_EXPORT_RETENTION_HOURS", 168),
-		ExportMaxRows:            num("GOTCHA_EXPORT_MAX_ROWS", 200_000),
-		ExportMaxBytes:           num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
-		ExportDiskBudgetBytes:    num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
+		// GOTCHA_SECRET_KEY_PREV — читается ДОСЛОВНО, через getenv напрямую,
+		// а не через str()/strGuarded(): назначение PREV — держать прежний
+		// мастер-ключ байт в байт, каким бы он ни был, чтобы им ещё можно
+		// было расшифровать секреты, зашифрованные ДО ротации. Если старый
+		// GOTCHA_SECRET_KEY имел хвостовой пробел (str() его бы обрезал, но
+		// шифровал он именно "ключ+пробел"), тримминг PREV сделал бы
+		// единственный штатный путь восстановления нерабочим: расшифровка
+		// пошла бы уже другим ключом. GOTCHA_SECRET_KEY по-прежнему триммится
+		// strGuarded() — это текущий ключ, у него нет обратной совместимости
+		// с историческими байтами.
+		SecretKeyPrev:         getenv("GOTCHA_SECRET_KEY_PREV"),
+		RegistrationMode:      strings.ToLower(str("GOTCHA_REGISTRATION_MODE", "invite")),
+		HSTSEnabled:           boolEnvDef("GOTCHA_HSTS_ENABLED", true),
+		HSTSMaxAgeSeconds:     intNum("GOTCHA_HSTS_MAX_AGE_SECONDS", 31536000),
+		HSTSIncludeSubDomains: boolEnv("GOTCHA_HSTS_INCLUDE_SUBDOMAINS"),
+		HSTSPreload:           boolEnv("GOTCHA_HSTS_PRELOAD"),
+		Locale:                strings.ToLower(str("GOTCHA_LOCALE", "ru")),
+		UptimeConcurrency:     intNum("GOTCHA_UPTIME_CONCURRENCY", 50),
+		LocalRegion:           str("GOTCHA_UPTIME_LOCAL_REGION", "local"),
+		ProbeToken:            str("GOTCHA_PROBE_KEY", ""),
+		ServerURL:             str("GOTCHA_PROBE_SERVER_URL", ""),
+		AgentDistDir:          str("GOTCHA_DIST_DIR", "/opt/gotcha/agent-dist"),
+		AgentDistRatePerMin:   intNum("GOTCHA_DIST_RATE_PER_MIN", 120),
+		ExportDir:             str("GOTCHA_EXPORT_DIR", "/var/lib/gotcha/exports"),
+		ExportTTLHours:        intNum("GOTCHA_EXPORT_RETENTION_HOURS", 168),
+		ExportMaxRows:         num("GOTCHA_EXPORT_MAX_ROWS", 200_000),
+		ExportMaxBytes:        num("GOTCHA_EXPORT_MAX_BYTES", 268_435_456),
+		ExportDiskBudgetBytes: num("GOTCHA_EXPORT_DISK_BUDGET_BYTES", 5_368_709_120),
 	}
 	// GOTCHA_PG_DSN/GOTCHA_CH_DSN — единственные обязательные адреса, которых
 	// до сих пор старт не разбирал вовсе: опечатка всплывала только на первом
@@ -772,11 +786,21 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// которую сам клиент понимает как в URL-виде (postgres://…), так и в
 	// keyword/value-виде (host=… user=… dbname=…) — обе легальны для pgx,
 	// baseurl.Normalize отверг бы вторую как «не URL».
+	//
+	// Обе ошибки копятся в errs, а не возвращаются немедленно: это два
+	// НОВЫХ старта-проверки, вставленные в функцию, которая уже копит
+	// числовые/булевы опечатки и отдаёт их разом (errors.Join ниже) — цикл
+	// «оператор чинит один DSN, перезапускается, узнаёт про следующую
+	// опечатку» — ровно то, что накопление errs существует, чтобы убрать.
+	// Немедленный return сохранился бы, если бы результат разбора DSN тёк
+	// куда-то дальше по функции, но он никуда не течёт: PostgresDSN/
+	// ClickHouseDSN используются позже только как есть (сырой строкой),
+	// не через возврат этой проверки.
 	if err := db.ValidatePostgresDSN(cfg.PostgresDSN); err != nil {
-		return Config{}, fmt.Errorf("GOTCHA_PG_DSN: %w", err)
+		errs = append(errs, fmt.Errorf("GOTCHA_PG_DSN: %w", err))
 	}
 	if err := db.ValidateClickHouseDSN(cfg.ClickHouseDSN); err != nil {
-		return Config{}, fmt.Errorf("GOTCHA_CH_DSN: %w", err)
+		errs = append(errs, fmt.Errorf("GOTCHA_CH_DSN: %w", err))
 	}
 	// GOTCHA_BASE_URL — база всех ссылок, которые продукт строит сам: heartbeat
 	// cron-команда (см. её докблок в web/monitorform.go — curl без -L, редиректа
@@ -788,11 +812,25 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// ссылка вела бы в никуда, а хвостовая косая («…app/») даёт «…app//dashboard»
 	// в КАЖДОЙ из них — молча, до первого репорта пользователя о битой ссылке в
 	// письме или упавшем cron.
-	normalizedBaseURL, err := baseurl.Normalize("GOTCHA_BASE_URL", cfg.BaseURL)
-	if err != nil {
-		return Config{}, err
+	//
+	// Ошибка тоже копится в errs, а не возвращается немедленно (та же
+	// причина, что у DSN выше) — с сырым, ненормализованным cfg.BaseURL,
+	// который продолжает жить в конфиге до самого возврата. SEC-C1 ниже
+	// (слабый/дефолтный секрет на не-local адресе) читает и isLocalBaseURL
+	// (cfg.BaseURL), и baseURLErr САМ: на сыром невалидном значении
+	// isLocalBaseURL честно возвращает false (url.Parse либо падает, либо
+	// отдаёт хост, не совпадающий ни с localhost, ни с 127.0.0.1, ни с ::1),
+	// но SEC-C1 намеренно НЕ стреляет, пока baseURLErr != nil (см. её
+	// докблок) — «не-локальный» на невалидном значении означает «неизвестно»,
+	// а не «точно публичный», и решение по сомнительному входу не должно
+	// самостоятельным немедленным return топить саму причину сомнения —
+	// ошибку разбора GOTCHA_BASE_URL, уже накопленную в errs строкой ниже.
+	normalizedBaseURL, baseURLErr := baseurl.Normalize("GOTCHA_BASE_URL", cfg.BaseURL)
+	if baseURLErr != nil {
+		errs = append(errs, baseURLErr)
+	} else {
+		cfg.BaseURL = normalizedBaseURL
 	}
-	cfg.BaseURL = normalizedBaseURL
 	cfg.OIDCEnabled = boolEnv("GOTCHA_OIDC_ENABLED")
 	cfg.OIDCIssuer = str("GOTCHA_OIDC_ISSUER", "")
 	cfg.OIDCClientID = str("GOTCHA_OIDC_CLIENT_ID", "")
@@ -931,8 +969,18 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// (угон аккаунта через OAuth-link) — отказываемся стартовать.
 	// Escape-hatch для нестандартного dev-окружения —
 	// GOTCHA_SECRET_KEY_ALLOW_INSECURE=1.
+	//
+	// baseURLErr == nil в условии: если GOTCHA_BASE_URL сам не разобрался,
+	// isLocalBaseURL на сыром значении не врёт (не путает мусор с localhost),
+	// но «не-локальный» тут означает «неизвестно», а не «точно публичный» —
+	// решение по сомнительному входу подменило бы собой САМУ ПРИЧИНУ
+	// (невалидный BASE_URL, уже накопленный в errs строкой выше) отдельным
+	// немедленным return, который её топит. Разобраться с URL — первый шаг;
+	// SEC-C1 либо сработает при следующем старте на уже валидном значении,
+	// либо нет.
 	if secretKeyMattersFor(cfg.Mode) &&
 		cfg.SecretKey == devSecretKey &&
+		baseURLErr == nil &&
 		!isLocalBaseURL(cfg.BaseURL) &&
 		!cfg.AllowInsecureSecret {
 		return Config{}, fmt.Errorf(
@@ -943,11 +991,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	// SEC: слишком короткий кастомный ключ — слабый ключ подписи oauth-cookie и
 	// мастер шифрования SSO client_secret. В серверных режимах на не-local
-	// требуем >= 32 байт (стандартный минимум для ключа). Тот же escape-hatch,
-	// что и у проверки дефолтного ключа выше.
+	// требуем >= 32 байт (стандартный минимум для ключа). Тот же escape-hatch
+	// и та же оговорка про baseURLErr, что и у проверки дефолтного ключа выше.
 	if secretKeyMattersFor(cfg.Mode) &&
 		cfg.SecretKey != devSecretKey &&
 		len(cfg.SecretKey) < 32 &&
+		baseURLErr == nil &&
 		!isLocalBaseURL(cfg.BaseURL) &&
 		!cfg.AllowInsecureSecret {
 		return Config{}, fmt.Errorf(
@@ -1292,6 +1341,16 @@ func loadConfigChecked(getenv func(string) string, environ func() []string, args
 // требует именно перечисления, поэтому она отдельная функция со своей
 // точкой инъекции (в проде — os.Environ, в тестах — срез-фикстура), а не
 // ветка внутри loadConfig.
+//
+// internal/agent.LoadConfig несёт СВОЮ, более узкую версию той же идеи
+// (checkUnknownAgentEnvVars) — она смотрит только на переменные с префиксом
+// GOTCHA_AGENT_, а не на весь GOTCHA_* целиком, как эта функция: агент
+// штатно ставится на тот же хост, что и сервер, с общим `.env`, и обязан
+// пропускать чужие (серверные) имена молча — отказ по ним был бы
+// самоуправством, не защитой. Но опечатка ВНУТРИ своего же префикса — тот
+// же класс дыры, что и здесь: на удалённом хосте, где агент стоит один,
+// этой (серверной) проверки нет вовсе, и без агентской install.sh --check
+// подтверждал бы битый конфиг агента как «config OK».
 func checkUnknownEnvVars(environ func() []string) error {
 	var unknown []string
 	for _, kv := range environ() {
