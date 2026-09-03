@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-03
+
 ### Changed
 - Monitor page for heartbeat monitors no longer borrows the polling layout: the
   latency chart with DNS/TCP/TLS/TTFB phases and the "Recent checks" table are
