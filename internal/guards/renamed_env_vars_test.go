@@ -19,7 +19,7 @@ import (
 // `docker run -e GOTCHA_SERVER_URL=…`, которой после переименования не
 // существовало — скопированная команда молча не работала бы, и поймал это
 // человек, а не гейт. Этот сторож закрывает класс находки целиком: ни одно
-// из десяти старых имён не должно встречаться нигде в дереве (кроме
+// из старых имён (все волны переименования) не должно встречаться нигде в дереве (кроме
 // CHANGELOG и файла-истины — см. докблок TestNoRenamedEnvVarNames).
 //
 // Сам список — не собственная копия, а псевдоним envcontract.Renamed
@@ -100,7 +100,7 @@ var renamedEnvVarsSkipRootDirs = map[string]bool{
 	"deploy":          true,
 }
 
-// TestNoRenamedEnvVarNames — ни одно из десяти старых имён переменных
+// TestNoRenamedEnvVarNames — ни одно из старых имён переменных (все волны переименования)
 // окружения (renamedEnvVars) не встречается нигде в дереве исходников и
 // документации. Мотивация — реальная находка ЧЕЛОВЕКА, а не гейта:
 // internal/web/probes.go рисовал пользователю команду
@@ -133,10 +133,18 @@ var renamedEnvVarsSkipRootDirs = map[string]bool{
 //   - CHANGELOG.md/CHANGELOG.ru.md — там старые имена верны как
 //     историческая запись прошлых релизов, править их значило бы
 //     фальсифицировать историю;
+//   - internal/docs/ru/upgrade.md и internal/docs/en/upgrade.md (задача 11) —
+//     страница апгрейда обязана называть старое имя
+//     буквально, парами «было → стало»: оператору нужен список для sed по
+//     собственному .env, отсылка «см. CHANGELOG» этого не даёт. Полноту
+//     этих таблиц (что каждая пара ВСЕХ волн переименования — envcontract.Renamed
+//     кумулятивен — реально присутствует в upgrade.md обеих локалей)
+//     проверяет отдельный сторож, TestUpgradeDocDocumentsAllRenamedPairs —
+//     исключение отсюда не превращается в дыру;
 //   - cmd/gotcha/renamed_env_contract_test.go — держит независимую сверку
 //     envcontract.Renamed с документированным в CHANGELOG списком
 //     (TestEnvcontractRenamedComplete): её want-таблица по определению
-//     повторяет все десять старых имён буквально, иначе тест сверял бы карту
+//     повторяет все старые имена буквально, иначе тест сверял бы карту
 //     саму с собой и не заметил бы порчи. Исключение точечно ЭТОГО файла, а
 //     не всего cmd/gotcha: config_test.go (где живут поведенческие тесты
 //     самого отказа старта) старое имя не пишет НИ РАЗУ — тесты берут пару
@@ -192,6 +200,20 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 		if rel == "CHANGELOG.md" || rel == "CHANGELOG.ru.md" {
 			return nil
 		}
+		// upgrade.md обеих локалей (задача 11): страница
+		// апгрейда обязана называть старое имя буквально — оператору нужен
+		// список «было → стало» для sed по собственному .env, а не абстрактная
+		// отсылка «см. CHANGELOG». Тот же случай, что и у CHANGELOG.{md,ru.md}
+		// выше: старое имя здесь — не забытый огрызок контракта, а сама суть
+		// страницы. Полнота этих таблиц (что каждая пара ВСЕХ волн
+		// переименования — envcontract.Renamed кумулятивен — реально
+		// присутствует в upgrade.md обеих локалей) проверяется отдельно,
+		// TestUpgradeDocDocumentsAllRenamedPairs ниже — исключение здесь не
+		// превращается в дыру, потому что полноту таблиц ловит другой
+		// сторож.
+		if rel == "internal/docs/ru/upgrade.md" || rel == "internal/docs/en/upgrade.md" {
+			return nil
+		}
 		// internal/envcontract/renamed.go — файл-истина,
 		// cmd/gotcha/renamed_env_contract_test.go — справочник для сверки
 		// с CHANGELOG; оба исключения разобраны в докблоке
@@ -230,5 +252,65 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 	for _, f := range findings {
 		t.Errorf("%s:%d: встречается удалённое имя переменной окружения %s — замените на %s",
 			f.path, f.line, f.old, renamedEnvVars[f.old])
+	}
+}
+
+// allRenamedOldNames — ВСЕ старые имена envcontract.Renamed, всех волн
+// переименования (кумулятивно: v0.23.0 «контрактная уборка», E3 сервер/
+// агент/compose-сборка). Решение владельца (2026-09-03, вариант b): бинарь
+// fail-fast'ит на ЛЮБОМ старом имени, включая v0.23.0-е, — оператор,
+// прыгающий с v0.22 сразу на 1.0, упирается во все записи Renamed сразу и
+// должен найти sed-таблицу «было → стало» в одном месте (upgrade.md), а не
+// по датированным записям CHANGELOG. Сторож сверяет копию (upgrade.md) с
+// истиной (Renamed) — истина кумулятивна, копия обязана быть тоже.
+func allRenamedOldNames() []string {
+	names := make([]string, 0, len(envcontract.Renamed))
+	for old := range envcontract.Renamed {
+		names = append(names, old)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestUpgradeDocDocumentsAllRenamedPairs — задача 11, п.2, решение владельца
+// (вариант b): каждая пара «было → стало» из
+// envcontract.Renamed (все волны, allRenamedOldNames()) обязана буквально
+// присутствовать в upgrade.md ОБЕИХ локалей — иначе исключение этих файлов
+// из TestNoRenamedEnvVarNames (см. докблок выше) стало бы дырой: старое имя
+// разрешено писать в upgrade.md, но НЕ проверяется, что оно там реально
+// есть.
+//
+// Мутация, которую держит в уме ревьюер задачи: убрать сверку по одной из
+// локалей — красит именно РАЗДЕЛЬНЫЙ цикл по ru/en ниже, не объединённое
+// множество имён.
+func TestUpgradeDocDocumentsAllRenamedPairs(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatalf("findRoot: %v", err)
+	}
+	names := allRenamedOldNames()
+	if len(names) < 40 {
+		t.Fatalf("allRenamedOldNames() вернула %d имён, ожидалось ≥40 (10 v0.23.0 + 17 серверных + 3 агентских + 11 compose/build) — envcontract.Renamed урезан или обход сломан", len(names))
+	}
+
+	for _, loc := range []string{"ru", "en"} {
+		path := filepath.Join(root, "internal", "docs", loc, "upgrade.md")
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		text := string(body)
+		for _, old := range names {
+			newName := envcontract.Renamed[old]
+			if newName == "" {
+				t.Fatalf("envcontract.Renamed[%s] пуст — allRenamedOldNames() содержит имя вне реестра", old)
+			}
+			if !strings.Contains(text, old) {
+				t.Errorf("%s: upgrade.md не содержит старое имя %s (пара %s → %s)", loc, old, old, newName)
+			}
+			if !strings.Contains(text, newName) {
+				t.Errorf("%s: upgrade.md не содержит новое имя %s (пара %s → %s)", loc, newName, old, newName)
+			}
+		}
 	}
 }

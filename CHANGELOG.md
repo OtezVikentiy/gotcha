@@ -9,6 +9,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking.** Seventeen server environment variables have been renamed ahead
+  of the 1.0 contract freeze: the listen address is distinguished from the
+  published port, the logging subsystem is spelled out so it stops colliding
+  with the log-ingest one, a modifier variable now sits next to the setting it
+  modifies, and several booleans and enums lost names that read like the
+  opposite of what they do. The old names are no longer read — update your
+  `.env` and compose variables before upgrading. An old name set to a
+  non-empty value now refuses to start, naming the new variable, instead of
+  silently applying a default. `GOTCHA_PROBE_KEY` also changed the docker run
+  snippet shown in the probe registration UI.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_ADDR` | `GOTCHA_LISTEN_ADDR` |
+  | `GOTCHA_LOG_LEVEL` | `GOTCHA_LOGGING_LEVEL` |
+  | `GOTCHA_LOG_FORMAT` | `GOTCHA_LOGGING_FORMAT` |
+  | `GOTCHA_LOCAL_REGION` | `GOTCHA_UPTIME_LOCAL_REGION` |
+  | `GOTCHA_REGISTRATION` | `GOTCHA_REGISTRATION_MODE` |
+  | `GOTCHA_EXPORT_TTL_HOURS` | `GOTCHA_EXPORT_RETENTION_HOURS` |
+  | `GOTCHA_SCRUB_KEYS` | `GOTCHA_SCRUB_DENY_KEYS` |
+  | `GOTCHA_SCRUB_ALLOW_KEYS` | `GOTCHA_SCRUB_KEEP_KEYS` |
+  | `GOTCHA_RUN_EVALUATORS` | `GOTCHA_EVALUATORS_ENABLED` |
+  | `GOTCHA_AUTO_MIGRATE` | `GOTCHA_AUTO_MIGRATE_ENABLED` |
+  | `GOTCHA_ALLOW_INSECURE_SECRET` | `GOTCHA_SECRET_KEY_ALLOW_INSECURE` |
+  | `GOTCHA_MAX_BUFFER_BYTES` | `GOTCHA_MAX_WRITER_BUFFER_BYTES` |
+  | `GOTCHA_MAX_QUEUE_BYTES` | `GOTCHA_MAX_INGEST_QUEUE_BYTES` |
+  | `GOTCHA_PROBE_TOKEN` | `GOTCHA_PROBE_KEY` |
+  | `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` |
+  | `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
+  | `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
+
+- **Breaking.** Three environment variables of the `gotcha-agent` binary have
+  been renamed in the same wave — one with a type change: the collection
+  interval is now a whole number of seconds (range 10–300), not a duration
+  string like "30s" (the old format under the new name is a parse error, not
+  a silent reinterpretation). The old names are no longer read; the agent
+  refuses to start on them, naming the new variable instead of silently
+  applying a default. The install command shown in the UI, `install.sh`,
+  `.env.example`, and the variable reference ([Hosts](/docs/hosts)) have all
+  been updated to the new names.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_AGENT_INTERVAL` | `GOTCHA_AGENT_INTERVAL_SECONDS` |
+  | `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
+  | `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
+
+- **Breaking.** Eleven Docker Compose and build variables have been renamed
+  in the same wave, into their own namespace: eight Compose substitution
+  variables (database container passwords and memory ceilings, the app
+  container's memory ceiling and network MTU, the published port and bind
+  address) now carry a `GOTCHA_COMPOSE_` prefix, and the three build
+  metadata variables the `Makefile` passes into `docker-compose.yml`
+  (`DOCKER_BUILD_ENV`) now carry a `GOTCHA_BUILD_` prefix. None of these
+  eleven are read by any gotcha process — only Docker Compose itself and
+  `make` ever see them — but an old name is still caught: `.env` is loaded
+  wholesale into the app container, so an old name left there refuses
+  startup the same way a server variable would, naming the new one instead
+  of silently doing nothing. `:-` defaults are unchanged, so a fresh clone
+  with no `.env` still starts.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_PG_PASSWORD` | `GOTCHA_COMPOSE_PG_PASSWORD` |
+  | `GOTCHA_CH_PASSWORD` | `GOTCHA_COMPOSE_CH_PASSWORD` |
+  | `GOTCHA_PG_MEM_LIMIT` | `GOTCHA_COMPOSE_PG_MEM_LIMIT` |
+  | `GOTCHA_CH_MEM_LIMIT` | `GOTCHA_COMPOSE_CH_MEM_LIMIT` |
+  | `GOTCHA_MEM_LIMIT` | `GOTCHA_COMPOSE_MEM_LIMIT` |
+  | `GOTCHA_NET_MTU` | `GOTCHA_COMPOSE_NET_MTU` |
+  | `GOTCHA_PORT` | `GOTCHA_COMPOSE_PORT` |
+  | `GOTCHA_BIND` | `GOTCHA_COMPOSE_BIND` |
+  | `GOTCHA_VERSION` | `GOTCHA_BUILD_VERSION` |
+  | `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
+  | `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
+
+- Startup now refuses an unrecognized `GOTCHA_*` variable in the environment,
+  naming the closest known variable if one is within a couple of letters —
+  a typo in a variable name (`GOTCHA_HSTS_ENABLE` without the `D`) used to
+  pass silently and apply a default, the same class of mistake the renamed-
+  variable check above already caught for old names. `GOTCHA_COMPOSE_*` and
+  `GOTCHA_BUILD_*` are exempt: Compose and the build itself read those, not
+  the gotcha process. `gotcha-agent` gained the matching check for its own
+  `GOTCHA_AGENT_*` namespace (a foreign `GOTCHA_*` variable — the server's,
+  say, on a shared host — is still ignored, same as before).
+- **Breaking.** A number of previously silent misconfigurations now refuse to
+  start the process instead of falling back to a default or failing later,
+  somewhere less obvious, the first time the value is used. If your `.env`
+  hits any of these, fix it before upgrading:
+  - a garbled boolean (`GOTCHA_SCRUB_IP=ture` and the like) used to disable
+    the setting silently; it's now a startup error naming the variable;
+  - `GOTCHA_MAX_WRITER_BUFFER_BYTES=0` / `GOTCHA_MAX_INGEST_QUEUE_BYTES=0`
+    used to fall back to the package default; an explicit `0` (or a
+    negative value) is now a startup error — if you meant "no limit", that
+    was never the convention here;
+  - an unrecognized `GOTCHA_LOGGING_LEVEL` or `GOTCHA_LOGGING_FORMAT` used
+    to fall back to `info`/text silently; it's now a startup error;
+  - `GOTCHA_SMTP_PORT` outside `1..65535` is now a startup error,
+    unconditionally — including a stray `GOTCHA_SMTP_PORT` left over with no
+    `GOTCHA_SMTP_HOST` set;
+  - the four export limits (`GOTCHA_EXPORT_MAX_ROWS`, `_MAX_BYTES`,
+    `_DISK_BUDGET_BYTES`, `_RETENTION_HOURS`) are now validated at startup;
+    an instance already running with a broken limit (previously swallowed
+    into a `slog.Warn` at first use) will not come back up after this
+    upgrade until the value is fixed;
+  - `GOTCHA_PG_DSN` / `GOTCHA_CH_DSN` are now parsed (not connected to, just
+    parsed) at startup — a typo surfaces immediately instead of on the first
+    database connection;
+  - a whitespace-only `GOTCHA_SECRET_KEY` / `GOTCHA_PG_DSN` / `GOTCHA_CH_DSN`
+    used to fall back to the (wrong, for a real deployment) default; it's
+    now a startup error naming the variable;
+  - **worse than the rest:** `GOTCHA_SECRET_KEY` is now trimmed of
+    surrounding whitespace — it used to be taken verbatim, space and all.
+    If your key was ever copy-pasted with a trailing space, everything
+    encrypted under it at rest (delivery channel secrets, SSO client
+    secrets) stops decrypting after this upgrade, silently — the symptom is
+    alerts to Telegram/webhook going quiet and SSO login breaking, with no
+    error at startup naming the cause. See the next entry for the recovery
+    path, and [Upgrade](/docs/upgrade) for the full procedure.
+
+  Before upgrading a real instance, run the new binary against a copy of
+  your `.env` on staging first — see the new section in
+  [Upgrade](/docs/upgrade) for a command that exercises every one of these
+  checks without touching production.
+- **Breaking.** `GOTCHA_SECRET_KEY_PREV` (the rotation key, see
+  [Privacy and 152-FZ](/docs/privacy)) is now read verbatim, with no
+  trimming of surrounding whitespace — unlike `GOTCHA_SECRET_KEY` (previous
+  entry), which is now trimmed. This is deliberate, and it's what makes
+  rotation an actual recovery path for the previous entry: if your old key
+  had a trailing space, set `GOTCHA_SECRET_KEY_PREV` to that exact old
+  value (space included) alongside a new, trimmed `GOTCHA_SECRET_KEY`,
+  restart once, then unset `GOTCHA_SECRET_KEY_PREV` — see
+  [Upgrade](/docs/upgrade) for the full steps. Trimming `_PREV` the same
+  way `GOTCHA_SECRET_KEY` is trimmed would have made the two identical and
+  the rotation refuse to start (`must differ from GOTCHA_SECRET_KEY`),
+  closing off the only recovery path.
+
 ## [0.33.0] - 2026-09-03
 
 ### Changed

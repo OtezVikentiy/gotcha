@@ -3,9 +3,9 @@ package main
 import "testing"
 
 // TestHealthcheckURLFollowsAddr — дефолтный URL проверки следует за
-// GOTCHA_ADDR: оператор, сменивший порт, не должен получать второй
+// GOTCHA_LISTEN_ADDR: оператор, сменивший порт, не должен получать второй
 // независимый симптом от той же правки (находка №99). Хост всегда 127.0.0.1:
-// GOTCHA_ADDR — адрес прослушивания, адресом назначения он быть не может.
+// GOTCHA_LISTEN_ADDR — адрес прослушивания, адресом назначения он быть не может.
 func TestHealthcheckURLFollowsAddr(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -20,20 +20,20 @@ func TestHealthcheckURLFollowsAddr(t *testing.T) {
 	}
 	for _, c := range cases {
 		getenv := func(k string) string {
-			if k == "GOTCHA_ADDR" {
+			if k == "GOTCHA_LISTEN_ADDR" {
 				return c.addr
 			}
 			return ""
 		}
 		url, ok := healthcheckRequested([]string{"--healthcheck"}, getenv)
 		if !ok || url != c.want {
-			t.Errorf("GOTCHA_ADDR=%q: url=%q ok=%v, want %q", c.addr, url, ok, c.want)
+			t.Errorf("GOTCHA_LISTEN_ADDR=%q: url=%q ok=%v, want %q", c.addr, url, ok, c.want)
 		}
 	}
 }
 
 // TestHealthcheckExplicitURLWins — явный --healthcheck-url перекрывает
-// и дефолт, и GOTCHA_ADDR.
+// и дефолт, и GOTCHA_LISTEN_ADDR.
 func TestHealthcheckExplicitURLWins(t *testing.T) {
 	getenv := func(string) string { return ":9000" }
 	url, ok := healthcheckRequested(

@@ -6,30 +6,48 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
 // envReaderFuncs — функции cmd/gotcha/config.go, читающие переменные
 // окружения. Имя переменной — первый строковый литерал GOTCHA_* в аргументах
-// (у optionalBoolEnv имя стоит вторым аргументом, поэтому «первый аргумент»
-// недостаточен). go/ast, а не регэксп — чтобы не ловить имена в текстах
-// ошибок и комментариях.
+// (не обязательно первый аргумент позиционно — только это делает разбор
+// устойчивым к сигнатуре конкретного читателя). go/ast, а не регэксп — чтобы
+// не ловить имена в текстах ошибок и комментариях.
+//
+// strGuarded добавлен задачей 9 (M2): без него GOTCHA_PG_DSN/
+// GOTCHA_CH_DSN/GOTCHA_SECRET_KEY — реальные поля cmd/gotcha.Config — не
+// попадали в собранный набор, и TestComposeVarsNamespaced (compose_test.go)
+// не мог структурно отличить их форвардинг (`GOTCHA_SECRET_KEY:
+// ${GOTCHA_SECRET_KEY:-...}`) от настоящей compose-only переменной под тем
+// же именем ключа — сигнатура (key, def string) совпадает со str/boolEnvDef,
+// разбор общий.
+// parseBool добавлен задачей 10 (E3, реестр известных имён):
+// без него GOTCHA_EVALUATORS_ENABLED — читается напрямую через
+// parseBool("GOTCHA_EVALUATORS_ENABLED"), не через boolEnv/boolEnvDef,
+// у RunEvaluators особая тристабильная логика (nil/true/false) — не
+// попадала в собранный набор ни здесь, ни в internal/envcontract.Known,
+// хотя реально читается cmd/gotcha/config.go.
 var envReaderFuncs = map[string]bool{
-	"str":             true,
-	"intNum":          true,
-	"num":             true,
-	"boolEnv":         true,
-	"boolEnvDef":      true,
-	"optionalBoolEnv": true,
-	"getenv":          true,
+	"str":        true,
+	"strGuarded": true,
+	"intNum":     true,
+	"num":        true,
+	"boolEnv":    true,
+	"boolEnvDef": true,
+	"getenv":     true,
+	"parseBool":  true,
 }
 
 // numericReaderFuncs — подмножество envReaderFuncs, читающее переменную как
 // голое число (strconv.ParseInt), а не строку/duration-строку/bool. Именно
 // эти переменные подлежат конвенции единиц измерения ниже: значение вида
-// "60" само по себе не несёт единицы, в отличие от "30s"
-// (GOTCHA_AGENT_INTERVAL, time.ParseDuration) или булева флага.
+// "60" само по себе не несёт единицы, в отличие от duration-строки вида
+// "30s" (time.ParseDuration, единица прямо в значении) или булева флага.
 var numericReaderFuncs = map[string]bool{
 	"intNum": true,
 	"num":    true,
@@ -71,6 +89,137 @@ func hasUnitSuffix(name string) bool {
 		}
 	}
 	return false
+}
+
+// booleanCanonForbiddenTokens — задача 11, п.2, решение владельца
+// (2026-09-03, вариант (a), механический критерий БЕЗ exception-map):
+// токены-анти-паттерны, которые устранила таблица переименований релиза 2
+// (envcontract.Renamed, «E3, заморозка контракта») — GOTCHA_RUN_EVALUATORS
+// (RUN), GOTCHA_AUTO_MIGRATE (AUTO), GOTCHA_ALLOW_INSECURE_SECRET (голый
+// ALLOW без подсистемы), опечатка-кандидат GOTCHA_HSTS_ENABLE (ENABLE вместо
+// ENABLED). Имя-квалификатор подсистемы (форма 3 в hasBooleanCanonForm ниже)
+// не имеет права нести ни один из этих токенов отдельным "_"-сегментом —
+// иначе оно в точности повторяет один из устранённых анти-паттернов.
+var booleanCanonForbiddenTokens = map[string]bool{
+	"RUN": true, "ENABLE": true, "DISABLE": true, "DISABLED": true,
+	"USE": true, "ON": true, "OFF": true, "FLAG": true, "TOGGLE": true,
+	"ALLOW": true, "AUTO": true,
+}
+
+// hasBooleanCanonForm — задача 11, п.2, решение владельца (2026-09-03,
+// вариант (a)): каноничное булево имя — ОДНА из трёх форм, без
+// exception-map:
+//
+//  1. `*_ENABLED` — включение функции целиком.
+//  2. `<подсистема>_ALLOW_<послабление>` — единственный маркер послабления
+//     безопасности в словаре (GOTCHA_SSRF_ALLOW_PRIVATE*,
+//     GOTCHA_SECRET_KEY_ALLOW_INSECURE). Подсистема и послабление ОБЯЗАНЫ
+//     быть непустыми: GOTCHA_ALLOW_X — красный, подсистемы нет ("_ALLOW_"
+//     ищется в остатке имени ПОСЛЕ префикса GOTCHA_, не во всём имени —
+//     иначе сам префикс GOTCHA_ сходил бы за «подсистему»).
+//  3. Квалификатор ВНУТРИ уже существующей подсистемы — не форма 1/2, но
+//     обязан пройти оба условия: (a) ни один "_"-токен имени не входит в
+//     booleanCanonForbiddenTokens; (b) первый токен после GOTCHA_ реально
+//     общий хотя бы с ОДНИМ ДРУГИМ именем known (истина — реестр
+//     envcontract.Known на настоящем скане, не отдельный список) —
+//     подсистема должна реально существовать в словаре, а не быть
+//     выдумана: голое GOTCHA_SOMETHING такую проверку не проходит,
+//     GOTCHA_HSTS_INCLUDE_SUBDOMAINS — проходит (в реестре есть
+//     GOTCHA_HSTS_ENABLED/_MAX_AGE_SECONDS/_PRELOAD).
+//
+// На HEAD (см. envcontract.Known) все булевы имена проходят одну из трёх
+// форм — «нулём исключений» выполняется буквально, без списка. Шесть имён
+// живут только формой 3 (не формой 1/2): GOTCHA_HSTS_INCLUDE_SUBDOMAINS,
+// GOTCHA_HSTS_PRELOAD, GOTCHA_SCRUB_IP, GOTCHA_SCRUB_EMAIL,
+// GOTCHA_SCRUB_FREETEXT, GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY — владелец
+// решает отдельно, переименовывать ли их в форму *_ENABLED/_ALLOW_ этой же
+// волной (вне рамок этой задачи, см. отчёт задачи 11).
+func hasBooleanCanonForm(name string, known map[string]bool) bool {
+	rest := strings.TrimPrefix(name, "GOTCHA_")
+	if strings.HasSuffix(name, "_ENABLED") {
+		return true
+	}
+	if idx := strings.Index(rest, "_ALLOW_"); idx > 0 && idx+len("_ALLOW_") < len(rest) {
+		return true
+	}
+	tokens := strings.Split(rest, "_")
+	for _, tok := range tokens {
+		if booleanCanonForbiddenTokens[tok] {
+			return false
+		}
+	}
+	if len(tokens) == 0 || tokens[0] == "" {
+		return false
+	}
+	prefix := "GOTCHA_" + tokens[0] + "_"
+	for other := range known {
+		if other == name {
+			continue
+		}
+		if strings.HasPrefix(other, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// boolReaderFuncs — читатели булевых значений: boolEnv/boolEnvDef в
+// cmd/gotcha/config.go (обёртки над parseBool — см. envReaderFuncs выше) и
+// прямой parseBool — и в cmd/gotcha/config.go (GOTCHA_EVALUATORS_ENABLED,
+// минуя boolEnv/boolEnvDef, см. докблок envReaderFuncs), и в
+// internal/agent/config.go (единственный булев читатель агента).
+var boolReaderFuncs = map[string]bool{
+	"boolEnv":    true,
+	"boolEnvDef": true,
+	"parseBool":  true,
+}
+
+// collectBoolReaderVars — как collectGotchaEnvVars выше, но фильтр по
+// boolReaderFuncs, а не envReaderFuncs: конвенция булевых имён сканирует
+// РЕАЛЬНЫЕ булевы читатели, а не любые GOTCHA_*-читатели вообще (строковые/
+// числовые/duration-переменные конвенции не подлежат). Отдельная функция, а
+// не третий out-параметр у collectGotchaEnvVars (как numericOut) — там уже
+// два разных источника (server/agent) вызываются с разными наборами
+// нужных выходов, и совмещение усложнило бы сигнатуру всех вызывающих мест
+// без нужды: то же решение, каким collectOSEnvVars уже сосуществует рядом
+// как отдельный целевой сканер.
+func collectBoolReaderVars(t *testing.T, root, relFile string) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, relFile), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", relFile, err)
+	}
+	vars := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := ""
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			name = fun.Name
+		case *ast.SelectorExpr:
+			name = fun.Sel.Name
+		}
+		if !boolReaderFuncs[name] {
+			return true
+		}
+		for _, arg := range call.Args {
+			lit, ok := arg.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			v := strings.Trim(lit.Value, `"`)
+			if strings.HasPrefix(v, "GOTCHA_") {
+				vars[v] = true
+			}
+			break
+		}
+		return true
+	})
+	return vars
 }
 
 // collectGotchaEnvVars разбирает один Go-файл и возвращает имена переменных
@@ -172,6 +321,89 @@ func collectOSEnvVars(t *testing.T, root, relFile string) map[string]bool {
 	return vars
 }
 
+// tableRowFirstCellRe находит ПЕРВУЮ ячейку строки markdown-таблицы, если
+// она несёт код-цитату вида `NAME`, сразу за начальным `|` (не считая
+// пробелов). Заякорено на начало строки нарочно: имя, процитированное где-то
+// в третьей колонке (перекрёстная ссылка на другую переменную в тексте
+// описания — так уже было с `_CLIENT_SECRET` в OIDC-строке, задача 11),
+// не должно засчитываться как документирующая эту переменную
+// строка — только первая колонка таблицы документирует.
+var tableRowFirstCellRe = regexp.MustCompile("^\\|\\s*`([A-Z][A-Z0-9_]*)`")
+
+// tableVarNames возвращает множество имён GOTCHA_*/GOMEMLIMIT, задокументированных
+// ПЕРВОЙ колонкой строки markdown-таблицы в doc — упоминание имени в прозе
+// (в том числе в описании соседней строки) не считается. Одно имя на
+// ячейку: строка с несколькими именами в одной ячейке через `/`
+// (сокращение вида “ `GOTCHA_OIDC_CLIENT_ID` / `_CLIENT_SECRET` “) не
+// распознаётся — такие строки переписаны отдельными строками на переменную
+// (см. configuration.md обеих локалей, раздел OAuth/SSO), а не добавлением
+// более умного разбора: сокращение само по себе плохо читается человеком,
+// чинить парсер под него — тащить проблему дальше вместо того, чтобы убрать
+// её из документа.
+func tableVarNames(doc string) map[string]bool {
+	out := map[string]bool{}
+	for _, line := range strings.Split(doc, "\n") {
+		m := tableRowFirstCellRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		name := m[1]
+		if name == "GOMEMLIMIT" || strings.HasPrefix(name, "GOTCHA_") {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// checkConfigurationTableParity — задача 11, пункт 1: паритет .env.example
+// ↔ таблицы configuration.md обеих локалей (звено код ↔ .env.example уже
+// проверено выше, в TestEnvExampleCoversConfig). Две независимые сверки:
+//
+//   - vars (переменные, реально читаемые cmd/gotcha/config.go, плюс
+//     GOMEMLIMIT) обязаны быть строкой таблицы в ОБЕИХ локалях — ru и en
+//     проверяются раздельно, каждая своим циклом, а не одним объединённым
+//     множеством имён: дыра в одной локали не должна маскироваться полнотой
+//     другой (мутация, которую держит в уме ревьюер задачи — убрать сверку
+//     по одной из локалей — красит именно этот раздельный цикл, а не
+//     тихо проходит по union);
+//   - обратное — «строка таблицы без читателя в коде — тоже находка»:
+//     каждое имя, задокументированное строкой таблицы, обязано иметь
+//     читателя из readers (объединение серверных/агентских переменных,
+//     GOMEMLIMIT и compose-неймспейса GOTCHA_COMPOSE_*/GOTCHA_BUILD_* —
+//     решение владельца, задача 11 п.5: их читатель — подстановка `${...}` в
+//     docker-compose.yml, не Go-код). Без читателя ни там, ни там — строка
+//     документирует переменную-призрак.
+//
+// Агентские переменные (internal/agent/config.go) намеренно НЕ входят в
+// vars: они документированы отдельной таблицей на странице /docs/hosts
+// (см. upgrade.md, «Актуальные имена ... в справочнике переменных на
+// странице Хосты»), а не в configuration.md — дублировать их сюда значило
+// бы держать вторую копию той таблицы, которая разъедется с первой при
+// следующей агентской переменной. Как ЧИТАТЕЛЬ (readers) агентские
+// переменные всё же учитываются — иначе строка о них в configuration.md
+// (если такая когда-нибудь появится) ложно считалась бы призраком.
+func checkConfigurationTableParity(t testingT, vars, readers, ruTable, enTable map[string]bool) {
+	t.Helper()
+	for v := range vars {
+		if !ruTable[v] {
+			t.Errorf("ru: %s читается кодом (или это GOMEMLIMIT) и есть в .env.example, но не задокументирована строкой таблицы в internal/docs/ru/configuration.md", v)
+		}
+		if !enTable[v] {
+			t.Errorf("en: %s читается кодом (или это GOMEMLIMIT) и есть в .env.example, но не задокументирована строкой таблицы в internal/docs/en/configuration.md", v)
+		}
+	}
+	for v := range ruTable {
+		if !readers[v] {
+			t.Errorf("ru: %s задокументирована строкой таблицы в configuration.md, но её не читает ни cmd/gotcha/config.go, ни internal/agent/config.go, ни Docker Compose (не несёт префикс GOTCHA_COMPOSE_/GOTCHA_BUILD_) — переменная-призрак", v)
+		}
+	}
+	for v := range enTable {
+		if !readers[v] {
+			t.Errorf("en: %s задокументирована строкой таблицы в configuration.md, но её не читает ни cmd/gotcha/config.go, ни internal/agent/config.go, ни Docker Compose (не несёт префикс GOTCHA_COMPOSE_/GOTCHA_BUILD_) — переменная-призрак", v)
+		}
+	}
+}
+
 // TestEnvExampleCoversConfig — №86: каждая переменная GOTCHA_*, которую
 // читает cmd/gotcha/config.go ИЛИ internal/agent/config.go, обязана
 // упоминаться в .env.example — единственном полном справочном файле
@@ -205,11 +437,12 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 	if len(numericVars) < 30 {
 		t.Fatalf("collected only %d numeric variables — cmd/gotcha/config.go parsing is broken, or numericReaderFuncs (intNum/num) stopped being used", len(numericVars))
 	}
-	// numericVars собирает и из агентского файла: сейчас там нет голых
-	// числовых чтений (GOTCHA_AGENT_INTERVAL — duration-строка вида "30s"
-	// через time.ParseDuration, единица уже в значении, не в имени), но если
-	// агент когда-нибудь заведёт intNum/num-подобный читатель, конвенция
-	// подхватит его тем же путём, без отдельной правки теста.
+	// numericVars собирает и из агентского файла: internal/agent/config.go
+	// (E3 T8) завёл собственную intNum-обёртку для GOTCHA_AGENT_INTERVAL_SECONDS
+	// (переименована из duration-строки GOTCHA_AGENT_INTERVAL/time.ParseDuration
+	// — единица теперь в имени, не в значении), и конвенция подхватывает её
+	// тем же путём, без отдельной правки этого теста — ровно то поведение,
+	// которое комментарий выше и предполагал заранее.
 	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"), numericVars)
 	if len(agentVars) < 8 {
 		t.Fatalf("collected only %d agent variables — internal/agent/config.go parsing is broken", len(agentVars))
@@ -271,6 +504,63 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 			t.Errorf("%s is listed in unitlessCounters but is no longer read as a bare number — remove the stale exception", v)
 		}
 	}
+
+	// Задача 11, пункт 1: паритет .env.example ↔ таблицы configuration.md
+	// обеих локалей (см. докблок checkConfigurationTableParity). tableVars —
+	// СЕРВЕРНЫЕ переменные плюс GOMEMLIMIT, БЕЗ агентских (документированы
+	// отдельно, на /docs/hosts — см. докблок checkConfigurationTableParity):
+	// сборка из уже собранных выше serverVars/memlimitVars, а не второй
+	// проход разбора.
+	tableVars := map[string]bool{}
+	for v := range serverVars {
+		tableVars[v] = true
+	}
+	for v := range memlimitVars {
+		tableVars[v] = true
+	}
+
+	// composeVars — переменные подстановки Docker Compose (${GOTCHA_COMPOSE_*}/
+	// ${GOTCHA_BUILD_*}) из обоих compose-файлов: их читатель — сам Compose,
+	// не Go-код (решение владельца, задача 11 п.5), они легитимно документируются
+	// таблицей, не будучи в vars/tableVars. composeSubstRe и её семантика —
+	// compose_test.go (тот же пакет).
+	composeVars := map[string]bool{}
+	for _, name := range []string{"docker-compose.yml", "docker-compose.small.yml"} {
+		raw, err := os.ReadFile(filepath.Join(tree.Root, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, m := range composeSubstRe.FindAllStringSubmatch(string(raw), -1) {
+			composeVars[m[1]] = true
+		}
+	}
+	if len(composeVars) < 8 {
+		t.Fatalf("collected only %d compose-substituted GOTCHA_COMPOSE_*/GOTCHA_BUILD_* variables — compose parsing is broken", len(composeVars))
+	}
+
+	readers := map[string]bool{}
+	for v := range vars { // server + agent + GOMEMLIMIT, уже собранные выше
+		readers[v] = true
+	}
+	for v := range composeVars {
+		readers[v] = true
+	}
+
+	ruDoc, err := os.ReadFile(filepath.Join(tree.Root, "internal", "docs", "ru", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enDoc, err := os.ReadFile(filepath.Join(tree.Root, "internal", "docs", "en", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruTable := tableVarNames(string(ruDoc))
+	enTable := tableVarNames(string(enDoc))
+	if len(ruTable) < 50 || len(enTable) < 50 {
+		t.Fatalf("collected %d ru / %d en table rows from configuration.md — table parsing is broken (tableRowFirstCellRe stopped matching)", len(ruTable), len(enTable))
+	}
+
+	checkConfigurationTableParity(t, tableVars, readers, ruTable, enTable)
 }
 
 // TestUnitSuffixConvention — юнит-тест конвенции единиц измерения (T1) на
@@ -286,7 +576,7 @@ func TestUnitSuffixConvention(t *testing.T) {
 	}{
 		{"GOTCHA_ESCALATION_INTERVAL_SECONDS", true},
 		{"GOTCHA_EVENT_RETENTION_DAYS", true},
-		{"GOTCHA_PURGE_RECONCILE_HOURS", true},
+		{"GOTCHA_PROJECT_PURGE_RECONCILE_HOURS", true},
 		{"GOTCHA_MAX_EVENT_BYTES", true},
 		{"GOTCHA_INGEST_RATE_PER_SEC", true},
 		{"GOTCHA_DIST_RATE_PER_MIN", true},
@@ -304,6 +594,99 @@ func TestUnitSuffixConvention(t *testing.T) {
 	}
 }
 
+// booleanCanonFixtureKnown — синтетический "known"-набор для
+// TestBooleanNamingConvention: держит только то, что нужно кейсам ниже,
+// чтобы (b)-условие формы 3 (реальная семья в словаре) проверялось на
+// вымышленных, но контролируемых данных, а не на envcontract.Known
+// (реальный реестр гоняет отдельный TestBooleanNamingConventionRealReaders
+// ниже).
+var booleanCanonFixtureKnown = map[string]bool{
+	"GOTCHA_HSTS_ENABLED":         true,
+	"GOTCHA_HSTS_MAX_AGE_SECONDS": true,
+	"GOTCHA_HSTS_PRELOAD":         true,
+	"GOTCHA_SCRUB_EMAIL":          true,
+	"GOTCHA_SCRUB_IP":             true,
+	// GOTCHA_SOMETHING — намеренно единственный представитель своей
+	// "подсистемы": ни один ДРУГОЙ ключ этого набора не начинается с
+	// GOTCHA_SOMETHING_, поэтому условие (b) формы 3 не выполняется.
+	"GOTCHA_SOMETHING": true,
+}
+
+// TestBooleanNamingConvention — задача 11, п.2, решение владельца
+// (2026-09-03): конвенция булевых имён на фиксированных кейсах, по образцу
+// TestUnitSuffixConvention выше — независимая от фактического набора
+// переменных в config.go проверка самой функции-классификатора (реальный
+// скан — TestBooleanNamingConventionRealReaders ниже). Все три кейса
+// контракта задачи 11 дословно: GOTCHA_RUN_SOMETHING (форма 1/2 не
+// подходит, форбидден-токен RUN — анти-паттерн GOTCHA_RUN_EVALUATORS),
+// GOTCHA_ALLOW_X (форма 2 не подходит — подсистемы перед ALLOW_ нет, и
+// форбидден-токен ALLOW тоже режет форму 3), голое GOTCHA_SOMETHING (форма
+// 3 не подходит — нет ДРУГОГО известного имени той же "подсистемы").
+func TestBooleanNamingConvention(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"GOTCHA_HSTS_ENABLED", true},
+		{"GOTCHA_EVALUATORS_ENABLED", true},
+		{"GOTCHA_AUTO_MIGRATE_ENABLED", true},
+		{"GOTCHA_SECRET_KEY_ALLOW_INSECURE", true},
+		{"GOTCHA_SSRF_ALLOW_PRIVATE", true},
+		{"GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME", true},
+		// Форма 3 (квалификатор существующей подсистемы): проходит, потому
+		// что booleanCanonFixtureKnown несёт ДРУГИЕ имена той же подсистемы
+		// HSTS/SCRUB.
+		{"GOTCHA_HSTS_INCLUDE_SUBDOMAINS", true},
+		{"GOTCHA_SCRUB_FREETEXT", true},
+		// Изолирует условие (a) от условия (b): подсистема HSTS реальна в
+		// фикстуре (siblings есть), но токен ON запрещён — без отдельной
+		// проверки (a) эта форма прошла бы мимо запрета одним лишь наличием
+		// подсистемы.
+		{"GOTCHA_HSTS_ON", false},
+		// Контракт задачи 11, п.2 — три дословных негативных кейса.
+		{"GOTCHA_RUN_SOMETHING", false},
+		{"GOTCHA_ALLOW_X", false},
+		{"GOTCHA_SOMETHING", false},
+		// ALLOW_ на самом краю имени — нет послабления справа (idx+len(marker)
+		// упирается в конец остатка), форма 2 не признаётся; форбидден-токен
+		// ALLOW тоже режет форму 3.
+		{"GOTCHA_ALLOW_", false},
+	}
+	for _, c := range cases {
+		if got := hasBooleanCanonForm(c.name, booleanCanonFixtureKnown); got != c.want {
+			t.Errorf("hasBooleanCanonForm(%q, ...) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBooleanNamingConventionRealReaders — задача 11, п.2, решение владельца
+// (2026-09-03, вариант (a)): сторож подключён к РЕАЛЬНЫМ булевым читателям
+// (boolEnv/boolEnvDef/parseBool — collectBoolReaderVars, cmd/gotcha/config.go
+// и internal/agent/config.go), БЕЗ exception-map. На HEAD все булевы имена
+// обязаны проходить hasBooleanCanonForm относительно настоящего
+// envcontract.Known — «нулём исключений» проверяется буквально, а не на
+// фикстуре.
+func TestBooleanNamingConventionRealReaders(t *testing.T) {
+	tree := Load(t)
+
+	vars := map[string]bool{}
+	for v := range collectBoolReaderVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go")) {
+		vars[v] = true
+	}
+	for v := range collectBoolReaderVars(t, tree.Root, filepath.Join("internal", "agent", "config.go")) {
+		vars[v] = true
+	}
+	if len(vars) < 15 {
+		t.Fatalf("collected only %d boolean variables — parsing is broken, or boolEnv/boolEnvDef/parseBool stopped being used", len(vars))
+	}
+
+	for v := range vars {
+		if !hasBooleanCanonForm(v, envcontract.Known) {
+			t.Errorf("%s is read as a boolean but matches neither *_ENABLED, nor <subsystem>_ALLOW_<relaxation>, nor an established subsystem qualifier — expected form *_ENABLED or <subsystem>_ALLOW_<relaxation>", v)
+		}
+	}
+}
+
 // TestMemlimitEnvVarDiscovered — T2 (ops-A9): без collectOSEnvVars сторож
 // .env.example фильтровал по strings.HasPrefix(v, "GOTCHA_") и был слеп к
 // GOMEMLIMIT (internal/memlimit/memlimit.go), стандартной переменной
@@ -316,5 +699,148 @@ func TestMemlimitEnvVarDiscovered(t *testing.T) {
 	vars := collectOSEnvVars(t, tree.Root, filepath.Join("internal", "memlimit", "memlimit.go"))
 	if !vars["GOMEMLIMIT"] {
 		t.Fatalf("collectOSEnvVars(internal/memlimit/memlimit.go) = %v, want it to contain GOMEMLIMIT", vars)
+	}
+}
+
+// TestKnownEnvVarsCoversConfig — E3 T10: реестр известных имён
+// envcontract.Known обязан быть НАДмножеством всего, что реально читают
+// cmd/gotcha/config.go и internal/agent/config.go — иначе новая переменная,
+// добавленная в конфиг без правки Known, стала бы «неизвестной» для
+// checkUnknownEnvVars (cmd/gotcha/config.go) и валила бы старт легитимному
+// оператору. Источник истины — тот же AST-сборщик collectGotchaEnvVars, что
+// уже сверяет .env.example выше в TestEnvExampleCoversConfig — не вторая
+// копия разбора.
+func TestKnownEnvVarsCoversConfig(t *testing.T) {
+	tree := Load(t)
+	serverVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go"), nil)
+	if len(serverVars) < 20 {
+		t.Fatalf("collected only %d server variables — cmd/gotcha/config.go parsing is broken", len(serverVars))
+	}
+	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"), nil)
+	if len(agentVars) < 8 {
+		t.Fatalf("collected only %d agent variables — internal/agent/config.go parsing is broken", len(agentVars))
+	}
+	for v := range serverVars {
+		if !envcontract.Known[v] {
+			t.Errorf("%s is read by cmd/gotcha/config.go but missing from envcontract.Known", v)
+		}
+	}
+	for v := range agentVars {
+		if !envcontract.Known[v] {
+			t.Errorf("%s is read by internal/agent/config.go but missing from envcontract.Known", v)
+		}
+	}
+}
+
+// TestKnownEnvVarsHaveNoGhosts — обратная сверка: каждое имя в
+// envcontract.Known обязано реально читаться cmd/gotcha/config.go или
+// internal/agent/config.go. Без этого теста Known мог бы «знать» имена-
+// призраки (опечатка при ручном заведении записи, оставшееся после
+// переименования старое имя) — checkUnknownEnvVars пропустил бы реальную
+// опечатку оператора, случайно совпавшую с призраком, и реестр перестал бы
+// быть надёжной проверкой в обе стороны, которой его делает
+// TestKnownEnvVarsCoversConfig выше.
+func TestKnownEnvVarsHaveNoGhosts(t *testing.T) {
+	tree := Load(t)
+	serverVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go"), nil)
+	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"), nil)
+	for v := range envcontract.Known {
+		if !serverVars[v] && !agentVars[v] {
+			t.Errorf("envcontract.Known contains %s, but neither cmd/gotcha/config.go nor internal/agent/config.go reads it — stale/ghost entry", v)
+		}
+	}
+}
+
+// TestTableVarNamesFirstColumnOnly — tableVarNames считает документирующей
+// только ПЕРВУЮ колонку строки таблицы: имя, упомянутое в прозе или в
+// третьей колонке (описании) той же или другой строки, покрытием не
+// считается (контракт задачи 11, п.1: «упоминание имени в прозе не
+// считается покрытием»). GOMEMLIMIT — легитимное отдельное имя без префикса
+// GOTCHA_, тоже подхватывается.
+func TestTableVarNamesFirstColumnOnly(t *testing.T) {
+	doc := "Проза упоминает `GOTCHA_PROSE_ONLY` мимоходом, не как строку таблицы.\n" +
+		"\n" +
+		"| Переменная | По умолчанию | Описание |\n" +
+		"|---|---|---|\n" +
+		"| `GOTCHA_REAL_ROW` | `1` | Ссылается на `GOTCHA_CROSS_REF` в тексте описания. |\n" +
+		"| `GOMEMLIMIT` | *(вычисляется)* | Рантайм Go. |\n"
+
+	got := tableVarNames(doc)
+
+	for _, want := range []string{"GOTCHA_REAL_ROW", "GOMEMLIMIT"} {
+		if !got[want] {
+			t.Errorf("tableVarNames: %s не найден, хотя это первая колонка настоящей строки таблицы", want)
+		}
+	}
+	for _, notWant := range []string{"GOTCHA_PROSE_ONLY", "GOTCHA_CROSS_REF"} {
+		if got[notWant] {
+			t.Errorf("tableVarNames: %s засчитан, хотя это упоминание в прозе/третьей колонке, не строка таблицы", notWant)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("tableVarNames вернул %v, ожидалось ровно 2 имени", got)
+	}
+}
+
+// TestConfigurationTableParityCatchesMissingRow — «подсунуть переменную,
+// отсутствующую в таблице RU» из контракта задачи 11, п.1: переменная есть
+// в vars (код+.env.example), но отсутствует строкой в ru-таблице — красный
+// с именем переменной и локалью в тексте ошибки. Симметричный случай для en
+// — сама мутация, которую держит в уме ревьюер («убрать сверку по одной из
+// локалей»): реализация проверяет ru и en раздельными циклами (см. докблок
+// checkConfigurationTableParity), поэтому дыра в одной локали не маскируется
+// полнотой другой — оба подтеста ниже должны падать независимо.
+func TestConfigurationTableParityCatchesMissingRow(t *testing.T) {
+	t.Run("ru", func(t *testing.T) {
+		ft := &fakeT{}
+		vars := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		readers := vars
+		ruTable := map[string]bool{} // GOTCHA_FAKE_VAR отсутствует
+		enTable := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+		ft.requireFailure(t, "GOTCHA_FAKE_VAR")
+		ft.requireFailure(t, "ru:")
+	})
+	t.Run("en", func(t *testing.T) {
+		ft := &fakeT{}
+		vars := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		readers := vars
+		ruTable := map[string]bool{"GOTCHA_FAKE_VAR": true}
+		enTable := map[string]bool{} // GOTCHA_FAKE_VAR отсутствует
+		checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+		ft.requireFailure(t, "GOTCHA_FAKE_VAR")
+		ft.requireFailure(t, "en:")
+	})
+}
+
+// TestConfigurationTableParityCatchesGhostRow — обратное направление
+// контракта: строка таблицы без читателя в коде — тоже находка. Имя
+// присутствует в обеих таблицах, но отсутствует в readers (ни серверный/
+// агентский код, ни compose-неймспейс его не читает) — красный в обеих
+// локалях.
+func TestConfigurationTableParityCatchesGhostRow(t *testing.T) {
+	ft := &fakeT{}
+	vars := map[string]bool{}
+	readers := map[string]bool{} // GOTCHA_GHOST_VAR без читателя
+	ruTable := map[string]bool{"GOTCHA_GHOST_VAR": true}
+	enTable := map[string]bool{"GOTCHA_GHOST_VAR": true}
+	checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+	ft.requireFailure(t, "GOTCHA_GHOST_VAR")
+}
+
+// TestConfigurationTableParityAcceptsComposeReader — решение владельца,
+// задача 11 п.5: переменная compose-неймспейса (читатель — подстановка ${...} в
+// docker-compose.yml, не Go-код) НЕ должна считаться призраком, даже не
+// входя в vars. Регрессия на случай, если кто-то однажды сузит readers до
+// одного vars, забыв про composeVars.
+func TestConfigurationTableParityAcceptsComposeReader(t *testing.T) {
+	ft := &fakeT{}
+	vars := map[string]bool{}
+	readers := map[string]bool{"GOTCHA_COMPOSE_FAKE": true} // читатель — compose, не код
+	ruTable := map[string]bool{"GOTCHA_COMPOSE_FAKE": true}
+	enTable := map[string]bool{"GOTCHA_COMPOSE_FAKE": true}
+	checkConfigurationTableParity(ft, vars, readers, ruTable, enTable)
+	if ft.failed {
+		t.Fatalf("compose-переменная с читателем в readers ошибочно забракована: %v", ft.msgs)
 	}
 }

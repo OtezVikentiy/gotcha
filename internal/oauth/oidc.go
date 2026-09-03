@@ -65,11 +65,30 @@ func (o *OIDC) DisplayName() string {
 	return "OIDC"
 }
 
+// scopes — список scope, отправляемый в authorization-запросе. Пусто (или
+// разбор ниже не оставил ни одного элемента) → дефолт "openid email profile".
+//
+// GOTCHA_OIDC_SCOPES принимает список через запятую — тот же разделитель,
+// что у всех остальных списочных переменных контракта (GOTCHA_SCRUB_DENY_KEYS,
+// GOTCHA_TRUSTED_RECIPIENTS, GOTCHA_TRUSTED_PROXIES в cmd/gotcha/config.go).
+// Раньше значение уходило в scope= как есть: разделителем там пробел (см.
+// RFC 6749 §3.3), и оператор, написавший по аналогии с остальными списками
+// "openid,email,profile", получал ОДИН scope из трёх слов, слипшихся через
+// запятую, — провайдер такой не знает, и вход отваливается на первом же
+// логине без единой подсказки, где искать причину. Здесь запятая разбирается
+// и нормализуется в пробел непосредственно перед отправкой; пустые элементы
+// (лишняя/двойная запятая) отбрасываются, каждый — триммится.
 func (o *OIDC) scopes() string {
-	if o.cfg.Scopes != "" {
-		return o.cfg.Scopes
+	var parts []string
+	for _, s := range strings.Split(o.cfg.Scopes, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			parts = append(parts, s)
+		}
 	}
-	return "openid email profile"
+	if len(parts) == 0 {
+		return "openid email profile"
+	}
+	return strings.Join(parts, " ")
 }
 
 // discovery лениво загружает и кеширует .well-known/openid-configuration и JWKS

@@ -113,7 +113,7 @@ When the connection is clearly established and the first large exchange is what 
 docker compose exec gotcha wget -q -O /dev/null https://api.github.com/ && echo ok || echo fail
 ```
 
-If it hangs there too, go to `GOTCHA_NET_MTU` in [Configuration](/docs/configuration), which explains why the host works while the container doesn't, why some destinations are fine and others aren't, and why the failure can disappear for ten minutes and come back.
+If it hangs there too, go to `GOTCHA_COMPOSE_NET_MTU` in [Configuration](/docs/configuration), which explains why the host works while the container doesn't, why some destinations are fine and others aren't, and why the failure can disappear for ten minutes and come back.
 
 ## Privacy: what external channels see
 
@@ -139,14 +139,77 @@ GOTCHA_TRUSTED_RECIPIENTS=corp.example
 ```
 
 ```
-GOTCHA_EXTERNAL_CHANNEL_DETAILS=true
+GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true
 ```
 
 lifts the restriction entirely — details then go to every recipient, Telegram included. Enable it only if you have a lawful basis for cross-border transfer. Both are instance-level settings; see [Privacy and 152-FZ](/docs/privacy) for the reasoning.
+
+## Webhook body format
+
+Every notification is a `POST` request with a JSON body (`Content-Type: application/json`). If the channel has a secret set, the body is signed: the `X-Gotcha-Signature: sha256=<hex>` header carries the HMAC-SHA256 of the request body keyed with the channel's secret, hex-encoded, prefixed with `sha256=`. To verify it on your side: compute HMAC-SHA256(secret, raw request body) and compare it against the part after `sha256=` — with a constant-time byte comparison, not a plain string `==`. No secret means no header at all.
+
+Which fields show up depends on whether the channel's recipient is trusted — see [Privacy: what external channels see](#privacy-what-external-channels-see) above: with `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=false` and an untrusted recipient, some fields are stripped and `subject`/`body` are replaced with anonymized text. The order of keys in the JSON object is not part of the contract.
+
+Below is the body for an issue alert: `kind` is `new_issue`, `regression`, or `spike`.
+
+| Field | Type | With details | Without details |
+|---|---|---|---|
+| `kind` | string | ✓ | ✓ |
+| `project_id` | number | ✓ | ✓ |
+| `project_name` | string | ✓ | ✓ |
+| `url` | string | ✓ | ✓ |
+| `subject` | string | ✓ (subject with details) | ✓ (anonymized subject) |
+| `body` | string | ✓ (body with details) | ✓ (anonymized body) |
+| `issue_id` | number | ✓ | ✓ |
+| `times_seen` | number | ✓ | ✓ |
+| `title` | string | ✓ | — |
+| `culprit` | string | ✓ | — |
+| `level` | string | ✓ | — |
+
+Example body with details:
+
+```json
+{
+  "body": "Project: Storefront\n\nTypeError: cannot read properties of undefined\n\nCulprit: checkoutHandler\nLevel: error\nSeen: 3 times\n\nhttps://gotcha.example/issues/42",
+  "culprit": "checkoutHandler",
+  "issue_id": 42,
+  "kind": "new_issue",
+  "level": "error",
+  "project_id": 7,
+  "project_name": "Storefront",
+  "subject": "[Gotcha] New issue: TypeError: cannot read properties of undefined · Storefront",
+  "times_seen": 3,
+  "title": "TypeError: cannot read properties of undefined",
+  "url": "https://gotcha.example/issues/42"
+}
+```
+
+Example body without details (`GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=false`, untrusted recipient):
+
+```json
+{
+  "body": "Project: Storefront\n\nNew issue\n\nhttps://gotcha.example/issues/42",
+  "issue_id": 42,
+  "kind": "new_issue",
+  "project_id": 7,
+  "project_name": "Storefront",
+  "subject": "[Gotcha] New issue · Storefront",
+  "times_seen": 3,
+  "url": "https://gotcha.example/issues/42"
+}
+```
+
+Compatibility rule: adding a new field to the body is not a breaking change (an integration must ignore fields it doesn't recognize); removing a field, renaming it, or changing its type is a breaking change.
+
+Other event kinds send the same routing minimum (`kind`, `project_id`, `url`, `subject`, `body`, and the same anonymized path for untrusted recipients) with their own `kind` and their own extra fields:
+
+- Suppressed alerts digest (`kind` = `suppressed_digest`) — `count`: how many notifications were suppressed since the last digest.
+- Performance regression (`kind` = `n_plus_one` / `slow_db_query` / `http_flood`) — `perf_issue_id`, `title`, `culprit`, `count`, `regression` (boolean: `true` means the regression closed, `false` means a new finding).
+- Test notification (the channel's "Test" button) — `kind` = `channel_test`, no extra fields.
 
 ## See also
 
 - [Metric Alerts](/docs/metric-alerts) — threshold rules on numeric metrics, using the same channel set.
 - [Issues](/docs/issues) — what an issue is, what a regression is, statuses.
-- [Configuration](/docs/configuration) — the SMTP variables and `GOTCHA_EXTERNAL_CHANNEL_DETAILS`.
+- [Configuration](/docs/configuration) — the SMTP variables and `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED`.
 - [Teams and roles](/docs/teams) — who is a project operator, and the full table of what operators vs. owner/admin can do.

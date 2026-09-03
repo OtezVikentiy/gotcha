@@ -72,7 +72,7 @@ var agentEnvNameRe = regexp.MustCompile(`GOTCHA_AGENT_[A-Z_]+`)
 // аутентифицирующие установку (endpoint инстанса и ключ проекта).
 var mustAppearInHostsGo = []string{
 	"GOTCHA_AGENT_ENDPOINT",
-	"GOTCHA_AGENT_KEY",
+	"GOTCHA_AGENT_INGEST_KEY",
 }
 
 // hostsGoExclusions — остальные шесть канонических переменных, СОЗНАТЕЛЬНО не
@@ -82,12 +82,12 @@ var mustAppearInHostsGo = []string{
 // запуском install.sh, либо правкой /etc/gotcha-agent/gotcha-agent.env после
 // — internal/docs/{ru,en}/hosts.md).
 var hostsGoExclusions = map[string]string{
-	"GOTCHA_AGENT_HOSTNAME":        "override host.name; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_CA_CERT":         "путь к CA для самоподписанного инстанса; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_INTERVAL":        "интервал сбора; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_TLS_SKIP_VERIFY": "крайнее средство вместо CA_CERT; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_ENVIRONMENT":     "resource-метка deployment.environment; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_ROLE":            "resource-метка host.role; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_HOSTNAME":                 "override host.name; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_CA_CERT":                  "путь к CA для самоподписанного инстанса; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_INTERVAL_SECONDS":         "интервал сбора; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY": "крайнее средство вместо CA_CERT; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_ENVIRONMENT":              "resource-метка deployment.environment; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_ROLE":                     "resource-метка host.role; необязательная настройка агента, не часть auth-only команды UI",
 }
 
 // mustAppearInInstallSh — подмножество канона, которое install.sh обязан
@@ -96,19 +96,20 @@ var hostsGoExclusions = map[string]string{
 // reject_newline/printf (internal/web/install.sh).
 var mustAppearInInstallSh = []string{
 	"GOTCHA_AGENT_ENDPOINT",
-	"GOTCHA_AGENT_KEY",
-	"GOTCHA_AGENT_INTERVAL",
+	"GOTCHA_AGENT_INGEST_KEY",
+	"GOTCHA_AGENT_INTERVAL_SECONDS",
 	"GOTCHA_AGENT_HOSTNAME",
 	"GOTCHA_AGENT_CA_CERT",
-	"GOTCHA_AGENT_TLS_SKIP_VERIFY",
+	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY",
 	"GOTCHA_AGENT_ENVIRONMENT",
 	"GOTCHA_AGENT_ROLE",
 }
 
 // installShExclusions — канонические переменные, которых install.sh
-// намеренно не читает и не пишет в $CONF; сегодня пуст (ENDPOINT/KEY/
-// INTERVAL/HOSTNAME/CA_CERT/TLS_SKIP_VERIFY/ENVIRONMENT/ROLE — все восемь
-// канонических переменных — входят в mustAppearInInstallSh). Оставлен как
+// намеренно не читает и не пишет в $CONF; сегодня пуст (ENDPOINT/INGEST_KEY/
+// INTERVAL_SECONDS/HOSTNAME/CA_CERT/TLS_INSECURE_SKIP_VERIFY/ENVIRONMENT/
+// ROLE — все восемь канонических переменных — входят в
+// mustAppearInInstallSh). Оставлен как
 // map, а не удалён: TestAgentEnvVarsClassified требует классификации КАЖДОЙ
 // новой канонической переменной либо сюда с причиной, либо в
 // mustAppearInInstallSh — карта остаётся точкой, куда её вписать, если
@@ -332,5 +333,42 @@ func TestInstallShVarsMatchAgentConfig(t *testing.T) {
 			t.Errorf("install.sh больше не упоминает %s — переменную добавили/переименовали в internal/agent/config.go, "+
 				"а install.sh не поправили следом", name)
 		}
+	}
+}
+
+// TestInstallShChecksBeforeSwappingBinary — install.sh обязан прогнать
+// `--check` НОВЫМ бинарём из временного пути ($BIN.new) ДО того, как
+// подменит боевой $BIN (`mv "$BIN.new" "$BIN"`): иначе на устаревшем имени
+// переменной, сохранённом в $CONF (update-режим НЕ переписывает $CONF —
+// см. main() в install.sh), systemd рано или поздно перезапустит уже
+// подменённый бинарь на битом конфиге и получит `exit 2` —
+// RestartPreventExitStatus=2 гасит юнит насмерть вместо "старый агент
+// продолжает работать", как обещает upgrade.md (реалистичный триггер —
+// плановая перезагрузка хоста между обновлением сервера и обходом хостов).
+// Проверяет ПОРЯДОК двух операций в файле, а не
+// факт их присутствия — TestInstallShVarsMatchAgentConfig выше уже
+// проверяет имена; здесь достаточно строкового индекса, переустановка
+// блоков местами обязана уронить именно этот тест.
+func TestInstallShChecksBeforeSwappingBinary(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "internal", "web", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := stripShellLineComments(string(raw))
+
+	checkIdx := strings.Index(code, `"$BIN.new" --check`)
+	mvIdx := strings.Index(code, `mv "$BIN.new" "$BIN"`)
+	if checkIdx < 0 {
+		t.Fatal(`обход ослеп: install.sh не содержит вызов "$BIN.new" --check`)
+	}
+	if mvIdx < 0 {
+		t.Fatal(`обход ослеп: install.sh не содержит mv "$BIN.new" "$BIN"`)
+	}
+	if mvIdx < checkIdx {
+		t.Errorf(`install.sh подменяет боевой бинарь (mv "$BIN.new" "$BIN") РАНЬШЕ, чем проверяет конфиг ("$BIN.new" --check) — на устаревших именах в $CONF это гасит юнит на первом же рестарте вместо того, чтобы оставить работать старый бинарь`)
 	}
 }

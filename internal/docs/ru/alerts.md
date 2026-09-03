@@ -113,7 +113,7 @@ curl -sS -m 5 -o /dev/null -w '%{http_code}\n' https://api.telegram.org/
 docker compose exec gotcha wget -q -O /dev/null https://api.github.com/ && echo ok || echo fail
 ```
 
-Если и здесь виснет — берите `GOTCHA_NET_MTU` в разделе [Конфигурация](/docs/configuration): там разобрано, почему с хоста при этом всё работает, почему до одних адресатов доходит, а до других нет, и почему поломка может исчезать на десять минут и возвращаться.
+Если и здесь виснет — берите `GOTCHA_COMPOSE_NET_MTU` в разделе [Конфигурация](/docs/configuration): там разобрано, почему с хоста при этом всё работает, почему до одних адресатов доходит, а до других нет, и почему поломка может исчезать на десять минут и возвращаться.
 
 ## Приватность: что видят внешние каналы
 
@@ -139,14 +139,77 @@ GOTCHA_TRUSTED_RECIPIENTS=corp.example
 ```
 
 ```
-GOTCHA_EXTERNAL_CHANNEL_DETAILS=true
+GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true
 ```
 
 снимает ограничение целиком — детали пойдут любому получателю, включая Telegram. Включайте, только если у вас есть законные основания для трансграничной передачи. Обе настройки — на уровне инстанса; подробности и обоснование см. в разделе [Приватность и 152-ФЗ](/docs/privacy).
+
+## Формат тела вебхука
+
+Каждое уведомление — `POST`-запрос с телом JSON (`Content-Type: application/json`). Если у канала задан секрет, тело подписывается: заголовок `X-Gotcha-Signature: sha256=<hex>` несёт HMAC-SHA256 тела запроса по секрету канала, в шестнадцатеричной кодировке, с префиксом `sha256=`. Чтобы проверить подпись на своей стороне: посчитать HMAC-SHA256(секрет, сырое тело запроса) и сравнить с частью после `sha256=` — побайтовым сравнением с постоянным временем, а не строковым `==`. Если секрет не задан, заголовка нет вовсе.
+
+Состав полей зависит от того, доверенный ли получатель канала — см. [«Приватность: что видят внешние каналы»](#privatnost-chto-vidyat-vneshnie-kanaly) выше: при `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=false` и недоверенном получателе часть полей вырезается, а `subject`/`body` заменяются обезличенным текстом. Порядок ключей JSON-объекта частью контракта не является.
+
+Ниже — тело алерта по проблеме (issue): `kind` равен `new_issue`, `regression` или `spike`.
+
+| Поле | Тип | С деталями | Без деталей |
+|---|---|---|---|
+| `kind` | строка | ✓ | ✓ |
+| `project_id` | число | ✓ | ✓ |
+| `project_name` | строка | ✓ | ✓ |
+| `url` | строка | ✓ | ✓ |
+| `subject` | строка | ✓ (тема с деталями) | ✓ (обезличенная тема) |
+| `body` | строка | ✓ (тело с деталями) | ✓ (обезличенное тело) |
+| `issue_id` | число | ✓ | ✓ |
+| `times_seen` | число | ✓ | ✓ |
+| `title` | строка | ✓ | — |
+| `culprit` | строка | ✓ | — |
+| `level` | строка | ✓ | — |
+
+Пример тела с деталями:
+
+```json
+{
+  "body": "Project: Storefront\n\nTypeError: cannot read properties of undefined\n\nCulprit: checkoutHandler\nLevel: error\nSeen: 3 times\n\nhttps://gotcha.example/issues/42",
+  "culprit": "checkoutHandler",
+  "issue_id": 42,
+  "kind": "new_issue",
+  "level": "error",
+  "project_id": 7,
+  "project_name": "Storefront",
+  "subject": "[Gotcha] New issue: TypeError: cannot read properties of undefined · Storefront",
+  "times_seen": 3,
+  "title": "TypeError: cannot read properties of undefined",
+  "url": "https://gotcha.example/issues/42"
+}
+```
+
+Пример тела без деталей (`GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=false`, недоверенный получатель):
+
+```json
+{
+  "body": "Project: Storefront\n\nNew issue\n\nhttps://gotcha.example/issues/42",
+  "issue_id": 42,
+  "kind": "new_issue",
+  "project_id": 7,
+  "project_name": "Storefront",
+  "subject": "[Gotcha] New issue · Storefront",
+  "times_seen": 3,
+  "url": "https://gotcha.example/issues/42"
+}
+```
+
+Правило совместимости: добавление нового поля в тело — не ломающее изменение (интеграция обязана игнорировать незнакомые поля); удаление поля, переименование или смена типа — ломающее изменение.
+
+Остальные виды событий шлют тот же маршрутный минимум (`kind`, `project_id`, `url`, `subject`, `body`, а при недоверенном получателе — тот же обезличенный путь) со своим `kind` и собственными дополнительными полями:
+
+- Сводка подавленных уведомлений (`kind` = `suppressed_digest`) — `count`: сколько уведомлений подавлено с прошлой сводки.
+- Регрессия производительности (`kind` = `n_plus_one` / `slow_db_query` / `http_flood`) — `perf_issue_id`, `title`, `culprit`, `count`, `regression` (булево: `true` — регрессия закрылась, `false` — новая находка).
+- Тестовое уведомление (кнопка «Тест» у канала) — `kind` = `channel_test`, дополнительных полей нет.
 
 ## Смотрите также
 
 - [Оповещения по метрикам](/docs/metric-alerts) — пороговые правила по числовым метрикам, тот же набор каналов.
 - [Проблемы](/docs/issues) — что такое issue, регрессия, статусы.
-- [Конфигурация](/docs/configuration) — переменные SMTP и `GOTCHA_EXTERNAL_CHANNEL_DETAILS`.
+- [Конфигурация](/docs/configuration) — переменные SMTP и `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED`.
 - [Команды и роли](/docs/teams) — кто такой оператор проекта и полная таблица того, что доступно оператору, а что — только owner/admin.

@@ -494,7 +494,7 @@ const (
 // RegistrationMode по умолчанию "open" — это исторический контракт конструктора
 // (регистрация открыта). Продовая безопасность PROD-B1 живёт на уровне конфига:
 // main.go всегда проставляет webHandler.RegistrationMode = cfg.RegistrationMode
-// (GOTCHA_REGISTRATION, дефолт "invite"), переопределяя это значение.
+// (GOTCHA_REGISTRATION_MODE, дефолт "invite"), переопределяя это значение.
 //
 // HSTSHeader по умолчанию "max-age=31536000" — исторический контракт
 // конструктора (ровно тот заголовок, который securityHeaders слал до

@@ -23,7 +23,7 @@ func main() {
 		// Только валидация конфига, без сети и без цикла сбора — install.sh
 		// зовёт это ДО systemctl enable, чтобы не соврать "installed and
 		// running" на битом ключе/URL (ревью аудита ops-H2).
-		if _, err := agent.LoadConfig(os.Getenv); err != nil {
+		if _, err := agent.LoadConfig(os.Getenv, os.Environ); err != nil {
 			fmt.Fprintln(os.Stderr, "gotcha-agent --check: "+err.Error())
 			os.Exit(2)
 		}
@@ -31,7 +31,7 @@ func main() {
 		return
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	cfg, err := agent.LoadConfig(os.Getenv)
+	cfg, err := agent.LoadConfig(os.Getenv, os.Environ)
 	if err != nil {
 		logger.Error("config", "error", err)
 		os.Exit(2)

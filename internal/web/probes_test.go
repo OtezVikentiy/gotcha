@@ -111,7 +111,7 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("POST %s status = %d, want 200: %s", probesPath, resp.StatusCode, body)
 	}
 	token := extractProbeToken(t, string(body))
-	if !strings.Contains(string(body), "GOTCHA_PROBE_TOKEN="+token) {
+	if !strings.Contains(string(body), "GOTCHA_PROBE_KEY="+token) {
 		t.Fatalf("POST %s missing docker run line with token: %s", probesPath, body)
 	}
 	if !strings.Contains(string(body), "GOTCHA_PROBE_SERVER_URL="+s.srv.URL) {
@@ -261,8 +261,8 @@ func TestWebProbesAccess(t *testing.T) {
 }
 
 // TestWebProbesReservedRegionFollowsLocalRegion — зарезервирован тот регион,
-// который встроенная проба РЕАЛЬНО лизит (GOTCHA_LOCAL_REGION), а не литерал
-// "local". При GOTCHA_LOCAL_REGION=eu-central:
+// который встроенная проба РЕАЛЬНО лизит (GOTCHA_UPTIME_LOCAL_REGION), а не литерал
+// "local". При GOTCHA_UPTIME_LOCAL_REGION=eu-central:
 //   - выносную пробу в регионе eu-central завести нельзя (иначе её задания
 //     забирал бы org-agnostic LeaseLocal центра, и монитор проверялся бы из
 //     центра, молча выдавая себя за eu-central);

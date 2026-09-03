@@ -31,10 +31,10 @@ GOTCHA_OIDC_ISSUER=https://idp.example.com/realms/myrealm
 GOTCHA_OIDC_CLIENT_ID=<client id from the IdP>
 GOTCHA_OIDC_CLIENT_SECRET=<client secret from the IdP>
 GOTCHA_OIDC_SCOPES=openid email profile   # optional — this is already the default
-GOTCHA_OIDC_NAME=Corp SSO                 # optional — the button label on /login (defaults to "OIDC")
+GOTCHA_OIDC_DISPLAY_NAME=Corp SSO                 # optional — the button label on /login (defaults to "OIDC")
 ```
 
-5. Restart the server. The `/login` page will show a "Sign in with {GOTCHA_OIDC_NAME or OIDC}" button.
+5. Restart the server. The `/login` page will show a "Sign in with {GOTCHA_OIDC_DISPLAY_NAME or OIDC}" button.
 
 Gotcha fetches `{issuer}/.well-known/openid-configuration` itself to discover the authorization/token endpoints and the JWKS — you don't need to set those manually.
 
@@ -71,7 +71,7 @@ The `/login` button reads "Sign in with VK".
 ## What happens at sign-in
 
 - If the provider's email is already linked to an existing account (or matches an existing user's verified email), sign-in issues a session right away.
-- If no account exists for that email yet, what happens depends on `GOTCHA_REGISTRATION`: under `open`, an account is created on the first sign-in through a provider (a pending invite for that email, if any, is accepted along the way); under `invite`, a new user is provisioned only if there's a pending invite for that email (see [Inviting members](/docs/teams)) — otherwise sign-in is rejected; under `closed`, no new accounts appear at all.
+- If no account exists for that email yet, what happens depends on `GOTCHA_REGISTRATION_MODE`: under `open`, an account is created on the first sign-in through a provider (a pending invite for that email, if any, is accepted along the way); under `invite`, a new user is provisioned only if there's a pending invite for that email (see [Inviting members](/docs/teams)) — otherwise sign-in is rejected; under `closed`, no new accounts appear at all.
 - From `/profile`, a signed-in user can additionally link a provider to their existing account through the same flow (`?link=1`).
 
 ## How this differs from per-org enterprise SSO

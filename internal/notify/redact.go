@@ -25,7 +25,7 @@ func RedactToken(s, token string) string {
 
 // externalSafeKeys — «белый список» полей payload, которые разрешено
 // раскрывать во внешние каналы (Telegram/webhook) при выключенном
-// GOTCHA_EXTERNAL_CHANNEL_DETAILS. Только маршрут доставки, числовые
+// GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED. Только маршрут доставки, числовые
 // идентификаторы/счётчики, вид алерта и ссылка на карточку — всё, что не
 // несёт текста ошибки, имён транзакций/функций и потенциальных ПДн.
 //
@@ -130,7 +130,7 @@ func redactedKindLabel(ctx context.Context, kind string) string {
 
 // RedactExternalPayload возвращает обезличенную копию payload для доставки во
 // внешние каналы (Telegram/webhook), когда оператор выключил раскрытие
-// деталей (GOTCHA_EXTERNAL_CHANNEL_DETAILS=false). Текст ошибки, имена
+// деталей (GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=false). Текст ошибки, имена
 // транзакций/функций и тело уведомления могут нести ПДн, а Telegram/webhook
 // уводят их за пределы РФ (152-ФЗ), поэтому наружу отдаётся только маршрут
 // доставки, ссылка на карточку и вид алерта.

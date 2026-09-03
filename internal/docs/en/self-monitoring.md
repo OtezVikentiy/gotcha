@@ -28,7 +28,7 @@ config snippets and the other service paths.
 The stock compose file gives the `gotcha` container a healthcheck on `/readyz`.
 The probe is a subcommand of the binary itself — `gotcha --healthcheck` — so it
 survives a move to a distroless base where no curl exists. Its target URL is
-built from `GOTCHA_ADDR` (host always `127.0.0.1`: the probe talks to itself),
+built from `GOTCHA_LISTEN_ADDR` (host always `127.0.0.1`: the probe talks to itself),
 so changing the listen port does not leave the probe knocking on a dead
 `:8080`; for non-standard setups — TLS termination inside the container, a
 different path — override it with `--healthcheck-url=<url>`.
@@ -63,7 +63,7 @@ scrape_configs:
   - job_name: gotcha
     static_configs:
       # 8080 is the in-container port; the stock compose publishes 59080
-      # (GOTCHA_PORT). Use whichever port the instance is reachable on for you.
+      # (GOTCHA_COMPOSE_PORT). Use whichever port the instance is reachable on for you.
       - targets: ["gotcha.example.com:59080"]
 ```
 
@@ -91,7 +91,7 @@ Sustained depth near capacity means the workers cannot keep up, usually because
 PostgreSQL is slow (every task upserts an issue).
 
 **`gotcha_pipeline_queue_bytes`** — bytes held by tasks waiting in that queue.
-The queue has a byte budget as well as a task count (`GOTCHA_MAX_QUEUE_BYTES`):
+The queue has a byte budget as well as a task count (`GOTCHA_MAX_INGEST_QUEUE_BYTES`):
 a thousand small events and a thousand megabyte-sized ones are very different
 loads at the same depth. When drops show `reason="queue_bytes"`, this is the
 budget that ran out.
@@ -151,13 +151,9 @@ signals.
 an ingest path that has been replaced. Three intake endpoints moved into
 gotcha's own `/api/v1/*` namespace; the old paths still work, but every request
 to them is counted here and answered with `Deprecation` and
-`Link; rel="deprecation"` response headers. `path` is a closed set:
-
-| `path` | Send to instead |
-|---|---|
-| `/logs` | `/api/v1/logs` |
-| `/profiles/pprof` | `/api/v1/profiles/pprof` |
-| `/api/{project}/deployments/` | `/api/v1/{project}/deployments` |
+`Link; rel="deprecation"` response headers. The list of paths, their
+replacements, and the removal deadline live in the
+[Versioning policy](/docs/versioning).
 
 Watch it after upgrading: a non-zero rate means some sender still uses a path
 that will be removed. Once every series here stays flat at zero, you are safe
@@ -175,7 +171,7 @@ fix:
 | `reason` | What happened | What to do |
 |---|---|---|
 | `queue_full` | processing cannot keep up with ingest | more workers, faster PostgreSQL |
-| `queue_bytes` | the queue's byte budget ran out — tasks are larger than usual | check `GOTCHA_MAX_QUEUE_BYTES` and event sizes |
+| `queue_bytes` | the queue's byte budget ran out — tasks are larger than usual | check `GOTCHA_MAX_INGEST_QUEUE_BYTES` and event sizes |
 | `storage_error` | the write to PostgreSQL failed (usually an upsert timeout) | fix the database; the queue is not the problem |
 | `panic` | the handler crashed on one item | a product bug: send it to us with the log |
 | `closed` | ingest was already stopping when the event arrived | normal during shutdown; steady growth means a restart loop |

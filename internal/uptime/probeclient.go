@@ -34,7 +34,7 @@ const (
 // конструктора.
 type ProbeClient struct {
 	ServerURL string // база центра, например https://gotcha.example.com
-	Token     string // GOTCHA_PROBE_TOKEN; в логи не попадает никогда
+	Token     string // GOTCHA_PROBE_KEY; в логи не попадает никогда
 
 	Concurrency int           // одновременных проверок; 0 = defaultConcurrency
 	PollEvery   time.Duration // период опроса центра; 0 = defaultPollEvery

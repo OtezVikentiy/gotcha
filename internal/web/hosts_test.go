@@ -315,7 +315,7 @@ func TestAgentCommands(t *testing.T) {
 	if !strings.Contains(install, "https://g.example/install.sh") {
 		t.Errorf("install-команда без /install.sh: %s", install)
 	}
-	if !strings.Contains(install, "GOTCHA_AGENT_KEY=pk_x") {
+	if !strings.Contains(install, "GOTCHA_AGENT_INGEST_KEY=pk_x") {
 		t.Errorf("install-команда без ключа: %s", install)
 	}
 	if !strings.Contains(install, "GOTCHA_AGENT_ENDPOINT=https://g.example") {
@@ -326,7 +326,7 @@ func TestAgentCommands(t *testing.T) {
 	if !strings.Contains(update, "https://g.example/install.sh") {
 		t.Errorf("update-команда без /install.sh: %s", update)
 	}
-	if strings.Contains(update, "GOTCHA_AGENT_KEY") {
+	if strings.Contains(update, "GOTCHA_AGENT_INGEST_KEY") {
 		t.Errorf("update-команда не должна нести ключ: %s", update)
 	}
 }
@@ -426,7 +426,7 @@ func TestHostsOnboardingAgentDefault(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 	html := renderHostsListOnboarding(t, installCmd, config, "")
 
-	for _, want := range []string{"GOTCHA_AGENT_ENDPOINT=https://g.example", "GOTCHA_AGENT_KEY=pk_x", "/install.sh"} {
+	for _, want := range []string{"GOTCHA_AGENT_ENDPOINT=https://g.example", "GOTCHA_AGENT_INGEST_KEY=pk_x", "/install.sh"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("онбординг без фрагмента команды агента %q: %s", want, html)
 		}
@@ -839,7 +839,7 @@ func TestHostsListCollectorConfigDetailsInstallCmd(t *testing.T) {
 	}
 	html := sb.String()
 
-	if !strings.Contains(html, "GOTCHA_AGENT_KEY=pk_x") {
+	if !strings.Contains(html, "GOTCHA_AGENT_INGEST_KEY=pk_x") {
 		t.Errorf("нет блока команды установки агента в непустом списке: %s", html)
 	}
 	if !strings.Contains(html, "otlphttp") {
@@ -1112,7 +1112,7 @@ func TestHostSettingsAgentInstallBlock(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 	html := renderHostSettingsPage(t, installCmd, config, "")
 
-	for _, want := range []string{"GOTCHA_AGENT_ENDPOINT=https://g.example", "GOTCHA_AGENT_KEY=pk_x", "/install.sh"} {
+	for _, want := range []string{"GOTCHA_AGENT_ENDPOINT=https://g.example", "GOTCHA_AGENT_INGEST_KEY=pk_x", "/install.sh"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("страница настроек без фрагмента команды агента %q: %s", want, html)
 		}

@@ -41,13 +41,37 @@ func TestProviderNamesAndDisplay(t *testing.T) {
 }
 
 // TestOIDCScopesCustomAndDefault — пустые scopes дают дефолт "openid email profile",
-// заданные — прокидываются как есть (ветка кастома в scopes()).
+// заданные без запятой (уже разделены пробелом) — прокидываются как есть
+// (ветка кастома в scopes(): один элемент после split(",")).
 func TestOIDCScopesCustomAndDefault(t *testing.T) {
 	if got := NewOIDC(OIDCConfig{}).scopes(); got != "openid email profile" {
 		t.Fatalf("default scopes = %q", got)
 	}
 	if got := NewOIDC(OIDCConfig{Scopes: "openid groups"}).scopes(); got != "openid groups" {
 		t.Fatalf("custom scopes = %q", got)
+	}
+}
+
+// TestOIDCScopesCommaSeparatedNormalizedToSpace — E3 задача 5, бриф дословно:
+// GOTCHA_OIDC_SCOPES=openid,email должен уйти в scope= как "openid email".
+// Раньше запятая уходила в scope= как есть (разделитель там пробел, RFC 6749
+// §3.3), и "openid,email,profile" давал провайдеру ОДИН бессмысленный scope —
+// обнаруживалось только на первом логине.
+func TestOIDCScopesCommaSeparatedNormalizedToSpace(t *testing.T) {
+	if got := NewOIDC(OIDCConfig{Scopes: "openid,email"}).scopes(); got != "openid email" {
+		t.Fatalf("scopes() = %q, want %q", got, "openid email")
+	}
+
+	// Пустые элементы (двойная запятая, пробелы по краям) отбрасываются,
+	// каждый элемент триммится.
+	if got := NewOIDC(OIDCConfig{Scopes: " openid , ,email "}).scopes(); got != "openid email" {
+		t.Fatalf("scopes() with blanks = %q, want %q", got, "openid email")
+	}
+
+	// Значение из одних запятых/пробелов — как будто scopes не задан:
+	// откат на дефолт, а не пустой scope= (провайдер отверг бы запрос).
+	if got := NewOIDC(OIDCConfig{Scopes: " , , "}).scopes(); got != "openid email profile" {
+		t.Fatalf("scopes() blank-only = %q, want default %q", got, "openid email profile")
 	}
 }
 

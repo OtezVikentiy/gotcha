@@ -46,3 +46,18 @@ func NewClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
 	}
 	return conn, nil
 }
+
+// ValidateClickHouseDSN проверяет, что dsn разбираем клиентом ClickHouse —
+// без установки соединения (тот же clickhouse.ParseDSN, что NewClickHouse
+// вызывает первым шагом). Тот же клиентский парсер принимает DSN и в URL-, и
+// в keyword-форме — проверка не сужает набор относительно того, что реально
+// потребит клиент.
+func ValidateClickHouseDSN(dsn string) error {
+	if _, err := clickhouse.ParseDSN(dsn); err != nil {
+		// Как и в NewClickHouse: сырая ошибка ParseDSN может содержать сам
+		// DSN с паролем в тексте (проверено — "invalid port" эхом отдаёт
+		// весь адрес), логировать/оборачивать её нельзя.
+		return fmt.Errorf("clickhouse: invalid DSN")
+	}
+	return nil
+}

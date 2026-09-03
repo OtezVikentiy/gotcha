@@ -19,7 +19,7 @@ import (
 // мере, что и Telegram: уведомление на @gmail.com уезжало с полным текстом
 // ошибки, потому что «это же email». А вебхук на собственный сервер во
 // внутренней сети деталей не получал, хотя не покидал контура вовсе — и чтобы
-// их получить, оператору приходилось включать GOTCHA_EXTERNAL_CHANNEL_DETAILS
+// их получить, оператору приходилось включать GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED
 // глобально, открывая заодно и Telegram. Правило по транспорту одновременно
 // пропускало то, что должно было задержать, и задерживало то, что могло
 // пропустить.
@@ -32,7 +32,7 @@ type DetailPolicy struct {
 	// границе метки, а не по строке: «corp.example» покрывает
 	// «mail.corp.example», но не «evilcorp.example».
 	trusted []string
-	// all — GOTCHA_EXTERNAL_CHANNEL_DETAILS: оператор заявил законное основание
+	// all — GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED: оператор заявил законное основание
 	// и разрешил детали кому угодно, включая Telegram.
 	all bool
 }
@@ -52,7 +52,7 @@ type DetailPolicy struct {
 // Поэтому домен организации указывается явно, через trusted
 // (GOTCHA_TRUSTED_RECIPIENTS).
 //
-// allowAll — глобальное разрешение (GOTCHA_EXTERNAL_CHANNEL_DETAILS).
+// allowAll — глобальное разрешение (GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED).
 func NewDetailPolicy(baseURL string, trusted []string, allowAll bool) DetailPolicy {
 	p := DetailPolicy{all: allowAll}
 	if h := hostOfURL(baseURL); h != "" {

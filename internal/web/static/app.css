@@ -4020,7 +4020,7 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	margin: 0 0 14px;
 }
 /* Первая колонка справочных таблиц — имена переменных: не даём длинному
-   GOTCHA_EXTERNAL_CHANNEL_DETAILS растягивать таблицу вдвое. */
+   GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED растягивать таблицу вдвое. */
 .doc-content td:first-child {
 	white-space: nowrap;
 }

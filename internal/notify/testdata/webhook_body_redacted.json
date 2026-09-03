@@ -1,0 +1,10 @@
+{
+  "body": "Project: Storefront\n\nNew issue\n\nhttps://gotcha.example/issues/42",
+  "issue_id": 42,
+  "kind": "new_issue",
+  "project_id": 7,
+  "project_name": "Storefront",
+  "subject": "[Gotcha] New issue · Storefront",
+  "times_seen": 3,
+  "url": "https://gotcha.example/issues/42"
+}

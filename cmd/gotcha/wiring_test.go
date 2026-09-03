@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,13 +48,13 @@ func TestRunEvaluatorsDefaultsAndExplicit(t *testing.T) {
 	}
 }
 
-// TestEvaluatorsDisabledWarningNamesAllSixCycles: GOTCHA_RUN_EVALUATORS гейтит
+// TestEvaluatorsDisabledWarningNamesAllSixCycles: GOTCHA_EVALUATORS_ENABLED гейтит
 // ШЕСТЬ фоновых циклов (metric/trace(perf)/profile/host-оценщики + slo.Evaluator
 // + escalation.Scheduler, см. startEvaluators), но предупреждение при старте
 // раньше называло только четыре — slo и эскалация молчали о себе так же, как
 // правило по метрике молчит без этого предупреждения (W3-D, запись 8 = находка
 // W3-C). Оператор раздельного развёртывания web+ingest без
-// GOTCHA_RUN_EVALUATORS не узнавал, что SLO-алерты и эскалация ВСЕХ пяти
+// GOTCHA_EVALUATORS_ENABLED не узнавал, что SLO-алерты и эскалация ВСЕХ пяти
 // источников инцидентов (не только SLO) тоже не работают.
 func TestEvaluatorsDisabledWarningNamesAllSixCycles(t *testing.T) {
 	for _, want := range []string{"metric", "profile", "host", "slo", "escalation"} {
@@ -115,26 +118,100 @@ func TestDetailPolicyFollowsRecipient(t *testing.T) {
 
 	open := detailPolicy(Config{BaseURL: cfg.BaseURL, ExternalChannelDetails: true})
 	if !open.AllowsDetails(alert.Channel{Kind: alert.ChannelTelegram, Target: "12345"}) {
-		t.Error("при GOTCHA_EXTERNAL_CHANNEL_DETAILS=true детали обязаны уходить всем")
+		t.Error("при GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true детали обязаны уходить всем")
 	}
 	// Лог о действующей политике не должен падать ни в одном режиме.
 	logDetailPolicy(cfg)
 	logDetailPolicy(Config{BaseURL: cfg.BaseURL, ExternalChannelDetails: true})
 }
 
-// TestSetupLoggingAcceptsKnownLevels: нераспознанное значение не должно менять
-// поведение молча — апгрейд с новым параметром иначе тихо поднимал бы
-// детализацию логов на проде.
+// TestLogDetailPolicyLogsTrustedRecipients — m7 (финальное ревью): разбор
+// GOTCHA_TRUSTED_RECIPIENTS не отказывает старт ни на одном значении
+// (невалидное имя просто ни с чем не совпадёт), так что лог на старте —
+// единственная диагностика опечатки в списке. Список обязан попасть в лог в
+// ОБЕИХ ветках logDetailPolicy, а не только когда список реально фильтрует
+// доставку (default) — GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true не должен
+// прятать распознанный список от оператора.
+func TestLogDetailPolicyLogsTrustedRecipients(t *testing.T) {
+	cfg := Config{
+		BaseURL:           "https://gotcha.example.com",
+		TrustedRecipients: []string{"acme.example", "acme2.example"},
+	}
+
+	capture := func(fn func()) string {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		defer slog.SetDefault(prev)
+		fn()
+		return buf.String()
+	}
+
+	trusted := capture(func() { logDetailPolicy(cfg) })
+	if !strings.Contains(trusted, "acme.example") || !strings.Contains(trusted, "acme2.example") {
+		t.Errorf("лог доверенного режима = %q, want оба домена из GOTCHA_TRUSTED_RECIPIENTS", trusted)
+	}
+
+	open := capture(func() {
+		logDetailPolicy(Config{BaseURL: cfg.BaseURL, TrustedRecipients: cfg.TrustedRecipients, ExternalChannelDetails: true})
+	})
+	if !strings.Contains(open, "acme.example") || !strings.Contains(open, "acme2.example") {
+		t.Errorf("лог режима EXTERNAL_CHANNEL_DETAILS_ENABLED=true = %q, want тот же список — флаг не должен прятать его от оператора", open)
+	}
+}
+
+// TestSetupLoggingAcceptsKnownLevels: каждое распознанное сочетание
+// level/format проходит без ошибки и не паникует. cfg.LogLevel/cfg.LogFormat
+// приходят из config.go уже триммленными и в нижнем регистре — здесь
+// проверяются ровно те значения, что setupLogging реально получает.
 func TestSetupLoggingAcceptsKnownLevels(t *testing.T) {
-	for _, level := range []string{"", "debug", "info", "warn", "warning", "error", "nonsense"} {
-		for _, format := range []string{"", "json", "text", "nonsense"} {
-			setupLogging(level, format) // не должно паниковать ни на одном сочетании
+	defer setupLogging("", "") // не оставлять хендлер последней итерации глобальным
+	for _, level := range []string{"", "debug", "info", "warn", "warning", "error"} {
+		for _, format := range []string{"", "json", "text"} {
+			if err := setupLogging(level, format); err != nil {
+				t.Errorf("setupLogging(%q, %q): %v", level, format, err)
+			}
 		}
 	}
 }
 
+// TestSetupLoggingRejectsUnknownLevel — RA-контракт (задача 5, E3): нераспознанный
+// GOTCHA_LOGGING_LEVEL обязан ронять старт, а не тихо откатываться на Info.
+// Раньше `LOG_LEVEL=trace` во время инцидента давал молчаливый Info без
+// единой диагностики, и оператор отлаживал логгер вместо инцидента.
+func TestSetupLoggingRejectsUnknownLevel(t *testing.T) {
+	if err := setupLogging("trace", "text"); err == nil {
+		t.Error(`setupLogging("trace", "text") must fail, got nil error`)
+	}
+}
+
+// TestSetupLoggingRejectsUnknownFormat — тот же контракт для GOTCHA_LOGGING_FORMAT:
+// раньше нераспознанный формат тихо откатывался на text.
+func TestSetupLoggingRejectsUnknownFormat(t *testing.T) {
+	if err := setupLogging("info", "nonsense"); err == nil {
+		t.Error(`setupLogging("info", "nonsense") must fail, got nil error`)
+	}
+}
+
+// TestSetupLoggingWarningAliasSetsWarnLevel — "warning" (алиас, документирован
+// в обеих локалях) обязан выставлять именно slog.LevelWarn: Info-сообщения
+// после него отфильтрованы, Warn — проходят.
+func TestSetupLoggingWarningAliasSetsWarnLevel(t *testing.T) {
+	defer setupLogging("", "")
+	if err := setupLogging("warning", "text"); err != nil {
+		t.Fatalf("setupLogging: %v", err)
+	}
+	h := slog.Default().Handler()
+	if h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error(`level "warning" must disable Info logs`)
+	}
+	if !h.Enabled(context.Background(), slog.LevelWarn) {
+		t.Error(`level "warning" must enable Warn logs`)
+	}
+}
+
 // TestAutoMaxBufferBytesSafeUnderHeapCeiling: находка P0-1 — дефолтный
-// docker-compose.yml (mem_limit 1g, GOTCHA_MAX_BUFFER_BYTES не задан) даёт
+// docker-compose.yml (mem_limit 1g, GOTCHA_MAX_WRITER_BUFFER_BYTES не задан) даёт
 // потолок кучи 819 МиБ (0.8×1024 МиБ), а пять буферов-«единиц» по flat
 // defaultMaxBufBytes=256 МиБ (событие+SpanWriter×2+метрика+профиль) суммарно
 // весят 1.25 ГиБ — больше потолка. Авто-дефолт обязан вывести per-writer-cap,
@@ -171,13 +248,13 @@ func TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault(t *testing.T) {
 }
 
 // TestEffectiveMaxBufferBytesRespectsExplicitOverride: явный
-// GOTCHA_MAX_BUFFER_BYTES обязан побеждать авто-дефолт в обе стороны — и
+// GOTCHA_MAX_WRITER_BUFFER_BYTES обязан побеждать авто-дефолт в обе стороны — и
 // когда оператор просит больше, и когда меньше того, что вывел бы авто-режим.
 func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
 	const heapCeiling = 800 << 20
 	const explicit = 24 << 20 // как в docker-compose.small.yml
 	if got := effectiveMaxBufferBytes(explicit, heapCeiling); got != explicit {
-		t.Errorf("effectiveMaxBufferBytes(explicit=%d, heap=%d) = %d, явный GOTCHA_MAX_BUFFER_BYTES проигнорирован",
+		t.Errorf("effectiveMaxBufferBytes(explicit=%d, heap=%d) = %d, явный GOTCHA_MAX_WRITER_BUFFER_BYTES проигнорирован",
 			explicit, heapCeiling, got)
 	}
 	if got := effectiveMaxBufferBytes(explicit, 0); got != explicit {
@@ -211,7 +288,7 @@ func TestVersionRequestedForms(t *testing.T) {
 // TestExportRowRetention: Store.PurgeRows чистит терминальные строки заявок
 // на выгрузку по finished_at независимо от expires_at (janitor.go). Если бы
 // retention был жёстко зафиксирован на 30 сутках, оператор, поднявший
-// GOTCHA_EXPORT_TTL_HOURS выше 720 (30 суток), получил бы удаление строки
+// GOTCHA_EXPORT_RETENTION_HOURS выше 720 (30 суток), получил бы удаление строки
 // ЖИВОЙ (ещё не истёкшей по собственному TTL) заявки раньше её срока —
 // retention обязан расти вместе с TTL, а не оставаться позади него.
 func TestExportRowRetention(t *testing.T) {

@@ -43,7 +43,7 @@ Recovery deliberately requires the value to move 5% past the threshold on the sa
 
 A background evaluator sweeps every enabled rule **once a minute** — that is the default, changed via `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` (seconds).
 
-Note: in `web` and `ingest` modes the evaluators do **not** run by default — a rule would be enabled and never fire. Enable them explicitly with `GOTCHA_RUN_EVALUATORS=true`, or run the instance in `all` or `uptime` mode. On each pass, it computes the metric's aggregate over the window `[now − window, now)` — the same query that draws the chart on the metric detail page. If there's no data at all for the window, no decision is made (the incident is neither opened nor closed; it waits for the next pass).
+Note: in `web` and `ingest` modes the evaluators do **not** run by default — a rule would be enabled and never fire. Enable them explicitly with `GOTCHA_EVALUATORS_ENABLED=true`, or run the instance in `all` or `uptime` mode. On each pass, it computes the metric's aggregate over the window `[now − window, now)` — the same query that draws the chart on the metric detail page. If there's no data at all for the window, no decision is made (the incident is neither opened nor closed; it waits for the next pass).
 
 Then:
 - no open incident and the value breaches the threshold → an **incident opens**, a "firing" notification is sent;
@@ -58,7 +58,7 @@ Below the rules table, on the same page, is the project's incident list (the las
 
 ## Notifications and channels
 
-Open/close notifications are queued to **every enabled delivery channel in the project** — the same channels configured under [Alerts](/docs/alerts) (email/webhook/Telegram); there's no separate channel setup for metrics. Email is skipped with a warning in the log if SMTP isn't configured (see [Configuration](/docs/configuration)). Whether the metric name, values, and threshold appear in a notification follows the same per-recipient trust policy as issue alerts: details reach trusted recipients only (your own infrastructure; how trust is decided is described in [Alerts](/docs/alerts)), everyone else gets a link to the rules page and the event kind, and `GOTCHA_EXTERNAL_CHANNEL_DETAILS=true` lifts the restriction for every recipient.
+Open/close notifications are queued to **every enabled delivery channel in the project** — the same channels configured under [Alerts](/docs/alerts) (email/webhook/Telegram); there's no separate channel setup for metrics. Email is skipped with a warning in the log if SMTP isn't configured (see [Configuration](/docs/configuration)). Whether the metric name, values, and threshold appear in a notification follows the same per-recipient trust policy as issue alerts: details reach trusted recipients only (your own infrastructure; how trust is decided is described in [Alerts](/docs/alerts)), everyone else gets a link to the rules page and the event kind, and `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true` lifts the restriction for every recipient.
 
 ## The threshold on the chart
 

@@ -13,7 +13,7 @@ In practice:
 
 - **mail on a public service** (`@gmail.com`, `@yandex.ru`, and the like) no longer receives the error text — only a link to the issue in the interface;
 - **mail on your organization's domain** stops receiving details too, if that domain differs from the instance host, until you list it in `GOTCHA_TRUSTED_RECIPIENTS`;
-- **a webhook pointed at your internal infrastructure** now does receive details — previously that required turning `GOTCHA_EXTERNAL_CHANNEL_DETAILS` on globally, which opened up Telegram as well.
+- **a webhook pointed at your internal infrastructure** now does receive details — previously that required turning `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` on globally, which opened up Telegram as well.
 
 If your mail lives on an organization domain, add it before upgrading:
 
@@ -78,7 +78,7 @@ If the list isn't empty — **any of this upgrade's twenty-four indexes** showin
 DROP INDEX CONCURRENTLY <index-name>;
 ```
 
-then re-apply migrations (restart with `GOTCHA_AUTO_MIGRATE=true`, or run `--migrate-only` again) — this time `IF NOT EXISTS` won't find an object under that name and will build the index from scratch.
+then re-apply migrations (restart with `GOTCHA_AUTO_MIGRATE_ENABLED=true`, or run `--migrate-only` again) — this time `IF NOT EXISTS` won't find an object under that name and will build the index from scratch.
 
 ## What changes when upgrading: ingest DSN keys get a type
 
@@ -103,6 +103,232 @@ the full breakdown. For an existing install, this upgrade breaks nothing:
 Splitting your sources across the new typed keys without any ingest downtime
 is a separate, optional task — see [Ingest keys](/docs/keys) for the steps.
 
+## What changes when upgrading from versions before 0.23.0: ten environment variables renamed
+
+Release v0.23.0 ("contract cleanup") renamed ten server environment
+variables. A variable set under its old name with a non-empty value refuses
+to start with an explicit "old name → new name" message, instead of
+silently falling back to a default — this check has no expiration date and
+still applies on any installation, however old.
+
+| Before | After |
+|---|---|
+| `GOTCHA_METRIC_EVAL_INTERVAL` | `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_PROFILE_EVAL_INTERVAL` | `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_HOST_EVAL_INTERVAL` | `GOTCHA_HOST_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_SLO_EVAL_INTERVAL` | `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` |
+| `GOTCHA_ESCALATION_INTERVAL` | `GOTCHA_ESCALATION_INTERVAL_SECONDS` |
+| `GOTCHA_RETENTION_DAYS` | `GOTCHA_EVENT_RETENTION_DAYS` |
+| `GOTCHA_SERVER_URL` | `GOTCHA_PROBE_SERVER_URL` |
+| `GOTCHA_INGEST_RATE_LIMIT` | `GOTCHA_INGEST_RATE_PER_SEC` |
+| `GOTCHA_AGENT_DIST_DIR` | `GOTCHA_DIST_DIR` |
+| `GOTCHA_AGENT_DIST_RATE_PER_MIN` | `GOTCHA_DIST_RATE_PER_MIN` |
+
+If you're upgrading from a version older than v0.23.0, go through every
+place where these variables are set, the same way described below for the
+pre-1.0 contract freeze wave: `.env`, systemd units, the `.env` of remote
+probes on other hosts.
+
+## What changes when upgrading: seventeen environment variables renamed
+
+This upgrade renames seventeen server environment variables — the unit of
+measurement, the modifier, and the subsystem now read honestly from the
+name itself, rather than from what sits next to it. A variable set under
+its old name with a non-empty value refuses to start with an explicit
+"old name → new name" message, instead of silently falling back to a
+default.
+
+| Before | After |
+|---|---|
+| `GOTCHA_ADDR` | `GOTCHA_LISTEN_ADDR` |
+| `GOTCHA_LOG_LEVEL` | `GOTCHA_LOGGING_LEVEL` |
+| `GOTCHA_LOG_FORMAT` | `GOTCHA_LOGGING_FORMAT` |
+| `GOTCHA_LOCAL_REGION` | `GOTCHA_UPTIME_LOCAL_REGION` |
+| `GOTCHA_REGISTRATION` | `GOTCHA_REGISTRATION_MODE` |
+| `GOTCHA_EXPORT_TTL_HOURS` | `GOTCHA_EXPORT_RETENTION_HOURS` |
+| `GOTCHA_SCRUB_KEYS` | `GOTCHA_SCRUB_DENY_KEYS` |
+| `GOTCHA_SCRUB_ALLOW_KEYS` | `GOTCHA_SCRUB_KEEP_KEYS` |
+| `GOTCHA_RUN_EVALUATORS` | `GOTCHA_EVALUATORS_ENABLED` |
+| `GOTCHA_AUTO_MIGRATE` | `GOTCHA_AUTO_MIGRATE_ENABLED` |
+| `GOTCHA_ALLOW_INSECURE_SECRET` | `GOTCHA_SECRET_KEY_ALLOW_INSECURE` |
+| `GOTCHA_MAX_BUFFER_BYTES` | `GOTCHA_MAX_WRITER_BUFFER_BYTES` |
+| `GOTCHA_MAX_QUEUE_BYTES` | `GOTCHA_MAX_INGEST_QUEUE_BYTES` |
+| `GOTCHA_PROBE_TOKEN` | `GOTCHA_PROBE_KEY` |
+| `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` |
+| `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
+| `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
+
+After upgrading the server, go through **every** place where you set
+`GOTCHA_*` variables, not just the `.env` next to `docker-compose.yml`:
+systemd units, separate CI/CD `.env` files, and, separately, **the `.env` of
+remote probes (`--mode=probe`) running on other hosts** — the server upgrade
+physically cannot reach them, and they'll keep running with the old names
+until you update them by hand.
+
+The most visible case of this blast radius is the remote probe's token
+variable: its new name is `GOTCHA_PROBE_KEY` (the before/after line is in
+the table above). Probes that are already registered and
+running hold the old name in their host's environment. Restart them with
+the variable under its new name right after upgrading the central server —
+otherwise, the next time a probe restarts (an image update, a host reboot,
+and so on), it will refuse to start instead of quietly reconnecting with
+its old value. See [Probes](/docs/probes) and
+[Configuration](/docs/configuration).
+
+The same blast radius applies to three environment variables of the
+`gotcha-agent` binary itself — one with a type change: the collection
+interval is now a whole number of seconds, not a duration string like
+"30s". The agent is also a separate process on a remote host that the
+server upgrade can't reach: if `/etc/gotcha-agent/gotcha-agent.env` still
+holds them under their old names, the next time you run the update command
+it refuses with a `config check failed` message — the installer validates
+the config with the new binary (`--check`) before it ever touches the
+systemd unit, so the old agent keeps running unchanged on its old binary
+until you fix the names in that file by hand (per the table below) and run
+the update command again. The current names and ranges are in the variable
+reference on the [Hosts](/docs/hosts) page.
+
+| Before | After |
+|---|---|
+| `GOTCHA_AGENT_INTERVAL` | `GOTCHA_AGENT_INTERVAL_SECONDS` |
+| `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
+| `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
+
+## What changes when upgrading: compose and build variables renamed
+
+The same wave renames eleven more variables — eight Docker Compose
+substitution variables (the database containers' passwords and memory
+ceilings, the app container's memory ceiling and network MTU, the published
+port and bind address) get the `GOTCHA_COMPOSE_` prefix, and the three
+variables the `Makefile` uses to pass build metadata into
+`docker-compose.yml` (`DOCKER_BUILD_ENV`) get the `GOTCHA_BUILD_` prefix.
+The variables themselves and their defaults are documented in
+[Configuration](/docs/configuration), under the "Compose-only variables"
+and "Build-only variables" sections.
+
+| Before | After |
+|---|---|
+| `GOTCHA_PG_PASSWORD` | `GOTCHA_COMPOSE_PG_PASSWORD` |
+| `GOTCHA_CH_PASSWORD` | `GOTCHA_COMPOSE_CH_PASSWORD` |
+| `GOTCHA_PG_MEM_LIMIT` | `GOTCHA_COMPOSE_PG_MEM_LIMIT` |
+| `GOTCHA_CH_MEM_LIMIT` | `GOTCHA_COMPOSE_CH_MEM_LIMIT` |
+| `GOTCHA_MEM_LIMIT` | `GOTCHA_COMPOSE_MEM_LIMIT` |
+| `GOTCHA_NET_MTU` | `GOTCHA_COMPOSE_NET_MTU` |
+| `GOTCHA_PORT` | `GOTCHA_COMPOSE_PORT` |
+| `GOTCHA_BIND` | `GOTCHA_COMPOSE_BIND` |
+| `GOTCHA_VERSION` | `GOTCHA_BUILD_VERSION` |
+| `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
+| `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
+
+Unlike the server and agent variables, no gotcha process reads these
+eleven at all — only Docker Compose itself (the `${...}` substitution in
+the compose file) and `make` ever see them. The safety net is the same
+one: `docker-compose.yml` pulls in `.env` wholesale (`env_file`), so an
+old name left in `.env` still reaches the `gotcha` process's environment
+and gets caught by the same "old name → new name" startup refusal, even
+though the process itself never reads it and never did.
+
+If you set these variables somewhere other than `.env` — directly in the
+compose file's `environment:`/`build.args` block, or passed separately to
+`make` (e.g. `make up GOTCHA_COMPOSE_PORT=...`) — rename them there by
+hand, using the table above: the startup refusal can't catch that edit,
+because it never reaches the `gotcha` process's environment.
+
+## What changes when upgrading: a misconfiguration with a typo no longer starts
+
+Before this upgrade, some invalid `GOTCHA_*` values were accepted silently —
+either falling back to the package default, or surfacing not at startup but
+later, the first time the value was actually used (the first mail sent, the
+first database connection, the first export). Everything in the list below
+is now a startup refusal, naming the variable in the error:
+
+- a garbled boolean (`GOTCHA_SCRUB_IP=ture` and the like) — used to disable
+  the setting silently;
+- `GOTCHA_MAX_WRITER_BUFFER_BYTES=0` or `GOTCHA_MAX_INGEST_QUEUE_BYTES=0` —
+  used to fall back to the package default; an explicit `0` (or a negative
+  value) is now a startup refusal;
+- an unrecognized `GOTCHA_LOGGING_LEVEL`/`GOTCHA_LOGGING_FORMAT` — used to
+  fall back to `info`/text silently;
+- `GOTCHA_SMTP_PORT` outside `1..65535` — now an unconditional refusal, even
+  if `GOTCHA_SMTP_HOST` isn't set;
+- the four export limits (`GOTCHA_EXPORT_MAX_ROWS`, `_MAX_BYTES`,
+  `_DISK_BUDGET_BYTES`, `_RETENTION_HOURS`) — now validated at startup
+  instead of being swallowed into a `slog.Warn` on first use;
+- `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` — now parsed (not connected to) at
+  startup, so a typo surfaces immediately instead of on the first database
+  access;
+- a whitespace-only (but non-empty) `GOTCHA_SECRET_KEY`/`GOTCHA_PG_DSN`/
+  `GOTCHA_CH_DSN` — used to fall back to the default;
+- **`GOTCHA_SECRET_KEY` is now trimmed of surrounding whitespace** — it used
+  to be taken verbatim, space and all. If your key was ever copy-pasted
+  with a trailing space, everything encrypted under it at rest (delivery
+  channel secrets, SSO client secrets) stops decrypting after this upgrade
+  — silently, with no error at startup. Symptom: alerts to Telegram/webhook
+  go quiet, SSO login breaks. Recovery: set `GOTCHA_SECRET_KEY_PREV` to the
+  old key value verbatim, space included (unlike `GOTCHA_SECRET_KEY`, this
+  variable is read exactly as given, precisely so this recovery works),
+  alongside the new `GOTCHA_SECRET_KEY` — the app decrypts with either key
+  and encrypts with the new one. After restarting with the new key, unset
+  `GOTCHA_SECRET_KEY_PREV`. Full rotation procedure —
+  [Privacy and 152-FZ](/docs/privacy).
+
+**Preflight check.** Before upgrading a real instance, it's worth checking
+ahead of time that the new binary accepts your `.env` with no findings —
+but `--migrate-only` doesn't just check the config: once the checks pass,
+it connects to the database and actually applies migrations to it. Run
+this check on staging, not on production — the same command the "Running
+migrations as a separate step" section below uses to initialize a schema:
+
+```bash
+docker compose --env-file .env run --rm --no-deps gotcha --migrate-only
+```
+
+Config parsing and every check above (plus the rename checks from the
+sections before this one) run before the app opens a single database
+connection — if `.env` has anything wrong, this command exits non-zero with
+a single `ERROR ... GOTCHA_NAME: ...` line before any migration touches
+staging. Exit zero doesn't just mean "config is clean" — it also means a
+real migration run against whichever database the command pointed at
+already happened (see below for exactly where).
+
+**Where the migrations actually land.** In this repository's stock
+`docker-compose.yml`, the `gotcha` service's `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN`
+are set directly in its `environment:` block, pointing at the
+`postgres`/`clickhouse` services of the same compose project — that block
+**overrides** the same names coming from `.env` (see the comment above it
+in the file), so the command above physically cannot reach a production
+database through a production DSN copied into `.env`: it always goes to the
+local containers of whichever stand it's run on. This doesn't remove the
+need for care in two cases:
+
+- if you run this some other way than through the stock `docker-compose.yml`
+  — say, the binary directly (`gotcha --migrate-only` with `.env` exported
+  into the process environment) — then `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` come
+  from `.env` literally, with nothing overriding them, and a production DSN
+  in a copied `.env` goes exactly where it points;
+- if the "staging" you're running this on isn't a separate
+  `docker-compose.yml` at all but the same production project (same host,
+  same compose stack) — then "the local containers of this stand" simply
+  are the production database.
+
+If you need to point the preflight check at a specific staging database
+instead of the compose project's local containers (a shared staging
+Postgres/ClickHouse instance, say), override both DSNs explicitly with
+`-e` — it takes precedence over `environment:` in `docker-compose.yml`
+(verified: `-e` really does win over both `--env-file` and the service's
+`environment:` block):
+
+```bash
+docker compose --env-file .env run --rm --no-deps \
+  -e GOTCHA_PG_DSN='postgres://user:pass@staging-pg:5432/gotcha_staging?sslmode=disable' \
+  -e GOTCHA_CH_DSN='clickhouse://user:pass@staging-ch:9000/gotcha_staging' \
+  gotcha --migrate-only
+```
+
+**Never put a production DSN here** — `-e` overrides `docker-compose.yml`'s
+built-in safety net literally, and the command applies migrations to
+whichever database you point it at, with no further confirmation.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:
@@ -116,7 +342,7 @@ make up-rebuild
 Breaking this down:
 
 1. `git pull` — pulls the new code from the repository.
-2. `make up-rebuild` — rebuilds the `gotcha` application image with the updated code and recreates the container (Postgres/ClickHouse use pre-built official images; you don't need to rebuild those — Compose pulls the version pinned in `docker-compose.yml` automatically if it changed). On startup (this is the default behavior, `GOTCHA_AUTO_MIGRATE=true` by default), the app **automatically** applies any missing schema migrations to PostgreSQL and ClickHouse before it starts accepting requests — nothing else to do.
+2. `make up-rebuild` — rebuilds the `gotcha` application image with the updated code and recreates the container (Postgres/ClickHouse use pre-built official images; you don't need to rebuild those — Compose pulls the version pinned in `docker-compose.yml` automatically if it changed). On startup (this is the default behavior, `GOTCHA_AUTO_MIGRATE_ENABLED=true` by default), the app **automatically** applies any missing schema migrations to PostgreSQL and ClickHouse before it starts accepting requests — nothing else to do.
 
 Build through `make`, not through a bare `docker compose build`: only `make` computes the git version and stamps it into the binary. An image built with bare compose commands works, but reports itself as "no build metadata" in `/version`, on the About page and in the `gotcha_build_info` metric — you lose the ability to verify that what is deployed is what you think it is.
 
@@ -124,21 +350,21 @@ If you only want to update the image without rebuilding from source (e.g. you're
 
 ## What automatic migrations mean
 
-By default (`GOTCHA_AUTO_MIGRATE=true`), on every start the app checks the schema version in the database and, if it's behind the version baked into the binary, applies the missing migrations automatically before opening its port. This is convenient for the typical "single server, single process" setup — an upgrade boils down to the three commands above.
+By default (`GOTCHA_AUTO_MIGRATE_ENABLED=true`), on every start the app checks the schema version in the database and, if it's behind the version baked into the binary, applies the missing migrations automatically before opening its port. This is convenient for the typical "single server, single process" setup — an upgrade boils down to the three commands above.
 
 ## Running migrations as a separate step (multiple app replicas)
 
 If you're running **multiple** `gotcha` processes at once (e.g. separate `--mode=ingest` and `--mode=web` processes, or several replicas behind a load balancer — an advanced deployment scenario beyond the stock `docker-compose.yml`), letting every replica auto-migrate on startup is risky: multiple processes could try to apply migrations at the same time. For that case:
 
-1. Set `GOTCHA_AUTO_MIGRATE=false` for all replicas.
+1. Set `GOTCHA_AUTO_MIGRATE_ENABLED=false` for all replicas.
 2. Before starting the replicas, run migrations **once** with `--migrate-only`:
 
    ```bash
    docker compose run --rm --no-deps gotcha --migrate-only
    ```
 
-   That invocation applies the schema and exits 0 without opening the HTTP port or starting ingest or uptime — an init job in the proper sense. The flag turns migration on by itself, so `GOTCHA_AUTO_MIGRATE=false` in the replicas' environment does not get in its way. It is rejected together with `--mode=probe`, and says so: a probe never opens a database connection, and exiting 0 quietly would claim a schema was applied when it was not.
-3. After that, start (or restart) all replicas with `GOTCHA_AUTO_MIGRATE=false` — they'll verify the database schema matches the version built into the binary and refuse to start if it doesn't (this is a safeguard against silently accepting data into a stale schema — an explicit refusal at startup beats silent errors on every insert).
+   That invocation applies the schema and exits 0 without opening the HTTP port or starting ingest or uptime — an init job in the proper sense. The flag turns migration on by itself, so `GOTCHA_AUTO_MIGRATE_ENABLED=false` in the replicas' environment does not get in its way. It is rejected together with `--mode=probe`, and says so: a probe never opens a database connection, and exiting 0 quietly would claim a schema was applied when it was not.
+3. After that, start (or restart) all replicas with `GOTCHA_AUTO_MIGRATE_ENABLED=false` — they'll verify the database schema matches the version built into the binary and refuse to start if it doesn't (this is a safeguard against silently accepting data into a stale schema — an explicit refusal at startup beats silent errors on every insert).
 
 For the stock `docker-compose.yml` in this repository (a single `gotcha` service in `all` mode), separate migrations aren't needed — use the standard upgrade flow above.
 
@@ -193,7 +419,7 @@ This is why "take a backup before upgrading" at the top of this page stays manda
 
 ## Agents on hosts are updated separately
 
-Upgrading the instance doesn't touch the `gotcha-agent` installed on your servers: they keep reporting on the old version. A host's card shows an "Update available" badge with the command ready to copy — updating is the same install command, run on the host without the environment variables (see [Hosts](/docs/hosts)). An older agent stays compatible: metric names and the protocol didn't change, the update carries fixes to the agent itself.
+Upgrading the instance doesn't touch the `gotcha-agent` installed on your servers: they keep reporting on the old version. A host's card shows an "Update available" badge with the command ready to copy — updating is the same install command, run on the host without the environment variables (see [Hosts](/docs/hosts)). An older agent stays compatible: metric names and the protocol didn't change, the update carries fixes to the agent itself. The rename of the agent's own environment variables in this upgrade is covered in the previous section.
 
 ## Verify after upgrading
 
@@ -213,5 +439,5 @@ A line reading `applying migrations` not followed by an error message means migr
 ## What's next
 
 - [Backup & Restore](/docs/backup-restore).
-- [Configuration](/docs/configuration) — the full variable reference, including `GOTCHA_AUTO_MIGRATE`.
+- [Configuration](/docs/configuration) — the full variable reference, including `GOTCHA_AUTO_MIGRATE_ENABLED`.
 - [Installation](/docs/installation).

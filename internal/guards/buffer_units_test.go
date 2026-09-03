@@ -14,7 +14,7 @@ import (
 
 // Сторож на autoBufferCapUnits: константа в cmd/gotcha/main.go делит долю
 // потолка кучи между буферами писателей, и её расхождение с реальным числом
-// буферов тихо ломает авто-дефолт GOTCHA_MAX_BUFFER_BYTES — каждый буфер
+// буферов тихо ломает авто-дефолт GOTCHA_MAX_WRITER_BUFFER_BYTES — каждый буфер
 // получает больше, чем ему причитается, и сумма перерастает потолок ровно в
 // том сценарии, ради которого потолок и заводился (долгий простой ClickHouse).
 //
@@ -88,7 +88,7 @@ func TestAutoBufferCapUnitsMatchesWriters(t *testing.T) {
 			"Единица — независимый буфер, а не писатель: SpanWriter держит два "+
 			"(txBuf и spanBuf) и считается за два.\n"+
 			"Появился буфер — поднять константу в %s И выправить описание "+
-			"авто-дефолта GOTCHA_MAX_BUFFER_BYTES в internal/docs/{ru,en}/configuration.md, "+
+			"авто-дефолта GOTCHA_MAX_WRITER_BUFFER_BYTES в internal/docs/{ru,en}/configuration.md, "+
 			"иначе на каждый буфер выдаётся больше, чем есть.",
 			unitsConstName, declared, units, wiringFile)
 	}
@@ -246,7 +246,7 @@ func TestBufferShareConstantsPinned(t *testing.T) {
 			t.Errorf("%s = %g, а сторож ждёт %g (%s).\n"+
 				"Доля изменилась осознанно? Тогда пройти по обоим языкам "+
 				"internal/docs/{ru,en}/configuration.md: описание авто-дефолта "+
-				"GOTCHA_MAX_BUFFER_BYTES и строку GOTCHA_MEM_LIMIT в таблице. "+
+				"GOTCHA_MAX_WRITER_BUFFER_BYTES и строку GOTCHA_COMPOSE_MEM_LIMIT в таблице. "+
 				"Там четыре числа — потолок кучи, доля под буферы, объём на буфер "+
 				"и сумма flat-константы, — и все они следствия этих долей. "+
 				"Выправив прозу, поднять значение здесь.",

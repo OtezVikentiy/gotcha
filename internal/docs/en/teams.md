@@ -30,7 +30,7 @@ If the server has no SMTP configured, the invite is still created but no email i
 
 Until it is accepted, an invitation is listed under "Awaiting acceptance" on the same page and can be revoked there — mistype an address, and revoking kills the link before a stranger can use it. Accepting removes the invitation from the list and adds the member.
 
-What happens next depends on the instance's **registration mode** (`GOTCHA_REGISTRATION`, see [Configuration](/docs/configuration)):
+What happens next depends on the instance's **registration mode** (`GOTCHA_REGISTRATION_MODE`, see [Configuration](/docs/configuration)):
 
 - **open** — self-registration is always open; an invite is just a way to add someone with a specific role right away;
 - **invite** (default) — self-registration closes once the instance has its first user; joining afterward requires a valid invite link (or OAuth/SSO, if a pending invite exists for that email);

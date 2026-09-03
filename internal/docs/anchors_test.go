@@ -90,3 +90,59 @@ func TestInPageAnchorLinksResolve(t *testing.T) {
 		}
 	}
 }
+
+// TestCrossPageLinksResolve: каждая ссылка вида [текст](/docs/slug) или
+// [текст](/docs/slug#якорь) обязана вести на страницу, которая реально есть
+// в registry текущей локали, а якорь (если указан) — на существующий id
+// заголовка ЦЕЛЕВОЙ страницы той же локали.
+//
+// TestInPageAnchorLinksResolve проверяет только ссылки на якоря ВНУТРИ той же
+// страницы (`href="#..."`) — опечатка в slug'е соседней страницы или в её
+// якоре (например, `/docs/upgrade` → `/docs/upgrad`, или правильный slug с
+// протухшим `#якорем`) им не ловится и не роняет сборку: markdown-ссылка на
+// несуществующую страницу — не ошибка компиляции, автор замечает её только
+// щёлкнув по ней в браузере. Целевую страницу рендерим через docs.Render —
+// это даёт готовый список id заголовков (транслитерация уже применена) без
+// повторной реализации slugify здесь.
+func TestCrossPageLinksResolve(t *testing.T) {
+	// Якорь захватывается ЛЮБЫМИ символами до закрывающей кавычки, а не
+	// закрытым классом `[a-z0-9-]+`: закрытый класс не матчится на опечатке
+	// вида `#security-bezopasnostX` (заглавная буква не входит в класс), и
+	// такая ссылка просто выпадает из FindAllStringSubmatch — регэксп молча
+	// пропускает битую ссылку вместо того, чтобы её проверить и завалить тест.
+	crossLink := regexp.MustCompile(`href="(/docs/[a-z0-9-]+)(?:#([^"]*))?"`)
+	for _, locale := range []string{"ru", "en"} {
+		pages := docs.Pages(locale)
+		known := make(map[string]bool, len(pages))
+		for _, p := range pages {
+			known[p.Slug] = true
+		}
+		for _, p := range pages {
+			html, _, ok := docs.Render(locale, p.Slug)
+			if !ok {
+				t.Fatalf("нет страницы %s/%s", locale, p.Slug)
+			}
+			for _, m := range crossLink.FindAllStringSubmatch(html, -1) {
+				target, anchor := strings.TrimPrefix(m[1], "/docs/"), m[2]
+				if !known[target] {
+					t.Errorf("%s/%s: ссылка на /docs/%s, а такой страницы нет в registry",
+						locale, p.Slug, target)
+					continue
+				}
+				if anchor == "" {
+					continue
+				}
+				targetHTML, _, ok := docs.Render(locale, target)
+				if !ok {
+					t.Errorf("%s/%s: ссылка на /docs/%s#%s, но целевая страница /docs/%s не рендерится",
+						locale, p.Slug, target, anchor, target)
+					continue
+				}
+				if !strings.Contains(targetHTML, `id="`+anchor+`"`) {
+					t.Errorf("%s/%s: ссылка на /docs/%s#%s, а заголовка с таким id на странице /docs/%s нет",
+						locale, p.Slug, target, anchor, target)
+				}
+			}
+		}
+	}
+}

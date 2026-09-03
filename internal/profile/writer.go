@@ -367,7 +367,7 @@ func (w *Writer) insert(ctx context.Context, rows []profileRow) error {
 // стеснённом профиле (docker-compose.small.yml: mem_limit 256m) буферы по
 // 256 МиБ физически не могут сработать раньше OOM-killer'а, то есть защита
 // инертна ровно там, где нужнее всего. Ставится из main по
-// GOTCHA_MAX_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
+// GOTCHA_MAX_WRITER_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
 func (w *Writer) SetMaxBufferBytes(n int64) {
 	if n <= 0 {
 		return

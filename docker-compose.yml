@@ -12,23 +12,23 @@ services:
       # Метаданные версии для ldflags из окружения (проставляет make build/up-rebuild);
       # при прямом `docker compose build` образ помечается версией "dev".
       args:
-        VERSION: ${GOTCHA_VERSION:-dev}
-        COMMIT: ${GOTCHA_COMMIT:-}
-        DATE: ${GOTCHA_DATE:-}
+        VERSION: ${GOTCHA_BUILD_VERSION:-dev}
+        COMMIT: ${GOTCHA_BUILD_COMMIT:-}
+        DATE: ${GOTCHA_BUILD_DATE:-}
     restart: unless-stopped
     # Потолок памяти нужен, чтобы он вообще существовал: при недоступном ClickHouse
     # буферы растут по замыслу, и без лимита раньше срабатывает OOM-killer ядра.
-    # GOMEMLIMIT приложение берёт из cgroup само (80%). Поднимается: GOTCHA_MEM_LIMIT=2g.
-    mem_limit: ${GOTCHA_MEM_LIMIT:-1g}
+    # GOMEMLIMIT приложение берёт из cgroup само (80%). Поднимается: GOTCHA_COMPOSE_MEM_LIMIT=2g.
+    mem_limit: ${GOTCHA_COMPOSE_MEM_LIMIT:-1g}
     # Бюджет дренажа при остановке: дефолт Docker (10с) режет корректное завершение
     # (HTTP + 5 писателей телеметрии), теряя буферы. 90с хватает штатному пути.
     stop_grace_period: 90s
     ports:
       # Внешний порт в 59xxx, чтобы не конфликтовать с другими докер-проектами.
-      # Переопределяется: GOTCHA_PORT=... docker compose up.
+      # Переопределяется: GOTCHA_COMPOSE_PORT=... docker compose up.
       #
-      # Бинд по умолчанию — ТОЛЬКО loopback (GOTCHA_BIND=127.0.0.1). Раньше
-      # публиковалось на 0.0.0.0 безусловно: чек-лист прод-развёртывания
+      # Бинд по умолчанию — ТОЛЬКО loopback (GOTCHA_COMPOSE_BIND=127.0.0.1).
+      # Раньше публиковалось на 0.0.0.0 безусловно: чек-лист прод-развёртывания
       # (installation.md) ставит перед приложением TLS-реверс-прокси
       # (nginx/Caddy), но голый HTTP-вход и открытый /metrics (self-телеметрия
       # без аутентификации) оставались доступны напрямую по 59080 В ОБХОД
@@ -39,8 +39,8 @@ services:
       # закрывается по умолчанию. Квикстарту БЕЗ реверс-прокси (чек-лист
       # installation.md отдельно описывает раннюю стадию — открыть
       # http://<server-IP>:59080 до настройки HTTPS) нужен внешний бинд явно:
-      # GOTCHA_BIND=0.0.0.0 в .env.
-      - "${GOTCHA_BIND:-127.0.0.1}:${GOTCHA_PORT:-59080}:8080"
+      # GOTCHA_COMPOSE_BIND=0.0.0.0 в .env.
+      - "${GOTCHA_COMPOSE_BIND:-127.0.0.1}:${GOTCHA_COMPOSE_PORT:-59080}:8080"
     # Признак готовности (/readyz): без него зависший процесс числился Up бесконечно.
     # start_period покрывает первый старт с миграциями. Важно: сам compose unhealthy-
     # контейнер не перезапускает (лишь метка в ps) — см. /docs/self-monitoring.
@@ -73,10 +73,11 @@ services:
     # Значения ниже заданы явно и ПЕРЕКРЫВАЮТ .env: DSN указывают на соседние
     # сервисы этого же compose-файла, и подменять их через .env нечего.
     environment:
-      # Пароли баз — из GOTCHA_PG_PASSWORD/GOTCHA_CH_PASSWORD; дефолт «gotcha» годится
-      # только для квикстарта. Смена, ограничения символов — /docs/configuration.
-      GOTCHA_PG_DSN: postgres://gotcha:${GOTCHA_PG_PASSWORD:-gotcha}@postgres:5432/gotcha?sslmode=disable
-      GOTCHA_CH_DSN: clickhouse://gotcha:${GOTCHA_CH_PASSWORD:-gotcha}@clickhouse:9000/gotcha
+      # Пароли баз — из GOTCHA_COMPOSE_PG_PASSWORD/GOTCHA_COMPOSE_CH_PASSWORD;
+      # дефолт «gotcha» годится только для квикстарта. Смена, ограничения
+      # символов — /docs/configuration.
+      GOTCHA_PG_DSN: postgres://gotcha:${GOTCHA_COMPOSE_PG_PASSWORD:-gotcha}@postgres:5432/gotcha?sslmode=disable
+      GOTCHA_CH_DSN: clickhouse://gotcha:${GOTCHA_COMPOSE_CH_PASSWORD:-gotcha}@clickhouse:9000/gotcha
       # BaseURL обязан совпадать с внешним портом: из него строятся DSN проекта,
       # ссылки на issue в алертах и ссылки-приглашения.
       GOTCHA_BASE_URL: ${GOTCHA_BASE_URL:-http://localhost:59080}
@@ -103,7 +104,7 @@ services:
     image: postgres:17-alpine
     # Потолок памяти — чтобы он существовал (как у gotcha): иначе OOM-killer ядра
     # выбирает жертву по всему хосту. Поднимается переменной.
-    mem_limit: ${GOTCHA_PG_MEM_LIMIT:-512m}
+    mem_limit: ${GOTCHA_COMPOSE_PG_MEM_LIMIT:-512m}
     # Только УНИВЕРСАЛЬНЫЕ настройки носителя (Gotcha требует SSD; дефолты PG — под
     # шпиндель). Пропорциональное ресурсам (shared_buffers и пр.) не трогаем — на
     # большом сервере навредит. Слабое железо — docker-compose.small.yml.
@@ -116,7 +117,7 @@ services:
     environment:
       POSTGRES_USER: gotcha
       # Действует только при инициализации тома; смена — через ALTER USER (см. gotcha).
-      POSTGRES_PASSWORD: ${GOTCHA_PG_PASSWORD:-gotcha}
+      POSTGRES_PASSWORD: ${GOTCHA_COMPOSE_PG_PASSWORD:-gotcha}
       POSTGRES_DB: gotcha
     # start_period: иначе бюджет проверок тратится на инициализацию и первый запуск
     # на минимальном VPS падает «dependency failed to start».
@@ -145,12 +146,12 @@ services:
     # Потолок памяти обязателен: без cgroup-лимита ClickHouse берёт 0.9 памяти ХОСТА
     # (3.6 ГБ на рекомендованных 4) и становится жертвой OOM. CPU не ограничиваем —
     # лимит только вредит merge/запросам. Слабое железо — docker-compose.small.yml.
-    mem_limit: ${GOTCHA_CH_MEM_LIMIT:-2g}
+    mem_limit: ${GOTCHA_COMPOSE_CH_MEM_LIMIT:-2g}
     environment:
       CLICKHOUSE_DB: gotcha
       CLICKHOUSE_USER: gotcha
       # Действует только при инициализации тома; смена — через ALTER USER (см. gotcha).
-      CLICKHOUSE_PASSWORD: ${GOTCHA_CH_PASSWORD:-gotcha}
+      CLICKHOUSE_PASSWORD: ${GOTCHA_COMPOSE_CH_PASSWORD:-gotcha}
     healthcheck:
       # 127.0.0.1, не localhost: внутри контейнера localhost = ::1, а ClickHouse слушает
       # только IPv4 (иначе healthcheck зависает). start_period — как у postgres.
@@ -174,7 +175,7 @@ networks:
     driver_opts:
       # MTU сети контейнеров: Docker берёт 1500, не глядя на аплинк хоста. Трогать
       # только по симптому — /docs/configuration разбирает, по какому именно.
-      com.docker.network.driver.mtu: "${GOTCHA_NET_MTU:-1500}"
+      com.docker.network.driver.mtu: "${GOTCHA_COMPOSE_NET_MTU:-1500}"
 
 volumes:
   pgdata:

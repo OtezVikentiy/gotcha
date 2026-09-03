@@ -70,7 +70,8 @@ This builds the `gotcha` image and starts three containers: `gotcha` (the app,
 `--mode=all`), `postgres`, and `clickhouse`. The app listens on
 `http://localhost:59080` by default (the compose file maps host port 59080 to
 the container's 8080 to avoid clashing with other local stacks). Override the
-host port with `GOTCHA_PORT`, e.g. `GOTCHA_PORT=8080 docker compose up -d`.
+host port with `GOTCHA_COMPOSE_PORT`, e.g.
+`GOTCHA_COMPOSE_PORT=8080 docker compose up -d`.
 Equivalent `make` targets exist: `make up`, `make logs`, `make down`, `make
 health` (see the Makefile for the full list).
 
@@ -85,8 +86,8 @@ curl -sf http://localhost:59080/readyz
 
 1. Open `http://localhost:59080/register` and create the first user. On a
    fresh instance, the first registered user always succeeds regardless of
-   `GOTCHA_REGISTRATION` and is automatically granted instance-admin
-   ("bootstrap" — see `GOTCHA_REGISTRATION` below for how later signups are
+   `GOTCHA_REGISTRATION_MODE` and is automatically granted instance-admin
+   ("bootstrap" — see `GOTCHA_REGISTRATION_MODE` below for how later signups are
    gated).
 2. Create an organization and a project from the UI.
 3. Open the project's **Setup** page for its DSN and per-language snippets —
@@ -114,36 +115,36 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GOTCHA_ADDR` | `:8080` | HTTP listen address. |
+| `GOTCHA_LISTEN_ADDR` | `:8080` | HTTP listen address. |
 | `GOTCHA_BASE_URL` | `http://localhost:8080` | Public URL of this instance; used to build project DSNs, alert links, and invite links. Must match how users reach the instance. |
 | `GOTCHA_PG_DSN` | `postgres://gotcha:gotcha@localhost:5432/gotcha?sslmode=disable` | PostgreSQL connection string. |
 | `GOTCHA_CH_DSN` | `clickhouse://localhost:9000/gotcha` | ClickHouse connection string. |
-| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs OAuth state/session cookies. **The default is public** (it's in the source) and enables account takeover via OAuth on any non-localhost deployment — the process refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) on a non-local `GOTCHA_BASE_URL` unless this is overridden (escape hatch: `GOTCHA_ALLOW_INSECURE_SECRET=1`, dev only). Generate a strong random value for any real deployment. |
+| `GOTCHA_SECRET_KEY` | `insecure-dev-secret` | Signs OAuth state/session cookies. **The default is public** (it's in the source) and enables account takeover via OAuth on any non-localhost deployment — the process refuses to start in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) on a non-local `GOTCHA_BASE_URL` unless this is overridden (escape hatch: `GOTCHA_SECRET_KEY_ALLOW_INSECURE=1`, dev only). Generate a strong random value for any real deployment. |
 | `GOTCHA_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_FROM` | unset / `587` / unset / unset / unset | Outbound email for invites and email alert channels; email delivery is disabled until `GOTCHA_SMTP_HOST` is set. |
 | `GOTCHA_EVENT_RETENTION_DAYS` | `90` | Retention for events/transactions/Web Vitals in ClickHouse. |
 | `GOTCHA_SPAN_RETENTION_DAYS` | `30` | Retention for trace spans. |
 | `GOTCHA_METRIC_RETENTION_DAYS` | `30` | Retention for metric points. |
 | `GOTCHA_PROFILE_RETENTION_DAYS` | `7` | Retention for profile samples. |
 | `GOTCHA_INCIDENT_RETENTION_DAYS` | `90` | Retention for resolved uptime incidents in PostgreSQL. Separate from the others because an incident has no telemetry of its own and the public status page shows 90 days of history. |
-| `GOTCHA_PURGE_RECONCILE_HOURS` | `24` | How often to look for ClickHouse telemetry of projects that no longer exist and queue it for deletion. Deleting a project queues that work in the same transaction; this check covers the case where no request was ever queued. `0` turns it off. |
+| `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` | `24` | How often to look for ClickHouse telemetry of projects that no longer exist and queue it for deletion. Deleting a project queues that work in the same transaction; this check covers the case where no request was ever queued. `0` turns it off. |
 | `GOTCHA_EDITION` | `oss` | `oss` or `saas`. Controls the default for the quota variables below (`oss` → 0/unlimited, `saas` → 1,000,000/month). |
 | `GOTCHA_DEFAULT_EVENT_QUOTA` / `_TRANSACTION_QUOTA` / `_METRIC_QUOTA` / `_PROFILE_QUOTA` | `0` in `oss` (unlimited) | Default monthly ingest quota assigned to new organizations. **If you expose a project DSN publicly, set these to a real cap** — `oss` defaults to unlimited. |
-| `GOTCHA_REGISTRATION` | `invite` | `open` (anyone can self-register), `invite` (self-registration closed except invite links), or `closed` (no self-registration at all). The very first user always succeeds regardless of this setting (instance-admin bootstrap). |
+| `GOTCHA_REGISTRATION_MODE` | `invite` | `open` (anyone can self-register), `invite` (self-registration closed except invite links), or `closed` (no self-registration at all). The very first user always succeeds regardless of this setting (instance-admin bootstrap). |
 | `GOTCHA_SCRUB_IP` / `GOTCHA_SCRUB_EMAIL` | `true` / `true` | Zero out the reporting user's IP/email server-side before storage. On by default. |
-| `GOTCHA_SCRUB_KEYS` | built-in denylist (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `access_token`, `refresh_token`, `session`, `credit_card`, `card_number`, `cvv`, …) | Comma-separated key names redacted from tags/contexts/stack traces/span data. This variable extends the built-in list (use `GOTCHA_SCRUB_ALLOW_KEYS` to drop a specific built-in key). |
+| `GOTCHA_SCRUB_DENY_KEYS` | built-in denylist (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `access_token`, `refresh_token`, `session`, `credit_card`, `card_number`, `cvv`, …) | Comma-separated key names redacted from tags/contexts/stack traces/span data. This variable extends the built-in list (use `GOTCHA_SCRUB_KEEP_KEYS` to drop a specific built-in key). |
 | `GOTCHA_SSRF_ALLOW_PRIVATE` | `false` | Allow uptime checks and outbound webhooks to target private/loopback/link-local addresses. Keep `false` on any multi-tenant instance. |
 | `GOTCHA_OIDC_ENABLED` / `GOTCHA_YANDEX_ENABLED` / `GOTCHA_VK_ENABLED` | `false` | Enable each SSO provider independently; each requires its own client ID/secret (and issuer, for OIDC) once enabled. |
 
 Further runtime variables (`GOTCHA_MAX_EVENT_BYTES`,
 `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS`, `GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS`,
 `GOTCHA_HOST_EVAL_INTERVAL_SECONDS`,
-`GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE`,
-`GOTCHA_EXTERNAL_CHANNEL_DETAILS`, `GOTCHA_UPTIME_CONCURRENCY`,
-`GOTCHA_LOCAL_REGION`, `GOTCHA_PROBE_TOKEN`, `GOTCHA_PROBE_SERVER_URL`,
+`GOTCHA_OUTBOX_RETENTION_DAYS`, `GOTCHA_AUTO_MIGRATE_ENABLED`,
+`GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED`, `GOTCHA_UPTIME_CONCURRENCY`,
+`GOTCHA_UPTIME_LOCAL_REGION`, `GOTCHA_PROBE_KEY`, `GOTCHA_PROBE_SERVER_URL`,
 `GOTCHA_SCRUB_FREETEXT`) and the full OIDC/Yandex/VK variable set are listed
 with their defaults in [`.env.example`](.env.example) and described in the
 built-in [Configuration](internal/docs/en/configuration.md) guide. They are
-ordinary environment variables — no rebuild needed; `GOTCHA_PROBE_TOKEN` and
+ordinary environment variables — no rebuild needed; `GOTCHA_PROBE_KEY` and
 `GOTCHA_PROBE_SERVER_URL` are in fact required to run a remote probe.
 
 ## Build from source

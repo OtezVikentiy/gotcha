@@ -30,7 +30,7 @@ func TestCheckSubcommand(t *testing.T) {
 		cmd := exec.Command(bin, "--check")
 		cmd.Env = append(os.Environ(),
 			"GOTCHA_AGENT_ENDPOINT=https://gotcha.example",
-			"GOTCHA_AGENT_KEY=test-key",
+			"GOTCHA_AGENT_INGEST_KEY=test-key",
 		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("--check на валидном конфиге: %v\n%s", err, out)
@@ -39,7 +39,7 @@ func TestCheckSubcommand(t *testing.T) {
 
 	t.Run("битый конфиг — выход 2", func(t *testing.T) {
 		cmd := exec.Command(bin, "--check")
-		cmd.Env = append(os.Environ(), "GOTCHA_AGENT_ENDPOINT=", "GOTCHA_AGENT_KEY=")
+		cmd.Env = append(os.Environ(), "GOTCHA_AGENT_ENDPOINT=", "GOTCHA_AGENT_INGEST_KEY=")
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok {
