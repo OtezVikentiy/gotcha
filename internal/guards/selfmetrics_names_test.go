@@ -154,7 +154,7 @@ var bareQueueSuffix = regexp.MustCompile(`^gotcha_[a-z]+_(depth|oldest_seconds|f
 // поймать «сторож ослеп» (сканер сломан или указывает не туда) отдельно от
 // «золотой список устарел».
 //
-// Нелитеральный ТИП (первый аргумент — не селектор selfmetrics.<Ident>, а
+// Нелитеральный ТИП (первый аргумент — не селектор <pkg>.<Ident>, а
 // переменная/параметр) в файле, реально импортирующем selfmetrics, роняет
 // тест той же t.Errorf: обёртка вида
 // func reg(r *selfmetrics.Registry, typ selfmetrics.Type, name string, …)
@@ -163,6 +163,28 @@ var bareQueueSuffix = regexp.MustCompile(`^gotcha_[a-z]+_(depth|oldest_seconds|f
 // действовать на всё, что регистрируется через такую обёртку. Пятиаргументный
 // Add/AddInt чужого, не относящегося к selfmetrics типа в файле БЕЗ импорта
 // пакета false positive не даёт: проверка ограничена importsSelfMetrics.
+//
+// <pkg> — не жёстко "selfmetrics": импорт под алиасом (import sm ".../
+// internal/selfmetrics") меняет локальное имя, под которым файл ссылается на
+// пакет, — сверка идёт с ФАКТИЧЕСКИМ локальным именем из этого же импорта
+// (localPkgName), а не с зашитой строкой. Без этого файл с алиасом либо
+// целиком выпадал бы из скана (метрики через sm.Counter выглядели бы как
+// "чужой тип" и попадали бы в fail-open той же природы, что чинила правка 1,
+// либо, если fail-open починен буквально, ложно считался бы нелитеральным
+// типом — алиас так же легитимен, как и его отсутствие). Слепой (dot-)
+// импорт (import "..."."/internal/selfmetrics") делает localPkgName равным
+// ".", с которым ни один идентификатор совпасть не может, — тип метрики
+// тогда обязан выглядеть как голый Counter/Gauge без селектора вовсе,
+// call.Args[0] окажется *ast.Ident, а не *ast.SelectorExpr, и упадёт в ту же
+// ветку "нелитеральный тип": слепой импорт делает исходный код
+// нечитаемым для этого сканера настолько же, насколько и для человека.
+//
+// Предфильтр по телу файла — не по подстроке "selfmetrics." (её не даёт
+// алиас: файл с "sm.Counter" физически не содержит "selfmetrics." нигде,
+// кроме самой строки импорта), а по фрагменту ПУТИ импорта
+// "internal/selfmetrics\"", который остаётся в тексте импорта независимо от
+// локального имени — это только более дешёвая версия того же условия
+// "импортирует ли файл этот пакет", а не альтернатива AST-проверке ниже.
 func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -173,24 +195,28 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 			strings.HasPrefix(gf.Path, "internal/guards/") {
 			continue
 		}
-		if !strings.Contains(gf.Body, "selfmetrics.") {
+		if !strings.Contains(gf.Body, `internal/selfmetrics"`) {
 			continue
 		}
 		f, err := parser.ParseFile(fset, gf.Path, gf.Body, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", gf.Path, err)
 		}
-		// importsSelfMetrics ограничивает следующую проверку (нелитеральный
-		// первый аргумент Add/AddInt) файлами, реально импортирующими пакет
-		// selfmetrics: без этого фильтра пятиаргументный Add/AddInt чужого типа
-		// в файле, где строка "selfmetrics." встретилась хотя бы раз (например
-		// в комментарии), давал бы ложное срабатывание.
+		// importsSelfMetrics/localPkgName снимаются с РЕАЛЬНОГО импорта файла
+		// (f.Imports), а не с догадки по тексту: localPkgName — то имя,
+		// которым файл в действительности ссылается на пакет (алиас, "." для
+		// dot-импорта, иначе голое "selfmetrics").
 		importsSelfMetrics := false
+		localPkgName := "selfmetrics"
 		for _, imp := range f.Imports {
-			if strings.Trim(imp.Path.Value, `"`) == selfMetricsImportPath {
-				importsSelfMetrics = true
-				break
+			if strings.Trim(imp.Path.Value, `"`) != selfMetricsImportPath {
+				continue
 			}
+			importsSelfMetrics = true
+			if imp.Name != nil {
+				localPkgName = imp.Name.Name
+			}
+			break
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -205,14 +231,14 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 			typSel, ok := call.Args[0].(*ast.SelectorExpr)
 			if !ok {
 				if importsSelfMetrics {
-					t.Errorf("%s: self-metric type is not a literal selfmetrics.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos)
+					t.Errorf("%s: self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos, localPkgName)
 				}
 				return true
 			}
 			pkg, ok := typSel.X.(*ast.Ident)
-			if !ok || pkg.Name != "selfmetrics" {
+			if !ok || pkg.Name != localPkgName {
 				if importsSelfMetrics {
-					t.Errorf("%s: self-metric type is not a literal selfmetrics.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos)
+					t.Errorf("%s: self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos, localPkgName)
 				}
 				return true
 			}
