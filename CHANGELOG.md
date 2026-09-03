@@ -91,7 +91,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass silently and apply a default, the same class of mistake the renamed-
   variable check above already caught for old names. `GOTCHA_COMPOSE_*` and
   `GOTCHA_BUILD_*` are exempt: Compose and the build itself read those, not
-  the gotcha process.
+  the gotcha process. `gotcha-agent` gained the matching check for its own
+  `GOTCHA_AGENT_*` namespace (a foreign `GOTCHA_*` variable — the server's,
+  say, on a shared host — is still ignored, same as before).
+- **Breaking.** A number of previously silent misconfigurations now refuse to
+  start the process instead of falling back to a default or failing later,
+  somewhere less obvious, the first time the value is used. If your `.env`
+  hits any of these, fix it before upgrading:
+  - a garbled boolean (`GOTCHA_SCRUB_IP=ture` and the like) used to disable
+    the setting silently; it's now a startup error naming the variable;
+  - `GOTCHA_MAX_WRITER_BUFFER_BYTES=0` / `GOTCHA_MAX_INGEST_QUEUE_BYTES=0`
+    used to fall back to the package default; an explicit `0` (or a
+    negative value) is now a startup error — if you meant "no limit", that
+    was never the convention here;
+  - an unrecognized `GOTCHA_LOGGING_LEVEL` or `GOTCHA_LOGGING_FORMAT` used
+    to fall back to `info`/text silently; it's now a startup error;
+  - `GOTCHA_SMTP_PORT` outside `1..65535` is now a startup error,
+    unconditionally — including a stray `GOTCHA_SMTP_PORT` left over with no
+    `GOTCHA_SMTP_HOST` set;
+  - the four export limits (`GOTCHA_EXPORT_MAX_ROWS`, `_MAX_BYTES`,
+    `_DISK_BUDGET_BYTES`, `_RETENTION_HOURS`) are now validated at startup;
+    an instance already running with a broken limit (previously swallowed
+    into a `slog.Warn` at first use) will not come back up after this
+    upgrade until the value is fixed;
+  - `GOTCHA_PG_DSN` / `GOTCHA_CH_DSN` are now parsed (not connected to, just
+    parsed) at startup — a typo surfaces immediately instead of on the first
+    database connection;
+  - a whitespace-only `GOTCHA_SECRET_KEY` / `GOTCHA_PG_DSN` / `GOTCHA_CH_DSN`
+    used to fall back to the (wrong, for a real deployment) default; it's
+    now a startup error naming the variable;
+  - **worse than the rest:** `GOTCHA_SECRET_KEY` is now trimmed of
+    surrounding whitespace — it used to be taken verbatim, space and all.
+    If your key was ever copy-pasted with a trailing space, everything
+    encrypted under it at rest (delivery channel secrets, SSO client
+    secrets) stops decrypting after this upgrade, silently — the symptom is
+    alerts to Telegram/webhook going quiet and SSO login breaking, with no
+    error at startup naming the cause. See the next entry for the recovery
+    path, and [Upgrade](/docs/upgrade) for the full procedure.
+
+  Before upgrading a real instance, run the new binary against a copy of
+  your `.env` on staging first — see the new section in
+  [Upgrade](/docs/upgrade) for a command that exercises every one of these
+  checks without touching production.
+- **Breaking.** `GOTCHA_SECRET_KEY_PREV` (the rotation key, see
+  [Privacy and 152-FZ](/docs/privacy)) is now read verbatim, with no
+  trimming of surrounding whitespace — unlike `GOTCHA_SECRET_KEY` (previous
+  entry), which is now trimmed. This is deliberate, and it's what makes
+  rotation an actual recovery path for the previous entry: if your old key
+  had a trailing space, set `GOTCHA_SECRET_KEY_PREV` to that exact old
+  value (space included) alongside a new, trimmed `GOTCHA_SECRET_KEY`,
+  restart once, then unset `GOTCHA_SECRET_KEY_PREV` — see
+  [Upgrade](/docs/upgrade) for the full steps. Trimming `_PREV` the same
+  way `GOTCHA_SECRET_KEY` is trimmed would have made the two identical and
+  the rotation refuse to start (`must differ from GOTCHA_SECRET_KEY`),
+  closing off the only recovery path.
 
 ## [0.33.0] - 2026-09-03
 

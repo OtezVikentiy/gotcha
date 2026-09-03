@@ -234,6 +234,60 @@ compose file's `environment:`/`build.args` block, or passed separately to
 hand, using the table above: the startup refusal can't catch that edit,
 because it never reaches the `gotcha` process's environment.
 
+## What changes when upgrading: a misconfiguration with a typo no longer starts
+
+Before this upgrade, some invalid `GOTCHA_*` values were accepted silently —
+either falling back to the package default, or surfacing not at startup but
+later, the first time the value was actually used (the first mail sent, the
+first database connection, the first export). Everything in the list below
+is now a startup refusal, naming the variable in the error:
+
+- a garbled boolean (`GOTCHA_SCRUB_IP=ture` and the like) — used to disable
+  the setting silently;
+- `GOTCHA_MAX_WRITER_BUFFER_BYTES=0` or `GOTCHA_MAX_INGEST_QUEUE_BYTES=0` —
+  used to fall back to the package default; an explicit `0` (or a negative
+  value) is now a startup refusal;
+- an unrecognized `GOTCHA_LOGGING_LEVEL`/`GOTCHA_LOGGING_FORMAT` — used to
+  fall back to `info`/text silently;
+- `GOTCHA_SMTP_PORT` outside `1..65535` — now an unconditional refusal, even
+  if `GOTCHA_SMTP_HOST` isn't set;
+- the four export limits (`GOTCHA_EXPORT_MAX_ROWS`, `_MAX_BYTES`,
+  `_DISK_BUDGET_BYTES`, `_RETENTION_HOURS`) — now validated at startup
+  instead of being swallowed into a `slog.Warn` on first use;
+- `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` — now parsed (not connected to) at
+  startup, so a typo surfaces immediately instead of on the first database
+  access;
+- a whitespace-only (but non-empty) `GOTCHA_SECRET_KEY`/`GOTCHA_PG_DSN`/
+  `GOTCHA_CH_DSN` — used to fall back to the default;
+- **`GOTCHA_SECRET_KEY` is now trimmed of surrounding whitespace** — it used
+  to be taken verbatim, space and all. If your key was ever copy-pasted
+  with a trailing space, everything encrypted under it at rest (delivery
+  channel secrets, SSO client secrets) stops decrypting after this upgrade
+  — silently, with no error at startup. Symptom: alerts to Telegram/webhook
+  go quiet, SSO login breaks. Recovery: set `GOTCHA_SECRET_KEY_PREV` to the
+  old key value verbatim, space included (unlike `GOTCHA_SECRET_KEY`, this
+  variable is read exactly as given, precisely so this recovery works),
+  alongside the new `GOTCHA_SECRET_KEY` — the app decrypts with either key
+  and encrypts with the new one. After restarting with the new key, unset
+  `GOTCHA_SECRET_KEY_PREV`. Full rotation procedure —
+  [Privacy and 152-FZ](/docs/privacy).
+
+**Preflight check.** Before upgrading a real instance, run the new binary
+against a copy of your real `.env` on staging — the same command the
+"Running migrations as a separate step" section below uses to initialize a
+schema:
+
+```bash
+docker compose --env-file .env run --rm --no-deps gotcha --migrate-only
+```
+
+Config parsing and every check above (plus the rename checks from the
+sections before this one) run before the app opens a single database
+connection — if `.env` has anything wrong, this command exits non-zero with
+a single `ERROR ... GOTCHA_NAME: ...` line before any migration touches
+staging. Exit zero means the config is clean (and staging's schema is
+updated by the same run, as a side effect).
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

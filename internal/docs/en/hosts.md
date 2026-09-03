@@ -98,6 +98,8 @@ journalctl -u gotcha-agent -n 50
 
 Except for the required ones on first install, these variables are applied once — at the moment the install command runs — and land in `/etc/gotcha-agent/gotcha-agent.env`. To change them later, edit the file and run `sudo systemctl restart gotcha-agent` (re-running the installer without the variables won't pick them up, and it explicitly fails if only optional ones are left in the command — on purpose, so a value never gets silently dropped).
 
+Like the server (see [Configuration](/docs/configuration)), the agent refuses to start on a typo INSIDE its own namespace — a variable prefixed `GOTCHA_AGENT_` that isn't in the table above (`GOTCHA_AGENT_INTERVAL_SECOND` missing the trailing `S`, and the like). A foreign `GOTCHA_*` variable in the host's shared `.env` (the server's `GOTCHA_PG_DSN`, say, if the server and the agent sit on the same host) is still ignored — the agent never reads it, and refusing to start over it would be overreach.
+
 ### OpenTelemetry Collector (alternative)
 
 The `otelcol-contrib` collector is a third-party process reaching the same result, with its own set of dependencies rather than the Gotcha binary. It isn't the default path anymore, but it remains a fully supported alternative — for example, if you already run `otelcol-contrib` for other purposes, or on a platform/architecture outside Linux amd64/arm64+systemd that the agent supports.

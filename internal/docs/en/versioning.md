@@ -18,7 +18,7 @@ or with a major version bump:
 | The migration schema | migrations are forward-compatible — a database on N reaches N+1 without manual intervention |
 | The backup format | a backup taken today restores on a newer version |
 | Self-metric names | the names and labels of the metrics documented in [Monitoring gotcha itself](/docs/self-monitoring), except the ones explicitly marked temporary |
-| The outgoing webhook body | [the body shape is frozen](/docs/self-monitoring); adding a new field is not a breaking change — parse it tolerant of fields you don't recognize |
+| The outgoing webhook body | [the body shape is frozen](/docs/alerts#webhook-body-format); adding a new field is not a breaking change — parse it tolerant of fields you don't recognize |
 | The `GOTCHA_AGENT_*` contract | the agent's environment variables and the protocol it speaks to the server |
 | Addresses of existing status pages | a status page's published URL does not change on its own |
 
