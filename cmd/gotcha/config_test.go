@@ -1862,19 +1862,30 @@ var renamedEnvVarNewNameChecks = map[string]struct {
 // непустым значением роняет старт (envcontract.Renamed), а не молча
 // подменяется дефолтом. Сообщение обязано называть И старое, И новое имя —
 // оператор должен сразу понять, что чинить.
+//
+// Подтест на КАЖДУЮ пару реестра (t.Run по старому имени), а не одна
+// проверка на sortedRenamedOldNames()[0]: взятие только алфавитно первой
+// пары — вырожденное прочтение требования «итерация по envcontract.Renamed»
+// и ровно тот анти-паттерн, на котором проект уже обжигался (таблица без
+// реального обхода защищает одну строку из многих, а не все). При такой
+// проверке неоднородный баг в checkRenamedEnvVars — скажем, срабатывающий
+// не на всех именах, — прошёл бы незамеченным: единственная запись под
+// защитой не покрывает остальные двадцать шесть.
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
-	old := sortedRenamedOldNames()[0]
-	newName := envcontract.Renamed[old]
-
-	_, err := loadConfig(getenvFrom(map[string]string{old: "some-value"}), nil)
-	if err == nil {
-		t.Fatalf("loadConfig: want ошибку на устаревшем %s, получили nil", old)
-	}
-	if !strings.Contains(err.Error(), old) {
-		t.Errorf("err = %q, want упоминание старого имени %s", err, old)
-	}
-	if !strings.Contains(err.Error(), newName) {
-		t.Errorf("err = %q, want упоминание нового имени %s", err, newName)
+	for _, old := range sortedRenamedOldNames() {
+		newName := envcontract.Renamed[old]
+		t.Run(old, func(t *testing.T) {
+			_, err := loadConfig(getenvFrom(map[string]string{old: "some-value"}), nil)
+			if err == nil {
+				t.Fatalf("loadConfig: want ошибку на устаревшем %s, получили nil", old)
+			}
+			if !strings.Contains(err.Error(), old) {
+				t.Errorf("err = %q, want упоминание старого имени %s", err, old)
+			}
+			if !strings.Contains(err.Error(), newName) {
+				t.Errorf("err = %q, want упоминание нового имени %s", err, newName)
+			}
+		})
 	}
 }
 

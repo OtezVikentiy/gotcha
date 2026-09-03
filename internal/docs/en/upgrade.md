@@ -103,6 +103,33 @@ the full breakdown. For an existing install, this upgrade breaks nothing:
 Splitting your sources across the new typed keys without any ingest downtime
 is a separate, optional task — see [Ingest keys](/docs/keys) for the steps.
 
+## What changes when upgrading: seventeen environment variables renamed
+
+This upgrade renames seventeen server environment variables — the unit of
+measurement, the modifier, and the subsystem now read honestly from the
+name itself, rather than from what sits next to it. The full "before →
+after" table is in `CHANGELOG.md`, under the `### Changed` heading of the
+`[Unreleased]` section. A variable set under its old name with a non-empty
+value refuses to start with an explicit "old name → new name" message,
+instead of silently falling back to a default.
+
+After upgrading the server, go through **every** place where you set
+`GOTCHA_*` variables, not just the `.env` next to `docker-compose.yml`:
+systemd units, separate CI/CD `.env` files, and, separately, **the `.env` of
+remote probes (`--mode=probe`) running on other hosts** — the server upgrade
+physically cannot reach them, and they'll keep running with the old names
+until you update them by hand.
+
+The most visible case of this blast radius is the remote probe's token
+variable: its new name is `GOTCHA_PROBE_KEY` (the full before/after line is
+in that same CHANGELOG table). Probes that are already registered and
+running hold the old name in their host's environment. Restart them with
+the variable under its new name right after upgrading the central server —
+otherwise, the next time a probe restarts (an image update, a host reboot,
+and so on), it will refuse to start instead of quietly reconnecting with
+its old value. See [Probes](/docs/probes) and
+[Configuration](/docs/configuration).
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:
