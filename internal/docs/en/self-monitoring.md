@@ -151,13 +151,9 @@ signals.
 an ingest path that has been replaced. Three intake endpoints moved into
 gotcha's own `/api/v1/*` namespace; the old paths still work, but every request
 to them is counted here and answered with `Deprecation` and
-`Link; rel="deprecation"` response headers. `path` is a closed set:
-
-| `path` | Send to instead |
-|---|---|
-| `/logs` | `/api/v1/logs` |
-| `/profiles/pprof` | `/api/v1/profiles/pprof` |
-| `/api/{project}/deployments/` | `/api/v1/{project}/deployments` |
+`Link; rel="deprecation"` response headers. The list of paths, their
+replacements, and the removal deadline live in the
+[Versioning policy](/docs/versioning).
 
 Watch it after upgrading: a non-zero rate means some sender still uses a path
 that will be removed. Once every series here stays flat at zero, you are safe
