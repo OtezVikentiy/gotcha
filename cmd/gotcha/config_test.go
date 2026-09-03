@@ -349,11 +349,18 @@ func TestLoadConfigProbeModeRejectsServerURLWithoutScheme(t *testing.T) {
 
 // TestLoadConfigProbeServerURLNormalized — та же нормализация (E3 T6), что у
 // GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE: хвостовая косая срезается. До
-// этой правки GOTCHA_PROBE_SERVER_URL хвостовую "/" не срезал вовсе —
-// internal/uptime/probeclient.go собирает URL запроса как ServerURL+path
-// (path уже начинается с "/"), и "https://host/" давало бы "https://host//probe/lease".
-// Ассерт ниже воспроизводит именно эту сборку: мутация, убирающая срез слэша
-// в loadConfig, красит именно его — "//probe/lease" в собранном URL.
+// этой правки GOTCHA_PROBE_SERVER_URL хвостовую "/" не срезал вовсе.
+//
+// Ассерт — прямое наблюдаемое свойство cfg.ServerURL, а не синтетическая
+// копия сборки запроса: internal/uptime/probeclient.go.post() уже режет
+// хвостовой слэш САМ (strings.TrimSuffix(c.ServerURL, "/") + path) — точка
+// использования подстрахована независимо от этого теста. Этот тест стережёт
+// контракт КОНФИГУРАЦИИ (единая нормализация на старте, тот же baseurl.Normalize,
+// что у остальных трёх базовых адресов), а не сборку URL запроса пробы —
+// раньше здесь была конкатенация cfg.ServerURL+"/probe/lease" с проверкой
+// "//probe" в результате, что проверяло собственную копию логики теста, а не
+// боевой путь (round 1 ревью задачи 6: probeclient.go и без нормализации в
+// конфиге не даёт двойной слэш благодаря своему TrimSuffix).
 func TestLoadConfigProbeServerURLNormalized(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"https://gotcha.example.com", "https://gotcha.example.com"},
@@ -371,17 +378,14 @@ func TestLoadConfigProbeServerURLNormalized(t *testing.T) {
 		if cfg.ServerURL != tc.want {
 			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q: got %q, want %q", tc.in, cfg.ServerURL, tc.want)
 		}
-		// Сборка запроса — та же конкатенация, что internal/uptime/probeclient.go
-		// делает в post(): ServerURL + path.
-		if built := cfg.ServerURL + "/probe/lease"; strings.Contains(built, "//probe") {
-			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q: собранный URL = %q, двойной слэш перед путём", tc.in, built)
-		}
 	}
 }
 
 // TestLoadConfigProbeServerURLRejectsQuery — та же политика query/fragment,
-// что у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE, и НЕЗАВИСИМО от --mode:
-// мусор в переменной — опечатка оператора в любом режиме.
+// что у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE, но только В --mode=probe:
+// формат вне режима пробы не проверяется вовсе (см.
+// TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns) — переменную
+// никто не читает, и ронять по ней старт было бы тихим breaking change.
 func TestLoadConfigProbeServerURLRejectsQuery(t *testing.T) {
 	for _, v := range []string{
 		"https://gotcha.example.com?token=1",
@@ -448,6 +452,48 @@ func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
 	}
 	if hasWarn(records, "GOTCHA_PROBE_SERVER_URL") {
 		t.Error("предупреждение о GOTCHA_PROBE_SERVER_URL выдано при незаданной переменной")
+	}
+}
+
+// TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns — round 1
+// ревью задачи 6 (CRITICAL): на BASE (до унификации) GOTCHA_PROBE_SERVER_URL
+// вне --mode=probe вообще не разбирался, и невалидное значение там СТАРТ НЕ
+// РОНЯЛО — переменную в этом режиме никто не читает. Безусловный вызов
+// baseurl.Normalize (без гейта режимом) превратил бы это в тихий breaking
+// change: оператор с оставшимся от пробы или опечатанным значением перестал
+// бы стартовать по значению, которое приложение и не собиралось читать. Формат
+// проверяется ТОЛЬКО внутри --mode=probe (см. TestLoadConfigProbeServerURLRejectsQuery
+// и TestLoadConfigProbeModeRejectsServerURLWithoutScheme); вне него —
+// безусловно предупреждение и продолжение старта, независимо от валидности.
+func TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns(t *testing.T) {
+	var records []slog.Record
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	defer slog.SetDefault(prev)
+
+	for _, v := range []string{
+		"not-a-url",
+		"ftp://gotcha.example.com",
+		"https://gotcha.example.com?token=1",
+	} {
+		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_PROBE_SERVER_URL": v}), nil)
+		if err != nil {
+			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q вне --mode=probe: want no error, got %v", v, err)
+			continue
+		}
+		if cfg.ServerURL != v {
+			t.Errorf("GOTCHA_PROBE_SERVER_URL=%q вне --mode=probe: ServerURL = %q, want непотронутое значение %q", v, cfg.ServerURL, v)
+		}
+	}
+	found := false
+	for _, r := range records {
+		if r.Level == slog.LevelWarn && strings.Contains(r.Message, "GOTCHA_PROBE_SERVER_URL") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("нет предупреждения о GOTCHA_PROBE_SERVER_URL для невалидного значения вне --mode=probe")
 	}
 }
 

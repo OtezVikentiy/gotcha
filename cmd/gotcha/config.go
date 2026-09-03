@@ -1187,17 +1187,24 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	cfg.TelegramAPIBase = normalizedTelegramAPIBase
 
-	// GOTCHA_PROBE_SERVER_URL — нормализуем тем же хелпером, если задан,
-	// НЕЗАВИСИМО от режима: мусор в переменной — опечатка оператора в любом
-	// режиме, а не только в --mode=probe. Схему/хост/query проверяем и
+	// GOTCHA_PROBE_SERVER_URL — формат-проверку (тем же baseurl.Normalize)
+	// гейтим режимом пробы: вне --mode=probe переменную никто не читает, и
+	// ронять старт по невалидному-но-неиспользуемому значению — ровно тот
+	// класс тихих breaking-change, ради предотвращения которого делается E3
+	// (round 1 ревью задачи 6: до этой правки "not-a-url" вне --mode=probe
+	// стало отказом старта, хотя на BASE и по контракту это должно быть
+	// молчаливо-игнорируемое значение с предупреждением). Внутри режима
+	// пробы — вся строгость Normalize, как раньше: схему/хост проверяем и
 	// хвостовую «/» срезаем сразу — без этого «https://host/» давало бы
-	// «//probe/lease» в КАЖДОМ запросе пробы (см. internal/uptime/probeclient.go).
-	normalizedServerURL, err := baseurl.Normalize("GOTCHA_PROBE_SERVER_URL", cfg.ServerURL)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.ServerURL = normalizedServerURL
+	// «//probe/lease» в каждом запросе (внутри internal/uptime/probeclient.go
+	// от этого есть отдельная защита на точке использования, TrimSuffix — но
+	// контракт замораживается на уровне конфигурации, а не только там).
 	if cfg.Mode == "probe" {
+		normalizedServerURL, err := baseurl.Normalize("GOTCHA_PROBE_SERVER_URL", cfg.ServerURL)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.ServerURL = normalizedServerURL
 		if cfg.ServerURL == "" {
 			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL is required with --mode=probe")
 		}
@@ -1209,7 +1216,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		// поэтому оператор, скорее всего, либо забыл переключить режим, либо
 		// перенёс переменную из .env пробы по ошибке — тот же паттерн, что
 		// предупреждение о GOTCHA_HSTS_* при выключенном GOTCHA_HSTS_ENABLED
-		// выше.
+		// выше. Безусловно, НЕЗАВИСИМО от того, валидно значение или нет —
+		// формат вне режима пробы не проверяется вовсе (см. выше).
 		slog.Warn("GOTCHA_PROBE_SERVER_URL is set but --mode is not probe — the value is ignored",
 			"mode", cfg.Mode)
 	}
