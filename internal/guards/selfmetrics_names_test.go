@@ -1,6 +1,7 @@
 package guards
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -135,6 +136,18 @@ var wantQueueCanonNames = []string{
 // [a-z]+ подсистемы не захватывает "_").
 var bareQueueSuffix = regexp.MustCompile(`^gotcha_[a-z]+_(depth|oldest_seconds|failed|capacity|bytes)$`)
 
+// nonLiteralSelfMetricTypeMsg — текст ассерта на нелитеральный тип
+// self-метрики, отдельно называющий dot-импорт: под ним тип метрики выглядит
+// как голый идентификатор (Counter/Gauge) без какого-либо селектора вовсе, а
+// не как "<localPkgName>.<Type>" — localPkgName в этом случае равен ".", и
+// подстановка дала бы нечитаемое "..<Type>" вместо описания формы импорта.
+func nonLiteralSelfMetricTypeMsg(localPkgName string) string {
+	if localPkgName == "." {
+		return "self-metric type is not a literal package selector — the file dot-imports selfmetrics, which turns the type into an unqualified identifier and makes it unrecognizable as a frozen literal"
+	}
+	return fmt.Sprintf("self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", localPkgName)
+}
+
 // collectSelfMetrics — реально зарегистрированные в дереве self-метрики:
 // имя → тип (первый строковый литерал и первый аргумент-селектор пакета
 // selfmetrics пятиаргументного Add/AddInt), плюс сырое число найденных
@@ -231,14 +244,14 @@ func collectSelfMetrics(t *testing.T, tree *Tree) (map[string]string, int) {
 			typSel, ok := call.Args[0].(*ast.SelectorExpr)
 			if !ok {
 				if importsSelfMetrics {
-					t.Errorf("%s: self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos, localPkgName)
+					t.Errorf("%s: %s", pos, nonLiteralSelfMetricTypeMsg(localPkgName))
 				}
 				return true
 			}
 			pkg, ok := typSel.X.(*ast.Ident)
 			if !ok || pkg.Name != localPkgName {
 				if importsSelfMetrics {
-					t.Errorf("%s: self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", pos, localPkgName)
+					t.Errorf("%s: %s", pos, nonLiteralSelfMetricTypeMsg(localPkgName))
 				}
 				return true
 			}
