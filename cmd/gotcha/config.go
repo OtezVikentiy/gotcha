@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,17 +20,52 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 )
 
-// exportEnvNames переводит текст ошибки export.Config.Validate() (называет
-// поля структуры — MaxRows, MaxBytes, DiskBudget, TTL) в имена переменных
-// окружения, которыми эти поля наполняются в loadConfig ниже: оператору
-// имя поля Go ни о чём не говорит, а имя переменной — то, что он правит в
-// .env.
-var exportEnvNames = strings.NewReplacer(
-	"MaxRows", "GOTCHA_EXPORT_MAX_ROWS",
-	"MaxBytes", "GOTCHA_EXPORT_MAX_BYTES",
-	"DiskBudget", "GOTCHA_EXPORT_DISK_BUDGET_BYTES",
-	"TTL", "GOTCHA_EXPORT_RETENTION_HOURS",
-)
+// exportFieldEnvNames переводит текст ошибки export.Config.Validate()
+// (называет поля структуры — MaxRows, MaxBytes, DiskBudget, TTL) в имена
+// переменных окружения, которыми эти поля наполняются в loadConfig ниже:
+// оператору имя поля Go ни о чём не говорит, а имя переменной — то, что он
+// правит в .env.
+var exportFieldEnvNames = map[string]string{
+	"MaxRows":    "GOTCHA_EXPORT_MAX_ROWS",
+	"MaxBytes":   "GOTCHA_EXPORT_MAX_BYTES",
+	"DiskBudget": "GOTCHA_EXPORT_DISK_BUDGET_BYTES",
+	"TTL":        "GOTCHA_EXPORT_RETENTION_HOURS",
+}
+
+// exportFieldNameRe находит имена полей exportFieldEnvNames в тексте ошибки
+// ТОЛЬКО целым словом (\b...\b), а не любой подстрокой — минорная находка
+// задачи 11: internal/export/worker.go несёт собственный пакетный термин
+// leaseTTL (внутренняя константа-таймаут переклейма заявки, 20 минут,
+// никогда не читается из env — не поле export.Config вовсе), который
+// заканчивается тем же токеном "TTL". Прежняя strings.NewReplacer билась по
+// голой подстроке и увечила "...строго меньше leaseTTL (%s)" в
+// "...строго меньше leaseGOTCHA_EXPORT_RETENTION_HOURS (%s)" — то же имя,
+// но не то понятие, а сообщение оператору переставало читаться. \b слева от
+// "TTL" внутри "leaseTTL" не находит границы слова (оба символа — часть
+// одного идентификатора), поэтому целословный разбор оставляет его нетронутым.
+var exportFieldNameRe = regexp.MustCompile(`\b(` + strings.Join(exportFieldNames(), "|") + `)\b`)
+
+// exportFieldNames — ключи exportFieldEnvNames для регэкспа выше, в
+// детерминированном порядке (карта иначе даёт недетерминированный порядок
+// альтернатив — сам regexp/syntax от этого не ломается, но воспроизводимость
+// скомпилированного паттерна между прогонами дороже одной сортировки).
+func exportFieldNames() []string {
+	names := make([]string, 0, len(exportFieldEnvNames))
+	for name := range exportFieldEnvNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// translateExportEnvNames — обёртка над exportFieldNameRe/exportFieldEnvNames,
+// вызываемая на err.Error() из export.Config.Validate() перед показом
+// оператору.
+func translateExportEnvNames(msg string) string {
+	return exportFieldNameRe.ReplaceAllStringFunc(msg, func(field string) string {
+		return exportFieldEnvNames[field]
+	})
+}
 
 // devSecretKey — публично известный дефолт GOTCHA_SECRET_KEY для localhost-стендов.
 // Вынесен в константу, т.к. по нему принимаются решения в нескольких местах
@@ -1138,7 +1174,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MaxBytes:   cfg.ExportMaxBytes,
 		DiskBudget: cfg.ExportDiskBudgetBytes,
 	}).Validate(); err != nil {
-		return Config{}, errors.New(exportEnvNames.Replace(err.Error()))
+		return Config{}, errors.New(translateExportEnvNames(err.Error()))
 	}
 	// GOTCHA_TELEGRAM_API_BASE — свой Bot API вместо api.telegram.org.
 	// Отправитель дописывает к адресу «/bot{token}/sendMessage», поэтому

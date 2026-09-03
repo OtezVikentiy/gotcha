@@ -2287,6 +2287,35 @@ func TestLoadConfigExportValidatedAtStartup(t *testing.T) {
 	}
 }
 
+// TestTranslateExportEnvNamesWholeWordOnly — задача 11, минор задачи 4:
+// exportFieldNameRe обязана сопоставлять "TTL"/"MaxRows"/"MaxBytes"/
+// "DiskBudget" ЦЕЛЫМ словом, а не любой подстрокой. internal/export/worker.go
+// несёт собственный пакетный термин leaseTTL (константа-таймаут переклейма,
+// 20 минут — не поле export.Config, никогда не читается из env), который
+// заканчивается тем же токеном "TTL": прежняя strings.NewReplacer версия
+// увечила "...строго меньше leaseTTL (20m0s)" в
+// "...строго меньше leaseGOTCHA_EXPORT_RETENTION_HOURS (20m0s)" — то же имя,
+// но не то понятие.
+func TestTranslateExportEnvNamesWholeWordOnly(t *testing.T) {
+	msg := "export: конфигурация: JobTimeout (15m0s) обязан быть строго меньше leaseTTL (20m0s)"
+	got := translateExportEnvNames(msg)
+	if got != msg {
+		t.Errorf("translateExportEnvNames(%q) = %q, want unchanged (leaseTTL — не поле export.Config, а внутренний пакетный термин)", msg, got)
+	}
+	if strings.Contains(got, "GOTCHA_EXPORT_RETENTION_HOURS") {
+		t.Errorf("translateExportEnvNames(%q) = %q, leaseTTL изуродован подстрочной заменой", msg, got)
+	}
+
+	// Регрессия: настоящее поле TTL как отдельное слово по-прежнему
+	// переводится — целословный разбор не должен был выключить перевод
+	// вовсе.
+	real := "export: конфигурация: TTL (0s) обязан быть положительным"
+	want := "export: конфигурация: GOTCHA_EXPORT_RETENTION_HOURS (0s) обязан быть положительным"
+	if got := translateExportEnvNames(real); got != want {
+		t.Errorf("translateExportEnvNames(%q) = %q, want %q", real, got, want)
+	}
+}
+
 // TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength —
 // GOTCHA_SECRET_KEY_ALLOW_INSECURE разбирается ДО обеих secret-проверок ниже, а
 // не inline через boolEnv() в их && условиях. Раньше при СИЛЬНОМ кастомном
