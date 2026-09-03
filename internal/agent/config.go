@@ -5,6 +5,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -160,48 +161,55 @@ func LoadConfig(getenv func(string) string, environ func() []string) (Config, er
 // (GOTCHA_PG_DSN и т.п.) в общем `.env` одного хоста — легитимный сосед по
 // файлу, агент её никогда не читал и отказ по ней был бы самоуправством
 // (тот же принцип, что у envcontract.CheckRenamedScoped выше — см. её
-// докблок). Но опечатка ВНУТРИ своего же префикса — другое дело: агент
-// штатно стоит на удалённом хосте ОДИН, там нет ни сервера, ни его проверки
-// неизвестных имён (checkUnknownEnvVars, cmd/gotcha/config.go) — без этой
+// докблок) — это единственное настоящее отличие от серверного
+// checkUnknownEnvVars (cmd/gotcha/config.go), которая смотрит на ЛЮБОЕ
+// GOTCHA_*, а не только на свой узкий неймспейс. Но опечатка ВНУТРИ своего
+// же префикса — другое дело: агент штатно стоит на удалённом хосте ОДИН,
+// там нет ни сервера, ни его проверки неизвестных имён — без этой
 // проверки install.sh --check подтверждал бы битый конфиг агента как
 // "config OK", а опечатка (например GOTCHA_AGENT_INTERVAL_SECOND без "S" на
 // конце) молча превращалась бы в «переменная не задана», то есть в тихий
 // дефолт вместо отказа старта.
 //
-// Значение проверяемого имени не смотрится — тот же контракт, что у
-// серверного checkUnknownEnvVars (cmd/gotcha/config.go): опечатка вида
-// GOTCHA_AGENT_INTERVAL_SECOND= (пустое значение) не должна проходить там,
-// где GOTCHA_AGENT_INTERVAL_SECOND=30 не прошло бы. Единственное исключение —
-// имя, которое КОГДА-ТО было легитимным и с тех пор переименовано
-// (envcontract.Renamed): его пустое значение — тот же самый
-// declared-but-unset случай, что уже пропускает CheckRenamedScoped выше
-// (docker-compose штатно прокидывает объявленные, но не заданные
-// переменные пустой строкой) — отказывать по нему здесь второй раз, уже
-// не текстом «renamed to», а общим «unknown», было бы избыточно и хуже
-// диагностикой. Имя, которого не было НИКОГДА (настоящая опечатка), под
-// это исключение не попадает ни при каком значении.
+// Имя из envcontract.Renamed под своим префиксом — ОТДЕЛЬНАЯ ветка, не
+// «unknown»: пара переменных распространения агентских бинарей — старые
+// СЕРВЕРНЫЕ имена (см. envcontract.Renamed — их новые имена без префикса
+// GOTCHA_AGENT_, но старые исторически несут его по недосмотру), не
+// входящие в envcontract.AgentOwned, так что CheckRenamedScoped выше их не
+// ловит вовсе (не в его области). Без этой ветки на такой переменной агент
+// и сервер на ОДНОМ И ТОМ ЖЕ хосте отдавали бы противоречащие вердикты:
+// агент — «unknown, check for typos», сервер — «renamed to <новое имя>».
+// Значение НЕ смотрится — ни здесь, ни в ветке «unknown» ниже:
+// declared-but-unset для по-настоящему ЖИВОГО имени — забота
+// CheckRenamedScoped/envcontract.Known (тех, что уже читает конфиг), а не
+// этой проверки; имя, которое НЕ читает уже никто (переименовано или
+// никогда не существовало), под «пустое = не задано» не подпадает — само
+// его присутствие в `.env`, с любым значением, стоит назвать оператору.
 func checkUnknownAgentEnvVars(environ func() []string) error {
-	var unknown []string
+	var renamed, unknown []string
 	for _, kv := range environ() {
-		name, value, ok := strings.Cut(kv, "=")
+		name, _, ok := strings.Cut(kv, "=")
 		if !ok || !strings.HasPrefix(name, "GOTCHA_AGENT_") {
 			continue
 		}
 		if envcontract.Known[name] {
 			continue
 		}
-		if value == "" {
-			if _, wasRenamed := envcontract.Renamed[name]; wasRenamed {
-				continue
-			}
+		if _, wasRenamed := envcontract.Renamed[name]; wasRenamed {
+			renamed = append(renamed, name)
+			continue
 		}
 		unknown = append(unknown, name)
 	}
-	if len(unknown) == 0 {
-		return nil
+	var errs []error
+	if err := envcontract.RenamedError(renamed); err != nil {
+		errs = append(errs, err)
 	}
-	sort.Strings(unknown)
-	return fmt.Errorf("unknown environment variable(s) in the GOTCHA_AGENT_ namespace, check for typos: %s", strings.Join(unknown, ", "))
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		errs = append(errs, fmt.Errorf("unknown environment variable(s) in the GOTCHA_AGENT_ namespace, check for typos: %s", strings.Join(unknown, ", ")))
+	}
+	return errors.Join(errs...)
 }
 
 // parseBool — тот же разбор булевых значений env, что у parseBool в

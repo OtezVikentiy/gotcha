@@ -54,9 +54,9 @@ func CheckRenamedScoped(getenv func(string) string, old []string) error {
 //
 // Пустое значение переменной — легитимно (docker-compose штатно
 // прокидывает объявленные, но не заданные переменные пустой строкой) и
-// старт не роняет. Сообщение перечисляет ВСЕ найденные старые имена за один
-// проход (отсортированно, для устойчивого текста ошибки между запусками —
-// map не даёт порядка сам по себе), а не только первое найденное.
+// старт не роняет — здесь, где keys уже сузили область до имён, которые
+// эта проверка ЗНАЕТ по имени заранее. Форматирование сообщения не
+// дублируется — RenamedError.
 func checkRenamed(getenv func(string) string, keys []string) error {
 	var found []string
 	for _, k := range keys {
@@ -64,12 +64,26 @@ func checkRenamed(getenv func(string) string, keys []string) error {
 			found = append(found, k)
 		}
 	}
+	return RenamedError(found)
+}
+
+// RenamedError форматирует «имя (renamed to новое-имя)» для произвольного
+// набора найденных старых имён — тот же текст, что CheckRenamedAll/
+// CheckRenamedScoped, для вызывающих, которые находят старые имена ДРУГИМ
+// способом (internal/agent.checkUnknownAgentEnvVars — сканом окружения по
+// префиксу GOTCHA_AGENT_, а не перебором известного списка ключей через
+// getenv) и не должны заново набирать тот же текст руками. found — уже
+// отфильтрованные вызывающим имена (какие включать и с каким условием —
+// решает он; здесь дублируется только форматирование, не отбор). nil/пустой
+// srez — легитимный «ничего не найдено», а не ошибка.
+func RenamedError(found []string) error {
 	if len(found) == 0 {
 		return nil
 	}
-	sort.Strings(found)
-	parts := make([]string, len(found))
-	for i, k := range found {
+	sorted := append([]string(nil), found...)
+	sort.Strings(sorted)
+	parts := make([]string, len(sorted))
+	for i, k := range sorted {
 		parts[i] = fmt.Sprintf("%s (renamed to %s)", k, Renamed[k])
 	}
 	return fmt.Errorf("environment variable(s) renamed, update your .env before upgrading: %s",

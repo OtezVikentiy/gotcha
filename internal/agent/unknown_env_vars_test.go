@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
 // TestCheckUnknownAgentEnvVarsAcceptsKnownVars — регрессия: сама проверка не
@@ -60,18 +62,47 @@ func TestCheckUnknownAgentEnvVarsRejectsTypoEvenWithEmptyValue(t *testing.T) {
 	}
 }
 
-// TestCheckUnknownAgentEnvVarsIgnoresEmptyRenamedName — declared-but-unset:
-// docker-compose штатно прокидывает объявленные, но не заданные переменные
-// пустой строкой (см. TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart).
-// В отличие от опечатки выше, СТАРОЕ ИМЯ, которое когда-то было легитимным
-// (envcontract.Renamed), с пустым значением — не повод отказывать старту:
-// CheckRenamedScoped выше по той же причине пропускает его тем же
-// правилом, и повторный отказ здесь под другим (менее точным) текстом был
-// бы избыточен.
-func TestCheckUnknownAgentEnvVarsIgnoresEmptyRenamedName(t *testing.T) {
+// TestCheckUnknownAgentEnvVarsRejectsEmptyRenamedName — W2-2 (повторное
+// ревью): контракт изменился — старое имя (envcontract.Renamed) с пустым
+// значением больше НЕ declared-but-unset здесь. checkUnknownAgentEnvVars
+// смотрит на ИМЯ, не на значение: переименованное имя не читает уже никто,
+// так что «объявлено, но не задано» для него бессмысленно (в отличие от
+// живого, ещё читаемого имени — там declared-but-unset остаётся законным,
+// это забота CheckRenamedScoped/envcontract.Known, не этой функции).
+// Сообщение — «renamed to», а не «unknown»: старое имя известно поимённо.
+func TestCheckUnknownAgentEnvVarsRejectsEmptyRenamedName(t *testing.T) {
 	old := sortedAgentOwnedOldNames()[0]
-	if err := checkUnknownAgentEnvVars(environFrom(old + "=")); err != nil {
-		t.Errorf("checkUnknownAgentEnvVars(%s=\"\"): %v, want nil (старое имя, пустое — declared-but-unset)", old, err)
+	newName := envcontract.Renamed[old]
+	err := checkUnknownAgentEnvVars(environFrom(old + "="))
+	if err == nil {
+		t.Fatalf("checkUnknownAgentEnvVars(%s=\"\"): want ошибку renamed, получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) || !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание старого %s и нового %s имени", err, old, newName)
+	}
+}
+
+// TestCheckUnknownAgentEnvVarsRejectsForeignRenamedNameUnderOwnPrefix —
+// W2-2: одно из старых СЕРВЕРНЫХ имён распространения агентских бинарей
+// (envcontract.Renamed, см. foreignRenamedNameUnderOwnPrefix), не
+// входящее в envcontract.AgentOwned, но несущее префикс GOTCHA_AGENT_.
+// Живой прогон нашёл: агент отказывал ей текстом «unknown, check for
+// typos», сервер на ТОЙ ЖЕ переменной — «renamed to <новое имя>».
+// Проверка неизвестных имён обязана распознать envcontract.Renamed
+// независимо от AgentOwned — иначе один хост даёт два противоречивых
+// вердикта на одну переменную.
+func TestCheckUnknownAgentEnvVarsRejectsForeignRenamedNameUnderOwnPrefix(t *testing.T) {
+	old := foreignRenamedNameUnderOwnPrefix(t)
+	newName := envcontract.Renamed[old]
+	err := checkUnknownAgentEnvVars(environFrom(old + "=/opt/x"))
+	if err == nil {
+		t.Fatalf("checkUnknownAgentEnvVars(%s=/opt/x): want ошибку renamed, получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) || !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание старого %s и нового %s имени", err, old, newName)
+	}
+	if strings.Contains(err.Error(), "typo") {
+		t.Errorf("err = %q, want текст переименования, а не «unknown … typos»", err)
 	}
 }
 

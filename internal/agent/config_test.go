@@ -365,6 +365,30 @@ func sortedAgentOwnedOldNames() []string {
 	return names
 }
 
+// foreignRenamedNameUnderOwnPrefix — a sortedRenamedOldNames() style lookup
+// for the W2-2 case: an old name outside envcontract.AgentOwned that still
+// carries the GOTCHA_AGENT_ prefix (old SERVER names, historically
+// misnamed with an agent-looking prefix). Found dynamically, not by
+// literal: internal/guards/renamed_env_vars_test.go (TestNoRenamedEnvVarNames)
+// doesn't let old names appear as literals outside renamed.go/CHANGELOG/
+// upgrade.md/renamed_env_contract_test.go, and t.Fatal is deterministic
+// enough (there's exactly one such pair on HEAD) without needing a sorted
+// pick — any match proves the same code path.
+func foreignRenamedNameUnderOwnPrefix(t *testing.T) string {
+	t.Helper()
+	agentOwned := map[string]bool{}
+	for _, old := range envcontract.AgentOwned {
+		agentOwned[old] = true
+	}
+	for old := range envcontract.Renamed {
+		if !agentOwned[old] && strings.HasPrefix(old, "GOTCHA_AGENT_") {
+			return old
+		}
+	}
+	t.Fatal("обход ослеп: в envcontract.Renamed не нашлось имени вне AgentOwned, но под префиксом GOTCHA_AGENT_")
+	return ""
+}
+
 // TestLoadConfigRenamedEnvVarFailsStart — envcontract.AgentOwned (три свои
 // пары, НЕ весь реестр — агент не отвечает за 27 серверных переменных,
 // которые никогда не читает; см. докблок LoadConfig и AgentOwned в
@@ -391,31 +415,42 @@ func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart — пустое значение
-// старого имени не роняет старт: docker-compose штатно прокидывает
-// объявленные, но не заданные переменные пустой строкой. ENDPOINT/KEY заданы
-// явно и валидно — иначе на пустом окружении LoadConfig упал бы по другой,
-// не связанной с переименованием причине, и тест не отличил бы «прошёл
-// renamed-check» от «упал раньше него».
-func TestLoadConfigRenamedEnvVarEmptyDoesNotFailStart(t *testing.T) {
+// TestLoadConfigRenamedEnvVarEmptyNowFailsStart — контракт изменился
+// (повторное ревью, W2-2): раньше пустое значение старого агентского имени
+// было легитимным declared-but-unset (docker-compose штатно прокидывает
+// объявленные, но не заданные переменные пустой строкой) и старт проходил
+// молча. Теперь checkUnknownAgentEnvVars смотрит имя, а не значение, — то
+// же самое старое имя, свойское оно или чужое (см. следующий тест),
+// обязано быть названо «renamed to», потому что declared-but-unset имеет
+// смысл только для переменной, которую что-то ЕЩЁ читает по этому имени, —
+// а переименованное имя не читает уже никто. ENDPOINT/KEY заданы явно и
+// валидно — иначе на пустом окружении LoadConfig упал бы по другой, не
+// связанной с переименованием причине.
+func TestLoadConfigRenamedEnvVarEmptyNowFailsStart(t *testing.T) {
 	old := sortedAgentOwnedOldNames()[0]
-	if _, err := LoadConfig(env(map[string]string{
+	newName := envcontract.Renamed[old]
+	_, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
 		"GOTCHA_AGENT_INGEST_KEY": "pk",
 		old:                       "",
-	})); err != nil {
-		t.Errorf("LoadConfig с пустым устаревшим %s: %v, want nil (пустое значение легитимно)", old, err)
+	}))
+	if err == nil {
+		t.Fatalf("LoadConfig с пустым устаревшим %s: want ошибку (declared-but-unset больше не спасает переименованное имя), получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) || !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание старого %s и нового %s имени", err, old, newName)
 	}
 }
 
-// TestLoadConfigIgnoresOutOfScopeRenamedNames — старое СЕРВЕРНОЕ имя (не
-// входящее в envcontract.AgentOwned), стоящее с непустым значением в общем
-// .env хоста, не должно ронять старт агента: он никогда его не читал ни до,
-// ни после переименования, и отказ по нему был бы самоуправством, а не
-// защитой — агент проверяет ТОЛЬКО свои старые имена, а не весь реестр из
-// 30 записей, включая 27 чужих. ENDPOINT/KEY заданы явно и
-// валидно, чтобы тест проверял именно эту ветку, а не общий отказ на их
-// отсутствие.
+// TestLoadConfigIgnoresOutOfScopeRenamedNames — старое СЕРВЕРНОЕ имя ВНЕ
+// префикса GOTCHA_AGENT_ (не входящее в envcontract.AgentOwned И не
+// начинающееся с этого префикса — см. следующий тест про пару, которая
+// формально «не своя», но всё же под своим префиксом), стоящее в общем
+// .env хоста, не должно ронять старт агента ни в каком виде: он никогда
+// его не читал ни до, ни после переименования, и отказ по нему был бы
+// самоуправством — агент вообще не смотрит имена без своего префикса.
+// ENDPOINT/KEY заданы явно и валидно, чтобы тест проверял именно эту
+// ветку, а не общий отказ на их отсутствие.
 func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
 	agentOwned := map[string]bool{}
 	for _, old := range envcontract.AgentOwned {
@@ -423,13 +458,19 @@ func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
 	}
 	outOfScope := ""
 	for old := range envcontract.Renamed {
-		if !agentOwned[old] {
+		// Без исключения по префиксу обход мог бы (недетерминированно,
+		// порядок обхода map) выбрать одну из пары старых СЕРВЕРНЫХ имён
+		// распространения агентских бинарей — формально не в AgentOwned,
+		// но несущих префикс GOTCHA_AGENT_, и потому ИМЕННО ИХ агент
+		// обязан назвать «renamed to» (см. тест ниже), а не проигнорировать
+		// молча.
+		if !agentOwned[old] && !strings.HasPrefix(old, "GOTCHA_AGENT_") {
 			outOfScope = old
 			break
 		}
 	}
 	if outOfScope == "" {
-		t.Fatal("обход ослеп: в envcontract.Renamed не нашлось имени вне AgentOwned")
+		t.Fatal("обход ослеп: в envcontract.Renamed не нашлось имени вне AgentOwned и вне префикса GOTCHA_AGENT_")
 	}
 	cfg, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
@@ -441,6 +482,34 @@ func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
 	}
 	if cfg.Endpoint != "https://g.example" {
 		t.Errorf("Endpoint = %q, want https://g.example", cfg.Endpoint)
+	}
+}
+
+// TestLoadConfigRejectsForeignRenamedNameUnderOwnPrefix — W2-2 (повторное
+// ревью): пара переменных распространения агентских бинарей — старые
+// СЕРВЕРНЫЕ имена, не входящие в envcontract.AgentOwned, но несущие
+// префикс GOTCHA_AGENT_ по историческим причинам (см.
+// foreignRenamedNameUnderOwnPrefix выше). Живой прогон до этого теста
+// показал: агент на такой переменной говорил «unknown, check for typos», а
+// сервер на той же переменной — «renamed to <новое имя>»: один хост, одна
+// переменная, два противоречивых вердикта. Агент обязан сказать то же
+// самое, что сервер.
+func TestLoadConfigRejectsForeignRenamedNameUnderOwnPrefix(t *testing.T) {
+	old := foreignRenamedNameUnderOwnPrefix(t)
+	newName := envcontract.Renamed[old]
+	_, err := LoadConfig(env(map[string]string{
+		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
+		"GOTCHA_AGENT_INGEST_KEY": "pk",
+		old:                       "/opt/x",
+	}))
+	if err == nil {
+		t.Fatalf("LoadConfig с %s=/opt/x: want ошибку renamed, получили nil", old)
+	}
+	if !strings.Contains(err.Error(), old) || !strings.Contains(err.Error(), newName) {
+		t.Errorf("err = %q, want упоминание старого %s и нового %s имени", err, old, newName)
+	}
+	if strings.Contains(err.Error(), "typo") {
+		t.Errorf("err = %q, want текст переименования, а не «unknown … typos» — это не опечатка, а известное старое имя", err)
 	}
 }
 
