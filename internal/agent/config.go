@@ -6,10 +6,13 @@ package agent
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/baseurl"
+	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
 // Config — публичный контракт GOTCHA_AGENT_* (фиксируется набело, спека §1.4).
@@ -18,7 +21,7 @@ type Config struct {
 	Key                string        // публичный ключ проекта (Bearer)
 	Hostname           string        // переопределение host.name; "" — os.Hostname в Run
 	CACert             string        // путь к PEM CA (самоподписанные инстансы)
-	Interval           time.Duration // 10s..5m, дефолт 30s
+	Interval           time.Duration // 10s..5m (env — целые секунды, 10..300), дефолт 30s
 	InsecureSkipVerify bool          // крайнее средство; рекомендуемый путь — CACert
 	Environment        string        // resource-метка deployment.environment; "" — не эмитится
 	Role               string        // resource-метка host.role; "" — не эмитится
@@ -26,13 +29,71 @@ type Config struct {
 
 const (
 	defaultInterval = 30 * time.Second
-	minInterval     = 10 * time.Second // ниже — самоDoS ключом по ingest
-	maxInterval     = 5 * time.Minute  // выше — «тишина» порогов ложно срабатывает
+	minIntervalSecs = 10  // ниже — самоDoS ключом по ingest
+	maxIntervalSecs = 300 // выше — «тишина» порогов ложно срабатывает
+
+	// maxInterval — то же значение диапазона, что maxIntervalSecs, в
+	// исходном представлении Config.Interval (time.Duration): run_test.go
+	// использует его напрямую, минуя LoadConfig/GOTCHA_AGENT_INTERVAL_SECONDS.
+	maxInterval = maxIntervalSecs * time.Second
 )
+
+// checkRenamedEnvVars — envcontract.Renamed, встреченное с непустым
+// значением, роняет старт агента с подсказкой «старое → новое», тем же
+// приёмом, что checkRenamedEnvVars в cmd/gotcha/config.go (независимая
+// копия: internal/agent не может импортировать package main). Проверяется
+// ВЕСЬ реестр, а не только три агентские пары: install.sh/hosts.go штатно
+// кладут агентские и серверные переменные в общий .env одного хоста, и
+// оператор с устаревшим именем — хоть серверным, хоть агентским — обязан
+// узнать об этом при рестарте ЛЮБОГО из двух процессов, а не только того,
+// который эту конкретную переменную реально читает.
+func checkRenamedEnvVars(getenv func(string) string) error {
+	var found []string
+	for old := range envcontract.Renamed {
+		if getenv(old) != "" {
+			found = append(found, old)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	parts := make([]string, len(found))
+	for i, old := range found {
+		parts[i] = fmt.Sprintf("%s (renamed to %s)", old, envcontract.Renamed[old])
+	}
+	return fmt.Errorf("environment variable(s) renamed, update your .env before upgrading: %s",
+		strings.Join(parts, ", "))
+}
+
+// intNum разбирает голое целое число секунд. Название функции — не
+// совпадение с cmd/gotcha/config.go: internal/guards/env_example_test.go
+// (numericReaderFuncs) ищет вызовы именно с этим именем, чтобы применить
+// конвенцию единиц измерения к голым числовым переменным (здесь единица
+// уже в имени, суффикс _SECONDS). Общий код с cmd/gotcha не заводится —
+// agent не может импортировать package main. На пустом значении возвращает
+// set=false (переменная не задана, у вызывающего кода свой дефолт); на
+// ошибке разбора НЕ возвращает частичный результат strconv — так "30s"
+// (старый duration-формат) не может быть по ошибке принято как правдоподобное
+// число вместо явного отказа.
+func intNum(name, raw string) (value int, set bool, err error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseInt(v, 10, strconv.IntSize)
+	if err != nil {
+		return 0, true, fmt.Errorf("%s: %w", name, err)
+	}
+	return int(n), true, nil
+}
 
 // LoadConfig читает окружение. getenv параметром — детерминированные тесты
 // без t.Setenv (тот же приём, что loadConfig в cmd/gotcha).
 func LoadConfig(getenv func(string) string) (Config, error) {
+	if err := checkRenamedEnvVars(getenv); err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		// Endpoint: пробелы по краям обрезаются здесь, ДО baseurl.Normalize
 		// ниже — иначе "https://g.example/ " (пробел после слэша) прошёл бы
@@ -41,7 +102,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		// вызывающего кода, как и у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE/
 		// GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go).
 		Endpoint: strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")),
-		Key:      strings.TrimSpace(getenv("GOTCHA_AGENT_KEY")),
+		Key:      strings.TrimSpace(getenv("GOTCHA_AGENT_INGEST_KEY")),
 		// Hostname — identity-ключ хоста в проде: run.go кладёт его как есть в
 		// OTLP-атрибут host.name (emit.go), а приём (internal/ingest/otlp.go)
 		// использует сырой host.name ключом карты хостов без своего тримминга.
@@ -69,19 +130,23 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.Endpoint = normalized
 	if cfg.Key == "" {
-		return Config{}, fmt.Errorf("GOTCHA_AGENT_KEY is required")
+		return Config{}, fmt.Errorf("GOTCHA_AGENT_INGEST_KEY is required")
 	}
-	if raw := getenv("GOTCHA_AGENT_INTERVAL"); raw != "" {
-		d, err := time.ParseDuration(raw)
+	// GOTCHA_AGENT_INTERVAL_SECONDS — целое число секунд, не duration-строка:
+	// intNum отказывает разбор на "30s" вместо того, чтобы молча принять его
+	// как значение, — единственная duration-строка продукта раньше не несла
+	// единицу измерения в самом имени, в отличие от шести серверных *_SECONDS.
+	if raw := strings.TrimSpace(getenv("GOTCHA_AGENT_INTERVAL_SECONDS")); raw != "" {
+		seconds, _, err := intNum("GOTCHA_AGENT_INTERVAL_SECONDS", raw)
 		if err != nil {
-			return Config{}, fmt.Errorf("GOTCHA_AGENT_INTERVAL: %w", err)
+			return Config{}, err
 		}
-		if d < minInterval || d > maxInterval {
-			return Config{}, fmt.Errorf("GOTCHA_AGENT_INTERVAL must be within %s..%s, got %s", minInterval, maxInterval, d)
+		if seconds < minIntervalSecs || seconds > maxIntervalSecs {
+			return Config{}, fmt.Errorf("GOTCHA_AGENT_INTERVAL_SECONDS must be within %d..%d, got %d", minIntervalSecs, maxIntervalSecs, seconds)
 		}
-		cfg.Interval = d
+		cfg.Interval = time.Duration(seconds) * time.Second
 	}
-	v, set, err := parseBool("GOTCHA_AGENT_TLS_SKIP_VERIFY", getenv("GOTCHA_AGENT_TLS_SKIP_VERIFY"))
+	v, set, err := parseBool("GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY", getenv("GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY"))
 	if err != nil {
 		return Config{}, err
 	}

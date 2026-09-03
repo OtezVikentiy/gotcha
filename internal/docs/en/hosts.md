@@ -17,7 +17,7 @@ settings if you need to.
 The simplest way to collect host metrics is the native `gotcha-agent`: a single static, dependency-free binary installed with one command run straight from your instance. A ready-made command with the instance's address and the project's key already filled in is shown right in the UI: as the onboarding step on an empty hosts list, and under "How to install the agent" on a non-empty list and on the threshold settings page, with a "Copy command" button next to it. In shape it looks like this:
 
 ```bash
-GOTCHA_AGENT_ENDPOINT=https://gotcha.example.com GOTCHA_AGENT_KEY=a1b2c3d4e5f6 sh -c "$(curl -fsSL https://gotcha.example.com/install.sh)"
+GOTCHA_AGENT_ENDPOINT=https://gotcha.example.com GOTCHA_AGENT_INGEST_KEY=a1b2c3d4e5f6 sh -c "$(curl -fsSL https://gotcha.example.com/install.sh)"
 ```
 
 Run the command as a regular user with `sudo` rights, or as root. **Don't prefix it with `sudo` yourself** — the script invokes it itself where needed: prefixing the whole line with `sudo sh -c "..."` strips the `GOTCHA_AGENT_*` variables (sudo's default `env_reset`), and the script silently falls into the update path instead of a first install, while `sudo KEY=... sh -c ...` puts the project key into `sudo`'s process arguments, visible to other local users via `ps`.
@@ -53,7 +53,7 @@ sudo userdel gotcha-agent
 
 **Customizing the systemd unit.** The unit file is an installer artifact: both the install and every update overwrite it wholesale, so editing `/etc/systemd/system/gotcha-agent.service` directly won't survive the next `sh -c "$(curl ...)"`. For changes that need to stick (a custom `RestartSec`, extra systemd sandboxing, and so on), use a drop-in: `sudo systemctl edit gotcha-agent` creates a separate file under `/etc/systemd/system/gotcha-agent.service.d/`, which the installer never touches.
 
-**The command with the key stays in shell history.** `GOTCHA_AGENT_ENDPOINT`/`GOTCHA_AGENT_KEY` at the start of the install command land in `~/.bash_history` (or your shell's equivalent) on the server where you ran it — the same as any command carrying a secret in an environment variable on the same line. If that doesn't fit your threat model, clear the line from history afterward, or run the install from a script or CI secret store instead of interactively.
+**The command with the key stays in shell history.** `GOTCHA_AGENT_ENDPOINT`/`GOTCHA_AGENT_INGEST_KEY` at the start of the install command land in `~/.bash_history` (or your shell's equivalent) on the server where you ran it — the same as any command carrying a secret in an environment variable on the same line. If that doesn't fit your threat model, clear the line from history afterward, or run the install from a script or CI secret store instead of interactively.
 
 **Closed networks: a separate endpoint for the agent.** The install command shown in the UI fills `GOTCHA_AGENT_ENDPOINT` with the instance's `GOTCHA_BASE_URL` — the address browsers use to reach it. If hosts running the agent reach the instance by a different path (an internal DNS name/IP, a separate internal domain, a reverse proxy dedicated to telemetry), edit `GOTCHA_AGENT_ENDPOINT` to that address before running the command — the agent itself doesn't need to be reachable from outside, and doesn't need to reach the instance the same way a browser does.
 
@@ -78,7 +78,7 @@ systemctl status gotcha-agent
 journalctl -u gotcha-agent -n 50
 ```
 
-- a `401` in the log means the key in `/etc/gotcha-agent/gotcha-agent.env` is wrong (a revoked key, for instance): fix `GOTCHA_AGENT_KEY` and run `sudo systemctl restart gotcha-agent`;
+- a `401` in the log means the key in `/etc/gotcha-agent/gotcha-agent.env` is wrong (a revoked key, for instance): fix `GOTCHA_AGENT_INGEST_KEY` and run `sudo systemctl restart gotcha-agent`;
 - connection or TLS errors mean the instance isn't reachable from this host at `GOTCHA_AGENT_ENDPOINT` (see "Closed networks" above), or its certificate is self-signed (`GOTCHA_AGENT_CA_CERT`);
 - if the unit doesn't start at all, `journalctl -u gotcha-agent` says why: the agent validates its config at startup and names the offending variable;
 - the fastest way to check the config itself without touching the live process: `sudo systemd-run --quiet --wait --pipe -p EnvironmentFile=/etc/gotcha-agent/gotcha-agent.env /usr/local/bin/gotcha-agent --check` (the installer runs this same check itself).
@@ -88,11 +88,11 @@ journalctl -u gotcha-agent -n 50
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GOTCHA_AGENT_ENDPOINT` | yes | — | The instance's base URL, without a path (same meaning as `endpoint` in the collector config). Must be an absolute `http(s)` URL with no query or fragment; a trailing slash is stripped automatically. |
-| `GOTCHA_AGENT_KEY` | yes | — | The project's public key — the same one used in the DSN and in the collector config's `Authorization` header. |
-| `GOTCHA_AGENT_INTERVAL` | no | `30s` | Collection and export interval. Valid range **10s–5m**: lower risks self-DoS'ing ingest with your own key, higher causes false "Silence" threshold trips. |
+| `GOTCHA_AGENT_INGEST_KEY` | yes | — | The project's public key — the same one used in the DSN and in the collector config's `Authorization` header. |
+| `GOTCHA_AGENT_INTERVAL_SECONDS` | no | `30` | Collection and export interval, in whole seconds. Valid range **10–300**: lower risks self-DoS'ing ingest with your own key, higher causes false "Silence" threshold trips. |
 | `GOTCHA_AGENT_HOSTNAME` | no | the server's `os.Hostname()` | Overrides `host.name`, for when the system hostname isn't what you want on the card. |
 | `GOTCHA_AGENT_CA_CERT` | no | *(empty)* | Path to a PEM CA file — for instances with a self-signed TLS certificate. The recommended way to trust such an instance. |
-| `GOTCHA_AGENT_TLS_SKIP_VERIFY` | no | `false` | Disables TLS certificate verification for the instance entirely (`1`/`0`/`true`/`false`/`yes`/`no`/`on`/`off`, case-insensitive). A last resort — prefer `GOTCHA_AGENT_CA_CERT`; this removes MITM protection on the metric delivery channel. |
+| `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` | no | `false` | Disables TLS certificate verification for the instance entirely (`1`/`0`/`true`/`false`/`yes`/`no`/`on`/`off`, case-insensitive). A last resort — prefer `GOTCHA_AGENT_CA_CERT`; this removes MITM protection on the metric delivery channel. |
 | `GOTCHA_AGENT_ENVIRONMENT` | no | *(empty)* | Host environment label (`prod`, `staging`, …). Lands in the `deployment.environment` resource attribute; an empty value isn't emitted. |
 | `GOTCHA_AGENT_ROLE` | no | *(empty)* | Host role label (`web`, `db`, …). Lands in the `host.role` resource attribute; an empty value isn't emitted. |
 

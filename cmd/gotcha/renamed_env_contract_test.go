@@ -17,9 +17,10 @@ import (
 // литерала старого имени (см. sortedRenamedOldNames в config_test.go).
 
 // TestEnvcontractRenamedComplete — envcontract.Renamed держит РОВНО
-// двадцать семь пар (десять из волны контрактной уборки v0.23.0 плюс
-// семнадцать из волны заморозки контракта перед 1.0) и покрывает весь
-// список, документированный в CHANGELOG. Тест на полноту: если карту в
+// тридцать пар (десять из волны контрактной уборки v0.23.0, семнадцать
+// серверных из волны заморозки контракта перед 1.0 плюс три агентские из
+// той же волны) и покрывает весь список, документированный в CHANGELOG.
+// Тест на полноту: если карту в
 // будущем случайно урежут (например, забудут добавить очередное
 // переименование или потеряют одну пару при рефакторинге), этот тест
 // укажет на расхождение с документированным контрактом, а не только на
@@ -57,9 +58,12 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 		"GOTCHA_EXTERNAL_CHANNEL_DETAILS": "GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED",
 		"GOTCHA_OIDC_NAME":                "GOTCHA_OIDC_DISPLAY_NAME",
 		"GOTCHA_PURGE_RECONCILE_HOURS":    "GOTCHA_PROJECT_PURGE_RECONCILE_HOURS",
+		"GOTCHA_AGENT_INTERVAL":           "GOTCHA_AGENT_INTERVAL_SECONDS",
+		"GOTCHA_AGENT_KEY":                "GOTCHA_AGENT_INGEST_KEY",
+		"GOTCHA_AGENT_TLS_SKIP_VERIFY":    "GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY",
 	}
-	if len(envcontract.Renamed) != 27 {
-		t.Errorf("len(envcontract.Renamed) = %d, want 27", len(envcontract.Renamed))
+	if len(envcontract.Renamed) != 30 {
+		t.Errorf("len(envcontract.Renamed) = %d, want 30", len(envcontract.Renamed))
 	}
 	for old, newName := range want {
 		got, ok := envcontract.Renamed[old]
@@ -78,31 +82,61 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 	}
 }
 
+// agentOwnedRenamedNewNames — новые имена envcontract.Renamed, которые
+// читает internal/agent (отдельный бинарь gotcha-agent), а НЕ cmd/gotcha:
+// у Config здесь нет и не может быть поля под GOTCHA_AGENT_INGEST_KEY/
+// GOTCHA_AGENT_INTERVAL_SECONDS/GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY,
+// поэтому регрессионный подтест «новое имя применяется как обычно» для них
+// живёт в internal/agent/config_test.go (agentRenamedEnvVarNewNameChecks +
+// TestLoadConfigRenamedEnvVarNewNameStillApplies того пакета), а не здесь.
+// Список явный, а не по префиксу "GOTCHA_AGENT_": GOTCHA_AGENT_DIST_DIR и
+// GOTCHA_AGENT_DIST_RATE_PER_MIN — старые имена того же префикса из волны
+// v0.23.0, но их НОВЫЕ имена (GOTCHA_DIST_DIR/GOTCHA_DIST_RATE_PER_MIN) уже
+// без префикса и читаются cmd/gotcha — префиксное правило дало бы неверный
+// результат, если применить его по ошибке к старым именам.
+var agentOwnedRenamedNewNames = map[string]bool{
+	"GOTCHA_AGENT_INTERVAL_SECONDS":         true,
+	"GOTCHA_AGENT_INGEST_KEY":               true,
+	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY": true,
+}
+
 // TestRenamedEnvVarNewNameChecksComplete — renamedEnvVarNewNameChecks
 // (cmd/gotcha/config_test.go, регрессионные подтесты «новое имя применяется
 // как обычно») обязана содержать РОВНО те новые имена, что есть среди
-// значений envcontract.Renamed — ни лишних, ни пропущенных. Таблица и карта
-// живут в разных местах не просто рядом: без этой сверки одиннадцатая пара,
-// добавленная в envcontract.Renamed, тихо осталась бы без регрессионного
-// подтеста в TestLoadConfigRenamedEnvVarNewNameStillApplies — ровно то же
-// расхождение таблицы и истины, которое уже один раз привело к тому, что
-// девять из десяти строк таблицы не вызывались никогда (таблица заявляла
-// покрытие, которого не было). Сравнение только НОВЫХ имён — они не под
-// сторожем TestNoRenamedEnvVarNames, поэтому написать их буквально можно
-// в любом файле cmd/gotcha, в том числе в config_test.go.
+// значений envcontract.Renamed И принадлежат cmd/gotcha (не входят в
+// agentOwnedRenamedNewNames выше) — ни лишних, ни пропущенных. Таблица и
+// карта живут в разных местах не просто рядом: без этой сверки
+// одиннадцатая пара, добавленная в envcontract.Renamed, тихо осталась бы
+// без регрессионного подтеста в TestLoadConfigRenamedEnvVarNewNameStillApplies
+// — ровно то же расхождение таблицы и истины, которое уже один раз привело
+// к тому, что девять из десяти строк таблицы не вызывались никогда
+// (таблица заявляла покрытие, которого не было). Сравнение только НОВЫХ
+// имён — они не под сторожем TestNoRenamedEnvVarNames, поэтому написать их
+// буквально можно в любом файле cmd/gotcha, в том числе в config_test.go.
 func TestRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 	wantNewNames := make(map[string]bool, len(envcontract.Renamed))
 	for _, newName := range envcontract.Renamed {
 		wantNewNames[newName] = true
 	}
 	for newName := range renamedEnvVarNewNameChecks {
+		if agentOwnedRenamedNewNames[newName] {
+			t.Errorf("renamedEnvVarNewNameChecks содержит %s — она в agentOwnedRenamedNewNames, регрессия для неё живёт в internal/agent/config_test.go", newName)
+		}
 		if !wantNewNames[newName] {
 			t.Errorf("renamedEnvVarNewNameChecks содержит лишнюю запись %s — среди значений envcontract.Renamed такого нет", newName)
 		}
 	}
 	for newName := range wantNewNames {
+		if agentOwnedRenamedNewNames[newName] {
+			continue
+		}
 		if _, ok := renamedEnvVarNewNameChecks[newName]; !ok {
 			t.Errorf("renamedEnvVarNewNameChecks не хватает записи для %s (есть в envcontract.Renamed, но без регрессионного подтеста)", newName)
+		}
+	}
+	for newName := range agentOwnedRenamedNewNames {
+		if !wantNewNames[newName] {
+			t.Errorf("agentOwnedRenamedNewNames содержит %s, которой нет среди значений envcontract.Renamed — список устарел", newName)
 		}
 	}
 }

@@ -28,8 +28,8 @@ var envReaderFuncs = map[string]bool{
 // numericReaderFuncs — подмножество envReaderFuncs, читающее переменную как
 // голое число (strconv.ParseInt), а не строку/duration-строку/bool. Именно
 // эти переменные подлежат конвенции единиц измерения ниже: значение вида
-// "60" само по себе не несёт единицы, в отличие от "30s"
-// (GOTCHA_AGENT_INTERVAL, time.ParseDuration) или булева флага.
+// "60" само по себе не несёт единицы, в отличие от duration-строки вида
+// "30s" (time.ParseDuration, единица прямо в значении) или булева флага.
 var numericReaderFuncs = map[string]bool{
 	"intNum": true,
 	"num":    true,
@@ -205,11 +205,12 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 	if len(numericVars) < 30 {
 		t.Fatalf("collected only %d numeric variables — cmd/gotcha/config.go parsing is broken, or numericReaderFuncs (intNum/num) stopped being used", len(numericVars))
 	}
-	// numericVars собирает и из агентского файла: сейчас там нет голых
-	// числовых чтений (GOTCHA_AGENT_INTERVAL — duration-строка вида "30s"
-	// через time.ParseDuration, единица уже в значении, не в имени), но если
-	// агент когда-нибудь заведёт intNum/num-подобный читатель, конвенция
-	// подхватит его тем же путём, без отдельной правки теста.
+	// numericVars собирает и из агентского файла: internal/agent/config.go
+	// (E3 T8) завёл собственную intNum-обёртку для GOTCHA_AGENT_INTERVAL_SECONDS
+	// (переименована из duration-строки GOTCHA_AGENT_INTERVAL/time.ParseDuration
+	// — единица теперь в имени, не в значении), и конвенция подхватывает её
+	// тем же путём, без отдельной правки этого теста — ровно то поведение,
+	// которое комментарий выше и предполагал заранее.
 	agentVars := collectGotchaEnvVars(t, tree.Root, filepath.Join("internal", "agent", "config.go"), numericVars)
 	if len(agentVars) < 8 {
 		t.Fatalf("collected only %d agent variables — internal/agent/config.go parsing is broken", len(agentVars))

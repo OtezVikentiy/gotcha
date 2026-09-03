@@ -41,6 +41,21 @@
   | `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
   | `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
 
+- **Ломающее.** Три переменные окружения агента `gotcha-agent` переименованы
+  той же волной — одна со сменой типа: интервал сбора теперь целое число
+  секунд (диапазон 10–300), а не duration-строка вида «30s» (старый формат
+  на новом имени — отказ разбора, а не тихое приведение к другому смыслу).
+  Старые имена не читаются, агент отказывается стартовать на них с указанием
+  нового имени вместо тихого применения дефолта. Команда установки в
+  интерфейсе, `install.sh`, `.env.example` и справочник переменных
+  ([Хосты](/docs/hosts)) обновлены на новые имена.
+
+  | Было | Стало |
+  |---|---|
+  | `GOTCHA_AGENT_INTERVAL` | `GOTCHA_AGENT_INTERVAL_SECONDS` |
+  | `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
+  | `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
+
 ## [0.33.0] - 2026-09-03
 
 ### Изменено

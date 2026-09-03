@@ -72,7 +72,7 @@ var agentEnvNameRe = regexp.MustCompile(`GOTCHA_AGENT_[A-Z_]+`)
 // аутентифицирующие установку (endpoint инстанса и ключ проекта).
 var mustAppearInHostsGo = []string{
 	"GOTCHA_AGENT_ENDPOINT",
-	"GOTCHA_AGENT_KEY",
+	"GOTCHA_AGENT_INGEST_KEY",
 }
 
 // hostsGoExclusions — остальные шесть канонических переменных, СОЗНАТЕЛЬНО не
@@ -82,12 +82,12 @@ var mustAppearInHostsGo = []string{
 // запуском install.sh, либо правкой /etc/gotcha-agent/gotcha-agent.env после
 // — internal/docs/{ru,en}/hosts.md).
 var hostsGoExclusions = map[string]string{
-	"GOTCHA_AGENT_HOSTNAME":        "override host.name; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_CA_CERT":         "путь к CA для самоподписанного инстанса; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_INTERVAL":        "интервал сбора; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_TLS_SKIP_VERIFY": "крайнее средство вместо CA_CERT; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_ENVIRONMENT":     "resource-метка deployment.environment; необязательная настройка агента, не часть auth-only команды UI",
-	"GOTCHA_AGENT_ROLE":            "resource-метка host.role; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_HOSTNAME":                 "override host.name; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_CA_CERT":                  "путь к CA для самоподписанного инстанса; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_INTERVAL_SECONDS":         "интервал сбора; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY": "крайнее средство вместо CA_CERT; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_ENVIRONMENT":              "resource-метка deployment.environment; необязательная настройка агента, не часть auth-only команды UI",
+	"GOTCHA_AGENT_ROLE":                     "resource-метка host.role; необязательная настройка агента, не часть auth-only команды UI",
 }
 
 // mustAppearInInstallSh — подмножество канона, которое install.sh обязан
@@ -96,19 +96,20 @@ var hostsGoExclusions = map[string]string{
 // reject_newline/printf (internal/web/install.sh).
 var mustAppearInInstallSh = []string{
 	"GOTCHA_AGENT_ENDPOINT",
-	"GOTCHA_AGENT_KEY",
-	"GOTCHA_AGENT_INTERVAL",
+	"GOTCHA_AGENT_INGEST_KEY",
+	"GOTCHA_AGENT_INTERVAL_SECONDS",
 	"GOTCHA_AGENT_HOSTNAME",
 	"GOTCHA_AGENT_CA_CERT",
-	"GOTCHA_AGENT_TLS_SKIP_VERIFY",
+	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY",
 	"GOTCHA_AGENT_ENVIRONMENT",
 	"GOTCHA_AGENT_ROLE",
 }
 
 // installShExclusions — канонические переменные, которых install.sh
-// намеренно не читает и не пишет в $CONF; сегодня пуст (ENDPOINT/KEY/
-// INTERVAL/HOSTNAME/CA_CERT/TLS_SKIP_VERIFY/ENVIRONMENT/ROLE — все восемь
-// канонических переменных — входят в mustAppearInInstallSh). Оставлен как
+// намеренно не читает и не пишет в $CONF; сегодня пуст (ENDPOINT/INGEST_KEY/
+// INTERVAL_SECONDS/HOSTNAME/CA_CERT/TLS_INSECURE_SKIP_VERIFY/ENVIRONMENT/
+// ROLE — все восемь канонических переменных — входят в
+// mustAppearInInstallSh). Оставлен как
 // map, а не удалён: TestAgentEnvVarsClassified требует классификации КАЖДОЙ
 // новой канонической переменной либо сюда с причиной, либо в
 // mustAppearInInstallSh — карта остаётся точкой, куда её вписать, если

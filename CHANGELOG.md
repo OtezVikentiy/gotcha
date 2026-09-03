@@ -41,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
   | `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
 
+- **Breaking.** Three environment variables of the `gotcha-agent` binary have
+  been renamed in the same wave — one with a type change: the collection
+  interval is now a whole number of seconds (range 10–300), not a duration
+  string like "30s" (the old format under the new name is a parse error, not
+  a silent reinterpretation). The old names are no longer read; the agent
+  refuses to start on them, naming the new variable instead of silently
+  applying a default. The install command shown in the UI, `install.sh`,
+  `.env.example`, and the variable reference ([Hosts](/docs/hosts)) have all
+  been updated to the new names.
+
+  | Before | After |
+  |---|---|
+  | `GOTCHA_AGENT_INTERVAL` | `GOTCHA_AGENT_INTERVAL_SECONDS` |
+  | `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
+  | `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
+
 ## [0.33.0] - 2026-09-03
 
 ### Changed

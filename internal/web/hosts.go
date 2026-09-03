@@ -525,7 +525,7 @@ func agentBaseURLSecure(baseURL string) bool {
 // разница только в том, что `$(...)` не начинает выполнять байты по мере
 // получения потоковым pipe'ом.
 func agentInstallCommand(baseURL, key string) string {
-	return fmt.Sprintf(`GOTCHA_AGENT_ENDPOINT=%s GOTCHA_AGENT_KEY=%s sh -c "$(curl -fsSL %s/install.sh)"`,
+	return fmt.Sprintf(`GOTCHA_AGENT_ENDPOINT=%s GOTCHA_AGENT_INGEST_KEY=%s sh -c "$(curl -fsSL %s/install.sh)"`,
 		baseURL, key, baseURL)
 }
 

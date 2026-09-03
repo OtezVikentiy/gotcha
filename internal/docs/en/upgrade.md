@@ -130,6 +130,20 @@ and so on), it will refuse to start instead of quietly reconnecting with
 its old value. See [Probes](/docs/probes) and
 [Configuration](/docs/configuration).
 
+The same blast radius applies to three environment variables of the
+`gotcha-agent` binary itself — one with a type change: the collection
+interval is now a whole number of seconds, not a duration string like
+"30s" (the full before/after line is in that same CHANGELOG table). The
+agent is also a separate process on a remote host that the server upgrade
+can't reach: if `/etc/gotcha-agent/gotcha-agent.env` still holds them under
+their old names, the next time you run the update command it refuses with
+a `config check failed` message — the installer validates the config with
+the new binary (`--check`) before it ever touches the systemd unit, so the
+old agent keeps running unchanged on its old binary until you fix the
+names in that file by hand (per the CHANGELOG table) and run the update
+command again. The current names and ranges are in the variable reference
+on the [Hosts](/docs/hosts) page.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:
@@ -221,6 +235,8 @@ This is why "take a backup before upgrading" at the top of this page stays manda
 ## Agents on hosts are updated separately
 
 Upgrading the instance doesn't touch the `gotcha-agent` installed on your servers: they keep reporting on the old version. A host's card shows an "Update available" badge with the command ready to copy — updating is the same install command, run on the host without the environment variables (see [Hosts](/docs/hosts)). An older agent stays compatible: metric names and the protocol didn't change, the update carries fixes to the agent itself.
+
+This same release also renames three of the agent's own environment variables — one with a type change: the collection interval is now a whole number of seconds, not a duration string like "30s". The full before/after table is in `CHANGELOG.md`; the current names and ranges are in the variable reference on the [Hosts](/docs/hosts) page. The agent is a separate process on a remote host that the server upgrade physically can't reach: if `/etc/gotcha-agent/gotcha-agent.env` still holds these variables under their old names, the next time you run the update command it refuses with a `config check failed` message — the installer validates the config with the new binary (`--check`) before it ever touches the systemd unit, so the old agent keeps running unchanged on its old binary until you fix the names in that file by hand (per the CHANGELOG table) and run the update command again.
 
 ## Verify after upgrading
 
