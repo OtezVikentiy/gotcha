@@ -100,6 +100,41 @@ var AgentOwned = []string{
 	"GOTCHA_AGENT_TLS_SKIP_VERIFY",
 }
 
+// ServerOwned — подмножество старых имён Renamed, переименованных волной
+// заморозки контракта перед 1.0 (см. CHANGELOG, «Семнадцать серверных
+// переменных переименованы») — семнадцать полей cmd/gotcha.Config, БЕЗ
+// агентских (AgentOwned выше) и БЕЗ compose/build (InfraOwned ниже) и БЕЗ
+// более ранней волны v0.23.0 (десять переменных, уже отдельным релизом —
+// CHANGELOG, «Ten environment variables have been renamed»).
+//
+// Единственный источник для internal/guards/renamed_env_vars_test.go
+// (TestUpgradeDocDocumentsCurrentRenameWave) — эта волна, в отличие от
+// более старой v0.23.0, ещё не выпущена отдельным релизом на момент
+// написания, и её пары задокументированы буквально в upgrade.md обеих
+// локалей (оператору нужен список для sed по .env), а не только в
+// CHANGELOG. internal/envcontract/check_test.go проверяет, что каждое имя
+// отсюда реально есть среди ключей Renamed и не пересекается с AgentOwned/
+// InfraOwned — рассинхрон ловится тестом.
+var ServerOwned = []string{
+	"GOTCHA_ADDR",
+	"GOTCHA_LOG_LEVEL",
+	"GOTCHA_LOG_FORMAT",
+	"GOTCHA_LOCAL_REGION",
+	"GOTCHA_REGISTRATION",
+	"GOTCHA_EXPORT_TTL_HOURS",
+	"GOTCHA_SCRUB_KEYS",
+	"GOTCHA_SCRUB_ALLOW_KEYS",
+	"GOTCHA_RUN_EVALUATORS",
+	"GOTCHA_AUTO_MIGRATE",
+	"GOTCHA_ALLOW_INSECURE_SECRET",
+	"GOTCHA_MAX_BUFFER_BYTES",
+	"GOTCHA_MAX_QUEUE_BYTES",
+	"GOTCHA_PROBE_TOKEN",
+	"GOTCHA_EXTERNAL_CHANNEL_DETAILS",
+	"GOTCHA_OIDC_NAME",
+	"GOTCHA_PURGE_RECONCILE_HOURS",
+}
+
 // InfraOwned — подмножество старых имён Renamed, чьё новое имя не является
 // (и не может стать) полем ни cmd/gotcha.Config, ни internal/agent.Config:
 // одиннадцать переменных compose и сборки выше. Единственный источник для

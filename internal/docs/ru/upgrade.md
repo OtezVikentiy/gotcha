@@ -109,10 +109,29 @@ DROP INDEX CONCURRENTLY <имя_индекса>;
 
 Это обновление переименовывает семнадцать серверных переменных окружения —
 единица измерения, модификатор и подсистема теперь честно читаются из
-имени, а не из соседства с ним. Полная таблица «было → стало» —
-в `CHANGELOG.ru.md`, блок `### Изменено` раздела `[Unreleased]`. Переменная
-под прежним именем с непустым значением роняет старт с явным сообщением
-вида «старое имя → новое», а не тихо подменяется дефолтом.
+имени, а не из соседства с ним. Переменная под прежним именем с непустым
+значением роняет старт с явным сообщением вида «старое имя → новое», а не
+тихо подменяется дефолтом.
+
+| Было | Стало |
+|---|---|
+| `GOTCHA_ADDR` | `GOTCHA_LISTEN_ADDR` |
+| `GOTCHA_LOG_LEVEL` | `GOTCHA_LOGGING_LEVEL` |
+| `GOTCHA_LOG_FORMAT` | `GOTCHA_LOGGING_FORMAT` |
+| `GOTCHA_LOCAL_REGION` | `GOTCHA_UPTIME_LOCAL_REGION` |
+| `GOTCHA_REGISTRATION` | `GOTCHA_REGISTRATION_MODE` |
+| `GOTCHA_EXPORT_TTL_HOURS` | `GOTCHA_EXPORT_RETENTION_HOURS` |
+| `GOTCHA_SCRUB_KEYS` | `GOTCHA_SCRUB_DENY_KEYS` |
+| `GOTCHA_SCRUB_ALLOW_KEYS` | `GOTCHA_SCRUB_KEEP_KEYS` |
+| `GOTCHA_RUN_EVALUATORS` | `GOTCHA_EVALUATORS_ENABLED` |
+| `GOTCHA_AUTO_MIGRATE` | `GOTCHA_AUTO_MIGRATE_ENABLED` |
+| `GOTCHA_ALLOW_INSECURE_SECRET` | `GOTCHA_SECRET_KEY_ALLOW_INSECURE` |
+| `GOTCHA_MAX_BUFFER_BYTES` | `GOTCHA_MAX_WRITER_BUFFER_BYTES` |
+| `GOTCHA_MAX_QUEUE_BYTES` | `GOTCHA_MAX_INGEST_QUEUE_BYTES` |
+| `GOTCHA_PROBE_TOKEN` | `GOTCHA_PROBE_KEY` |
+| `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` |
+| `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
+| `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
 
 После обновления сервера пройдите по **всем** местам, где у вас заданы
 переменные `GOTCHA_*`, а не только по `.env` рядом с `docker-compose.yml`:
@@ -122,8 +141,8 @@ DROP INDEX CONCURRENTLY <имя_индекса>;
 вручную.
 
 Самый заметный случай этого радиуса — переменная токена выносной пробы:
-её новое имя — `GOTCHA_PROBE_KEY` (полная строка «было → стало» — в той же
-таблице CHANGELOG). Уже зарегистрированные и работающие пробы держат
+её новое имя — `GOTCHA_PROBE_KEY` (строка «было → стало» — в таблице выше).
+Уже зарегистрированные и работающие пробы держат
 прежнее имя в окружении своего хоста. Перезапустите их с переменной под
 новым именем сразу после обновления центрального сервера — иначе при
 следующем перезапуске пробы (обновление образа, перезагрузка хоста и т.п.)
@@ -133,16 +152,22 @@ DROP INDEX CONCURRENTLY <имя_индекса>;
 
 Тот же радиус и у трёх переменных окружения самого агента `gotcha-agent` —
 одна со сменой типа: интервал сбора теперь целое число секунд, а не
-duration-строка вида «30s» (полная таблица «было → стало» — в той же таблице
-CHANGELOG). Агент — тоже отдельный процесс на удалённом хосте, куда апгрейд
-сервера не дотягивается: если `/etc/gotcha-agent/gotcha-agent.env` хранит их
-под прежними именами, ближайший запуск команды обновления откажет с
-сообщением `config check failed` — установщик проверяет конфиг новым
-бинарём (`--check`) раньше, чем трогает systemd-юнит, так что старый агент
+duration-строка вида «30s». Агент — тоже отдельный процесс на удалённом
+хосте, куда апгрейд сервера не дотягивается: если
+`/etc/gotcha-agent/gotcha-agent.env` хранит их под прежними именами,
+ближайший запуск команды обновления откажет с сообщением
+`config check failed` — установщик проверяет конфиг новым бинарём
+(`--check`) раньше, чем трогает systemd-юнит, так что старый агент
 продолжит спокойно работать на прежнем бинаре, пока вы не поправите имена в
-файле вручную (по таблице CHANGELOG) и не запустите команду обновления ещё
-раз. Актуальные имена и диапазоны — в справочнике переменных на странице
+файле вручную (по таблице ниже) и не запустите команду обновления ещё раз.
+Актуальные имена и диапазоны — в справочнике переменных на странице
 [Хосты](/docs/hosts).
+
+| Было | Стало |
+|---|---|
+| `GOTCHA_AGENT_INTERVAL` | `GOTCHA_AGENT_INTERVAL_SECONDS` |
+| `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
+| `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
 
 ## Что меняется при обновлении: переменные compose и сборки переименованы
 
@@ -151,10 +176,23 @@ CHANGELOG). Агент — тоже отдельный процесс на уд�
 баз, потолок памяти и MTU сети контейнера приложения, публикуемый порт и
 адрес бинда) получают префикс `GOTCHA_COMPOSE_`, а три переменные, которыми
 `Makefile` передаёт версию сборки в `docker-compose.yml` (`DOCKER_BUILD_ENV`),
-— префикс `GOTCHA_BUILD_`. Полная таблица «было → стало» — в той же таблице
-CHANGELOG, что и у семнадцати серверных переменных выше; описание самих
-переменных и их дефолтов — в [Конфигурации](/docs/configuration), разделы
-«Переменные только для compose».
+— префикс `GOTCHA_BUILD_`. Описание самих переменных и их дефолтов — в
+[Конфигурации](/docs/configuration), разделы «Переменные только для
+compose» и «Переменные только для сборки».
+
+| Было | Стало |
+|---|---|
+| `GOTCHA_PG_PASSWORD` | `GOTCHA_COMPOSE_PG_PASSWORD` |
+| `GOTCHA_CH_PASSWORD` | `GOTCHA_COMPOSE_CH_PASSWORD` |
+| `GOTCHA_PG_MEM_LIMIT` | `GOTCHA_COMPOSE_PG_MEM_LIMIT` |
+| `GOTCHA_CH_MEM_LIMIT` | `GOTCHA_COMPOSE_CH_MEM_LIMIT` |
+| `GOTCHA_MEM_LIMIT` | `GOTCHA_COMPOSE_MEM_LIMIT` |
+| `GOTCHA_NET_MTU` | `GOTCHA_COMPOSE_NET_MTU` |
+| `GOTCHA_PORT` | `GOTCHA_COMPOSE_PORT` |
+| `GOTCHA_BIND` | `GOTCHA_COMPOSE_BIND` |
+| `GOTCHA_VERSION` | `GOTCHA_BUILD_VERSION` |
+| `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
+| `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
 
 В отличие от серверных и агентских переменных, эти одиннадцать не читает
 вообще никакой процесс gotcha — их видит только сам Docker Compose
@@ -167,8 +205,8 @@ CHANGELOG, что и у семнадцати серверных переменн
 Если вы задаёте эти переменные не через `.env`, а прямо в блоке
 `environment:`/`build.args` compose-файла или отдельно передаёте их в
 `make` (например, `make up GOTCHA_COMPOSE_PORT=...`), переименуйте их там
-же вручную по той же таблице CHANGELOG — отказ старта такую правку не
-поймает, потому что до окружения процесса `gotcha` она никогда не доходит.
+же вручную по таблице выше — отказ старта такую правку не поймает, потому
+что до окружения процесса `gotcha` она никогда не доходит.
 
 ## Обычное обновление (один сервер, режим `--mode=all`)
 

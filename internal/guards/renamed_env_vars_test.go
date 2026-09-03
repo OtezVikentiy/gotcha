@@ -133,6 +133,14 @@ var renamedEnvVarsSkipRootDirs = map[string]bool{
 //   - CHANGELOG.md/CHANGELOG.ru.md — там старые имена верны как
 //     историческая запись прошлых релизов, править их значило бы
 //     фальсифицировать историю;
+//   - internal/docs/ru/upgrade.md и internal/docs/en/upgrade.md (задача 11,
+//     круг правок) — страница апгрейда обязана называть старое имя
+//     буквально, парами «было → стало»: оператору нужен список для sed по
+//     собственному .env, отсылка «см. CHANGELOG» этого не даёт. Полноту
+//     этих таблиц (что каждая пара текущей волны переименования реально
+//     присутствует в upgrade.md обеих локалей) проверяет отдельный сторож,
+//     TestUpgradeDocDocumentsCurrentRenameWave — исключение отсюда не
+//     превращается в дыру;
 //   - cmd/gotcha/renamed_env_contract_test.go — держит независимую сверку
 //     envcontract.Renamed с документированным в CHANGELOG списком
 //     (TestEnvcontractRenamedComplete): её want-таблица по определению
@@ -192,6 +200,20 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 		if rel == "CHANGELOG.md" || rel == "CHANGELOG.ru.md" {
 			return nil
 		}
+		// upgrade.md обеих локалей (задача 11, круг правок): страница
+		// апгрейда обязана называть старое имя буквально — оператору нужен
+		// список «было → стало» для sed по собственному .env, а не абстрактная
+		// отсылка «см. CHANGELOG». Тот же случай, что и у CHANGELOG.{md,ru.md}
+		// выше: старое имя здесь — не забытый огрызок контракта, а сама суть
+		// страницы. Полнота этих таблиц (что каждая пара текущей волны
+		// переименования — AgentOwned/InfraOwned/ServerOwned из
+		// envcontract — реально присутствует в upgrade.md обеих локалей)
+		// проверяется отдельно, TestUpgradeDocDocumentsCurrentRenameWave
+		// ниже — исключение здесь не превращается в дыру, потому что полноту
+		// таблиц ловит другой сторож.
+		if rel == "internal/docs/ru/upgrade.md" || rel == "internal/docs/en/upgrade.md" {
+			return nil
+		}
 		// internal/envcontract/renamed.go — файл-истина,
 		// cmd/gotcha/renamed_env_contract_test.go — справочник для сверки
 		// с CHANGELOG; оба исключения разобраны в докблоке
@@ -230,5 +252,63 @@ func TestNoRenamedEnvVarNames(t *testing.T) {
 	for _, f := range findings {
 		t.Errorf("%s:%d: встречается удалённое имя переменной окружения %s — замените на %s",
 			f.path, f.line, f.old, renamedEnvVars[f.old])
+	}
+}
+
+// currentRenameWaveOldNames — старые имена ТЕКУЩЕЙ волны переименования (E3,
+// заморозка контракта перед 1.0), которую документирует upgrade.md буквальными
+// таблицами «было → стало»: объединение envcontract.AgentOwned, ServerOwned и
+// InfraOwned. Более ранняя волна v0.23.0 (десять переменных) сюда намеренно
+// не входит — она уже вышла отдельным релизом, её таблица «было → стало»
+// остаётся исторической записью под своей версией в CHANGELOG, а не текущей
+// инструкцией по апгрейду (см. докблок ServerOwned в
+// internal/envcontract/renamed.go).
+func currentRenameWaveOldNames() []string {
+	names := make([]string, 0, len(envcontract.AgentOwned)+len(envcontract.ServerOwned)+len(envcontract.InfraOwned))
+	names = append(names, envcontract.AgentOwned...)
+	names = append(names, envcontract.ServerOwned...)
+	names = append(names, envcontract.InfraOwned...)
+	return names
+}
+
+// TestUpgradeDocDocumentsCurrentRenameWave — задача 11, круг правок, п.2:
+// каждая пара «было → стало» из currentRenameWaveOldNames() обязана
+// буквально присутствовать в upgrade.md ОБЕИХ локалей — иначе исключение
+// этих файлов из TestNoRenamedEnvVarNames (см. докблок выше) стало бы
+// дырой: старое имя разрешено писать в upgrade.md, но НЕ проверяется, что
+// оно там реально есть.
+//
+// Мутация, которую держит в уме ревьюер задачи: убрать сверку по одной из
+// локалей — красит именно РАЗДЕЛЬНЫЙ цикл по ru/en ниже, не объединённое
+// множество имён.
+func TestUpgradeDocDocumentsCurrentRenameWave(t *testing.T) {
+	root, err := findRoot()
+	if err != nil {
+		t.Fatalf("findRoot: %v", err)
+	}
+	names := currentRenameWaveOldNames()
+	if len(names) < 20 {
+		t.Fatalf("currentRenameWaveOldNames() вернула %d имён, ожидалось ≥20 (17 серверных + 3 агентских + 11 compose/build) — AgentOwned/ServerOwned/InfraOwned урезаны или обход сломан", len(names))
+	}
+
+	for _, loc := range []string{"ru", "en"} {
+		path := filepath.Join(root, "internal", "docs", loc, "upgrade.md")
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		text := string(body)
+		for _, old := range names {
+			newName := envcontract.Renamed[old]
+			if newName == "" {
+				t.Fatalf("envcontract.Renamed[%s] пуст — currentRenameWaveOldNames() содержит имя вне реестра", old)
+			}
+			if !strings.Contains(text, old) {
+				t.Errorf("%s: upgrade.md не содержит старое имя %s (пара %s → %s)", loc, old, old, newName)
+			}
+			if !strings.Contains(text, newName) {
+				t.Errorf("%s: upgrade.md не содержит новое имя %s (пара %s → %s)", loc, newName, old, newName)
+			}
+		}
 	}
 }

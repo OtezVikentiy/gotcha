@@ -107,11 +107,30 @@ is a separate, optional task — see [Ingest keys](/docs/keys) for the steps.
 
 This upgrade renames seventeen server environment variables — the unit of
 measurement, the modifier, and the subsystem now read honestly from the
-name itself, rather than from what sits next to it. The full "before →
-after" table is in `CHANGELOG.md`, under the `### Changed` heading of the
-`[Unreleased]` section. A variable set under its old name with a non-empty
-value refuses to start with an explicit "old name → new name" message,
-instead of silently falling back to a default.
+name itself, rather than from what sits next to it. A variable set under
+its old name with a non-empty value refuses to start with an explicit
+"old name → new name" message, instead of silently falling back to a
+default.
+
+| Before | After |
+|---|---|
+| `GOTCHA_ADDR` | `GOTCHA_LISTEN_ADDR` |
+| `GOTCHA_LOG_LEVEL` | `GOTCHA_LOGGING_LEVEL` |
+| `GOTCHA_LOG_FORMAT` | `GOTCHA_LOGGING_FORMAT` |
+| `GOTCHA_LOCAL_REGION` | `GOTCHA_UPTIME_LOCAL_REGION` |
+| `GOTCHA_REGISTRATION` | `GOTCHA_REGISTRATION_MODE` |
+| `GOTCHA_EXPORT_TTL_HOURS` | `GOTCHA_EXPORT_RETENTION_HOURS` |
+| `GOTCHA_SCRUB_KEYS` | `GOTCHA_SCRUB_DENY_KEYS` |
+| `GOTCHA_SCRUB_ALLOW_KEYS` | `GOTCHA_SCRUB_KEEP_KEYS` |
+| `GOTCHA_RUN_EVALUATORS` | `GOTCHA_EVALUATORS_ENABLED` |
+| `GOTCHA_AUTO_MIGRATE` | `GOTCHA_AUTO_MIGRATE_ENABLED` |
+| `GOTCHA_ALLOW_INSECURE_SECRET` | `GOTCHA_SECRET_KEY_ALLOW_INSECURE` |
+| `GOTCHA_MAX_BUFFER_BYTES` | `GOTCHA_MAX_WRITER_BUFFER_BYTES` |
+| `GOTCHA_MAX_QUEUE_BYTES` | `GOTCHA_MAX_INGEST_QUEUE_BYTES` |
+| `GOTCHA_PROBE_TOKEN` | `GOTCHA_PROBE_KEY` |
+| `GOTCHA_EXTERNAL_CHANNEL_DETAILS` | `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` |
+| `GOTCHA_OIDC_NAME` | `GOTCHA_OIDC_DISPLAY_NAME` |
+| `GOTCHA_PURGE_RECONCILE_HOURS` | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` |
 
 After upgrading the server, go through **every** place where you set
 `GOTCHA_*` variables, not just the `.env` next to `docker-compose.yml`:
@@ -121,8 +140,8 @@ physically cannot reach them, and they'll keep running with the old names
 until you update them by hand.
 
 The most visible case of this blast radius is the remote probe's token
-variable: its new name is `GOTCHA_PROBE_KEY` (the full before/after line is
-in that same CHANGELOG table). Probes that are already registered and
+variable: its new name is `GOTCHA_PROBE_KEY` (the before/after line is in
+the table above). Probes that are already registered and
 running hold the old name in their host's environment. Restart them with
 the variable under its new name right after upgrading the central server —
 otherwise, the next time a probe restarts (an image update, a host reboot,
@@ -133,16 +152,21 @@ its old value. See [Probes](/docs/probes) and
 The same blast radius applies to three environment variables of the
 `gotcha-agent` binary itself — one with a type change: the collection
 interval is now a whole number of seconds, not a duration string like
-"30s" (the full before/after line is in that same CHANGELOG table). The
-agent is also a separate process on a remote host that the server upgrade
-can't reach: if `/etc/gotcha-agent/gotcha-agent.env` still holds them under
-their old names, the next time you run the update command it refuses with
-a `config check failed` message — the installer validates the config with
-the new binary (`--check`) before it ever touches the systemd unit, so the
-old agent keeps running unchanged on its old binary until you fix the
-names in that file by hand (per the CHANGELOG table) and run the update
-command again. The current names and ranges are in the variable reference
-on the [Hosts](/docs/hosts) page.
+"30s". The agent is also a separate process on a remote host that the
+server upgrade can't reach: if `/etc/gotcha-agent/gotcha-agent.env` still
+holds them under their old names, the next time you run the update command
+it refuses with a `config check failed` message — the installer validates
+the config with the new binary (`--check`) before it ever touches the
+systemd unit, so the old agent keeps running unchanged on its old binary
+until you fix the names in that file by hand (per the table below) and run
+the update command again. The current names and ranges are in the variable
+reference on the [Hosts](/docs/hosts) page.
+
+| Before | After |
+|---|---|
+| `GOTCHA_AGENT_INTERVAL` | `GOTCHA_AGENT_INTERVAL_SECONDS` |
+| `GOTCHA_AGENT_KEY` | `GOTCHA_AGENT_INGEST_KEY` |
+| `GOTCHA_AGENT_TLS_SKIP_VERIFY` | `GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY` |
 
 ## What changes when upgrading: compose and build variables renamed
 
@@ -152,10 +176,23 @@ ceilings, the app container's memory ceiling and network MTU, the published
 port and bind address) get the `GOTCHA_COMPOSE_` prefix, and the three
 variables the `Makefile` uses to pass build metadata into
 `docker-compose.yml` (`DOCKER_BUILD_ENV`) get the `GOTCHA_BUILD_` prefix.
-The full "before → after" table is in that same CHANGELOG table as the
-seventeen server variables above; the variables themselves and their
-defaults are documented in [Configuration](/docs/configuration), under the
-"Compose-only variables" sections.
+The variables themselves and their defaults are documented in
+[Configuration](/docs/configuration), under the "Compose-only variables"
+and "Build-only variables" sections.
+
+| Before | After |
+|---|---|
+| `GOTCHA_PG_PASSWORD` | `GOTCHA_COMPOSE_PG_PASSWORD` |
+| `GOTCHA_CH_PASSWORD` | `GOTCHA_COMPOSE_CH_PASSWORD` |
+| `GOTCHA_PG_MEM_LIMIT` | `GOTCHA_COMPOSE_PG_MEM_LIMIT` |
+| `GOTCHA_CH_MEM_LIMIT` | `GOTCHA_COMPOSE_CH_MEM_LIMIT` |
+| `GOTCHA_MEM_LIMIT` | `GOTCHA_COMPOSE_MEM_LIMIT` |
+| `GOTCHA_NET_MTU` | `GOTCHA_COMPOSE_NET_MTU` |
+| `GOTCHA_PORT` | `GOTCHA_COMPOSE_PORT` |
+| `GOTCHA_BIND` | `GOTCHA_COMPOSE_BIND` |
+| `GOTCHA_VERSION` | `GOTCHA_BUILD_VERSION` |
+| `GOTCHA_COMMIT` | `GOTCHA_BUILD_COMMIT` |
+| `GOTCHA_DATE` | `GOTCHA_BUILD_DATE` |
 
 Unlike the server and agent variables, no gotcha process reads these
 eleven at all — only Docker Compose itself (the `${...}` substitution in
@@ -168,8 +205,8 @@ though the process itself never reads it and never did.
 If you set these variables somewhere other than `.env` — directly in the
 compose file's `environment:`/`build.args` block, or passed separately to
 `make` (e.g. `make up GOTCHA_COMPOSE_PORT=...`) — rename them there by
-hand, using the same CHANGELOG table: the startup refusal can't catch that
-edit, because it never reaches the `gotcha` process's environment.
+hand, using the table above: the startup refusal can't catch that edit,
+because it never reaches the `gotcha` process's environment.
 
 ## Standard upgrade (single server, `--mode=all`)
 
@@ -261,9 +298,7 @@ This is why "take a backup before upgrading" at the top of this page stays manda
 
 ## Agents on hosts are updated separately
 
-Upgrading the instance doesn't touch the `gotcha-agent` installed on your servers: they keep reporting on the old version. A host's card shows an "Update available" badge with the command ready to copy — updating is the same install command, run on the host without the environment variables (see [Hosts](/docs/hosts)). An older agent stays compatible: metric names and the protocol didn't change, the update carries fixes to the agent itself.
-
-This same release also renames three of the agent's own environment variables — one with a type change: the collection interval is now a whole number of seconds, not a duration string like "30s". The full before/after table is in `CHANGELOG.md`; the current names and ranges are in the variable reference on the [Hosts](/docs/hosts) page. The agent is a separate process on a remote host that the server upgrade physically can't reach: if `/etc/gotcha-agent/gotcha-agent.env` still holds these variables under their old names, the next time you run the update command it refuses with a `config check failed` message — the installer validates the config with the new binary (`--check`) before it ever touches the systemd unit, so the old agent keeps running unchanged on its old binary until you fix the names in that file by hand (per the CHANGELOG table) and run the update command again.
+Upgrading the instance doesn't touch the `gotcha-agent` installed on your servers: they keep reporting on the old version. A host's card shows an "Update available" badge with the command ready to copy — updating is the same install command, run on the host without the environment variables (see [Hosts](/docs/hosts)). An older agent stays compatible: metric names and the protocol didn't change, the update carries fixes to the agent itself. The rename of the agent's own environment variables in this upgrade is covered in the previous section.
 
 ## Verify after upgrading
 

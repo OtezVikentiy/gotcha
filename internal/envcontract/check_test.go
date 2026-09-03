@@ -62,6 +62,38 @@ func TestInfraOwnedSubsetOfRenamed(t *testing.T) {
 	}
 }
 
+// TestServerOwnedSubsetOfRenamed — ServerOwned не должен разойтись с
+// Renamed: каждое имя обязано быть реальным ключом карты (та же причина,
+// что у TestAgentOwnedSubsetOfRenamed — иначе Renamed[old] на отсутствующем
+// ключе вернёт "", и текст ошибки соврёт про "renamed to"), и НЕ входить ни
+// в AgentOwned, ни в InfraOwned — иначе одна и та же пара документировалась
+// бы в upgrade.md дважды под разными разделами (TestUpgradeDocDocumentsCurrentRenameWave
+// в internal/guards читает объединение всех трёх множеств).
+func TestServerOwnedSubsetOfRenamed(t *testing.T) {
+	if len(ServerOwned) == 0 {
+		t.Fatal("ServerOwned пуст")
+	}
+	agent := map[string]bool{}
+	for _, old := range AgentOwned {
+		agent[old] = true
+	}
+	infra := map[string]bool{}
+	for _, old := range InfraOwned {
+		infra[old] = true
+	}
+	for _, old := range ServerOwned {
+		if _, ok := Renamed[old]; !ok {
+			t.Errorf("ServerOwned содержит %s, которой нет среди ключей Renamed", old)
+		}
+		if agent[old] {
+			t.Errorf("ServerOwned содержит %s, которая уже входит в AgentOwned", old)
+		}
+		if infra[old] {
+			t.Errorf("ServerOwned содержит %s, которая уже входит в InfraOwned", old)
+		}
+	}
+}
+
 // TestCheckRenamedAllChecksWholeRegistry — CheckRenamedAll проверяет ВЕСЬ
 // реестр (режим cmd/gotcha), а не только AgentOwned. Подтест на КАЖДУЮ
 // запись реестра — не таблица, по которой не итерируют.
