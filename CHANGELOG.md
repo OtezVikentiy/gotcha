@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The "No active key — issue a new one" warning in project settings now also shows
   when every key is revoked, not only when there are no keys at all: event ingestion
   is broken for such a project and the page used to say nothing about it.
+- Three pages ran off the side of the screen on a phone. The top bar of the pages
+  without the rail (sign-in, sign-up, project setup, error pages) now wraps instead
+  of pushing the "Sign out" button past the edge; on the logs page the column holding
+  the list and the facets no longer sizes itself to the longest facet value; and the
+  public status page address wraps instead of stretching its card. Pagination wraps
+  when it does not fit on one line.
 
 ## [0.32.1] - 2026-09-02
 

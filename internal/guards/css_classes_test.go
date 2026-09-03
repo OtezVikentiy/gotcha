@@ -266,7 +266,6 @@ var permanentCSSClassExemptions = []Exemption{
 	{Value: "rate-guard-card", Why: "семантический маркер, стоит в паре с .card.card--wide (class=\"card card--wide rate-guard-card\")", Finding: "по замыслу"},
 	{Value: "sso-redirect", Why: "семантический маркер-обёртка вокруг текста и <code> (визуал code — от базового селектора)", Finding: "по замыслу"},
 	{Value: "sso-status", Why: "семантический маркер; в одном из трёх вхождений идёт вместе с уже стилизованным .hint (class=\"sso-status hint\")", Finding: "по замыслу"},
-	{Value: "status-page-public", Why: "семантический маркер-обёртка вокруг текста и стилизованной ссылки", Finding: "по замыслу"},
 	{Value: "team", Why: "семантический маркер, стоит в паре с .card (class=\"team card\")", Finding: "по замыслу"},
 }
 
@@ -321,7 +320,13 @@ var permanentCSSClassExemptions = []Exemption{
 // правило в app.css (зазор между карточкой пинга и кнопками действий) — снят.
 // 81→80 (эскалации, доводки): "escalations-section" получил реальное правило
 // в app.css (зазор между карточками лесенок critical и warning) — снят.
-const maxPermanentCSSClassExemptions = 80
+// 80→79 (адаптивная вёрстка, статус-страницы): "status-page-public" получил
+// реальное правило в app.css (overflow-wrap:anywhere — длинный публичный
+// адрес распирал страницу на 390px) — снят. Заодно вскрылась расходка:
+// список уже был короче потолка на 1 запись (потолок 80 при фактических 79
+// записях) — снятие довело фактический список до 78, потолок правится на
+// то же число, а не на "минус один от старого потолка".
+const maxPermanentCSSClassExemptions = 78
 
 // debtCSSClassExemptions — классы, у которых нет ни семьи, ни соседнего
 // стилизованного класса: похоже, что автор разметки РАССЧИТЫВАЛ на

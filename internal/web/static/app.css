@@ -926,11 +926,17 @@ a:hover {
 /* -- Chromeless: анонимные/setup-страницы (логин, регистрация, онбординг,
    ошибки) — без рейла и сайдбара, тонкая верхняя полоса + центр-форма -- */
 .chromeless-top {
-	height: 48px;
+	/* min-height + height:auto, а не жёсткая height:48px: полосе разрешено
+	   переноситься (flex-wrap ниже), и при фиксированной высоте вторая
+	   строка была бы обрезана — кнопка «Выйти» из невидимой-за-краем стала
+	   бы просто невидимой. */
+	min-height: 48px;
+	height: auto;
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
-	padding: 0 16px;
+	padding: 6px 16px;
 	border-bottom: 1px solid var(--border);
 	background: var(--surface);
 }
@@ -1071,6 +1077,16 @@ a:hover {
 	   вторую строку целиком, а не обрезается многоточием посередине смысла. */
 	.breadcrumb {
 		flex-basis: 100%;
+	}
+	/* Тот же приём ужатия, что у .topbar выше, — но переноса он один не
+	   спасает: 88+69+94+96=347 плюс паддинг/зазоры даже при 0 8px/4px
+	   упирается ровно в 375px, а на более узком экране (или при более
+	   длинном переводе подписи) снова потечёт. Держится именно на
+	   flex-wrap в базовом правиле выше, ужатие — только чтобы перенос
+	   срабатывал реже. */
+	.chromeless-top {
+		padding: 6px 8px;
+		gap: 4px;
 	}
 }
 
@@ -1799,6 +1815,10 @@ th {
 
 .pagination {
 	display: flex;
+	/* Перенос обязателен: «Показать старее» + «Показать новее» + счётчик на
+	   375px в строку не встают (тот же приём и то же обоснование, что у
+	   .issue-meta ниже). */
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
 	margin-top: 12px;
@@ -2601,15 +2621,21 @@ th {
 /* Список логов + фасет-сайдбар (задача 4, C2): на мобильном одна колонка —
    фасеты идут ПОСЛЕ списка в том же порядке, что и в DOM (см. logs.templ,
    .logs-body), на широких экранах вторая узкая колонка справа. */
+/* minmax(0, 1fr), а не голое 1fr: 1fr — это minmax(auto, 1fr), и auto в роли
+   минимума трека равен min-content содержимого — трек перестаёт быть
+   ограничен шириной контейнера (та же причина, что у .escalation-steps и
+   .threshold-grid). Внутри .logs-facets сидят длинные значения фасетов —
+   без явного 0-минимума трек расходился до 551.5px при контейнере 271px и
+   распирал всю страницу. */
 .logs-body {
 	display: grid;
-	grid-template-columns: 1fr;
+	grid-template-columns: minmax(0, 1fr);
 	gap: 16px;
 	align-items: start;
 }
 @media (min-width: 900px) {
 	.logs-body {
-		grid-template-columns: 1fr 260px;
+		grid-template-columns: minmax(0, 1fr) 260px;
 	}
 }
 .logs-facets {
@@ -2860,6 +2886,14 @@ th {
    ширину карточки. */
 .status-page-editor .data-table {
 	width: 100%;
+}
+/* Публичный адрес статус-страницы — длинная ссылка (398px), которая на
+   узкой карточке не переносится сама и распирает абзац (237px) и страницу
+   целиком. overflow-wrap:anywhere — та же идиома, что у .copy-preview и у
+   машинных строк в таблицах: рвём слово там, где не помещается, вместо
+   горизонтального скролла. */
+.status-page-public {
+	overflow-wrap: anywhere;
 }
 
 /* OAuth / social login: кнопки на /login, /register и в профиле. */
