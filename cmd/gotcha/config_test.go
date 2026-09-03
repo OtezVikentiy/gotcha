@@ -1872,6 +1872,16 @@ var renamedEnvVarNewNameChecks = map[string]struct {
 // не на всех именах, — прошёл бы незамеченным: единственная запись под
 // защитой не покрывает остальные двадцать шесть.
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
+	// Сторож против вырождения самого перебора (задача 11, круг правок):
+	// sortedRenamedOldNames(), вручную урезанная до, скажем, names[:1],
+	// по-прежнему возвращала бы валидный []string — цикл t.Run ниже просто
+	// прогнал бы один подтест вместо всех и остался бы зелёным. Сверка длины
+	// с envcontract.Renamed НАПРЯМУЮ (а не через саму функцию, которая и
+	// могла бы быть урезана) — то немногое, что отличает такую мутацию от
+	// «всё покрыто».
+	if got, want := len(sortedRenamedOldNames()), len(envcontract.Renamed); got != want {
+		t.Fatalf("sortedRenamedOldNames() вернула %d имён, envcontract.Renamed содержит %d — обход урезан, ниже проверится не весь реестр", got, want)
+	}
 	for _, old := range sortedRenamedOldNames() {
 		newName := envcontract.Renamed[old]
 		t.Run(old, func(t *testing.T) {

@@ -66,6 +66,15 @@ func TestInfraOwnedSubsetOfRenamed(t *testing.T) {
 // реестр (режим cmd/gotcha), а не только AgentOwned. Подтест на КАЖДУЮ
 // запись реестра — не таблица, по которой не итерируют.
 func TestCheckRenamedAllChecksWholeRegistry(t *testing.T) {
+	// Сторож против вырождения перебора (задача 11, круг правок): та же
+	// проверка, что и в cmd/gotcha/config_test.go у
+	// TestLoadConfigRenamedEnvVarFailsStart — sortedRenamedOldNames(),
+	// урезанная до names[:1], осталась бы валидным []string, и цикл t.Run
+	// ниже прогнал бы один подтест вместо всех, оставшись зелёным. Длина
+	// сверяется напрямую с len(Renamed), а не через саму функцию.
+	if got, want := len(sortedRenamedOldNames()), len(Renamed); got != want {
+		t.Fatalf("sortedRenamedOldNames() вернула %d имён, Renamed содержит %d — обход урезан, ниже проверится не весь реестр", got, want)
+	}
 	for _, old := range sortedRenamedOldNames() {
 		newName := Renamed[old]
 		t.Run(old, func(t *testing.T) {
