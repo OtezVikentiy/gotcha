@@ -1206,6 +1206,95 @@ func TestLoadConfigRejectsNonNumericInt64(t *testing.T) {
 	}
 }
 
+// TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected —
+// GOTCHA_MAX_BUFFER_BYTES и GOTCHA_MAX_QUEUE_BYTES вошли в семью
+// «запрещённого нуля» вместе с OUTBOX_RETENTION_DAYS/MAX_EVENT_BYTES/
+// *_EVAL_INTERVAL_SECONDS/*_WINDOW_SECONDS/*_CONCURRENCY: явный 0 или
+// отрицательное значение — отказ старта, а не тихий откат к дефолту пакета
+// (который для этих двух переменных тоже кодируется нулём — см.
+// TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault).
+func TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected(t *testing.T) {
+	cases := []struct{ key, value string }{
+		{"GOTCHA_MAX_BUFFER_BYTES", "0"},
+		{"GOTCHA_MAX_BUFFER_BYTES", "-1"},
+		{"GOTCHA_MAX_QUEUE_BYTES", "0"},
+		{"GOTCHA_MAX_QUEUE_BYTES", "-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			_, err := loadConfig(getenvFrom(map[string]string{tc.key: tc.value}), nil)
+			if err == nil {
+				t.Fatalf("%s=%s: want error, got nil", tc.key, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("%s=%s: error %q does not name the variable", tc.key, tc.value, err)
+			}
+		})
+	}
+}
+
+// TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault — переменная,
+// оставленная незаданной, обязана вести себя как раньше: дефолт писателя
+// (для буфера — через effectiveMaxBufferBytes, а не приватное поле писателя;
+// для очереди — прямое значение Config.MaxQueueBytes, публичный контракт).
+func TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if got := effectiveMaxBufferBytes(cfg.MaxBufferBytes, 0); got != 0 {
+		t.Errorf("effectiveMaxBufferBytes(cfg.MaxBufferBytes, 0) = %d, want 0 (writer package default, no heap ceiling detected)", got)
+	}
+	if cfg.MaxQueueBytes != 0 {
+		t.Errorf("MaxQueueBytes = %d, want 0 (queue package default) когда GOTCHA_MAX_QUEUE_BYTES не задана", cfg.MaxQueueBytes)
+	}
+}
+
+// TestLoadConfigGarbageInMultipleNumericVarsReportsAllNames — loadConfig
+// обязан вернуть ВСЕ накопленные ошибки, а не первую (errs[0]): оператор с
+// несколькими опечатками правит .env за один проход, а не за один деплой на
+// каждую. Мутация: вернуть errs[0] вместо errors.Join(errs...) красит именно
+// этот тест — в тексте ошибки исчезнет одно из двух имён.
+func TestLoadConfigGarbageInMultipleNumericVarsReportsAllNames(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_MAX_BUFFER_BYTES": "8MiB",
+		"GOTCHA_MAX_QUEUE_BYTES":  "not-a-number",
+	}
+	_, err := loadConfig(getenvFrom(env), nil)
+	if err == nil {
+		t.Fatal("мусор в двух числовых переменных: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_MAX_BUFFER_BYTES") {
+		t.Errorf("error = %q, does not name GOTCHA_MAX_BUFFER_BYTES", err)
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_MAX_QUEUE_BYTES") {
+		t.Errorf("error = %q, does not name GOTCHA_MAX_QUEUE_BYTES", err)
+	}
+}
+
+// TestLoadConfigSecretKeyErrorNotDrownedByNumericErrors — ops P2-1: слабый/
+// дефолтный GOTCHA_SECRET_KEY на не-локальном BaseURL обязан быть виден
+// оператору САМ ПО СЕБЕ, даже когда рядом одновременно опечатка в числовой
+// переменной. Переход к «вернуть ВСЕ ошибки» не должен утопить security-
+// critical предупреждение о ключе среди диагностики опечаток — секретный
+// ключ проверяется своим отдельным return ДО сбора errs.
+func TestLoadConfigSecretKeyErrorNotDrownedByNumericErrors(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_BASE_URL":             "https://gotcha.example",
+		"GOTCHA_EVENT_RETENTION_DAYS": "abc",
+	}
+	_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err == nil {
+		t.Fatal("дефолтный GOTCHA_SECRET_KEY на не-локальном BaseURL: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOTCHA_SECRET_KEY must be set to a strong random value") {
+		t.Errorf("error = %q, want the secret-key warning to be visible and not superseded by the retention-days typo", err)
+	}
+	if strings.Contains(err.Error(), "GOTCHA_EVENT_RETENTION_DAYS") {
+		t.Errorf("error = %q, want ONLY the secret-key warning, not it plus the numeric typo (SEC-C1: secret must win, not share the line)", err)
+	}
+}
+
 // TestLoadConfigTrustedProxiesParsed — CIDR и голые адреса. Голый IP обязан
 // становиться /32 (/128 для IPv6), иначе net.ParseCIDR отвергнет запись, и
 // самая частая форма записи («192.168.1.5») стала бы ошибкой конфигурации.

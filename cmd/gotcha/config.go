@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -72,18 +73,27 @@ type Config struct {
 	DefaultProfileQuota     int64
 	DefaultLogQuota         int64
 	MaxEventBytes           int64
-	// MaxBufferBytes — байтовый потолок КАЖДОГО буфера писателя. 0 = значение
-	// по умолчанию из пакета писателя (256 МиБ). Нужен для стеснённых профилей:
-	// пять независимых буферов по 256 МиБ дают 1.25 ГиБ, тогда как
-	// docker-compose.small.yml ставит контейнеру mem_limit 256m — там потолок
-	// физически не может сработать раньше OOM-killer'а.
+	// MaxBufferBytes — байтовый потолок КАЖДОГО буфера писателя. Незаданная
+	// переменная — 0 внутри Config — значение по умолчанию из пакета писателя
+	// (256 МиБ) либо авто-вывод от потолка кучи (см. effectiveMaxBufferBytes,
+	// autoMaxBufferBytes в main.go). Явный 0 или отрицательное значение —
+	// ошибка конфигурации, отказ старта (loadConfig отличает «не задано» от
+	// «задано нулём»), а не тихое приравнивание к дефолту. Нужен для
+	// стеснённых профилей: писателей пять (event, SpanWriter, metric, profile,
+	// log), но SpanWriter применяет ОДИН потолок к ДВУМ независимым буферам
+	// (txBuf и spanBuf) — итого шесть «единиц потолка» по 256 МиБ, худший
+	// случай 1.5 ГиБ (не 1.25, как было бы при пяти писателях по одному
+	// буферу), тогда как docker-compose.small.yml ставит контейнеру mem_limit
+	// 256m — там потолок физически не может сработать раньше OOM-killer'а.
 	MaxBufferBytes int64
 	// IngestRateLimit — per-DSN токен-бакет приёма, запросов/с на project id
 	// (GOTCHA_INGEST_RATE_PER_SEC). Burst = 2×лимит. 0 выключает лимит.
 	// Срабатывает после аутентификации ключа и ДО квоты; ответ 429.
 	IngestRateLimit int
 	// MaxQueueBytes — байтовый потолок очереди приёма (в дополнение к её
-	// ёмкости в задачах). 0 = значение по умолчанию (64 МиБ).
+	// ёмкости в задачах). Незаданная переменная — 0 внутри Config — значение
+	// по умолчанию (64 МиБ). Явный 0 или отрицательное значение — ошибка
+	// конфигурации, отказ старта (см. MaxBufferBytes — тот же контракт).
 	//
 	// Счётный потолок сам по себе ничего не гарантировал: событие несёт до
 	// четырёх сырых JSON-блоков по 256 КиБ, то есть до мегабайта на задачу, а
@@ -527,6 +537,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return v
 	}
 
+	// num — как intNum, но для полей типа int64. На ошибке разбора возвращает
+	// def, а не частичный результат strconv.ParseInt (который на «8MiB»
+	// вернул бы 0, а на переполнении — зажатый до края диапазона): без этого
+	// нолём, случайно прошедшим все >=0-валидации, оказывалась именно
+	// опечатка оператора, а не осознанный дефолт.
 	num := func(key string, def int64) int64 {
 		v := getenv(key)
 		if v == "" {
@@ -535,6 +550,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", key, err))
+			return def
 		}
 		return n
 	}
@@ -573,6 +589,36 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		runEvaluators = &v
 	}
 
+	// GOTCHA_MAX_BUFFER_BYTES/GOTCHA_MAX_QUEUE_BYTES: 0 внутри Config остаётся
+	// сигналом «нет явного потолка, посчитай/возьми дефолт пакета» для
+	// downstream (effectiveMaxBufferBytes, autoMaxBufferBytes в main.go) — это
+	// НЕ меняется. Но 0 не заданной переменной и 0, написанный оператором
+	// руками, обязаны различаться: num() возвращает одно и то же значение
+	// (def=0) что при отсутствии переменной, что после её фикса на ошибке
+	// разбора, поэтому решение «задано ли явно и разобралось ли» берём ДО
+	// вызова num() — по сырому значению env и по факту добавления ошибки
+	// именно для этого ключа. Так «мусор» и «явный 0» не дублируют друг
+	// друга вторым сообщением об ошибке.
+	maxBufferBytesSet := strings.TrimSpace(getenv("GOTCHA_MAX_BUFFER_BYTES")) != ""
+	maxBufferBytesErrsBefore := len(errs)
+	maxBufferBytes := num("GOTCHA_MAX_BUFFER_BYTES", 0)
+	if maxBufferBytesSet && len(errs) == maxBufferBytesErrsBefore && maxBufferBytes < 1 {
+		errs = append(errs, fmt.Errorf(
+			"GOTCHA_MAX_BUFFER_BYTES must be >= 1 (0 or negative refuses startup here, unlike "+
+				"the other retention/quota variables where 0 means unlimited/forever; unset the "+
+				"variable entirely to use the writer package default), got %d", maxBufferBytes))
+	}
+
+	maxQueueBytesSet := strings.TrimSpace(getenv("GOTCHA_MAX_QUEUE_BYTES")) != ""
+	maxQueueBytesErrsBefore := len(errs)
+	maxQueueBytes := num("GOTCHA_MAX_QUEUE_BYTES", 0)
+	if maxQueueBytesSet && len(errs) == maxQueueBytesErrsBefore && maxQueueBytes < 1 {
+		errs = append(errs, fmt.Errorf(
+			"GOTCHA_MAX_QUEUE_BYTES must be >= 1 (0 or negative refuses startup here, unlike "+
+				"the other retention/quota variables where 0 means unlimited/forever; unset the "+
+				"variable entirely to use the ingest queue package default), got %d", maxQueueBytes))
+	}
+
 	cfg := Config{
 		Mode:                     *mode,
 		MigrateOnly:              *migrateOnly,
@@ -603,8 +649,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultLogQuota:          num("GOTCHA_DEFAULT_LOG_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_PER_SEC", 500),
-		MaxBufferBytes:           num("GOTCHA_MAX_BUFFER_BYTES", 0),
-		MaxQueueBytes:            num("GOTCHA_MAX_QUEUE_BYTES", 0),
+		MaxBufferBytes:           maxBufferBytes,
+		MaxQueueBytes:            maxQueueBytes,
 		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
 		AlertBudgetLimit:         intNum("GOTCHA_ALERT_BUDGET_LIMIT", 50),
 		CardinalityLimit:         intNum("GOTCHA_CARDINALITY_LIMIT", 10000),
@@ -759,16 +805,19 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 			cfg.TrustedProxies = append(cfg.TrustedProxies, n)
 		}
 	}
-	// ops P2-1: проверка GOTCHA_SECRET_KEY стоит ПЕРЕД errs[0] ниже (а не среди
-	// остальных валидаций хвостом функции) сознательно — это единственная
-	// security-critical проверка конфига (слабый/дефолтный ключ на не-local
-	// BaseURL = угон аккаунта через OAuth-link, SEC-C1). Если у оператора
-	// ОДНОВРЕМЕННО опечатка в каком-то числовом поле (например
-	// GOTCHA_EVENT_RETENTION_DAYS=abc) И слабый секрет, порядок ниже гарантирует,
-	// что он увидит именно предупреждение про секрет первым, а не только
-	// про опечатку — иначе он мог бы исправить опечатку, перезапуститься и
-	// невольно продолжить стартовать со слабым ключом ещё один цикл
-	// деплоя, пока не увидит следующую ошибку.
+	// ops P2-1: проверка GOTCHA_SECRET_KEY стоит ПЕРЕД возвратом накопленных
+	// errs ниже (а не среди остальных валидаций хвостом функции) сознательно —
+	// это единственная security-critical проверка конфига (слабый/дефолтный
+	// ключ на не-local BaseURL = угон аккаунта через OAuth-link, SEC-C1). Она
+	// возвращается СВОИМ отдельным `return`, а не через накопление в errs, —
+	// поэтому даже теперь, когда loadConfig отдаёт ВСЕ накопленные числовые/
+	// булевы опечатки разом (errors.Join ниже), слабый секрет при этом не
+	// тонет между ними одной строкой из многих: если у оператора ОДНОВРЕМЕННО
+	// опечатка в каком-то числовом поле (например GOTCHA_EVENT_RETENTION_DAYS=abc)
+	// И слабый секрет, порядок ниже гарантирует, что он увидит СНАЧАЛА и
+	// ТОЛЬКО предупреждение про секрет — иначе он мог бы исправить опечатку,
+	// перезапуститься и невольно продолжить стартовать со слабым ключом ещё
+	// один цикл деплоя, пока не увидит следующую ошибку.
 	//
 	// Тем не менее checkRenamedEnvVars в самом начале loadConfig стоит ВЫШЕ
 	// даже этой проверки: старое имя означает, что часть .env оператора не
@@ -842,8 +891,14 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		}
 	}
 
+	// Возвращаем ВСЕ накопленные ошибки, а не только первую: оператор с
+	// пятью опечатками правит .env за один проход, а не за пять деплоев.
+	// errors.Join кладёт каждую на отдельную строку, и каждая из них уже
+	// начинается с имени переменной (см. num/intNum/parseBool выше и
+	// GOTCHA_TRUSTED_PROXIES/GOTCHA_MAX_BUFFER_BYTES/GOTCHA_MAX_QUEUE_BYTES
+	// рядом) — этим текстом оператор чинит конфиг.
 	if len(errs) > 0 {
-		return Config{}, errs[0]
+		return Config{}, errors.Join(errs...)
 	}
 
 	// max-age проверяется независимо от HSTSEnabled: отрицательное значение —
