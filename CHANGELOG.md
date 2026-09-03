@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   short keys and query values.
 - Host and project thresholds are shown as cards in a row; recipe cards and setup
   page blocks got spacing between them.
+- The "DSN keys" block in project settings shows keys as cards instead of a table
+  where every record spanned two rows. The public key is no longer printed twice
+  (on its own and inside the DSN): the card header shortens it when the full key is
+  visible in the DSN, and shows it in full when there is no DSN. The copy button is
+  labelled with the action ("Copy DSN") rather than a field caption, a revoked key
+  says what that means, and the type of a new key is picked with a segmented control
+  that describes the selected type.
+
+### Fixed
+- The "No active key — issue a new one" warning in project settings now also shows
+  when every key is revoked, not only when there are no keys at all: event ingestion
+  is broken for such a project and the page used to say nothing about it.
 
 ## [0.32.1] - 2026-09-02
 

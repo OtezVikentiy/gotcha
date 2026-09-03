@@ -3289,8 +3289,85 @@ form.inline {
 	gap: 16px;
 }
 .card-stack > * { margin: 0; }
-/* «Новый ключ» не должен прилипать к таблице DSN-ключей сверху. */
+
+/* Список карточек DSN-ключей (см. keyCard в projsettings.templ) — замена
+   двухстрочной записи таблицы: у таблицы с колонками ключ/тип/статус/действие
+   в узкой средней колонке настроек (1/3 ширины при ≥1440px) для четырёх
+   столбцов не хватало места, пятая колонка под DSN схлопывалась до ~78px, и
+   адрес печатался столбиком по одному-два символа. Карточка этого
+   ограничения не имеет: ширина одна, произвольная высота — не проблема, а
+   следующий ключ просто добавляет ещё одну карточку в столбик. */
+.key-list {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	margin: 0 0 12px;
+}
+.key-card {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 10px 12px;
+}
+/* Приглушённая, без своей рамки — карточка отозванного ключа не должна
+   выглядеть недорисованной (у неё нет ни DSN, ни кнопки отзыва), но и не
+   должна тянуть внимание на себя: ключ больше не участвует в приёме. */
+.key-card--revoked {
+	color: var(--text-dim);
+}
+/* Шапка: идентификатор занимает свободное место, бейджи типа и статуса
+   прижаты вправо — то же поведение, что у .card-header:has(.card-header-action). */
+.key-card-head {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.key-card-id {
+	margin-right: auto;
+	font-family: var(--font-mono);
+	/* Полный ключ (отозванный, либо живой при пустом DSN, см. keyDisplayID)
+	   обязан переноситься, а не распирать карточку в узкой колонке — та же
+	   причина, что у .card .data-table td.overflow-wrap выше. */
+	overflow-wrap: anywhere;
+}
+/* Заметка карточки: ссылка «Что это значит» у legacy-ключа (переехала сюда
+   из шапки — там ей не было места ни при какой ширине) и пояснение у
+   отозванного ключа («события с ним больше не принимаются»). */
+.key-card-note {
+	margin: 6px 0 0;
+	font-size: var(--fs-sm);
+	color: var(--text-dim);
+}
+/* «Новый ключ» не должен прилипать к списку ключей сверху. */
 .key-create-form { margin-top: 12px; }
+/* Три ДЛИННЫЕ подписи типа ключа в одном сегмент-контроле — тот же приём
+   переноса, что у .host-thresholds .segmented (app.css выше): на узкой
+   колонке контрол не должен раздвигать страницу вбок. */
+.key-create-form .segmented {
+	flex-wrap: wrap;
+}
+/* Длинное описание выбранного типа — под контролом, а не в подписи радио
+   (та не резиновая: строка переносилась, и кружок радио отрывался от своей
+   подписи). Показываем ровно одно описание — приём :has(), уже применённый
+   у .host-group-threshold-form выше: скрыть все хвосты, включить нужный по
+   тому, какое radio отмечено. Место под описание не прыгает — при
+   невыбранном типе показана нейтральная строка key-kind-hint--none. */
+.key-create-form .key-kind-hint {
+	display: none;
+}
+.key-create-form:not(:has(input[name="kind"]:checked)) .key-kind-hint--none {
+	display: block;
+}
+.key-create-form:has(input[name="kind"][value="browser"]:checked) .key-kind-hint--browser {
+	display: block;
+}
+.key-create-form:has(input[name="kind"][value="server"]:checked) .key-kind-hint--server {
+	display: block;
+}
+.key-create-form:has(input[name="kind"][value="agent"]:checked) .key-kind-hint--agent {
+	display: block;
+}
 
 /* Разлипание вертикально составленных действий в карточке: несколько форм/
    кнопок подряд (напр. Опасная зона — «Покинуть» и «Удалить» шли впритык). */
@@ -4313,27 +4390,6 @@ svg.flamegraph text {
 	overflow-wrap: normal;
 	white-space: nowrap;
 }
-/* Ключ и его DSN — одна запись из двух строк таблицы (см. keyRow в
-   projsettings.templ): DSN идёт под строкой ключа во всю ширину через
-   colspan, а не пятой колонкой. Пятой колонкой он схлопывался до ~78px —
-   таблица стоит в узкой средней колонке настроек, — и адрес печатался
-   столбиком по одному-два символа, отодвигая кнопку отзыва под
-   горизонтальную прокрутку. Разделительную линию несёт только нижняя строка
-   пары: иначе ключ и его DSN читались бы как две независимые записи. */
-.data-table tr.key-row-with-dsn > td {
-	border-bottom: none;
-	padding-bottom: 0;
-}
-.data-table tr.key-dsn-row > td {
-	padding-top: 4px;
-}
-/* Подсветка при наведении берёт пару целиком — с любой из двух строк.
-   Без этого курсор над DSN подсвечивал «половину» записи. */
-.data-table tbody tr.key-row-with-dsn:hover + tr.key-dsn-row,
-.data-table tbody tr.key-row-with-dsn:has(+ tr.key-dsn-row:hover) {
-	background: var(--surface-2);
-}
-
 /* Подписи кнопок и бейджей тоже не рвём: «Отозвать» переносилось как
    «Отозва/ть». Перенос по любому символу нужен только машинным строкам
    (ключам, DSN, URL), а не элементам управления. */

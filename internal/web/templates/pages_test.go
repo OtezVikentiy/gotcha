@@ -580,24 +580,25 @@ func TestProjectSettings(t *testing.T) {
 	if !strings.Contains(out, "https://pk_untyped@dsn") {
 		t.Error("ключ с Kind==\"\" должен показывать собственный DSN")
 	}
-	// Строка конкретно ЭТОГО ключа (а не любая другая с badge-warn — legacy
+	// Карточка конкретно ЭТОГО ключа (а не любая другая с badge-warn — legacy
 	// pk_old его тоже несёт) обязана получить предупреждающий бейдж и
-	// подпись «без типа».
-	if idx := strings.Index(out, "pk_untyped"); idx == -1 {
-		t.Error("ключ с Kind==\"\" не найден в выводе")
-	} else {
-		rowStart := strings.LastIndex(out[:idx], "<tr>")
-		rowEnd := strings.Index(out[idx:], "</tr>")
-		if rowStart == -1 || rowEnd == -1 {
-			t.Fatalf("malformed row for pk_untyped: %s", out)
-		}
-		row := out[rowStart : idx+rowEnd+len("</tr>")]
-		if !strings.Contains(row, "badge-warn") {
-			t.Error("ключ с Kind==\"\" должен получить предупреждающий бейдж legacy, а не обычный")
-		}
-		if !strings.Contains(row, "/docs/keys") {
-			t.Error("ключ с Kind==\"\" должен показывать ссылку на /docs/keys в своей строке")
-		}
+	// подпись «без типа». Границы карточки — <article class="key-card...">,
+	// пришедшая на смену <tr> таблицы (см. keyCard в projsettings.templ).
+	idx := strings.Index(out, "pk_untyped")
+	if idx == -1 {
+		t.Fatal("ключ с Kind==\"\" не найден в выводе")
+	}
+	cardStart := strings.LastIndex(out[:idx], `<article class="key-card`)
+	cardEnd := strings.Index(out[idx:], "</article>")
+	if cardStart == -1 || cardEnd == -1 {
+		t.Fatalf("malformed card for pk_untyped: %s", out)
+	}
+	card := out[cardStart : idx+cardEnd+len("</article>")]
+	if !strings.Contains(card, "badge-warn") {
+		t.Error("ключ с Kind==\"\" должен получить предупреждающий бейдж legacy, а не обычный")
+	}
+	if !strings.Contains(card, "/docs/keys") {
+		t.Error("ключ с Kind==\"\" должен показывать ссылку на /docs/keys в своей карточке")
 	}
 }
 

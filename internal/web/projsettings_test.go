@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
@@ -594,8 +595,8 @@ func TestProjectSettingsKeyCreateKind(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsPageShowsKindsAndDSN — таблица показывает тип каждого
-// ключа и его СОБСТВЕННЫЙ DSN; отдельного «DSN проекта» на странице нет.
+// TestProjectSettingsPageShowsKindsAndDSN — карточка каждого ключа показывает
+// его тип и его СОБСТВЕННЫЙ DSN; отдельного «DSN проекта» на странице нет.
 func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -658,109 +659,65 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 		t.Fatalf("GET %s missing legacy key DSN %q: %s", settingsPath, legacyDSN, html)
 	}
 
-	// Таблица ключей — единственный <table class="data-table"> на странице
-	// (см. projsettings.templ). Вырезаем её и делим HTML на «внутри
-	// таблицы» / «снаружи»: тип и DSN обязаны жить ТОЛЬКО в строках, иначе
-	// проверки ниже не отличили бы возврат старого блока «DSN проекта» или
-	// подписей формы выпуска от настоящей таблицы.
-	tableStart := strings.Index(html, `<table class="data-table">`)
-	tableEnd := strings.Index(html, "</table>")
-	if tableStart == -1 || tableEnd == -1 || tableEnd < tableStart {
-		t.Fatalf("GET %s missing keys table: %s", settingsPath, html)
-	}
-	tableEnd += len("</table>")
-	tableHTML := html[tableStart:tableEnd]
-	outsideHTML := html[:tableStart] + html[tableEnd:]
-
-	// «Главного» DSN проекта больше нет: если кто-то вернёт старый блок
-	// <p>метка</p><pre>DSN</pre> перед таблицей, эта проверка обязана
-	// покраснеть на дублирующемся DSN снаружи таблицы.
-	for _, dsn := range []string{browserDSN, agentDSN, legacyDSN} {
-		if strings.Contains(outsideHTML, dsn) {
-			t.Fatalf("GET %s shows DSN %q outside the keys table (вернулся старый блок «DSN проекта»): %s", settingsPath, dsn, html)
-		}
-	}
-	if strings.Contains(outsideHTML, "DSN этого ключа") || strings.Contains(outsideHTML, "DSN of this key") {
-		t.Fatalf("GET %s shows a DSN label outside the keys table: %s", settingsPath, html)
+	if strings.Contains(html, "DSN этого ключа") || strings.Contains(html, "DSN of this key") {
+		t.Fatalf("GET %s shows the old dsn.label copy caption (should say project.settings.dsn.copy now): %s", settingsPath, html)
 	}
 
-	// rowFor вырезает фрагмент <tr>...</tr>, содержащий public_key ключа —
-	// подпись типа проверяем ИМЕННО в строке этого ключа, а не «где-то на
-	// странице» (форма выпуска рендерит те же подписи типов безусловно в
-	// своих radio, и наивная проверка по всему HTML не отличила бы одно от
-	// другого).
-	//
-	// Ищем именно "<tr" без закрывающей скобки: у строки ключа есть класс
-	// (key-row-with-dsn у ключа с DSN), и поиск по литеральному "<tr>"
-	// проскочил бы её до <tr> шапки — фрагмент тогда охватывал бы пол-таблицы
-	// и проверки подписей ниже проходили бы на чужих строках.
-	rowFor := func(publicKey string) string {
-		idx := strings.Index(tableHTML, publicKey)
+	// cardFor вырезает фрагмент <article class="key-card...">...</article>,
+	// несущий publicKey ключа (полный ключ живёт внутри его собственного DSN
+	// — copyBlock печатает его целиком и в hidden-textarea, и в видимом
+	// <pre>, см. keyDisplayID) — тип и DSN проверяем ИМЕННО в карточке этого
+	// ключа, а не «где-то на странице» (форма выпуска рендерит те же
+	// подписи типов безусловно в своих radio, и наивная проверка по всему
+	// HTML не отличила бы одно от другого).
+	cardFor := func(publicKey string) string {
+		idx := strings.Index(html, publicKey)
 		if idx == -1 {
-			t.Fatalf("GET %s key row for %q not found in table: %s", settingsPath, publicKey, tableHTML)
+			t.Fatalf("GET %s key card for %q not found: %s", settingsPath, publicKey, html)
 		}
-		rowStart := strings.LastIndex(tableHTML[:idx], "<tr")
-		rowEndRel := strings.Index(tableHTML[idx:], "</tr>")
-		if rowStart == -1 || rowEndRel == -1 {
-			t.Fatalf("GET %s malformed row for %q: %s", settingsPath, publicKey, tableHTML)
+		cardStart := strings.LastIndex(html[:idx], `<article class="key-card`)
+		cardEndRel := strings.Index(html[idx:], "</article>")
+		if cardStart == -1 || cardEndRel == -1 {
+			t.Fatalf("GET %s malformed card for %q: %s", settingsPath, publicKey, html)
 		}
-		return tableHTML[rowStart : idx+rowEndRel+len("</tr>")]
+		return html[cardStart : idx+cardEndRel+len("</article>")]
 	}
 
-	// dsnRowAfter возвращает строку, идущую СРАЗУ за строкой ключа: DSN живёт
-	// в ней (colspan под записью ключа), и привязка «этот DSN принадлежит
-	// этому ключу» держится только соседством. Проверка по всей таблице её
-	// не заменяет: страница с тремя ключами содержит три DSN, и перепутанные
-	// местами строки такую проверку прошли бы.
-	dsnRowAfter := func(publicKey string) string {
-		row := rowFor(publicKey)
-		idx := strings.Index(tableHTML, row)
-		rest := tableHTML[idx+len(row):]
-		start := strings.Index(rest, "<tr")
-		end := strings.Index(rest, "</tr>")
-		if start == -1 || end == -1 || end < start {
-			t.Fatalf("GET %s no row after key %q: %s", settingsPath, publicKey, tableHTML)
-		}
-		return rest[start : end+len("</tr>")]
+	browserCard := cardFor(browserKey.PublicKey)
+	if !strings.Contains(browserCard, "Браузер") && !strings.Contains(browserCard, "Browser") {
+		t.Fatalf("GET %s browser card missing kind label: %s", settingsPath, browserCard)
+	}
+	agentCard := cardFor(agentKey.PublicKey)
+	if !strings.Contains(agentCard, "Агент") && !strings.Contains(agentCard, "Agent") {
+		t.Fatalf("GET %s agent card missing kind label: %s", settingsPath, agentCard)
+	}
+	legacyCard := cardFor(legacyKey.PublicKey)
+	if !strings.Contains(legacyCard, "Без типа") && !strings.Contains(legacyCard, "Untyped") {
+		t.Fatalf("GET %s legacy card missing kind label: %s", settingsPath, legacyCard)
+	}
+	if !strings.Contains(legacyCard, "/docs/keys") {
+		t.Fatalf("GET %s legacy card missing hint link to /docs/keys: %s", settingsPath, legacyCard)
 	}
 
-	browserRow := rowFor(browserKey.PublicKey)
-	if !strings.Contains(browserRow, "Браузер") && !strings.Contains(browserRow, "Browser") {
-		t.Fatalf("GET %s browser row missing kind label: %s", settingsPath, browserRow)
-	}
-	agentRow := rowFor(agentKey.PublicKey)
-	if !strings.Contains(agentRow, "Агент") && !strings.Contains(agentRow, "Agent") {
-		t.Fatalf("GET %s agent row missing kind label: %s", settingsPath, agentRow)
-	}
-	legacyRow := rowFor(legacyKey.PublicKey)
-	if !strings.Contains(legacyRow, "Без типа") && !strings.Contains(legacyRow, "Untyped") {
-		t.Fatalf("GET %s legacy row missing kind label: %s", settingsPath, legacyRow)
-	}
-	if !strings.Contains(legacyRow, "/docs/keys") {
-		t.Fatalf("GET %s legacy row missing hint link to /docs/keys: %s", settingsPath, legacyRow)
-	}
-
-	// DSN каждого ключа — в строке ПОД его записью, и ни один DSN не остаётся
-	// в самой записи: колонки DSN в таблице больше нет (она схлопывалась в
-	// столбик из одного символа), а место DSN — отдельная строка с colspan.
+	// Каждая карточка несёт СВОЙ DSN и ни один чужой — перепутанные местами
+	// карточки эту проверку не прошли бы.
 	for _, c := range []struct {
-		publicKey string
-		dsn       string
-		row       string
+		name   string
+		card   string
+		dsn    string
+		others []string
 	}{
-		{browserKey.PublicKey, browserDSN, browserRow},
-		{agentKey.PublicKey, agentDSN, agentRow},
-		{legacyKey.PublicKey, legacyDSN, legacyRow},
+		{"browser", browserCard, browserDSN, []string{agentDSN, legacyDSN}},
+		{"agent", agentCard, agentDSN, []string{browserDSN, legacyDSN}},
+		{"legacy", legacyCard, legacyDSN, []string{browserDSN, agentDSN}},
 	} {
-		dsnRow := dsnRowAfter(c.publicKey)
-		if !strings.Contains(dsnRow, `class="key-dsn-row"`) {
-			t.Fatalf("GET %s row after key %q is not the DSN row: %s", settingsPath, c.publicKey, dsnRow)
+		if !strings.Contains(c.card, c.dsn) {
+			t.Fatalf("GET %s %s card missing its own DSN %q: %s", settingsPath, c.name, c.dsn, c.card)
 		}
-		if !strings.Contains(dsnRow, c.dsn) {
-			t.Fatalf("GET %s DSN row after key %q missing its DSN %q: %s", settingsPath, c.publicKey, c.dsn, dsnRow)
-		}
-		if strings.Contains(c.row, c.dsn) {
-			t.Fatalf("GET %s key row for %q still carries the DSN inline: %s", settingsPath, c.publicKey, c.row)
+		for _, other := range c.others {
+			if strings.Contains(c.card, other) {
+				t.Fatalf("GET %s %s card carries a foreign DSN %q: %s", settingsPath, c.name, other, c.card)
+			}
 		}
 	}
 }
@@ -816,5 +773,79 @@ func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 	if strings.Contains(string(body), "confirm.key_revoke.last_of_kind.message") ||
 		strings.Contains(string(body), "последний активный ключ") {
 		t.Fatalf("POST %s (paired server key) unexpectedly shows last-of-kind warning: %s", revokePath, body)
+	}
+}
+
+// TestProjectSettingsAllRevokedShowsNoLiveKeyWarning — проект, у которого
+// ВСЕ ключи отозваны (не только «ключей нет вовсе»), обязан показывать
+// предупреждение «Нет активного ключа»: приём событий в обоих случаях
+// одинаково сломан (см. hasLiveKey в projsettings.templ, дефект поведения из
+// брифа блока «DSN-ключи», п.6). Предупреждение исчезает после выпуска
+// нового ключа.
+func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "keys-allrevoked-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "keys-allrevoked-co", "AllRevoked Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "keys-allrevoked-proj", "AllRevoked Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
+	revokePath := settingsPath + "/keys/revoke"
+	keysPath := settingsPath + "/keys"
+
+	soleKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer)
+	if err != nil {
+		t.Fatalf("create sole key: %v", err)
+	}
+	soleKey := soleKeys[0]
+
+	// Пока ключ жив -> предупреждения нет.
+	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), i18n.T(context.Background(), "project.settings.keys.no_dsn")) {
+		t.Fatalf("GET %s shows no-live-key warning with a live key present: %s", settingsPath, body)
+	}
+
+	// Отзыв единственного ключа (confirmed=yes — без него revoke только
+	// показал бы confirm-страницу, см. TestProjectSettingsRevokeLastOfKindWarns).
+	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(soleKey.ID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (revoke sole key) status = %d, want 303", revokePath, resp.StatusCode)
+	}
+
+	// Ключ есть (отозванный), но живого — нет: предупреждение обязано
+	// появиться. Старое условие len(keys)==0 этот случай пропускало.
+	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), i18n.T(context.Background(), "project.settings.keys.no_dsn")) {
+		t.Fatalf("GET %s missing no-live-key warning when the only key is revoked: %s", settingsPath, body)
+	}
+	if keys, err := orgSvc.KeysForProject(context.Background(), proj.ID); err != nil || len(keys) != 1 {
+		t.Fatalf("KeysForProject after revoke = %+v, err=%v, want 1 (revoked) key", keys, err)
+	}
+
+	// Новый ключ -> предупреждение снимается.
+	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (issue new key) status = %d, want 303", keysPath, resp.StatusCode)
+	}
+	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), i18n.T(context.Background(), "project.settings.keys.no_dsn")) {
+		t.Fatalf("GET %s still shows no-live-key warning after issuing a new key: %s", settingsPath, body)
 	}
 }
