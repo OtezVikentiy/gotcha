@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-03
+
 ### Changed
 - **Breaking.** Seventeen server environment variables have been renamed ahead
   of the 1.0 contract freeze: the listen address is distinguished from the
