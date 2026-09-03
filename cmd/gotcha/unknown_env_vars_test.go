@@ -57,6 +57,19 @@ func TestCheckUnknownEnvVarsIgnoresNonGotchaVars(t *testing.T) {
 	}
 }
 
+// TestCheckUnknownEnvVarsIsCasePreserving — префикс "GOTCHA_" сравнивается
+// РЕГИСТРОЗАВИСИМО: "gotcha_lower" и "Gotcha_Port" не наши переменные вовсе
+// (продукт всегда пишет имена капсом, см. конвенцию именования), а не
+// "неизвестные GOTCHA_*" — strings.HasPrefix(name, "GOTCHA_") обязан
+// остаться без нормализации регистра перед сравнением. Без этого теста
+// вставка strings.ToUpper(name) перед проверкой префикса (или аналогичная
+// мутация) не ловится ни одним другим тестом.
+func TestCheckUnknownEnvVarsIsCasePreserving(t *testing.T) {
+	if err := checkUnknownEnvVars(environFrom("gotcha_lower=1", "Gotcha_Port=1")); err != nil {
+		t.Errorf("checkUnknownEnvVars: %v, want nil — 'gotcha_lower'/'Gotcha_Port' не начинаются с 'GOTCHA_' регистрозависимо, это не наши переменные", err)
+	}
+}
+
 // TestCheckUnknownEnvVarsIgnoresMalformedEntries — запись без "=" (которую
 // os.Environ() в реальности не производит никогда) не паникует и не
 // считается неизвестным именем: strings.Cut возвращает ok=false, вся
@@ -223,5 +236,26 @@ func TestSuggestKnownNamesDeterministicOrderWithTies(t *testing.T) {
 func TestSuggestKnownNamesNoCandidate(t *testing.T) {
 	if got := suggestKnownNames("GOTCHA_TOTALLY_UNKNOWN_NAME_THAT_MATCHES_NOTHING"); len(got) != 0 {
 		t.Errorf("suggestKnownNames = %v, want пустой список", got)
+	}
+}
+
+// TestSuggestKnownNamesOrdersByDistanceFirst — круг правок 1 (ревью): ветка
+// sort.Slice, где кандидаты РАЗЛИЧАЮТСЯ расстоянием (candidates[i].dist !=
+// candidates[j].dist), раньше не была покрыта ни одним тестом —
+// TestSuggestKnownNamesDeterministicOrderWithTies проверяет только ничью
+// (оба расстояния равны). GOTCHA_SMTP_PONT — расстояние 1 до
+// GOTCHA_SMTP_PORT и расстояние 2 до GOTCHA_SMTP_HOST: ближайший кандидат
+// обязан идти первым независимо от алфавита (HOST < PORT по буквам, но
+// PORT ближе и обязан быть первым).
+func TestSuggestKnownNamesOrdersByDistanceFirst(t *testing.T) {
+	got := suggestKnownNames("GOTCHA_SMTP_PONT")
+	want := []string{"GOTCHA_SMTP_PORT", "GOTCHA_SMTP_HOST"}
+	if len(got) != len(want) {
+		t.Fatalf("suggestKnownNames(\"GOTCHA_SMTP_PONT\") = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("suggestKnownNames(\"GOTCHA_SMTP_PONT\")[%d] = %q, want %q (ближайший по расстоянию первым, а не по алфавиту)", i, got[i], want[i])
+		}
 	}
 }
