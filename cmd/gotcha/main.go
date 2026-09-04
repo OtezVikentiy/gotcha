@@ -108,28 +108,20 @@ func deriveCookieKey(master string) string {
 // cfg.LogLevel/cfg.LogFormat уже триммленными и в нижнем регистре
 // (cmd/gotcha/config.go), здесь их разбирать повторно не нужно.
 func setupLogging(level, format string) error {
-	var lv slog.Level
-	switch level {
-	case "", "info":
-		lv = slog.LevelInfo
-	case "debug":
-		lv = slog.LevelDebug
-	case "warn", "warning":
-		lv = slog.LevelWarn
-	case "error":
-		lv = slog.LevelError
-	default:
-		return fmt.Errorf("GOTCHA_LOGGING_LEVEL must be debug, info, warn (alias warning) or error, got %q", level)
+	// validateLogging (cmd/gotcha/config.go) — та же таблица значений, что
+	// loadConfig проверяет на старте (K5-1): вызывается здесь первой строкой,
+	// дальше только строится хендлер по уже провалидированным level/format —
+	// вторую таблицу допустимых значений заводить незачем.
+	if err := validateLogging(level, format); err != nil {
+		return err
 	}
-	opts := &slog.HandlerOptions{Level: lv}
+	opts := &slog.HandlerOptions{Level: logLevels[level]}
 	var h slog.Handler
 	switch format {
 	case "", "text":
 		h = slog.NewTextHandler(os.Stderr, opts)
 	case "json":
 		h = slog.NewJSONHandler(os.Stderr, opts)
-	default:
-		return fmt.Errorf("GOTCHA_LOGGING_FORMAT must be text or json, got %q", format)
 	}
 	slog.SetDefault(slog.New(h))
 	return nil

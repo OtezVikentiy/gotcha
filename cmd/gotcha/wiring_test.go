@@ -193,6 +193,23 @@ func TestSetupLoggingRejectsUnknownFormat(t *testing.T) {
 	}
 }
 
+// TestSetupLoggingUsesValidateLogging — K5-1: setupLogging не заводит свою
+// копию таблицы допустимых level/format, а вызывает validateLogging
+// (cmd/gotcha/config.go) первой строкой — ту же функцию, которую loadConfig
+// зовёт в блоке накопления ошибок. Тест сравнивает ТЕКСТ ошибки: если бы
+// setupLogging вернулась к собственному switch с def-веткой, тексты могли бы
+// разойтись незаметно для остальных тестов (они лишь проверяют err != nil).
+func TestSetupLoggingUsesValidateLogging(t *testing.T) {
+	want := validateLogging("trace", "text")
+	if want == nil {
+		t.Fatal(`validateLogging("trace", "text") = nil, want error`)
+	}
+	got := setupLogging("trace", "text")
+	if got == nil || got.Error() != want.Error() {
+		t.Errorf("setupLogging(%q, %q) = %v, want same error as validateLogging: %v", "trace", "text", got, want)
+	}
+}
+
 // TestSetupLoggingWarningAliasSetsWarnLevel — "warning" (алиас, документирован
 // в обеих локалях) обязан выставлять именно slog.LevelWarn: Info-сообщения
 // после него отфильтрованы, Warn — проходят.

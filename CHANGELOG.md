@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breaks mid-stream during a subject data export is surfaced as an error
   instead of a silently truncated file. The export janitor now runs under a
   tick budget and reports its own liveness.
+- Startup configuration errors are all reported together instead of one per
+  restart. The SLO evaluator now runs under a tick budget, like the other
+  periodic evaluators — a hung ClickHouse query no longer holds it forever.
+  A failure to release the migration lock is now logged instead of being
+  silently dropped. The migration test suite now checks that rolling back
+  each individual migration restores the exact prior schema shape, not just
+  that rolling back the whole set leaves an empty database.
 
 ## [0.34.0] - 2026-09-03
 

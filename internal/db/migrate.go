@@ -587,8 +587,18 @@ func WithMigrationLock(ctx context.Context, pool *pgxpool.Pool, fn func() error)
 		return fmt.Errorf("migration lock: %w", err)
 	}
 	defer func() {
-		_, _ = conn.Exec(context.WithoutCancel(ctx),
-			"SELECT pg_advisory_unlock($1)", migrationLockKey)
+		unlockCtx := context.WithoutCancel(ctx)
+		if _, err := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+			slog.Warn("db: migrate: снятие advisory lock", "err", err)
+			// Сессионный advisory lock живёт с соединением: если снять его не
+			// удалось, соединение всё ещё держит лок. Вернуть его в пул
+			// обычным Release() (defer выше) — значит подсунуть следующему
+			// пользователю пула чужой лок: он либо неожиданно заблокируется на
+			// pg_advisory_lock, либо (хуже) его собственный unlock снимет
+			// ЧУЖОЙ лок первым. Закрываем соединение — pgxpool обнаружит, что
+			// оно закрыто, и не вернёт его в пул на следующем Release().
+			conn.Conn().Close(unlockCtx)
+		}
 	}()
 	return fn()
 }

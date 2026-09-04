@@ -2,6 +2,8 @@ package db_test
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -252,6 +254,354 @@ func TestMigratePGUpDownUp(t *testing.T) {
 	}
 	if again := userTableCount(t, ctx, pool); again != before {
 		t.Fatalf("повторный up дал %d таблиц вместо %d", again, before)
+	}
+}
+
+// schemaSnapshot читает форму public-схемы PostgreSQL (колонки, констрейнты,
+// индексы, представления) и возвращает её как отсортированный список строк,
+// пригодный для текстового сравнения между двумя моментами. schema_migrations
+// (служебная таблица golang-migrate) исключена — её форма не зависит от
+// миграций проекта и одинакова на любой версии схемы.
+func schemaSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
+	t.Helper()
+	var lines []string
+
+	// Позиция колонки (ordinal_position ИЛИ ранг относительно соседей по
+	// таблице) сознательно НЕ входит в снимок — ни сырым
+	// information_schema.ordinal_position, ни row_number() по нему.
+	//
+	// Причина — не гипотетическая, тест ловил обе формы FALSE POSITIVE на
+	// заведомо корректных миграциях этого репозитория при живом прогоне:
+	//   1) 0090 (dep_released_at): PostgreSQL не переиспользует физический
+	//      attnum после DROP COLUMN — ADD COLUMN, вернувший ту же колонку
+	//      после down+up round trip, получает СЛЕДУЮЩИЙ номер (был 21 —
+	//      стал 22), хотя относительный порядок (она по-прежнему последняя)
+	//      не изменился. Сырой ordinal_position считал бы это расхождением
+	//      на КАЖДОЙ миграции, добавляющей колонку, — то есть почти на любой
+	//      миграции проекта.
+	//   2) 0062/0063 (status_pages.public_id/slug): у этого теста «want»
+	//      снимается ПОСЛЕ приведения версии к v ПОСЛЕДОВАТЕЛЬНЫМИ down от
+	//      текущей верхней версии (см. докблок TestMigratePGEachDownMirrorsUp
+	//      про приведение к v) — путь, которым продовый деплой НИКОГДА не
+	//      идёт (он только up, с пустой схемы). На этом пути down 0063
+	//      (DROP COLUMN slug) под up 0062 (ADD COLUMN public_id) уже
+	//      применённым ре-добавляет slug ПОСЛЕ public_id физически — а
+	//      «до» слог стоял ДО public_id (add public_id в 0062 шёл на схеме,
+	//      где slug уже существовал). round trip именно 0062 эту пару не
+	//      трогает и восстанавливает «естественный» порядок (slug, потом
+	//      public_id) — расхождение с «want» чисто из способа приведения
+	//      теста к версии v, а не из содержимого 0062/0063.down.sql.
+	// Оба случая — не находки о миграциях, а свойства метода тестирования
+	// (down+up на приведённой последовательными откатами базе). Присутствие/
+	// тип/nullable/default колонки эти случаи не задевают — только порядок,
+	// который приложение нигде не использует (SQL обращается к колонкам по
+	// имени), поэтому вне комплекта проверяемых свойств формы схемы.
+	colRows, err := pool.Query(ctx, `
+		SELECT table_name, column_name, data_type, is_nullable, column_default
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`)
+	if err != nil {
+		t.Fatalf("schema snapshot: columns: %v", err)
+	}
+	for colRows.Next() {
+		var table, column, dataType, nullable string
+		var def *string
+		if err := colRows.Scan(&table, &column, &dataType, &nullable, &def); err != nil {
+			colRows.Close()
+			t.Fatalf("schema snapshot: scan column: %v", err)
+		}
+		defStr := "<nil>"
+		if def != nil {
+			defStr = *def
+		}
+		lines = append(lines, fmt.Sprintf("column %s.%s %s null=%s default=%s",
+			table, column, dataType, nullable, defStr))
+	}
+	if err := colRows.Err(); err != nil {
+		t.Fatalf("schema snapshot: columns rows: %v", err)
+	}
+	colRows.Close()
+
+	conRows, err := pool.Query(ctx, `
+		SELECT cl.relname, c.conname, pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class cl ON cl.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = cl.relnamespace
+		WHERE n.nspname = 'public' AND cl.relname <> 'schema_migrations'`)
+	if err != nil {
+		t.Fatalf("schema snapshot: constraints: %v", err)
+	}
+	for conRows.Next() {
+		var rel, name, def string
+		if err := conRows.Scan(&rel, &name, &def); err != nil {
+			conRows.Close()
+			t.Fatalf("schema snapshot: scan constraint: %v", err)
+		}
+		lines = append(lines, fmt.Sprintf("constraint %s.%s %s", rel, name, def))
+	}
+	if err := conRows.Err(); err != nil {
+		t.Fatalf("schema snapshot: constraints rows: %v", err)
+	}
+	conRows.Close()
+
+	idxRows, err := pool.Query(ctx, `
+		SELECT tablename, indexname, indexdef
+		FROM pg_indexes
+		WHERE schemaname = 'public' AND tablename <> 'schema_migrations'`)
+	if err != nil {
+		t.Fatalf("schema snapshot: indexes: %v", err)
+	}
+	for idxRows.Next() {
+		var table, name, def string
+		if err := idxRows.Scan(&table, &name, &def); err != nil {
+			idxRows.Close()
+			t.Fatalf("schema snapshot: scan index: %v", err)
+		}
+		lines = append(lines, fmt.Sprintf("index %s.%s %s", table, name, def))
+	}
+	if err := idxRows.Err(); err != nil {
+		t.Fatalf("schema snapshot: indexes rows: %v", err)
+	}
+	idxRows.Close()
+
+	viewRows, err := pool.Query(ctx, `
+		SELECT table_name, view_definition
+		FROM information_schema.views
+		WHERE table_schema = 'public'`)
+	if err != nil {
+		t.Fatalf("schema snapshot: views: %v", err)
+	}
+	for viewRows.Next() {
+		var name, def string
+		if err := viewRows.Scan(&name, &def); err != nil {
+			viewRows.Close()
+			t.Fatalf("schema snapshot: scan view: %v", err)
+		}
+		lines = append(lines, fmt.Sprintf("view %s %s", name, def))
+	}
+	if err := viewRows.Err(); err != nil {
+		t.Fatalf("schema snapshot: views rows: %v", err)
+	}
+	viewRows.Close()
+
+	sort.Strings(lines)
+	return lines
+}
+
+// diffSnapshots возвращает до 20 строк, присутствующих в want, но не в got, и
+// до 20 строк, присутствующих в got, но не в want — читаемая сводка для
+// TestMigratePGEachDownMirrorsUp вместо полного текста снимков (сотни строк).
+func diffSnapshots(want, got []string) (missing, extra []string) {
+	inGot := make(map[string]bool, len(got))
+	for _, l := range got {
+		inGot[l] = true
+	}
+	inWant := make(map[string]bool, len(want))
+	for _, l := range want {
+		inWant[l] = true
+	}
+	for _, l := range want {
+		if !inGot[l] {
+			missing = append(missing, l)
+			if len(missing) == 20 {
+				break
+			}
+		}
+	}
+	for _, l := range got {
+		if !inWant[l] {
+			extra = append(extra, l)
+			if len(extra) == 20 {
+				break
+			}
+		}
+	}
+	return missing, extra
+}
+
+// structuralOnly отрезает суффикс " default=..." у строк колонок (индексы/
+// констрейнты/представления проходят как есть) и пересортировывает. Нужен
+// ТОЛЬКО для промежуточной проверки «down.sql полностью откатывает свой
+// up.sql» в TestMigratePGEachDownMirrorsUp: несколько down.sql этого проекта
+// СОЗНАТЕЛЬНО выставляют другой DEFAULT, чем был у колонки до up (обратная
+// совместимость со старым бинарём на время отката релиза — «legacy»-дефолт
+// квот, 0018/0020). Живой прогон поймал ровно это на 0020
+// (organizations.event_quota): пристинная версия 19 не имеет DEFAULT вовсе
+// (0002 создаёт колонку без него), а down 0020 ставит DEFAULT 1000000 —
+// задокументированная асимметрия, а не находка K12-1. Раунд-трип-проверка
+// (want/got на одной и той же версии v, см. ниже) default НЕ теряет — она
+// сравнивает результат одного и того же up.sql версии v, применённого дважды,
+// так что легитимные «компенсирующие» дефолты down.sql там не участвуют.
+func structuralOnly(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		if strings.HasPrefix(l, "column ") {
+			if idx := strings.Index(l, " default="); idx != -1 {
+				l = l[:idx]
+			}
+		}
+		out[i] = l
+	}
+	sort.Strings(out)
+	return out
+}
+
+// equalSnapshots — сравнение двух уже отсортированных снимков schemaSnapshot.
+func equalSnapshots(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestMigratePGEachDownMirrorsUp — K12-1: для каждой версии v от максимальной
+// до 1 откатывает РОВНО ОДНУ миграцию (down v) и накатывает её обратно (up v),
+// сравнивая снимок public-схемы (schemaSnapshot) до и после этого round trip.
+// Расхождение означает, что down.sql версии v не полностью зеркалит свой
+// up.sql (например, забытый DROP COLUMN/DROP INDEX оставляет за собой лишний
+// артефакт, который up создаёт заново с тем же именем и молча дублирует, или
+// вовсе не создаёт, потому что решил, что он уже есть).
+//
+// Сравнение «до/после ВСЕГО round trip» само по себе не ловит забытый
+// DROP: если down.sql — no-op (ничего не удаляет), а up.sql идемпотентен
+// (`CREATE INDEX CONCURRENTLY IF NOT EXISTS`, как у большинства индексов
+// этого проекта — см. 0031/0089), то round trip целиком не меняет схему
+// вообще, и снимки «до» и «после» совпадут, СПРЯТАВ полностью сломанный
+// down (проверено живым прогоном: временная порча down.sql версии 89 —
+// замена DROP INDEX на no-op — тест остался зелёным без промежуточной
+// проверки ниже). Поэтому тест сверяет ОБЕ половины round trip по
+// отдельности: снимок сразу ПОСЛЕ down обязан совпасть с пристинным
+// снимком версии v-1 (сохранён с прошлой итерации в prevWant — см. тело
+// цикла), и только потом отдельно проверяется, что up возвращает обратно
+// к «want».
+//
+// Отличие от TestMigratePGUpDownUp выше: тот проверяет только факт «весь набор
+// миграций откатывается до ПУСТОЙ схемы» — down-файл, который забыл снять одну
+// колонку/индекс/констрейнт, но исправно роняет свою таблицу целиком (DROP
+// TABLE), пройдёт его незамеченным. Этот тест ловит именно такую находку —
+// K12-1: расхождение ЛОКАЛИЗУЕТСЯ до конкретной версии v, а не «где-то в 90
+// миграциях».
+//
+// Проход идёт СНИЗУ ВВЕРХ (v от 1 до max), а не сверху вниз, как в первом
+// черновике брифа задачи, — направление пришлось сменить по факту двух живых
+// провалов на заведомо корректных миграциях этого репозитория при спуске
+// «сверху»:
+//
+//  1. 0090 (dep_released_at): спуск с max к v-1 идёт через ЧУЖИЕ down.sql выше
+//     v (90, 89, …), каждый из которых — DROP COLUMN. PostgreSQL не
+//     переиспользует физический attnum убитой колонки: колонка, вернувшаяся
+//     ОБРАТНО через ADD COLUMN (свой ли round trip, или down чужой более
+//     высокой миграции), получает СЛЕДУЮЩИЙ физический номер, а не старый.
+//  2. 0062/0063 (status_pages.public_id/slug): спуск через down 0063 (ADD
+//     COLUMN slug, «восстанавливает» её) выполняется на состоянии, где
+//     public_id (добавлена 0062) уже присутствует — slug физически встаёт
+//     ПОСЛЕ public_id, хотя в реальной прямой миграции (0002 создаёт slug,
+//     0062 добавляет public_id позже) порядок обратный.
+//
+// В обоих случаях «want» снимался на состоянии, куда прямой forward-деплой
+// (единственный путь, которым живёт прод — см. докблок MigratePGTo) вообще
+// никогда не попадает: спуск через ЧУЖИЕ down.sql — операция, которую прод
+// не делает НИКОГДА (down применяется только тестами). Снизу вверх «want» на
+// шаге v получается ЕДИНСТВЕННО естественным шагом вперёд MigratePGTo(dsn, v)
+// от уже провалидированного v-1 — тем же путём, каким v применяется в проде,
+// — и не может быть загрязнён чужим down.sql: round trip версии v трогает
+// СВОИ (v) down.sql/up.sql и ничьи больше. Итог не слабее спеки «каждый
+// down зеркалит свой up»: он просто снимает «want» безопасным способом.
+func TestMigratePGEachDownMirrorsUp(t *testing.T) {
+	dsn := testenv.PostgresDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	if err := db.MigratePG(dsn); err != nil {
+		t.Fatalf("MigratePG: %v", err)
+	}
+	max, dirty, err := db.SchemaVersion(dsn)
+	if err != nil {
+		t.Fatalf("SchemaVersion: %v", err)
+	}
+	if dirty {
+		t.Fatal("SchemaVersion: dirty=true после MigratePG")
+	}
+	if max == 0 {
+		t.Fatal("SchemaVersion: 0 после MigratePG — миграции не применились")
+	}
+	// Сброс перед проходом снизу вверх (см. докблок выше) — единственный
+	// спуск ниже уровня, где мы уже проверили round trip, во всём тесте.
+	if err := db.MigrateDownPG(dsn); err != nil {
+		t.Fatalf("MigrateDownPG (сброс перед проходом снизу вверх): %v", err)
+	}
+
+	pool, err := db.NewPostgres(ctx, dsn)
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	defer pool.Close()
+
+	// prevWant — пристинный снимок версии v-1, снятый на ПРЕДЫДУЩЕЙ итерации
+	// (для v=1 остаётся nil — пристинная «версия 0» это пустая схема, что
+	// проверяется отдельно ниже через len(afterDown)==0, а не через nil-срез).
+	var prevWant []string
+	for v := uint(1); v <= max; v++ {
+		// Естественный шаг вперёд — тем же путём, каким v применяется в
+		// проде: применяет РОВНО ОДНУ (v-ю) up.sql к уже провалидированному
+		// v-1 (v=1 — к пустой схеме сразу после сброса выше).
+		if err := db.MigratePGTo(dsn, v); err != nil {
+			t.Fatalf("v=%d: MigratePGTo(%d) (естественный шаг вперёд): %v", v, v, err)
+		}
+		want := schemaSnapshot(t, ctx, pool)
+
+		if v == 1 {
+			if err := db.MigrateDownPG(dsn); err != nil {
+				t.Fatalf("v=%d: MigrateDownPG: %v", v, err)
+			}
+		} else {
+			if err := db.MigratePGTo(dsn, v-1); err != nil {
+				t.Fatalf("v=%d: MigratePGTo(%d) (down): %v", v, v-1, err)
+			}
+		}
+		// Половина 1/2: down сам по себе обязан вернуть СТРУКТУРНО пристинную
+		// v-1 (см. докблок structuralOnly про то, почему сравнение по
+		// default'ам здесь исключено, а не про идемпотентный up, прячущий
+		// сломанный down от проверки «после ВСЕГО round trip», — это
+		// отдельная причина, почему сравнение вообще есть, см. докблок
+		// теста).
+		afterDown := schemaSnapshot(t, ctx, pool)
+		if v == 1 {
+			if len(afterDown) != 0 {
+				t.Fatalf("v=1: MigrateDownPG оставил непустую схему (%d строк снимка) — "+
+					"down.sql версии 1 не полностью откатывает свой up.sql", len(afterDown))
+			}
+		} else if wantStruct, gotStruct := structuralOnly(prevWant), structuralOnly(afterDown); !equalSnapshots(wantStruct, gotStruct) {
+			missing, extra := diffSnapshots(wantStruct, gotStruct)
+			t.Fatalf("v=%d: down.sql не полностью откатывает свой up.sql "+
+				"(снимок после down структурно не совпадает с пристинной версией %d)\n"+
+				"должно было исчезнуть, но осталось (первые %d из возможных больше): %v\n"+
+				"не должно было появиться, но есть (первые %d из возможных больше): %v",
+				v, v-1, len(missing), missing, len(extra), extra)
+		}
+
+		// Половина 2/2: up возвращает обратно к «want» — тот же ROUND TRIP,
+		// что и в первом черновике теста (ловит противоположный класс
+		// поломки: up, забывший что-то досоздать после down).
+		if err := db.MigratePGTo(dsn, v); err != nil {
+			t.Fatalf("v=%d: MigratePGTo(%d) (up again): %v", v, v, err)
+		}
+		got := schemaSnapshot(t, ctx, pool)
+
+		if !equalSnapshots(want, got) {
+			missing, extra := diffSnapshots(want, got)
+			t.Fatalf("v=%d: форма схемы после down+up отличается от исходной\n"+
+				"пропало после round trip (первые %d из возможных больше): %v\n"+
+				"появилось лишнее после round trip (первые %d из возможных больше): %v",
+				v, len(missing), missing, len(extra), extra)
+		}
+
+		prevWant = want
 	}
 }
 
