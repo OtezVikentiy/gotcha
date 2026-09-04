@@ -109,14 +109,23 @@ func seedEvalProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	return projectID
 }
 
-// seedAlertChannel заводит один включённый webhook-канал проекта. Нужен
-// тестам, проверяющим RECOVERY (resolvedCount): дефолт-лесенка эскалации
-// (escalation.PolicyStore.Ladder, B4) резолвится из РЕАЛЬНЫХ enabled-каналов
-// проекта — без единого канала её ChannelIDs пуст, notifyOpen нечего
-// логировать в incident_escalations, и notifyClose (RecoveryChannels) не
-// находит адресата вовсе. Тестам, которым важно только «нотифаер был позван
-// на открытии» (openedCount), канал не нужен — NotifyStep зовётся независимо
-// от того, есть ли что логировать.
+// seedAlertChannel заводит один включённый webhook-канал проекта. Дефолт-
+// лесенка эскалации (escalation.PolicyStore.Ladder, B4) резолвится из
+// РЕАЛЬНЫХ enabled-каналов проекта — без единого канала её ChannelIDs пуст,
+// и notifyOpen нечего логировать в incident_escalations, а notifyClose
+// (RecoveryChannels) не находит адресата вовсе.
+//
+// Раньше (до claim-before-notify, аудит K1-1) этот хелпер был нужен только
+// тестам RECOVERY (resolvedCount): NotifyStep звался независимо от того,
+// есть ли что логировать, так что openedCount-тестам канал был не нужен.
+// escalation.SendStepIfDue теперь при пустом ChannelIDs ступени бампит
+// уровень НАПРЯМУЮ, не занимая ступень и не вызывая notifyStep вовсе (см. её
+// докблок и escalation.TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels)
+// — канал без каналов проекта эскалация не клинит, но и не шлёт. Поэтому
+// теперь seedAlertChannel нужен ЛЮБОМУ тесту, которому важно, что NotifyStep
+// реально позван (в т.ч. openedCount) — без него open-уведомление тоже не
+// уйдёт, и это уже не деталь реализации мока, а прямое следствие
+// продуктового поведения.
 func seedAlertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) {
 	t.Helper()
 	asvc := alert.NewService(pool)
@@ -213,6 +222,7 @@ func TestEvaluatorDiskOpensWithWorstMountpointDetail(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/var"}, 0.60, time.Minute)
@@ -250,6 +260,7 @@ func TestEvaluatorDiskRetickBumpsSilently(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 
@@ -803,6 +814,7 @@ func TestEvaluatorSilentEvaluatedWhileClickHouseHangs(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-while-ch-hangs")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-30*time.Minute))
 	seedEvalHost(t, pool, pid, "noisy-neighbour") // живой сосед — его пороги и полезут в CH
@@ -973,6 +985,7 @@ func TestEvaluatorNotifiesEvenWhenTickBudgetRunsOut(t *testing.T) {
 	defer cancel()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-budget-out")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-30*time.Minute))
 
@@ -1018,6 +1031,7 @@ func TestEvaluatorKeepsNotifiedFalseWhenNotifierFails(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-notify-fails")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-30*time.Minute))
 
@@ -1317,6 +1331,7 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 

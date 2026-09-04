@@ -119,6 +119,7 @@ func TestGroupGateAttachErrorStillNotifies(t *testing.T) {
 	buf := captureErrorLog(t)
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-10*time.Minute))
 
@@ -247,6 +248,7 @@ func TestGroupRootOpenedDownRootErrorStillNotifies(t *testing.T) {
 	buf := captureErrorLog(t)
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-10*time.Minute))
 
@@ -299,6 +301,7 @@ func TestGroupRootOpenedRootIncidentErrorStillNotifies(t *testing.T) {
 	buf := captureErrorLog(t)
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-10*time.Minute))
 

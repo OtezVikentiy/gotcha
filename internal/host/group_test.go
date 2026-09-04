@@ -224,6 +224,7 @@ func TestEvaluatorGroupsSilentRootMemberNotifies(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	root := seedEvalHost(t, pool, pid, "gw-01")
 	child := seedEvalHost(t, pool, pid, "web-01")
 	seedDepEdge(t, pool, pid, root.ID, child.ID)

@@ -121,6 +121,17 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool)
 	st := slo.NewStore(pool)
+	// Дефолт-лесенка эскалации резолвится из РЕАЛЬНЫХ enabled-каналов проекта
+	// (escalation.PolicyStore.defaultLadder) — без единого канала её
+	// ChannelIDs пуст, и claim-before-notify (аудит K1-1) бампит ступень
+	// НАПРЯМУЮ, не зовя notifyStep вовсе (уже нечего занимать/слать). Этому
+	// тесту важно, что notifyStep реально позван при открытии вне окна
+	// обслуживания — нужен хотя бы один канал, как в TestSLOEvaluatorOpensAndCloses.
+	if _, err := alert.NewService(pool).CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
 
 	s, err := st.Create(ctx, slo.SLO{
 		ProjectID: pid, Name: "checkout nomaint", Kind: slo.SLIAvailability,
