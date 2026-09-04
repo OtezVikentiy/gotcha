@@ -460,10 +460,17 @@ func (s *Service) Name() string { return "uptime" }
 // incident_groups LEFT JOIN сдвигает точку отсчёта задержки на момент
 // выхода из группы (та же логика D3, см. комментарий host); suppressed_by_dep
 // исключён — подавленный B5 инцидент эскалацию дальше не получает никогда.
+//
+// dep_released_at (миграция 0090, K1-4) — третий аргумент того же GREATEST,
+// что уже перезапускает часы от выхода из группы: инцидент, освобождённый
+// Detector.settleHeldIncident из-под подавления, начинает лесенку заново от
+// момента освобождения — иначе он получил бы просроченные ступени лесенки
+// каскадом. NULL для инцидента, никогда не подавлявшегося — COALESCE
+// возвращает i.started_at, и GREATEST не меняет исход.
 func (s *Service) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, m.project_id,
-		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at)) AS started_at,
+		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at), COALESCE(i.dep_released_at, i.started_at)) AS started_at,
 		       i.severity, i.escalation_level
 		FROM incidents i
 		JOIN monitors m ON m.id = i.monitor_id
@@ -517,6 +524,26 @@ func (s *Service) MarkSuppressedByDep(ctx context.Context, incidentID int64) err
 	tag, err := s.pool.Exec(ctx, "UPDATE incidents SET suppressed_by_dep = true WHERE id = $1", incidentID)
 	if err != nil {
 		return fmt.Errorf("uptime: mark suppressed by dep: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearSuppressedByDep snaps suppressed_by_dep back to false and stamps
+// dep_released_at (migration 0090, K1-4, аудит перед 1.0) — the sole writer
+// into false for this table's flag, symmetric to MarkSuppressedByDep (sole
+// writer into true). Called by Detector.settleHeldIncident once ParentDown
+// reports the declared parent has recovered. The "AND suppressed_by_dep"
+// guard makes a repeated call idempotent — a second release doesn't stamp
+// dep_released_at again.
+func (s *Service) ClearSuppressedByDep(ctx context.Context, incidentID int64) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE incidents SET suppressed_by_dep = false, dep_released_at = now()
+		WHERE id = $1 AND suppressed_by_dep`, incidentID)
+	if err != nil {
+		return fmt.Errorf("uptime: clear suppressed by dep: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

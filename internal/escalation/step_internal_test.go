@@ -39,21 +39,22 @@ func newLogFailureChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) int
 	return chID
 }
 
-// TestSendStepIfDueForcesBumpAfterMaxLogFailures — W2-C находка 3, условие 2
-// ревью: устойчиво падающий LogStep не должен клинить ступень в бесконечный
-// пейджинг-шторм (bump заблокирован → тот же шаг на следующем тике →
-// notifyStep пейджит снова → LogStep падает снова, каждый тик). После
-// maxLogFailureAttempts подряд неудачных попыток bump обязан продавиться
-// принудительно, а счётчик — сброситься.
-//
-// LogStep форсированно ломается constraint CHECK (false) на
-// incident_escalations — не отзывом привилегий (роль тестового контейнера
-// суперпользователь, REVOKE на неё не действует), а constraint'ом, который
-// не обходит даже суперпользователь. escalation_step_log_failures — другая
-// таблица, ничем не тронута, и её запись продолжает работать как обычно —
-// это и позволяет счётчику попыток дойти до границы, пока LogStep
-// стабильно падает.
-func TestSendStepIfDueForcesBumpAfterMaxLogFailures(t *testing.T) {
+// TestSendStepIfDueClaimFailureNeverForcesBump — АДАПТИРОВАН под
+// claim-before-notify (аудит перед 1.0, K1-1): до этой правки SendStepIfDue
+// логировал ПОСЛЕ notifyStep, и устойчиво падающий LogStep грозил
+// пейджинг-штормом (bump заблокирован → тот же шаг на следующем тике →
+// notifyStep пейджит снова → LogStep падает снова, каждый тик) —
+// maxLogFailureAttempts продавливал bump принудительно после N провалов,
+// проверялось это здесь. Теперь ЛОГ И ЕСТЬ CLAIM (ClaimStepChannels), и он
+// стоит ДО notifyStep — устойчивый провал claim (тот же forcing-constraint,
+// что и раньше) означает, что notifyStep вообще ни разу не вызывается, и
+// пейджинг-шторма, от которого защищал потолок, физически быть не может:
+// продавливать прогресс уже нечем и незачем (см. докблок SendStepIfDue,
+// случай 4). Тест теперь фиксирует обратное: claim падает на КАЖДОМ вызове
+// без ограничения попыток, sent всегда false, bump никогда не зовётся —
+// maxLogFailureAttempts/escalation_step_log_failures в эту функцию больше
+// не участвуют (остаются только для LogStepChannels — uptime-шаг 0).
+func TestSendStepIfDueClaimFailureNeverForcesBump(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
 	}
@@ -64,21 +65,8 @@ func TestSendStepIfDueForcesBumpAfterMaxLogFailures(t *testing.T) {
 	const incidentID = int64(9600)
 	const source = "metric"
 
-	// Предзаполняем счётчик до maxLogFailureAttempts-1: следующий (единственный
-	// в тесте) вызов SendStepIfDue доводит его РОВНО до границы.
-	var attempts int
-	for i := 0; i < maxLogFailureAttempts-1; i++ {
-		var err error
-		attempts, err = recordLogFailure(ctx, pool, source, incidentID, 0)
-		if err != nil {
-			t.Fatalf("recordLogFailure seed #%d: %v", i, err)
-		}
-	}
-	if attempts != maxLogFailureAttempts-1 {
-		t.Fatalf("seeded attempts = %d, want %d", attempts, maxLogFailureAttempts-1)
-	}
-
-	// LogStep обязан провалиться детерминированно на ЭТОМ вызове.
+	// ClaimStepChannels — тот же INSERT в incident_escalations, что раньше
+	// делал LogStep — обязан провалиться детерминированно.
 	if _, err := pool.Exec(ctx, "ALTER TABLE incident_escalations ADD CONSTRAINT test_force_log_fail CHECK (false)"); err != nil {
 		t.Fatalf("add forcing constraint: %v", err)
 	}
@@ -87,38 +75,40 @@ func TestSendStepIfDueForcesBumpAfterMaxLogFailures(t *testing.T) {
 	})
 
 	ladder := Ladder{{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}}}
-	var bumpCalled bool
-	var bumpFrom int
-	sent, err := SendStepIfDue(ctx, ladder, source, pool, incidentID, 0, 0,
-		func(chs []int64, step int) ([]int64, error) { return chs, nil }, // notifyStep "успешен"
-		func(id int64, from int) (bool, error) {
-			bumpCalled = true
-			bumpFrom = from
-			return true, nil
-		})
-	if err == nil {
-		t.Fatal("SendStepIfDue err = nil, want ошибку LogStep (даже при принудительном bump — провал реален и не должен маскироваться)")
-	}
-	if !sent {
-		t.Error("sent = false, want true: bump обязан продавиться принудительно на границе попыток")
-	}
-	if !bumpCalled {
-		t.Fatal("bump не вызван — находка storm-prevention: граница попыток должна была продавить прогресс")
-	}
-	if bumpFrom != 0 {
-		t.Errorf("bump(from=%d), want 0", bumpFrom)
+	var notifyCalled, bumpCalled bool
+	notifyStep := func(chs []int64, step int) ([]int64, error) { notifyCalled = true; return chs, nil }
+	bump := func(id int64, from int) (bool, error) { bumpCalled = true; return true, nil }
+
+	// Несколько подряд вызовов — больше maxLogFailureAttempts: старый
+	// потолок попыток здесь бы уже продавил bump, новый claim-путь не
+	// продавливает НИКОГДА, пока PG (constraint) не отпустит.
+	for i := 0; i < maxLogFailureAttempts+2; i++ {
+		notifyCalled, bumpCalled = false, false
+		sent, err := SendStepIfDue(ctx, ladder, source, pool, incidentID, 0, 0, notifyStep, bump)
+		if err == nil {
+			t.Fatalf("вызов #%d: SendStepIfDue err = nil, want ошибку claim", i)
+		}
+		if sent {
+			t.Errorf("вызов #%d: sent = true, want false — claim не проходит, форсировать прогресс нечем", i)
+		}
+		if notifyCalled {
+			t.Errorf("вызов #%d: notifyStep вызван — не должен: claim падает раньше", i)
+		}
+		if bumpCalled {
+			t.Errorf("вызов #%d: bump вызван — claim-путь не продавливает прогресс принудительно", i)
+		}
 	}
 
-	// Счётчик сброшен после принудительного bump — следующая ступень того
-	// же инцидента начинает с чистого листа, а не с уже исчерпанной границы.
-	var remaining int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM escalation_step_log_failures WHERE incident_source=$1 AND incident_id=$2 AND step=0",
-		source, incidentID).Scan(&remaining); err != nil {
-		t.Fatalf("select escalation_step_log_failures: %v", err)
+	// Лог ступени пуст: ни одна попытка claim не закоммитилась (constraint
+	// откатывает INSERT целиком).
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM incident_escalations WHERE incident_source=$1 AND incident_id=$2 AND step=0",
+		source, incidentID).Scan(&count); err != nil {
+		t.Fatalf("select incident_escalations: %v", err)
 	}
-	if remaining != 0 {
-		t.Errorf("escalation_step_log_failures rows after forced bump = %d, want 0 (cleared)", remaining)
+	if count != 0 {
+		t.Errorf("incident_escalations rows = %d, want 0 (claim ни разу не прошёл)", count)
 	}
 }
 

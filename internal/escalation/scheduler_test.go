@@ -20,6 +20,18 @@ type fakeSource struct {
 	mu   sync.Mutex
 	name string
 	incs []*fakeIncident
+	// suppressed — id инцидентов, подавленных зависимостью (K1-4): fakeSource
+	// реализует SuppressedSource через эту карту, OpenUnacked её тоже
+	// фильтрует (как реальный host.IncidentService).
+	suppressed map[int64]bool
+	// clock — источник времени для ClearSuppressed (K1-4): по умолчанию
+	// time.Now, но тесты, желающие детерминированного elapsed сразу после
+	// освобождения (ступень с DelayMinutes=0 обязана уйти в ТОМ ЖЕ тике),
+	// подставляют ТОТ ЖЕ clock, что и Scheduler.Now — иначе StartedAt,
+	// проставленный реальным time.Now(), почти всегда чуть ПОЗЖЕ уже
+	// захваченного планировщиком now, и elapsed уходит в отрицательные
+	// значения.
+	clock func() time.Time
 }
 
 type fakeIncident struct {
@@ -65,11 +77,52 @@ func (s *fakeSource) OpenUnacked(ctx context.Context) ([]escalation.PendingIncid
 	defer s.mu.Unlock()
 	var out []escalation.PendingIncident
 	for _, i := range s.incs {
-		if !i.acked {
+		if !i.acked && !s.suppressed[i.inc.ID] {
 			out = append(out, i.inc)
 		}
 	}
 	return out, nil
+}
+
+// markSuppressed отмечает инцидент id как подавленный зависимостью (K1-4):
+// исключён из OpenUnacked, появляется в OpenSuppressed.
+func (s *fakeSource) markSuppressed(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.suppressed == nil {
+		s.suppressed = make(map[int64]bool)
+	}
+	s.suppressed[id] = true
+}
+
+// OpenSuppressed и ClearSuppressed реализуют escalation.SuppressedSource
+// (K1-4) поверх той же карты suppressed/списка incs.
+func (s *fakeSource) OpenSuppressed(ctx context.Context) ([]escalation.PendingIncident, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []escalation.PendingIncident
+	for _, i := range s.incs {
+		if s.suppressed[i.inc.ID] {
+			out = append(out, i.inc)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeSource) ClearSuppressed(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.suppressed, id)
+	clock := s.clock
+	if clock == nil {
+		clock = time.Now
+	}
+	for _, i := range s.incs {
+		if i.inc.ID == id {
+			i.inc.StartedAt = clock()
+		}
+	}
+	return nil
 }
 
 func (s *fakeSource) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
@@ -849,5 +902,258 @@ func TestSchedulerTickBudgetAbortsHungTick(t *testing.T) {
 	}
 	if got := sched.LastTickSeconds(); got <= 0 {
 		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
+	}
+}
+
+// barrierSource — обёртка над fakeSource, синхронизирующая OpenUnacked
+// барьером на две реплики (K1-1, TestSchedulerTwoReplicasDeliverStepOnce):
+// каждый вызов OpenUnacked сначала сигналит о своём приходе (gate.Done()),
+// потом ждёт партнёра (gate.Wait()) — обе реплики гарантированно читают
+// escalation_level=0 ДО того, как любая из них дойдёт до ClaimStepChannels,
+// иначе гонка вырождается в "кто первый вызвался" и не проверяет то, ради
+// чего заведена (реальную конкуренцию за claim в БД, а не за OpenUnacked).
+type barrierSource struct {
+	*fakeSource
+	gate *sync.WaitGroup
+}
+
+func (b barrierSource) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	b.gate.Done()
+	b.gate.Wait()
+	return b.fakeSource.OpenUnacked(ctx)
+}
+
+// TestSchedulerTwoReplicasDeliverStepOnce — K1-1, дискриминирующий тест
+// claim-before-notify на настоящей гонке двух реплик планировщика поверх
+// одного и того же pool/PolicyStore: без барьера обе реплики почти всегда
+// успевали бы одна за другой и не пересеклись бы на ClaimStepChannels;
+// barrierSource гарантирует, что обе войдут в тик, прочитав ОДИН И ТОТ ЖЕ
+// уровень эскалации, и одновременно бросятся занимать одну и ту же ступень.
+// Правильная реализация (claim ДО notifyStep) отдаёт ступень ровно одной из
+// них — сумма вызовов их нотифаеров равна 1, а не 2. Повторяется на 10
+// свежих инцидентах (каждый со своим барьером), чтобы не полагаться на
+// удачу одного прогона.
+func TestSchedulerTwoReplicasDeliverStepOnce(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+	c2 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1, c2}},
+		{StepNo: 1, DelayMinutes: 15, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 10; i++ {
+		incidentID := int64(30000 + i)
+		src := newFakeSource("metric")
+		src.add(escalation.PendingIncident{
+			ID: incidentID, ProjectID: pid, StartedAt: now,
+			Severity: escalation.SeverityWarning, EscalationLevel: 0,
+		})
+
+		var gate sync.WaitGroup
+		gate.Add(2)
+		bsrc := barrierSource{fakeSource: src, gate: &gate}
+
+		notifier1 := &fakeNotifier{}
+		notifier2 := &fakeNotifier{}
+		sched1 := &escalation.Scheduler{
+			Bindings: []escalation.Binding{{Src: bsrc, Notifier: notifier1}},
+			Policy:   policy,
+			Maint:    &fakeMaint{inMaint: false},
+			Pool:     pool,
+			Now:      func() time.Time { return now },
+		}
+		sched2 := &escalation.Scheduler{
+			Bindings: []escalation.Binding{{Src: bsrc, Notifier: notifier2}},
+			Policy:   policy,
+			Maint:    &fakeMaint{inMaint: false},
+			Pool:     pool,
+			Now:      func() time.Time { return now },
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); sched1.Tick(ctx) }()
+		go func() { defer wg.Done(); sched2.Tick(ctx) }()
+		wg.Wait()
+
+		total := notifier1.callCount() + notifier2.callCount()
+		if total != 1 {
+			t.Fatalf("инцидент #%d (id=%d): сумма вызовов NotifyStep двух реплик = %d, want 1",
+				i, incidentID, total)
+		}
+		if got := src.level(incidentID); got != 1 {
+			t.Fatalf("инцидент #%d (id=%d): EscalationLevel = %d, want 1", i, incidentID, got)
+		}
+		var count int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND step=0",
+			incidentID).Scan(&count); err != nil {
+			t.Fatalf("инцидент #%d: select escalation log: %v", i, err)
+		}
+		if count != 2 {
+			t.Fatalf("инцидент #%d (id=%d): incident_escalations rows for step0 = %d, want 2", i, incidentID, count)
+		}
+	}
+}
+
+// TestSchedulerReleasesSuppressedIncidentWhenParentRecovers — K1-4 (аудит
+// перед 1.0): инцидент, подавленный зависимостью, чей родитель
+// восстановился (fakeDep.parentDown=false), обязан быть снят ЭТИМ ЖЕ тиком
+// (releaseSuppressed стоит перед OpenUnacked того же биндинга, в бюджете
+// того же тика) и сразу получить ступень 0 — не ждать следующего тика ради
+// одной лишь видимости освобождения.
+func TestSchedulerReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	src := newFakeSource("metric")
+	const incidentID = int64(40001)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	src.clock = clock
+	src.markSuppressed(incidentID)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: false}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 1 {
+		t.Fatalf("NotifyStep calls = %d, want 1 (снятый инцидент должен получить ступень 0 в этом же тике)", notifier.callCount())
+	}
+	call := notifier.last()
+	if call.incidentID != incidentID || call.step != 0 {
+		t.Fatalf("NotifyStep call = %+v, want incident=%d step=0", call, incidentID)
+	}
+	if got := src.level(incidentID); got != 1 {
+		t.Fatalf("EscalationLevel = %d, want 1", got)
+	}
+}
+
+// TestSchedulerKeepsSuppressedWhileParentDown — родитель ещё лежит
+// (fakeDep.parentDown=true): подавление не снимается, ступени не уходят,
+// нотифаер не звался ни разу.
+func TestSchedulerKeepsSuppressedWhileParentDown(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	src := newFakeSource("metric")
+	const incidentID = int64(40002)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	src.clock = clock
+	src.markSuppressed(incidentID)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: true}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (родитель ещё лежит — подавление держится)", notifier.callCount())
+	}
+	if got := src.level(incidentID); got != 0 {
+		t.Fatalf("EscalationLevel = %d, want 0 (не снят)", got)
+	}
+	got, err := src.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != incidentID {
+		t.Fatalf("OpenSuppressed = %+v, want [инцидент %d] (флаг подавления не снят)", got, incidentID)
+	}
+}
+
+// TestSchedulerReleasesWhenDependencyRemoved — hasParent=false (зависимость
+// удалена, пока инцидент был подавлен): подавлять больше нечем, снимается
+// так же, как и восстановление родителя.
+func TestSchedulerReleasesWhenDependencyRemoved(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	src := newFakeSource("metric")
+	const incidentID = int64(40003)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	src.clock = clock
+	src.markSuppressed(incidentID)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: false, parentDown: false}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 1 {
+		t.Fatalf("NotifyStep calls = %d, want 1 (зависимость удалена — подавлять больше нечем)", notifier.callCount())
+	}
+	if got := src.level(incidentID); got != 1 {
+		t.Fatalf("EscalationLevel = %d, want 1", got)
 	}
 }

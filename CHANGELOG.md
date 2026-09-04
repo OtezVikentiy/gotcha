@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- An escalation step running on two replicas could be delivered twice; a channel
+  claims its step before it is sent now, not after, so only one replica ever sends
+  it. A single failing delivery channel in the suppressed-alerts digest no longer
+  stops the rest of the channels in the same digest from receiving it. An incident
+  suppressed because its dependency was down now resumes escalation once the
+  dependency recovers, instead of staying silent for good.
+
 ## [0.34.0] - 2026-09-03
 
 ### Changed

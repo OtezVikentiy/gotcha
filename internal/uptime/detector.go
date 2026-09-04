@@ -400,9 +400,42 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 		return
 	}
-	if inc.SuppressedByDep || inc.InMaintenance || d.Dep == nil {
-		// уже подавлен / подавлен окном обслуживания (B3, BLOCKER-1: не
-		// воскрешать) / нет dep-сервиса — ничего не делаем.
+	if inc.InMaintenance || d.Dep == nil {
+		// подавлен окном обслуживания (B3, BLOCKER-1: не воскрешать) / нет
+		// dep-сервиса — ничего не делаем.
+		return
+	}
+	if inc.SuppressedByDep {
+		// K1-4 (аудит перед 1.0): раньше подавленный B5 инцидент молчал
+		// навсегда — писателя в suppressed_by_dep=false не было вовсе,
+		// и восстановление родителя не возобновляло эскалацию НИКОГДА, даже
+		// если родитель ожил через минуту после подавления. Теперь на
+		// каждом "всё ещё down" тике проверяем родителя заново; если он
+		// отпустил — снимаем подавление и доставляем "down" немедленно, как
+		// для только что открытого инцидента (шаг 0), а не откладываем ещё
+		// на SettleGrace: инцидент уже отстоял СВОЙ грейс до момента, когда
+		// был подавлен (см. switch ниже), второй раз ждать незачем.
+		down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
+		if err != nil {
+			slog.Warn("uptime: detector: dep ParentDown failed while releasing suppressed incident",
+				"monitor_id", m.ID, "incident_id", inc.ID, "error", err)
+			return
+		}
+		if down {
+			return // родитель всё ещё лежит — держим
+		}
+		if err := d.Svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+			slog.Warn("uptime: detector: clear suppressed by dep failed",
+				"monitor_id", m.ID, "incident_id", inc.ID, "error", err)
+			return
+		}
+		slog.Info("uptime: dependency recovered, incident released", "incident_id", inc.ID, "monitor_id", m.ID)
+		if d.Notifier == nil {
+			return
+		}
+		downRegions := regionsWithStatus(states, "down")
+		cause := causeFrom(st, states)
+		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 		return
 	}
 	down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
