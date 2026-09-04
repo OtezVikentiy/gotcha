@@ -208,7 +208,7 @@ func HostSettings(projectID int64, s host.Settings, installCmd, config, agentRea
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <input type=\"number\" class=\"input\" name=\"disk_threshold\" min=\"1\" max=\"100\" step=\"1\" required value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <input type=\"number\" class=\"input\" name=\"disk_threshold\" min=\"1\" max=\"99\" step=\"1\" required value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -283,7 +283,7 @@ func HostSettings(projectID int64, s host.Settings, installCmd, config, agentRea
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, " <input type=\"number\" class=\"input\" name=\"memory_threshold\" min=\"1\" max=\"100\" step=\"1\" required value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, " <input type=\"number\" class=\"input\" name=\"memory_threshold\" min=\"1\" max=\"99\" step=\"1\" required value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1716,7 +1716,7 @@ func groupThresholdKindFields(form FormState, s host.Settings, gt host.GroupThre
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 124, " <input type=\"number\" class=\"input\" name=\"disk_value\" min=\"1\" max=\"100\" step=\"1\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 124, " <input type=\"number\" class=\"input\" name=\"disk_value\" min=\"1\" max=\"99\" step=\"1\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1824,7 +1824,7 @@ func groupThresholdKindFields(form FormState, s host.Settings, gt host.GroupThre
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 136, " <input type=\"number\" class=\"input\" name=\"memory_value\" min=\"1\" max=\"100\" step=\"1\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 136, " <input type=\"number\" class=\"input\" name=\"memory_value\" min=\"1\" max=\"99\" step=\"1\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

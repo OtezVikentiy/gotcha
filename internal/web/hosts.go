@@ -616,8 +616,8 @@ func boolFormValue(b bool) string {
 // invalidThresholdFloat — то же условие, что у metricAlertCreate
 // (metricalerts.go:121-122, бриф прямо называл этот файл образцом):
 // strconv.ParseFloat принимает "NaN"/"Inf"/"+Inf" БЕЗ ошибки, а
-// host.Validate сравнивает результат с границами через <=/> — сравнение с
-// NaN всегда false в обе стороны ("NaN <= 0" и "NaN > 1" одновременно
+// host.Validate сравнивает результат с границами через <=/>= — сравнение с
+// NaN всегда false в обе стороны ("NaN <= 0" и "NaN >= 1" одновременно
 // ложны), поэтому такой порог тихо проходит Validate и попадает в БД
 // (Postgres double precision и CHECK (load_threshold > 0) тоже принимают
 // NaN/Infinity). Дальше оценщик host.Evaluator никогда не срабатывает
@@ -786,7 +786,7 @@ func parseHostThresholdsForm(r *http.Request) (host.ThresholdOverride, error) {
 // набор сентинелов host.ErrInvalid*, см. hostThresholdsSave) в понятное
 // сообщение — тот же приём, что
 // maintenanceErrorMessage: errors.Is по каждому сентинелу вместо показа
-// err.Error() (Go-текста "host: disk threshold must be in (0, 1]: got 1.5")
+// err.Error() (Go-текста "host: disk threshold must be in (0, 1): got 1.5")
 // пользователю.
 func hostSettingsErrorMessage(ctx context.Context, err error) string {
 	switch {

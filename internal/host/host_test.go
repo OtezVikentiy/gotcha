@@ -282,6 +282,43 @@ func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 	}
 }
 
+// TestStoreUpsertCeilingAdmitsInArrivalOrder — K3-3: при упоре в потолок
+// свободные места среди НОВЫХ имён раздаются в порядке появления в батче, а
+// не по алфавиту. Потолок минус один занят; батч из трёх новых имён, где
+// алфавитно первое ("alpha") стоит в батче последним: место получает первое
+// приехавшее ("zeta"), "alpha" и "mid" отбрасываются.
+func TestStoreUpsertCeilingAdmitsInArrivalOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	s, projectID := setupProject(t)
+	ctx := context.Background()
+
+	almost := make([]host.TouchEntry, 0, host.MaxHostsPerProject-1)
+	for i := 0; i < host.MaxHostsPerProject-1; i++ {
+		almost = append(almost, host.TouchEntry{Name: fmt.Sprintf("host-%04d", i)})
+	}
+	if rejected, err := s.Upsert(ctx, projectID, almost); err != nil || rejected != 0 {
+		t.Fatalf("Upsert до потолка минус один: rejected=%d err=%v", rejected, err)
+	}
+
+	rejected, err := s.Upsert(ctx, projectID, entries("zeta", "mid", "alpha"))
+	if err != nil {
+		t.Fatalf("Upsert батча сверх потолка: %v", err)
+	}
+	if rejected != 2 {
+		t.Errorf("rejected = %d, want 2 (одно свободное место на три новых имени)", rejected)
+	}
+	if _, ok, err := s.Get(ctx, projectID, "zeta"); err != nil || !ok {
+		t.Errorf("первое приехавшее имя zeta не зарегистрировано в единственное свободное место: ok=%v err=%v", ok, err)
+	}
+	for _, name := range []string{"mid", "alpha"} {
+		if _, ok, err := s.Get(ctx, projectID, name); err != nil || ok {
+			t.Errorf("%s зарегистрирован в обход порядка прихода (алфавитный отбор): ok=%v err=%v", name, ok, err)
+		}
+	}
+}
+
 // TestStoreUpsertRejectsPathTraversalNames — "." и ".." не регистрируются:
 // url.PathEscape точки не экранирует, и /hosts/.. нормализуется браузером в
 // адрес проекта — открыть или удалить такой хост в интерфейсе было бы нечем.

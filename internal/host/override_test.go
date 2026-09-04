@@ -166,6 +166,7 @@ func TestValidateOverride(t *testing.T) {
 	off := false
 	valid := 0.5
 	invalid := 1.5
+	dead := 1.0
 
 	cases := []struct {
 		name    string
@@ -198,6 +199,18 @@ func TestValidateOverride(t *testing.T) {
 			name:    "value вне границ, даже при enabled=false — ошибка",
 			ov:      host.ThresholdOverride{DiskEnabled: &off, DiskThreshold: &invalid},
 			wantErr: host.ErrInvalidDiskThreshold,
+		},
+		{
+			// Как в Validate: 1.0 (100%) со строгим «>» оценщика не сработал бы
+			// никогда — переопределение с таким значением отвергается (K3-2).
+			name:    "disk: ровно 1.0 — мёртвый порог, ошибка",
+			ov:      host.ThresholdOverride{DiskEnabled: &on, DiskThreshold: &dead},
+			wantErr: host.ErrInvalidDiskThreshold,
+		},
+		{
+			name:    "memory: ровно 1.0 — мёртвый порог, ошибка",
+			ov:      host.ThresholdOverride{MemoryEnabled: &on, MemoryThreshold: &dead},
+			wantErr: host.ErrInvalidMemoryThreshold,
 		},
 		{
 			name: "silent: enabled=false без value — ок",

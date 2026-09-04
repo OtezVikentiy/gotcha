@@ -216,7 +216,7 @@ templ hostThresholdsSection(vm HostDetailVM) {
 						<div class="field th-disk-value">
 							<label>
 								{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-								<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
+								<input type="number" class="input" name="disk_value" min="1" max="99" step="1"
 									value={ vm.ThresholdsForm.Get("disk_value", thresholdPercentValue(vm.Override.DiskThreshold, vm.Effective.Settings.DiskThreshold)) }/>
 							</label>
 						</div>
@@ -241,7 +241,7 @@ templ hostThresholdsSection(vm HostDetailVM) {
 						<div class="field th-memory-value">
 							<label>
 								{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-								<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
+								<input type="number" class="input" name="memory_value" min="1" max="99" step="1"
 									value={ vm.ThresholdsForm.Get("memory_value", thresholdPercentValue(vm.Override.MemoryThreshold, vm.Effective.Settings.MemoryThreshold)) }/>
 							</label>
 						</div>

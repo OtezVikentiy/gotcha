@@ -914,7 +914,7 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	if !strings.Contains(text, `value="150"`) {
 		t.Errorf("422-ответ не вернул введённое значение disk_value=150: %s", text)
 	}
-	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
+	if !strings.Contains(text, "Порог диска должен быть от 1 до 99%") {
 		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
 	}
 	// Пара role/web уже существует — 422 обязан переоткрыть модалку правки
@@ -1843,7 +1843,7 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	if !strings.Contains(text, `value="150"`) {
 		t.Errorf("422-ответ не вернул введённое значение disk_value=150 в форму: %s", text)
 	}
-	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
+	if !strings.Contains(text, "Порог диска должен быть от 1 до 99%") {
 		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
 	}
 	stillSaved, err := s.overrides.Get(ctx, hst.ID)
@@ -1903,7 +1903,7 @@ func TestWebHostThresholdsSaveInvalidMemoryLoadSilent(t *testing.T) {
 				"disk_mode": {"inherit"}, "memory_mode": {"override"}, "memory_value": {"150"},
 				"load_mode": {"inherit"}, "silent_mode": {"inherit"},
 			},
-			"Порог памяти должен быть от 1 до 100%",
+			"Порог памяти должен быть от 1 до 99%",
 		},
 		{
 			"load не больше 0",

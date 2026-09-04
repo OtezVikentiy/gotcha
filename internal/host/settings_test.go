@@ -176,6 +176,14 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 			wantErr: host.ErrInvalidDiskThreshold,
 		},
 		{
+			// 100% — мёртвый порог: applyDecision сравнивает строго «>», а
+			// занятость диска не бывает больше 1.0; валидатор не пропускает
+			// значение, которое оценщик не смог бы использовать (K3-2).
+			name:    "диск ровно 1.0 — мёртвый порог",
+			mutate:  func(s *host.Settings) { s.DiskThreshold = 1.0 },
+			wantErr: host.ErrInvalidDiskThreshold,
+		},
+		{
 			name:    "диск = 0",
 			mutate:  func(s *host.Settings) { s.DiskThreshold = 0 },
 			wantErr: host.ErrInvalidDiskThreshold,
@@ -183,6 +191,11 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 		{
 			name:    "память выше 1.0",
 			mutate:  func(s *host.Settings) { s.MemoryThreshold = 1.01 },
+			wantErr: host.ErrInvalidMemoryThreshold,
+		},
+		{
+			name:    "память ровно 1.0 — мёртвый порог",
+			mutate:  func(s *host.Settings) { s.MemoryThreshold = 1.0 },
 			wantErr: host.ErrInvalidMemoryThreshold,
 		},
 		{
@@ -220,14 +233,14 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceValidateAcceptsBoundaries — граничные значения (ровно
-// на CHECK'ах) обязаны проходить: 180с силент, диск/память=1.0, минимальный
-// положительный load.
+// TestSettingsServiceValidateAcceptsBoundaries — граничные значения обязаны
+// проходить: 180с силент, диск/память=0.99 (максимум формы, 99%; 1.0 —
+// мёртвый порог, см. Validate), минимальный положительный load.
 func TestSettingsServiceValidateAcceptsBoundaries(t *testing.T) {
 	s := host.DefaultSettings()
 	s.SilentAfter = host.MinSilentAfter
-	s.DiskThreshold = 1.0
-	s.MemoryThreshold = 1.0
+	s.DiskThreshold = 0.99
+	s.MemoryThreshold = 0.99
 	s.LoadThreshold = 0.01
 
 	if err := host.Validate(s); err != nil {
