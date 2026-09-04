@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -95,6 +96,50 @@ func keyStatusLabelKey(k org.Key) string {
 type ProjectKeyView struct {
 	Key org.Key
 	DSN string
+}
+
+// DeprecatedPathView — одна строка callout'а «проект ещё шлёт по устаревшим
+// адресам» (аудит перед 1.0, K7-5/K7-6): собирается в web-слое из
+// ingestsignal.Store.ForProject (renderProjectSettings), фильтр по
+// LastSeenAt — там же. Path — сам устаревший адрес (например "/logs"), Hits
+// — сумма попаданий за всё время наблюдения (не только за окно фильтра, оно
+// лишь решает, показывать ли строку вообще — отсюда формулировка «всего», а
+// не «за 7 дней» в тексте). Docs — страница документации именно этого входа
+// (ingest.DocsPath), не общий /docs/upgrade: разные адреса ведут в разные
+// разделы (logs/profiling/deployments).
+type DeprecatedPathView struct {
+	Path       string
+	LastSeenAt time.Time
+	Hits       int64
+	Docs       string
+}
+
+// deprecatedPathsCallout — над списком ключей (K7-5): раз отправитель ещё
+// стучится на удаляемый в 1.0 алиас, самое уместное место напомнить об этом
+// — прямо рядом с тем местом, где выпускают новые ключи и смотрят на DSN.
+// Пусто (nil/[]) → блок не рендерится вовсе — свежий проект или проект без
+// Store (h.Signals == nil) не должен видеть пустой callout. Ссылка — у
+// каждого адреса своя (p.Docs), а не одна общая: /logs и /profiles/pprof
+// документированы в разных разделах.
+templ deprecatedPathsCallout(paths []DeprecatedPathView) {
+	if len(paths) > 0 {
+		<div class="quota-banner">
+			<div>
+				<strong>{ i18n.T(ctx, "ingest_signals.deprecated.title") }</strong>
+				<ul>
+					for _, p := range paths {
+						<li>
+							{ i18n.Tf(ctx, "ingest_signals.deprecated.item", "path", p.Path) }
+							@relativeTime(p.LastSeenAt)
+							{ i18n.Tf(ctx, "ingest_signals.deprecated.item_hits", "hits", strconv.FormatInt(p.Hits, 10)) }
+							<a href={ templ.SafeURL(p.Docs) }>{ i18n.T(ctx, "ingest_signals.deprecated.link") }</a>
+						</li>
+					}
+				</ul>
+				<span class="quota-banner-detail">{ i18n.T(ctx, "ingest_signals.deprecated.hint") }</span>
+			</div>
+		</div>
+	}
 }
 
 // keyKindLabelKey — i18n-ключ подписи типа ключа. legacy отображается как
@@ -364,7 +409,7 @@ templ retentionNotice(retentionDays int) {
 	}
 }
 
-templ ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm, retentionDays int) {
+templ ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEmail string, perf PerfSettingsForm, reg RegressionSettingsForm, retentionDays int, deprecatedPaths []DeprecatedPathView) {
 	@layout(i18n.T(ctx, "project.settings.title")+" "+project.Name, userEmail) {
 		<div class="project-settings">
 			<h1>{ i18n.T(ctx, "project.settings.title") } { project.Name }</h1>
@@ -391,6 +436,7 @@ templ ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEm
 				if !hasLiveKey(keys) {
 					<p class="error">{ i18n.T(ctx, "project.settings.keys.no_dsn") }</p>
 				}
+				@deprecatedPathsCallout(deprecatedPaths)
 				<div class="key-list">
 					for _, v := range keys {
 						@keyCard(project.ID, v)

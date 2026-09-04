@@ -34,6 +34,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
@@ -325,6 +326,15 @@ type Handler struct {
 	// предшествующему деплою. Как Hosts/Metrics — отдельное необязательное
 	// поле; nil → маркеры не рисуются, экран отвечает 404 (nil-guard).
 	Deploy *deploy.Store
+
+	// Signals — per-project сигналы приёма (аудит перед 1.0, K7-5/K7-6):
+	// попадания на устаревшие пути приёма и отказы по ключу, которые раньше
+	// были видны только process-local self-метриками без метки проекта.
+	// Читается страницей настроек проекта (устаревшие пути) и страницей
+	// issues (отказы по ключу на пустом списке/в чек-листе онбординга).
+	// nil-safe, как Deploy/Trace выше: без него секции просто не рендерятся
+	// — ни то, ни другое не критично для работы этих страниц.
+	Signals *ingestsignal.Store
 
 	// LogQuery — чтение структурированных логов из ClickHouse (C2, задача 2):
 	// страница /projects/{id}/logs. Как Trace/Metrics — отдельное

@@ -11,6 +11,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -180,46 +181,78 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int64, canManage, canOperate bool) templates.GettingStartedVM {
 	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID, CanManage: canManage, CanOperate: canOperate}
 
-	// №71: скрытый пользователем чек-лист не считается и не рендерится —
-	// пустая VM с CanManage=false никогда не пройдёт условие показа.
-	if hidden, err := h.Auth.HideGettingStarted(ctx, uid); err != nil {
+	// №71: скрытый пользователем чек-лист сам не считается и не рендерится
+	// (Hidden гасит checklistVisible() независимо от Done/CanOperate — см.
+	// help.templ), но KeyRejects ниже всё равно собирается: это единственный
+	// способ увидеть отказы по ключу (в пустом состоянии issues), когда
+	// чек-лист, который иначе нёс бы ту же врезку, скрыт (находка ревью
+	// аудита G1 — раньше hidden сразу отдавал нулевую VM, и KeyRejects до
+	// этого места не доходил).
+	hidden, err := h.Auth.HideGettingStarted(ctx, uid)
+	if err != nil {
 		slog.Warn("gettingStarted: hide flag lookup failed", "user_id", uid, "err", err)
-	} else if hidden {
-		return templates.GettingStartedVM{}
+	}
+	gs.Hidden = hidden
+
+	if !hidden {
+		if exists, err := h.Issues.Exists(ctx, projectID); err != nil {
+			slog.Warn("gettingStarted: issues exists check failed", "project_id", projectID, "err", err)
+		} else {
+			gs.Step2Done = exists
+		}
+
+		// B1: Channels() здесь вызывается напрямую, мимо channelsForView —
+		// намеренно (allowlist-запись "count-only" в internal/guards). Результат
+		// идёт только в len(channels) ниже, ни Target, ни Secret никогда не
+		// покидают эту функцию — маскировать нечего, а гонять через дверь ради
+		// счётчика было бы лишним чтением.
+		if h.Alerts == nil {
+			slog.Warn("gettingStarted: Alerts service not configured", "project_id", projectID)
+		} else if channels, err := h.Alerts.Channels(ctx, projectID); err != nil {
+			slog.Warn("gettingStarted: alert channels failed", "project_id", projectID, "err", err)
+		} else {
+			gs.Step3Done = len(channels) > 0
+		}
+
+		// №71: команда и монитор — два отдельных шага с раздельными ссылками,
+		// а не один «или/или» с единственной дверью в настройки организации.
+		if members, err := h.Org.MembersOf(ctx, orgID); err != nil {
+			slog.Warn("gettingStarted: org members failed", "org_id", orgID, "err", err)
+		} else {
+			gs.Step4aDone = len(members) > 1
+		}
+		if h.Uptime == nil {
+			slog.Warn("gettingStarted: Uptime service not configured", "project_id", projectID)
+		} else if monitors, err := h.Uptime.List(ctx, projectID); err != nil {
+			slog.Warn("gettingStarted: uptime monitors failed", "project_id", projectID, "err", err)
+		} else {
+			gs.Step4bDone = len(monitors) > 0
+		}
 	}
 
-	if exists, err := h.Issues.Exists(ctx, projectID); err != nil {
-		slog.Warn("gettingStarted: issues exists check failed", "project_id", projectID, "err", err)
-	} else {
-		gs.Step2Done = exists
-	}
-
-	// B1: Channels() здесь вызывается напрямую, мимо channelsForView —
-	// намеренно (allowlist-запись "count-only" в internal/guards). Результат
-	// идёт только в len(channels) ниже, ни Target, ни Secret никогда не
-	// покидают эту функцию — маскировать нечего, а гонять через дверь ради
-	// счётчика было бы лишним чтением.
-	if h.Alerts == nil {
-		slog.Warn("gettingStarted: Alerts service not configured", "project_id", projectID)
-	} else if channels, err := h.Alerts.Channels(ctx, projectID); err != nil {
-		slog.Warn("gettingStarted: alert channels failed", "project_id", projectID, "err", err)
-	} else {
-		gs.Step3Done = len(channels) > 0
-	}
-
-	// №71: команда и монитор — два отдельных шага с раздельными ссылками,
-	// а не один «или/или» с единственной дверью в настройки организации.
-	if members, err := h.Org.MembersOf(ctx, orgID); err != nil {
-		slog.Warn("gettingStarted: org members failed", "org_id", orgID, "err", err)
-	} else {
-		gs.Step4aDone = len(members) > 1
-	}
-	if h.Uptime == nil {
-		slog.Warn("gettingStarted: Uptime service not configured", "project_id", projectID)
-	} else if monitors, err := h.Uptime.List(ctx, projectID); err != nil {
-		slog.Warn("gettingStarted: uptime monitors failed", "project_id", projectID, "err", err)
-	} else {
-		gs.Step4bDone = len(monitors) > 0
+	// K7-5/K7-6: отказы по ключу этого проекта за последний час — на пустом
+	// списке issues и под шагом 2 чек-листа неверный DSN/номер проекта/скоуп
+	// ключа объясняет отсутствие данных лучше, чем голый пустой список.
+	// h.Signals — необязательное поле, как Deploy/Trace (не как
+	// Alerts/Uptime выше): нет Warn на nil, секция просто не появляется (тот
+	// же приём, что deprecatedPathsView в projsettings.go). Собирается и
+	// когда чек-лист скрыт (hidden) — см. комментарий выше.
+	if h.Signals != nil {
+		if signals, err := h.Signals.ForProject(ctx, projectID); err != nil {
+			slog.Warn("gettingStarted: ingest signals failed", "project_id", projectID, "err", err)
+		} else {
+			cutoff := time.Now().Add(-time.Hour)
+			for _, sig := range signals {
+				if !isKeyRejectKind(sig.Kind) || sig.LastSeenAt.Before(cutoff) {
+					continue
+				}
+				gs.KeyRejects = append(gs.KeyRejects, templates.KeyRejectView{
+					Kind:       string(sig.Kind),
+					Hits:       sig.Hits,
+					LastSeenAt: sig.LastSeenAt,
+				})
+			}
+		}
 	}
 
 	gs.Done = 1
@@ -229,6 +262,18 @@ func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int6
 		}
 	}
 	return gs
+}
+
+// isKeyRejectKind — kind относится к отказам по ключу (K7-5/K7-6), а не к
+// устаревшим путям приёма (те показываются отдельно, на странице настроек
+// проекта — см. deprecatedPathByKind в projsettings.go).
+func isKeyRejectKind(k ingestsignal.Kind) bool {
+	switch k {
+	case ingestsignal.KindKeyInvalid, ingestsignal.KindKeyProjectMismatch, ingestsignal.KindKeyScope:
+		return true
+	default:
+		return false
+	}
 }
 
 // gettingStartedHide — POST /profile/getting-started/hide (№71): скрывает

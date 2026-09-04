@@ -124,6 +124,17 @@ func DeprecatedPaths() []DeprecatedPath {
 	return append([]DeprecatedPath(nil), deprecatedPaths...)
 }
 
+// DocsPath — страница документации СВОЕГО входа для устаревшего пути p (тот
+// же адрес, что уходит в заголовок Link deprecatedAlias, см. deprecatedTarget
+// выше). Единственный потребитель вне пакета — web.deprecatedPathsView
+// (аудит перед 1.0, K7-5): callout на странице настроек проекта должен вести
+// на страницу конкретного входа, а не на общий /docs/upgrade. ok=false для
+// пути вне закрытого набора deprecatedTargets.
+func DocsPath(p DeprecatedPath) (string, bool) {
+	t, ok := deprecatedTargets[p]
+	return t.docs, ok
+}
+
 func newDeprecatedCounters() map[DeprecatedPath]*atomic.Int64 {
 	m := make(map[DeprecatedPath]*atomic.Int64, len(deprecatedPaths))
 	for _, p := range deprecatedPaths {

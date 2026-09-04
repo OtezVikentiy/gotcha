@@ -155,6 +155,64 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 	}
 }
 
+// TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState — F5 (аудит
+// перед 1.0): врезка «отказы по ключу» умеет рисоваться в двух местах
+// страницы issues (чек-лист «Первые шаги» и пустое состояние списка), но на
+// одной и той же странице должна показаться только там, где чек-лист
+// реально виден — иначе свежий проект видел бы один и тот же текст дважды.
+// checklistVisible() — общий predicate обоих мест; сценарии здесь
+// используют VM напрямую (а не полный HTTP-стек), потому что на реальной
+// странице issues чек-лист прячется, только когда gs.KeyRejects тоже пуст
+// (см. gettingStarted в web/issues.go) — эта пара условий совместно
+// недостижима через настоящий запрос, только через VM.
+func TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState(t *testing.T) {
+	rejects := []KeyRejectView{{Kind: "key_invalid", Hits: 5, LastSeenAt: time.Now()}}
+	wantReason := i18n.Tf(context.Background(), "ingest_signals.rejects.key_invalid", "hits", "5")
+
+	// Чек-лист виден (Done < 5, CanOperate) → врезка обязана быть ВНУТРИ его
+	// секции, а пустое состояние — не нести свою копию.
+	visible := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, KeyRejects: rejects}
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, visible, false, false))
+	section := sectionBetween(t, out, `<section class="card getting-started">`, "</section>")
+	if !strings.Contains(section, wantReason) {
+		t.Errorf("видимый чек-лист должен нести причину отказа %q внутри своей секции: %s", wantReason, section)
+	}
+	if strings.Contains(out, `class="notice notice--warn"`) {
+		t.Error("чек-лист виден — пустое состояние не должно дублировать врезку notice--warn")
+	}
+
+	// Чек-лист не виден (CanOperate=false) → врезка обязана показаться в
+	// пустом состоянии — иначе отказ по ключу нигде не виден вовсе.
+	hidden := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, KeyRejects: rejects}
+	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, hidden, false, false))
+	if strings.Contains(out2, `class="card getting-started"`) {
+		t.Fatal("CanOperate=false не должен показывать чек-лист")
+	}
+	notice := sectionBetween(t, out2, `<div class="notice notice--warn">`, "</div>")
+	if !strings.Contains(notice, wantReason) {
+		t.Errorf("чек-лист скрыт — пустое состояние должно нести причину отказа %q: %s", wantReason, notice)
+	}
+}
+
+// sectionBetween — первая подстрока между двумя маркерами; фейлит тест,
+// если открывающий или закрывающий маркер не найден. Используется, чтобы
+// ассертить текст ВНУТРИ конкретной секции разметки, а не по всему телу
+// страницы — иначе поломка одной врезки может маскироваться другой (аудит
+// перед 1.0, M9/M10).
+func sectionBetween(t *testing.T, s, openTag, closeTag string) string {
+	t.Helper()
+	i := strings.Index(s, openTag)
+	if i < 0 {
+		t.Fatalf("маркер %q не найден: %s", openTag, s)
+	}
+	rest := s[i+len(openTag):]
+	j := strings.Index(rest, closeTag)
+	if j < 0 {
+		t.Fatalf("закрывающий маркер %q не найден после %q: %s", closeTag, openTag, s)
+	}
+	return rest[:j]
+}
+
 // TestIssueDetail — деталь issue показывает событие, стектрейс-кадры и
 // назначенного; выбранное событие раскрывается.
 func TestIssueDetail(t *testing.T) {
@@ -564,7 +622,7 @@ func TestProjectSettings(t *testing.T) {
 	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
 	reg := RegressionSettingsForm{ThresholdPct: "20", RecoveryPct: "10", WindowMinutes: "60", MinSamples: "100", Enabled: true}
-	out := renderTo(t, ProjectSettings(project, keys, "", "u@e.com", perf, reg, 30))
+	out := renderTo(t, ProjectSettings(project, keys, "", "u@e.com", perf, reg, 30, nil))
 	if !strings.Contains(out, "pk_live") || !strings.Contains(out, "badge-danger") {
 		t.Error("ключи со статусами должны отрендериться")
 	}

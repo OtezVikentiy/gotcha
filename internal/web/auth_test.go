@@ -14,6 +14,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -58,6 +59,10 @@ func newStack(t *testing.T) *stack {
 	// показывает failed-доставки — тот же принцип, что и Alerts выше, заводим
 	// один раз на весь стенд, а не в каждом тесте.
 	h.Outbox = notify.NewOutbox(pool)
+	// Signals (аудит перед 1.0, K7-5/K7-6): callout устаревших путей на
+	// странице настроек проекта (projsettings_test.go) читает эту таблицу
+	// через s.h.Signals.Bump напрямую, тем же приёмом, что и issuesStack.
+	h.Signals = ingestsignal.NewStore(pool)
 	h.Register(mux)
 
 	return &stack{pool: pool, srv: srv, h: h, mux: mux}

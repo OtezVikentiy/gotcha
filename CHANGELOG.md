@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently dropped. The migration test suite now checks that rolling back
   each individual migration restores the exact prior schema shape, not just
   that rolling back the whole set leaves an empty database.
+- The project settings page now shows when a sender is still using a
+  deprecated ingest address. Key rejections from the last hour — an invalid
+  or revoked key, a key from another project, a key of the wrong type — are
+  now shown on the empty issues list and in the getting-started checklist.
 
 ## [0.34.0] - 2026-09-03
 

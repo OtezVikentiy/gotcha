@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
@@ -65,6 +66,86 @@ type GettingStartedVM struct {
 	// упрётся в 403 (см. requireOrgRole), поэтому шаг рендерится
 	// неактивным текстом (gsStepReadOnly), а не мёртвой ссылкой.
 	CanManage bool
+	// Hidden — чек-лист скрыт пользователем (№71, POST /profile/getting-
+	// started/hide). Гасит checklistVisible() независимо от Done/CanOperate
+	// — карточка не возвращается сама, даже если появился новый незакрытый
+	// шаг (например, отозвали единственный alert-канал). Отдельно от Done<5,
+	// потому что KeyRejects ниже собирается и при Hidden=true: аудит перед
+	// 1.0 (находка G1) — иначе команда, скрывшая чек-лист, не увидела бы
+	// отказы по ключу нигде (ни в чек-листе, ни в пустом состоянии issues,
+	// который показывает эту же врезку только пока чек-лист не виден).
+	Hidden bool
+	// KeyRejects — отказы по ключу этого проекта за последний час (аудит
+	// перед 1.0, K7-5/K7-6): собирается в web/issues.go из
+	// ingestsignal.Store.ForProject, отфильтровано до kind'ов key_* с
+	// LastSeenAt не старше часа. Пусто — либо отказов не было, либо
+	// h.Signals не настроен (nil-safe). Рендерится под шагом 2 (SDK ещё не
+	// прислал ни одного события — самое частое объяснение — неверный DSN) и
+	// на пустом списке issues, когда чек-лист там не виден (checklistVisible()).
+	KeyRejects []KeyRejectView
+}
+
+// KeyRejectView — один вид отказа по ключу с суммарным счётчиком за всё
+// время наблюдения (не только за окно фильтра часа, отобравшее строку —
+// LastSeenAt рендерится отдельно, относительным временем). Kind — значение
+// ingestsignal.Kind как строка (сам пакет templates ingestsignal не
+// импортирует — VM здесь не должна тянуть за собой зависимость от БД-слоя).
+type KeyRejectView struct {
+	Kind       string
+	Hits       int64
+	LastSeenAt time.Time
+}
+
+// keyRejectItem — одна строка причины отказа по ключу: {hits} + человеческое
+// объяснение, специфичное для kind'а (K7-5/K7-6), + когда отказ случился в
+// последний раз (relativeTime): {hits} — счётчик за всё время, а не за окно
+// фильтра, поэтому без LastSeenAt рядом число вводило бы в заблуждение о
+// свежести проблемы. Кейсы — закрытый список
+// ingestsignal.Kind{Invalid,ProjectMismatch,Scope}; kind вне списка (не
+// должен встречаться — VM фильтрует уже в web-слое) не рендерит строку.
+templ keyRejectItem(kr KeyRejectView) {
+	switch kr.Kind {
+		case "key_invalid":
+			<li>
+				{ i18n.Tf(ctx, "ingest_signals.rejects.key_invalid", "hits", strconv.FormatInt(kr.Hits, 10)) }
+				@relativeTime(kr.LastSeenAt)
+			</li>
+		case "key_project_mismatch":
+			<li>
+				{ i18n.Tf(ctx, "ingest_signals.rejects.key_project_mismatch", "hits", strconv.FormatInt(kr.Hits, 10)) }
+				@relativeTime(kr.LastSeenAt)
+			</li>
+		case "key_scope":
+			<li>
+				{ i18n.Tf(ctx, "ingest_signals.rejects.key_scope", "hits", strconv.FormatInt(kr.Hits, 10)) }
+				@relativeTime(kr.LastSeenAt)
+			</li>
+	}
+}
+
+// keyRejectsBody — общее тело уведомления об отказах по ключу, используемое
+// и в чек-листе «Первые шаги» (внутри <li>), и на пустом списке issues
+// (внутри отдельного блока) — обёртку выбирает вызывающий шаблон, здесь
+// только содержимое (K7-5/K7-6).
+templ keyRejectsBody(rejects []KeyRejectView, settingsHref string) {
+	if len(rejects) > 0 {
+		<p>{ i18n.T(ctx, "ingest_signals.rejects.title") }</p>
+		<ul>
+			for _, kr := range rejects {
+				@keyRejectItem(kr)
+			}
+		</ul>
+		<a href={ templ.SafeURL(settingsHref) }>{ i18n.T(ctx, "ingest_signals.rejects.link") }</a>
+	}
+}
+
+// checklistVisible — тот же predicate, что решает, рисуется ли карточка
+// «Первые шаги» (gettingStartedChecklist ниже). Общий метод — чтобы
+// зависимая логика в IssuesList (F5 аудита: врезка об отказах по ключу не
+// должна дублироваться в пустом состоянии списка issues, когда чек-лист на
+// той же странице уже её показывает) не разошлась с условием самой карточки.
+func (gs GettingStartedVM) checklistVisible() bool {
+	return !gs.Hidden && gs.Done < 5 && gs.CanOperate
 }
 
 // gettingStartedChecklist — карточка над списком issues, пока не закрыты
@@ -78,7 +159,7 @@ type GettingStartedVM struct {
 // решением ровно того класса «мёртвых контролов», который правит этот
 // аудит, только наоборот — не мёртвая ссылка, а спрятанная рабочая.
 templ gettingStartedChecklist(gs GettingStartedVM) {
-	if gs.Done < 5 && gs.CanOperate {
+	if gs.checklistVisible() {
 		<section class="card getting-started">
 			<h2 class="card-header">
 				{ i18n.T(ctx, "getting_started.title") } · { i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "5") }
@@ -89,6 +170,11 @@ templ gettingStartedChecklist(gs GettingStartedVM) {
 			<ul class="gs-steps">
 				@gsStepDone("getting_started.step.1")
 				@gsStep(gs.Step2Done, "getting_started.step.2", projectSetupPath(gs.ProjectID), "getting_started.step.2.cta")
+				if len(gs.KeyRejects) > 0 {
+					<li class="gs-todo">
+						@keyRejectsBody(gs.KeyRejects, projectSettingsPath(gs.ProjectID))
+					</li>
+				}
 				@gsStep(gs.Step3Done, "getting_started.step.3", alertsPath(gs.ProjectID), "getting_started.step.3.cta")
 				if gs.CanManage {
 					@gsStep(gs.Step4aDone, "getting_started.step.4a", orgSettingsPath(gs.OrgID), "getting_started.step.4a.cta")

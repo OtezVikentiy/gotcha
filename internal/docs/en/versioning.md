@@ -108,7 +108,10 @@ As of 1.0, two deprecations are open in the contract:
 For the three ingest aliases, the `gotcha_ingest_deprecated_path_total{path="…"}`
 counter in [Monitoring gotcha itself](/docs/self-monitoring) shows whether
 anything is still hitting the old path — a non-zero rate after upgrading is
-your signal to move that sender to the new path before 1.0.
+your signal to move that sender to the new path before 1.0. The same
+question for a SPECIFIC project (rather than the whole instance) is also
+visible without observability: the project settings page shows whether that
+project has hit a deprecated address in the last 7 days.
 
 ## OIDC's extension path
 

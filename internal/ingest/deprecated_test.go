@@ -239,6 +239,29 @@ func TestDeprecatedPathHitsUnknownPath(t *testing.T) {
 	}
 }
 
+// TestDocsPath — экспорт для web.deprecatedPathsView (аудит перед 1.0, F3):
+// известный путь отдаёт страницу СВОЕГО входа (та же, что уходит в заголовок
+// Link deprecatedAlias — см. TestDeprecatedAliasLogs), путь вне закрытого
+// набора — пустую строку и ok=false, а не панику или нулевое значение молча.
+func TestDocsPath(t *testing.T) {
+	cases := []struct {
+		path     DeprecatedPath
+		wantDocs string
+		wantOK   bool
+	}{
+		{DeprecatedLogs, "/docs/logs", true},
+		{DeprecatedProfilePprof, "/docs/profiling", true},
+		{DeprecatedDeployments, "/docs/deployments", true},
+		{DeprecatedPath("/nowhere"), "", false},
+	}
+	for _, c := range cases {
+		docs, ok := DocsPath(c.path)
+		if docs != c.wantDocs || ok != c.wantOK {
+			t.Errorf("DocsPath(%q) = (%q, %v), want (%q, %v)", c.path, docs, ok, c.wantDocs, c.wantOK)
+		}
+	}
+}
+
 // TestDeprecatedTargetsAndKindsHaveSameKeys — minor m2: deprecatedTargets и
 // deprecatedKinds — две независимые карты по одному и тому же набору
 // DeprecatedPath. Новый путь, добавленный в одну карту без другой, давал бы

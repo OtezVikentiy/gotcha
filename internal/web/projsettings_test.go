@@ -8,9 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
@@ -847,5 +849,131 @@ func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 	resp.Body.Close()
 	if strings.Contains(string(body), i18n.T(context.Background(), "project.settings.keys.no_dsn")) {
 		t.Fatalf("GET %s still shows no-live-key warning after issuing a new key: %s", settingsPath, body)
+	}
+}
+
+// TestWebProjectSettingsShowsDeprecatedPathSignal — аудит перед 1.0
+// (K7-5/K7-6): проект, который недавно постучался на устаревший алиас
+// приёма (/logs), видит об этом callout на своей странице настроек; проект,
+// чей единственный сигнал старше 7 дней (отправитель, судя по всему, уже
+// переехал или отвалился), его не видит — иначе баннер, разучившийся
+// исчезать, был бы бесполезнее его отсутствия.
+func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "depr-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "depr-co", "Depr Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	fresh, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-fresh", "Depr Fresh", "go")
+	if err != nil {
+		t.Fatalf("create project fresh: %v", err)
+	}
+	stale, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-stale", "Depr Stale", "go")
+	if err != nil {
+		t.Fatalf("create project stale: %v", err)
+	}
+	// wrongKind — сигнал есть и он свежий, но его kind (key_invalid) не
+	// входит в deprecatedPathByKind: он про отказ по ключу, а не про
+	// устаревший адрес. Убирает `!ok` из фильтра — и этот сигнал ложно
+	// всплывёт в callout'е (мутация M2).
+	wrongKind, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-wrongkind", "Depr WrongKind", "go")
+	if err != nil {
+		t.Fatalf("create project wrongkind: %v", err)
+	}
+	// noSignals — h.Signals == nil (стенд без per-project учёта): страница
+	// обязана рендериться без паники и без callout'а (мутация M3).
+	noSignals, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-nosig", "Depr NoSig", "go")
+	if err != nil {
+		t.Fatalf("create project nosignals: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := s.h.Signals.Bump(ctx, fresh.ID, ingestsignal.KindDeprecatedLogs, 5, time.Now()); err != nil {
+		t.Fatalf("bump fresh: %v", err)
+	}
+	if err := s.h.Signals.Bump(ctx, stale.ID, ingestsignal.KindDeprecatedLogs, 3, time.Now().Add(-8*24*time.Hour)); err != nil {
+		t.Fatalf("bump stale: %v", err)
+	}
+	if err := s.h.Signals.Bump(ctx, wrongKind.ID, ingestsignal.KindKeyInvalid, 9, time.Now()); err != nil {
+		t.Fatalf("bump wrongkind: %v", err)
+	}
+
+	freshPath := "/projects/" + strconv.FormatInt(fresh.ID, 10) + "/settings"
+	resp := getWithCookie(t, s.srv, freshPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", freshPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), i18n.T(context.Background(), "ingest_signals.deprecated.title")) {
+		t.Errorf("GET %s missing deprecated-path callout: %s", freshPath, body)
+	}
+	if !strings.Contains(string(body), "/logs") {
+		t.Errorf("GET %s missing deprecated path /logs: %s", freshPath, body)
+	}
+	// M4: Hits (5, du Bump выше) обязан попасть в текст, а не остаться 0.
+	if want := i18n.Tf(ctx, "ingest_signals.deprecated.item_hits", "hits", "5"); !strings.Contains(string(body), want) {
+		t.Errorf("GET %s missing hits count %q: %s", freshPath, want, body)
+	}
+	// G3 (re-review): item_hits — текстовый узел сразу после @relativeTime,
+	// без пробела между ними (ведущий пробел, если он вообще нужен, — часть
+	// самой строки item_hits, а не разметки). Склейка "</time>" + item_hits
+	// без промежуточного пробела фейлится, если templ при следующей
+	// регенерации вставит пробел между узлами.
+	glued := "</time>" + i18n.Tf(ctx, "ingest_signals.deprecated.item_hits", "hits", "5")
+	if !strings.Contains(string(body), glued) {
+		t.Errorf("GET %s: relativeTime и item_hits не склеены без пробела, want %q: %s", freshPath, glued, body)
+	}
+	// F3: ссылка на устаревший адрес ведёт на страницу ЭТОГО входа
+	// (/docs/logs), а не на общий /docs/upgrade.
+	if !strings.Contains(string(body), `href="/docs/logs"`) {
+		t.Errorf("GET %s missing per-path docs link href=\"/docs/logs\": %s", freshPath, body)
+	}
+	if strings.Contains(string(body), `href="/docs/upgrade"`) {
+		t.Errorf("GET %s still links the deprecated-path callout to the generic /docs/upgrade: %s", freshPath, body)
+	}
+
+	stalePath := "/projects/" + strconv.FormatInt(stale.ID, 10) + "/settings"
+	resp = getWithCookie(t, s.srv, stalePath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", stalePath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), i18n.T(context.Background(), "ingest_signals.deprecated.title")) {
+		t.Errorf("GET %s shows deprecated-path callout for a signal older than 7 days: %s", stalePath, body)
+	}
+
+	// M2: kind вне deprecatedPathByKind (key_invalid) не должен породить
+	// callout, даже будучи свежим.
+	wrongKindPath := "/projects/" + strconv.FormatInt(wrongKind.ID, 10) + "/settings"
+	resp = getWithCookie(t, s.srv, wrongKindPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", wrongKindPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), i18n.T(context.Background(), "ingest_signals.deprecated.title")) {
+		t.Errorf("GET %s shows deprecated-path callout for a key-reject signal (kind outside deprecatedPathByKind): %s", wrongKindPath, body)
+	}
+
+	// M3: h.Signals == nil не должен ронять страницу настроек, ни рисовать
+	// пустой callout.
+	prevSignals := s.h.Signals
+	s.h.Signals = nil
+	t.Cleanup(func() { s.h.Signals = prevSignals })
+	noSignalsPath := "/projects/" + strconv.FormatInt(noSignals.ID, 10) + "/settings"
+	resp = getWithCookie(t, s.srv, noSignalsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (Signals=nil) status = %d, want 200: %s", noSignalsPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), i18n.T(context.Background(), "ingest_signals.deprecated.title")) {
+		t.Errorf("GET %s (Signals=nil) unexpectedly shows deprecated-path callout: %s", noSignalsPath, body)
 	}
 }

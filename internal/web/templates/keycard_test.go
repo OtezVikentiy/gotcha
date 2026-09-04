@@ -194,7 +194,7 @@ func TestKeyCreateFormSegmented(t *testing.T) {
 	project := org.Project{ID: 9, OrgID: 1, Slug: "seg", Name: "Seg", Platform: "go"}
 	perf := PerfSettingsForm{SampleRate: "1", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
 	reg := RegressionSettingsForm{ThresholdPct: "20", RecoveryPct: "10", WindowMinutes: "60", MinSamples: "100", Enabled: true}
-	out := renderTo(t, ProjectSettings(project, nil, "", "u@e.com", perf, reg, 30))
+	out := renderTo(t, ProjectSettings(project, nil, "", "u@e.com", perf, reg, 30, nil))
 
 	formStart := strings.Index(out, `class="key-create-form"`)
 	if formStart == -1 {

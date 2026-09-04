@@ -256,6 +256,19 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
 				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
+					// F5 (аудит перед 1.0): чек-лист «Первые шаги» рисуется
+					// выше на этой же странице (@gettingStartedChecklist) и
+					// уже несёт эту же врезку под шагом 2, когда он виден —
+					// повторять её здесь означало бы показать один и тот же
+					// текст дважды на пустом свежем проекте. Врезка в пустом
+					// состоянии — только запасной путь на случай, когда
+					// чек-лист на странице не рендерится (скрыт пользователем
+					// или все 5 шагов уже закрыты).
+					if len(gs.KeyRejects) > 0 && !gs.checklistVisible() {
+						<div class="notice notice--warn">
+							@keyRejectsBody(gs.KeyRejects, projectSettingsPath(projectID))
+						</div>
+					}
 				} else {
 					<div class="card">
 						// Тулбар над таблицей: слева массовые действия, справа точки

@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -264,7 +268,58 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		reg = *regOverride
 	}
 	w.WriteHeader(status)
-	_ = templates.ProjectSettings(project, views, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays).Render(r.Context(), w)
+	_ = templates.ProjectSettings(project, views, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays,
+		h.deprecatedPathsView(r.Context(), projectID)).Render(r.Context(), w)
+}
+
+// deprecatedIngestPathWindow — сигнал деприкейтед-пути показывается на
+// странице настроек, только пока отправитель ещё реально им пользуется:
+// 7 дней тем же порядком величины, что окно квоты/дропов (droppedBreakdown),
+// а не сутки — деплой конкретного отправителя, который стучится на устаревший
+// адрес раз в несколько дней (например, батч-джоб по расписанию), не должен
+// пропасть из виду только потому, что заглянули на следующий день.
+const deprecatedIngestPathWindow = 7 * 24 * time.Hour
+
+// deprecatedPathByKind — устаревший адрес приёма, которым бьёт сигнал (K7-5).
+// Соответствие обратное к ingest.deprecatedKinds: web уже импортирует ingest
+// (см. cardinality.go), обратная зависимость (ingest → web) недопустима —
+// так что держим здесь ту же тройку путей текстом ingest.DeprecatedPath, а
+// не заводим в ingest экспортируемую обратную мапу ради одного потребителя.
+var deprecatedPathByKind = map[ingestsignal.Kind]ingest.DeprecatedPath{
+	ingestsignal.KindDeprecatedLogs:        ingest.DeprecatedLogs,
+	ingestsignal.KindDeprecatedPprof:       ingest.DeprecatedProfilePprof,
+	ingestsignal.KindDeprecatedDeployments: ingest.DeprecatedDeployments,
+}
+
+// deprecatedPathsView — callout «проект ещё шлёт по устаревшим адресам»
+// (K7-5): пусто, если h.Signals не настроен (nil-safe, как Deploy/Trace) или
+// сигналов, свежих не старше deprecatedIngestPathWindow, для проекта нет.
+// Ошибка ForProject не роняет страницу настроек — тем же приёмом, что и
+// quotaBanner/gettingStarted: сигнал вспомогательный, а не часть контракта
+// страницы.
+func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []templates.DeprecatedPathView {
+	if h.Signals == nil {
+		return nil
+	}
+	signals, err := h.Signals.ForProject(ctx, projectID)
+	if err != nil {
+		slog.Warn("deprecatedPathsView: for project", "project_id", projectID, "err", err)
+		return nil
+	}
+	cutoff := time.Now().Add(-deprecatedIngestPathWindow)
+	var out []templates.DeprecatedPathView
+	for _, sig := range signals {
+		path, ok := deprecatedPathByKind[sig.Kind]
+		if !ok || sig.LastSeenAt.Before(cutoff) {
+			continue
+		}
+		// docs всегда найдётся: deprecatedPathByKind отдаёт только пути из
+		// закрытой тройки, для которой ingest.DocsPath гарантированно знает
+		// страницу документации (см. ingest.deprecatedTargets).
+		docs, _ := ingest.DocsPath(path)
+		out = append(out, templates.DeprecatedPathView{Path: string(path), LastSeenAt: sig.LastSeenAt, Hits: sig.Hits, Docs: docs})
+	}
+	return out
 }
 
 // projectSettingsRename — POST /projects/{id}/settings/rename: name.
