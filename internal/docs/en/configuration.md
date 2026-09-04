@@ -281,6 +281,24 @@ Detail level and format of the instance's own logs.
 
 > The `--migrate-only` command-line flag applies the schema and exits without starting any component: an init job for deployments with `GOTCHA_AUTO_MIGRATE_ENABLED=false`. See [Upgrade](/docs/upgrade).
 
+## Process modes: what each `--mode=` runs
+
+The process role is set by the binary's `--mode=` flag (not an environment variable): `all` is the default and what the stock `docker-compose.yml` runs; `web`, `ingest`, and `uptime` are for a split deployment across several replicas; `probe` is a remote probe (see below). The table shows which components each mode brings up. All four database-backed modes keep an HTTP listener with the service endpoints (`/healthz`, `/readyz`, `/version`, `/metrics`, see [Monitoring gotcha itself](/docs/self-monitoring)) and run the secrets backfill under the current `GOTCHA_SECRET_KEY` at startup.
+
+| Component | `web` | `ingest` | `uptime` | `all` |
+|---|---|---|---|---|
+| Telemetry ingest over HTTP (`/api/v1/*`), ClickHouse writers (events, spans, metrics, profiles, logs), spike detector, ingest signal recorder | — | ✓ | — | ✓ |
+| The UI (every page, sign-in, SSO, the probe API), the session and expired-invite janitor | ✓ | — | — | ✓ |
+| Export worker and janitor (when `GOTCHA_EXPORT_DIR` is writable) | ✓ | — | — | ✓ |
+| Uptime scheduler (queues the checks) | ✓ (with a log warning: checks are queued but not executed) | — | ✓ | ✓ |
+| Uptime check runner and watchdog (heartbeats, reminders) | — | — | ✓ | ✓ |
+| Notification delivery: outbox worker, suppressed-alerts digest, outbox janitor | ✓ | ✓ | ✓ | ✓ |
+| Evaluators: performance regressions, metric rules, profile regressions, host thresholds, SLO burn rate; the escalation scheduler; incident and incident-group janitors | only with `GOTCHA_EVALUATORS_ENABLED=true` | only with `GOTCHA_EVALUATORS_ENABLED=true` | ✓ | ✓ |
+| PostgreSQL entity janitor by retention (issues, incidents, regressions, hosts, deploy markers) | ✓ | ✓ | ✓ | ✓ |
+| ClickHouse cleanup of telemetry from deleted projects | ✓ | ✓ | ✓ | ✓ |
+
+Two consequences for a split deployment follow. First, `web` is not "UI only": it delivers notifications and prunes the database like every other mode, so a `notify outbox janitor` line in its log is normal, not a sign of a mixed-up mode. Second, without an `uptime` or `all` replica the evaluators run nowhere — enable them explicitly with `GOTCHA_EVALUATORS_ENABLED=true` on exactly one replica (see [Limits and evaluators](#limits-and-evaluators)).
+
 ## Uptime & probe
 
 | Variable | Default | Description |

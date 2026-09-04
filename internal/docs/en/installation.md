@@ -276,6 +276,12 @@ Before pointing real users or real application traffic at this instance, make su
   - **Caddy**: even simpler, HTTPS is automatic — a `Caddyfile` line like `gotcha.example.com { reverse_proxy localhost:59080 }` is all you need.
 
   Without HTTPS, session cookies travel over the network in plain text — the server even warns about this in its logs (`GOTCHA_BASE_URL is non-local plain HTTP`). If the proxy restricts paths to an allowlist, add `/install.sh` and `/agent/` to it — otherwise installing the host-metrics agent (see [Hosts](/docs/hosts)) won't work.
+- [ ] **Database passwords** — PostgreSQL and ClickHouse in `docker-compose.yml` both ship with the same well-known default, `gotcha` / `gotcha`. Set your own via `GOTCHA_COMPOSE_PG_PASSWORD` and `GOTCHA_COMPOSE_CH_PASSWORD` in `.env` **before the first start**: the database containers read these variables only when initializing the volume, and ignore them afterwards. On an install that is already running the order is different — change the password inside the database first, then the variable, then `docker compose up -d`:
+  ```bash
+  docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
+  docker compose exec clickhouse clickhouse-client --user gotcha --password 'gotcha' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
+  ```
+  Details and the character restriction are in [Configuration](/docs/configuration#compose-only-variables-database-containers).
 - [ ] **SMTP** — without it, invite emails and the email alert channel don't work. Setup is covered in [Configuration](/docs/configuration).
 - [ ] **Backups** — set these up before real data accumulates in the database. See [Backup & Restore](/docs/backup-restore).
 - [ ] **Quotas** — if a project DSN could leak publicly (e.g. frontend JS), set `GOTCHA_DEFAULT_*_QUOTA` (unlimited by default in the oss edition). See [Configuration](/docs/configuration).

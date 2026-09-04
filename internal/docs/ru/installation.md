@@ -276,6 +276,12 @@ docker compose up -d
   - **Caddy**: ещё проще, HTTPS настраивается автоматически — в `Caddyfile` достаточно строки `gotcha.example.com { reverse_proxy localhost:59080 }`.
 
   Без HTTPS сессионные cookie идут по сети открытым текстом — сервер даже предупредит об этом в логах (`GOTCHA_BASE_URL is non-local plain HTTP`). Если прокси ограничивает пути белым списком, добавьте в него `/install.sh` и `/agent/` — иначе установка агента хост-метрик (см. [Хосты](/docs/hosts)) не пройдёт.
+- [ ] **Пароли баз** — у PostgreSQL и ClickHouse из `docker-compose.yml` один и тот же известный всем дефолт `gotcha` / `gotcha`. Задайте свои через `GOTCHA_COMPOSE_PG_PASSWORD` и `GOTCHA_COMPOSE_CH_PASSWORD` в `.env` **до первого старта**: контейнеры баз читают эти переменные только при инициализации тома, потом они не действуют. На уже поднятой установке порядок другой — сначала сменить пароль в самой базе, потом переменная, потом `docker compose up -d`:
+  ```bash
+  docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'новый-пароль'"
+  docker compose exec clickhouse clickhouse-client --user gotcha --password 'gotcha' -q "ALTER USER gotcha IDENTIFIED BY 'новый-пароль'"
+  ```
+  Подробности и ограничение на символы — в [Конфигурации](/docs/configuration#peremennye-tolko-dlya-compose-konteynery-baz).
 - [ ] **SMTP** — без него не работают письма-приглашения и email-канал алертов. Настройка — в [Конфигурации](/docs/configuration).
 - [ ] **Резервное копирование** — настройте до того, как в базе появятся важные данные. См. [Резервное копирование и восстановление](/docs/backup-restore).
 - [ ] **Квоты** — если DSN проекта может утечь публично (например, фронтенд-JS), задайте `GOTCHA_DEFAULT_*_QUOTA` (по умолчанию в oss-редакции — безлимит). См. [Конфигурацию](/docs/configuration).

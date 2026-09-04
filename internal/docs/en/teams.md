@@ -90,10 +90,10 @@ Being on a team attached to a project — an **operator**, in the table below �
 | Status page publication: the "Published" toggle, or deleting a page that's already published | — | — | ✓ | ✓ |
 | Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
 | [Escalations](/docs/escalations): per-severity notification ladders ("Critical"/"Warning") | — | ✓ | ✓ | ✓ |
-| [Storm suppression](/docs/alert-suppression): dependency edges — create, delete | — | ✓ | ✓ | ✓ |
+| [Storm suppression](/docs/alert-suppression): dependency edges — create, edit, delete | — | ✓ | ✓ | ✓ |
 | Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, enough to tell channels apart when picking one in a rule) | ✓ | ✓ |
 | Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
-| Metric alerts: create, delete | — | ✓ | ✓ | ✓ |
+| [Metric alerts](/docs/metric-alerts): create, edit and disable, delete | — | ✓ | ✓ | ✓ |
 | [SLOs](/docs/slo): create, delete | — | ✓ | ✓ | ✓ |
 | [Recipes](/docs/recipes): turn on a service's recommended thresholds | — | ✓ | ✓ | ✓ |
 | Hosts: project-wide thresholds, environment/role label groups, a per-host threshold override, deleting a host | — | ✓ | ✓ | ✓ |

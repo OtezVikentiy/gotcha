@@ -98,6 +98,8 @@ journalctl -u gotcha-agent -n 50
 
 Except for the required ones on first install, these variables are applied once — at the moment the install command runs — and land in `/etc/gotcha-agent/gotcha-agent.env`. To change them later, edit the file and run `sudo systemctl restart gotcha-agent` (re-running the installer without the variables won't pick them up, and it explicitly fails if only optional ones are left in the command — on purpose, so a value never gets silently dropped).
 
+**The host name is the identity key, not a label.** A host within a project is identified by the pair "project + `host.name`": ingest looks the record up by name and updates it, or creates a new one if none is found. So changing `GOTCHA_AGENT_HOSTNAME` (or the system hostname, when there is no override) is **not a rename**: a **new** host with an empty history appears under the new name, while the old one stays in the list with its labels, threshold overrides, and [storm suppression](/docs/alert-suppression) edges, goes quiet, eventually opens a "Silence" incident, and is retired by the janitor once the metric retention period passes (see [Deletion and automatic cleanup](#deletion-and-automatic-cleanup)). There is no in-place host rename in the UI. If you do need to change the name: move the threshold overrides and dependency edges to the new host by hand and delete the old one from its card — otherwise it keeps paging about silence until the automatic cleanup.
+
 Like the server (see [Configuration](/docs/configuration)), the agent refuses to start on a typo INSIDE its own namespace — a variable prefixed `GOTCHA_AGENT_` that isn't in the table above (`GOTCHA_AGENT_INTERVAL_SECOND` missing the trailing `S`, and the like). A foreign `GOTCHA_*` variable in the host's shared `.env` (the server's `GOTCHA_PG_DSN`, say, if the server and the agent sit on the same host) is still ignored — the agent never reads it, and refusing to start over it would be overreach.
 
 ### OpenTelemetry Collector (alternative)
@@ -321,6 +323,7 @@ The names `.` and `..` are never registered: a host card's address is `/projects
 
 - A host literally named `settings` isn't reachable through its card: `/projects/{id}/hosts/settings` is the threshold settings page, and that literal route segment wins over the `{name}` wildcard. The same accepted limitation already exists for a metric literally named `alerts` under "Metrics".
 - Status-aware host auto-registration isn't part of this version.
+- Hosts can't be renamed: `host.name` is the identity key, and a new name creates a new host (see [Agent environment variables](#agent-environment-variables)).
 - Environment and role labels are read-only and come only from telemetry (see [Host labels](#host-labels-environment-role-filter-grouping) above) — the UI doesn't offer freeform labels of its own, unmoored from a resource attribute.
 - Per-process metrics aren't collected — only the `system.processes.count` aggregate broken down by status.
 

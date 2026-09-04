@@ -70,6 +70,16 @@ handle @internal {
 Replace `10.0.0.0/8` with the range your probes actually come from (orchestrator, Prometheus,
 your own network) — the default-open range is meaningless as a restriction.
 
+The same goes for the databases. The stock `docker-compose.yml` doesn't publish the PostgreSQL
+and ClickHouse ports on the host — only containers on the same docker network can reach them
+— but both ship with the default password `gotcha` / `gotcha`, identical on every install in
+the world. Change it via `GOTCHA_COMPOSE_PG_PASSWORD` / `GOTCHA_COMPOSE_CH_PASSWORD` **before
+the first start** (once the volume is initialized, the variable alone changes nothing), and on
+a running install run `ALTER USER` inside the database first, then set the variable; the
+commands are in [Configuration](/docs/configuration#compose-only-variables-database-containers).
+And don't add `ports:` to the databases "for convenience": with the default password that is
+an open database on a public address.
+
 ## TLS and HSTS
 
 TLS 1.2 or newer, with a redirect from plain HTTP to HTTPS. Set HSTS in exactly ONE place —

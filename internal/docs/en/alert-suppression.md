@@ -33,6 +33,14 @@ the parent host's own label; the exact same edge doesn't already exist; and
 the new edge doesn't close a cycle among the already-declared nodes of the
 graph.
 
+An edge can be **edited**, not only deleted and recreated: the "Edit" button
+on its row opens the "Edit dependency" modal with the same form and the same
+validation as on creation (only the fields for the selected parent and child
+types are shown). Editing, like creating and deleting, is a project operator
+action. It applies to **new** suppression decisions: the service re-reads the
+graph within a few seconds. Incidents already suppressed stay suppressed
+until they close — an edit doesn't replay anything retroactively.
+
 ## What actually gets suppressed
 
 Only the child's **availability incidents** are suppressed — a host going
@@ -46,6 +54,16 @@ child's first notification goes out as usual, and further
 [escalation](/docs/escalations) waits for the group to close. Trace and
 profile regressions are outside this mechanism entirely and notify as
 usual — they have no node that could be set as a dependency.
+
+**A limitation of the current release.** The dependency gate in the
+[escalation scheduler](/docs/escalations) — hold the ladder while the parent
+is down, release it once the parent recovers — is implemented for **host**
+incidents only. A monitor incident is checked against its parent once, when
+it opens (the uptime detector decides on its own: suppress for good, or send
+late after the settling grace), and is not re-evaluated against the parent
+afterwards. Incidents from metric rules, trace and profile regressions, and
+SLOs don't consult dependency edges at all — for them only the
+[incident groups](/docs/incident-groups) mechanism described above applies.
 
 ## Settling grace
 

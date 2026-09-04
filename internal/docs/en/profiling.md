@@ -58,7 +58,7 @@ Gotcha's flame graph is drawn as an **icicle** diagram (top to bottom): the root
 - **Depth (row number from the top)** — call depth: the lower a block sits, the deeper it is in the call stack.
 - **Hovering** over a block shows a tooltip with the function name and the exact percentage.
 - Block color is deterministic based on the function name (for visually telling adjacent calls apart) — it doesn't encode "good/bad" and doesn't distinguish your code from library code.
-- The flame graph is static: there's no click-to-zoom into depth — the whole picture is in front of you at once, and the widest branch at any level is the heaviest execution path, which is where to start digging.
+- **Click to zoom.** Every frame is a link: clicking it expands the frame to the full width and shows only its subtree beneath, with the ancestors kept above as a narrow breadcrumb of the path. The "all" row (the root) restores the full profile. The zoom lives in the page URL (the `focus=` parameter — the path of function names from the top level), so a zoomed view can be shared as a link; if that path no longer exists in the profile for the selected period, the page falls back to the full profile. Frames are keyboard-focusable, and a hint under the chart explains the gesture. The widest branch at any level is still the heaviest execution path, and still where to start digging.
 
 ## Relation to transactions (profiling in trace context)
 

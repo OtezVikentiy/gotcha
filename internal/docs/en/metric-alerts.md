@@ -82,9 +82,19 @@ Say your app sends a histogram metric `http.server.duration` (unit `ms`) — see
 5. Once the trailing-5-minute p95 exceeds 500 (in whatever unit the metric carries — Gotcha doesn't convert units), an incident opens and a notification goes out to the project's enabled channels. A dashed line at 500 appears on the metric chart when viewing the p95 aggregation.
 6. When p95 drops back below 475 (500 × 0.95), the incident closes and a second, "resolved" notification is sent.
 
+## Editing and disabling a rule
+
+The "Edit" button on the rule's row opens the "Edit rule" modal with the same fields as on creation, plus an **"Enabled"** checkbox. Editing is for project operators, like creation.
+
+- **Changing the condition** (metric, aggregation, threshold, window, filters) takes effect on the next evaluation cycle: the rule's open incident is re-checked against the new condition — it closes on its own if the condition no longer holds, or continues. Editing does not send a fresh "opened" notification: it is the same incident.
+- **Disabling** (unchecking "Enabled") closes the rule's open incident immediately and atomically — in the same transaction that saves the rule; the incident stays in the history as "Resolved". No recovery notification is sent: nothing recovered, an operator switched the rule off. A disabled rule is not evaluated at all until it is enabled again.
+- **Re-enabling** doesn't open anything retroactively — the first evaluation cycle after that decides based on the current value of the aggregate.
+
+Disabling is the right way to silence a rule temporarily while keeping its settings and incident history.
+
 ## Deleting a rule
 
-The "Delete" button on the rule's row removes it after a confirmation step on a separate page. Past or open incidents already recorded for that rule stay in the incident history.
+The "Delete" button on the rule's row removes it after a confirmation step on a separate page. **All of the rule's incidents — open and resolved — are deleted along with it** (the database relation cascades): an open incident isn't "closed", it disappears, and no recovery notification is sent for it. If you need to stop the rule from firing but keep the history, disable it instead of deleting it.
 
 ## See also
 
