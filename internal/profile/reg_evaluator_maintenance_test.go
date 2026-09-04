@@ -62,14 +62,14 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
 
-	// Свежее окно: slow — 80 из 100 (80%). Прошлые дни: slow — 10 из 100 (10%) →
+	// Свежее окно: slow — 80 из 100 (80%). Прошлые дни: slow — 30 из 300 (10%) →
 	// база (медиана) ~0.1 → рост ≥ порога, доля ≥ пола, samples=100 → Open.
 	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
 	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 10, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 10, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 48*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
 
 	eval.Tick(ctx)
 	rec, open, err := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow")
@@ -137,10 +137,10 @@ func TestRegressionEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 
 	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
 	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 10, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 10, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 48*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
 
 	eval.Tick(ctx)
 	rec, open, err := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow")
@@ -195,10 +195,10 @@ func TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *t
 
 	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
 	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 10, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 10, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 48*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
 
 	eval.Tick(ctx)
 	rec, open, err := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow")

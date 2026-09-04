@@ -828,3 +828,110 @@ func TestDetectRedisNPlusOneAlphabeticKeys(t *testing.T) {
 		t.Errorf("Description = %q, want %q", f.Description, want)
 	}
 }
+
+// Пустая транзакция (спанов нет вовсе или пустой срез) — находок нет и
+// детектор не падает: nil-срез и пустой срез обходятся одинаково.
+func TestDetectEmptyTransaction(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spans []Span
+	}{
+		{"nil spans", nil},
+		{"empty spans", []Span{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := mkTx(1000)
+			tx.Spans = tc.spans
+			if got := Detect(tx, DefaultDetectorConfig()); len(got) != 0 {
+				t.Fatalf("Detect(empty) = %v, want no findings", kindsOf(got))
+			}
+		})
+	}
+}
+
+// Orphan-спаны (ParentSpanID не встречается среди спанов транзакции и не
+// равен корню) участвуют в N+1 наравне с остальными: место выпуска — это
+// идентификатор родителя, а не факт его присутствия в пейлоаде. Родитель мог
+// не доехать (лимит спанов SDK, битые данные), но N одинаковых запросов под
+// одним идентификатором — тот же цикл, что и под живым родителем; молчать о
+// нём значило бы ослепнуть на SDK, у которых родитель теряется.
+func TestDetectOrphanSpans(t *testing.T) {
+	const q = "SELECT * FROM users WHERE id = 7"
+
+	// Одно скопление под несуществующим родителем: находка есть, parent_op
+	// пуст — op родителя неоткуда взять (шаблон детали проблемы пустой
+	// parent_op не показывает).
+	t.Run("single orphan cluster is N+1", func(t *testing.T) {
+		got := Detect(mkTx(1000, repeatSpans(6, "ghost", "db.sql.query", q, 5)...), DefaultDetectorConfig())
+		f := findingOf(t, got, KindNPlusOne)
+		if got, want := f.Evidence["count"], 6; got != want {
+			t.Errorf("evidence count = %v, want %v", got, want)
+		}
+		if got, want := f.Evidence["parent_op"], ""; got != want {
+			t.Errorf("evidence parent_op = %q, want empty for an absent parent", got)
+		}
+	})
+
+	// Два скопления с РАЗНЫМИ несуществующими родителями и одним запросом —
+	// два места, каждое ниже порога: N+1 нет. Ключ группы — родитель, и он
+	// работает и для отсутствующих родителей; без него детектор склеил бы
+	// 3+3 в шесть и открыл ложную проблему.
+	t.Run("clusters under different missing parents stay apart", func(t *testing.T) {
+		spans := append(
+			repeatSpansFrom(0, 3, "ghost1", "db.sql.query", q, 10),
+			repeatSpansFrom(3, 3, "ghost2", "db.sql.query", q, 10)...)
+		got := Detect(mkTx(1000, spans...), DefaultDetectorConfig())
+		if kinds := kindsOf(got); len(kinds) != 0 {
+			t.Fatalf("Detect = %v, want no findings: 3+3 under different parents is not one loop", kinds)
+		}
+	})
+
+	// Один несуществующий родитель, разные запросы — разные группы, N+1 нет.
+	t.Run("different queries under one missing parent stay apart", func(t *testing.T) {
+		spans := append(
+			repeatSpansFrom(0, 3, "ghost", "db.sql.query", q, 10),
+			repeatSpansFrom(3, 3, "ghost", "db.sql.query", "SELECT * FROM orders WHERE id = 7", 10)...)
+		got := Detect(mkTx(1000, spans...), DefaultDetectorConfig())
+		if kinds := kindsOf(got); len(kinds) != 0 {
+			t.Fatalf("Detect = %v, want no findings", kinds)
+		}
+	})
+
+	// Один несуществующий родитель, один запрос, два «скопления» по 3 —
+	// снаружи неотличимы от одного цикла из шести: у детектора нет признака,
+	// по которому их разделить (время он не кластеризует ни для живых, ни для
+	// потерянных родителей). Это N+1 с count=6, а не два молчания.
+	t.Run("same missing parent and query is one loop", func(t *testing.T) {
+		spans := append(
+			repeatSpansFrom(0, 3, "ghost", "db.sql.query", q, 10),
+			repeatSpansFrom(3, 3, "ghost", "db.sql.query", q, 10)...)
+		got := Detect(mkTx(1000, spans...), DefaultDetectorConfig())
+		f := findingOf(t, got, KindNPlusOne)
+		if got, want := f.Evidence["count"], 6; got != want {
+			t.Errorf("evidence count = %v, want %v", got, want)
+		}
+		if len(got) != 1 {
+			t.Errorf("findings = %v, want exactly one", kindsOf(got))
+		}
+	})
+
+	// Пустой ParentSpanID (родитель не передан вовсе) — тот же orphan: спаны
+	// группируются под пустым идентификатором, N+1 находится.
+	t.Run("empty parent id groups like any other", func(t *testing.T) {
+		got := Detect(mkTx(1000, repeatSpans(6, "", "db.sql.query", q, 5)...), DefaultDetectorConfig())
+		f := findingOf(t, got, KindNPlusOne)
+		if got, want := f.Evidence["count"], 6; got != want {
+			t.Errorf("evidence count = %v, want %v", got, want)
+		}
+	})
+}
+
+// repeatSpansFrom — как repeatSpans, но с нумерацией id от from: чтобы два
+// скопления в одной транзакции не делили span_id.
+func repeatSpansFrom(from, n int, parent, op, desc string, ms int) []Span {
+	out := make([]Span, 0, n)
+	for i := from; i < from+n; i++ {
+		out = append(out, mkSpan(fmt.Sprintf("s%d", i), parent, op, desc, ms))
+	}
+	return out
+}

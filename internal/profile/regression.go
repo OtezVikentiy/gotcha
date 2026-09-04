@@ -40,11 +40,17 @@ type Decision struct {
 }
 
 // Decide решает по свежей self-доле функции, скользящей базе и наличию
-// открытого инцидента. Мало сэмплов → None. Открытие: доля выросла над базой на
-// ThresholdPct, доля ≥ пола, база > 0. Закрытие: доля вернулась в пределы
-// RecoveryPct (гистерезис); при усохшей до нуля базе — при возврате доли к
-// шумовому полу ShareFloor. Иначе (открыт и всё ещё нарушено/мёртвая зона) — Bump.
-func Decide(baseShare, recentShare float64, recentSamples uint64, cfg RegressionConfig, open bool) Decision {
+// открытого инцидента. Мало сэмплов в свежем окне → None. Открытие: доля
+// выросла над базой на ThresholdPct, доля ≥ пола, база > 0 и набрана не из
+// горстки наблюдений (baseSamples ≥ MinSamples — объём именно этой функции за
+// базовое окно; медиана дневных долей по нескольким точкам скачет и открывала
+// бы ложные регрессии). Функции, которой в базе нет вовсе, гейт не меняет
+// судьбу: base == 0 и так не открывает инцидент. Закрытие: доля вернулась в
+// пределы RecoveryPct (гистерезис); при усохшей до нуля базе — при возврате
+// доли к шумовому полу ShareFloor. Гейт базы на открытый инцидент не действует:
+// иначе умершая функция держала бы инцидент открытым вечно. Иначе (открыт и
+// всё ещё нарушено/мёртвая зона) — Bump.
+func Decide(baseShare, recentShare float64, baseSamples, recentSamples uint64, cfg RegressionConfig, open bool) Decision {
 	if recentSamples < uint64(cfg.MinSamples) {
 		return Decision{Kind: DecisionNone}
 	}
@@ -65,6 +71,9 @@ func Decide(baseShare, recentShare float64, recentSamples uint64, cfg Regression
 			return Decision{Kind: DecisionResolve}
 		}
 		return Decision{Kind: DecisionBump}
+	}
+	if baseSamples < uint64(cfg.MinSamples) {
+		return Decision{Kind: DecisionNone}
 	}
 	if recentShare >= cfg.ShareFloor && baseShare > 0 && recentShare > baseShare*(1+cfg.ThresholdPct) {
 		return Decision{Kind: DecisionOpen}

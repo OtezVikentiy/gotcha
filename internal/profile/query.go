@@ -76,18 +76,44 @@ type FlameNode struct {
 	Children []*FlameNode
 }
 
+// maxFlameStacks — потолок числа уникальных стеков, из которых собирается
+// flamegraph (строк GROUP BY stack в Flame/FlameForTrace).
+//
+// Откуда число. Уникальных стеков в профиле не больше, чем выборок: pprof CPU
+// на 100 Гц за 30-секундный профиль даёт ≤ 3 000 выборок и обычно 500–2 000
+// разных стеков, PHP/Excimer на своих частотах — меньше. За часовое окно
+// непрерывного профилирования стеки в основном повторяются, и у нагруженного
+// сервиса с несколькими инстансами набирается порядка 5–20 тысяч уникальных.
+// 50 000 — запас в 2,5–10 раз над этим: на реальных окнах флеймграф остаётся
+// полным, усечение включается только на аномально широких.
+//
+// Зачем потолок. Без него дерево строилось в памяти хендлера на неограниченном
+// числе стеков (единственные запросы файла без LIMIT). С потолком верхняя
+// граница — 50 000 стеков × ~30 кадров = 1,5 млн узлов в худшем случае без
+// общих префиксов; реальные стеки префиксы делят, так что фактически десятки
+// мегабайт.
+//
+// Усечение идёт по убыванию веса: отрезаются самые лёгкие стеки, то есть те,
+// что на флеймграфе и так тоньше пикселя.
+const maxFlameStacks = 50_000
+
 // Flame агрегирует стеки за период + фильтры и строит flamegraph-дерево. Корень
 // синтетический («all») с суммарным value; каждый стек прибавляется проходом
-// корень→лист.
+// корень→лист. Стеков не больше maxFlameStacks, самые тяжёлые; таймаут
+// SETTINGS max_execution_time — тот же литеральный приём, что у raw-запросов
+// trace (Dependencies).
 func (q *Query) Flame(ctx context.Context, projectID int64, service, environment, profileType, transaction string, from, to time.Time) (*FlameNode, error) {
 	rows, err := q.conn.Query(ctx, `
-		SELECT stack, sum(value)
+		SELECT stack, sum(value) AS total
 		FROM profile_samples
 		WHERE project_id = ? AND profile_type = ? AND service = ?
 		  AND (? = '' OR environment = ?) AND (? = '' OR transaction = ?)
 		  AND ts >= ? AND ts < ?
-		GROUP BY stack`,
-		projectID, profileType, service, environment, environment, transaction, transaction, from, to)
+		GROUP BY stack
+		ORDER BY total DESC
+		LIMIT ?
+		SETTINGS max_execution_time = 10`,
+		projectID, profileType, service, environment, environment, transaction, transaction, from, to, maxFlameStacks)
 	if err != nil {
 		return nil, fmt.Errorf("profile: flame: %w", err)
 	}
@@ -118,14 +144,18 @@ func (q *Query) HasProfileForTrace(ctx context.Context, projectID int64, traceID
 }
 
 // FlameForTrace строит flamegraph по всем профилям, привязанным к trace_id
-// (без окна/сервиса/типа — trace_id сам ограничивает выборку).
+// (без окна/сервиса/типа — trace_id сам ограничивает выборку). Потолок стеков
+// и таймаут — те же, что у Flame.
 func (q *Query) FlameForTrace(ctx context.Context, projectID int64, traceID string) (*FlameNode, error) {
 	rows, err := q.conn.Query(ctx, `
-		SELECT stack, sum(value)
+		SELECT stack, sum(value) AS total
 		FROM profile_samples
 		WHERE project_id = ? AND trace_id = ?
-		GROUP BY stack`,
-		projectID, traceID)
+		GROUP BY stack
+		ORDER BY total DESC
+		LIMIT ?
+		SETTINGS max_execution_time = 10`,
+		projectID, traceID, maxFlameStacks)
 	if err != nil {
 		return nil, fmt.Errorf("profile: flame for trace: %w", err)
 	}
@@ -135,8 +165,27 @@ func (q *Query) FlameForTrace(ctx context.Context, projectID int64, traceID stri
 
 // buildFlame собирает дерево из строк (stack Array(String), sum(value)). Корень
 // синтетический («all»); каждый стек прибавляется проходом корень→лист.
+//
+// Детей ищем через индекс по имени, живущий только на время сборки: линейный
+// перебор Children делал сборку квадратичной по ширине узла, и maxFlameStacks
+// стеков под одним кадром (широкий «плоский» профиль) собирались 15 секунд.
 func buildFlame(rows driver.Rows) (*FlameNode, error) {
 	root := &FlameNode{Name: "all"}
+	index := map[*FlameNode]map[string]*FlameNode{}
+	child := func(n *FlameNode, name string) *FlameNode {
+		kids := index[n]
+		if c, ok := kids[name]; ok {
+			return c
+		}
+		if kids == nil {
+			kids = map[string]*FlameNode{}
+			index[n] = kids
+		}
+		c := &FlameNode{Name: name}
+		n.Children = append(n.Children, c)
+		kids[name] = c
+		return c
+	}
 	for rows.Next() {
 		var stack []string
 		var total uint64
@@ -146,7 +195,7 @@ func buildFlame(rows driver.Rows) (*FlameNode, error) {
 		root.Value += total
 		node := root
 		for _, name := range stack {
-			node = node.child(name)
+			node = child(node, name)
 			node.Value += total
 		}
 	}
@@ -268,20 +317,32 @@ func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service,
 	return out, rows.Err()
 }
 
-// BaselineFunctionShares — медианы дневной доли для перечисленных функций,
-// одним запросом.
+// BaselineShare — базовая линия одной функции.
+type BaselineShare struct {
+	// Share — медиана дневной self-доли функции за базовое окно.
+	Share float64
+	// Samples — объём наблюдений именно этой функции за базовое окно (сумма
+	// её self); по нему Decide гейтит открытие по MinSamples. Оконный итог
+	// здесь не годится: свежее окно вложено в базовое, и оконный объём базы
+	// всегда не меньше свежего — такой гейт не срабатывал бы никогда.
+	Samples uint64
+}
+
+// BaselineFunctionShares — базовые линии перечисленных функций одним запросом.
+// Функции, не встречавшейся в базовом окне, в карте нет (нулевое значение).
 //
 // Дневной итог считается по всем функциям дня (оконная функция с PARTITION BY
 // по дню), а отбор нужных функций идёт снаружи: иначе доля считалась бы от
 // самой себя.
-func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]float64, error) {
+func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]BaselineShare, error) {
+	out := make(map[string]BaselineShare, len(functions))
 	if len(functions) == 0 {
-		return map[string]float64{}, nil
+		return out, nil
 	}
 	from := now.AddDate(0, 0, -baselineDays)
 	rows, err := q.conn.Query(ctx, `
-		SELECT fn, quantileExact(0.5)(share) AS median FROM (
-			SELECT d, fn, self / day_total AS share FROM (
+		SELECT fn, quantileExact(0.5)(share) AS median, sum(self) AS samples FROM (
+			SELECT d, fn, self, self / day_total AS share FROM (
 				SELECT toDate(ts) AS d,
 				       arrayElement(stack, -1) AS fn,
 				       sum(value) AS self,
@@ -299,14 +360,13 @@ func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, ser
 		return nil, fmt.Errorf("profile: baseline function shares: %w", err)
 	}
 	defer rows.Close()
-	out := make(map[string]float64, len(functions))
 	for rows.Next() {
 		var fn string
-		var median float64
-		if err := rows.Scan(&fn, &median); err != nil {
+		var b BaselineShare
+		if err := rows.Scan(&fn, &b.Share, &b.Samples); err != nil {
 			return nil, fmt.Errorf("profile: baseline function shares scan: %w", err)
 		}
-		out[fn] = median
+		out[fn] = b
 	}
 	return out, rows.Err()
 }
@@ -370,16 +430,4 @@ func (q *Query) BaselineFunctionShare(ctx context.Context, projectID int64, serv
 		return 0, fmt.Errorf("profile: baseline function share: %w", err)
 	}
 	return median, nil
-}
-
-// child находит/создаёт ребёнка по имени кадра.
-func (n *FlameNode) child(name string) *FlameNode {
-	for _, c := range n.Children {
-		if c.Name == name {
-			return c
-		}
-	}
-	c := &FlameNode{Name: name}
-	n.Children = append(n.Children, c)
-	return c
 }

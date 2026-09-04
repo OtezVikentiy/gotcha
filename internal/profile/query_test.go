@@ -175,3 +175,65 @@ func TestSelfShareQueries(t *testing.T) {
 		t.Fatalf("baseline = %v, want within (0,0.65]", base)
 	}
 }
+
+// TestBaselineFunctionSharesSamples: базовая линия функции несёт объём её
+// наблюдений (Samples = сумма self за окно) — по нему Decide гейтит открытие.
+// Объём считается по функции, а не по окну: свежее окно вложено в базовое, и
+// оконный объём базы никогда не меньше свежего.
+func TestBaselineFunctionSharesSamples(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ins := func(fnLeaf string, v uint64, ago time.Duration) {
+		if err := conn.Exec(ctx, `INSERT INTO profile_samples
+			(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+			VALUES (11,'cpu','api','','','go',?,?,?,'')`,
+			now.Add(-ago), []string{"root", fnLeaf}, v); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	// Сегодня: slow 60 из 100; вчера: slow 10 из 100.
+	ins("slow", 60, 10*time.Minute)
+	ins("fast", 40, 10*time.Minute)
+	ins("slow", 10, 24*time.Hour)
+	ins("fast", 90, 24*time.Hour)
+
+	base, err := q.BaselineFunctionShares(ctx, 11, "api", "cpu", []string{"slow", "missing"}, 7, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	slow, ok := base["slow"]
+	if !ok {
+		t.Fatalf("no baseline for slow: %+v", base)
+	}
+	if slow.Samples != 70 {
+		t.Fatalf("slow.Samples = %d, want 70 (self функции за окно, не итог окна 200)", slow.Samples)
+	}
+	// Медиана дневных долей slow (0.6 и 0.1) — в их пределах.
+	if slow.Share < 0.1 || slow.Share > 0.6 {
+		t.Fatalf("slow.Share = %v, want within [0.1,0.6]", slow.Share)
+	}
+	if _, ok := base["missing"]; ok {
+		t.Fatalf("baseline has key for a function absent from the window: %+v", base)
+	}
+	if _, ok := base["fast"]; ok {
+		t.Fatalf("fast вне списка не должна попадать в выдачу: %+v", base)
+	}
+
+	// Другая функция — свой объём.
+	base, err = q.BaselineFunctionShares(ctx, 11, "api", "cpu", []string{"fast"}, 7, now.Add(time.Minute))
+	if err != nil || base["fast"].Samples != 130 {
+		t.Fatalf("fast = %+v err=%v, want Samples=130", base["fast"], err)
+	}
+
+	// Пустой список — пустая карта без запроса.
+	base, err = q.BaselineFunctionShares(ctx, 11, "api", "cpu", nil, 7, now.Add(time.Minute))
+	if err != nil || len(base) != 0 {
+		t.Fatalf("empty list: %+v err=%v, want empty", base, err)
+	}
+}
