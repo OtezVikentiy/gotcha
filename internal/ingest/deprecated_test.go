@@ -238,3 +238,23 @@ func TestDeprecatedPathHitsUnknownPath(t *testing.T) {
 		t.Errorf("DeprecatedPathHits(/nowhere) = %d, want 0 (пути нет в наборе)", got)
 	}
 }
+
+// TestDeprecatedTargetsAndKindsHaveSameKeys — minor m2: deprecatedTargets и
+// deprecatedKinds — две независимые карты по одному и тому же набору
+// DeprecatedPath. Новый путь, добавленный в одну карту без другой, давал бы
+// либо nil-Link/docs (если забыт deprecatedTargets), либо молчаливое «сигнал
+// не пишется» (если забыт deprecatedKinds, см. kindForDeprecated: ok=false —
+// no-op без предупреждения). Сторож ловит расхождение сразу, а не когда кто-то
+// заметит пропавший сигнал в проде.
+func TestDeprecatedTargetsAndKindsHaveSameKeys(t *testing.T) {
+	for p := range deprecatedTargets {
+		if _, ok := deprecatedKinds[p]; !ok {
+			t.Errorf("deprecatedTargets содержит %q, а deprecatedKinds — нет", p)
+		}
+	}
+	for p := range deprecatedKinds {
+		if _, ok := deprecatedTargets[p]; !ok {
+			t.Errorf("deprecatedKinds содержит %q, а deprecatedTargets — нет", p)
+		}
+	}
+}

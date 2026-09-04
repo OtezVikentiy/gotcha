@@ -29,6 +29,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/memlimit"
@@ -230,6 +231,18 @@ func waitGroupWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 		return true
 	case <-time.After(timeout):
 		return false
+	}
+}
+
+// drainIngestSignals ждёт горутину Recorder.Run сигналов приёма (K7-5/K7-6)
+// перед тем, как drain() продолжит к pg.Close(): Run уже увидел <-ctx.Done()
+// и делает финальный Flush, но без этого ожидания он гонится с закрытием
+// пула, и накопленное с последнего тика теряется молча. Тот же приём и то же
+// окно, что у exportWorkersWG (см. P2-OPS-5) — вынесено отдельной функцией,
+// чтобы саму гарантию ожидания можно было проверить тестом без запуска run().
+func drainIngestSignals(wg *sync.WaitGroup) {
+	if !waitGroupWithTimeout(wg, 5*time.Second) {
+		slog.Warn("ingest signals recorder did not stop within the shutdown window")
 	}
 }
 
@@ -795,6 +808,12 @@ func run() error {
 	// тем же приёмом, что и srv.Shutdown, чтобы заявка, прерванная посреди
 	// сборки, успела дописать release() в БД до убийства процесса.
 	var exportWorkersWG sync.WaitGroup
+	// ingestSignalsWG — то же самое ожидание, что exportWorkersWG выше, но для
+	// накопителя сигналов приёма (K7-5/K7-6): Run флашит по тику и делает
+	// финальный Flush на отмену ctx, и это финальное Flush обязано успеть
+	// дописать в PG до pg.Close() в drain() — иначе накопленное с последнего
+	// тика теряется на каждой штатной остановке процесса.
+	var ingestSignalsWG sync.WaitGroup
 	// cardinality — ограничитель кардинальности; нужен и приёму (схлопывание),
 	// и веб-слою (диагностика: что схлопнуто и примеры значений).
 	var cardinality *ingest.CardinalityGuard
@@ -1315,6 +1334,19 @@ func run() error {
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_cardinality_tracked_values",
 			"Distinct field values the cardinality guard is remembering right now.",
 			nil, cardinality.TrackedValues)
+		// Сигналы приёма per-project (аудит перед 1.0, K7-5/K7-6): отказ по
+		// ключу и попадание на устаревший путь раньше были видны только
+		// process-local self-метриками без метки проекта. Аккумулятор, а не
+		// запись на каждый Touch — путь неаутентифицированный, запись в PG на
+		// каждый отказ была бы усилителем нагрузки; Run сам флашит по тику и
+		// делает финальный Flush при остановке процесса.
+		ingestSignals := ingestsignal.NewRecorder(ingestsignal.NewStore(pg))
+		ingestHandler.Signals = ingestSignals
+		ingestSignalsWG.Add(1)
+		go func() {
+			defer ingestSignalsWG.Done()
+			ingestSignals.Run(ctx)
+		}()
 		slog.Info("ingest enabled")
 	}
 	if cfg.Mode == "web" || cfg.Mode == "all" {
@@ -1526,6 +1558,10 @@ func run() error {
 				slog.Error("log writer drain failed", "error", err)
 			}
 		}
+		// Аккумулятор сигналов приёма (K7-5/K7-6): ctx уже отменён (см. select
+		// ниже), Run() уже увидел <-ctx.Done() и делает финальный Flush — см.
+		// drainIngestSignals.
+		drainIngestSignals(&ingestSignalsWG)
 		if runner != nil {
 			runner.Close()
 		}

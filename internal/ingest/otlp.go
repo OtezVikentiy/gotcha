@@ -517,9 +517,14 @@ func (h *Handler) otlpAuthenticate(w http.ResponseWriter, r *http.Request, signa
 		return org.Key{}, false
 	}
 	if !scopeAllows(key.Kind, signal) {
-		h.scopeReject(w, r, signal)
+		h.scopeReject(w, r, signal, key.ProjectID)
 		return org.Key{}, false
 	}
+	// K7-5/K7-6: /logs и /profiles/pprof — единственные алиасы, аутентификация
+	// которых идёт через otlpAuthenticate (см. deprecatedAlias); missing/
+	// invalid-ветки выше НЕ пишут сигнал — у OTLP-Bearer-протокола нет
+	// project id в URL, и до резолва ключа проект попросту неизвестен.
+	h.touchDeprecatedSignal(r.Context(), key.ProjectID)
 	return key, true
 }
 

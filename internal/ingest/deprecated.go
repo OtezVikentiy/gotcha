@@ -1,10 +1,13 @@
 package ingest
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 )
 
 // DeprecatedPath — старый путь приёма, оставленный работать алиасом до 1.0.
@@ -51,6 +54,59 @@ var deprecatedTargets = map[DeprecatedPath]deprecatedTarget{
 	DeprecatedLogs:         {docs: "/docs/logs", canonical: "/api/v1/logs"},
 	DeprecatedProfilePprof: {docs: "/docs/profiling", canonical: "/api/v1/profiles/pprof"},
 	DeprecatedDeployments:  {docs: "/docs/deployments", canonical: "/api/v1/{project}/deployments"},
+}
+
+// deprecatedKinds — соответствие устаревшего пути виду per-project сигнала
+// (аудит перед 1.0, K7-5/K7-6): self-метрики gotcha_ingest_deprecated_path_total
+// процесс-локальны и без метки проекта, а оператору конкретного проекта нужно
+// видеть, что именно ЕГО отправитель ещё не переехал на канон.
+var deprecatedKinds = map[DeprecatedPath]ingestsignal.Kind{
+	DeprecatedLogs:         ingestsignal.KindDeprecatedLogs,
+	DeprecatedProfilePprof: ingestsignal.KindDeprecatedPprof,
+	DeprecatedDeployments:  ingestsignal.KindDeprecatedDeployments,
+}
+
+// kindForDeprecated отдаёт вид сигнала для устаревшего пути p. ok=false для
+// пути вне закрытого набора (тот же контракт, что у deprecatedTargets[p]).
+func kindForDeprecated(p DeprecatedPath) (ingestsignal.Kind, bool) {
+	k, ok := deprecatedKinds[p]
+	return k, ok
+}
+
+// deprecatedCtxKey — приватный ключ контекста запроса под DeprecatedPath.
+type deprecatedCtxKey struct{}
+
+// withDeprecatedPath кладёт p в контекст запроса: deprecatedAlias знает путь
+// раньше, чем next() узнаёт projectID (аутентификация ещё не пройдена), а
+// сигнал устаревшего пути пишется на projectID, который выясняется только
+// внутри authenticate/otlpAuthenticate — контекст переносит p через границу.
+func withDeprecatedPath(ctx context.Context, p DeprecatedPath) context.Context {
+	return context.WithValue(ctx, deprecatedCtxKey{}, p)
+}
+
+// deprecatedPathFromContext читает DeprecatedPath, положенный
+// withDeprecatedPath. ok=false — запрос пришёл на канонический путь (алиас
+// его не оборачивал).
+func deprecatedPathFromContext(ctx context.Context) (DeprecatedPath, bool) {
+	p, ok := ctx.Value(deprecatedCtxKey{}).(DeprecatedPath)
+	return p, ok
+}
+
+// touchDeprecatedSignal — если запрос пришёл через deprecatedAlias, отмечает
+// per-project сигнал устаревшего пути на projectID. Общая точка для
+// authenticate и otlpAuthenticate: оба протокола (Sentry-стиль и OTLP-Bearer)
+// оборачиваются deprecatedAlias, и оба узнают projectID только по итогу
+// собственной успешной аутентификации.
+func (h *Handler) touchDeprecatedSignal(ctx context.Context, projectID int64) {
+	p, ok := deprecatedPathFromContext(ctx)
+	if !ok {
+		return
+	}
+	kind, ok := kindForDeprecated(p)
+	if !ok {
+		return
+	}
+	h.touchSignal(projectID, kind)
 }
 
 // deprecatedPaths — порядок регистрации self-метрик в main. Явный слайс, а не
@@ -120,6 +176,10 @@ func (h *Handler) deprecatedAlias(p DeprecatedPath, next http.HandlerFunc) http.
 					"path", string(p), "canonical", target.canonical)
 			})
 		}
-		next(w, r)
+		// DeprecatedPath в контекст — ДО next: authenticate/otlpAuthenticate
+		// внутри next читают его при успехе, чтобы отметить per-project сигнал
+		// (K7-5/K7-6, см. touchDeprecatedSignal). ProjectID на этом шаге ещё не
+		// известен — next его ещё не резолвил.
+		next(w, r.WithContext(withDeprecatedPath(r.Context(), p)))
 	}
 }

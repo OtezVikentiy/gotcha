@@ -11,8 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
 // Точка входа состоит из проводки, но решения в ней есть, и они меняют
@@ -624,5 +628,100 @@ func TestCommonServicesEnabled(t *testing.T) {
 		if got := commonServicesEnabled(tc.mode); got != tc.want {
 			t.Errorf("commonServicesEnabled(%q) = %v, want %v", tc.mode, got, tc.want)
 		}
+	}
+}
+
+// TestDrainIngestSignalsWaitsForFinalFlush (I1, аудит перед 1.0, K7-5/K7-6):
+// раньше `go ingestSignals.Run(ctx)` в run() не был обёрнут ничем — drain()
+// шёл к pg.Close() не дожидаясь горутины, и финальный Flush (см.
+// internal/ingestsignal.Recorder.Run) гонялся с закрытием пула. Фикс —
+// drainIngestSignals, тот же приём, что exportWorkersWG/waitGroupWithTimeout.
+//
+// Чтобы проверка не зависела от везения планировщика, пул исчерпывается ДО
+// отмены ctx: Bump внутри финального Flush гарантированно блокируется в
+// Acquire, пока тест не отпустит соединения. Мутация — заменить тело
+// drainIngestSignals на no-op (не ждать вовсе) — обязана уронить первую
+// проверку: без ожидания функция вернётся немедленно, не дав Run дойти до
+// Flush.
+func TestDrainIngestSignalsWaitsForFinalFlush(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	var orgID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO organizations (slug, name, event_quota) VALUES ('ingest-signals-drain', 'Drain Test', 0) RETURNING id").
+		Scan(&orgID); err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	var projectID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'ingest-signals-drain', 'Drain Test') RETURNING id", orgID).
+		Scan(&projectID); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	st := ingestsignal.NewStore(pool)
+	rec := ingestsignal.NewRecorder(st)
+	rec.FlushEvery = time.Hour // тик не должен успеть сработать сам за время теста
+	rec.Touch(projectID, ingestsignal.KindKeyInvalid)
+
+	// Исчерпать пул: Bump внутри финального Flush не сможет получить
+	// соединение, пока мы не отпустим все Acquire ниже.
+	maxConns := int(pool.Config().MaxConns)
+	held := make([]*pgxpool.Conn, 0, maxConns)
+	for i := 0; i < maxConns; i++ {
+		c, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire %d: %v", i, err)
+		}
+		held = append(held, c)
+	}
+	// Release гарантированно один раз и даже при t.Fatal ниже: без этого
+	// зависший Acquire не даёт pool.Close() в t.Cleanup(MigratedPG) вернуться
+	// (Close ждёт возврата ВСЕХ выданных соединений), и тест виснет вместо
+	// того, чтобы упасть.
+	release := sync.OnceFunc(func() {
+		for _, c := range held {
+			c.Release()
+		}
+	})
+	t.Cleanup(release)
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rec.Run(runCtx)
+	}()
+	cancel() // как в drain(): ctx уже отменён к этому моменту, Run уходит в финальный Flush
+
+	drainDone := make(chan struct{})
+	go func() {
+		drainIngestSignals(&wg)
+		close(drainDone)
+	}()
+
+	// Соединения заняты нами — drainIngestSignals обязан ещё ждать.
+	select {
+	case <-drainDone:
+		t.Fatal("drainIngestSignals вернулся, пока пул исчерпан и Flush не мог завершиться — ожидания нет")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+
+	select {
+	case <-drainDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drainIngestSignals не вернулся после освобождения соединений")
+	}
+
+	got, err := st.ForProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != ingestsignal.KindKeyInvalid || got[0].Hits != 1 {
+		t.Fatalf("сигналов = %+v, want ровно [key_invalid hits=1] — drainIngestSignals обязан был дождаться финального Flush", got)
 	}
 }
