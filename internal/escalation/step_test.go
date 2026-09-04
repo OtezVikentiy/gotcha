@@ -3,6 +3,7 @@ package escalation_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -521,5 +522,124 @@ func TestSendStepIfDueNotifiesOnlyWonChannels(t *testing.T) {
 	}
 	if len(gotChs) != 1 || gotChs[0] != c2 {
 		t.Fatalf("notifyStep получил %v, want [%d] (c1 уже занят)", gotChs, c2)
+	}
+}
+
+// TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels — F3 (аудит перед
+// 1.0): ступень лесенки без каналов (проект без alert-каналов на эту
+// ступень) — явная ветка len(chs)==0 в SendStepIfDue: нечего занимать и
+// некому слать, но эскалация не должна клинить — bump применяется, notifyStep
+// не зовётся вовсе, лог ступени пуст (ClaimStepChannels/ReleaseStepChannels
+// тоже не участвуют).
+func TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	const incidentID = int64(9014)
+
+	ladder := escalation.Ladder{{StepNo: 0, DelayMinutes: 0, ChannelIDs: nil}}
+	var notifyCalls int
+	var bumpCalled bool
+	var bumpFrom int
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "metric", pool, incidentID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { notifyCalls++; return chs, nil },
+		func(id int64, from int) (bool, error) { bumpCalled = true; bumpFrom = from; return true, nil })
+	if err != nil {
+		t.Fatalf("SendStepIfDue: %v", err)
+	}
+	if !sent {
+		t.Error("sent = false, want true (bump применился)")
+	}
+	if notifyCalls != 0 {
+		t.Errorf("notifyStep вызван %d раз, want 0 (лесенка без каналов на этой ступени)", notifyCalls)
+	}
+	if !bumpCalled {
+		t.Fatal("bump не вызван — лесенка без каналов не должна клинить эскалацию")
+	}
+	if bumpFrom != 0 {
+		t.Errorf("bump(from=%d), want 0", bumpFrom)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND step=0",
+		incidentID).Scan(&count); err != nil {
+		t.Fatalf("select incident_escalations: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("incident_escalations rows = %d, want 0 (claim не звался — каналов нет)", count)
+	}
+}
+
+// TestSendStepIfDueLogsReleaseErrorOnTotalNotifyFailure — F3 (аудит перед
+// 1.0): тотальный провал notifyStep, ПОСЛЕ которого сам ReleaseStepChannels
+// тоже проваливается (случай 3 докблока SendStepIfDue) — итоговая ошибка
+// обязана содержать ОБЕ причины (errBoom и ошибку release), bump не
+// зовётся, а строка лога claim остаётся (release не смог её удалить) —
+// следующий тик увидит ступень занятой и не повторит доставку каналу,
+// громкий slog.Error об этом уже пишется в самой функции.
+func TestSendStepIfDueLogsReleaseErrorOnTotalNotifyFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+	const incidentID = int64(9015)
+	errBoom := errors.New("outbox down")
+
+	// BEFORE DELETE триггер с RAISE EXCEPTION — тот же трюк, что CHECK(false)
+	// в step_internal_test.go, но для DELETE, а не INSERT: claim (INSERT)
+	// обязан пройти штатно, провалиться должен именно ReleaseStepChannels
+	// (DELETE) после тотального провала notifyStep.
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_force_release_fail() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'test: release forbidden';
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE TRIGGER test_force_release_fail_trg BEFORE DELETE ON incident_escalations
+		FOR EACH ROW EXECUTE FUNCTION test_force_release_fail()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, "DROP TRIGGER IF EXISTS test_force_release_fail_trg ON incident_escalations")
+		_, _ = pool.Exec(ctx, "DROP FUNCTION IF EXISTS test_force_release_fail()")
+	})
+
+	ladder := escalation.Ladder{{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}}}
+	var bumpCalled bool
+	sent, err := escalation.SendStepIfDue(ctx, ladder, "metric", pool, incidentID, 0, 0,
+		func(chs []int64, step int) ([]int64, error) { return nil, errBoom },
+		func(id int64, from int) (bool, error) { bumpCalled = true; return true, nil })
+	if sent {
+		t.Error("sent = true, want false (тотальный провал notifyStep)")
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("err = %v, want содержит errBoom", err)
+	}
+	if !strings.Contains(err.Error(), "release") {
+		t.Fatalf("err = %v, want ТАКЖЕ содержит ошибку release (не только errBoom)", err)
+	}
+	if bumpCalled {
+		t.Error("bump вызван — не должен при тотальном провале")
+	}
+
+	// Release не смог удалить строку — claim остался залогированным.
+	var count int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM incident_escalations WHERE incident_source='metric' AND incident_id=$1 AND channel_id=$2 AND step=0",
+		incidentID, c1).Scan(&count); err != nil {
+		t.Fatalf("select incident_escalations: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("incident_escalations rows for c1 = %d, want 1 (release провалился — claim не откатился)", count)
 	}
 }

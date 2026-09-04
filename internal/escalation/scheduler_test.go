@@ -1,8 +1,11 @@
 package escalation_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +14,21 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
+
+// captureInfoLog — подменяет slog.Default на текстовый handler уровня INFO
+// (тот же приём, что internal/host/group_hook_error_test.go
+// captureErrorLog, но порог ниже — releaseSuppressed логирует и success-путь
+// через slog.Info, его тоже нужно ловить) и возвращает буфер + восстановление
+// через t.Cleanup. Не вызывать из тестов с t.Parallel() — slog.Default
+// глобален для процесса.
+func captureInfoLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // fakeSource — Source (T4) в памяти: планировщик (T8) работает с ЛЮБЫМ из
 // пяти product-сторов через один и тот же интерфейс, поэтому тесты
@@ -32,6 +50,11 @@ type fakeSource struct {
 	// захваченного планировщиком now, и elapsed уходит в отрицательные
 	// значения.
 	clock func() time.Time
+	// openSuppressedErr/clearSuppressedErr — инъекция ошибки в
+	// OpenSuppressed/ClearSuppressed (F3, аудит перед 1.0): проверяют
+	// fail-safe ветки releaseSuppressed, где реальная PG недоступна.
+	openSuppressedErr  error
+	clearSuppressedErr error
 }
 
 type fakeIncident struct {
@@ -106,12 +129,24 @@ func (s *fakeSource) OpenSuppressed(ctx context.Context) ([]escalation.PendingIn
 			out = append(out, i.inc)
 		}
 	}
+	if s.openSuppressedErr != nil {
+		// Возвращаем и ошибку, И непустой (частичный) список — так тест
+		// ловит удаление ранней проверки `if err != nil { return }` в
+		// releaseSuppressed: без неё код бы всё равно обошёл этот список и
+		// дёрнул CheckIncident/ClearSuppressed, хотя источник сигнализировал
+		// сбой. Реальный pgx.Query может отдать частично прочитанные строки
+		// до ошибки — тот же случай, что этот guard обязан отсекать.
+		return out, s.openSuppressedErr
+	}
 	return out, nil
 }
 
 func (s *fakeSource) ClearSuppressed(ctx context.Context, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.clearSuppressedErr != nil {
+		return s.clearSuppressedErr
+	}
 	delete(s.suppressed, id)
 	clock := s.clock
 	if clock == nil {
@@ -1007,8 +1042,14 @@ func TestSchedulerTwoReplicasDeliverStepOnce(t *testing.T) {
 // перед 1.0): инцидент, подавленный зависимостью, чей родитель
 // восстановился (fakeDep.parentDown=false), обязан быть снят ЭТИМ ЖЕ тиком
 // (releaseSuppressed стоит перед OpenUnacked того же биндинга, в бюджете
-// того же тика) и сразу получить ступень 0 — не ждать следующего тика ради
-// одной лишь видимости освобождения.
+// того же тика) — видимость освобождения не ждёт следующего тика. Ступень 0
+// в этом тесте тоже уходит в ЭТОМ ЖЕ тике, но только благодаря двум
+// условиям теста, не гарантированным в проде (см. докблок releaseSuppressed):
+// SettleGrace здесь не задан (=0), и src.clock — ТОТ ЖЕ clock, что и
+// Scheduler.Now, так что elapsed не уходит в отрицательные значения из-за
+// разницы часов. В проде (SettleGrace>0, dep_released_at от PG-часов)
+// освобождённый инцидент уровня 0, как правило, отстаивает грейс заново и
+// получает ступень 0 позже, не в тике освобождения.
 func TestSchedulerReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1155,5 +1196,179 @@ func TestSchedulerReleasesWhenDependencyRemoved(t *testing.T) {
 	}
 	if got := src.level(incidentID); got != 1 {
 		t.Fatalf("EscalationLevel = %d, want 1", got)
+	}
+}
+
+// TestSchedulerReleaseSuppressedOpenSuppressedError — F3 (аудит перед 1.0):
+// OpenSuppressed самого биндинга падает (PG недоступна) — releaseSuppressed
+// fail-safe: инцидент остаётся подавленным, тик не падает, нотифаер не
+// звался, а остальные биндинги (не проверяются тут напрямую, но тик
+// продолжается — Tick не паникует и не блокируется).
+func TestSchedulerReleaseSuppressedOpenSuppressedError(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	src := newFakeSource("metric")
+	const incidentID = int64(40004)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	src.clock = clock
+	src.markSuppressed(incidentID)
+	src.openSuppressedErr = errors.New("open suppressed: db down")
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: false}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (OpenSuppressed упал — снятие подавления не произошло)", notifier.callCount())
+	}
+	src.openSuppressedErr = nil
+	got, err := src.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != incidentID {
+		t.Fatalf("OpenSuppressed = %+v, want [инцидент %d] (флаг подавления не тронут)", got, incidentID)
+	}
+}
+
+// TestSchedulerReleaseSuppressedCheckIncidentError — F3: CheckIncident
+// (проверка родителя) падает для подавленного инцидента — releaseSuppressed
+// пропускает его (не снимает, не роняет тик), тот же fail-safe, что и у
+// OpenSuppressed выше.
+func TestSchedulerReleaseSuppressedCheckIncidentError(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	src := newFakeSource("metric")
+	const incidentID = int64(40005)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	src.clock = clock
+	src.markSuppressed(incidentID)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: false, checkErr: errors.New("dep check: db down")}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (CheckIncident упал — снятие подавления не произошло)", notifier.callCount())
+	}
+	got, err := src.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != incidentID {
+		t.Fatalf("OpenSuppressed = %+v, want [инцидент %d] (флаг подавления не тронут)", got, incidentID)
+	}
+}
+
+// TestSchedulerReleaseSuppressedClearSuppressedError — F3: родитель
+// восстановился, но ClearSuppressed падает (PG недоступна на записи) —
+// инцидент остаётся подавленным (флаг не снят), тик продолжает работу.
+func TestSchedulerReleaseSuppressedClearSuppressedError(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	src := newFakeSource("metric")
+	const incidentID = int64(40006)
+	src.add(escalation.PendingIncident{
+		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+		Severity: escalation.SeverityWarning, EscalationLevel: 0,
+	})
+	src.clock = clock
+	src.markSuppressed(incidentID)
+	src.clearSuppressedErr = errors.New("clear suppressed: db down")
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDep{hasParent: true, parentDown: false}
+
+	sched := &escalation.Scheduler{
+		Bindings: []escalation.Binding{{Src: src, Notifier: notifier}},
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	logs := captureInfoLog(t)
+	sched.Tick(ctx)
+
+	if notifier.callCount() != 0 {
+		t.Fatalf("NotifyStep calls = %d, want 0 (ClearSuppressed упал — снятие подавления не произошло)", notifier.callCount())
+	}
+	// Провал ClearSuppressed не мутирует состояние fakeSource (тот же приём,
+	// что реальный UPDATE ... AND suppressed_by_dep, откатившийся целиком),
+	// так что notifier.callCount()/OpenSuppressed уже доказывают, что
+	// releaseSuppressed не продолжил как после успеха. Единственное
+	// наблюдаемое отличие удаления guard'а (`if err != nil { ...; continue
+	// }`) — код всё равно доходит до "dependency recovered" INFO, хотя
+	// снятие провалилось: ловим это через лог.
+	if !strings.Contains(logs.String(), "clear suppressed failed") {
+		t.Fatalf("log = %q, want содержит warn \"clear suppressed failed\"", logs.String())
+	}
+	if strings.Contains(logs.String(), "dependency recovered") {
+		t.Fatalf("log = %q, не должен содержать \"dependency recovered\" — ClearSuppressed провалился", logs.String())
+	}
+	src.clearSuppressedErr = nil
+	got, err := src.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != incidentID {
+		t.Fatalf("OpenSuppressed = %+v, want [инцидент %d] (флаг подавления не снят)", got, incidentID)
 	}
 }

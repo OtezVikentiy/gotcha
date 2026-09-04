@@ -411,10 +411,13 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 		// и восстановление родителя не возобновляло эскалацию НИКОГДА, даже
 		// если родитель ожил через минуту после подавления. Теперь на
 		// каждом "всё ещё down" тике проверяем родителя заново; если он
-		// отпустил — снимаем подавление и доставляем "down" немедленно, как
-		// для только что открытого инцидента (шаг 0), а не откладываем ещё
-		// на SettleGrace: инцидент уже отстоял СВОЙ грейс до момента, когда
-		// был подавлен (см. switch ниже), второй раз ждать незачем.
+		// отпустил — снимаем подавление и проваливаемся в ОБЫЧНЫЙ путь
+		// settle (switch ниже): грейс проверяется по исходному
+		// inc.StartedAt — подавление это поле не трогает. Подавление
+		// (case down выше) срабатывает на первом же "всё ещё down" тике, БЕЗ
+		// проверки SettleGrace — значит ребёнок мог не отстоять свой грейс
+		// вовсе (blip родителя короче SettleGrace); уведомлять немедленно
+		// значило бы пейджить ровно тот шум, который грейс должен гасить.
 		down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
 		if err != nil {
 			slog.Warn("uptime: detector: dep ParentDown failed while releasing suppressed incident",
@@ -430,13 +433,11 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 			return
 		}
 		slog.Info("uptime: dependency recovered, incident released", "incident_id", inc.ID, "monitor_id", m.ID)
-		if d.Notifier == nil {
-			return
-		}
-		downRegions := regionsWithStatus(states, "down")
-		cause := causeFrom(st, states)
-		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
-		return
+		// Дальше — обычный путь settle (switch ниже): грейс проверяется по
+		// inc.StartedAt (моменту, когда ЭТОТ инцидент открылся, до всякого
+		// подавления) — если ребёнок к этому моменту уже отстоял SettleGrace
+		// сам по себе, "down" уходит немедленно; если нет — держим до конца
+		// исходного грейса, как любой другой свежий held-инцидент.
 	}
 	down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
 	if err != nil {
