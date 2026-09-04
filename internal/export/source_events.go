@@ -76,9 +76,14 @@ func NewEventSource(q *event.Query, issues *issue.Service) EventSource {
 	return &eventSource{q: q, issues: issues, maxIssueIDs: defaultMaxIssueIDsForEventExport}
 }
 
-// Stream резолвит область выгрузки в список issue_id и стримит события
-// дальше как Record. Порядок строк — по StreamForExport (issue_id,
-// timestamp DESC), тот же, что и в источнике CH.
+// Stream резолвит область выгрузки в список issue_id (resolveIssueIDs:
+// IDsForFilter отдаёт его отсортированным по last_seen DESC, id DESC — самые
+// активные группы первыми) и стримит события дальше как Record. Порядок
+// строк — по StreamForExport: группами в порядке ЭТОГО списка, внутри
+// группы timestamp DESC (K4-2, аудит перед 1.0) — так усечение по
+// eventStreamSafetyLimit/бюджету заявки отбрасывает наименее активные
+// группы, а не произвольные (раньше StreamForExport сортировал по
+// возрастанию issue_id, не связанному с активностью группы).
 func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error {
 	issueIDs, err := s.resolveIssueIDs(ctx, projectID, scopeIssueID, p)
 	if err != nil {

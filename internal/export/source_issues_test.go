@@ -62,7 +62,7 @@ func TestIssueSourceRecordHasAbsoluteURL(t *testing.T) {
 
 	src := NewIssueSource(svc, "https://gotcha.example.com/")
 	var records []Record
-	if err := src.Stream(ctx, projectID, Params{}, func(r Record) error {
+	if err := src.Stream(ctx, projectID, true, Params{}, func(r Record) error {
 		records = append(records, r)
 		return nil
 	}); err != nil {
@@ -123,7 +123,7 @@ func TestIssueSourceEmptyEnvironmentsIsEmptyString(t *testing.T) {
 
 	src := NewIssueSource(svc, "https://gotcha.example.com")
 	var got Record
-	if err := src.Stream(ctx, projectID, Params{}, func(r Record) error {
+	if err := src.Stream(ctx, projectID, true, Params{}, func(r Record) error {
 		got = r
 		return nil
 	}); err != nil {
@@ -155,7 +155,7 @@ func TestIssueSourceIsolatedByProject(t *testing.T) {
 	src := NewIssueSource(svc, "https://gotcha.example.com")
 	var titles []string
 	// Пустой Params — самый широкий фильтр, наибольший риск утечки.
-	if err := src.Stream(ctx, projectA, Params{}, func(r Record) error {
+	if err := src.Stream(ctx, projectA, true, Params{}, func(r Record) error {
 		titles = append(titles, r["title"].(string))
 		return nil
 	}); err != nil {
@@ -191,7 +191,7 @@ func TestIssueSourcePipelineThroughWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := src.Stream(ctx, projectID, Params{}, func(r Record) error {
+	if err := src.Stream(ctx, projectID, true, Params{}, func(r Record) error {
 		return w.Write(r)
 	}); err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -264,7 +264,7 @@ func TestIssueSourceOrderDescendingByIDOnEqualLastSeen(t *testing.T) {
 
 	src := NewIssueSource(svc, "https://gotcha.example.com")
 	var gotIDs []int64
-	if err := src.Stream(ctx, projectID, Params{}, func(r Record) error {
+	if err := src.Stream(ctx, projectID, true, Params{}, func(r Record) error {
 		id, _ := r["id"].(int64)
 		gotIDs = append(gotIDs, id)
 		return nil
@@ -278,6 +278,97 @@ func TestIssueSourceOrderDescendingByIDOnEqualLastSeen(t *testing.T) {
 		if gotIDs[i] != wantIDs[i] {
 			t.Fatalf("порядок строк на равном last_seen не убывает строго по id (позиция %d): got %d, want %d — полные последовательности: got=%v, want=%v",
 				i, gotIDs[i], wantIDs[i], gotIDs, wantIDs)
+		}
+	}
+}
+
+// TestIssueSourceMasksAssigneeEmailByDefault — K4-1 (аудит перед 1.0):
+// assignee_email — прямой идентификатор пользователя (email назначенного),
+// как user_email в выгрузке событий, и обязан маскироваться MaskUser при
+// includePII == false, а не уезжать как есть независимо от галки заявки.
+func TestIssueSourceMasksAssigneeEmailByDefault(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	projectID, _ := seedProjectAndUser(t, pool)
+
+	assigneeEmail := "assignee-" + randSlug(t) + "@e.com"
+	var assigneeID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id`,
+		assigneeEmail).Scan(&assigneeID); err != nil {
+		t.Fatalf("insert assignee: %v", err)
+	}
+
+	res, err := svc.Upsert(ctx, projectID, "fp-assignee", "boom", "app.worker",
+		issue.LevelError, "prod", time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := svc.Assign(ctx, res.IssueID, &assigneeID); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	src := NewIssueSource(svc, "https://gotcha.example.com")
+
+	var masked []Record
+	if err := src.Stream(ctx, projectID, false, Params{}, func(r Record) error {
+		masked = append(masked, r)
+		return nil
+	}); err != nil {
+		t.Fatalf("Stream(includePII=false): %v", err)
+	}
+	if len(masked) != 1 {
+		t.Fatalf("includePII=false: получили %d записей, want 1", len(masked))
+	}
+	if got, _ := masked[0]["assignee_email"].(string); got != "[masked]" {
+		t.Errorf("assignee_email (includePII=false) = %q, want [masked]", got)
+	}
+
+	var unmasked []Record
+	if err := src.Stream(ctx, projectID, true, Params{}, func(r Record) error {
+		unmasked = append(unmasked, r)
+		return nil
+	}); err != nil {
+		t.Fatalf("Stream(includePII=true): %v", err)
+	}
+	if len(unmasked) != 1 {
+		t.Fatalf("includePII=true: получили %d записей, want 1", len(unmasked))
+	}
+	if got, _ := unmasked[0]["assignee_email"].(string); got != assigneeEmail {
+		t.Errorf("assignee_email (includePII=true) = %q, want %q", got, assigneeEmail)
+	}
+}
+
+// TestIssueSourceEmptyAssigneeEmailNotMasked — пустая колонка (группа без
+// назначенного) не должна подменяться маской ни в одном из режимов: иначе
+// по выгрузке нельзя было бы отличить «не назначено» от «email скрыт»
+// (симметрично докблоку MaskUser в pii.go).
+func TestIssueSourceEmptyAssigneeEmailNotMasked(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	projectID, _ := seedProjectAndUser(t, pool)
+
+	if _, err := svc.Upsert(ctx, projectID, "fp-unassigned", "boom", "app.worker",
+		issue.LevelError, "prod", time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	src := NewIssueSource(svc, "https://gotcha.example.com")
+	for _, includePII := range []bool{false, true} {
+		var records []Record
+		if err := src.Stream(ctx, projectID, includePII, Params{}, func(r Record) error {
+			records = append(records, r)
+			return nil
+		}); err != nil {
+			t.Fatalf("Stream(includePII=%v): %v", includePII, err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("includePII=%v: получили %d записей, want 1", includePII, len(records))
+		}
+		if got, _ := records[0]["assignee_email"].(string); got != "" {
+			t.Errorf("includePII=%v: assignee_email = %q, want \"\" (нет назначенного)", includePII, got)
 		}
 	}
 }

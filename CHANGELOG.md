@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency recovers, instead of staying silent for good.
 - The instance administrator's account can no longer be deleted until the role
   is transferred; the transfer form lives on the profile page.
+- The issue export masks the assignee's email by default, like every other
+  direct user identifier. Truncating an event export now drops the least
+  active issue groups instead of arbitrary ones. A ClickHouse cursor that
+  breaks mid-stream during a subject data export is surfaced as an error
+  instead of a silently truncated file. The export janitor now runs under a
+  tick budget and reports its own liveness.
 
 ## [0.34.0] - 2026-09-03
 

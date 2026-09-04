@@ -299,10 +299,15 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 }
 
-// TestStreamForExportOrdersByIssueThenTime — обход выгрузки обязан идти по
-// (issue_id, timestamp DESC), ровно по первичному ключу CH: сортировка по
-// одному времени без ограничения по issue_id заставила бы ClickHouse читать
-// партицию целиком (см. комментарий StreamForExport).
+// TestStreamForExportOrdersByIssueThenTime — обход выгрузки обязан идти
+// ГРУППАМИ в порядке списка issueIDs, внутри группы — timestamp DESC (K4-2,
+// аудит перед 1.0): issueIDs передаётся вызывающим уже отсортированным
+// (last_seen DESC — самые активные группы первыми), а не по возрастанию
+// issue_id, и именно порядок списка обязан определять, какие группы
+// усечение LIMIT оставит первыми (см. TestStreamForExportTruncation
+// KeepsFirstListedIssues). Список ниже намеренно ставит issue2 (числом
+// БОЛЬШЕ issue1) первым — тест обязан провалиться, если реализация
+// вернулась бы к сортировке по возрастанию issue_id вместо порядка списка.
 func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -327,7 +332,7 @@ func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 
 	q := event.NewQuery(conn)
 	var got []string
-	err := q.StreamForExport(ctx, projectID, []int64{issue1, issue2}, t0, t0.Add(time.Hour), 100, func(ev event.Stored) error {
+	err := q.StreamForExport(ctx, projectID, []int64{issue2, issue1}, t0, t0.Add(time.Hour), 100, func(ev event.Stored) error {
 		got = append(got, fmt.Sprintf("%d@%s", ev.IssueID, ev.Timestamp.UTC().Format(time.RFC3339)))
 		return nil
 	})
@@ -335,13 +340,103 @@ func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 		t.Fatalf("StreamForExport: %v", err)
 	}
 	want := []string{
-		fmt.Sprintf("%d@%s", issue1, t3.Format(time.RFC3339)),
-		fmt.Sprintf("%d@%s", issue1, t1.Format(time.RFC3339)),
 		fmt.Sprintf("%d@%s", issue2, t2.Format(time.RFC3339)),
 		fmt.Sprintf("%d@%s", issue2, t1.Format(time.RFC3339)),
+		fmt.Sprintf("%d@%s", issue1, t3.Format(time.RFC3339)),
+		fmt.Sprintf("%d@%s", issue1, t1.Format(time.RFC3339)),
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("порядок строк = %v, want %v", got, want)
+		t.Errorf("порядок строк = %v, want %v (порядок списка issueIDs, не возрастание issue_id)", got, want)
+	}
+}
+
+// TestStreamForExportFollowsGivenIssueOrder — три группы, список issueIDs в
+// произвольном порядке (не по возрастанию и не по времени вставки): обход
+// обязан вернуть строки группами строго в порядке списка (K4-2).
+func TestStreamForExportFollowsGivenIssueOrder(t *testing.T) {
+	ctx := context.Background()
+	conn := testenv.MigratedCH(t)
+	const projectID = int64(51003)
+	const issueA = int64(930001)
+	const issueB = int64(930002)
+	const issueC = int64(930003)
+
+	t0 := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+
+	b := event.NewBatcher(conn)
+	go b.Run()
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueA, Timestamp: t0, Level: "error", Message: "a"})
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueB, Timestamp: t0, Level: "error", Message: "b"})
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueC, Timestamp: t0, Level: "error", Message: "c"})
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	q := event.NewQuery(conn)
+	var got []int64
+	err := q.StreamForExport(ctx, projectID, []int64{issueC, issueA, issueB}, t0, t0.Add(time.Hour), 100, func(ev event.Stored) error {
+		got = append(got, ev.IssueID)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	want := []int64{issueC, issueA, issueB}
+	if !slices.Equal(got, want) {
+		t.Errorf("порядок групп = %v, want %v (порядок списка issueIDs)", got, want)
+	}
+}
+
+// TestStreamForExportTruncationKeepsFirstListedIssues — усечение LIMIT
+// обязано отбросить наименее активные группы (последние в списке issueIDs,
+// который вызывающий сортирует по last_seen DESC), а не произвольные
+// строки, оставшиеся после сортировки по issue_id (K4-2): C — первая в
+// списке и самая «активная» по числу событий, A и B — позади неё. LIMIT,
+// равный числу событий C, обязан вернуть ровно события C и ни одного
+// события A/B.
+func TestStreamForExportTruncationKeepsFirstListedIssues(t *testing.T) {
+	ctx := context.Background()
+	conn := testenv.MigratedCH(t)
+	const projectID = int64(51004)
+	const issueA = int64(930011)
+	const issueB = int64(930012)
+	const issueC = int64(930013)
+	const cEvents = 4
+
+	t0 := time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC)
+
+	b := event.NewBatcher(conn)
+	go b.Run()
+	for i := 0; i < cEvents; i++ {
+		b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueC,
+			Timestamp: t0.Add(time.Duration(i) * time.Minute), Level: "error", Message: "c"})
+	}
+	for i := 0; i < 2; i++ {
+		b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueA,
+			Timestamp: t0.Add(time.Duration(i) * time.Minute), Level: "error", Message: "a"})
+		b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueB,
+			Timestamp: t0.Add(time.Duration(i) * time.Minute), Level: "error", Message: "b"})
+	}
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	q := event.NewQuery(conn)
+	var got []int64
+	err := q.StreamForExport(ctx, projectID, []int64{issueC, issueA, issueB}, t0, t0.Add(time.Hour), cEvents, func(ev event.Stored) error {
+		got = append(got, ev.IssueID)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if len(got) != cEvents {
+		t.Fatalf("получено %d строк, want %d (LIMIT = число событий C)", len(got), cEvents)
+	}
+	for _, id := range got {
+		if id != issueC {
+			t.Errorf("усечение отдало событие группы %d — ожидали только группу %d, первую в списке issueIDs", id, issueC)
+		}
 	}
 }
 

@@ -117,6 +117,13 @@ type SubjectExport struct {
 // инъекция невозможна. На таблицу отдаётся не более exportRowLimit строк,
 // отсортированных по времени DESC (сначала свежие). Вся выгрузка ограничена
 // exportTimeout.
+//
+// Каждый из четырёх циклов сканирования проверяет rows.Err() ПОСЛЕ for
+// rows.Next(), а не только ошибку rows.Close() (K4-3, аудит перед 1.0,
+// см. purge_queue.go: Reconcile): обрыв курсора ClickHouse посреди чтения
+// иначе вернулся бы как «успешно», но с усечённой (обрезанной на месте
+// обрыва) выгрузкой — субъект получил бы неполные данные по своему праву
+// на доступ, думая, что это исчерпывающий список.
 func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject) (SubjectExport, error) {
 	ctx, cancel := context.WithTimeout(ctx, exportTimeout)
 	defer cancel()
@@ -169,6 +176,10 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		r.EventID = id.String()
 		out.Events = append(out.Events, r)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return SubjectExport{}, fmt.Errorf("telemetry: export subject events rows (project %d): %w", projectID, err)
+	}
 	if err := rows.Close(); err != nil {
 		return SubjectExport{}, fmt.Errorf("telemetry: export subject events close (project %d): %w", projectID, err)
 	}
@@ -197,6 +208,10 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 				return SubjectExport{}, fmt.Errorf("telemetry: scan transaction row (project %d): %w", projectID, err)
 			}
 			out.Transactions = append(out.Transactions, r)
+		}
+		if err := txRows.Err(); err != nil {
+			_ = txRows.Close()
+			return SubjectExport{}, fmt.Errorf("telemetry: export subject transactions rows (project %d): %w", projectID, err)
 		}
 		if err := txRows.Close(); err != nil {
 			return SubjectExport{}, fmt.Errorf("telemetry: export subject transactions close (project %d): %w", projectID, err)
@@ -234,6 +249,10 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 				return SubjectExport{}, fmt.Errorf("telemetry: scan metric_point row (project %d): %w", projectID, err)
 			}
 			out.MetricPoints = append(out.MetricPoints, r)
+		}
+		if err := mpRows.Err(); err != nil {
+			_ = mpRows.Close()
+			return SubjectExport{}, fmt.Errorf("telemetry: export subject metric_points rows (project %d): %w", projectID, err)
 		}
 		if err := mpRows.Close(); err != nil {
 			return SubjectExport{}, fmt.Errorf("telemetry: export subject metric_points close (project %d): %w", projectID, err)
@@ -276,6 +295,10 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 				return SubjectExport{}, fmt.Errorf("telemetry: scan log row (project %d): %w", projectID, err)
 			}
 			out.Logs = append(out.Logs, r)
+		}
+		if err := logRows.Err(); err != nil {
+			_ = logRows.Close()
+			return SubjectExport{}, fmt.Errorf("telemetry: export subject logs rows (project %d): %w", projectID, err)
 		}
 		if err := logRows.Close(); err != nil {
 			return SubjectExport{}, fmt.Errorf("telemetry: export subject logs close (project %d): %w", projectID, err)

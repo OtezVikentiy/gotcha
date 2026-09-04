@@ -666,7 +666,7 @@ func (w *Worker) stream(ctx context.Context, job Job, fn func(Record) error) err
 		if w.Issues == nil {
 			return fmt.Errorf("%w: источник групп не настроен", ErrPermanent)
 		}
-		return w.Issues.Stream(ctx, job.ProjectID, job.Params, fn)
+		return w.Issues.Stream(ctx, job.ProjectID, job.IncludePII, job.Params, fn)
 	case KindEvents:
 		if w.Events == nil {
 			return fmt.Errorf("%w: источник событий не настроен", ErrPermanent)

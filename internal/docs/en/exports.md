@@ -95,6 +95,12 @@ already blanked in storage at ingest time. The "Export PII unmasked" checkbox
 doesn't resurrect what was never saved — if the fields are already empty,
 unmasking on export changes nothing.
 
+In the group export (`kind=issues`), the same checkbox and the same
+`[masked]` mask govern the `assignee_email` column — the email of the user
+assigned to the group: a direct user identifier, not a property of the group
+itself. An empty column (an unassigned group) is not replaced with the mask,
+same as `user_email`/`user_ip` above.
+
 ### `user_id` pseudonyms aren't comparable across exports
 
 The `user_id` pseudonym is built from a random, one-time key generated fresh

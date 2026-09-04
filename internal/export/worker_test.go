@@ -27,6 +27,10 @@ type fakeIssueSource struct {
 	n       int
 	failAt  int // индекс записи, на которой вернуть failErr вместо записи
 	failErr error
+	// seenPII — includePII, с которым Stream был вызван, по порядку вызовов
+	// (мутационная проверка M1b, worker.go:stream: includePII обязан быть
+	// job.IncludePII заявки, а не константой).
+	seenPII []bool
 }
 
 func fakeIssues(n int) IssueSource { return &fakeIssueSource{n: n} }
@@ -43,7 +47,8 @@ func partialFailingSource(k int, err error) IssueSource {
 	return &fakeIssueSource{n: k + 1, failAt: k, failErr: err}
 }
 
-func (s *fakeIssueSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *fakeIssueSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
+	s.seenPII = append(s.seenPII, includePII)
 	for i := 0; i < s.n; i++ {
 		if s.failErr != nil && i == s.failAt {
 			return s.failErr
@@ -89,7 +94,7 @@ type deleteOnStreamSource struct {
 	id   int64
 }
 
-func (s *deleteOnStreamSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *deleteOnStreamSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	if err := fn(Record{"id": int64(1), "title": "x", "culprit": "", "level": "error",
 		"status": "unresolved", "times_seen": int64(1), "environments": "", "assignee_email": "", "url": ""}); err != nil {
 		return err
@@ -267,6 +272,61 @@ func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
 	}
 	if !strings.Contains(string(rawOut), leakEmail) || !strings.Contains(string(rawOut), leakIP) {
 		t.Errorf("реальные значения отсутствуют в выгрузке заявки с IncludePII=true (галка проигнорирована): %s", rawOut)
+	}
+}
+
+// TestWorkerPassesJobIncludePIIToIssueSource — то же самое (M1b, аудит
+// перед 1.0), что TestWorkerPassesJobIncludePIIToEventSource, но для
+// worker.go:stream ветки KindIssues: includePII, дошедший до
+// IssueSource.Stream, обязан быть галочкой ИМЕННО этой заявки
+// (job.IncludePII), а не константой, зашитой в вызове (например, true
+// независимо от заявки — тогда маска assignee_email из source_issues.go
+// никогда не применялась бы). fakeIssueSource фиксирует includePII каждого
+// вызова Stream, Claim берёт заявки по ORDER BY created_at — сначала
+// masked, потом raw.
+func TestWorkerPassesJobIncludePIIToIssueSource(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	dir := t.TempDir()
+	projectID, userID := seedProjectAndUser(t, pool)
+	now := time.Now().UTC()
+
+	maskedID, err := st.Enqueue(ctx, Job{
+		ProjectID: projectID, CreatedBy: userID, Kind: KindIssues, Format: FormatCSV,
+		Params: Params{Since: now.Add(-time.Hour), Until: now}, IncludePII: false,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue (masked): %v", err)
+	}
+	rawID, err := st.Enqueue(ctx, Job{
+		ProjectID: projectID, CreatedBy: userID, Kind: KindIssues, Format: FormatCSV,
+		Params: Params{Since: now.Add(-time.Hour), Until: now}, IncludePII: true,
+	})
+	if err != nil {
+		t.Fatalf("Enqueue (raw): %v", err)
+	}
+
+	src := &fakeIssueSource{n: 1}
+	w := &Worker{Store: st, Pool: pool, Issues: src, Cfg: Config{
+		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
+
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick 1: %v", err)
+	}
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("Tick 2: %v", err)
+	}
+
+	if maskedJob, err := st.Get(ctx, maskedID); err != nil || maskedJob.Status != StatusDone {
+		t.Fatalf("masked job: status=%+v err=%v", maskedJob, err)
+	}
+	if rawJob, err := st.Get(ctx, rawID); err != nil || rawJob.Status != StatusDone {
+		t.Fatalf("raw job: status=%+v err=%v", rawJob, err)
+	}
+
+	if want := []bool{false, true}; len(src.seenPII) != len(want) || src.seenPII[0] != want[0] || src.seenPII[1] != want[1] {
+		t.Errorf("IssueSource.Stream вызван с includePII=%v, want %v (masked заявка первой, raw второй)", src.seenPII, want)
 	}
 }
 
@@ -706,7 +766,7 @@ type staleningIssueSource struct {
 	id   int64
 }
 
-func (s *staleningIssueSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *staleningIssueSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	if err := fn(Record{"id": int64(1), "title": "x", "culprit": "", "level": "error",
 		"status": "unresolved", "times_seen": int64(1), "environments": "", "assignee_email": "", "url": ""}); err != nil {
 		return err
@@ -1014,7 +1074,7 @@ func TestWorkerTruncatesAtByteCapIndependentlyOfRowCap(t *testing.T) {
 // записи строки, а не чтения источника.
 type badRecordSource struct{}
 
-func (badRecordSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (badRecordSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	return fn(Record{"bad": make(chan int)})
 }
 
@@ -1056,7 +1116,7 @@ type staleningFailingSource struct {
 	id   int64
 }
 
-func (s *staleningFailingSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *staleningFailingSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	if _, err := s.pool.Exec(ctx, "UPDATE export_jobs SET attempts = attempts + 1 WHERE id = $1", s.id); err != nil {
 		return err
 	}
@@ -1101,7 +1161,7 @@ func TestWorkerFailSuppressesStaleClaim(t *testing.T) {
 // заявка стала бы done несмотря на истёкший тайм-аут тика.
 type slowAfterWriteSource struct{}
 
-func (s *slowAfterWriteSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *slowAfterWriteSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	if err := fn(Record{"id": int64(1), "title": "x", "culprit": "", "level": "error",
 		"status": "unresolved", "times_seen": int64(1), "environments": "", "assignee_email": "", "url": ""}); err != nil {
 		return err
@@ -1187,7 +1247,7 @@ type shutdownIssueSource struct {
 	cancel context.CancelFunc
 }
 
-func (s *shutdownIssueSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *shutdownIssueSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	for i := 0; i < s.n; i++ {
 		if err := fn(Record{"id": int64(i + 1), "title": "x", "culprit": "", "level": "error",
 			"status": "unresolved", "times_seen": int64(1), "environments": "", "assignee_email": "", "url": ""}); err != nil {
@@ -1288,7 +1348,7 @@ type permanentFailAfterShutdownSource struct {
 	permErr error
 }
 
-func (s *permanentFailAfterShutdownSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *permanentFailAfterShutdownSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	s.cancel()
 	return s.permErr
 }
@@ -1333,7 +1393,7 @@ type shutdownAfterLastWriteSource struct {
 	cancel context.CancelFunc
 }
 
-func (s *shutdownAfterLastWriteSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+func (s *shutdownAfterLastWriteSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	if err := fn(Record{"id": int64(1), "title": "x", "culprit": "", "level": "error",
 		"status": "unresolved", "times_seen": int64(1), "environments": "", "assignee_email": "", "url": ""}); err != nil {
 		return err

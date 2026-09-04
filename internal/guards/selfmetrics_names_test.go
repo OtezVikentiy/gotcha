@@ -51,6 +51,8 @@ var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_entities_purged_total", "Counter"},
 	{"gotcha_escalation_scheduler_last_tick_timestamp_seconds", "Gauge"},
 	{"gotcha_escalation_scheduler_tick_duration_seconds", "Gauge"},
+	{"gotcha_export_janitor_last_tick_timestamp_seconds", "Gauge"},
+	{"gotcha_export_janitor_tick_duration_seconds", "Gauge"},
 	{"gotcha_export_queue_depth", "Gauge"},
 	{"gotcha_export_queue_failed", "Gauge"},
 	{"gotcha_export_queue_oldest_seconds", "Gauge"},

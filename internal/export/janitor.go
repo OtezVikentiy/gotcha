@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +32,13 @@ const (
 	// "чужим" — либо лиза уже протухла и заявку переклеймили, либо процесс
 	// действительно упал.
 	stalePartAge = time.Hour
+	// tickBudgetShare/minTickBudget — та же пара, что escalation.Scheduler:
+	// дедлайн тика — доля Interval, но не меньше пола, иначе повисшая
+	// PG-операция (истечение заявок/чистка истории/сироты) держала бы тик
+	// (и self-метрику живости) бесконечно, а следующий тик так и не начался
+	// бы.
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
 )
 
 // Janitor чистит после себя очередь выгрузок: убирает файлы и строки
@@ -46,16 +55,49 @@ type Janitor struct {
 	RowRetention time.Duration
 	// Interval — период тика; 0 — defaultJanitorInterval.
 	Interval time.Duration
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
+	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+}
+
+// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
+// ещё не было). Self-метрика живости, как у escalation.Scheduler: умерший
+// или зависший джанитор снаружи выглядит ровно как «нечего чистить».
+func (j *Janitor) LastTickUnix() int64 { return j.lastTickUnix.Load() }
+
+// LastTickSeconds — длительность последнего завершённого тика в секундах.
+func (j *Janitor) LastTickSeconds() float64 {
+	return math.Float64frombits(j.lastTickSeconds.Load())
+}
+
+// effectiveInterval — j.Interval с подстановкой дефолта: 0 (не задан, как в
+// проде, см. cmd/gotcha/main.go) означает defaultJanitorInterval, а не
+// "сразу же" — тот же дефолт, что и Run ниже подставляет тикеру.
+func (j *Janitor) effectiveInterval() time.Duration {
+	if j.Interval <= 0 {
+		return defaultJanitorInterval
+	}
+	return j.Interval
+}
+
+// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
+// Считается от effectiveInterval, а не от сырого j.Interval: иначе прод, где
+// Interval не задан (Run сам подставляет дефолт), получал бы бюджет
+// minTickBudget (10s) вместо ~48 минут — тик обрывался бы на каждой чуть
+// более долгой чистке, и диск-бюджет каталога выгрузок никогда не
+// освобождался бы до конца.
+func (j *Janitor) tickBudget() time.Duration {
+	budget := time.Duration(float64(j.effectiveInterval()) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
 }
 
 // Run крутит тикер до отмены ctx. Ошибка одного тика логируется и не
 // останавливает цикл — следующий тик просто попробует снова.
 func (j *Janitor) Run(ctx context.Context) {
-	interval := j.Interval
-	if interval <= 0 {
-		interval = defaultJanitorInterval
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(j.effectiveInterval())
 	defer ticker.Stop()
 
 	// Первый проход — сразу, не дожидаясь тика (как telemetry.EntityJanitor):
@@ -83,7 +125,22 @@ func (j *Janitor) Run(ctx context.Context) {
 // строки истории, файлы-сироты. Порядок обязателен — сироты ищутся ПОСЛЕ
 // удаления строк (PurgeRows), иначе только что осиротевшие файлы
 // (строку снёс этот же тик) ждали бы следующего цикла лишний круг.
+//
+// Tick ограничен дедлайном (tickBudget), как escalation.Scheduler.Tick: без
+// внешнего дедлайна повисшая PG-операция держала бы тик (и self-метрику
+// живости) бесконечно.
 func (j *Janitor) Tick(ctx context.Context) error {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, j.tickBudget())
+	defer cancel()
+	defer func() {
+		j.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+		if ctx.Err() != nil {
+			return
+		}
+		j.lastTickUnix.Store(time.Now().Unix())
+	}()
+
 	conn, err := j.Pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("export: джанитор: получение соединения: %w", err)
@@ -101,7 +158,15 @@ func (j *Janitor) Tick(ctx context.Context) error {
 		return nil
 	}
 	defer func() {
-		if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", int64(janitorLockKey)); err != nil {
+		// detachTimeout(ctx), а не ctx напрямую (K4-5, аудит перед 1.0): к
+		// моменту снятия лока ctx тика мог уже истечь по tickBudget (или
+		// быть отменён снаружи) — а снятие лока обязано дойти до PG именно
+		// тогда, когда сам тик уже не успел, иначе лок доживает до
+		// закрытия соединения пулом и блокирует следующий тик до этого
+		// момента.
+		uctx, cancel := detachTimeout(ctx)
+		defer cancel()
+		if _, err := conn.Exec(uctx, "SELECT pg_advisory_unlock($1)", int64(janitorLockKey)); err != nil {
 			slog.Warn("export: джанитор: снятие advisory lock", "err", err)
 		}
 	}()

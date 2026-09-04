@@ -364,28 +364,43 @@ func (q *Query) Sparklines(ctx context.Context, projectID int64, issueIDs []int6
 	return out, nil
 }
 
-// StreamForExport читает события выгрузки (internal/export, kind=events) в
-// порядке первичного ключа таблицы — (project_id, issue_id, timestamp): любая
-// другая сортировка на выгрузке в сотни тысяч строк заставила бы ClickHouse
-// материализовать и сортировать разом весь набор, вместо того чтобы отдавать
-// его по мере готовности кусков (см. миграцию 0018_events_timestamp_skip_index —
-// без ограничения по issue_id время в первичном ключе вообще не отсекает).
+// StreamForExport читает события выгрузки (internal/export, kind=events)
+// ГРУППАМИ в ПОРЯДКЕ СПИСКА issueIDs, внутри группы — timestamp DESC (K4-2,
+// аудит перед 1.0): вызывающий передаёт issueIDs уже отсортированным
+// (source_events.go: last_seen DESC — самые активные группы первыми), а
+// limit — защитный потолок строк, который на большой выгрузке реально
+// отсекает часть групп. Раньше сортировка шла по возрастанию issue_id, то
+// есть по НОМЕРУ, не связанному с активностью группы: усечение LIMIT
+// отбрасывало произвольные группы (какие именно — от порядка автоинкремента
+// id, а не от того, что важнее пользователю) вместо наименее активных.
+//
+// Ранг группы в списке вычисляется через transform(issue_id, ids, ranks,
+// len(ids)) — хеш-таблица, построенная ClickHouse один раз на запрос,
+// O(1) на строку. indexOf(ids, issue_id) — единственная альтернатива без
+// материализации ранга отдельным массивом — O(n) на строку (линейный
+// поиск по массиву), что на maxIssueIDs в тысячи групп (source_events.go)
+// умножает стоимость сортировки на размер списка. default-значение
+// len(ids) для issue_id вне списка недостижимо: WHERE issue_id IN (?) уже
+// отсекает всё, чего в ids нет.
 //
 // since/until нулевые — граница не задаётся: источник выгрузки строит их из
 // Params, где нулевое значение уже значит «без границы» (issue.Filter следует
 // тому же соглашению).
 //
-// limit — защитный потолок строк одного запроса; обрезку по бюджету заявки
-// (GOTCHA_EXPORT_MAX_ROWS/MAX_BYTES) делает вызывающий раннер, останавливая
-// обход возвратом ошибки из fn, а не эта функция.
+// limit — защитный потолок строк ОДНОГО запроса (eventStreamSafetyLimit в
+// source_events.go); обрезку по бюджету заявки (GOTCHA_EXPORT_MAX_ROWS/
+// MAX_BYTES) делает вызывающий раннер, останавливая обход возвратом ошибки
+// из fn, а не эта функция.
 func (q *Query) StreamForExport(ctx context.Context, projectID int64, issueIDs []int64,
 	since, until time.Time, limit int, fn func(Stored) error) error {
 	if len(issueIDs) == 0 {
 		return nil
 	}
 	ids := make([]uint64, len(issueIDs))
+	ranks := make([]uint32, len(issueIDs))
 	for i, id := range issueIDs {
 		ids[i] = uint64(id)
+		ranks[i] = uint32(i)
 	}
 
 	query := `SELECT ` + storedColumns + `
@@ -400,8 +415,8 @@ func (q *Query) StreamForExport(ctx context.Context, projectID int64, issueIDs [
 		query += ` AND timestamp < ?`
 		args = append(args, until)
 	}
-	query += ` ORDER BY issue_id, timestamp DESC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY transform(issue_id, ?, ?, ?), timestamp DESC LIMIT ?`
+	args = append(args, ids, ranks, uint32(len(ids)), limit)
 
 	rows, err := q.conn.Query(ctx, query, args...)
 	if err != nil {

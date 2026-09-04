@@ -324,6 +324,16 @@ request usually fails for the same reason, typically export directory
 permissions or an exhausted `GOTCHA_EXPORT_DISK_BUDGET_BYTES` (see the last
 attempt's error in the UI's Exports section).
 
+**`gotcha_export_janitor_last_tick_timestamp_seconds`** /
+**`gotcha_export_janitor_tick_duration_seconds`** — when the export janitor
+(removes expired requests' files and rows, purges history older than the
+retention window, sweeps orphan files) last completed a pass, and how long it
+took. A dead or stuck janitor looks like "nothing to clean up" from the
+outside — the export directory's disk budget never frees up, and the request
+history grows without bound. The pass runs once an hour; a gap noticeably
+larger than that means cleanup has stopped. These metrics are absent
+wherever `gotcha_export_queue_*` is (`--mode=ingest`).
+
 **`gotcha_memory_limit_bytes`** — the heap ceiling derived from the container's
 memory limit (80% of it). Zero means there is no limit: buffers will grow until
 the HOST runs out of memory, and the kernel's OOM killer gets there first — it

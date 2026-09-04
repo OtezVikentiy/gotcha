@@ -966,6 +966,12 @@ func run() error {
 				defer exportWorkersWG.Done()
 				exportJanitor.Run(ctx)
 			}()
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_export_janitor_last_tick_timestamp_seconds",
+				"Unix time of the last completed export janitor pass. Stale value means expired exports, purge queue history, and orphan files are not being cleaned up.",
+				nil, exportJanitor.LastTickUnix)
+			selfMetrics.Add(selfmetrics.Gauge, "gotcha_export_janitor_tick_duration_seconds",
+				"Duration of the last export janitor pass. Approaching the interval means PostgreSQL or the export directory is falling behind.",
+				nil, exportJanitor.LastTickSeconds)
 
 			// Наблюдаемость очереди выгрузок (P1-OPS-1): до этого КАЖДАЯ соседняя
 			// очередь была видна (gotcha_notify_queue_depth/_queue_failed/
