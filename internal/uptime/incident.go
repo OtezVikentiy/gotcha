@@ -72,11 +72,11 @@ func (inc Incident) DeliveryExhausted() bool {
 const incidentColumns = `id, monitor_id, started_at, resolved_at, cause, regions, in_maintenance, notified_open, notified_close, last_reminded_at, suppressed_by_dep, acknowledged_at, acknowledged_by, severity, escalation_level, last_escalated_at, notify_open_failed, notify_open_attempts, notify_open_channels`
 
 // incidentScanDest — ЕДИНСТВЕННЫЙ список приёмников под incidentColumns, в
-// том же порядке. Оба разборщика строк инцидента (scanIncident и
-// queryIncidentsPaged, у которого в конце добавляется ещё count(*) OVER())
-// берут приёмники отсюда: два независимых Scan-списка на одну строку колонок
-// уже разъезжались — notify_open_channels (миграция 0086) доехала до
-// incidentColumns и scanIncident, но не до ручного Scan в queryIncidentsPaged,
+// том же порядке. Все разборщики строк инцидента (scanIncident, через него —
+// queryIncidents и постраничные выборки) берут приёмники отсюда: два
+// независимых Scan-списка на одну строку колонок уже разъезжались —
+// notify_open_channels (миграция 0086) доехала до incidentColumns и
+// scanIncident, но не до ручного Scan, который тогда жил в queryIncidentsPaged,
 // и обе постраничные выборки инцидентов начали отдавать 500 «number of field
 // descriptions must equal number of destinations». Новая колонка теперь
 // правится в двух местах рядом (константа и этот список), а не в трёх врозь.
@@ -268,39 +268,55 @@ func (s *Service) IncidentsForMonitorsBatch(ctx context.Context, monitorIDs []in
 	return out, nil
 }
 
-// queryIncidentsPaged runs an incident query whose LAST selected column is
-// count(*) OVER() AS total, returning the page rows together with the
-// unpaginated total (0 for an empty page — no row carries the window count).
-func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, query string, args ...any) ([]Incident, int64, error) {
-	rows, err := pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
-	}
-	defer rows.Close()
-	var out []Incident
+// queryIncidentsPaged runs a paged incident query as two statements — a
+// bare count(*) over countFrom (the FROM/WHERE part alone) for the pager's
+// total, then the page rows themselves — instead of count(*) OVER() inside
+// the page query. Same trade-off as issue.Service.List (internal/issue/
+// query.go, read its doc comment for the full reasoning): OVER() without
+// PARTITION BY forces the planner to materialise and count EVERY matching
+// row before LIMIT/OFFSET applies, so page 1 cost as much as reading the
+// whole history; a separate light count lets the row query stop after LIMIT
+// rows. The price is that the two statements are not one snapshot — an
+// incident opened between them shifts total by one on a page boundary,
+// self-correcting on the next load.
+//
+// An empty page returns total=0, exactly as the single-statement form did
+// (no row carried the window count): the web pager (incidents.templ,
+// monitor detail) reads total<=0 as "no such page, go to the first", and a
+// non-zero total on an out-of-range page would change that behaviour.
+//
+// key is the single $1 filter argument shared by both statements (project or
+// monitor id); the page query additionally takes $2 = limit, $3 = offset.
+func queryIncidentsPaged(ctx context.Context, pool *pgxpool.Pool, countFrom, pageQuery string, key int64, limit, offset int) ([]Incident, int64, error) {
 	var total int64
-	for rows.Next() {
-		var inc Incident
-		if err := rows.Scan(append(incidentScanDest(&inc), &total)...); err != nil {
-			return nil, 0, fmt.Errorf("uptime: incidents: %w", err)
-		}
-		out = append(out, inc)
+	if err := pool.QueryRow(ctx, "SELECT count(*)"+countFrom, key).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("uptime: incidents count: %w", err)
 	}
-	return out, total, rows.Err()
+	if int64(offset) >= total {
+		return nil, 0, nil
+	}
+	out, err := queryIncidents(ctx, pool, pageQuery, key, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(out) == 0 {
+		return nil, 0, nil
+	}
+	return out, total, nil
 }
 
 // IncidentsPaged returns one page (limit/offset) of projectID's incidents,
 // freshest first, plus the total across all pages for the pager.
 func (s *Service) IncidentsPaged(ctx context.Context, projectID int64, limit, offset int) ([]Incident, int64, error) {
-	return queryIncidentsPaged(ctx, s.pool, `
+	const from = `
+		FROM incidents i
+		JOIN monitors m ON m.id = i.monitor_id
+		WHERE m.project_id = $1`
+	return queryIncidentsPaged(ctx, s.pool, from, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
 			i.in_maintenance, i.notified_open, i.notified_close, i.last_reminded_at, i.suppressed_by_dep,
 			i.acknowledged_at, i.acknowledged_by, i.severity, i.escalation_level, i.last_escalated_at,
-			i.notify_open_failed, i.notify_open_attempts, i.notify_open_channels,
-			count(*) OVER() AS total
-		FROM incidents i
-		JOIN monitors m ON m.id = i.monitor_id
-		WHERE m.project_id = $1
+			i.notify_open_failed, i.notify_open_attempts, i.notify_open_channels`+from+`
 		ORDER BY i.started_at DESC
 		LIMIT $2 OFFSET $3`, projectID, limit, offset)
 }
@@ -308,9 +324,9 @@ func (s *Service) IncidentsPaged(ctx context.Context, projectID int64, limit, of
 // IncidentsForMonitorPaged returns one page (limit/offset) of monitorID's
 // incidents, freshest first, plus the total across all pages.
 func (s *Service) IncidentsForMonitorPaged(ctx context.Context, monitorID int64, limit, offset int) ([]Incident, int64, error) {
-	return queryIncidentsPaged(ctx, s.pool, `
-		SELECT `+incidentColumns+`, count(*) OVER() AS total
-		FROM incidents WHERE monitor_id = $1
+	const from = ` FROM incidents WHERE monitor_id = $1`
+	return queryIncidentsPaged(ctx, s.pool, from, `
+		SELECT `+incidentColumns+from+`
 		ORDER BY started_at DESC
 		LIMIT $2 OFFSET $3`, monitorID, limit, offset)
 }
@@ -468,6 +484,14 @@ func (s *Service) Name() string { return "uptime" }
 // момента освобождения — иначе он получил бы просроченные ступени лесенки
 // каскадом. NULL для инцидента, никогда не подавлявшегося — COALESCE
 // возвращает i.started_at, и GREATEST не меняет исход.
+//
+// m.enabled — пауза монитора глушит лесенку эскалации по его открытому
+// инциденту (K2-2), симметрично IncidentsDueForReminder (watchdog.go).
+// Инцидент НЕ закрывается и не резолвится через ResolveIncident: пауза
+// значит «не проверяем и не будим», а не «сервис поднялся» — история
+// инцидента не переписывается. При снятии паузы проверки возобновятся и
+// штатно закроют инцидент, если сервис жив; иначе лесенка продолжится с
+// того уровня, на котором остановилась.
 func (s *Service) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, m.project_id,
@@ -477,6 +501,7 @@ func (s *Service) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident
 		JOIN monitors m ON m.id = i.monitor_id
 		LEFT JOIN incident_groups g ON g.id = i.group_id
 		WHERE i.resolved_at IS NULL AND i.acknowledged_at IS NULL AND i.suppressed_by_dep = false
+		  AND m.enabled
 		  AND i.escalation_level > 0
 		  AND (i.group_id IS NULL OR g.id IS NULL OR g.resolved_at IS NOT NULL)
 		ORDER BY i.id`)

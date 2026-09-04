@@ -284,3 +284,55 @@ func TestIncidentDeliveryExhausted(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenUnackedSkipsDisabledMonitor (K2-2): монитор на паузе не отдаёт
+// свой открытый инцидент лесенке эскалации, но инцидент остаётся открытым;
+// снятие паузы возвращает его планировщику.
+func TestOpenUnackedSkipsDisabledMonitor(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	inc, created, err := svc.OpenIncident(ctx, mon.ID, "boom", []string{"local"}, false)
+	if err != nil || !created {
+		t.Fatalf("OpenIncident: (%+v,%v,%v)", inc, created, err)
+	}
+	if ok, err := svc.BumpEscalation(ctx, inc.ID, 0); err != nil || !ok {
+		t.Fatalf("BumpEscalation(0): (%v,%v), want (true,nil)", ok, err)
+	}
+
+	pending := func(step string) bool {
+		t.Helper()
+		list, err := svc.OpenUnacked(ctx)
+		if err != nil {
+			t.Fatalf("OpenUnacked %s: %v", step, err)
+		}
+		for _, p := range list {
+			if p.ID == inc.ID {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !pending("enabled") {
+		t.Fatalf("OpenUnacked while monitor enabled: incident %d missing, want it pending", inc.ID)
+	}
+	if err := svc.SetEnabled(ctx, mon.ID, false); err != nil {
+		t.Fatalf("SetEnabled(false): %v", err)
+	}
+	if pending("disabled") {
+		t.Fatalf("OpenUnacked while monitor disabled: incident %d listed, want it skipped", inc.ID)
+	}
+	if still := assertOpenIncident(t, ctx, svc, mon.ID); still.ID != inc.ID || still.ResolvedAt != nil {
+		t.Fatalf("incident after pause = %+v, want the same one still open (pause must not resolve it)", still)
+	}
+	if err := svc.SetEnabled(ctx, mon.ID, true); err != nil {
+		t.Fatalf("SetEnabled(true): %v", err)
+	}
+	if !pending("re-enabled") {
+		t.Fatalf("OpenUnacked after unpause: incident %d missing, want it pending again", inc.ID)
+	}
+}

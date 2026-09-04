@@ -779,6 +779,9 @@ func run() error {
 			Notifier: uptimeNotifier,
 			Writer:   uptimeWriter,
 			Region:   cfg.LocalRegion,
+			// Maint — живая проверка окна обслуживания перед напоминанием
+			// (см. Watchdog.checkReminders); окна читает сам uptimeSvc.
+			Maint: uptimeSvc,
 		}
 		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_uptime_watchdog_last_tick_timestamp_seconds",
 			"Unix time of the last completed heartbeat/reminder pass. Stale value means missed heartbeats and incident reminders are not being evaluated.",

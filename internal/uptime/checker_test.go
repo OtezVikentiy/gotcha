@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -258,6 +259,39 @@ func TestHTTPCheckerTimeout(t *testing.T) {
 	}
 }
 
+// checkWithin runs c.Check in a goroutine and fails the test if it hasn't
+// returned within limit — a checker that lost its per-monitor timeout would
+// otherwise hang the whole package run (TCP SYN retries take minutes, the
+// Go resolver's own retries ~10s) instead of failing one assertion.
+func checkWithin(t *testing.T, c uptime.Checker, m uptime.Monitor, limit time.Duration) (uptime.Result, time.Duration) {
+	t.Helper()
+	start := time.Now()
+	done := make(chan uptime.Result, 1)
+	go func() { done <- c.Check(context.Background(), m) }()
+	select {
+	case got := <-done:
+		return got, time.Since(start)
+	case <-time.After(limit):
+		t.Fatalf("Check() did not return within %v (monitor timeout %ds) — per-monitor timeout not applied", limit, m.TimeoutSeconds)
+		return uptime.Result{}, 0
+	}
+}
+
+// assertTimedOut — общая проверка чекеров на «зависшую» цель: ошибка
+// таймаута, возврат в пределах таймаута монитора плюс запас.
+func assertTimedOut(t *testing.T, got uptime.Result, elapsed time.Duration, m uptime.Monitor) {
+	t.Helper()
+	if got.OK {
+		t.Fatalf("Check() = %+v, want fail (timeout)", got)
+	}
+	if !strings.Contains(got.Error, "timeout") {
+		t.Errorf("Error = %q, want it to mention timeout", got.Error)
+	}
+	if limit := time.Duration(m.TimeoutSeconds)*time.Second + 2*time.Second; elapsed > limit {
+		t.Errorf("Check() took %v, want within %v (monitor timeout %ds)", elapsed, limit, m.TimeoutSeconds)
+	}
+}
+
 func TestHTTPCheckerTimingsNonZero(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Millisecond)
@@ -303,8 +337,10 @@ func TestHTTPCheckerTLSFillsSSLExpiresAt(t *testing.T) {
 	if got.SSLExpiresAt == nil {
 		t.Fatalf("SSLExpiresAt is nil, want set")
 	}
-	if got.SSLExpiresAt.Before(time.Now()) {
-		t.Errorf("SSLExpiresAt = %v, want in the future", got.SSLExpiresAt)
+	// Ровно NotAfter сертификата сервера (с точностью до секунды — так его
+	// хранит колонка), а не «какая-то дата в будущем» (K2-8).
+	if want := srv.Certificate().NotAfter; !got.SSLExpiresAt.Truncate(time.Second).Equal(want.Truncate(time.Second)) {
+		t.Errorf("SSLExpiresAt = %v, want the server certificate's NotAfter %v", got.SSLExpiresAt, want)
 	}
 	if got.TLSMs == 0 {
 		t.Errorf("TLSMs = 0, want > 0")
@@ -442,6 +478,47 @@ func TestTCPCheckerConnectsToLiveListener(t *testing.T) {
 	if !got.OK || got.Error != "" {
 		t.Fatalf("Check() = %+v, want OK", got)
 	}
+}
+
+// TestTCPCheckerTimeout (K2-4): цель, которая принимает SYN, но никогда не
+// завершает рукопожатие, — чекер обязан вернуться в пределах таймаута
+// монитора с ошибкой таймаута. Такую цель даёт сокет с listen(backlog=0),
+// у которого очередь accept уже занята одним соединением: следующий SYN
+// ядро молча отбрасывает, и клиент висит в повторных SYN. Без
+// context.WithTimeout в TCPChecker.Check висел бы минуты — это ловит
+// checkWithin, а не ассерт на elapsed.
+func TestTCPCheckerTimeout(t *testing.T) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	defer syscall.Close(fd)
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if err := syscall.Listen(fd, 0); err != nil {
+		t.Fatalf("listen(0): %v", err)
+	}
+	sa, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("getsockname: %v", err)
+	}
+	port := sa.(*syscall.SockaddrInet4).Port
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+
+	// Заполняем очередь accept: первое соединение ядро ещё принимает
+	// (backlog 0 = одно место), после него очередь полна.
+	filler, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("filler dial: %v", err)
+	}
+	defer filler.Close()
+
+	c := uptime.NewTCPChecker(true)
+	m := checkerMonitor(uptime.KindTCP, 1, tcpConfig(t, uptime.TCPConfig{Host: "127.0.0.1", Port: port}))
+
+	got, elapsed := checkWithin(t, c, m, 5*time.Second)
+	assertTimedOut(t, got, elapsed, m)
 }
 
 func TestTCPCheckerFailsOnClosedPort(t *testing.T) {
@@ -614,6 +691,37 @@ func buildDNSAnswer(id uint16, question []byte, qtype uint16, gotName, wantName 
 
 	msg := append(hdr, question...)
 	return append(msg, answer...)
+}
+
+// TestDNSCheckerTimeout (K2-4): резолвер, который принимает запрос и никогда
+// не отвечает (UDP-сокет, из которого никто не читает), — чекер обязан
+// вернуться в пределах таймаута монитора с ошибкой таймаута. Без
+// context.WithTimeout в DNSChecker.Check ждал бы собственные повторы
+// стандартного резолвера (~10 с) — это ловят checkWithin и ассерт на elapsed.
+func TestDNSCheckerTimeout(t *testing.T) {
+	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer silent.Close()
+
+	var dials atomic.Int32
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dials.Add(1)
+			return net.Dial("udp", silent.LocalAddr().String())
+		},
+	}
+
+	c := &uptime.DNSChecker{Resolver: resolver}
+	m := checkerMonitor(uptime.KindDNS, 1, dnsConfig(t, uptime.DNSConfig{Hostname: "never.example", RecordType: "A"}))
+
+	got, elapsed := checkWithin(t, c, m, 5*time.Second)
+	assertTimedOut(t, got, elapsed, m)
+	if dials.Load() == 0 {
+		t.Fatalf("Dial never called: the lookup bypassed the silent resolver, so the timeout was not exercised")
+	}
 }
 
 func TestDNSCheckerAEmptyExpectedOK(t *testing.T) {
