@@ -17,6 +17,8 @@ var (
 	ErrWeakPassword       = errors.New("auth: password must be 8..512 characters")
 	ErrInvalidCredentials = errors.New("auth: invalid email or password")
 	ErrInvalidEmail       = errors.New("auth: invalid email")
+	ErrNotInstanceAdmin   = errors.New("auth: user is not the instance admin")
+	ErrSelfTransfer       = errors.New("auth: cannot transfer the instance admin role to yourself")
 )
 
 // reEmail — намеренно простая проверка формата (не полная RFC 5322): один @,
@@ -121,6 +123,44 @@ func (s *Service) UserIsInstanceAdmin(ctx context.Context, userID int64) (bool, 
 		return false, fmt.Errorf("auth: instance admin flag: %w", err)
 	}
 	return admin, nil
+}
+
+// TransferInstanceAdmin передаёт роль администратора инстанса от fromUID
+// пользователю с email toEmail (K7-1: единственный админ инстанса без этого
+// метода не мог передать роль — назначить второго было негде ни в Store, ни
+// в CLI, ни в UI). Одна транзакция: снять флаг у текущего (RowsAffected 0 —
+// он не админ, ErrNotInstanceAdmin), поставить получателю; частичный UNIQUE
+// one_instance_admin (0017_instance_admin) — страховка от гонки двух
+// одновременных передач: второй commit упадёт на этом индексе, транзакция
+// откатится, ошибка вернётся как есть.
+func (s *Service) TransferInstanceAdmin(ctx context.Context, fromUID int64, toEmail string) (int64, error) {
+	toUID, err := s.UserByEmail(ctx, toEmail)
+	if err != nil {
+		return 0, err
+	}
+	if toUID == fromUID {
+		return 0, ErrSelfTransfer
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("transfer instance admin: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx,
+		"UPDATE users SET is_instance_admin = false WHERE id = $1 AND is_instance_admin", fromUID)
+	if err != nil {
+		return 0, fmt.Errorf("transfer instance admin: release: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, ErrNotInstanceAdmin
+	}
+	if _, err := tx.Exec(ctx, "UPDATE users SET is_instance_admin = true WHERE id = $1", toUID); err != nil {
+		return 0, fmt.Errorf("transfer instance admin: grant: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("transfer instance admin: commit: %w", err)
+	}
+	return toUID, nil
 }
 
 // Authenticate возвращает id пользователя по email+паролю.

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stops the rest of the channels in the same digest from receiving it. An incident
   suppressed because its dependency was down now resumes escalation once the
   dependency recovers, instead of staying silent for good.
+- The instance administrator's account can no longer be deleted until the role
+  is transferred; the transfer form lives on the profile page.
 
 ## [0.34.0] - 2026-09-03
 

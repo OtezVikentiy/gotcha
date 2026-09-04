@@ -672,17 +672,29 @@ func TestAlertDeliveriesMaskedHint(t *testing.T) {
 func TestProfilePage(t *testing.T) {
 	linked := []LinkedIdentity{{Provider: "yandex", DisplayName: "Яндекс", Email: "u@ya.ru", CanUnlink: true}}
 	linkable := []LinkableProvider{{Name: "github", DisplayName: "GitHub"}}
-	out := renderTo(t, Profile("u@e.com", "", "сохранено", true, linked, linkable, "u@e.com"))
+	out := renderTo(t, Profile("u@e.com", "", "сохранено", true, linked, linkable, false, "u@e.com"))
 	if !strings.Contains(out, "Яндекс") || !strings.Contains(out, "GitHub") {
 		t.Error("провайдеры должны отрендериться")
 	}
 	if !strings.Contains(out, "сохранено") {
 		t.Error("сообщение должно отрендериться")
 	}
+	if strings.Contains(out, "/profile/instance-admin/transfer") {
+		t.Error("не-админу инстанса секция передачи роли не должна показываться")
+	}
 	// Без пароля и с ошибкой.
-	outErr := renderTo(t, Profile("u@e.com", "ошибка", "", false, nil, linkable, "u@e.com"))
+	outErr := renderTo(t, Profile("u@e.com", "ошибка", "", false, nil, linkable, false, "u@e.com"))
 	if !strings.Contains(outErr, "ошибка") {
 		t.Error("ошибка профиля должна отрендериться")
+	}
+}
+
+// TestProfilePageInstanceAdmin — K7-1: администратору инстанса на /profile
+// показывается секция передачи роли.
+func TestProfilePageInstanceAdmin(t *testing.T) {
+	out := renderTo(t, Profile("u@e.com", "", "", true, nil, nil, true, "u@e.com"))
+	if !strings.Contains(out, "/profile/instance-admin/transfer") {
+		t.Error("администратору инстанса секция передачи роли должна показываться")
 	}
 }
 

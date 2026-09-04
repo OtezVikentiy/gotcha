@@ -606,6 +606,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /profile/delete", h.requireUser(http.HandlerFunc(h.profileDelete)))
 	inner.Handle("POST /profile/sessions/revoke", h.requireUser(http.HandlerFunc(h.profileSessionsRevoke)))
 	inner.Handle("POST /profile/identities/unlink", h.requireUser(http.HandlerFunc(h.profileIdentityUnlink)))
+	inner.Handle("POST /profile/instance-admin/transfer", h.requireUser(http.HandlerFunc(h.profileInstanceAdminTransfer)))
 
 	inner.Handle("GET /onboarding", h.requireUser(http.HandlerFunc(h.onboardingPage)))
 	inner.Handle("POST /onboarding", h.requireUser(http.HandlerFunc(h.onboardingSubmit)))

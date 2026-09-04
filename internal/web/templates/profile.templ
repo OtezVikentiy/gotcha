@@ -19,7 +19,7 @@ type LinkableProvider struct {
 // и кнопка «выйти со всех других устройств». errMsg — ошибка последнего POST,
 // message — подтверждение успеха. Оба рендерятся на этой же странице без
 // редиректа — как и OrgSettings.
-templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedIdentity, linkable []LinkableProvider, userEmail string) {
+templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedIdentity, linkable []LinkableProvider, isInstanceAdmin bool, userEmail string) {
 	@layout(i18n.T(ctx, "profile.title"), userEmail) {
 		<div class="profile">
 			<h1>{ i18n.T(ctx, "profile.title") }</h1>
@@ -129,6 +129,21 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "profile.sessions.revoke_submit") }</button>
 				</form>
 			</section>
+			if isInstanceAdmin {
+				<section class="card">
+					<h2 class="card-header">{ i18n.T(ctx, "profile.instance_admin.title") }</h2>
+					<p class="hint">{ i18n.T(ctx, "profile.instance_admin.hint") }</p>
+					<form method="post" action="/profile/instance-admin/transfer">
+						<div class="field">
+							<label>
+								{ i18n.T(ctx, "profile.instance_admin.email_label") }
+								<input type="email" name="email" required class="input"/>
+							</label>
+						</div>
+						<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "profile.instance_admin.transfer_button") }</button>
+					</form>
+				</section>
+			}
 			<section class="card">
 				<h2 class="card-header">{ i18n.T(ctx, "profile.danger.title") }</h2>
 				<p class="hint">{ i18n.T(ctx, "profile.danger.delete_account.hint") }</p>

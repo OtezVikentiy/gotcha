@@ -148,8 +148,9 @@ var routeAuthz = map[string]string{
 	// --- Только админ инстанса (requireInstanceAdminForSSO): per-org SSO.
 	// Не owner-роль организации — глобальный флаг users.is_instance_admin,
 	// см. комментарий у lvlInstanceAdmin выше. ---
-	"POST /orgs/{id}/settings/sso":        lvlInstanceAdmin,
-	"POST /orgs/{id}/settings/sso/delete": lvlInstanceAdmin,
+	"POST /orgs/{id}/settings/sso":          lvlInstanceAdmin,
+	"POST /orgs/{id}/settings/sso/delete":   lvlInstanceAdmin,
+	"POST /profile/instance-admin/transfer": lvlInstanceAdmin,
 
 	// ============================= GET =============================
 	// (находка B2: тот же принцип, что у POST выше, но для рендера).
