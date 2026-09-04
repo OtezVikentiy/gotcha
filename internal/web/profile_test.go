@@ -264,14 +264,19 @@ func TestWebIndexNoAccessibleProjects(t *testing.T) {
 }
 
 // TestWebProfileDeleteBlockedForInstanceAdmin — находка K7-1: единственный
-// администратор инстанса не может удалить свой аккаунт, пока не передаст
-// роль (иначе инстанс остаётся без единственного, кому доступна настройка
-// SSO организаций). A регистрируется первым и становится админом bootstrap'ом.
+// администратор инстанса не может удалить свой аккаунт, пока на инстансе
+// есть ДРУГИЕ пользователи (иначе инстанс остаётся без единственного, кому
+// доступна настройка SSO организаций, а передать роль некому). A
+// регистрируется первым и становится админом bootstrap'ом, B — обычный
+// второй пользователь: без него гейт не имеет смысла проверять (см.
+// TestWebProfileDeleteSoleInstanceAdminSucceeds — один пользователь на
+// инстансе удаляется свободно).
 func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
 
 	uidA, cookieA := orgSettingsRegister(t, authSvc, "instadmin-delete@example.com")
+	uidB, _ := orgSettingsRegister(t, authSvc, "instadmin-delete-b@example.com")
 
 	resp := postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, cookieA)
 	body, _ := io.ReadAll(resp.Body)
@@ -283,9 +288,65 @@ func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
 		t.Fatalf("POST /profile/delete (instance admin) body missing explanation: %s", body)
 	}
 
-	// Аккаунт всё ещё существует.
+	// Оба аккаунта всё ещё существуют.
 	if _, err := authSvc.UserEmail(context.Background(), uidA); err != nil {
 		t.Fatalf("UserEmail(A) after blocked delete: %v", err)
+	}
+	if _, err := authSvc.UserEmail(context.Background(), uidB); err != nil {
+		t.Fatalf("UserEmail(B) after blocked delete: %v", err)
+	}
+
+	// A остаётся залогинен: удаление не состоялось, рвать сессию было не за
+	// что (F4, раунд правок по ревью финревью волны 1 аудита перед 1.0) — до
+	// фикса DestroySession звался ДО DeleteSelfAccount, и заблокированный
+	// гейтом админ терял сессию при попытке, которая так и не выполнилась.
+	profResp := getWithCookie(t, s.srv, "/profile", cookieA)
+	profBody, _ := io.ReadAll(profResp.Body)
+	profResp.Body.Close()
+	if profResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /profile после заблокированного удаления status = %d, want 200 (сессия жива): %s",
+			profResp.StatusCode, profBody)
+	}
+}
+
+// TestWebProfileDeleteSoleInstanceAdminSucceeds — решение владельца по I1:
+// гейт K7-1 закрывает ловушку «единственный админ ушёл, команда осталась без
+// владельца», а не «единственный пользователь инстанса не может уйти». Когда
+// удалять некого запирать некого — единственный пользователь (он же
+// bootstrap-админ) удаляет себя свободно, а первый следующий
+// зарегистрировавшийся сам становится instance-admin (NOT EXISTS,
+// user.go:74) — это и есть инвариант bootstrap'а, который здесь проверяется
+// после удаления.
+func TestWebProfileDeleteSoleInstanceAdminSucceeds(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+
+	uidA, cookieA := orgSettingsRegister(t, authSvc, "sole-admin-delete@example.com")
+
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
+		t.Fatalf("A IsInstanceAdmin before delete = (%v,%v), want (true,nil)", admin, err)
+	}
+
+	resp := postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, cookieA)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /profile/delete (sole admin) status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login" {
+		t.Fatalf("redirect = %q, want /login", loc)
+	}
+	if _, err := authSvc.UserEmail(context.Background(), uidA); err == nil {
+		t.Fatalf("A still exists after self-delete as sole instance admin")
+	}
+
+	// Инвариант bootstrap'а: следующий зарегистрировавшийся — новый админ.
+	uidC, err := authSvc.Register(context.Background(), "next-after-sole-admin@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("register C: %v", err)
+	}
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidC); err != nil || !admin {
+		t.Fatalf("C IsInstanceAdmin after sole admin's self-delete = (%v,%v), want (true,nil)", admin, err)
 	}
 }
 

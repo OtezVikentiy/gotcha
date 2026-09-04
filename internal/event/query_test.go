@@ -3,7 +3,9 @@ package event_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -511,5 +513,27 @@ func TestStreamForExportTiedTimestampsNoLossOrDuplication(t *testing.T) {
 		if c != 1 {
 			t.Errorf("id %s встретился %d раз, want 1 (дубликат)", id, c)
 		}
+	}
+}
+
+// TestStreamForExportDoesNotSortByComputedKey — закрепление I2 (финревью
+// волны 1 аудита перед 1.0): ORDER BY transform(issue_id, …) исключает
+// read-in-order при любой версии ClickHouse — сервер обязан прочитать и
+// отсортировать весь отфильтрованный набор целиком вместо потокового
+// чтения по первичному ключу (project_id, issue_id, timestamp). Порядок
+// строк (группами в порядке issueIDs, внутри группы timestamp DESC)
+// закреплён поведенческими тестами выше и обязан сохраняться без
+// вычисляемого ключа сортировки — эта проверка ловит только регресс
+// СПОСОБА, а не результата: возврат к transform() молча вернул бы прежний
+// результат на тестовых объёмах, но заново снял бы потоковость на проде.
+func TestStreamForExportDoesNotSortByComputedKey(t *testing.T) {
+	src, err := os.ReadFile("query.go")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(src), "ORDER BY transform") {
+		t.Error("query.go снова сортирует по вычисляемому ключу (transform(...)) — " +
+			"это исключает optimize_read_in_order и заставляет ClickHouse " +
+			"материализовать и сортировать весь отфильтрованный набор целиком (I2)")
 	}
 }

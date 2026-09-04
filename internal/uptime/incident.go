@@ -538,16 +538,18 @@ func (s *Service) MarkSuppressedByDep(ctx context.Context, incidentID int64) err
 // writer into true). Called by Detector.settleHeldIncident once ParentDown
 // reports the declared parent has recovered. The "AND suppressed_by_dep"
 // guard makes a repeated call idempotent — a second release doesn't stamp
-// dep_released_at again.
+// dep_released_at again, and RowsAffected()==0 (already cleared, by this
+// call or a racing replica's) is exactly that idempotent no-op, not an
+// error — ErrNotFound is for an incidentID that doesn't exist at all, which
+// this UPDATE can't distinguish from "already cleared" by RowsAffected
+// alone, so it doesn't try (M3, финревью волны 1 аудита перед 1.0; mirrors
+// host.IncidentService.ClearSuppressed, which never inspects RowsAffected).
 func (s *Service) ClearSuppressedByDep(ctx context.Context, incidentID int64) error {
-	tag, err := s.pool.Exec(ctx, `
+	_, err := s.pool.Exec(ctx, `
 		UPDATE incidents SET suppressed_by_dep = false, dep_released_at = now()
 		WHERE id = $1 AND suppressed_by_dep`, incidentID)
 	if err != nil {
 		return fmt.Errorf("uptime: clear suppressed by dep: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
 	}
 	return nil
 }

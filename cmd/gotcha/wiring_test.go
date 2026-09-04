@@ -547,6 +547,109 @@ func TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow(t *testing.T)
 	}
 }
 
+// TestCloseBoundedReturnsTrueWhenCloseFnFinishes (I3, финревью волны 1
+// аудита перед 1.0): closeFn, завершившийся в срок, обязан дать drain()
+// увидеть это сразу, а не всегда упираться в timeout — иначе каждая
+// остановка ждала бы полное окно зря, даже когда uptime.Runner.Close()
+// вернулся мгновенно.
+func TestCloseBoundedReturnsTrueWhenCloseFnFinishes(t *testing.T) {
+	start := time.Now()
+	ok := closeBounded(func() { time.Sleep(5 * time.Millisecond) }, time.Second)
+	elapsed := time.Since(start)
+
+	if !ok {
+		t.Fatal("closeBounded = false, хотя closeFn завершился в срок")
+	}
+	if elapsed >= time.Second {
+		t.Errorf("closeBounded дождался всего окна (%s) вместо возврата сразу после завершения closeFn", elapsed)
+	}
+}
+
+// TestCloseBoundedReturnsFalseWithoutBlockingPastWindow (I3): зависший
+// closeFn (например, uptime.Runner.Close(), который у самого Runner без
+// ctx/дедлайна — см. его докблок) не имеет права держать drain() дольше
+// timeout — ровно тот сценарий, ради которого до фикса I3 сумма ограниченных
+// ожиданий в --mode=all упиралась в stop_grace_period. Мутация — заменить
+// тело closeBounded на голый closeFn() (без select/timeout) — обязана
+// уронить этот тест таймаутом самого теста (горутина never returns) или
+// зависанием.
+func TestCloseBoundedReturnsFalseWithoutBlockingPastWindow(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	start := time.Now()
+	ok := closeBounded(func() { <-release }, 30*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("closeBounded = true, хотя closeFn не завершился")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("closeBounded ждал %s — окно (30ms) не ограничило ожидание", elapsed)
+	}
+}
+
+// TestDrainParallelWaitsForEveryBranch (I3, раунд правок по ревью финревью
+// волны 1 аудита перед 1.0): drain() строит из независимых веток список и
+// отдаёт его drainParallel — само свойство «не вернуться, пока не отработала
+// КАЖДАЯ ветка» до этого теста не было закрыто ничем, а именно ради него
+// ветки drain() вообще переведены с последовательного ожидания на
+// sync.WaitGroup (см. докблок drain() в main.go). Мутация — заменить
+// dwg.Wait() на `_ = dwg` — обязана уронить этот тест: drainParallel
+// вернулась бы сразу после запуска горутин, не дождавшись release[2].
+func TestDrainParallelWaitsForEveryBranch(t *testing.T) {
+	const n = 3
+	release := make([]chan struct{}, n)
+	for i := range release {
+		release[i] = make(chan struct{})
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		drainParallel(
+			func() { <-release[0] },
+			func() { <-release[1] },
+			func() { <-release[2] },
+		)
+		close(finished)
+	}()
+
+	// Отпускаем только две ветки из трёх — drainParallel не имеет права
+	// вернуться, пока жива третья.
+	close(release[0])
+	close(release[1])
+	select {
+	case <-finished:
+		t.Fatal("drainParallel вернулась, не дождавшись всех веток")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release[2])
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("drainParallel не вернулась после завершения всех веток")
+	}
+}
+
+// TestIngestSignalsFinalFlushFitsDrainWindow (L, раунд правок по ревью
+// финревью волны 1 аудита перед 1.0): drainIngestSignals ждёт
+// Recorder.Run ingestSignalsDrainWindow, а Run() закрывает свой WaitGroup
+// только ПОСЛЕ финального Flush с бюджетом ingestsignal.FinalFlushTimeout —
+// значит окно ожидания обязано быть строго БОЛЬШЕ бюджета флаша, иначе
+// внешнее ожидание при медленной PG гарантированно проигрывало бы гонку
+// собственному флашу. Сверяет обе стороны отношения напрямую с
+// первоисточниками (константа cmd/gotcha и экспортированная константа
+// ingestsignal), а не копию с копией — правка одной стороны «для симметрии»
+// без другой обязана уронить этот тест.
+func TestIngestSignalsFinalFlushFitsDrainWindow(t *testing.T) {
+	if ingestsignal.FinalFlushTimeout >= ingestSignalsDrainWindow {
+		t.Fatalf("ingestsignal.FinalFlushTimeout (%s) >= ingestSignalsDrainWindow (%s): "+
+			"финальный флаш не успевает уложиться в окно, которым drain() ждёт Recorder.Run",
+			ingestsignal.FinalFlushTimeout, ingestSignalsDrainWindow)
+	}
+}
+
 // fakeWriterStats — писатель, рассказывающий о себе три числа (см. writerStats).
 type fakeWriterStats struct{ buffered, dropped, failures int64 }
 

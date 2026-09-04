@@ -303,3 +303,36 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 		}
 	}
 }
+
+// TestClearSuppressedByDepIsIdempotent (M3, финревью волны 1 аудита перед
+// 1.0): докблок ClearSuppressedByDep называет повторный вызов идемпотентным
+// — второй Clear на уже снятом подавлении обязан вернуть nil, а не
+// ErrNotFound (раньше отдавал его при RowsAffected()==0), симметрично
+// host.IncidentService.ClearSuppressed, который RowsAffected не смотрит
+// вовсе. На гонке двух реплик Detector.settleHeldIncident проигравшая
+// раньше получала ErrNotFound → Warn → return и пропускала settle этого
+// тика; мутация — вернуть проверку RowsAffected()==0/ErrNotFound — обязана
+// уронить второй вызов ниже.
+func TestClearSuppressedByDepIsIdempotent(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	inc, _, err := svc.OpenIncident(ctx, mon.ID, "boom", []string{"local"}, false)
+	if err != nil {
+		t.Fatalf("OpenIncident: %v", err)
+	}
+	if err := svc.MarkSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("MarkSuppressedByDep: %v", err)
+	}
+
+	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("первый ClearSuppressedByDep: %v", err)
+	}
+	// Повторный вызов на уже снятом подавлении — идемпотентный no-op.
+	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("повторный ClearSuppressedByDep = %v, want nil (идемпотентно)", err)
+	}
+}

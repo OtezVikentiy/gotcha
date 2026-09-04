@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The project settings page now shows when a sender is still using a
+  deprecated ingest address. Key rejections from the last hour — an invalid
+  or revoked key, a key from another project, a key of the wrong type — are
+  now shown on the empty issues list and in the getting-started checklist.
+
 ### Fixed
 - An escalation step running on two replicas could be delivered twice; a channel
   claims its step before it is sent now, not after, so only one replica ever sends
@@ -16,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stops the rest of the channels in the same digest from receiving it. An incident
   suppressed because its dependency was down now resumes escalation once the
   dependency recovers, instead of staying silent for good.
-- The instance administrator's account can no longer be deleted until the role
-  is transferred; the transfer form lives on the profile page.
+- While other users exist on the instance, the instance administrator's account
+  can no longer be deleted until the role is transferred; the transfer form
+  lives on the profile page. The sole user on an instance can still delete
+  their own account freely.
 - The issue export masks the assignee's email by default, like every other
   direct user identifier. Truncating an event export now drops the least
   active issue groups instead of arbitrary ones. A ClickHouse cursor that
@@ -31,10 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently dropped. The migration test suite now checks that rolling back
   each individual migration restores the exact prior schema shape, not just
   that rolling back the whole set leaves an empty database.
-- The project settings page now shows when a sender is still using a
-  deprecated ingest address. Key rejections from the last hour — an invalid
-  or revoked key, a key from another project, a key of the wrong type — are
-  now shown on the empty issues list and in the getting-started checklist.
 
 ## [0.34.0] - 2026-09-03
 

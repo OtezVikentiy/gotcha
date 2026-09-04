@@ -15,9 +15,13 @@ import (
 
 // profileDelete — POST /profile/delete: самоудаление аккаунта (право субъекта на
 // удаление своих ПДн, 152-ФЗ ст.14 / GDPR art.17). Двухшаговое подтверждение,
-// как у delete-org (под CSP без inline-JS confirm() невозможен). auth.DeleteUser
+// как у delete-org (под CSP без inline-JS confirm() невозможен). auth.DeleteSelfAccount
 // каскадно (FK) удаляет личности/членства/сессии. Блокируется, если юзер —
-// единственный владелец каких-то организаций: иначе они остались бы без владельца.
+// единственный владелец каких-то организаций (иначе они остались бы без владельца),
+// либо если юзер — единственный администратор инстанса, А НА ИНСТАНСЕ ЕСТЬ ДРУГИЕ
+// ПОЛЬЗОВАТЕЛИ (K7-1: передать роль некому, SSO организаций осталась бы недоступна
+// никому). Если пользователь на инстансе один — гейт не срабатывает: запирать
+// некого, а первый следующий зарегистрировавшийся сам станет администратором.
 func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -40,18 +44,6 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// K7-1: единственный администратор инстанса не может удалить свой
-	// аккаунт, не передав роль — иначе настройка SSO организаций (см.
-	// requireInstanceAdminForSSO) осталась бы недоступна никому.
-	admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	if admin {
-		h.renderError(w, r, http.StatusConflict, i18n.T(r.Context(), "profile.danger.delete_account.instance_admin"))
-		return
-	}
 	// Без confirmed=yes — страница подтверждения вместо удаления.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.account_delete.message",
@@ -59,22 +51,31 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Адрес читаем ДО удаления пользователя, а не после: currentEmail делает
-	// SELECT email FROM users WHERE id=$1, и после DeleteUser строки уже нет —
-	// запрос вернул бы пустую строку, а очистка приглашений ниже молча не
+	// SELECT email FROM users WHERE id=$1, и после DeleteSelfAccount строки уже
+	// нет — запрос вернул бы пустую строку, а очистка приглашений ниже молча не
 	// выполнялась бы вовсе (баг был именно таким: строку переставили под
-	// DeleteUser, и ветка не срабатывала ни разу). Если следующий читатель
+	// удаление, и ветка не срабатывала ни разу). Если следующий читатель
 	// снова передвинет чтение вниз «для симметрии» — тест
 	// TestProfileDeletePurgesPendingInvites это поймает.
 	var email string
 	if h.Org != nil {
 		email = h.currentEmail(r)
 	}
-	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
-		_ = h.Auth.DestroySession(r.Context(), token)
-	}
-	if err := h.Auth.DeleteUser(r.Context(), uid); err != nil {
+	// Гейт «единственный админ инстанса при наличии других пользователей»
+	// (K7-1) проверяется атомарно ВНУТРИ DeleteSelfAccount, в одной транзакции
+	// с самим удалением — поэтому сессию рвём только после успеха: иначе
+	// заблокированный гейтом админ терял бы сессию при попытке удаления,
+	// которая так и не состоялась.
+	if err := h.Auth.DeleteSelfAccount(r.Context(), uid); err != nil {
+		if errors.Is(err, auth.ErrInstanceAdminBlocked) {
+			h.renderError(w, r, http.StatusConflict, i18n.T(r.Context(), "profile.danger.delete_account.instance_admin"))
+			return
+		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
+	}
+	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
+		_ = h.Auth.DestroySession(r.Context(), token)
 	}
 	// Pending-инвайты на email пользователя не связаны с users по FK, поэтому
 	// каскад их не трогает — чистим отдельно (ПДн, минимизация). Best-effort:

@@ -234,6 +234,17 @@ func waitGroupWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 	}
 }
 
+// ingestSignalsDrainWindow — сколько drainIngestSignals ждёт Recorder.Run.
+// Названо константой (а не литералом на месте вызова), чтобы
+// TestIngestSignalsFinalFlushFitsDrainWindow мог сверить её с
+// ingestsignal.FinalFlushTimeout напрямую — копию с истиной, а не копию с
+// копией (L, раунд правок по ревью финревью волны 1 аудита перед 1.0):
+// Recorder.Run возвращается (и закрывает wg) только ПОСЛЕ финального Flush,
+// поэтому это окно обязано быть строго БОЛЬШЕ FinalFlushTimeout — иначе при
+// медленной PG внешнее ожидание гарантированно проигрывало бы гонку
+// собственному флашу ещё до того, как Run успеет вернуться.
+const ingestSignalsDrainWindow = 5 * time.Second
+
 // drainIngestSignals ждёт горутину Recorder.Run сигналов приёма (K7-5/K7-6)
 // перед тем, как drain() продолжит к pg.Close(): Run уже увидел <-ctx.Done()
 // и делает финальный Flush, но без этого ожидания он гонится с закрытием
@@ -241,9 +252,50 @@ func waitGroupWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 // окно, что у exportWorkersWG (см. P2-OPS-5) — вынесено отдельной функцией,
 // чтобы саму гарантию ожидания можно было проверить тестом без запуска run().
 func drainIngestSignals(wg *sync.WaitGroup) {
-	if !waitGroupWithTimeout(wg, 5*time.Second) {
+	if !waitGroupWithTimeout(wg, ingestSignalsDrainWindow) {
 		slog.Warn("ingest signals recorder did not stop within the shutdown window")
 	}
+}
+
+// closeBounded запускает closeFn в горутине и сообщает, успела ли она
+// завершиться за timeout (I3, финревью волны 1 аудита перед 1.0): нужен
+// закрывашкам без собственного ctx/дедлайна — сейчас единственная,
+// uptime.Runner.Close — чтобы зависшая остановка не растягивала drain()
+// дольше её бюджета. По превышении closeFn продолжает работать в
+// горутине-сироте (утечка до её собственного завершения), а drain() идёт
+// дальше — тот же компромисс, что уже принят для pipeline.Close/
+// waitGroupWithTimeout: не потерять весь процесс по SIGKILL дороже, чем
+// изредка не досчитаться самой последней записи опоздавшего писателя.
+func closeBounded(closeFn func(), timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		closeFn()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// drainParallel запускает каждую из branches в своей горутине и не
+// возвращается, пока ВСЕ не завершились (I3, финревью волны 1 аудита перед
+// 1.0) — вынесено из drain() отдельной функцией, чтобы само это свойство
+// (ожидание, а не только запуск) было проверяемо юнит-тестом без поднятия
+// run() целиком. drain() строит branches из независимых цепочек писателей —
+// см. её докблок про то, какие ветки можно параллелить, а какие нет.
+func drainParallel(branches ...func()) {
+	var dwg sync.WaitGroup
+	dwg.Add(len(branches))
+	for _, b := range branches {
+		go func() {
+			defer dwg.Done()
+			b()
+		}()
+	}
+	dwg.Wait()
 }
 
 // commonServicesEnabled — режимы, в которых run() строит общие сервисы
@@ -1518,65 +1570,114 @@ func run() error {
 		errCh <- srv.ListenAndServe()
 	}()
 
+	// drain останавливает все фоновые писатели/воркеры при завершении.
+	// Независимые цепочки ждутся ПАРАЛЛЕЛЬНО (I3, финревью волны 1 аудита
+	// перед 1.0): раньше все бюджеты складывались последовательно — сумма
+	// ограниченных ожиданий (без runner.Close(), который был вовсе без
+	// потолка) доросла до 90с, ровно stop_grace_period в docker-compose.yml
+	// — запаса не оставалось, и превышение любого бюджета гарантированно
+	// добивало остановку до SIGKILL. Верхняя граница сейчас (после
+	// srv.Shutdown, 10с, которое отрабатывает ДО вызова drain — см. select
+	// ниже) — max по параллельным веткам. Каждый Close(ctx) писателя сперва
+	// ждёт <-w.done (in-flight flushWithTimeout, до 10с своим бюджетом —
+	// event/batcher.go, trace/writer.go, metric/writer.go, log/writer.go,
+	// profile/writer.go, uptime/results.go), и лишь потом входит в свой
+	// ctx-ограниченный цикл долива — до 20с на писателя. Самая длинная
+	// цепочка pipeline→batcher→spanWriter: 10+20+20 = 50с. Итог 10+50 = 60с,
+	// с запасом 30с до 90с грейса.
+	//
+	// Параллелить можно только НЕЗАВИСИМЫЕ писатели — порядок внутри двух
+	// цепочек ниже сохранён, потому что он не декоративный:
+	//   - pipeline forward'ит задания в batcher (events) и spanWriter
+	//     (Pipeline.Spans = spanWriter, ingest.NewPipeline(_, batcher)):
+	//     закрыть их раньше pipeline.Close() значило бы, что воркер
+	//     пайплайна мог бы писать в уже закрытый писатель;
+	//   - runner пишет результаты проверок в uptimeWriter
+	//     (Runner.Writer, Ingestor.Accept → Writer.Add): та же причина.
+	// metricWriter/profileWriter/logWriter пишутся НАПРЯМУЮ из
+	// ingest-хендлера (ingestHandler.Metrics/Profiles/Logs), в обход
+	// pipeline, — их закрытие ни от чего из перечисленного не зависит.
 	drain := func() {
-		if pipeline != nil {
-			// Тот же бюджет, что у остальных писателей ниже: без дедлайна деградация
-			// PostgreSQL держала бы shutdown до ~20 минут, и внешний
-			// stop_grace_period успел бы убить процесс раньше их дренажа.
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := pipeline.Close(cctx); err != nil {
-				slog.Warn("ingest pipeline drain incomplete", "error", err)
-			}
-			cancel()
-		}
-		if batcher != nil {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := batcher.Close(cctx); err != nil {
-				slog.Error("event batcher drain failed", "error", err)
-			}
-		}
-		if spanWriter != nil {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := spanWriter.Close(cctx); err != nil {
-				slog.Error("span writer drain failed", "error", err)
-			}
+		var branches []func()
+
+		if pipeline != nil || batcher != nil || spanWriter != nil {
+			branches = append(branches, func() {
+				if pipeline != nil {
+					// Тот же бюджет, что у остальных писателей: без дедлайна
+					// деградация PostgreSQL держала бы shutdown до ~20 минут.
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := pipeline.Close(cctx); err != nil {
+						slog.Warn("ingest pipeline drain incomplete", "error", err)
+					}
+					cancel()
+				}
+				if batcher != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := batcher.Close(cctx); err != nil {
+						slog.Error("event batcher drain failed", "error", err)
+					}
+				}
+				if spanWriter != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := spanWriter.Close(cctx); err != nil {
+						slog.Error("span writer drain failed", "error", err)
+					}
+				}
+			})
 		}
 		if metricWriter != nil {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := metricWriter.Close(cctx); err != nil {
-				slog.Error("metric writer drain failed", "error", err)
-			}
+			branches = append(branches, func() {
+				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := metricWriter.Close(cctx); err != nil {
+					slog.Error("metric writer drain failed", "error", err)
+				}
+			})
 		}
 		if profileWriter != nil {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := profileWriter.Close(cctx); err != nil {
-				slog.Error("profile writer drain failed", "error", err)
-			}
+			branches = append(branches, func() {
+				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := profileWriter.Close(cctx); err != nil {
+					slog.Error("profile writer drain failed", "error", err)
+				}
+			})
 		}
 		if logWriter != nil {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := logWriter.Close(cctx); err != nil {
-				slog.Error("log writer drain failed", "error", err)
-			}
+			branches = append(branches, func() {
+				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := logWriter.Close(cctx); err != nil {
+					slog.Error("log writer drain failed", "error", err)
+				}
+			})
 		}
 		// Аккумулятор сигналов приёма (K7-5/K7-6): ctx уже отменён (см. select
 		// ниже), Run() уже увидел <-ctx.Done() и делает финальный Flush — см.
 		// drainIngestSignals.
-		drainIngestSignals(&ingestSignalsWG)
-		if runner != nil {
-			runner.Close()
-		}
-		if uptimeWriter != nil {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := uptimeWriter.Close(cctx); err != nil {
-				slog.Error("uptime result writer drain failed", "error", err)
-			}
+		branches = append(branches, func() {
+			drainIngestSignals(&ingestSignalsWG)
+		})
+		if runner != nil || uptimeWriter != nil {
+			branches = append(branches, func() {
+				if runner != nil {
+					// runner.Close() у самого Runner без ctx (докблок
+					// «идемпотентен» — внутренний контракт здесь не
+					// меняется), ограничиваем на месте вызова.
+					if !closeBounded(runner.Close, 10*time.Second) {
+						slog.Warn("uptime runner did not stop within the shutdown window")
+					}
+				}
+				if uptimeWriter != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := uptimeWriter.Close(cctx); err != nil {
+						slog.Error("uptime result writer drain failed", "error", err)
+					}
+				}
+			})
 		}
 		// Воркер/джанитор выгрузок (P2-OPS-5): ctx уже отменён к этому моменту
 		// (см. select ниже), сами они завершаются быстро — тик воркера видит
@@ -1586,10 +1687,14 @@ func run() error {
 		// дописать строку в PG до того, как процесс убьют. Окно небольшое
 		// (5с, не 15 минут jobTimeout) — ждать саму сборку файла нельзя, это
 		// сорвало бы деплой; 5с с запасом хватает release()/detachTimeout()
-		// (см. их докблоки), а stop_grace_period в docker-compose — 90с.
-		if !waitGroupWithTimeout(&exportWorkersWG, 5*time.Second) {
-			slog.Warn("export worker/janitor did not stop within the shutdown window")
-		}
+		// (см. их докблоки).
+		branches = append(branches, func() {
+			if !waitGroupWithTimeout(&exportWorkersWG, 5*time.Second) {
+				slog.Warn("export worker/janitor did not stop within the shutdown window")
+			}
+		})
+
+		drainParallel(branches...)
 	}
 
 	select {

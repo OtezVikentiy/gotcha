@@ -367,74 +367,119 @@ func (q *Query) Sparklines(ctx context.Context, projectID int64, issueIDs []int6
 // StreamForExport читает события выгрузки (internal/export, kind=events)
 // ГРУППАМИ в ПОРЯДКЕ СПИСКА issueIDs, внутри группы — timestamp DESC (K4-2,
 // аудит перед 1.0): вызывающий передаёт issueIDs уже отсортированным
-// (source_events.go: last_seen DESC — самые активные группы первыми), а
-// limit — защитный потолок строк, который на большой выгрузке реально
-// отсекает часть групп. Раньше сортировка шла по возрастанию issue_id, то
-// есть по НОМЕРУ, не связанному с активностью группы: усечение LIMIT
-// отбрасывало произвольные группы (какие именно — от порядка автоинкремента
-// id, а не от того, что важнее пользователю) вместо наименее активных.
+// (source_events.go: last_seen DESC — самые активные группы первыми).
+// Про limit — ниже отдельным абзацем: на большой выгрузке он реально
+// отсекает часть групп, и важно, КАКИЕ именно.
 //
-// Ранг группы в списке вычисляется через transform(issue_id, ids, ranks,
-// len(ids)) — хеш-таблица, построенная ClickHouse один раз на запрос,
-// O(1) на строку. indexOf(ids, issue_id) — единственная альтернатива без
-// материализации ранга отдельным массивом — O(n) на строку (линейный
-// поиск по массиву), что на maxIssueIDs в тысячи групп (source_events.go)
-// умножает стоимость сортировки на размер списка. default-значение
-// len(ids) для issue_id вне списка недостижимо: WHERE issue_id IN (?) уже
-// отсекает всё, чего в ids нет.
+// Группа обходится ОДНИМ запросом НА issue_id, а не общим IN(...) с общим
+// ORDER BY: issue_id в этом запросе — равенство, а не список, поэтому
+// ORDER BY timestamp DESC — суффикс первичного ключа events
+// (project_id, issue_id, timestamp) для ФИКСИРОВАННОГО issue_id, и
+// ClickHouse читает страницы в порядке PK (в т.ч. в обратном для DESC),
+// без материализации и сортировки набора целиком — ровно то свойство,
+// ради которого раньше сортировка шла по issue_id, timestamp DESC (I2,
+// финревью волны 1 аудита перед 1.0).
+//
+// Раньше (до K4-2) общий запрос сортировал по issue_id ASC — по НОМЕРУ, не
+// связанному с активностью группы: усечение LIMIT отбрасывало произвольные
+// группы (какие именно — от порядка автоинкремента id, а не от того, что
+// важнее пользователю) вместо наименее активных. K4-2 заменил ключ на transform(issue_id, ids, ranks, len(ids))
+// — вычисляемое выражение, которое исключает read-in-order при ЛЮБОЙ
+// версии ClickHouse: сервер обязан прочитать и отсортировать весь
+// отфильтрованный набор целиком, держа top-N буфер размером до limit
+// (eventStreamSafetyLimit = 1_000_000 в source_events.go) ШИРОКИХ строк —
+// storedColumns включает stacktrace/breadcrumbs/contexts/request. На
+// крупном проекте без max_bytes_before_external_sort/max_memory_usage
+// (в проекте не заданы нигде) это MEMORY_LIMIT_EXCEEDED вместо файла
+// выгрузки. Обход по одной группе за раз даёт тот же порядок строк за счёт
+// того, что группы уже идут в порядке списка issueIDs (вызывающий
+// сортирует их сам — last_seen DESC, самые активные первыми), просто
+// последовательными запросами вместо одного вычисляемого ключа сортировки:
+// каждый запрос — точечный поиск по PK, дешёвый даже на огромной таблице
+// (индекс отсекает гранулы всех остальных issue_id), а remaining ниже
+// прекращает обход, как только исчерпан limit, — без похода за оставшимися
+// (наименее активными) группами вовсе.
 //
 // since/until нулевые — граница не задаётся: источник выгрузки строит их из
 // Params, где нулевое значение уже значит «без границы» (issue.Filter следует
 // тому же соглашению).
 //
-// limit — защитный потолок строк ОДНОГО запроса (eventStreamSafetyLimit в
-// source_events.go); обрезку по бюджету заявки (GOTCHA_EXPORT_MAX_ROWS/
-// MAX_BYTES) делает вызывающий раннер, останавливая обход возвратом ошибки
-// из fn, а не эта функция.
+// limit — защитный потолок строк ВСЕГО обхода (eventStreamSafetyLimit в
+// source_events.go), не одного запроса на группу: remaining уменьшается по
+// факту отданных строк и передаётся следующему запросу как ЕГО собственный
+// LIMIT, так что сумма строк по всем группам не превышает limit. Обрезку
+// по бюджету заявки (GOTCHA_EXPORT_MAX_ROWS/MAX_BYTES) делает вызывающий
+// раннер, останавливая обход возвратом ошибки из fn, а не эта функция.
+//
+// Цена пустых групп реальна и измерена (раунд правок по ревью финревью
+// волны 1 аудита перед 1.0, F5): на testenv.MigratedCH 1000 групп (999
+// пустых) — 4.866с всего, 4.87мс на пустой round-trip; при потолке
+// defaultMaxIssueIDsForEventExport = 20 000 — ≈97с чистых round-trip'ов на
+// пустые группы даже на простаивающем локальном сервере. Отсечка «не
+// запрашивать группу с last_seen < since» здесь БЫЛА добавлена и ОТКАЧЕНА:
+// каждая issueID, доехавшая сюда из source_events.go.resolveIssueIDs, уже
+// прошла через issue.Service.buildIssueFilter, который САМ добавляет
+// `issues.last_seen >= $n` из ТОГО ЖЕ since, когда он задан — то есть
+// last_seen < since для доехавшей сюда группы уже невозможен (а при since
+// нулевом граница вовсе не задана ни на одном уровне). Цена остаётся
+// некомпенсированной на этом уровне — годного источника last_seen СТРОЖЕ
+// уже применённого PG-фильтра здесь нет (см. докблок resolveIssueIDs).
 func (q *Query) StreamForExport(ctx context.Context, projectID int64, issueIDs []int64,
 	since, until time.Time, limit int, fn func(Stored) error) error {
-	if len(issueIDs) == 0 {
-		return nil
-	}
-	ids := make([]uint64, len(issueIDs))
-	ranks := make([]uint32, len(issueIDs))
-	for i, id := range issueIDs {
-		ids[i] = uint64(id)
-		ranks[i] = uint32(i)
-	}
+	remaining := limit
+	for _, issueID := range issueIDs {
+		if remaining <= 0 {
+			break
+		}
 
-	query := `SELECT ` + storedColumns + `
-		FROM events
-		WHERE project_id = ? AND issue_id IN (?)`
-	args := []any{uint64(projectID), ids}
-	if !since.IsZero() {
-		query += ` AND timestamp >= ?`
-		args = append(args, since)
-	}
-	if !until.IsZero() {
-		query += ` AND timestamp < ?`
-		args = append(args, until)
-	}
-	query += ` ORDER BY transform(issue_id, ?, ?, ?), timestamp DESC LIMIT ?`
-	args = append(args, ids, ranks, uint32(len(ids)), limit)
+		query := `SELECT ` + storedColumns + `
+			FROM events
+			WHERE project_id = ? AND issue_id = ?`
+		args := []any{uint64(projectID), uint64(issueID)}
+		if !since.IsZero() {
+			query += ` AND timestamp >= ?`
+			args = append(args, since)
+		}
+		if !until.IsZero() {
+			query += ` AND timestamp < ?`
+			args = append(args, until)
+		}
+		query += ` ORDER BY timestamp DESC LIMIT ?`
+		args = append(args, remaining)
 
+		n, err := q.streamOneIssue(ctx, query, args, fn)
+		if err != nil {
+			return err
+		}
+		remaining -= n
+	}
+	return nil
+}
+
+// streamOneIssue выполняет один запрос StreamForExport (одна группа) и
+// возвращает число строк, реально отданных fn — им StreamForExport уменьшает
+// remaining. Вынесено отдельно, чтобы rows.Close() отрабатывал на каждой
+// группе сразу (defer в цикле копил бы все rows до возврата функции).
+func (q *Query) streamOneIssue(ctx context.Context, query string, args []any, fn func(Stored) error) (int, error) {
 	rows, err := q.conn.Query(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("stream for export: %w", err)
+		return 0, fmt.Errorf("stream for export: %w", err)
 	}
 	defer rows.Close()
 
+	n := 0
 	for rows.Next() {
 		s, err := scanStored(rows)
 		if err != nil {
-			return fmt.Errorf("stream for export scan: %w", err)
+			return n, fmt.Errorf("stream for export scan: %w", err)
 		}
 		if err := fn(s); err != nil {
-			return err
+			return n, err
 		}
+		n++
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("stream for export: %w", err)
+		return n, fmt.Errorf("stream for export: %w", err)
 	}
-	return nil
+	return n, nil
 }

@@ -332,7 +332,7 @@ took. A dead or stuck janitor looks like "nothing to clean up" from the
 outside — the export directory's disk budget never frees up, and the request
 history grows without bound. The pass runs once an hour; a gap noticeably
 larger than that means cleanup has stopped. These metrics are absent
-wherever `gotcha_export_queue_*` is (`--mode=ingest`).
+wherever `gotcha_export_queue_*` is absent (`--mode=ingest`).
 
 **`gotcha_memory_limit_bytes`** — the heap ceiling derived from the container's
 memory limit (80% of it). Zero means there is no limit: buffers will grow until

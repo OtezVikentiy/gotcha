@@ -1169,7 +1169,7 @@
     "profile.danger.delete_account.sole_owner": "Cannot delete your account: you are the sole owner of these organizations: {orgs}. Transfer ownership to another member or delete those organizations first.",
     "profile.danger.delete_account.instance_admin": "Cannot delete your account: you are the instance administrator. Transfer the role to another user in the \"Instance admin\" section first.",
     "profile.instance_admin.title": "Instance admin",
-    "profile.instance_admin.hint": "This role configures and removes SSO for organizations (see the docs). The account cannot be deleted until the role is transferred to another user.",
+    "profile.instance_admin.hint": "This role configures and removes SSO for organizations (see the docs). While other users exist on the instance, the account cannot be deleted until the role is transferred to another user.",
     "profile.instance_admin.email_label": "New administrator's email",
     "profile.instance_admin.transfer_button": "Transfer role",
     "profile.instance_admin.err_email_required": "Enter the email of the user to transfer the role to",

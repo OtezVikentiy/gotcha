@@ -106,6 +106,18 @@ func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64,
 // CH-фильтр без похода в PG: заявка уже указывает конкретный id. «Проект с
 // фильтрами» — id резолвятся из PG тем же Filter, что видел пользователь на
 // экране списка issues (buildIssueFilter, общий с issue.List/StreamForExport).
+//
+// Отсечка StreamForExport по last_seen (рассматривалась, откачена в раунде
+// правок по ревью финревью волны 1 аудита перед 1.0) на этом уровне
+// бессмысленна: buildIssueFilter уже добавляет `issues.last_seen >= $n` из
+// ЭТОГО ЖЕ p.Since (см. Filter.Since ниже), когда он задан — то есть каждая
+// группа, доехавшая до issueIDs, УЖЕ имеет last_seen >= p.Since, и «отсечь
+// группы с last_seen < since» здесь не может сработать ни разу; при
+// p.Since нулевом граница вовсе не задаётся ни на одном уровне. Цена
+// пустых точечных запросов в StreamForExport (см. её докблок — 4.87мс на
+// пустой round-trip, ≈97с на потолке 20 000 групп) реальна, но не лечится
+// отсечкой НА ЭТОМ уровне — годного источника last_seen, который был бы
+// СТРОЖЕ уже применённого PG-фильтра, здесь нет.
 func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssueID int64, p Params) ([]int64, error) {
 	if scopeIssueID != 0 {
 		return []int64{scopeIssueID}, nil

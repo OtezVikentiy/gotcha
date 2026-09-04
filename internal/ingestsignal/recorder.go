@@ -17,12 +17,24 @@ const (
 	// перебора project_id в URL атакующим: без него карта росла бы без
 	// границы между тиками.
 	defaultMaxPending = 4096
-	// finalFlushTimeout — бюджет detached-контекста финального Flush при
-	// остановке процесса (тот же приём, что detachTimeout в internal/export/
-	// worker.go): ctx.Done() уже наступил, но запись накопленного с
-	// последнего тика обязана дойти до PG, а не оборваться вместе с ним.
-	finalFlushTimeout = 5 * time.Second
 )
+
+// FinalFlushTimeout — бюджет detached-контекста финального Flush при
+// остановке процесса (тот же приём, что detachTimeout в internal/export/
+// worker.go): ctx.Done() уже наступил, но запись накопленного с последнего
+// тика обязана дойти до PG, а не оборваться вместе с ним.
+//
+// Строго МЕНЬШЕ окна, которым drainIngestSignals (cmd/gotcha/main.go) ждёт
+// саму горутину Run — ingestSignalsDrainWindow, 5с (M1/L, финревью волны 1
+// аудита перед 1.0): Run() возвращается (и закрывает свой WaitGroup) уже
+// ПОСЛЕ того, как этот таймаут истечёт или Flush завершится раньше, так что
+// при равных значениях внешнее ожидание при медленной PG гарантированно
+// проигрывало бы гонку собственному флашу ещё до того, как Run успеет
+// вернуться — drain() уходил бы в Warn, пока Flush ещё в полёте. Экспортирован
+// (а не unexported-константа с ручным дублированием числа в cmd/gotcha),
+// чтобы TestIngestSignalsFinalFlushFitsDrainWindow сверял это отношение с
+// первоисточником, а не с переписанной копией.
+const FinalFlushTimeout = 4 * time.Second
 
 // pendingKey — ключ карты накопления Recorder: одна пара (project_id, kind).
 type pendingKey struct {
@@ -126,7 +138,7 @@ func (r *Recorder) Flush(ctx context.Context) error {
 // Run крутит тикер FlushEvery до отмены ctx. Ошибка тика логируется и не
 // останавливает цикл — следующий тик просто попробует снова (как
 // export.Janitor.Run). На ctx.Done() делает финальный Flush detached-
-// контекстом с бюджетом finalFlushTimeout: накопленное с последнего тика не
+// контекстом с бюджетом FinalFlushTimeout: накопленное с последнего тика не
 // должно молча теряться при штатной остановке процесса (SIGTERM/деплой).
 func (r *Recorder) Run(ctx context.Context) {
 	interval := r.FlushEvery
@@ -139,7 +151,7 @@ func (r *Recorder) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalFlushTimeout)
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), FinalFlushTimeout)
 			if err := r.Flush(fctx); err != nil {
 				slog.Warn("ingestsignal: recorder: final flush", "err", err)
 			}

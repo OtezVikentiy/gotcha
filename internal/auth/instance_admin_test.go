@@ -204,3 +204,91 @@ func TestTransferInstanceAdminRollsBackWhenGrantFails(t *testing.T) {
 		t.Fatalf("B IsInstanceAdmin after failed grant = (%v,%v), want (false,nil)", admin, err)
 	}
 }
+
+// TestDeleteSelfAccountLocksInstanceAdminFlag (F3, раунд правок по ревью
+// финревью волны 1 аудита перед 1.0): FOR UPDATE в SELECT is_instance_admin
+// сериализует DeleteSelfAccount с конкурентной grant-половиной
+// TransferInstanceAdmin. Наивный тест «блокируется ли вызов вообще» мутанта
+// (снятие FOR UPDATE) не отличит: без FOR UPDATE SELECT проходит РАНЬШЕ
+// коммита конкурентной транзакции (читает старое значение), но последующий
+// DELETE FROM users всё равно упирается в тот же лок строки — вызов виснет
+// в обоих случаях. Различие — в ИТОГЕ после коммита: с FOR UPDATE SELECT
+// дожидается коммита, видит is_instance_admin=true и возвращает
+// ErrInstanceAdminBlocked, A не удаляется; без FOR UPDATE проверка уже
+// пройдена по старому (false) значению, и DELETE, дождавшись лока, просто
+// удаляет A.
+//
+// Сценарий: B — единственный админ инстанса (первый зарегистрированный), A —
+// обычный пользователь. Внешняя транзакция делает НЕЗАКОММИЧЕННЫЙ
+// UPDATE users SET is_instance_admin = true WHERE id = A (ровно grant-
+// половина TransferInstanceAdmin, держит эксклюзивный лок строки A);
+// конкурентно вызывается DeleteSelfAccount(A); внешняя транзакция
+// коммитится.
+func TestDeleteSelfAccountLocksInstanceAdminFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := auth.NewService(pool)
+	bg := context.Background()
+
+	uidB, err := svc.Register(bg, "delete-lock-b@example.com", "password12")
+	if err != nil {
+		t.Fatalf("Register B: %v", err)
+	}
+	uidA, err := svc.Register(bg, "delete-lock-a@example.com", "password12")
+	if err != nil {
+		t.Fatalf("Register A: %v", err)
+	}
+
+	// one_instance_admin (0017) — частичный UNIQUE на is_instance_admin: как
+	// и настоящий TransferInstanceAdmin, сперва снимаем флаг у B, потом
+	// ставим A — иначе конфликт индекса ещё до коммита.
+	grantTx, err := pool.Begin(bg)
+	if err != nil {
+		t.Fatalf("begin grant tx: %v", err)
+	}
+	defer grantTx.Rollback(bg)
+	if _, err := grantTx.Exec(bg, "UPDATE users SET is_instance_admin = false WHERE id = $1", uidB); err != nil {
+		t.Fatalf("release half: %v", err)
+	}
+	if _, err := grantTx.Exec(bg, "UPDATE users SET is_instance_admin = true WHERE id = $1", uidA); err != nil {
+		t.Fatalf("grant half: %v", err)
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- svc.DeleteSelfAccount(bg, uidA)
+	}()
+
+	// DeleteSelfAccount обязана застрять на локе строки A (на SELECT ... FOR
+	// UPDATE — с фиксом; на самом DELETE — без него), пока grantTx не
+	// закоммичена. Короткая пауза исключает случайное прохождение раньше.
+	select {
+	case err := <-deleteDone:
+		t.Fatalf("DeleteSelfAccount вернулась до коммита grant-транзакции (err=%v) — вызов не заблокирован на строке A", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := grantTx.Commit(bg); err != nil {
+		t.Fatalf("commit grant tx: %v", err)
+	}
+
+	var deleteErr error
+	select {
+	case deleteErr = <-deleteDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeleteSelfAccount не вернулась после коммита grant-транзакции")
+	}
+
+	if !errors.Is(deleteErr, auth.ErrInstanceAdminBlocked) {
+		t.Fatalf("DeleteSelfAccount после конкурентного grant = %v, want ErrInstanceAdminBlocked", deleteErr)
+	}
+	var stillExists bool
+	if err := pool.QueryRow(bg, "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)", uidA).Scan(&stillExists); err != nil {
+		t.Fatalf("check A exists: %v", err)
+	}
+	if !stillExists {
+		t.Fatal("A удалён, хотя DeleteSelfAccount вернула ErrInstanceAdminBlocked")
+	}
+}
