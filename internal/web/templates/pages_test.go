@@ -774,3 +774,47 @@ func TestIncidentsPagerOnEmptyPage(t *testing.T) {
 		t.Errorf("не должно быть счётчика при total=0:\n%s", out)
 	}
 }
+
+// TestIssuesUntitledFallback — issue с пустым title (событие без exception/
+// message/transaction/logger): список рисует локализованную заглушку и в
+// ссылке, и в aria-label чекбокса массовых действий, деталь — в <h1> и
+// <title>. Пустой aria-label и пустой <h1> недопустимы ни при каком входе.
+func TestIssuesUntitledFallback(t *testing.T) {
+	untitled := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "issues.untitled")
+	if untitled == "" || untitled == "issues.untitled" {
+		t.Fatalf("ключ issues.untitled должен быть в каталоге: %q", untitled)
+	}
+	now := time.Now()
+
+	rows := []IssueRow{{Issue: issue.Issue{ID: 9, Title: "", Level: "error", Status: "unresolved", TimesSeen: 1, FirstSeen: now, LastSeen: now}, Sparkline: stub()}}
+	list := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{ProjectID: 7, Done: 3, Step2Done: true}, true, true))
+	if strings.Contains(list, `aria-label=""`) {
+		t.Error("список: пустой aria-label у чекбокса массовых действий")
+	}
+	if !strings.Contains(list, `aria-label="`+untitled+`"`) {
+		t.Errorf("список: aria-label чекбокса должен нести заглушку %q", untitled)
+	}
+	if !strings.Contains(list, `">`+untitled+`</a>`) {
+		t.Errorf("список: ссылка на issue должна нести заглушку %q", untitled)
+	}
+
+	it := issue.Issue{ID: 9, Title: "", Level: "error", Status: "unresolved", TimesSeen: 1, FirstSeen: now, LastSeen: now}
+	ev := event.Stored{ID: "ev1", Level: "error", Message: ""}
+	detail := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true))
+	if strings.Contains(detail, "<h1></h1>") {
+		t.Error("деталь: пустой <h1>")
+	}
+	if !strings.Contains(detail, "<h1>"+untitled+"</h1>") {
+		t.Errorf("деталь: <h1> должен нести заглушку %q", untitled)
+	}
+	if !strings.Contains(detail, "<title>"+untitled+" · Gotcha</title>") {
+		t.Errorf("деталь: <title> должен нести заглушку %q", untitled)
+	}
+
+	// Непустой заголовок заглушкой не подменяется.
+	rows[0].Issue.Title = "NPE"
+	list = renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{ProjectID: 7, Done: 3, Step2Done: true}, true, true))
+	if !strings.Contains(list, `aria-label="NPE"`) || strings.Contains(list, untitled) {
+		t.Error("список: непустой заголовок должен рисоваться как есть")
+	}
+}

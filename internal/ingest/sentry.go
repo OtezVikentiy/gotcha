@@ -140,6 +140,12 @@ type ParsedEvent struct {
 	// пайплайне), парсится к показу на детали issue.
 	RequestJSON string
 	Fingerprint []string
+	// Transaction/Logger — верхнеуровневые transaction и logger события:
+	// фолбэки заголовка, когда нет ни exception, ни message (см.
+	// titleAndCulprit). Выдумывать заголовок константой нельзя — это подделка
+	// данных; если пусто и здесь, Title остаётся пустым, заглушку рисует UI.
+	Transaction string
+	Logger      string
 	Title       string
 	Culprit     string
 	// TraceID/SpanID — из contexts.trace: SDK кладут их в событие, когда
@@ -174,6 +180,8 @@ type sentryEvent struct {
 	Environment string          `json:"environment"`
 	Release     string          `json:"release"`
 	ServerName  string          `json:"server_name"`
+	Transaction string          `json:"transaction"`
+	Logger      string          `json:"logger"`
 	SDK         *struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
@@ -204,6 +212,8 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 		Environment: capRunes(se.Environment, 200),
 		Release:     capRunes(se.Release, 200),
 		ServerName:  capRunes(se.ServerName, 200),
+		Transaction: capRunes(se.Transaction, 200),
+		Logger:      capRunes(se.Logger, 200),
 		Fingerprint: capFingerprint(se.Fingerprint),
 		Tags:        map[string]string{},
 	}
@@ -429,8 +439,19 @@ func titleAndCulprit(pe *ParsedEvent) (title, culprit string) {
 			last := frames[len(frames)-1]
 			culprit = last.Module + "." + last.Function
 		}
-	} else {
+	}
+	// Фолбэки заголовка: message (первая строка), затем реальные поля события
+	// — transaction и logger. Пустой exception без type/value тоже сюда. Если
+	// пусто везде, заголовок остаётся пустым: подделывать его константой в
+	// данных нельзя, заглушку рисует интерфейс.
+	if title == "" {
 		title, _, _ = strings.Cut(pe.Message, "\n")
+	}
+	if title == "" {
+		title = pe.Transaction
+	}
+	if title == "" {
+		title = pe.Logger
 	}
 	if r := []rune(title); len(r) > 200 {
 		title = string(r[:200])

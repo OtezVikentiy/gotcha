@@ -181,6 +181,7 @@
     "issues.table.last_seen": "Last seen",
     "issues.table.status": "Status",
     "issues.table.assignee": "Assignee",
+    "issues.untitled": "Untitled event",
     "issues.empty.title": "No issues yet",
     "issues.empty.body": "Connect your project DSN to start receiving events.",
     "issues.empty.cta": "Connect DSN",

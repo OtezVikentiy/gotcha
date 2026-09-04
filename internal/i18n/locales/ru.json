@@ -181,6 +181,7 @@
     "issues.table.last_seen": "Последнее",
     "issues.table.status": "Статус",
     "issues.table.assignee": "Ответственный",
+    "issues.untitled": "Событие без заголовка",
     "issues.empty.title": "Проблем пока нет",
     "issues.empty.body": "Подключите DSN проекта, чтобы начать приём событий.",
     "issues.empty.cta": "Подключить DSN",

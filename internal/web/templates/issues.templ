@@ -101,6 +101,17 @@ func issueLevelLabel(ctx context.Context, level string) string {
 	return level
 }
 
+// issueTitle — заголовок issue для списка и детали. Приём оставляет title
+// пустым, когда у события нет ни exception, ни message, ни transaction, ни
+// logger (данные не подделываются); пустая ссылка и пустой aria-label — это
+// невидимый элемент, поэтому заглушку рисует интерфейс.
+func issueTitle(ctx context.Context, title string) string {
+	if title == "" {
+		return i18n.T(ctx, "issues.untitled")
+	}
+	return title
+}
+
 // issueStatusLabel — локализованное имя статуса issue/perf-issue (unresolved/
 // resolved/ignored). Неизвестный статус возвращается как есть.
 func issueStatusLabel(ctx context.Context, status string) string {
@@ -356,11 +367,11 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 														// aria-label обязателен: без него скринридер объявляет
 														// «флажок, не отмечен», не сказав, о какой проблеме речь,
 														// и массовые действия становятся выбором вслепую.
-														<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ row.Issue.Title }/>
+														<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ issueTitle(ctx, row.Issue.Title) }/>
 													</td>
 													<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
 													<td>
-														<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
+														<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ issueTitle(ctx, row.Issue.Title) }</a>
 														if row.Issue.Culprit != "" {
 															<div class="culprit">{ row.Issue.Culprit }</div>
 														}
