@@ -164,6 +164,16 @@ it will be removed in 1.0 together with the deprecated paths themselves. Do not
 build a long-lived dashboard or alert on it — unlike the rest of the metrics on
 this page, its name is not part of the 1.0 observability contract.
 
+**`gotcha_metric_points_clock_skew_total`** — metric points that arrived with a
+timestamp from the future and were clamped to the receive time. To charts and
+threshold rules a point from the future is otherwise as good as lost — a host
+whose clock runs ahead would silently drop out of evaluation. Growth means some
+sender's clock (an agent, an exporter) is ahead of the server's; which host is
+in the log: for a lead of a minute or more the product writes a warning (at
+most once a minute) with the host name, the number of points and the largest
+lead over the period. The fix is time synchronisation on the sender
+(`chrony`/`ntpd`).
+
 **`gotcha_pipeline_dropped_tasks_total{reason="…"}`** — events and transactions
 the pipeline threw away. Also unrecoverable. The `reason` label tells you what to
 fix:

@@ -398,3 +398,87 @@ func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
 	}
 }
+
+// TestEvaluatorNoDataInWindowLeavesIncidentsAlone — K3-7: пустое окно
+// агрегата (ok=false) — не значение 0, а отсутствие решения: инцидент не
+// открывается и открытый не закрывается. Два правила по одной метрике:
+// «lt 100» ловит ложное ОТКРЫТИЕ (0 < 100 открыло бы инцидент, будь пустое
+// окно нулём), «gt 100» — ложное ЗАКРЫТИЕ (0 <= 95 закрыло бы открытый).
+func TestEvaluatorNoDataInWindowLeavesIncidentsAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	ctx := context.Background()
+
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	rules := metric.NewRuleService(pool)
+	incidents := metric.NewIncidentService(pool)
+	projectID := seedProject(t, pool)
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("channel: %v", err)
+	}
+	below, err := rules.Create(ctx, metric.Rule{
+		ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "lt",
+		Threshold: 100, WindowSeconds: 300, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("rule lt: %v", err)
+	}
+	above, err := rules.Create(ctx, metric.Rule{
+		ProjectID: projectID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt",
+		Threshold: 100, WindowSeconds: 300, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("rule gt: %v", err)
+	}
+	eval := &metric.Evaluator{
+		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
+		Notifier: &metric.MetricNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Incidents: incidents, Rules: rules, Pool: pool},
+		Policy:   escalation.NewPolicyStore(pool),
+		Pool:     pool,
+		Interval: time.Hour,
+	}
+
+	// Ни одной точки: ни одно правило не открывает инцидент, уведомлений нет.
+	eval.Tick(ctx)
+	if _, open, _ := incidents.OpenFor(ctx, below.ID); open {
+		t.Fatalf("lt rule opened an incident on an empty window")
+	}
+	if _, open, _ := incidents.OpenFor(ctx, above.ID); open {
+		t.Fatalf("gt rule opened an incident on an empty window")
+	}
+	if jobs, _ := ob.Claim(ctx, 10); len(jobs) != 0 {
+		t.Fatalf("empty window produced %d notify jobs, want 0", len(jobs))
+	}
+
+	// 150 > 100: gt-правило открывает инцидент, lt — нет.
+	seedMetricGauge(t, ch, projectID, "cpu", 150, time.Minute)
+	eval.Tick(ctx)
+	if _, open, _ := incidents.OpenFor(ctx, above.ID); !open {
+		t.Fatalf("gt rule must open on 150 > 100")
+	}
+	if jobs, _ := ob.Claim(ctx, 10); len(jobs) != 1 {
+		t.Fatalf("open produced %d notify jobs, want 1", len(jobs))
+	}
+
+	// Данные пропали: открытый инцидент остаётся открытым, закрытого не
+	// появляется, уведомлений нет.
+	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	eval.Tick(ctx)
+	if _, open, _ := incidents.OpenFor(ctx, above.ID); !open {
+		t.Fatalf("gt incident was closed by an empty window; no data is not a recovery")
+	}
+	if _, open, _ := incidents.OpenFor(ctx, below.ID); open {
+		t.Fatalf("lt rule opened an incident on an empty window after data vanished")
+	}
+	if jobs, _ := ob.Claim(ctx, 10); len(jobs) != 0 {
+		t.Fatalf("empty window after data vanished produced %d notify jobs, want 0", len(jobs))
+	}
+}

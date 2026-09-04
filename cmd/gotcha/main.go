@@ -1188,6 +1188,13 @@ func run() error {
 		metricWriter = metric.NewWriter(ch)
 		metricWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "metrics", metricWriter)
+		// Точки со временем из будущего приводятся к моменту приёма (см.
+		// metric.pointTime): для читателей они иначе равны потерянным. Счётчик
+		// делает спешащие часы отправителя видимыми; имя хоста — в логе, не
+		// в метке (кардинальность).
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_metric_points_clock_skew_total",
+			"Metric points that arrived with a timestamp from the future and were clamped to the receive time. Growth means a sender's clock runs ahead of the server's.",
+			nil, metric.ClockSkewPoints)
 		go metricWriter.Run()
 
 		// Профили (этап 7) — четвёртый приёмник: Sentry-профили из envelope и

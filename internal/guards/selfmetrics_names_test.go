@@ -68,6 +68,7 @@ var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_memory_limit_bytes", "Gauge"},
 	{"gotcha_metric_evaluator_last_tick_timestamp_seconds", "Gauge"},
 	{"gotcha_metric_evaluator_tick_duration_seconds", "Gauge"},
+	{"gotcha_metric_points_clock_skew_total", "Counter"},
 	{"gotcha_notify_failed_total", "Counter"},
 	{"gotcha_notify_queue_depth", "Gauge"},
 	{"gotcha_notify_queue_failed", "Gauge"},

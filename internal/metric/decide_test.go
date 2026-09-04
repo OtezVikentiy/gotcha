@@ -40,6 +40,25 @@ func TestDecideLT(t *testing.T) {
 	}
 }
 
+// TestDecideEqualToThresholdIsNotABreach — K3-6: граница строгая. Значение,
+// равное порогу, нарушением не считается ни для gt, ни для lt (валидация
+// правил допускает порог, совпадающий с потолком метрики, — «1.0» для доли;
+// равенство ему не открывает инцидент). Для открытого инцидента равенство
+// порогу — мёртвая зона: не закрываем, держим.
+func TestDecideEqualToThresholdIsNotABreach(t *testing.T) {
+	for _, cmp := range []string{"gt", "lt"} {
+		if got := Decide(100, cmp, 100, false); got != (Decision{}) {
+			t.Errorf("%s: current == threshold opened an incident: %+v", cmp, got)
+		}
+		if got := Decide(100, cmp, 100, true); got != (Decision{Bump: true}) {
+			t.Errorf("%s: current == threshold with open incident = %+v, want Bump (dead zone)", cmp, got)
+		}
+	}
+	if got := Decide(1, "gt", 1, false); got != (Decision{}) {
+		t.Errorf("gt: 1 == 1 opened an incident: %+v", got)
+	}
+}
+
 // TestDecideNegativeThresholdHysteresis — полоса гистерезиса берётся от модуля
 // порога. Умножение на (1±band) разворачивало её на отрицательных порогах:
 // при пороге -100 «безопасной стороной» для gt оказывалось -95, то есть выше

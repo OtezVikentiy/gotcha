@@ -29,6 +29,30 @@ func TestHistogramQuantile(t *testing.T) {
 	}
 }
 
+// TestHistogramQuantileNegativeBounds — K3-5: нижняя граница первого бакета
+// не зашита нулём. При границах [-10, 0, 10] все наблюдения первой корзины не
+// больше -10; квантиль внутри неё обязан быть ровно её верхней границей, а
+// не «нулём, интерполированным к -10» (раньше получалось -5 — выше границы,
+// которую ни одно наблюдение не превысило).
+func TestHistogramQuantileNegativeBounds(t *testing.T) {
+	counts := []uint64{4, 2, 2, 2}
+	bounds := []float64{-10, 0, 10}
+	if got := histogramQuantile(counts, bounds, 0.2); got != -10 {
+		t.Fatalf("p20 inside the first bucket = %v, want bounds[0] = -10", got)
+	}
+	if got := histogramQuantile(counts, bounds, 0.4); got != -10 {
+		t.Fatalf("p40 at the top of the first bucket = %v, want -10", got)
+	}
+	// Второй бакет (-10, 0]: интерполяция от bounds[0], как и раньше.
+	if got := histogramQuantile(counts, bounds, 0.5); got <= -10 || got > 0 {
+		t.Fatalf("p50 = %v, want inside (-10, 0]", got)
+	}
+	// Неотрицательные границы: первый бакет по-прежнему интерполируется от нуля.
+	if got := histogramQuantile([]uint64{2, 8, 2}, []float64{100, 500}, 0.1); got <= 0 || got > 100 {
+		t.Fatalf("p10 with positive bounds = %v, want inside (0, 100]", got)
+	}
+}
+
 // seedPoints вставляет точки напрямую (без writer) для query-тестов.
 func seedGauge(t *testing.T, conn interface {
 	Exec(ctx context.Context, query string, args ...any) error
