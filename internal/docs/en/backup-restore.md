@@ -104,21 +104,30 @@ startup the application applies migrations itself (`GOTCHA_AUTO_MIGRATE_ENABLED=
 default) — that is, it creates every table before opening its port — so a dump
 loaded afterwards meets a schema that already exists.
 
-The order:
+Restoring a full copy (both databases) is one continuous procedure, not two independent ones. The PostgreSQL dump carries its own schema (`CREATE TABLE` statements baked into the dump itself), but a ClickHouse `Native` dump is rows only — Gotcha's own migrations create the schema for it. Between restoring PostgreSQL and inserting into ClickHouse there's a mandatory step in between: apply migrations without starting the application, or ClickHouse has no tables yet to insert into:
 
 ```bash
-# 1. Bring up ONLY the database, without the application, or it creates the schema.
-docker compose up -d postgres
+# 1. Bring up ONLY the databases, without the application, or it creates the schema first.
+docker compose up -d postgres clickhouse
 
-# 2. Recreate the database from scratch.
+# 2. Recreate the PostgreSQL database from scratch.
 docker compose exec -T postgres psql -U gotcha -d postgres \
   -c 'DROP DATABASE IF EXISTS gotcha' -c 'CREATE DATABASE gotcha'
 
-# 3. Load the dump, stopping at the first error.
+# 3. Load the PostgreSQL dump, stopping at the first error.
 gunzip -c backup/postgres-2026-07-01.sql.gz \
   | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 --single-transaction -U gotcha -d gotcha
 
-# 4. Only now start the application.
+# 4. Apply migrations without starting the application: this creates the
+#    ClickHouse schema (and brings PostgreSQL's schema up to the binary's
+#    version, if needed) without opening the port or starting any background
+#    workers — safe to insert into ClickHouse right after this, with no
+#    race against a live application.
+docker compose run --rm --no-deps gotcha --migrate-only
+
+# 5. Restore ClickHouse — see "Restore: ClickHouse" below.
+
+# 6. Only now start the full application.
 docker compose up -d
 ```
 
@@ -146,7 +155,20 @@ cat backup/clickhouse/events-2026-07-01.native | \
     --query "INSERT INTO events FORMAT Native"
 ```
 
-Repeat for each table. The table must already exist (created by migrations on app startup) and be empty, otherwise the data is appended to what's already there instead of replacing it.
+Repeat for each table. The table must already exist (created by step 4 in "Restore: PostgreSQL" above, `--migrate-only`) and be empty, otherwise the data is appended to what's already there instead of replacing it.
+
+**Restoring a second time, into a database that already has data?** Clear the materialized views (`transactions_5m`, `web_vitals_5m`) **before** inserting into the source tables, not after. They fill themselves as a side effect of the insert into `transactions` — clearing them afterwards wipes out what the insert just added, and Performance stays empty even though the restore reported success:
+
+```bash
+docker compose exec -T clickhouse clickhouse-client \
+  --user gotcha --password gotcha --database gotcha \
+  --query "TRUNCATE TABLE transactions_5m"
+docker compose exec -T clickhouse clickhouse-client \
+  --user gotcha --password gotcha --database gotcha \
+  --query "TRUNCATE TABLE web_vitals_5m"
+```
+
+only then insert the `Native` dumps using the command above.
 
 ## Restore from a volume snapshot
 
