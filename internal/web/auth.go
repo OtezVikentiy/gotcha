@@ -45,12 +45,42 @@ func (h *Handler) oauthButtons(ctx context.Context) []templates.OAuthButton {
 	return out
 }
 
+// resolveAuthNext — адресат для GET /login и /register.
+//
+// Сперва query next — общий механизм глубоких ссылок (issue из письма
+// алерта и т.п., см. auth.loginWithNext в internal/auth/middleware.go): он не
+// секрет, ему в query самое место. Если его нет — invite-cookie (K9-19):
+// ссылки со страницы приглашения ведут на /login и /register БЕЗ next в
+// query, а куда вернуться после входа, помнит cookie, выставленная
+// inviteAcceptPage (см. invitecookie.go).
+//
+// Легаси-случай — next в query уже содержит путь приглашения (старая ссылка,
+// сохранённая до этого исправления, либо адрес набран руками): такой next
+// по-прежнему возвращается как есть (иначе ссылка перестала бы работать), но
+// токен из него сразу же зеркалится в cookie — иначе следующая ссылка
+// «войти» на RegisterStub (см. denyRegistration и loginLinkWithNext)
+// повторила бы ту же утечку в свою очередь.
+func (h *Handler) resolveAuthNext(w http.ResponseWriter, r *http.Request, rawNext string) string {
+	next := safeNextPath(rawNext)
+	if next != "" {
+		if token, ok := inviteTokenFromNext(next); ok {
+			h.setInviteNextCookie(w, token)
+		}
+		return next
+	}
+	if token, ok := inviteNextToken(r); ok {
+		return inviteAcceptPath(token)
+	}
+	return ""
+}
+
 func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
-	_ = templates.Login("", safeNextPath(r.URL.Query().Get("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
+	next := h.resolveAuthNext(w, r, r.URL.Query().Get("next"))
+	_ = templates.Login("", next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
-	next := safeNextPath(r.URL.Query().Get("next"))
+	next := h.resolveAuthNext(w, r, r.URL.Query().Get("next"))
 	// PROD-B1: если режим closed и первый пользователь уже есть — показываем
 	// экран «регистрация закрыта» вместо формы (bootstrap уже пройден).
 	if h.registrationClosed(r) {
@@ -268,6 +298,10 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
+	// Адресат употреблён — invite-cookie (если была) больше не нужна (K9-19):
+	// оставлять её висеть до истечения TTL значило бы дать ей всплыть на
+	// следующем, никак не связанном входе.
+	h.clearInviteNextCookie(w)
 	// Возврат туда, куда человек шёл до формы входа (см. safeNextPath и
 	// auth.loginWithNext): иначе глубокая ссылка — приглашение, ссылка на
 	// проблему из письма алерта — теряется, и он оказывается на главной.
@@ -369,6 +403,8 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
+	// См. комментарий в loginSubmit: адресат употреблён, invite-cookie гасим.
+	h.clearInviteNextCookie(w)
 	// Возврат туда, куда человек шёл до формы регистрации — та же логика, что
 	// и в loginSubmit (см. комментарий там): без этого ссылка-приглашение
 	// теряется после регистрации, а не только после входа.

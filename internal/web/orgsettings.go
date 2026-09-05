@@ -1098,6 +1098,14 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	if email == "" {
+		// K9-19: страница ниже покажет анониму ссылки «войти»/«создать
+		// аккаунт» БЕЗ next=/invite/{token} в query (см. loginLinkWithNext/
+		// registerLinkWithNext в auth.templ) — токен вместо этого едет в
+		// HttpOnly cookie и его читает resolveAuthNext на GET /login и
+		// /register (auth.go, invitecookie.go).
+		h.setInviteNextCookie(w, token)
+	}
 	_ = templates.InviteAccept(token, "", email, inv).Render(r.Context(), w)
 }
 

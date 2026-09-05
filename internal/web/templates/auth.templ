@@ -2,6 +2,7 @@ package templates
 
 import (
 	"net/url"
+	"strings"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
@@ -79,25 +80,36 @@ templ SSOLogin(errMsg string) {
 	}
 }
 
+// isInvitePath — тот же признак «этот next — путь приглашения», что и у
+// inviteTokenFromNext в internal/web/auth.go, но локальная копия: templates
+// не может импортировать web (обратный цикл). Здесь она решает только, класть
+// ли next в query ссылки — сам токен по этому пути не проверяется, проверка
+// остаётся в web.inviteTokenFromNext.
+func isInvitePath(next string) bool {
+	return strings.HasPrefix(next, "/invite/")
+}
+
 // loginLinkWithNext — ссылка на /login, несущая адресата, если он есть. Тот
 // же приём экранирования, что и у loginWithNext в
 // internal/auth/middleware.go (RequireUser): url.QueryEscape без url.Values,
 // потому что параметр всего один. next приходит уже провалидированным через
 // safeNextPath у вызывающего — здесь только строится ссылка.
+//
+// K9-19: путь приглашения (/invite/{token}) в query не кладём никогда —
+// оттуда токен утекает в историю браузера, в лог обратного прокси и в
+// Referer. Адресат при этом не теряется: его несёт invite-cookie
+// (invitecookie.go), которую читает resolveAuthNext на GET /login.
 func loginLinkWithNext(next string) string {
-	if next == "" {
+	if next == "" || isInvitePath(next) {
 		return "/login"
 	}
 	return "/login?next=" + url.QueryEscape(next)
 }
 
-// registerLinkWithNext — тот же приём для /register: ссылка «создать аккаунт»
-// со страницы приглашения обязана нести токен так же, как и ссылка «войти»
-// (см. loginLinkWithNext), иначе registerSubmit получит next="" и откажет
-// законному приглашённому как незнакомцу без токена (inviteTokenFromNext в
-// internal/web/auth.go).
+// registerLinkWithNext — тот же приём для /register, с тем же исключением
+// для пути приглашения (см. loginLinkWithNext).
 func registerLinkWithNext(next string) string {
-	if next == "" {
+	if next == "" || isInvitePath(next) {
 		return "/register"
 	}
 	return "/register?next=" + url.QueryEscape(next)
