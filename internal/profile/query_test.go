@@ -341,3 +341,74 @@ func TestRegressionGateOnRowCountNotWeight(t *testing.T) {
 		t.Fatalf("Decide on 150-row window = %v, want DecisionOpen (enough samples, share far above base)", got)
 	}
 }
+
+// TestTopFunctionSharesShareByWeightSamplesByCount — Share и Samples обязаны
+// считаться от РАЗНЫХ знаменателей: Share — от суммы веса окна, Samples — от
+// числа его строк. Обе фикстуры TestRegressionGateOnRowCountNotWeight кладут
+// строки весом 1, поэтому там sum(value) и count() совпадают по построению —
+// подмена одного на другое в Share была бы там не видна ни разу за весь
+// прогон пакета. Здесь вес разновесный по функциям намеренно: A — 2 строки
+// весом 100 (self=200), B — 8 строк весом 1 (self=8). По весам A ≈ 0.96 —
+// подавляющее большинство; по числу строк A была бы всего 2 из 10 (0.2), то
+// есть меньшинством — подмену знаменателя доли пропустить невозможно.
+func TestTopFunctionSharesShareByWeightSamplesByCount(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ins := func(fnLeaf string, v uint64, n int) {
+		for i := 0; i < n; i++ {
+			if err := conn.Exec(ctx, `INSERT INTO profile_samples
+				(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+				VALUES (31,'cpu','api','','','go',?,?,?,'')`,
+				now.Add(-10*time.Minute), []string{"root", fnLeaf}, v); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+		}
+	}
+	ins("a", 100, 2)
+	ins("b", 1, 8)
+
+	shares, err := q.TopFunctionShares(ctx, 31, "api", "cpu", now.Add(-time.Hour), now.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("TopFunctionShares: %v", err)
+	}
+	if len(shares) != 2 {
+		t.Fatalf("shares = %+v, want 2 functions", shares)
+	}
+	byFn := map[string]profile.FunctionShare{}
+	for _, sh := range shares {
+		byFn[sh.Function] = sh
+	}
+	a, ok := byFn["a"]
+	if !ok {
+		t.Fatalf("no share for 'a': %+v", shares)
+	}
+	b, ok := byFn["b"]
+	if !ok {
+		t.Fatalf("no share for 'b': %+v", shares)
+	}
+
+	// Share — по весу: a self=200 из total=208 ≈ 0.9615, b self=8 из 208 ≈
+	// 0.0385. Подмена знаменателя на число строк (10) дала бы a=0.2, b=0.8 —
+	// функции поменялись бы местами по величине доли, допуски это исключают.
+	if a.Share < 0.9 || a.Share > 1.0 {
+		t.Fatalf("a.Share = %v, want ~0.9615 (self/total по весу, не 2/10 по числу строк)", a.Share)
+	}
+	if b.Share < 0.0 || b.Share > 0.1 {
+		t.Fatalf("b.Share = %v, want ~0.0385 (self/total по весу, не 8/10 по числу строк)", b.Share)
+	}
+
+	// Samples — число строк окна (2+8=10), одинаково для всех функций окна;
+	// подмена на сумму весов (208) отличается на порядок.
+	if a.Samples != 10 {
+		t.Fatalf("a.Samples = %d, want 10 (число строк окна, не вес 208)", a.Samples)
+	}
+	if b.Samples != 10 {
+		t.Fatalf("b.Samples = %d, want 10 (число строк окна, не вес 208)", b.Samples)
+	}
+}
