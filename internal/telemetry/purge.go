@@ -97,11 +97,18 @@ func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 //     transactions только через теги (см. txSubjectConds);
 //   - spans: у таблицы spans (ch/0004_spans.up.sql) вообще нет колонки субъекта —
 //     ни user_id, ни тегов. Субъект адресуется КОСВЕННО, через trace_id его
-//     транзакций: сначала (до их удаления) собираются trace_id строк transactions,
-//     совпавших с субъектом по тем же условиям, что и сама очистка transactions
+//     транзакций: сначала собираются trace_id строк transactions, совпавших с
+//     субъектом по тем же условиям, что и сама очистка transactions
 //     (txSubjectConds), и уже по этому списку удаляются spans с тем же
-//     project_id и trace_id IN (...). Порядок обязателен: удали транзакции
-//     первыми — и trace_id субъекта взять уже неоткуда, спаны останутся навсегда;
+//     project_id и trace_id IN (...). Удаление spans идёт ДО удаления
+//     transactions (а не после, хотя оба списка формируются из одних и тех же
+//     trace_id) — ради повторяемости при сбое: если операция не atomic (а она
+//     не atomic — это два независимых ALTER ... DELETE) и упадёт на какой-то
+//     пачке spans, transactions ещё целы, и повторный вызов PurgeSubject
+//     соберёт те же trace_id заново и продолжит. Переставь порядок обратно —
+//     и сбой на spans после того, как transactions уже стёрты, станет
+//     неисправим: retry не найдёт trace_id субъекта, а недоудалённые spans
+//     станут неотличимы от законно осиротевших;
 //   - metric_points: attributes['user.id']/['enduser.id'] (← UserID),
 //     attributes['user.email'] (← Email);
 //   - logs: log_attributes['user.id']/['enduser.id'] (← UserID),
@@ -168,11 +175,15 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 	// transactions: субъект живёт в колонке user_id и в тегах (см. txSubjectConds).
 	// Матчим по обоим, иначе субъект, заданный email, не удаляет свои транзакции.
 	//
-	// ПОРЯДОК ОБЯЗАТЕЛЕН: trace_id транзакций субъекта собираются ДО их
-	// удаления. spans не хранит субъекта ни в одной колонке — единственный путь
-	// к ним лежит через trace_id ровно тех транзакций, которые сейчас будут
-	// стёрты. Удали транзакции первыми — и список trace_id взять будет уже
-	// неоткуда, а спаны субъекта останутся в базе навсегда.
+	// ПОРЯДОК ОБЯЗАТЕЛЕН, и он не «собрать → удалить транзакции → удалить
+	// spans»: spans удаляются РАНЬШЕ transactions. trace_id собираются один
+	// раз в начале и не меняются, но если удалить транзакции первыми, а потом
+	// упадёт удаление spans (несколько независимых ALTER ... DELETE, не
+	// atomic), повторный вызов PurgeSubject уже не найдёт trace_id субъекта —
+	// транзакций больше нет — и недоудалённые spans останутся в базе
+	// неотличимыми от законно осиротевших. Удаляя spans первыми, сбой на них
+	// оставляет transactions нетронутыми, и retry просто повторяет всю
+	// операцию заново.
 	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
 		args := append([]any{projectID}, txArgs...)
 		txWhere := "project_id = ? AND (" + strings.Join(txConds, " OR ") + ")"
@@ -181,6 +192,16 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 		if err != nil {
 			return res, err
 		}
+
+		// spans: субъект в этой таблице не адресуется напрямую (нет ни колонки,
+		// ни тегов) — только косвенно, через trace_id, собранный строкой выше,
+		// пока транзакции ещё на месте. Удаляются ДО transactions — см.
+		// комментарий выше про идемпотентность retry.
+		spansDeleted, err := p.purgeSpansByTraceIDs(ctx, projectID, traceIDs)
+		if err != nil {
+			return res, err
+		}
+		res.Spans = spansDeleted
 
 		n, err := p.countMatching(ctx, "transactions", txWhere, args)
 		if err != nil {
@@ -192,15 +213,6 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 		if err := p.conn.Exec(ctx, txQ, args...); err != nil {
 			return res, fmt.Errorf("telemetry: purge subject from transactions (project %d): %w", projectID, err)
 		}
-
-		// spans: субъект в этой таблице не адресуется напрямую (нет ни колонки,
-		// ни тегов) — только косвенно, через trace_id, собранный строкой выше,
-		// пока транзакции ещё были на месте.
-		spansDeleted, err := p.purgeSpansByTraceIDs(ctx, projectID, traceIDs)
-		if err != nil {
-			return res, err
-		}
-		res.Spans = spansDeleted
 	}
 
 	// metric_points несут ПДн в attributes (Map(String,String)): OTel-конвенции

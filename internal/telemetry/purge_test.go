@@ -2,6 +2,8 @@ package telemetry_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,6 +316,72 @@ func TestPurgeSubjectSpans(t *testing.T) {
 	}
 	if got := countSpansByTrace(t, ctx, conn, p1, "tr-victim"); got == 0 {
 		t.Errorf("p1 spans tr-victim удалены, а не должны были (субъект чистится в рамках проекта)")
+	}
+}
+
+// failOnceConn оборачивает driver.Conn и возвращает ошибку на первый Exec,
+// чей текст запроса содержит match, а дальше форвардит все вызовы как есть.
+// Нужен, чтобы воспроизвести сбой ровно в удалении spans, не трогая остальную
+// логику PurgeSubject — остальные методы наследуются встраиванием.
+type failOnceConn struct {
+	driver.Conn
+	match  string
+	failed bool
+}
+
+func (f *failOnceConn) Exec(ctx context.Context, query string, args ...any) error {
+	if !f.failed && strings.Contains(query, f.match) {
+		f.failed = true
+		return errors.New("injected failure")
+	}
+	return f.Conn.Exec(ctx, query, args...)
+}
+
+// TestPurgeSubjectSpansRetryAfterFailure фиксирует правку по ретраю: spans
+// удаляются РАНЬШЕ transactions ровно затем, чтобы сбой на spans не забирал у
+// повторного вызова возможность найти trace_id субъекта заново. Если порядок
+// когда-нибудь перевернут обратно (transactions раньше spans), тот же сбой на
+// spans застанет transactions уже удалёнными — и этот тест поймает это на
+// втором ассерте ("transactions удалены несмотря на сбой").
+func TestPurgeSubjectSpansRetryAfterFailure(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p = int64(82)
+	ts := time.Now().UTC()
+
+	seedTransactionTrace(t, ctx, conn, p, "victim", "tr-retry", ts)
+	seedSpanTrace(t, ctx, conn, p, "tr-retry", ts)
+
+	failing := &failOnceConn{Conn: conn, match: "ALTER TABLE spans DELETE"}
+	if _, err := telemetry.NewPurger(failing).PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim"}); err == nil {
+		t.Fatal("PurgeSubject: ждали ошибку от инъекции сбоя в удалении spans")
+	}
+
+	// Сбой на spans не должен успевать стереть transactions — иначе у retry
+	// не останется способа заново найти trace_id субъекта.
+	if got := count(t, ctx, conn, "transactions", p); got == 0 {
+		t.Fatal("transactions удалены несмотря на сбой удаления spans — retry больше невозможен")
+	}
+	if got := countSpansByTrace(t, ctx, conn, p, "tr-retry"); got == 0 {
+		t.Fatal("spans tr-retry удалены несмотря на инъекцию сбоя")
+	}
+
+	// Повтор без инъекции сбоя обязан довести дело до конца: найти те же
+	// trace_id заново (транзакция ещё жива) и удалить и spans, и transactions.
+	res, err := telemetry.NewPurger(conn).PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim"})
+	if err != nil {
+		t.Fatalf("PurgeSubject retry: %v", err)
+	}
+	if res.Spans != 1 {
+		t.Errorf("retry res.Spans = %d, ждали 1", res.Spans)
+	}
+	if got := count(t, ctx, conn, "transactions", p); got != 0 {
+		t.Errorf("transactions p: осталось %d после retry, ждали 0", got)
+	}
+	if got := countSpansByTrace(t, ctx, conn, p, "tr-retry"); got != 0 {
+		t.Errorf("spans tr-retry: осталось %d после retry, ждали 0", got)
 	}
 }
 
