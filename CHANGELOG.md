@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-05
+
 ### Fixed
 - Rolling the binary back onto a database with a newer schema now shows the
   prepared schema-version error at startup instead of a crash loop, including
