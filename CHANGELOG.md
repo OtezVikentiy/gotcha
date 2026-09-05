@@ -39,6 +39,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently dropped. The migration test suite now checks that rolling back
   each individual migration restores the exact prior schema shape, not just
   that rolling back the whole set leaves an empty database.
+- An uptime incident's reminders now stop when a maintenance window starts
+  after the incident opened, and resume once the window ends; the window is
+  checked live before each reminder, not only from a snapshot taken when the
+  incident opened. Pausing a monitor now silences both reminders and the
+  escalation ladder for its open incident without closing the incident —
+  checks resume and close it as usual once the monitor is enabled again.
+  Incident list pages no longer count the whole incident history on every
+  page load.
+- Metric points with a timestamp from the future are clamped to the receive
+  time instead of being accepted as-is (up to a day) or dropped (beyond it):
+  charts and threshold rules only read up to the server's clock, so a host
+  whose clock ran ahead was silently invisible to them. The new
+  `gotcha_metric_points_clock_skew_total` counter and a rate-limited warning
+  with the host name make the skew visible. Histograms with more than 512
+  buckets are truncated consistently, keeping one more count than bounds and
+  folding the tail into the last bucket, so their percentiles no longer read
+  shifted bounds. Percentiles over histograms with negative bounds no longer
+  fall back to zero as the first bucket's lower edge.
+- Documentation caught up with the code: rolling back below 0.25.0 needs the
+  pre-upgrade backup because of the secrets envelope; the production checklist
+  and hardening page require changing the default database passwords; metric
+  alert rules and suppression edges document editing and disabling (0.33.0),
+  and rule deletion states that it removes the rule's incidents; the flame
+  graph page describes click-to-zoom (0.31.0); the host name is documented as
+  the identity key; the backup script registers its `trap` before the first
+  command that can fail; the configuration page gained a table of what each
+  `--mode=` runs; the dependency gate's host-only scope and the heartbeat URL
+  as the sole ping secret are spelled out.
 
 ## [0.34.0] - 2026-09-03
 
