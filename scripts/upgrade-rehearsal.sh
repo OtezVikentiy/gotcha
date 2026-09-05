@@ -72,6 +72,31 @@ cmd_snapshot() {
   echo "снимок: $out ($(wc -l < "$out") строк)"
 }
 
+cmd_compare() {
+  local a="${1:?снимок до}" b="${2:?снимок после}" allow="${3:-}"
+  local fa fb diff_out
+  fa=$(mktemp) && fb=$(mktemp)
+  # Схема и совместимость обязаны меняться при апгрейде — сверяются отдельно,
+  # из сравнения исключаются ещё ДО diff: если фильтровать сам вывод diff по
+  # содержимому строк, заголовки блоков ("NcN", "---") под фильтр не попадают
+  # и remain — расхождение продолжит "кричать" даже на пустой разнице.
+  grep -v -P '^pg\t(schema|compat)\t' "$a" > "$fa" || true
+  grep -v -P '^pg\t(schema|compat)\t' "$b" > "$fb" || true
+  if [ -n "$allow" ] && [ -s "$allow" ]; then
+    while read -r pat; do
+      case "$pat" in ''|\#*) continue ;; esac
+      grep -Fv "$pat" "$fa" > "$fa.tmp" || true; mv "$fa.tmp" "$fa"
+      grep -Fv "$pat" "$fb" > "$fb.tmp" || true; mv "$fb.tmp" "$fb"
+    done < "$allow"
+  fi
+  diff_out=$(diff "$fa" "$fb" || true)
+  rm -f "$fa" "$fb"
+  if [ -n "$diff_out" ]; then
+    echo "РАСХОЖДЕНИЕ вне списка ожидаемых:"; printf '%s\n' "$diff_out"; return 1
+  fi
+  echo "инварианты совпали"
+}
+
 case "${1:-}" in
   snapshot)     shift; cmd_snapshot "$@" ;;
   compare)      shift; cmd_compare "$@" ;;
