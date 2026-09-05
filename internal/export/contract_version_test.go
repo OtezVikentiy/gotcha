@@ -187,3 +187,46 @@ func TestExportContractIssueFieldsMatchFrozenSet(t *testing.T) {
 		t.Fatalf(contractBreakMsg, "NDJSON", "issues", got, wantSorted)
 	}
 }
+
+// TestExportContractMetaFieldsMatchFrozenSet — тот же принцип, что у двух
+// тестов выше, применённый к самой структуре Meta (K4-7 аудита):
+// MetaSchemaVersion объявляет несовместимой правкой переименование/удаление
+// поля Meta, но без сторожа на ПОЛНЫЙ набор ключей это обещание в докблоке
+// ничем не удержано — переименуй FilterCode в структуре, и ни один из
+// прежних тестов (TestBuildMetaAlwaysSetsSchemaVersion,
+// TestMetaSchemaVersionFieldNameAndValue — оба смотрят только на
+// schema_version) не покраснеет.
+//
+// pseudonym_note — единственное опциональное поле (`omitempty`, докблок
+// PseudonymNote: непусто только у events без ПДн) — тест проверяет оба
+// состояния явно, а не только «набор ключей достаточно большой»: три
+// обязательных ключа присутствуют ВСЕГДА, pseudonym_note — РОВНО там, где
+// докблок его обещает, и нигде больше.
+func TestExportContractMetaFieldsMatchFrozenSet(t *testing.T) {
+	alwaysWant := []string{"filter_code", "schema_version", "scope_issue_id"}
+
+	cases := []struct {
+		name         string
+		job          Job
+		wantOptional []string
+	}{
+		{"issues", Job{Kind: KindIssues}, nil},
+		{"events, includePII=true", Job{Kind: KindEvents, IncludePII: true}, nil},
+		{"events, includePII=false", Job{Kind: KindEvents, IncludePII: false}, []string{"pseudonym_note"}},
+	}
+	for _, c := range cases {
+		raw, err := json.Marshal(BuildMeta(c.job))
+		if err != nil {
+			t.Fatalf("%s: json.Marshal: %v", c.name, err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("%s: json.Unmarshal: %v (%s)", c.name, err, raw)
+		}
+		want := append(append([]string{}, alwaysWant...), c.wantOptional...)
+		sort.Strings(want)
+		if got := sortedKeys(m); !slices.Equal(got, want) {
+			t.Fatalf(contractBreakMsg, "Meta JSON", c.name, got, want)
+		}
+	}
+}
