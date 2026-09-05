@@ -308,3 +308,42 @@ func TestWebInviteFormKeepsInputOn422(t *testing.T) {
 		t.Errorf("ошибка не привязана к форме приглашения: %s", page)
 	}
 }
+
+// TestInviteNextCookieRejectsPathBreakingValue — фикс-раунд 1 по T7:
+// inviteNextToken отбрасывает значение cookie, которое ломает путь
+// /invite/{token} (несёт "/", "?" или "#"). Cookie полностью подконтрольна
+// клиенту — сервер сам никогда не кладёт туда такое значение (setInviteNextCookie
+// пишет ровно сырой токен приглашения), но проверка защищает от следующего,
+// кто станет подставлять cookie иначе, и от cookie, навязанной извне (что
+// возможно и для HttpOnly cookie: не через JS, но через forged Set-Cookie от
+// другого источника на том же сайте — например, компрометацию поддомена).
+//
+// Проверяется НАБЛЮДАЕМОЕ поведение GET /login: без query next, но с плохой
+// cookie, форма не должна получить псевдо-адресата "/invite/{плохое
+// значение}" — испорченная cookie равносильна отсутствию приглашения вовсе
+// (никакого скрытого поля next).
+func TestInviteNextCookieRejectsPathBreakingValue(t *testing.T) {
+	s := newInviteModeStack(t)
+
+	for _, bad := range []string{"x/y", "a?b", "c#d"} {
+		req, err := http.NewRequest(http.MethodGet, s.srv.URL+"/login", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.AddCookie(&http.Cookie{Name: "invite_next", Value: bad})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /login: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		page := string(body)
+
+		if strings.Contains(page, "/invite/"+bad) {
+			t.Errorf("плохое значение cookie %q подставилось в путь приглашения:\n%s", bad, page)
+		}
+		if strings.Contains(page, `name="next"`) {
+			t.Errorf("плохое значение cookie %q дало форме ложного адресата:\n%s", bad, page)
+		}
+	}
+}
